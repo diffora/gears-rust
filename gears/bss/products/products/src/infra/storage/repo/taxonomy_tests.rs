@@ -42,10 +42,12 @@ use super::{
     definition_value_holders, delete_attribute_value, delete_metadata_key, delete_retired_category,
     flip_definition_state, insert_attribute_definition, insert_category, metadata_of,
     rename_category, replace_category_assignments, retire_category, retire_census,
-    upsert_attribute_value, upsert_metadata, write_category_display_value,
+    seed_well_known_definitions, upsert_attribute_value, upsert_metadata,
+    write_category_display_value,
 };
 use crate::domain::taxonomy::{
-    AssignmentRole, DefinitionState, definition_in_use_verdict, retire_verdict,
+    AssignmentRole, DefinitionState, REGISTRY_SEEDED_BY, WELL_KNOWN_SEEDS,
+    definition_in_use_verdict, retire_verdict,
 };
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::product;
@@ -1962,4 +1964,174 @@ async fn a_missing_category_answers_the_token_refusal_with_the_sentinel() {
     .expect("no storage failure")
     .expect_err("there is no such category");
     assert_eq!(refusal.found, -1, "the sentinel says the row is not there");
+}
+
+// -- The well-known seeds (**P-D-100**, as amended by **P-D-104**) --
+
+/// **An empty roster is seeded, marked `registry`, with `imageUri`
+/// non-localized.**
+///
+/// The rows are asserted against `WELL_KNOWN_SEEDS` itself rather than
+/// against a second list written here: a literal roster in the test would be
+/// exactly the disagreement the single definition site exists to prevent.
+///
+/// **Seeding is a write and the roster read is a read.** P-D-104 separated the
+/// two -- a lazy read-through made a `GET` mutate -- so this calls the writer
+/// and reads back, which is what the door does.
+#[tokio::test]
+async fn an_empty_roster_is_seeded_with_the_well_known_five() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    let conn = provider.conn().expect("scoped connection");
+
+    assert!(
+        attribute_definitions(&conn, &scope, TENANT)
+            .await
+            .expect("read")
+            .is_empty(),
+        "this case's own premise: nothing is seeded yet"
+    );
+
+    seed_well_known_definitions(&conn, &scope, TENANT, at(9))
+        .await
+        .expect("seed");
+    let seeded = attribute_definitions(&conn, &scope, TENANT)
+        .await
+        .expect("read back");
+
+    assert_eq!(
+        seeded.iter().map(|d| d.key.as_str()).collect::<Vec<_>>(),
+        {
+            let mut keys: Vec<&str> = WELL_KNOWN_SEEDS.iter().map(|s| s.key).collect();
+            keys.sort_unstable();
+            keys
+        },
+        "the roster is WELL_KNOWN_SEEDS', ordered by key"
+    );
+    for definition in &seeded {
+        let seed = WELL_KNOWN_SEEDS
+            .iter()
+            .find(|s| s.key == definition.key)
+            .expect("every row came from the roster");
+        assert_eq!(definition.seeded_by.as_deref(), Some(REGISTRY_SEEDED_BY));
+        assert_eq!(definition.state, DefinitionState::Active);
+        assert_eq!(definition.localized, seed.localized, "{}", seed.key);
+        assert_eq!(definition.value_type, seed.value_type, "{}", seed.key);
+    }
+}
+
+/// **A read does not seed.** P-D-104's whole point: a `GET` of the roster must
+/// not write, or a read-only replica breaks and the first reader of a tenant
+/// pays for a write it did not ask for.
+#[tokio::test]
+async fn reading_the_roster_writes_nothing() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    let conn = provider.conn().expect("scoped connection");
+
+    for _ in 0..3 {
+        assert!(
+            attribute_definitions(&conn, &scope, TENANT)
+                .await
+                .expect("read")
+                .is_empty(),
+            "the read is pure; three of them leave the roster empty"
+        );
+    }
+}
+
+/// **Seeding twice adds nothing, and never undoes a deprecation.**
+///
+/// The door calls the writer on every content save that names an attribute,
+/// so it must be idempotent -- the key index is what makes it so, and the
+/// conflict is swallowed. The second half is the sharper one: a tenant that
+/// has **deprecated** one of the five does not get it back. Re-materialising a
+/// definition an operator deliberately moved out of the way would undo their
+/// act, and the state flip is the only removal there is, so they would have no
+/// way left to say no.
+#[tokio::test]
+async fn seeding_twice_adds_nothing_and_never_undoes_a_deprecation() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    let conn = provider.conn().expect("scoped connection");
+
+    seed_well_known_definitions(&conn, &scope, TENANT, at(9))
+        .await
+        .expect("seed");
+    let first = attribute_definitions(&conn, &scope, TENANT)
+        .await
+        .expect("read");
+    assert_eq!(first.len(), WELL_KNOWN_SEEDS.len());
+
+    let display = first
+        .iter()
+        .find(|d| d.key == "displayName")
+        .expect("the roster carries it");
+    flip_definition_state(
+        &conn,
+        &scope,
+        TENANT,
+        display.definition_id,
+        DefinitionFlip {
+            expected: DefinitionState::Active,
+            to: DefinitionState::Deprecated,
+        },
+        at(10),
+    )
+    .await
+    .expect("the operator deprecates one");
+
+    seed_well_known_definitions(&conn, &scope, TENANT, at(11))
+        .await
+        .expect("the door calls this again on the next such write");
+    let second = attribute_definitions(&conn, &scope, TENANT)
+        .await
+        .expect("read again");
+    assert_eq!(
+        second.len(),
+        WELL_KNOWN_SEEDS.len(),
+        "no sixth row: the read-through did not fire on a non-empty roster"
+    );
+    assert_eq!(
+        second
+            .iter()
+            .find(|d| d.key == "displayName")
+            .expect("still there")
+            .state,
+        DefinitionState::Deprecated,
+        "the operator's act stands"
+    );
+}
+
+/// **Each tenant is seeded for itself**, which is the whole reason a migration
+/// alone cannot do this: the rows are five *per tenant*, not five in the
+/// database.
+#[tokio::test]
+async fn the_seeds_are_per_tenant() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+
+    seed_well_known_definitions(&conn, &AccessScope::for_tenant(TENANT), TENANT, at(9))
+        .await
+        .expect("seed the first tenant");
+    assert!(
+        attribute_definitions(&conn, &AccessScope::for_tenant(OTHER_TENANT), OTHER_TENANT)
+            .await
+            .expect("read")
+            .is_empty(),
+        "seeding one tenant seeds no other"
+    );
+
+    seed_well_known_definitions(
+        &conn,
+        &AccessScope::for_tenant(OTHER_TENANT),
+        OTHER_TENANT,
+        at(9),
+    )
+    .await
+    .expect("seed the second tenant");
+    let other = attribute_definitions(&conn, &AccessScope::for_tenant(OTHER_TENANT), OTHER_TENANT)
+        .await
+        .expect("read it back");
+    assert_eq!(other.len(), WELL_KNOWN_SEEDS.len());
 }

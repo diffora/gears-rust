@@ -74,7 +74,7 @@ use uuid::Uuid;
 
 use crate::domain::containment::ResolvedScope;
 use crate::domain::error::DomainError;
-use crate::domain::validation::{Phase, ValidationReport, ValidationRule};
+use crate::domain::validation::{Phase, ValidationPipeline, ValidationReport, ValidationRule};
 
 /// Which taxonomy mutation is being judged.
 ///
@@ -1237,7 +1237,8 @@ pub struct LocaleRequest<'a> {
     pub region: &'a str,
     /// The reader's brand.
     pub brand: &'a str,
-    /// The tenant's configured default locale.
+    /// The tenant's configured default locale — `ProductsConfig::default_locale`
+    /// (**P-D-101**).
     ///
     /// **A preference, not the anchor.** `inst-av-resolve`'s item-37 note is
     /// explicit: *"Totality is anchored on the resolution path, not on the
@@ -1246,9 +1247,14 @@ pub struct LocaleRequest<'a> {
     /// already-published entity the moment it changed."* So this is consulted
     /// at step 3 and the chain still ends at the global coordinate.
     ///
-    /// The gear carries no configuration field for it, so every caller
-    /// supplies it and none can today. That absence is the resolver's, not
-    /// this type's, and it is reported rather than defaulted.
+    /// **`""` skips step 3 rather than keying it on the empty string**, which
+    /// the config field's own doc states: *"an unset default locale skips step
+    /// 3 and resolution still succeeds."* Running the step with `""` would key
+    /// it on `("", "", brand)` — a brand-scoped, locale-less value, which is a
+    /// real coordinate a caller can write and **not** the tenant default for
+    /// that brand. A reader with no configured default would then be handed
+    /// that value ahead of the global one, which is a different answer, not a
+    /// shorter path.
     pub tenant_default_locale: &'a str,
 }
 
@@ -1298,9 +1304,12 @@ pub struct Resolved<'v> {
 ///
 /// A reader with no brand looks for `brand: ""` at every step, so steps 3 and
 /// 4 coincide for it. That is not a bug and not a shortcut: the global
-/// coordinate **is** `(default-locale-less, region-less, brand-less)`, and a
+/// coordinate **is** `(locale-less, region-less, brand-less)`, and a
 /// brand-less reader whose tenant default matches nothing simply arrives one
 /// step early.
+///
+/// An empty **tenant default** is different in kind: it skips step 3 rather
+/// than keying it on `""` — see [`LocaleRequest::tenant_default_locale`].
 ///
 /// # `None` means the chain ran out
 ///
@@ -1329,7 +1338,14 @@ pub fn resolve_localized<'v>(
         ),
         (
             ResolutionStep::DefaultLocaleAndBrand,
-            at(request.tenant_default_locale, "", request.brand),
+            // Skipped, not keyed on `""`. See the field's own doc: an unset
+            // default has no key, and `("", "", brand)` is a coordinate that
+            // means something else.
+            if request.tenant_default_locale.is_empty() {
+                None
+            } else {
+                at(request.tenant_default_locale, "", request.brand)
+            },
         ),
         (ResolutionStep::Global, at("", "", "")),
     ];
@@ -1573,6 +1589,191 @@ pub fn value_collection(values: &[FrozenAttributeValue]) -> serde_json::Value {
             })
             .collect(),
     )
+}
+
+/// The seven content rules, registered — the **one** list both save doors run.
+///
+/// # Why the list lives here and not at each door
+///
+/// `domain::rules`' own doc gives the rule this follows: *"a feature ships its
+/// validators with its handler, and there is no runtime registry to fall out
+/// of step with the handler set."* The concern that sentence names is a
+/// **runtime** registry, and this is not one: it is compile-time code in the
+/// feature's own module, beside the seven rule types it registers, and a rule
+/// added without a line here is a rule with no caller — which is exactly the
+/// state `A-OWED-08` found sixteen of this feature's own in.
+///
+/// The alternative was a builder per door. Two doors need the identical seven,
+/// and the SKU door's list would have been the one to go stale: it is the door
+/// that runs **no** pipeline today, so nothing there would have reddened when
+/// an eighth rule landed on the Product side alone. One list cannot drift from
+/// itself.
+///
+/// **The counter-argument, stated:** registration is now one call away from
+/// the handler rather than in it, so a reader at the door sees
+/// `content_save_pipeline()` and not the seven names. That is the cost, and it
+/// is paid to remove a drift a second list would have made silent.
+///
+/// Every rule is [`Phase::RegisteredValidators`] — **P-D-97** arm 2's first
+/// form, a registered rule whose operands are facts the door prefetches, the
+/// shipped `PrimaryCategoryRequired` + `has_primary_category` pattern. One
+/// phase means one rejection carrying every content violation, so an operator
+/// fixing four fields makes one round trip.
+#[must_use]
+pub fn content_save_pipeline() -> ValidationPipeline<ContentSaveSubject> {
+    ValidationPipeline::new()
+        .with_rule(Box::new(CategoryResolvableRule))
+        .with_rule(Box::new(CategoryNotRetiredRule))
+        .with_rule(Box::new(CategoryRoleConflictRule))
+        .with_rule(Box::new(AttributeDefinitionKnownRule))
+        .with_rule(Box::new(AttributeDefinitionActiveRule))
+        .with_rule(Box::new(AttributeValueTypeRule))
+        .with_rule(Box::new(AttributeScopeRule))
+}
+
+/// The `-> published` content pipeline: the global-coordinate demand.
+///
+/// Separate from [`content_save_pipeline`] and from
+/// `products::published_transition_pipeline`, because its subject is neither
+/// of theirs — `inst-av-default-locale` judges the entity's **stored** values,
+/// which a save's payload does not carry and
+/// `rules::PublishedTransitionSubject` has no field for.
+///
+/// At publish and never at draft save, for the reason
+/// `rules::PrimaryCategoryRequired`'s doc gives about its sibling: a
+/// partially-authored draft is legal.
+#[must_use]
+pub fn published_content_pipeline() -> ValidationPipeline<PublishedContentSubject> {
+    ValidationPipeline::new().with_rule(Box::new(DefaultLocaleRequired))
+}
+
+// -- The content-PII write block (`inst-av-pii-block`, `inst-av-pii-reason`) --
+
+/// What a detector answers about one piece of operator free text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PiiVerdict {
+    /// No personal data. The write proceeds.
+    Clean,
+    /// Personal data, or a match the allow-list does not cover.
+    Blocked(String),
+    /// The detector could not decide. **[`content_pii_block`] treats this as
+    /// blocked**, which is where `dod-pii-write-block`'s *"failing closed on
+    /// uncertainty"* lives — in the hook rather than in each detector, so a
+    /// detector cannot opt out of it by returning its own doubt as `Clean`.
+    Uncertain(String),
+}
+
+/// The detector seam `10-retention-erasure` fills.
+///
+/// This feature *"owns **no PII detector** — it places the write-block hook
+/// and invokes the policy `10-retention-erasure` owns"* (§1.2). So the policy,
+/// the allow-list and the matching are all behind this trait, and the only
+/// thing here is where the hook runs and what it does with the answer.
+///
+/// Synchronous, like [`ValidationRule::evaluate`] and for the same reason: a
+/// door calls it inside its own transaction and an `async` seam would let a
+/// detector make a network call there.
+pub trait PiiDetector: Send + Sync {
+    /// Inspect one field's text. `subject` is the field's own name, for the
+    /// refusal to quote.
+    fn inspect(&self, subject: &str, text: &str) -> PiiVerdict;
+}
+
+/// The reason [`NoPiiPolicyDetector`] admits every string.
+///
+/// Named rather than inlined for the reason [`crate::domain::governance`]'s
+/// `NO_POLICY_REASON` gives: this is what an operator reading a log or an
+/// audit row sees, so it states the **deviation** and not a justification. A
+/// sentence claiming the text was inspected and found clean would tell that
+/// operator something no code here established.
+pub const NO_PII_POLICY_REASON: &str = "no PII detector or allow-list is registered at this commit, so this host inspects nothing      and admits every string; this is a deviation owed to slice 10-retention-erasure, not a      finding that the text carries no personal data";
+
+/// The host the gear runs until `10-retention-erasure` registers a detector.
+///
+/// # It admits, and refusing everything would be worse
+///
+/// `design/02` §6's own note on this seam says why: *"a stub that refuses
+/// every string satisfies both `dod-pii-write-block` and acceptance criterion
+/// 22"* — vacuously, by never letting a clean write through, so nothing
+/// distinguishes a working block from a closed door. **A clean-text positive
+/// control is part of the criterion**, and a refuse-everything host cannot
+/// have one.
+///
+/// So this admits and says so, exactly as `NoMaterialityPolicyGate` authorizes
+/// and says so. The deviation is named in [`NO_PII_POLICY_REASON`] and is owed
+/// to slice 10; it is **not** an argument that the text is clean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NoPiiPolicyDetector;
+
+impl PiiDetector for NoPiiPolicyDetector {
+    fn inspect(&self, _subject: &str, _text: &str) -> PiiVerdict {
+        PiiVerdict::Clean
+    }
+}
+
+/// A write refused because its free text carries personal data.
+///
+/// Carries the rendered detail; the wire code is [`Self::CODE`]. **Not a
+/// [`DomainError`]** at this commit, for the reason [`CategoryReferenced`]
+/// gives — and unlike the seven pipeline rules, this one genuinely needs the
+/// variant, because `design/02` §3.3 raises it **outside** the pipeline:
+/// *"a code raised outside the pipeline needs no phase status and gets none."*
+/// So it cannot reach the wire as itself through `DomainError::Validation`,
+/// and `dod-taxonomy-errors` is where the variant lands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContentPiiBlocked {
+    /// What was refused and why, for a human reading the response.
+    pub detail: String,
+}
+
+impl ContentPiiBlocked {
+    /// The refusal code (`design/02` §3.3, 422 architectural).
+    pub const CODE: &'static str = "CONTENT_PII_BLOCKED";
+}
+
+/// **The single raiser** of `CONTENT_PII_BLOCKED` (`inst-av-pii-block`).
+///
+/// # One hook, every door
+///
+/// `dod-pii-write-block` requires *"a single write-block hook"* and *"the hook
+/// **MUST** be the single raiser"*, and `inst-av-pii-reason` enumerates the
+/// doors that spend it — this feature's attribute and metadata writes, and
+/// **every operator free-text `reason`** across `01`, `04`, `05` and `07`.
+/// That is why this is a free function over a seam rather than a check inside
+/// either of this feature's doors: a door that inlined the rule would be a
+/// second raiser the moment the next one needed it.
+///
+/// **For `04-lifecycle` and anyone else**: call this with your field's own
+/// name as `subject` and the operator's text; it lives here because
+/// `design/02` §3.3 is the code's single declaration site.
+///
+/// # Fail-closed is here, not in the detector
+///
+/// [`PiiVerdict::Uncertain`] blocks. Leaving that to each detector would let
+/// one opt out of the rule by answering its own doubt as `Clean`, and the `DoD`
+/// puts *"failing closed on uncertainty"* on the hook.
+///
+/// # Errors
+///
+/// [`ContentPiiBlocked`] naming the field, on a blocked or an undecided
+/// verdict.
+pub fn content_pii_block(
+    detector: &dyn PiiDetector,
+    subject: &str,
+    text: &str,
+) -> Result<(), ContentPiiBlocked> {
+    match detector.inspect(subject, text) {
+        PiiVerdict::Clean => Ok(()),
+        PiiVerdict::Blocked(reason) => Err(ContentPiiBlocked {
+            detail: format!("{subject}: {reason}"),
+        }),
+        PiiVerdict::Uncertain(reason) => Err(ContentPiiBlocked {
+            detail: format!(
+                "{subject}: the detector could not decide ({reason}), and this block fails closed \
+                 on uncertainty"
+            ),
+        }),
+    }
 }
 
 /// The sixteen codes `design/02` §3.3 declares, as one roster.

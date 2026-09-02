@@ -49,8 +49,8 @@ use uuid::Uuid;
 use super::{TERMINAL_HEAD_STATES, driver_failure};
 use crate::domain::error::DomainError;
 use crate::domain::taxonomy::{
-    AssignmentRole, CategoryState, DefinitionState, RetireCensus, StaleCategoryToken,
-    TaxonomyMutation,
+    AssignmentRole, CategoryState, DefinitionState, REGISTRY_SEEDED_BY, RetireCensus,
+    StaleCategoryToken, TaxonomyMutation, WELL_KNOWN_SEEDS,
 };
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
@@ -443,6 +443,56 @@ pub async fn category_assignments(
         .collect()
 }
 
+/// The stored state of each named category, for the save door's subject.
+///
+/// Answers only the ids it was given, so a caller can tell *"this id resolved
+/// to nothing"* from *"this id resolved to a retired node"* — the two are
+/// different refusals (`CategoryResolvableRule` and `CategoryNotRetiredRule`)
+/// and a read that silently dropped the unresolvable ones would collapse them
+/// into one.
+///
+/// One statement for the whole set rather than one per id: a save naming four
+/// categories would otherwise take four round trips inside the mutation
+/// transaction, and the four could disagree with each other under a peer's
+/// retire.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure; [`RepoError::CorruptRow`] on a
+/// `state` outside the roster the `CHECK` admits.
+pub async fn category_states(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    ids: &[Uuid],
+) -> Result<Vec<(Uuid, CategoryState)>, RepoError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = category::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(category::Column::TenantId.eq(tenant_id))
+                .add(category::Column::CategoryId.is_in(ids.to_vec())),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("states of {} categories", ids.len()), e))?;
+    rows.into_iter()
+        .map(|row| {
+            let state = CategoryState::parse(&row.state).ok_or_else(|| {
+                RepoError::CorruptRow(format!(
+                    "products_category.state `{}` on {}",
+                    row.state, row.category_id
+                ))
+            })?;
+            Ok((row.category_id, state))
+        })
+        .collect()
+}
+
 /// Name which assignment index refused a write, or `None` where the failure
 /// is not a uniqueness one.
 ///
@@ -655,7 +705,13 @@ pub async fn attribute_definition_by_key(
     row.map(into_definition).transpose()
 }
 
-/// One tenant's whole definition roster, ordered by key.
+/// One tenant's whole definition roster, ordered by key. **A pure read.**
+///
+/// It seeded the well-known five until **P-D-104**, which moved that off the
+/// read path: a lazy read-through means a `GET` writes, a read-only replica
+/// breaks, and the first reader of a tenant pays a write it did not ask for.
+/// [`seed_well_known_definitions`] is the writer now, and the door calls it on
+/// the write path.
 ///
 /// # Errors
 ///
@@ -675,6 +731,79 @@ pub async fn attribute_definitions(
         .await
         .map_err(|e| driver_failure(format!("read the definition roster of {tenant_id}"), e))?;
     rows.into_iter().map(into_definition).collect()
+}
+
+/// Materialise [`crate::domain::taxonomy::WELL_KNOWN_SEEDS`] for one tenant
+/// that has no definition rows at all (**P-D-100**, as amended by
+/// **P-D-104**).
+///
+/// # One writer, on a write path
+///
+/// `products_attribute_definition` is per-tenant, so `dod-well-known-seeds`'
+/// five are five rows **per tenant**. P-D-100 first split the work into a
+/// migration for tenants present at deploy and a read-through for the rest;
+/// P-D-104 withdrew both halves of that split, on two measurements. The
+/// migration arm is **unbuildable** — seeding a per-tenant store needs a list
+/// of tenants and no gear's schema has a tenant registry, and no migration in
+/// the workspace inserts a row at all. And it was redundant: the condition
+/// below is *"this tenant has no seed rows"*, never *"this tenant is new"*, so
+/// one writer always reached a pre-deploy tenant just as readily. The
+/// old-versus-new split was reading a distinction the condition never made.
+///
+/// # Empty is the trigger, and it is not "the five are missing"
+///
+/// A tenant that has **deprecated** one of the five is not re-seeded.
+/// Re-materialising a definition an operator deliberately moved out of the way
+/// would undo their act, and the state flip is the only removal there is — so
+/// they would have no way left to say no. The caller passes the roster it has
+/// already read, so the common path costs no extra statement.
+///
+/// # Idempotent under a race, by the index
+///
+/// Two concurrent first writes both see an empty roster and both insert.
+/// `uq_products_attribute_definition_key` admits one of each key, so the loser
+/// takes a conflict — swallowed here, because a tenant whose seeds already
+/// exist is the outcome the caller wanted. Each row is inserted on its own so
+/// one key's conflict does not lose the other four.
+///
+/// # Errors
+///
+/// [`RepoError`] on any storage failure that is **not** the key conflict —
+/// this function does not widen a driver error into a success.
+pub async fn seed_well_known_definitions(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<(), RepoError> {
+    for seed in WELL_KNOWN_SEEDS {
+        let outcome = insert_attribute_definition(
+            runner,
+            scope,
+            NewAttributeDefinition {
+                tenant_id,
+                definition_id: Uuid::now_v7(),
+                key: seed.key,
+                value_type: seed.value_type,
+                localized: seed.localized,
+                region_scope: "",
+                brand_scope: "",
+                seeded_by: Some(REGISTRY_SEEDED_BY),
+            },
+            now,
+        )
+        .await;
+        if let Err(error) = outcome {
+            let message = error.to_string().to_ascii_lowercase();
+            let conflict = message.contains("unique constraint")
+                || message.contains("duplicate key")
+                || message.contains("uq_products_attribute_definition_key");
+            if !conflict {
+                return Err(error);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// One state flip: the state the caller's `GovernedLiveOp` read, and the

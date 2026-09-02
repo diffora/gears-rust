@@ -7,14 +7,15 @@ use super::{
     AssignmentCandidate, AssignmentRole, AttributeDefinitionActiveRule,
     AttributeDefinitionKnownRule, AttributeScopeRule, AttributeValueTypeRule, CarriedDefinition,
     CategoryNotRetiredRule, CategoryReferenced, CategoryResolvableRule, CategoryRoleConflictRule,
-    CategoryState, ContentSaveSubject, DefaultLocaleRequired, DefinitionInUse, DefinitionState,
-    FrozenAttributeValue, GLOBAL_COORDINATE, LocaleRequest, LocalizedValue,
-    PublishedContentSubject, REGISTRY_SEEDED_BY, ResolutionStep, ResolvedDefinition, RetireCensus,
-    StaleCategoryToken, TAXONOMY_ERROR_CODES, TaxonomyLimitExceeded, TaxonomyLimits,
-    TaxonomyMutation, ValueCandidate, ValueShape, WELL_KNOWN_SEEDS, ancestors_of,
-    assignment_collection, children_of, cycle_verdict, definition_edge, definition_in_use_verdict,
-    depth_of, is_global, is_removable, limit_verdict, resolve_localized, retire_verdict,
-    seeded_edge, value_collection,
+    CategoryState, ContentPiiBlocked, ContentSaveSubject, DefaultLocaleRequired, DefinitionInUse,
+    DefinitionState, FrozenAttributeValue, GLOBAL_COORDINATE, LocaleRequest, LocalizedValue,
+    NO_PII_POLICY_REASON, NoPiiPolicyDetector, PiiDetector, PiiVerdict, PublishedContentSubject,
+    REGISTRY_SEEDED_BY, ResolutionStep, ResolvedDefinition, RetireCensus, StaleCategoryToken,
+    TAXONOMY_ERROR_CODES, TaxonomyLimitExceeded, TaxonomyLimits, TaxonomyMutation, ValueCandidate,
+    ValueShape, WELL_KNOWN_SEEDS, ancestors_of, assignment_collection, children_of,
+    content_pii_block, cycle_verdict, definition_edge, definition_in_use_verdict, depth_of,
+    is_global, is_removable, limit_verdict, resolve_localized, retire_verdict, seeded_edge,
+    value_collection,
 };
 use crate::domain::validation::ValidationPipeline;
 
@@ -446,22 +447,15 @@ fn only_an_operator_added_definition_is_removable() {
 
 // -- The content-save validators (`inst-av-validate`, `inst-tx-assign`). --
 
-/// The pipeline the **lead** must register at the save door, mirrored here.
+/// The pipeline both save doors now run -- the real one, not a mirror.
 ///
-/// This is a test-local copy, and saying so is the point: the rules below are
-/// proven to work **once registered**, and until the `.with_rule` lines land
-/// in `api/rest/products.rs` and `api/rest/skus.rs` no runtime reaches any of
-/// them. A green run here is not evidence the gear refuses anything -- that
-/// is §3.1's whole warning, and the report carries the exact lines.
+/// Group A6 replaced the test-local copy that stood here. A mirror could pass
+/// while the doors registered a different list, which is precisely the drift
+/// `content_save_pipeline`'s own doc explains the single list exists to
+/// remove; a test asserting the mirror would have proved nothing about either
+/// door.
 fn content_pipeline() -> ValidationPipeline<ContentSaveSubject> {
-    ValidationPipeline::new()
-        .with_rule(Box::new(CategoryResolvableRule))
-        .with_rule(Box::new(CategoryNotRetiredRule))
-        .with_rule(Box::new(CategoryRoleConflictRule))
-        .with_rule(Box::new(AttributeDefinitionKnownRule))
-        .with_rule(Box::new(AttributeDefinitionActiveRule))
-        .with_rule(Box::new(AttributeValueTypeRule))
-        .with_rule(Box::new(AttributeScopeRule))
+    super::content_save_pipeline()
 }
 
 /// Run the pipeline and answer the codes it raised, in order.
@@ -1082,8 +1076,7 @@ fn carried(localized: bool, values: Vec<LocalizedValue>) -> PublishedContentSubj
 }
 
 fn publish_codes(subject: &PublishedContentSubject) -> Vec<&'static str> {
-    ValidationPipeline::new()
-        .with_rule(Box::new(DefaultLocaleRequired))
+    super::published_content_pipeline()
         .run(subject)
         .map(|(_phase, report)| report.violations().iter().map(|v| v.code).collect())
         .unwrap_or_default()
@@ -1385,3 +1378,161 @@ const DOMAIN_ERROR_CODES: &[&str] = &[
     "PRIMARY_CATEGORY_REQUIRED",
     "STALE_LIVE_OP",
 ];
+
+/// **An unset tenant default skips step 3 rather than keying it on `""`.**
+///
+/// `ProductsConfig::default_locale`'s own doc states the behaviour — *"an
+/// unset default locale skips step 3 and resolution still succeeds"* — and
+/// running the step with `""` would key it on `("", "", brand)`, which is a
+/// brand-scoped locale-less value a caller can genuinely write. A reader with
+/// no configured default would then be handed that value **ahead of the
+/// global one**: a different answer, not a shorter path.
+///
+/// The paired control is the same fixture with a default configured, which
+/// must still reach step 3 — without it a resolver that skipped step 3
+/// unconditionally would pass this case.
+#[test]
+fn an_unset_tenant_default_skips_step_three() {
+    let values = vec![
+        coordinate("", "", "acme", "brand-scoped, locale-less"),
+        coordinate("", "", "", "global"),
+        coordinate(
+            TENANT_DEFAULT,
+            "",
+            "acme",
+            "the brand's default-locale value",
+        ),
+    ];
+
+    let unset = resolve_localized(
+        &LocaleRequest {
+            locale: "de-DE",
+            region: "",
+            brand: "acme",
+            tenant_default_locale: "",
+        },
+        &values,
+    )
+    .expect("resolution still succeeds");
+    assert_eq!(
+        (unset.value, unset.step),
+        ("global", ResolutionStep::Global),
+        "with no default configured the chain falls past step 3 to the global value"
+    );
+
+    let configured = resolve_localized(&ask("de-DE", "", "acme"), &values).expect("resolved");
+    assert_eq!(
+        (configured.value, configured.step),
+        (
+            "the brand's default-locale value",
+            ResolutionStep::DefaultLocaleAndBrand
+        ),
+        "the paired control: a configured default still reaches step 3"
+    );
+}
+
+// -- The content-PII write block. --
+
+/// A detector double: blocks any text containing `needle`, and is uncertain
+/// about text containing `maybe`.
+struct Doubles {
+    needle: &'static str,
+    maybe: &'static str,
+}
+
+impl PiiDetector for Doubles {
+    fn inspect(&self, _subject: &str, text: &str) -> PiiVerdict {
+        if text.contains(self.needle) {
+            PiiVerdict::Blocked("matches a personal-data pattern".to_owned())
+        } else if text.contains(self.maybe) {
+            PiiVerdict::Uncertain("the allow-list does not cover this shape".to_owned())
+        } else {
+            PiiVerdict::Clean
+        }
+    }
+}
+
+fn doubles() -> Doubles {
+    Doubles {
+        needle: "ssn",
+        maybe: "perhaps",
+    }
+}
+
+/// **The block refuses personal data and admits clean text**, and the second
+/// half is not an extra.
+///
+/// `design/02` §6 says so about this very seam: *"a stub that refuses every
+/// string satisfies both `dod-pii-write-block` and acceptance criterion 22.
+/// A clean-text positive control is therefore part of the criterion."* A hook
+/// that refused everything would pass the first assertion here and fail the
+/// second, which is the whole point of having both.
+#[test]
+fn the_block_refuses_personal_data_and_admits_clean_text() {
+    let blocked = content_pii_block(&doubles(), "attributes.description", "ssn 000-00-0000")
+        .expect_err("personal data is refused");
+    assert!(
+        blocked.detail.contains("attributes.description"),
+        "{blocked:?}"
+    );
+    assert_eq!(ContentPiiBlocked::CODE, "CONTENT_PII_BLOCKED");
+
+    content_pii_block(&doubles(), "attributes.description", "a fast fibre line")
+        .expect("clean text is admitted -- the positive control section 6 asks for");
+}
+
+/// **Uncertainty blocks, and the rule lives in the hook.**
+///
+/// `dod-pii-write-block` puts *"failing closed on uncertainty"* on the hook
+/// rather than on each detector, and that placement is the assertion: a
+/// detector cannot opt out by answering its own doubt as `Clean`, because the
+/// hook never sees `Clean` in that case. The refusal says which of the two
+/// reasons it was, so an operator can tell "we found something" from "we could
+/// not tell".
+#[test]
+fn an_undecided_verdict_fails_closed() {
+    let refused = content_pii_block(&doubles(), "metadata.owner", "perhaps a name")
+        .expect_err("uncertainty is refused");
+    assert!(
+        refused.detail.contains("could not decide"),
+        "the two refusals are told apart: {refused:?}"
+    );
+    assert!(refused.detail.contains("fails closed"), "{refused:?}");
+}
+
+/// **The default host admits everything and names the deviation.**
+///
+/// It is not a claim that the text is clean. `NoMaterialityPolicyGate`'s own
+/// reason constant takes the same shape and for the same reason: the string is
+/// what an operator sees, so it states what is missing rather than justifying
+/// the pass.
+#[test]
+fn the_default_host_admits_and_says_it_inspected_nothing() {
+    for text in ["ssn 000-00-0000", "perhaps a name", ""] {
+        content_pii_block(&NoPiiPolicyDetector, "attributes.description", text)
+            .expect("no detector is registered, so nothing is inspected");
+    }
+    assert!(
+        NO_PII_POLICY_REASON.contains("deviation owed to slice 10"),
+        "the reason names what is missing, not a finding that the text is clean"
+    );
+    assert!(
+        !NO_PII_POLICY_REASON.contains("clean"),
+        "and does not claim the text was found clean"
+    );
+}
+
+/// **`CONTENT_PII_BLOCKED` is one of the sixteen**, and the hook is its single
+/// raiser — there is no second construction of the code anywhere in the
+/// module.
+#[test]
+fn the_block_is_the_single_raiser_of_its_code() {
+    assert!(TAXONOMY_ERROR_CODES.contains(&ContentPiiBlocked::CODE));
+    let source = include_str!("taxonomy.rs");
+    assert_eq!(
+        source.matches("\"CONTENT_PII_BLOCKED\"").count(),
+        2,
+        "exactly two: the roster entry and the constant on the refusal. A third \
+         would be a second raiser, which `dod-pii-write-block` forbids"
+    );
+}

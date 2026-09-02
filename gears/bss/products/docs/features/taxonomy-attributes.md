@@ -641,20 +641,30 @@ Category), `description` (localized), `imageUri` (a URI string, non-localized),
 `marketingFeatures` (a localized string list). A seeded definition **MUST** be deprecatable and
 **MUST NOT** be removable.
 
-**Blocked, and by more than §7 row 23 says.** The row records that *"seeded by migration, per tenant
-bootstrap"* names **two code paths**, and asks which writes for a tenant created after the
-migration. Measured at this commit, **neither path is available**: `migrations/` is not this
-strand's to write, and the gear carries **no tenant-bootstrap hook of any kind** — no
-tenant-created handler, no provisioning callback, nothing for a per-tenant seeder to hang off. So
-the row is not a choice between two mechanisms; it is a question with one mechanism forbidden to
-this strand and the other not built by anyone. Naming that is the deliverable, and no seeder is
-invented to get past it.
+**Answered by P-D-100 as amended by P-D-104, and built: one writer, on the first write that could
+need a seed.** This feature reported the DoD blocked because *"seeded by migration, per tenant
+bootstrap"* names two paths and neither was available — the migration was another owner's and the
+gear has no tenant-bootstrap hook. The owner's first call took that split; the second withdrew it
+on two measurements this feature had not made. The migration arm is **unbuildable**: seeding a
+per-tenant store needs a list of tenants, no gear's schema has a tenant registry, and **no
+migration in the workspace inserts a row at all**. And it was redundant, because the condition is
+*"this tenant has no seed rows"* and never *"this tenant is new"* — one writer always reached a
+pre-deploy tenant just as readily. The old-versus-new split read a distinction the condition never
+made, and this feature's own entry proposed it.
 
-**What does ship** is the roster itself — `domain::taxonomy::WELL_KNOWN_SEEDS`, the five keys in the
-order above with their localized flags, `REGISTRY_SEEDED_BY`, and `is_removable`, whose operand is
-the `seeded_by` marker's presence and which is probed in **both** directions so a guard refusing
-every removal cannot satisfy it. One definition site, so whichever path its owner picks does not
-mint a second copy of the list.
+**The trigger site is the content-save path**, at the moment a payload names `attributes` — a
+**write**, the earliest act that can need a well-known definition, and the one place where the
+existence check is free: the door must read the roster anyway to resolve each named key, so the
+check is that read's own `is_empty()`. Only the empty case pays, and only once per tenant. A save
+naming just `categories` triggers nothing, since it cannot need a definition. P-D-104 moved this
+off the read path deliberately: a lazy read-through makes a `GET` mutate, breaks a read-only
+replica, and bills the first reader for a write it did not ask for.
+
+`domain::taxonomy::WELL_KNOWN_SEEDS` is the single definition site — the roster, `REGISTRY_SEEDED_BY`
+and `is_removable`, the last probed in **both** directions so a guard refusing every removal cannot
+satisfy it. Seeding is idempotent by `uq_products_attribute_definition_key` and never re-materialises
+a definition an operator has deprecated, since the state flip is the only removal there is and they
+would otherwise have no way to say no.
 
 **One thing in it is this feature's proposal and not the design's.** The `DoD` names five keys and
 three **shapes** — a localized string, a URI string, a localized string list — and no **tokens**;
@@ -842,13 +852,20 @@ that is retired (`CATEGORY_RETIRED`) and a category named both primary and secon
 rows **MUST** land inside the save door's transaction, and a rollback **MUST** leave neither the
 head update nor the assignment rows.
 
-**The three rules ship and none of them reaches a runtime, which is why this is not ticked.**
-`CategoryResolvableRule`, `CategoryNotRetiredRule` and `CategoryRoleConflictRule` implement
-`ValidationRule<ContentSaveSubject>` and are probed through a pipeline built **in the test module**.
-That mirror is not the door: registration is compile-time code, the `.with_rule` lines live at the
-doors, and **there is no content-save pipeline to add them to at this commit** — the gear has three
-pipelines, all publish-path, and the SKU save door runs none at all. A rule with no registration
-line is not done, and the lines are handed over rather than the box being ticked.
+**The three rules are registered and reach the wire** (group A6). `content_save_pipeline` is the
+one list both save doors run, and the Product door builds its subject from the payload plus two
+reads — each named category's state, and the tenant's definition roster. All three refusals are
+probed **through the door**, and each is shown to write no assignment row and move no head
+revision.
+
+The transaction clause holds end to end: the pipeline runs in the registered-validators phase
+before the gate, and `repo::replace_category_assignments` runs after the head `UPDATE` on the same
+transaction (**P-D-46**), so a refusal costs nothing and a rollback leaves neither.
+
+**Still not ticked, on §7 row 17.** Two of the three refusals — the unresolvable category and the
+primary/secondary duplicate — have no code of their own and ride the Foundation's `VALIDATION`.
+This DoD's own sentence names a code for one refusal only, so the row and the DoD may not be asking
+the same thing; that is registered rather than decided here, on the standard `A-OWED-02` set.
 
 **Two of the three refusals have no code**, which is §7 row 17's own list — the unresolvable
 category and the primary/secondary duplicate. Both raise the Foundation's declared `VALIDATION`
@@ -957,11 +974,22 @@ whose type does not match the declared type (`ATTRIBUTE_TYPE_MISMATCH`), and coo
 either the definition's visibility scope or the entity's own scope
 (`ATTRIBUTE_SCOPE_VIOLATION`). Every refusal **MUST** carry a paired positive control.
 
-**All four rules ship with their controls; none reaches a runtime.** Same reason as
-`dod-assignment-validators`: there is no content-save pipeline at either door, so the four
-`.with_rule` lines have nowhere to go yet and the box stays unticked. Beyond the paired controls
-the DoD asks for, one case holds the property the shared phase makes possible: an unresolved
-definition raises **one** violation and not four, because every rule skips what it cannot judge.
+**All four rules are registered at both doors** (group A6) — including the SKU save door, which
+ran **no pipeline at all** before it while SKUs have carried attribute values since `02`'s tables
+landed. One `content_save_pipeline` serves both, so the two lists cannot drift.
+
+**A rule's code reaches the wire as itself, and group A5 reported otherwise.** A5 said these codes
+would fall back to `INCOMPLETE_ENTITY` until twelve `DomainError` variants landed; that read
+`transition_refusal`'s ladder, which is the **publish** path. The save path is
+`DomainError::Validation`, whose mapping arm renders **each violation's own `code`** as the wire
+`type`. So all four are attributed today with no variant at all, which is measured at both doors.
+The consequence for §7 row 18: a pipeline violation renders through `failed_precondition`, the
+architectural 422 — so answering that row 409 would move these refusals **out** of the pipeline,
+which makes it a placement question and not only a status one.
+
+Beyond the paired controls the DoD asks for, one case holds the property the shared phase makes
+possible: an unresolved definition raises **one** violation and not four, because every rule skips
+what it cannot judge.
 
 Three readings inside them are worth stating, because each could have gone the other way silently:
 
@@ -1006,7 +1034,14 @@ refusing `DEFAULT_LOCALE_MISSING` at publish and not at draft save. Per-brand de
 values **MUST** be optional overrides. For a category the same demand **MUST** land at the first
 display-value write for that definition.
 
-**The rule ships; the registration and the category half do not.** `DefaultLocaleRequired` refuses
+**The rule is registered at the publish door** (group A6): `published_content_pipeline` runs in
+the `→ published` phase beside `inst-tx-primary-at-publish`, over the entity's **stored** values
+grouped by definition. Both directions are probed through the door — a localized definition with no
+global value refuses the publish naming `DEFAULT_LOCALE_MISSING`, and the same entity publishes the
+moment the global value lands. A non-localized definition holds no publish, which is the arm that
+keeps `imageUri` from refusing every entity that carries an image.
+
+**The category half does not ship.** `DefaultLocaleRequired` refuses
 a localized definition carrying values but none at the global coordinate, skips a non-localized one
 and one carrying nothing at all, and -- the case that matters -- is **not** satisfied by a value at
 `(default-locale, brand A)`. That is the whole reason per-brand values are *overrides*: a brand-B
@@ -1015,15 +1050,17 @@ It goes in the `-> published` pipeline and nowhere else, for the reason
 `inst-tx-primary-at-publish`'s sibling gives -- a rule in the shared pipeline would refuse a draft
 save the design admits.
 
-**§7 row 8, and why the rule is buildable anyway.** Row 8 asks what the global coordinate's key is,
-and observes that if it means all three coordinates absent then *"a default-locale value at the
-global coordinate"* names a coordinate carrying no locale. That naming **is** self-contradictory.
-The fork it implies is not live: `inst-av-resolve`'s item-37 note already refuses the other horn in
-as many words -- anchoring totality on the tenant default *"would un-total the chain for every
-already-published entity the moment it changed"* -- and P-D-88 arm 2 ships the spelling
-`("", "", "")`. So the rule demands a value at the shipped global coordinate, and what is left of
-row 8 is a **naming defect rather than a decision**. Registered, not asserted: the row stays open
-and this stays unticked.
+**§7 row 8 is answered and struck (P-D-102): the global coordinate is absent on all three axes.**
+This feature reported the row as a naming defect with both readings closed elsewhere, and the
+decision came out **larger** than that. Read in full, `inst-av-default-locale` said *"the
+default-locale value at the global **(brand-less)** coordinate"* — and that parenthetical is a
+third, live reading: brand absent, locale present and equal to the tenant default. It is settled on
+P-D-101's own argument, that such a value carries the locale which was default when it was written.
+`DefaultLocaleRequired` and `GLOBAL_COORDINATE` already had it right; the register entry that
+compressed the fork was the weaker artifact, and that is worth recording where the next reader will
+find it.
+
+**§7 row 1 still holds the tick**, and it is now the only thing that does.
 
 **The category half is the live-value door's** and lands with it -- see
 `dod-category-live-value-door`, whose route is undeclared (§7 row 16).
@@ -1056,14 +1093,13 @@ One case beyond the DoD's list, because it is the chain's one silent failure mod
 name a locale and a brand and no region, so both look for a value whose region is **absent**. A
 region-insensitive step 2 would hand an `eu` value to an `apac` reader.
 
-**Two things the DoD needs that do not exist**, and the tick waits on both. §7 row 6 is the first:
-*"the per-brand default locale has no store"*. `inst-av-resolve` says default-locale *"resolves per
-brand, falling back to the tenant default"*, so step 3 should consult a **per-brand** default
-locale before the tenant's; only the fallback half is built, because nothing stores the per-brand
-half. The second is smaller and is in no row: **the gear carries no configuration field for the
-tenant default locale either**, so every caller supplies it as an argument and none can. The
-resolver is correct for whatever arrives and nothing arrives -- the same shape `TaxonomyLimits`
-takes.
+**One thing the DoD needs that does not exist, and it is not what §7 row 6 asked.** That row is
+answered and struck (**P-D-101**): the default-locale is the **tenant** default only and *"resolves
+per brand"* is gone from `inst-av-resolve`, so the per-brand store the row wanted is no longer
+owed. What remains is the gap this feature found beside it and no row carried: **`ProductsConfig`
+has no `default_locale` field**, so the chain's one input has no source and every caller supplies
+it as an argument. The resolver is correct for whatever arrives and nothing arrives — the same
+shape `TaxonomyLimits` takes. `config.rs` is not this strand's; the DoD ticks when the field lands.
 
 **Implements**: `cpt-cf-bss-products-flow-attribute-values`
 
@@ -1120,6 +1156,32 @@ correction-override, break-glass-correction and producer-retirement reasons, and
 reason carried into the `SkuRetired` payload. The hook **MUST** be the single raiser and this
 feature the single declaration site.
 
+**The hook ships and is placed at both of this feature's attribute call sites** (group A7).
+`domain::taxonomy::content_pii_block` is the single raiser, a free function over a `PiiDetector`
+seam that `10-retention-erasure` fills — a free function and not a check inside either door,
+because `inst-av-pii-reason` enumerates doors in `01`, `04`, `05` and `07` that spend the same
+block, and a door that inlined the rule would be a second raiser the moment the next one needed it.
+**For `04-lifecycle`'s retirement `reason`: it is `domain::taxonomy::content_pii_block`**, called
+with the field's own name and the operator's text.
+
+**Fail-closed lives in the hook, not in the detector.** `PiiVerdict::Uncertain` blocks. Leaving
+that to each detector would let one opt out of the rule by answering its own doubt as `Clean`, and
+the DoD puts *"failing closed on uncertainty"* on the hook.
+
+**The default host admits and says so.** `NoPiiPolicyDetector` is the shape
+`NoMaterialityPolicyGate` takes for its own missing slice: it inspects nothing, and
+`NO_PII_POLICY_REASON` states the **deviation** rather than a justification, because that string is
+what an operator sees. Refusing every string was the alternative and §6 already ruled it out —
+*"a stub that refuses every string satisfies both `dod-pii-write-block` and acceptance criterion 22"*
+vacuously, which is why the clean-text positive control is part of the criterion and is asserted
+beside the refusal.
+
+**Not ticked, and this feature cannot tick it alone** — §5's own note says so. The enumeration
+reaches six doors owned by `01`, `04`, `05` and `07`; the hook and this feature's two call sites are
+its testable core and they ship. The metadata call site waits with the metadata door below. §7 row 4
+also stands: the detector itself is `10`'s and does not exist, so nothing here has been measured
+against a real policy.
+
 **Implements**: `cpt-cf-bss-products-flow-attribute-values`,
 `cpt-cf-bss-products-flow-metadata`
 
@@ -1138,6 +1200,33 @@ merge under the `metadata × write` grant, leaving absent keys untouched and rem
 value is `null`. Configured caps on key count, key byte length and value byte length **MUST** be
 enforced at the door with `METADATA_LIMIT`. A write to a terminal entity **MUST** be refused
 `ENTITY_TERMINAL`. A test **MUST** prove a map standing at the cap can be reduced.
+
+**BLOCKED — the door cannot be authorized, and the two files that would authorize it are not this
+strand's.** The store surface ships (`repo::upsert_metadata`, `metadata_of`,
+`delete_metadata_key`), and the route is buildable now that the door files are granted. The grant
+pair is not. `metadata × write` is declared **nowhere in the code**, and standing it up needs both:
+
+- `src/authz.rs` — a `resource_types::METADATA`, a `labels::METADATA`, and that label added to
+  `labels::ALL`;
+- `src/gts/permissions.rs` — the matching `AuthzPermissionV1` instance
+  (`…products.metadata_write.v1`, `resource_type: labels::METADATA`, `action: actions::WRITE`).
+
+**Both, together.** `permissions.rs`'s own `catalog_resource_types_match_authz_labels_all` asserts
+**equality** between the declared instances and `labels::ALL`, so a label without a permission fails
+the gate and a permission without a label fails it the other way.
+
+**And the contradiction worth an owner's glance**: `permissions.rs` is on this strand's forbidden
+list, while that file's own module doc says the `metadata` row is *"deliberately absent: they belong
+to the slices that build those doors"* — which is this one. The grant that opened the door files was
+made on the reading that they were the only obstacle; they are not. No grant was invented and no
+existing pair was borrowed: authorizing a new door against `product × write` would be an
+authorization decision taken by a strand, which is the one class of thing worth stopping for.
+
+**Two §7 rows stand behind it in any case.** Row 2 leaves `METADATA_LIMIT` with **no number** — the
+key count and the byte lengths have no value anywhere — so the DoD's *"configured caps … MUST be
+enforced"* has nothing to enforce, and the required *"a map standing at the cap can be reduced"*
+test has no cap to stand at. Row 14 records that two concurrent metadata writes both pass their
+precondition, since metadata rides the entity's `If-Match` and by P-D-06 bumps no version.
 
 **Implements**: `cpt-cf-bss-products-flow-metadata`
 
@@ -1242,17 +1331,34 @@ identifier, each element following the Foundation's field-ordering rule (P-D-29)
 **MUST** prove the rendering byte-identical across both engines, because
 `10-retention-erasure`'s restore drill compares those digests byte for byte.
 
-**Both renderers ship, and one of them exceeds this DoD's first sentence on purpose.**
-`assignment_collection` sorts by category id, which is total for that collection —
-`uq_products_product_category` admits one row per `(product, category)`. `value_collection` sorts by
-the **whole coordinate**, and §7 row 9 is why: *"Sorting by the attribute id orders groups, not
-rows, so two engines can serialize one content two ways — the failure the rule exists to prevent."*
+**Both renderers ship, and the whole-coordinate sort is the set's own rule — not an excess over
+it.** `assignment_collection` sorts by category id, total because
+`uq_products_product_category` admits one row per `(product, category)`. `value_collection` sorts
+by the **whole coordinate**, since an identifier sort orders groups and not rows.
 
-**The two sentences of this DoD contradict each other and only one can be built.** The first asks
-for a sort by *"the collection's own identifier"*; the second asks for a golden vector proving the
-rendering byte-identical across both engines. An identifier sort cannot deliver the second, so the
-total sort is taken and the divergence is registered — it is exactly the amendment row 9 says is
-owed to **P-D-29**'s owner, and the DoD stays unticked until that owner acts.
+**§7 row 9 is answered and struck (P-D-103), and this feature had the reasoning wrong.** It
+reported the sort as an excess over P-D-29's letter, owed an amendment in two documents — and
+checked only that those two documents say it in the same words. It did **not** grep the register
+for a rule already in force: **P-D-80** arm 1, *"keyed collections sort by their key"*, had
+generalized *"by the collection's own identifier"* to *"a keyed collection sorts by its own key
+rendering"* and simply never restated it for P-D-29's two collections. So the decision is a
+consistency fix, the code was already conformant, and the lesson is the entry's: grep the register
+for the rule before calling something an excess over it.
+
+**What holds the tick now is two concrete gaps, neither of them a question.**
+
+1. **The renderers have no caller.** `products::product_content` builds a frozen version's content
+   from head columns alone, so neither collection reaches `products_entity_version.content` today.
+   Adding them is a **`DIGEST_VERSION`** matter — `domain::canonical` states that *"the first
+   content change after deployment must bump"* and that the present non-bump is correct only
+   because **no stored row exists** — plus an entry in each entity's version-content roster
+   (`SKU_VERSION_CONTENT_ROSTER` and its Product twin). That is a larger decision than a wiring and
+   it is in no group of this strand's current assignment.
+2. **The golden vector is a pure-function pin, not a cross-engine one.** The rendering never
+   queries, so the only way an engine could change it is the **input order**, which is held against
+   every rotation and the reverse of the hard case. What the DoD asks for literally — bytes
+   compared across both engines — lives in `tests/postgres_golden_vector.rs`, which neither carries
+   these two collections nor is this strand's file.
 
 **No second serialization rule is minted.** `canonical::render_into` sorts every object's keys and
 preserves every array's order, recursively, so these functions owe the array order and nothing
@@ -1383,10 +1489,11 @@ false, and the three-lens review of 2026-08-31 measured it so. Every item below 
 Definition of Done in §5, and the DoD it blocks is stated so an implementer meets the question
 before the code rather than after.
 
-**Two of the twenty-four are now answered and struck in place — 3 and 7 — leaving twenty-two
-open.** **P-D-88** answered row 7 (the nullable-`UNIQUE` gap) and **P-D-93** row 3 (the
-`GovernedLiveOp` seam, whose premise had gone stale on three counts). Each was answered by a
-register entry, not here; the struck rows point at it.
+**Five of the twenty-four are now answered and struck in place — 3, 6, 7, 8 and 9 — leaving
+nineteen open.** **P-D-88** answered row 7 (the nullable-`UNIQUE` gap) and **P-D-93** row 3 (the
+`GovernedLiveOp` seam, whose premise had gone stale on three counts); **P-D-101**, **P-D-102** and
+**P-D-103** answered rows 6, 8 and 9 on 2026-09-02, from this feature's own owed register. Each was
+answered by a register entry, not here; the struck rows point at it.
 
 **Nothing else here is answered.** A FEATURE artifact records what its design set leaves open;
 it does not decide it.
@@ -1398,10 +1505,10 @@ it does not decide it.
 | 3 | ~~*(seam — see below)*~~ **Answered (owner call, 2026-09-01 — P-D-93): the row's premise is stale on three counts — 05's FEATURE artifact ships, its approval and decision stores ship with their guards, and the in-test approval double the row names as its obligation ships four times over. The envelope is buildable; what stays owed to 05's own door is a test that drives a live op through a REAL approval record.** | no DoD — resolved by P-D-93 | was this feature with 05; **closed** |
 | 4 | *(seam — see below)* | `dod-pii-write-block` | `10-retention-erasure` |
 | 5 | **Do 02 and 03 admit a `draft` head as a blocking reference?** This feature's removal operand is the non-terminal head, `03-sku-classification`'s is the non-terminal *published* head. **03's half is answered (P-D-89): its operand excludes `draft`, and the row is not a joint decision after all — each slice states its own operand and the divergence is registered on both sides. What is still open is THIS feature's half**: whether the wider operand is right for attribute definitions, whose values have no unit-style publish-time re-recognition to fall back on | `dod-definition-lifecycle` | this feature |
-| 6 | **The coordinate model admits combinations the resolver never visits, and the per-brand default locale has no store.** The chain's third step needs one; the only store named is the tenant default | `dod-locale-resolver` | this feature |
+| 6 | ~~**The coordinate model admits combinations the resolver never visits, and the per-brand default locale has no store.**~~ **Answered (owner call, 2026-09-02 — P-D-101): the default-locale is the *tenant* default only, and *"resolves per brand, falling back to"* is struck from `inst-av-resolve`.** The per-brand default had no store, and a second config value under a step that cannot change *whether* resolution succeeds doubles the exposure that row's own next sentence argues against. What remains is not this row's: `ProductsConfig` carries no `default_locale` field, so the chain's one input has no source and the DoD waits on that rather than on this question | no DoD — resolved by P-D-101 | was this feature; **closed** |
 | 7 | ~~**Both uniqueness guarantees are `UNIQUE` over nullable columns.**~~ **Answered (owner call, 2026-09-01 — P-D-88): roots take a partial `UNIQUE (tenant_id, name_normalized) WHERE parent_id IS NULL`, since a sentinel cannot satisfy the self-FK and `NULLS NOT DISTINCT` has no `SQLite` twin; the value coordinates ship `NOT NULL` with `''` as the stated absence (P-D-39's convention). Both probed on both engines.** Original text: `(tenant_id, parent_id, name_normalized)` does not constrain **root** categories, and the attribute-value tuple does not constrain the **global** coordinate — the one row `dod-default-locale` makes mandatory. The gear's answer elsewhere is NOT NULL with a stated absence value (P-D-39) | no DoD — resolved by P-D-88 | was this feature with the schema owner; **closed** |
-| 8 | **What is the `global` coordinate's key?** If it is keyed on the default locale it is anchored on the config value the §2 boundary argues against; if it means all three coordinates absent, "a default-locale value at the global coordinate" names a coordinate that carries no locale | `dod-default-locale`, `dod-locale-resolver` | this feature |
-| 9 | **The frozen-content sort key is not total for attribute values.** Sorting by the attribute id orders groups, not rows, so two engines can serialize one content two ways — the failure the rule exists to prevent. Amending it is a register change: P-D-29 and `01-foundation` §4.3 state it in the same words | `dod-version-content-rendering` | P-D-29's owner |
+| 8 | ~~**What is the `global` coordinate's key?**~~ **Answered (owner call, 2026-09-02 — P-D-102): absent on *all three* axes, `("", "", "")`.** The decision is **larger than this feature reported it**: the register entry called it a naming defect with both readings closed elsewhere, having read `inst-av-default-locale` as offering only the two this row names. Its full text says *"the default-locale value at the global **(brand-less)** coordinate"*, and that parenthetical is a third, live reading — brand absent, locale present and equal to the tenant default. It is settled on P-D-101's argument: such a value carries the locale that was default *when it was written*, so a config change leaves step 3 matching nothing. The code already had it right; the entry was the weaker artifact | no DoD — resolved by P-D-102 | was this feature; **closed** |
+| 9 | ~~**The frozen-content sort key is not total for attribute values.**~~ **Answered (owner call, 2026-09-02 — P-D-103): the attribute-value set sorts by its *whole coordinate*, and this is a consistency fix rather than an amendment.** **P-D-80** arm 1 — *"keyed collections sort by their key"* — had already generalized *"by the collection's own identifier"* to *"a keyed collection sorts by its own key rendering"*; it simply never restated the rule for P-D-29's two collections. So what ships **is** the set's rule. This feature reported it as an excess owed an amendment in two documents, having checked that those two documents say it in the same words and **not** having grepped the register for a generalization already in force | no DoD — resolved by P-D-103 | was P-D-29's owner; **closed** |
 | 10 | **Is definition removal a material op?** Removal is absent from the material-op enumeration while deprecation, the step before it, is in it. So §4's `inst-de-edge-remove` carries no approval condition while the re-listing edge does — the destructive edge is cheaper than the restorative one | `dod-definition-lifecycle`, `cpt-cf-bss-products-state-attribute-definition` | this feature |
 | 11 | **Does the type-change operand mean the same as the removal operand?** One rule states two: undefined "live values" for the type change, the defined non-terminal head for removal | `dod-definition-lifecycle` | this feature |
 | 12 | **Does the PRD carry a live-reference condition for attribute definitions?** The non-terminal-head operand was credited to the PRD and that attribution is struck; it is either inherited from 03 or design-introduced and owed a PRD amendment | `dod-definition-lifecycle` | the PRD owner with this feature |

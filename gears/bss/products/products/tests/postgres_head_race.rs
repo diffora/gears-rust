@@ -166,6 +166,10 @@ fn rename(to: &str, normalized: &str) -> ProductHeadSave {
         }),
         region_scope: None,
         brand_scope: None,
+        // No `02` content in this probe: `internal_revision` is the single
+        // operand under test and a content write would give the loser's
+        // filter a second reason to miss.
+        content_moved: false,
     }
 }
 
@@ -192,6 +196,8 @@ fn rescope(to: &str) -> SkuHeadSave {
         brand_scope: None,
         metering_unit: None,
         usage_type_ref: None,
+        // See `rename`: one operand under test.
+        content_moved: false,
     }
 }
 
