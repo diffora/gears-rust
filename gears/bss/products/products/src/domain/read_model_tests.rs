@@ -6,7 +6,8 @@ use chrono::{TimeZone, Utc};
 
 use super::{
     BrowseProjection, POLLED_SURFACES, ReadProjector, ReadSurface, StalenessStamp,
-    VisibilityFilter, scope_condition, serves,
+    StampAdvanceRefusal, StampApply, StampCatalogTouch, VisibilityFilter, advance_stamp,
+    completeness_rejects_removal, floor_admits_removal, scope_condition, serves,
 };
 use crate::infra::storage::entity::read_entity;
 
@@ -203,6 +204,118 @@ fn the_stamp_answers_a_tenant_with_no_catalog_version() {
     let stamp = StalenessStamp::anchorless(at);
     assert_eq!(stamp.as_of_catalog_version, None);
     assert_eq!(stamp.projected_at, at);
+}
+
+/// A zero-version tenant's bootstrap is an apply: it stamps `null` with a
+/// real `projectedAt`, and only once the (empty) entity list is projected.
+#[test]
+fn a_zero_version_bootstrap_stamps_null_with_a_projected_at() {
+    let at = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let stamp = advance_stamp(
+        None,
+        StampApply {
+            catalog: StampCatalogTouch::Anchorless,
+            projected_at: at,
+            entities_projected: true,
+        },
+    )
+    .expect("an empty list is still projected");
+    assert_eq!(stamp.as_of_catalog_version, None);
+    assert_eq!(stamp.projected_at, at);
+}
+
+/// `projectedAt` advances on every admitted apply, version or none.
+#[test]
+fn projected_at_advances_on_every_apply_version_or_none() {
+    let t0 = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let t1 = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 1).unwrap();
+    let t2 = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 2).unwrap();
+    let version = uuid::Uuid::from_u128(0xca_01);
+
+    let after_bootstrap = advance_stamp(
+        None,
+        StampApply {
+            catalog: StampCatalogTouch::Anchorless,
+            projected_at: t0,
+            entities_projected: true,
+        },
+    )
+    .unwrap();
+    let after_entity = advance_stamp(
+        Some(after_bootstrap),
+        StampApply {
+            catalog: StampCatalogTouch::Unchanged,
+            projected_at: t1,
+            entities_projected: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(after_entity.as_of_catalog_version, None);
+    assert_eq!(after_entity.projected_at, t1);
+
+    let after_version = advance_stamp(
+        Some(after_entity),
+        StampApply {
+            catalog: StampCatalogTouch::Set(version),
+            projected_at: t2,
+            entities_projected: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(after_version.as_of_catalog_version, Some(version));
+    assert_eq!(after_version.projected_at, t2);
+}
+
+/// Ordering: a `CatalogVersionPublished` that arrives before its entity
+/// events must not stamp. The refuse is the probe — a silent accept would
+/// make the stamp a claim of content it is missing.
+#[test]
+fn the_stamp_refuses_to_advance_before_entities_are_projected() {
+    let at = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let version = uuid::Uuid::from_u128(0xca_02);
+    let err = advance_stamp(
+        None,
+        StampApply {
+            catalog: StampCatalogTouch::Set(version),
+            projected_at: at,
+            entities_projected: false,
+        },
+    )
+    .expect_err("stamping before the changed-entity list is projected is refused");
+    assert_eq!(err, StampAdvanceRefusal::EntitiesNotYetProjected);
+}
+
+/// Floor vs completeness, armed on a **removal**. A retirement flip drops a
+/// row and increments no catalog version; completeness treats that as
+/// corruption, the floor admits it when `projected_at` advances and
+/// `as_of` stays.
+#[test]
+fn a_retirement_removal_is_admitted_by_the_floor_and_rejected_by_completeness() {
+    let version = uuid::Uuid::from_u128(0xca_03);
+    let t0 = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let t1 = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 1).unwrap();
+    let before = StalenessStamp {
+        as_of_catalog_version: Some(version),
+        projected_at: t0,
+    };
+    let after = advance_stamp(
+        Some(before),
+        StampApply {
+            catalog: StampCatalogTouch::Unchanged,
+            projected_at: t1,
+            entities_projected: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(after.as_of_catalog_version, Some(version));
+    assert!(
+        completeness_rejects_removal(1, 0, true),
+        "completeness alarms on a removal with no version bump"
+    );
+    assert!(
+        floor_admits_removal(1, 0, &before, &after),
+        "the floor admits the same removal when projected_at advances"
+    );
 }
 
 /// A polled surface's stamp is its own table's last apply and carries no

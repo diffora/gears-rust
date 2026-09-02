@@ -165,10 +165,11 @@ So **`inst-rp-consume`'s** operand is armed, by a test that checks the value. Th
 re-specify — and the guarantee lives in a **test**, not on a production path, which is worth stating
 rather than rounding up.
 
-**`inst-rp-stamp`'s is not armed.** Its operands are the catalog version, `projectedAt` and the
-event's own changed-entity list, and its anchor is `CatalogVersionPublished`, which ships nowhere.
-The two instructions are armed and unarmed respectively, and conflating them would report the stamp
-as build-ready.
+**`inst-rp-stamp`'s host is armed; its event anchor is not.** The advance rule
+(`domain::read_model::advance_stamp` + `repo::apply_read_stamp`) encodes the floor, the
+ordering refusal and the null-anchor arm. Its *event* operand
+`CatalogVersionPublished` still ships nowhere — the projector that would feed the host is
+`dod-projector`. The host being green does not make that consumer build-ready.
 
 **A contradiction the naive reading finds, and measurement withdraws.**
 `GET /bss-products/v1/products/{id}` ships and returns head content, while C6 says Product/SKU
@@ -181,12 +182,10 @@ state"*. It is the authoring plane. C6 governs
 the **consumer** plane, which has no shipped door at all. Recorded so the withdrawal is not
 re-litigated.
 
-**And one absent artifact that two features now depend on.** `products_entity_version` ships
-`insert_entity_version` and **no read function**, and `domain::canonical` renders without parsing.
-C6's frozen-only rule therefore needs exactly the reader and canonical-rendering decoder that
-`features/clone.md`'s `cpt-cf-bss-products-dod-clone-read-surface` needs, and whose owner is
-registered as **`features/clone.md` §7 row 23**. This feature **cites that row rather than raising a
-second one** — the one-declaration discipline applied to open items.
+**And one formerly-absent pair that two features depended on.** `domain::canonical` now ships
+`decode_rendering` (P-D-77 closed `features/clone.md` §7 row 23), and `repo::latest_entity_version`
+reads the newest frozen row. A by-key production reader is still only a test helper. This feature's
+remaining frozen-read-path blockers are its own §7 rows 9 and 19, not the closed decoder question.
 
 ## 2. Actor Flows (CDSL)
 
@@ -452,7 +451,7 @@ says so rather than restating it as new work.
 
 ### The projection table
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-projection-table`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-projection-table`
 
 `products_read_entity` exists, per-tenant and denormalized, carrying: identity; state with the
 `deprecated`, `compositionPending` and `sellable` flags; `deprecation_provenance` and
@@ -460,8 +459,13 @@ says so rather than restating it as new work.
 the type, tier and unit display fields; the resolved display attributes per locale coordinate,
 materialized for the tenant's active locales; the category paths; and `published_version`.
 
-**It does not exist today** — zero occurrences across `products/src` — so this DoD creates the table
-and its migration.
+**It ships** as `m20260901_000023` on both dialect arms, with SeaORM entity
+`infra::storage::entity::read_entity`, schema oracles in `migrations_tests`, and the P-D-39
+scope predicate in `domain::read_model::scope_condition`. An earlier draft of this body claimed
+*"It does not exist today — zero occurrences across `products/src`"*; that claim was true before
+the migration landed and is false at `d6cce574b`. The open §7 rows 2, 11 and 12 still name
+adjacent questions (locale config home, metadata field, parked-row exit) and do **not** retract
+the table itself.
 
 **The scope columns carry P-D-39's empty-set rule**, and it inverts the obvious predicate: **an
 empty set means unrestricted**, so a scope predicate matches a row whose set is empty **or**
@@ -479,6 +483,7 @@ and the reason is that an index not leading with `tenant_id` cannot serve a per-
 **Touches**:
 - DB Table: `products_read_entity`
 - Entities: `ReadEntity`, `BrowseProjection`
+- Modules: `infra::storage::entity::read_entity`, `domain::read_model`
 
 ### The projector, whose key already ships
 
@@ -530,14 +535,16 @@ else frozen, nothing else from a head at all.
 display values, definitions and recognized sets **have no frozen versions and no draft state to
 leak**, their mutations being governed-and-applied. A live read there is already-published content.
 
-**This DoD is blocked on a reader that does not exist, and the question is already registered.**
-`products_entity_version` ships `insert_entity_version` and **no read function**;
-`domain::canonical` exports `content_digest`, `canonical_rendering`,
-`render_instant`, `DIGEST_VERSION` and `Absence` — and **no parser**. That is the same absent pair `features/clone.md`'s
-`cpt-cf-bss-products-dod-clone-read-surface` needs, and its owner is registered at
-**`features/clone.md` §7 row 23**. This feature **cites that row and raises no second one** — two
-features needing one artifact is one question, and duplicating it would leave the specific copy open
-after the general one closed.
+**Earlier body text claimed this DoD was blocked on a reader and a parser that did not exist**,
+citing `features/clone.md` §7 row 23. **That claim is false at `d6cce574b`**: `domain::canonical`
+ships `decode_rendering` (P-D-77 closed row 23), and `repo::latest_entity_version` reads the newest
+frozen row. A by-`(tenant, entity_kind, entity_id, published_version)` production reader is still
+only a test helper (`find_frozen_version` in `repo_tests`), not a public repository function.
+
+**This DoD remains blocked on open register rows, not on inventing a substitute reader here:**
+§7 **row 9** (projector posture when a `*Published` event's frozen row has been collected — owner:
+this slice with 10 and 12) and §7 **row 19** (published entity rescope without a version row —
+owner: P-D-24/P-D-35 with `01-foundation`). Building a local stub around either would hide the gap.
 
 **Implements**: `cpt-cf-bss-products-algo-projection`
 
@@ -597,7 +604,7 @@ decision and contradicted this DoD's own `retired`/filtered-browse cell.
 
 ### The staleness stamp, as a floor
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-staleness-stamp`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-staleness-stamp`
 
 Every read response carries `(asOfCatalogVersion, projectedAt)` — **persisted as one per-tenant
 stamp row** (**P-D-70**: a column duplicated per projection row cannot answer an *empty* projection,
@@ -622,11 +629,18 @@ stamp would be a claim rather than a floor.
 null is a stated value, not an absence — a response without the field is indistinguishable from a
 dropped stamp.
 
+**It ships** as table `products_read_stamp` (`m20260901_000024`), entity
+`infra::storage::entity::read_stamp`, domain host `domain::read_model::advance_stamp`, and
+persistence host `infra::storage::repo::apply_read_stamp`. The projector that *drives* those hosts
+remains `dod-projector`. An earlier Touches line named `products_read_entity`; the body's
+per-tenant-row semantics require `products_read_stamp`, and that is the table that exists.
+
 **Implements**: `cpt-cf-bss-products-flow-project`
 
 **Touches**:
 - Entities: `StalenessStamp`
-- DB Table: `products_read_entity`
+- DB Table: `products_read_stamp`
+- Modules: `domain::read_model`, `infra::storage::repo::read_models`
 
 ### The history timeline
 
@@ -911,12 +925,12 @@ already written `PRD` §15 and needs no exception. Third, each row gains a `**Bl
 from those three, nothing is altered.
 
 **One question is deliberately NOT raised here because another document already owns it**, and is
-cited instead: **the frozen-row reader and the canonical-rendering decoder** —
-`features/clone.md` §7 row 23, whose owner is *"`01-foundation`'s canonical-rendering owner, with
-this feature"* — that feature being `features/clone.md`.
-`cpt-cf-bss-products-dod-frozen-read-path` is the half this document owns, and it is `p1` while the
-row's only recorded consumer is clone's `p3` DoD. The reciprocal is recorded in the owed subsection
-below rather than by duplicating the row.
+cited instead: **the frozen-row reader and the canonical-rendering decoder** were registered at
+`features/clone.md` §7 row 23. That row is **closed by P-D-77** (`decode_rendering` ships beside
+the renderer). `cpt-cf-bss-products-dod-frozen-read-path` remains open on this feature's own §7
+rows 9 and 19 — collected-row posture and published rescope without a version — not on the
+closed decoder question. The reciprocal note below is retained as historical record of the
+citation discipline, not as a live blocker.
 
 ### Carried verbatim from `design/08` §6
 
@@ -1160,11 +1174,15 @@ below rather than by duplicating the row.
   and names *"08's bounded subtree recompute"* as one of four rules that read them, with the owner as
   the §17.1 policy owner. `cpt-cf-bss-products-dod-reparent`'s termination argument rests on those
   values. Recorded as the DoD's own stated gap; the register entry is `design/02`'s.
-- **`features/clone.md` §7 row 23's `Blocks` field names only `cpt-cf-bss-products-dod-clone-read-surface`,
-  which is `p3`.** `cpt-cf-bss-products-dod-frozen-read-path` is a second consumer of the same
-  absent reader and is `p1`. The reciprocal is not added to that row here — editing another
-  feature's register from this one is the duplication the citation avoids — so it is recorded against
-  `features/clone.md`'s owner.
+- **`features/clone.md` §7 row 23** named only `cpt-cf-bss-products-dod-clone-read-surface` as
+  blocked and is now **closed by P-D-77**. `cpt-cf-bss-products-dod-frozen-read-path` was a second
+  consumer of the same absent pair; the decoder half is no longer absent. The reciprocal is kept
+  here as the citation record, not as a live blocker — live blockers are this feature's §7 rows 9
+  and 19.
+- **`DECOMPOSITION.md` §2.8 Data** lists `products_read_entity` and the three polled dashboard
+  tables, and **omits `products_read_stamp`**. P-D-70 arm 6 settled the per-tenant stamp row after
+  that Data list was written. This feature cannot edit `DECOMPOSITION.md` (strand boundary); the
+  repair is owed to the design-set owner.
 - **`design/10` §6's identity-map question names this feature as a co-owner and `design/08` does not
   carry it.** Recorded as row 25 above; the entry is `design/10`'s.
 

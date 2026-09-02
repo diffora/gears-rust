@@ -57,9 +57,8 @@ pub struct Model {
     /// The assigned categories' full paths, canonical.
     pub category_paths: Option<String>,
     pub published_version: i64,
-    /// This row's own last apply. The response-level floor is the per-tenant
-    /// `StalenessStamp`, which has no table yet — see `features/read-models.md`
-    /// §7.
+    /// This row's own last apply. The response-level floor lives on the
+    /// per-tenant `products_read_stamp` row (`StalenessStamp`), not here.
     pub projected_at: ChronoDateTimeUtc,
 }
 

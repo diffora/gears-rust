@@ -1705,6 +1705,7 @@ pub async fn supersede_open_approval(
 mod bulk;
 mod governance;
 mod increment;
+mod read_models;
 mod recognized;
 mod reference;
 mod taxonomy;
@@ -1713,6 +1714,7 @@ mod versions;
 pub use bulk::*;
 pub use governance::*;
 pub use increment::*;
+pub use read_models::*;
 pub use recognized::*;
 pub use reference::*;
 pub use taxonomy::*;

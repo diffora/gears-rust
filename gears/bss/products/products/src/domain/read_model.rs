@@ -28,7 +28,7 @@
 //! either serve `retired` on filtered browse (false) or make the decision
 //! unreachable (also false).
 //!
-//! # The stamp is a floor, and its home is not here
+//! # The stamp is a floor, and the advance rule lives here
 //!
 //! [`StalenessStamp`] carries `(as_of_catalog_version, projected_at)` and is
 //! **a floor** (**P-D-07**): everything at or below it is reflected, and
@@ -41,13 +41,11 @@
 //! catalog version has no anchor, and **P-D-70** arm 6 makes the stamp *"one
 //! per-tenant stamp row"* whose `projectedAt` advances on **every** apply,
 //! version or none. That row ships as `products_read_stamp`
-//! (`m20260901_000024`) — `DESIGN.md` §3.5's four-table index for this slice
-//! predates the decision, the same way it predates
-//! `products_catalog_version_capture`. What is still owed is the **advance
-//! rule's host**: `projectedAt` moves only after the event's changed-entity
-//! list is projected, and that step is the projector's, which
-//! `features/read-models.md` §7 rows 8, 15, 16 and 24 block. Hence
-//! `dod-staleness-stamp`'s bare marker.
+//! (`m20260901_000024`). [`advance_stamp`] is the advance rule's host: it
+//! refuses to move the stamp until the caller reports the event's
+//! changed-entity list as projected, and it never treats a content removal
+//! as a version regression. The projector (`dod-projector`) drives it; this
+//! module does not build that consumer.
 //!
 //! # `ReadProjector`'s subject is the event-driven family only
 //!
@@ -59,7 +57,8 @@
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-read-seams:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-visibility:p1
-//! @cpt-cf-bss-products-dod-staleness-stamp
+//! @cpt-dod:cpt-cf-bss-products-dod-staleness-stamp:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-projection-table:p1
 
 use bss_products_sdk::models::LifecycleState;
 use chrono::{DateTime, Utc};
@@ -186,6 +185,113 @@ impl StalenessStamp {
             projected_at,
         }
     }
+}
+
+/// How one projector apply touches the catalog-version half of the stamp.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum StampCatalogTouch {
+    /// Leave `as_of_catalog_version` alone — an entity-only apply (publish,
+    /// retirement flip, …) that still advances `projected_at`.
+    Unchanged,
+    /// Set the floor to this catalog version — a `CatalogVersionPublished`
+    /// whose changed-entity list has already been projected in this step.
+    Set(Uuid),
+    /// Explicit null: a zero-version tenant's bootstrap. The null is a
+    /// stated value, not an absence.
+    Anchorless,
+}
+
+/// One projector apply's stamp operands.
+///
+/// The projector builds this **after** projecting the event's changed-entity
+/// list from frozen rows in the same step. [`advance_stamp`] refuses any
+/// advance where [`Self::entities_projected`] is false — that is the
+/// ordering obligation that keeps the stamp a floor rather than a claim.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct StampApply {
+    /// How this apply moves the catalog-version coordinate.
+    pub catalog: StampCatalogTouch,
+    /// The apply's instant. Advances on every admitted apply.
+    pub projected_at: DateTime<Utc>,
+    /// Whether this step's changed-entity list has already been projected
+    /// from frozen rows. Required for any advance, including an empty list
+    /// (bootstrap / version-or-none apply with nothing to rewrite).
+    pub entities_projected: bool,
+}
+
+/// Why [`advance_stamp`] refused to move the stamp.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum StampAdvanceRefusal {
+    /// The caller asked to stamp before projecting the event's own
+    /// changed-entity list. Advancing now would claim a version whose
+    /// content is missing.
+    EntitiesNotYetProjected,
+    /// `projected_at` must move forward on every apply; a non-increasing
+    /// instant is not an apply.
+    ProjectedAtDidNotAdvance,
+}
+
+/// Compute the next stamp from the current one and one apply.
+///
+/// # Errors
+///
+/// [`StampAdvanceRefusal`] when the ordering obligation is unmet or the
+/// instant does not advance.
+pub fn advance_stamp(
+    current: Option<StalenessStamp>,
+    apply: StampApply,
+) -> Result<StalenessStamp, StampAdvanceRefusal> {
+    if !apply.entities_projected {
+        return Err(StampAdvanceRefusal::EntitiesNotYetProjected);
+    }
+    if let Some(prev) = current
+        && apply.projected_at <= prev.projected_at
+    {
+        return Err(StampAdvanceRefusal::ProjectedAtDidNotAdvance);
+    }
+    let as_of_catalog_version = match apply.catalog {
+        StampCatalogTouch::Unchanged => current.and_then(|s| s.as_of_catalog_version),
+        StampCatalogTouch::Set(id) => Some(id),
+        StampCatalogTouch::Anchorless => None,
+    };
+    Ok(StalenessStamp {
+        as_of_catalog_version,
+        projected_at: apply.projected_at,
+    })
+}
+
+/// Whether the **completeness** reading would treat a content shrinkage at
+/// an unchanged catalog version as corruption.
+///
+/// Completeness says the projection at stamp `S` is the full catalog of `S`
+/// and may only grow for later versions. A retirement flip removes a row
+/// and increments no version — legitimate under the floor, "corruption"
+/// under completeness. This function exists so a test can arm against that
+/// false alarm rather than only against additive cases.
+#[must_use]
+pub const fn completeness_rejects_removal(
+    rows_before: usize,
+    rows_after: usize,
+    catalog_version_unchanged: bool,
+) -> bool {
+    catalog_version_unchanged && rows_after < rows_before
+}
+
+/// Whether the **floor** reading admits the same removal.
+///
+/// The floor asserts everything at or below the stamp is reflected, and
+/// asserts nothing about content above it — including removals that leave
+/// `as_of_catalog_version` alone while `projected_at` advances.
+#[must_use]
+pub fn floor_admits_removal(
+    rows_before: usize,
+    rows_after: usize,
+    before: &StalenessStamp,
+    after: &StalenessStamp,
+) -> bool {
+    rows_after < rows_before
+        && before.as_of_catalog_version == after.as_of_catalog_version
+        && after.projected_at > before.projected_at
 }
 
 /// Which surface is asking (`dod-visibility`'s three columns, plus P-D-70
