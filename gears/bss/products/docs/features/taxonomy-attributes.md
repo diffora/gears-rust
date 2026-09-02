@@ -518,8 +518,25 @@ rather than an application convention. The Foundation's entity tables **MUST NOT
 category columns.
 
 **The table ships and the tick does not, because §7 row 21 is about this FK.** Both keys, both
-uniqueness guarantees and the role roster are built and probed on both engines. What is unbuilt is
-the row's own subject: *"no referential action is stated"*. The shipped FK takes the default, which
+uniqueness guarantees and the role roster are built, and the **store over them ships with them** —
+`repo::replace_category_assignments` and `repo::category_assignments`, whole-set writes on the
+caller's runner so the save door can land them in its own transaction (P-D-46). At-most-one-primary
+is proven by writing two primaries and reading the index's refusal back, never by a prior read.
+
+**Where each guarantee is probed, corrected.** An earlier revision of this paragraph said all three
+were *"probed on both engines"*; measured at this commit, the Postgres side probes the **column
+roster only** (`tests/postgres_taxonomy_schema.rs`), while the role `CHECK`, the table-level
+`UNIQUE` and the partial primary index are probed on the `SQLite` mirror alone. The gap is one
+Postgres case, and it matters beyond bookkeeping: the two engines report a uniqueness refusal in
+**different shapes** — Postgres names the constraint, `SQLite` names the columns — so the store's
+classifier has an engine-specific branch that no executed statement here reaches. It is covered by
+a direct unit test over the classifier and is owed a Postgres probe.
+
+The DoD's last clause — *"The Foundation's entity tables **MUST NOT** gain inline category
+columns"* — stood asserted by nothing until this commit: it was stated in two module docs, and a
+doc comment refuses nothing. It is now read off the engine's own catalogue for both head tables.
+
+What is unbuilt is the row's own subject: *"no referential action is stated"*. The shipped FK takes the default, which
 refuses a category's deletion while **any** link row exists — including rows held by discarded and
 retired Products, which `inst-tx-retire-guard`'s "unreferenced" test does not count, reading the
 Product's lifecycle state and never the link row. So the DDL as written makes the guard's stated
@@ -543,6 +560,14 @@ The system **MUST** create `products_attribute_definition` with `definition_id`,
 `state` in `{active, deprecated, removed}`, a nullable `seeded_by` marker and timestamps. The
 `removed` value **MUST** be reachable only as a state flip; no migration or door may delete a row.
 
+**The roster and its store ship; the tick waits on §7 row 13.** `repo::insert_attribute_definition`,
+`attribute_definition_by_key`, `attribute_definitions` and `flip_definition_state` are built, the
+flip **pinned at the state the caller read** so a peer's move between read and write moves no row.
+The store offers no delete for this table at all, which is the DoD's own clause made structural
+beside the `BEFORE DELETE` trigger that enforces it on both engines. `value_type` stays a string
+in the store for the reason the migration gives: no document enumerates the admitted types, and an
+enum in the repository would answer that question from the storage layer.
+
 **Implements**: `cpt-cf-bss-products-flow-attribute-definitions`
 
 **Constraints**: `cpt-cf-bss-products-constraint-tenant-isolation`,
@@ -565,6 +590,16 @@ full coordinate tuple. **That constraint does not today constrain the mandatory 
 living in the frozen version rows. For category rows the table **MUST** be the live state itself,
 with no freeze-copy.
 
+**The store ships; the tick waits on §7 row 20.** `repo::upsert_attribute_value`,
+`attribute_values_of` and `delete_attribute_value` key on the whole seven-column coordinate, and
+the write is an upsert rather than a read-then-write so two authors racing on one coordinate
+produce one row instead of a conflict the door would have to translate. The read is ordered
+totally over the four coordinate columns, which is **that read's** determinism and answers nothing
+about row 9 — the frozen-content sort key is `01-foundation` §4.3's and P-D-29's, a different
+site. `entity_kind` is a `&str` through the store, since row 20 is exactly the question of what it
+admits; a `category` row is written and read back beside a `product` one, so the kind the row
+measures is demonstrably admitted.
+
 **Implements**: `cpt-cf-bss-products-flow-attribute-values`
 
 **Constraints**: `cpt-cf-bss-products-constraint-tenant-isolation`
@@ -580,6 +615,12 @@ with no freeze-copy.
 The system **MUST** create `products_metadata` keyed `(tenant_id, entity_kind, entity_id, key)`
 with a value and timestamps, on both engines. The table **MUST** sit outside frozen version
 content (P-D-06).
+
+**The store ships; the tick waits on §7 row 20, which this table shares with the value plane.**
+`repo::upsert_metadata`, `metadata_of` and `delete_metadata_key`. The upsert leaves `created_at`
+alone on an overwrite, so the column keeps meaning *when this key first appeared* rather than
+quietly becoming a second copy of `updated_at`. No cap is enforced here: `METADATA_LIMIT` is the
+door's and §7 row 2 records that neither the key count nor the value length has a value anywhere.
 
 **Implements**: `cpt-cf-bss-products-flow-metadata`
 
@@ -599,6 +640,27 @@ Category), `description` (localized), `imageUri` (a URI string, non-localized),
 `unitDisplayLabel` (localized, display only and never the metering-unit identity) and
 `marketingFeatures` (a localized string list). A seeded definition **MUST** be deprecatable and
 **MUST NOT** be removable.
+
+**Blocked, and by more than §7 row 23 says.** The row records that *"seeded by migration, per tenant
+bootstrap"* names **two code paths**, and asks which writes for a tenant created after the
+migration. Measured at this commit, **neither path is available**: `migrations/` is not this
+strand's to write, and the gear carries **no tenant-bootstrap hook of any kind** — no
+tenant-created handler, no provisioning callback, nothing for a per-tenant seeder to hang off. So
+the row is not a choice between two mechanisms; it is a question with one mechanism forbidden to
+this strand and the other not built by anyone. Naming that is the deliverable, and no seeder is
+invented to get past it.
+
+**What does ship** is the roster itself — `domain::taxonomy::WELL_KNOWN_SEEDS`, the five keys in the
+order above with their localized flags, `REGISTRY_SEEDED_BY`, and `is_removable`, whose operand is
+the `seeded_by` marker's presence and which is probed in **both** directions so a guard refusing
+every removal cannot satisfy it. One definition site, so whichever path its owner picks does not
+mint a second copy of the list.
+
+**One thing in it is this feature's proposal and not the design's.** The `DoD` names five keys and
+three **shapes** — a localized string, a URI string, a localized string list — and no **tokens**;
+no document in the set enumerates `value_type`'s admitted values, the column being pinned to
+non-emptiness only on P-D-74's shape. The three constants are therefore carried in the owed
+register as a proposal, and nothing closes the set: the store's `value_type` is still a string.
 
 **Implements**: `cpt-cf-bss-products-flow-attribute-definitions`
 
@@ -625,13 +687,41 @@ which is the live-value door's precondition); and `apply` runs the check immedia
 mutation closure, so a stale op **cannot** write — asserted by observing the closure, because a
 check placed after the write would pass a naive test while having already written.
 
-**What is not built is submission to the `05` gate, and the reason was written down before this
-code existed.** `GovernanceGate::evaluate` takes an `EntityRef` and an `InternalRevision`; a
-category, a definition and a set member have neither — that absence is the very reason the envelope
-pins a *state* — so submitting one through today's contract means inventing a mapping from a live
-target to an entity ref. **P-D-93** recorded exactly this as its first residue: *"a live op whose
-subject is not an entity would need a second contract and this decision does not grant one"*. The
-half waits on `05`'s submit door (its §7 row 12, no route declared) or on that second contract.
+**What is not built is submission to the `05` gate — but the reason above was wrong, and a reader
+steered by it would build the wrong thing.** The struck paragraph said
+`GovernanceGate::evaluate` takes an `EntityRef`, that submitting therefore *"means inventing a
+mapping from a live target to an entity ref"*, and that **P-D-93** recorded this as its first
+residue. Measured at this commit, three of those are false:
+
+| The claim | What the code and the register say at `HEAD` |
+|---|---|
+| `evaluate` takes an `EntityRef` | It takes a **`GateSubject`**. `EntityRef` is one constructor of five |
+| a live target needs an invented mapping | `GateSubject::governed_live_op(tenant_id, target)` **is** the constructor, and `SubjectKind::GovernedLiveOp` is one of the five kinds — granted by **P-D-67 arm 4** on 2026-08-31, *"the gate's subject widens to the approval store's own pair"* |
+| P-D-93 recorded it as a residue | The sentence is in P-D-93's **arguments-against** paragraph, and it says *"**this decision** does not grant one"* — true of P-D-93, which granted nothing, while P-D-67 had |
+
+**P-D-93 is not the defect; carrying it forward was.** Its argument was *correct when written*:
+`043bca636` landed at 17:30 on 2026-09-01, and `evaluate` did still take an `EntityRef` at that
+moment. `f894378e9` built P-D-67 arm 4's grant — which that entry had itself deferred *"to the
+build"* — at **18:38 the same day**, sixty-eight minutes later. An arguments-against paragraph
+records a moment; this DoD quoted one as a standing reason and never re-measured it. The lesson is
+the citation's, not the register's.
+
+The subject seam is one call wide and is now probed
+(`domain::live_op_tests::the_envelopes_target_is_a_gate_subject_of_its_own_kind`, which asserts the
+live-op kind **against** the entity kind so the two cannot collapse into the very mapping the
+struck sentence imagined).
+
+**What genuinely remains, narrower and two-fold**: `evaluate`'s **`expected_revision`** operand,
+which a live row cannot supply — that absence being why this envelope pins a *state* — and which is
+`features/governance.md` §7 row 14, live; and **`05`'s submit door**, whose route is undeclared (05
+§7 row 12).
+
+**And one measurement of P-D-93's own does not reach here.** It released this DoD's §7 row partly
+on *"**four** doubles ship … and the door tests already turn on which one is passed"*. All four are
+private items in two `#[cfg(test)]` door modules with no `pub`, and `test_support` carries no gate
+double at all — so the apply path is proven against the closure it is handed, never against a gate,
+fake or real. That is recorded rather than used to re-hold the row: the row's other two
+measurements stand.
 
 **Implements**: `cpt-cf-bss-products-algo-governed-live`
 
@@ -665,6 +755,24 @@ a create or re-parent exceeds the configured maximum depth or maximum children p
 **MUST** be validated on the mutation path only, so a later limit decrease never invalidates
 existing structure.
 
+**The cycle half ships; the limit half is judged and unreachable, on §7 row 2.** `TaxonomyWalk` runs
+under the per-tenant writer lock in `infra::taxonomy::reparent_under_lock` — lock, then read, then
+judge, then write, an order whose whole point is that reading first would judge a chain a peer can
+still change. `domain::taxonomy::depth_of` and `children_of` measure off the **same** edge list the
+cycle rule reads, so the two cannot disagree, and both terminate on a tree that already contains a
+cycle. `limit_verdict` refuses above each threshold and names which, with the boundary case probed
+in both directions.
+
+`TaxonomyLimits` carries `Option` thresholds and **no `Default`**: row 2 records that these limits
+*"have no interim default anywhere"*, so `None` is not a policy of *unlimited* but the absence of a
+stated number, and nothing can acquire one by accident. Nothing configures it, so the judge is
+declared and unreachable — the honest shape for a rule whose operand is owed, and it means
+`TAXONOMY_LIMIT` is a code this feature declares and never raises.
+
+The third MUST is structural rather than tested at a door: `limit_verdict` takes what a mutation
+**would** make the tree and never the tree as it stands, so no reading of it judges existing rows,
+and a later limit decrease has nothing to invalidate.
+
 **Implements**: `cpt-cf-bss-products-algo-taxonomy-integrity`,
 `cpt-cf-bss-products-flow-manage-taxonomy`
 
@@ -695,6 +803,30 @@ Product's lifecycle state and **MUST NOT** read the mere presence of a
 `products_product_category` row. A test **MUST** prove that a discarded draft holding a category
 link does not block the retire.
 
+**Built and probed; the tick waits on §7 row 21 and on the code's own absence.**
+`repo::retire_census` reads both halves and `domain::taxonomy::retire_verdict` judges them, the
+census taking the caller's read under the writer lock rather than fetching its own rows.
+
+The MUST that decides the shape is *"reads the Product's lifecycle state and **not** the mere
+presence of a `products_product_category` row"*, so the Product read is the **outer** query and the
+link table is a subquery inside it: a link row held by a discarded draft contributes nothing
+because its Product never enters the result. Two round trips would have been wrong in one
+direction — a Product **published** between them has a link row the first read never saw, and the
+guard would answer *"unreferenced"* about catalog that now references the node. One statement has
+no window.
+
+The named test ships and asserts the link row is **still there** afterwards, without which a census
+returning nothing because the assignment had vanished would pass while the rule went unmeasured.
+Beside it: one Product walked along its own admitted edges with the census re-read at each, so
+`draft`, `published` and `deprecated` block and `retired` and `discarded` do not; an active child
+blocks and a retired one does not; and the sample reads `bound + 1` so the refusal can say *"at
+least N"* without a second counting statement.
+
+**`CATEGORY_REFERENCED` has no `DomainError` variant at this commit** — it is one of twelve of this
+feature's sixteen codes still absent, which is `dod-taxonomy-errors`' work. So the verdict returns
+`domain::taxonomy::CategoryReferenced`, carrying the code as a constant and the sample in its
+detail, and the door maps it exactly as it maps `repo::AssignmentWrite`'s two conflicts.
+
 **Implements**: `cpt-cf-bss-products-flow-manage-taxonomy`,
 `cpt-cf-bss-products-state-category`
 
@@ -709,6 +841,25 @@ The system **MUST** register save-door validators rejecting an unresolvable cate
 that is retired (`CATEGORY_RETIRED`) and a category named both primary and secondary. Assignment
 rows **MUST** land inside the save door's transaction, and a rollback **MUST** leave neither the
 head update nor the assignment rows.
+
+**The three rules ship and none of them reaches a runtime, which is why this is not ticked.**
+`CategoryResolvableRule`, `CategoryNotRetiredRule` and `CategoryRoleConflictRule` implement
+`ValidationRule<ContentSaveSubject>` and are probed through a pipeline built **in the test module**.
+That mirror is not the door: registration is compile-time code, the `.with_rule` lines live at the
+doors, and **there is no content-save pipeline to add them to at this commit** — the gear has three
+pipelines, all publish-path, and the SKU save door runs none at all. A rule with no registration
+line is not done, and the lines are handed over rather than the box being ticked.
+
+**Two of the three refusals have no code**, which is §7 row 17's own list — the unresolvable
+category and the primary/secondary duplicate. Both raise the Foundation's declared `VALIDATION`
+rather than a seventeenth code minted here, and the violation's `subject` and `detail` are what tell
+them apart until row 17's owner acts. `CATEGORY_RETIRED` is one of the sixteen and is raised as
+itself.
+
+**The transaction half is measured on the half this strand owns**:
+`replace_category_assignments` takes the caller's runner and opens nothing, so a rolled-back save
+leaves no assignment row —
+`assignment_rows_roll_back_with_the_transaction_they_ride_in`. The head-update half is the door's.
 
 **Implements**: `cpt-cf-bss-products-flow-assign-categories`
 
@@ -763,6 +914,31 @@ removal operand. Removal **MUST** be a state flip to a tombstone and never a `DE
 removal refused while a non-terminal head carries a value, and removal **admitted** while only a
 frozen version carries one.
 
+**The machine and the operand ship; the routing does not.** `definition_edge` admits exactly §4's
+four edges — both re-listings included, `active → removed` excluded because
+`inst-de-deprecate-then-remove` puts deprecation between them — and every other pair, self-edges
+among them, is refused. `seeded_edge` holds `dod-well-known-seeds`' clause in **both** directions: a
+seed deprecates and re-lists and never removes, while an operator-added definition does remove, so
+a guard refusing every act on a seed fails as surely as one refusing none. Removal is a flip and
+this strand's store offers no delete for the table at all, beside the `BEFORE DELETE` trigger.
+
+**The named both-ways probe ships on its exact scenario.** `repo::definition_value_holders` reads
+the operand across the three tables `entity_kind` spans — non-terminal Products and SKUs, and
+`active` categories, the last because §6 records that the guard *"counts an active category as a
+value-carrying head"*. The Product is then walked `draft → published → deprecated → retired`
+through real edges, so a frozen version genuinely exists, and the census is empty at that end while
+the `products_attribute_value` row is asserted to still be there — without which a census answering
+empty because the *value* had vanished would pass while the rule went unmeasured.
+
+**What is not built, and it is not the machine.** The `GovernedLiveOp` routing the DoD's first
+clause requires needs `05`'s submit door, which has no route (05 §7 row 12) — the same blocker
+`dod-governed-live-op` carries — and the `attribute_definition × write` grant pair is undeclared
+(§7 row 16). Four §7 rows also hold this DoD's *operands* rather than its mechanism: rows 5, 10,
+11 and 12. Row 11 is the sharpest — the DoD states **two** operands in one sentence, an undefined
+*"live values"* for the type change and the defined non-terminal head for removal — so
+`definition_in_use_verdict` takes whatever census it is handed and judges it, and which census a
+type change should read stays that row's.
+
 **Implements**: `cpt-cf-bss-products-flow-attribute-definitions`,
 `cpt-cf-bss-products-state-attribute-definition`
 
@@ -781,6 +957,38 @@ whose type does not match the declared type (`ATTRIBUTE_TYPE_MISMATCH`), and coo
 either the definition's visibility scope or the entity's own scope
 (`ATTRIBUTE_SCOPE_VIOLATION`). Every refusal **MUST** carry a paired positive control.
 
+**All four rules ship with their controls; none reaches a runtime.** Same reason as
+`dod-assignment-validators`: there is no content-save pipeline at either door, so the four
+`.with_rule` lines have nowhere to go yet and the box stays unticked. Beyond the paired controls
+the DoD asks for, one case holds the property the shared phase makes possible: an unresolved
+definition raises **one** violation and not four, because every rule skips what it cannot judge.
+
+Three readings inside them are worth stating, because each could have gone the other way silently:
+
+- **A `removed` definition is refused as `ATTRIBUTE_DEFINITION_UNKNOWN`, not `_DEPRECATED`.** The
+  tombstone is a row that exists and is *outside the set* — `repo::recognized`'s own words for the
+  sibling roster. It keeps a terminal head's value resolving and admits no new write.
+- **A type token the gear does not know is not judged.** `ValueShape` maps the three tokens
+  `WELL_KNOWN_SEEDS` proposes and answers `None` for everything else; refusing an unmapped token
+  would close the feature to every operator-defined type, and `design/02` §6 owes the roster.
+- **§6's brand-less-global item is deferred, in the one direction that leaves both DoDs
+  satisfiable.** The item records that under a containment-only reading *"the write the publish
+  validator demands is the write the save validator refuses"*, so a brand-scoped entity could never
+  publish. `AttributeScopeRule` judges a coordinate **only where the payload names one**: `brand:
+  ""` is P-D-88 arm 2's absence, not a brand called empty-string, and there is nothing to contain.
+  Taken as forced rather than chosen, pinned by
+  `a_brand_less_global_value_survives_a_brand_scoped_entity`, and registered — if its owner decides
+  otherwise, that is the test which changes.
+
+Both scope columns are read through `ResolvedScope::parse`, so an **empty column is unrestricted**
+(P-D-39) rather than empty — the predicate written as membership alone would refuse every
+coordinate under nearly every definition in the gear — and a column that will not parse refuses
+rather than admits.
+
+**Untouched**: §7 row 19, which asks *which* of these run at the category live-value door. They are
+registered on the entity save door by construction here; the category branch writes through another
+one and that door is `dod-category-live-value-door`'s.
+
 **Implements**: `cpt-cf-bss-products-flow-attribute-values`
 
 **Constraints**: `cpt-cf-bss-products-constraint-tenant-isolation`
@@ -798,6 +1006,28 @@ refusing `DEFAULT_LOCALE_MISSING` at publish and not at draft save. Per-brand de
 values **MUST** be optional overrides. For a category the same demand **MUST** land at the first
 display-value write for that definition.
 
+**The rule ships; the registration and the category half do not.** `DefaultLocaleRequired` refuses
+a localized definition carrying values but none at the global coordinate, skips a non-localized one
+and one carrying nothing at all, and -- the case that matters -- is **not** satisfied by a value at
+`(default-locale, brand A)`. That is the whole reason per-brand values are *overrides*: a brand-B
+reader never visits brand A's default, which the resolver's matrix measures from the reading side.
+It goes in the `-> published` pipeline and nowhere else, for the reason
+`inst-tx-primary-at-publish`'s sibling gives -- a rule in the shared pipeline would refuse a draft
+save the design admits.
+
+**§7 row 8, and why the rule is buildable anyway.** Row 8 asks what the global coordinate's key is,
+and observes that if it means all three coordinates absent then *"a default-locale value at the
+global coordinate"* names a coordinate carrying no locale. That naming **is** self-contradictory.
+The fork it implies is not live: `inst-av-resolve`'s item-37 note already refuses the other horn in
+as many words -- anchoring totality on the tenant default *"would un-total the chain for every
+already-published entity the moment it changed"* -- and P-D-88 arm 2 ships the spelling
+`("", "", "")`. So the rule demands a value at the shipped global coordinate, and what is left of
+row 8 is a **naming defect rather than a decision**. Registered, not asserted: the row stays open
+and this stays unticked.
+
+**The category half is the live-value door's** and lands with it -- see
+`dod-category-live-value-door`, whose route is undeclared (§7 row 16).
+
 **Implements**: `cpt-cf-bss-products-flow-attribute-values`
 
 **Touches**:
@@ -813,6 +1043,27 @@ preference before the global step. A resolution-matrix fixture **MUST** cover ev
 including the brand-default and tenant-default fallbacks, and **MUST** include the case of a
 brand-B reader against a value present only at `(default-locale, brand A)`, which resolves only
 through the global coordinate. A test **MUST** prove a tenant-default change is non-retroactive.
+
+**The chain and its matrix ship.** `resolve_localized` walks the four steps and reports **which**
+one answered, so the matrix asserts the step and not only the value -- a resolver whose first step
+matched everything would satisfy a value-only assertion at every row of it. The DoD's named case is
+there: brand A reaches its own default, brand B does not and falls to global. So is the
+non-retroactivity proof, and it is the interesting one -- moving the tenant default to a locale
+nothing is stored under moves the reader from step 3 to step 4 and the resolution **does not
+fail**, which is `inst-av-resolve`'s item-37 claim made executable.
+
+One case beyond the DoD's list, because it is the chain's one silent failure mode: steps 2 and 3
+name a locale and a brand and no region, so both look for a value whose region is **absent**. A
+region-insensitive step 2 would hand an `eu` value to an `apac` reader.
+
+**Two things the DoD needs that do not exist**, and the tick waits on both. §7 row 6 is the first:
+*"the per-brand default locale has no store"*. `inst-av-resolve` says default-locale *"resolves per
+brand, falling back to the tenant default"*, so step 3 should consult a **per-brand** default
+locale before the tenant's; only the fallback half is built, because nothing stores the per-brand
+half. The second is smaller and is in no row: **the gear carries no configuration field for the
+tenant default locale either**, so every caller supplies it as an argument and none can. The
+resolver is correct for whatever arrives and nothing arrives -- the same shape `TaxonomyLimits`
+takes.
 
 **Implements**: `cpt-cf-bss-products-flow-attribute-values`
 
@@ -830,6 +1081,27 @@ The system **MUST** provide a category live-value door taking `If-Match` on
 approval subject built from an act identity renders identically on the approved retry. The door
 **MUST** emit `CategoryDisplayUpdated` in the same transaction and **MUST** be classified
 non-material with an effective count of `min(N, 1)`.
+
+**The token ships; the door does not, and cannot here.** `repo::write_category_display_value`
+carries the caller's `If-Match` value **inside the counter bump's own `WHERE` clause**, so the
+token is spent by the same statement that advances it and no read-then-write window is left for a
+peer act to fit into. A lost token answers `domain::taxonomy::StaleCategoryToken` carrying both
+counters, and the probe asserts the negative that matters: on a refusal **no value lands** and the
+counter does not move. A door that checked the token and then wrote, or wrote and then checked,
+would pass a counter-only assertion while the display value it was refusing had already been
+committed.
+
+*"Counts acts, not row writes"* (**P-D-50**) is probed as its own case: writing a category's value
+through the plain store path leaves the counter alone. Without that, a counter advanced by any row
+write would change under an approval subject built from an act identity, and the approved retry
+would render a different subject -- the exact failure P-D-50 names.
+
+**What is not here, and none of it is this strand's.** The REST path and the grant pair are
+undeclared (§7 row 16); wire doors are the lead's; `CategoryDisplayUpdated` has no payload type in
+`infra::events` and no `SCHEMA_REFS` entry, so the *"same transaction"* clause has nothing to
+enqueue -- that is `dod-taxonomy-events`' patch; and the non-material classification with effective
+count `min(N, 1)` lives in the governance host, which this feature does not own.
+`STALE_CATEGORY_TOKEN` also has no `DomainError` variant yet, which is `dod-taxonomy-errors`'.
 
 **Implements**: `cpt-cf-bss-products-flow-attribute-values`
 
@@ -882,6 +1154,28 @@ them into the Foundation's taxonomy, each carrying the RFC 9457 problem-response
 slice assigns it. No code carrying a registry code may reach the wire as a 422; the architectural
 422s **MUST** render as 400 carrying their code.
 
+**Declared: fourteen of sixteen. Registered: four.** The declaration half is a constant on the
+raising rule, and ten now carry one in `domain::taxonomy`; `PRIMARY_CATEGORY_REQUIRED` has had one
+in `domain::rules` since the Foundation. The two without a constant are `CONTENT_PII_BLOCKED` and
+`METADATA_LIMIT`, whose raisers are the PII hook and the metadata door and neither is this
+feature's to write. `TAXONOMY_ERROR_CODES` is the census beside them: a code named there with no
+raiser and a raiser with no entry both redden.
+
+**The registration half is twelve variants and twelve mapping arms in two files this strand does
+not edit**, and they are handed over as patches rather than applied. Until they land every one of
+the twelve reaches the wire as `INCOMPLETE_ENTITY` through `transition_refusal`'s ladder, which
+names only the codes the crate declares — so the codes are declared, refusals are reachable, and
+**attribution is not**. That is the gap, stated rather than implied, and
+`twelve_of_the_sixteen_codes_have_no_domain_error_variant_yet` is the counted gate that reddens
+when it closes.
+
+**A pre-existing shortfall found on the way**, reported rather than fixed here:
+`domain/error_tests.rs` asserts its roster is 34 while `DomainError` carries **44** variants, and
+its own comment says the roster is meant to be complete. Ten are absent, two of them this slice's
+own — `DuplicateCategoryName` and `TaxonomyCycle`. It is the same class `error_mapping_tests`
+records fixing on 2026-09-02 (*"It read 35 against 41 real variants"*): one file was corrected and
+its sibling was not.
+
 **Implements**: `cpt-cf-bss-products-algo-error-taxonomy`
 
 **Constraints**: `cpt-cf-bss-products-constraint-tenant-isolation`
@@ -900,6 +1194,30 @@ Taxonomy events **MUST** order on `(tenant, category tree)` as one aggregate, ma
 single-writer discipline; metadata events **MUST** order on `(tenant, entity)`. Product and SKU
 attribute-value writes **MUST** emit no event of their own, and that absence **MUST** be recorded
 as an explicit no-event declaration.
+
+**The aggregates ship; the payload types are a patch; two of the eight are held.**
+`infra::taxonomy::TAXONOMY_TREE_AGGREGATE` is one sentinel per tenant for the five tree acts —
+matching `inst-tc-writer-lock`'s per-tenant serialization, since a per-node key would promise an
+ordering across nodes that nothing enforces — and `metadata_aggregate` is the owning entity, which
+is the ordering a metadata write's own `If-Match` actually provides. The sentinel carries UUID
+version `0` and every id this gear mints is v7, so it cannot collide with a category, a Product or
+a SKU; that is asserted rather than assumed.
+
+**`CategoryDisplayUpdated` and `AttributeDefinitionUpdated` get no aggregate here.** §7 row 15 asks
+which orders them and states why it is not a free choice — *"display writes do not take the taxonomy
+writer lock, so the tree key would claim a serialization the door does not provide"*. Giving them
+the tree key would be that claim, made from an infra module.
+
+**The no-event declaration is a named constant**, `ATTRIBUTE_VALUE_WRITES_EMIT_NO_EVENT`, so a
+census looking for what this feature announces finds the absence too. Its reason is C2: those
+values are entity content, so the act already announces itself as `ProductHeadSaved` /
+`SkuHeadSaved` and at publish as `ProductPublished` / `SkuPublished`; a second event would announce
+one act twice and give a consumer no way to tell an independent change from a component of one it
+has already seen.
+
+**Each payload type needs its own `SCHEMA_REFS` entry, and that is the half no `match` catches.** A
+type added without one compiles clean, `schema_ref_for` answers `None`, and the act rolls back at
+runtime rather than at build time. Both halves are in the patch; neither is applied.
 
 **Implements**: `cpt-cf-bss-products-flow-manage-taxonomy`,
 `cpt-cf-bss-products-flow-attribute-definitions`, `cpt-cf-bss-products-flow-metadata`
@@ -923,6 +1241,30 @@ and the attribute-value set — **MUST** be rendered as JSON arrays sorted by th
 identifier, each element following the Foundation's field-ordering rule (P-D-29). A golden vector
 **MUST** prove the rendering byte-identical across both engines, because
 `10-retention-erasure`'s restore drill compares those digests byte for byte.
+
+**Both renderers ship, and one of them exceeds this DoD's first sentence on purpose.**
+`assignment_collection` sorts by category id, which is total for that collection —
+`uq_products_product_category` admits one row per `(product, category)`. `value_collection` sorts by
+the **whole coordinate**, and §7 row 9 is why: *"Sorting by the attribute id orders groups, not
+rows, so two engines can serialize one content two ways — the failure the rule exists to prevent."*
+
+**The two sentences of this DoD contradict each other and only one can be built.** The first asks
+for a sort by *"the collection's own identifier"*; the second asks for a golden vector proving the
+rendering byte-identical across both engines. An identifier sort cannot deliver the second, so the
+total sort is taken and the divergence is registered — it is exactly the amendment row 9 says is
+owed to **P-D-29**'s owner, and the DoD stays unticked until that owner acts.
+
+**No second serialization rule is minted.** `canonical::render_into` sorts every object's keys and
+preserves every array's order, recursively, so these functions owe the array order and nothing
+else; handing the result to `canonical_rendering` field-orders the elements by the one rule the
+gear has. `domain::canonical`'s own doc says the sort is owed *"**here**, rather than at its own
+call site"* — that sentence is about a generic array sort, while these two keys are slice-02's, so
+they live in slice 02's module and the tension is registered rather than resolved by an edit to a
+Foundation file this strand does not own.
+
+The probe is the permutation, not the fixture: four rows of **one** definition, rendered from every
+rotation and from the reverse, all byte-identical. A fixture using four *different* definitions
+would pass under the very sort row 9 says is wrong.
 
 **Implements**: `cpt-cf-bss-products-flow-assign-categories`,
 `cpt-cf-bss-products-flow-attribute-values`

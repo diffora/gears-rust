@@ -147,3 +147,50 @@ fn a_failing_mutation_keeps_its_own_error() {
         .expect_err("the mutation refused");
     assert_eq!(refusal.code(), "DUPLICATE_CODE");
 }
+
+// -- The gate seam, which the FEATURE's DoD body said did not exist. --
+
+/// **The envelope's target renders straight into a gate subject**, so the
+/// seam `dod-governed-live-op`'s body called unbuildable is one call wide.
+///
+/// The body said submitting *"means inventing a mapping from a live target to
+/// an entity ref"*, citing P-D-93. Measured at this commit that is false
+/// twice over: `GovernanceGate::evaluate` takes a [`GateSubject`], **not** an
+/// `EntityRef`, and `GateSubject::governed_live_op` is the constructor for
+/// exactly this case -- granted by **P-D-67 arm 4** on 2026-08-31, the day
+/// before P-D-93. This case is what keeps that correction honest: it reddens
+/// if the constructor or the `SubjectKind` variant is withdrawn.
+///
+/// **The negative half is why this is a probe.** The entity constructor is
+/// asserted to answer a *different* kind, so a `governed_live_op` that
+/// silently produced `EntityPublish` -- the exact mapping the stale sentence
+/// imagined was necessary -- would fail here rather than pass.
+#[test]
+fn the_envelopes_target_is_a_gate_subject_of_its_own_kind() {
+    use bss_products_sdk::models::EntityKind;
+
+    use crate::domain::governance::{EntityRef, GateSubject, SubjectKind};
+
+    let tenant = uuid::Uuid::from_u128(0x7e_11);
+    let envelope = op(MemberState::Active);
+    let subject = GateSubject::governed_live_op(tenant, &envelope.target);
+
+    assert_eq!(subject.kind, SubjectKind::GovernedLiveOp);
+    assert_eq!(
+        subject.reference, envelope.target,
+        "the approval record carries the envelope's own target, unmapped"
+    );
+    assert_eq!(subject.tenant_id, tenant);
+
+    let entity = GateSubject::entity_publish(EntityRef {
+        tenant_id: tenant,
+        entity_kind: EntityKind::Product,
+        entity_id: uuid::Uuid::from_u128(0xf0_01),
+    });
+    assert_ne!(
+        entity.kind, subject.kind,
+        "a live op is not an entity publish: if these collapsed, the seam \
+         would be the invented mapping the DoD body feared rather than the \
+         widened subject P-D-67 granted"
+    );
+}
