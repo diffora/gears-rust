@@ -8,7 +8,11 @@
 //!
 //! 1. A **registered rule** whose operand is subject-local or a single fact
 //!    the door prefetches — [`ParentPublishedRequired`] on
-//!    [`PublishOrderingSubject`].
+//!    [`PublishOrderingSubject`]. The subject carries the parent's
+//!    [`LifecycleState`], not a boolean: a boolean loses the terminal
+//!    carve-out and would raise `PARENT_NOT_PUBLISHED` on a `retired` /
+//!    `discarded` parent (P-D-96). Both fillings call
+//!    [`parent_must_be_published`], so they cannot drift.
 //! 2. A **continuation** of that phase on the same transaction, positioned
 //!    immediately after the pipeline and before the edge and the gate — the
 //!    position §4.1 asks for. [`parent_must_be_published`] is that filling
@@ -22,8 +26,9 @@
 //!
 //! The insertion site *is* the keying. The lead wires
 //! `.with_rule(Box::new(ParentPublishedRequired))` on the SKU publish
-//! re-validation pipeline (see the D2 report). Until that line lands the
-//! rule type reaches no runtime.
+//! re-validation pipeline, prefetching the parent's [`LifecycleState`]
+//! into [`PublishOrderingSubject`]. Until that line lands the rule type
+//! reaches no runtime.
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-registered-validator-host:p1
 //! @cpt-cf-bss-products-dod-publish-ordering
@@ -129,13 +134,17 @@ impl LifecycleRefusal {
     }
 }
 
-/// The single prefetch fact the publish-ordering rule reads (**P-D-97** arm
-/// "registered rule": the door reads the parent row, this subject carries
-/// the boolean).
+/// The prefetch fact the publish-ordering rule reads (**P-D-97** registered
+/// filling). The door reads the parent row; this subject carries its
+/// [`LifecycleState`].
+///
+/// A boolean would collapse `draft`/`deprecated` with `retired`/`discarded`
+/// and make the registered filling disagree with
+/// [`parent_must_be_published`] on a terminal parent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PublishOrderingSubject {
-    /// Whether the parent Product's `lifecycle_state` is `published`.
-    pub parent_is_published: bool,
+    /// The parent Product's stored lifecycle state.
+    pub parent: LifecycleState,
 }
 
 /// `inst-pc-ordering` — a SKU reaching `published` needs a `published` parent.
@@ -159,12 +168,8 @@ impl ValidationRule<PublishOrderingSubject> for ParentPublishedRequired {
     }
 
     fn evaluate(&self, subject: &PublishOrderingSubject, report: &mut ValidationReport) {
-        if !subject.parent_is_published {
-            report.violate(
-                LifecycleRefusal::PARENT_NOT_PUBLISHED,
-                "product_id",
-                "the parent Product is not published",
-            );
+        if let Err(refusal) = parent_must_be_published(subject.parent) {
+            report.violate(refusal.code, "product_id", refusal.detail);
         }
     }
 }

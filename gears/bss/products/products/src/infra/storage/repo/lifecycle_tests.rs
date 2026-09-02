@@ -10,9 +10,10 @@ use uuid::Uuid;
 use super::{
     NewDeferredRetirement, NewScheduledTransition, claim_due_transition, find_deferred_retirement,
     find_live_retire_intents, find_scheduled_transition, finish_scheduled_transition,
-    insert_deferred_retirement, insert_scheduled_transition, resolve_deferred_retirement,
-    supersede_live_intents,
+    insert_deferred_retirement, insert_scheduled_transition, reclaim_expired_lease,
+    resolve_deferred_retirement, supersede_live_intents,
 };
+use crate::domain::activation::{ClaimLease, DeferralPopulation, RunFinish};
 use crate::infra::storage::migrations::Migrator;
 
 const TENANT: Uuid = Uuid::from_u128(0x7e_42);
@@ -195,25 +196,131 @@ async fn a_due_row_claims_and_finishes_applied() {
     assert_eq!(running.state, "running");
 
     assert!(
-        finish_scheduled_transition(
-            &conn,
-            &scope,
-            TENANT,
-            TRANSITION,
-            "applied",
-            Some("published".to_owned()),
-            now,
-        )
-        .await
-        .expect("finish")
+        finish_scheduled_transition(&conn, &scope, TENANT, TRANSITION, &RunFinish::Applied, now)
+            .await
+            .expect("finish")
     );
     let done = find_scheduled_transition(&conn, &scope, TENANT, TRANSITION)
         .await
         .expect("find")
         .expect("row");
     assert_eq!(done.state, "applied");
-    assert_eq!(done.outcome_reason.as_deref(), Some("published"));
+    assert_eq!(done.outcome_reason, None);
     assert_eq!(done.retirement_reason, None);
+    assert_eq!(done.attempt, 0);
+}
+
+#[tokio::test]
+async fn reclaim_moves_running_to_pending_and_increments_attempt() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let at = now - chrono::Duration::hours(1);
+    let lease = ClaimLease {
+        ttl: chrono::Duration::seconds(30),
+    };
+
+    insert_scheduled_transition(
+        &conn,
+        &scope,
+        &NewScheduledTransition {
+            transition_id: TRANSITION,
+            tenant_id: TENANT,
+            entity_kind: "sku".to_owned(),
+            entity_id: ENTITY,
+            kind: "publish".to_owned(),
+            at,
+            approval_ref: APPROVAL,
+            retirement_reason: None,
+            now,
+        },
+    )
+    .await
+    .expect("insert");
+    assert!(
+        claim_due_transition(&conn, &scope, TENANT, TRANSITION, now)
+            .await
+            .expect("claim")
+    );
+
+    let too_soon = now + chrono::Duration::seconds(5);
+    assert!(
+        !reclaim_expired_lease(&conn, &scope, TENANT, TRANSITION, too_soon, lease)
+            .await
+            .expect("lease still held")
+    );
+
+    let later = now + chrono::Duration::seconds(31);
+    assert!(
+        reclaim_expired_lease(&conn, &scope, TENANT, TRANSITION, later, lease)
+            .await
+            .expect("reclaim")
+    );
+    let row = find_scheduled_transition(&conn, &scope, TENANT, TRANSITION)
+        .await
+        .expect("find")
+        .expect("row");
+    assert_eq!(row.state, "pending");
+    assert_eq!(row.attempt, 1);
+    assert!(row.claimed_at.is_none());
+}
+
+#[tokio::test]
+async fn a_transient_deferral_finish_increments_attempt() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let at = now - chrono::Duration::hours(1);
+
+    insert_scheduled_transition(
+        &conn,
+        &scope,
+        &NewScheduledTransition {
+            transition_id: TRANSITION,
+            tenant_id: TENANT,
+            entity_kind: "sku".to_owned(),
+            entity_id: ENTITY,
+            kind: "publish".to_owned(),
+            at,
+            approval_ref: APPROVAL,
+            retirement_reason: None,
+            now,
+        },
+    )
+    .await
+    .expect("insert");
+    assert!(
+        claim_due_transition(&conn, &scope, TENANT, TRANSITION, now)
+            .await
+            .expect("claim")
+    );
+    assert!(
+        finish_scheduled_transition(
+            &conn,
+            &scope,
+            TENANT,
+            TRANSITION,
+            &RunFinish::Deferred {
+                population: DeferralPopulation::TransientDependency,
+                reason: "transient: UNAVAILABLE".to_owned(),
+            },
+            now,
+        )
+        .await
+        .expect("finish")
+    );
+    let row = find_scheduled_transition(&conn, &scope, TENANT, TRANSITION)
+        .await
+        .expect("find")
+        .expect("row");
+    assert_eq!(row.state, "deferred");
+    assert_eq!(row.attempt, 1);
+    assert_eq!(
+        row.outcome_reason.as_deref(),
+        Some("transient: UNAVAILABLE")
+    );
 }
 
 #[tokio::test]

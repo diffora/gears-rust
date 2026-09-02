@@ -75,7 +75,9 @@ const PG_UP_STATEMENTS: &[&str] = &[
             CONSTRAINT chk_products_scheduled_transition_state
                 CHECK (state IN ('pending', 'running', 'applied', 'failed', 'deferred', 'superseded')),
             CONSTRAINT chk_products_scheduled_transition_attempt
-                CHECK (attempt >= 0)
+                CHECK (attempt >= 0),
+            CONSTRAINT chk_products_scheduled_transition_claim
+                CHECK ((state = 'running' AND claimed_at IS NOT NULL) OR (state <> 'running'))
         )",
     "CREATE UNIQUE INDEX uq_products_scheduled_transition_live
         ON bss.products_scheduled_transition USING btree (tenant_id, entity_kind, entity_id, kind)
@@ -128,7 +130,9 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             CONSTRAINT chk_products_scheduled_transition_state
                 CHECK (state IN ('pending', 'running', 'applied', 'failed', 'deferred', 'superseded')),
             CONSTRAINT chk_products_scheduled_transition_attempt
-                CHECK (attempt >= 0)
+                CHECK (attempt >= 0),
+            CONSTRAINT chk_products_scheduled_transition_claim
+                CHECK ((state = 'running' AND claimed_at IS NOT NULL) OR (state <> 'running'))
         )",
     "CREATE UNIQUE INDEX uq_products_scheduled_transition_live
         ON products_scheduled_transition (tenant_id, entity_kind, entity_id, kind)

@@ -29,6 +29,7 @@ use chrono::{DateTime, Duration, Utc};
 use uuid::Uuid;
 
 use super::lifecycle::LifecycleRefusal;
+use super::retirement::RetirementHeld;
 
 /// The reserved idempotency lane the runner resolves (`internal:` prefix).
 pub const ACTIVATION_LANE: &str = "internal:scheduled-activation";
@@ -107,6 +108,30 @@ pub fn activation_idempotency_key(transition_id: Uuid) -> String {
     format!("{ACTIVATION_LANE}:{transition_id}")
 }
 
+/// The three states a `running` row may finish in. The store writer takes
+/// this rather than a raw string, so `"pending"` cannot un-finish a row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScheduledFinishState {
+    /// Door committed.
+    Applied,
+    /// Terminal for this transition.
+    Failed,
+    /// Hold — flip-guard or transient.
+    Deferred,
+}
+
+impl ScheduledFinishState {
+    /// The stored spelling. Only these three are admitted as a finish.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Applied => "applied",
+            Self::Failed => "failed",
+            Self::Deferred => "deferred",
+        }
+    }
+}
+
 /// How a door refusal finishes the transition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunFinish {
@@ -126,32 +151,64 @@ pub enum RunFinish {
     },
 }
 
+impl RunFinish {
+    /// The stored finish state this outcome writes.
+    #[must_use]
+    pub const fn state(&self) -> ScheduledFinishState {
+        match *self {
+            Self::Applied => ScheduledFinishState::Applied,
+            Self::Failed { .. } => ScheduledFinishState::Failed,
+            Self::Deferred { .. } => ScheduledFinishState::Deferred,
+        }
+    }
+}
+
+/// A door's own refusal, as the runner sees it. Flip-guard holds are
+/// **not** a door code — they arrive as [`RetirementHeld`] and go through
+/// [`defer_flip_guard`] before this classifier is ever called.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DoorRefusal {
+    /// The door's wire code (`STALE_REVISION`, `APPROVAL_REQUIRED`, …).
+    pub code: &'static str,
+    /// Whether this is the bounded transient-dependency arm.
+    pub transient: bool,
+}
+
+/// Unbounded flip-guard hold. The runner evaluates [`super::retirement::flip_guard`]
+/// itself and never turns [`RetirementHeld`] into a door-code string.
+#[must_use]
+pub fn defer_flip_guard(held: &RetirementHeld) -> RunFinish {
+    let reason = if held.blocking_producers.is_empty() {
+        "flip guard: no producers".to_owned()
+    } else {
+        format!("flip guard: {}", held.blocking_producers.join(", "))
+    };
+    RunFinish::Deferred {
+        population: DeferralPopulation::FlipGuard,
+        reason,
+    }
+}
+
 /// Wrap a door refusal. `STALE_REVISION` and `APPROVAL_REQUIRED` become
-/// `SCHEDULE_STALE_APPROVAL`. A flip-guard hold is unbounded; a transient
-/// hold spends the budget.
+/// `SCHEDULE_STALE_APPROVAL`. A transient hold spends the budget; everything
+/// else is terminal. Flip-guard holds do not enter here.
 ///
 /// # Errors
 ///
 /// [`LifecycleRefusal::SCHEDULE_STALE_APPROVAL`] when the door's code is
 /// one of the two wrapped codes — the runner raises, the door does not.
 pub fn classify_door_refusal(
-    door_code: &str,
+    refusal: DoorRefusal,
     attempt: i32,
     budget: AttemptBudget,
-    transient: bool,
 ) -> Result<RunFinish, LifecycleRefusal> {
-    if door_code == "STALE_REVISION" || door_code == "APPROVAL_REQUIRED" {
+    if refusal.code == "STALE_REVISION" || refusal.code == "APPROVAL_REQUIRED" {
         return Err(LifecycleRefusal::schedule_stale_approval(format!(
-            "door refused {door_code}"
+            "door refused {}",
+            refusal.code
         )));
     }
-    if door_code == "RETIREMENT_HELD" {
-        return Ok(RunFinish::Deferred {
-            population: DeferralPopulation::FlipGuard,
-            reason: "flip guard".to_owned(),
-        });
-    }
-    if transient {
+    if refusal.transient {
         if attempt + 1 >= budget.max {
             return Ok(RunFinish::Failed {
                 reason: format!("transient budget exhausted after {attempt} attempts"),
@@ -159,11 +216,11 @@ pub fn classify_door_refusal(
         }
         return Ok(RunFinish::Deferred {
             population: DeferralPopulation::TransientDependency,
-            reason: format!("transient: {door_code}"),
+            reason: format!("transient: {}", refusal.code),
         });
     }
     Ok(RunFinish::Failed {
-        reason: door_code.to_owned(),
+        reason: refusal.code.to_owned(),
     })
 }
 

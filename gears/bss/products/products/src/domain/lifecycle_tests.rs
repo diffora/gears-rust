@@ -24,15 +24,15 @@ fn a_published_parent_admits_and_a_draft_parent_refuses_the_code() {
     assert!(
         pipeline
             .run(&PublishOrderingSubject {
-                parent_is_published: true
+                parent: LifecycleState::Published
             })
             .is_none()
     );
     let (phase, report) = pipeline
         .run(&PublishOrderingSubject {
-            parent_is_published: false,
+            parent: LifecycleState::Draft,
         })
-        .expect("draft/deprecated parent refuses");
+        .expect("draft parent refuses");
     assert_eq!(phase, Phase::RegisteredValidators);
     assert_eq!(
         report.audit_code(),
@@ -54,11 +54,45 @@ fn the_continuation_refuses_draft_and_deprecated_and_passes_published() {
     }
 }
 
-/// Terminal parents are foundation's `PARENT_TERMINAL`, not this code.
+/// Terminal parents are foundation's `PARENT_TERMINAL`, not this code — and
+/// both fillings must agree, or the registration line would fork them.
 #[test]
-fn a_terminal_parent_is_not_this_rules_operand() {
+fn a_terminal_parent_is_not_this_rules_operand_in_either_filling() {
+    let pipeline = ValidationPipeline::new().with_rule(Box::new(ParentPublishedRequired));
     for terminal in [LifecycleState::Retired, LifecycleState::Discarded] {
         parent_must_be_published(terminal)
             .expect("terminal is PARENT_TERMINAL on the identity check, not here");
+        assert!(
+            pipeline
+                .run(&PublishOrderingSubject { parent: terminal })
+                .is_none(),
+            "the registered filling must carve out {terminal:?} the same way"
+        );
+    }
+}
+
+/// Every admitted state produces the same verdict from both fillings.
+#[test]
+fn both_fillings_agree_on_every_lifecycle_state() {
+    let pipeline = ValidationPipeline::new().with_rule(Box::new(ParentPublishedRequired));
+    for state in [
+        LifecycleState::Draft,
+        LifecycleState::Published,
+        LifecycleState::Deprecated,
+        LifecycleState::Retired,
+        LifecycleState::Discarded,
+    ] {
+        let continuation = parent_must_be_published(state);
+        let registered = pipeline.run(&PublishOrderingSubject { parent: state });
+        match continuation {
+            Ok(()) => assert!(
+                registered.is_none(),
+                "{state:?}: continuation admits, registered must too"
+            ),
+            Err(refusal) => {
+                let (_, report) = registered.expect("registered must refuse too");
+                assert_eq!(report.audit_code(), Some(refusal.code));
+            }
+        }
     }
 }

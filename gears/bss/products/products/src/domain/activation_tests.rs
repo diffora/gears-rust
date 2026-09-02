@@ -4,11 +4,12 @@ use chrono::{Duration, TimeZone, Utc};
 use uuid::Uuid;
 
 use super::{
-    ACTIVATION_LANE, AttemptBudget, ClaimDecision, ClaimLease, DeferralPopulation,
-    PreAuthorizedCall, RunFinish, StoredRunState, activation_idempotency_key, claim_decision,
-    classify_door_refusal,
+    ACTIVATION_LANE, AttemptBudget, ClaimDecision, ClaimLease, DeferralPopulation, DoorRefusal,
+    PreAuthorizedCall, RunFinish, ScheduledFinishState, StoredRunState, activation_idempotency_key,
+    claim_decision, classify_door_refusal, defer_flip_guard,
 };
 use crate::domain::lifecycle::LifecycleRefusal;
+use crate::domain::retirement::{FlipPredicate, RetirementHeld, flip_guard};
 
 fn lease() -> ClaimLease {
     ClaimLease {
@@ -97,28 +98,51 @@ fn the_idempotency_key_is_the_lane_and_the_transition_id() {
 fn stale_revision_and_approval_required_become_schedule_stale_approval() {
     let budget = AttemptBudget { max: 3 };
     for code in ["STALE_REVISION", "APPROVAL_REQUIRED"] {
-        let err = classify_door_refusal(code, 0, budget, false).expect_err(code);
+        let err = classify_door_refusal(
+            DoorRefusal {
+                code,
+                transient: false,
+            },
+            0,
+            budget,
+        )
+        .expect_err(code);
         assert_eq!(err.code, LifecycleRefusal::SCHEDULE_STALE_APPROVAL);
     }
 }
 
 #[test]
-fn flip_guard_deferral_is_unbounded() {
-    let budget = AttemptBudget { max: 1 };
-    let finish = classify_door_refusal("RETIREMENT_HELD", 99, budget, false).expect("defer");
+fn flip_guard_deferral_bypasses_the_door_classifier() {
+    let held = flip_guard(FlipPredicate::FreshPositive).expect_err("held");
+    let finish = defer_flip_guard(&held);
+    assert_eq!(finish.state(), ScheduledFinishState::Deferred);
     assert_eq!(
         finish,
         RunFinish::Deferred {
             population: DeferralPopulation::FlipGuard,
-            reason: "flip guard".to_owned(),
+            reason: "flip guard: stub:fresh-positive".to_owned(),
         }
     );
+    let empty = defer_flip_guard(&RetirementHeld {
+        blocking_producers: vec![],
+    });
+    assert!(matches!(
+        empty,
+        RunFinish::Deferred {
+            population: DeferralPopulation::FlipGuard,
+            ..
+        }
+    ));
 }
 
 #[test]
 fn transient_deferral_is_bounded_by_the_budget() {
     let budget = AttemptBudget { max: 2 };
-    let hold = classify_door_refusal("UNAVAILABLE", 0, budget, true).expect("still in budget");
+    let door = DoorRefusal {
+        code: "UNAVAILABLE",
+        transient: true,
+    };
+    let hold = classify_door_refusal(door, 0, budget).expect("still in budget");
     assert!(matches!(
         hold,
         RunFinish::Deferred {
@@ -126,7 +150,7 @@ fn transient_deferral_is_bounded_by_the_budget() {
             ..
         }
     ));
-    let fail = classify_door_refusal("UNAVAILABLE", 1, budget, true).expect("exhausted");
+    let fail = classify_door_refusal(door, 1, budget).expect("exhausted");
     assert!(matches!(fail, RunFinish::Failed { .. }));
 }
 

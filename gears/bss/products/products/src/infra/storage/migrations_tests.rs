@@ -7392,6 +7392,24 @@ mod lifecycle_store_schema_tests {
                 .contains("chk_products_scheduled_transition_attempt"),
             "{err}"
         );
+
+        let err = exec(
+            &db,
+            &format!(
+                "INSERT INTO products_scheduled_transition \
+                 (transition_id, tenant_id, entity_kind, entity_id, kind, at, approval_ref, \
+                  state, claimed_at, attempt, created_at, updated_at) \
+                 VALUES (X'{TRANSITION}', X'{TENANT}', 'sku', X'{ENTITY}', 'retire', \
+                  '2026-10-01', X'{APPROVAL}', 'running', NULL, 0, '2026-09-02', '2026-09-02')"
+            ),
+        )
+        .await
+        .expect_err("running without a claim stamp");
+        assert!(
+            err.to_string()
+                .contains("chk_products_scheduled_transition_claim"),
+            "{err}"
+        );
     }
 
     /// One live intent per entity per kind — the partial UNIQUE.

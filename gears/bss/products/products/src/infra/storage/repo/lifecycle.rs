@@ -12,12 +12,13 @@
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
-use sea_orm::{ColumnTrait, Condition, EntityTrait};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, ExprTrait};
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
 use uuid::Uuid;
 
+use crate::domain::activation::{ClaimLease, RunFinish};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{deferred_retirement, scheduled_transition};
 
@@ -271,7 +272,51 @@ pub async fn claim_due_transition(
     Ok(result.rows_affected == 1)
 }
 
-/// Finish a `running` row `applied|failed|deferred` with `outcome_reason`.
+/// Lease reclaim: `running → pending`, `attempt += 1`, `claimed_at` cleared.
+/// The lease is the caller's — §7 row 8 is open, this writer does not mint one.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn reclaim_expired_lease(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    transition_id: Uuid,
+    now: DateTime<Utc>,
+    lease: ClaimLease,
+) -> Result<bool, RepoError> {
+    let cutoff = now - lease.ttl;
+    let result = scheduled_transition::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(scheduled_transition::Column::State, Expr::value("pending"))
+        .col_expr(
+            scheduled_transition::Column::ClaimedAt,
+            Expr::value(Option::<DateTime<Utc>>::None),
+        )
+        .col_expr(
+            scheduled_transition::Column::Attempt,
+            Expr::col(scheduled_transition::Column::Attempt).add(Expr::val(1_i32)),
+        )
+        .col_expr(scheduled_transition::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(scheduled_transition::Column::TenantId.eq(tenant_id))
+                .add(scheduled_transition::Column::TransitionId.eq(transition_id))
+                .add(scheduled_transition::Column::State.eq("running"))
+                .add(scheduled_transition::Column::ClaimedAt.is_not_null())
+                .add(scheduled_transition::Column::ClaimedAt.lte(cutoff)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("reclaim scheduled transition {transition_id}"), e))?;
+    Ok(result.rows_affected == 1)
+}
+
+/// Finish a `running` row. The stored state comes from [`RunFinish`] so a
+/// raw `"pending"` cannot un-finish the row. A transient (or flip-guard)
+/// deferral increments `attempt` so the next classify sees the spent try.
 ///
 /// # Errors
 ///
@@ -281,19 +326,32 @@ pub async fn finish_scheduled_transition(
     scope: &AccessScope,
     tenant_id: Uuid,
     transition_id: Uuid,
-    state: &str,
-    outcome_reason: Option<String>,
+    finish: &RunFinish,
     now: DateTime<Utc>,
 ) -> Result<bool, RepoError> {
-    let result = scheduled_transition::Entity::update_many()
+    let outcome_reason = match finish {
+        RunFinish::Applied => None,
+        RunFinish::Failed { reason } | RunFinish::Deferred { reason, .. } => Some(reason.clone()),
+    };
+    let mut update = scheduled_transition::Entity::update_many()
         .secure()
         .scope_with(scope)
-        .col_expr(scheduled_transition::Column::State, Expr::value(state))
+        .col_expr(
+            scheduled_transition::Column::State,
+            Expr::value(finish.state().as_str()),
+        )
         .col_expr(
             scheduled_transition::Column::OutcomeReason,
             Expr::value(outcome_reason),
         )
-        .col_expr(scheduled_transition::Column::UpdatedAt, Expr::value(now))
+        .col_expr(scheduled_transition::Column::UpdatedAt, Expr::value(now));
+    if matches!(finish, RunFinish::Deferred { .. }) {
+        update = update.col_expr(
+            scheduled_transition::Column::Attempt,
+            Expr::col(scheduled_transition::Column::Attempt).add(Expr::val(1_i32)),
+        );
+    }
+    let result = update
         .filter(
             Condition::all()
                 .add(scheduled_transition::Column::TenantId.eq(tenant_id))
