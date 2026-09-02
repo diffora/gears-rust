@@ -1569,6 +1569,61 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-98 — `04-lifecycle` owns wire doors after all; `DECOMPOSITION` §2.4's "None of its own" is withdrawn
+
+- **Date**: 2026-09-02 (owner call, on the lead's measurement below)
+- **Context**: `DECOMPOSITION` §2.4 states the feature's API is *"None of its own — lifecycle edges
+  are driven through `01-foundation`'s publish and transition doors, which run this feature's
+  registered validators."* Measured at `HEAD`, that is not sufficient for the acts the slice
+  specifies. The shipped route set is `products`: create, read, patch, publish, discard, clone,
+  **deprecate**; `skus`: create, read, patch, publish, discard, clone. So:
+  - **`inst-lc-undeprecate`** (`deprecated → published`) has **no door on either kind**, though
+    `domain::transition`'s edge list admits the edge.
+  - **`inst-rt-initiate`** — retire a SKU, and retire a Product with its cascade — has **no door**,
+    while the act takes a payload the design enumerates (`reason` running 02's PII write block,
+    `replacedBy?`, `effectiveAt` against the lead-time policy) and requires *"explicit confirmation
+    with the active-reference count shown."* A payload-bearing, confirmed operator act is not a
+    validator on somebody else's door.
+  - **A direct SKU deprecation** has no door: `provenance = direct` is defined for an operator act,
+    and the only path to a deprecated SKU today is the cascade from the Product door.
+  - **The governed cancel** of a `ScheduledTransition` is *"its own explicit act"*; `design/05`
+    §3.2 already registers it — `inst-mt-inputs` (d) names *"04's `ScheduledTransition` cancel
+    ops"* as material, and §3.3 records that the cancel *"is a `GovernedLiveOp` subject kind on
+    `ApprovalRecord`."* The governance side is specified; the wire side is absent.
+  - **`publishAt` needs no door and is not in this decision.** §2's own words: it *"drives the
+    ordinary Foundation publish door in `PreAuthorized(approvalId)` mode"* — a field the activation
+    runner consumes, which is exactly the arrangement §2.4 describes and which does work.
+  Nineteen of the feature's twenty-six DoDs are open, and **ten of them wait on an act with no
+  wire surface**; the lead's sweep of 2026-09-02 found **zero** further door-side wiring available.
+- **Decision**: **`04-lifecycle` owns wire doors of its own, and §2.4's API field is withdrawn and
+  rewritten.** The four acts above each get a door on the kind that carries them; `publishAt`
+  keeps the arrangement it has. §2.4's *reasoning* survives in the narrower form it is actually
+  true of: an **edge** driven by a validator needs no door of its own, and that is why publish,
+  save and discard host this feature's rules rather than duplicating them — but an **act** with its
+  own payload, its own confirmation and its own grant is a door.
+- **The arguments against, stated**: the field was written deliberately, and this reverses it — the
+  decomposition's uniformity claim ("one feature per slice, twelve in total") is untouched, but its
+  API column is no longer "None" for the only feature that claimed it. The alternative considered
+  was folding the acts into `PATCH` as request modes, declined because a governed ceremony hidden
+  behind a payload field cannot carry its own authz action or its own OpenAPI response set, and
+  `design/05` already assigns the cancel its own grant. The second alternative — leaving the acts
+  without a wire surface in v1 and closing ten DoDs as out-of-scope — was declined because the PRD
+  enumerates retirement and un-deprecation as operator capabilities, not as internal mechanics.
+- **What this decision does NOT settle, and is owed**: the **exact paths, verbs and payload
+  shapes**. Naming them here would author the interface. They are owed to `design/04`, which
+  currently has no interfaces section at all, and each affected DoD's `Touches` then gains its
+  `API:` line in `features/lifecycle.md` — the feature's own file, so the lifecycle strand's edit
+  and not the lead's. The governed cancel's shape is owed **jointly with `02`**, since
+  `GovernedLiveOp` is that slice's envelope.
+- **Propagated**: `DECOMPOSITION.md` §2.4 (the API field, rewritten with this entry). **Not** the
+  three-site route census pricing has — products censuses differently, measured today:
+  `OperationBuilder` registers the route, `authz.rs` holds the action constants with doc lines
+  naming the routes that spend them, and `authz_tests.rs` asserts completeness over `labels::ALL`
+  rather than over routes, so doors added under the existing `product|sku` labels need no test
+  change. **Owed**: `design/04`'s interfaces section; the `features/lifecycle.md` `Touches` lines;
+  and whichever `authz.rs` actions the four acts spend — `PUBLISH` and `WRITE` exist, and whether a
+  retirement spends one of them or mints its own is part of the owed interface work.
+
 #### P-D-97 — `RegisteredValidators` is a phase **slot** with two admissible fillings; the trait does not widen
 
 - **Date**: 2026-09-02 (owner call with `04-lifecycle`, closing `features/lifecycle.md` §7 row 20 —
