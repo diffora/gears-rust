@@ -7,14 +7,15 @@ use super::{
     AssignmentCandidate, AssignmentRole, AttributeDefinitionActiveRule,
     AttributeDefinitionKnownRule, AttributeScopeRule, AttributeValueTypeRule, CarriedDefinition,
     CategoryNotRetiredRule, CategoryReferenced, CategoryResolvableRule, CategoryRoleConflictRule,
-    CategoryState, ContentSaveSubject, DefaultLocaleRequired, DefinitionInUse, DefinitionState,
-    FrozenAttributeValue, GLOBAL_COORDINATE, LocaleRequest, LocalizedValue,
-    PublishedContentSubject, REGISTRY_SEEDED_BY, ResolutionStep, ResolvedDefinition, RetireCensus,
-    StaleCategoryToken, TAXONOMY_ERROR_CODES, TaxonomyLimitExceeded, TaxonomyLimits,
-    TaxonomyMutation, ValueCandidate, ValueShape, WELL_KNOWN_SEEDS, ancestors_of,
-    assignment_collection, children_of, cycle_verdict, definition_edge, definition_in_use_verdict,
-    depth_of, is_global, is_removable, limit_verdict, resolve_localized, retire_verdict,
-    seeded_edge, value_collection,
+    CategoryState, ContentPiiBlocked, ContentSaveSubject, DefaultLocaleRequired, DefinitionInUse,
+    DefinitionState, FrozenAttributeValue, GLOBAL_COORDINATE, LocaleRequest, LocalizedValue,
+    NO_PII_POLICY_REASON, NoPiiPolicyDetector, PiiDetector, PiiVerdict, PublishedContentSubject,
+    REGISTRY_SEEDED_BY, ResolutionStep, ResolvedDefinition, RetireCensus, StaleCategoryToken,
+    TAXONOMY_ERROR_CODES, TaxonomyLimitExceeded, TaxonomyLimits, TaxonomyMutation, ValueCandidate,
+    ValueShape, WELL_KNOWN_SEEDS, ancestors_of, assignment_collection, children_of,
+    content_pii_block, cycle_verdict, definition_edge, definition_in_use_verdict, depth_of,
+    is_global, is_removable, limit_verdict, resolve_localized, retire_verdict, seeded_edge,
+    value_collection,
 };
 use crate::domain::validation::ValidationPipeline;
 
@@ -1427,5 +1428,111 @@ fn an_unset_tenant_default_skips_step_three() {
             ResolutionStep::DefaultLocaleAndBrand
         ),
         "the paired control: a configured default still reaches step 3"
+    );
+}
+
+// -- The content-PII write block. --
+
+/// A detector double: blocks any text containing `needle`, and is uncertain
+/// about text containing `maybe`.
+struct Doubles {
+    needle: &'static str,
+    maybe: &'static str,
+}
+
+impl PiiDetector for Doubles {
+    fn inspect(&self, _subject: &str, text: &str) -> PiiVerdict {
+        if text.contains(self.needle) {
+            PiiVerdict::Blocked("matches a personal-data pattern".to_owned())
+        } else if text.contains(self.maybe) {
+            PiiVerdict::Uncertain("the allow-list does not cover this shape".to_owned())
+        } else {
+            PiiVerdict::Clean
+        }
+    }
+}
+
+fn doubles() -> Doubles {
+    Doubles {
+        needle: "ssn",
+        maybe: "perhaps",
+    }
+}
+
+/// **The block refuses personal data and admits clean text**, and the second
+/// half is not an extra.
+///
+/// `design/02` §6 says so about this very seam: *"a stub that refuses every
+/// string satisfies both `dod-pii-write-block` and acceptance criterion 22.
+/// A clean-text positive control is therefore part of the criterion."* A hook
+/// that refused everything would pass the first assertion here and fail the
+/// second, which is the whole point of having both.
+#[test]
+fn the_block_refuses_personal_data_and_admits_clean_text() {
+    let blocked = content_pii_block(&doubles(), "attributes.description", "ssn 000-00-0000")
+        .expect_err("personal data is refused");
+    assert!(
+        blocked.detail.contains("attributes.description"),
+        "{blocked:?}"
+    );
+    assert_eq!(ContentPiiBlocked::CODE, "CONTENT_PII_BLOCKED");
+
+    content_pii_block(&doubles(), "attributes.description", "a fast fibre line")
+        .expect("clean text is admitted -- the positive control section 6 asks for");
+}
+
+/// **Uncertainty blocks, and the rule lives in the hook.**
+///
+/// `dod-pii-write-block` puts *"failing closed on uncertainty"* on the hook
+/// rather than on each detector, and that placement is the assertion: a
+/// detector cannot opt out by answering its own doubt as `Clean`, because the
+/// hook never sees `Clean` in that case. The refusal says which of the two
+/// reasons it was, so an operator can tell "we found something" from "we could
+/// not tell".
+#[test]
+fn an_undecided_verdict_fails_closed() {
+    let refused = content_pii_block(&doubles(), "metadata.owner", "perhaps a name")
+        .expect_err("uncertainty is refused");
+    assert!(
+        refused.detail.contains("could not decide"),
+        "the two refusals are told apart: {refused:?}"
+    );
+    assert!(refused.detail.contains("fails closed"), "{refused:?}");
+}
+
+/// **The default host admits everything and names the deviation.**
+///
+/// It is not a claim that the text is clean. `NoMaterialityPolicyGate`'s own
+/// reason constant takes the same shape and for the same reason: the string is
+/// what an operator sees, so it states what is missing rather than justifying
+/// the pass.
+#[test]
+fn the_default_host_admits_and_says_it_inspected_nothing() {
+    for text in ["ssn 000-00-0000", "perhaps a name", ""] {
+        content_pii_block(&NoPiiPolicyDetector, "attributes.description", text)
+            .expect("no detector is registered, so nothing is inspected");
+    }
+    assert!(
+        NO_PII_POLICY_REASON.contains("deviation owed to slice 10"),
+        "the reason names what is missing, not a finding that the text is clean"
+    );
+    assert!(
+        !NO_PII_POLICY_REASON.contains("clean"),
+        "and does not claim the text was found clean"
+    );
+}
+
+/// **`CONTENT_PII_BLOCKED` is one of the sixteen**, and the hook is its single
+/// raiser — there is no second construction of the code anywhere in the
+/// module.
+#[test]
+fn the_block_is_the_single_raiser_of_its_code() {
+    assert!(TAXONOMY_ERROR_CODES.contains(&ContentPiiBlocked::CODE));
+    let source = include_str!("taxonomy.rs");
+    assert_eq!(
+        source.matches("\"CONTENT_PII_BLOCKED\"").count(),
+        2,
+        "exactly two: the roster entry and the constant on the refusal. A third \
+         would be a second raiser, which `dod-pii-write-block` forbids"
     );
 }

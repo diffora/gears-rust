@@ -472,8 +472,9 @@ use crate::domain::rules::{
 };
 use crate::domain::taxonomy::{
     AssignmentCandidate, AssignmentRole, AttributeDefinitionKnownRule, CarriedDefinition,
-    CategoryRoleConflictRule, ContentSaveSubject, LocalizedValue, PublishedContentSubject,
-    ResolvedDefinition, ValueCandidate, content_save_pipeline, published_content_pipeline,
+    CategoryRoleConflictRule, ContentPiiBlocked, ContentSaveSubject, LocalizedValue,
+    NoPiiPolicyDetector, PublishedContentSubject, ResolvedDefinition, ValueCandidate,
+    content_pii_block, content_save_pipeline, published_content_pipeline,
 };
 use crate::domain::transition::{
     self, ApprovalInvalidation, ApprovalInvalidationHook as _, NoApprovalStoreHook,
@@ -5039,6 +5040,32 @@ async fn content_subject(
     }
 
     if let Some(writes) = payload.attributes.as_ref() {
+        // -- The content-PII write block, this feature's first of two call
+        // sites (`inst-av-pii-block`: attribute free text). It runs before the
+        // roster read, because a blocked write must not seed a tenant's
+        // vocabulary on its way to being refused.
+        //
+        // The host is named at the call site rather than threaded through the
+        // door's state: `NoPiiPolicyDetector` admits everything and says so,
+        // and the day `10-retention-erasure` registers a real one this is the
+        // line that changes. --
+        for write in writes {
+            content_pii_block(
+                &NoPiiPolicyDetector,
+                &format!("attributes.{}", write.key),
+                &write.value,
+            )
+            .map_err(|blocked| {
+                let mut report = ValidationReport::new();
+                report.violate(
+                    ContentPiiBlocked::CODE,
+                    format!("attributes.{}", write.key),
+                    blocked.detail,
+                );
+                HeadActError::Refused(content_refusal(report))
+            })?;
+        }
+
         let roster = well_known_roster(runner, inputs).await?;
         subject.values = writes
             .iter()

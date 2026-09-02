@@ -1647,6 +1647,135 @@ pub fn published_content_pipeline() -> ValidationPipeline<PublishedContentSubjec
     ValidationPipeline::new().with_rule(Box::new(DefaultLocaleRequired))
 }
 
+// -- The content-PII write block (`inst-av-pii-block`, `inst-av-pii-reason`) --
+
+/// What a detector answers about one piece of operator free text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PiiVerdict {
+    /// No personal data. The write proceeds.
+    Clean,
+    /// Personal data, or a match the allow-list does not cover.
+    Blocked(String),
+    /// The detector could not decide. **[`content_pii_block`] treats this as
+    /// blocked**, which is where `dod-pii-write-block`'s *"failing closed on
+    /// uncertainty"* lives — in the hook rather than in each detector, so a
+    /// detector cannot opt out of it by returning its own doubt as `Clean`.
+    Uncertain(String),
+}
+
+/// The detector seam `10-retention-erasure` fills.
+///
+/// This feature *"owns **no PII detector** — it places the write-block hook
+/// and invokes the policy `10-retention-erasure` owns"* (§1.2). So the policy,
+/// the allow-list and the matching are all behind this trait, and the only
+/// thing here is where the hook runs and what it does with the answer.
+///
+/// Synchronous, like [`ValidationRule::evaluate`] and for the same reason: a
+/// door calls it inside its own transaction and an `async` seam would let a
+/// detector make a network call there.
+pub trait PiiDetector: Send + Sync {
+    /// Inspect one field's text. `subject` is the field's own name, for the
+    /// refusal to quote.
+    fn inspect(&self, subject: &str, text: &str) -> PiiVerdict;
+}
+
+/// The reason [`NoPiiPolicyDetector`] admits every string.
+///
+/// Named rather than inlined for the reason [`crate::domain::governance`]'s
+/// `NO_POLICY_REASON` gives: this is what an operator reading a log or an
+/// audit row sees, so it states the **deviation** and not a justification. A
+/// sentence claiming the text was inspected and found clean would tell that
+/// operator something no code here established.
+pub const NO_PII_POLICY_REASON: &str = "no PII detector or allow-list is registered at this commit, so this host inspects nothing      and admits every string; this is a deviation owed to slice 10-retention-erasure, not a      finding that the text carries no personal data";
+
+/// The host the gear runs until `10-retention-erasure` registers a detector.
+///
+/// # It admits, and refusing everything would be worse
+///
+/// `design/02` §6's own note on this seam says why: *"a stub that refuses
+/// every string satisfies both `dod-pii-write-block` and acceptance criterion
+/// 22"* — vacuously, by never letting a clean write through, so nothing
+/// distinguishes a working block from a closed door. **A clean-text positive
+/// control is part of the criterion**, and a refuse-everything host cannot
+/// have one.
+///
+/// So this admits and says so, exactly as `NoMaterialityPolicyGate` authorizes
+/// and says so. The deviation is named in [`NO_PII_POLICY_REASON`] and is owed
+/// to slice 10; it is **not** an argument that the text is clean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NoPiiPolicyDetector;
+
+impl PiiDetector for NoPiiPolicyDetector {
+    fn inspect(&self, _subject: &str, _text: &str) -> PiiVerdict {
+        PiiVerdict::Clean
+    }
+}
+
+/// A write refused because its free text carries personal data.
+///
+/// Carries the rendered detail; the wire code is [`Self::CODE`]. **Not a
+/// [`DomainError`]** at this commit, for the reason [`CategoryReferenced`]
+/// gives — and unlike the seven pipeline rules, this one genuinely needs the
+/// variant, because `design/02` §3.3 raises it **outside** the pipeline:
+/// *"a code raised outside the pipeline needs no phase status and gets none."*
+/// So it cannot reach the wire as itself through `DomainError::Validation`,
+/// and `dod-taxonomy-errors` is where the variant lands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContentPiiBlocked {
+    /// What was refused and why, for a human reading the response.
+    pub detail: String,
+}
+
+impl ContentPiiBlocked {
+    /// The refusal code (`design/02` §3.3, 422 architectural).
+    pub const CODE: &'static str = "CONTENT_PII_BLOCKED";
+}
+
+/// **The single raiser** of `CONTENT_PII_BLOCKED` (`inst-av-pii-block`).
+///
+/// # One hook, every door
+///
+/// `dod-pii-write-block` requires *"a single write-block hook"* and *"the hook
+/// **MUST** be the single raiser"*, and `inst-av-pii-reason` enumerates the
+/// doors that spend it — this feature's attribute and metadata writes, and
+/// **every operator free-text `reason`** across `01`, `04`, `05` and `07`.
+/// That is why this is a free function over a seam rather than a check inside
+/// either of this feature's doors: a door that inlined the rule would be a
+/// second raiser the moment the next one needed it.
+///
+/// **For `04-lifecycle` and anyone else**: call this with your field's own
+/// name as `subject` and the operator's text; it lives here because
+/// `design/02` §3.3 is the code's single declaration site.
+///
+/// # Fail-closed is here, not in the detector
+///
+/// [`PiiVerdict::Uncertain`] blocks. Leaving that to each detector would let
+/// one opt out of the rule by answering its own doubt as `Clean`, and the `DoD`
+/// puts *"failing closed on uncertainty"* on the hook.
+///
+/// # Errors
+///
+/// [`ContentPiiBlocked`] naming the field, on a blocked or an undecided
+/// verdict.
+pub fn content_pii_block(
+    detector: &dyn PiiDetector,
+    subject: &str,
+    text: &str,
+) -> Result<(), ContentPiiBlocked> {
+    match detector.inspect(subject, text) {
+        PiiVerdict::Clean => Ok(()),
+        PiiVerdict::Blocked(reason) => Err(ContentPiiBlocked {
+            detail: format!("{subject}: {reason}"),
+        }),
+        PiiVerdict::Uncertain(reason) => Err(ContentPiiBlocked {
+            detail: format!(
+                "{subject}: the detector could not decide ({reason}), and this block fails closed \
+                 on uncertainty"
+            ),
+        }),
+    }
+}
+
 /// The sixteen codes `design/02` §3.3 declares, as one roster.
 ///
 /// # Why the roster exists rather than only the constants

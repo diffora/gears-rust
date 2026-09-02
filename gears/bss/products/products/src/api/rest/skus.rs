@@ -261,8 +261,8 @@ use crate::domain::rules::{
     PublishRevalidationSubject, SkuCodeStillPresent, SkuScopeColumnsStillParse,
 };
 use crate::domain::taxonomy::{
-    AttributeDefinitionKnownRule, ContentSaveSubject, ResolvedDefinition, ValueCandidate,
-    content_save_pipeline,
+    AttributeDefinitionKnownRule, ContentPiiBlocked, ContentSaveSubject, NoPiiPolicyDetector,
+    ResolvedDefinition, ValueCandidate, content_pii_block, content_save_pipeline,
 };
 use crate::domain::transition::{self, ApprovalInvalidation, ApprovalInvalidationHook as _};
 use crate::domain::validation::{ValidationPipeline, ValidationReport};
@@ -4177,9 +4177,42 @@ async fn sku_content_subject(
     head: &SkuRecord,
     writes: &[AttributeWrite],
 ) -> Result<ContentSaveSubject, HeadActError> {
-    let roster = repo::attribute_definitions(runner, &inputs.scope, inputs.tenant_id)
+    // The content-PII write block, the SKU twin of the Product door's call
+    // site. One hook, named at the call site; see `content_pii_block`. It runs
+    // before the roster read, because a blocked write must not seed a tenant's
+    // vocabulary on its way to being refused.
+    for write in writes {
+        content_pii_block(
+            &NoPiiPolicyDetector,
+            &format!("attributes.{}", write.key),
+            &write.value,
+        )
+        .map_err(|blocked| {
+            let mut report = ValidationReport::new();
+            report.violate(
+                ContentPiiBlocked::CODE,
+                format!("attributes.{}", write.key),
+                blocked.detail,
+            );
+            HeadActError::Refused(DomainError::Validation(report))
+        })?;
+    }
+
+    // The same trigger site as the Product door's `well_known_roster`, and the
+    // same reasons: a write, the first that can need a well-known definition,
+    // and the existence check is the roster read this door owes anyway. The
+    // helper is not shared because each door's `HeadActInputs` is its own type.
+    let mut roster = repo::attribute_definitions(runner, &inputs.scope, inputs.tenant_id)
         .await
         .map_err(|e| HeadActError::from_repo(&e))?;
+    if roster.is_empty() {
+        repo::seed_well_known_definitions(runner, &inputs.scope, inputs.tenant_id, inputs.now)
+            .await
+            .map_err(|e| HeadActError::from_repo(&e))?;
+        roster = repo::attribute_definitions(runner, &inputs.scope, inputs.tenant_id)
+            .await
+            .map_err(|e| HeadActError::from_repo(&e))?;
+    }
     Ok(ContentSaveSubject {
         assignments: Vec::new(),
         values: writes

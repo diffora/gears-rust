@@ -1156,6 +1156,32 @@ correction-override, break-glass-correction and producer-retirement reasons, and
 reason carried into the `SkuRetired` payload. The hook **MUST** be the single raiser and this
 feature the single declaration site.
 
+**The hook ships and is placed at both of this feature's attribute call sites** (group A7).
+`domain::taxonomy::content_pii_block` is the single raiser, a free function over a `PiiDetector`
+seam that `10-retention-erasure` fills — a free function and not a check inside either door,
+because `inst-av-pii-reason` enumerates doors in `01`, `04`, `05` and `07` that spend the same
+block, and a door that inlined the rule would be a second raiser the moment the next one needed it.
+**For `04-lifecycle`'s retirement `reason`: it is `domain::taxonomy::content_pii_block`**, called
+with the field's own name and the operator's text.
+
+**Fail-closed lives in the hook, not in the detector.** `PiiVerdict::Uncertain` blocks. Leaving
+that to each detector would let one opt out of the rule by answering its own doubt as `Clean`, and
+the DoD puts *"failing closed on uncertainty"* on the hook.
+
+**The default host admits and says so.** `NoPiiPolicyDetector` is the shape
+`NoMaterialityPolicyGate` takes for its own missing slice: it inspects nothing, and
+`NO_PII_POLICY_REASON` states the **deviation** rather than a justification, because that string is
+what an operator sees. Refusing every string was the alternative and §6 already ruled it out —
+*"a stub that refuses every string satisfies both `dod-pii-write-block` and acceptance criterion 22"*
+vacuously, which is why the clean-text positive control is part of the criterion and is asserted
+beside the refusal.
+
+**Not ticked, and this feature cannot tick it alone** — §5's own note says so. The enumeration
+reaches six doors owned by `01`, `04`, `05` and `07`; the hook and this feature's two call sites are
+its testable core and they ship. The metadata call site waits with the metadata door below. §7 row 4
+also stands: the detector itself is `10`'s and does not exist, so nothing here has been measured
+against a real policy.
+
 **Implements**: `cpt-cf-bss-products-flow-attribute-values`,
 `cpt-cf-bss-products-flow-metadata`
 
@@ -1174,6 +1200,33 @@ merge under the `metadata × write` grant, leaving absent keys untouched and rem
 value is `null`. Configured caps on key count, key byte length and value byte length **MUST** be
 enforced at the door with `METADATA_LIMIT`. A write to a terminal entity **MUST** be refused
 `ENTITY_TERMINAL`. A test **MUST** prove a map standing at the cap can be reduced.
+
+**BLOCKED — the door cannot be authorized, and the two files that would authorize it are not this
+strand's.** The store surface ships (`repo::upsert_metadata`, `metadata_of`,
+`delete_metadata_key`), and the route is buildable now that the door files are granted. The grant
+pair is not. `metadata × write` is declared **nowhere in the code**, and standing it up needs both:
+
+- `src/authz.rs` — a `resource_types::METADATA`, a `labels::METADATA`, and that label added to
+  `labels::ALL`;
+- `src/gts/permissions.rs` — the matching `AuthzPermissionV1` instance
+  (`…products.metadata_write.v1`, `resource_type: labels::METADATA`, `action: actions::WRITE`).
+
+**Both, together.** `permissions.rs`'s own `catalog_resource_types_match_authz_labels_all` asserts
+**equality** between the declared instances and `labels::ALL`, so a label without a permission fails
+the gate and a permission without a label fails it the other way.
+
+**And the contradiction worth an owner's glance**: `permissions.rs` is on this strand's forbidden
+list, while that file's own module doc says the `metadata` row is *"deliberately absent: they belong
+to the slices that build those doors"* — which is this one. The grant that opened the door files was
+made on the reading that they were the only obstacle; they are not. No grant was invented and no
+existing pair was borrowed: authorizing a new door against `product × write` would be an
+authorization decision taken by a strand, which is the one class of thing worth stopping for.
+
+**Two §7 rows stand behind it in any case.** Row 2 leaves `METADATA_LIMIT` with **no number** — the
+key count and the byte lengths have no value anywhere — so the DoD's *"configured caps … MUST be
+enforced"* has nothing to enforce, and the required *"a map standing at the cap can be reduced"*
+test has no cap to stand at. Row 14 records that two concurrent metadata writes both pass their
+precondition, since metadata rides the entity's `If-Match` and by P-D-06 bumps no version.
 
 **Implements**: `cpt-cf-bss-products-flow-metadata`
 
