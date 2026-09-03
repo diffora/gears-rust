@@ -833,8 +833,9 @@ Beside it: one Product walked along its own admitted edges with the census re-re
 blocks and a retired one does not; and the sample reads `bound + 1` so the refusal can say *"at
 least N"* without a second counting statement.
 
-**`CATEGORY_REFERENCED` has no `DomainError` variant at this commit** — it is one of twelve of this
-feature's sixteen codes still absent, which is `dod-taxonomy-errors`' work. So the verdict returns
+**`CATEGORY_REFERENCED` has no `DomainError` variant at this commit** — it is one of **eleven** of
+this feature's sixteen codes still absent, which is `dod-taxonomy-errors`' work. *(Twelve until
+`CONTENT_PII_BLOCKED`'s variant landed; re-derived against `DomainError::code`'s arms 2026-09-03.)* So the verdict returns
 `domain::taxonomy::CategoryReferenced`, carrying the code as a constant and the sample in its
 detail, and the door maps it exactly as it maps `repo::AssignmentWrite`'s two conflicts.
 

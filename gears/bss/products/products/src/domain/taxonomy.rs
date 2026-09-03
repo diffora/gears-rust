@@ -319,9 +319,10 @@ impl TaxonomyLimitExceeded {
     /// The refusal code this maps to (`design/02` §3.3).
     ///
     /// **Declared and unraised**, and its `DomainError` variant does not exist
-    /// at this commit: the code is one of twelve of this feature's sixteen
+    /// at this commit: the code is one of **eleven** of this feature's sixteen
     /// still absent from `domain::error`, which is `dod-taxonomy-errors`'
-    /// work. The constant lives here so that when the variant lands there is
+    /// work. *(Twelve until `CONTENT_PII_BLOCKED`'s variant landed in
+    /// `b844b2632`; re-derived against `DomainError::code`'s arms.)* The constant lives here so that when the variant lands there is
     /// one spelling and not two.
     pub const CODE: &'static str = "TAXONOMY_LIMIT";
 }

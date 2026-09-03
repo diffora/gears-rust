@@ -1347,7 +1347,7 @@ fn the_sixteen_codes_are_a_distinct_roster() {
 /// silent gap is what this exists to prevent, so it is deliberately not
 /// written as an inequality.
 #[test]
-fn twelve_of_the_sixteen_codes_have_no_domain_error_variant_yet() {
+fn eleven_of_the_sixteen_codes_have_no_domain_error_variant_yet() {
     let raiseable: Vec<&str> = TAXONOMY_ERROR_CODES
         .into_iter()
         .filter(|code| DOMAIN_ERROR_CODES.contains(code))
@@ -1358,24 +1358,41 @@ fn twelve_of_the_sixteen_codes_have_no_domain_error_variant_yet() {
             "DUPLICATE_CATEGORY_NAME",
             "TAXONOMY_CYCLE",
             "PRIMARY_CATEGORY_REQUIRED",
+            "CONTENT_PII_BLOCKED",
             "STALE_LIVE_OP",
         ],
-        "exactly these four are raiseable as themselves"
+        "exactly these five are raiseable as themselves, in TAXONOMY_ERROR_CODES' \
+         own order"
     );
     assert_eq!(
         TAXONOMY_ERROR_CODES.len() - raiseable.len(),
-        12,
-        "twelve still need a variant and a mapping arm"
+        11,
+        "eleven still need a variant and a mapping arm"
     );
 }
 
-/// The codes `DomainError::code` can answer, read off the enum rather than
-/// listed -- so this cannot drift from it the way a second literal roster
-/// would.
+/// The taxonomy codes `DomainError::code` can answer.
+///
+/// # This is a literal roster, and an earlier version of this doc denied it
+///
+/// It said the list was *"read off the enum rather than listed -- so this
+/// cannot drift"*. It is listed, it did drift, and the denial is what let the
+/// drift go unseen: `CONTENT_PII_BLOCKED` gained `DomainError::ContentPiiBlocked`
+/// in `b844b2632` and this roster did not move, so the test above asserted
+/// twelve codes without a variant while the true count was eleven -- and it
+/// passed, because both of its halves are computed from this same stale array.
+/// A false green, and the reason a hand-written roster needs its own discipline
+/// rather than a sentence claiming it has none.
+///
+/// **Re-derive against `DomainError::code`'s arms rather than bumping.** Grep
+/// each of [`TAXONOMY_ERROR_CODES`] for a `=> "CODE"` arm in `domain::error`;
+/// what matches is this list. That is the method that catches the drift, and
+/// bumping the number is the method that hides it.
 const DOMAIN_ERROR_CODES: &[&str] = &[
     "DUPLICATE_CATEGORY_NAME",
     "TAXONOMY_CYCLE",
     "PRIMARY_CATEGORY_REQUIRED",
+    "CONTENT_PII_BLOCKED",
     "STALE_LIVE_OP",
 ];
 
