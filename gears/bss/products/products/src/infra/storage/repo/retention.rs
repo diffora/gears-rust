@@ -212,12 +212,24 @@ pub async fn identity_entries_of_principal(
         .collect())
 }
 
-/// The `audit_id`s of every audit row carrying one of these refs.
+/// The `audit_id`s of every audit row carrying one of these refs, in **either**
+/// column.
 ///
 /// `inst-er-export` returns the map entries *"plus the audit-row references
 /// carrying their refs"* — references, not the rows: an audit row's `reason`
 /// is operator free text inside the content-PII write block, and returning it
 /// here would put a second copy of whatever it holds into the export.
+///
+/// # `actor_ref` **or** `subject_id`, and the erasure's own row is why
+///
+/// A pseudonym appears in an audit row two ways: the ref that **acted**, and
+/// the ref that was **acted upon** — `AuditEntry::EventlessAct`'s
+/// `subject_id`. Matching only the actor column was the first shape of this
+/// function, and its own door test caught it: an erased principal never acted
+/// in the row recording its erasure, so a DSAR filed after an erasure could
+/// not see the erasure. Both columns carry the person's pseudonym, so a
+/// subject-access request that disclosed only one would be answering less
+/// than it holds.
 ///
 /// An empty `actor_refs` answers an empty vector **without a query**. A
 /// generated `IN ()` is not portable and, worse, the shapes that do parse it
@@ -244,7 +256,11 @@ pub async fn audit_refs_of_actors(
         .filter(
             Condition::all()
                 .add(audit_log::Column::TenantId.eq(tenant_id))
-                .add(audit_log::Column::ActorRef.is_in(actor_refs.iter().copied())),
+                .add(
+                    Condition::any()
+                        .add(audit_log::Column::ActorRef.is_in(actor_refs.iter().copied()))
+                        .add(audit_log::Column::SubjectId.is_in(actor_refs.iter().copied())),
+                ),
         )
         .order_by(audit_log::Column::WrittenAt, sea_orm::Order::Asc)
         .order_by(audit_log::Column::AuditId, sea_orm::Order::Asc)
@@ -270,6 +286,16 @@ pub async fn audit_refs_of_actors(
 /// It carries no `session_id` because it runs under no elevation — the grant
 /// is `compliance × export`, its own pair.
 ///
+/// # The subject is the principal, so the row is a `KeyedAct`
+///
+/// An export's subject is the **principal string** the caller named; it has no
+/// minted uuid, and the request is answerable — with an empty export — for a
+/// principal that has never held a ref, so there is no id to carry even in
+/// principle. That is exactly `AuditEntry::KeyedAct`'s case, and the principal
+/// rides `attempted_key` as the freeze ledger's pair does. Writing the first
+/// returned entry's `actor_ref` instead would name a subject the request did
+/// not, and would leave the empty export unauditable.
+///
 /// # `runner` MUST be a transaction of its own, committed before the read is
 /// served
 ///
@@ -287,15 +313,14 @@ pub async fn write_audited_read_audit(
     runner: &impl DBRunner,
     scope: &AccessScope,
     common: AuditCommon,
-    subject_id: Uuid,
+    principal_ref: String,
 ) -> Result<(), RepoError> {
     insert_audit_row(
         runner,
         scope,
         common,
-        AuditEntry::EventlessAct {
-            subject_id,
-            subject_revision: None,
+        AuditEntry::KeyedAct {
+            attempted_key: principal_ref,
         },
     )
     .await

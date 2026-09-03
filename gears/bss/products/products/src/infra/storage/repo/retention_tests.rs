@@ -355,19 +355,21 @@ async fn the_evidential_row_carries_the_erasers_ref_and_the_reason() {
     assert_eq!(row.session_id, None, "not an elevated read");
 }
 
-/// **The compliance export's row carries no session id.**
+/// **The compliance export's row names the principal and carries no session
+/// id.**
 ///
 /// The class it lands in was widened from *"reads under elevation"* to the
 /// reason that justified it, and this door runs under no elevation at all --
 /// its grant is `compliance × export`, its own pair. A session id here would
-/// be an invented value.
+/// be an invented value, and so would a `subject_id`: the request names a
+/// principal string, and an export is answerable for a principal that has
+/// never held a ref.
 #[tokio::test]
 async fn the_audited_read_row_carries_no_session_id() {
     let provider = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
 
-    let subject = Uuid::from_u128(0x5b_02);
     write_audited_read_audit(
         &conn,
         &scope,
@@ -381,7 +383,7 @@ async fn the_audited_read_row_carries_no_session_id() {
             correlation_id: None,
             written_at: at(12),
         },
-        subject,
+        ALICE.to_owned(),
     )
     .await
     .expect("write the audited-read row");
@@ -395,8 +397,16 @@ async fn the_audited_read_row_carries_no_session_id() {
         .expect("read it back")
         .expect("it exists");
 
-    assert_eq!(row.session_id, None);
-    assert_eq!(row.subject_id, Some(subject));
+    assert_eq!(row.session_id, None, "not an elevated read");
+    assert_eq!(
+        row.subject_id, None,
+        "an export's subject is a principal string, not a minted id"
+    );
+    assert_eq!(
+        row.attempted_key.as_deref(),
+        Some(ALICE),
+        "and the principal the caller named is what the row carries"
+    );
 }
 
 /// **An empty ref list answers empty**, and a populated one answers only the
@@ -443,5 +453,55 @@ async fn audit_refs_are_scoped_to_the_named_actors() {
             .expect("one ref"),
         vec![Uuid::from_u128(0x1)],
         "and the positive control: the named actor's row is found"
+    );
+}
+
+/// **A ref is found in `subject_id` as well as in `actor_ref`.**
+///
+/// The erasure's own evidential row names the eraser as the actor and the
+/// **retired** ref as the subject, so an erased principal never appears in the
+/// actor column of the row recording its own erasure. An export matching only
+/// that column answers a DSAR filed after an erasure without the erasure in
+/// it. The negative control is in the same case: a third ref appearing in
+/// neither column is not returned.
+#[tokio::test]
+async fn a_ref_in_the_subject_column_is_found_too() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    let erased = Uuid::from_u128(0xac_33);
+    let stranger = Uuid::from_u128(0xac_44);
+    write_evidential_act_audit(
+        &conn,
+        &scope,
+        AuditCommon {
+            audit_id: AUDIT,
+            tenant_id: TENANT,
+            actor_ref: ERASER,
+            action: "erasure.execute".to_owned(),
+            subject_kind: "identity_ref".to_owned(),
+            reason: Some("dsar-2026-114".to_owned()),
+            correlation_id: None,
+            written_at: at(12),
+        },
+        erased,
+    )
+    .await
+    .expect("write the erasure's own row");
+
+    assert_eq!(
+        audit_refs_of_actors(&conn, &scope, TENANT, &[erased])
+            .await
+            .expect("read"),
+        vec![AUDIT],
+        "the row recording the erasure is part of the erased principal's export"
+    );
+    assert!(
+        audit_refs_of_actors(&conn, &scope, TENANT, &[stranger])
+            .await
+            .expect("read")
+            .is_empty(),
+        "and a ref in neither column is not"
     );
 }

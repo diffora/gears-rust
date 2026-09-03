@@ -456,7 +456,7 @@ doc already states this; the DoD is that every stamping door honours it.
 
 ### The erasure door
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-erasure-door`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-erasure-door`
 
 The system **MUST** serve `POST /bss-products/v1/erasure-requests` on `erasure × execute`, resolve
 the named principal to its **at most one** live `actor_ref` **in the requesting tenant** — the
@@ -476,6 +476,28 @@ An unknown principal **MUST** be refused `ERASURE_UNKNOWN_ACTOR`, **naming the p
 
 **Erasure completes within one tenant** (**P-D-50**), and this DoD **MUST NOT** mint a platform-plane
 grant to widen it.
+
+**Built, clause by clause, with the call site named for each** (P-D-109's discipline; ticked
+2026-09-03).
+
+| clause | where it lands | what proves it |
+|---|---|---|
+| the route on `erasure × execute` | `api::rest::retention`'s router, `Gate::Erasure` | the door answers `200` and a denial is audited as `PERMISSION_DENIED` |
+| resolve to **at most one** live ref **in this tenant** | `repo::tombstone_principal`, which carries its own resolve | `an_erasure_stops_at_the_tenant_boundary`: the same principal in a second tenant is untouched (P-D-50) |
+| tombstone in **one transaction** | the door's `transaction_with_retry`, the audit inside it | `an_erasure_retires_the_ref_and_records_it` |
+| destroy the payload, stamp the tombstone, leave `principal_ref` | `tombstone_principal`'s `UPDATE` | `an_erasure_destroys_a_seeded_payload_and_stamps_the_tombstone` — the payload is **seeded first**, because no production writer ever sets it and the case would otherwise be vacuous |
+| audit with the reason under the **eraser's own** ref | `repo::write_evidential_act_audit` | `the_evidential_row_carries_the_erasers_ref_and_the_reason` |
+| **MUST NOT** touch any immutable record (C1) | nothing outside the map and the audit log is written | `an_erasure_leaves_a_frozen_record_byte_identical` — §6's flagship, both halves in one probe |
+| `ERASURE_UNKNOWN_ACTOR`, naming the principal | the miss returns `None`, which the door refuses | `an_unknown_principal_is_refused_and_nothing_is_minted`, whose second half is the one that matters: the shared actor context would have **minted** the unknown principal a ref |
+
+**The door does not resolve the subject through the shared actor context**, and that is the DoD's own
+constraint honoured rather than restated: `resolve_creator_actor_ref` mints on a miss, so an unknown
+principal would gain a fresh live row and the door would report a successful erasure of a principal
+it had just invented. The caller's ref comes from that context; the subject's does not.
+
+**The reason rides the content-PII write block**, as `inst-av-pii-reason`'s enumeration requires of
+every operator free-text `reason` — with the registered `NoPiiPolicyDetector` until
+`dod-pii-detector` lands a real one, exactly as the product and SKU doors do.
 
 **Implements**: `cpt-cf-bss-products-flow-erasure`
 
@@ -916,11 +938,11 @@ to prevent, and `ActorErased` deliberately carries none.
 **The arithmetic of this section.** Thirty-two rows: **fourteen carried verbatim** from
 [`../design/10-retention-erasure.md`](../design/10-retention-erasure.md) §6 — the slice's full count,
 not a selection — and **eighteen raised here**: five while authoring, from reading the crate, and
-thirteen by the three-lens review of this document. Of the thirty-two, **twelve block no DoD in this
+thirteen by the three-lens review of this document. Of the thirty-two, **fourteen block no DoD in this
 document** (rows 1, 2, 3, 30, 31 and 32; row 13, resolved by **P-D-64 on 2026-08-31**, and row 20,
-resolved by **P-D-72 on 2026-09-01**; and rows 15, 17, 19 and 29, **closed by measurement on
-2026-09-03** — all six of those kept in place rather than struck); the other twenty each name the DoD
-they block. **A row marked *closed by measurement* was answered by nobody**: no decision was taken and
+resolved by **P-D-72 on 2026-09-01**; rows 15, 17, 19 and 29, **closed by measurement on
+2026-09-03**; and rows 4 and 24, **answered by the owner on 2026-09-03** — all eight of those kept in
+place rather than struck); the other eighteen each name the DoD they block. **A row marked *closed by measurement* was answered by nobody**: no decision was taken and
 none is owed, the crate simply moved past the row's premise, and the entry says which fact it moved
 past so the close is checkable. That is a different disposition from a resolved row and is spelled
 differently on purpose. Row 8 is **parked for the owner** with `features/read-models.md`'s
@@ -973,16 +995,27 @@ cited instead:
    **Blocks**: no DoD — it is a deployment gate.
    **Owner**: the platform storage owner.
 
-4. **Which store holds the audit rows this slice's own rules require?** `inst-er-erase` is "audited
+4. ~~**Which store holds the audit rows this slice's own rules require?**~~
+   **Answered (owner call, 2026-09-03) in two parts, because the row holds two different acts.**
+   **The compliance export needs no new class**: P-D-21 words class 2 as *"reads under elevation"*
+   and justifies it as *"a read writes no outbox row at all"*, and the export is a read that writes
+   no outbox row, so the class widens from its example to its own stated reason. **The erasure act
+   gets a fourth class** — *"acts whose evidential record must carry a field the event deliberately
+   omits"* — the row's other two arms both being closed by this document's own `dod-retention-events`,
+   which forbids widening `ActorErased` and requires it be emitted. Built as
+   `repo::write_audited_read_audit` and `repo::write_evidential_act_audit`; until
+   `dod-retention-events` lands the erasure act emits nothing and class 3 covers it verbatim, the
+   fourth class being what keeps it admitted afterwards. **`01` §4.4 owes the fourth class's
+   sentence**, which is `01-foundation`'s edit and not this feature's.
+   Original text: `inst-er-erase` is "audited
    with a reason", `inst-er-export` audits "every access individually", and 01 §4.4 holds — under
    **P-D-21** — "only acts that emit no event, in three classes". The erasure act emits
    `ActorErased`, so it writes no row there; the compliance export is a read that is not "a read
    under elevation"; and the minimal `ActorErased(actor_ref)` carries neither the reason nor the
    eraser's own ref. Either 01 §4.4 gains a class, `ActorErased` widens, or these acts are declared
    eventless.
-   **Blocks**: `cpt-cf-bss-products-dod-erasure-door`,
-   `cpt-cf-bss-products-dod-compliance-export`, `cpt-cf-bss-products-dod-retention-events`.
-   **Owner**: `01-foundation`'s owner with P-D-21's.
+   **Blocks**: no DoD — **answered**; `01` §4.4's sentence is owed to `01-foundation`.
+   **Owner**: was `01-foundation`'s owner with P-D-21's; **answered, one edit owed**.
 
 5. **What `actor_ref` attributes an unattended act's audit row?** The age-triggered tombstone and
    every GC act are audited, 01 makes the audit row's `actor_ref` non-nullable, and every ref in the
@@ -1195,15 +1228,25 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
     **Owner**: Legal with the data-protection owner for what an entry may contain — row 12's pair —
     and `02-taxonomy-attributes` for how it is evaluated.
 
-24. **Does an erasure request or a DSAR export name a `principal_ref` or a real-world identity?** The
+24. ~~**Does an erasure request or a DSAR export name a `principal_ref` or a real-world identity?**~~
+    **Answered (owner call, 2026-09-03): the request names a `principal_ref`, and the
+    person-to-pseudonym step belongs to whichever identity provider minted the principal.** This
+    door is internal to the gear. The alternative was disqualified by the row's own argument: an
+    identity string makes the refusal *"naming the principal"* write personal data into its own
+    audit row, the failure `dod-pii-detector` forbids for `CONTENT_PII_BLOCKED`.
+    **The row's objection to the chosen arm was measured false before the call**: `principal_ref` is
+    `NOT NULL` and survives the tombstone by design (**P-D-49**), so a repeat DSAR still resolves;
+    and a **first** DSAR from a principal that never held a ref resolves to *"no entries"*, which is
+    a correct answer rather than a failure. `inst-er-erase`'s *"resolves the operator identity"*
+    owes a wording fix, which is `design/10`'s and is row 21's neighbour.
+    Original text: The
     store's key is the pseudonym. If the request carries `principal_ref`, nothing maps a person to
     one and a first DSAR for an already-erased principal is unresolvable, since the payload is gone.
     If it carries an identity string, the resolve searches an unindexed nullable column and the
     refusal *"naming the principal"* writes personal data into its own audit row — the failure
     `cpt-cf-bss-products-dod-pii-detector` forbids for `CONTENT_PII_BLOCKED`.
-    **Blocks**: `cpt-cf-bss-products-dod-erasure-door`,
-    `cpt-cf-bss-products-dod-compliance-export`.
-    **Owner**: Architecture with Legal — row 11's pair.
+    **Blocks**: no DoD — **answered**; `design/10`'s `inst-er-erase` owes a wording fix.
+    **Owner**: was Architecture with Legal — row 11's pair; **answered**.
 
 25. **What is the GC's transaction boundary, and what does a crash mid-order leave?** The stated
     order makes an intermediate state observable — a catalog-version row surviving with its entry
