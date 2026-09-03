@@ -21,6 +21,7 @@ pub mod freeze_ack;
 pub mod freeze_participant;
 pub mod idempotency;
 pub mod identity_ref;
+pub mod materiality_policy;
 pub mod metadata;
 pub mod product;
 pub mod product_category;

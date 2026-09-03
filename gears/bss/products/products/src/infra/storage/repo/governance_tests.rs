@@ -71,13 +71,15 @@ use super::super::{
 use super::{
     ApprovalPath, Consumption, DecisionOutcome, DecisionVerdict, Elevation, NewApproval,
     NewDecision, NewElevation, admit_elevated_call, consume_approval, discharge_posthoc_review,
-    gate_candidate_by_id, gate_candidates, open_breakglass_session, read_approval, record_decision,
-    submit_approval,
+    encode_field_set, gate_candidate_by_id, gate_candidates, open_breakglass_session,
+    read_approval, record_decision, resolve_materiality_policy, submit_approval,
+    write_materiality_policy,
 };
 use crate::domain::approval::{ApprovalState, ApproverDiff, diff_basis_for, render_diff};
 use crate::domain::governance::{ApprovalId, EntityRef, GateSubject, SubjectKind};
 use crate::domain::materiality::{
-    MaterialAct, MaterialityEvaluator, MaterialityPolicy, Resolution,
+    DEFAULT_AFFECTED_ENTITY_TRIGGER, DEFAULT_APPROVER_COUNT, MaterialAct, MaterialityEvaluator,
+    MaterialityPolicy, Resolution,
 };
 use crate::infra::storage::entity::{approval, breakglass_session};
 use crate::infra::storage::migrations::Migrator;
@@ -1481,5 +1483,195 @@ async fn the_by_id_reader_answers_none_for_an_unknown_or_foreign_record() {
             .expect("the read runs")
             .is_none(),
         "another tenant's scope sees no record"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The materiality policy's store (**P-D-112**).
+// ---------------------------------------------------------------------------
+
+/// **A tenant with no row resolves to the default, and does not refuse.**
+///
+/// This is P-D-112 arm 2, and the decision calls it *"the one a builder will
+/// get wrong"*. Every tenant is this tenant at launch, so the arm that must
+/// hold is the one with no setup at all: `Resolved(default)`, `N = 2`, trigger
+/// 10, no extra fields. An implementation that mapped the read's `None` onto
+/// `Unresolvable` would refuse every act in every unconfigured tenant, against
+/// C4's *"enforceable at launch"*.
+#[tokio::test]
+async fn a_tenant_with_no_policy_row_resolves_to_the_default() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    let resolved = resolve_materiality_policy(&conn, &scope, TENANT)
+        .await
+        .expect("the read runs");
+    match resolved {
+        Resolution::Resolved(policy) => {
+            assert_eq!(
+                policy.approver_count(),
+                DEFAULT_APPROVER_COUNT,
+                "P-D-11: absent implies the default, interim 2"
+            );
+            assert_eq!(
+                policy.affected_entity_trigger(),
+                DEFAULT_AFFECTED_ENTITY_TRIGGER
+            );
+            assert!(policy.field_set().is_empty());
+            assert_eq!(
+                policy,
+                MaterialityPolicy::default(),
+                "the whole value, not just N: a partial default is a third policy nobody chose"
+            );
+        }
+        Resolution::Unresolvable => panic!(
+            "an absent row is a resolved default (P-D-112 arm 2); refusing here refuses every \
+             act in every tenant that has never configured anything"
+        ),
+    }
+}
+
+/// The evaluator accepts what the absent row resolves to.
+///
+/// The store's answer is only useful if it is the operand the evaluator takes,
+/// so this drives the whole first link: no row, resolve, evaluate, and a
+/// verdict rather than a refusal. Without it the two halves could each be
+/// right and not meet.
+#[tokio::test]
+async fn the_evaluator_runs_on_the_default_an_absent_row_resolves_to() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    let Resolution::Resolved(policy) = resolve_materiality_policy(&conn, &scope, TENANT)
+        .await
+        .expect("the read runs")
+    else {
+        panic!("an absent row resolves");
+    };
+    let claims = vec!["catalog-admin".to_owned()];
+    let evaluator =
+        MaterialityEvaluator::new(Resolution::Resolved(&policy), Resolution::Resolved(&claims));
+    assert!(
+        evaluator.verdict(&MaterialAct::PolicyMutation).is_ok(),
+        "the evaluator refuses an unresolved policy by design, so an unconfigured tenant \
+         reaching a verdict at all is the whole of what P-D-112's first link buys"
+    );
+}
+
+/// A written policy round-trips, and replaces rather than accumulating.
+///
+/// `N = 0` is the value written, because it is the one P-D-11 made reachable
+/// and the one a `CHECK (approver_count >= 1)` would have silently refused —
+/// so the probe is armed where the schema could be wrong rather than where it
+/// is comfortable.
+#[tokio::test]
+async fn a_written_policy_round_trips_and_the_second_write_replaces_the_first() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    let first = MaterialityPolicy::new(vec!["tax_category".to_owned()], 25, 0);
+    write_materiality_policy(&conn, &scope, TENANT, &first, ACTOR, at(11))
+        .await
+        .expect("the first governed mutation creates the row");
+    let Resolution::Resolved(read_back) = resolve_materiality_policy(&conn, &scope, TENANT)
+        .await
+        .expect("the read runs")
+    else {
+        panic!("a written policy resolves");
+    };
+    assert_eq!(read_back, first, "every field, not just N");
+    assert_eq!(
+        read_back.approver_count(),
+        0,
+        "P-D-11 made zero reachable and the CHECK floors at zero, not at one"
+    );
+
+    let second = MaterialityPolicy::new(Vec::new(), 10, 3);
+    write_materiality_policy(&conn, &scope, TENANT, &second, ACTOR, at(12))
+        .await
+        .expect("the second replaces");
+    let Resolution::Resolved(read_back) = resolve_materiality_policy(&conn, &scope, TENANT)
+        .await
+        .expect("the read runs")
+    else {
+        panic!("resolves");
+    };
+    assert_eq!(
+        read_back, second,
+        "one row per tenant, replaced and not appended"
+    );
+}
+
+/// One tenant's policy is not another's, and the absent neighbour still gets
+/// the default rather than the configured tenant's value.
+#[tokio::test]
+async fn a_policy_is_scoped_to_its_tenant() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    write_materiality_policy(
+        &conn,
+        &scope,
+        TENANT,
+        &MaterialityPolicy::new(Vec::new(), 10, 5),
+        ACTOR,
+        at(11),
+    )
+    .await
+    .expect("written");
+
+    let other = Uuid::from_u128(0x9e_77);
+    let Resolution::Resolved(neighbour) =
+        resolve_materiality_policy(&conn, &AccessScope::for_tenant(other), other)
+            .await
+            .expect("the read runs")
+    else {
+        panic!("an absent row resolves");
+    };
+    assert_eq!(
+        neighbour.approver_count(),
+        DEFAULT_APPROVER_COUNT,
+        "the neighbour has no row and gets the default, not the configured tenant's N"
+    );
+}
+
+/// The stored `field_set` has one producer, and it survives a round trip with
+/// its members intact.
+#[tokio::test]
+async fn the_field_set_round_trips_through_its_canonical_rendering() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+
+    let fields = vec!["gl_code".to_owned(), "tax_category".to_owned()];
+    write_materiality_policy(
+        &conn,
+        &scope,
+        TENANT,
+        &MaterialityPolicy::new(fields.clone(), 10, 2),
+        ACTOR,
+        at(11),
+    )
+    .await
+    .expect("written");
+    let Resolution::Resolved(policy) = resolve_materiality_policy(&conn, &scope, TENANT)
+        .await
+        .expect("the read runs")
+    else {
+        panic!("resolves");
+    };
+    for field in &fields {
+        assert!(
+            policy.names_field(field),
+            "{field} did not survive the round trip"
+        );
+    }
+    assert_eq!(
+        encode_field_set(&fields),
+        r#"["gl_code","tax_category"]"#,
+        "the stored bytes are the canonical rendering, and both engines hold these"
     );
 }

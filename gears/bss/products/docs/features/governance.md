@@ -558,9 +558,34 @@ config administrator's general grant, so that the holder of a config grant canno
 threshold that governs them. `N` **MUST** default to 2 with a floor of 0, be reachable only by
 explicit configuration, and take its initial value from tenant provisioning.
 
+**Built: the store, the door and both routed indexes (P-D-112).**
+`products_materiality_policy` is the fourth table — per tenant, every column `NOT NULL`, with a
+`CHECK` flooring `approver_count` at **zero** rather than one, because a floor of one would silently
+restore the fixed count P-D-11 retired. `PUT /bss-products/v1/materiality-policy` mutates it as a
+`GovernedLiveOp` on the existing `materiality_policy x write` pair, submitting to the gate exactly
+as `02`'s taxonomy ops do, and writing its row and its audit row in one transaction.
+
+**The clause P-D-112 says a builder gets wrong is the one three probes are armed on.** An **absent
+row resolves to the default**; only a failed read is `Unresolvable`. Inverting it — mapping the
+read's `None` onto `Unresolvable` — turns all three red, which is the measurement, because that
+inversion refuses every act in every tenant that has never configured anything, which is every
+tenant at launch.
+
+**There is no `GET`, and that is forced rather than chosen**: §3.2 mints `materiality_policy x write`
+and no read action, so a read door would spend a grant nobody declared — §7 row 24's question, not
+this door's to answer.
+
+**The tick does not follow.** This DoD also obliges `N` to *"take its initial value from tenant
+provisioning"*, and this gear has **no tenant registry to provision from** — **P-D-104** withdrew
+the migration that would have needed one. An absent row resolving to the default is P-D-112's answer
+to the launch case, not to that clause. §7 row 38 — which `subject_kind` a policy mutation's record
+carries — is also live, and untouched: this door writes no `ApprovalRecord`.
+
 **Implements**: `cpt-cf-bss-products-algo-materiality`
 
 **Touches**:
+- DB Table: `products_materiality_policy`
+- API: `PUT /bss-products/v1/materiality-policy`
 - Entities: `MaterialityEvaluator`
 
 ### Stored content snapshot
