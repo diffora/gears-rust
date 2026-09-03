@@ -1569,6 +1569,183 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-121 — `03`'s eight decidable rows, for a slice with no strand
+
+- **Date**: 2026-09-03 (owner call, answering `features/sku-classification.md` §7 **rows 8, 10, 13,
+  16, 17, 19 and 21**, and the number in **row 12**). `03` has no strand; these are recorded so
+  whoever takes it starts from answers.
+- **Row 10 — P-D-104's answer, one slice over.** *"Who writes the seed members for a tenant
+  created after the migration?"* is the question `02` registered and P-D-104 closed: **nobody seeds
+  by migration** — a per-tenant store has no tenant list to iterate and no migration in this
+  workspace inserts a row — and the seeds are written on the tenant's **first write that could need
+  one**, in that write's transaction, once. The mechanism is settled; **which members** the Finance
+  sets seed is `03` §2's roster to name, and the row's *"are the Finance sets seeded at all"* is
+  answered by whether that roster is non-empty.
+- **Row 16 — a `sellable` flip is material, and the PRD's enumeration is a floor.** `05` registers
+  `sellable` bucket-iii under **P-D-28** — a slice registers its bucket tags in code, and that
+  registry is what the head-door guard and the materiality judgement both read. The PRD's
+  material-change enumeration omits it; the design exceeds the PRD here on purpose, because a
+  `sellable` flip changes what a consumer may buy, which is what a material change to a published
+  SKU *is*. The divergence is registered; the PRD owner may narrow it and has not.
+- **Row 17 — a `PlanTier` display-label rename is non-material at `min(N, 1)`**, uniformly with
+  `02` (P-D-108 arm 2, P-D-116 row 15): a display label is a value on the thing, not the thing.
+  `05`'s registration of *"taxonomy ops"* as material is amended to **except display-label edits**
+  for both slices — one exception stated once, not two slices reading one sentence two ways.
+- **Row 13 — an absent `type` is `VALIDATION` at the shape phase; `SKU_TYPE_UNKNOWN` covers a
+  present, unrecognized value.** That is how the pipeline already runs — the shape phase refuses a
+  missing required field before any registered validator sees the row — so the code's *absent* arm
+  is unreachable by construction and the AC map reads the one way that matches the code.
+- **Row 19 — the registered-validators phase runs inside the publish transaction, and a validator
+  with a cross-gear input resolves it before.** The phase is inside as shipped — **P-D-97** landed
+  `parent_must_be_published` as its continuation — and `07`'s reading is right about *where the
+  phase runs* and wrong about *what it may do there*. The row's cost is real: a collector call with
+  a timeout inside a transaction holds the head-row lock and a pooled connection, and serializes
+  every publish on SQLite. The gear already has the shape that avoids it — `MaterialityEvaluator`
+  *"holds the two looked-up inputs as resolutions and nothing else: no resolver, no clock, no store
+  handle."* The usage-type resolver is resolved **before** the transaction and the phase is handed
+  a `Resolution`; `07`'s fix follows the same pattern.
+- **Row 8 — the recognized-and-active check judges a new or changed declaration; a carried-forward
+  value is judged by the state it had when declared.** Otherwise deprecating a tier or an
+  accounting code freezes every SKU carrying it against any further publish — a retroactive
+  lockout the design's own deprecate-then-remove path exists to avoid (`inst-ad-deprecate-then-remove`:
+  *"`deprecated` blocks new values"*, existing ones stand). The comparand for the two bucket-iii
+  fields is the previous published version's value; the unit is bucket ii and carried-forward by
+  construction, as the row itself notes.
+- **Row 21 — the census and the flip are one transaction, and the flip re-asserts the census.**
+  The `deprecated → removed` `UPDATE` carries `WHERE NOT EXISTS (a non-terminal published head
+  declaring the member)`, so a concurrent first publish either commits before — and the flip's
+  predicate finds it and refuses `UNIT_DELIST_BLOCKED` — or after, and the publish's own
+  recognized-and-active check (row 8, inside its transaction) refuses the now-removed member. Two
+  writers, each guarded by the other's fact in its own transaction; the write-skew window closes
+  because neither side judges on a read from a different transaction. **This is the fix for the
+  `dod-unit-delist` tick P-D-109's pass withdrew.**
+- **Row 12, the number — `usage_type_resolver_timeout_ms` at 2000, interim, in `ProductsConfig`.**
+  *"A short timeout"* had none. Two seconds because the resolve now happens **before** the
+  transaction (row 19) where it holds nothing, so the cost of the bound is latency on the publish
+  path and not a lock. **The unwired/unreachable split is not settled here**: it entangles the
+  bulk lane's once-consumed approval and belongs with consume-at-schedule in the lead's queue.
+- **Routed, not decided.** **Row 6** — whether the resolved-binding snapshot is inside the content
+  digest — changes `DIGEST_VERSION` and re-pins the golden vector, and is `01`/`06`'s to take with
+  the digest protocol in hand.
+- **The arguments against, stated.** Row 8 lets a SKU keep publishing a deprecated tier
+  indefinitely — accepted because that is what *deprecated* means everywhere else in this gear, and
+  removal is the act that stops it. Row 21 puts a correlated subquery in a hot `UPDATE` — accepted
+  because the alternative is a lock, and the row's own measurement was that SQLite's single writer
+  had been hiding a Postgres defect. Row 16 registers a deliberate divergence from the PRD, which
+  this register otherwise avoids — accepted because P-D-28 made the code the registry.
+- **Propagated**: rows 8, 10, 13, 16, 17, 19, 21 struck; 12 narrowed; the timeout field lands with
+  this entry. `05`'s taxonomy-ops registration gains its display-label exception. **All code here
+  is unassigned — `03` has no strand** — and is named in the lead's queue.
+
+
+#### P-D-119 — The gate's verdicts and codes: ten of `05`'s rows, most of them answered by what landed this week
+
+- **Date**: 2026-09-03 (owner call, answering `features/governance.md` §7 **rows 3, 8, 13, 26, 28,
+  30, 31, 34, 36 and 37**)
+- **Rows 8, 26 and 28 — answered by P-D-105 and strand B's arm.** Row 8 asked what `Gate` mode
+  requires of a gated transition; `01`'s `inst-fd-gate-mode-preauthorized` now states both arms
+  (P-D-105's propagation). Row 26 said the trait gives the host no act operand — **`GatedAct`**
+  (`Governed` / `Ungoverned` / `ScheduledFlip`) is exactly that operand, carried at construction so
+  a caller cannot build the host without saying which act it holds it for. Row 28 said a
+  store-backed host needs the candidates read first — `StoredApprovalGate::governed(candidates)`
+  takes the door's own read. All three struck against `24e7d15f2`.
+- **Row 34 — no code, and P-D-112 arm 2 removed the case.** An *absent* policy is now the default,
+  **resolved**; the only unresolved input is a **failed read**, which is a storage error and answers
+  a 500 as every driver failure does. Nothing about that is a refusal a code could classify.
+- **Row 36 — the claim set is not an input of the materiality verdict.** Measured:
+  `MaterialityEvaluator::verdict` requires `claims` to resolve and then **discards it** —
+  `let _claims = …; Self::judge(act, policy)`. C8 says why it never mattered: role predicates
+  narrow *who may approve*, which is decided at **decide** time against the approver's claims, not
+  at submission against the submitter's. The fail-closed clause on the claim set is vestigial and
+  goes; the evaluator takes the policy alone. B's build.
+- **Row 31 — at `N = 0` the record is satisfied at submission.** P-D-11: *"a tenant at `N = 0`
+  publishes approver-less by policy and the record says exactly that."* §4's human arm — *"met by
+  distinct principals"* — cannot fire on zero principals, so `required = 0` is met by construction
+  at submission, and the record moves `pending → satisfied` in the submit transaction with no
+  decision rows. The same shape `system_signal`'s auto-satisfaction already has (P-D-14).
+- **Row 30 — `APPROVER_ROLE_REQUIRED` is raised at the decide door, never by the gate.** The gate's
+  one refusal is *"no satisfied record"* → `APPROVAL_REQUIRED`; it never sees a principal's roles.
+  A principal without the base role attempting a **decision** is refused at that door — which is
+  where the role is checked and the only place the code has a raise path. Row 13 follows: it is a
+  **403** (`permission_denied`, the platform's standing refusal), because the principal lacks
+  standing, not because the record's state refuses the act.
+- **Row 3 — an authorization denial carries the platform's 403 and no gear code.** Deny-by-default
+  is the PEP's; the gear's doors open by authorizing and the refusal that comes back is the
+  platform's `permission_denied`. The gear mints codes for **its own** refusals (the gate's
+  `APPROVAL_REQUIRED`, the decide door's `APPROVER_ROLE_REQUIRED`), never for the platform's.
+- **Row 37 — one new code, `DECISION_ALREADY_RECORDED` (409), and the roster opens to seven on
+  purpose.** Two refusals the ceremony raises ship today as **500s** through `RepoError::Db` —
+  a second verdict from one principal (C2's `UNIQUE`, read back) and a decision on a record that
+  closed on no approver (P-D-68 arm 1). Both are the **record's state refusing the act**, which is
+  409's whole definition, and both are ordinary user actions (a double click, a stale queue). The
+  gear's own rule is that error class follows provenance: a request-borne condition rendered as a
+  server error is a defect. So one code covers both — *this record cannot take that decision* —
+  with the detail saying which. **The roster was closed at six deliberately; opening it for a
+  refusal that was reaching users as a 500 is the case a closed roster exists to be reopened for.**
+  Both counters and the third roster move; B's build.
+- **The arguments against, stated.** Row 37 opens a roster two decisions kept closed, and the
+  alternative — two codes, one per cause — was rejected as splitting one user-facing fact. Row 36
+  removes a fail-closed clause, which this gear treats as the safe direction; accepted because the
+  clause guarded an input nothing read, and a guard on nothing is not safety. Row 31 lets a record
+  reach `satisfied` with zero decision rows, which an auditor may find surprising; that is P-D-11's
+  policy, and the descriptor's `required = 0` is the record saying so.
+- **Propagated**: rows 3, 8, 13, 26, 28, 30, 31, 34, 36, 37 struck. `05` §3.3's roster gains its
+  seventh code. B's RELAY gains the four builds (rows 31, 36, 37 and the decide door's refusal).
+
+
+#### P-D-120 — The approval record's doors, its non-entity subjects, and what `quorumReduced` marks
+
+- **Date**: 2026-09-03 (owner call, answering `features/governance.md` §7 **rows 11, 12, 14, 15,
+  16, 35, 38 and 39**)
+- **Row 12 — the ceremony's three doors, on the corpus's shape.** Measured: **no approval door
+  exists** — no `/approvals` route, no break-glass door — while `approval × submit`,
+  `approval × decide` and `breakglass × elevate` are minted. P-D-106's situation, one slice over,
+  and the same answer: `POST /bss-products/v1/approvals` (submit), `POST
+  /bss-products/v1/approvals/{approvalId}/decisions` (decide), `POST /bss-products/v1/breakglass-sessions`
+  (elevate) — the collection-POST-plus-act-subresource shape P-D-67, P-D-87, P-D-90 and P-D-106
+  set. The grants were never the open half. **Doors land with their `Doors` cells in §3.2, per the
+  census rule**; B's build, one module, one seventh-plus `.merge(...)` in `gear.rs`.
+- **Row 38 — `materiality_policy` is a subject kind.** `subject_kind` is a **CHECK enumeration**
+  (`chk_products_approval_subject_kind`), so the kind is added by editing that migration in place,
+  landing with P-D-112's table. P-D-14's precedent: `system_signal` became a kind because
+  `subject_kind` names *what is approved*, and a policy mutation is a thing approved.
+- **Row 14 — the entity-shaped columns for non-entity subjects, from `05`'s own text.**
+  `inst-gv-materiality` already says the change set is *"for a `GovernedLiveOp`, the op payload"*,
+  so `content_snapshot` **is the op payload**; `internal_revision` is the op's own pin — the
+  envelope's revision where it has one, `0` where the subject has no counter — because the column
+  exists to detect a stale submission and an op with no counter cannot go stale; `diff_basis` is
+  `NULL`, there being no published version to diff against. For `system_signal`, *"the signal
+  reference as the authorizing principal"* is the **`submitter`** column: the record is
+  auto-satisfied and writes no decision row, so the decision key never needs to carry it.
+- **Row 11 — the decide door's transaction writes `state = satisfied`**, on the decision that meets
+  the descriptor; the evaluator only computes whether it is met. And per P-D-119 row 31, the
+  **submit** transaction writes it when `required = 0`. Two writers, each the transaction in which
+  the fact becomes true.
+- **Rows 15 and 39 — `quorumReduced` marks an effective count below the retained default of two,
+  whatever the cause.** That is P-D-13's own wording — *"quorumReduced recorded below the default of
+  2"* — and it answers row 15's worry directly: yes, it fires on every non-material change at
+  `N = 2`, because a non-material change **is** a reduced ceremony. The flag does not distinguish
+  reduced-by-configuration from reduced-by-non-materiality and is not asked to: the descriptor's
+  other fields (`configuredQuorum`, `required`) carry that distinction — `{2, 1}` is
+  non-material, `{1, 1}` is configured down. Reading the flag alone was the mistake.
+- **Row 16 — the base role set binds any approver, one or `N`.** C1 states the set for approvers
+  without a count; C8 says predicates narrow within it and nothing replaces it. A single approver
+  of a non-material change is an approver.
+- **Row 35 — `dod-pii-on-reasons` narrows to the two reasons this feature stores.** The submission
+  carries no operator free text in this design — its content is the snapshot — and `products_approval`
+  has no `reason` column because nothing would write it. A column for text nobody writes is the
+  wrong fix; the DoD names the decision reason and the break-glass reason, which exist and are in
+  the block.
+- **The arguments against, stated.** Row 12 puts three doors on B in one assignment on top of the
+  store and the host — a heavy brief, accepted because every one of `05`'s door DoDs is blocked
+  on them and the shape is settled. Row 14 lets `internal_revision = 0` mean "no pin", which
+  overloads a counter with a sentinel; accepted because a nullable revision would put `NULL` into
+  P-D-105's equality clause. Row 15/39 leaves a flag whose meaning needs a second field to read —
+  accepted because that is what a descriptor is for.
+- **Propagated**: rows 11, 12, 14, 15, 16, 35, 38, 39 struck; `dod-pii-on-reasons` narrowed in the
+  FEATURE; `05` §3.2 `Doors` cells and the `subject_kind` CHECK follow with B's build.
+
+
 #### P-D-117 — The identity map and the allow-list: seven of `10`'s rows, decided from the code and the design
 
 - **Date**: 2026-09-03 (owner call, answering `features/retention-erasure.md` §7 items **5, 8 (its

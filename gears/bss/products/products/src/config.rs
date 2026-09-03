@@ -72,6 +72,9 @@ pub const PSEUDONYMIZATION_AGE_DAYS_DEFAULT: u32 = 730;
 /// The restore drill's cadence, in hours — **interim, P-D-118**.
 pub const DRILL_CADENCE_HOURS_DEFAULT: u32 = 24;
 
+/// The usage-type resolver's bound, in milliseconds — **interim, P-D-121**.
+pub const USAGE_TYPE_RESOLVER_TIMEOUT_MS_DEFAULT: u32 = 2_000;
+
 /// `design/07` §17.1's interim freshness threshold, in minutes.
 pub const REFERENCE_FRESHNESS_MINUTES_DEFAULT: u32 = 15;
 
@@ -325,6 +328,14 @@ pub struct ProductsConfig {
     /// How often the restore drill runs, in hours. **Interim 24 — P-D-118**,
     /// so a corrupt backup is found within a day.
     pub drill_cadence_hours: u32,
+
+    /// How long the publish path waits on the usage-type resolver, in
+    /// milliseconds. **Interim 2000 — P-D-121.** `design/03` said *"a short
+    /// timeout"* and named no number. Two seconds because the resolve runs
+    /// **before** the publish transaction and hands the phase a `Resolution`
+    /// (P-D-121 row 19, `MaterialityEvaluator`'s shape), so the bound costs
+    /// latency on the publish path and not a held lock.
+    pub usage_type_resolver_timeout_ms: u32,
 }
 
 impl Default for ProductsConfig {
@@ -354,6 +365,7 @@ impl Default for ProductsConfig {
             retention_days_audit: RETENTION_DAYS_DEFAULT,
             pseudonymization_age_days: PSEUDONYMIZATION_AGE_DAYS_DEFAULT,
             drill_cadence_hours: DRILL_CADENCE_HOURS_DEFAULT,
+            usage_type_resolver_timeout_ms: USAGE_TYPE_RESOLVER_TIMEOUT_MS_DEFAULT,
         }
     }
 }
@@ -444,6 +456,10 @@ impl ProductsConfig {
             ("retention_days_audit", self.retention_days_audit),
             ("pseudonymization_age_days", self.pseudonymization_age_days),
             ("drill_cadence_hours", self.drill_cadence_hours),
+            (
+                "usage_type_resolver_timeout_ms",
+                self.usage_type_resolver_timeout_ms,
+            ),
         ] {
             if value == 0 {
                 return Err(format!(

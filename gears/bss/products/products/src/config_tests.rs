@@ -292,6 +292,13 @@ fn a_zero_cap_is_refused_at_boot() {
                 ..ProductsConfig::default()
             },
         ),
+        (
+            "usage_type_resolver_timeout_ms",
+            ProductsConfig {
+                usage_type_resolver_timeout_ms: 0,
+                ..ProductsConfig::default()
+            },
+        ),
     ];
     for (name, cfg) in cases {
         let message = cfg
@@ -330,4 +337,7 @@ fn the_interim_ceilings_are_the_justified_numbers() {
     assert_eq!(cfg.retention_days_audit, 3_650);
     assert_eq!(cfg.pseudonymization_age_days, 730);
     assert_eq!(cfg.drill_cadence_hours, 24);
+    // P-D-121: the resolve runs before the transaction, so this bounds latency,
+    // not a lock.
+    assert_eq!(cfg.usage_type_resolver_timeout_ms, 2_000);
 }
