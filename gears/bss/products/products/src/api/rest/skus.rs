@@ -2991,8 +2991,15 @@ async fn announce_and_answer(
     })?;
 
     if published_version.is_some() {
-        reannounce_retirement_if_live(runner, outbox, inputs, &core, image.published_version)
-            .await?;
+        reannounce_retirement_if_live(
+            runner,
+            outbox,
+            inputs,
+            &core,
+            image.published_version,
+            image.replaced_by_sku_id,
+        )
+        .await?;
     }
 
     let body = serde_json::to_value(SkuView::from(image.clone())).map_err(|e| {
@@ -3023,12 +3030,18 @@ async fn announce_and_answer(
 /// P-D-20 / P-D-48: a publish that moves the version while a live retire
 /// intent is in the lead window re-emits `SkuRetired` in this same
 /// transaction.
+///
+/// `replaced_by` is an operand rather than a re-read: the successor is the
+/// head's, the caller already holds the post-publish image, and re-announcing
+/// `None` would **erase** what the initiation announced, consumers taking the
+/// latest `(skuId, effectiveAt)`.
 async fn reannounce_retirement_if_live(
     runner: &(impl toolkit_db::secure::DBRunner + Sync),
     outbox: &crate::infra::broker::EventSink,
     inputs: &HeadActInputs,
     core: &events::EventBodyCore,
     from_version: i64,
+    replaced_by: Option<Uuid>,
 ) -> Result<(), HeadActError> {
     let intents =
         repo::find_live_retire_intents(runner, &inputs.scope, inputs.tenant_id, inputs.sku_id)
@@ -3050,7 +3063,11 @@ async fn reannounce_retirement_if_live(
             core,
             from_version,
             reason,
-            replaced_by: None,
+            // The successor the initiation announced, carried rather than
+            // dropped: consumers take the latest `(skuId, effectiveAt)`, so
+            // re-announcing `None` erases it. See
+            // `repo::SkuRecord::replaced_by_sku_id`.
+            replaced_by,
             effective_at: intent.at.to_rfc3339_opts(SecondsFormat::Secs, true),
             must_migrate_by: None,
         },

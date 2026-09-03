@@ -279,6 +279,22 @@ pub struct SkuRecord {
     /// read at (P-D-76; `None`/`None` for a non-clone).
     pub cloned_from: Option<Uuid>,
     pub cloned_from_version: Option<i64>,
+    /// The successor named at retirement initiation, or `None`.
+    ///
+    /// **The row carried this column and this struct did not**, which made
+    /// `04`'s lead-window re-announcement drop it. The retire door emits
+    /// `SkuRetired` with `replaced_by: request.replaced_by`; a publish inside
+    /// the window re-emitted the same event with `None`, and consumers key on
+    /// `(skuId, effectiveAt)` and take the latest (**P-D-20**, **P-D-48**), so
+    /// an unrelated publish **erased** the successor from every consumer's
+    /// view. Reported by strand C, which could not confirm it because there
+    /// was no field here to read.
+    ///
+    /// Write-once per retirement by the row's own trigger — `null` to
+    /// non-null at initiation, non-null to `null` at the governed cancel
+    /// (**P-D-49**) — so a re-announcement can only ever repeat what the
+    /// initiation announced.
+    pub replaced_by_sku_id: Option<Uuid>,
     /// Why this entity is `deprecated`, or `None` where it is not — the
     /// operand `dod-provenance-reversal` reads to decide which children a
     /// parent's un-deprecation revives. `None` on a `deprecated` row is a
@@ -625,6 +641,7 @@ fn into_sku_record(row: sku::Model) -> Result<SkuRecord, RepoError> {
         updated_at: row.updated_at,
         cloned_from: row.cloned_from,
         cloned_from_version: row.cloned_from_version,
+        replaced_by_sku_id: row.replaced_by_sku_id,
         deprecation_provenance: parse_provenance(
             row.deprecation_provenance.as_deref(),
             "products_sku",

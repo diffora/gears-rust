@@ -2293,6 +2293,11 @@ fn the_sku_content_builder_writes_exactly_the_roster() {
         // both names.
         cloned_from: Some(Uuid::from_u128(0xd1_13)),
         cloned_from_version: Some(2),
+        // Populated on this fixture's own stated premise: a builder that
+        // dropped the name would still satisfy an equality taken against a
+        // bare `None`. Frozen content does not carry the successor, so the
+        // roster below must not name it.
+        replaced_by_sku_id: Some(Uuid::from_u128(0xd1_14)),
         // Populated for the same reason, and it arms a different clause:
         // `deprecation_provenance` is one of the four columns §4.3
         // **excludes** from frozen version content, and an exclusion a bare
@@ -5251,6 +5256,82 @@ mod retire_door_tests {
             enqueued_event_count(&harness.dsn, "SkuRetired").await,
             1,
             "initiation still emits none; this row is the re-announcement"
+        );
+    }
+
+    /// **The re-announcement carries the successor the initiation named.**
+    ///
+    /// This is the assertion the sibling case above does not make, and the
+    /// defect it did not catch: `SkuRecord` carried no `replaced_by_sku_id`,
+    /// so the re-announce emitted `replaced_by: None` while the initiation had
+    /// emitted the successor. Consumers key on `(skuId, effectiveAt)` and take
+    /// the latest (**P-D-20**, **P-D-48**), so an unrelated publish inside the
+    /// lead window **erased** the successor from every consumer's view.
+    ///
+    /// A test that pins `fromVersion` and `effectiveAt` passes either way,
+    /// which is why this one pins the field that moved.
+    #[tokio::test]
+    async fn the_reannouncement_carries_the_successor_the_initiation_named() {
+        let harness = harness().await;
+        // One parent for both SKUs: `published_sku` seeds its own, and
+        // `new_parent_product` takes a fixed name, so calling it twice in one
+        // test collides on `(tenant_id, brand_id, name_normalized)`.
+        let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+        let publish_under = |code: &'static str| {
+            let harness = &harness;
+            async move {
+                let (sku_id, etag) = seed_draft_sku(harness, parent_id, code).await;
+                let published =
+                    post_publish(app_for(harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+                assert_eq!(published.status(), StatusCode::OK, "{code} is the premise");
+                let rev = body_json(published).await["internal_revision"]
+                    .as_i64()
+                    .expect("revision");
+                (sku_id, rev)
+            }
+        };
+        let (successor_id, _) = publish_under("SKU-SUCCESSOR").await;
+        let (sku_id, rev) = publish_under("SKU-REANNOUNCE-SUCC").await;
+
+        let retired = post_retire(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &if_match_for(rev),
+            &json!({
+                "reason": "end of sale",
+                "confirmed": true,
+                "replaced_by": successor_id.to_string(),
+            }),
+        )
+        .await;
+        assert_eq!(
+            retired.status(),
+            StatusCode::OK,
+            "initiation with a published successor is the premise"
+        );
+
+        let republished = post_publish(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            Some(&if_match_for(rev + 1)),
+        )
+        .await;
+        assert_eq!(republished.status(), StatusCode::OK);
+
+        let body = enqueued_event_body(&harness.dsn, "SkuRetired").await;
+        assert_eq!(
+            body["replacedBy"],
+            json!(successor_id.to_string()),
+            "the re-announcement repeats the successor rather than dropping it: \
+             a consumer taking the latest must not lose it to an unrelated publish"
+        );
+        let head = sku_of(&harness, sku_id).await;
+        assert_eq!(
+            body["fromVersion"],
+            json!(head.published_version),
+            "and it still carries the new version"
         );
     }
 
