@@ -82,6 +82,18 @@ pub struct CatalogSku {
     pub status: String,
     /// The registry-owned tier, which a plan's own tier is checked against.
     pub plan_tier: Option<String>,
+    /// `product` | `service` | `bundle`, verbatim — the registry owns this
+    /// vocabulary as it owns `status`, and `dod-sdk-read-shape` names the
+    /// member `type` on the wire. A fourth value must not become a parse
+    /// failure here.
+    pub sku_type: String,
+    /// Whether the SKU may be sold on its own. `false` is a composition- or
+    /// metering-only member — priced, never picked as a line of its own.
+    pub sellable: bool,
+    /// The usage collector's `UsageType` id a usage SKU's declaration carries
+    /// (registry **P-D-05**); absent on a SKU priced per period. Present
+    /// exactly when `metering_unit` is, on a well-formed registry row.
+    pub usage_type_ref: Option<String>,
 }
 
 /// Why the catalog could not be read — the typed view over [`CanonicalError`].

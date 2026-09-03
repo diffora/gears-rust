@@ -279,7 +279,7 @@ actor, the scenarios and the boundary.
   surface resolver latency in the publish SLO breakdown.
 - ~~**UsageType deletion**~~ **Answered (P-D-131, 2026-09-03): the registry's half is the correction door's `unresolvable_target` arm; the collector's tombstone obligation is in `PRD` §15.** *The item's text stood as:* (PRD §15, P-D-05 residue): `inst-cd-stamp` gives the remediation path
   its evidence, but the negotiation with the collector is still open.
-- **`sellable`, `usage_type_ref` and `type` missing in pricing's `CatalogSku`** *(P-D-133, 2026-09-04: accepted; the lead lands the three members in pricing.)* — this slice's three
+- ~~**`sellable`, `usage_type_ref` and `type` missing in pricing's `CatalogSku`**~~ **Landed (P-D-133, 2026-09-04): the three members are in pricing's `CatalogSku` and on its wire as `type`, `sellable`, `usage_type_ref`.** *The item's text stood as:* *(P-D-133, 2026-09-04: accepted; the lead lands the three members in pricing.)* — this slice's three
   of the four members 12 `inst-sdk-catalogsku` names; owed consumer-side, and our SDK shape carries
   them from day one so the fix stays additive.
 - ~~**`tax_category_ref` and `gl_code_ref` may not belong to this registry at all.**~~ **Answered (P-D-131, 2026-09-03): they stay** — §2.1 forbids the descriptor, `fr-accounting-codes` requires the reference. *The item's text stood as:* 01 §4.2 marks both

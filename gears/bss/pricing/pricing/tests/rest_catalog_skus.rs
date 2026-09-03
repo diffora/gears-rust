@@ -123,9 +123,12 @@ async fn a_configured_catalog_returns_its_skus_under_its_own_source_name() {
          constraint publish does not enforce"
     );
 
-    // Field-by-field on one entry rather than a length check: `view_of` maps six
+    // Field-by-field on one entry rather than a length check: `view_of` maps nine
     // members and a transposition between two `Option<String>` neighbours
-    // (`metering_unit` and `plan_tier`) would survive any count.
+    // (`metering_unit` and `plan_tier`, or `usage_type_ref`) would survive any
+    // count. `type` is the registry contract's own spelling (registry
+    // `dod-sdk-read-shape`; P-D-133 on the registry side landed the three
+    // members here).
     //
     // Snake case on the wire because `toolkit_macros::api_dto` emits
     // `#[serde(rename_all = "snake_case")]` — the platform's DTO convention,
@@ -149,6 +152,18 @@ async fn a_configured_catalog_returns_its_skus_under_its_own_source_name() {
         first["plan_tier"],
         source
             .plan_tier
+            .clone()
+            .map_or(serde_json::Value::Null, serde_json::Value::String)
+    );
+    assert_eq!(
+        first["type"], source.sku_type,
+        "the contract spells it `type`"
+    );
+    assert_eq!(first["sellable"], source.sellable);
+    assert_eq!(
+        first["usage_type_ref"],
+        source
+            .usage_type_ref
             .clone()
             .map_or(serde_json::Value::Null, serde_json::Value::String)
     );

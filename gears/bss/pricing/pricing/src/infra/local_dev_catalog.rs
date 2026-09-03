@@ -76,6 +76,16 @@ fn dev_sku_id(n: u8) -> Uuid {
     Uuid::from_bytes(bytes)
 }
 
+/// The fabricated `UsageType` reference a usage SKU carries.
+///
+/// A real registry row carries the usage collector's `gts_id` (registry
+/// **P-D-05**); this mode has no collector to ask, so the ref is minted from
+/// the unit under the same `DEV-` prefix every fabricated code wears, and is
+/// as visibly invented as the code beside it.
+fn dev_usage_type_ref(unit: &str) -> String {
+    format!("{DEV_LOCAL_CODE_PREFIX}usage-type:{unit}")
+}
+
 fn sku(
     n: u8,
     code: &str,
@@ -83,6 +93,7 @@ fn sku(
     unit: Option<&str>,
     tier: Option<&str>,
     status: &str,
+    sku_type: &str,
 ) -> CatalogSku {
     CatalogSku {
         sku_id: dev_sku_id(n),
@@ -91,6 +102,12 @@ fn sku(
         metering_unit: unit.map(str::to_owned),
         status: status.to_owned(),
         plan_tier: tier.map(str::to_owned),
+        sku_type: sku_type.to_owned(),
+        // Every fabricated SKU is a sellable line: the mode exists so a plan
+        // row can be authored from the pick-list, and a member that cannot be
+        // picked teaches nothing here.
+        sellable: true,
+        usage_type_ref: unit.map(dev_usage_type_ref),
     }
 }
 
@@ -118,6 +135,7 @@ impl LocalDevStaticProductCatalog {
                 Some("vCPU-hour"),
                 Some("Pro"),
                 "published",
+                "service",
             ),
             sku(
                 2,
@@ -126,6 +144,7 @@ impl LocalDevStaticProductCatalog {
                 Some("GiB-hour"),
                 Some("Pro"),
                 "published",
+                "service",
             ),
             sku(
                 3,
@@ -134,6 +153,7 @@ impl LocalDevStaticProductCatalog {
                 Some("GiB-month"),
                 Some("Standard"),
                 "published",
+                "service",
             ),
             sku(
                 4,
@@ -142,6 +162,7 @@ impl LocalDevStaticProductCatalog {
                 Some("1k-ops"),
                 Some("Standard"),
                 "published",
+                "service",
             ),
             sku(
                 5,
@@ -150,6 +171,7 @@ impl LocalDevStaticProductCatalog {
                 Some("GiB-egress"),
                 Some("Pro"),
                 "published",
+                "service",
             ),
             sku(
                 6,
@@ -158,6 +180,7 @@ impl LocalDevStaticProductCatalog {
                 Some("cloudlet-hour"),
                 Some("Pro"),
                 "published",
+                "service",
             ),
             // No unit: priced per period, never as usage.
             sku(
@@ -167,8 +190,17 @@ impl LocalDevStaticProductCatalog {
                 None,
                 Some("Pro"),
                 "published",
+                "product",
             ),
-            sku(8, "SEAT-STD", "Team Seat", None, Some("Pro"), "published"),
+            sku(
+                8,
+                "SEAT-STD",
+                "Team Seat",
+                None,
+                Some("Pro"),
+                "published",
+                "product",
+            ),
             // A draft and a deprecated one, because a pick-list that only ever
             // shows publishable entries never teaches an operator that the
             // status matters.
@@ -179,6 +211,7 @@ impl LocalDevStaticProductCatalog {
                 Some("GPU-hour"),
                 Some("Pro"),
                 "draft",
+                "service",
             ),
             sku(
                 10,
@@ -187,6 +220,7 @@ impl LocalDevStaticProductCatalog {
                 Some("instance-hour"),
                 Some("Legacy"),
                 "deprecated",
+                "service",
             ),
         ]
     }

@@ -63,6 +63,14 @@ pub struct CatalogSkuView {
     /// The registry's own word, passed through unparsed.
     pub status: String,
     pub plan_tier: Option<String>,
+    /// `product` | `service` | `bundle`, the registry's word — `type` on the
+    /// wire, as the registry's consumer contract (`dod-sdk-read-shape`) spells
+    /// it; the raw identifier is only Rust's spelling of the same name.
+    pub r#type: String,
+    /// `false` is a composition- or metering-only member.
+    pub sellable: bool,
+    /// The usage collector's `UsageType` id; present on usage SKUs only.
+    pub usage_type_ref: Option<String>,
 }
 
 /// The catalog, and where it came from.
@@ -87,6 +95,9 @@ fn view_of(sku: CatalogSku) -> CatalogSkuView {
         metering_unit: sku.metering_unit,
         status: sku.status,
         plan_tier: sku.plan_tier,
+        r#type: sku.sku_type,
+        sellable: sku.sellable,
+        usage_type_ref: sku.usage_type_ref,
     }
 }
 
