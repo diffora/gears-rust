@@ -199,7 +199,7 @@ which is why its gaps are omissions rather than contradictions:
   lands through the **create** door, which that arm did not reach, so this slice's atomicity claim
   still has no writer; 01 §6 carries the narrowed question. Owner: 01's door owner with 02's, plus 05
   for the grant. *(Raised by the slice-11 first lens pass.)*
-- **Does the clone door need `metadata × write` beside `product|sku × write`?** 05 split that grant
+- ~~**Does the clone door need `metadata × write` beside `product|sku × write`?**~~ **Answered (P-D-128, 2026-09-03): no** — a new draft's map under the authoring pair; `metadata × write` guards in-place edits on a published entity. *The item's text stood as:* 05 split that grant
   because the map is mutable in place on a **published** entity; the clone writes a new draft's map,
   which that reason does not reach — but the pair is declared per resource, not per lifecycle state,
   and 05 lists no exemption. Owner: 05's owner with 02's. *(Raised by the slice-11 first lens pass.)*
@@ -219,7 +219,7 @@ which is why its gaps are omissions rather than contradictions:
   admitted, and `ENTITY_TERMINAL` cannot be reused as-is because the clone writes nothing to the
   source while a `retired` source is explicitly allowed. Owner: the taxonomy owner with this slice.
   *(Raised by the slice-11 first lens pass.)*
-- **Which surface answers the reverse lineage lookup — what was cloned from a given entity?** The absence of a clone event is justified by
+- ~~**Which surface answers the reverse lineage lookup — what was cloned from a given entity?**~~ **Answered (P-D-128, 2026-09-03): `08`'s timeline, from the `clonedFrom` column at render time**; no clone event. *The item's text stood as:* The absence of a clone event is justified by
   the lineage field being "queryable", and the field appears in no read model and no SDK shape; a
   clone is a draft, which the browse projection cannot see at all. Owner: 08's and 12's owners —
   expose it, or withdraw the justification. *(Two lenses raised it independently.)*
@@ -235,7 +235,7 @@ which is why its gaps are omissions rather than contradictions:
   console gives clone to an Operator/Platform owner, while the door spends the authoring pair. The
   PRD disagrees with itself and no document maps roles to grants. Owner: the PRD owner with 05.
   *(Raised by the slice-11 first lens pass.)*
-- **May a slice restate a decision whose propagation field does not name it?** This slice's central
+- ~~**May a slice restate a decision whose propagation field does not name it?**~~ **Answered (P-D-128, 2026-09-03): yes** — the field names where a decision was filed, not every citer. *The item's text stood as:* This slice's central
   rule leans on P-D-04, whose surface names `design/01-foundation.md`,
   `design/02-taxonomy-attributes.md`, `design/04-lifecycle.md` and `design/09-bulk-promotion.md` —
   not this file; the same holds for P-D-05 and P-D-06, while P-D-21, P-D-25 and P-D-35 name this
@@ -243,7 +243,7 @@ which is why its gaps are omissions rather than contradictions:
   is that a propagation field describes what a document says — which makes these register omissions
   rather than defects here, but nothing states whether the citing side owes an entry. Owner: the
   register's owner. *(Raised by the slice-11 first lens pass.)*
-- **Who owns mass cloning?** This slice puts it Out and pointed at 09, whose resolver is total over
+- ~~**Who owns mass cloning?**~~ **Answered (P-D-128, 2026-09-03): nobody, on purpose — out of v1**; `09`'s conflict arm naming clone is the intended revival path. *The item's text stood as:* This slice puts it Out and pointed at 09, whose resolver is total over
   identity and produces no copies — it classifies such a row as a no-op, an update to the source, or
   (for revival) a conflict naming clone as the only path. So the case is claimed by nobody. Owner:
   the design-set owner with 09. *(Raised by the slice-11 first lens pass.)*

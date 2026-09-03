@@ -1569,6 +1569,112 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-127 — `09`'s open set: identity by id first, a reaper for the unapproved, the worker as the executor, the batch record as the subject, and the report's determinism
+
+- **Date**: 2026-09-03 (owner call over `features/bulk-promotion.md` §7 rows 4, 6, 7, 10, 11, 12, 13,
+  14, 16, 17, 21, 23, 28, 29 and 31, and `design/09` §6's matching items; `09` has no strand and
+  every arm here is recorded so its builder starts from answers)
+- **Row 4 — promotion identity is `productId`, then `productCode`, then `normalized(name)`.** An
+  export carries the source's ids, so a round-trip row resolves by id whatever was renamed; a
+  hand-authored row without id or code matches by name and is otherwise a create — the documented
+  residual risk, accepted because a name-only row *is* a new Product until something says
+  otherwise.
+- **Row 6 — a batch nobody approves is `abandoned` by a reaper.** The state exists (P-D-69); what
+  was missing is the clock: `bulk_batch_ttl_hours`, **168** interim on the P-D-107 idiom, applied
+  by a tick in `gear.rs`'s lifecycle loop (P-D-113's precedent) that flips `awaiting_approval` to
+  `abandoned` and supersedes the record (`APPROVAL_SUPERSEDED` is `05`'s existing state). A week
+  because the ceremony is human-paced and the harm is a held tenant slot.
+- **Row 7 — the bulk worker is the executor.** `batch_tick` already runs in the lifecycle loop;
+  it observes the batch's record `satisfied`, and **its claim transaction** writes `committing`
+  and consumes the record — one transaction, so the one-shot is enforced where the phase starts.
+  `05`'s decide door writes nothing of `09`'s.
+- **Row 10 — yes: the batch's record is the subject for every row it contains**, live-entity ops
+  included, in `PreAuthorized` mode under **P-D-105's own predicate** — the row's stored
+  `approval_ref` names the consumed record. P-D-105 scoped itself to one table because
+  `products_bulk_batch.approval_ref` has different writers; this arm extends it to that table
+  **with its own writer-count guard**, owed with the build. `05`'s composite-act enumeration gains
+  the bulk batch.
+- **Rows 11 and 23 — the record's scalar pin for a batch is the ledger digest, and the N per-row
+  pins live in `content_snapshot`.** P-D-125's per-kind pin (row 52) is the ledger digest for a
+  `bulk_batch` subject; the `ChangeReport` the quorum signs is the snapshot and carries the per-row
+  pinned revisions as JSON. One column holds N pins because the column holds the report.
+- **Row 12 — the diff reads staged content from `09`'s own ledger and the target's current heads
+  through `01`'s repository read**, rendered through `domain::canonical`. `08` is not the input:
+  it projects frozen rows and serves no draft.
+- **Row 13 — the lint producer is P-D-125's dry-run door**, per row.
+- **Row 14 — byte-determinism is P-D-29's rule applied to the artifact**: rendered through
+  `domain::canonical`, every collection sorted by its own identifier; `06`'s manifest sorts
+  entries by `(entity_kind, entity_id)`.
+- **Row 16 — a row kind with no draft state classifies as `update-as-live-op`**: the row becomes a
+  `GovernedLiveOp` envelope applied at commit under the batch record (row 10). C5's four-way
+  classification gains that arm for categories and definitions.
+- **Row 17 — the scope-values lint is advisory.** A finding rides the `ChangeReport` and is
+  acknowledged through the override ceremony (row 29); *"unseen"* means a region or brand token no
+  published entity of the tenant carries. A blocking lint would be a validator, which is the
+  publish pipeline's job.
+- **Row 21 — "matching content" is canonical equality of the bucket-iii/iv fields**, the row's
+  after the save door's normalization against the target head's, rendered through
+  `domain::canonical`; capture halves are derived and not compared. Equal ⇒ `no-op`.
+- **Row 28 — the sample is the first N rows by `row_key` ascending**, N a config on the P-D-107
+  idiom (**20** interim), so the report the quorum signs and the commit that follows reproduce it.
+- **Row 29 — answered by the crate**: the itemised acknowledgment is the decision row's
+  `override_acknowledgments` (text, JSON), beside each ledger row's `override_acknowledged`; the
+  approval row has and needs no column.
+- **Row 31 — the ledger digest's covered set is pinned as the executor renders it**:
+  `(row_key, disposition, code, entity_id)` per row, sorted by `row_key`, through
+  `domain::canonical`; the staged payload and the timestamps are excluded, for the reasons the
+  row states. `design/09` owes the sentence; `dod-coalesced-event` may tick against it.
+- **The arguments against, stated.** Extending P-D-105 to a second table widens the one predicate
+  that lets a stored column stand in for a caller's proof — accepted only with the guard. A
+  week's TTL abandons a batch a slow reviewer meant to approve — accepted; resubmission is cheap
+  and a held slot is not. Identity by id first makes an exported row un-renameable by name —
+  that is the point.
+- **Propagated**: fifteen rows and ten §6 items struck; rows 1, 2, 3 gain owners (notes, not
+  questions); row 22's grant half is answered (`bulk × read` for export, `bulk × execute` for
+  import) and its role half stays the PRD owner's.
+
+
+#### P-D-128 — `11`'s open set: the clone writes on the save door's terms, and the register's own conventions
+
+- **Date**: 2026-09-03 (owner call over `features/clone.md` §7 rows 3, 6, 9, 10, 11, 16, 17, 20, 22,
+  24, 25 and 27, and `design/11` §6's matching items)
+- **Rows 25 and 11 — the clone door runs `content_save_pipeline`, and the phase is
+  `RegisteredValidators`.** P-D-123 item 11 made the clone the second content writer *on the save
+  door's terms*; the disposition rules **are** that pipeline's registered validators, and a phase
+  collects every rule's violation into one report — which is how *"every failing field class"* is
+  named without a create-door pipeline. `ATTRIBUTE_SCOPE_VIOLATION` and `CONTENT_PII_BLOCKED` sit
+  where they sit today. The create door stays as it is.
+- **Row 3 — no `metadata × write`.** The clone writes a new draft's map inside its own transaction
+  under the authoring pair; `metadata × write` guards in-place edits on a published entity, which a
+  clone is not.
+- **Row 17 — the variantless codes ship with their owning slices as `Violation` codes inside one
+  `DomainError::Validation` report** — the shipped collector's form and P-D-121/P-D-123's reading;
+  `02`'s already do. No variants are minted here.
+- **Row 20 — answered by the crate**: `products_metadata` ships under `02`, placed beside the
+  entity (P-D-06), so a `retired` source's map is read from it.
+- **Row 16 — a source whose versions were collected is not clonable.** The read surface answers
+  its version not-found and no new code is minted (the 503 set is closed, and this is a 404);
+  `10`'s GC protects live freeze registrations, not future clones — retention wins by design.
+- **Row 22 — a clone reads a version and registers nothing.** Copying is not referencing;
+  `06`'s participant model enumerates holders, and a read holds nothing. Exempt by construction.
+- **Row 6 — no clone event, and the reverse lookup is `08`'s.** The column is the source: the
+  entity view exposes `clonedFrom` forward, and `08`'s history timeline renders lineage from the
+  column at render time — the reverse read joins the column, drafts included, because the
+  timeline is not the browse projection. Owed to `08`'s build.
+- **Row 27 — the count is stated against the codes as minted at test time**; P-D-47 arm 3
+  already makes the two accounting codes go with their columns if the PRD removes them, and the
+  count goes with them.
+- **Rows 9, 10 and 24 — the design-set's answers.** A propagation field names where a decision was
+  *filed*, not every document that cites it; citing obliges no entry unless the citing document
+  depends on an arm the entry does not state. Mass cloning is **out of v1 and claimed by nobody on
+  purpose**, recorded in `PRD` §15's terms; `09`'s resolver's conflict arm naming clone as the path
+  is the intended answer for a revival. `Domain Model Entities` is a **listing convention** (the
+  slice's §1.7 names); `dod-clone-seams`' rule rests on the slice's own *"neither is an
+  aggregate"* sentence, which stands.
+- **Propagated**: twelve rows and four §6 items struck; rows 8 and 21 stay the PRD owner's, with
+  the grant half of row 8 answered (the door spends the authoring pair).
+
+
 #### P-D-124 — The propagation budget's meter: declared by `01`, asserted by `08`, composed by `06`, with the outbox row's own clock as its origin
 
 - **Date**: 2026-09-03 (owner call over `features/catalog-version.md` §7 rows 2 and 17 and

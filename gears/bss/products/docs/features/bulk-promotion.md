@@ -1091,7 +1091,7 @@ whether DECOMPOSITION's entity field is a listing convention or an ontological c
     check reads the summary event as additive, not as suppression.
     **Blocks**: no DoD — it records why the coalesced event reads as additive to slice 12's lint,
     not as suppression.
-    **Owner**: not stated in the slice; carried unassigned.
+    **Owner**: `12-consumer-contracts` — a note for its lint, not a question (assigned by P-D-127, 2026-09-03).
 
 2. **Update-as-draft promotion onto a live entity** stages bucket-iii/iv changes on the target's
     head — bucket-i/ii differences (type, meter) cannot be promoted onto an existing identity and
@@ -1099,19 +1099,19 @@ whether DECOMPOSITION's entity field is a listing convention or an ontological c
     update-as-draft and fail at the save door with 01's `ILLEGAL_FIELD_MUTATION`, whose reason
     names 07's correction door; worth its own probe when built.
     **Blocks**: `cpt-cf-bss-products-dod-promotion-resolver`.
-    **Owner**: not stated in the slice; carried unassigned.
+    **Owner**: this feature — a probe owed when the resolver is built (assigned by P-D-127, 2026-09-03).
 
 3. **Export format versioning** (schema evolution of the artifact) rides slice 12's vN→vN+1
     discipline; named here so the exporter carries a format version from day one.
     **Blocks**: `cpt-cf-bss-products-dod-export`.
-    **Owner**: not stated in the slice; carried unassigned.
+    **Owner**: this feature with `12-consumer-contracts` (assigned by P-D-127, 2026-09-03).
 
-4. **A renamed Product carrying no `productCode` is promoted as a create, not an update.**
+4. ~~**A renamed Product carrying no `productCode` is promoted as a create, not an update.**~~ **Answered (P-D-127, 2026-09-03): identity is `productId`, then `productCode`, then `normalized(name)`** — an export carries ids, so a round-trip row resolves by id whatever was renamed; a hand-authored row without either is a create when unmatched. *The item's text stood as:*
     `normalized(name)` is both bucket-iii in 01 §4.1 (a published Product is renameable) and this
     slice's C5 fallback promotion identity where `productCode` is absent — and `product_code` is
     nullable, so a rename between promotions makes the target resolve *unknown identity* and
     create a second Product, which C5's four-way classification exists to prevent.
-    **Blocks**: `cpt-cf-bss-products-dod-promotion-resolver`.
+    **Blocks**: no DoD — **resolved by P-D-127** *(was: `cpt-cf-bss-products-dod-promotion-resolver`.)*
     **Owner**: this slice. *(Filed from 01 §6 by the slice-01 eighth lens pass — the pointer
     claimed it was registered here and it was not.)*
 
@@ -1130,17 +1130,17 @@ whether DECOMPOSITION's entity field is a listing convention or an ontological c
     **Owner**: was this slice, with 05 if abandonment releases the approval. *(Raised by the slice-09
     first lens pass.)*; **closed**.
 
-6. **What ends a batch that is never approved?** No timeout, expiry or reaper is stated, and the
+6. ~~**What ends a batch that is never approved?**~~ **Answered (P-D-127, 2026-09-03): a reaper tick in `gear.rs`'s loop flips it to `abandoned` (P-D-69's state) after `bulk_batch_ttl_hours`, 168 interim**, superseding the record. *The item's text stood as:* No timeout, expiry or reaper is stated, and the
     approval it waits on has no deadline either — so an abandoned-but-unabandoned batch consumes a
     tenant slot permanently.
-    **Blocks**: `cpt-cf-bss-products-dod-batch-state-machine`.
+    **Blocks**: no DoD — **resolved by P-D-127** *(was: `cpt-cf-bss-products-dod-batch-state-machine`.)*
     **Owner**: this slice with 05. *(Raised by the slice-09 first lens pass.)*
 
-7. **What door, actor or signal starts the commit phase?** "On quorum" names no executor: this
+7. ~~**What door, actor or signal starts the commit phase?**~~ **Answered (P-D-127, 2026-09-03): the bulk worker** — `batch_tick` observes the record `satisfied`, and its claim transaction writes `committing` and consumes the record; the one-shot is enforced there. *The item's text stood as:* "On quorum" names no executor: this
     slice declares three routes and none is a commit, it names no runner, and 05's decide door is
     itself unowned (05 §6). The answer fixes which transaction writes `committing` and therefore
     where the one-shot consumption is enforced.
-    **Blocks**: `cpt-cf-bss-products-dod-commit-phase`,
+    **Blocks**: no DoD — **resolved by P-D-127** *(was: `cpt-cf-bss-products-dod-commit-phase`,)*
     `cpt-cf-bss-products-dod-batch-state-machine`.
     **Owner**: this slice with 05. *(Raised by the slice-09 first lens pass.)*
 
@@ -1172,40 +1172,40 @@ whether DECOMPOSITION's entity field is a listing convention or an ontological c
     **Blocks**: no DoD — **resolved by P-D-61**; `cpt-cf-bss-products-dod-bulk-tables` is freed.
     **Owner**: was this slice's storage owner with 05's; **closed**.
 
-10. **Does a `bulk_batch` approval authorize a `GovernedLiveOp` apply?** This slice says the
+10. ~~**Does a `bulk_batch` approval authorize a `GovernedLiveOp` apply?**~~ **Answered (P-D-127, 2026-09-03): yes** — the batch's record is the subject for every row, live-entity ops included, under P-D-105's predicate extended to `products_bulk_batch.approval_ref` with its own writer-count guard; `05`'s composite-act enumeration gains the batch. *The item's text stood as:* This slice says the
     live-entity ops apply "under the same consumed approval", while 05's live-op gate asks its
     question with the op **envelope** as subject, and 05's composite-act enumeration names per-row
     publishes and nothing else. 05's approval carries one subject and a partial unique over it.
-    **Blocks**: `cpt-cf-bss-products-dod-commit-phase`.
+    **Blocks**: no DoD — **resolved by P-D-127** *(was: `cpt-cf-bss-products-dod-commit-phase`.)*
     **Owner**: the governance owner with 05 and 02 — extend the composite-act enumeration, or give
     each live-entity row its own record. *(Raised by the slice-09 first lens pass.)*
 
-11. **Does the per-row pin fit 05's store?** This slice states the approval's stored snapshot as
+11. ~~**Does the per-row pin fit 05's store?**~~ **Answered (P-D-127, 2026-09-03): the record's scalar pin for a batch is the ledger digest** (P-D-125's per-kind pin); the per-row pins live in `content_snapshot`, which holds the report. *The item's text stood as:* This slice states the approval's stored snapshot as
     the report **plus the ledger's per-row pinned revisions**, and 05 declares one scalar
     `internal_revision` per record — registering the mismatch itself as "What do the entity-shaped
     columns hold for the non-entity subject kinds?".
-    **Blocks**: `cpt-cf-bss-products-dod-change-report`.
+    **Blocks**: no DoD — **resolved by P-D-127** *(was: `cpt-cf-bss-products-dod-change-report`.)*
     **Owner**: 05's owner with 12. *(Raised by the slice-09 first lens pass.)*
 
-12. **Where does the `ChangeReport`'s diff read its two operands?** The pre-approval view is
+12. ~~**Where does the `ChangeReport`'s diff read its two operands?**~~ **Answered (P-D-127, 2026-09-03): staged content from this slice's ledger, the target's heads through `01`'s repository read**, rendered through `domain::canonical`; `08` is not the input. *The item's text stood as:* The pre-approval view is
     "staged content vs the target's current heads", this slice books 08 as the input, and 08's C6
     projects entity content **only** from frozen version rows, never from heads — and serves no
     draft. Neither operand has a stated producer.
-    **Blocks**: `cpt-cf-bss-products-dod-change-report`.
+    **Blocks**: no DoD — **resolved by P-D-127** *(was: `cpt-cf-bss-products-dod-change-report`.)*
     **Owner**: this slice with 08. *(Raised by the slice-09 first lens pass.)*
 
-13. **Which slice builds the lint producer?** The `ChangeReport` is a PRD MUST that must carry
+13. ~~**Which slice builds the lint producer?**~~ **Answered (P-D-125, 2026-09-03): a dry-run of `01`'s publish pipeline**, per row. *The item's text stood as:* The `ChangeReport` is a PRD MUST that must carry
     lint findings; 06 §6 records that no instruction, store, RBAC pair, error code or probe in
     that slice delivers the report and names this slice as co-owner of the gap.
-    **Blocks**: `cpt-cf-bss-products-dod-change-report`.
+    **Blocks**: no DoD — **resolved by P-D-125** *(was: `cpt-cf-bss-products-dod-change-report`.)*
     **Owner**: the design-set owner with 06 and this slice. *(Two lenses raised it
     independently.)*
 
-14. **What makes the export byte-deterministic?** C4 promises byte-for-byte determinism for a
+14. ~~**What makes the export byte-deterministic?**~~ **Answered (P-D-127, 2026-09-03): P-D-29's rule applied to the artifact** — `domain::canonical`, every collection sorted by its identifier, `06`'s entries by `(entity_kind, entity_id)`. *The item's text stood as:* C4 promises byte-for-byte determinism for a
     given version; 06 §6 records that the manifest it renders from has no named sort key for its
     row collections, and `inst-bk-export` states no canonical serialization for the artifact
     itself.
-    **Blocks**: `cpt-cf-bss-products-dod-export`.
+    **Blocks**: no DoD — **resolved by P-D-127** *(was: `cpt-cf-bss-products-dod-export`.)*
     **Owner**: P-D-29's owner with 06 and this slice. *(Raised by the slice-09 first lens pass.)*
 
 15. ~~**Does every import run the `PromotionResolver`, and what selects promotion mode?**~~
@@ -1221,16 +1221,16 @@ whether DECOMPOSITION's entity field is a listing convention or an ontological c
     **Blocks**: no DoD — **resolved by P-D-69**; `cpt-cf-bss-products-dod-promotion-resolver` and `dod-import-door` carry the operand.
     **Owner**: was this slice with the contract owner. *(Raised by the slice-09 first lens pass.)*; **closed**.
 
-16. **What is "update-as-draft" for a row kind with no draft state?** C5 calls its four
+16. ~~**What is "update-as-draft" for a row kind with no draft state?**~~ **Answered (P-D-127, 2026-09-03): `update-as-live-op`** — the row becomes a `GovernedLiveOp` envelope applied at commit under the batch record; C5 gains the arm. *The item's text stood as:* C5 calls its four
     classifications exhaustive and this pass added the live-entity promotion identities to it, so
     a promoted category whose content differs falls into a classification it cannot occupy.
-    **Blocks**: `cpt-cf-bss-products-dod-promotion-resolver`.
+    **Blocks**: no DoD — **resolved by P-D-127** *(was: `cpt-cf-bss-products-dod-promotion-resolver`.)*
     **Owner**: this slice with 02. *(Raised by the slice-09 first lens pass.)*
 
-17. **Is the scope-values lint blocking or advisory, and what does "unseen" mean?** It appears
+17. ~~**Is the scope-values lint blocking or advisory, and what does "unseen" mean?**~~ **Answered (P-D-127, 2026-09-03): advisory** — the finding rides the `ChangeReport` and the override ceremony acknowledges it; *"unseen"* is a token no published entity of the tenant carries. *The item's text stood as:* It appears
     once, carries no code, no threshold and no probe, and nothing says whether it stops the
     report, the approval or nothing.
-    **Blocks**: `cpt-cf-bss-products-dod-change-report`.
+    **Blocks**: no DoD — **resolved by P-D-127** *(was: `cpt-cf-bss-products-dod-change-report`.)*
     **Owner**: this slice. *(Raised by the slice-09 first lens pass.)*
 
 18. ~~**No instruction in this slice names its event or records "no event".**~~
@@ -1284,12 +1284,12 @@ whether DECOMPOSITION's entity field is a listing convention or an ontological c
     **Blocks**: no DoD — **resolved by P-D-69**; `cpt-cf-bss-products-dod-idempotency-lane` and `dod-resume-abandon` carry the record.
     **Owner**: was `01-foundation`'s storage owner with this feature; **closed**.
 
-21. **What does the resolver compare to decide *"matching content"*?** C5 says only *"identity bound
+21. ~~**What does the resolver compare to decide *"matching content"*?**~~ **Answered (P-D-127, 2026-09-03): canonical equality of the bucket-iii/iv fields** after the save door's normalization, through `domain::canonical`; capture halves are not compared; equal ⇒ `no-op`. *The item's text stood as:* C5 says only *"identity bound
     to matching content ⇒ **no-op**"*. Which buckets participate, whether capture halves count, and
     what canonicalization runs are unstated — so `no-op` and `update-as-draft` have no predicate
     separating them, and two of the resolver's four classes are indistinguishable in a build.
     Carried row 12 asks where the report's diff reads its operands, not how they are compared.
-    **Blocks**: `cpt-cf-bss-products-dod-promotion-resolver`.
+    **Blocks**: no DoD — **resolved by P-D-127** *(was: `cpt-cf-bss-products-dod-promotion-resolver`.)*
     **Owner**: this feature with `02-taxonomy-attributes` and `08-read-models`.
 
 22. **Who runs an export?** `design/09` §1.3 gives it to the catalog admin; `PRD.md` §3 gives the
@@ -1298,14 +1298,14 @@ whether DECOMPOSITION's entity field is a listing convention or an ontological c
     Nothing can settle it from the RBAC catalog, whose columns are resource × action, door and slice
     — **there is no actor column** — so the grant is mapped to a route and never to a role.
     **Blocks**: `cpt-cf-bss-products-dod-export`.
-    **Owner**: the PRD owner with `05-governance`'s catalog owner.
+    **Owner**: *(P-D-127, 2026-09-03: the grant half is answered — export spends `bulk × read`, import `bulk × execute`, both in `gts/permissions.rs`; the role half stays the PRD owner's.)* the PRD owner with `05-governance`'s catalog owner.
 
-23. **Can `content_snapshot` carry N per-row pins?** This feature's approval snapshot is the report
+23. ~~**Can `content_snapshot` carry N per-row pins?**~~ **Answered (P-D-127, 2026-09-03): yes** — `content_snapshot` holds the report, and the report carries the per-row pins; the scalar pin is the ledger digest. *The item's text stood as:* This feature's approval snapshot is the report
     **plus the ledger's per-row pinned revisions**, and `design/05` declares one `content_snapshot`
     column beside one pinned `internal_revision`. Whether one JSON column may hold N pins, and
     whether the pins are part of what the quorum signs, is unstated — and there is no shipped
     approval table to measure against. Carried row 11 registers the `internal_revision` half only.
-    **Blocks**: `cpt-cf-bss-products-dod-change-report`,
+    **Blocks**: no DoD — **resolved by P-D-127** *(was: `cpt-cf-bss-products-dod-change-report`,)*
     `cpt-cf-bss-products-dod-commit-phase`.
     **Owner**: `05-governance`'s owner, as the second half of carried row 11.
 
@@ -1365,18 +1365,18 @@ whether DECOMPOSITION's entity field is a listing convention or an ontological c
     **Blocks**: no DoD — **resolved by P-D-69**; `dod-import-door`, `dod-export` and `dod-bulk-lifecycle` are unblocked by it.
     **Owner**: was `05-governance`'s owner with this feature; **closed**.
 
-28. **What makes the `ChangeReport`'s sample deterministic?** The report carries *"a deterministic
+28. ~~**What makes the `ChangeReport`'s sample deterministic?**~~ **Answered (P-D-127, 2026-09-03): the first N rows by `row_key` ascending**, N on the P-D-107 idiom, 20 interim. *The item's text stood as:* The report carries *"a deterministic
     sample"* and no document states a size, a selection rule or an ordering. A sample with no rule
     cannot be reproduced between the report the quorum signs and the commit that follows it.
-    **Blocks**: `cpt-cf-bss-products-dod-change-report`.
+    **Blocks**: no DoD — **resolved by P-D-127** *(was: `cpt-cf-bss-products-dod-change-report`.)*
     **Owner**: this feature, alongside carried row 17's scope-values-lint question.
 
-29. **Where is the batch's itemised override acknowledgment stored?** This feature stores it on the
+29. ~~**Where is the batch's itemised override acknowledgment stored?**~~ **Answered by the crate (P-D-127, 2026-09-03): the decision row's `override_acknowledgments`** (text, JSON), beside each ledger row's `override_acknowledged`; the approval row needs no column. *The item's text stood as:* This feature stores it on the
     batch's approval record *"exactly as an entity-publish override is stored on its own"*, and
     `features/governance.md` records that **there is no such column**: the only acknowledgment column
     sits on the decision row, which demands an approver principal and a verdict, and *"the approval
     row has no acknowledgment column"*. Its own open item 10 is the same gap from the other side.
-    **Blocks**: `cpt-cf-bss-products-dod-bulk-override-ceremony`.
+    **Blocks**: no DoD — **resolved by P-D-127** *(was: `cpt-cf-bss-products-dod-bulk-override-ceremony`.)*
     **Owner**: `05-governance`'s owner.
 
 30. ~~**Where does a Product or SKU row's staged payload live between the import door and the
@@ -1404,7 +1404,7 @@ whether DECOMPOSITION's entity field is a listing convention or an ontological c
     **Blocks**: no DoD — **resolved by P-D-86**; `cpt-cf-bss-products-dod-stage-phase` is freed again.
     **Owner**: was this feature with `01-foundation`'s storage owner; **closed**.
 
-31. **What does "the ledger digest" cover?** `inst-bk-complete` and `dod-coalesced-event` both
+31. ~~**What does "the ledger digest" cover?**~~ **Answered (P-D-127, 2026-09-03): the executor's set is pinned** — `(row_key, disposition, code, entity_id)` per row, sorted by `row_key`, through `domain::canonical`, payload and timestamps excluded; `design/09` owes the sentence. *The item's text stood as:* `inst-bk-complete` and `dod-coalesced-event` both
     require the completion summary to carry it, and **neither the design nor any decision defines a
     computation** — no field set, no ordering, no rendering rule. The shipped executor renders the
     ledger's own terminal facts — `(row_key, disposition, code, entity_id)` per row, sorted by
@@ -1413,7 +1413,7 @@ whether DECOMPOSITION's entity field is a listing convention or an ontological c
     timestamps (which differ between a run and its replay). **That covered set is the executor's
     choice, not a document's**, which is why `dod-coalesced-event` carries a bare marker rather
     than a tick. A consumer verifying the digest needs the set pinned somewhere it can read.
-    **Blocks**: `cpt-cf-bss-products-dod-coalesced-event`
+    **Blocks**: no DoD — **resolved by P-D-127** *(was: `cpt-cf-bss-products-dod-coalesced-event`)*
     **Owner**: this feature with `12-consumer-contracts` — the verifying side is the consumer's.
 ### Owed to other documents, recorded and deliberately not edited
 

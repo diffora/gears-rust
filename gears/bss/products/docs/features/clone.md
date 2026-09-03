@@ -986,11 +986,11 @@ duplicating it.
    **Owner**: was `01-foundation`'s door owner with `02-taxonomy-attributes`', plus `05-governance` for
    the grant; **closed**.
 
-3. **Does the clone door need `metadata × write` beside `product|sku × write`?** 05 split that grant
+3. ~~**Does the clone door need `metadata × write` beside `product|sku × write`?**~~ **Answered (P-D-128, 2026-09-03): no** — the clone writes a new draft's map under the authoring pair inside its own transaction; `metadata × write` guards in-place edits on a published entity. *The item's text stood as:* 05 split that grant
    because the map is mutable in place on a **published** entity; the clone writes a new draft's map,
    which that reason does not reach — but the pair is declared per resource, not per lifecycle state,
    and 05 lists no exemption.
-   **Blocks**: `cpt-cf-bss-products-dod-clone-authz`.
+   **Blocks**: no DoD — **resolved by P-D-128** *(was: `cpt-cf-bss-products-dod-clone-authz`.)*
    **Owner**: `05-governance`'s owner with `02-taxonomy-attributes`'.
 
 4. ~~**How are `-copy-N` and `-revived` generated?**~~
@@ -1019,11 +1019,11 @@ duplicating it.
    **Blocks**: no DoD — **resolved by P-D-75**; `cpt-cf-bss-products-dod-clone-door` carries the refusal.
    **Owner**: was the taxonomy owner with this feature; **closed**.
 
-6. **Which surface answers the reverse lineage lookup — what was cloned from a given entity?** The
+6. ~~**Which surface answers the reverse lineage lookup — what was cloned from a given entity?**~~ **Answered (P-D-128, 2026-09-03): no clone event; the column is the source** — the entity view exposes `clonedFrom` forward and `08`'s timeline renders the reverse from the column at render time, drafts included. Owed to `08`. *The item's text stood as:* The
    absence of a clone event is justified by the lineage field being "queryable", and the field appears
    in no read model and no SDK shape; a clone is a draft, which the browse projection cannot see at
    all.
-   **Blocks**: `cpt-cf-bss-products-dod-clone-lineage`.
+   **Blocks**: no DoD — **resolved by P-D-128** *(was: `cpt-cf-bss-products-dod-clone-lineage`.)*
    **Owner**: `08-read-models`' and `12-consumer-contracts`' owners — expose it, or withdraw the
    justification.
 
@@ -1043,9 +1043,9 @@ duplicating it.
    console gives clone to an Operator/Platform owner, while the door spends the authoring pair. The
    PRD disagrees with itself and no document maps roles to grants.
    **Blocks**: `cpt-cf-bss-products-dod-clone-authz`.
-   **Owner**: the PRD owner with `05-governance`.
+   **Owner**: *(P-D-128, 2026-09-03: the grant half is answered — the door spends the authoring pair; the role half stays the PRD owner's.)* the PRD owner with `05-governance`.
 
-9. **May a slice restate a decision whose propagation field does not name it?** This slice's central
+9. ~~**May a slice restate a decision whose propagation field does not name it?**~~ **Answered (P-D-128, 2026-09-03): a propagation field names where a decision was filed, not every citer**; citing obliges no entry unless the citer depends on an arm the entry does not state. *The item's text stood as:* This slice's central
    rule leans on P-D-04, whose surface names `design/01-foundation.md`,
    `design/02-taxonomy-attributes.md`, `design/04-lifecycle.md` and `design/09-bulk-promotion.md` —
    not this file; the same holds for P-D-05 and P-D-06, while P-D-21, P-D-25 and P-D-35 name this
@@ -1055,7 +1055,7 @@ duplicating it.
    **Blocks**: no DoD — it is a register-hygiene question about `DECISIONS.md`'s own convention.
    **Owner**: the register's owner.
 
-10. **Who owns mass cloning?** This slice puts it Out and pointed at 09, whose resolver is total over
+10. ~~**Who owns mass cloning?**~~ **Answered (P-D-128, 2026-09-03): out of v1 and claimed by nobody on purpose**; `09`'s conflict arm naming clone as the path is the intended answer for a revival. *The item's text stood as:* This slice puts it Out and pointed at 09, whose resolver is total over
     identity and produces no copies — it classifies such a row as a no-op, an update to the source, or
     (for revival) a conflict naming clone as the only path. So the case is claimed by nobody.
     **Blocks**: no DoD — mass cloning is Out of this feature's scope.
@@ -1063,13 +1063,13 @@ duplicating it.
 
 ### Raised here rather than carried
 
-11. **Which phase hosts the disposition re-validation set?** C4 and **P-D-49** arm 3 require the
+11. ~~**Which phase hosts the disposition re-validation set?**~~ **Answered (P-D-128, 2026-09-03): `RegisteredValidators`** — the phase collects every rule's violation into one report, which names every failing field class. *The item's text stood as:* C4 and **P-D-49** arm 3 require the
     refusal to name every failing field class, and the shipped `ValidationPipeline` *"stops at the
     first failing phase"*, so a set split across phases cannot produce that refusal. `Phase::Shape`
     covers *"the resolvability of every reference the payload carries"* and is the natural host, but
     no document assigns the clone's rules to a phase, and `ATTRIBUTE_SCOPE_VIOLATION` and
     `CONTENT_PII_BLOCKED` are plausibly `RegisteredValidators` rather than `Shape`.
-    **Blocks**: `cpt-cf-bss-products-dod-disposition-rules`.
+    **Blocks**: no DoD — **resolved by P-D-128** *(was: `cpt-cf-bss-products-dod-disposition-rules`.)*
     **Owner**: this feature with `01-foundation`'s pipeline owner.
 
 12. ~~**Is C4's "every field class that failed" scoped to the vocabulary classes or to the whole act?**~~
@@ -1138,16 +1138,16 @@ duplicating it.
     keeps rows 16, 20 and 22.
     **Owner**: was `04-lifecycle`'s owner with this feature; **closed**.
 
-16. **What does a clone of a source with no frozen version at all do?** C1 admits a `published`
+16. ~~**What does a clone of a source with no frozen version at all do?**~~ **Answered (P-D-128, 2026-09-03): not clonable** — the read surface answers its version not-found, no new code; retention wins by design. *The item's text stood as:* C1 admits a `published`
     source, and `01-foundation`'s publish door writes the version row, so the case should not arise —
     but a `retired` entity whose versions were collected by `10-retention-erasure`'s GC has a
     lifecycle state implying frozen content and no row to read. `10`'s retention gate protects
     versions with live freeze registrations, not versions a future clone might want.
-    **Blocks**: `cpt-cf-bss-products-dod-clone-read-surface`.
+    **Blocks**: no DoD — **resolved by P-D-128** *(was: `cpt-cf-bss-products-dod-clone-read-surface`.)*
     **Owner**: `10-retention-erasure`'s owner with this feature.
 
-17. **Do the twelve variantless codes ship with their owning slices or with this feature, and as
-    what?** `UNRECOGNIZED_UNIT`, `UNIT_DEPRECATED`, `PLAN_TIER_UNKNOWN`, `PLAN_TIER_DEPRECATED`,
+17. ~~**Do the twelve variantless codes ship with their owning slices or with this feature, and as
+    what?**~~ **Answered (P-D-128, 2026-09-03): as `Violation` codes inside one `DomainError::Validation` report, with their owning slices** — the shipped collector's form; no variants minted. *The item's text stood as:* `UNRECOGNIZED_UNIT`, `UNIT_DEPRECATED`, `PLAN_TIER_UNKNOWN`, `PLAN_TIER_DEPRECATED`,
     `CATEGORY_RETIRED`, `ACCOUNTING_CODE_UNKNOWN`, `ACCOUNTING_CODE_DEPRECATED`,
     `ATTRIBUTE_DEFINITION_UNKNOWN`, `ATTRIBUTE_DEFINITION_DEPRECATED` and
     `ATTRIBUTE_SCOPE_VIOLATION` have no `DomainError` variant and are named nowhere in the crate.
@@ -1157,7 +1157,7 @@ duplicating it.
     other ten is **the form**: a `DomainError` variant each, or `Violation` codes inside one
     `DomainError::Validation` report. The second is what the shipped collector supports and what
     §7 row 13 turns on; the first would mint variants this document says it does not mint.
-    **Blocks**: `cpt-cf-bss-products-dod-revalidation-codes`.
+    **Blocks**: no DoD — **resolved by P-D-128** *(was: `cpt-cf-bss-products-dod-revalidation-codes`.)*
     **Owner**: the design-set owner, with `02`, `03` and `04`.
 
 18. ~~**Is `cloned_from` one column or two?**~~
@@ -1187,11 +1187,11 @@ duplicating it.
    **Blocks**: no DoD — **resolved by P-D-72**; `cpt-cf-bss-products-dod-clone-lineage` and `dod-clone-children` carry it.
    **Owner**: was this feature; **closed**.
 
-20. **Which store answers the metadata map read for a `retired` source?** **P-D-06** places the map
+20. ~~**Which store answers the metadata map read for a `retired` source?**~~ **Answered by the crate (P-D-128, 2026-09-03): `products_metadata`**, shipped under `02` beside the entity (P-D-06). *The item's text stood as:* **P-D-06** places the map
     outside frozen version content so it survives retirement, and `design/11` §2 relies on that —
     but no metadata-map table exists in the crate at this commit, and `02-taxonomy-attributes` owns
     it. The read is specified against a store whose shape is not yet settled.
-    **Blocks**: `cpt-cf-bss-products-dod-clone-read-surface`,
+    **Blocks**: no DoD — **resolved by P-D-128** *(was: `cpt-cf-bss-products-dod-clone-read-surface`,)*
     `cpt-cf-bss-products-dod-disposition-rules`.
     **Owner**: `02-taxonomy-attributes`' owner.
 
@@ -1205,15 +1205,15 @@ duplicating it.
     correctable in place (remedied only by retire + clone)"*. §1's glossary repeats the first and
     carries no priority of its own. Raised as an observation about the set, not a request to re-prioritise.
     **Blocks**: no DoD — it is a priority question about the feature as a whole.
-    **Owner**: the PRD owner.
+    **Owner**: *(P-D-128, 2026-09-03: a priority observation for the PRD owner; nothing here builds differently under either answer.)* the PRD owner.
 
-22. **Does the clone door consume a version of the source at all, or a snapshot of it?** The read
+22. ~~**Does the clone door consume a version of the source at all, or a snapshot of it?**~~ **Answered (P-D-128, 2026-09-03): a clone reads a version and registers nothing** — copying is not referencing, and a read holds nothing. *The item's text stood as:* The read
     surface reads the last frozen version, and `10-retention-erasure`'s freeze registrations exist so
     that a participant can hold a version against collection. A clone reads a version and does not
     register — correctly, since it copies rather than references — but nothing states that a clone's
     read is exempt from the freeze protocol, and `06-catalog-version`'s participant model does not
     enumerate readers.
-    **Blocks**: `cpt-cf-bss-products-dod-clone-read-surface`.
+    **Blocks**: no DoD — **resolved by P-D-128** *(was: `cpt-cf-bss-products-dod-clone-read-surface`.)*
     **Owner**: `06-catalog-version`'s owner.
 
 23. ~~**Who owns the decoder for a frozen version's canonical rendering?**~~
@@ -1233,15 +1233,15 @@ duplicating it.
     keeps rows 16, 20 and 22.
     **Owner**: was `01-foundation`'s canonical-rendering owner, with this feature; **closed**.
 
-24. **Is DECOMPOSITION's `Domain Model Entities` field a listing convention or an ontological
-    claim?** This pass listed `DispositionTable` and `CloneDoor` there on §2.7's and §2.10's
+24. ~~**Is DECOMPOSITION's `Domain Model Entities` field a listing convention or an ontological
+    claim?**~~ **Answered (P-D-128, 2026-09-03): a listing convention** — the slice's §1.7 names; `dod-clone-seams`' rule rests on the slice's own *"neither is an aggregate"* sentence. *The item's text stood as:* This pass listed `DispositionTable` and `CloneDoor` there on §2.7's and §2.10's
     precedent — both list their slice's §1.7 names — while the same entry says *"Neither is an
     aggregate of its own"* and `cpt-cf-bss-products-dod-clone-seams` derives a reviewer rule from
     that. Nothing states which reading governs, so the derived rule rests on an unsettled basis.
     **Blocks**: no DoD — `dod-clone-seams` stands under either reading.
     **Owner**: the design-set owner.
 
-25. **Which pipeline hosts the disposition rules, and over which subject type?**
+25. ~~**Which pipeline hosts the disposition rules, and over which subject type?**~~ **Answered (P-D-128, 2026-09-03): the clone door runs `content_save_pipeline`** — P-D-123 made it the second content writer on the save door's terms; the create door stays as it is. *The item's text stood as:*
     `cpt-cf-bss-products-dod-disposition-rules` calls the re-validating rows registered
     `ValidationRule` implementations, but the **create doors run no pipeline**: the only two
     `ValidationPipeline` constructions in the crate are `publish_revalidation_pipeline` in each door,
@@ -1251,7 +1251,7 @@ duplicating it.
     reference. So either `01-foundation` widens the create door to a registered-rule pipeline over a
     candidate carrying the disposition operands, or the clone door runs its own pipeline before
     delegating — which contradicts `cpt-cf-bss-products-dod-clone-door`'s "same validators, once".
-    **Blocks**: `cpt-cf-bss-products-dod-disposition-rules`.
+    **Blocks**: no DoD — **resolved by P-D-128** *(was: `cpt-cf-bss-products-dod-disposition-rules`.)*
     **Owner**: `01-foundation`'s door and pipeline owner, with this feature. Row 11 asks *which
     phase*; this row asks *which pipeline*, and the second must be answered first.
 
@@ -1272,12 +1272,12 @@ duplicating it.
    **Owner**: was this feature with `12-consumer-contracts`, which row 1 already holds the request half
     of; **closed**.
 
-27. **Do the two accounting codes survive into the positive-control count?**
+27. ~~**Do the two accounting codes survive into the positive-control count?**~~ **Answered (P-D-128, 2026-09-03): against the codes as minted at test time**; P-D-47 arm 3 already sends the two accounting codes with their columns, and the count with them. *The item's text stood as:*
     `cpt-cf-bss-products-dod-clone-tests` states a count per code raised, and **P-D-47** arm 3 makes
     `ACCOUNTING_CODE_UNKNOWN` and `ACCOUNTING_CODE_DEPRECATED` *"exactly as contingent as the two
     columns (`PRD` §15's ownership question) and go with them if it goes"*. No document says whether
     the test count is stated against the codes as minted or against those that survive that call.
-    **Blocks**: `cpt-cf-bss-products-dod-clone-tests`.
+    **Blocks**: no DoD — **resolved by P-D-128** *(was: `cpt-cf-bss-products-dod-clone-tests`.)*
     **Owner**: the PRD owner with `03-sku-classification`'s.
 
 ### Owed to other documents, recorded and deliberately not edited

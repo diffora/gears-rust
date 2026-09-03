@@ -269,7 +269,7 @@ via 05).
   `ILLEGAL_FIELD_MUTATION`, whose reason names 07's correction door; worth its own probe when built.
 - **Export format versioning** (schema evolution of the artifact) rides slice 12's vN→vN+1
   discipline; named here so the exporter carries a format version from day one.
-- **A renamed Product carrying no `productCode` is promoted as a create, not an update.**
+- ~~**A renamed Product carrying no `productCode` is promoted as a create, not an update.**~~ **Answered (P-D-127, 2026-09-03): identity is `productId`, then `productCode`, then the name** — exports carry ids. *The item's text stood as:*
   `normalized(name)` is both bucket-iii in 01 §4.1 (a published Product is renameable) and this
   slice's C5 fallback promotion identity where `productCode` is absent — and `product_code` is
   nullable, so a rename between promotions makes the target resolve *unknown identity* and create a
@@ -285,10 +285,10 @@ via 05).
   has no state to write. A rejected batch sits in `reported` forever holding its staged drafts and a
   slot against the concurrency ceiling. Owner: this slice, with 05 if abandonment releases the
   approval. *(Raised by the slice-09 first lens pass.)*
-- **What ends a batch that is never approved?** No timeout, expiry or reaper is stated, and the
+- ~~**What ends a batch that is never approved?**~~ **Answered (P-D-127, 2026-09-03): a reaper tick after `bulk_batch_ttl_hours` (168 interim) flips it to `abandoned`.** *The item's text stood as:* No timeout, expiry or reaper is stated, and the
   approval it waits on has no deadline either — so an abandoned-but-unabandoned batch consumes a
   tenant slot permanently. Owner: this slice with 05. *(Raised by the slice-09 first lens pass.)*
-- **What door, actor or signal starts the commit phase?** "On quorum" names no executor: this slice
+- ~~**What door, actor or signal starts the commit phase?**~~ **Answered (P-D-127, 2026-09-03): the bulk worker's claim transaction**, on observing the record `satisfied`; it writes `committing` and consumes the record. *The item's text stood as:* "On quorum" names no executor: this slice
   declares three routes and none is a commit, it names no runner, and 05's decide door is itself
   unowned (05 §6). The answer fixes which transaction writes `committing` and therefore where the
   one-shot consumption is enforced. Owner: this slice with 05. *(Raised by the slice-09 first lens pass.)*
@@ -315,25 +315,25 @@ via 05).
   batch and row keys, the row disposition and reason, the pending `GovernedLiveOp` payload, the
   itemised override set, and the `operation_key`. Owner: was this slice's storage owner with 05's;
   **closed**.
-- **Does a `bulk_batch` approval authorize a `GovernedLiveOp` apply?** This slice says the live-entity
+- ~~**Does a `bulk_batch` approval authorize a `GovernedLiveOp` apply?**~~ **Answered (P-D-127, 2026-09-03): yes** — the batch's record is the subject for every row, under P-D-105's predicate with its own writer-count guard. *The item's text stood as:* This slice says the live-entity
   ops apply "under the same consumed approval", while 05's live-op gate asks its question with the op
   **envelope** as subject, and 05's composite-act enumeration names per-row publishes and nothing
   else. 05's approval carries one subject and a partial unique over it. Owner: the governance owner
   with 05 and 02 — extend the composite-act enumeration, or give each live-entity row its own record.
   *(Raised by the slice-09 first lens pass.)*
-- **Does the per-row pin fit 05's store?** This slice states the approval's stored snapshot as the
+- ~~**Does the per-row pin fit 05's store?**~~ **Answered (P-D-127, 2026-09-03): the scalar pin is the ledger digest; the per-row pins live in `content_snapshot`, which holds the report.** *The item's text stood as:* This slice states the approval's stored snapshot as the
   report **plus the ledger's per-row pinned revisions**, and 05 declares one scalar
   `internal_revision` per record — registering the mismatch itself as "What do the entity-shaped
   columns hold for the non-entity subject kinds?". Owner: 05's owner with 12. *(Raised by the slice-09 first lens pass.)*
-- **Where does the `ChangeReport`'s diff read its two operands?** The pre-approval view is "staged
+- ~~**Where does the `ChangeReport`'s diff read its two operands?**~~ **Answered (P-D-127, 2026-09-03): this slice's ledger and `01`'s repository read of the heads**, through `domain::canonical`. *The item's text stood as:* The pre-approval view is "staged
   content vs the target's current heads", this slice books 08 as the input, and 08's C6 projects
   entity content **only** from frozen version rows, never from heads — and serves no draft. Neither
   operand has a stated producer. Owner: this slice with 08. *(Raised by the slice-09 first lens pass.)*
-- **Which slice builds the lint producer?** The `ChangeReport` is a PRD MUST that must carry lint
+- ~~**Which slice builds the lint producer?**~~ **Answered (P-D-125, 2026-09-03): `01`, as a dry-run of its publish pipeline.** *The item's text stood as:* The `ChangeReport` is a PRD MUST that must carry lint
   findings; 06 §6 records that no instruction, store, RBAC pair, error code or probe in that slice
   delivers the report and names this slice as co-owner of the gap. Owner: the design-set owner with
   06 and this slice. *(Two lenses raised it independently.)*
-- **What makes the export byte-deterministic?** C4 promises byte-for-byte determinism for a given
+- ~~**What makes the export byte-deterministic?**~~ **Answered (P-D-127, 2026-09-03): P-D-29's rule** — `domain::canonical`, collections sorted by their identifiers. *The item's text stood as:* C4 promises byte-for-byte determinism for a given
   version; 06 §6 records that the manifest it renders from has no named sort key for its row
   collections, and `inst-bk-export` states no canonical serialization for the artifact itself. Owner:
   P-D-29's owner with 06 and this slice. *(Raised by the slice-09 first lens pass.)*
@@ -346,11 +346,11 @@ via 05).
   gets `DUPLICATE_CODE` under `inst-bk-keys` and update-as-draft under `inst-pm-resolve`. No request
   field, header or route segment distinguishes an import from a promotion. Owner: this slice with the
   contract owner. *(Raised by the slice-09 first lens pass.)*
-- **What is "update-as-draft" for a row kind with no draft state?** C5 calls its four classifications
+- ~~**What is "update-as-draft" for a row kind with no draft state?**~~ **Answered (P-D-127, 2026-09-03): `update-as-live-op`** — a `GovernedLiveOp` envelope applied at commit under the batch record. *The item's text stood as:* C5 calls its four classifications
   exhaustive and this pass added the live-entity promotion identities to it, so a promoted category
   whose content differs falls into a classification it cannot occupy. Owner: this slice with 02.
   *(Raised by the slice-09 first lens pass.)*
-- **Is the scope-values lint blocking or advisory, and what does "unseen" mean?** It appears once,
+- ~~**Is the scope-values lint blocking or advisory, and what does "unseen" mean?**~~ **Answered (P-D-127, 2026-09-03): advisory**, acknowledged through the override ceremony; *"unseen"* is a token no published entity carries. *The item's text stood as:* It appears once,
   carries no code, no threshold and no probe, and nothing says whether it stops the report, the
   approval or nothing. Owner: this slice. *(Raised by the slice-09 first lens pass.)*
 - ~~**No instruction in this slice names its event or records "no event".**~~
