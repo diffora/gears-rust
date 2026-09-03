@@ -305,8 +305,8 @@ actor, the scenarios and the boundary.
   that this slice's own operand admits (a `draft` head still referencing it), raising a raw violation
   instead of `PLAN_TIER_RETIRE_BLOCKED`. This pass struck the FK claim. Owner: this slice with the
   schema owner. *(Raised by the slice-03 first lens pass.)*
-- **At which publishes do the recognized-and-active unit, tier and accounting-code checks run, and
-  what tells a new declaration from a carried-forward one?** The draft clause forces the check at
+- ~~**At which publishes do the recognized-and-active unit, tier and accounting-code checks run, and
+  what tells a new declaration from a carried-forward one?**~~ **Answered (P-D-121 row 8, 2026-09-03): a new or changed declaration is judged; a carried-forward value is judged by the state it had when declared** — otherwise a deprecation is a retroactive lockout the deprecate-then-remove path exists to avoid; the comparand is the previous published version. *The item's text stood as:* The draft clause forces the check at
   publish over the stored value; the
   de-listing clause says existing publishes are unaffected. A bucket-iii re-publish re-runs every
   registered validator fail-closed, so as written, deprecating a unit, a tier or a code freezes every
@@ -314,13 +314,13 @@ actor, the scenarios and the boundary.
   `inst-ac-recognized` each state both clauses. No store holds a new-versus-carried-forward marker.
   Owner: this slice with 01.
   *(Raised by the slice-03 first lens pass.)*
-- **Which door writes `products_recognized_set`, at what path and under what grant?** The only stated
+- ~~**Which door writes `products_recognized_set`, at what path and under what grant?**~~ **Answered (P-D-90, 2026-09-01): `POST /bss-products/v1/recognized-sets/{setKind}/members` and `…/members/{memberCode}/transitions`**, one route family under `recognized_set × write`. *The item's text stood as:* The only stated
   write mechanism is `GovernedLiveOp`, and this slice names no route; 05 already mints
   `recognized_set × write` and `plan_tier × write` with no door to attach them to, while 09's bulk lane
   is currently the only *named* writer of the table. Owner: this slice with 05 — one door for all four
   `set_kind` values, or one per set. *(Raised by the slice-03 first lens pass.)*
-- **Who writes the seed members for a tenant created after the migration, and are the Finance sets
-  seeded at all?** No writer is named for the unit seeds, the tier seed or the code sets, and the rows
+- ~~**Who writes the seed members for a tenant created after the migration, and are the Finance sets
+  seeded at all?**~~ **Answered (P-D-104, 2026-09-02; restated by P-D-121 row 10): on the tenant's first write that could need one, in that transaction, once** — nobody by migration; which members the Finance sets seed is §2's roster to name. *The item's text stood as:* No writer is named for the unit seeds, the tier seed or the code sets, and the rows
   are load-bearing: `inst-mt-recognized` refuses every declaration outside the set, so a tenant
   provisioned after the migration could declare no meter. 02 registers the identical question and
   names this slice in it. Owner: this slice with 01. *(Raised by the slice-03 first lens pass.)*
@@ -336,7 +336,7 @@ actor, the scenarios and the boundary.
   spent. No number is given for "a short timeout" and §17.1 carries no row; and "not wired" is not
   separated from "unreachable", which 06 makes explicit for its own inbound client. Owner: this slice
   with 09 and the §17.1 owner. *(Raised by the slice-03 first lens pass.)*
-- **Which code does an absent `type` carry?** If `type` is required at create, the shape phase raises
+- ~~**Which code does an absent `type` carry?**~~ **Answered (P-D-121 row 13, 2026-09-03): `VALIDATION` at the shape phase**; `SKU_TYPE_UNKNOWN` covers a present, unrecognized value and its absent arm is unreachable by construction. *The item's text stood as:* If `type` is required at create, the shape phase raises
   `VALIDATION` and the run stops there, so `SKU_TYPE_UNKNOWN`'s "absent" arm is unreachable and AC #38's
   map gets two different readings. No document says whether `type` is in the shape phase's
   required-at-this-state set. Owner: this slice with the error-contract owner. *(Raised by the slice-03 first lens pass.)*
@@ -356,7 +356,7 @@ actor, the scenarios and the boundary.
   the tombstone mechanics and never touches the reference operand. Owner: this slice with 02, jointly —
   02's rule cited uniformity with this one until this pass struck the claim.
   *(Raised by the slice-03 second lens pass.)*
-- **Is a `sellable` flip material?** 05 `inst-mt-inputs` registers `sellable` among this slice's
+- ~~**Is a `sellable` flip material?**~~ **Answered (P-D-121 row 16, 2026-09-03): yes** — `05` registers it bucket-iii under P-D-28 and the PRD's enumeration is a floor the design exceeds on purpose: a `sellable` flip changes what a consumer may buy. *The item's text stood as:* 05 `inst-mt-inputs` registers `sellable` among this slice's
   bucket-iii fields, which "make any touch material", while the PRD's material-change enumeration
   (§6.7) names `PlanTier`, metering-unit, `taxCategory` and `glCode` and not `sellable`; `fr-sku-sellable`
   and AC #2a say only that the flip is governed. P-D-11 rewrote the count in that sentence and left the
@@ -370,7 +370,7 @@ actor, the scenarios and the boundary.
   whitelist and blessing it (as `design/01`'s head guard blesses its own timestamp) are both
   authored choices. Owner: this slice with the schema owner. *(Raised by the three-lens review of
   2026-09-01; recorded in the migration's own doc.)*
-- **Is a PlanTier display-label rename material?** `inst-pt-stable-code` makes the rename display-only
+- ~~**Is a PlanTier display-label rename material?**~~ **Answered (P-D-121 row 17, 2026-09-03): no — non-material at `min(N, 1)`, uniformly with `02`**; `05`'s taxonomy-ops registration gains one display-label exception for both slices. *The item's text stood as:* `inst-pt-stable-code` makes the rename display-only
   by construction, and 05 registers this slice's `PlanTier` taxonomy ops as material without excepting
   it — while 02 `inst-ad-governed` calls the identical edit on its own vocabulary non-material at
   `min(N, 1)`. PRD §6.7 names category ops and material attribute-definition changes and says nothing
@@ -382,7 +382,7 @@ actor, the scenarios and the boundary.
   silence for `WellKnownSeed`, and registers it among its own code-less refusals. Owner: this slice with
   02 and the error-contract owner — one code for the shared rule, or a widening of an existing one.
   *(Raised by the slice-03 second lens pass.)*
-- **Does the registered-validators phase run before the publish transaction, or inside it?**
+- ~~**Does the registered-validators phase run before the publish transaction, or inside it?**~~ **Answered (P-D-121 row 19, 2026-09-03; P-D-97 as shipped): inside** — and a validator with a cross-gear input resolves it *before* and is handed a `Resolution`, `MaterialityEvaluator`'s shape; `07`'s fix follows the same pattern. *The item's text stood as:*
   `inst-cd-once` puts a cross-gear call with a short timeout and no retry in that phase because it
   "runs before the publish transaction opens", which is what 01 `inst-fd-publish-txn` says (the
   transaction opens on the gate's yes); 07 `inst-cr-republish` says the admission gate "is itself a
@@ -397,7 +397,7 @@ actor, the scenarios and the boundary.
   lane that publishes a `bundle` carries it") an ordinary bucket-iii re-publish of a composed bundle
   demands the override again and re-raises `compositionPending`; 06 exempts only its own `system_signal`
   re-publish. Owner: this slice with 01 and 06. *(Raised by the slice-03 second lens pass.)*
-- **What closes the de-list window between the holder census and the flip?** `inst-us-delist`
+- ~~**What closes the de-list window between the holder census and the flip?**~~ **Answered (P-D-121 row 21, 2026-09-03): one transaction, and the flip's `UPDATE` re-asserts the census** — `WHERE NOT EXISTS (a non-terminal published head declaring the member)` — while the publish's own recognized-and-active check refuses a removed member inside its transaction. *The item's text stood as:* `inst-us-delist`
   states the invariant — a removal is refused while a non-terminal published head still declares
   the unit — and names no mechanism for enforcing it across two transactions. The shipped doors read
   the holder population and the member on separate transactions at the engine's default isolation,

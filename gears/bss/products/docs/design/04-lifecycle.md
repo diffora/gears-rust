@@ -382,7 +382,7 @@ pricing D-47 (joint contract), P-D-04 (containment residue).
   (C4) but operationally invisible without slice 08's surfacing + the `retirement_held` alert;
   the §15 fail-safe tripwire (slice 07) bounds the corrections debt, nothing yet bounds held
   retirements. Candidate for an operator report, not a new mechanism.
-- **Cascade + scheduled child publishes**: a `pending` scheduled publish on a child of a
+- ~~**Cascade + scheduled child publishes**~~ **Answered (P-D-114 row 2, 2026-09-03): supersede, then schedule, atomically** — `inst-cp-plan`'s own two clauses; the confirmation is the only writer and it is one transaction. *The item's text stood as:*: a `pending` scheduled publish on a child of a
   retiring Product is superseded by the cascade (auto-discard or listed) — stated here, but the
   supersession ordering deserves a probe when built.
 - **Owed: the instruction row registering the create-door live-retire-intent validator.**
@@ -392,7 +392,7 @@ pricing D-47 (joint contract), P-D-04 (containment residue).
   and until one does nobody builds the guard — leaving item 36's hole open: a draft SKU created
   under a Product with a live retire intent defers that retirement indefinitely. *(Raised by the
   slice-01 fifth-pass review.)*
-- **Does any runner write the reserved lane `internal:cascade-leg`?** 01 §3.2 reserves three
+- ~~**Does any runner write the reserved lane `internal:cascade-leg`?**~~ **Answered (P-D-113 arm 6, 2026-09-03): the activation runner, when it activates a cascade leg** — nothing wrote it before because nothing activated anything. *The item's text stood as:* 01 §3.2 reserves three
   `internal:` lane names and names this slice as the writer of the cascade one, keyed by "the
   leg's" id — but a repo-wide grep finds the lane only in 01 and in `DECISIONS.md` **P-D-26**, which reserves it and names this slice and 09 as its targets, this slice's cascade rows name no
   lane, and its one lane use routes legs through the runner on `internal:scheduled-activation`
@@ -400,7 +400,7 @@ pricing D-47 (joint contract), P-D-04 (containment residue).
   ride the activation lane and 01 reserves a name nothing uses, or this slice owes the row that
   writes it — and the `client_key` it is keyed by, which no table here supplies. Owner: this slice
   with 01. *(Raised by the slice-01 fourth lens wave.)*
-- **What announces a Product's `deprecated→retired` flip?** 01 §4.5 asserts this slice announces
+- ~~**What announces a Product's `deprecated→retired` flip?**~~ **Answered (P-D-115, 2026-09-03): `ProductRetirementEffective`**, its payload the SKU flip body minus `replacedBy`. *The item's text stood as:* 01 §4.5 asserts this slice announces
   all three floor edges, naming `SkuRetirementEffective` on `deprecated→retired`. This slice gives
   the parent Product its own retire `ScheduledTransition` on that edge (H2 fix) and emits
   `ProductRetired` at *initiation*, but its Events list names no Product analogue for the flip — **now load-bearing: P-D-70 keys `08`'s projector on exactly that analogue, so until this slice mints it a retired Product stays browsable**
@@ -413,24 +413,24 @@ pricing D-47 (joint contract), P-D-04 (containment residue).
   `inst-fd-save-txn` is the only door that may change a SKU's `product_id`, so a draft SKU can be
   re-parented under a retire-pending Product by a door neither arm covers — the hazard
   `inst-fd-containment-retire-intent` itself describes. Owner: this slice. *(Filed from 01 §6 by the slice-01 eighth lens pass — the pointer claimed it was registered here and it was not.)*
-- **What is the claim lease, and what is the per-transition attempt budget?** `inst-ar-claim`
+- ~~**What is the claim lease, and what is the per-transition attempt budget?**~~ **Answered (P-D-113 arm 4, 2026-09-03): `activation_claim_lease_secs` 60 and `activation_attempt_budget` 5, interim, in `ProductsConfig`**; `attempt` increments on every claim, so the budget can actually be spent. *The item's text stood as:* `inst-ar-claim`
   reclaims a `running` row "past the claim lease" and `inst-ar-failure` bounds retries by "a
   per-transition attempt budget"; neither carries a value, a default or a config home, and PRD
   §17.1's interim-defaults table has no row for either. 03 relies on the same budget. Owner: the
   §17.1 policy owner. *(All three lenses raised it independently.)*
-- **Is the cascade-retire trigger keyed on non-`retired` or non-terminal children?**
+- ~~**Is the cascade-retire trigger keyed on non-`retired` or non-terminal children?**~~ **Answered (P-D-114 row 9, 2026-09-03): non-terminal** — a `discarded` child is terminal and non-retired, and firing over it would try an edge the machine admits no path for; the DoD's *"non-retired"* is corrected. *The item's text stood as:*
   `inst-cp-plan` fires over non-`retired` SKUs while `inst-pc-narrowing` rejects that exact operand
   for its sibling rule and records the narrowing by number. A `discarded` child is inside the
   trigger population and fits none of the three plan arms. The PRD carries the wider wording, so
   narrowing it is a deliberate deviation that owes a register entry. Owner: this slice with the PRD
   owner. *(Two lenses raised it independently.)*
-- **Is `inst-pc-narrowing`'s operand a PRD deviation that owes an entry?** The instruction
+- ~~**Is `inst-pc-narrowing`'s operand a PRD deviation that owes an entry?**~~ **Answered (P-D-115, 2026-09-03): the register entry is P-D-115 itself** — narrowing is judged at publish, naming the falling-out children. *The item's text stood as:* The instruction
   reads **non-terminal**, `fr-parent-child-integrity` reads non-`retired`, and the reasoning here is
   sound — but no `DECISIONS.md` entry records the change, the way P-D-20 recorded the struck freeze.
   **P-D-96 did not settle this**: it withdrew the narrowing-specific *code*, leaving the *operand*
   question exactly as it stood. Owner: the PRD owner. *(Raised by the slice-04 first lens pass.)*
-- **Does the narrowing refusal name the falling-out children, now that it rides
-  `SCOPE_NOT_CONTAINED`?** `inst-pc-narrowing` says *"the validator names the falling-out
+- ~~**Does the narrowing refusal name the falling-out children, now that it rides
+  `SCOPE_NOT_CONTAINED`?**~~ **Answered (P-D-115, 2026-09-03): yes, at publish, and the door does** (`features/lifecycle.md` §7 row 27). *The item's text stood as:* `inst-pc-narrowing` says *"the validator names the falling-out
   children"*, and **P-D-96 leaves that requirement untouched** — but the code it now rides does not
   meet it: `skus::scope_not_contained_domain_err` builds its detail from the **dimension and the two
   scope value sets**, never from child ids, and the create door's standing choice not to name
@@ -440,8 +440,8 @@ pricing D-47 (joint contract), P-D-04 (containment residue).
   answering it here would be authoring, and the lead's P-D-96 mandate was the roster edit only.
   Owner: the lifecycle owner with `01-foundation` (the builder is 01's). *(Raised by the lead's
   2026-09-02 roster edit.)*
-- **How does the active-reference count the operator *saw* reach the retire
-  request?** `inst-rt-confirm` requires *"explicit confirmation with the active-reference count
+- ~~**How does the active-reference count the operator *saw* reach the retire
+  request?**~~ **Answered (P-D-115, 2026-09-03): it does not** — the confirmation is a boolean and the count is displayed, not pinned (`features/lifecycle.md` §7 row 34). *The item's text stood as:* `inst-rt-confirm` requires *"explicit confirmation with the active-reference count
   shown"* (07's predicate, conservative states included). §3.3 requires confirmation and does
   not pick its wire form. Three observably different readings:
 
@@ -460,8 +460,8 @@ pricing D-47 (joint contract), P-D-04 (containment residue).
   predicate is a live operand will stand on the narrowest reading that lets it exist
   (a boolean `confirmed`), and that posture is not a ruling. Owner: this slice with
   07. *(Raised when §3.3 wrote the request shapes.)*
-- **Does a deferred cascade complete automatically or by an operator act, and who writes
-  `resolution = children_cleared`?** Three mechanics are in play for one act: `inst-ar-failure` says
+- ~~**Does a deferred cascade complete automatically or by an operator act, and who writes
+  `resolution = children_cleared`?**~~ **Answered (P-D-114 row 11, 2026-09-03): the operator resumes, and the resume writes `resolution = children_cleared`**; the flip guard's re-check on the next poll decides whether the deferral still holds and is not the resolution. *The item's text stood as:* Three mechanics are in play for one act: `inst-ar-failure` says
   `deferred` re-evaluates automatically, `inst-cp-deferred` says the parent is "resumable by an
   operator once the listed children clear", and §4's `resolution` has a named writer for
   `cascade_cancelled` and none for `children_cleared`. No listed child acquires a retire intent of
@@ -477,13 +477,13 @@ pricing D-47 (joint contract), P-D-04 (containment residue).
   §4's two tables hold no such row and §3.1's observability line names only gauges and
   `retirement_held`. Owner: this slice with the observability owner — alert only (then strike
   "stored fact"), or a row with a table, key and consumer. *(Raised by the slice-04 first lens pass.)*
-- **Is `effectiveAt` an operator input or computed?** `inst-rt-initiate` has it "honoring the
+- ~~**Is `effectiveAt` an operator input or computed?**~~ **Answered by the crate (`features/lifecycle.md` §7 row 14): both** — `RetireSkuRequest.effective_at` is optional; absent means now plus the interim 30-day lead, and `RETIREMENT_LEAD_TIME` judges a supplied instant. *The item's text stood as:* `inst-rt-initiate` has it "honoring the
   configured lead-time policy … `RETIREMENT_LEAD_TIME` otherwise", and §3.2 declares the code with a
   status. If the registry computes `now + policy` the code can never be raised — a declared code
   with no raiser, which 12's completeness check reads as a defect; if the operator supplies a date,
   the door owes a date input, a fail-closed comparison and a timezone rule. Owner: this slice with
   Product. *(Raised by the slice-04 first lens pass.)*
-- **Which actor performs the governed cancel of a `ScheduledTransition`?** `inst-lc-undeprecate`
+- ~~**Which actor performs the governed cancel of a `ScheduledTransition`?**~~ **Answered (P-D-114 row 15, 2026-09-03): the catalog admin**, under the N-governed ceremony the un-deprecation instruction registers; the actor who initiates a retirement or a cascade is the actor who may abort one. *The item's text stood as:* `inst-lc-undeprecate`
   makes the cancel a `GovernedLiveOp` registered material by this slice; §1.3's roster gives it to
   nobody — the catalog-admin row carries "initiates retirement/cascades" and "resumes deferred
   cascades", both forward acts. Owner: this slice with 05. *(Raised by the slice-04 first lens pass.)*
@@ -493,6 +493,6 @@ pricing D-47 (joint contract), P-D-04 (containment residue).
   PRD's wording the arm has no v1 population at all. Owner: the PRD owner, as a wording call.
   *(Raised by the slice-04 first lens pass.)*
 - ~~**`inst-lc-terminal` restates a rule §1.5 puts out of scope.**~~ **Answered (owner, 2026-09-03): the row is kept as a pointer and reworded to say so** — it declares nothing `01` does not, and it stays because a reader of the lifecycle's edge list should find `retired`'s fate stated beside the others rather than by absence.
-- **Pointer**: which slice declares `PARENT_NOT_PUBLISHED` is open in 01 §6, owned by P-D-35/36's
+- ~~**Pointer**~~ **Answered (P-D-97; `features/lifecycle.md` §7 row 18): `PARENT_NOT_PUBLISHED` is declared by `01` and raised by `04`'s parent guard as a publish-phase continuation.** *The item's text stood as:*: which slice declares `PARENT_NOT_PUBLISHED` is open in 01 §6, owned by P-D-35/36's
   owner. This slice asserts one arm ("named in 01, registered here"); the answer is not this
   slice's to give.

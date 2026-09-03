@@ -365,7 +365,7 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
   already settles that `draft→discarded` is ungated beyond authz, so this is the grant model
   only: minting `discard` lets a tenant withhold it, folding it into `write` does not. Owner:
   this slice (`cpt-cf-bss-products-contract-rbac`). *(Raised by the slice-01 sixth-pass review.)*
-- **What code does an authorization denial carry, and what status?** Every door in 01 §2 opens by
+- ~~**What code does an authorization denial carry, and what status?**~~ **Struck in `features/governance.md` §7 row 3 (P-D-119/P-D-120, 2026-09-03):** **What code does an authorization denial carry, and what status?** Every door opens by authorizing deny-by-default and no slice declares a denial code, while the Foundation requires every code to carry a status and every refusal to be audited with its reason. *The item's text stood as:* Every door in 01 §2 opens by
   authorizing deny-by-default, 01 §1.5 puts RBAC grants in this slice, and no slice declares a
   denial code — while 01 §3.3 requires every code to carry a status and 01 §4.4 requires every
   refusal to be audited with its reason. So the first step of every registry door terminates in a
@@ -381,7 +381,7 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
 - **Does the authoring head read need an action of its own in the RBAC catalog?** 01 §2's `GET` is
   an authoring read, and 01 §4.3 says that read "is not a consumer read", while this slice's
   catalog lists only `read|write|publish` per kind. Owner: this slice. *(Filed from 01 §6 by the slice-01 eighth lens pass — the pointer claimed it was registered here and it was not.)*
-- **What does `Gate` mode require of a gated transition?** 01 `inst-fd-gate-mode-gate` is worded for
+- ~~**What does `Gate` mode require of a gated transition?**~~ **Answered (P-D-105, 2026-09-02): for a scheduled flip, that the record is `consumed` and the flipped row's own `approval_ref` names it** — subject/revision equality is dropped there and kept everywhere else; the operand is a stored column no caller can write. *The item's text stood as:* 01 `inst-fd-gate-mode-gate` is worded for
   a publish and pins "the door's expected revision", while the transition doors are this slice's and
   04's and pin nothing stated in 01. Owner: this slice with 04. *(Filed from 01 §6 by the slice-01 eighth lens pass — the pointer claimed it was registered here and it was not.)*
 - **Is a break-glass two-person approval an `ApprovalRecord`, and what holds its fixed floor?**
@@ -401,17 +401,17 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
   on `products_approval_decision`, whose row demands an approver principal and a verdict the author
   does not have, and `products_approval` has no acknowledgment column. Owner: this slice's storage
   owner. *(Two lenses raised it independently.)*
-- **Which transaction writes `state = satisfied`?** Every other value has a named writer — submit
+- ~~**Which transaction writes `state = satisfied`?**~~ **Struck in `features/governance.md` §7 row 11 (P-D-119/P-D-120, 2026-09-03):** . Two writers, each the transaction in which the fact becomes true. *The item's text stood as:* Every other value has a named writer — submit
   flips `superseded`, a rejection finalizes `rejected`, the publish/apply marks `consumed`. This one
   has only an evaluator, and nothing says whether a record at `required = 0` is born satisfied. If
   satisfaction is evaluated at gate time instead, the `satisfied` branch of §4's partial unique is
   dead. Owner: this slice. *(Raised by the slice-05 first lens pass.)*
-- **What door carries submit, decide and break-glass elevation?** The catalog mints
+- ~~**What door carries submit, decide and break-glass elevation?**~~ **Answered (P-D-120, 2026-09-03): `POST /approvals`, `POST /approvals/{id}/decisions`, `POST /breakglass-sessions`.** *The item's text stood as:* The catalog mints
   `approval × submit|read|decide` and `breakglass × elevate`, and the only route this slice declares
   is the inbox `GET`. 01 §1.5 closes its own set at five wire doors. `DESIGN.md` books approvals
   here and says endpoint tables live per slice. Owner: this slice with the contract owner — routes,
   verbs, grants and statuses. *(Raised by the slice-05 first lens pass.)*
-- **What do the entity-shaped columns hold for the non-entity subject kinds?** §4 fixes pinned
+- ~~**What do the entity-shaped columns hold for the non-entity subject kinds?**~~ **Struck in `features/governance.md` §7 row 14 (P-D-119/P-D-120, 2026-09-03):** **What do the entity-shaped columns hold for the non-entity subject kinds?** The pinned revision, content snapshot and diff basis are fixed on every record, while **at least three** of the five kinds are not entities — a `GovernedLiveOp` envelope, a `system_si *The item's text stood as:* §4 fixes pinned
   `internal_revision`, `content_snapshot` and `diff_basis` on every record, while at least three
   subject kinds are not entities — a `GovernedLiveOp` envelope, a `system_signal`, a `bulk_batch`.
   A live op has no internal revision, no published version to diff against, and no scope for
@@ -424,12 +424,12 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
   catalog entry with no door is invisible to it in both directions. Owner: the governance owner with
   04, 08 and 12 — is the catalog the mint, or must a slice name its pair first?
   *(Two lenses raised it independently.)*
-- **Is `APPROVER_ROLE_REQUIRED` 403 or 409?** The gate now raises it (this pass), but §3.3's own
+- ~~**Is `APPROVER_ROLE_REQUIRED` 403 or 409?**~~ **Answered (P-D-119, 2026-09-03): 403, at the decide door** — the caller may not take the act whatever the record's state; `DECISION_ALREADY_RECORDED` is the 409 beside it. *The item's text stood as:* The gate now raises it (this pass), but §3.3's own
   convention puts **409** where the current state refuses the act and **403** where the caller may
   not act at all — and by its stated raise site the caller may publish and it is the record's state
   that refuses, which is where the sibling `APPROVAL_SUPERSEDED` sits at 409. Owner: the governance
   owner with the taxonomy owner. *(Raised by the slice-05 first lens pass.)*
-- **Does `quorumReduced` fire on every non-material change at the default `N = 2`?** §1.7 sets the
+- ~~**Does `quorumReduced` fire on every non-material change at the default `N = 2`?**~~ **Answered (P-D-120, 2026-09-03): it marks an effective count below the default of two, for any cause** — so yes at the default; a bucket-iv-only re-publish rides it. *The item's text stood as:* §1.7 sets the
   marker "when the effective count is below the retained-name default of 2", and a bucket-iv-only
   re-publish at `N = 2` has an effective count of 1 — so the marker would ride the majority of
   records. P-D-13 frames it as a marker for the *reducible ceremonies*. Nothing distinguishes

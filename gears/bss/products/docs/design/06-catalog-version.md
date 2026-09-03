@@ -395,7 +395,7 @@ struck. Branch review.)*
   named to keep it out of v1).
 - **Bulk-lane starvation**: a steady interactive trickle must not defer a bulk window past its
   5-min hard max — the coalescer's deadline logic gets a probe when built.
-- **`freezeComplete` = "all acked" regresses when a participant releases.** `inst-fz-ack` defines
+- ~~**`freezeComplete` = "all acked" regresses when a participant releases.**~~ **Answered (P-D-84 arm 1, 2026-09-01): the predicate ranges over SETTLED** — complete ⇔ no `pending` and no `not_frozen(forced)` row, a release settling exactly as an ack — so completeness is monotone and the regression cannot be expressed. *The item's text stood as:* `inst-fz-ack` defines
   the predicate over the ledger's current value, and §4 makes `state` "four values, one column" —
   so the release door overwrites `acked` with `released` and the version flips back out of
   posting-safe. §4 already stores `acked_at` / `released_at`, so a timestamp-keyed predicate is
@@ -461,7 +461,7 @@ struck. Branch review.)*
   `released`, and whether a forced participant's later ack clears the `released_at` the ceremony
   stamped. Each answer changes both `freezeComplete` and slice 10's collection gate, which reads
   the pair. Owner: was this slice with 10; **closed** for the edges.
-- **What is the resolution API's transport and route?** `IntentfulResolver` is the only door in
+- ~~**What is the resolution API's transport and route?**~~ **Answered (P-D-84 arm 4, 2026-09-01): the request door's dual shape** — an SDK client surface (P-D-15) plus `GET /bss-products/v1/catalog-versions/{id}` with a required `intent` query, both under `catalog_version × read`. *The item's text stood as:* `IntentfulResolver` is the only door in
   this slice with no route: the increment door and the diff both carry one, 08 explicitly puts the
   surface out of its scope, and 01 hands this slice the intent clause without a surface. 12's
   qualifier grammar means this slice cannot simply add the authoring-publish contract id while 01
@@ -499,7 +499,7 @@ struck. Branch review.)*
   and records its NFR #3 probe as owed, while 08 also names the meter as 01's. The posting-safe
   composite is declared derivable from three meters when one is declared nowhere. Owner: this slice
   with 01 and 08. *(Raised by the slice-06 first lens pass.)*
-- **`freezeComplete` and `freeze_state` are one concept with two names and two shapes.** `PRD` §3
+- ~~**`freezeComplete` and `freeze_state` are one concept with two names and two shapes.**~~ **Answered (P-D-84 arm 3, 2026-09-01): the exposed flag derives strictly** — `freezeComplete = (freeze_state = 'complete')`, `complete(forced)` reads false with `VERSION_FORCED_INCOMPLETE` carrying the why; the column stays the storage truth. *The item's text stood as:* `PRD` §3
   defines `freezeComplete` as "A per-`CatalogVersion` **flag**" and §6.6 makes it a **MUST expose**
   obligation per `catalogVersionId`; §4 of this slice stores `freeze_state ∈ {open, complete,
   complete(forced)}`; and **P-D-19** writes `freezeComplete = complete(forced)`, which is coherent

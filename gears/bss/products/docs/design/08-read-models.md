@@ -333,7 +333,7 @@ clause — M5); the §5.1 p2 rows "Advanced search, filter & faceting" and the r
   **Answered (owner call, 2026-09-01 — P-D-70): yes, through the by-id read under an explicit state opt-in** — browse stays exclusionary, the timeline stays `p2`, and the FR's `p1` is met by one explicit parameter that is never the default. Original text: C2 and `inst-rb-query` state it at `p1` through "the
   explicit history surface", and that surface is the `p2` timeline flow. Owner: this slice with the
   PRD owner, the FR's priority being the PRD's. *(Raised by the slice-08 first lens pass.)*
-- **Under which aggregate key are 02's two display events ordered?** The projector's idempotence
+- ~~**Under which aggregate key are 02's two display events ordered?**~~ **Answered (P-D-116 row 15 and P-D-122, 2026-09-03): their own entity's id** — a display write serializes on `products_category.mutation_seq`, `CategoryDisplayUpdated` carries the token it spent (`mutationSeq`) so the projector can order on it, and `AttributeDefinitionUpdated` orders on the definition's id. *The item's text stood as:* The projector's idempotence
   rests on a per-`(tenant, aggregate)` checkpoint, and 02 §6 registers that `CategoryDisplayUpdated`
   and `AttributeDefinitionUpdated` fall under neither of its two stated ordering keys. Without one
   a rename and a display edit on the same category can land in either order. Owner: 02 with 12 —

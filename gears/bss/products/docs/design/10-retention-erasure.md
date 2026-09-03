@@ -258,14 +258,14 @@ either way).
   silently.
 - **Encrypted-at-rest for the map** rides the platform storage posture; if a deployment lacks
   it, this table is the one that must not ship — a deployment gate, not a code path.
-- **Which store holds the audit rows this slice's own rules require?** `inst-er-erase` is "audited
+- ~~**Which store holds the audit rows this slice's own rules require?**~~ **Answered (owner call, 2026-09-03; `features/retention-erasure.md` §7 row 4): the compliance export needs no new class** — a read writes no outbox row, P-D-21's own reason for class 2 — **and the erasure act gets a fourth class**, acts whose evidential record must carry a field the event deliberately omits. *The item's text stood as:* `inst-er-erase` is "audited
   with a reason", `inst-er-export` audits "every access individually", and 01 §4.4 holds — under
   **P-D-21** — "only acts that emit no event, in three classes". The erasure act emits
   `ActorErased`, so it writes no row there; the compliance export is a read that is not "a read
   under elevation"; and the minimal `ActorErased(actor_ref)` carries neither the reason nor the
   eraser's own ref. Either 01 §4.4 gains a class, `ActorErased` widens, or these acts are declared
   eventless. Owner: 01's owner with P-D-21's. *(Two lenses raised it independently — slice-10 first lens pass.)*
-- **What `actor_ref` attributes an unattended act's audit row?** The age-triggered tombstone and
+- ~~**What `actor_ref` attributes an unattended act's audit row?**~~ **Answered (P-D-113 arm 2, 2026-09-03): `gear::system_actor_ref()`, a stable UUID v5 from `bss-products:system`** — the per-boot v4 was a defect. *The item's text stood as:* The age-triggered tombstone and
   every GC act are audited, 01 makes the audit row's `actor_ref` non-nullable, and every ref in
   the set is minted for a human principal on first appearance. No document names a system ref or
   admits a null one. Owner: 01's owner with this slice. *(Raised by the slice-10 first lens pass.)*
@@ -321,7 +321,7 @@ either way).
   enum has no member for a refusal a caller will routinely hit. Either it rides 01's `VALIDATION`
   or this slice declares its own. Owner: was this slice with the error-contract owner; **closed**.
   *(Raised by the slice-10 first lens pass.)*
-- **What does "byte-identical in effect" mean for the age-triggered path?** §5 asserts the age
+- ~~**What does "byte-identical in effect" mean for the age-triggered path?**~~ **Answered (P-D-117, 2026-09-03): the map state** — tombstoned, payload destroyed, `principal_ref` standing — and the audit row differs by construction. *The item's text stood as:* §5 asserts the age
   path is byte-identical in effect to the requested path, while the requested path is "audited
   with a reason" and the age path has no requester and no supplied reason. Nothing says whether
   the audit row is part of "effect" or only the map state. Owner: this slice. *(Raised by the slice-10 first lens pass.)*

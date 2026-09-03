@@ -1063,13 +1063,13 @@ citation discipline, not as a live blocker.
     **Owner**: was this slice with the PRD owner, the FR's priority being the PRD's. *(Raised by the
     slice-08 first lens pass.)*; **closed**.
 
-15. **Under which aggregate key are 02's two display events ordered?** The projector's idempotence
+15. ~~**Under which aggregate key are 02's two display events ordered?**~~ **Answered (P-D-116 row 15 and P-D-122, 2026-09-03): their own entity's id** — a display write serializes on `products_category.mutation_seq`, `CategoryDisplayUpdated` carries the token it spent (`mutationSeq`) so the projector can order on it, and `AttributeDefinitionUpdated` orders on the definition's id. *The item's text stood as:* The projector's idempotence
     rests on a per-`(tenant, aggregate)` checkpoint, and 02 §6 registers that
     `CategoryDisplayUpdated` and `AttributeDefinitionUpdated` fall under neither of its two stated
     ordering keys. Without one a rename and a display edit on the same category can land in either
     order.
-    **Blocks**: `cpt-cf-bss-products-dod-projector`.
-    **Owner**: 02 with 12 — this slice is the only consumer of both. *(Raised by the slice-08
+    **Blocks**: no DoD — **resolved by P-D-116 / P-D-122**.
+    **Owner**: was 02 with 12 — this slice is the only consumer of both. *(Raised by the slice-08
     first lens pass.)*
 
 16. **Does the composition-clear re-publish reach this projector?** The browse row carries

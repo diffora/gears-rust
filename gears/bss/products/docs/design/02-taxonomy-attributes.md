@@ -339,7 +339,7 @@ no event of their own (category display values emit `CategoryDisplayUpdated`, ab
 - The PII detector's false-positive posture (fail-closed on uncertainty) will generate operator
   friction; the allow-list governance loop (slice 10 + Legal sign-off, PRD AC #35) must exist
   before GA, not after the first blocked legitimate product name.
-- **The taxonomy and metadata limits have no interim default anywhere.** C3 pointed at `PRD` §17.1
+- ~~**The taxonomy and metadata limits have no interim default anywhere.**~~ **Answered (P-D-107 arm 1, 2026-09-03): five interim ceilings in `ProductsConfig`** — `taxonomy_max_depth` 8, `taxonomy_max_children_per_node` 1000, `metadata_max_keys` 50, key 128 bytes, value 2048 bytes — zero refused at boot; the NFR workshop overrides by configuration, no code change. *The item's text stood as:* C3 pointed at `PRD` §17.1
   (corrected this pass — that table has no such row), and `nfr-scale-extensibility` defers the values
   to the NFR workshop. Four rules read them: `inst-tx-walk`, `inst-ti-limits`, `inst-md-write`, and
   08's bounded subtree recompute. Owner: the §17.1 policy owner — a taxonomy-limits row and a
@@ -347,13 +347,13 @@ no event of their own (category display values emit `CategoryDisplayUpdated`, ab
   all** — 01 takes the entity-count half, 06 the `CatalogVersion`-growth half, and the trace above
   claims depth and children/node only, so no rule reads it and §3.3 declares no code for it.
   *(Two lenses raised it independently.)*
-- **What is the `global` coordinate's key?** `inst-av-default-locale` requires "the default-locale
+- ~~**What is the `global` coordinate's key?**~~ **Answered (P-D-102, 2026-09-02): absent on all three axes, `("", "", "")`**; `inst-av-default-locale`'s *"(brand-less)"* third reading is retired. *The item's text stood as:* `inst-av-default-locale` requires "the default-locale
   value at the global (brand-less) coordinate", while the same rule argues totality must **not**
   anchor on the tenant default because that config can change under published entities. If the row
   is keyed on the default locale it is anchored on exactly that value; if `global` means
   `(locale NULL, region NULL, brand NULL)` — which §4.1's `(locale?, region?, brand?)` admits — then
   the phrase names the wrong coordinate. Owner: this slice. *(Two lenses raised it independently.)*
-- **The coordinate model admits combinations the resolver never visits.** Eight presence
+- ~~**The coordinate model admits combinations the resolver never visits.**~~ **Answered (P-D-101, 2026-09-02): the default locale is the *tenant* default only** — step 3 keys on it and the chain still ends at the global coordinate; *"resolves per brand, falling back to"* is struck from `inst-av-resolve`. *The item's text stood as:* Eight presence
   combinations are storable and the chain walks four steps: a value at `(locale, region, brand
   absent)` is unreachable to any branded reader, and a value with no locale is matched by no step.
   Separately "default-locale resolves per brand" presumes a per-brand default locale, while the only
@@ -389,7 +389,7 @@ no event of their own (category display values emit `CategoryDisplayUpdated`, ab
   builder once its own rows resolve), so a later pin is an in-place edit rather than a redesign. Owner: this slice — the roster, and whether a type is a
   closed set at all or an open vocabulary the seeds merely populate. *(Raised while building the
   table, 2026-09-01.)*
-- **The frozen-content sort key is not total for attribute values.** §4.1's ordering note sorts by
+- ~~**The frozen-content sort key is not total for attribute values.**~~ **Answered (P-D-103, 2026-09-02): the attribute-value set sorts by its whole coordinate** — definition, locale, region, brand — a consistency fix under P-D-29 and P-D-80, not an amendment. *The item's text stood as:* §4.1's ordering note sorts by
   "the attribute id", while row identity is the full coordinate tuple — so the key orders groups,
   not rows, and two engines can serialize one content two ways, which is the failure the note exists
   to prevent. Amending it is a register change **and a 01 change**: **P-D-29** and 01 §4.3 state
@@ -400,15 +400,15 @@ no event of their own (category display values emit `CategoryDisplayUpdated`, ab
   explicitly for attribute definitions ("frozen versions are self-contained copies"); for categories
   it is not. Owner: this slice with 06 and 08 — copy the name into the frozen set, or tombstone
   category rows. *(Raised by the slice-02 first lens pass.)*
-- **Is definition removal a material op?** Removal is absent from `inst-ad-governed`'s material-op
+- ~~**Is definition removal a material op?**~~ **Answered (P-D-108 arm 1, 2026-09-03): yes, material** — the list as written priced the irreversible act below the reversible one. *The item's text stood as:* Removal is absent from `inst-ad-governed`'s material-op
   enumeration while deprecation, the step before it, is in it. *(The other half of this item —
   physical DELETE or a third state — is closed by **P-D-47**: a removal is the `removed` state, §4.1.)*
   Owner: this slice. *(Raised by the slice-02 first lens pass.)*
-- **Where does a definition's display label live?** Label edits are a named non-material op, and
+- ~~**Where does a definition's display label live?**~~ **Answered (P-D-108 arm 2, 2026-09-03): as an attribute value on the definition**, `entity_kind = 'attribute_definition'`, at the global coordinate, resolved through the ordinary fallback chain. *The item's text stood as:* Label edits are a named non-material op, and
   §4.1's definition roster carries no label column, while the attribute-value table's `entity_kind`
   does not admit a definition as a value-bearing entity — so the op has no target. 03 solves the
   sibling case with a `display_label?` column on its own table. Owner: this slice. *(Raised by the slice-02 first lens pass.)*
-- **Two concurrent metadata writes both pass their precondition.** Metadata writes ride the entity
+- ~~**Two concurrent metadata writes both pass their precondition.**~~ **Answered (P-D-107 arm 3, 2026-09-03): accepted as last-write-wins under the entity's `If-Match`, with P-D-50 named as the donor** — `dod-metadata-door` asks for no optimistic concurrency on the map, and a counter column would be a requirement no DoD carries. *The item's text stood as:* Metadata writes ride the entity
   row's `If-Match` and, by P-D-06, bump no version — so the token never moves, both writers pass and
   the second silently overwrites the first, on a map that keeps no history between snapshots. Owner:
   this slice — does the metadata PATCH bump `internal_revision` (and what does that do to P-D-06's
@@ -433,7 +433,7 @@ no event of their own (category display values emit `CategoryDisplayUpdated`, ab
   pair was never the open half** — `inst-tx-governed-op` and `inst-ad-governed` name their grants
   and §3.2 carries all three; the note read the missing routes as a missing decision about grants.
   The three labels arrive **with** the doors, per `authz_tests.rs`' own census rule.
-- **Four refusals in this slice have no code.** "target category exists" and "duplicates between
+- ~~**Four refusals in this slice have no code.**~~ **Measured 2026-09-03 (`features/taxonomy-attributes.md` §7 row 17): three, not four.** The unresolvable category and the role duplicate ride the Foundation's `VALIDATION`; the seeded removal is the Foundation's `ILLEGAL_FIELD_MUTATION`; the removal on a non-terminal head carrying a value **is** `DEFINITION_IN_USE`, one of the sixteen. Codes of their own for the first two are the error-contract owner's, `CATEGORY_UNKNOWN` recommended. *The item's text stood as:* "target category exists" and "duplicates between
   primary/secondary" in `inst-tx-assign`, the seeded-definition removal refusal, and the removal
   refusal on a non-terminal head carrying a value all lack one (the type-change arm of that same
   row already carries `DEFINITION_IN_USE`), and none appears in AC #38's enumeration, so no lint
@@ -442,7 +442,7 @@ no event of their own (category display values emit `CategoryDisplayUpdated`, ab
 - **Are `CATEGORY_RETIRED` and `ATTRIBUTE_DEFINITION_DEPRECATED` 422 or 409?** Both are the target's
   *current state* refusing the act — the shape §3.3's own convention puts at 409, and where the
   sibling `DEFINITION_IN_USE` already sits. The note calls the mapping "Proposed per row and open to correction". Owner: the API-contract owner. *(Raised by the slice-02 first lens pass.)*
-- **Does the type-change operand mean the same thing as the removal operand?** One row states two:
+- ~~**Does the type-change operand mean the same thing as the removal operand?**~~ **Answered (P-D-116 row 11, 2026-09-03): yes — one operand, the non-terminal head carrying a value, and one rule, `definition_in_use_verdict`**; *"live values"* means that head. *The item's text stood as:* One row states two:
   the undefined "live values" for the type change and the defined "non-terminal head" for removal.
   The stated reasoning for the removal operand — frozen versions are self-contained copies — applies
   equally to a type change, but the file never says the operand was narrowed. Owner: this slice.
@@ -451,12 +451,12 @@ no event of their own (category display values emit `CategoryDisplayUpdated`, ab
   "bulk/promotion row reasons (09)", while 09's only two `reason`s are a system-produced failure
   reason and a fixed literal — and 09's own owed item quotes this enumeration as its evidence, so
   nothing independent establishes the door. Slice 10 has an interest: its "only table in the gear where PII may live" guarantee rests on this enumeration being complete. Owner: 09's owner with this slice. *(Raised by the slice-02 first lens pass.)*
-- **Who writes the well-known seeds for a tenant created after the migration?** §4.2 says "Seeded by migration, per tenant bootstrap" — two different code paths, and a migration cannot create rows
+- ~~**Who writes the well-known seeds for a tenant created after the migration?**~~ **Answered (P-D-100 as amended by P-D-104, 2026-09-02): nobody by migration** — the tenant's first write that could need one seeds them in its own transaction, once; built and ticked with `dod-well-known-seeds`. *The item's text stood as:* §4.2 says "Seeded by migration, per tenant bootstrap" — two different code paths, and a migration cannot create rows
   for tenants that do not yet exist. The rows are load-bearing: the publish validator refuses every
   localized definition whose default-locale value is absent, and AC #12 requires the seeds. 03
   registers the identical question with no writer either. Owner: this slice with 01.
   *(Two lenses raised it independently.)*
-- **Which of `inst-av-validate`'s validators run at the category live-value door?** Step 1 registers
+- ~~**Which of `inst-av-validate`'s validators run at the category live-value door?**~~ **Answered (P-D-107 arm 2, 2026-09-03): the four value rules, not the three assignment rules** — a category is not assigned to itself, and the global-coordinate demand lands at the first write. *The item's text stood as:* Step 1 registers
   them on the entity draft-save door, and `inst-av-category-branch` writes through a different one.
   §3.3 shows one of them reaching it (`DEFAULT_LOCALE_MISSING`, "at the first category display-value
   write") and says nothing about the definition-exists, type and scope checks — so a category value
@@ -464,7 +464,7 @@ no event of their own (category display values emit `CategoryDisplayUpdated`, ab
   an active category as a value-carrying head. Owner: this slice with 01, whose registered-validator
   phase is keyed by `(entity kind, transition, target state, field set)`, which this door does not
   pass through. *(Two lenses raised it independently.)*
-- **What `entity_kind` values does each table admit, and does a definition scope to entity kinds?**
+- ~~**What `entity_kind` values does each table admit, and does a definition scope to entity kinds?**~~ **Answered (P-D-108 arm 3, 2026-09-03): four kinds — `product`, `sku`, `category`, `attribute_definition` — closed by `CHECK`; a definition does not scope to kinds.** *The item's text stood as:*
   §4.1 gives `products_attribute_value` and `products_metadata` an `entity_kind` column and the set
   enumerates its values nowhere; the attribute-value table demonstrably admits `category`, while the
   only metadata door named admits `{products|skus}`. §4.2's `displayName` is "per Product/SKU/Category"
