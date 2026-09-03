@@ -1017,7 +1017,7 @@ cited instead:
    **Blocks**: no DoD — **answered**; `01` §4.4's sentence is owed to `01-foundation`.
    **Owner**: was `01-foundation`'s owner with P-D-21's; **answered, one edit owed**.
 
-5. **What `actor_ref` attributes an unattended act's audit row?** The age-triggered tombstone and
+5. ~~**What `actor_ref` attributes an unattended act's audit row?**~~ **Answered by P-D-113 arm 2 (2026-09-03): `gear::system_actor_ref()`, a stable UUID v5 from `bss-products:system`.** The premise — *no document names a system ref* — was true when written; the v4-per-boot it replaced was a defect. The age-triggered tombstone and
    every GC act are audited, 01 makes the audit row's `actor_ref` non-nullable, and every ref in the
    set is minted for a human principal on first appearance. No document names a system ref or admits
    a null one.
@@ -1044,7 +1044,7 @@ cited instead:
    **Blocks**: `cpt-cf-bss-products-dod-restore-drill`.
    **Owner**: this feature with the NFR #5 workshop.
 
-8. **Which surfaces may resolve an identity through the map, and under what grant?**
+8. **Which surfaces may resolve an identity through the map, and under what grant?** *(P-D-117 (2026-09-03): **the engineering half is answered** — only the compliance export resolves through the map; `08` renders pseudonyms and `inst-im-render` is corrected. **What remains is item 11's half**: which principals hold `compliance × export`, Architecture's with Legal.)*
    `compliance × export` is "its own grant, never `audit × export`", and it is the only grant any
    document attaches to a map read — yet `inst-im-render` has approval queues and 08 projections
    resolving at render time. 08 states it renders "actor pseudonyms" and never mentions the map or a
@@ -1077,7 +1077,7 @@ cited instead:
     **Blocks**: `cpt-cf-bss-products-dod-compliance-export`.
     **Owner**: Architecture with Legal.
 
-12. **Is `products_pii_allowlist` itself a PII store?** By construction it holds person-named
+12. **Is `products_pii_allowlist` itself a PII store?** By construction it holds person-named *(P-D-117 (2026-09-03): **the posture half is answered** — the allow-list is a PII store by construction and takes the map's posture. **What remains is Legal's**: what an entry may contain.)*
     strings, and its entries are "exportable for the Legal review", yet only the map carries the
     posture "excluded from every export except the compliance surface, encrypted at rest". The same
     question decides whether the allow-list's justification and sign-off fields belong in §3.1's
@@ -1104,7 +1104,7 @@ cited instead:
     and 23.
     **Owner**: was this feature with the error-contract owner; **closed**.
 
-14. **What does "byte-identical in effect" mean for the age-triggered path?** §5 asserts the age path
+14. ~~**What does "byte-identical in effect" mean for the age-triggered path?**~~ **Answered by P-D-117 (2026-09-03): the map state is what is byte-identical — tombstoned, payload destroyed, `principal_ref` standing — and the audit row differs by construction**, written under the system principal with the age rule's own name as the reason. §5 asserts the age path
     is byte-identical in effect to the requested path, while the requested path is "audited with a
     reason" and the age path has no requester and no supplied reason. Nothing says whether the audit
     row is part of "effect" or only the map state.
@@ -1132,7 +1132,7 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
     blocked by rows 12, 22 and 23.
     **Owner**: was `02-taxonomy-attributes`, which declares the code; **discharged**.
 
-16. **`repo::AuditCommon::correlation_id` is permanently `NULL`, and this feature owns the audit
+16. **`repo::AuditCommon::correlation_id` is permanently `NULL`, and this feature owns the audit *(P-D-118 (2026-09-03): **the shape is decided** — `correlation_id` is a W3C trace id, the column becomes `text`, background acts write NULL by design. **The migration edit is `01`'s and the lead's**; it does not block `dod-retention-clock`.)*
     class's clock and its deletes.** The field is `Option<Uuid>` and its own doc names the blocker:
     *"the value is 32 hex characters and this column is `uuid` on Postgres"*, with two candidate
     migration shapes written up and the decision, the migration behind it and the wiring recorded as
@@ -1160,7 +1160,7 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
     blocked by rows 5 and 25.
     **Owner**: was `06-catalog-version` — sequencing, not a question; **discharged**.
 
-18. **The map's read-by-principal path has no index of its own for the tombstoned case.**
+18. ~~**The map's read-by-principal path has no index of its own for the tombstoned case.**~~ **Answered by P-D-118 (2026-09-03): an index `(tenant_id, principal_ref, tombstoned_at)`**, landing with D's next migration — the allow-list table — on P-D-110/111's reasoning.
     `idx_products_identity_ref_principal` covers `(tenant_id, principal_ref)` and
     `uq_products_identity_ref_active` covers the live subset, so resolving a principal's **historical**
     refs — which the compliance export needs, since it returns "the principal's map entries" and a
@@ -1203,7 +1203,7 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
     **Blocks**: no DoD — **resolved by P-D-72**; `cpt-cf-bss-products-dod-identity-map` carries the split while staying blocked by row 8, parked.
     **Owner**: was this feature with `01-foundation`; **closed**.
 
-21. **Does a principal have at most one live `actor_ref` per tenant, and is the erasure act therefore
+21. ~~**Does a principal have at most one live `actor_ref` per tenant, and is the erasure act therefore~~ **Answered by the crate, recorded by P-D-117 (2026-09-03)**: `uq_products_identity_ref_active` caps live rows at one and the shipped resolve is `.one(…)`. `inst-er-erase`'s plural named a population the index forbids and is corrected in `design/10`.
     single-row?** The partial unique index caps live rows at one and the shipped resolve uses
     `.one(...)`, but `design/10`'s `inst-er-erase` — the normative step — says *"resolves the
     operator identity to its `actor_ref`s and overwrites the map entries"*, plural. Correcting the
@@ -1211,7 +1211,7 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
     **Blocks**: `cpt-cf-bss-products-dod-erasure-door`.
     **Owner**: `design/10`'s owner, on `inst-er-erase`'s wording, with the schema owner.
 
-22. **When a door-set fact differs between `design/10` §3.1 and `design/02`'s canonical enumeration,
+22. ~~**When a door-set fact differs between `design/10` §3.1 and `design/02`'s canonical enumeration,~~ **Answered by P-D-117 (2026-09-03): `design/02`'s canonical enumeration governs a door-set fact** — the slice that owns the hook owns the enumeration of what spends it. `design/10` §3.1 loses the bulk/promotion entry P-D-50 struck.
     which governs?** §1.4 pins precedence for column-level facts only. The bulk/promotion reason
     entry is a door-set fact: `design/02` records it **struck by P-D-50**, and `design/10` §3.1 still
     carries it because P-D-50's propagation reached `inst-er-export`, `inst-er-erase` and §6 — never
@@ -1219,7 +1219,7 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
     **Blocks**: `cpt-cf-bss-products-dod-pii-detector`.
     **Owner**: `design/10`'s owner with `design/02`'s.
 
-23. **What does an allow-list entry match on?** No document names the table's central column, nor how
+23. ~~**What does an allow-list entry match on?**~~ **Answered by P-D-117 (2026-09-03): exact match on `value_normalized`** — C2's *curated allow-list for legitimate person-named products* is a list of names, not patterns. What makes the detector *uncertain* is the detector's own verdict, built against §6's matrix. Roster: item 31. No document names the table's central column, nor how
     "allow-by-list" matches a candidate free-text value, nor what makes the detector *uncertain* such
     that C2's fail-closed arm fires. Without the matched value and the match rule, the third arm of
     the detector cannot be built and §6's four-arm matrix has no fixture.
@@ -1248,7 +1248,7 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
     **Blocks**: no DoD — **answered**; `design/10`'s `inst-er-erase` owes a wording fix.
     **Owner**: was Architecture with Legal — row 11's pair; **answered**.
 
-25. **What is the GC's transaction boundary, and what does a crash mid-order leave?** The stated
+25. ~~**What is the GC's transaction boundary, and what does a crash mid-order leave?**~~ **Answered by P-D-118 (2026-09-03): one catalog version at a time, whole** — manifest, entries and the entity versions only it references in one transaction; a resumed pass re-judges from scratch. The stated
     order makes an intermediate state observable — a catalog-version row surviving with its entry
     rows deleted — in which the referential guard now *admits* deleting entity-version rows the
     surviving manifest still names, and a backup taken in that window carries a partial manifest the
@@ -1258,7 +1258,7 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
     `cpt-cf-bss-products-dod-restore-drill`.
     **Owner**: this feature with `06-catalog-version`, which owns the predicate the order spends.
 
-26. **What `aggregate_id` do `ActorErased` and `PiiAllowlistChanged` partition on?**
+26. ~~**What `aggregate_id` do `ActorErased` and `PiiAllowlistChanged` partition on?**~~ **Answered by P-D-118 (2026-09-03): `ActorErased` on `principal_ref`, `PiiAllowlistChanged` on `entry_id`** — the thing each act serializes on.
     `infra::events::enqueue` requires one and **P-D-22** fixes
     `partition = hash(tenant_id, aggregate_id) mod N`. An erased actor and an allow-list entry are
     not aggregates in that sense. `features/catalog-version.md` §7 rows 27 and 47 reach the body core
@@ -1266,7 +1266,7 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
     **Blocks**: `cpt-cf-bss-products-dod-retention-events`.
     **Owner**: the events/audit owner with the PRD §4.5 owner.
 
-27. **Is the audit-class retention window config or a DDL constant?** `design/10` §1.8 calls the
+27. ~~**Is the audit-class retention window config or a DDL constant?**~~ **Answered by P-D-118 (2026-09-03): configuration, and the DDL guard admits any authorised `DELETE`.** The trigger stops *unauthorised* deletion; the *window* is the GC's own predicate from `retention_days_audit`. No `OLD.written_at < <cutoff>` arm is written. `design/10` §1.8 calls the
     retention durations config; `m20260829_000004` says *"A trigger cannot read configuration, so
     there is no predicate to write yet"* and plans the arm as a literal `OLD.written_at < <cutoff>`.
     If it is config the trigger cannot enforce it and the arm must admit any authorised `DELETE`; if
@@ -1275,7 +1275,7 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
     **Blocks**: `cpt-cf-bss-products-dod-retention-clock`.
     **Owner**: `01-foundation`'s owner, whose migration holds the guard, with Legal and Finance.
 
-28. **Three "configured" operands have no home.** `ProductsConfig` ships exactly two fields —
+28. ~~**Three "configured" operands have no home.**~~ **Answered by P-D-118 (2026-09-03), and the premise was stale by nine fields.** PRD §15 already states the interim policy — *statutory max* — so five fields land: `retention_days_{financial,version,audit}` 3650, `pseudonymization_age_days` 730, `drill_cadence_hours` 24. Interim; Legal and Finance override by configuration. `ProductsConfig` ships exactly two fields —
     `idempotency_retention_hours` and `require_broker` — and neither the pseudonymization age, the
     drill cadence nor the retention durations is among them. PRD §15 marks the values themselves
     **TBD**, owned by Legal and Finance. `features/reference-signal.md` met the same gap by obliging
@@ -1308,7 +1308,7 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
     **Blocks**: no DoD — it decides whether a thirteenth is owed or §1.1 and §1.2 narrow.
     **Owner**: the design owner with the NFR #5 workshop — row 10's owner.
 
-31. **Does `cpt-cf-bss-products-dod-pii-allowlist` owe a column roster?** It is the only DoD here
+31. ~~**Does `cpt-cf-bss-products-dod-pii-allowlist` owe a column roster?**~~ **Answered by P-D-117 (2026-09-03): yes** — `(tenant_id, entry_id, value_normalized, justification, signed_off_by, signed_off_at, state ∈ {active, revoked}, timestamps)`, `UNIQUE (tenant_id, value_normalized) WHERE state = 'active'`, revocation a state flip never a `DELETE` (P-D-47). The table does not exist yet; D's build. It is the only DoD here
     that creates a table and it names no column, while `cpt-cf-bss-products-dod-identity-map`
     restates ten column and guard names for a table that already ships. No document names a column of
     `products_pii_allowlist`. Either §1.4's restatement rule is narrowed to tables with a shipped
@@ -1316,7 +1316,7 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
     **Blocks**: no DoD directly — it decides whether one is incomplete.
     **Owner**: the design owner with `05-governance`'s, which owns the `GovernedLiveOp` shape.
 
-32. **Is §6 owed one criterion per DoD?** Five DoDs have no criterion, among them the authz DoD whose
+32. ~~**Is §6 owed one criterion per DoD?**~~ **Answered by P-D-118 (2026-09-03): yes.** A DoD whose unnamed obligations are *ticked by inspection* is a DoD nothing can fail. The five missing criteria are D's documentation work. Five DoDs have no criterion, among them the authz DoD whose
     own body argues that unnamed obligations are ticked by inspection. The general question is
     `features/catalog-version.md` §7 row 50's; this row records that it bites here too.
     **Blocks**: no DoD; it decides whether §6 is short.

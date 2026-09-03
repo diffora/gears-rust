@@ -59,6 +59,19 @@ pub const ACTIVATION_CLAIM_LEASE_SECS_DEFAULT: u32 = 60;
 /// [`ProductsConfig::activation_attempt_budget`].
 pub const ACTIVATION_ATTEMPT_BUDGET_DEFAULT: u32 = 5;
 
+/// Retention per record class, in days — **interim, P-D-118**: PRD §15's
+/// *"statutory max"*, taken as the longest common one. One constant for the
+/// three classes because the interim policy does not distinguish them; the
+/// three fields exist so Legal and Finance can, per jurisdiction.
+pub const RETENTION_DAYS_DEFAULT: u32 = 3_650;
+
+/// The age-triggered tombstone's operand, in days of inactivity — **interim,
+/// P-D-118**. See [`ProductsConfig::pseudonymization_age_days`].
+pub const PSEUDONYMIZATION_AGE_DAYS_DEFAULT: u32 = 730;
+
+/// The restore drill's cadence, in hours — **interim, P-D-118**.
+pub const DRILL_CADENCE_HOURS_DEFAULT: u32 = 24;
+
 /// `design/07` §17.1's interim freshness threshold, in minutes.
 pub const REFERENCE_FRESHNESS_MINUTES_DEFAULT: u32 = 15;
 
@@ -282,6 +295,36 @@ pub struct ProductsConfig {
     /// any sense the runner can act on. `attempt` increments on every claim
     /// (arm 3), so this is *"how many times has a worker picked this up"*.
     pub activation_attempt_budget: u32,
+
+    /// Retention of the **financial** record class, in days. **Interim 3650 —
+    /// P-D-118.** PRD §15's own interim policy is *"financial/version/audit →
+    /// statutory max"* with final durations per jurisdiction owned by Legal
+    /// and Finance; ten years is the longest common statutory maximum, chosen
+    /// so no jurisdiction's record is deleted early before Legal narrows it.
+    /// The GC reads this; a DDL trigger cannot (item 27), which is why the
+    /// window is here and the trigger guards only against unauthorised
+    /// deletion.
+    pub retention_days_financial: u32,
+
+    /// Retention of the **version** record class, in days. **Interim 3650 —
+    /// P-D-118**; see [`Self::retention_days_financial`] for the anchoring.
+    pub retention_days_version: u32,
+
+    /// Retention of the **audit** record class, in days. **Interim 3650 —
+    /// P-D-118**; see [`Self::retention_days_financial`].
+    pub retention_days_audit: u32,
+
+    /// Age of a principal's **last activity** in a tenant after which the
+    /// age-triggered tombstone fires, in days. **Interim 730 — P-D-118.**
+    /// Anchored to `inst-er-age`'s own operand — last activity, not first
+    /// appearance, since age-since-first-appearance *"would tombstone an
+    /// active employee mid-employment"* (M2) — and two years without a stamped
+    /// act is not an active employee.
+    pub pseudonymization_age_days: u32,
+
+    /// How often the restore drill runs, in hours. **Interim 24 — P-D-118**,
+    /// so a corrupt backup is found within a day.
+    pub drill_cadence_hours: u32,
 }
 
 impl Default for ProductsConfig {
@@ -306,6 +349,11 @@ impl Default for ProductsConfig {
             metadata_max_value_bytes: METADATA_MAX_VALUE_BYTES_DEFAULT,
             activation_claim_lease_secs: ACTIVATION_CLAIM_LEASE_SECS_DEFAULT,
             activation_attempt_budget: ACTIVATION_ATTEMPT_BUDGET_DEFAULT,
+            retention_days_financial: RETENTION_DAYS_DEFAULT,
+            retention_days_version: RETENTION_DAYS_DEFAULT,
+            retention_days_audit: RETENTION_DAYS_DEFAULT,
+            pseudonymization_age_days: PSEUDONYMIZATION_AGE_DAYS_DEFAULT,
+            drill_cadence_hours: DRILL_CADENCE_HOURS_DEFAULT,
         }
     }
 }
@@ -391,6 +439,11 @@ impl ProductsConfig {
                 self.activation_claim_lease_secs,
             ),
             ("activation_attempt_budget", self.activation_attempt_budget),
+            ("retention_days_financial", self.retention_days_financial),
+            ("retention_days_version", self.retention_days_version),
+            ("retention_days_audit", self.retention_days_audit),
+            ("pseudonymization_age_days", self.pseudonymization_age_days),
+            ("drill_cadence_hours", self.drill_cadence_hours),
         ] {
             if value == 0 {
                 return Err(format!(

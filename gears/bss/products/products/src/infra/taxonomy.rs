@@ -309,7 +309,9 @@ fn limits_verdict_for(
 ///
 /// # Errors
 ///
-/// [`DomainError::TaxonomyLimit`] when the landing place breaks a configured
+/// [`crate::domain::taxonomy::TaxonomyLimitExceeded`] (`TAXONOMY_LIMIT` — no
+/// `DomainError` variant exists for it yet, one of the ten still owed) when the
+/// landing place breaks a configured
 /// ceiling, [`DomainError::DuplicateCategoryName`] on a name already taken in
 /// the sibling set. [`RepoError`] on a lock, storage or scope failure.
 pub async fn create_under_lock(
@@ -343,7 +345,9 @@ pub async fn create_under_lock(
 ///
 /// # Errors
 ///
-/// [`DomainError::CategoryReferenced`] when a product or an active child
+/// [`crate::domain::taxonomy::CategoryReferenced`] (`CATEGORY_REFERENCED`; its code
+/// travels as a `Validation` violation, so no `DomainError` variant) when a
+/// product or an active child
 /// still holds the node. [`RepoError`] on a lock, storage or scope failure.
 pub async fn retire_under_lock(
     db: &DBProvider<DbError>,

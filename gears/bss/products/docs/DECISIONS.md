@@ -1569,6 +1569,129 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-117 — The identity map and the allow-list: seven of `10`'s rows, decided from the code and the design
+
+- **Date**: 2026-09-03 (owner call, answering `features/retention-erasure.md` §7 items **5, 8 (its
+  engineering half), 12 (its posture half), 14, 21, 22, 23 and 31**). That §7 is a **numbered**
+  list — thirty-four items, eight struck — which a bullet-shaped census had read as five.
+- **Item 5 — the unattended act's `actor_ref` is `gear::system_actor_ref()`.** Answered by
+  **P-D-113** arm 2 hours earlier: a stable UUID v5 from `bss-products:system`. The row's premise —
+  *"no document names a system ref"* — was true when written and is not now; the age-triggered
+  tombstone and every GC act write under it, and `01`'s non-nullable `actor_ref` is satisfied.
+- **Item 21 — one live `actor_ref` per principal per tenant, so the erasure is single-row.**
+  Answered by the crate: `uq_products_identity_ref_active` caps live rows at one and the shipped
+  resolve is `.one(…)`. The residue was `inst-er-erase`'s plural — *"its `actor_ref`s"* — which
+  named a population the index forbids; **corrected in `design/10`** with the index cited, so the
+  FEATURE no longer stands against a step it declares normative.
+- **Item 22 — `design/02`'s canonical enumeration governs a door-set fact, and `design/10` §3.1
+  follows it.** §1.4 pinned precedence for column-level facts only; door-set facts had none. The
+  bulk/promotion reason entry was struck in `02` by **P-D-50** and survived in `10` §3.1 because the
+  propagation reached three instructions and not `inst-im-map`. Precedence stated: the slice that
+  **owns the hook** (`02`, `content_pii_block`'s single-raiser rule) owns the enumeration of what
+  spends it. §3.1 loses the entry.
+- **Item 14 — "byte-identical in effect" means the map state, and the audit row differs by
+  construction.** The requested path is *"audited with a reason"* by a human; the age path has no
+  requester and no supplied reason, so its row is written under the system principal (item 5) with
+  the age rule's own name as the reason. What the two paths leave **identical** is the map entry:
+  tombstoned, payload destroyed, `principal_ref` standing. The design's sentence gains those words.
+- **Item 12 — `products_pii_allowlist` is a PII store by construction and takes the map's
+  posture**: excluded from every export except the compliance surface, encrypted at rest under the
+  platform posture, and its `justification` and `signed_off_by` fields join §3.1's content-PII
+  write block. That is the engineering half. **Whether a given entry may contain what it
+  contains is Legal's and stays open**, as the row records.
+- **Items 23 and 31 — the allow-list owes a column roster, and here it is.** No document named a
+  column of `products_pii_allowlist` and the table does not exist; measured. The roster:
+  `(tenant_id, entry_id, value_normalized, justification, signed_off_by, signed_off_at, state ∈
+  {active, revoked}, created_at, updated_at)`, with `UNIQUE (tenant_id, value_normalized) WHERE
+  state = 'active'` on P-D-47's terms — revocation is a state flip, never a `DELETE`, so a revoked
+  entry keeps its sign-off on record. **The match rule is exact match on the normalized value**
+  — C2's *"curated allow-list for legitimate person-named products"* is a list of names, not
+  patterns, and the narrowest rule is the one that cannot admit more than Legal signed off.
+  *What makes the detector uncertain* is the detector's own verdict and is `10`'s to build against
+  §6's four-arm matrix; this entry gives the list its shape, not the detector its policy.
+- **Item 8, engineering half — only the compliance export resolves an identity through the
+  map.** `08` states it renders *"actor pseudonyms"* and never names the map or a join, so the
+  two slices do not disagree about what `08` does: it does not resolve. `inst-im-render`'s mention
+  of queues and projections *"resolving at render time"* is corrected to *rendering the pseudonym*.
+  **Which principals may hold `compliance × export`** — item 11 — is Architecture's with Legal and
+  stays open.
+- **The arguments against, stated.** Item 22 grants `02` precedence over a fact `10` declares in
+  its own normative section, which is a real narrowing of `10`'s authority — accepted because a
+  hook with one raiser must have one enumeration of its spenders. Item 23's exact-match rule will
+  refuse a legitimate product name spelled two ways until both are listed, and Legal signs off
+  twice — accepted as the cost of a rule that cannot widen itself. Item 14 writes an audit row with
+  a reason no human supplied — accepted because a row with a system reason is honest about its
+  origin where a row without one would be a hole in the class this very slice retains.
+- **Propagated**: items 5, 14, 21, 22 struck; 8 and 12 **narrowed** to their Legal/Architecture
+  halves; 23 and 31 struck with the roster recorded here. `design/10`: `inst-er-erase` singular
+  (done), §3.1's bulk entry struck, `inst-im-render`'s render sentence, the "byte-identical"
+  sentence. **The table, its migration, the match rule and the posture are strand D's build.**
+
+
+#### P-D-118 — Retention's clock, its numbers, the GC's boundary, and the two events' aggregates
+
+- **Date**: 2026-09-03 (owner call, answering `features/retention-erasure.md` §7 items **16 (its
+  shape), 18, 25, 26, 27, 28 and 32**)
+- **Item 28 — the three configured operands get homes, interim, on the P-D-107 idiom.** The row's
+  premise — *"`ProductsConfig` ships exactly two fields"* — is stale by nine fields since P-D-107
+  and P-D-113, but its three operands still had none. **PRD §15 already states the interim
+  policy**: *"Interim set (financial/version/audit → statutory max). Final durations per
+  jurisdiction …"* owned by Legal and Finance. So the fields carry that policy as numbers:
+  `retention_days_financial`, `retention_days_version` and `retention_days_audit` at **3650** — the
+  longest common statutory maximum, chosen so no jurisdiction's record is deleted early before
+  Legal narrows it; `pseudonymization_age_days` at **730** — anchored to `inst-er-age`'s own
+  operand, *"the age of the principal's last activity"*, since two years without a stamped act is
+  not *"an active employee mid-employment"* (M2); and `drill_cadence_hours` at **24**, so a
+  corrupt backup is found within a day. Zero refused at boot; each says **interim** in its doc;
+  Legal and Finance override by configuration with no code change.
+- **Item 27 — the audit-class retention window is configuration, and the DDL guard admits any
+  authorised `DELETE`.** The row states the dilemma exactly: a trigger cannot read config, and a
+  DDL constant cannot be set per jurisdiction as PRD §15 says Legal will. Resolved by separating
+  two guards that the migration's comment had run together: `m20260829_000004`'s trigger guards
+  against **unauthorised** deletion — anything not the GC — and the **window** is the GC's own
+  predicate, read from `retention_days_audit`. A trigger arm of the form `OLD.written_at <
+  <cutoff>` is not written; the GC is the only authorised deleter and it carries the cutoff.
+  `01`'s migration comment follows.
+- **Item 25 — the GC's transaction boundary is one catalog version at a time, whole.** The
+  manifest row, its entry rows and the entity-version rows only it references delete in **one
+  transaction**, so the intermediate state the row describes — a surviving manifest with its
+  entries gone, admitting deletes it still names — cannot exist for a backup to capture. A pass is
+  per-version; a resumed pass re-judges every candidate from scratch and finds a half-deleted
+  version impossible rather than needing a rule for it.
+- **Item 26 — `ActorErased` partitions on `principal_ref`, `PiiAllowlistChanged` on its
+  `entry_id`.** P-D-116 row 15's reasoning, one slice over: the aggregate is the thing the act
+  serializes on. An erasure serializes on the principal's row; an allow-list change on its entry.
+  Neither is a Product or SKU aggregate and neither needs to be — P-D-22's partition is
+  `hash(tenant_id, aggregate_id)`, and both ids are stable within the tenant.
+- **Item 18 — an index for the tombstone-inclusive read-by-principal path**, `(tenant_id,
+  principal_ref, tombstoned_at)`, since the compliance export walks historical refs and the only
+  covering index is the partial `WHERE tombstoned_at IS NULL`. It lands with strand D's next
+  migration — the allow-list table — the same "index rides the change that makes the read live"
+  reasoning P-D-110 and P-D-111 used.
+- **Item 16, its shape — `correlation_id` is a W3C trace id, `text` not `uuid`, and NULL for
+  background acts by design.** Measured: `infra::events::correlation_id` reads the 32-hex trace id
+  off the ambient OTel layer *the host installs*, `None` outside a traced request, and its doc says
+  why it is rendered as hex — *"grep-equal to the one in the access log, the OTel span and the error
+  envelope; a `Uuid` rendering … would join to none of them."* So the `uuid` column was the wrong
+  type for the value from the start. The column becomes `text`; the GC's and the runner's rows
+  write NULL because a background act **has** no request — that is a fact about the act, not a
+  hole. **The migration edit is `01`'s and the lead's**, routed to the lead's own next batch; it
+  does not block `dod-retention-clock`, as the row itself says.
+- **Item 32 — yes, §6 owes one criterion per DoD**, as `catalog-version` §7 row 50 asks generally.
+  A DoD whose *"unnamed obligations are ticked by inspection"* is a DoD nothing can fail. The five
+  missing criteria are **strand D's documentation work** and are named in its brief.
+- **The arguments against, stated.** Item 28's numbers are guesses bounded from one side — 3650
+  is *at least* the statutory maximum, not equal to any jurisdiction's — and say so. Item 27 makes
+  the GC the sole holder of the window, so a bug in the GC's cutoff deletes early with no DDL
+  backstop; accepted because a DDL backstop that cannot read config was the alternative and it
+  could never be right for two jurisdictions at once. Item 25 makes a large catalog version a large
+  transaction — accepted because the row's own incident (a partial manifest in a backup) is worse
+  than a long transaction.
+- **Propagated**: items 18, 25, 26, 27, 28, 32 struck; item 16 **narrowed** to its migration, owed
+  to the lead. The five config fields land with this entry. The GC, the two events' aggregates
+  and the index are **strand D's build**.
+
+
 #### P-D-116 — `02`'s five remaining lead calls: the global value's containment, the removal operand, one rule for two changes, the display events' aggregate, and what a category delete admits
 
 - **Date**: 2026-09-03 (owner call, answering `features/taxonomy-attributes.md` §7 **rows 1, 5, 11,

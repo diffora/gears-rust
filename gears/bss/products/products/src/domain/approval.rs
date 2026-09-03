@@ -832,7 +832,7 @@ pub fn evaluate_quorum(
 /// `inst-gv-scope` reads: *"an unrestricted claim set covers every subject,
 /// an unrestricted subject scope is covered only by an unrestricted claim
 /// set, and between two non-empty sets it is ordinary subset"*. Laid against
-/// [`contains`]'s three clauses — an unrestricted **parent** contains every
+/// [`crate::domain::containment::contains`]'s three clauses — an unrestricted **parent** contains every
 /// child; an unrestricted **child** is contained only by an unrestricted
 /// parent; otherwise subset — the mapping is forced: **parent = the
 /// approver's claims, child = the subject's scope**. Transposed, a

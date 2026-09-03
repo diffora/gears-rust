@@ -257,6 +257,41 @@ fn a_zero_cap_is_refused_at_boot() {
                 ..ProductsConfig::default()
             },
         ),
+        (
+            "retention_days_financial",
+            ProductsConfig {
+                retention_days_financial: 0,
+                ..ProductsConfig::default()
+            },
+        ),
+        (
+            "retention_days_version",
+            ProductsConfig {
+                retention_days_version: 0,
+                ..ProductsConfig::default()
+            },
+        ),
+        (
+            "retention_days_audit",
+            ProductsConfig {
+                retention_days_audit: 0,
+                ..ProductsConfig::default()
+            },
+        ),
+        (
+            "pseudonymization_age_days",
+            ProductsConfig {
+                pseudonymization_age_days: 0,
+                ..ProductsConfig::default()
+            },
+        ),
+        (
+            "drill_cadence_hours",
+            ProductsConfig {
+                drill_cadence_hours: 0,
+                ..ProductsConfig::default()
+            },
+        ),
     ];
     for (name, cfg) in cases {
         let message = cfg
@@ -288,4 +323,11 @@ fn the_interim_ceilings_are_the_justified_numbers() {
     // pin mismatch being terminal on its first try.
     assert_eq!(cfg.activation_claim_lease_secs, 60);
     assert_eq!(cfg.activation_attempt_budget, 5);
+    // P-D-118: PRD §15's interim "statutory max", the age of last activity,
+    // and a daily drill.
+    assert_eq!(cfg.retention_days_financial, 3_650);
+    assert_eq!(cfg.retention_days_version, 3_650);
+    assert_eq!(cfg.retention_days_audit, 3_650);
+    assert_eq!(cfg.pseudonymization_age_days, 730);
+    assert_eq!(cfg.drill_cadence_hours, 24);
 }

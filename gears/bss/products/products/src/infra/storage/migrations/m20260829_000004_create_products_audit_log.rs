@@ -82,12 +82,17 @@
 //! predicate — a row whose `written_at` is older than its class's retention
 //! window — but that window is Legal/Finance's call and `PRD` §15 currently
 //! leaves it undecided. A trigger cannot read configuration, so there is no
-//! predicate to write yet, and an arm that admitted every DELETE in the
-//! meantime would defeat the posture the table exists for. The retention arm
-//! is owed to slice 10's `inst-rt-gc` and is to be opened, in this file, as
-//! `OLD.written_at < <cutoff>` once `PRD` §15 supplies the window. Shipping a
-//! permissive DELETE arm now and tightening it after a GC exists is exactly
-//! the migration this ordering avoids.
+//! predicate to write here — and **P-D-118** (2026-09-03) rules that there
+//! never will be: the window is **configuration** (`retention_days_audit`,
+//! interim 3650 days, Legal and Finance's to narrow per jurisdiction), and a
+//! DDL constant could not be set per jurisdiction as `PRD` §15 says it must.
+//! So this trigger and the window are **two different guards** the earlier
+//! text ran together. The trigger's job is to refuse **unauthorised**
+//! deletion — anything that is not the GC. The window is the GC's own
+//! predicate, read from configuration, and the GC is the only authorised
+//! deleter. No `OLD.written_at < <cutoff>` arm is written in this file; when
+//! slice 10's `inst-rt-gc` lands, the DELETE arm this trigger admits is the
+//! GC's identity, not a date.
 //!
 //! **UPDATE admits exactly one transition**: `unsealed` to `sealed`, one-way,
 //! supplying `chain_id`, `seq`, `prev_hash` and `row_hash` together in the same
