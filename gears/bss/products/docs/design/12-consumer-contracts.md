@@ -187,7 +187,7 @@ Doc-plane lints over this design set + PRD (spec-check-class. **Gated by nothing
    slices each, so the generic one-slice reading — `spec-check`'s `P2/fr-multiply-claimed` —
    reports all fourteen. That is expected here and is not a defect to sweep. Split ownership
    is legal in this set **when every claim carries a scope qualifier**, which is what the
-   qualifier grammar below enforces and what all fourteen pairs now carry. The invariant is
+   qualifier grammar below enforces and what all fourteen — thirteen pairs and one triple, `nfr-scale-extensibility` claimed by `01`, `02` and `06` (**P-D-130**, 2026-09-03) — now carry. The invariant is
    one owner per **clause**, not one slice per id.*
 2. [ ] - `p1` - **AC #38 map**: every enumerated failure row **that a registry door can refuse** maps to exactly one error code with **exactly one declaring *slice*** — a slice, not a door and not a pipeline phase (**P-D-36**: the phase unit **P-D-24** introduced was this set's own invention, carried contradictions no other gear has — the donor's `ValidationPipeline` has no stage concept at all — and is withdrawn. The door unit it had replaced was red by construction on every multi-door code; the slice unit is not, a code having exactly one declaring slice by construction, fixed by **P-D-35**'s rule. 01 §3.1's seven phases remain the execution order and are no longer a taxonomy). **The map gains three codes and a status class from the round (P-D-25)**: `DUPLICATE_CODE` (renamed from `DUPLICATE_SKU_CODE`, one code covering both the `skuCode` and `productCode` reservations), `ENTITY_TERMINAL` (409 — **any head write on a `retired`/`discarded` row**, save, publish or correction alike, 01 §3.3 / **P-D-32**) and `AUDIT_UNAVAILABLE` (**503** — the refusal's audit row could not be written), the third 503 in the gear beside 08's `READ_MODEL_OVERLOADED` and 03's `USAGE_TYPE_UNAVAILABLE`. **Three of the fifteen rows are explicitly outside the universe — the retention-orphan alarm (10 `inst-rt-gc`), the `compositionPending` adoption duty (a consumer obligation with no registry door) and AC #38's post-v1 EOL row, whose only candidate code refuses the feature rather than the named condition — named here so the lint is buildable rather than perpetually red** (item 32 of the review): the retention-orphan row is deliberately an **alarm**, not an API error (10 `inst-rt-gc`), and "adopting a `compositionPending` bundle" is a **consumer duty with no registry door** (§2.2). The lint asserts the exclusion list is exactly those three — an unexplained fourth exclusion fails it - `inst-cc-errors`
 3. [ ] - `p1` - **Door×grant pairing**: every declared route appears in the `Doors` column of 05 §3.2's RBAC catalog. **The population is the declared routes** (**P-D-45**): the fourteen `` `METHOD /bss-products/v1/…` `` code spans, one machine-readable form. Doors named only in prose — "the fresh-zero door", "the watermark door", "the correction door" — are **outside** it, because a prose name has no enumerable form; that most grants carry no declared route is registered as a gap in 05 §6 rather than treated as a lint failure, the stated direction being door ⇒ grant - `inst-cc-rbac`
@@ -273,15 +273,15 @@ slice is that suite's specification.
 - **Most obligations are OWED** by construction (C4): the register makes the debt legible, and
   the P-D-03 watermark fixture is deliberately first — it unblocks retirement, the highest-value
   seam.
-- **Event-log retention ≥ bootstrap gap** needs its number (§15) before the replay contract is
+- ~~**Event-log retention ≥ bootstrap gap**~~ **Answered (P-D-130, 2026-09-03): the broker's retention bounds the gap**; an older checkpoint rebuilds from the store. *The item's text stood as:* needs its number (§15) before the replay contract is
   more than words; named as the replay contract's single config dependency.
-- **`inst-cc-events` lints per instruction row, against P-D-34's act unit.** **P-D-34** makes the
+- ~~**`inst-cc-events` lints per instruction row, against P-D-34's act unit.**~~ **Answered (P-D-130, 2026-09-03): the unit is the act** — inheriting rows lint as one. *The item's text stood as:* **P-D-34** makes the
   event-declaration unit the *act*: a step inside a transaction whose event another row of that
   transaction names inherits the declaration. This row still lints per instruction *row*, so 01's
   `inst-fd-publish-freeze`, `inst-fd-publish-correction` and `inst-fd-publish-bump` — which inherit
   `inst-fd-publish-emit`'s declaration — are red by construction on a correct document. Owner: this
   slice. *(Filed from 01 §6 by the slice-01 eighth lens pass — the pointer claimed it was registered here and it was not.)*
-- **Does this slice owe an open-item reciprocity lint?** Design 01 §6 used to restate its outbound
+- ~~**Does this slice owe an open-item reciprocity lint?**~~ **Answered (P-D-130, 2026-09-03): yes, a tenth lint**, declared and unenforced like the nine. *The item's text stood as:* Design 01 §6 used to restate its outbound
   questions as bullets claiming each was "registered where its owner will look". That claim was
   measured twice and was false both times — the eighth pass found four of six named documents
   unfiled and filed the headline item of each; the P-D-43…49 propagation audit found five
@@ -290,7 +290,7 @@ slice is that suite's specification.
   nothing catches a question filed nowhere. Owner: the design-set owner with this slice.
   *(Filed from design 01 §6 by the slice-01 eighth lens pass; re-measured by the P-D-43…49
   propagation audit.)*
-- **The `CoverageChecks` are gated by nothing, and there is nothing to restore.** This item
+- **The `CoverageChecks` are gated by nothing, and there is nothing to restore.** *(P-D-130, 2026-09-03: the `spec-check` skill runs a subset off-VCS; the CI gate stays repo tooling's.)* This item
   previously read "restoring the job is owed", which was false in its premise and is corrected
   here. The `Spec Invariants` job was not lost: commit `21a149fda` removed it deliberately
   along with `tools/spec-check`, the workspace member and `make spec-check`, and stated the
@@ -302,36 +302,36 @@ slice is that suite's specification.
   the honest statement that its checks are declared and unenforced — which §3.2 makes.
   Owner: whoever owns repo tooling, if and when the cost recorded in `21a149fda` is
   reconsidered. *(Premise corrected after the P-D-45 round.)*
-- **Does the pin run as one CI job or once per gear?** §2.1 says "one CI job over
+- ~~**Does the pin run as one CI job or once per gear?**~~ **Answered (P-D-130, 2026-09-03): one CI job over the fixtures crate**, on which both gears depend. *The item's text stood as:* §2.1 says "one CI job over
   `cf-gears-bss-fixtures`"; §5's probe says "both CIs must fail"; and one job cannot be the other side's CI, with
   both gears in one repository. Separately, `.github/workflows/api_contracts.yml` already exists
   under the proposed name with an unrelated purpose and triggers that never include a fixture
   crate. Owner: the `PRD` §15 owner.
-- **Two authorability criteria are in force.** C4 makes an assertion authorable "once the
+- ~~**Two authorability criteria are in force.**~~ **Answered (P-D-130, 2026-09-03): C4's binds** — instruction-id citations re-key to ACs. *The item's text stood as:* C4 makes an assertion authorable "once the
   referenced counterpart AC exists"; two register rows are marked owed on a different test — the
   counterpart raises no code — and their Source cells cite pricing *instruction* ids, whose
   counterparts do exist. The two disagree on at least two live rows. Owner: this slice with the
   plan-price owner.
-- **What does "unqualified" mean in the AC-existence check?** Under an adjacency reading, four
+- ~~**What does "unqualified" mean in the AC-existence check?**~~ **Answered (P-D-130, 2026-09-03): the sentence-context reading**. *The item's text stood as:* Under an adjacency reading, four
   slice-04 sites and one here are violations and a sweep is owed; under a sentence-context reading
   they are correct and the "one-line regex" the row names cannot implement the rule. The qualifier
   grammar governs Traces-to claims, not AC citations. Owner: this slice.
-- **The approval-queue envelope is asserted here and owed in 05.** `inst-sdk-inbox` says a
+- ~~**The approval-queue envelope is asserted here and owed in 05.**~~ **Answered (P-D-130, 2026-09-03): the sixth fixture of `dod-joint-fixtures`**. *The item's text stood as:* `inst-sdk-inbox` says a
   field-name drift "fails the suite", but the check is in neither the fixture roster nor the
   register, and 05 records the cross-check as future work — while C4 forbids exactly that ("an
   unauthorable assertion stays listed as OWED, never silently dropped"). Owner: this slice with 05.
-- **Should `P-D-01`, `P-D-03` and `P-D-05` name this slice?** This slice restates all three in its
+- ~~**Should `P-D-01`, `P-D-03` and `P-D-05` name this slice?**~~ **Answered (P-D-130, 2026-09-03): no** — a propagation field names filings, not citers (P-D-128). *The item's text stood as:* This slice restates all three in its
   constraint rows and register, and their propagation fields do not name it — and so do eight more
   (`P-D-24`, `P-D-25`, `P-D-26`, `P-D-27`, `P-D-29`, `P-D-34`, `P-D-35`, `P-D-43`): eleven of the
   twenty-three decisions this slice cites are absent from their own `Propagated` lists. The gap is
   set-wide rather than this slice's — **62 of the 179 (slice, decision) citation pairs** in the set
   sit outside the cited decision's list. Whether a constraint-row citation counts as a restatement for lint 5 is
   unstated; the fix lands in the register, not here. Owner: the register's owner.
-- **Is `inst-cc-errors`' exclusion list one filter or two?** Two of the three exclusions are
+- ~~**Is `inst-cc-errors`' exclusion list one filter or two?**~~ **Answered (P-D-130, 2026-09-03): one filter** — the opening clause defines the universe. *The item's text stood as:* Two of the three exclusions are
   already excluded by the opening clause ("that a registry door can refuse"); the third is
   excluded for a reason that clause does not express. The "exactly three" assertion is checkable
   only once one filter defines the universe. Owner: the error-contract owner.
-- **Lint 3's population is not in one machine-readable form.** **P-D-45** arm 1 defines it as
+- ~~**Lint 3's population is not in one machine-readable form.**~~ **Answered (P-D-130, 2026-09-03): the normalisation is the lint's** — `\|` → `|`. *The item's text stood as:* **P-D-45** arm 1 defines it as
   `` `METHOD /bss-products/v1/…` `` code spans, "one machine-readable form". At HEAD all seven
   pipe-bearing routes exist in **two** textual forms: `{products\|skus}` inside 05 §3.2's table,
   where a markdown cell must escape the pipe, and `{products|skus}` everywhere else — 01, 02, 08,
@@ -358,7 +358,7 @@ slice is that suite's specification.
   tokens is ignored" may be meant to cover the leading token, but a backticked identifier is not
   prose under any form the grammar states. Owner: was this slice; **closed**.
   *(Raised by the P-D-43…49 propagation audit.)*
-- **Seven register entries carry two `Propagated` fields, and lint 5 says there is one.** Lint 5's
+- ~~**Seven register entries carry two `Propagated` fields, and lint 5 says there is one.**~~ **Answered (P-D-130, 2026-09-03): the dated-amendment form is admitted** — lint 5 reads every field of an entry as one set. *The item's text stood as:* Lint 5's
   grammar (**P-D-43** arm 4) reads "the register carries **one** propagation field, spelled
   `- **Propagated**`". P-D-24 through P-D-30 each carry a base field plus a second dated
   *(owed until …, all closed)* field — 56 fields across 49 entries. Either the grammar admits the
@@ -366,7 +366,7 @@ slice is that suite's specification.
   — the rule P-D-43's own entry forces, since its arm 4 quotes the literal field name in its body —
   silently drops the primary field for all seven. Owner: the register's owner.
   *(Raised by the P-D-43…49 propagation audit.)*
-- **No lint verifies that a free-text `reason` door registers the PII block.** 02
+- ~~**No lint verifies that a free-text `reason` door registers the PII block.**~~ **Answered (P-D-130, 2026-09-03): an eleventh lint**, declared and unenforced. *The item's text stood as:* 02
   `inst-av-pii-reason` enumerates the doors that owe `inst-av-pii-block`, and says the enumeration
   *is* the registration — a slice that adds such a field "adds itself to the
   enumeration above; that is the whole registration". Nothing checks it. The nine lints here cover
@@ -377,20 +377,20 @@ slice is that suite's specification.
   had carried the debt as an open item instead. Owner: this slice with 02. *(Raised by CodeRabbit
   on PR #14, 2026-08-27; its first half — the unwired doors — was closed by P-D-50, this half was
   not.)*
-- **Does `inst-cc-errors` still lint against the phase unit?** **P-D-36** moved the declaring unit
+- ~~**Does `inst-cc-errors` still lint against the phase unit?**~~ **Answered (P-D-130, 2026-09-03): no — the declaring unit is the slice** (P-D-36). *The item's text stood as:* **P-D-36** moved the declaring unit
   from the phase to the declaring slice, which retires the carve-out mirror this row was owed
   rather than paying it. This slice cites P-D-36 nowhere. Owner: this slice. *(Filed from 01 §6 by
   the P-D-43…49 propagation audit — the pointer claimed it was registered here and it was not.)*
-- **`ENTITY_TERMINAL`'s gloss widened and the AC #38 map was not re-read.** **P-D-32** widened it
+- ~~**`ENTITY_TERMINAL`'s gloss widened and the AC #38 map was not re-read.**~~ **Answered (P-D-130, 2026-09-03): the row reads *any head write on a terminal head*** (P-D-32); the §4.1 edit is owed. *The item's text stood as:* **P-D-32** widened it
   from a save on a `retired`/`discarded` head (**P-D-25**) to any head write — save, publish or
   correction. The map's rows were written against the narrower reading. Owner: this slice.
   *(Filed from 01 §6 by the P-D-43…49 propagation audit — the pointer claimed it was registered
   here and it was not.)*
-- **Is `inst-cc-ids`' continuation enumeration stale?** Lint 6 names the ids 01 legitimately
+- ~~**Is `inst-cc-ids`' continuation enumeration stale?**~~ **Answered (P-D-130, 2026-09-03): it becomes a rule, not a count**. *The item's text stood as:* Lint 6 names the ids 01 legitimately
   carries on more than one row and how many rows each takes. That enumeration is a count against
   another document, and nothing re-reads it when 01 changes. Owner: this slice. *(Filed from 01 §6
   by the P-D-43…49 propagation audit — the pointer claimed it was registered here and it was not.)*
-- **May 01 §4.2's `composition_pending` no-re-raise clause rest on P-D-14?** **P-D-48** confirmed
+- ~~**May 01 §4.2's `composition_pending` no-re-raise clause rest on P-D-14?**~~ **Answered (P-D-130, 2026-09-03): it rests on P-D-48 as cited**; citing obliges no entry (P-D-128). *The item's text stood as:* **P-D-48** confirmed
   the clause, but P-D-14's propagation field names 05, 06, `design/README.md`, `DESIGN.md` and the
   PRD — not `design/01-foundation.md`. Under lint 5's own grammar a document restates a decision
   exactly when it cites the id, so either the field gains 01 or the clause rests on something else.

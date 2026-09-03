@@ -1140,29 +1140,29 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     home-agnostic, but an unowned CI job is an unrun one; this is the set's last organizational
     dependency.
     **Blocks**: `cpt-cf-bss-products-dod-seam-suite-home`.
-    **Owner**: not stated in the slice; carried unassigned.
+    **Owner**: the `PRD` §15 owner (assigned by P-D-130, 2026-09-03).
 
 3. **Most obligations are OWED** by construction (C4): the register makes the debt legible, and
     the P-D-03 watermark fixture is deliberately first — it unblocks retirement, the highest-value
     seam.
     **Blocks**: no DoD — it states the design's own posture under C4, not a blocker.
-    **Owner**: not stated in the slice; carried unassigned.
+    **Owner**: this feature — a posture statement, not a question (assigned by P-D-130, 2026-09-03).
 
-4. **Event-log retention ≥ bootstrap gap** needs its number (§15) before the replay contract is
+4. ~~**Event-log retention ≥ bootstrap gap**~~ **Answered (P-D-130, 2026-09-03): the broker's retention bounds the gap** (the platform's number, `PRD` §15); an older checkpoint rebuilds from the store — `08`'s anchorless arm (P-D-126). *The item's text stood as:* needs its number (§15) before the replay contract is
     more than words; named as the replay contract's single config dependency.
-    **Blocks**: `cpt-cf-bss-products-dod-bootstrap`.
+    **Blocks**: no DoD — **resolved by P-D-130** *(was: `cpt-cf-bss-products-dod-bootstrap`.)*
     **Owner**: not stated in the slice; carried unassigned.
 
-5. **`inst-cc-events` lints per instruction row, against P-D-34's act unit.** **P-D-34** makes the
+5. ~~**`inst-cc-events` lints per instruction row, against P-D-34's act unit.**~~ **Answered (P-D-130, 2026-09-03): the unit is the act** (P-D-34) — rows inheriting a declaration lint as one. *The item's text stood as:* **P-D-34** makes the
     event-declaration unit the *act*: a step inside a transaction whose event another row of that
     transaction names inherits the declaration. This row still lints per instruction *row*, so
     01's `inst-fd-publish-freeze`, `inst-fd-publish-correction` and `inst-fd-publish-bump` — which
     inherit `inst-fd-publish-emit`'s declaration — are red by construction on a correct document.
-    **Blocks**: `cpt-cf-bss-products-dod-lint-declarations`.
+    **Blocks**: no DoD — **resolved by P-D-130** *(was: `cpt-cf-bss-products-dod-lint-declarations`.)*
     **Owner**: this slice. *(Filed from 01 §6 by the slice-01 eighth lens pass — the pointer
     claimed it was registered here and it was not.)*
 
-6. **Does this slice owe an open-item reciprocity lint?** Design 01 §6 used to restate its
+6. ~~**Does this slice owe an open-item reciprocity lint?**~~ **Answered (P-D-130, 2026-09-03): yes, a tenth lint** — every §6 item naming an owner document has a matching item there; declared, unenforced like the nine. *The item's text stood as:* Design 01 §6 used to restate its
     outbound questions as bullets claiming each was "registered where its owner will look". That
     claim was measured twice and was false both times — the eighth pass found four of six named
     documents unfiled and filed the headline item of each; the P-D-43…49 propagation audit found
@@ -1184,39 +1184,39 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     than anything this design set can decide. What this slice owes is only the honest statement
     that its checks are declared and unenforced — which §3.2 makes.
     **Blocks**: `cpt-cf-bss-products-dod-lint-gate`.
-    **Owner**: whoever owns repo tooling, if and when the cost recorded in `21a149fda` is
+    **Owner**: *(P-D-130, 2026-09-03: the `spec-check` skill already runs a subset of these lints off-VCS; what is unenforced is the CI gate, which stays repo tooling's.)* whoever owns repo tooling, if and when the cost recorded in `21a149fda` is
     reconsidered. *(Premise corrected after the P-D-45 round.)*
 
-8. **Does the pin run as one CI job or once per gear?** §2.1 says "one CI job over
+8. ~~**Does the pin run as one CI job or once per gear?**~~ **Answered (P-D-130, 2026-09-03): one CI job over the fixtures crate**, on which both gears depend. *The item's text stood as:* §2.1 says "one CI job over
     `cf-gears-bss-fixtures`"; §5's probe says "both CIs must fail"; and one job cannot be the
     other side's CI, with both gears in one repository. Separately,
     `.github/workflows/api_contracts.yml` already exists under the proposed name with an unrelated
     purpose and triggers that never include a fixture crate.
-    **Blocks**: `cpt-cf-bss-products-dod-seam-suite-home`.
+    **Blocks**: no DoD — **resolved by P-D-130** *(was: `cpt-cf-bss-products-dod-seam-suite-home`.)*
     **Owner**: the `PRD` §15 owner.
 
-9. **Two authorability criteria are in force.** C4 makes an assertion authorable "once the
+9. ~~**Two authorability criteria are in force.**~~ **Answered (P-D-130, 2026-09-03): C4's criterion binds** — rows citing pricing instruction ids re-key to their ACs. *The item's text stood as:* C4 makes an assertion authorable "once the
     referenced counterpart AC exists"; two register rows are marked owed on a different test — the
     counterpart raises no code — and their Source cells cite pricing *instruction* ids, whose
     counterparts do exist. The two disagree on at least two live rows.
-    **Blocks**: `cpt-cf-bss-products-dod-joint-fixtures`.
+    **Blocks**: no DoD — **resolved by P-D-130** *(was: `cpt-cf-bss-products-dod-joint-fixtures`.)*
     **Owner**: this slice with the plan-price owner.
 
-10. **What does "unqualified" mean in the AC-existence check?** Under an adjacency reading, four
+10. ~~**What does "unqualified" mean in the AC-existence check?**~~ **Answered (P-D-130, 2026-09-03): the sentence-context reading**; the qualifier grammar governs Traces-to only. *The item's text stood as:* Under an adjacency reading, four
     slice-04 sites and one here are violations and a sweep is owed; under a sentence-context
     reading they are correct and the "one-line regex" the row names cannot implement the rule. The
     qualifier grammar governs Traces-to claims, not AC citations.
-    **Blocks**: `cpt-cf-bss-products-dod-lint-prd-universe`.
+    **Blocks**: no DoD — **resolved by P-D-130** *(was: `cpt-cf-bss-products-dod-lint-prd-universe`.)*
     **Owner**: this slice.
 
-11. **The approval-queue envelope is asserted here and owed in 05.** `inst-sdk-inbox` says a
+11. ~~**The approval-queue envelope is asserted here and owed in 05.**~~ **Answered (P-D-130, 2026-09-03): the sixth fixture of `dod-joint-fixtures`**. *The item's text stood as:* `inst-sdk-inbox` says a
     field-name drift "fails the suite", but the check is in neither the fixture roster nor the
     register, and 05 records the cross-check as future work — while C4 forbids exactly that ("an
     unauthorable assertion stays listed as OWED, never silently dropped").
-    **Blocks**: `cpt-cf-bss-products-dod-joint-fixtures`.
+    **Blocks**: no DoD — **resolved by P-D-130** *(was: `cpt-cf-bss-products-dod-joint-fixtures`.)*
     **Owner**: this slice with 05.
 
-12. **Should `P-D-01`, `P-D-03` and `P-D-05` name this slice?** This slice restates all three in
+12. ~~**Should `P-D-01`, `P-D-03` and `P-D-05` name this slice?**~~ **Answered (P-D-130, 2026-09-03): no** — a propagation field names filings, not citers (P-D-128); the 62-of-179 gap is not a gap. *The item's text stood as:* This slice restates all three in
     its constraint rows and register, and their propagation fields do not name it — and so do
     eight more (`P-D-24`, `P-D-25`, `P-D-26`, `P-D-27`, `P-D-29`, `P-D-34`, `P-D-35`, `P-D-43`):
     eleven of the twenty-three decisions this slice cites are absent from their own `Propagated`
@@ -1227,14 +1227,14 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     **Blocks**: no DoD — the fix lands in `DECISIONS.md`, not in any obligation here.
     **Owner**: the register's owner.
 
-13. **Is `inst-cc-errors`' exclusion list one filter or two?** Two of the three exclusions are
+13. ~~**Is `inst-cc-errors`' exclusion list one filter or two?**~~ **Answered (P-D-130, 2026-09-03): one filter** — the opening clause defines the universe; the third exclusion folds into its wording. *The item's text stood as:* Two of the three exclusions are
     already excluded by the opening clause ("that a registry door can refuse"); the third is
     excluded for a reason that clause does not express. The "exactly three" assertion is checkable
     only once one filter defines the universe.
-    **Blocks**: `cpt-cf-bss-products-dod-lint-prd-universe`.
+    **Blocks**: no DoD — **resolved by P-D-130** *(was: `cpt-cf-bss-products-dod-lint-prd-universe`.)*
     **Owner**: the error-contract owner.
 
-14. **Lint 3's population is not in one machine-readable form.** **P-D-45** arm 1 defines it as ``
+14. ~~**Lint 3's population is not in one machine-readable form.**~~ **Answered (P-D-130, 2026-09-03): the normalisation belongs to the lint's grammar** — `\|` → `|`, stated in §3.2. *The item's text stood as:* **P-D-45** arm 1 defines it as ``
     `METHOD /bss-products/v1/…` `` code spans, "one machine-readable form". At HEAD all seven
     pipe-bearing routes exist in **two** textual forms: `{products\|skus}` inside 05 §3.2's table,
     where a markdown cell must escape the pipe, and `{products|skus}` everywhere else — 01, 02,
@@ -1242,7 +1242,7 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     that boundary: it would read all fourteen `Doors` entries as undeclared and all seven outside
     declarations as un-doored. The table cannot drop the escape without breaking the cell, so the
     normalization belongs in the lint's grammar, and no document states it.
-    **Blocks**: `cpt-cf-bss-products-dod-lint-declarations`.
+    **Blocks**: no DoD — **resolved by P-D-130** *(was: `cpt-cf-bss-products-dod-lint-declarations`.)*
     **Owner**: this slice with 05. *(Raised by the P-D-43…49 propagation audit.)*
 
 15. ~~**Lint 9's `Operand` grammar does not describe the cells it reads.**~~
@@ -1266,17 +1266,17 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     freed, and `cpt-cf-bss-products-dod-lint-pin-coupling` carries the amendment while staying blocked by row 33.
     **Owner**: was this slice; **closed**. *(Raised by the P-D-43…49 propagation audit.)*
 
-16. **Seven register entries carry two `Propagated` fields, and lint 5 says there is one.** Lint
+16. ~~**Seven register entries carry two `Propagated` fields, and lint 5 says there is one.**~~ **Answered (P-D-130, 2026-09-03): the grammar admits the dated-amendment form** — lint 5 reads every `- **Propagated**` field of an entry as one set. *The item's text stood as:* Lint
     5's grammar (**P-D-43** arm 4) reads "the register carries **one** propagation field, spelled
     `- **Propagated**`". P-D-24 through P-D-30 each carry a base field plus a second dated *(owed
     until …, all closed)* field — 56 fields across 49 entries. Either the grammar admits the
     dated-amendment form or those seven merge; until it is settled, a reader taking the **last**
     field — the rule P-D-43's own entry forces, since its arm 4 quotes the literal field name in
     its body — silently drops the primary field for all seven.
-    **Blocks**: `cpt-cf-bss-products-dod-lint-declarations`.
+    **Blocks**: no DoD — **resolved by P-D-130** *(was: `cpt-cf-bss-products-dod-lint-declarations`.)*
     **Owner**: the register's owner. *(Raised by the P-D-43…49 propagation audit.)*
 
-17. **No lint verifies that a free-text `reason` door registers the PII block.** 02
+17. ~~**No lint verifies that a free-text `reason` door registers the PII block.**~~ **Answered (P-D-130, 2026-09-03): an eleventh lint** — every door whose payload carries a free-text `reason` appears in `02`'s enumeration; declared, unenforced. *The item's text stood as:* 02
     `inst-av-pii-reason` enumerates the doors that owe `inst-av-pii-block`, and says the
     enumeration *is* the registration — a slice that adds such a field "adds itself to the
     enumeration above; that is the whole registration". Nothing checks it. The nine lints here
@@ -1285,42 +1285,42 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     at all, and 02's own stated consequence is that personal data typed into such a field is
     unreachable by erasure forever. The class is not hypothetical: **P-D-50** had to wire five
     doors across 05 and 07 that had carried the debt as an open item instead.
-    **Blocks**: `cpt-cf-bss-products-dod-lint-surfaces`.
+    **Blocks**: no DoD — **resolved by P-D-130** *(was: `cpt-cf-bss-products-dod-lint-surfaces`.)*
     **Owner**: this slice with 02. *(Raised by CodeRabbit on PR #14, 2026-08-27; its first half —
     the unwired doors — was closed by P-D-50, this half was not.)*
 
-18. **Does `inst-cc-errors` still lint against the phase unit?** **P-D-36** moved the declaring
+18. ~~**Does `inst-cc-errors` still lint against the phase unit?**~~ **Answered (P-D-130, 2026-09-03): the declaring unit is the slice** (P-D-36); §3.2 cites it. *The item's text stood as:* **P-D-36** moved the declaring
     unit from the phase to the declaring slice, which retires the carve-out mirror this row was
     owed rather than paying it. This slice cites P-D-36 nowhere.
-    **Blocks**: `cpt-cf-bss-products-dod-lint-prd-universe`.
+    **Blocks**: no DoD — **resolved by P-D-130** *(was: `cpt-cf-bss-products-dod-lint-prd-universe`.)*
     **Owner**: this slice. *(Filed from 01 §6 by the P-D-43…49 propagation audit — the pointer
     claimed it was registered here and it was not.)*
 
-19. **`ENTITY_TERMINAL`'s gloss widened and the AC #38 map was not re-read.** **P-D-32** widened
+19. ~~**`ENTITY_TERMINAL`'s gloss widened and the AC #38 map was not re-read.**~~ **Answered (P-D-130, 2026-09-03): the map row reads *any head write on a terminal head*** (P-D-32); the §4.1 edit is owed to `design/12`. *The item's text stood as:* **P-D-32** widened
     it from a save on a `retired`/`discarded` head (**P-D-25**) to any head write — save, publish
     or correction. The map's rows were written against the narrower reading.
-    **Blocks**: `cpt-cf-bss-products-dod-lint-prd-universe`.
+    **Blocks**: no DoD — **resolved by P-D-130** *(was: `cpt-cf-bss-products-dod-lint-prd-universe`.)*
     **Owner**: this slice. *(Filed from 01 §6 by the P-D-43…49 propagation audit — the pointer
     claimed it was registered here and it was not.)*
 
-20. **Is `inst-cc-ids`' continuation enumeration stale?** Lint 6 names the ids 01 legitimately
+20. ~~**Is `inst-cc-ids`' continuation enumeration stale?**~~ **Answered (P-D-130, 2026-09-03): a rule, not a count** — an id may sit on several rows when each carries a distinct qualifier. *The item's text stood as:* Lint 6 names the ids 01 legitimately
     carries on more than one row and how many rows each takes. That enumeration is a count against
     another document, and nothing re-reads it when 01 changes.
-    **Blocks**: `cpt-cf-bss-products-dod-lint-declarations`.
+    **Blocks**: no DoD — **resolved by P-D-130** *(was: `cpt-cf-bss-products-dod-lint-declarations`.)*
     **Owner**: this slice. *(Filed from 01 §6 by the P-D-43…49 propagation audit — the pointer
     claimed it was registered here and it was not.)*
 
-21. **May 01 §4.2's `composition_pending` no-re-raise clause rest on P-D-14?** **P-D-48**
+21. ~~**May 01 §4.2's `composition_pending` no-re-raise clause rest on P-D-14?**~~ **Answered (P-D-130, 2026-09-03): the clause rests on P-D-48 as cited**; a propagation field names filings, not citers (P-D-128). *The item's text stood as:* **P-D-48**
     confirmed the clause, but P-D-14's propagation field names 05, 06, `design/README.md`,
     `DESIGN.md` and the PRD — not `design/01-foundation.md`. Under lint 5's own grammar a document
     restates a decision exactly when it cites the id, so either the field gains 01 or the clause
     rests on something else.
-    **Blocks**: `cpt-cf-bss-products-dod-lint-declarations`.
+    **Blocks**: no DoD — **resolved by P-D-130** *(was: `cpt-cf-bss-products-dod-lint-declarations`.)*
     **Owner**: the register's owner. *(Filed from 01 §6 by the P-D-43…49 propagation audit.)*
 
 ### Raised here rather than carried
 
-22. **Lint 3's stated population is wrong, and it is the number a lint would be built to.**
+22. ~~**Lint 3's stated population is wrong, and it is the number a lint would be built to.**~~ **Answered (P-D-130, 2026-09-03): seventeen, harvested** — never a literal; `inst-cc-rbac` and P-D-45's text read *the harvested count*. *The item's text stood as:*
     `inst-cc-rbac` and carried row 14 both say **fourteen** `` `METHOD /bss-products/v1/…` ``
     spans. Measured at `0771f15ae` with the escaping normalised, the design set declares **17**
     distinct routes and `design/05` §3.2's `Doors` column names the same 17. **It was wrong at
@@ -1328,18 +1328,18 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     and a diff of that commit's routes against HEAD's is empty. Carried row 14's *"all fourteen
     `Doors` entries"* is the same error. A lint built to fourteen is wrong by three on a set that
     satisfies it.
-    **Blocks**: `cpt-cf-bss-products-dod-lint-declarations`.
+    **Blocks**: no DoD — **resolved by P-D-130** *(was: `cpt-cf-bss-products-dod-lint-declarations`.)*
     **Owner**: this feature with `design/05`'s owner, and the register's owner for **P-D-45**'s own
     text.
 
-23. **One of the fourteen multiply-claimed requirements is claimed by three slices, not two.**
+23. ~~**One of the fourteen multiply-claimed requirements is claimed by three slices, not two.**~~ **Answered (P-D-130, 2026-09-03): n ≥ 2 with n distinct qualifiers** — thirteen pairs and one triple; the third qualifier is `06`'s. *The item's text stood as:*
     `design/12` §3.2 lint 1 says *"fourteen requirements are owned by **two** slices each"* and
     *"all fourteen pairs now carry"* a qualifier. Measured over every Traces-to line: **14 ids are
     multiply claimed, 13 of them pairs**, and `cpt-cf-bss-products-nfr-scale-extensibility` is
     claimed by **`01`, `02` and `06`**. The count is right; *pairs* is wrong for one member, and it
     matters because the qualifier rule needs **three** distinct qualifiers there — a reviewer
     checking "all fourteen pairs" checks two.
-    **Blocks**: `cpt-cf-bss-products-dod-lint-prd-universe`.
+    **Blocks**: no DoD — **resolved by P-D-130** *(was: `cpt-cf-bss-products-dod-lint-prd-universe`.)*
     **Owner**: this feature, with `01`, `02` and `06` for the third qualifier.
 
 24. ~~**Does the `status` pin bind a field the SDK does not carry?**~~
@@ -1413,7 +1413,7 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     **Owner**: was `01-foundation`'s broker owner with this feature; **closed** — the fixture question
     only. The production registration remains `01`'s and is not settled here.
 
-27. **Does `DECOMPOSITION.md` §2.12 or this document govern the feature's scope?** §2.12's **Scope**
+27. ~~**Does `DECOMPOSITION.md` §2.12 or this document govern the feature's scope?**~~ **Answered (P-D-130, 2026-09-03): this document governs, and §2.12 is amended** — the verification track is In; the thirteen DoDs stay. *The item's text stood as:* §2.12's **Scope**
     lists three items — event schema versioning, the replay/bootstrap contract, the SDK/§9 surfaces —
     and its **Out of scope** puts *"the seam-suite specification, the consumer-obligation register,
     the completeness checks and §17.2 traceability"* outside the feature, its Purpose calling that
@@ -1427,7 +1427,7 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     **Owner**: the DECOMPOSITION owner with the design-set owner. *(Raised independently by all three
     lenses.)*
 
-28. **Does lint 7 match `*_actor_ref` or `actor_ref`, and is "exactly one" the right assertion?**
+28. ~~**Does lint 7 match `*_actor_ref` or `actor_ref`, and is "exactly one" the right assertion?**~~ **Answered (P-D-130, 2026-09-03): exactly one table holds an identity** (`products_identity_ref`); the lint matches real-identity columns, not pseudonymous refs. *The item's text stood as:*
     Measured at `0771f15ae`: **no** column in the design set ends in `_actor_ref`, so the stated
     pattern has zero matches; under the bare `actor_ref` spelling **four** tables declare one —
     `products_identity_ref`, `products_approval`, `products_approval_decision`,
@@ -1435,10 +1435,10 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     the bare one. Either the column convention is renamed across four tables, or the assertion
     changes from *"exactly one table declares such a column"* to one over the columns that **hold**
     an identity rather than every column carrying a pseudonymous ref.
-    **Blocks**: `cpt-cf-bss-products-dod-lint-surfaces`.
+    **Blocks**: no DoD — **resolved by P-D-130** *(was: `cpt-cf-bss-products-dod-lint-surfaces`.)*
     **Owner**: the design-set owner with `10-retention-erasure`'s.
 
-29. **Where do the deserializable event payload types live?** C2's direction is an old consumer
+29. ~~**Where do the deserializable event payload types live?**~~ **Answered (P-D-130, 2026-09-03): in `infra::broker`** — every typed event derives `Deserialize`; the compatibility test lives in the gear and the SDK stays serde-free. *The item's text stood as:* C2's direction is an old consumer
     **deserializing** a new payload, and nothing can deserialize one today: `EventBodyCore` derives
     `Serialize` only and is `pub(crate)`, `Deserialize` occurs zero times in `infra/events.rs`, and
     the destination crate refuses the derive — `products-sdk/src/lib.rs` reads *"No serde derives
@@ -1446,17 +1446,17 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     stated: `products-sdk` gains serde against its own module doc, a third crate holds the wire
     types, or the compatibility test runs against the gear's REST DTOs. The `#[serde(default)]`
     obligation for new optional fields lands wherever the answer points.
-    **Blocks**: `cpt-cf-bss-products-dod-event-versioning`.
+    **Blocks**: no DoD — **resolved by P-D-130** *(was: `cpt-cf-bss-products-dod-event-versioning`.)*
     **Owner**: the SDK owner with `01-foundation`'s event owner.
 
-30. **Where is the `EventRegister` declared?** Lint 4 reads it, §7 row 1 assigns its **rows** to
+30. ~~**Where is the `EventRegister` declared?**~~ **Answered (P-D-130, 2026-09-03): a table in `design/12` §4**, a fifth named artifact; its rows stay owed per slice. *The item's text stood as:* Lint 4 reads it, §7 row 1 assigns its **rows** to
     every slice owner, and the artifact itself has no declaration site: it is not one of `design/12`
     §1.7's four design-introduced names and not one of §4's four named artifacts. So the container
     the rows go into is specified nowhere.
-    **Blocks**: `cpt-cf-bss-products-dod-lint-declarations`.
+    **Blocks**: no DoD — **resolved by P-D-130** *(was: `cpt-cf-bss-products-dod-lint-declarations`.)*
     **Owner**: the design-set owner.
 
-31. **Can the five joint fixtures be expressed in `cf-gears-bss-fixtures` at all?** The crate admits
+31. ~~**Can the five joint fixtures be expressed in `cf-gears-bss-fixtures` at all?**~~ **Answered (P-D-130, 2026-09-03): a products-side crate** — the fixtures crate's grammar is pricing's and closed; P-D-44's artifact row is amended. *The item's text stood as:* The crate admits
     a **closed** grammar: `Family` is an enum with `ALL: [Self; 9]`, all nine of them pricing charge
     families; a directory whose name is not a known family is a **load error**
     (`UnknownFamilyDirectory`); `CaseKind` is `Evaluation | Publish`; and `corpus/registry.toml`
@@ -1467,12 +1467,12 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     corpus root under the same crate, or place the suite in a products-side crate and retire
     **P-D-44**'s artifact row — and `cpt-cf-bss-products-dod-seam-suite-home`'s three-step task is
     unbuildable under all three until one is chosen.
-    **Blocks**: `cpt-cf-bss-products-dod-seam-suite-home`,
+    **Blocks**: no DoD — **resolved by P-D-130** *(was: `cpt-cf-bss-products-dod-seam-suite-home`,)*
     `cpt-cf-bss-products-dod-joint-fixtures`.
     **Owner**: the fixtures-crate owner with the `PRD.md` §15 owner.
 
-32. **Lint 3 needs two more normalisations than any document states, and one of them decides whether
-    it passes.** The escaping is the first and §5 carries it. The second two are unstated:
+32. ~~**Lint 3 needs two more normalisations than any document states, and one of them decides whether
+    it passes.**~~ **Answered (P-D-130, 2026-09-03): both are stated in §3.2's grammar** — a concrete verb roster excluding `METHOD`, and a corpus of the design set plus the PRD with `DECOMPOSITION` out. *The item's text stood as:* The escaping is the first and §5 carries it. The second two are unstated:
     (a) **the verb roster** — a harvest of `` `[A-Z]+ /bss-products/v1/…` `` also matches the
     grammar's own schematic literal `` `METHOD /bss-products/v1/…` ``, which occurs three times
     (`design/05` once, `design/12` twice), giving 18 rather than 17; and (b) **the corpus** —
@@ -1480,7 +1480,7 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     `` `GET /bss-products/v1/browse` `` while §3.2's `Doors` column carries
     `` `GET /bss-products/v1/browse…` ``. **If `DECOMPOSITION.md` is in scope the lint fails today**,
     on a set the design-set-only harvest passes.
-    **Blocks**: `cpt-cf-bss-products-dod-lint-declarations`.
+    **Blocks**: no DoD — **resolved by P-D-130** *(was: `cpt-cf-bss-products-dod-lint-declarations`.)*
     **Owner**: this feature with `design/05`'s owner.
 
 33. ~~**Is `CatalogVersion` a pin entry or outside the pin?**~~
@@ -1524,17 +1524,17 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     freed, row 33 having been resolved by P-D-65 the same day.
     **Owner**: was this feature with the plan-price owner; **closed**.
 
-35. **Where does the studio-inbox envelope cross-check land?** `DECOMPOSITION.md` §2.12 puts it
+35. ~~**Where does the studio-inbox envelope cross-check land?**~~ **Answered (P-D-130, 2026-09-03): the sixth fixture of `dod-joint-fixtures`**, with row 11. *The item's text stood as:* `DECOMPOSITION.md` §2.12 puts it
     **In** scope — *"The SDK and §9 surfaces, including the studio-inbox envelope cross-check"* — as
     does `design/12` §1.5, and `inst-sdk-inbox` says a field-name drift *"fails the suite"*. But it
     is in none of `cpt-cf-bss-products-dod-joint-fixtures`' five fixtures, in no register row, and
     under no acceptance criterion; carried row 11 routes it to that DoD, which does not carry it.
     **It is the one instruction id of `design/12`'s nineteen that no DoD in §5 covers.** It becomes
     a sixth fixture, a fifteenth register row, or a DoD of its own.
-    **Blocks**: `cpt-cf-bss-products-dod-joint-fixtures`.
+    **Blocks**: no DoD — **resolved by P-D-130** *(was: `cpt-cf-bss-products-dod-joint-fixtures`.)*
     **Owner**: this feature with `05-governance`'s.
 
-36. **May a DoD `Implements:` a `contract-` id that lives in the slice?** Three DoDs here do —
+36. ~~**May a DoD `Implements:` a `contract-` id that lives in the slice?**~~ **Answered (P-D-130, 2026-09-03): yes** — `contract-` ids declared in the slice are permitted targets beside `flow`/`algo`/`state`. *The item's text stood as:* Three DoDs here do —
     `dod-sdk-surface`, `dod-catalogsku-shape` and `dod-status-vocabulary` all point at
     `cpt-cf-bss-products-contract-sdk` — and they are the only `Implements` targets across the ten
     written FEATUREs that are not a `flow`/`algo`/`state` id declared in the same document. The
@@ -1545,12 +1545,12 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     **Blocks**: no DoD — the three build the same thing under either answer.
     **Owner**: the design-set owner.
 
-37. **Is lint 2's "fifteen rows" a parsed operand or a transcribed constant?** `PRD.md` AC #38 is a
+37. ~~**Is lint 2's "fifteen rows" a parsed operand or a transcribed constant?**~~ **Answered (P-D-130, 2026-09-03): a transcribed constant**, checked against the PRD's sentence at review by hand. *The item's text stood as:* `PRD.md` AC #38 is a
     single prose sentence whose enumerated items contain commas and a parenthetical aside, and
     `design/12` §4.1 is the machine-readable side. Only the transcribed reading is implementable —
     and under it the criterion *"lint 2 fails on a fourth, unexplained exclusion"* checks §4.1
     against itself rather than against the PRD.
-    **Blocks**: `cpt-cf-bss-products-dod-lint-prd-universe`.
+    **Blocks**: no DoD — **resolved by P-D-130** *(was: `cpt-cf-bss-products-dod-lint-prd-universe`.)*
     **Owner**: the error-contract owner.
 
 ### Owed to other documents, recorded and deliberately not edited

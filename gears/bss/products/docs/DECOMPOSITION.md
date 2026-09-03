@@ -701,7 +701,7 @@ authored downstream of this document, in the order §3 establishes.
 
   - [ ] `p1` - `cpt-cf-bss-products-component-capability-handlers`
 
-- **API**: None declared in the design set — the watermark and correction doors are
+- **API**: `POST /bss-products/v1/skus/{id}/corrections` — the correction door, adopting the route the crate's own refusal announces (P-D-129, 2026-09-03); previously *None declared in the design set* — the watermark and correction doors are
   service-to-service surfaces whose routes the design set does not pin
 
 - **Sequences**:
@@ -1035,6 +1035,7 @@ authored downstream of this document, in the order §3 establishes.
   - The broker's transport, which is Common Core's
   - The cross-gear open questions this feature can only assert once they are closed
 
+- **Amended by P-D-130 (2026-09-03)**: the verification track — the seam-suite specification, the consumer-obligation register, the completeness checks and §17.2 traceability — is **In** scope. `features/consumer-contracts.md` delivers it through thirteen DoDs and `design/12` §1.5 puts it In; the *"not decomposed"* sentence above and the Out-of-scope items it names are superseded. The seam suite's home is a products-side crate (P-D-44's artifact row amended).
 - **Requirements Covered**:
 
   - [ ] `p1` - `cpt-cf-bss-products-fr-event-versioning-replay`

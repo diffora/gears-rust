@@ -264,9 +264,9 @@ events per §1.8. All tenant-scoped, append-only where evidential.
   disabled" are the same words for opposite polarities, and §5's probe and C5 have read it both
   ways. A flag needs a name and a stated polarity; the code stays the 403.
 
-- **OPEN (third full-review pass) — a fresh producer's retirement can still free a SKU,
+- ~~**OPEN (third full-review pass) — a fresh producer's retirement can still free a SKU,
   and three attempts to write the rule have each introduced a contradiction. Registered rather than
-  drafted a fourth time.** `inst-pr-retirement` guards the case its own sentence names: a **stale or
+  drafted a fourth time.**~~ **Answered (P-D-129, 2026-09-03): a producer retires only with an empty current watermark**; a dead one under break-glass at the retirement door, with `producer_unavailable` override rows as evidence. *The item's text stood as:* `inst-pr-retirement` guards the case its own sentence names: a **stale or
   never-received** producer, whose *silence* is what pins the set. It does **not** dispose of a
   **fresh** producer that is the only one reporting SKU `X`: removing it drops the only non-zero vote
   and `X` goes fresh-zero, opening the bucket-ii correction door on it through the normal lane. Four
@@ -302,13 +302,13 @@ events per §1.8. All tenant-scoped, append-only where evidential.
 - **Watermark set size**: full-set replacement at 10K SKUs × cadence is fine as rows, but the
   door should accept a compressed set representation from day one (wire-level; no semantic
   change) — implementation note.
-- **`PRODUCER_RETIREMENT_WOULD_FREE`'s exception has no lane.** The refusal is buildable; its escape
+- ~~**`PRODUCER_RETIREMENT_WOULD_FREE`'s exception has no lane.**~~ **Answered (P-D-129, 2026-09-03): the exception exists for a dead producer only**, at the retirement door under break-glass elevation. *The item's text stood as:* The refusal is buildable; its escape
   hatch — "the break-glass ceremony's own justification" — has no admission predicate, no evidence
   record and no grant, and this slice's only break-glass lane is the single-SKU correction door,
   which is not a retirement door. No document defines a retirement-lane ceremony. Owner: the owner
   of §6's four sub-questions — decide whether the exception exists in v1 at all.
   *(All three lenses raised it independently.)*
-- **OWED — the tighter row-image predicate 01 books against this slice.** 01 §4.2 says twice that
+- ~~**OWED — the tighter row-image predicate 01 books against this slice.**~~ **Answered (P-D-129, 2026-09-03): the bump **and** `correction_ref` set in one statement** — a new nullable uuid on `products_sku`; the lead's build. *The item's text stood as:* 01 §4.2 says twice that
   the physical guard carries the interim predicate "with a tighter one still **owed by 07**"; this
   slice carries no such item. Until it is supplied, door identity for bucket-ii head-row writes is
   an application guarantee only, and any publish carrying the third argument passes the guard.
@@ -321,23 +321,23 @@ events per §1.8. All tenant-scoped, append-only where evidential.
   "configured tolerance, interim 5 min"; `PRD` §17.1 has no row for it, and §1.4's reference line
   claims only the freshness and tripwire interims. It is the one configurable in this slice with no
   home. Owner: was the §17.1 policy owner; **closed**. *(Two lenses raised it independently.)*
-- **What population does the tripwire count?** C6 counts break-glass corrections per window, and the
+- ~~**What population does the tripwire count?**~~ **Answered (P-D-129, 2026-09-03): two counters, one window** — only `producer_unavailable` feeds the release blocker. *The item's text stood as:* C6 counts break-glass corrections per window, and the
   unresolvable-target arm "increments the same `TripwireCounter`" — but that arm is admissible while
   the signal is fully available, and `fr-failsafe-tripwire` scopes the requirement to operating "in
   `SkuReferenceCount`-unavailable fail-safe mode". Six deleted-`UsageType` repairs in a month would
   reclassify signal *delivery* as a release blocker. P-D-16 amended the correction FR and AC #4 and
   did not touch the tripwire FR. Owner: the tripwire's §17.1 owner.
   *(Two lenses raised it independently.)*
-- **Where does `signal_delivery_release_blocker` live, and what clears it?** Derived from the rolling
+- ~~**Where does `signal_delivery_release_blocker` live, and what clears it?**~~ **Answered (P-D-129, 2026-09-03): derived, no row, no operator exit** — C6's rate rule is a rolling window. *The item's text stood as:* Derived from the rolling
   window it clears itself thirty days later — normalizing degraded operation, which C6 forbids;
   stored, it is a state with no exit and no table in §4. Owner: `fr-failsafe-tripwire`'s owner. *(Raised by the slice-07 first lens pass.)*
-- **What carries the admitting lane into the publish transaction?** `inst-cr-republish` has the
+- ~~**What carries the admitting lane into the publish transaction?**~~ **Answered (P-D-129, 2026-09-03): the `GovernedLiveOp` envelope's `kind`** — `sku_correction` is a registered kind. *The item's text stood as:* `inst-cr-republish` has the
   registered validator re-check "the lane's own admission predicate", and nothing tells it which
   lane admitted: 01's `PublishDoor` signature has no lane argument, 05's `ApprovalRecord` has no arm
   discriminator, and this slice's override row is written *by* the re-publish. Owner: this slice with
   01 and 05 — a fourth door argument, a field on the approval, or a pre-written admission record.
   *(Raised by the slice-07 first lens pass.)*
-- **Who sets `required` on a `sku_correction` `ApprovalRecord`?** This slice calls the correction a
+- ~~**Who sets `required` on a `sku_correction` `ApprovalRecord`?**~~ **Answered (P-D-129, 2026-09-03): `05`'s evaluator, returning material for the registered kind**; `required = N`. *The item's text stood as:* This slice calls the correction a
   material act at the tenant's `N`; 05's evaluator returns material only on a bucket-iii touch, the
   enumerated ops, an affected-entity count, or a registered `GovernedLiveOp` kind — and 05 explicitly
   removes the metering-unit field from the evaluator's view, while `sku_correction` is not a
@@ -359,10 +359,10 @@ events per §1.8. All tenant-scoped, append-only where evidential.
   set hash is an idempotent success and with a different set a refusal, while §4 declares no hash
   column and no rule states its derivation — canonical ordering, algorithm, stored at ingestion or
   recomputed from member rows at 10K SKUs. Owner: this slice with the schema owner. *(Raised by the slice-07 first lens pass.)*
-- **Is the correction door's `expected revision` the `If-Match` precondition or a body field?** This
+- ~~**Is the correction door's `expected revision` the `If-Match` precondition or a body field?**~~ **Answered (P-D-129, 2026-09-03): `If-Match`**, P-D-33's convention. *The item's text stood as:* This
   pass gave the mismatch 01's `STALE_REVISION`; which surface carries it is still unstated, and it
   determines the door's declared response map. Owner: this slice with 01. *(Raised by the slice-07 first lens pass.)*
-- **Which actor performs `reference_producer × write`?** §1.3 assigns producer registration and
+- ~~**Which actor performs `reference_producer × write`?**~~ **Answered (P-D-129, 2026-09-03): any principal holding the grant** — the quorum is on the approvers, not the submitter. *The item's text stood as:* §1.3 assigns producer registration and
   retirement to nobody: the producer actors "register at their own build", which reads either as the
   service registering itself or as an operator registering it — incompatible with a material governed
   op requiring a tenant quorum. Owner: this slice with 05. *(Raised by the slice-07 first lens pass.)*

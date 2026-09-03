@@ -1165,9 +1165,9 @@ leaves the specific ones looking open:
     **Blocks**: no DoD — **resolved by P-D-71**; `cpt-cf-bss-products-dod-reference-config` and `dod-breakglass-unavailable` carry the name.
     **Owner**: was this feature; **closed**.
 
-2. **OPEN (third full-review pass) — a fresh producer's retirement can still free a SKU, and three
+2. ~~**OPEN (third full-review pass) — a fresh producer's retirement can still free a SKU, and three
    attempts to write the rule have each introduced a contradiction. Registered rather than drafted a
-   fourth time.** `inst-pr-retirement` guards the case its own sentence names: a **stale or
+   fourth time.**~~ **Answered (P-D-129, 2026-09-03): a producer retires only with an empty current watermark** — a live one posts an empty set first; a dead one retires under `05`'s break-glass elevation at the retirement door, with one `producer_unavailable` override row per freed SKU as the evidence, and those rows feed the tripwire as they should. *The item's text stood as:* `inst-pr-retirement` guards the case its own sentence names: a **stale or
    never-received** producer, whose *silence* is what pins the set. It does **not** dispose of a
    **fresh** producer that is the only one reporting SKU `X`: removing it drops the only non-zero
    vote and `X` goes fresh-zero, opening the bucket-ii correction door on it through the normal lane.
@@ -1197,7 +1197,7 @@ leaves the specific ones looking open:
 
    **Until this is settled the guarded case is guarded and the fresh case is not**, which is the
    honest state and is why it is written here rather than papered over in the rule.
-   **Blocks**: `cpt-cf-bss-products-dod-producer-registration`, and constrains
+   **Blocks**: no DoD — **resolved by P-D-129** *(was: `cpt-cf-bss-products-dod-producer-registration`, and constrains)*
    `cpt-cf-bss-products-dod-correction-door`, whose normal lane is what the freed SKU walks through.
    **Owner**: this feature, jointly with the tripwire's and the PRD's owners — sub-questions 3 and 4
    reach both.
@@ -1215,23 +1215,23 @@ leaves the specific ones looking open:
    free to satisfy it.
    **Owner**: this feature at implementation.
 
-5. **`PRODUCER_RETIREMENT_WOULD_FREE`'s exception has no lane.** The refusal is buildable; its escape
+5. ~~**`PRODUCER_RETIREMENT_WOULD_FREE`'s exception has no lane.**~~ **Answered (P-D-129, 2026-09-03): the exception exists for a dead producer only**, at the retirement door under break-glass elevation, evidenced by `producer_unavailable` override rows. *The item's text stood as:* The refusal is buildable; its escape
    hatch — "the break-glass ceremony's own justification" — has no admission predicate, no evidence
    record and no grant, and this slice's only break-glass lane is the single-SKU correction door,
    which is not a retirement door. No document defines a retirement-lane ceremony. *(All three lenses
    raised it independently.)*
-   **Blocks**: `cpt-cf-bss-products-dod-producer-registration`.
+   **Blocks**: no DoD — **resolved by P-D-129** *(was: `cpt-cf-bss-products-dod-producer-registration`.)*
    **Owner**: the owner of row 2's four sub-questions — decide whether the exception exists in v1 at
    all.
 
-6. **OWED — the tighter row-image predicate 01 books against this slice.** 01 §4.2 says twice that
+6. ~~**OWED — the tighter row-image predicate 01 books against this slice.**~~ **Answered (P-D-129, 2026-09-03): the bump **and** `correction_ref` set in the same statement** — a nullable uuid on `products_sku` only the correction re-publish writes; `01`'s migration, the lead's build. *The item's text stood as:* 01 §4.2 says twice that
    the physical guard carries the interim predicate "with a tighter one still **owed by 07**"; this
    slice carries no such item. Until it is supplied, door identity for bucket-ii head-row writes is
    an application guarantee only, and **any** publish carrying the third argument passes the guard.
    *Re-measured at `19a81a406`: the phrase occurs **twice** in `design/01`, but once under §3.1's
    `inst-fd-bucket-ii-refusal` and once under §4.2's `products_sku` — not twice in §4.2 as the row
    reads. The obligation is unaffected; the citation is.*
-   **Blocks**: `cpt-cf-bss-products-dod-correction-door`,
+   **Blocks**: no DoD — **resolved by P-D-129** *(was: `cpt-cf-bss-products-dod-correction-door`,)*
    `cpt-cf-bss-products-dod-correction-republish`.
    **Owner**: this feature.
 
@@ -1246,37 +1246,37 @@ leaves the specific ones looking open:
     **Blocks**: no DoD — **resolved by P-D-87**.
     **Owner**: was the §17.1 policy owner. *See row 19: measured at `19a81a406`, three of this feature's; **closed**.
 
-8. **What population does the tripwire count?** C6 counts break-glass corrections per window, and the
+8. ~~**What population does the tripwire count?**~~ **Answered (P-D-129, 2026-09-03): two counters, one window** — `producer_unavailable` feeds the release blocker, `unresolvable_target` its own alarm; the PRD owner may narrow. *The item's text stood as:* C6 counts break-glass corrections per window, and the
    unresolvable-target arm "increments the same `TripwireCounter`" — but that arm is admissible while
    the signal is fully available, and `fr-failsafe-tripwire` scopes the requirement to operating "in
    `SkuReferenceCount`-unavailable fail-safe mode". Six deleted-`UsageType` repairs in a month would
    reclassify signal *delivery* as a release blocker. P-D-16 amended the correction FR and AC #4 and
    did not touch the tripwire FR. *(Two lenses raised it independently.)*
-   **Blocks**: `cpt-cf-bss-products-dod-tripwire`,
+   **Blocks**: no DoD — **resolved by P-D-129** *(was: `cpt-cf-bss-products-dod-tripwire`,)*
    `cpt-cf-bss-products-dod-breakglass-unresolvable`.
    **Owner**: the tripwire's §17.1 owner.
 
-9. **Where does `signal_delivery_release_blocker` live, and what clears it?** Derived from the
+9. ~~**Where does `signal_delivery_release_blocker` live, and what clears it?**~~ **Answered (P-D-129, 2026-09-03): derived** — a rolling-window predicate over the override table, no row, no operator exit; C6's rate rule is a rolling window. *The item's text stood as:* Derived from the
    rolling window it clears itself thirty days later — normalizing degraded operation, which C6
    forbids; stored, it is a state with no exit and no table in `design/07` §4.
-   **Blocks**: `cpt-cf-bss-products-dod-tripwire`.
+   **Blocks**: no DoD — **resolved by P-D-129** *(was: `cpt-cf-bss-products-dod-tripwire`.)*
    **Owner**: `fr-failsafe-tripwire`'s owner.
 
-10. **What carries the admitting lane into the publish transaction?** `inst-cr-republish` has the
+10. ~~**What carries the admitting lane into the publish transaction?**~~ **Answered (P-D-129, 2026-09-03): the envelope's `kind`** — `sku_correction` is a registered `GovernedLiveOp` kind and the lane is its arm. *The item's text stood as:* `inst-cr-republish` has the
     registered validator re-check "the lane's own admission predicate", and nothing tells it which
     lane admitted: 01's `PublishDoor` signature has no lane argument, 05's `ApprovalRecord` has no
     arm discriminator, and this slice's override row is written *by* the re-publish.
-    **Blocks**: `cpt-cf-bss-products-dod-correction-republish`.
+    **Blocks**: no DoD — **resolved by P-D-129** *(was: `cpt-cf-bss-products-dod-correction-republish`.)*
     **Owner**: this feature with `01-foundation` and `05-governance` — a fourth door argument, a field
     on the approval, or a pre-written admission record.
 
-11. **Who sets `required` on a `sku_correction` `ApprovalRecord`?** This slice calls the correction a
+11. ~~**Who sets `required` on a `sku_correction` `ApprovalRecord`?**~~ **Answered (P-D-129, 2026-09-03): `05`'s evaluator, and it returns material** once `sku_correction` is a registered `GovernedLiveOp` kind; `required = N`. *The item's text stood as:* This slice calls the correction a
     material act at the tenant's `N`; 05's evaluator returns material only on a bucket-iii touch, the
     enumerated ops, an affected-entity count, or a registered `GovernedLiveOp` kind — and 05
     explicitly removes the metering-unit field from the evaluator's view, while `sku_correction` is
     not a `GovernedLiveOp` kind. **As it stands the evaluator returns non-material and the correction
     closes on `min(N, 1)`.**
-    **Blocks**: `cpt-cf-bss-products-dod-correction-republish`.
+    **Blocks**: no DoD — **resolved by P-D-129** *(was: `cpt-cf-bss-products-dod-correction-republish`.)*
     **Owner**: `05-governance`'s owner.
 
 12. ~~**What happens to a retired producer's watermark and member rows, and to one that re-registers?**~~
@@ -1303,20 +1303,20 @@ leaves the specific ones looking open:
     **Blocks**: no DoD — **resolved by P-D-71**; `cpt-cf-bss-products-dod-watermark-tables` and `dod-watermark-door` carry the column.
     **Owner**: was this feature with the schema owner; **closed**.
 
-14. **Is the correction door's `expected revision` the `If-Match` precondition or a body field?**
+14. ~~**Is the correction door's `expected revision` the `If-Match` precondition or a body field?**~~ **Answered (P-D-129, 2026-09-03): `If-Match`** — P-D-33's convention for every mutating door. *The item's text stood as:*
     This pass gave the mismatch 01's `STALE_REVISION`; which surface carries it is still unstated,
     and it determines the door's declared response map.
-    **Blocks**: `cpt-cf-bss-products-dod-correction-door`.
+    **Blocks**: no DoD — **resolved by P-D-129** *(was: `cpt-cf-bss-products-dod-correction-door`.)*
     **Owner**: this feature with `01-foundation`.
 
-15. **Which actor performs `reference_producer × write`?** `design/07` §1.3 assigns producer
+15. ~~**Which actor performs `reference_producer × write`?**~~ **Answered (P-D-129, 2026-09-03): any principal holding `reference_producer × write`** — the quorum is on the tenant's approvers, so a service at deploy and an operator use one door. *The item's text stood as:* `design/07` §1.3 assigns producer
     registration and retirement to nobody: the producer actors "register at their own build", which
     reads either as the service registering itself or as an operator registering it — incompatible
     with a material
     governed op requiring a tenant quorum. *(This document's own §1.3 names
     `actor-catalog-admin` on the ceremony, which is an authoring choice made here and not an answer
     — the incompatibility above is untouched by it.)*
-    **Blocks**: `cpt-cf-bss-products-dod-producer-registration`,
+    **Blocks**: no DoD — **resolved by P-D-129** *(was: `cpt-cf-bss-products-dod-producer-registration`,)*
     `cpt-cf-bss-products-dod-reference-authz`.
     **Owner**: this feature with `05-governance`.
 
@@ -1337,8 +1337,8 @@ leaves the specific ones looking open:
 
 Five, all from reading the crate at `19a81a406`. Every quotation was byte-verified against source.
 
-17. **A shipped green test's message assigns this feature's scope to it wrongly, and the message is
-    what a later reader will act on.** `bucket_tests::buckets_ii_and_iv_have_no_members_today`
+17. ~~**A shipped green test's message assigns this feature's scope to it wrongly, and the message is
+    what a later reader will act on.**~~ **Answered (P-D-129, 2026-09-03): stale by measurement** — `bucket_tests` counts two `Correctable` members and carries no such message. *The item's text stood as:* `bucket_tests::buckets_ii_and_iv_have_no_members_today`
     asserts the `Correctable` member count is zero with the message *"bucket-ii columns arrive with
     slice 07"*. `domain/bucket.rs`'s module doc says the opposite and is right: *"03 owns the
     columns and their registration while slice 07 owns the correction door"* — and the
@@ -1350,15 +1350,15 @@ Five, all from reading the crate at `19a81a406`. Every quotation was byte-verifi
     `cpt-cf-bss-products-dod-correction-door` must not grow a column.
     **Owner**: `01-foundation`'s code, whose test it is. One-line pointer only.
 
-18. **`CONTENT_PII_BLOCKED` guards three of this feature's operator reasons — across two of its
-    doors — and is armed nowhere.** The
+18. ~~**`CONTENT_PII_BLOCKED` guards three of this feature's operator reasons — across two of its
+    doors — and is armed nowhere.**~~ **Answered (P-D-129, 2026-09-03): stale by measurement** — `DomainError::ContentPiiBlocked` exists and `content_pii_block` is called at five doors; `07`'s three reasons call it when `07`'s doors are built. *The item's text stood as:* The
     correction reason, the break-glass reason and the producer-retirement justification all fail on a
     PII hit with that code (**P-D-50**), and `domain::error::DomainError`'s fourteen variants carry no
     arm for it — unlike `ILLEGAL_FIELD_MUTATION` and `STALE_REVISION`, the other foreign codes this
     feature cites, which are armed. A code with no raiser anywhere in the crate is the class
     `04-lifecycle` found in `SCOPE_NARROWING_BLOCKED`. **This feature must not mint it** — that would
     make it the second author of another slice's code.
-    **Blocks**: `cpt-cf-bss-products-dod-reference-error-taxonomy`.
+    **Blocks**: no DoD — **resolved by P-D-129** *(was: `cpt-cf-bss-products-dod-reference-error-taxonomy`.)*
     **Owner**: `02-taxonomy-attributes`, which declares the code.
 
 19. ~~**Three of this feature's four config knobs have no home, not one.**~~
@@ -1378,25 +1378,25 @@ Five, all from reading the crate at `19a81a406`. Every quotation was byte-verifi
     **Blocks**: no DoD — **resolved by P-D-87**; `cpt-cf-bss-products-dod-tripwire` keeps rows 8 and 9.
     **Owner**: was this gear's config owner with the §17.1 policy owner; **closed**.
 
-20. **The shipped crate already announces one of the three routes the design set declines to pin.**
+20. ~~**The shipped crate already announces one of the three routes the design set declines to pin.**~~ **Answered (P-D-129, 2026-09-03): the announced shape is adopted** — `POST /bss-products/v1/skus/{id}/corrections`, declared in `DECOMPOSITION` §2.7. *The item's text stood as:*
     `api/rest/products.rs`'s `correctable_after_publish` builds a refusal reading *"writable only
     through the correction door (POST .../corrections, slice 07)"*, so callers are told a route shape
     that no artifact carries — DECOMPOSITION §2.7 says *"API: None declared in the design set"* and
     row 16 records the gap. Either the artifact adopts the announced shape or the message is changed;
     a third route, invented at implementation, would make the refusal a lie.
-    **Blocks**: `cpt-cf-bss-products-dod-correction-door`.
+    **Blocks**: no DoD — **resolved by P-D-129** *(was: `cpt-cf-bss-products-dod-correction-door`.)*
     **Owner**: the design-set owner — row 16's owner, with this measurement attached.
 
-21. **Is `sku × correct` a new action on the existing `sku` label, or a new label?** The slice writes
+21. ~~**Is `sku × correct` a new action on the existing `sku` label, or a new label?**~~ **Answered (P-D-129, 2026-09-03): a new action `correct` on the existing `sku` label**; `sku × write` does not reach the door. *The item's text stood as:* The slice writes
     the pair and `05-governance`'s roster owns the catalog. Measured: `authz::labels::ALL` is exactly
     `[PRODUCT, SKU]` and `actions` is exactly `read | write | publish`, so either answer extends a
     positionally-asserted roster, and the two answers differ in whether an existing `sku × write`
     grant reaches this door. This feature cannot widen another slice's table.
-    **Blocks**: `cpt-cf-bss-products-dod-reference-authz`.
+    **Blocks**: no DoD — **resolved by P-D-129** *(was: `cpt-cf-bss-products-dod-reference-authz`.)*
     **Owner**: 05's roster owner.
 
 
-22. **How does the admission gate re-run inside the publish transaction?**
+22. ~~**How does the admission gate re-run inside the publish transaction?**~~ **Answered (P-D-129, 2026-09-03): P-D-121 row 19's shape** — the door resolves the reads before the transaction and hands the phase a `Resolution`; inside, a continuation of the identity phase. *The item's text stood as:*
     `cpt-cf-bss-products-dod-correction-republish` obliges the re-run and deliberately names no host,
     because the shipped pipeline cannot be one: `ValidationRule<S>::evaluate(&self, subject: &S,
     report)` is synchronous and judges the subject row alone, while this re-check reads
@@ -1405,28 +1405,28 @@ Five, all from reading the crate at `19a81a406`. Every quotation was byte-verifi
     check *"runs as a continuation of the same identity phase … rather than as a `Phase::Identity`
     rule that cannot reach"* its operand. Whether the trait widens or the re-check runs as a
     continuation is `features/lifecycle.md` §7 row 20's, which registers the general question.
-    **Blocks**: `cpt-cf-bss-products-dod-correction-republish`,
+    **Blocks**: no DoD — **resolved by P-D-129** *(was: `cpt-cf-bss-products-dod-correction-republish`,)*
     `cpt-cf-bss-products-dod-correction-door`.
     **Owner**: `01-foundation`, with this feature.
 
-23. **Where does the correction's payload live between submission and the approved re-publish?** The
+23. ~~**Where does the correction's payload live between submission and the approved re-publish?**~~ **Answered (P-D-129, 2026-09-03): in the `GovernedLiveOp` envelope**, whose bytes `05`'s snapshot pins; the apply writes head and override row in the re-publish transaction. *The item's text stood as:* The
     door accepts the new value and the write happens on approval, and each candidate store is closed
     by another document: the head, because this door is the only writer of a bucket-ii column after
     first publish; the `GovernedLiveOp` payload channel, because §7 row 11 records that
     `sku_correction` is not such a kind; and the approval's stored snapshot, because
     `05-governance` C3 makes it byte-identical to the head at that revision. No table in §5 holds a
     pending correction.
-    **Blocks**: `cpt-cf-bss-products-dod-correction-door`,
+    **Blocks**: no DoD — **resolved by P-D-129** *(was: `cpt-cf-bss-products-dod-correction-door`,)*
     `cpt-cf-bss-products-dod-correction-republish`.
     **Owner**: `05-governance`'s owner with this feature.
 
-24. **What measures "the head is clean"?** `CORRECTION_DIRTY_HEAD` refuses on an operand no document
+24. ~~**What measures "the head is clean"?**~~ **Answered (P-D-129, 2026-09-03): digest equality** — the head rendered through `domain::canonical` over the frozen roster carries its last version row's `content_digest`; one operand for all three guards. *The item's text stood as:* `CORRECTION_DIRTY_HEAD` refuses on an operand no document
     names. The cheap comparison is unavailable: the frozen content excludes `lifecycle_state`,
     `deprecation_provenance`, `replaced_by_sku_id` and `internal_revision`, so a whole-image diff
     against `published_version` is not the same question. `06-catalog-version` records that this
     guard has **three** instances — `CORRECTION_DIRTY_HEAD`/`CORRECTION_APPROVAL_OPEN` here and
     `PROMOTION_DIRTY_HEAD` in 09 — and none of the three defines it.
-    **Blocks**: `cpt-cf-bss-products-dod-correction-door`.
+    **Blocks**: no DoD — **resolved by P-D-129** *(was: `cpt-cf-bss-products-dod-correction-door`.)*
     **Owner**: `01-foundation`'s head/version model owner, since the guard is shared by three
     slices.
 
@@ -1515,7 +1515,7 @@ Five, all from reading the crate at `19a81a406`. Every quotation was byte-verifi
     **Blocks**: no DoD — **resolved by P-D-71**; `cpt-cf-bss-products-dod-watermark-tables` and `dod-watermark-door` carry the posture.
     **Owner**: was this feature with `fr-reference-signal`'s owner; **closed**.
 
-31. **Does "no config home" mean no `config.rs` field, or no PRD §17.1 policy row?** Row 7 uses the
+31. ~~**Does "no config home" mean no `config.rs` field, or no PRD §17.1 policy row?**~~ **Answered (P-D-129, 2026-09-03): a knob's home is `ProductsConfig`; "homeless" means owed a `PRD` §17.1 row** — rows 7 and 19 restate as that. *The item's text stood as:* Row 7 uses the
     second sense — the skew tolerance is *"the one configurable in this slice with no home"* because
     §17.1 has no row for it — and row 19 uses the first, under which the tripwire rate has no home
     either though §17.1 carries its interim. Under one sense three knobs are homeless, under the
@@ -1533,7 +1533,7 @@ Five, all from reading the crate at `19a81a406`. Every quotation was byte-verifi
     **Blocks**: no DoD — **resolved by P-D-87**.
     **Owner**: was row 1's owner — this feature; **closed**.
 
-33. **Can a `p2` deliverable carry a `p1` arm's obligation?** `cpt-cf-bss-products-dod-tripwire` is
+33. ~~**Can a `p2` deliverable carry a `p1` arm's obligation?**~~ **Answered (P-D-125, 2026-09-03): `pN` is a per-id importance**; a `p2` DoD may carry a `p1` arm's obligation. *The item's text stood as:* `cpt-cf-bss-products-dod-tripwire` is
     `p2` while the `p1` arm-(b) DoD obliges *"It **MUST** increment the same `TripwireCounter`"*. The
     design set carries the same split — `inst-bc-unresolvable` is `p1` and `inst-bc-tripwire` `p2` —
     so this document did not introduce it and cannot resolve it: either the counter rises with arm
@@ -1541,8 +1541,8 @@ Five, all from reading the crate at `19a81a406`. Every quotation was byte-verifi
     **Blocks**: no DoD; it decides whether one changes priority.
     **Owner**: the slice owner.
 
-34. **The retirement door's not-found refusal has no declared code, so it can carry no audit
-    row.** `dod-reference-audit` obliges a row for *"every producer registration and retirement …
+34. ~~**The retirement door's not-found refusal has no declared code, so it can carry no audit
+    row.**~~ **Answered (P-D-129, 2026-09-03): `PRODUCER_UNREGISTERED` widens to the producer doors** — one slice declares it and raises it at two of its own doors. *The item's text stood as:* `dod-reference-audit` obliges a row for *"every producer registration and retirement …
     **accepted or refused**"*, and `design/01` §4.4 scopes the class to *"every refusal a registry
     door raises, not only the enumerated ones"*. Retiring a producer the tenant does not have is a
     refusal, and §3.3 names no code for it — `PRODUCER_UNREGISTERED` is declared for **the
@@ -1550,11 +1550,11 @@ Five, all from reading the crate at `19a81a406`. Every quotation was byte-verifi
     false attribution under 12's one-declaring-slice rule. An audit row's `error_code` is the
     channel a consumer matches, so the refusal ships as a bare 404 with no row. Either the code
     widens to the producer doors or a second one is minted.
-    **Blocks**: `cpt-cf-bss-products-dod-reference-audit`.
+    **Blocks**: no DoD — **resolved by P-D-129** *(was: `cpt-cf-bss-products-dod-reference-audit`.)*
     **Owner**: this feature with `12-consumer-contracts`. *(Raised by the three-lens review of
     `e939953ee`; two lenses independently.)*
 
-35. **Does an act that emits a broker event still owe an audit row?** The two rows this surface
+35. ~~**Does an act that emits a broker event still owe an audit row?**~~ **Answered (P-D-129, 2026-09-03): P-D-21's rule stands** — when `ReferenceProducerSetChanged` lands, the registration and retirement audit rows go and `dod-reference-audit` narrows to refusals. *The item's text stood as:* The two rows this surface
     writes for registration and retirement are admissible today only because
     `ReferenceProducerSetChanged` is emitted nowhere in the crate. `design/01` §4.4 under
     **P-D-21** holds the table for *"only acts that emit no event"* and says a committed mutation
@@ -1562,11 +1562,11 @@ Five, all from reading the crate at `19a81a406`. Every quotation was byte-verifi
     `design/07` §3 and `dod-reference-events` require the membership ops to emit
     `ReferenceProducerSetChanged` **and** audit. The day the event lands, one of the two must give,
     and which decides whether these rows are removed.
-    **Blocks**: `cpt-cf-bss-products-dod-reference-audit`, `cpt-cf-bss-products-dod-reference-events`.
+    **Blocks**: no DoD — **resolved by P-D-129** *(was: `cpt-cf-bss-products-dod-reference-audit`, `cpt-cf-bss-products-dod-reference-events`.)*
     **Owner**: `01-foundation`'s owner with this feature. *(Raised by the three-lens review of
     `e939953ee`; two lenses independently.)*
 
-36. **The audit side of the ceremony join has no column.** `dod-reference-audit` requires a
+36. ~~**The audit side of the ceremony join has no column.**~~ **Answered (P-D-129, 2026-09-03): a nullable `ceremony_ref` on `products_audit_log`**, in the same in-place migration as P-D-118's `correlation_id`; the lead's build. *The item's text stood as:* `dod-reference-audit` requires a
     break-glass correction's row to *"carry the ceremony reference, the same value
     `products_correction_override` stores, so the ceremony and the evidence are joinable from
     either side"*. `products_audit_log`'s roster carries **no `ceremony_ref`** — its columns are
@@ -1574,17 +1574,17 @@ Five, all from reading the crate at `19a81a406`. Every quotation was byte-verifi
     `subject_revision`, `error_code`, `attempted_key`, `reason`, `correlation_id`, `written_at`,
     `session_id`. So the join is owed on both sides, not just on the corrections door's. Whether
     the value rides a new column or the existing `correlation_id` is the choice.
-    **Blocks**: `cpt-cf-bss-products-dod-reference-audit`.
+    **Blocks**: no DoD — **resolved by P-D-129** *(was: `cpt-cf-bss-products-dod-reference-audit`.)*
     **Owner**: `01-foundation`'s schema owner with this feature. *(Raised by the three-lens review
     of `e939953ee`.)*
 
-37. **Is the tripwire's window edge inclusive?** The shipped count filters `recorded_at >= since`
+37. ~~**Is the tripwire's window edge inclusive?**~~ **Answered (P-D-129, 2026-09-03): inclusive**, as shipped and probed — `[now − 30 d, now]`. *The item's text stood as:* The shipped count filters `recorded_at >= since`
     and a probe pins that, but nothing normative says which: §5 gives only *"a windowed count over
     this table"* and `design/07` C6 gives the rate as *"> 5 break-glass corrections / 30 days
     (configured)"* with no edge rule. A rolling caller crossing a boundary gets a different answer
     under `>` — at exactly six overrides thirty days apart, one reading escalates and the other
     does not.
-    **Blocks**: `cpt-cf-bss-products-dod-tripwire`.
+    **Blocks**: no DoD — **resolved by P-D-129** *(was: `cpt-cf-bss-products-dod-tripwire`.)*
     **Owner**: the tripwire's §17.1 owner. *(Raised by the three-lens review of `e939953ee`.)*
 
 38. **May a retention collector delete from `products_correction_override`, and which document
@@ -1597,7 +1597,7 @@ Five, all from reading the crate at `19a81a406`. Every quotation was byte-verifi
     statutory-max row raises `P0001`, which is not retryable contention, so the sweep aborts and
     takes its other candidates with it.
     **Blocks**: no DoD here; it is `10-retention-erasure`'s to answer for the whole class.
-    **Owner**: `10-retention-erasure`'s owner. *(Raised by the three-lens review of `e939953ee`.)*
+    **Owner**: *(P-D-129, 2026-09-03: **routed to strand D** with a recommendation — the audit plane's row-image predicate, P-D-34, is the one shape for the class.)* `10-retention-erasure`'s owner. *(Raised by the three-lens review of `e939953ee`.)*
 
 ### Owed to other documents, recorded and deliberately not edited
 

@@ -1569,6 +1569,150 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-129 — `07`'s open set: a producer retires empty or under break-glass, the correction is a `GovernedLiveOp`, and the guards that shared one question
+
+- **Date**: 2026-09-03 (owner call over `features/reference-signal.md` §7 rows 2, 5, 6, 8, 9, 10, 11,
+  14, 15, 17, 18, 20, 21, 22, 23, 24, 31, 33, 34, 35, 36 and 37, and `design/07` §6's matching
+  items; the correction door is unbuilt and these are recorded so its builder starts from answers)
+- **Rows 2 and 5 — the retirement rule, in one shape built from parts that exist.** *Which test
+  binds*: **the retiring producer's current watermark is non-empty** — a property of the producer
+  alone, no constellation delay. A live producer therefore **posts an empty set first** through its
+  own watermark door and then retires; any SKU that goes fresh-zero from that post walks the
+  normal correction lane like every other fresh-zero, and `AC #43`'s clause holds because the
+  retired producer's signals are gone before it is unregistered. *The exception* exists for one
+  case only — a **dead** producer that cannot post — and its lane is **the retirement door itself
+  under `05`'s break-glass elevation** (`reference_producer × write` plus `breakglass × elevate`),
+  not the correction door. *The evidence* is the record kind that already ships: one
+  `products_correction_override` row per freed SKU on the **`producer_unavailable`** arm, with the
+  unavailability snapshot. *The tripwire*: those rows feed it, and a dead producer that pinned six
+  SKUs **should** trip the signal-delivery blocker — that is the failure the tripwire measures. No
+  new record, no new window, no new lane.
+- **Rows 10, 11 and 23 — `sku_correction` becomes a registered `GovernedLiveOp` kind.** The
+  envelope carries the payload (`payload` is the op's canonical arguments), `05`'s snapshot pins
+  those bytes (the subject is the envelope, not the head — `05`'s live-op gate already asks with
+  the envelope as subject), and the apply writes the head and the override row in the re-publish
+  transaction. So the pending correction lives in the envelope between submission and approval;
+  `05`'s evaluator returns **material** for a registered kind, so `required = N`; and the admitting
+  lane rides the envelope's `kind` — `sku_correction.producer_unavailable` /
+  `.unresolvable_target` — which the re-publish's validator reads.
+- **Row 22 — the re-check inside the publish transaction is P-D-121 row 19's shape**: the door
+  resolves the watermark, member and producer reads (and, on arm (b), the resolver) **before** the
+  transaction and hands the phase a `Resolution`; inside, the check runs as a continuation of the
+  identity phase (P-D-97's precedent), never as a `Phase::Identity` rule that cannot reach its
+  operand.
+- **Row 24 — "the head is clean" is digest equality.** A head is clean when its content rendered
+  through `domain::canonical` over the frozen roster carries the same `content_digest` as its last
+  version row — the frozen roster excludes `lifecycle_state`, `deprecation_provenance`,
+  `replaced_by_sku_id` and `internal_revision` by definition, so this is exactly *"no versioned
+  content moved since publish"*. One operand for `CORRECTION_DIRTY_HEAD`, `CORRECTION_APPROVAL_OPEN`
+  and `09`'s `PROMOTION_DIRTY_HEAD`.
+- **Row 6 — the tighter row-image predicate `07` owes `01`.** Measured: the guard admits a bucket-ii
+  change after first publish *"only in the same statement as a `published_version` bump"*, and any
+  publish carrying the bump passes. The tighter predicate: **and the same statement sets
+  `correction_ref`**, a new nullable uuid on `products_sku` that only the correction re-publish
+  writes — a physical door identity. `01`'s migration, edited in place; the lead's build.
+- **Rows 8 and 9 — the tripwire's population and its blocker.** Two counters, one window: the
+  `producer_unavailable` arm feeds `signal_delivery_release_blocker`; the `unresolvable_target` arm
+  feeds its own alarm and blocks nothing — the name must match the population, and six deleted
+  `UsageType` repairs are not a delivery failure. The blocker is **derived**, a rolling-window
+  predicate over the override table with no row and no operator exit: C6's rate rule *is* a
+  rolling window, and the release stays blocked while the rate holds. The PRD owner may narrow
+  the split.
+- **Row 14 — `If-Match`.** Every mutating door's precondition rides the header (P-D-33's
+  convention); a body field would be a second channel for one operand.
+- **Row 15 — any principal holding `reference_producer × write` submits the governed act**; the
+  quorum is on the tenant's approvers, not on the submitter, so a service registering itself at
+  deploy time and an operator registering it are the same door. §1.3's catalog admin stands as the
+  authoring choice.
+- **Rows 20 and 21 — the route and the action.** The crate's own refusal message is adopted:
+  `POST /bss-products/v1/skus/{id}/corrections` is the correction door, declared in
+  `DECOMPOSITION` §2.7. `sku × correct` is a **new action on the existing `sku` label**; `sku ×
+  write` does not reach it.
+- **Rows 34, 35 and 36 — the audit side.** `PRODUCER_UNREGISTERED` **widens to the producer doors**:
+  one slice declares it and may raise it at two of its own doors, which is what `12`'s
+  one-declaring-slice rule protects. P-D-21's rule stands: the day `ReferenceProducerSetChanged`
+  lands, the registration and retirement audit rows go and `dod-reference-audit` narrows to
+  refusals. The ceremony join gets a **nullable `ceremony_ref` on `products_audit_log`**, riding the
+  same in-place migration as P-D-118's `correlation_id` — the lead's build.
+- **Row 37 — the window's lower edge is inclusive**, as shipped and probed (`recorded_at >=
+  since`); *"> 5 in 30 days"* counts over `[now − 30 d, now]`.
+- **Rows 31 and 33 — conventions.** A knob's *home* is `ProductsConfig` (P-D-107); `PRD` §17.1 is
+  the policy register of interim values, and *"homeless"* means *"owed a §17.1 row"* — rows 7 and
+  19 restate as that. `pN` is a per-id importance (P-D-125): a `p2` DoD may carry a `p1` arm's
+  obligation and nothing changes priority.
+- **Rows 17 and 18 — stale, by measurement.** `bucket_tests` now counts two `Correctable` members
+  and carries no *"arrive with slice 07"* message; `DomainError::ContentPiiBlocked` exists and
+  `content_pii_block` is called at five doors — `07`'s three reasons will call it when `07`'s doors
+  are built, which is a build and no longer a taxonomy gap.
+- **The arguments against, stated.** Refusing every non-empty retirement makes a live producer
+  perform two acts — accepted; the second act is the honest one. Making the correction a live-op
+  kind puts a bucket-ii payload in a `GovernedLiveOp` envelope, a shape built for taxonomy ops —
+  accepted; it is the one channel the design already pins bytes for. Digest equality for
+  *clean* costs a render per correction — accepted; it is the same render every publish pays.
+- **Propagated**: twenty-two rows and nine §6 items struck; rows 3 and 4 stay as owned notes; row
+  38 (the retention collector against a flat-refusal guard) is **routed to strand D** with the
+  recommendation that the audit plane's row-image predicate (P-D-34) is the one shape for the
+  class. Builds owed: `correction_ref` and `ceremony_ref` (the lead, `01`), the `sku_correction`
+  kind and the door (`07`'s builder).
+
+
+#### P-D-130 — `12`'s open set: the lints' grammars, the register's own conventions, the fixtures' home, and the verification track brought In
+
+- **Date**: 2026-09-03 (owner call over `features/consumer-contracts.md` §7 rows 4, 5, 6, 8, 9, 10, 11,
+  12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 27, 28, 29, 30, 31, 32, 35, 36 and 37, and
+  `design/12` §6's matching items — the design-set owner's slice, answered as the design-set owner)
+- **The lints' grammars, stated once.** *Lint 1* reads *multiply claimed* as n ≥ 2 with n distinct
+  qualifiers: fourteen ids, thirteen pairs and one triple (`nfr-scale-extensibility`: `01`, `02`,
+  `06` — the third qualifier is `06`'s, the newest claimant). *Lint 2*'s *"fifteen rows"* is a
+  **transcribed constant** and the criterion checks §4.1 against the PRD's sentence at review, by
+  hand — a transcription is not a parse; `inst-cc-errors`' exclusion list is **one filter** (the
+  opening clause defines the universe, and the third exclusion folds into its wording); the
+  declaring unit is the **slice** (P-D-36), and `ENTITY_TERMINAL`'s map row reads *any head write on
+  a terminal head* (P-D-32). *Lint 3*'s population is **seventeen** routes, harvested, never a
+  literal; its grammar carries three normalisations — the table escape `\|` → `|`, a concrete verb
+  roster (`GET|POST|PATCH|PUT|DELETE`) that excludes the schematic `METHOD`, and a corpus of the
+  design set plus the PRD with `DECOMPOSITION` out. *Lint 4*'s unit is the **act** (P-D-34): rows
+  inheriting a declaration lint as one. *Lint 5* reads **every** `- **Propagated**` field of an
+  entry as one set, so the dated-amendment form is admitted; a propagation field names filings, not
+  citers (P-D-128), which closes the 62-of-179 gap as a non-gap and `composition_pending`'s clause
+  rests on P-D-48 as cited. *Lint 6*'s continuation enumeration becomes a **rule** — an id may sit
+  on several rows when each carries a distinct qualifier — not a count. *Lint 7* asserts *exactly one
+  table holds an identity* (`products_identity_ref`), matching real-identity columns and not every
+  pseudonymous `actor_ref`. *"Unqualified"* in the AC-existence check is the **sentence-context**
+  reading; the qualifier grammar governs Traces-to only.
+- **Two lints are added, declared and unenforced like the nine**: a **reciprocity lint** — every §6
+  item naming an owner document has a matching item there — and a **PII-hook lint** — every door
+  whose payload carries a free-text `reason` appears in `02`'s enumeration.
+- **The seam suite.** C4's authorability criterion binds: rows citing pricing instruction ids
+  re-key to their ACs. The studio-inbox envelope cross-check is the **sixth fixture** of
+  `dod-joint-fixtures`. The pin runs as **one CI job over the fixtures crate**, on which both
+  gears depend — *"both CIs must fail"* is satisfied by one job both require. **The suite's home
+  is a products-side crate**: `cf-gears-bss-fixtures`' grammar is pricing's and closed (`Family`,
+  `CaseKind`, a pricing-generated registry), and re-keying it is not this gear's to do — **P-D-44's
+  artifact row is amended** to that home; the job's name and trigger stay `PRD` §15's.
+- **The event side.** The deserializable payload types **already exist in `infra::broker`**: every
+  typed event derives `Deserialize` (`TypedEvent` requires it), so the compatibility test lives in
+  the gear and deserialises an old payload into the new struct under `#[serde(default)]`; the SDK
+  stays serde-free. The `EventRegister` is a **table in `design/12` §4**, a fifth named artifact,
+  with one row per emitting instruction and an explicit no-event row; its rows stay owed per
+  slice. The bootstrap gap is bounded by the **broker's** retention (the platform's number, `PRD`
+  §15), and a checkpoint older than the retained tail rebuilds from the store — `08`'s anchorless
+  arm (P-D-126).
+- **The verification track is In.** `DECOMPOSITION` §2.12 put the seam suite, the register, the
+  completeness checks and §17.2 traceability Out and called them *"not decomposed"*; thirteen of
+  the feature's seventeen DoDs deliver them and `design/12` §1.5 puts them In. The facts moved and
+  the entry follows: §2.12 is amended, the DoDs stay. `contract-` ids declared in the slice are
+  permitted `Implements` targets beside `flow`/`algo`/`state`.
+- **The arguments against, stated.** Two more declared-unenforced lints add to a set nothing runs
+  — accepted, because the `spec-check` skill already runs a subset off-VCS and a declared lint is
+  what it reads. Moving the suite out of the shared fixtures crate splits the seam across two
+  crates — accepted; the alternative re-keys another gear's generated registry.
+- **Propagated**: twenty-seven rows and sixteen §6 items struck; rows 1 and 3 stay as owned work
+  and posture; row 2 gains the `PRD` §15 owner; row 7 is annotated with the skill that runs the
+  subset. `design/12` §3.2 lint 1 and `DECOMPOSITION` §2.12 and §2.7 edited; §4.1's
+  `ENTITY_TERMINAL` row and the `EventRegister` table's declaration are **owed** to `design/12`.
+
+
 #### P-D-127 — `09`'s open set: identity by id first, a reaper for the unapproved, the worker as the executor, the batch record as the subject, and the report's determinism
 
 - **Date**: 2026-09-03 (owner call over `features/bulk-promotion.md` §7 rows 4, 6, 7, 10, 11, 12, 13,
