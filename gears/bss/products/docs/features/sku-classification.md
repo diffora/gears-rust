@@ -669,7 +669,7 @@ transaction.
 
 ### Unit de-listing guard
 
-- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-unit-delist`
+- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-unit-delist`
 
 The system **MUST** refuse a unit removal while a non-terminal published head declares it, raising
 `UNIT_DELIST_BLOCKED` with the holders sampled, and **MUST** admit it once only frozen version
