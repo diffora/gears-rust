@@ -102,6 +102,9 @@ fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
         // Slice `02`'s content-PII block: 422 architectural, 400 on the wire,
         // with the code as the discriminator.
         D::ContentPiiBlocked(_) => (400, Some("CONTENT_PII_BLOCKED")),
+        // Slice `02`'s metadata caps: 422 architectural, 400 on the wire,
+        // enforced at the door and so carrying a variant of its own.
+        D::MetadataLimit(_) => (400, Some("METADATA_LIMIT")),
     }
 }
 
@@ -178,6 +181,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
         D::WatermarkConflict(d()),
         D::WatermarkFuture(d()),
         D::ContentPiiBlocked(d()),
+        D::MetadataLimit(d()),
     ]
 }
 
@@ -202,7 +206,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
 /// file's guard is the strong one — `declared_status_and_code`'s match is
 /// exhaustive, so a new variant does not compile until it is handled — and the
 /// sibling's is a roster nothing ties to the enum. Move both.
-const DOMAIN_ERROR_VARIANTS: usize = 52;
+const DOMAIN_ERROR_VARIANTS: usize = 53;
 
 /// Covers all 14 variants (§3.3's own count, `DomainError::code`'s own
 /// exhaustiveness note): every one lands on the status the design ladder

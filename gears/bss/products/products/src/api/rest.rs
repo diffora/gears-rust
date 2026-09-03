@@ -164,6 +164,7 @@ pub mod recognized_sets;
 pub mod reference;
 pub mod retention;
 pub mod skus;
+pub mod taxonomy;
 
 /// The gear's reserved service prefix.
 const PREFIX: &str = "/bss-products/v1";
@@ -187,6 +188,41 @@ pub fn router(host_router: Router) -> Router {
 /// is a runner to hand them — the `PolicyEnforcer` arrives through its own
 /// `Extension`, layered once in `register_rest`, exactly as the sibling
 /// ledger gear's door modules take it.
+/// The five interim ceilings **P-D-107 arm 1** put in `ProductsConfig`,
+/// resolved once at init as `watermark_skew_tolerance` is.
+///
+/// Bundled into one field rather than five, because `ApiState` is built at
+/// fifteen sites — three in `gear.rs` and twelve in door harnesses that are
+/// other strands' files — and five fields would be five lines of churn at
+/// each. Read from configuration and never inlined: the numbers are interim
+/// and the NFR workshop overrides them by configuration with no code change.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TaxonomyCaps {
+    /// `taxonomy_max_depth` — bounds the hold on the per-tenant taxonomy
+    /// writer lock, since the walk runs inside the write transaction.
+    pub(crate) max_depth: u32,
+    /// `taxonomy_max_children_per_node`.
+    pub(crate) max_children_per_node: u32,
+    /// `metadata_max_keys`.
+    pub(crate) metadata_max_keys: u32,
+    /// `metadata_max_key_bytes`.
+    pub(crate) metadata_max_key_bytes: u32,
+    /// `metadata_max_value_bytes`.
+    pub(crate) metadata_max_value_bytes: u32,
+}
+
+impl From<&crate::config::ProductsConfig> for TaxonomyCaps {
+    fn from(cfg: &crate::config::ProductsConfig) -> Self {
+        Self {
+            max_depth: cfg.taxonomy_max_depth,
+            max_children_per_node: cfg.taxonomy_max_children_per_node,
+            metadata_max_keys: cfg.metadata_max_keys,
+            metadata_max_key_bytes: cfg.metadata_max_key_bytes,
+            metadata_max_value_bytes: cfg.metadata_max_value_bytes,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ApiState {
     /// The provider `state.db.conn()` opens a non-transactional runner from,
@@ -212,6 +248,10 @@ pub(crate) struct ApiState {
     /// Either the SDK producer's queue (P-D-47) or the interim one, decided
     /// once at `Gear::init` — see [`crate::infra::broker::EventSink`].
     pub(crate) sink: crate::infra::broker::EventSink,
+    /// The taxonomy and metadata ceilings the `02` doors enforce
+    /// (**P-D-107** arm 1). `TAXONOMY_LIMIT` and `METADATA_LIMIT` are rules
+    /// with no number without them.
+    pub(crate) taxonomy_caps: TaxonomyCaps,
     /// The operator's own `idempotency_retention_hours`
     /// ([`crate::config::ProductsConfig`]), resolved once in `gear.rs`'s `init` from
     /// `ctx.config_or_default()` and carried here for the same reason the

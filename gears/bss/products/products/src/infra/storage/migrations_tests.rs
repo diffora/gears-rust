@@ -6091,18 +6091,39 @@ mod attribute_store_guard_tests {
         .await
         .expect("a category value is live state, not frozen content");
 
+        // The fourth admitted kind, and the newest: a definition's display
+        // label is an attribute value **on the definition** (P-D-108 arm 2),
+        // the roster carrying no label column for it to be.
         exec(
+            &db,
+            "INSERT INTO products_attribute_value \
+             (tenant_id, entity_kind, entity_id, definition_id, locale, region, brand, value, updated_at) \
+             VALUES ('t-a', 'attribute_definition', 'd-1', 'd-1', '', '', '', 'Display name', '2026-09-01T00:00:00Z')",
+        )
+        .await
+        .expect("a definition's own label is a value on the definition");
+
+        // -- The set is CLOSED, and this assertion is the reverse of what it
+        // asserted a day ago. §7 row 20 owned the roster and left the DDL
+        // pinning non-emptiness only, so an unlisted kind was ADMITTED by
+        // design; P-D-108 arm 3 closed it at four and the guard is now an
+        // enumeration. An open complement names the one value it refuses and
+        // admits every other string, which is the shape that cannot be
+        // probed -- so this case flipped when the rule did, which is a new
+        // rule finding its violator in the fixture rather than a regression.
+        let err = exec(
             &db,
             "INSERT INTO products_attribute_value \
              (tenant_id, entity_kind, entity_id, definition_id, locale, region, brand, value, updated_at) \
              VALUES ('t-a', 'brand', 'b-1', 'd-1', '', '', '', 'x', '2026-09-01T00:00:00Z')",
         )
         .await
-        .expect("an unrostered kind is admitted until row 20 decides the set");
-        // §7 row 20 owns the roster, so the DDL pins non-emptiness only: an
-        // unlisted kind is ADMITTED by design and the blank is what is
-        // refused, being the one value that makes the coordinate
-        // unaddressable.
+        .expect_err("an unrostered kind is refused now that the set is closed");
+        assert!(
+            err.to_string()
+                .contains("chk_products_attribute_value_entity_kind"),
+            "{err}"
+        );
         let err = exec(
             &db,
             "INSERT INTO products_attribute_value \

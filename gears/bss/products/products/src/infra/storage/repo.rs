@@ -2538,7 +2538,7 @@ pub async fn discard_sku_head(
 /// neighbouring transition can retire the head between that read and this
 /// write and only the statement judges the image the write lands on. Exactly
 /// the argument [`discard_product_head`] makes for its own filter.
-const TERMINAL_HEAD_STATES: [&str; 2] = [
+pub(crate) const TERMINAL_HEAD_STATES: [&str; 2] = [
     LifecycleState::Retired.as_str(),
     LifecycleState::Discarded.as_str(),
 ];

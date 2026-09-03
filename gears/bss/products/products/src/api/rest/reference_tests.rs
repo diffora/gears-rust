@@ -90,6 +90,7 @@ fn app(harness: &TestHarness) -> Router {
     let state = Arc::new(ApiState {
         db: harness.db.clone(),
         sink: crate::infra::broker::EventSink::Interim(Arc::clone(&harness.outbox)),
+        taxonomy_caps: crate::api::rest::TaxonomyCaps::from(&ProductsConfig::default()),
         idempotency_retention_hours: defaults.idempotency_retention_hours,
         bulk_max_rows_per_batch: defaults.bulk_max_rows_per_batch,
         bulk_max_concurrent_batches_per_tenant: defaults.bulk_max_concurrent_batches_per_tenant,
@@ -469,6 +470,7 @@ async fn the_in_process_binding_shares_the_gate_and_the_store() {
         state: Arc::new(ApiState {
             db: harness.db.clone(),
             sink: crate::infra::broker::EventSink::Interim(Arc::clone(&harness.outbox)),
+            taxonomy_caps: crate::api::rest::TaxonomyCaps::from(&ProductsConfig::default()),
             idempotency_retention_hours: defaults.idempotency_retention_hours,
             // Small on purpose: the set bound must be provable through the
             // binding, which no HTTP body limit covers.

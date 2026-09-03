@@ -67,6 +67,7 @@
 //! `&str` through the repository until an owner closes the sets.
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-name-in-parent:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-locale-resolver:p1
 //! @cpt-cf-bss-products-dod-taxonomy-walk
 
 use toolkit_macros::domain_model;
@@ -272,20 +273,60 @@ pub fn children_of(parent: Option<Uuid>, edges: &[(Uuid, Option<Uuid>)]) -> u32 
     u32::try_from(edges.iter().filter(|(_, p)| *p == parent).count()).unwrap_or(u32::MAX)
 }
 
+/// How many levels hang **below** one node, `0` for a leaf.
+///
+/// The re-parent's depth rule needs it and `depth_of` cannot supply it:
+/// `depth_of` counts a node's ancestors, so it judges where the moved node
+/// lands and says nothing about what it drags. Moving a three-level subtree
+/// under a node at depth six overflows a limit of eight at the **leaves**,
+/// and a rule reading the moved node alone admits it.
+///
+/// Breadth-first over the same edge list [`ancestors_of`]'s `parent_of` is
+/// built from, so one read under the lock still serves every rule. A
+/// pre-existing cycle terminates it: a node already seen is not descended
+/// into again, so this reports a finite height on a tree that is not one,
+/// exactly as [`depth_of`] reports a finite depth.
+#[must_use]
+pub fn subtree_height(node: Uuid, edges: &[(Uuid, Option<Uuid>)]) -> u32 {
+    let mut seen = vec![node];
+    let mut frontier = vec![node];
+    let mut height = 0_u32;
+    loop {
+        let next: Vec<Uuid> = edges
+            .iter()
+            .filter(|(child, parent)| {
+                parent.is_some_and(|p| frontier.contains(&p)) && !seen.contains(child)
+            })
+            .map(|(child, _)| *child)
+            .collect();
+        if next.is_empty() {
+            return height;
+        }
+        seen.extend(next.iter().copied());
+        frontier = next;
+        height = height.saturating_add(1);
+    }
+}
+
 /// The configured extensibility limits (`nfr-scale-extensibility`'s
 /// extensibility-limits half).
 ///
 /// # Both are `None` at this commit, and that is a measurement rather than a
 /// default
 ///
-/// `design/02` §6 records that *"The taxonomy and metadata limits have no
-/// interim default anywhere"*, and the feature's §7 row 2 names their owner:
-/// the PRD §17.1 policy owner, whose section carries neither a taxonomy-limits
-/// row nor a metadata-caps row. So `None` here does not mean *unlimited as a
-/// policy*; it means **no threshold has been stated**, and this type carries
-/// no `Default` precisely so that nothing can acquire one by accident. A
-/// number invented here would be a policy this slice has no standing to set,
-/// and `ProductsConfig` grows no field for it until that owner acts.
+/// **The numbers landed on 2026-09-03 and this paragraph used to deny they
+/// could.** It read that *"`ProductsConfig` grows no field for it until that
+/// owner acts"* — **P-D-107 arm 1** acted instead, on the ground that a rule
+/// with no number is not a rule and two `DoD`s could not be built at all:
+/// `taxonomy_max_depth` **8** and `taxonomy_max_children_per_node` **1000**
+/// now ship as interim configured values, with the NFR workshop overriding
+/// them by configuration and no code change.
+///
+/// What survives unchanged is the type's shape. Both fields stay `Option`
+/// and the type still carries **no `Default`**, because a caller that has not
+/// read configuration must not be able to acquire a limit by accident — the
+/// door constructs this from `ApiState`'s resolved caps, and `None` continues
+/// to mean *no threshold stated* rather than *unlimited as a policy*.
 ///
 /// The judgement is built and unreachable, which is the honest shape for a
 /// rule whose operand is owed: [`limit_verdict`] is correct for whatever
@@ -1752,6 +1793,29 @@ pub fn content_save_pipeline() -> ValidationPipeline<ContentSaveSubject> {
         .with_rule(Box::new(CategoryResolvableRule))
         .with_rule(Box::new(CategoryNotRetiredRule))
         .with_rule(Box::new(CategoryRoleConflictRule))
+        .with_rule(Box::new(AttributeDefinitionKnownRule))
+        .with_rule(Box::new(AttributeDefinitionActiveRule))
+        .with_rule(Box::new(AttributeValueTypeRule))
+        .with_rule(Box::new(AttributeScopeRule))
+}
+
+/// The category live-value door's pipeline: **four** of the seven rules.
+///
+/// **P-D-107 arm 2.** `CategoryResolvable`, `CategoryNotRetired` and
+/// `CategoryRoleConflict` are all about **assigning categories to a Product**
+/// and have no operand at all when the subject *is* a category, so running
+/// them there would be judging an empty list. The four that do apply are the
+/// value rules, and the defect the decision's row named is real: without
+/// `AttributeDefinitionActive`, a category value against a `deprecated`
+/// definition would be admitted while the removal guard counts it as live.
+///
+/// This makes the live-value door a **fifth caller of the one registration
+/// list**, not a second list — which is the trade `content_save_pipeline` was
+/// created to make, and the counter-argument the decision states is that a
+/// third subject now rides a pipeline whose subject type was designed for two.
+#[must_use]
+pub fn category_value_pipeline() -> ValidationPipeline<ContentSaveSubject> {
+    ValidationPipeline::new()
         .with_rule(Box::new(AttributeDefinitionKnownRule))
         .with_rule(Box::new(AttributeDefinitionActiveRule))
         .with_rule(Box::new(AttributeValueTypeRule))

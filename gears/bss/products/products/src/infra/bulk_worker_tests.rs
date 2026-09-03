@@ -76,6 +76,7 @@ async fn harness() -> Harness {
     let state = Arc::new(ApiState {
         db: DBProvider::<DbError>::new(db),
         sink: crate::infra::broker::EventSink::Interim(Arc::clone(outbox_handle.outbox())),
+        taxonomy_caps: crate::api::rest::TaxonomyCaps::from(&ProductsConfig::default()),
         idempotency_retention_hours: defaults.idempotency_retention_hours,
         bulk_max_rows_per_batch: defaults.bulk_max_rows_per_batch,
         bulk_max_concurrent_batches_per_tenant: defaults.bulk_max_concurrent_batches_per_tenant,

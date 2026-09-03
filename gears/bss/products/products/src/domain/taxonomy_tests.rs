@@ -1347,11 +1347,8 @@ fn the_sixteen_codes_are_a_distinct_roster() {
 /// silent gap is what this exists to prevent, so it is deliberately not
 /// written as an inequality.
 #[test]
-fn eleven_of_the_sixteen_codes_have_no_domain_error_variant_yet() {
-    let raiseable: Vec<&str> = TAXONOMY_ERROR_CODES
-        .into_iter()
-        .filter(|code| DOMAIN_ERROR_CODES.contains(code))
-        .collect();
+fn ten_of_the_sixteen_codes_have_no_domain_error_variant_yet() {
+    let raiseable = raiseable_codes();
     assert_eq!(
         raiseable,
         vec![
@@ -1359,42 +1356,44 @@ fn eleven_of_the_sixteen_codes_have_no_domain_error_variant_yet() {
             "TAXONOMY_CYCLE",
             "PRIMARY_CATEGORY_REQUIRED",
             "CONTENT_PII_BLOCKED",
+            "METADATA_LIMIT",
             "STALE_LIVE_OP",
         ],
-        "exactly these five are raiseable as themselves, in TAXONOMY_ERROR_CODES' \
+        "exactly these six are raiseable as themselves, in TAXONOMY_ERROR_CODES' \
          own order"
     );
     assert_eq!(
         TAXONOMY_ERROR_CODES.len() - raiseable.len(),
-        11,
-        "eleven still need a variant and a mapping arm"
+        10,
+        "ten still need a variant and a mapping arm"
     );
 }
 
-/// The taxonomy codes `DomainError::code` can answer.
+/// The taxonomy codes `DomainError::code` can answer, **derived from the
+/// enum's own source** rather than listed.
 ///
-/// # This is a literal roster, and an earlier version of this doc denied it
+/// # This was a literal, its doc denied being one, and it drifted twice
 ///
-/// It said the list was *"read off the enum rather than listed -- so this
-/// cannot drift"*. It is listed, it did drift, and the denial is what let the
-/// drift go unseen: `CONTENT_PII_BLOCKED` gained `DomainError::ContentPiiBlocked`
-/// in `b844b2632` and this roster did not move, so the test above asserted
-/// twelve codes without a variant while the true count was eleven -- and it
-/// passed, because both of its halves are computed from this same stale array.
-/// A false green, and the reason a hand-written roster needs its own discipline
-/// rather than a sentence claiming it has none.
+/// The first version claimed to be *"read off the enum rather than listed --
+/// so this cannot drift"* and was a hand-written `&[&str]`. It went stale when
+/// `b844b2632` landed `DomainError::ContentPiiBlocked`, and the test above
+/// **passed anyway**, because its filter and its subtraction were both
+/// computed from that one array: the two halves drift together and cancel.
 ///
-/// **Re-derive against `DomainError::code`'s arms rather than bumping.** Grep
-/// each of [`TAXONOMY_ERROR_CODES`] for a `=> "CODE"` arm in `domain::error`;
-/// what matches is this list. That is the method that catches the drift, and
-/// bumping the number is the method that hides it.
-const DOMAIN_ERROR_CODES: &[&str] = &[
-    "DUPLICATE_CATEGORY_NAME",
-    "TAXONOMY_CYCLE",
-    "PRIMARY_CATEGORY_REQUIRED",
-    "CONTENT_PII_BLOCKED",
-    "STALE_LIVE_OP",
-];
+/// The repair on 2026-09-03 corrected the contents and the doc but left it a
+/// literal with a written-down re-derivation discipline -- and the very next
+/// commit, `METADATA_LIMIT`'s, walked past it the same way. **A discipline in
+/// a doc comment is not a guard.** So the filter now reads `error.rs` for the
+/// `code()` arm itself, which is what the original doc always claimed and what
+/// breaks the shared operand: the expected list in the test stays a hand
+/// written claim, and nothing computes it from the same place.
+fn raiseable_codes() -> Vec<&'static str> {
+    let source = include_str!("error.rs");
+    TAXONOMY_ERROR_CODES
+        .into_iter()
+        .filter(|code| source.contains(&format!("=> \"{code}\"")))
+        .collect()
+}
 
 /// **An unset tenant default skips step 3 rather than keying it on `""`.**
 ///

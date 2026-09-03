@@ -106,6 +106,7 @@ fn app_for(harness: &TestHarness, tenant: Uuid) -> Router {
     let state = Arc::new(ApiState {
         db: harness.db.clone(),
         sink: crate::infra::broker::EventSink::Interim(Arc::clone(&harness.outbox)),
+        taxonomy_caps: crate::api::rest::TaxonomyCaps::from(&ProductsConfig::default()),
         idempotency_retention_hours: ProductsConfig::default().idempotency_retention_hours,
         bulk_max_rows_per_batch: ProductsConfig::default().bulk_max_rows_per_batch,
         bulk_max_concurrent_batches_per_tenant: ProductsConfig::default()
@@ -165,6 +166,7 @@ async fn patch_sku_meter(
     let state = std::sync::Arc::new(ApiState {
         db: harness.db.clone(),
         sink: crate::infra::broker::EventSink::Interim(Arc::clone(&harness.outbox)),
+        taxonomy_caps: crate::api::rest::TaxonomyCaps::from(&ProductsConfig::default()),
         idempotency_retention_hours: ProductsConfig::default().idempotency_retention_hours,
         bulk_max_rows_per_batch: ProductsConfig::default().bulk_max_rows_per_batch,
         bulk_max_concurrent_batches_per_tenant: ProductsConfig::default()

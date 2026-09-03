@@ -130,6 +130,29 @@ pub mod labels {
     /// design (`03` §3.2's taxonomy and P-D-90 arm 2).
     pub const PLAN_TIER: &str = gts_id!("cf.bss.products.plan_tier.v1~");
 
+    /// The category taxonomy — `write`. `design/02`'s `inst-tx-governed-op`
+    /// names the pair, and **P-D-106** gave it its route family: one door for
+    /// the create and one `operations` door for rename, re-parent, retire and
+    /// delete, because the four ride one `GovernedLiveOp` envelope, one gate
+    /// and one apply path. The **live-value** door spends this same pair —
+    /// a category's attribute values are the category's content, not a
+    /// separate resource.
+    pub const CATEGORY: &str = gts_id!("cf.bss.products.category.v1~");
+
+    /// Attribute definitions — `write`. `inst-ad-governed`'s pair, doored by
+    /// **P-D-106**: create, the material changes, the state flips and the
+    /// non-material label edit all ride one `operations` door, materiality
+    /// being judged by the envelope's kind through `05 inst-mt-inputs` and
+    /// never by which path was called.
+    pub const ATTRIBUTE_DEFINITION: &str = gts_id!("cf.bss.products.attribute_definition.v1~");
+
+    /// The entity metadata map — `write`. Its own resource and not the
+    /// entity's: **P-D-06** puts the map outside frozen version content, so a
+    /// metadata write is not a write to the entity a reader would version,
+    /// and `design/05` §3.2 declared the pair with its path before the door
+    /// existed.
+    pub const METADATA: &str = gts_id!("cf.bss.products.metadata.v1~");
+
     /// Every authz label this module declares, stable order. The single
     /// canonical list driving [`super::authz_label_type_schemas`]'s stub
     /// registration. MUST match the permission catalog's distinct
@@ -151,6 +174,9 @@ pub mod labels {
         PII_ALLOWLIST,
         RECOGNIZED_SET,
         PLAN_TIER,
+        CATEGORY,
+        ATTRIBUTE_DEFINITION,
+        METADATA,
     ];
 }
 
@@ -273,6 +299,16 @@ pub mod resource_types {
     /// The PII allow-list — `write`.
     pub const PII_ALLOWLIST: ResourceType =
         ResourceType::from_static(labels::PII_ALLOWLIST, SUPPORTED_PROPERTIES);
+    /// The category taxonomy — `write`, spent by the op doors and the
+    /// live-value door alike.
+    pub const CATEGORY: ResourceType =
+        ResourceType::from_static(labels::CATEGORY, SUPPORTED_PROPERTIES);
+    /// Attribute definitions — `write`.
+    pub const ATTRIBUTE_DEFINITION: ResourceType =
+        ResourceType::from_static(labels::ATTRIBUTE_DEFINITION, SUPPORTED_PROPERTIES);
+    /// The entity metadata map — `write`.
+    pub const METADATA: ResourceType =
+        ResourceType::from_static(labels::METADATA, SUPPORTED_PROPERTIES);
 }
 
 /// Error from the registry's PEP gate.

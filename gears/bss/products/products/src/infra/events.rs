@@ -263,9 +263,15 @@ pub(crate) const SKU_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE: &str = "SkuRetirementEff
 /// tenant, matching `inst-tc-writer-lock`'s per-tenant serialization. A
 /// per-node key would promise an ordering across nodes that nothing enforces.
 ///
-/// **Declared, not yet emitted.** The taxonomy's doors have no REST routes
-/// (`features/taxonomy-attributes.md` §7 row 16), so nothing calls
-/// [`enqueue_body`] with these yet. They are declared with their
+/// **Declared, not yet emitted — and the reason has changed.** It read *"the
+/// taxonomy's doors have no REST routes (§7 row 16), so nothing calls
+/// [`enqueue_body`] with these yet"*. **P-D-106** doored them and
+/// `api::rest::taxonomy` ships; what blocks the emit now is the other sink.
+/// `EventSink::Broker`'s arm needs one **typed** struct per payload type in
+/// `infra::broker`, as `RecognizedUnitUpdated` and its two siblings have, and
+/// that file is not slice `02`'s. Emitting on the interim sink alone would be
+/// a door that announces in one deployment shape and is silent in the other,
+/// which is worse than not announcing at all. They are declared with their
 /// [`SCHEMA_REFS`] entries anyway, together, because that pairing is the one
 /// an exhaustive `match` cannot enforce: a type added without its entry
 /// compiles clean, `schema_ref_for` answers `None`, and the act rolls back at
@@ -285,9 +291,9 @@ pub(crate) const CATEGORY_DELETED_PAYLOAD_TYPE: &str = "CategoryDeleted";
 /// taxonomy lock and rides the entity row's own `If-Match`, so the entity is
 /// both the serialization the door provides and the key the event claims.
 ///
-/// Declared and not yet emitted, for the reason above **and** one of its own:
-/// the metadata door is blocked on a grant pair that does not exist
-/// (`features/taxonomy-attributes.md`, `dod-metadata-door`).
+/// Declared and not yet emitted, for the reason above. Its own second reason
+/// is discharged: the metadata door's grant pair landed with the door itself
+/// under **P-D-106**, and `dod-metadata-door` is ticked.
 pub(crate) const METADATA_UPDATED_PAYLOAD_TYPE: &str = "MetadataUpdated";
 
 /// `RecognizedUnitUpdated`'s payload type token — `design/03` §4's roster,
