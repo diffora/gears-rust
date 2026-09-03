@@ -1569,6 +1569,84 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-110 — Strand B's three open register entries, ruled
+
+- **Date**: 2026-09-03 (owner call, on `O-B-01`, `O-B-03` and `O-B-05` in
+  `gears-rust-governance/logs/governance/OWED-REGISTER.md`). `O-B-02` was already answered by the
+  ownership table; **`O-B-04` stands and nothing here settles it** — see arm 2.
+
+- **Arm 1 — `O-B-01`: per-module repository tests are the convention, and `at()` is hoisted while
+  `harness()` is not.** The entry offered three options and recommended per-module files. That is
+  **already the convention**, not a proposal: measured, `repo/` carries **four** such modules —
+  `governance_tests.rs`, `lifecycle_tests.rs`, `read_models_tests.rs`, `taxonomy_tests.rs` — so all
+  four strands arrived at it independently, and the domain layer set the precedent
+  (`domain/approval.rs:1360`, `domain/materiality.rs:549`). `repo_tests.rs` really is **4336
+  lines**. Ratified.
+  The entry's own trigger for hoisting the copied helpers was *"if the copies multiply past two or
+  three"*, and there are five sites. **But a count is the wrong trigger**, and measuring the copies
+  says why:
+  - **`harness()` has two forms that differ only in an `.expect()` message** — *"run migrator"*
+    against *"boot the migration chain"*. Cosmetic. No test behaves differently, and hoisting it
+    would edit four strands' files to unify a panic string.
+  - **`at()` has three forms carrying two different epochs**: `repo_tests.rs` is
+    **2026-08-29** while `governance_tests.rs` and `taxonomy_tests.rs` are **2026-09-02**, and one
+    uses `.single().expect("a real instant")` where the others `.unwrap()`. So **`at(9)` means a
+    different instant depending on which module you are in.** That is the harm duplication causes,
+    and it has already happened.
+  So: **hoist `at()`, leave `harness()` copied.** The surviving body is `.single().expect(…)` on
+  **2026-09-02**, and the implementer **re-runs each module's tests rather than mechanically
+  re-pointing them** — an assertion comparing a stored instant to `at(9)` is safe under a change of
+  epoch and one computing an interval against a hardcoded date is not.
+  **The trigger for any future hoist is a behavioural divergence, never a count.**
+  *Timing*: after strand A's door build lands. The hoist touches four strands' test files and a
+  `mod` line in `repo.rs`, which is C's; starting it under an active strand is the sequencing error
+  this programme keeps paying for.
+
+- **Arm 2 — `O-B-03`: `configuredQuorum` carries the floor, and this deliberately does not fix
+  `O-B-04`.** For a cross-tenant break-glass elevation there is no tenant `N` in force (**P-D-13**:
+  *"no tenant's configured `N` has standing over an act whose subject is another tenant's data"*),
+  while §4 defines the field as *"the `N` in force at submission"*. **The floor is the `N` in
+  force**, so option 1 reads true, renders today, and asserts no tenant standing. Option 3 —
+  a sixth, absent state — is the most honest and the most expensive: the column is `NOT NULL`
+  inside a canonical rendering whose reader errors on a missing member, and `inst-gv-queue`'s
+  envelope has no optional arm, so slice 12 would re-pin it. Ratified as option 1.
+  **The argument against, and it is the entry's blind spot**: option 1 is *precisely* what makes
+  `describe_platform_quorum()` and `describe_quorum(Material, 2, false)` byte-identical, which is
+  `O-B-04`. Option 2 — the target tenant's `N` — would distinguish them as a **side effect**, and
+  is rejected anyway: a solo-tenant target rendering *2 required / 0 configured* invites exactly
+  the reading of raised tenant standing that P-D-13 denies. **`O-B-04` is not to be solved by
+  choosing a value for this field.** Overloading a field to carry a distinction it is not about is
+  how a record stops being readable; the authority dimension needs its own name or its own
+  `subject_kind`, and that remains open and B's to raise again.
+
+- **Arm 3 — `O-B-05`: the gate's read gets its index, and it lands with the seam wiring.**
+  Confirmed: `gate_candidates` ends `.order_by(SubmittedAt, Desc).all(runner)` with no `LIMIT` and
+  no cursor, and `products_approval` carries exactly the two indexes the entry names —
+  `uq_products_approval_open`, whose state predicate a stateless query cannot use, and
+  `idx_products_approval_queue`, which offers only the `tenant_id` prefix and cannot serve that
+  `ORDER BY`.
+  **Option 1**, the entry's recommendation: a partial index
+  `(tenant_id, subject_kind, subject_ref, submitted_at)` with **no** state predicate, which serves
+  both the stateless lookup and the ordering. **Not option 2** — bounding a read whose whole
+  purpose is to find an arbitrarily old `consumed` record for `PreAuthorized` trades a performance
+  cost for a correctness one, and any `k` makes some composite act unverifiable. Option 3, the
+  queue's pagination, is slice 12's envelope to shape and is not ruled here.
+  **Timing, and it is measured rather than assumed: neither read has a production caller today.**
+  Both are reached only from tests, because every door still registers `NoMaterialityPolicyGate`.
+  So this is latent, and it goes live at the exact moment `StoredApprovalGate` is registered. The
+  index therefore lands **in the same change as the seam wiring** — that is when the read starts
+  running, and a migration inserted into a 24-link chain is worth paying for once, alongside the
+  work that needs it.
+
+- **Not changed**: `O-B-04`, `O-B-02`'s answer, `inst-gv-queue`'s envelope, and the descriptor's
+  five names.
+- **Propagated**: nothing normative — all three are conventions and implementation rulings rather
+  than instruction changes. Arms 1 and 3 are **routed to the seam-wiring change**, and named in the
+  lead's queue so they are not rediscovered.
+- **Owed**: nothing. Arm 2's residue is `O-B-04`, which is a standing entry rather than a debt of
+  this one, and arm 1's `harness()` copies are an accepted cost with a stated trigger.
+
+
 #### P-D-109 — When a live §7 row blocks a tick, and when it does not
 
 - **Date**: 2026-09-03 (owner call, on strand C's finding in its `C+1` handback, and correcting a
