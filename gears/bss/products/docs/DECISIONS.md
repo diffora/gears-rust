@@ -1569,6 +1569,68 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-111 — The elevation's authority is recorded on the session row, not in the quorum descriptor
+
+- **Date**: 2026-09-03 (owner call, on `O-B-04` — the sharpest of strand B's five entries, and the
+  one **P-D-110** arm 2 deliberately left standing)
+- **Context**: `describe_platform_quorum()` and `describe_quorum(Material, 2, false)` produce
+  **byte-identical** descriptors that compare `==` —
+  `{configuredQuorum: 2, required: 2, financeRequired: false, predicateUnsatisfiable: null,
+  quorumReduced: false}`. Every field is individually correct; the *set* records nothing about
+  **whose** authority ran the ceremony, which is the one fact **P-D-13** exists to record: a fixed
+  floor is right *"only where the acting principal is not the tenant's"*. So a later reader of
+  `products_approval.quorum_descriptor` cannot tell a cross-tenant break-glass elevation from a
+  routine tenant publish.
+  P-D-110 arm 2 ruled that `configuredQuorum` carries the floor and **must not** be overloaded to
+  carry this distinction, which left the question of where it does live.
+- **Decision: it is already recorded, on `products_breakglass_session`.** Measured rather than
+  assumed — the entry's own option 4 claimed the two ceremonies are *"distinguishable by their rows
+  today"*, and that claim is **true**: the session row carries
+  **`two_person_approval_ref: Option<Uuid>`**, which names the approval record. So an approval
+  named by some session's `two_person_approval_ref` **is** an elevation and one named by no session
+  is not, and the session row already holds `principal`, `target_tenant`, `reason`, the validity
+  window and the post-hoc review — every other fact about an elevation. The descriptor's
+  byte-identity is therefore **not a lost fact**; it is a fact recorded once, on the row whose
+  whole purpose is the elevation, and **nothing in `design/05` asks the descriptor to carry it**
+  (measured: no clause about the descriptor mentions authority, platform, cross-tenant or
+  break-glass).
+- **The residual, and it is real: the link is one-way and unindexed.** The reference lives on the
+  **session**, so the session-side question *"which approval backed this elevation?"* is a keyed
+  lookup, while the approval-side question *"was this act an elevation?"* is a **reverse** lookup —
+  `WHERE two_person_approval_ref = ?` — and there is **no index on that column** (measured against
+  the break-glass migration). That is the same class as `O-B-05`, and it lands in the same
+  migration: the seam-wiring change that gives `gate_candidates` its index (**P-D-110** arm 3).
+- **Rejected: a sixth descriptor name (option 1).** The column sits inside a canonical rendering
+  whose reader errors on a missing member, `inst-gv-queue`'s envelope would gain a field, and slice
+  12 must re-pin it — a wire-visible cost for a fact already recorded. If a consumer ever needs the
+  authority *in the descriptor*, that is the arm to take, and taking it after 12 pins the envelope
+  is exactly what B registered this to avoid.
+- **Rejected on the merits, not the cost: the subject kind (option 2).** **P-D-14** already fixes
+  what `subject_kind` is about — it made `system_signal` a **subject kind** for a publish whose
+  content is a system-owned flag, *"with the signal reference as the authorizing principal"*. So
+  the kind names **what is being approved** and the authorizing principal is recorded separately. A
+  break-glass elevation's subject is still an ordinary entity; the ceremony is a property of the
+  **authority**, not of the subject. Putting it in `subject_kind` would make one column mean two
+  things — the same mistake P-D-110 arm 2 refused for `configuredQuorum`, one column over.
+- **Ratified in passing**: B removed a `QuorumAuthority` enum it had declared for this and that
+  nothing read, on the grounds that *"an unread type is not a record."* That was right, and this
+  entry is why it stays removed rather than being revived.
+- **The argument against, stated.** The distinction now requires a **join a reader must know to
+  make**, and an auditor handed one `products_approval` row in isolation genuinely cannot answer
+  the question. That is a real loss of self-containment, accepted because the alternative writes a
+  wire-visible field for a fact the elevation's own row already holds, and because the reverse
+  lookup is being indexed anyway. **If a consumer contract ever needs the answer without the
+  join, this decision is the one to reopen** — and option 1 is where it goes.
+- **Not changed**: the descriptor's five names, `inst-gv-queue`'s envelope, P-D-13's floor,
+  P-D-110 arm 2's ruling on `configuredQuorum`, and §7 row 9's other halves — whether the
+  elevation's record is an `ApprovalRecord` at all, and which row holds it, stay open and are
+  untouched here.
+- **Propagated**: nothing normative — this records where an existing fact lives rather than moving
+  it. **Routed**: the index on `two_person_approval_ref`, to the seam-wiring migration beside
+  P-D-110 arm 3's.
+- **Owed**: nothing. `O-B-04` closes with this entry.
+
+
 #### P-D-110 — Strand B's three open register entries, ruled
 
 - **Date**: 2026-09-03 (owner call, on `O-B-01`, `O-B-03` and `O-B-05` in
