@@ -1569,6 +1569,146 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-111 — The elevation's authority is recorded on the session row, not in the quorum descriptor
+
+- **Date**: 2026-09-03 (owner call, on `O-B-04` — the sharpest of strand B's five entries, and the
+  one **P-D-110** arm 2 deliberately left standing)
+- **Context**: `describe_platform_quorum()` and `describe_quorum(Material, 2, false)` produce
+  **byte-identical** descriptors that compare `==` —
+  `{configuredQuorum: 2, required: 2, financeRequired: false, predicateUnsatisfiable: null,
+  quorumReduced: false}`. Every field is individually correct; the *set* records nothing about
+  **whose** authority ran the ceremony, which is the one fact **P-D-13** exists to record: a fixed
+  floor is right *"only where the acting principal is not the tenant's"*. So a later reader of
+  `products_approval.quorum_descriptor` cannot tell a cross-tenant break-glass elevation from a
+  routine tenant publish.
+  P-D-110 arm 2 ruled that `configuredQuorum` carries the floor and **must not** be overloaded to
+  carry this distinction, which left the question of where it does live.
+- **Decision: it is already recorded, on `products_breakglass_session`.** Measured rather than
+  assumed — the entry's own option 4 claimed the two ceremonies are *"distinguishable by their rows
+  today"*, and that claim is **true**: the session row carries
+  **`two_person_approval_ref: Option<Uuid>`**, which names the approval record. So an approval
+  named by some session's `two_person_approval_ref` **is** an elevation and one named by no session
+  is not, and the session row already holds `principal`, `target_tenant`, `reason`, the validity
+  window and the post-hoc review — every other fact about an elevation. The descriptor's
+  byte-identity is therefore **not a lost fact**; it is a fact recorded once, on the row whose
+  whole purpose is the elevation, and **nothing in `design/05` asks the descriptor to carry it**
+  (measured: no clause about the descriptor mentions authority, platform, cross-tenant or
+  break-glass).
+- **The residual, and it is real: the link is one-way and unindexed.** The reference lives on the
+  **session**, so the session-side question *"which approval backed this elevation?"* is a keyed
+  lookup, while the approval-side question *"was this act an elevation?"* is a **reverse** lookup —
+  `WHERE two_person_approval_ref = ?` — and there is **no index on that column** (measured against
+  the break-glass migration). That is the same class as `O-B-05`, and it lands in the same
+  migration: the seam-wiring change that gives `gate_candidates` its index (**P-D-110** arm 3).
+- **Rejected: a sixth descriptor name (option 1).** The column sits inside a canonical rendering
+  whose reader errors on a missing member, `inst-gv-queue`'s envelope would gain a field, and slice
+  12 must re-pin it — a wire-visible cost for a fact already recorded. If a consumer ever needs the
+  authority *in the descriptor*, that is the arm to take, and taking it after 12 pins the envelope
+  is exactly what B registered this to avoid.
+- **Rejected on the merits, not the cost: the subject kind (option 2).** **P-D-14** already fixes
+  what `subject_kind` is about — it made `system_signal` a **subject kind** for a publish whose
+  content is a system-owned flag, *"with the signal reference as the authorizing principal"*. So
+  the kind names **what is being approved** and the authorizing principal is recorded separately. A
+  break-glass elevation's subject is still an ordinary entity; the ceremony is a property of the
+  **authority**, not of the subject. Putting it in `subject_kind` would make one column mean two
+  things — the same mistake P-D-110 arm 2 refused for `configuredQuorum`, one column over.
+- **Ratified in passing**: B removed a `QuorumAuthority` enum it had declared for this and that
+  nothing read, on the grounds that *"an unread type is not a record."* That was right, and this
+  entry is why it stays removed rather than being revived.
+- **The argument against, stated.** The distinction now requires a **join a reader must know to
+  make**, and an auditor handed one `products_approval` row in isolation genuinely cannot answer
+  the question. That is a real loss of self-containment, accepted because the alternative writes a
+  wire-visible field for a fact the elevation's own row already holds, and because the reverse
+  lookup is being indexed anyway. **If a consumer contract ever needs the answer without the
+  join, this decision is the one to reopen** — and option 1 is where it goes.
+- **Not changed**: the descriptor's five names, `inst-gv-queue`'s envelope, P-D-13's floor,
+  P-D-110 arm 2's ruling on `configuredQuorum`, and §7 row 9's other halves — whether the
+  elevation's record is an `ApprovalRecord` at all, and which row holds it, stay open and are
+  untouched here.
+- **Propagated**: nothing normative — this records where an existing fact lives rather than moving
+  it. **Routed**: the index on `two_person_approval_ref`, to the seam-wiring migration beside
+  P-D-110 arm 3's.
+- **Owed**: nothing. `O-B-04` closes with this entry.
+
+
+#### P-D-110 — Strand B's three open register entries, ruled
+
+- **Date**: 2026-09-03 (owner call, on `O-B-01`, `O-B-03` and `O-B-05` in
+  `gears-rust-governance/logs/governance/OWED-REGISTER.md`). `O-B-02` was already answered by the
+  ownership table; **`O-B-04` stands and nothing here settles it** — see arm 2.
+
+- **Arm 1 — `O-B-01`: per-module repository tests are the convention, and `at()` is hoisted while
+  `harness()` is not.** The entry offered three options and recommended per-module files. That is
+  **already the convention**, not a proposal: measured, `repo/` carries **four** such modules —
+  `governance_tests.rs`, `lifecycle_tests.rs`, `read_models_tests.rs`, `taxonomy_tests.rs` — so all
+  four strands arrived at it independently, and the domain layer set the precedent
+  (`domain/approval.rs:1360`, `domain/materiality.rs:549`). `repo_tests.rs` really is **4336
+  lines**. Ratified.
+  The entry's own trigger for hoisting the copied helpers was *"if the copies multiply past two or
+  three"*, and there are five sites. **But a count is the wrong trigger**, and measuring the copies
+  says why:
+  - **`harness()` has two forms that differ only in an `.expect()` message** — *"run migrator"*
+    against *"boot the migration chain"*. Cosmetic. No test behaves differently, and hoisting it
+    would edit four strands' files to unify a panic string.
+  - **`at()` has three forms carrying two different epochs**: `repo_tests.rs` is
+    **2026-08-29** while `governance_tests.rs` and `taxonomy_tests.rs` are **2026-09-02**, and one
+    uses `.single().expect("a real instant")` where the others `.unwrap()`. So **`at(9)` means a
+    different instant depending on which module you are in.** That is the harm duplication causes,
+    and it has already happened.
+  So: **hoist `at()`, leave `harness()` copied.** The surviving body is `.single().expect(…)` on
+  **2026-09-02**, and the implementer **re-runs each module's tests rather than mechanically
+  re-pointing them** — an assertion comparing a stored instant to `at(9)` is safe under a change of
+  epoch and one computing an interval against a hardcoded date is not.
+  **The trigger for any future hoist is a behavioural divergence, never a count.**
+  *Timing*: after strand A's door build lands. The hoist touches four strands' test files and a
+  `mod` line in `repo.rs`, which is C's; starting it under an active strand is the sequencing error
+  this programme keeps paying for.
+
+- **Arm 2 — `O-B-03`: `configuredQuorum` carries the floor, and this deliberately does not fix
+  `O-B-04`.** For a cross-tenant break-glass elevation there is no tenant `N` in force (**P-D-13**:
+  *"no tenant's configured `N` has standing over an act whose subject is another tenant's data"*),
+  while §4 defines the field as *"the `N` in force at submission"*. **The floor is the `N` in
+  force**, so option 1 reads true, renders today, and asserts no tenant standing. Option 3 —
+  a sixth, absent state — is the most honest and the most expensive: the column is `NOT NULL`
+  inside a canonical rendering whose reader errors on a missing member, and `inst-gv-queue`'s
+  envelope has no optional arm, so slice 12 would re-pin it. Ratified as option 1.
+  **The argument against, and it is the entry's blind spot**: option 1 is *precisely* what makes
+  `describe_platform_quorum()` and `describe_quorum(Material, 2, false)` byte-identical, which is
+  `O-B-04`. Option 2 — the target tenant's `N` — would distinguish them as a **side effect**, and
+  is rejected anyway: a solo-tenant target rendering *2 required / 0 configured* invites exactly
+  the reading of raised tenant standing that P-D-13 denies. **`O-B-04` is not to be solved by
+  choosing a value for this field.** Overloading a field to carry a distinction it is not about is
+  how a record stops being readable; the authority dimension needs its own name or its own
+  `subject_kind`, and that remains open and B's to raise again.
+
+- **Arm 3 — `O-B-05`: the gate's read gets its index, and it lands with the seam wiring.**
+  Confirmed: `gate_candidates` ends `.order_by(SubmittedAt, Desc).all(runner)` with no `LIMIT` and
+  no cursor, and `products_approval` carries exactly the two indexes the entry names —
+  `uq_products_approval_open`, whose state predicate a stateless query cannot use, and
+  `idx_products_approval_queue`, which offers only the `tenant_id` prefix and cannot serve that
+  `ORDER BY`.
+  **Option 1**, the entry's recommendation: a partial index
+  `(tenant_id, subject_kind, subject_ref, submitted_at)` with **no** state predicate, which serves
+  both the stateless lookup and the ordering. **Not option 2** — bounding a read whose whole
+  purpose is to find an arbitrarily old `consumed` record for `PreAuthorized` trades a performance
+  cost for a correctness one, and any `k` makes some composite act unverifiable. Option 3, the
+  queue's pagination, is slice 12's envelope to shape and is not ruled here.
+  **Timing, and it is measured rather than assumed: neither read has a production caller today.**
+  Both are reached only from tests, because every door still registers `NoMaterialityPolicyGate`.
+  So this is latent, and it goes live at the exact moment `StoredApprovalGate` is registered. The
+  index therefore lands **in the same change as the seam wiring** — that is when the read starts
+  running, and a migration inserted into a 24-link chain is worth paying for once, alongside the
+  work that needs it.
+
+- **Not changed**: `O-B-04`, `O-B-02`'s answer, `inst-gv-queue`'s envelope, and the descriptor's
+  five names.
+- **Propagated**: nothing normative — all three are conventions and implementation rulings rather
+  than instruction changes. Arms 1 and 3 are **routed to the seam-wiring change**, and named in the
+  lead's queue so they are not rediscovered.
+- **Owed**: nothing. Arm 2's residue is `O-B-04`, which is a standing entry rather than a debt of
+  this one, and arm 1's `harness()` copies are an accepted cost with a stated trigger.
+
+
 #### P-D-109 — When a live §7 row blocks a tick, and when it does not
 
 - **Date**: 2026-09-03 (owner call, on strand C's finding in its `C+1` handback, and correcting a
