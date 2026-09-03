@@ -49,7 +49,7 @@ use uuid::Uuid;
 use super::{TERMINAL_HEAD_STATES, driver_failure};
 use crate::domain::error::DomainError;
 use crate::domain::taxonomy::{
-    AssignmentRole, CategoryState, DefinitionState, REGISTRY_SEEDED_BY, RetireCensus,
+    AssignmentRole, CategoryState, DefinitionState, DeleteCensus, REGISTRY_SEEDED_BY, RetireCensus,
     StaleCategoryToken, TaxonomyMutation, WELL_KNOWN_SEEDS,
 };
 use crate::infra::storage::RepoError;
@@ -1406,6 +1406,75 @@ pub async fn delete_retired_category(
         .await
         .map_err(|e| driver_failure(format!("delete category {category_id}"), e))?;
     Ok(CategoryWrite::from_rows(result.rows_affected))
+}
+
+/// Read the census a **physical delete** is judged against (**P-D-116 row 21**).
+///
+/// Presence, not state: every `products_product_category` row naming the node
+/// counts, whatever its Product's lifecycle state, and every child row counts,
+/// whatever its state. That is the opposite reading from [`retire_census`]
+/// and deliberately so -- the retire guard must not lock a category behind a
+/// discarded draft's link row, and the delete must not leave that row pointing
+/// at nothing in the table the design calls the single source of truth. Both
+/// statements are one query each, bounded at `sample + 1`, under the caller's
+/// lock, for [`retire_census`]'s reasons.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn delete_census(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    category_id: Uuid,
+    sample: u64,
+) -> Result<DeleteCensus, RepoError> {
+    let holders_of_category = sea_orm::sea_query::Query::select()
+        .column(product_category::Column::ProductId)
+        .from(product_category::Entity)
+        .and_where(Expr::col(product_category::Column::TenantId).eq(tenant_id))
+        .and_where(Expr::col(product_category::Column::CategoryId).eq(category_id))
+        .to_owned();
+
+    let linked_products: Vec<String> = product::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(product::Column::TenantId.eq(tenant_id))
+                .add(Expr::col(product::Column::ProductId).in_subquery(holders_of_category)),
+        )
+        .order_by(product::Column::Name, sea_orm::Order::Asc)
+        .limit(sample + 1)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("link rows of category {category_id}"), e))?
+        .into_iter()
+        .map(|row| format!("{} ({})", row.name, row.lifecycle_state))
+        .collect();
+
+    let children: Vec<String> = category::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(category::Column::TenantId.eq(tenant_id))
+                .add(category::Column::ParentId.eq(category_id)),
+        )
+        .order_by(category::Column::Name, sea_orm::Order::Asc)
+        .limit(sample + 1)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("child rows of category {category_id}"), e))?
+        .into_iter()
+        .map(|row| format!("{} ({})", row.name, row.state))
+        .collect();
+
+    Ok(DeleteCensus {
+        linked_products,
+        children,
+        sample_bound: usize::try_from(sample).unwrap_or(usize::MAX),
+    })
 }
 
 /// Everything still carrying a value for one definition -- the removal

@@ -195,6 +195,18 @@ fn wire_code_roster() -> Vec<(DomainError, &'static str)> {
             "CONTENT_PII_BLOCKED",
         ),
         (DomainError::MetadataLimit("m".into()), "METADATA_LIMIT"),
+        (
+            DomainError::CategoryReferenced("c".into()),
+            "CATEGORY_REFERENCED",
+        ),
+        (
+            DomainError::DefinitionInUse("d".into()),
+            "DEFINITION_IN_USE",
+        ),
+        (
+            DomainError::StaleCategoryToken("t".into()),
+            "STALE_CATEGORY_TOKEN",
+        ),
     ]
 }
 
@@ -219,7 +231,7 @@ fn every_variant_carries_its_design_set_wire_code() {
     // until today. Read that file's own note before changing either.
     assert_eq!(
         cases.len(),
-        53,
+        56,
         "the Foundation owns fourteen raiseable codes and hosts two guests \
          (retention-erasure's ERASURE_UNKNOWN_ACTOR, P-D-64 keeping that \
          roster at one, and the clone door's CLONE_SOURCE_DISCARDED, \

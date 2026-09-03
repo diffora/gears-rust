@@ -1925,6 +1925,16 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   live as a measurement for A. `design/02`'s type-change sentence and the retire-delete guard's
   operand follow. **The code changes — `AttributeScope`'s global exemption, the guard's operand,
   the two events' aggregate — are strand A's build.**
+- **Filed 2026-09-03, by the lead, with strand A stood down — and the entry above had only
+  pointed.** `design/02` instruction 4 gains the delete operand and its three §6 items (rows 1, 15,
+  21) are struck with their answers; the entry's *"follow"* was a pointer, not a filing, for a day.
+  The code: the `AttributeScope` exemption **already stood** (taken *"as forced rather than chosen"*
+  and registered as open — now decided, docs re-worded, one door test added); the delete census is
+  new (`delete_census`, `delete_verdict`, `delete_under_lock` — the delete had run **no** census and
+  the FK answered as a 500); and two guards the door never called are wired (`seeded_edge`,
+  `definition_in_use_verdict`), which also gave `CATEGORY_REFERENCED`, `DEFINITION_IN_USE` and
+  `STALE_CATEGORY_TOKEN` their 409 variants — §3.3 files them there and `Validation` renders 400.
+  The two events' aggregate is the last piece and lands with their declaration.
 
 
 #### P-D-113 — The activation runner: hosted in the lifecycle loop, under a stable system principal, with a budget that can actually be spent

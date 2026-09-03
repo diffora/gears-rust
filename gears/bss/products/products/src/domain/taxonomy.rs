@@ -68,6 +68,10 @@
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-name-in-parent:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-locale-resolver:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-default-locale:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-value-validators:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-assignment-validators:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-taxonomy-errors:p1
 //! @cpt-cf-bss-products-dod-taxonomy-walk
 
 use toolkit_macros::domain_model;
@@ -443,12 +447,13 @@ pub struct RetireCensus {
 
 /// A retire or delete refused because the node is still in use.
 ///
-/// Carries the rendered detail; the wire code is [`Self::CODE`]. **Not a
-/// [`DomainError`]**, because `CATEGORY_REFERENCED` has no variant at this
-/// commit — see [`TaxonomyLimitExceeded::CODE`] for the same situation and
-/// the same reason. The door maps this to a refusal exactly as it maps
-/// `repo::AssignmentWrite`'s two conflicts, and the mapping lands with
-/// `dod-taxonomy-errors`.
+/// Carries the rendered detail; the wire code is [`Self::CODE`]. **Its wire
+/// form is [`DomainError::CategoryReferenced`]** (`From`), a **409** —
+/// `design/02` §3.3's status, which the `Validation` route it rode until
+/// 2026-09-03 could not render: that route is the architectural 422, a 400 on
+/// the wire, and the clause `dod-taxonomy-errors` measures is that each code
+/// carries *the status the design assigns it*. The domain type stays so the
+/// two verdict functions carry no wire shape.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CategoryReferenced {
     /// What is still holding the node, for a human reading the response.
@@ -456,8 +461,14 @@ pub struct CategoryReferenced {
 }
 
 impl CategoryReferenced {
-    /// The refusal code (`design/02` §3.3).
+    /// The refusal code (`design/02` §3.3, **409**).
     pub const CODE: &'static str = "CATEGORY_REFERENCED";
+}
+
+impl From<CategoryReferenced> for DomainError {
+    fn from(refusal: CategoryReferenced) -> Self {
+        Self::CategoryReferenced(refusal.detail)
+    }
 }
 
 /// Judge a retire or delete against its census.
@@ -490,6 +501,66 @@ pub fn retire_verdict(census: &RetireCensus) -> Result<(), CategoryReferenced> {
     Err(CategoryReferenced {
         detail: format!(
             "the category is still in use and cannot be retired or deleted: {}",
+            parts.join("; and ")
+        ),
+    })
+}
+
+/// The census a **physical delete** is judged against -- **P-D-116 row 21**.
+///
+/// A different operand from [`RetireCensus`], and the difference is the whole
+/// decision: the retire guard reads the referencing Product's lifecycle state,
+/// so a discarded draft's link row does not hold the node; the delete admits
+/// only when **no** `products_product_category` row names the node at all, in
+/// any Product state, and no child row points at it, in any state. The link
+/// table is the design's single source of truth for assignments, and a delete
+/// that left rows in it pointing at nothing would falsify that -- so a
+/// category with history is **retired**, never deleted, by the same reasoning
+/// P-D-47 made a definition's removal a state and never a `DELETE`.
+///
+/// Both samples are the caller's read under the writer lock, bounded at
+/// `sample + 1` as [`RetireCensus`]'s are.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeleteCensus {
+    /// Products with a link row naming the node, **in any lifecycle state**,
+    /// rendered as the refusal should name them.
+    pub linked_products: Vec<String>,
+    /// Child categories pointing at the node, **in any state** -- a retired
+    /// child holds a delete. The parent foreign key would refuse it anyway;
+    /// the census says so in the design's own code rather than the engine's.
+    pub children: Vec<String>,
+    /// The bound each sample was read at.
+    pub sample_bound: usize,
+}
+
+/// Judge a physical delete against its census (**P-D-116 row 21**).
+///
+/// # Errors
+///
+/// [`CategoryReferenced`] naming a sample of whatever still names the node --
+/// both halves in one refusal, as [`retire_verdict`] reports them.
+pub fn delete_verdict(census: &DeleteCensus) -> Result<(), CategoryReferenced> {
+    if census.linked_products.is_empty() && census.children.is_empty() {
+        return Ok(());
+    }
+    let mut parts = Vec::new();
+    if !census.linked_products.is_empty() {
+        parts.push(format!(
+            "{} product(s) in any state still file under it ({})",
+            count_phrase(census.linked_products.len(), census.sample_bound),
+            census.linked_products.join(", ")
+        ));
+    }
+    if !census.children.is_empty() {
+        parts.push(format!(
+            "{} child category(ies) in any state still point at it ({})",
+            count_phrase(census.children.len(), census.sample_bound),
+            census.children.join(", ")
+        ));
+    }
+    Err(CategoryReferenced {
+        detail: format!(
+            "the category has history and cannot be deleted, only retired: {}",
             parts.join("; and ")
         ),
     })
@@ -686,10 +757,11 @@ pub fn definition_edge(from: DefinitionState, to: DefinitionState) -> Result<(),
 
 /// A definition that cannot move because something still carries its values.
 ///
-/// Carries the rendered detail; the wire code is [`Self::CODE`]. **Not a
-/// [`DomainError`]**, for the reason [`CategoryReferenced`] gives -- the
-/// variant does not exist at this commit and `dod-taxonomy-errors` is where
-/// it lands.
+/// Carries the rendered detail; the wire code is [`Self::CODE`], and its wire
+/// form is [`DomainError::DefinitionInUse`] (`From`, **409** -- `design/02`
+/// §3.3). Raised at the definition operations door's `remove` arm since
+/// 2026-09-03; before that [`definition_in_use_verdict`] had no production
+/// caller, and a removal under live values went through.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DefinitionInUse {
     /// What still carries values, for a human reading the response.
@@ -699,6 +771,12 @@ pub struct DefinitionInUse {
 impl DefinitionInUse {
     /// The refusal code (`design/02` §3.3, 409).
     pub const CODE: &'static str = "DEFINITION_IN_USE";
+}
+
+impl From<DefinitionInUse> for DomainError {
+    fn from(refusal: DefinitionInUse) -> Self {
+        Self::DefinitionInUse(refusal.detail)
+    }
 }
 
 /// Judge one definition act against a census of what still carries its
@@ -888,6 +966,17 @@ impl ValueShape {
 /// from a rule; raising the Foundation's declared generic keeps the refusal
 /// **reachable** and leaves the code to row 17's owner. The `subject` and
 /// `detail` a violation carries are what tells the two apart meanwhile.
+///
+/// **Row 17 measured, 2026-09-03.** Of its four: the unresolvable category and
+/// the role duplicate raise this generic (no code of their own); the
+/// seeded-definition removal raises the Foundation's `ILLEGAL_FIELD_MUTATION`
+/// (a borrowed variant, no code of its own); and *"the removal refused on a
+/// non-terminal head carrying a value"* is `DEFINITION_IN_USE` -- **one of the
+/// sixteen**, so the row's count was three, not four. Whether the first two
+/// get codes of their own is the error-contract owner's call, routed with a
+/// recommendation (`CATEGORY_UNKNOWN`, for parity with
+/// `ATTRIBUTE_DEFINITION_UNKNOWN`); the third has a code the Foundation
+/// already declares for exactly that refusal.
 const UNASSIGNED_CODE: &str = "VALIDATION";
 
 /// A payload naming a category the tenant does not have.
@@ -1165,7 +1254,7 @@ impl ValidationRule<ContentSaveSubject> for AttributeValueTypeRule {
 /// written as set membership alone would refuse every coordinate under every
 /// unrestricted row -- which is to say, under nearly all of them.
 ///
-/// # An absent coordinate is not judged, and that is §6's open item, deferred
+/// # An absent coordinate is not judged, and that is now the decision
 ///
 /// *"Does a brand-less global value survive the scope check on a
 /// brand-scoped entity?"* -- `design/02` §6, whose own text records that under
@@ -1173,11 +1262,12 @@ impl ValidationRule<ContentSaveSubject> for AttributeValueTypeRule {
 /// write the save validator refuses"*, so a brand-scoped entity could never
 /// publish. This rule judges a coordinate **only where the payload names
 /// one**: `brand: ""` is the absence P-D-88 arm 2 spells, not a brand called
-/// empty-string, and there is nothing to contain. That is the one direction
-/// in which both `dod-value-validators` and `dod-default-locale` are
-/// satisfiable at once, so it is taken as forced rather than chosen -- and it
-/// is registered, because the owner may yet want the global value scoped some
-/// other way.
+/// empty-string, and there is nothing to contain. **P-D-116 row 1 made that
+/// the rule rather than a deferral**: containment is a rule about *scoped*
+/// values, the global coordinate `("", "", "")` claims nothing and is
+/// contained by everything, and it is the fallback of last resort that
+/// `inst-av-default-locale` exists to reach. The alternative makes every
+/// brand-scoped entity unpublishable, which no requirement asks for.
 pub struct AttributeScopeRule;
 
 impl AttributeScopeRule {
@@ -1506,9 +1596,10 @@ impl ValidationRule<PublishedContentSubject> for DefaultLocaleRequired {
 /// The category live-value door's precondition mismatch
 /// (**P-D-50**, `inst-av-category-branch`).
 ///
-/// Carries the two counters so a caller can re-fetch without a second read.
-/// **Not a [`DomainError`]**: `STALE_CATEGORY_TOKEN` has no variant at this
-/// commit, for the reason [`CategoryReferenced`] gives.
+/// Carries the two counters so a caller can re-fetch without a second read;
+/// its wire form is [`DomainError::StaleCategoryToken`] (`From`, **409** --
+/// `design/02` §3.3, which the `Validation` route rendered as 400 until
+/// 2026-09-03).
 ///
 /// It is deliberately **neither** of its two neighbours: `STALE_REVISION` is
 /// the Foundation's entity-head code, which a live row cannot be stale
@@ -1524,9 +1615,20 @@ pub struct StaleCategoryToken {
 }
 
 impl StaleCategoryToken {
-    /// The refusal code (`design/02` §3.3, **409** — the one code of this
-    /// feature's sixteen that §3.3 does not file at 422).
+    /// The refusal code (`design/02` §3.3, **409** — with
+    /// `DUPLICATE_CATEGORY_NAME`, `CATEGORY_REFERENCED`, `DEFINITION_IN_USE`
+    /// and `STALE_LIVE_OP`, one of the five of this feature's sixteen that
+    /// §3.3 files at 409 rather than 422).
     pub const CODE: &'static str = "STALE_CATEGORY_TOKEN";
+}
+
+impl From<StaleCategoryToken> for DomainError {
+    fn from(mismatch: StaleCategoryToken) -> Self {
+        Self::StaleCategoryToken(format!(
+            "the category's token is {} and the request carried {}",
+            mismatch.found, mismatch.expected
+        ))
+    }
 }
 
 // -- Frozen version content (`dod-version-content-rendering`, **P-D-29**) --
@@ -1876,9 +1978,10 @@ pub fn content_pii_block(
 /// `dod-taxonomy-errors` requires *"all sixteen"* be declared and registered.
 /// A constant on each raising rule is the declaration; nothing on its own is
 /// the **census**, and a code that is declared nowhere is invisible to every
-/// per-rule test. `the_sixteen_codes_are_all_reachable` reads this array
-/// against the constants and against `DomainError::code`, so a code named
-/// here with no raiser and a raiser with no entry here both redden.
+/// per-rule test. `domain::taxonomy_tests` reads this array both ways -- every
+/// rule constant must be one of the sixteen, and `raiseable_codes` reads
+/// `error.rs`'s own `code()` arms against it -- so a code named here with no
+/// raiser and a raiser with no entry here both redden.
 ///
 /// The array is the design's list verbatim and in its order; it is **not** a
 /// claim that all sixteen are raiseable at this commit, which they are not.

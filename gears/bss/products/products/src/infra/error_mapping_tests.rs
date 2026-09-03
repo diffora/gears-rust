@@ -105,6 +105,11 @@ fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
         // Slice `02`'s metadata caps: 422 architectural, 400 on the wire,
         // enforced at the door and so carrying a variant of its own.
         D::MetadataLimit(_) => (400, Some("METADATA_LIMIT")),
+        // Slice `02`'s three 409s beyond `DUPLICATE_CATEGORY_NAME`: the
+        // current state refusing the act (`02` §3.3).
+        D::CategoryReferenced(_) => (409, Some("CATEGORY_REFERENCED")),
+        D::DefinitionInUse(_) => (409, Some("DEFINITION_IN_USE")),
+        D::StaleCategoryToken(_) => (409, Some("STALE_CATEGORY_TOKEN")),
     }
 }
 
@@ -182,6 +187,9 @@ fn one_of_every_variant() -> Vec<DomainError> {
         D::WatermarkFuture(d()),
         D::ContentPiiBlocked(d()),
         D::MetadataLimit(d()),
+        D::CategoryReferenced(d()),
+        D::DefinitionInUse(d()),
+        D::StaleCategoryToken(d()),
     ]
 }
 
@@ -206,7 +214,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
 /// file's guard is the strong one — `declared_status_and_code`'s match is
 /// exhaustive, so a new variant does not compile until it is handled — and the
 /// sibling's is a roster nothing ties to the enum. Move both.
-const DOMAIN_ERROR_VARIANTS: usize = 53;
+const DOMAIN_ERROR_VARIANTS: usize = 56;
 
 /// Covers all 14 variants (§3.3's own count, `DomainError::code`'s own
 /// exhaustiveness note): every one lands on the status the design ladder

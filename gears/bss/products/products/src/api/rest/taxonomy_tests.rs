@@ -454,8 +454,10 @@ async fn a_stale_category_token_is_refused_with_this_slices_own_code() {
     )
     .await;
 
-    assert_eq!(stale.status(), axum::http::StatusCode::BAD_REQUEST);
-    assert_eq!(error_code(stale).await, "STALE_CATEGORY_TOKEN");
+    // 409 — `design/02` §3.3's status for the door's own precondition. The
+    // `Validation` route this rode until 2026-09-03 rendered it 400.
+    assert_eq!(stale.status(), axum::http::StatusCode::CONFLICT);
+    assert_eq!(conflict_code(stale).await, "STALE_CATEGORY_TOKEN");
 }
 
 /// **One act, one bump** — `mutation_seq` counts acts and not row writes
@@ -1010,5 +1012,214 @@ async fn a_label_edit_writes_a_value_on_the_definition() {
         record.state,
         DefinitionState::Active,
         "a label edit is non-material and moves no state"
+    );
+}
+
+// ------------------------------------------- the guards that judged nothing
+
+/// **A seeded definition deprecates and never removes** (`dod-well-known-seeds`).
+///
+/// `seeded_edge` existed and judged nothing: the operations door flipped
+/// `deprecated → removed` without asking it, so the `MUST NOT` was a doc
+/// comment. Now the door asks, and the answer is the Foundation's
+/// `ILLEGAL_FIELD_MUTATION` -- a borrowed code, which is what §7 row 17's
+/// measurement recorded for this refusal.
+#[tokio::test]
+async fn a_seeded_definition_deprecates_and_never_removes() {
+    let h = harness().await;
+    {
+        let conn = h.db.conn().expect("scoped connection");
+        let scope = AccessScope::for_tenant(TENANT);
+        repo::insert_attribute_definition(
+            &conn,
+            &scope,
+            repo::NewAttributeDefinition {
+                tenant_id: TENANT,
+                definition_id: Uuid::now_v7(),
+                key: "imageUri",
+                value_type: "uri",
+                localized: false,
+                region_scope: "",
+                brand_scope: "",
+                seeded_by: Some(crate::domain::taxonomy::REGISTRY_SEEDED_BY),
+            },
+            now(),
+        )
+        .await
+        .expect("seed a well-known definition");
+    }
+    let uri = "/bss-products/v1/attribute-definitions/imageUri/operations";
+
+    let deprecated = send(
+        app(&h),
+        "POST",
+        uri,
+        &json!({ "op": "deprecate", "expected_state": "active" }),
+    )
+    .await;
+    assert_eq!(
+        deprecated.status(),
+        axum::http::StatusCode::OK,
+        "a seed is deprecatable"
+    );
+
+    let removed = send(
+        app(&h),
+        "POST",
+        uri,
+        &json!({ "op": "remove", "expected_state": "deprecated" }),
+    )
+    .await;
+    assert_eq!(removed.status(), axum::http::StatusCode::CONFLICT);
+    assert_eq!(conflict_code(removed).await, "ILLEGAL_FIELD_MUTATION");
+}
+
+/// **A removal is refused while a non-terminal head carries the value, and
+/// admitted once the value is gone** -- `DEFINITION_IN_USE`, 409 (P-D-116
+/// rows 5 and 11: one operand, and a `draft` head is in it).
+#[tokio::test]
+async fn a_removal_is_refused_while_a_draft_carries_the_value() {
+    let h = harness().await;
+    let product = seed_product(&h).await;
+    let definition = seed_definition(&h, "colour").await;
+    let coordinate = || repo::AttributeCoordinate {
+        entity_kind: "product",
+        entity_id: product,
+        definition_id: definition,
+        locale: "",
+        region: "",
+        brand: "",
+    };
+    {
+        let conn = h.db.conn().expect("scoped connection");
+        let scope = AccessScope::for_tenant(TENANT);
+        repo::upsert_attribute_value(&conn, &scope, TENANT, coordinate(), "red", now())
+            .await
+            .expect("the draft carries a value");
+    }
+    let uri = "/bss-products/v1/attribute-definitions/colour/operations";
+
+    let deprecated = send(
+        app(&h),
+        "POST",
+        uri,
+        &json!({ "op": "deprecate", "expected_state": "active" }),
+    )
+    .await;
+    assert_eq!(deprecated.status(), axum::http::StatusCode::OK);
+
+    let held = send(
+        app(&h),
+        "POST",
+        uri,
+        &json!({ "op": "remove", "expected_state": "deprecated" }),
+    )
+    .await;
+    assert_eq!(held.status(), axum::http::StatusCode::CONFLICT);
+    assert_eq!(conflict_code(held).await, "DEFINITION_IN_USE");
+
+    {
+        let conn = h.db.conn().expect("scoped connection");
+        let scope = AccessScope::for_tenant(TENANT);
+        repo::delete_attribute_value(&conn, &scope, TENANT, coordinate())
+            .await
+            .expect("the value goes");
+    }
+    let removed = send(
+        app(&h),
+        "POST",
+        uri,
+        &json!({ "op": "remove", "expected_state": "deprecated" }),
+    )
+    .await;
+    assert_eq!(
+        removed.status(),
+        axum::http::StatusCode::OK,
+        "the paired admission: no carrier, no hold"
+    );
+}
+
+/// **A category delete admits only when no link row names it, in any Product
+/// state** (P-D-116 row 21) -- and the retire beside it still admits, which is
+/// `dod-retire-delete-guard`'s own "discarded draft" case, here through the
+/// door. Before this the delete ran no census at all and the engine's foreign
+/// key met the act as a 500.
+#[tokio::test]
+async fn a_category_delete_is_held_by_a_discarded_products_link_row() {
+    let h = harness().await;
+    let category = create_category(app(&h), "Legacy", None).await;
+    let category_id: Uuid = category["category_id"]
+        .as_str()
+        .expect("id")
+        .parse()
+        .expect("a uuid");
+    let product = seed_product(&h).await;
+    let uri = format!("/bss-products/v1/categories/{category_id}/operations");
+    {
+        let conn = h.db.conn().expect("scoped connection");
+        let scope = AccessScope::for_tenant(TENANT);
+        repo::replace_category_assignments(
+            &conn,
+            &scope,
+            TENANT,
+            product,
+            &[(
+                category_id,
+                crate::domain::taxonomy::AssignmentRole::Primary,
+            )],
+            now(),
+        )
+        .await
+        .expect("file the product under the category");
+        crate::infra::storage::repo::discard_product_head(&conn, &scope, TENANT, product, 1, now())
+            .await
+            .expect("discard the draft");
+    }
+
+    let retired = send(
+        app(&h),
+        "POST",
+        &uri,
+        &json!({ "op": "retire", "expected_state": "active" }),
+    )
+    .await;
+    assert_eq!(
+        retired.status(),
+        axum::http::StatusCode::OK,
+        "a discarded holder does not block the retire"
+    );
+
+    let held = send(
+        app(&h),
+        "POST",
+        &uri,
+        &json!({ "op": "delete", "expected_state": "retired" }),
+    )
+    .await;
+    assert_eq!(
+        held.status(),
+        axum::http::StatusCode::CONFLICT,
+        "presence, not state"
+    );
+    assert_eq!(conflict_code(held).await, "CATEGORY_REFERENCED");
+
+    {
+        let conn = h.db.conn().expect("scoped connection");
+        let scope = AccessScope::for_tenant(TENANT);
+        repo::replace_category_assignments(&conn, &scope, TENANT, product, &[], now())
+            .await
+            .expect("clear the assignment set");
+    }
+    let deleted = send(
+        app(&h),
+        "POST",
+        &uri,
+        &json!({ "op": "delete", "expected_state": "retired" }),
+    )
+    .await;
+    assert_eq!(
+        deleted.status(),
+        axum::http::StatusCode::OK,
+        "no link row and no child: admitted"
     );
 }

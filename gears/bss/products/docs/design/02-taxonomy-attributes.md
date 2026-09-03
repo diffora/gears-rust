@@ -126,7 +126,7 @@ actor, the scenarios and the boundary.
 1. [ ] - `p1` - Authorize `category × write`; wrap the request as a `GovernedLiveOp`; **every one of these five taxonomy ops is material** (PRD `fr-materiality-gated-publish` enumerates category create/rename/re-parent/retire/delete), so the op queues through the slice-05 two-person gate before anything mutates - `inst-tx-governed-op`
 2. [ ] - `p1` - On apply, re-validate against the **live** tree (the gate pinned the op, not the world): name uniqueness within the parent on `(tenant_id, parent_id, normalized(name))` — re-checked on rename **and** re-parent; violation fails `DUPLICATE_CATEGORY_NAME` - `inst-tx-name-in-parent`
 3. [ ] - `p1` - `TaxonomyWalk` inside the write transaction, under the per-tenant taxonomy writer lock (§3.4): a re-parent whose new ancestor chain contains the node itself fails `TAXONOMY_CYCLE`; a create/re-parent exceeding configured max depth or max children fails `TAXONOMY_LIMIT` naming the limit - `inst-tx-walk`
-4. [ ] - `p1` - Retire/delete **MUST** be refused while any **non-terminal** Product (`draft`/`published`/`deprecated` — the PRD's operand is "active", and `retired` *and* `discarded` are both terminal) references the category (primary or secondary) or any active child exists. **The guard reads the referencing Product's lifecycle state, never the presence of a `products_product_category` row** (item 17 of the review: discard releases the code and name reservations but leaves the category link, so on the old "non-`retired`" operand one discarded draft blocked the category permanently) — `CATEGORY_REFERENCED`, with a sample of holders named; retire marks the node closed to new assignment, delete is admitted only on a retired, empty, unreferenced node - `inst-tx-retire-guard`
+4. [ ] - `p1` - Retire/delete **MUST** be refused while any **non-terminal** Product (`draft`/`published`/`deprecated` — the PRD's operand is "active", and `retired` *and* `discarded` are both terminal) references the category (primary or secondary) or any active child exists. **The guard reads the referencing Product's lifecycle state, never the presence of a `products_product_category` row** (item 17 of the review: discard releases the code and name reservations but leaves the category link, so on the old "non-`retired`" operand one discarded draft blocked the category permanently) — `CATEGORY_REFERENCED`, with a sample of holders named; retire marks the node closed to new assignment, delete is admitted only on a retired, empty, unreferenced node — where for the **delete** *unreferenced* means **no `products_product_category` row names the node, in any Product state** (P-D-116 row 21, 2026-09-03: the lifecycle-state operand is the retire's; a category with history is retired, never deleted) - `inst-tx-retire-guard`
 5. [ ] - `p1` - Each applied op emits its event (`CategoryCreated`/`CategoryRenamed`/`CategoryReparented`/`CategoryRetired`/`CategoryDeleted`) in the same transaction (**P-D-21**: the event is the success-path audit record); the op envelope id rides the event for approval traceability - `inst-tx-event`
 
 ### Assign categories to a Product
@@ -355,13 +355,15 @@ no event of their own (category display values emit `CategoryDisplayUpdated`, ab
   Separately "default-locale resolves per brand" presumes a per-brand default locale, while the only
   store named is the tenant default. Owner: this slice — the admitted coordinate roster per
   `localized` flag, the refusal outside it, and where a brand-scoped default lives. *(Raised by the slice-02 first lens pass.)*
-- **Does a brand-less global value survive the scope check on a brand-scoped entity?**
-  `inst-av-validate` requires coordinates within the entity's own scope; under the gear's stated
-  containment reading an unrestricted coordinate under a restricted entity is **not** contained — so
-  the write the publish validator demands is the write the save validator refuses. P-D-39's
-  propagation named 01 and 04 only, and §4.1 gives the definition's visibility scope neither
-  nullability nor an empty-set meaning. Owner: this slice with 05, whose `inst-gv-scope` reads the
-  same rule. *(Raised by the slice-02 first lens pass.)*
+- ~~**Does a brand-less global value survive the scope check on a brand-scoped entity?**~~
+  **Answered (owner call, 2026-09-03 — P-D-116 row 1): yes, by construction.** Containment is a rule
+  about *scoped* values; the global coordinate `("", "", "")` claims nothing and is contained by
+  everything, and it is the fallback of last resort `inst-av-default-locale` exists to reach.
+  `AttributeScopeRule` judges only a coordinate the payload names. Pinned at the rule and through
+  both doors (`a_brand_scoped_entity_publishes_on_the_global_value_alone`). *The item's text stood
+  as: `inst-av-validate` requires coordinates within the entity's own scope; under a containment-only
+  reading an unrestricted coordinate under a restricted entity is not contained — so the write the
+  publish validator demands is the write the save validator refuses.*
 - ~~**Both uniqueness guarantees are UNIQUE over nullable columns.**~~
   **Answered (owner call, 2026-09-01 — P-D-88): roots get a partial
   `UNIQUE (tenant_id, name_normalized) WHERE parent_id IS NULL` (a sentinel cannot satisfy the
@@ -407,12 +409,15 @@ no event of their own (category display values emit `CategoryDisplayUpdated`, ab
   the second silently overwrites the first, on a map that keeps no history between snapshots. Owner:
   this slice — does the metadata PATCH bump `internal_revision` (and what does that do to P-D-06's
   "no version bump"), or carry its own per-map token? *(Raised by the slice-02 first lens pass.)*
-- **Which aggregate orders `CategoryDisplayUpdated` and `AttributeDefinitionUpdated`?** §4.3 gives
-  ordering keys for taxonomy ops and for metadata, and neither of these two falls under either.
-  It is not a free choice: display writes do not take the taxonomy writer lock, so putting them on
-  the tree key claims a serialization the door does not provide, while a per-category key leaves a
-  rename and a display edit on one category mutually unordered. Owner: this slice with 12.
-  *(Two lenses raised it independently.)*
+- ~~**Which aggregate orders `CategoryDisplayUpdated` and `AttributeDefinitionUpdated`?**~~
+  **Answered (owner call, 2026-09-03 — P-D-116 row 15): their own entity's id.** Not the tree key —
+  display writes do not take the writer lock, so that key would claim a serialization the door does
+  not provide (the item's own argument); not the metadata key — they are not metadata. A display
+  write serializes on its own row (`products_category.mutation_seq` is the live-value door's
+  precondition), so the entity id is the aggregate that matches what actually orders the writes.
+  Slice 12 pins the envelope; the aggregate choice is the emitter's. *A rename and a display edit
+  on one category are therefore mutually unordered across the two aggregates, which the item named
+  as the cost and the decision accepts.*
 - ~~**Three doors name no REST path, and one names no grant pair.**~~ **Answered (owner call,
   2026-09-03 — P-D-106): each gets one route family** — `POST /bss-products/v1/categories` and
   `…/{categoryId}/operations`; `POST /bss-products/v1/attribute-definitions` and
@@ -462,13 +467,15 @@ no event of their own (category display values emit `CategoryDisplayUpdated`, ab
   while `key` is unique per tenant, so that parenthetical is either an applicability set the definition
   roster carries no column for, or a constraint on nothing. Owner: this slice — the admitted roster per
   table, and whether a category may carry a metadata map. *(Two lenses raised it independently.)*
-- **What happens to `products_product_category` rows when a category is physically deleted?**
-  `inst-tx-retire-guard` admits a physical delete on a retired, empty, unreferenced node and reads
-  "unreferenced" from the referencing Product's lifecycle state, never from the link row — so discarded
-  and retired Products still hold rows in the table §4.1 calls the single source of truth. §4.1 states
-  an FK guard for `parent_id` only and gives `products_product_category.category_id` no referential
-  action. Owner: this slice with the schema owner — the action on delete, or a narrowing of
-  "unreferenced". *(Raised by the slice-02 second lens pass.)*
+- ~~**What happens to `products_product_category` rows when a category is physically deleted?**~~
+  **Answered (owner call, 2026-09-03 — P-D-116 row 21): nothing, because none may exist.** A category
+  is physically deleted only when **no** `products_product_category` row names it, in any Product
+  state; the shipped FK's default restrict is the stated semantics, and the guard now reads it
+  itself (`repo::delete_census`, `delete_verdict`, `CATEGORY_REFERENCED` 409) rather than leaving
+  the engine to refuse. A category with history is retired, never deleted. *The item's text stood
+  as: `inst-tx-retire-guard` read "unreferenced" from the Product's lifecycle state, never the link
+  row, so discarded and retired Products still held rows in the single source of truth, and §4.1
+  gave `category_id` no referential action.*
 - **Does the PRD carry a live-reference condition for attribute definitions?**
   `inst-ad-deprecate-then-remove` credited its "non-terminal head" operand to the PRD, and that
   attribution is struck this pass: the PRD's definition clauses (`fr-localized-attributes`, AC #12)

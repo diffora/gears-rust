@@ -8,15 +8,16 @@ use super::{
     AttributeDefinitionKnownRule, AttributeScopeRule, AttributeValueTypeRule, CarriedDefinition,
     CategoryNotRetiredRule, CategoryReferenced, CategoryResolvableRule, CategoryRoleConflictRule,
     CategoryState, ContentPiiBlocked, ContentSaveSubject, DefaultLocaleRequired, DefinitionInUse,
-    DefinitionState, FrozenAttributeValue, GLOBAL_COORDINATE, LocaleRequest, LocalizedValue,
-    NO_PII_POLICY_REASON, NoPiiPolicyDetector, PiiDetector, PiiVerdict, PublishedContentSubject,
-    REGISTRY_SEEDED_BY, ResolutionStep, ResolvedDefinition, RetireCensus, StaleCategoryToken,
-    TAXONOMY_ERROR_CODES, TaxonomyLimitExceeded, TaxonomyLimits, TaxonomyMutation, ValueCandidate,
-    ValueShape, WELL_KNOWN_SEEDS, ancestors_of, assignment_collection, children_of,
-    content_pii_block, cycle_verdict, definition_edge, definition_in_use_verdict, depth_of,
-    is_global, is_removable, limit_verdict, resolve_localized, retire_verdict, seeded_edge,
-    value_collection,
+    DefinitionState, DeleteCensus, FrozenAttributeValue, GLOBAL_COORDINATE, LocaleRequest,
+    LocalizedValue, NO_PII_POLICY_REASON, NoPiiPolicyDetector, PiiDetector, PiiVerdict,
+    PublishedContentSubject, REGISTRY_SEEDED_BY, ResolutionStep, ResolvedDefinition, RetireCensus,
+    StaleCategoryToken, TAXONOMY_ERROR_CODES, TaxonomyLimitExceeded, TaxonomyLimits,
+    TaxonomyMutation, ValueCandidate, ValueShape, WELL_KNOWN_SEEDS, ancestors_of,
+    assignment_collection, children_of, content_pii_block, cycle_verdict, definition_edge,
+    definition_in_use_verdict, delete_verdict, depth_of, is_global, is_removable, limit_verdict,
+    resolve_localized, retire_verdict, seeded_edge, value_collection,
 };
+use crate::domain::error::DomainError;
 use crate::domain::validation::ValidationPipeline;
 
 const A: Uuid = Uuid::from_u128(0xa1);
@@ -1333,40 +1334,96 @@ fn the_sixteen_codes_are_a_distinct_roster() {
     }
 }
 
-/// **The counted gate on the registration gap.**
+/// **The counted gate on the variant roster.**
 ///
-/// Twelve of the sixteen have no `DomainError` variant at this commit, so no
-/// door can raise them as themselves and every one would fall back to
-/// `INCOMPLETE_ENTITY` through `transition_refusal`'s ladder. That is
-/// `dod-taxonomy-errors`' remaining work and it lands as a patch to
-/// `domain::error` and `infra::error_mapping`, neither of which is this
-/// strand's file.
+/// Nine of the sixteen have a `DomainError` variant: the five `design/02` §3.3
+/// files at **409** (a `Validation` violation renders 400, so a 409 code needs
+/// a variant to carry its status), plus the four raised **outside** any
+/// pipeline (`TAXONOMY_CYCLE`, `PRIMARY_CATEGORY_REQUIRED`,
+/// `CONTENT_PII_BLOCKED`, `METADATA_LIMIT`). The remaining seven are the
+/// pipeline's own 422-architectural codes, which ride `Validation` and reach
+/// the wire carrying themselves -- a variant for one of those would be a dead
+/// `match` arm (`infra::error_mapping`'s own rule).
 ///
-/// The literal is the gate: **when the patch lands this test reddens**, and
-/// the number is what the applier updates -- to `0`, in the same edit. A
-/// silent gap is what this exists to prevent, so it is deliberately not
-/// written as an inequality.
+/// The literal is the gate: a variant added or removed reddens this, and the
+/// number is what the applier updates in the same edit. Three landed
+/// 2026-09-03 (`CATEGORY_REFERENCED`, `DEFINITION_IN_USE`,
+/// `STALE_CATEGORY_TOKEN`) when the taxonomy doors gave them production
+/// raisers; the count moved 6 → 9 here and 53 → 56 in the two enum rosters.
 #[test]
-fn ten_of_the_sixteen_codes_have_no_domain_error_variant_yet() {
+fn seven_of_the_sixteen_codes_ride_validation_and_nine_have_a_variant() {
     let raiseable = raiseable_codes();
     assert_eq!(
         raiseable,
         vec![
             "DUPLICATE_CATEGORY_NAME",
             "TAXONOMY_CYCLE",
+            "CATEGORY_REFERENCED",
+            "DEFINITION_IN_USE",
             "PRIMARY_CATEGORY_REQUIRED",
+            "STALE_CATEGORY_TOKEN",
             "CONTENT_PII_BLOCKED",
             "METADATA_LIMIT",
             "STALE_LIVE_OP",
         ],
-        "exactly these six are raiseable as themselves, in TAXONOMY_ERROR_CODES' \
+        "exactly these nine are raiseable as themselves, in TAXONOMY_ERROR_CODES' \
          own order"
     );
     assert_eq!(
         TAXONOMY_ERROR_CODES.len() - raiseable.len(),
-        10,
-        "ten still need a variant and a mapping arm"
+        7,
+        "seven ride `Validation` carrying their own code"
     );
+}
+
+/// **The delete census is judged on presence and the retire census is not**
+/// (P-D-116 row 21): the link row a discarded Product still holds admits a
+/// retire and refuses a delete.
+#[test]
+fn a_delete_is_refused_by_any_link_row_and_a_retire_is_not() {
+    let retire = RetireCensus {
+        referencing_products: Vec::new(),
+        active_children: Vec::new(),
+        sample_bound: 3,
+    };
+    retire_verdict(&retire).expect("a discarded holder does not block a retire");
+
+    let delete = DeleteCensus {
+        linked_products: vec!["Fibre 500 (discarded)".to_owned()],
+        children: Vec::new(),
+        sample_bound: 3,
+    };
+    let refused = delete_verdict(&delete).expect_err("any link row holds a delete");
+    assert!(
+        refused.detail.contains("only retired"),
+        "{}",
+        refused.detail
+    );
+    assert!(refused.detail.contains("Fibre 500"), "{}", refused.detail);
+}
+
+/// **Both halves in one refusal, a bounded sample says "at least", and the
+/// wire form is the 409 variant.**
+#[test]
+fn the_delete_verdict_names_both_halves_and_renders_as_a_conflict() {
+    let census = DeleteCensus {
+        linked_products: vec!["a".into(), "b".into(), "c".into(), "d".into()],
+        children: vec!["kids (retired)".into()],
+        sample_bound: 3,
+    };
+    let refused = delete_verdict(&census).expect_err("held twice over");
+    assert!(
+        refused.detail.contains("at least 3 product(s)"),
+        "{}",
+        refused.detail
+    );
+    assert!(
+        refused.detail.contains("1 child category(ies)"),
+        "{}",
+        refused.detail
+    );
+    let wire = DomainError::from(refused);
+    assert_eq!(wire.code(), CategoryReferenced::CODE);
 }
 
 /// The taxonomy codes `DomainError::code` can answer, **derived from the

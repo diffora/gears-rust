@@ -70,6 +70,7 @@
 //! with the schema owner. The tick waits for it.
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-category-table:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-category-assignment-table:p1
 
 use sea_orm_migration::prelude::*;
 

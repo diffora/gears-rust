@@ -801,9 +801,14 @@ async fn execute_category_operation(
         .await
         .map(|r| r.map(|_| repo::CategoryWrite::Applied)),
         "delete" => {
-            crate::infra::taxonomy::delete_under_lock(&state.db, &scope, tenant_id, category_id)
-                .await
-                .map(Ok)
+            crate::infra::taxonomy::delete_under_lock(
+                &state.db,
+                &scope,
+                tenant_id,
+                category_id,
+                RETIRE_SAMPLE,
+            )
+            .await
         }
         other => {
             return Err(refuse(
@@ -1033,6 +1038,56 @@ async fn execute_definition_operation(
             .await);
         }
     };
+
+    // Two guards the flip statement deliberately does not carry (its own doc:
+    // *"which pairs are legal is not decided here"*). Both were declared and
+    // judged nothing until 2026-09-03: `seeded_edge` and
+    // `definition_in_use_verdict` had no production caller, so a seeded
+    // definition was removable and a removal under live values went through.
+    if let Some(flip) = &flip {
+        if let Err(refusal) =
+            crate::domain::taxonomy::seeded_edge(record.seeded_by.as_deref(), flip.to)
+        {
+            return Err(refuse(
+                &state,
+                &scope,
+                tenant_id,
+                actor_ref,
+                Gate::Definition,
+                key,
+                refusal,
+            )
+            .await);
+        }
+        if flip.to == DefinitionState::Removed {
+            // P-D-116 rows 5 and 11: the one operand is the non-terminal head
+            // carrying a value, `draft` included — an attribute value has no
+            // publish-time re-recognition to fall back on.
+            let holders = repo::definition_value_holders(
+                &conn,
+                &scope,
+                tenant_id,
+                record.definition_id,
+                RETIRE_SAMPLE,
+            )
+            .await
+            .map_err(|e| repo_error_to_canonical(&e))?;
+            let bound = usize::try_from(RETIRE_SAMPLE).unwrap_or(usize::MAX);
+            if let Err(in_use) = crate::domain::taxonomy::definition_in_use_verdict(&holders, bound)
+            {
+                return Err(refuse(
+                    &state,
+                    &scope,
+                    tenant_id,
+                    actor_ref,
+                    Gate::Definition,
+                    key,
+                    DomainError::from(in_use),
+                )
+                .await);
+            }
+        }
+    }
 
     let state_after = if let Some(flip) = flip {
         let to = flip.to;
@@ -1298,6 +1353,8 @@ async fn patch_category_values(
     {
         Ok(seq) => seq,
         Err(mismatch) => {
+            // 409 — `design/02` §3.3's status for the door's own precondition.
+            // It rode `Validation` as a 400 until 2026-09-03.
             return Err(refuse(
                 &state,
                 &scope,
@@ -1305,14 +1362,7 @@ async fn patch_category_values(
                 actor_ref,
                 Gate::Category,
                 category_id.to_string(),
-                violation(
-                    crate::domain::taxonomy::StaleCategoryToken::CODE,
-                    "expectedSeq",
-                    format!(
-                        "the category's token is {} and the request carried {}",
-                        mismatch.found, mismatch.expected
-                    ),
-                ),
+                DomainError::from(mismatch),
             )
             .await);
         }

@@ -402,6 +402,40 @@ pub enum DomainError {
     /// to gain one, after `CONTENT_PII_BLOCKED`.
     #[error("metadata exceeds a configured cap: {0}")]
     MetadataLimit(String),
+
+    /// A category retire or delete refused because something still holds the
+    /// node. For a **retire**: a non-terminal Product filing under it or an
+    /// `active` child. For a **delete**: **any** `products_product_category`
+    /// row naming it and **any** child row, in any state (**P-D-116** row 21
+    /// — a category with history is retired, never deleted).
+    ///
+    /// `design/02` §3.3 files `CATEGORY_REFERENCED` at **409**: the tree's
+    /// current state refuses the act. Until 2026-09-03 it rode
+    /// [`Self::Validation`], which renders **400** — the wrong status for a
+    /// code the design puts at 409, and exactly the clause `dod-taxonomy-errors`
+    /// measures (*"each carrying the RFC 9457 problem-response status the
+    /// design slice assigns it"*). The domain refusal stays
+    /// `taxonomy::CategoryReferenced`; this is its wire form, reached through
+    /// `From`.
+    #[error("category still referenced: {0}")]
+    CategoryReferenced(String),
+
+    /// A definition removal refused because a **non-terminal** head still
+    /// carries one of its values (`inst-ad-deprecate-then-remove`; **P-D-116**
+    /// row 11 makes this the one operand for removal and type change, and row 5
+    /// keeps a `draft` head in it). 409 by `design/02` §3.3, for
+    /// [`Self::CategoryReferenced`]'s reason. The wire form of
+    /// `taxonomy::DefinitionInUse`.
+    #[error("definition still in use: {0}")]
+    DefinitionInUse(String),
+
+    /// The category live-value door's `If-Match` mismatch on
+    /// `products_category.mutation_seq` (**P-D-50**, `inst-av-category-branch`).
+    /// 409 by `design/02` §3.3 — the door's own precondition, deliberately
+    /// neither `STALE_REVISION` (the entity head's) nor `STALE_LIVE_OP` (the
+    /// envelope's). The wire form of `taxonomy::StaleCategoryToken`.
+    #[error("stale category token: {0}")]
+    StaleCategoryToken(String),
 }
 
 impl DomainError {
@@ -467,6 +501,9 @@ impl DomainError {
             Self::EolDisabled(_) => "EOL_DISABLED",
             Self::ContentPiiBlocked(_) => "CONTENT_PII_BLOCKED",
             Self::MetadataLimit(_) => "METADATA_LIMIT",
+            Self::CategoryReferenced(_) => "CATEGORY_REFERENCED",
+            Self::DefinitionInUse(_) => "DEFINITION_IN_USE",
+            Self::StaleCategoryToken(_) => "STALE_CATEGORY_TOKEN",
         }
     }
 }

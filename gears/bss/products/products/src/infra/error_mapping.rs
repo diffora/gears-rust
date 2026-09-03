@@ -330,6 +330,14 @@ impl From<DomainError> for CanonicalError {
             // 409: the tree's current state refuses the name, and the index
             // is what decided it (`02` §3.3).
             D::DuplicateCategoryName(detail) => aborted(detail, "DUPLICATE_CATEGORY_NAME"),
+            // 409, the same reading, for the three `02` §3.3 files there
+            // beside it: the node's holders refuse a retire or delete, the
+            // definition's carriers refuse a removal, and the live-value
+            // door's token mismatch is the row's current state refusing the
+            // write. All three rode `Validation` — a 400 — until 2026-09-03.
+            D::CategoryReferenced(detail) => aborted(detail, "CATEGORY_REFERENCED"),
+            D::DefinitionInUse(detail) => aborted(detail, "DEFINITION_IN_USE"),
+            D::StaleCategoryToken(detail) => aborted(detail, "STALE_CATEGORY_TOKEN"),
 
             // -- Architectural 422s (rendered 400, no transport override —
             // see the module doc's "The 422s here are architectural, not

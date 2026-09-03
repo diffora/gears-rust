@@ -58,6 +58,7 @@
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-taxonomy-writer-lock:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-taxonomy-walk:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-retire-delete-guard:p1
 
 use chrono::{DateTime, Utc};
 use toolkit_db::secure::AccessScope;
@@ -66,8 +67,8 @@ use uuid::Uuid;
 
 use crate::domain::error::DomainError;
 use crate::domain::taxonomy::{
-    CategoryReferenced, RetireCensus, TaxonomyLimitExceeded, TaxonomyLimits, ancestors_of,
-    cycle_verdict, depth_of, limit_verdict, retire_verdict, subtree_height,
+    DeleteCensus, RetireCensus, TaxonomyLimitExceeded, TaxonomyLimits, ancestors_of, cycle_verdict,
+    delete_verdict, depth_of, limit_verdict, retire_verdict, subtree_height,
 };
 use crate::domain::validation::ValidationReport;
 use crate::infra::storage::{RepoError, repo};
@@ -345,10 +346,10 @@ pub async fn create_under_lock(
 ///
 /// # Errors
 ///
-/// [`crate::domain::taxonomy::CategoryReferenced`] (`CATEGORY_REFERENCED`; its code
-/// travels as a `Validation` violation, so no `DomainError` variant) when a
-/// product or an active child
-/// still holds the node. [`RepoError`] on a lock, storage or scope failure.
+/// [`DomainError::CategoryReferenced`] (`CATEGORY_REFERENCED`, **409** —
+/// `design/02` §3.3's status; it rode `Validation` as a 400 until 2026-09-03)
+/// when a non-terminal product or an active child still holds the node.
+/// [`RepoError`] on a lock, storage or scope failure.
 pub async fn retire_under_lock(
     db: &DBProvider<DbError>,
     scope: &AccessScope,
@@ -365,10 +366,7 @@ pub async fn retire_under_lock(
     let census: RetireCensus =
         repo::retire_census(&conn, scope, tenant_id, category_id, sample).await?;
     if let Err(referenced) = retire_verdict(&census) {
-        // `CATEGORY_REFERENCED` has no variant either; same route.
-        let mut report = ValidationReport::new();
-        report.violate(CategoryReferenced::CODE, "categoryId", referenced.detail);
-        return Ok(Err(DomainError::Validation(report)));
+        return Ok(Err(DomainError::from(referenced)));
     }
 
     Ok(Ok(repo::retire_category(
@@ -381,27 +379,55 @@ pub async fn retire_under_lock(
     .await?))
 }
 
-/// Delete one **retired** category under the writer lock.
+/// Delete one **retired** category under the writer lock, refusing a node
+/// with history.
 ///
-/// The store's own statement carries the `retired` predicate, so a live
+/// **The delete has its own census, and it reads presence** (**P-D-116 row
+/// 21**): any `products_product_category` row naming the node, in any Product
+/// state, and any child row, in any state, refuse it — `CATEGORY_REFERENCED`,
+/// naming a sample. That is the opposite operand from the retire's, on
+/// purpose: a discarded draft's link row must not lock a category out of
+/// `retired`, and a delete must not leave that row pointing at nothing in the
+/// table the design calls the single source of truth. A category with history
+/// is retired, never deleted. Until 2026-09-03 this function ran **no** census
+/// and the parent foreign key met the act as a storage error — a 500 for what
+/// the design files as a 409.
+///
+/// The store's own statement still carries the `retired` predicate, so a live
 /// category answers `Unmatched` rather than being deleted; the lock is here
 /// because a delete racing a re-parent would remove a node a walk had just
-/// judged.
+/// judged, and the census shares it so the count a refusal reports is the
+/// same instant's as the row it protects.
 ///
 /// # Errors
 ///
-/// [`RepoError`] on a lock, storage or scope failure.
+/// [`DomainError::CategoryReferenced`] when any link row or child row still
+/// names the node. [`RepoError`] on a lock, storage or scope failure.
 pub async fn delete_under_lock(
     db: &DBProvider<DbError>,
     scope: &AccessScope,
     tenant_id: Uuid,
     category_id: Uuid,
-) -> Result<repo::CategoryWrite, RepoError> {
+    sample: u64,
+) -> Result<Result<repo::CategoryWrite, DomainError>, RepoError> {
     let _guard = take_writer_lock(db, tenant_id).await?;
     let conn = db
         .conn()
         .map_err(|e| RepoError::Db(format!("taxonomy connection: {e}")))?;
-    repo::delete_retired_category(&conn, scope, tenant_id, category_id).await
+
+    let census: DeleteCensus =
+        repo::delete_census(&conn, scope, tenant_id, category_id, sample).await?;
+    if let Err(referenced) = delete_verdict(&census) {
+        return Ok(Err(DomainError::from(referenced)));
+    }
+
+    Ok(Ok(repo::delete_retired_category(
+        &conn,
+        scope,
+        tenant_id,
+        category_id,
+    )
+    .await?))
 }
 
 #[cfg(test)]

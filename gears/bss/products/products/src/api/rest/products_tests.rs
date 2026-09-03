@@ -8054,3 +8054,88 @@ async fn the_same_door_and_detector_admit_clean_text() {
         "and the value lands"
     );
 }
+
+/// **A brand-scoped entity publishes on the global default-locale value alone**
+/// (P-D-116 row 1), and a value that names a brand outside the entity's scope
+/// is still refused -- so the exemption is exactly as narrow as the decision.
+///
+/// `design/02` §6 recorded the contradiction: under a containment-only reading
+/// *"the write the publish validator demands is the write the save validator
+/// refuses"*. `AttributeScopeRule` judges only a coordinate the payload names;
+/// the global one names nothing. This is that reading through both doors, on
+/// a Product whose `brand_scope` is restricted -- the fixture every other
+/// publish case leaves unrestricted.
+#[tokio::test]
+async fn a_brand_scoped_entity_publishes_on_the_global_value_alone() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    {
+        let conn = harness
+            .db
+            .conn()
+            .expect("checkout the pinned production connection");
+        let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+        repo::insert_product(
+            &conn,
+            &scope,
+            NewProduct {
+                brand_scope: "acme".to_owned(),
+                ..new_product(product_id, TENANT)
+            },
+        )
+        .await
+        .expect("seed a brand-scoped draft");
+    }
+    let category = seed_category(&harness, "active").await;
+    seed_definition(&harness, "displayName", "localized_string", "active", "").await;
+
+    // The global value: no locale, no region, no brand. Nothing to contain.
+    let filed = save_at(
+        &harness,
+        product_id,
+        1,
+        &json!({
+            "categories": [{ "categoryId": category, "role": "primary" }],
+            "attributes": [{ "key": "displayName", "value": "Fibre" }],
+        }),
+    )
+    .await;
+    assert_eq!(
+        filed.status(),
+        StatusCode::OK,
+        "the save the publish demands is not the save the scope rule refuses"
+    );
+
+    let published = post_head_act(
+        app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(2))],
+    )
+    .await;
+    assert_eq!(
+        published.status(),
+        StatusCode::OK,
+        "a brand-scoped entity can publish on its global value"
+    );
+
+    // The paired control: a coordinate that *names* a brand is judged, and
+    // one outside the entity's own scope is refused. Same entity, one value.
+    let refused = save_at(
+        &harness,
+        product_id,
+        3,
+        &json!({
+            "attributes": [{ "key": "displayName", "brand": "other", "value": "Fibre (other)" }],
+        }),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let (code, subject) = first_violation(refused).await;
+    assert_eq!(
+        (code.as_str(), subject.as_str()),
+        ("ATTRIBUTE_SCOPE_VIOLATION", "attributes.displayName"),
+        "the exemption is for the absent coordinate, not for the brand axis"
+    );
+}

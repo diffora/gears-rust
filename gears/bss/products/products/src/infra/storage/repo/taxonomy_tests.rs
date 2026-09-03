@@ -38,15 +38,15 @@ use super::{
     AssignmentWrite, AttributeCoordinate, CategoryWrite, DefinitionFlip, NewAttributeDefinition,
     NewCategory, attribute_definition_by_key, attribute_definitions, attribute_values_of,
     category_assignments, category_mutation_seq, category_parents, classify_assignment_write,
-    definition_value_holders, delete_attribute_value, delete_metadata_key, delete_retired_category,
-    flip_definition_state, insert_attribute_definition, insert_category, metadata_of,
-    rename_category, replace_category_assignments, retire_category, retire_census,
+    definition_value_holders, delete_attribute_value, delete_census, delete_metadata_key,
+    delete_retired_category, flip_definition_state, insert_attribute_definition, insert_category,
+    metadata_of, rename_category, replace_category_assignments, retire_category, retire_census,
     seed_well_known_definitions, upsert_attribute_value, upsert_metadata,
     write_category_display_value,
 };
 use crate::domain::taxonomy::{
     AssignmentRole, DefinitionState, REGISTRY_SEEDED_BY, WELL_KNOWN_SEEDS,
-    definition_in_use_verdict, retire_verdict,
+    definition_in_use_verdict, delete_verdict, retire_verdict,
 };
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::product;
@@ -1251,6 +1251,107 @@ async fn a_discarded_draft_holding_a_link_does_not_block_the_retire() {
         "the link row is STILL THERE -- the guard read the Product's state, \
          not the row's presence, which is the DoD's own distinction"
     );
+}
+
+/// **The same discarded draft's link row admits the retire and refuses the
+/// delete** (P-D-116 row 21) -- and clearing the row is what admits the delete.
+///
+/// The old operand passed the first case wrongly: a delete read nothing at
+/// all, so a discarded Product's link row was invisible to the guard and the
+/// engine met the act instead. That is the assertion that matters here, and
+/// the paired admission proves the census is not refusing everything.
+#[tokio::test]
+async fn a_discarded_drafts_link_row_holds_the_delete_until_it_is_gone() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    seed_product_and_categories(&provider, &scope).await;
+    let conn = provider.conn().expect("scoped connection");
+
+    replace_category_assignments(
+        &conn,
+        &scope,
+        TENANT,
+        PRODUCT,
+        &[(CATEGORY_A, AssignmentRole::Primary)],
+        at(10),
+    )
+    .await
+    .expect("file the draft under the category");
+    discard_product_head(&conn, &scope, TENANT, PRODUCT, 1, at(11))
+        .await
+        .expect("discard the draft");
+
+    let retire = retire_census(&conn, &scope, TENANT, CATEGORY_A, 3)
+        .await
+        .expect("census");
+    retire_verdict(&retire).expect("a discarded holder admits the retire");
+
+    let held = delete_census(&conn, &scope, TENANT, CATEGORY_A, 3)
+        .await
+        .expect("census");
+    assert_eq!(
+        held.linked_products.len(),
+        1,
+        "presence, not state: {held:?}"
+    );
+    assert!(held.linked_products[0].contains("discarded"), "{held:?}");
+    delete_verdict(&held).expect_err("any link row holds a delete");
+
+    replace_category_assignments(&conn, &scope, TENANT, PRODUCT, &[], at(12))
+        .await
+        .expect("clear the assignment set");
+    let cleared = delete_census(&conn, &scope, TENANT, CATEGORY_A, 3)
+        .await
+        .expect("census");
+    delete_verdict(&cleared).expect("no link row and no child: the delete is admitted");
+}
+
+/// **A retired child clears the retire census and holds the delete census**,
+/// so the design's own code -- not the parent foreign key -- is what refuses a
+/// delete that is not depth-first.
+#[tokio::test]
+async fn a_retired_child_is_invisible_to_the_retire_census_and_counted_by_the_delete_census() {
+    let provider = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    seed_product_and_categories(&provider, &scope).await;
+    let conn = provider.conn().expect("scoped connection");
+
+    let child = Uuid::from_u128(0xca_0b);
+    insert_category(
+        &conn,
+        &scope,
+        NewCategory {
+            tenant_id: TENANT,
+            category_id: child,
+            parent_id: Some(CATEGORY_A),
+            name: "fibre",
+            name_normalized: "fibre",
+        },
+        at(9),
+    )
+    .await
+    .expect("insert the child")
+    .expect("the name is free");
+    retire_category(&conn, &scope, TENANT, child, at(10))
+        .await
+        .expect("retire the child");
+
+    let retire = retire_census(&conn, &scope, TENANT, CATEGORY_A, 3)
+        .await
+        .expect("census");
+    assert!(
+        retire.active_children.is_empty(),
+        "a retired child does not hold a retire"
+    );
+    let delete = delete_census(&conn, &scope, TENANT, CATEGORY_A, 3)
+        .await
+        .expect("census");
+    assert_eq!(
+        delete.children.len(),
+        1,
+        "any child row holds a delete: {delete:?}"
+    );
+    assert!(delete.children[0].contains("retired"), "{delete:?}");
 }
 
 /// **Every non-terminal state blocks, and both terminal ones do not.**
