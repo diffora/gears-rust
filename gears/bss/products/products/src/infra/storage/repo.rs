@@ -1726,6 +1726,7 @@ mod lifecycle;
 mod read_models;
 mod recognized;
 mod reference;
+mod retention;
 mod taxonomy;
 mod versions;
 
@@ -1736,6 +1737,7 @@ pub use lifecycle::*;
 pub use read_models::*;
 pub use recognized::*;
 pub use reference::*;
+pub use retention::*;
 pub use taxonomy::*;
 pub use versions::*;
 
