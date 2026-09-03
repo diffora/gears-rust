@@ -181,7 +181,7 @@ actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - One runner drives both transition kinds off `products_scheduled_transition`; due rows are claimed atomically (state CAS `pending|deferred → running` with `claimed_at` (a `deferred` row is re-claimed on the same poll — it is the only **runner** exit that state has — the other is supersession by a confirmed cascade (`inst-cp-plan`), which is why `dod-scheduled-transition-store`'s partial UNIQUE counts `deferred` among the live states; §7 row 23, answered 2026-09-03); a `running` row past the claim **lease** is reclaimed `running → pending` with `attempt += 1` — a crash never wedges the entity's one live-intent slot, and re-execution is safe because the doors are idempotent — M4 fix), executed through the ordinary Foundation doors, and finished `applied|failed|deferred` with the reason recorded — the runner adds **no** privileged path around the pipeline - `inst-ar-claim`
 2. [ ] - `p1` - Failure posture: the runner is **its own raising door** (01's one-door rule, M2 fix) — it wraps the publish door's refusal (`STALE_REVISION`/`APPROVAL_REQUIRED`) into `SCHEDULE_STALE_APPROVAL` on the transition; `failed` is terminal for that transition (operator reschedules explicitly — a stale approval cannot be silently re-armed); `deferred` re-evaluates automatically, and it carries **two** populations, not one: the flip guard (`inst-rt-flip-guard`) and **transient dependency unavailability** — today `USAGE_TYPE_UNAVAILABLE` (03 `inst-cd-once`) — **of which only the second** is bounded by a per-transition attempt budget after which it lands `failed`; a flip-guard deferral is unbounded (C4, and §6's standing note that deferred flips holding indefinitely is correct). Anything else is terminal. Without that arm a collector blip burned a pinned approval on a lane with no operator to retry it (item 37 of the review) - `inst-ar-failure`
-3. [ ] - `p2` - Observability: gauges for due-but-unclaimed and deferred counts; the `retirement_held` alert carries the blocking producers from the slice-07 predicate - `inst-ar-observe`
+3. [ ] - `p2` - Observability: gauges for due-but-unclaimed and deferred counts; the `retirement_held` alert carries the blocking producers from the slice-07 predicate; the alert fires for a deferral older than `retirement_held_alert_hours` (72 interim) and reads `replacement_chain_broken` from the deferral's `outcome_reason` (P-D-133, 2026-09-04) - `inst-ar-observe`
 
 ### 3.2 Error taxonomy (slice-owned codes)
 
@@ -378,7 +378,7 @@ who performs the cancel stays in §6.
 pricing D-47 (joint contract), P-D-04 (containment residue).
 
 **Risks & open items**:
-- **Deferred flips can hold indefinitely** while a producer watermark stays stale — correct
+- ~~**Deferred flips can hold indefinitely**~~ **Answered (P-D-133, 2026-09-04): the deferred-intent dashboard plus `retirement_held_alert_hours`, 72 interim.** *The item's text stood as:* while a producer watermark stays stale — correct
   (C4) but operationally invisible without slice 08's surfacing + the `retirement_held` alert;
   the §15 fail-safe tripwire (slice 07) bounds the corrections debt, nothing yet bounds held
   retirements. Candidate for an operator report, not a new mechanism.
@@ -472,7 +472,7 @@ pricing D-47 (joint contract), P-D-04 (containment residue).
   cycle is constructible on this slice's own admission that a cancelled, un-deprecated SKU keeps a
   successor no admitted write can clear. 08 claims no chain walk. Owner: this slice with the
   read-model owner — which surface walks it, what bounds it, and what a closed chain returns. *(Raised by the slice-04 first lens pass.)*
-- **Where is the `replacement_chain_broken` fact stored, and who reads it?** `inst-rt-replacedby`
+- ~~**Where is the `replacement_chain_broken` fact stored, and who reads it?**~~ **Answered (P-D-133, 2026-09-04): the deferral's `outcome_reason`**, read by the dashboard and the `retirement_held` alert. *The item's text stood as:* `inst-rt-replacedby`
   calls it "a stored fact with a consumer-usable resolution rather than a silent dangling pointer";
   §4's two tables hold no such row and §3.1's observability line names only gauges and
   `retirement_held`. Owner: this slice with the observability owner — alert only (then strike

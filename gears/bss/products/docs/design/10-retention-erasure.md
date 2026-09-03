@@ -39,7 +39,7 @@ the identity-reference map** (every audit row, event, and version field carries 
 ref — erasure updates the map and touches no immutable record). Plus: retention classes to the
 statutory maximum, the **retention↔grandfathering coupling** (expiry gated on the 06
 freeze-registration liveness records, fail-closed), and the NFR #5 durability mechanics
-(storage class, periodic checksum restore verification, DR posture).
+(storage class, periodic checksum restore verification, DR posture). **Narrowed by P-D-133 (2026-09-04): storage class, backups, RPO and RTO are the platform's deployment properties; this slice owns the restore drill as the probe that a backup is restorable and digest-verified.**
 
 ### 1.2 Purpose
 
@@ -256,7 +256,7 @@ either way).
   asserted here so their retention rides ordinary classes; if a future producer's payload grew
   identity-bearing fields, the map discipline would apply — named to keep it from drifting in
   silently.
-- **Encrypted-at-rest for the map** rides the platform storage posture; if a deployment lacks
+- **Encrypted-at-rest for the map** *(P-D-133, 2026-09-04: a deployment-checklist item, the platform storage owner's.)* rides the platform storage posture; if a deployment lacks
   it, this table is the one that must not ship — a deployment gate, not a code path.
 - ~~**Which store holds the audit rows this slice's own rules require?**~~ **Answered (owner call, 2026-09-03; `features/retention-erasure.md` §7 row 4): the compliance export needs no new class** — a read writes no outbox row, P-D-21's own reason for class 2 — **and the erasure act gets a fourth class**, acts whose evidential record must carry a field the event deliberately omits. *The item's text stood as:* `inst-er-erase` is "audited
   with a reason", `inst-er-export` audits "every access individually", and 01 §4.4 holds — under
@@ -274,8 +274,8 @@ either way).
   no new record tables"; and a per-tenant watermark is neither config nor an append-only audit
   row. `DECISIONS.md` already records this as owed under P-D-21 and deliberately unapplied.
   Owner: this slice with P-D-21's owner. *(All three lenses raised it independently — slice-10 first lens pass.)*
-- **What does the drill do on a digest-version mismatch, and what is the corruption alarm
-  called?** The mismatch arm is named and not terminated — nothing says whether the row is
+- ~~**What does the drill do on a digest-version mismatch, and what is the corruption alarm
+  called?**~~ **Answered (P-D-133, 2026-09-04): report** — `unverifiable` rows warn, mismatches with code alarm `products_restore_drill_corruption`; every row scanned. *The item's text stood as:* The mismatch arm is named and not terminated — nothing says whether the row is
   skipped, re-rendered under its stored version, or reported — the alarm is unnamed where every
   other alarm in the set has a name, and the sample rule ("a sampled set") is unstated. 01 pins
   `digest_version` starting at `1` as a code constant, so no second version yet exists to test the
@@ -293,13 +293,13 @@ either way).
   instruction, no §4 shape and no §5 probe for cold resolution or its p95, and 06 — which owns the
   resolver — claims only the durability half. Owner: the design-set owner with 06.
   *(Two lenses raised it independently — slice-10 first lens pass.)*
-- **Who delivers the DR half of the durability mechanics?** §1.1 promises "storage class, periodic
+- ~~**Who delivers the DR half of the durability mechanics?**~~ **Answered (P-D-133, 2026-09-04): the platform**; the gear owns the restore drill. §1.1 narrowed. *The item's text stood as:* §1.1 promises "storage class, periodic
   checksum restore verification, DR posture" and §1.5 "checksum restore verification cadence, DR
   posture as config + probes", and the only body
   rule is the drill; storage class and RPO/RTO appear only as a constraint deferred to the NFR
   workshop. Either an instruction owes the DR config and probes, or Scope In owes a narrowing.
   Owner: the design owner, with the NFR workshop's output in hand. *(Raised by the slice-10 first lens pass.)*
-- **Which actor holds `compliance × export`?** The door returns real identities, the only
+- ~~**Which actor holds `compliance × export`?**~~ **Answered (P-D-133, 2026-09-04): a platform compliance principal**, Legal confirming which; a new grant in `05`'s catalog. *The item's text stood as:* The door returns real identities, the only
   compliance actor in §1.3 is described as reading "over pseudonymized trails", and 05's RBAC
   catalog has no such pair for this gear. Entangled with the cross-tenant DSAR item already open
   here. Owner: Architecture with Legal. *(Raised by the slice-10 first lens pass.)*

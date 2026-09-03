@@ -1569,6 +1569,58 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-133 — Ops, platform and the cross-team seams: thirteen product-owner calls
+
+- **Date**: 2026-09-04 (**the product owner's decision** on the lead's third batch, accepted as
+  recommended; `05` rows 5, 9, 18, 21, `04` rows 1, 13, `10` rows 3, 7, 10, 11, 30, `03` rows 2, 4,
+  `07` row 3, and the matching design §6 items)
+- **Sealing (`05` row 21) — answered by P-D-08** since 2026-08-26: not built per gear, a reserved
+  seam and requirements S1–S9 to the platform. The organisational half — who on the platform, when
+  — is **Architecture's**, put there by the Program Lead.
+- **Post-hoc break-glass review (`05` row 5).** The owner exists (P-D-68: the second platform
+  principal); the number did not. **`breakglass_review_sla_hours`, 24 interim**, in
+  `ProductsConfig` and `PRD` §17.1; the obligation alert fires when the SLA lapses.
+- **The elevation's two-person approval lives on the session (`05` row 9).** Not an
+  `ApprovalRecord`: the store's `required` is `N` or `min(N, 1)` and its row is tenant-scoped,
+  while the elevation needs exactly two platform principals outside the tenant. P-D-111 already
+  made `two_person_approval_ref` the authority; the session row carries the two approvers
+  explicitly — `approver_a`, `approver_b`, distinct, platform-scoped. Strand B's seam build.
+- **What an elevation changes (`05` row 18).** The session names its target tenant; the door reads
+  the session id from a header in the pre-pipeline gate, checks the window (P-D-132) and
+  substitutes `AccessScope::for_tenant(target)` **read-only** for the caller's own scope; every
+  write is refused. `ToolKit` is unchanged — `AccessScope` already builds for any tenant.
+- **Held retirements become visible (`04` row 1).** The surface is P-D-126's deferred-intent
+  dashboard; the threshold is **`retirement_held_alert_hours`, 72 interim**: the `retirement_held`
+  alert fires for a deferral older than that. Ops owns the runbook.
+- **`replacement_chain_broken` is the deferral's `outcome_reason` (`04` row 13)** — the channel
+  P-D-113 arm 5 gave `retention_orphan_blocked`; the dashboard and the same alert read it. No new
+  table, no silent pointer.
+- **Encrypted-at-rest for the identity map (`10` row 3)** is a deployment gate: a mandatory item of
+  the deployment checklist, owned by the platform storage owner. No code.
+- **The restore drill on a digest-version mismatch (`10` row 7): report, never skip, never
+  re-render.** Rows whose `digest_version` has no recomputation code count as `unverifiable` and
+  raise the warning `products_restore_drill_unverifiable`; rows with code and a mismatch raise the
+  alarm `products_restore_drill_corruption`. Every row is scanned on every drill.
+- **The DR posture is the platform's (`10` rows 10 and 30).** Storage class, backups, RPO and RTO
+  are deployment properties; the gear owns the **restore drill** as the probe that a backup is
+  restorable and digest-verified. `design/10` §1.1 and its Scope In narrow to that; no thirteenth
+  DoD.
+- **`compliance × export` (`10` row 11)** is a new grant in `05`'s catalog held by a **platform
+  compliance principal**, not a tenant role; the door requires a justification and an audit row.
+  Which principal is **Legal's** to confirm, routed with this shape.
+- **Pricing's `CatalogSku` gains `sellable`, `usageTypeRef` and `type` (`03` row 4).** `PRD` §15
+  had it right — a consumer-side addition — and both gears are this programme's: **the lead lands
+  it in pricing**, with the row struck when it does.
+- **The pricing watermark (`07` row 3)** is scheduled by the Program Lead; the registry side is
+  ready and the fixture (P-D-130's products-side crate) runs on demand.
+- **The collector in the publish path (`03` row 2)** is answered by P-D-121 row 19 and P-D-131:
+  the resolve runs before the transaction and an unavailable collector is a fail-closed 503 for
+  usage SKUs only — a latency coupling, not a lock.
+- **Propagated**: the rows and items struck or annotated; `config.rs` gains the two fields;
+  `design/05`'s elevation instruction, `design/04`'s observability instruction and `design/10`
+  §1.1 carry their sentences; `PRD` §17.1 gains two rows.
+
+
 #### P-D-132 — Governance, lifecycle, launch and priority: seven product-owner calls, and one refusal
 
 - **Date**: 2026-09-03 (**the product owner's decision** on the lead's second batch; accepted as

@@ -78,6 +78,12 @@ pub const USAGE_TYPE_RESOLVER_TIMEOUT_MS_DEFAULT: u32 = 2_000;
 /// The break-glass window's interim, in hours — **P-D-132**, `PRD` §17.1.
 pub const BREAKGLASS_WINDOW_HOURS_DEFAULT: u32 = 4;
 
+/// The post-hoc review SLA's interim, in hours — **P-D-133**.
+pub const BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT: u32 = 24;
+
+/// The held-retirement alert threshold's interim, in hours — **P-D-133**.
+pub const RETIREMENT_HELD_ALERT_HOURS_DEFAULT: u32 = 72;
+
 /// `design/07` §17.1's interim freshness threshold, in minutes.
 pub const REFERENCE_FRESHNESS_MINUTES_DEFAULT: u32 = 15;
 
@@ -344,6 +350,16 @@ pub struct ProductsConfig {
     /// `PRD` §17.1's row made configuration. Hard expiry and **no renewal**:
     /// a second window is a second session and a second two-person ceremony.
     pub breakglass_window_hours: u32,
+
+    /// How long after a break-glass session expires its post-hoc review may
+    /// take, in hours. **Interim 24 — P-D-133**; the obligation alert fires
+    /// when it lapses.
+    pub breakglass_review_sla_hours: u32,
+
+    /// How old a deferred retirement may be before `retirement_held` fires,
+    /// in hours. **Interim 72 — P-D-133**; the deferred-intent dashboard is
+    /// the surface, this is its threshold.
+    pub retirement_held_alert_hours: u32,
 }
 
 impl Default for ProductsConfig {
@@ -375,6 +391,8 @@ impl Default for ProductsConfig {
             drill_cadence_hours: DRILL_CADENCE_HOURS_DEFAULT,
             usage_type_resolver_timeout_ms: USAGE_TYPE_RESOLVER_TIMEOUT_MS_DEFAULT,
             breakglass_window_hours: BREAKGLASS_WINDOW_HOURS_DEFAULT,
+            breakglass_review_sla_hours: BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
+            retirement_held_alert_hours: RETIREMENT_HELD_ALERT_HOURS_DEFAULT,
         }
     }
 }
@@ -470,6 +488,14 @@ impl ProductsConfig {
                 self.usage_type_resolver_timeout_ms,
             ),
             ("breakglass_window_hours", self.breakglass_window_hours),
+            (
+                "breakglass_review_sla_hours",
+                self.breakglass_review_sla_hours,
+            ),
+            (
+                "retirement_held_alert_hours",
+                self.retirement_held_alert_hours,
+            ),
         ] {
             if value == 0 {
                 return Err(format!(

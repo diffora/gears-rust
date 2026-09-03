@@ -306,6 +306,20 @@ fn a_zero_cap_is_refused_at_boot() {
                 ..ProductsConfig::default()
             },
         ),
+        (
+            "breakglass_review_sla_hours",
+            ProductsConfig {
+                breakglass_review_sla_hours: 0,
+                ..ProductsConfig::default()
+            },
+        ),
+        (
+            "retirement_held_alert_hours",
+            ProductsConfig {
+                retirement_held_alert_hours: 0,
+                ..ProductsConfig::default()
+            },
+        ),
     ];
     for (name, cfg) in cases {
         let message = cfg
@@ -349,4 +363,7 @@ fn the_interim_ceilings_are_the_justified_numbers() {
     assert_eq!(cfg.usage_type_resolver_timeout_ms, 2_000);
     // P-D-132: PRD §17.1's four hours, no renewal.
     assert_eq!(cfg.breakglass_window_hours, 4);
+    // P-D-133: a day to review, three days before a held retirement alarms.
+    assert_eq!(cfg.breakglass_review_sla_hours, 24);
+    assert_eq!(cfg.retirement_held_alert_hours, 72);
 }

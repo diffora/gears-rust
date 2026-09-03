@@ -183,7 +183,7 @@ Declared by [`../features/governance.md`](../features/governance.md) §2 as `cpt
 The steps below are this slice's and are the normative ones; the FEATURE carries the
 actor, the scenarios and the boundary.
 
-1. [ ] - `p1` - Elevation opens a `BreakGlassSession`: mandatory reason, time-boxed window (configured), scope named (which tenant); itself **two-person-approved or post-hoc-reviewed** — and this "two-person" is a **fixed floor of two distinct platform principals, outside the tenant's configured `N` entirely** (P-D-13: the acting principal is a platform owner and the subject is another tenant's data, so no tenant configuration has standing over it; the post-hoc-review arm is the escape the floor needs, so the floor blocks nobody) — (both paths recorded; the post-hoc path raises the review obligation as an alert, not a silent log line); `BreakGlassElevated` emitted + a distinct alert channel; the reason passes 02's `inst-av-pii-block` before the row is written, a hit failing `CONTENT_PII_BLOCKED` (**P-D-50**; 02 `inst-av-pii-reason` enumerates this door) - `inst-bg-open`
+1. [ ] - `p1` - Elevation opens a `BreakGlassSession`: mandatory reason, time-boxed window (configured), scope named (which tenant); itself **two-person-approved or post-hoc-reviewed** — and this "two-person" is a **fixed floor of two distinct platform principals, outside the tenant's configured `N` entirely** (P-D-13: the acting principal is a platform owner and the subject is another tenant's data, so no tenant configuration has standing over it; the post-hoc-review arm is the escape the floor needs, so the floor blocks nobody) — (both paths recorded; the post-hoc path raises the review obligation as an alert, not a silent log line); `BreakGlassElevated` emitted + a distinct alert channel; the reason passes 02's `inst-av-pii-block` before the row is written, a hit failing `CONTENT_PII_BLOCKED` (**P-D-50**; 02 `inst-av-pii-reason` enumerates this door) **The two approvers live on the session row — `approver_a`, `approver_b`, distinct platform principals — and an elevated call substitutes a read-only `AccessScope::for_tenant(target)` in the pre-pipeline gate, every write refused; post-hoc review within `breakglass_review_sla_hours`, 24 interim (P-D-133, 2026-09-04).** - `inst-bg-open`
 2. [ ] - `p1` - Under elevation: cross-tenant **read and audit-export only**; every access is individually audited with the session id, reason, and correlation id; any write attempt is refused `BREAKGLASS_WRITE_FORBIDDEN` — no exception in v1 (C5) - `inst-bg-readonly`
 3. [ ] - `p1` - Expiry is hard: past the window every elevated call fails `BREAKGLASS_EXPIRED`; `BreakGlassExpired` is emitted **exactly once, by the first post-expiry act, via a CAS flip of the session's `expired_emitted` stamp in the same transaction as its refusal — the winner emits, a replay emits nothing, and a session never touched after expiry emits no event at all, its expiry being a stored fact observable as a gauge with the alerting rule on top** (**P-D-68**, on P-D-54's and P-D-59's mechanisms); **expiry gates admission, not completion** — an elevated read admitted inside the window finishes (P-D-68); standing cross-tenant access is not grantable in the catalog at all — the grant model has no such shape - `inst-bg-expiry` **No renewal (P-D-132, 2026-09-03):** a session is never extended; a second window is a second session and a second two-person ceremony; the window is `breakglass_window_hours`, 4 interim.
 
@@ -374,7 +374,7 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
 - **The studio inbox envelope** is design-introduced (deliberately merge-compatible with
   pricing's queue); pricing's queue shape should be cross-checked when slice 12 pins the SDK —
   a field-name drift here costs a UI adapter later.
-- **Post-hoc break-glass review** needs an owner and an SLA for the review obligation alert —
+- ~~**Post-hoc break-glass review**~~ **Answered (P-D-133, 2026-09-04): P-D-68's second platform principal, within `breakglass_review_sla_hours` (24 interim).** *The item's text stood as:* needs an owner and an SLA for the review obligation alert —
   operational, not structural; noted for the ops runbook.
 - Approval retention/erasure interplay (approver principals are pseudonymous refs) is slice
   10's; this slice only guarantees the refs are pseudonymous from birth.
@@ -384,7 +384,7 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
 - ~~**What does `Gate` mode require of a gated transition?**~~ **Answered (P-D-105, 2026-09-02): for a scheduled flip, that the record is `consumed` and the flipped row's own `approval_ref` names it** — subject/revision equality is dropped there and kept everywhere else; the operand is a stored column no caller can write. *The item's text stood as:* 01 `inst-fd-gate-mode-gate` is worded for
   a publish and pins "the door's expected revision", while the transition doors are this slice's and
   04's and pin nothing stated in 01. Owner: this slice with 04. *(Filed from 01 §6 by the slice-01 eighth lens pass — the pointer claimed it was registered here and it was not.)*
-- **Is a break-glass two-person approval an `ApprovalRecord`, and what holds its fixed floor?**
+- ~~**Is a break-glass two-person approval an `ApprovalRecord`, and what holds its fixed floor?**~~ **Answered (P-D-133, 2026-09-04): no — the two platform approvers live on the session row**, P-D-111's authority completed. *The item's text stood as:*
   `inst-bg-open` requires "two distinct platform principals, outside the tenant's configured `N`
   entirely", while §1.7 defines `required` only as `N` or `min(N, 1)` — no writer can produce a
   fixed 2 — §4's row is `tenant_id`-scoped, and `inst-gv-scope` would refuse a platform approver on
@@ -439,7 +439,7 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
   CatalogAdmin/FinanceReviewer floor to material changes; a non-material change gets `min(N, 1)` and
   the descriptor carries no base role set. Nothing says whether any holder of `approval × decide`
   may close one. Owner: this slice. *(Raised by the slice-05 first lens pass.)*
-- **What does an elevation change about the authorization decision?** C6 is deny-by-default over
+- ~~**What does an elevation change about the authorization decision?**~~ **Answered (P-D-133, 2026-09-04): the pre-pipeline gate substitutes a read-only `AccessScope::for_tenant(target)` from the session; writes refused.** *The item's text stood as:* C6 is deny-by-default over
   tenant-scoped IdP claims and 01 C4 puts all repository access through SecureORM tenant scoping;
   no rule anywhere says how a live `BreakGlassSession` widens either the grant check or the query
   scoping. Owner: this slice with the ToolKit/SecureORM owner — the operand a door reads, and where

@@ -1206,7 +1206,7 @@ leaves the specific ones looking open:
    plan→SKU reference set") and its cadence are pricing's to design; this slice's door and the §15
    mirror are ready — the joint fixture belongs to slice 12's seam suite.
    **Blocks**: no DoD — the registry side is complete without it.
-   **Owner**: pricing, with `12-consumer-contracts` for the fixture.
+   **Owner**: *(P-D-133, 2026-09-04: scheduled by the Program Lead; the fixture runs on demand from P-D-130's crate.)* pricing, with `12-consumer-contracts` for the fixture.
 
 4. **Watermark set size**: full-set replacement at 10K SKUs × cadence is fine as rows, but the door
    should accept a compressed set representation from day one (wire-level; no semantic change) —

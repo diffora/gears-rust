@@ -296,7 +296,7 @@ events per §1.8. All tenant-scoped, append-only where evidential.
      resource and action.
   **Until this is settled the guarded case is guarded and the fresh case is not**, which is the
   honest state and is why it is written here rather than papered over in the rule.
-- **The pricing watermark is a joint build** (P-D-03): the producer-side query ("complete live
+- **The pricing watermark is a joint build** *(P-D-133, 2026-09-04: scheduled by the Program Lead.)* (P-D-03): the producer-side query ("complete live
   plan→SKU reference set") and its cadence are pricing's to design; this slice's door and the
   §15 mirror are ready — the joint fixture belongs to slice 12's seam suite.
 - **Watermark set size**: full-set replacement at 10K SKUs × cadence is fine as rows, but the

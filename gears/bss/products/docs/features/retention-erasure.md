@@ -993,7 +993,7 @@ cited instead:
 3. **Encrypted-at-rest for the map** rides the platform storage posture; if a deployment lacks it,
    this table is the one that must not ship — a deployment gate, not a code path.
    **Blocks**: no DoD — it is a deployment gate.
-   **Owner**: the platform storage owner.
+   **Owner**: *(P-D-133, 2026-09-04: a mandatory item of the deployment checklist, the platform storage owner's.)* the platform storage owner.
 
 4. ~~**Which store holds the audit rows this slice's own rules require?**~~
    **Answered (owner call, 2026-09-03) in two parts, because the row holds two different acts.**
@@ -1032,7 +1032,7 @@ cited instead:
    **Blocks**: `cpt-cf-bss-products-dod-restore-drill`.
    **Owner**: this feature with P-D-21's owner.
 
-7. **What does the drill do on a digest-version mismatch, and what is the corruption alarm called?**
+7. ~~**What does the drill do on a digest-version mismatch, and what is the corruption alarm called?**~~ **Answered (P-D-133, 2026-09-04, the product owner): report, never skip, never re-render** — `unverifiable` rows raise `products_restore_drill_unverifiable`, a mismatch with code raises `products_restore_drill_corruption`; every row is scanned. *The item's text stood as:*
    The mismatch arm is named and not terminated — nothing says whether the row is skipped,
    re-rendered under its stored version, or reported — the alarm is unnamed where every other alarm
    in the set has a name, and the sample rule ("a sampled set") is unstated. *(Re-measured at
@@ -1041,7 +1041,7 @@ cited instead:
    every historical row against a rule it was never computed under and reports the whole table
    corrupt". What stays open is what the drill does when that code is absent.)* 01 pins `digest_version`
    starting at `1` as a code constant, so no second version yet exists to test the arm against.
-   **Blocks**: `cpt-cf-bss-products-dod-restore-drill`.
+   **Blocks**: no DoD — **resolved by P-D-133** *(was: `cpt-cf-bss-products-dod-restore-drill`.)*
    **Owner**: this feature with the NFR #5 workshop.
 
 8. **Which surfaces may resolve an identity through the map, and under what grant?** *(P-D-117 (2026-09-03): **the engineering half is answered** — only the compliance export resolves through the map; `08` renders pseudonyms and `inst-im-render` is corrected. **What remains is item 11's half**: which principals hold `compliance × export`, Architecture's with Legal.)*
@@ -1062,19 +1062,19 @@ cited instead:
    **Blocks**: `cpt-cf-bss-products-dod-restore-drill`.
    **Owner**: the design-set owner with `06-catalog-version`.
 
-10. **Who delivers the DR half of the durability mechanics?** §1.1 promises "storage class, periodic
+10. ~~**Who delivers the DR half of the durability mechanics?**~~ **Answered (P-D-133, 2026-09-04, the product owner): the platform's** — storage class, backups, RPO and RTO are deployment properties; the gear owns the restore drill as the probe. *The item's text stood as:* §1.1 promises "storage class, periodic
     checksum restore verification, DR posture" and §1.5 "checksum restore verification cadence, DR
     posture as config + probes", and the only body rule is the drill; storage class and RPO/RTO
     appear only as a constraint deferred to the NFR workshop. Either an instruction owes the DR
     config and probes, or Scope In owes a narrowing.
-    **Blocks**: `cpt-cf-bss-products-dod-restore-drill`.
+    **Blocks**: no DoD — **resolved by P-D-133** *(was: `cpt-cf-bss-products-dod-restore-drill`.)*
     **Owner**: the design owner, with the NFR workshop's output in hand.
 
-11. **Which actor holds `compliance × export`?** The door returns real identities, the only
+11. ~~**Which actor holds `compliance × export`?**~~ **Answered (P-D-133, 2026-09-04, the product owner): a new `compliance × export` grant held by a platform compliance principal**, with justification and an audit row; Legal confirms the principal. *The item's text stood as:* The door returns real identities, the only
     compliance actor in §1.3 is described as reading "over pseudonymized trails", and 05's RBAC
     catalog has no such pair for this gear. Entangled with the erasure reach this feature's §2 closes at per-tenant
     (**P-D-50**).
-    **Blocks**: `cpt-cf-bss-products-dod-compliance-export`.
+    **Blocks**: no DoD — **resolved by P-D-133** *(was: `cpt-cf-bss-products-dod-compliance-export`.)*
     **Owner**: Architecture with Legal.
 
 12. **Is `products_pii_allowlist` itself a PII store?** By construction it holds person-named *(P-D-117 (2026-09-03): **the posture half is answered** — the allow-list is a PII store by construction and takes the map's posture. **What remains is Legal's**: what an entry may contain.)*
@@ -1301,7 +1301,7 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
     **Owner**: was `05-governance` (break-glass) and `07-reference-signal` (correction overrides)
     with this feature; **discharged**.
 
-30. **Does this feature own the DR posture, and which DoD delivers it?** §1.2's divided-requirement
+30. ~~**Does this feature own the DR posture, and which DoD delivers it?**~~ **Answered (P-D-133, 2026-09-04, the product owner): no** — the DR posture is the platform's, the gear owns the drill; §1.1 and Scope In narrow, no thirteenth DoD. *The item's text stood as:* §1.2's divided-requirement
     table claims *"restore verification and the DR posture"*, §1.1 promises storage class and DR
     posture, and **no DoD names DR config or a DR probe**. Row 10 asks the question in the slice's
     terms and does not reach this document's own claim.

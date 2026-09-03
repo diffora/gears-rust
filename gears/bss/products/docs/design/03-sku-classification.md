@@ -274,12 +274,12 @@ actor, the scenarios and the boundary.
 - ~~**Recognized-set owners + add/de-list workflows**~~ **Answered (P-D-131, 2026-09-03): owners as `PRD` §15 names them; the approver predicate is the owner's reviewer role at the decide door once roles exist.** *The item's text stood as:* are PRD §15 opens (Finance for codes,
   Product + Rating for units) — the `GovernedLiveOp` machinery is ready either way; only the
   approver-role predicates per set await the owners' sign-off.
-- **Collector in the publish path**: a synchronous dependency bounds publish availability by
+- ~~**Collector in the publish path**~~ **Answered (P-D-121 row 19, P-D-131; recorded by P-D-133, 2026-09-04): the resolve runs before the transaction; unavailability is a fail-closed 503 for usage SKUs — latency, not a lock.** *The item's text stood as:*: a synchronous dependency bounds publish availability by
   collector availability for usage SKUs; acceptable at authoring rates, but slice 08/12 should
   surface resolver latency in the publish SLO breakdown.
 - ~~**UsageType deletion**~~ **Answered (P-D-131, 2026-09-03): the registry's half is the correction door's `unresolvable_target` arm; the collector's tombstone obligation is in `PRD` §15.** *The item's text stood as:* (PRD §15, P-D-05 residue): `inst-cd-stamp` gives the remediation path
   its evidence, but the negotiation with the collector is still open.
-- **`sellable`, `usage_type_ref` and `type` missing in pricing's `CatalogSku`** — this slice's three
+- **`sellable`, `usage_type_ref` and `type` missing in pricing's `CatalogSku`** *(P-D-133, 2026-09-04: accepted; the lead lands the three members in pricing.)* — this slice's three
   of the four members 12 `inst-sdk-catalogsku` names; owed consumer-side, and our SDK shape carries
   them from day one so the fix stays additive.
 - ~~**`tax_category_ref` and `gl_code_ref` may not belong to this registry at all.**~~ **Answered (P-D-131, 2026-09-03): they stay** — §2.1 forbids the descriptor, `fr-accounting-codes` requires the reference. *The item's text stood as:* 01 §4.2 marks both
