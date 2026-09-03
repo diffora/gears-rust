@@ -95,10 +95,24 @@ async fn harness() -> TestHarness {
 }
 
 fn app(harness: &TestHarness) -> Router {
+    app_with_caps(
+        harness,
+        crate::api::rest::TaxonomyCaps::from(&ProductsConfig::default()),
+    )
+}
+
+/// The same router with the ceilings tightened.
+///
+/// The configured fan-out is a thousand, so a door case proving the rule
+/// fires would have to make a thousand and one categories -- a minute of test
+/// time to assert a comparison. Tightening the **configuration** is the same
+/// rule on the same path with a fixture a reader can hold, and it is what the
+/// caps being configuration is for.
+fn app_with_caps(harness: &TestHarness, caps: crate::api::rest::TaxonomyCaps) -> Router {
     let state = Arc::new(ApiState {
         db: harness.db.clone(),
         sink: crate::infra::broker::EventSink::Interim(Arc::clone(&harness.outbox)),
-        taxonomy_caps: crate::api::rest::TaxonomyCaps::from(&ProductsConfig::default()),
+        taxonomy_caps: caps,
         idempotency_retention_hours: ProductsConfig::default().idempotency_retention_hours,
         bulk_max_rows_per_batch: ProductsConfig::default().bulk_max_rows_per_batch,
         bulk_max_concurrent_batches_per_tenant: ProductsConfig::default()
@@ -702,6 +716,118 @@ async fn a_chain_past_the_configured_depth_is_refused() {
 
     assert_eq!(over.status(), axum::http::StatusCode::BAD_REQUEST);
     assert_eq!(error_code(over).await, "TAXONOMY_LIMIT");
+}
+
+/// **A re-parent past the configured depth is refused at the leaves of the
+/// moved subtree, not only at the moved node.**
+///
+/// The case `depth_of` alone cannot see: the moved node lands inside the
+/// ceiling and its own children do not. A rule reading the landing place
+/// admits this, which is why `subtree_height` exists.
+#[tokio::test]
+async fn a_reparent_is_judged_at_the_leaves_of_what_it_drags() {
+    let h = harness().await;
+    let caps = crate::api::rest::TaxonomyCaps {
+        max_depth: 2,
+        ..crate::api::rest::TaxonomyCaps::from(&ProductsConfig::default())
+    };
+
+    // A two-level subtree, rooted at depth 0.
+    let top = create_category(app(&h), "Top", None).await;
+    let top_id: Uuid = top["category_id"]
+        .as_str()
+        .expect("id")
+        .parse()
+        .expect("uuid");
+    let mid = create_category(app(&h), "Mid", Some(top_id)).await;
+    let mid_id: Uuid = mid["category_id"]
+        .as_str()
+        .expect("id")
+        .parse()
+        .expect("uuid");
+    create_category(app(&h), "Leaf", Some(mid_id)).await;
+
+    // And a separate chain whose tail sits at depth 1.
+    let other = create_category(app(&h), "Other", None).await;
+    let other_id: Uuid = other["category_id"]
+        .as_str()
+        .expect("id")
+        .parse()
+        .expect("uuid");
+    let landing = create_category(app(&h), "Landing", Some(other_id)).await;
+    let landing_id: Uuid = landing["category_id"]
+        .as_str()
+        .expect("id")
+        .parse()
+        .expect("uuid");
+
+    // `Top` would land at depth 2 -- inside a ceiling of 2 -- while `Leaf`
+    // would land at 4.
+    let response = send(
+        app_with_caps(&h, caps),
+        "POST",
+        &format!("/bss-products/v1/categories/{top_id}/operations"),
+        &json!({ "op": "reparent", "expected_state": "active", "parent_id": landing_id }),
+    )
+    .await;
+
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(error_code(response).await, "TAXONOMY_LIMIT");
+}
+
+/// **The fan-out ceiling fires on the mutation path**, and the refusal names
+/// which limit it was.
+///
+/// Two probes in one case: the sibling set at the ceiling is admitted, one
+/// over is refused. Without the first, a rule that refused every create would
+/// pass.
+#[tokio::test]
+async fn the_fan_out_ceiling_admits_the_ceiling_and_refuses_one_over() {
+    let h = harness().await;
+    let caps = crate::api::rest::TaxonomyCaps {
+        max_children_per_node: 2,
+        ..crate::api::rest::TaxonomyCaps::from(&ProductsConfig::default())
+    };
+    let parent = create_category(app(&h), "Parent", None).await;
+    let parent_id: Uuid = parent["category_id"]
+        .as_str()
+        .expect("id")
+        .parse()
+        .expect("uuid");
+
+    for n in 0..2 {
+        let made = send(
+            app_with_caps(&h, caps),
+            "POST",
+            "/bss-products/v1/categories",
+            &json!({ "name": format!("Child {n}"), "parent_id": parent_id }),
+        )
+        .await;
+        assert_eq!(
+            made.status(),
+            axum::http::StatusCode::CREATED,
+            "the ceiling itself is admitted"
+        );
+    }
+
+    let over = send(
+        app_with_caps(&h, caps),
+        "POST",
+        "/bss-products/v1/categories",
+        &json!({ "name": "Child 3", "parent_id": parent_id }),
+    )
+    .await;
+
+    assert_eq!(over.status(), axum::http::StatusCode::BAD_REQUEST);
+    let body = body_json(over).await;
+    assert_eq!(body["context"]["violations"][0]["type"], "TAXONOMY_LIMIT");
+    assert!(
+        body["context"]["violations"][0]["description"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("max_children"),
+        "the refusal names which ceiling: {body}"
+    );
 }
 
 // ---------------------------------------------------------- definition ops

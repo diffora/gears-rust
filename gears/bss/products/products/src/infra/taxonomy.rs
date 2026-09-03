@@ -57,6 +57,7 @@
 //! [`TAXONOMY_TREE_AGGREGATE`] would be that claim, made from this module.
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-taxonomy-writer-lock:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-taxonomy-walk:p1
 
 use chrono::{DateTime, Utc};
 use toolkit_db::secure::AccessScope;
@@ -268,7 +269,20 @@ fn limits_verdict_for(
     let deepest = node.map_or(landing, |id| {
         landing.saturating_add(subtree_height(id, edges))
     });
-    let siblings = crate::domain::taxonomy::children_of(new_parent, edges);
+    // The count the mutation **would make it**, which is what
+    // `TaxonomyLimitExceeded::measured`'s own doc says the field holds — the
+    // sibling set gains this node unless it is already in it, a re-parent to
+    // the parent a node already has being a no-op that must not be refused
+    // for growing a set it does not grow. Passing the *current* count instead
+    // made the effective ceiling one higher than the configured one, and the
+    // fan-out door case is what caught it.
+    let already_there = node.is_some_and(|id| {
+        edges
+            .iter()
+            .any(|(child, parent)| *child == id && *parent == new_parent)
+    });
+    let siblings = crate::domain::taxonomy::children_of(new_parent, edges)
+        .saturating_add(u32::from(!already_there));
     limit_verdict(deepest, siblings, limits).map_err(|exceeded| {
         // `TAXONOMY_LIMIT` is one of the ten of this slice's sixteen codes
         // with no `DomainError` variant, so it reaches the wire the way the

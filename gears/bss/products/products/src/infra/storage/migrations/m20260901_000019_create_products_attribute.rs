@@ -81,6 +81,9 @@
 //! The migration is edited rather than repaired by a successor, which is this
 //! gear's rule.
 
+//! @cpt-dod:cpt-cf-bss-products-dod-attribute-definition-table:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-attribute-value-table:p1
+
 use sea_orm_migration::prelude::*;
 
 #[derive(DeriveMigrationName)]

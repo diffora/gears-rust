@@ -40,6 +40,8 @@
 //! **non-empty only** rather than rostered — a CHECK naming the two kinds
 //! would answer the row from a migration.
 
+//! @cpt-dod:cpt-cf-bss-products-dod-metadata-table:p1
+
 use sea_orm_migration::prelude::*;
 
 #[derive(DeriveMigrationName)]

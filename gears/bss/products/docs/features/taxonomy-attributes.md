@@ -553,14 +553,14 @@ clearing link rows in its own transaction is row 21's, co-owned with the schema 
 
 ### Attribute definition table
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-attribute-definition-table`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-attribute-definition-table`
 
 The system **MUST** create `products_attribute_definition` with `definition_id`, `tenant_id`,
 `key` unique per tenant, `value_type`, a `localized` flag, brand and region visibility sets,
 `state` in `{active, deprecated, removed}`, a nullable `seeded_by` marker and timestamps. The
 `removed` value **MUST** be reachable only as a state flip; no migration or door may delete a row.
 
-**The roster and its store ship; the tick waits on §7 row 13.** `repo::insert_attribute_definition`,
+**Ticked 2026-09-03: the roster and its store ship, and row 13 is answered.** **P-D-108** arm 2 put the display label where the roster has no column for it — an attribute value **on the definition**, keyed `entity_kind = 'attribute_definition'` — so the label edit has a target and the op is spendable; `api::rest::taxonomy`'s definition door is its call site, and `a_label_edit_writes_a_value_on_the_definition` reads it back. Arm 1 made removal material, and `the_definition_walks_its_three_flips` walks the machine and refuses the shortcut. The clause *"the `removed` value MUST be reachable only as a state flip"* is structural: the store offers no delete for this table at all, beside the `BEFORE DELETE` trigger that enforces it on both engines. `repo::insert_attribute_definition`,
 `attribute_definition_by_key`, `attribute_definitions` and `flip_definition_state` are built, the
 flip **pinned at the state the caller read** so a peer's move between read and write moves no row.
 The store offers no delete for this table at all, which is the DoD's own clause made structural
@@ -579,18 +579,21 @@ enum in the repository would answer that question from the storage layer.
 
 ### Attribute value table
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-attribute-value-table`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-attribute-value-table`
 
 The system **MUST** create `products_attribute_value` keyed by the owned entity's coordinates
 `(tenant_id, entity_kind, entity_id)` plus `definition_id` plus the locale coordinates
 `(locale?, region?, brand?)` — the optionality markers are `design/02` §4.1's and are load-bearing,
 being the exact subject of open items 6 and 7 — and the value, with a `UNIQUE` constraint over the
-full coordinate tuple. **That constraint does not today constrain the mandatory global coordinate**
-(open item 7): both engines treat NULLs as distinct. For Product and SKU rows the table **MUST** hold the current head state only, history
+full coordinate tuple. *(That sentence read **"does not today constrain the mandatory global coordinate — both engines
+treat NULLs as distinct"** and is false at this commit: **P-D-88** arm 2 ships the three locale
+coordinates `NOT NULL` with `""` as the stated absence, so the global coordinate is `("", "", "")`
+and collides with itself. `migrations_tests::the_coordinate_key_constrains_the_global_coordinate`
+asserts exactly that, on both engines. Corrected 2026-09-03.)* For Product and SKU rows the table **MUST** hold the current head state only, history
 living in the frozen version rows. For category rows the table **MUST** be the live state itself,
 with no freeze-copy.
 
-**The store ships; the tick waits on §7 row 20.** `repo::upsert_attribute_value`,
+**Ticked 2026-09-03: the store ships and row 20 is answered.** **P-D-108** arm 3 closed the `entity_kind` set at four — `product`, `sku`, `category`, `attribute_definition` — and `chk_products_attribute_value_entity_kind` is tightened in place from `entity_kind <> ''` to that enumeration on both engines. The category half of the clause has its call site now: `api::rest::taxonomy`'s live-value door writes category rows as the live state, with no freeze-copy. `repo::upsert_attribute_value`,
 `attribute_values_of` and `delete_attribute_value` key on the whole seven-column coordinate, and
 the write is an upsert rather than a read-then-write so two authors racing on one coordinate
 produce one row instead of a conflict the door would have to translate. The read is ordered
@@ -610,13 +613,13 @@ measures is demonstrably admitted.
 
 ### Metadata table
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-dod-metadata-table`
+- [x] `p2` - **ID**: `cpt-cf-bss-products-dod-metadata-table`
 
 The system **MUST** create `products_metadata` keyed `(tenant_id, entity_kind, entity_id, key)`
 with a value and timestamps, on both engines. The table **MUST** sit outside frozen version
 content (P-D-06).
 
-**The store ships; the tick waits on §7 row 20, which this table shares with the value plane.**
+**Ticked 2026-09-03: the store ships, row 20 is answered and the door that spends it is built.** The caps stay the door's, which is where `dod-metadata-door` enforces them from configuration (**P-D-107** arm 1) — this table holds none, and that division is the DoD's own.
 `repo::upsert_metadata`, `metadata_of` and `delete_metadata_key`. The upsert leaves `created_at`
 alone on an overwrite, so the column keeps meaning *when this key first appeared* rather than
 quietly becoming a second copy of `updated_at`. No cap is enforced here: `METADATA_LIMIT` is the
@@ -758,7 +761,7 @@ when the lock is removed.
 
 ### Taxonomy walk and its limits
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-taxonomy-walk`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-taxonomy-walk`
 
 The system **MUST** execute `TaxonomyWalk` inside the write transaction, refusing `TAXONOMY_CYCLE`
 when the new ancestor chain contains the node itself and `TAXONOMY_LIMIT`, naming the limit, when
@@ -766,7 +769,7 @@ a create or re-parent exceeds the configured maximum depth or maximum children p
 **MUST** be validated on the mutation path only, so a later limit decrease never invalidates
 existing structure.
 
-**The cycle half ships; the limit half is judged and unreachable, on §7 row 2.** `TaxonomyWalk` runs
+**Ticked 2026-09-03: both halves reach a runtime.** Row 2 is answered (**P-D-107** arm 1) and the doors are the walk's callers, so the limit half is no longer judged-and-unreachable. `TaxonomyWalk` runs
 under the per-tenant writer lock in `infra::taxonomy::reparent_under_lock` — lock, then read, then
 judge, then write, an order whose whole point is that reading first would judge a chain a peer can
 still change. `domain::taxonomy::depth_of` and `children_of` measure off the **same** edge list the
