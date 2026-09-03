@@ -321,6 +321,50 @@ async fn an_empty_export_is_audited_all_the_same() {
     );
 }
 
+/// **§6's positive-control line for `ERASURE_UNKNOWN_ACTOR`: both arms, one
+/// case.**
+///
+/// *"A principal with no `actor_ref` in this tenant is refused **naming the
+/// principal**; the same request for a principal that has one succeeds."* The
+/// two arms are asserted together because a refusal-only case passes on a door
+/// that refuses everything, and a success-only case passes on one that refuses
+/// nothing.
+///
+/// **"Naming the principal" is asserted on the wire, not on the internal
+/// detail.** It is the clause row 24 turned on: the refusal may name the
+/// principal precisely *because* the request carries a `principal_ref` and not
+/// a real-world identity, so a refusal that echoes it writes a pseudonym into
+/// its own audit row and nothing more. If the door ever took an identity
+/// string, this assertion is the one that would have to be deleted -- which is
+/// what makes it worth making.
+#[tokio::test]
+async fn the_unknown_actor_refusal_names_the_principal_and_its_control_succeeds() {
+    let harness = harness().await;
+    seed_principal(&harness, ALICE).await;
+
+    let refused = erase(app_for(&harness, TENANT), "principal:nobody", "dsar-x").await;
+    assert_eq!(refused.status(), axum::http::StatusCode::BAD_REQUEST);
+    let body = body_json(refused).await;
+    assert_eq!(
+        body["context"]["violations"][0]["type"],
+        "ERASURE_UNKNOWN_ACTOR"
+    );
+    let described = body["context"]["violations"][0]["description"]
+        .as_str()
+        .expect("the violation carries a description");
+    assert!(
+        described.contains("principal:nobody"),
+        "the refusal names the principal it could not resolve: {described}"
+    );
+
+    let succeeded = erase(app_for(&harness, TENANT), ALICE, "dsar-2026-114").await;
+    assert_eq!(
+        succeeded.status(),
+        axum::http::StatusCode::OK,
+        "the control: the same request for a principal that has a ref succeeds"
+    );
+}
+
 /// **C1, the flagship: the erasure moves nothing inside a frozen record.**
 ///
 /// §6 asks for both halves in one probe, *"either half alone passes on a build
