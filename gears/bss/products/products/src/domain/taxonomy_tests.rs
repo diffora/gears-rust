@@ -9,13 +9,13 @@ use super::{
     CategoryNotRetiredRule, CategoryReferenced, CategoryResolvableRule, CategoryRoleConflictRule,
     CategoryState, ContentPiiBlocked, ContentSaveSubject, DefaultLocaleRequired, DefinitionInUse,
     DefinitionState, FrozenAttributeValue, GLOBAL_COORDINATE, LocaleRequest, LocalizedValue,
-    NO_PII_POLICY_REASON, NoPiiPolicyDetector, PiiDetector, PiiVerdict, PublishedContentSubject,
-    REGISTRY_SEEDED_BY, ResolutionStep, ResolvedDefinition, RetireCensus, StaleCategoryToken,
-    TAXONOMY_ERROR_CODES, TaxonomyLimitExceeded, TaxonomyLimits, TaxonomyMutation, ValueCandidate,
-    ValueShape, WELL_KNOWN_SEEDS, ancestors_of, assignment_collection, children_of,
-    content_pii_block, cycle_verdict, definition_edge, definition_in_use_verdict, depth_of,
-    is_global, is_removable, limit_verdict, resolve_localized, retire_verdict, seeded_edge,
-    value_collection,
+    MetadataLimitExceeded, MetadataLimits, NO_PII_POLICY_REASON, NoPiiPolicyDetector, PiiDetector,
+    PiiVerdict, PublishedContentSubject, REGISTRY_SEEDED_BY, ResolutionStep, ResolvedDefinition,
+    RetireCensus, StaleCategoryToken, TAXONOMY_ERROR_CODES, TaxonomyLimitExceeded, TaxonomyLimits,
+    TaxonomyMutation, ValueCandidate, ValueShape, WELL_KNOWN_SEEDS, ancestors_of,
+    assignment_collection, children_of, content_pii_block, cycle_verdict, definition_edge,
+    definition_in_use_verdict, depth_of, is_global, is_removable, limit_verdict,
+    metadata_limit_verdict, resolve_localized, retire_verdict, seeded_edge, value_collection,
 };
 use crate::domain::validation::ValidationPipeline;
 
@@ -1593,4 +1593,138 @@ fn the_block_is_the_single_raiser_of_its_code() {
         1,
         "one construction, and it is the hook's"
     );
+}
+
+// ── `METADATA_LIMIT`'s judge (P-D-107 arm 1) ─────────────────────────────────
+//
+// The door does not exist — P-D-106 gave it a route and nothing has built it —
+// so these drive `metadata_limit_verdict` directly. That is the whole rule:
+// the caps are enforced at the door, and this is what the door will ask.
+
+fn caps() -> MetadataLimits {
+    MetadataLimits {
+        keys: 3,
+        key_bytes: 8,
+        value_bytes: 10,
+    }
+}
+
+fn entry(key: &str, value: &str) -> (String, String) {
+    (key.to_owned(), value.to_owned())
+}
+
+/// **A map standing at the cap can be reduced** — the rule's half of what
+/// `dod-metadata-door` requires a test to prove.
+///
+/// **And only the rule's half.** The operand is chosen by the caller, not
+/// here: this function is handed `resulting_keys` and can only be right about
+/// the number it is given. The failure mode the `DoD` is guarding against —
+/// counting the payload, or the map *before* the merge, and so refusing the one
+/// act that fixes an over-full map — is a **door** defect, and no test of this
+/// function can catch it. What is pinned here is the contract the door must
+/// satisfy: a resulting count at or under the ceiling is admitted, including
+/// when the act writes nothing at all.
+///
+/// The `DoD`'s own required test therefore stays owed until the door exists,
+/// and saying so is better than a green that reads as if it covered both.
+#[test]
+fn a_map_at_the_cap_can_be_reduced() {
+    // Three keys stored, cap three, and the payload deletes two: the write
+    // sets nothing and leaves one.
+    metadata_limit_verdict(1, &[], caps()).expect("a reduction from the cap is admitted");
+    // And the same map merely re-written at the cap is still admitted.
+    metadata_limit_verdict(3, &[entry("a", "v")], caps())
+        .expect("a write that leaves the map exactly at the cap is admitted");
+}
+
+/// One key over the ceiling is refused, and the refusal names the map.
+#[test]
+fn a_resulting_map_over_the_key_cap_is_refused() {
+    let refused = metadata_limit_verdict(4, &[entry("d", "v")], caps())
+        .expect_err("four keys against a cap of three");
+    assert_eq!(refused.limit, "max_keys");
+    assert_eq!(refused.allowed, 3);
+    assert_eq!(refused.measured, 4);
+    assert_eq!(
+        refused.key, None,
+        "`max_keys` is about the map, so no key is named"
+    );
+    assert_eq!(MetadataLimitExceeded::CODE, "METADATA_LIMIT");
+}
+
+/// The two byte ceilings are separate operands, and each names its key.
+///
+/// Asserted apart because one arm covering both passes if the implementation
+/// checks the same length twice.
+#[test]
+fn each_byte_ceiling_is_its_own_refusal() {
+    let long_key = metadata_limit_verdict(1, &[entry("nine-char", "v")], caps())
+        .expect_err("a nine-byte key against a cap of eight");
+    assert_eq!(long_key.limit, "max_key_bytes");
+    assert_eq!(long_key.measured, 9);
+    assert_eq!(long_key.key.as_deref(), Some("nine-char"));
+
+    let long_value = metadata_limit_verdict(1, &[entry("k", "eleven-char")], caps())
+        .expect_err("an eleven-byte value against a cap of ten");
+    assert_eq!(long_value.limit, "max_value_bytes");
+    assert_eq!(long_value.measured, 11);
+    assert_eq!(
+        long_value.key.as_deref(),
+        Some("k"),
+        "a value refusal names the key that carries it, or an operator cannot find it"
+    );
+}
+
+/// **The count is checked before either length, and lengths in sorted order.**
+///
+/// Not a precedence claim — `design/02` states none among this feature's
+/// sixteen codes and its own §7 records that. It is reproducibility: two
+/// writes of the same payload must refuse identically, and a `HashMap`'s
+/// iteration order would make the named key arbitrary.
+#[test]
+fn the_order_of_checks_is_reproducible() {
+    // Over on all three at once: the count wins.
+    let both = metadata_limit_verdict(9, &[entry("nine-char", "eleven-char")], caps())
+        .expect_err("over on every ceiling");
+    assert_eq!(both.limit, "max_keys", "the count is judged first");
+
+    // Two keys both over the key ceiling: the sorted-first one is named.
+    let sorted = metadata_limit_verdict(
+        1,
+        &[entry("zebra-key", "v"), entry("alpha-key", "v")],
+        caps(),
+    )
+    .expect_err("two over-long keys");
+    assert_eq!(
+        sorted.key.as_deref(),
+        Some("alpha-key"),
+        "sorted order, so the refusal does not depend on the payload's order"
+    );
+
+    // And the reverse payload order refuses identically.
+    let reversed = metadata_limit_verdict(
+        1,
+        &[entry("alpha-key", "v"), entry("zebra-key", "v")],
+        caps(),
+    )
+    .expect_err("the same two, the other way round");
+    assert_eq!(sorted, reversed, "the same payload refuses the same way");
+}
+
+/// Bytes, not characters — a multi-byte value can exceed a ceiling its
+/// character count is under.
+#[test]
+fn the_ceilings_count_bytes() {
+    // Four characters, twelve bytes. Escaped because `clippy::non_ascii_literal`
+    // is denied here: these are four euro signs, three bytes each.
+    let value = "\u{20ac}\u{20ac}\u{20ac}\u{20ac}";
+    assert_eq!(value.chars().count(), 4);
+    assert_eq!(
+        value.len(),
+        12,
+        "the premise: four characters, twelve bytes"
+    );
+    let refused = metadata_limit_verdict(1, &[entry("k", value)], caps())
+        .expect_err("twelve bytes against a cap of ten");
+    assert_eq!(refused.measured, 12, "the ceiling is a byte length");
 }
