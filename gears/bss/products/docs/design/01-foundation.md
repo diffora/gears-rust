@@ -1262,7 +1262,8 @@ restated here, so nothing in this document can drift from them: `design/04-lifec
 P-D-35…42 rounds left, and one each by the P-D-46 and P-D-47 rounds. They are new rather than
 residual, and four of the ten are consequences of those rounds:
 
-1. **Which slice declares `PARENT_NOT_PUBLISHED`?** P-D-36's unit (the raising rule) puts it with
+1. ~~**Which slice declares `PARENT_NOT_PUBLISHED`?**~~ **Answered (owner, 2026-09-03), and this document had already answered itself**: §3.3 above reads *"`PARENT_NOT_PUBLISHED` (registered by slice 04 on the `→ published` target state … this code has two raising arms, and both are 04's)"*, and **P-D-97** landed the second arm as the publish door's phase continuation. **Declared here** — it is in this document's Problem-responses ladder — **and raised by 04**. `features/lifecycle.md` §7 row 18 is struck on this.
+   *(Original text kept for the record:)* **Which slice declares `PARENT_NOT_PUBLISHED`?** P-D-36's unit (the raising rule) puts it with
    04, whose validator raises it; P-D-35's unit (the response map) keeps it here.
    `RETIREMENT_PENDING` sits in the identical position and resolves the other way, the only stated
    distinguisher being "unless the register moves it". 12 `inst-cc-errors` lints the pair and gets

@@ -1569,6 +1569,64 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-116 — `02`'s five remaining lead calls: the global value's containment, the removal operand, one rule for two changes, the display events' aggregate, and what a category delete admits
+
+- **Date**: 2026-09-03 (owner call, answering `features/taxonomy-attributes.md` §7 **rows 1, 5, 11,
+  15 and 21** — the five of its seven remaining lead calls that are decidable from the design and
+  the code; 17 is a measurement and 22 a cross-slice seam, both routed)
+- **Row 1 — the global default-locale value is exempt from the containment check.** The row states
+  the contradiction exactly: under the gear's containment reading an unrestricted coordinate under
+  a restricted entity is *not* contained, so *"the write `dod-default-locale` demands is the write
+  `dod-value-validators` refuses, and a brand-scoped entity can never publish."* Containment is a
+  rule about **scoped** values — a value claiming a region or brand must sit inside its entity's.
+  **P-D-102** made the global coordinate `("", "", "")`, absent on all three axes: it claims
+  nothing and is therefore contained by everything, and it is the fallback of last resort that
+  step 3 of the resolver and the publish-time requirement both exist to reach. `AttributeScope`
+  treats the global coordinate as contained by construction. *Against*: a value that escapes a
+  check is a special case a reader must know; accepted because the alternative is a rule that
+  makes every brand-scoped entity unpublishable, which no requirement asks for.
+- **Row 5 — `02` keeps the wider operand, and the divergence with `03` is deliberate.** The row
+  supplies the reason itself: attribute values *"have no unit-style publish-time re-recognition to
+  fall back on."* A recognized-set member removed under a draft SKU is re-judged when that SKU
+  publishes (P-D-89's ground for excluding `draft`); a definition removed under a draft that
+  carries its value has **no later check** — the value would be stranded on a definition in
+  `removed`. So a `draft` head carrying a value **is** a blocking reference here. Registered on both
+  sides as a stated divergence, not a joint decision.
+- **Row 11 — one operand for both changes, and the crate already has one rule.**
+  `definition_in_use_verdict(holders, bound)` is the single judge; its doc names the two phrasings
+  — *"undefined 'live values' for a type change"* and *"the defined non-terminal head for
+  removal"* — and applies one operand to both. The design's *"live values"* **means** the
+  non-terminal head carrying a value, which is the removal operand. Struck with the citation; the
+  design's type-change sentence gains the two words that say so.
+- **Row 15 — `CategoryDisplayUpdated` and `AttributeDefinitionUpdated` order on their own entity's
+  id.** Not the taxonomy-tree key: display writes do not take the writer lock, so that key would
+  claim a serialization the door does not provide — the row's own argument. Not the metadata key:
+  they are not metadata. A display write serializes on **its own row** (`products_category.mutation_seq`
+  is the category door's precondition), so the entity id is the aggregate that matches what
+  actually orders the writes. Slice 12 pins the envelope; the aggregate choice is the emitter's.
+- **Row 21 — a category may be physically deleted only when no `products_product_category` row
+  names it, in any Product state.** The row is right that *"unreferenced"* read the Product's
+  lifecycle state and never the link row, leaving retired and discarded Products' rows in the
+  table the design calls the single source of truth. That claim becomes physically true: the
+  retire-delete guard's operand is **any link row**, and a category with history is **retired**,
+  never deleted — the same reasoning by which **P-D-47** made a definition's removal a state and
+  never a `DELETE`. *Against*: a category used once can never be deleted; accepted, because
+  `retired` is exactly the state for a category that must stay resolvable and must admit nothing
+  new.
+- **Routed, not decided.** **Row 17** — *"four refusals have no code"* — is a measurement, and the
+  lead's first attempt at it read the *next* struct's code literal through a two-line grep window;
+  it goes to strand A with the instruction to measure each of the four against the code.
+  **Row 22** — a category rename or delete against versions frozen on category **ids** — is a
+  `06`/`08` seam: the sibling case for definitions was answered by making frozen content a
+  self-contained copy (**P-D-47**), and the recommendation routed with it is the same — the
+  frozen assignment set carries name copies, not bare ids — but that changes `06`'s digest and is
+  not this slice's to decide alone.
+- **Propagated**: rows 1, 5, 11, 15 and 21 struck; row 22 re-owned to `06`/`08`; row 17 stays
+  live as a measurement for A. `design/02`'s type-change sentence and the retire-delete guard's
+  operand follow. **The code changes — `AttributeScope`'s global exemption, the guard's operand,
+  the two events' aggregate — are strand A's build.**
+
+
 #### P-D-113 — The activation runner: hosted in the lifecycle loop, under a stable system principal, with a budget that can actually be spent
 
 - **Date**: 2026-09-03 (owner call, answering `features/lifecycle.md` §7 **rows 4, 8, 28, 29 and
