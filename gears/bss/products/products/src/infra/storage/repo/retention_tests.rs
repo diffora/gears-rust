@@ -19,7 +19,6 @@
 //! through their `SQLite` twins.
 #![allow(clippy::expect_used)]
 
-use chrono::{TimeZone, Utc};
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use sea_orm_migration::MigratorTrait;
@@ -34,6 +33,7 @@ use super::{
 use crate::infra::storage::entity::{audit_log, identity_ref};
 use crate::infra::storage::migrations::Migrator;
 use crate::infra::storage::repo::{AuditCommon, resolve_actor_ref};
+use crate::test_support::at;
 
 const TENANT: Uuid = Uuid::from_u128(0x7e_11);
 const OTHER_TENANT: Uuid = Uuid::from_u128(0x7e_22);
@@ -57,10 +57,6 @@ async fn harness() -> DBProvider<DbError> {
         .await
         .expect("run migrator");
     DBProvider::<DbError>::new(db)
-}
-
-fn at(hour: u32) -> chrono::DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 9, 3, hour, 0, 0).unwrap()
 }
 
 /// Put an identity payload on a live row.

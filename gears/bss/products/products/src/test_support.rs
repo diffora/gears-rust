@@ -77,6 +77,33 @@ impl AuthZResolverClient for FlatInResolver {
     }
 }
 
+/// A fixture instant: `2026-09-02` at `hour`, UTC.
+///
+/// # Four copies, three epochs, and `at(9)` meant three different things
+///
+/// **P-D-110** arm 1 hoisted this. `repo_tests` had it on `2026-08-29`,
+/// `repo/governance_tests` and `repo/taxonomy_tests` on `2026-09-02`, and
+/// `repo/retention_tests` arrived on `2026-09-03` — a new module bringing a
+/// new epoch, which is how the drift was accelerating. Two other modules had
+/// no `at()` at all.
+///
+/// **The count was never the trigger.** `harness()` is copied five times too
+/// and stays copied: its forms differ only in an `.expect()` message, so
+/// unifying it would edit five files to agree on a panic string. This one
+/// differed in **meaning**, and that is what a hoist is for.
+///
+/// `.single()` rather than `.unwrap()`, which is the form one of the four
+/// already used and the only one that says what it is asserting: that the
+/// civil time names exactly one instant.
+#[must_use]
+pub fn at(hour: u32) -> chrono::DateTime<chrono::Utc> {
+    use chrono::TimeZone as _;
+    chrono::Utc
+        .with_ymd_and_hms(2026, 9, 2, hour, 0, 0)
+        .single()
+        .expect("a real instant")
+}
+
 /// A [`PolicyEnforcer`] over [`FlatInResolver`], scoped to one tenant.
 pub fn flat_in_enforcer(allowed: Uuid) -> PolicyEnforcer {
     PolicyEnforcer::new(Arc::new(FlatInResolver { allowed }))

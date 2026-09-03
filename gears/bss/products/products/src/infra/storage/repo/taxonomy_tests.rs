@@ -27,7 +27,6 @@
 //! seeded row nothing reads proves only that an `INSERT` parsed.
 #![allow(clippy::expect_used)]
 
-use chrono::{TimeZone, Utc};
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait as _, Condition, ConnectionTrait as _, EntityTrait as _};
 use sea_orm_migration::MigratorTrait as _;
@@ -56,6 +55,7 @@ use crate::infra::storage::repo::{
     NewEntityVersion, NewProduct, NewSku, VersionedEntityKind, discard_product_head,
     insert_entity_version, insert_product, insert_sku, publish_product_head,
 };
+use crate::test_support::at;
 
 const TENANT: Uuid = Uuid::from_u128(0x7e_11);
 const OTHER_TENANT: Uuid = Uuid::from_u128(0x7e_22);
@@ -83,10 +83,6 @@ async fn harness() -> DBProvider<DbError> {
         .await
         .expect("run migrator");
     DBProvider::<DbError>::new(db)
-}
-
-fn at(hour: u32) -> chrono::DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 9, 2, hour, 0, 0).unwrap()
 }
 
 fn new_product(product_id: Uuid, tenant_id: Uuid) -> NewProduct {

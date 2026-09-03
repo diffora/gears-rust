@@ -43,7 +43,7 @@
 //! leaves unmeasured is the door, not the rule.
 #![allow(clippy::expect_used)]
 
-use chrono::{TimeZone, Utc};
+use chrono::Utc;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, DbBackend, DbErr, EntityTrait, RuntimeErr};
 use sea_orm_migration::MigratorTrait;
@@ -68,6 +68,7 @@ use crate::infra::storage::entity::{
     audit_log, entity_version, idempotency, identity_ref, product, sku,
 };
 use crate::infra::storage::migrations::Migrator;
+use crate::test_support::at;
 
 const TENANT: Uuid = Uuid::from_u128(0x7e_11);
 const OTHER_TENANT: Uuid = Uuid::from_u128(0x7e_22);
@@ -100,10 +101,6 @@ async fn harness() -> DBProvider<DbError> {
         .await
         .expect("run migrator");
     DBProvider::<DbError>::new(db)
-}
-
-fn at(hour: u32) -> chrono::DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 29, hour, 0, 0).unwrap()
 }
 
 fn new_product(product_id: Uuid, tenant_id: Uuid) -> NewProduct {

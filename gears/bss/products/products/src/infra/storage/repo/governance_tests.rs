@@ -56,7 +56,6 @@
 
 #![allow(clippy::expect_used)]
 
-use chrono::{TimeZone as _, Utc};
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait as _, Condition, EntityTrait as _};
 use sea_orm_migration::MigratorTrait as _;
@@ -82,6 +81,7 @@ use crate::domain::materiality::{
 };
 use crate::infra::storage::entity::{approval, breakglass_session};
 use crate::infra::storage::migrations::Migrator;
+use crate::test_support::at;
 
 const TENANT: Uuid = Uuid::from_u128(0x9e_11);
 const BRAND: Uuid = Uuid::from_u128(0x9e_b1);
@@ -113,12 +113,6 @@ async fn harness() -> DBProvider<DbError> {
         .await
         .expect("run migrator");
     DBProvider::<DbError>::new(db)
-}
-
-fn at(hour: u32) -> chrono::DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 9, 2, hour, 0, 0)
-        .single()
-        .expect("a real instant")
 }
 
 fn subject() -> GateSubject {
