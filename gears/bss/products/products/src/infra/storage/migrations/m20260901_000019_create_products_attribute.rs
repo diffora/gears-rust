@@ -65,13 +65,21 @@
 //! target."* This roster carries none either — adding one would author the
 //! answer to the row that asks for it.
 //!
-//! `dod-attribute-value-table` waits on **row 20**: *"What `entity_kind`
-//! values does each table admit, and does a definition scope to entity
-//! kinds?"* So `entity_kind` is pinned **non-empty only**, the same P-D-74
-//! shape `value_type` takes above — a CHECK enumerating the set would BE the
-//! row's answer, written by a migration instead of by its owner. The
-//! `category` kind the row itself measures is therefore admitted, and so is
-//! anything else, until the roster is decided.
+//! `dod-attribute-value-table`'s row 20 is **answered, and the guard is now a
+//! set.** **P-D-108** arm 3 closed the roster at four — `product`, `sku`,
+//! `category` and `attribute_definition`, the last being where a definition's
+//! display label lives under arm 2 — so
+//! `chk_products_attribute_value_entity_kind` is tightened here **in place**,
+//! from `entity_kind <> ''` to that enumeration, on both engines.
+//!
+//! The old form was an **open complement**: it named the one value it refused
+//! and admitted every other string, which is the shape that cannot be
+//! probed. A closed set can be, and the `CorruptRow` case it makes testable —
+//! a row whose `entity_kind` the reader cannot parse — is exactly what the
+//! open guard denied, because no such row could be written to read back.
+//!
+//! The migration is edited rather than repaired by a successor, which is this
+//! gear's rule.
 
 use sea_orm_migration::prelude::*;
 
@@ -116,7 +124,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
             value         text        NOT NULL,
             updated_at    timestamptz NOT NULL,
             CONSTRAINT products_attribute_value_pkey PRIMARY KEY (tenant_id, entity_kind, entity_id, definition_id, locale, region, brand),
-            CONSTRAINT chk_products_attribute_value_entity_kind CHECK (entity_kind <> ''),
+            CONSTRAINT chk_products_attribute_value_entity_kind CHECK (entity_kind IN ('product', 'sku', 'category', 'attribute_definition')),
             CONSTRAINT fk_products_attribute_value_definition FOREIGN KEY (tenant_id, definition_id)
                 REFERENCES bss.products_attribute_definition (tenant_id, definition_id)
         )",
@@ -165,7 +173,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             value         text NOT NULL,
             updated_at    text NOT NULL,
             PRIMARY KEY (tenant_id, entity_kind, entity_id, definition_id, locale, region, brand),
-            CONSTRAINT chk_products_attribute_value_entity_kind CHECK (entity_kind <> ''),
+            CONSTRAINT chk_products_attribute_value_entity_kind CHECK (entity_kind IN ('product', 'sku', 'category', 'attribute_definition')),
             CONSTRAINT fk_products_attribute_value_definition FOREIGN KEY (tenant_id, definition_id)
                 REFERENCES products_attribute_definition (tenant_id, definition_id)
         )",

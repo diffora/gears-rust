@@ -64,7 +64,11 @@ use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
-use crate::domain::taxonomy::{ancestors_of, cycle_verdict};
+use crate::domain::taxonomy::{
+    CategoryReferenced, RetireCensus, TaxonomyLimitExceeded, TaxonomyLimits, ancestors_of,
+    cycle_verdict, depth_of, limit_verdict, retire_verdict, subtree_height,
+};
+use crate::domain::validation::ValidationReport;
 use crate::infra::storage::{RepoError, repo};
 
 /// The gear namespace every lock this module takes is scoped to.
@@ -177,6 +181,7 @@ pub async fn reparent_under_lock(
     tenant_id: Uuid,
     category_id: Uuid,
     new_parent: Option<Uuid>,
+    limits: TaxonomyLimits,
     now: DateTime<Utc>,
 ) -> Result<Result<repo::CategoryWrite, DomainError>, RepoError> {
     let _guard = take_writer_lock(db, tenant_id).await?;
@@ -197,6 +202,13 @@ pub async fn reparent_under_lock(
         if let Err(refusal) = cycle_verdict(category_id, &ancestors_of(parent, &parent_of)) {
             return Ok(Err(refusal));
         }
+    }
+
+    // Judged on the same read, after the cycle rule: a chain that closes on
+    // itself has no meaningful depth, so the cycle verdict must answer first.
+    let edges = repo::category_parents(&conn, scope, tenant_id).await?;
+    if let Err(refusal) = limits_verdict_for(Some(category_id), new_parent, &edges, limits) {
+        return Ok(Err(refusal));
     }
 
     repo::reparent_category(&conn, scope, tenant_id, category_id, new_parent, now).await
@@ -227,6 +239,151 @@ pub async fn rename_under_lock(
         .map_err(|e| RepoError::Db(format!("taxonomy connection: {e}")))?;
     let normalized = crate::domain::name::normalize(name);
     repo::rename_category(&conn, scope, tenant_id, category_id, name, &normalized, now).await
+}
+
+/// Judge a node's landing place against the configured ceilings.
+///
+/// Both rules read the **one** edge list the lock already bought, so the
+/// cycle verdict, the depth rule and the fan-out rule cannot disagree about
+/// the tree they judged.
+///
+/// `node` is `None` for a create, where nothing is being dragged, and
+/// `Some(id)` for a re-parent, where the moved subtree's own height counts:
+/// a limit of eight is broken at the **leaves** of a three-level subtree
+/// landing at depth six, and a rule reading the moved node alone admits it.
+fn limits_verdict_for(
+    node: Option<Uuid>,
+    new_parent: Option<Uuid>,
+    edges: &[(Uuid, Option<Uuid>)],
+    limits: TaxonomyLimits,
+) -> Result<(), DomainError> {
+    let parent_of = |id: Uuid| {
+        edges
+            .iter()
+            .find(|(child, _)| *child == id)
+            .and_then(|(_, p)| *p)
+    };
+    // A root sits at depth 0, so a child of `parent` sits one below it.
+    let landing = new_parent.map_or(0, |p| depth_of(p, &parent_of).saturating_add(1));
+    let deepest = node.map_or(landing, |id| {
+        landing.saturating_add(subtree_height(id, edges))
+    });
+    let siblings = crate::domain::taxonomy::children_of(new_parent, edges);
+    limit_verdict(deepest, siblings, limits).map_err(|exceeded| {
+        // `TAXONOMY_LIMIT` is one of the ten of this slice's sixteen codes
+        // with no `DomainError` variant, so it reaches the wire the way the
+        // pipeline's own codes do: as a violation carrying its code, which
+        // `error_mapping`'s `Validation` arm renders as the wire `type`.
+        let mut report = ValidationReport::new();
+        report.violate(
+            TaxonomyLimitExceeded::CODE,
+            "parentId",
+            format!(
+                "{} is {}, and the configured ceiling is {}",
+                exceeded.limit, exceeded.measured, exceeded.allowed
+            ),
+        );
+        DomainError::Validation(report)
+    })
+}
+
+/// Create one category under the writer lock, refusing a limit breach.
+///
+/// The same order as [`reparent_under_lock`] and for the same reason: lock,
+/// read, judge, write. A create cannot close a cycle — it has no descendants
+/// yet — so the walk is the depth and fan-out rules only.
+///
+/// # Errors
+///
+/// [`DomainError::TaxonomyLimit`] when the landing place breaks a configured
+/// ceiling, [`DomainError::DuplicateCategoryName`] on a name already taken in
+/// the sibling set. [`RepoError`] on a lock, storage or scope failure.
+pub async fn create_under_lock(
+    db: &DBProvider<DbError>,
+    scope: &AccessScope,
+    new: repo::NewCategory<'_>,
+    limits: TaxonomyLimits,
+    now: DateTime<Utc>,
+) -> Result<Result<(), DomainError>, RepoError> {
+    let tenant_id = new.tenant_id;
+    let _guard = take_writer_lock(db, tenant_id).await?;
+    let conn = db
+        .conn()
+        .map_err(|e| RepoError::Db(format!("taxonomy connection: {e}")))?;
+
+    let edges = repo::category_parents(&conn, scope, tenant_id).await?;
+    if let Err(refusal) = limits_verdict_for(None, new.parent_id, &edges, limits) {
+        return Ok(Err(refusal));
+    }
+
+    repo::insert_category(&conn, scope, new, now).await
+}
+
+/// Retire one category under the writer lock, refusing a referenced node.
+///
+/// The census and the retire share the lock so the count a refusal reports
+/// and the state a success writes are the same instant's: a product assigned
+/// between an unlocked census and its retire would leave a retired category
+/// holding a live reference, which is exactly what the guard exists to
+/// prevent.
+///
+/// # Errors
+///
+/// [`DomainError::CategoryReferenced`] when a product or an active child
+/// still holds the node. [`RepoError`] on a lock, storage or scope failure.
+pub async fn retire_under_lock(
+    db: &DBProvider<DbError>,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    category_id: Uuid,
+    sample: u64,
+    now: DateTime<Utc>,
+) -> Result<Result<repo::CategoryWrite, DomainError>, RepoError> {
+    let _guard = take_writer_lock(db, tenant_id).await?;
+    let conn = db
+        .conn()
+        .map_err(|e| RepoError::Db(format!("taxonomy connection: {e}")))?;
+
+    let census: RetireCensus =
+        repo::retire_census(&conn, scope, tenant_id, category_id, sample).await?;
+    if let Err(referenced) = retire_verdict(&census) {
+        // `CATEGORY_REFERENCED` has no variant either; same route.
+        let mut report = ValidationReport::new();
+        report.violate(CategoryReferenced::CODE, "categoryId", referenced.detail);
+        return Ok(Err(DomainError::Validation(report)));
+    }
+
+    Ok(Ok(repo::retire_category(
+        &conn,
+        scope,
+        tenant_id,
+        category_id,
+        now,
+    )
+    .await?))
+}
+
+/// Delete one **retired** category under the writer lock.
+///
+/// The store's own statement carries the `retired` predicate, so a live
+/// category answers `Unmatched` rather than being deleted; the lock is here
+/// because a delete racing a re-parent would remove a node a walk had just
+/// judged.
+///
+/// # Errors
+///
+/// [`RepoError`] on a lock, storage or scope failure.
+pub async fn delete_under_lock(
+    db: &DBProvider<DbError>,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    category_id: Uuid,
+) -> Result<repo::CategoryWrite, RepoError> {
+    let _guard = take_writer_lock(db, tenant_id).await?;
+    let conn = db
+        .conn()
+        .map_err(|e| RepoError::Db(format!("taxonomy connection: {e}")))?;
+    repo::delete_retired_category(&conn, scope, tenant_id, category_id).await
 }
 
 #[cfg(test)]

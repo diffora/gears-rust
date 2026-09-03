@@ -1545,17 +1545,30 @@ pub async fn definition_value_holders(
 ///
 /// [`RepoError`] on a storage or scope failure. A lost token is
 /// `Ok(Err(StaleCategoryToken))`, not an error: the act was judged and
-/// refused, which is a domain answer.
-pub async fn write_category_display_value(
+/// Take the category's act token, or refuse the caller's precondition.
+///
+/// A **compare-and-set**, not a read then a write: the `UPDATE` carries
+/// `mutation_seq = expected_seq` in its own `WHERE`, so two patches quoting
+/// one token cannot both be admitted. A door that read the token, judged it
+/// and then wrote would leave exactly the window `STALE_CATEGORY_TOKEN`
+/// exists to close.
+///
+/// One bump per **act** and never per row write (**P-D-50**): a patch
+/// carrying six coordinates moves the token by one, which is what makes the
+/// token quotable by a caller that wrote six values and read one number back.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure. A `Ok(Err(..))` is the
+/// caller's precondition failing, which is a refusal and not an error.
+pub async fn bump_category_mutation_seq(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
     category_id: Uuid,
     expected_seq: i64,
-    value: (Uuid, &str),
     now: DateTime<Utc>,
 ) -> Result<Result<i64, StaleCategoryToken>, RepoError> {
-    let (definition_id, text) = value;
     let taken = category::Entity::update_many()
         .secure()
         .scope_with(scope)
@@ -1576,7 +1589,7 @@ pub async fn write_category_display_value(
 
     if taken.rows_affected == 0 {
         // Read the row back to report what the token actually stands at. A
-        // vanished row answers the same refusal with the sentinel below: the
+        // vanished row answers the same refusal with the sentinel: the
         // caller's precondition did not hold either way, and a 404 is the
         // door's to prefer once it re-reads.
         let found = category_mutation_seq(runner, scope, tenant_id, category_id)
@@ -1587,6 +1600,31 @@ pub async fn write_category_display_value(
             found,
         }));
     }
+    Ok(Ok(expected_seq.saturating_add(1)))
+}
+
+/// refused, which is a domain answer.
+pub async fn write_category_display_value(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    category_id: Uuid,
+    expected_seq: i64,
+    value: (Uuid, &str),
+    now: DateTime<Utc>,
+) -> Result<Result<i64, StaleCategoryToken>, RepoError> {
+    let (definition_id, text) = value;
+    // One CAS, shared with the live-value door: two copies of a
+    // compare-and-set are two chances for one of them to decay into a read
+    // then a write, which is the window `STALE_CATEGORY_TOKEN` exists to
+    // close.
+    let bumped =
+        match bump_category_mutation_seq(runner, scope, tenant_id, category_id, expected_seq, now)
+            .await?
+        {
+            Ok(seq) => seq,
+            Err(stale) => return Ok(Err(stale)),
+        };
 
     upsert_attribute_value(
         runner,
@@ -1605,7 +1643,7 @@ pub async fn write_category_display_value(
     )
     .await?;
 
-    Ok(Ok(expected_seq + 1))
+    Ok(Ok(bumped))
 }
 
 /// The `entity_kind` a category's own values carry.

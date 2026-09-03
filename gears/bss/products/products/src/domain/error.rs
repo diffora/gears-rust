@@ -384,6 +384,24 @@ pub enum DomainError {
     /// their door's route is undeclared (§7 row 16).
     #[error("content blocked by the PII policy: {0}")]
     ContentPiiBlocked(String),
+
+    /// A metadata write exceeded one of the three configured caps — key
+    /// count, key byte length or value byte length (`inst-md-write`).
+    ///
+    /// **422 architectural, 400 on the wire**, transcribed from `design/02`
+    /// §3.3's own `Problem responses` block and not re-derived from a class
+    /// rule.
+    ///
+    /// It needs a variant of its own where the seven content rules do not,
+    /// and the difference is where it is raised: those ride
+    /// `DomainError::Validation`, whose mapping arm renders **each violation's
+    /// own code**, while this cap is enforced **at the metadata door, outside
+    /// any pipeline** — the store's own doc says so, *"the caps
+    /// `METADATA_LIMIT` names are the door's, read from configuration"* — so
+    /// there is no report for it to ride. Second of slice `02`'s sixteen codes
+    /// to gain one, after `CONTENT_PII_BLOCKED`.
+    #[error("metadata exceeds a configured cap: {0}")]
+    MetadataLimit(String),
 }
 
 impl DomainError {
@@ -448,6 +466,7 @@ impl DomainError {
             Self::CascadeConfirmationRequired(_) => "CASCADE_CONFIRMATION_REQUIRED",
             Self::EolDisabled(_) => "EOL_DISABLED",
             Self::ContentPiiBlocked(_) => "CONTENT_PII_BLOCKED",
+            Self::MetadataLimit(_) => "METADATA_LIMIT",
         }
     }
 }

@@ -274,6 +274,33 @@ gts_instance! {
         display_name: "Change the plan-tier taxonomy".to_owned(),
     }
 }
+// -- taxonomy & attributes -- `02`'s three grants, arriving with their doors
+// (P-D-106: `authz_tests`' census forbids declaring a grant whose door does
+// not ship, so these land in the same commit as the four routes).
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.category_write.v1"),
+        resource_type: labels::CATEGORY.to_owned(),
+        action: actions::WRITE.to_owned(),
+        display_name: "Change the category taxonomy or a category's values".to_owned(),
+    }
+}
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.attribute_definition_write.v1"),
+        resource_type: labels::ATTRIBUTE_DEFINITION.to_owned(),
+        action: actions::WRITE.to_owned(),
+        display_name: "Change an attribute definition".to_owned(),
+    }
+}
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.metadata_write.v1"),
+        resource_type: labels::METADATA.to_owned(),
+        action: actions::WRITE.to_owned(),
+        display_name: "Change an entity's metadata map".to_owned(),
+    }
+}
 gts_instance! {
     AuthzPermissionV1 {
         id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.audit_read.v1"),
@@ -328,6 +355,9 @@ mod tests {
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.pii_allowlist_write.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.recognized_set_write.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.plan_tier_write.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.category_write.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.attribute_definition_write.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.metadata_write.v1"),
     ];
 
     fn products_permission_instances() -> Vec<&'static InventoryInstance> {

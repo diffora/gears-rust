@@ -368,6 +368,7 @@ impl From<DomainError> for CanonicalError {
             // this gear cannot raise is the dead `match` arm this module's
             // own paragraph on `PARENT_NOT_PUBLISHED` refuses.
             D::ContentPiiBlocked(detail) => precondition("content", &detail, "CONTENT_PII_BLOCKED"),
+            D::MetadataLimit(detail) => precondition("metadata", &detail, "METADATA_LIMIT"),
 
             // -- Unavailable (503) -- fail closed, retry later. See the
             // module doc for why this carries neither resource marker.

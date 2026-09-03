@@ -137,6 +137,12 @@ pub(crate) struct ProductsRuntime {
     /// the same database, outbox and bounds a door does.
     pub sdk_state: Arc<crate::api::rest::ApiState>,
 
+    /// The taxonomy and metadata ceilings the `02` doors enforce, resolved
+    /// once at `init` from `ProductsConfig` (**P-D-107** arm 1), exactly as
+    /// `watermark_skew_tolerance` is. `register_rest` has no `cfg` in scope,
+    /// so the runtime is where the doors reach them.
+    pub taxonomy_caps: crate::api::rest::TaxonomyCaps,
+
     /// The pseudonymous ref the gear's own background acts attribute to.
     /// Server-minted per boot: the batch worker is not a person, and an
     /// audit row that named one would be a lie.
@@ -488,6 +494,7 @@ impl Gear for BssProductsGear {
         let sdk_state = Arc::new(crate::api::rest::ApiState {
             db: db_provider.clone(),
             sink: sink.clone(),
+            taxonomy_caps: crate::api::rest::TaxonomyCaps::from(&cfg),
             idempotency_retention_hours,
             bulk_max_rows_per_batch: cfg.bulk_max_rows_per_batch,
             bulk_max_concurrent_batches_per_tenant: cfg.bulk_max_concurrent_batches_per_tenant,
@@ -506,6 +513,7 @@ impl Gear for BssProductsGear {
                     state: Arc::new(crate::api::rest::ApiState {
                         db: db_provider.clone(),
                         sink: sink.clone(),
+                        taxonomy_caps: crate::api::rest::TaxonomyCaps::from(&cfg),
                         idempotency_retention_hours,
                         bulk_max_rows_per_batch: cfg.bulk_max_rows_per_batch,
                         bulk_max_concurrent_batches_per_tenant: cfg
@@ -524,6 +532,7 @@ impl Gear for BssProductsGear {
             bulk_max_concurrent_batches_per_tenant: cfg.bulk_max_concurrent_batches_per_tenant,
             watermark_skew_tolerance: cfg.watermark_skew_tolerance(),
             sdk_state: Arc::clone(&sdk_state),
+            taxonomy_caps: crate::api::rest::TaxonomyCaps::from(&cfg),
             system_actor_ref: uuid::Uuid::new_v4(),
             pipeline,
             db: db_provider,
@@ -570,6 +579,7 @@ impl RestApiCapability for BssProductsGear {
         let api_state = Arc::new(crate::api::rest::ApiState {
             db: rt.db.clone(),
             sink: rt.sink.clone(),
+            taxonomy_caps: rt.taxonomy_caps,
             idempotency_retention_hours: rt.idempotency_retention_hours,
             bulk_max_rows_per_batch: rt.bulk_max_rows_per_batch,
             bulk_max_concurrent_batches_per_tenant: rt.bulk_max_concurrent_batches_per_tenant,
@@ -597,6 +607,10 @@ impl RestApiCapability for BssProductsGear {
                 openapi,
             ))
             .merge(crate::api::rest::recognized_sets::router(
+                Arc::clone(&api_state),
+                openapi,
+            ))
+            .merge(crate::api::rest::taxonomy::router(
                 Arc::clone(&api_state),
                 openapi,
             ))

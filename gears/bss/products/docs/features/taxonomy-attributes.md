@@ -1111,7 +1111,7 @@ shape `TaxonomyLimits` takes. `config.rs` is not this strand's; the DoD ticks wh
 
 ### Category live value door
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-category-live-value-door`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-category-live-value-door`
 
 The system **MUST** provide a category live-value door taking `If-Match` on
 `products_category.mutation_seq` and refusing a mismatch with `STALE_CATEGORY_TOKEN`. The counter
@@ -1140,6 +1140,21 @@ undeclared (§7 row 16); wire doors are the lead's; `CategoryDisplayUpdated` has
 enqueue -- that is `dod-taxonomy-events`' patch; and the non-material classification with effective
 count `min(N, 1)` lives in the governance host, which this feature does not own.
 `STALE_CATEGORY_TOKEN` also has no `DomainError` variant yet, which is `dod-taxonomy-errors`'.
+
+**Built 2026-09-03, clause by clause with the call site named for each** (P-D-109's discipline).
+
+| clause | where it lands | what proves it |
+|---|---|---|
+| `PATCH …/categories/{categoryId}/attribute-values` on `category × write` | `api::rest::taxonomy`'s router; a category's values are the category's content, so they spend its own pair and not a resource of their own | every case below goes through the router |
+| `If-Match` on `products_category.mutation_seq`, a mismatch raising `STALE_CATEGORY_TOKEN` | `repo::bump_category_mutation_seq`, a **compare-and-set** — the `UPDATE` carries the expected token in its own `WHERE` | `a_stale_category_token_is_refused_with_this_slices_own_code`, and the code is this slice's, neither 01's `STALE_REVISION` nor the envelope's `STALE_LIVE_OP` |
+| one bump per **act**, not per row write (P-D-50) | one CAS per request, whatever the coordinate count | `three_coordinates_in_one_patch_move_the_token_by_one` |
+| the **four** value rules, and not the three assignment rules (P-D-107 arm 2) | `domain::taxonomy::category_value_pipeline`, a fifth caller of the one registration list | `a_value_against_a_deprecated_definition_is_refused` — the defect that arm names, a category value admitted against a definition the removal guard counts as live |
+| `inst-av-category-branch`'s global default-locale value at a definition's **first** write | the door's own check, the one rule here the entity save door does not run | `the_first_write_of_a_definition_needs_its_global_coordinate`, with its positive control: a later narrower write on its own is admitted |
+| a `null` value removes that coordinate | `repo::delete_attribute_value` | `a_null_value_removes_one_coordinate` |
+
+**One defect the build found in itself**: the first shape took the token **before** the first-write
+rule ran, so a refusal consumed it — and the caller's corrected patch came back stale for a token its
+own rejected request had moved. Every judgement now runs ahead of the CAS.
 
 **Implements**: `cpt-cf-bss-products-flow-attribute-values`
 
@@ -1195,7 +1210,7 @@ against a real policy.
 
 ### Metadata door
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-dod-metadata-door`
+- [x] `p2` - **ID**: `cpt-cf-bss-products-dod-metadata-door`
 
 The system **MUST** implement `PATCH /bss-products/v1/{products|skus}/{id}/metadata` as a per-key
 merge under the `metadata × write` grant, leaving absent keys untouched and removing a key whose
@@ -1203,32 +1218,37 @@ value is `null`. Configured caps on key count, key byte length and value byte le
 enforced at the door with `METADATA_LIMIT`. A write to a terminal entity **MUST** be refused
 `ENTITY_TERMINAL`. A test **MUST** prove a map standing at the cap can be reduced.
 
-**BLOCKED — the door cannot be authorized, and the two files that would authorize it are not this
-strand's.** The store surface ships (`repo::upsert_metadata`, `metadata_of`,
-`delete_metadata_key`), and the route is buildable now that the door files are granted. The grant
-pair is not. `metadata × write` is declared **nowhere in the code**, and standing it up needs both:
+**Built 2026-09-03, and the block that stood here is discharged.** It read *"the door cannot be
+authorized, and the two files that would authorize it are not this strand's"* — **P-D-106** granted a
+scoped, one-time hold over exactly those two files, on the census's own rule that a grant arrives
+with its door, and the pair landed in the same commit as the route: `labels::METADATA`,
+`resource_types::METADATA`, the entry in `labels::ALL`, and `…products.metadata_write.v1`.
+`catalog_resource_types_match_authz_labels_all` asserts the two sides equal, so the half-landing that
+paragraph feared cannot pass. The contradiction it recorded — that `permissions.rs`' own module doc
+said the `metadata` row belongs to the slice building the door, while the ownership table forbade the
+file — was **real, and it is the reading P-D-106 acted on.**
 
-- `src/authz.rs` — a `resource_types::METADATA`, a `labels::METADATA`, and that label added to
-  `labels::ALL`;
-- `src/gts/permissions.rs` — the matching `AuthzPermissionV1` instance
-  (`…products.metadata_write.v1`, `resource_type: labels::METADATA`, `action: actions::WRITE`).
+The two rows behind it are answered too: **P-D-107 arm 1** gave the caps their numbers, so the
+*"configured caps … MUST be enforced"* clause has something to enforce and the required *"a map
+standing at the cap can be reduced"* test has a cap to stand at; **arm 3** accepted row 14's
+same-key lost update as recorded rather than closed, no `DoD` asking for optimistic concurrency here.
 
-**Both, together.** `permissions.rs`'s own `catalog_resource_types_match_authz_labels_all` asserts
-**equality** between the declared instances and `labels::ALL`, so a label without a permission fails
-the gate and a permission without a label fails it the other way.
+**Clause by clause, with the call site named for each** (P-D-109's discipline):
 
-**And the contradiction worth an owner's glance**: `permissions.rs` is on this strand's forbidden
-list, while that file's own module doc says the `metadata` row is *"deliberately absent: they belong
-to the slices that build those doors"* — which is this one. The grant that opened the door files was
-made on the reading that they were the only obstacle; they are not. No grant was invented and no
-existing pair was borrowed: authorizing a new door against `product × write` would be an
-authorization decision taken by a strand, which is the one class of thing worth stopping for.
+| clause | where it lands | what proves it |
+|---|---|---|
+| `PATCH /bss-products/v1/{products\|skus}/{id}/metadata` on `metadata × write` | `api::rest::taxonomy`'s `register_metadata_door`, twice — one helper rather than two copied blocks, the two routes being one door | every case below goes through the router |
+| a per-key merge: absent untouched, `null` removes | `merge_metadata` | `the_metadata_merge_sets_leaves_and_removes_per_key`, all three arms in one case, because a door that replaced the whole map passes the set arm alone |
+| the three configured caps, **at the door**, with `METADATA_LIMIT` | `cap_refusal`, reading `ApiState`'s resolved values and never a literal | `the_byte_ceilings_refuse_and_say_which`, which also asserts the refusal names **which** ceiling |
+| a terminal entity is `ENTITY_TERMINAL` | `head_state` plus `repo::TERMINAL_HEAD_STATES`, read rather than copied | `a_terminal_entity_refuses_a_metadata_write` |
+| **a map at the cap can be reduced** — the test this `DoD` names in as many words | the caps judge the map the merge **would leave**, not the request | `a_map_at_the_key_cap_can_still_be_reduced`: fills to the configured cap, is refused one over, then removes a key |
 
-**Two §7 rows stand behind it in any case.** Row 2 leaves `METADATA_LIMIT` with **no number** — the
-key count and the byte lengths have no value anywhere — so the DoD's *"configured caps … MUST be
-enforced"* has nothing to enforce, and the required *"a map standing at the cap can be reduced"*
-test has no cap to stand at. Row 14 records that two concurrent metadata writes both pass their
-precondition, since metadata rides the entity's `If-Match` and by P-D-06 bumps no version.
+**One defect the build found in itself**: the first shape read the head's state, filtered it for
+terminality and treated `None` as *"nothing to refuse"*, so a write to an entity of another tenant —
+or to no entity — would have landed a metadata row keyed on an id nothing owns. Absence and
+terminality are answered apart now, a 404 and a 409, and
+`a_metadata_write_to_no_entity_is_not_found` holds it there.
+
 
 **Implements**: `cpt-cf-bss-products-flow-metadata`
 

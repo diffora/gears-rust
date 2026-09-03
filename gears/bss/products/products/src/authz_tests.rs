@@ -46,6 +46,9 @@ fn labels_all_carries_every_declared_label_in_order() {
             labels::PII_ALLOWLIST,
             labels::RECOGNIZED_SET,
             labels::PLAN_TIER,
+            labels::CATEGORY,
+            labels::ATTRIBUTE_DEFINITION,
+            labels::METADATA,
         ]
     );
 }
@@ -384,6 +387,12 @@ fn the_catalog_carries_the_built_slices_rows_and_withholds_the_rest() {
         // census's own maintenance rule.
         labels::RECOGNIZED_SET,
         labels::PLAN_TIER,
+        // 02's three, arrived with the P-D-106 doors -- rotated off the
+        // withheld list below in the same commit as the four routes, which is
+        // this census's own maintenance rule and what P-D-90's pair did.
+        labels::CATEGORY,
+        labels::ATTRIBUTE_DEFINITION,
+        labels::METADATA,
     ];
     for label in declared {
         assert!(
@@ -402,9 +411,6 @@ fn the_catalog_carries_the_built_slices_rows_and_withholds_the_rest() {
     // not oversights: §3.2 assigns them, and a grant declared here with no
     // owning door is a grant nobody can review.
     for owed in [
-        "cf.bss.products.category.v1~",             // 02
-        "cf.bss.products.attribute_definition.v1~", // 02
-        "cf.bss.products.metadata.v1~",             // 02
         "cf.bss.products.scheduled_transition.v1~", // 04
         "cf.bss.products.freeze_participant.v1~",   // 06, with its governed-set door
     ] {

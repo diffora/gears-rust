@@ -37,6 +37,7 @@ mod pg_support;
 use std::sync::Arc;
 
 use bss_products::domain::name;
+use bss_products::domain::taxonomy::TaxonomyLimits;
 use bss_products::infra::storage::{RepoError, repo};
 use bss_products::infra::taxonomy;
 use chrono::{TimeZone as _, Utc};
@@ -48,6 +49,19 @@ use uuid::Uuid;
 const TENANT: Uuid = Uuid::from_u128(0x7e42_0000_0000_0000_0000_0000_0000_0000);
 const A: Uuid = Uuid::from_u128(0xaa11);
 const B: Uuid = Uuid::from_u128(0xbb22);
+
+/// No configured ceilings, so a race case measures the lock and the cycle
+/// rule alone.
+///
+/// The limits are P-D-107 arm 1's and belong to the door; these cases are
+/// about what the **lock** admits when two writers interleave, and a ceiling
+/// firing here would refuse a re-parent for a reason the case is not testing.
+fn no_limits() -> TaxonomyLimits {
+    TaxonomyLimits {
+        max_depth: None,
+        max_children: None,
+    }
+}
 
 fn scope() -> AccessScope {
     AccessScope::for_tenant(TENANT)
@@ -105,13 +119,15 @@ async fn the_lock_is_what_refuses_the_second_reparent() {
     let first = {
         let db = Arc::new(DBProvider::<DbError>::new(pg.db().await));
         tokio::spawn(async move {
-            taxonomy::reparent_under_lock(&db, &scope(), TENANT, A, Some(B), at(10)).await
+            taxonomy::reparent_under_lock(&db, &scope(), TENANT, A, Some(B), no_limits(), at(10))
+                .await
         })
     };
     let second = {
         let db = Arc::new(DBProvider::<DbError>::new(pg.db().await));
         tokio::spawn(async move {
-            taxonomy::reparent_under_lock(&db, &scope(), TENANT, B, Some(A), at(10)).await
+            taxonomy::reparent_under_lock(&db, &scope(), TENANT, B, Some(A), no_limits(), at(10))
+                .await
         })
     };
 
@@ -279,7 +295,16 @@ async fn a_reparent_into_a_taken_name_is_refused_and_a_free_one_lands() {
     let first = {
         let db = Arc::new(DBProvider::<DbError>::new(pg.db().await));
         tokio::spawn(async move {
-            taxonomy::reparent_under_lock(&db, &scope(), TENANT, child_of_b, Some(A), at(11)).await
+            taxonomy::reparent_under_lock(
+                &db,
+                &scope(),
+                TENANT,
+                child_of_b,
+                Some(A),
+                no_limits(),
+                at(11),
+            )
+            .await
         })
     };
     let second = {
@@ -314,10 +339,11 @@ async fn a_reparent_into_a_taken_name_is_refused_and_a_free_one_lands() {
     // The positive control: the same node moves to a root position, where no
     // sibling carries the name.
     let db = Arc::new(DBProvider::<DbError>::new(pg.db().await));
-    let write = taxonomy::reparent_under_lock(&db, &scope(), TENANT, child_of_b, None, at(12))
-        .await
-        .expect("no storage failure")
-        .expect("a free sibling set admits the move");
+    let write =
+        taxonomy::reparent_under_lock(&db, &scope(), TENANT, child_of_b, None, no_limits(), at(12))
+            .await
+            .expect("no storage failure")
+            .expect("a free sibling set admits the move");
     assert_eq!(write, repo::CategoryWrite::Applied);
     assert_eq!(parent_of(&pg, child_of_b).await, None);
 }
