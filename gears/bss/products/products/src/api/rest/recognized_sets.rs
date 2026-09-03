@@ -77,7 +77,15 @@
 //! that double, not before.
 //!
 //! @cpt-cf-bss-products-dod-recognized-set-mechanics
-//! @cpt-dod:cpt-cf-bss-products-dod-unit-delist:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-unit-delist
+//!
+//! **Bare on purpose — the tick was withdrawn by the lead on 2026-09-03.** `features/sku-classification.md` §7 row 21: the `DoD` requires a removal be **refused** while
+//! a non-terminal published head declares the unit, and the doors read the holder population
+//! and the member on **separate transactions at default isolation** — write-skew-open on
+//! Postgres, so a publish declaring the unit and a `deprecated → removed` flip can both
+//! commit, leaving a published head declaring a removed member. The invariant the clause
+//! states does not hold, which is a clause defeated and not a pointer (P-D-109).
+//! A `:p1` marker is itself a done-claim, so it returns when the clause does.
 //! @cpt-cf-bss-products-dod-unit-immutable
 
 use std::sync::Arc;
