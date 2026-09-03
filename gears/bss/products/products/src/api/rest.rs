@@ -162,6 +162,7 @@ pub mod preconditions;
 pub mod products;
 pub mod recognized_sets;
 pub mod reference;
+pub mod retention;
 pub mod skus;
 
 /// The gear's reserved service prefix.

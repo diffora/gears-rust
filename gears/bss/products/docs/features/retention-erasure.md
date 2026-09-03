@@ -185,11 +185,12 @@ file: `m20260829_000004`'s owed retention arm and `m20260829_000007`'s owed `DEL
   against the rule it was actually computed under; without it, version-history corruption is
   invisible to every checksum."* `inst-rd-drill` says the drill compares like with like. **Neither
   side has to be persuaded of the other's obligation.**
-- **The DELETE this feature's GC spends is already specified.** `06-catalog-version`'s
-  `cpt-cf-bss-products-dod-referential-delete-predicate` obliges replacing
-  `m20260829_000007`'s unconditional refusal with **P-D-40**'s referential predicate. That predicate
-  is what `inst-rt-order` calls *"physically enforced, not merely ordered"*. **06 specifies the
-  guard; this feature owns the deleter.**
+- **The DELETE this feature's GC spends is already built.** *(Re-measured 2026-09-03; at
+  `80eee534a` it was specified and unbuilt, which is what §7 row 17 recorded before its close.)*
+  `06-catalog-version`'s `cpt-cf-bss-products-dod-referential-delete-predicate` is **ticked**, and
+  `m20260829_000007`'s unconditional refusal has been replaced in place by **P-D-40**'s referential
+  predicate on both engines. That predicate is what `inst-rt-order` calls *"physically enforced, not
+  merely ordered"*. **06 specified the guard and shipped it; this feature owns the deleter.**
 
 ## 2. Actor Flows (CDSL)
 
@@ -455,7 +456,7 @@ doc already states this; the DoD is that every stamping door honours it.
 
 ### The erasure door
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-erasure-door`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-erasure-door`
 
 The system **MUST** serve `POST /bss-products/v1/erasure-requests` on `erasure × execute`, resolve
 the named principal to its **at most one** live `actor_ref` **in the requesting tenant** — the
@@ -475,6 +476,28 @@ An unknown principal **MUST** be refused `ERASURE_UNKNOWN_ACTOR`, **naming the p
 
 **Erasure completes within one tenant** (**P-D-50**), and this DoD **MUST NOT** mint a platform-plane
 grant to widen it.
+
+**Built, clause by clause, with the call site named for each** (P-D-109's discipline; ticked
+2026-09-03).
+
+| clause | where it lands | what proves it |
+|---|---|---|
+| the route on `erasure × execute` | `api::rest::retention`'s router, `Gate::Erasure` | the door answers `200` and a denial is audited as `PERMISSION_DENIED` |
+| resolve to **at most one** live ref **in this tenant** | `repo::tombstone_principal`, which carries its own resolve | `an_erasure_stops_at_the_tenant_boundary`: the same principal in a second tenant is untouched (P-D-50) |
+| tombstone in **one transaction** | the door's `transaction_with_retry`, the audit inside it | `an_erasure_retires_the_ref_and_records_it` |
+| destroy the payload, stamp the tombstone, leave `principal_ref` | `tombstone_principal`'s `UPDATE` | `an_erasure_destroys_a_seeded_payload_and_stamps_the_tombstone` — the payload is **seeded first**, because no production writer ever sets it and the case would otherwise be vacuous |
+| audit with the reason under the **eraser's own** ref | `repo::write_evidential_act_audit` | `the_evidential_row_carries_the_erasers_ref_and_the_reason` |
+| **MUST NOT** touch any immutable record (C1) | nothing outside the map and the audit log is written | `an_erasure_leaves_a_frozen_record_byte_identical` — §6's flagship, both halves in one probe |
+| `ERASURE_UNKNOWN_ACTOR`, naming the principal | the miss returns `None`, which the door refuses | `an_unknown_principal_is_refused_and_nothing_is_minted`, whose second half is the one that matters: the shared actor context would have **minted** the unknown principal a ref |
+
+**The door does not resolve the subject through the shared actor context**, and that is the DoD's own
+constraint honoured rather than restated: `resolve_creator_actor_ref` mints on a miss, so an unknown
+principal would gain a fresh live row and the door would report a successful erasure of a principal
+it had just invented. The caller's ref comes from that context; the subject's does not.
+
+**The reason rides the content-PII write block**, as `inst-av-pii-reason`'s enumeration requires of
+every operator free-text `reason` — with the registered `NoPiiPolicyDetector` until
+`dod-pii-detector` lands a real one, exactly as the product and SKU doors do.
 
 **Implements**: `cpt-cf-bss-products-flow-erasure`
 
@@ -541,9 +564,10 @@ approval and its mass-retire reason on 04's. `design/10` §3.1 still carries the
 P-D-50's propagation never reached `inst-im-map`; that tail is its owner's, and §7 carries it. Personal data typed into any of them would be **unreachable by erasure**, because
 those records are never edited and erasure is a map-only tombstone.
 
-**`CONTENT_PII_BLOCKED` has no `DomainError` arm today**, and this DoD **MUST NOT** mint one: the code
-is `02-taxonomy-attributes`' declaration, and minting it here would make this feature the second
-author of another slice's code. §7 routes it.
+**`CONTENT_PII_BLOCKED` now has its `DomainError` arm, minted in `02` where the code is declared**,
+and this DoD **MUST NOT** mint a second: minting one here would make this feature the second author of
+another slice's code. §7 row 15 routed it and is **closed by measurement** — the arm landed on the
+side that owed it, which is the outcome the row asked for and not a waiver of the rule.
 
 **Implements**: `cpt-cf-bss-products-flow-pii-policy`
 
@@ -672,11 +696,12 @@ class, the clock and the gate verdict.
 
 **The last edge is physically enforced rather than merely ordered.** `01-foundation` admits an
 entity-version `DELETE` only when no manifest entry references the row (**P-D-40**), and
-`06-catalog-version`'s `cpt-cf-bss-products-dod-referential-delete-predicate` is what replaces the
-shipped unconditional refusal with that predicate, **by editing
-`m20260829_000007_create_products_entity_version.rs` in place**. **06 specifies the guard; this DoD
-owns the deleter that spends it** — and until that predicate lands, this feature's GC has no admitted
-`DELETE` at all.
+`06-catalog-version`'s `cpt-cf-bss-products-dod-referential-delete-predicate` is what **replaced**
+the unconditional refusal with that predicate, **by editing
+`m20260829_000007_create_products_entity_version.rs` in place**, and it is ticked. **06 specified the
+guard; this DoD owns the deleter that spends it** — and the `DELETE` this GC needs is admitted today,
+which is why §7 row 17 is closed. What remains open on this DoD is rows 5 and 25, neither of which is
+about the guard.
 
 An entity-version row referenced by **any** retained catalog-version manifest **MUST** be retained
 with it: version-row retention **derives** from catalog-version retention and is **never shorter**.
@@ -810,7 +835,8 @@ transaction as its act and each carrying a **versioned** schema reference. Both 
 today**: no projection in the design set materializes identities — renders join the map, and
 `08-read-models` holds pseudonyms only — so the event is a **defensive cache-buster** rather than a
 contract anyone consumes. **Materializing an identity into any projection is a `12-consumer-contracts`
-lint failure.**
+lint failure** — its **Lint 7**, which that feature declares by name and which names this feature's
+`IdentityRefMap` as the one permitted store.
 
 **Neither event fits `EventBodyCore`.** An `actor_ref` and an allow-list entry have none of its five
 fields, `EntityKind` is exactly `Product | Sku`, and the only subject types declared are the Product
@@ -912,10 +938,14 @@ to prevent, and `ActorErased` deliberately carries none.
 **The arithmetic of this section.** Thirty-two rows: **fourteen carried verbatim** from
 [`../design/10-retention-erasure.md`](../design/10-retention-erasure.md) §6 — the slice's full count,
 not a selection — and **eighteen raised here**: five while authoring, from reading the crate, and
-thirteen by the three-lens review of this document. Of the thirty-two, **eight block no DoD in this
-document** (rows 1, 2, 3, 30, 31 and 32, plus row 13, resolved by **P-D-64 on 2026-08-31**, and row
-20, resolved by **P-D-72 on 2026-09-01** — kept in place rather than struck); the other twenty-four
-each name the DoD they block. Row 8 is **parked for the owner** with `features/read-models.md`'s
+thirteen by the three-lens review of this document. Of the thirty-two, **fourteen block no DoD in this
+document** (rows 1, 2, 3, 30, 31 and 32; row 13, resolved by **P-D-64 on 2026-08-31**, and row 20,
+resolved by **P-D-72 on 2026-09-01**; rows 15, 17, 19 and 29, **closed by measurement on
+2026-09-03**; and rows 4 and 24, **answered by the owner on 2026-09-03** — all eight of those kept in
+place rather than struck); the other eighteen each name the DoD they block. **A row marked *closed by measurement* was answered by nobody**: no decision was taken and
+none is owed, the crate simply moved past the row's premise, and the entry says which fact it moved
+past so the close is checkable. That is a different disposition from a resolved row and is spelled
+differently on purpose. Row 8 is **parked for the owner** with `features/read-models.md`'s
 row 25 — the same identity-map privacy fork — so `dod-identity-map` waits on it. A third
 subsection below carries one-line pointers into other documents' registers; those are not rows.
 
@@ -925,8 +955,13 @@ provenance marker are converted into this document's `**Owner**:` field. Second,
 carry no `Owner:` sentence in `design/10` §6 at all** — their `**Owner**` field is authored here, and
 their routing has not been agreed with the parties named. Third, every bare `§N` inside a carried row
 is **`design/10`'s numbering, not this document's**: §1.1, §1.5, §3.1, §3.2, §4 and §5 there are the
-slice's sections, and three of the six do not exist here. Apart from those three, nothing is
-altered — the carried text was diffed against `design/10` §6 sentence by sentence, mechanically.
+slice's sections, and three of the six do not exist here. Apart from those three classes the carried
+text was diffed against `design/10` §6 sentence by sentence, mechanically, and **eleven of the
+fourteen rows are byte-identical**. The other three have moved since the carry and each says so in
+place: **row 7** gains a re-measurement at `80eee534a`, **row 11** replaces an entanglement with an
+item **P-D-50** struck, and **row 13** rewords its P-D-64 answer. Re-diffed 2026-09-03; an earlier
+version of this paragraph claimed nothing beyond the three classes was altered, and that was false in
+those three rows.
 
 **Three questions are deliberately NOT raised here because a sibling already owns them**, and are
 cited instead:
@@ -960,16 +995,27 @@ cited instead:
    **Blocks**: no DoD — it is a deployment gate.
    **Owner**: the platform storage owner.
 
-4. **Which store holds the audit rows this slice's own rules require?** `inst-er-erase` is "audited
+4. ~~**Which store holds the audit rows this slice's own rules require?**~~
+   **Answered (owner call, 2026-09-03) in two parts, because the row holds two different acts.**
+   **The compliance export needs no new class**: P-D-21 words class 2 as *"reads under elevation"*
+   and justifies it as *"a read writes no outbox row at all"*, and the export is a read that writes
+   no outbox row, so the class widens from its example to its own stated reason. **The erasure act
+   gets a fourth class** — *"acts whose evidential record must carry a field the event deliberately
+   omits"* — the row's other two arms both being closed by this document's own `dod-retention-events`,
+   which forbids widening `ActorErased` and requires it be emitted. Built as
+   `repo::write_audited_read_audit` and `repo::write_evidential_act_audit`; until
+   `dod-retention-events` lands the erasure act emits nothing and class 3 covers it verbatim, the
+   fourth class being what keeps it admitted afterwards. **`01` §4.4 owes the fourth class's
+   sentence**, which is `01-foundation`'s edit and not this feature's.
+   Original text: `inst-er-erase` is "audited
    with a reason", `inst-er-export` audits "every access individually", and 01 §4.4 holds — under
    **P-D-21** — "only acts that emit no event, in three classes". The erasure act emits
    `ActorErased`, so it writes no row there; the compliance export is a read that is not "a read
    under elevation"; and the minimal `ActorErased(actor_ref)` carries neither the reason nor the
    eraser's own ref. Either 01 §4.4 gains a class, `ActorErased` widens, or these acts are declared
    eventless.
-   **Blocks**: `cpt-cf-bss-products-dod-erasure-door`,
-   `cpt-cf-bss-products-dod-compliance-export`, `cpt-cf-bss-products-dod-retention-events`.
-   **Owner**: `01-foundation`'s owner with P-D-21's.
+   **Blocks**: no DoD — **answered**; `01` §4.4's sentence is owed to `01-foundation`.
+   **Owner**: was `01-foundation`'s owner with P-D-21's; **answered, one edit owed**.
 
 5. **What `actor_ref` attributes an unattended act's audit row?** The age-triggered tombstone and
    every GC act are audited, 01 makes the audit row's `actor_ref` non-nullable, and every ref in the
@@ -1069,15 +1115,22 @@ cited instead:
 
 Five, from reading the crate at `80eee534a`. Every quotation was byte-verified against source.
 
-15. **`CONTENT_PII_BLOCKED` is raised by every door this feature's detector guards and is armed
-    nowhere.** `domain::error::DomainError`'s fourteen variants carry no arm for it, and
+15. ~~**`CONTENT_PII_BLOCKED` is raised by every door this feature's detector guards and is armed
+    nowhere.**~~
+    **Closed by measurement (2026-09-03, no decision taken): the arm landed in `02`, which is where
+    this row routed it.** `domain::error::DomainError::ContentPiiBlocked` ships, its `code()` arm
+    renders `CONTENT_PII_BLOCKED`, and `infra::error_mapping`'s ladder carries the matching arm at
+    422 architectural. The row's **must not** was honoured rather than overtaken: the code was minted
+    by the slice that declares it and not here. Original text: `domain::error::DomainError`'s
+    fourteen variants carry no arm for it, and
     `infra::error_mapping`'s ladder therefore has none either — while `ILLEGAL_FIELD_MUTATION` and
     `STALE_REVISION`, other cross-slice codes, are armed. This feature **must not** mint it: the code
     is `02-taxonomy-attributes`' declaration and minting it here would make this the second author of
     another slice's code. The same gap is registered by `features/reference-signal.md` §7 row 18 from
     its own three reasons; **this row records the wider door set** the detector policy obliges.
-    **Blocks**: `cpt-cf-bss-products-dod-pii-detector`.
-    **Owner**: `02-taxonomy-attributes`, which declares the code.
+    **Blocks**: no DoD — **closed by measurement**; `cpt-cf-bss-products-dod-pii-detector` stays
+    blocked by rows 12, 22 and 23.
+    **Owner**: was `02-taxonomy-attributes`, which declares the code; **discharged**.
 
 16. **`repo::AuditCommon::correlation_id` is permanently `NULL`, and this feature owns the audit
     class's clock and its deletes.** The field is `Option<Uuid>` and its own doc names the blocker:
@@ -1089,15 +1142,23 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
     **Blocks**: `cpt-cf-bss-products-dod-retention-clock` — not its correctness, its worth.
     **Owner**: `01-foundation`'s code. One-line pointer only.
 
-17. **The GC has no admitted `DELETE` until `06-catalog-version`'s predicate lands.**
-    `m20260829_000007_create_products_entity_version.rs` refuses **every** `DELETE`
+17. ~~**The GC has no admitted `DELETE` until `06-catalog-version`'s predicate lands.**~~
+    **Closed by measurement (2026-09-03, no decision taken): the predicate landed.**
+    `cpt-cf-bss-products-dod-referential-delete-predicate` is ticked in
+    `features/catalog-version.md`, and `m20260829_000007_create_products_entity_version.rs` now
+    refuses a `DELETE` only where a `products_catalog_version_entry` row references it — the Postgres
+    trigger inside an `IF EXISTS` guard, the SQLite trigger under a `WHEN EXISTS` clause, and the
+    file's own header rewritten to say the owed arm is paid. So
+    `cpt-cf-bss-products-dod-retention-order` is no longer sequenced behind a DoD in another FEATURE.
+    Original text: `m20260829_000007_create_products_entity_version.rs` refuses **every** `DELETE`
     unconditionally today and says why — the referential predicate's table did not exist — and
     `06-catalog-version`'s `cpt-cf-bss-products-dod-referential-delete-predicate` is what replaces it,
     **by editing that migration in place**. So this feature's `cpt-cf-bss-products-dod-retention-order`
     is **sequenced behind** a DoD in another FEATURE rather than merely dependent on it, and the two
     shipped green tests that pin the unconditional refusal are amended there, not here.
-    **Blocks**: `cpt-cf-bss-products-dod-retention-order`.
-    **Owner**: `06-catalog-version` — sequencing, not a question.
+    **Blocks**: no DoD — **closed by measurement**; `cpt-cf-bss-products-dod-retention-order` stays
+    blocked by rows 5 and 25.
+    **Owner**: was `06-catalog-version` — sequencing, not a question; **discharged**.
 
 18. **The map's read-by-principal path has no index of its own for the tombstoned case.**
     `idx_products_identity_ref_principal` covers `(tenant_id, principal_ref)` and
@@ -1109,13 +1170,21 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
     **Blocks**: `cpt-cf-bss-products-dod-compliance-export`.
     **Owner**: this feature with the schema owner.
 
-19. **`ActorErased`'s consumer set is called "legitimately empty", and nothing enforces that it stays
-    so.** The event is a defensive cache-buster because no projection materializes identities, and
+19. ~~**`ActorErased`'s consumer set is called "legitimately empty", and nothing enforces that it
+    stays so.**~~
+    **Closed by measurement (2026-09-03, no decision taken): both halves of the premise moved.**
+    `features/consumer-contracts.md` declares **Lint 7 — identity materialization**, which names this
+    feature's `IdentityRefMap` as the one permitted store and cites erasure's guarantee as its reason,
+    with **P-D-45** supplying the lint's reading rule; and `08-read-models` **is written**, rendering
+    actor pseudonyms and no identity. What is left — that no job runs the lints — is `12`'s own open
+    item, registered there. Original text: The event is a defensive cache-buster because no projection
+    materializes identities, and
     `12-consumer-contracts` is named as the lint that would catch one that did. But this feature
     declares no obligation on that lint and 08 is unwritten, so the property the event's minimality
     rests on is asserted by this document and enforced by nothing yet.
-    **Blocks**: `cpt-cf-bss-products-dod-retention-events`.
-    **Owner**: `12-consumer-contracts`, with `08-read-models`.
+    **Blocks**: no DoD — **closed by measurement**; `cpt-cf-bss-products-dod-retention-events` stays
+    blocked by rows 4 and 26.
+    **Owner**: was `12-consumer-contracts`, with `08-read-models`; **discharged**.
 
 
 20. ~~**What does `cpt-cf-bss-products-dod-identity-map` still oblige, now that the read path is a
@@ -1159,15 +1228,25 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
     **Owner**: Legal with the data-protection owner for what an entry may contain — row 12's pair —
     and `02-taxonomy-attributes` for how it is evaluated.
 
-24. **Does an erasure request or a DSAR export name a `principal_ref` or a real-world identity?** The
+24. ~~**Does an erasure request or a DSAR export name a `principal_ref` or a real-world identity?**~~
+    **Answered (owner call, 2026-09-03): the request names a `principal_ref`, and the
+    person-to-pseudonym step belongs to whichever identity provider minted the principal.** This
+    door is internal to the gear. The alternative was disqualified by the row's own argument: an
+    identity string makes the refusal *"naming the principal"* write personal data into its own
+    audit row, the failure `dod-pii-detector` forbids for `CONTENT_PII_BLOCKED`.
+    **The row's objection to the chosen arm was measured false before the call**: `principal_ref` is
+    `NOT NULL` and survives the tombstone by design (**P-D-49**), so a repeat DSAR still resolves;
+    and a **first** DSAR from a principal that never held a ref resolves to *"no entries"*, which is
+    a correct answer rather than a failure. `inst-er-erase`'s *"resolves the operator identity"*
+    owes a wording fix, which is `design/10`'s and is row 21's neighbour.
+    Original text: The
     store's key is the pseudonym. If the request carries `principal_ref`, nothing maps a person to
     one and a first DSAR for an already-erased principal is unresolvable, since the payload is gone.
     If it carries an identity string, the resolve searches an unindexed nullable column and the
     refusal *"naming the principal"* writes personal data into its own audit row — the failure
     `cpt-cf-bss-products-dod-pii-detector` forbids for `CONTENT_PII_BLOCKED`.
-    **Blocks**: `cpt-cf-bss-products-dod-erasure-door`,
-    `cpt-cf-bss-products-dod-compliance-export`.
-    **Owner**: Architecture with Legal — row 11's pair.
+    **Blocks**: no DoD — **answered**; `design/10`'s `inst-er-erase` owes a wording fix.
+    **Owner**: was Architecture with Legal — row 11's pair; **answered**.
 
 25. **What is the GC's transaction boundary, and what does a crash mid-order leave?** The stated
     order makes an intermediate state observable — a catalog-version row surviving with its entry
@@ -1206,14 +1285,21 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
     `cpt-cf-bss-products-dod-restore-drill`, `cpt-cf-bss-products-dod-retention-clock`.
     **Owner**: this gear's config owner with Legal and Finance.
 
-29. **Which tables hold break-glass sessions and correction overrides for the clock?**
+29. ~~**Which tables hold break-glass sessions and correction overrides for the clock?**~~
+    **Closed by measurement (2026-09-03, no decision taken): each has a store of its own.**
+    `m20260901_000017_create_products_breakglass_session.rs` creates `products_breakglass_session`
+    carrying `opened_at`, and `m20260901_000022_create_products_correction_override.rs` creates
+    `products_correction_override` carrying `recorded_at`. Neither rides `products_audit_log`, so the
+    DoD's enumeration is a **table** list as written and each store hands the clock its own timestamp
+    column to sweep — which is what that DoD's **Touches** block already names. Original text:
     `cpt-cf-bss-products-dod-retention-clock` puts both at statutory maximum, and no document names
     either table in this feature's scope: `design/10` §4 names only the map and the allow-list.
     Whether they ride `products_audit_log` — making the DoD's enumeration a class list rather than a
     table list — or each has a store of its own, is unstated.
-    **Blocks**: `cpt-cf-bss-products-dod-retention-clock`.
-    **Owner**: `05-governance` (break-glass) and `07-reference-signal` (correction overrides) with
-    this feature.
+    **Blocks**: no DoD — **closed by measurement**; `cpt-cf-bss-products-dod-retention-clock` stays
+    blocked by rows 16, 27 and 28.
+    **Owner**: was `05-governance` (break-glass) and `07-reference-signal` (correction overrides)
+    with this feature; **discharged**.
 
 30. **Does this feature own the DR posture, and which DoD delivers it?** §1.2's divided-requirement
     table claims *"restore verification and the DR posture"*, §1.1 promises storage class and DR

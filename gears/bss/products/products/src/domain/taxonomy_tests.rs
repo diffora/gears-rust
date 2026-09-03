@@ -1347,7 +1347,7 @@ fn the_sixteen_codes_are_a_distinct_roster() {
 /// silent gap is what this exists to prevent, so it is deliberately not
 /// written as an inequality.
 #[test]
-fn twelve_of_the_sixteen_codes_have_no_domain_error_variant_yet() {
+fn eleven_of_the_sixteen_codes_have_no_domain_error_variant_yet() {
     let raiseable: Vec<&str> = TAXONOMY_ERROR_CODES
         .into_iter()
         .filter(|code| DOMAIN_ERROR_CODES.contains(code))
@@ -1358,24 +1358,41 @@ fn twelve_of_the_sixteen_codes_have_no_domain_error_variant_yet() {
             "DUPLICATE_CATEGORY_NAME",
             "TAXONOMY_CYCLE",
             "PRIMARY_CATEGORY_REQUIRED",
+            "CONTENT_PII_BLOCKED",
             "STALE_LIVE_OP",
         ],
-        "exactly these four are raiseable as themselves"
+        "exactly these five are raiseable as themselves, in TAXONOMY_ERROR_CODES' \
+         own order"
     );
     assert_eq!(
         TAXONOMY_ERROR_CODES.len() - raiseable.len(),
-        12,
-        "twelve still need a variant and a mapping arm"
+        11,
+        "eleven still need a variant and a mapping arm"
     );
 }
 
-/// The codes `DomainError::code` can answer, read off the enum rather than
-/// listed -- so this cannot drift from it the way a second literal roster
-/// would.
+/// The taxonomy codes `DomainError::code` can answer.
+///
+/// # This is a literal roster, and an earlier version of this doc denied it
+///
+/// It said the list was *"read off the enum rather than listed -- so this
+/// cannot drift"*. It is listed, it did drift, and the denial is what let the
+/// drift go unseen: `CONTENT_PII_BLOCKED` gained `DomainError::ContentPiiBlocked`
+/// in `b844b2632` and this roster did not move, so the test above asserted
+/// twelve codes without a variant while the true count was eleven -- and it
+/// passed, because both of its halves are computed from this same stale array.
+/// A false green, and the reason a hand-written roster needs its own discipline
+/// rather than a sentence claiming it has none.
+///
+/// **Re-derive against `DomainError::code`'s arms rather than bumping.** Grep
+/// each of [`TAXONOMY_ERROR_CODES`] for a `=> "CODE"` arm in `domain::error`;
+/// what matches is this list. That is the method that catches the drift, and
+/// bumping the number is the method that hides it.
 const DOMAIN_ERROR_CODES: &[&str] = &[
     "DUPLICATE_CATEGORY_NAME",
     "TAXONOMY_CYCLE",
     "PRIMARY_CATEGORY_REQUIRED",
+    "CONTENT_PII_BLOCKED",
     "STALE_LIVE_OP",
 ];
 
@@ -1472,7 +1489,7 @@ fn the_block_refuses_personal_data_and_admits_clean_text() {
     let blocked = content_pii_block(&doubles(), "attributes.description", "ssn 000-00-0000")
         .expect_err("personal data is refused");
     assert!(
-        blocked.detail.contains("attributes.description"),
+        blocked.detail().contains("attributes.description"),
         "{blocked:?}"
     );
     assert_eq!(ContentPiiBlocked::CODE, "CONTENT_PII_BLOCKED");
@@ -1494,10 +1511,10 @@ fn an_undecided_verdict_fails_closed() {
     let refused = content_pii_block(&doubles(), "metadata.owner", "perhaps a name")
         .expect_err("uncertainty is refused");
     assert!(
-        refused.detail.contains("could not decide"),
+        refused.detail().contains("could not decide"),
         "the two refusals are told apart: {refused:?}"
     );
-    assert!(refused.detail.contains("fails closed"), "{refused:?}");
+    assert!(refused.detail().contains("fails closed"), "{refused:?}");
 }
 
 /// **The default host admits everything and names the deviation.**
@@ -1546,5 +1563,34 @@ fn the_block_is_the_single_raiser_of_its_code() {
         2,
         "exactly two: the roster entry and the constant on the refusal. A third \
          would be a second raiser, which `dod-pii-write-block` forbids"
+    );
+    // -- The blind spot of the count above, closed structurally. A raiser that
+    // builds `ContentPiiBlocked` with a struct literal carries no code literal,
+    // so it moves the count by nothing and the assertion stays green while the
+    // hook's fail-closed-on-uncertainty rule has been bypassed. A private field
+    // makes the compiler refuse that construction outside this module; these
+    // two assertions are what keep the field private and the construction
+    // singular. --
+    // Scoped to this struct's own body on purpose: a bare scan for a public
+    // `detail` field matches `CategoryReferenced` and `DefinitionInUse` too,
+    // which carry one legitimately -- their codes reach the wire through a
+    // violation's own `code`, so neither has a single-raiser rule to bypass.
+    let body = source
+        .split_once("pub struct ContentPiiBlocked {")
+        .expect("the refusal is declared in this file")
+        .1
+        .split_once('}')
+        .expect("and its body closes")
+        .0;
+    assert!(
+        !body.contains("pub "),
+        "`ContentPiiBlocked` carries no public field: a public one is a second \
+         raiser the code-literal count cannot see, a struct literal needing no \
+         code literal. Body was: {body}"
+    );
+    assert_eq!(
+        source.matches("ContentPiiBlocked { detail }").count(),
+        1,
+        "one construction, and it is the hook's"
     );
 }

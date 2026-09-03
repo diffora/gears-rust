@@ -6224,7 +6224,7 @@ async fn content_subject(
                     // the pipeline -- *"a code raised outside the pipeline needs no
                     // phase status and gets none"* -- and the seven content rules that
                     // do ride a report are the contrast, not the pattern.
-                    HeadActError::Refused(DomainError::ContentPiiBlocked(blocked.detail))
+                    HeadActError::Refused(DomainError::ContentPiiBlocked(blocked.into_detail()))
                 })?;
         }
 

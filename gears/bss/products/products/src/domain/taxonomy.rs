@@ -319,9 +319,10 @@ impl TaxonomyLimitExceeded {
     /// The refusal code this maps to (`design/02` §3.3).
     ///
     /// **Declared and unraised**, and its `DomainError` variant does not exist
-    /// at this commit: the code is one of twelve of this feature's sixteen
+    /// at this commit: the code is one of **eleven** of this feature's sixteen
     /// still absent from `domain::error`, which is `dod-taxonomy-errors`'
-    /// work. The constant lives here so that when the variant lands there is
+    /// work. *(Twelve until `CONTENT_PII_BLOCKED`'s variant landed in
+    /// `b844b2632`; re-derived against `DomainError::code`'s arms.)* The constant lives here so that when the variant lands there is
     /// one spelling and not two.
     pub const CODE: &'static str = "TAXONOMY_LIMIT";
 }
@@ -1715,22 +1716,48 @@ impl PiiDetector for NoPiiPolicyDetector {
 
 /// A write refused because its free text carries personal data.
 ///
-/// Carries the rendered detail; the wire code is [`Self::CODE`]. **Not a
-/// [`DomainError`]** at this commit, for the reason [`CategoryReferenced`]
-/// gives — and unlike the seven pipeline rules, this one genuinely needs the
-/// variant, because `design/02` §3.3 raises it **outside** the pipeline:
-/// *"a code raised outside the pipeline needs no phase status and gets none."*
-/// So it cannot reach the wire as itself through `DomainError::Validation`,
-/// and `dod-taxonomy-errors` is where the variant lands.
+/// Carries the rendered detail; the wire code is [`Self::CODE`].
+/// `DomainError::ContentPiiBlocked` is what it becomes at a door, and unlike
+/// the seven pipeline rules this one genuinely needed a variant of its own,
+/// because `design/02` §3.3 raises the code **outside** the pipeline —
+/// *"a code raised outside the pipeline needs no phase status and gets none"* —
+/// so it cannot reach the wire as itself through `DomainError::Validation`.
+///
+/// # The field is private, and that is the single-raiser rule made structural
+///
+/// [`content_pii_block`] is the only raiser of this code, and the source scan
+/// that guards it can only count code **literals**. A `pub` field let any
+/// module build the refusal with a struct literal — which carries no
+/// `CONTENT_PII_BLOCKED` literal, so the count stayed at two and the guard
+/// stayed green — and that raiser would have opted out of the hook's
+/// fail-closed-on-uncertainty rule without tripping anything. With the field
+/// private the compiler refuses the construction outside this module, so the
+/// hook is the single raiser **by construction** rather than by a count. Read
+/// the text with [`Self::detail`], move it with [`Self::into_detail`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContentPiiBlocked {
     /// What was refused and why, for a human reading the response.
-    pub detail: String,
+    detail: String,
 }
 
 impl ContentPiiBlocked {
     /// The refusal code (`design/02` §3.3, 422 architectural).
     pub const CODE: &'static str = "CONTENT_PII_BLOCKED";
+
+    /// What was refused and why, for a human reading the response.
+    #[must_use]
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+
+    /// Take the detail, for the `DomainError` arm that carries it to the wire.
+    ///
+    /// A door **moves** it rather than cloning: the refusal is consumed at the
+    /// point it becomes a `DomainError` and has no second reader.
+    #[must_use]
+    pub fn into_detail(self) -> String {
+        self.detail
+    }
 }
 
 /// **The single raiser** of `CONTENT_PII_BLOCKED` (`inst-av-pii-block`).
@@ -1764,18 +1791,18 @@ pub fn content_pii_block(
     subject: &str,
     text: &str,
 ) -> Result<(), ContentPiiBlocked> {
-    match detector.inspect(subject, text) {
-        PiiVerdict::Clean => Ok(()),
-        PiiVerdict::Blocked(reason) => Err(ContentPiiBlocked {
-            detail: format!("{subject}: {reason}"),
-        }),
-        PiiVerdict::Uncertain(reason) => Err(ContentPiiBlocked {
-            detail: format!(
-                "{subject}: the detector could not decide ({reason}), and this block fails closed \
-                 on uncertainty"
-            ),
-        }),
-    }
+    // One construction, deliberately: privacy stops another module building
+    // the refusal, and folding both arms into a single `Err` stops a second
+    // one being added here.
+    let detail = match detector.inspect(subject, text) {
+        PiiVerdict::Clean => return Ok(()),
+        PiiVerdict::Blocked(reason) => format!("{subject}: {reason}"),
+        PiiVerdict::Uncertain(reason) => format!(
+            "{subject}: the detector could not decide ({reason}), and this block fails closed \
+             on uncertainty"
+        ),
+    };
+    Err(ContentPiiBlocked { detail })
 }
 
 /// The sixteen codes `design/02` §3.3 declares, as one roster.
