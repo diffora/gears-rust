@@ -1390,17 +1390,19 @@ question is the error-contract owner's.
 
 ### Taxonomy events
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-taxonomy-events`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-taxonomy-events`
 
 The system **MUST** emit eight events through the Foundation's outbox in the mutating
 transaction: `CategoryCreated`, `CategoryRenamed`, `CategoryReparented`, `CategoryRetired`,
 `CategoryDeleted`, `CategoryDisplayUpdated`, `AttributeDefinitionUpdated` and `MetadataUpdated`.
 Taxonomy events **MUST** order on `(tenant, category tree)` as one aggregate, matching the
-single-writer discipline; metadata events **MUST** order on `(tenant, entity)`. Product and SKU
+single-writer discipline — except the two display events, `CategoryDisplayUpdated` and
+`AttributeDefinitionUpdated`, which **MUST** order on their own entity's id (P-D-116 row 15; clause
+amended 2026-09-03); metadata events **MUST** order on `(tenant, entity)`. Product and SKU
 attribute-value writes **MUST** emit no event of their own, and that absence **MUST** be recorded
 as an explicit no-event declaration.
 
-**The aggregates and the six payload types ship; two of the eight are held.**
+**The aggregates and all eight payload types ship, and all eight are emitted (2026-09-03).**
 `infra::taxonomy::TAXONOMY_TREE_AGGREGATE` is one sentinel per tenant for the five tree acts —
 matching `inst-tc-writer-lock`'s per-tenant serialization, since a per-node key would promise an
 ordering across nodes that nothing enforces — and `metadata_aggregate` is the owning entity, which
@@ -1408,10 +1410,13 @@ is the ordering a metadata write's own `If-Match` actually provides. The sentine
 version `0` and every id this gear mints is v7, so it cannot collide with a category, a Product or
 a SKU; that is asserted rather than assumed.
 
-**`CategoryDisplayUpdated` and `AttributeDefinitionUpdated` get no aggregate here.** §7 row 15 asks
-which orders them and states why it is not a free choice — *"display writes do not take the taxonomy
-writer lock, so the tree key would claim a serialization the door does not provide"*. Giving them
-the tree key would be that claim, made from an infra module.
+**`CategoryDisplayUpdated` and `AttributeDefinitionUpdated` order on their own entity's id** (P-D-116
+row 15, 2026-09-03). §7 row 15 asked which orders them and stated why it was not a free choice —
+*"display writes do not take the taxonomy writer lock, so the tree key would claim a serialization the
+door does not provide"*. The row is what serializes a display write (`products_category.mutation_seq`
+is the door's precondition), so the entity id is the key that matches what actually orders them, and
+`CategoryDisplayUpdated` carries the token the act spent (`mutationSeq`) so a consumer can order on
+it. The DoD's ordering clause is amended above to say so.
 
 **The no-event declaration is a named constant**, `ATTRIBUTE_VALUE_WRITES_EMIT_NO_EVENT`, so a
 census looking for what this feature announces finds the absence too. Its reason is C2: those
@@ -1424,12 +1429,32 @@ has already seen.
 type added without one compiles clean, `schema_ref_for` answers `None`, and the act rolls back at
 runtime rather than at build time. Both halves landed together for exactly that reason.
 
-**Declared ahead of their emitters, and the roster says so.** `events_tests` carries slice `02`'s
-six as `THE_TAXONOMY_SIX`, its own array beside `04`'s and `03`'s — folding them into `THE_EIGHT`
-would claim §4.5 announces them, and §4.5 announces eight. Nothing enqueues any of the six yet: the
-taxonomy's doors have no route (§7 row 16) and the metadata door is blocked on its grant pair. That
-array's own doc says **read six as six, not as a mislaid eight**, so a later reader does not go
-looking for the two row 15 holds.
+**Emitted in the mutating transaction, all eight, on both sinks (P-D-122).** The five tree acts
+write and announce inside one `transaction_with_retry` each (`infra::taxonomy`), the definition
+door's create and operations, the category live-value door and the metadata door likewise; a
+refusal rolls back and announces nothing. `events::enqueue_taxonomy` is the one entry point, with
+one body for the eight (`TaxonomyEventBody`: `entityKind`, `entityId`, `act`, `state`,
+`mutationSeq?`, `operationKind?`), and `enqueue` refuses the eight tokens. The broker arm carries a
+typed struct per event (`infra::broker`, three subject types derived by P-D-94's rule), so the
+"announces in one deployment shape and is silent in the other" objection that held the six is
+discharged rather than argued with — it was also wrong: the broker arm's `NoTypedEvent` is a
+refusal that rolls the act back, not silence. `events_tests` carries the eight as
+`THE_TAXONOMY_EIGHT`, its own array beside `04`'s and `03`'s.
+
+**Ticked 2026-09-03 under P-D-109, clause by clause.** *Eight events through the outbox in the
+mutating transaction*: `every_tree_act_announces_itself_once`,
+`a_definition_announces_every_applied_change`,
+`a_display_write_announces_on_its_own_id_with_the_token_it_spent`,
+`a_metadata_merge_announces_on_the_owning_entity`, and the negative
+`a_refused_act_announces_nothing` (a census-refused retire opens no transaction; a stale display
+write rolls its back). *Taxonomy events on `(tenant, category tree)`*: `TAXONOMY_TREE_AGGREGATE`
+at the five tree acts. *The two display events on their own id*: `metadata_aggregate(category_id)`
+and the definition's id at the three door acts, clause as amended. *Metadata on `(tenant,
+entity)`*: `metadata_aggregate(entity_id)`. *Attribute-value writes emit no event of their own, and
+the absence is declared*: `ATTRIBUTE_VALUE_WRITE_ANNOUNCED_BY`, unchanged. **`inst-tx-event`'s "op
+envelope id rides the event" has no operand** — the envelope carries no id; the body carries the
+envelope's `kind` and the request's `traceparent` is the correlation channel (P-D-122 routes the id
+to `05`).
 
 **Implements**: `cpt-cf-bss-products-flow-manage-taxonomy`,
 `cpt-cf-bss-products-flow-attribute-definitions`, `cpt-cf-bss-products-flow-metadata`

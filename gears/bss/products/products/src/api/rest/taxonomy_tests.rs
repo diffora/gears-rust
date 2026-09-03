@@ -1223,3 +1223,307 @@ async fn a_category_delete_is_held_by_a_discarded_products_link_row() {
         "no link row and no child: admitted"
     );
 }
+
+// ------------------------------------------------ the eight announcements
+
+/// How many outbox rows carry `payload_type`, and the newest one's `data`.
+///
+/// `COUNT(*)` always answers a row, so the zero case is a real read and not a
+/// missing-row panic; the newest is by `id`, the outbox's own insertion order.
+async fn announced(h: &TestHarness, payload_type: &str) -> (i64, Option<JsonValue>) {
+    let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
+    let count: i64 = crate::test_support::raw_string_opt(
+        &h.dsn,
+        &format!(
+            "SELECT CAST(COUNT(*) AS TEXT) AS v FROM {body_table} \
+             WHERE payload_type = '{payload_type}'"
+        ),
+    )
+    .await
+    .expect("COUNT answers")
+    .parse()
+    .expect("a number");
+    if count == 0 {
+        return (0, None);
+    }
+    let payload = crate::test_support::raw_string_opt(
+        &h.dsn,
+        &format!(
+            "SELECT CAST(payload AS TEXT) AS v FROM {body_table} \
+             WHERE payload_type = '{payload_type}' ORDER BY id DESC LIMIT 1"
+        ),
+    )
+    .await
+    .expect("the newest row carries a payload");
+    let envelope: JsonValue = serde_json::from_str(&payload).expect("a JSON envelope");
+    (count, Some(envelope["data"].clone()))
+}
+
+fn id_of(view: &JsonValue) -> Uuid {
+    view["category_id"]
+        .as_str()
+        .expect("id")
+        .parse()
+        .expect("a uuid")
+}
+
+/// **Each of the five tree acts announces itself, once, in its own
+/// transaction, on the tree aggregate** (`inst-tx-event`, `dod-taxonomy-events`).
+///
+/// One category walked through its whole life: created, renamed, re-parented,
+/// retired, deleted -- the count read after each act so a door that announced
+/// twice, or announced the wrong act, is caught at the act and not at the end.
+#[tokio::test]
+async fn every_tree_act_announces_itself_once() {
+    let h = harness().await;
+    let root = id_of(&create_category(app(&h), "Root", None).await);
+    let (created, body) = announced(&h, "CategoryCreated").await;
+    assert_eq!(created, 1);
+    let body = body.expect("a body");
+    assert_eq!(body["entityKind"], "category");
+    assert_eq!(body["entityId"], root.to_string());
+    assert_eq!(body["act"], "created");
+    assert_eq!(body["state"], "active");
+
+    let other = id_of(&create_category(app(&h), "Other", None).await);
+    assert_eq!(announced(&h, "CategoryCreated").await.0, 2);
+    let uri = format!("/bss-products/v1/categories/{other}/operations");
+
+    let renamed = send(
+        app(&h),
+        "POST",
+        &uri,
+        &json!({ "op": "rename", "expected_state": "active", "name": "Renamed" }),
+    )
+    .await;
+    assert_eq!(renamed.status(), axum::http::StatusCode::OK);
+    let (n, body) = announced(&h, "CategoryRenamed").await;
+    assert_eq!(n, 1);
+    let body = body.expect("a body");
+    assert_eq!(body["act"], "renamed");
+    assert_eq!(body["operationKind"], "category.rename");
+    assert_eq!(body["entityId"], other.to_string());
+
+    let reparented = send(
+        app(&h),
+        "POST",
+        &uri,
+        &json!({ "op": "reparent", "expected_state": "active", "parent_id": root }),
+    )
+    .await;
+    assert_eq!(reparented.status(), axum::http::StatusCode::OK);
+    assert_eq!(announced(&h, "CategoryReparented").await.0, 1);
+
+    let retired = send(
+        app(&h),
+        "POST",
+        &uri,
+        &json!({ "op": "retire", "expected_state": "active" }),
+    )
+    .await;
+    assert_eq!(retired.status(), axum::http::StatusCode::OK);
+    let (n, body) = announced(&h, "CategoryRetired").await;
+    assert_eq!(n, 1);
+    assert_eq!(body.expect("a body")["state"], "retired");
+
+    let deleted = send(
+        app(&h),
+        "POST",
+        &uri,
+        &json!({ "op": "delete", "expected_state": "retired" }),
+    )
+    .await;
+    assert_eq!(deleted.status(), axum::http::StatusCode::OK);
+    let (n, body) = announced(&h, "CategoryDeleted").await;
+    assert_eq!(n, 1);
+    assert_eq!(body.expect("a body")["state"], "deleted");
+}
+
+/// **A refused act announces nothing** -- the event is the success-path audit
+/// record (P-D-21), and a refusal is not a success. Two refusals, two
+/// different transactions: the census-refused retire never opens one; the
+/// stale-token display write opens one and rolls it back.
+#[tokio::test]
+async fn a_refused_act_announces_nothing() {
+    let h = harness().await;
+    let category = id_of(&create_category(app(&h), "Held", None).await);
+    let product = seed_product(&h).await;
+    {
+        let conn = h.db.conn().expect("scoped connection");
+        let scope = AccessScope::for_tenant(TENANT);
+        repo::replace_category_assignments(
+            &conn,
+            &scope,
+            TENANT,
+            product,
+            &[(category, crate::domain::taxonomy::AssignmentRole::Primary)],
+            now(),
+        )
+        .await
+        .expect("a live draft files under the category");
+    }
+
+    let held = send(
+        app(&h),
+        "POST",
+        &format!("/bss-products/v1/categories/{category}/operations"),
+        &json!({ "op": "retire", "expected_state": "active" }),
+    )
+    .await;
+    assert_eq!(held.status(), axum::http::StatusCode::CONFLICT);
+    assert_eq!(conflict_code(held).await, "CATEGORY_REFERENCED");
+    assert_eq!(
+        announced(&h, "CategoryRetired").await.0,
+        0,
+        "a refused retire is not announced"
+    );
+
+    let definition = seed_definition(&h, "displayName").await;
+    let stale = send(
+        app(&h),
+        "PATCH",
+        &format!("/bss-products/v1/categories/{category}/attribute-values"),
+        &json!({
+            "expected_seq": 99,
+            "values": [{ "definition_id": definition, "locale": "", "region": "", "brand": "", "value": "Kit" }]
+        }),
+    )
+    .await;
+    assert_eq!(stale.status(), axum::http::StatusCode::CONFLICT);
+    assert_eq!(
+        announced(&h, "CategoryDisplayUpdated").await.0,
+        0,
+        "a rolled-back display write is not announced"
+    );
+}
+
+/// **A display write announces on the category's own id and carries the token
+/// it spent** (P-D-116 row 15): `mutationSeq` in the body equals the row's
+/// `mutation_seq` after the act, read off the table rather than off the door.
+#[tokio::test]
+async fn a_display_write_announces_on_its_own_id_with_the_token_it_spent() {
+    let h = harness().await;
+    let category = id_of(&create_category(app(&h), "Hardware", None).await);
+    let definition = seed_definition(&h, "displayName").await;
+    let uri = format!("/bss-products/v1/categories/{category}/attribute-values");
+
+    let seq_before: i64 = crate::test_support::raw_string_opt(
+        &h.dsn,
+        &format!(
+            "SELECT CAST(mutation_seq AS TEXT) AS v FROM products_category \
+             WHERE category_id = X'{}'",
+            category.simple()
+        ),
+    )
+    .await
+    .expect("the row carries a token")
+    .parse()
+    .expect("a number");
+
+    let written = send(
+        app(&h),
+        "PATCH",
+        &uri,
+        &json!({
+            "expected_seq": seq_before,
+            "values": [{ "definition_id": definition, "locale": "", "region": "", "brand": "", "value": "Kit" }]
+        }),
+    )
+    .await;
+    assert_eq!(written.status(), axum::http::StatusCode::OK);
+
+    let (n, body) = announced(&h, "CategoryDisplayUpdated").await;
+    assert_eq!(n, 1, "one act, one announcement");
+    let body = body.expect("a body");
+    assert_eq!(body["entityId"], category.to_string());
+    assert_eq!(body["act"], "display_updated");
+    assert_eq!(
+        body["mutationSeq"],
+        seq_before + 1,
+        "the token the act spent, one bump per act (P-D-50)"
+    );
+    assert!(
+        body.get("operationKind").is_none(),
+        "a display write rides no envelope"
+    );
+}
+
+/// **Every applied change to a definition announces `AttributeDefinitionUpdated`**
+/// (`inst-ad-event`): create, flip, label -- three acts, three rows, the newest
+/// naming its act and, where there was one, its envelope's kind.
+#[tokio::test]
+async fn a_definition_announces_every_applied_change() {
+    let h = harness().await;
+    let created = send(
+        app(&h),
+        "POST",
+        "/bss-products/v1/attribute-definitions",
+        &json!({ "key": "colour", "value_type": "string", "localized": false, "region_scope": "", "brand_scope": "" }),
+    )
+    .await;
+    assert_eq!(created.status(), axum::http::StatusCode::CREATED);
+    let definition_id = body_json(created).await["definition_id"]
+        .as_str()
+        .expect("id")
+        .to_owned();
+    let (n, body) = announced(&h, "AttributeDefinitionUpdated").await;
+    assert_eq!(n, 1);
+    let body = body.expect("a body");
+    assert_eq!(body["entityKind"], "attribute_definition");
+    assert_eq!(body["entityId"], definition_id);
+    assert_eq!(body["act"], "created");
+    assert_eq!(body["state"], "active");
+
+    let uri = "/bss-products/v1/attribute-definitions/colour/operations";
+    let deprecated = send(
+        app(&h),
+        "POST",
+        uri,
+        &json!({ "op": "deprecate", "expected_state": "active" }),
+    )
+    .await;
+    assert_eq!(deprecated.status(), axum::http::StatusCode::OK);
+    let (n, body) = announced(&h, "AttributeDefinitionUpdated").await;
+    assert_eq!(n, 2);
+    let body = body.expect("a body");
+    assert_eq!(body["act"], "deprecated");
+    assert_eq!(body["state"], "deprecated");
+    assert_eq!(body["operationKind"], "attribute_definition.deprecate");
+
+    let labelled = send(
+        app(&h),
+        "POST",
+        uri,
+        &json!({ "op": "label", "expected_state": "deprecated", "display_label": "Colour" }),
+    )
+    .await;
+    assert_eq!(labelled.status(), axum::http::StatusCode::OK);
+    let (n, body) = announced(&h, "AttributeDefinitionUpdated").await;
+    assert_eq!(n, 3);
+    assert_eq!(body.expect("a body")["act"], "label_updated");
+}
+
+/// **A metadata merge announces on the owning entity** (`inst-md-*`, P-D-06
+/// placement): `MetadataUpdated`, `entityKind` naming the table, the head's
+/// state as the act found it.
+#[tokio::test]
+async fn a_metadata_merge_announces_on_the_owning_entity() {
+    let h = harness().await;
+    let product = seed_product(&h).await;
+    let merged = send(
+        app(&h),
+        "PATCH",
+        &format!("/bss-products/v1/products/{product}/metadata"),
+        &json!({ "entries": { "owner": "team-a" } }),
+    )
+    .await;
+    assert_eq!(merged.status(), axum::http::StatusCode::OK);
+
+    let (n, body) = announced(&h, "MetadataUpdated").await;
+    assert_eq!(n, 1);
+    let body = body.expect("a body");
+    assert_eq!(body["entityKind"], "product");
+    assert_eq!(body["entityId"], product.to_string());
+    assert_eq!(body["act"], "merged");
+    assert_eq!(body["state"], "draft");
+}

@@ -1607,8 +1607,9 @@ pub async fn definition_value_holders(
 /// The value write runs **after** the token is won, on the caller's runner, so
 /// the pair is one transaction if the caller opened one. `inst-av-category-branch`
 /// requires the event in that same transaction too; this function does not
-/// enqueue it, because `infra::events` declares no `CategoryDisplayUpdated`
-/// payload type at this commit.
+/// enqueue it — the **door** does, on the same runner after the value writes
+/// (`events::enqueue_taxonomy`, `CategoryDisplayUpdated` on the category's own
+/// id with the token this statement won, since 2026-09-03).
 ///
 /// # Errors
 ///

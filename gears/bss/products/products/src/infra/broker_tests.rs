@@ -6,10 +6,13 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::{
-    CatalogBulkOperationCompleted, CatalogEventCore, PRODUCT_SUBJECT_TYPE, PlanTierUpdated,
-    ProductCreated, ProductDeprecated, ProductDiscarded, ProductHeadSaved, ProductPublished,
-    RecognizedCodeUpdated, RecognizedUnitUpdated, SKU_SUBJECT_TYPE, SOURCE, SkuCreated,
-    SkuDeprecated, SkuDiscarded, SkuHeadSaved, SkuPublished, TOPIC,
+    ATTRIBUTE_DEFINITION_SUBJECT_TYPE, AttributeDefinitionUpdated, CATEGORY_SUBJECT_TYPE,
+    CatalogBulkOperationCompleted, CatalogEventCore, CategoryCreated, CategoryDeleted,
+    CategoryDisplayUpdated, CategoryRenamed, CategoryReparented, CategoryRetired,
+    METADATA_SUBJECT_TYPE, MetadataUpdated, PRODUCT_SUBJECT_TYPE, PlanTierUpdated, ProductCreated,
+    ProductDeprecated, ProductDiscarded, ProductHeadSaved, ProductPublished, RecognizedCodeUpdated,
+    RecognizedUnitUpdated, SKU_SUBJECT_TYPE, SOURCE, SkuCreated, SkuDeprecated, SkuDiscarded,
+    SkuHeadSaved, SkuPublished, TOPIC,
 };
 
 const TENANT: Uuid = Uuid::from_u128(0x7e_42);
@@ -162,6 +165,35 @@ async fn enqueue_one(
         expected.push((entity_id.to_string(), type_id));
         return;
     }
+    if THE_TAXONOMY_EIGHT.iter().any(|(name, _, _)| *name == token) {
+        // Before the `Updated` suffix check below: three of these end in it
+        // too, and are not set events.
+        let entity_kind = match token {
+            "MetadataUpdated" => "product",
+            "AttributeDefinitionUpdated" => "attribute_definition",
+            _ => "category",
+        };
+        crate::infra::events::enqueue_taxonomy(
+            sink,
+            conn,
+            entity_id,
+            token,
+            &crate::infra::events::TaxonomyEventBody {
+                tenant_id: TENANT,
+                entity_kind,
+                entity_id,
+                act: "created",
+                state: "active",
+                mutation_seq: None,
+                operation_kind: None,
+            },
+            ACTOR,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue_taxonomy: {e}"));
+        expected.push((entity_id.to_string(), type_id));
+        return;
+    }
     if token.ends_with("Updated") {
         // One distinct kind per member, because the subject IS the kind.
         let set_kind = match token {
@@ -238,14 +270,71 @@ const THE_BULK_SUMMARY: &[(&str, &str, &str)] = &[(
     TRANSCRIBED_BULK_SUBJECT,
 )];
 
+/// The three subject types `02`'s events carry, transcribed.
+const TRANSCRIBED_CATEGORY_SUBJECT: &str =
+    "gts.cf.core.events.subject.v1~cf.bss.products.category.v1";
+/// [`TRANSCRIBED_CATEGORY_SUBJECT`]'s reason, for definitions.
+const TRANSCRIBED_DEFINITION_SUBJECT: &str =
+    "gts.cf.core.events.subject.v1~cf.bss.products.attribute_definition.v1";
+/// [`TRANSCRIBED_CATEGORY_SUBJECT`]'s reason, for the metadata map.
+const TRANSCRIBED_METADATA_SUBJECT: &str =
+    "gts.cf.core.events.subject.v1~cf.bss.products.metadata.v1";
+
+/// `02`'s eight — names from its §4.3 roster, ids and subject types derived by
+/// this module's naming rule (P-D-94, P-D-122) — a fifth list, for the
+/// others' reason.
+const THE_TAXONOMY_EIGHT: &[(&str, &str, &str)] = &[
+    (
+        "CategoryCreated",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.category_created.v1",
+        TRANSCRIBED_CATEGORY_SUBJECT,
+    ),
+    (
+        "CategoryRenamed",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.category_renamed.v1",
+        TRANSCRIBED_CATEGORY_SUBJECT,
+    ),
+    (
+        "CategoryReparented",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.category_reparented.v1",
+        TRANSCRIBED_CATEGORY_SUBJECT,
+    ),
+    (
+        "CategoryRetired",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.category_retired.v1",
+        TRANSCRIBED_CATEGORY_SUBJECT,
+    ),
+    (
+        "CategoryDeleted",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.category_deleted.v1",
+        TRANSCRIBED_CATEGORY_SUBJECT,
+    ),
+    (
+        "CategoryDisplayUpdated",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.category_display_updated.v1",
+        TRANSCRIBED_CATEGORY_SUBJECT,
+    ),
+    (
+        "AttributeDefinitionUpdated",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.attribute_definition_updated.v1",
+        TRANSCRIBED_DEFINITION_SUBJECT,
+    ),
+    (
+        "MetadataUpdated",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.metadata_updated.v1",
+        TRANSCRIBED_METADATA_SUBJECT,
+    ),
+];
+
 /// Every event this gear declares: §4.5's eight, 04's pair, 03's trio, 09's
-/// summary.
+/// summary, 02's eight.
 fn every_declared_event() -> Vec<(&'static str, &'static str, &'static str)> {
     THE_EIGHT
         .iter()
         .chain(THE_LIFECYCLE_PAIR)
         .chain(THE_SET_TRIO)
         .chain(THE_BULK_SUMMARY)
+        .chain(THE_TAXONOMY_EIGHT)
         .copied()
         .collect()
 }
@@ -323,6 +412,46 @@ fn declared() -> Vec<(&'static str, &'static str, &'static str)> {
             CatalogBulkOperationCompleted::SUBJECT_TYPE,
             CatalogBulkOperationCompleted::TOPIC,
         ),
+        (
+            CategoryCreated::TYPE_ID,
+            CategoryCreated::SUBJECT_TYPE,
+            CategoryCreated::TOPIC,
+        ),
+        (
+            CategoryRenamed::TYPE_ID,
+            CategoryRenamed::SUBJECT_TYPE,
+            CategoryRenamed::TOPIC,
+        ),
+        (
+            CategoryReparented::TYPE_ID,
+            CategoryReparented::SUBJECT_TYPE,
+            CategoryReparented::TOPIC,
+        ),
+        (
+            CategoryRetired::TYPE_ID,
+            CategoryRetired::SUBJECT_TYPE,
+            CategoryRetired::TOPIC,
+        ),
+        (
+            CategoryDeleted::TYPE_ID,
+            CategoryDeleted::SUBJECT_TYPE,
+            CategoryDeleted::TOPIC,
+        ),
+        (
+            CategoryDisplayUpdated::TYPE_ID,
+            CategoryDisplayUpdated::SUBJECT_TYPE,
+            CategoryDisplayUpdated::TOPIC,
+        ),
+        (
+            AttributeDefinitionUpdated::TYPE_ID,
+            AttributeDefinitionUpdated::SUBJECT_TYPE,
+            AttributeDefinitionUpdated::TOPIC,
+        ),
+        (
+            MetadataUpdated::TYPE_ID,
+            MetadataUpdated::SUBJECT_TYPE,
+            MetadataUpdated::TOPIC,
+        ),
     ]
 }
 
@@ -342,7 +471,7 @@ fn each_event_declares_its_derived_type_id_and_subject_type() {
     assert_eq!(
         declared.len(),
         transcribed.len(),
-        "thirteen events, thirteen rows: 4.5's eight, 04's pair and 03's trio"
+        "one row per declared event: 4.5's eight, 04's pair, 03's trio, 09's summary, 02's eight"
     );
 
     for ((type_id, subject_type, _), (token, want_type, want_subject)) in
@@ -419,6 +548,31 @@ fn the_subject_type_follows_the_entity_the_event_is_about() {
     assert_eq!(
         set_events, 3,
         "three are about a recognized set, and about no entity at all"
+    );
+    let taxonomy_events = declared()
+        .iter()
+        .filter(|(_, subject, _)| {
+            *subject == CATEGORY_SUBJECT_TYPE
+                || *subject == ATTRIBUTE_DEFINITION_SUBJECT_TYPE
+                || *subject == METADATA_SUBJECT_TYPE
+        })
+        .count();
+    assert_eq!(
+        taxonomy_events, 8,
+        "02's eight carry the three taxonomy subject types and none of the entity ones"
+    );
+    assert_eq!(
+        (
+            CATEGORY_SUBJECT_TYPE,
+            ATTRIBUTE_DEFINITION_SUBJECT_TYPE,
+            METADATA_SUBJECT_TYPE
+        ),
+        (
+            TRANSCRIBED_CATEGORY_SUBJECT,
+            TRANSCRIBED_DEFINITION_SUBJECT,
+            TRANSCRIBED_METADATA_SUBJECT
+        ),
+        "the three taxonomy subject types are broker-side state and are frozen here"
     );
 
     for (type_id, subject, _) in declared() {

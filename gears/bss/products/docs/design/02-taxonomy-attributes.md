@@ -127,7 +127,7 @@ actor, the scenarios and the boundary.
 2. [ ] - `p1` - On apply, re-validate against the **live** tree (the gate pinned the op, not the world): name uniqueness within the parent on `(tenant_id, parent_id, normalized(name))` — re-checked on rename **and** re-parent; violation fails `DUPLICATE_CATEGORY_NAME` - `inst-tx-name-in-parent`
 3. [ ] - `p1` - `TaxonomyWalk` inside the write transaction, under the per-tenant taxonomy writer lock (§3.4): a re-parent whose new ancestor chain contains the node itself fails `TAXONOMY_CYCLE`; a create/re-parent exceeding configured max depth or max children fails `TAXONOMY_LIMIT` naming the limit - `inst-tx-walk`
 4. [ ] - `p1` - Retire/delete **MUST** be refused while any **non-terminal** Product (`draft`/`published`/`deprecated` — the PRD's operand is "active", and `retired` *and* `discarded` are both terminal) references the category (primary or secondary) or any active child exists. **The guard reads the referencing Product's lifecycle state, never the presence of a `products_product_category` row** (item 17 of the review: discard releases the code and name reservations but leaves the category link, so on the old "non-`retired`" operand one discarded draft blocked the category permanently) — `CATEGORY_REFERENCED`, with a sample of holders named; retire marks the node closed to new assignment, delete is admitted only on a retired, empty, unreferenced node — where for the **delete** *unreferenced* means **no `products_product_category` row names the node, in any Product state** (P-D-116 row 21, 2026-09-03: the lifecycle-state operand is the retire's; a category with history is retired, never deleted) - `inst-tx-retire-guard`
-5. [ ] - `p1` - Each applied op emits its event (`CategoryCreated`/`CategoryRenamed`/`CategoryReparented`/`CategoryRetired`/`CategoryDeleted`) in the same transaction (**P-D-21**: the event is the success-path audit record); the op envelope id rides the event for approval traceability - `inst-tx-event`
+5. [ ] - `p1` - Each applied op emits its event (`CategoryCreated`/`CategoryRenamed`/`CategoryReparented`/`CategoryRetired`/`CategoryDeleted`) in the same transaction (**P-D-21**: the event is the success-path audit record); the op envelope id rides the event for approval traceability — **P-D-122 (2026-09-03): the envelope carries no id today**, so the event carries the envelope's **kind** (`operationKind`) and the request's `traceparent` is the correlation channel; minting an envelope id is `05`'s with the approval subject - `inst-tx-event`
 
 ### Assign categories to a Product
 
@@ -296,8 +296,12 @@ is deprecatable but not removable): `displayName` (localized, per Product/SKU/Ca
 
 `CategoryCreated` / `CategoryRenamed` / `CategoryReparented` / `CategoryRetired` /
 `CategoryDeleted`, `CategoryDisplayUpdated`, `AttributeDefinitionUpdated`, `MetadataUpdated` — broker-native envelope,
-ordering key `(tenant, category tree)` for taxonomy (one aggregate: the tree, matching the
-single-writer discipline) and `(tenant, entity)` for metadata. **Product/SKU** attribute-value writes emit
+ordering key `(tenant, category tree)` for the five tree acts (one aggregate: the tree, matching the
+single-writer discipline), `(tenant, entity)` for metadata **and for the two display events** —
+`CategoryDisplayUpdated` and `AttributeDefinitionUpdated` order on their own entity's id (**P-D-116**
+row 15: display writes take no writer lock, so the tree key would claim a serialization the door
+does not provide; the row is what serializes them). One body for the eight (`TaxonomyEventBody`,
+**P-D-122**), emitted in the mutating transaction on both sinks. **Product/SKU** attribute-value writes emit
 no event of their own (category display values emit `CategoryDisplayUpdated`, above): they are entity content and ride `ProductHeadSaved`/`SkuHeadSaved` (**P-D-27**: a save lands on the head in every non-terminal state, not only on a draft)
 (explicit "no event" record per 01 §4.5 rule).
 

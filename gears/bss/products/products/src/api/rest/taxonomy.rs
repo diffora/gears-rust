@@ -45,7 +45,7 @@ use chrono::Utc;
 use toolkit::api::OpenApiRegistry;
 use toolkit::api::canonical_prelude::{CanonicalError, resource_error};
 use toolkit::api::operation_builder::OperationBuilder;
-use toolkit_db::secure::AccessScope;
+use toolkit_db::secure::{AccessScope, TxConfig};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
@@ -59,6 +59,8 @@ use crate::domain::governance::{
 use crate::domain::live_op::GovernedLiveOp;
 use crate::domain::taxonomy::{DefinitionState, TaxonomyLimits};
 use crate::domain::validation::ValidationReport;
+use crate::infra::events::{self, TaxonomyEventBody};
+use crate::infra::storage::RepoError;
 use crate::infra::storage::repo::{self, RefusalSubject};
 
 /// The `OpenAPI` tag every door registers under.
@@ -586,6 +588,291 @@ fn violation(code: &'static str, field: &'static str, detail: impl Into<String>)
     DomainError::Validation(report)
 }
 
+/// The doors' transaction error channel — `recognized_sets`' shape: a
+/// refusal rolls the transaction back and is audited outside it, a repository
+/// failure is rendered as one, and an event that could not be enqueued rolls
+/// the act back too (`inst-tx-event`, `inst-ad-event`,
+/// `inst-av-category-branch`, `inst-md-*`: the event is the success-path
+/// audit record, P-D-21, so an act it cannot announce did not happen).
+enum TxError {
+    Refused(DomainError),
+    Repo(RepoError),
+    Events(events::EventsError),
+}
+
+impl From<toolkit_db::DbError> for TxError {
+    fn from(error: toolkit_db::DbError) -> Self {
+        Self::Repo(RepoError::Db(error.to_string()))
+    }
+}
+
+impl From<RepoError> for TxError {
+    fn from(error: RepoError) -> Self {
+        Self::Repo(error)
+    }
+}
+
+impl From<events::EventsError> for TxError {
+    fn from(error: events::EventsError) -> Self {
+        Self::Events(error)
+    }
+}
+
+/// The retryable-contention extractor: only a driver error can be contention.
+fn door_contention_db_err(error: &TxError) -> Option<&sea_orm::DbErr> {
+    match error {
+        TxError::Repo(RepoError::Driver { source, .. }) => Some(source),
+        TxError::Repo(_) | TxError::Refused(_) | TxError::Events(_) => None,
+    }
+}
+
+/// Render a transaction's non-refusal failure. Refusals are the caller's:
+/// they carry the gate and the subject `refuse` needs.
+fn tx_failure_to_canonical(error: TxError) -> CanonicalError {
+    match error {
+        TxError::Repo(e) => repo_error_to_canonical(&e),
+        TxError::Events(e) => {
+            repo_error_to_canonical(&RepoError::Db(format!("taxonomy event: {e}")))
+        }
+        TxError::Refused(refusal) => CanonicalError::from(refusal),
+    }
+}
+
+/// The label arm's operand: trimmed, non-blank, and clear of the PII block
+/// (`inst-md-write`'s rule applied to the one free-text field this door
+/// writes). Both refusals now go through `refuse`, so the PII block is
+/// audited like every other refusal — the former helper returned it bare.
+fn label_operand(display_label: Option<&str>) -> Result<String, DomainError> {
+    let Some(label) = display_label.map(str::trim).filter(|l| !l.is_empty()) else {
+        return Err(violation(
+            "VALIDATION",
+            "displayLabel",
+            "a label edit needs a label",
+        ));
+    };
+    let detector: Arc<dyn crate::domain::taxonomy::PiiDetector + Send + Sync> =
+        Arc::new(crate::domain::taxonomy::NoPiiPolicyDetector);
+    crate::domain::taxonomy::content_pii_block(detector.as_ref(), "displayLabel", label)
+        .map_err(|blocked| DomainError::ContentPiiBlocked(blocked.into_detail()))?;
+    Ok(label.to_owned())
+}
+
+/// One definition act, as the operations door hands it to its transaction.
+struct DefinitionAct {
+    definition_id: Uuid,
+    /// The state the envelope pinned — what the label arm, which moves
+    /// nothing, reports after the act.
+    standing_state: DefinitionState,
+    /// `(expected, to)` for a flip; `None` for the label arm.
+    flip: Option<(DefinitionState, DefinitionState)>,
+    /// The judged label, for the label arm.
+    label: Option<String>,
+    /// The act's name in the event.
+    act: &'static str,
+    /// The wire `op`, for the staleness message.
+    op_name: String,
+    /// The envelope's kind, which rides the event (P-D-122).
+    op_kind: String,
+}
+
+/// Apply one definition act and announce it, in one transaction
+/// (`inst-ad-event`, P-D-21). A stale flip is a refusal that rolls the
+/// transaction back and announces nothing.
+async fn apply_definition_act(
+    state: &ApiState,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    actor_ref: Uuid,
+    act: DefinitionAct,
+    now: chrono::DateTime<Utc>,
+) -> Result<DefinitionState, TxError> {
+    let sink = state.sink.clone();
+    let scope_tx = scope.clone();
+    let act = Arc::new(act);
+    state
+        .db
+        .db()
+        .transaction_with_retry::<DefinitionState, TxError, _, _>(
+            TxConfig::default(),
+            door_contention_db_err,
+            move |tx| {
+                let sink = sink.clone();
+                let scope = scope_tx.clone();
+                let act = Arc::clone(&act);
+                Box::pin(async move {
+                    let definition_id = act.definition_id;
+                    let state_after = if let Some((expected, to)) = act.flip {
+                        let moved = repo::flip_definition_state(
+                            tx,
+                            &scope,
+                            tenant_id,
+                            definition_id,
+                            repo::DefinitionFlip { expected, to },
+                            now,
+                        )
+                        .await?;
+                        if !moved {
+                            return Err(TxError::Refused(DomainError::StaleLiveOp(format!(
+                                "the definition was not in the state this `{}` requires",
+                                act.op_name
+                            ))));
+                        }
+                        to
+                    } else {
+                        // A value **on the definition** (P-D-108 arm 2), at
+                        // the global coordinate so the ordinary fallback chain
+                        // resolves it for every locale until a narrower one is
+                        // written; `entity_kind = 'attribute_definition'` is
+                        // one of the four the tightened CHECK admits.
+                        repo::upsert_attribute_value(
+                            tx,
+                            &scope,
+                            tenant_id,
+                            repo::AttributeCoordinate {
+                                entity_kind: "attribute_definition",
+                                entity_id: definition_id,
+                                definition_id,
+                                locale: "",
+                                region: "",
+                                brand: "",
+                            },
+                            act.label.as_deref().unwrap_or_default(),
+                            now,
+                        )
+                        .await?;
+                        act.standing_state
+                    };
+                    events::enqueue_taxonomy(
+                        &sink,
+                        tx,
+                        definition_id,
+                        events::ATTRIBUTE_DEFINITION_UPDATED_PAYLOAD_TYPE,
+                        &TaxonomyEventBody {
+                            tenant_id,
+                            entity_kind: "attribute_definition",
+                            entity_id: definition_id,
+                            act: act.act,
+                            state: state_after.as_str(),
+                            mutation_seq: None,
+                            operation_kind: Some(&act.op_kind),
+                        },
+                        actor_ref,
+                    )
+                    .await?;
+                    Ok(state_after)
+                })
+            },
+        )
+        .await
+}
+
+/// One coordinate the category live-value door writes, owned for the
+/// transaction.
+struct DisplayWrite {
+    definition_id: Uuid,
+    locale: String,
+    region: String,
+    brand: String,
+    /// `None` removes the coordinate.
+    value: Option<String>,
+}
+
+/// One live-value patch, as the door hands it to its transaction.
+struct DisplayPatch {
+    category_id: Uuid,
+    /// The caller's `If-Match` on `products_category.mutation_seq`.
+    expected_seq: i64,
+    writes: Vec<DisplayWrite>,
+}
+
+/// Spend the token, write the values and announce `CategoryDisplayUpdated`,
+/// in one transaction (`inst-av-category-branch`, P-D-21). The event orders
+/// on the category's own id (P-D-116 row 15) and carries the token this act
+/// won; a mismatch is a refusal that rolls the transaction back.
+async fn write_display_values(
+    state: &ApiState,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    actor_ref: Uuid,
+    patch: DisplayPatch,
+    now: chrono::DateTime<Utc>,
+) -> Result<i64, TxError> {
+    let sink = state.sink.clone();
+    let scope_tx = scope.clone();
+    let patch = Arc::new(patch);
+    state
+        .db
+        .db()
+        .transaction_with_retry::<i64, TxError, _, _>(
+            TxConfig::default(),
+            door_contention_db_err,
+            move |tx| {
+                let sink = sink.clone();
+                let scope = scope_tx.clone();
+                let patch = Arc::clone(&patch);
+                Box::pin(async move {
+                    let category_id = patch.category_id;
+                    let bumped = repo::bump_category_mutation_seq(
+                        tx,
+                        &scope,
+                        tenant_id,
+                        category_id,
+                        patch.expected_seq,
+                        now,
+                    )
+                    .await?
+                    // 409 — `design/02` §3.3's status for the door's own
+                    // precondition. It rode `Validation` as a 400 until
+                    // 2026-09-03.
+                    .map_err(|mismatch| TxError::Refused(DomainError::from(mismatch)))?;
+
+                    for write in &patch.writes {
+                        let coordinate = repo::AttributeCoordinate {
+                            entity_kind: "category",
+                            entity_id: category_id,
+                            definition_id: write.definition_id,
+                            locale: &write.locale,
+                            region: &write.region,
+                            brand: &write.brand,
+                        };
+                        match write.value.as_deref() {
+                            Some(text) => {
+                                repo::upsert_attribute_value(
+                                    tx, &scope, tenant_id, coordinate, text, now,
+                                )
+                                .await?;
+                            }
+                            None => {
+                                repo::delete_attribute_value(tx, &scope, tenant_id, coordinate)
+                                    .await?;
+                            }
+                        }
+                    }
+
+                    events::enqueue_taxonomy(
+                        &sink,
+                        tx,
+                        crate::infra::taxonomy::metadata_aggregate(category_id),
+                        events::CATEGORY_DISPLAY_UPDATED_PAYLOAD_TYPE,
+                        &TaxonomyEventBody {
+                            tenant_id,
+                            entity_kind: "category",
+                            entity_id: category_id,
+                            act: "display_updated",
+                            state: "active",
+                            mutation_seq: Some(bumped),
+                            operation_kind: None,
+                        },
+                        actor_ref,
+                    )
+                    .await?;
+                    Ok(bumped)
+                })
+            },
+        )
+        .await
+}
+
 /// The configured ceilings as the domain rule wants them.
 fn limits_of(state: &ApiState) -> TaxonomyLimits {
     TaxonomyLimits {
@@ -635,6 +922,7 @@ async fn create_category(
     let normalized = crate::domain::name::normalize(&name);
     let written = crate::infra::taxonomy::create_under_lock(
         &state.db,
+        &state.sink,
         &scope,
         repo::NewCategory {
             tenant_id,
@@ -643,6 +931,7 @@ async fn create_category(
             name: &name,
             name_normalized: &normalized,
         },
+        actor_ref,
         limits_of(&state),
         now,
     )
@@ -770,8 +1059,10 @@ async fn execute_category_operation(
             };
             crate::infra::taxonomy::rename_under_lock(
                 &state.db,
+                &state.sink,
                 &scope,
                 tenant_id,
+                actor_ref,
                 category_id,
                 name,
                 now,
@@ -781,8 +1072,10 @@ async fn execute_category_operation(
         "reparent" => {
             crate::infra::taxonomy::reparent_under_lock(
                 &state.db,
+                &state.sink,
                 &scope,
                 tenant_id,
+                actor_ref,
                 category_id,
                 body.parent_id,
                 limits_of(&state),
@@ -792,8 +1085,10 @@ async fn execute_category_operation(
         }
         "retire" => crate::infra::taxonomy::retire_under_lock(
             &state.db,
+            &state.sink,
             &scope,
             tenant_id,
+            actor_ref,
             category_id,
             RETIRE_SAMPLE,
             now,
@@ -803,8 +1098,10 @@ async fn execute_category_operation(
         "delete" => {
             crate::infra::taxonomy::delete_under_lock(
                 &state.db,
+                &state.sink,
                 &scope,
                 tenant_id,
+                actor_ref,
                 category_id,
                 RETIRE_SAMPLE,
             )
@@ -894,30 +1191,74 @@ async fn create_definition(
         .await);
     }
 
-    let conn = state.db.conn().map_err(|e| {
-        repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
-    })?;
     let definition_id = Uuid::now_v7();
-    let stored = repo::insert_attribute_definition(
-        &conn,
-        &scope,
-        repo::NewAttributeDefinition {
-            tenant_id,
-            definition_id,
-            key: &key,
-            value_type: body.value_type.trim(),
-            localized: body.localized,
-            region_scope: body.region_scope.trim(),
-            brand_scope: body.brand_scope.trim(),
-            // Operator-authored, so no registry provenance: `seeded_by` is
-            // the well-known seeds' marker and inventing one here would make
-            // an operator's definition undeletable by the seed guard.
-            seeded_by: None,
-        },
-        now,
-    )
-    .await
-    .map_err(|e| repo_error_to_canonical(&e))?;
+    // The insert and its `AttributeDefinitionUpdated` (act `created` — the
+    // roster has no `Created`, `inst-ad-event`) are one transaction. Owned
+    // copies for the closure, which runs once per attempt.
+    let sink = state.sink.clone();
+    let scope_tx = scope.clone();
+    let key_tx = key.clone();
+    let value_type = body.value_type.trim().to_owned();
+    let region_scope = body.region_scope.trim().to_owned();
+    let brand_scope = body.brand_scope.trim().to_owned();
+    let localized = body.localized;
+    let stored = state
+        .db
+        .db()
+        .transaction_with_retry::<repo::AttributeDefinitionRecord, TxError, _, _>(
+            TxConfig::default(),
+            door_contention_db_err,
+            move |tx| {
+                let sink = sink.clone();
+                let scope = scope_tx.clone();
+                let key = key_tx.clone();
+                let value_type = value_type.clone();
+                let region_scope = region_scope.clone();
+                let brand_scope = brand_scope.clone();
+                Box::pin(async move {
+                    let stored = repo::insert_attribute_definition(
+                        tx,
+                        &scope,
+                        repo::NewAttributeDefinition {
+                            tenant_id,
+                            definition_id,
+                            key: &key,
+                            value_type: &value_type,
+                            localized,
+                            region_scope: &region_scope,
+                            brand_scope: &brand_scope,
+                            // Operator-authored, so no registry provenance:
+                            // `seeded_by` is the well-known seeds' marker and
+                            // inventing one here would make an operator's
+                            // definition undeletable by the seed guard.
+                            seeded_by: None,
+                        },
+                        now,
+                    )
+                    .await?;
+                    events::enqueue_taxonomy(
+                        &sink,
+                        tx,
+                        definition_id,
+                        events::ATTRIBUTE_DEFINITION_UPDATED_PAYLOAD_TYPE,
+                        &TaxonomyEventBody {
+                            tenant_id,
+                            entity_kind: "attribute_definition",
+                            entity_id: definition_id,
+                            act: "created",
+                            state: stored.state.as_str(),
+                            mutation_seq: None,
+                            operation_kind: None,
+                        },
+                        actor_ref,
+                    )
+                    .await?;
+                    Ok(stored)
+                })
+            },
+        )
+        .await
+        .map_err(tx_failure_to_canonical)?;
 
     Ok((
         StatusCode::CREATED,
@@ -1089,13 +1430,51 @@ async fn execute_definition_operation(
         }
     }
 
-    let state_after = if let Some(flip) = flip {
-        let to = flip.to;
-        let moved =
-            repo::flip_definition_state(&conn, &scope, tenant_id, record.definition_id, flip, now)
-                .await
-                .map_err(|e| repo_error_to_canonical(&e))?;
-        if !moved {
+    let label = if flip.is_some() {
+        None
+    } else {
+        match label_operand(body.display_label.as_deref()) {
+            Ok(label) => Some(label),
+            Err(refusal) => {
+                return Err(refuse(
+                    &state,
+                    &scope,
+                    tenant_id,
+                    actor_ref,
+                    Gate::Definition,
+                    key,
+                    refusal,
+                )
+                .await);
+            }
+        }
+    };
+    let act: &'static str = match flip.as_ref().map(|f| f.to) {
+        Some(DefinitionState::Deprecated) => "deprecated",
+        Some(DefinitionState::Removed) => "removed",
+        Some(DefinitionState::Active) => "relisted",
+        None => "label_updated",
+    };
+    let outcome = apply_definition_act(
+        &state,
+        &scope,
+        tenant_id,
+        actor_ref,
+        DefinitionAct {
+            definition_id: record.definition_id,
+            standing_state: record.state,
+            flip: flip.as_ref().map(|f| (f.expected, f.to)),
+            label,
+            act,
+            op_name: body.op.clone(),
+            op_kind: op.kind.clone(),
+        },
+        now,
+    )
+    .await;
+    let state_after = match outcome {
+        Ok(state_after) => state_after,
+        Err(TxError::Refused(refusal)) => {
             return Err(refuse(
                 &state,
                 &scope,
@@ -1103,34 +1482,11 @@ async fn execute_definition_operation(
                 actor_ref,
                 Gate::Definition,
                 key,
-                DomainError::StaleLiveOp(format!(
-                    "the definition was not in the state this `{}` requires",
-                    body.op
-                )),
+                refusal,
             )
             .await);
         }
-        to
-    } else {
-        let Some(label) = body
-            .display_label
-            .as_deref()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-        else {
-            return Err(refuse(
-                &state,
-                &scope,
-                tenant_id,
-                actor_ref,
-                Gate::Definition,
-                key,
-                violation("VALIDATION", "displayLabel", "a label edit needs a label"),
-            )
-            .await);
-        };
-        write_definition_label(&state, &conn, &scope, tenant_id, &record, label, now).await?;
-        record.state
+        Err(failure) => return Err(tx_failure_to_canonical(failure)),
     };
 
     Ok((
@@ -1142,54 +1498,6 @@ async fn execute_definition_operation(
         }),
     )
         .into_response())
-}
-
-/// Write a definition's display label as an attribute value **on the
-/// definition** (P-D-108 arm 2).
-///
-/// Keyed `entity_kind = 'attribute_definition'`, which is one of the four the
-/// tightened `chk_products_attribute_value_entity_kind` admits, and written
-/// at the global coordinate so the ordinary fallback chain resolves it for
-/// every locale until a narrower one is written. The value's definition is
-/// `displayName`, one of the well-known seeds — the label resolves through the
-/// same chain every other display name uses, which is the category branch's
-/// shape applied one level up.
-async fn write_definition_label(
-    state: &ApiState,
-    conn: &impl toolkit_db::secure::DBRunner,
-    scope: &AccessScope,
-    tenant_id: Uuid,
-    record: &repo::AttributeDefinitionRecord,
-    label: &str,
-    now: chrono::DateTime<Utc>,
-) -> Result<(), CanonicalError> {
-    let detector: Arc<dyn crate::domain::taxonomy::PiiDetector + Send + Sync> =
-        Arc::new(crate::domain::taxonomy::NoPiiPolicyDetector);
-    if let Err(blocked) =
-        crate::domain::taxonomy::content_pii_block(detector.as_ref(), "displayLabel", label)
-    {
-        return Err(CanonicalError::from(DomainError::ContentPiiBlocked(
-            blocked.into_detail(),
-        )));
-    }
-    let _ = state;
-    repo::upsert_attribute_value(
-        conn,
-        scope,
-        tenant_id,
-        repo::AttributeCoordinate {
-            entity_kind: "attribute_definition",
-            entity_id: record.definition_id,
-            definition_id: record.definition_id,
-            locale: "",
-            region: "",
-            brand: "",
-        },
-        label,
-        now,
-    )
-    .await
-    .map_err(|e| repo_error_to_canonical(&e))
 }
 
 async fn patch_category_values(
@@ -1340,21 +1648,32 @@ async fn patch_category_values(
                 .create(),
         );
     }
-    let bumped = match repo::bump_category_mutation_seq(
-        &conn,
+    let outcome = write_display_values(
+        &state,
         &scope,
         tenant_id,
-        category_id,
-        body.expected_seq,
+        actor_ref,
+        DisplayPatch {
+            category_id,
+            expected_seq: body.expected_seq,
+            writes: body
+                .values
+                .iter()
+                .map(|w| DisplayWrite {
+                    definition_id: w.definition_id,
+                    locale: w.locale.clone(),
+                    region: w.region.clone(),
+                    brand: w.brand.clone(),
+                    value: w.value.clone(),
+                })
+                .collect(),
+        },
         now,
     )
-    .await
-    .map_err(|e| repo_error_to_canonical(&e))?
-    {
-        Ok(seq) => seq,
-        Err(mismatch) => {
-            // 409 — `design/02` §3.3's status for the door's own precondition.
-            // It rode `Validation` as a 400 until 2026-09-03.
+    .await;
+    let bumped = match outcome {
+        Ok(bumped) => bumped,
+        Err(TxError::Refused(refusal)) => {
             return Err(refuse(
                 &state,
                 &scope,
@@ -1362,34 +1681,12 @@ async fn patch_category_values(
                 actor_ref,
                 Gate::Category,
                 category_id.to_string(),
-                DomainError::from(mismatch),
+                refusal,
             )
             .await);
         }
+        Err(failure) => return Err(tx_failure_to_canonical(failure)),
     };
-
-    for write in &body.values {
-        let coordinate = repo::AttributeCoordinate {
-            entity_kind: "category",
-            entity_id: category_id,
-            definition_id: write.definition_id,
-            locale: &write.locale,
-            region: &write.region,
-            brand: &write.brand,
-        };
-        match write.value.as_deref() {
-            Some(text) => {
-                repo::upsert_attribute_value(&conn, &scope, tenant_id, coordinate, text, now)
-                    .await
-                    .map_err(|e| repo_error_to_canonical(&e))?;
-            }
-            None => {
-                repo::delete_attribute_value(&conn, &scope, tenant_id, coordinate)
-                    .await
-                    .map_err(|e| repo_error_to_canonical(&e))?;
-            }
-        }
-    }
 
     // One act, one bump: `mutation_seq` counts **acts, not row writes**
     // (P-D-50), so a patch carrying six coordinates moves the token by one --
@@ -1541,27 +1838,80 @@ async fn merge_metadata(
         }
     }
 
-    for (key, value) in &body.entries {
-        match value {
-            Some(text) => repo::upsert_metadata(
-                &conn,
-                &scope,
-                tenant_id,
-                entity_kind,
-                entity_id,
-                (key, text),
-                now,
-            )
-            .await
-            .map_err(|e| repo_error_to_canonical(&e))?,
-            None => {
-                repo::delete_metadata_key(&conn, &scope, tenant_id, entity_kind, entity_id, key)
-                    .await
-                    .map(|_| ())
-                    .map_err(|e| repo_error_to_canonical(&e))?;
-            }
-        }
-    }
+    // The per-key writes and `MetadataUpdated` are one transaction (`inst-md-*`
+    // placement: *"emitting `MetadataUpdated` in the same transaction"*,
+    // P-D-21). The event orders on the owning entity — `metadata_aggregate` —
+    // which is the serialization the door's `If-Match` actually provides.
+    let entries: Vec<(String, Option<String>)> = body
+        .entries
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    let kind: &'static str = if entity_kind == "product" {
+        "product"
+    } else {
+        "sku"
+    };
+    let state_after = state_now.as_str().to_owned();
+    let sink = state.sink.clone();
+    let scope_tx = scope.clone();
+    state
+        .db
+        .db()
+        .transaction_with_retry::<(), TxError, _, _>(
+            TxConfig::default(),
+            door_contention_db_err,
+            move |tx| {
+                let sink = sink.clone();
+                let scope = scope_tx.clone();
+                let entries = entries.clone();
+                let state_after = state_after.clone();
+                Box::pin(async move {
+                    for (key, value) in &entries {
+                        match value {
+                            Some(text) => {
+                                repo::upsert_metadata(
+                                    tx,
+                                    &scope,
+                                    tenant_id,
+                                    kind,
+                                    entity_id,
+                                    (key, text),
+                                    now,
+                                )
+                                .await?;
+                            }
+                            None => {
+                                repo::delete_metadata_key(
+                                    tx, &scope, tenant_id, kind, entity_id, key,
+                                )
+                                .await?;
+                            }
+                        }
+                    }
+                    events::enqueue_taxonomy(
+                        &sink,
+                        tx,
+                        crate::infra::taxonomy::metadata_aggregate(entity_id),
+                        events::METADATA_UPDATED_PAYLOAD_TYPE,
+                        &TaxonomyEventBody {
+                            tenant_id,
+                            entity_kind: kind,
+                            entity_id,
+                            act: "merged",
+                            state: &state_after,
+                            mutation_seq: None,
+                            operation_kind: None,
+                        },
+                        actor_ref,
+                    )
+                    .await?;
+                    Ok(())
+                })
+            },
+        )
+        .await
+        .map_err(tx_failure_to_canonical)?;
 
     Ok((
         StatusCode::OK,

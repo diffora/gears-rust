@@ -44,24 +44,39 @@
 //! `dod-taxonomy-events` puts the tree's five events on **one** aggregate per
 //! tenant — *"`(tenant, category tree)` as one aggregate, matching the
 //! single-writer discipline"* — and metadata on `(tenant, entity)`.
-//! [`TAXONOMY_TREE_AGGREGATE`] and [`metadata_aggregate`] are those two keys.
-//! Neither is spent yet: `infra::events` declares no payload type for any of
-//! the eight, so this module states the keys and the patch that adds the
-//! types is handed to the surface's owner.
+//! [`TAXONOMY_TREE_AGGREGATE`] and [`metadata_aggregate`] are those two keys,
+//! and both are spent: the five acts below announce themselves on the tree
+//! key **inside their own transaction**, and the doors' three other acts on
+//! the entity's id (`events::enqueue_taxonomy`, since 2026-09-03).
 //!
-//! **The two events that have no aggregate are not given one here.** §7 row
-//! 15 asks which aggregate orders `CategoryDisplayUpdated` and
-//! `AttributeDefinitionUpdated`, and says why it is not a free choice:
+//! **The two display events order on their own entity's id** (P-D-116 row
+//! 15). §7 row 15 asked which aggregate orders `CategoryDisplayUpdated` and
+//! `AttributeDefinitionUpdated` and said why it was not a free choice:
 //! *"display writes do not take the taxonomy writer lock, so the tree key
-//! would claim a serialization the door does not provide"*. Putting them on
-//! [`TAXONOMY_TREE_AGGREGATE`] would be that claim, made from this module.
+//! would claim a serialization the door does not provide"*. The row is what
+//! serializes a display write — `products_category.mutation_seq` is the door's
+//! precondition — so the entity id is the key that matches what actually
+//! orders them, and it is [`metadata_aggregate`]'s rule applied twice more.
+//!
+//! # Write and announce in one transaction
+//!
+//! Each act here takes the lock, judges on a plain connection, then opens
+//! **one transaction** for the write and its event (`inst-tx-event`, P-D-21:
+//! the event is the success-path audit record). A refusal inside travels as
+//! `Err(TaxonomyTxError::Refused)` so the transaction **rolls back** — on
+//! Postgres a failed statement aborts the transaction and a later `COMMIT`
+//! would fail on its own — and the door audits it afterwards, which is
+//! `recognized_sets`' shape. The closure owns what it captures (`FnMut`, one
+//! copy per attempt) because `transaction_with_retry`'s bound is
+//! higher-ranked over the transaction's lifetime.
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-taxonomy-writer-lock:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-taxonomy-walk:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-retire-delete-guard:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-taxonomy-events:p1
 
 use chrono::{DateTime, Utc};
-use toolkit_db::secure::AccessScope;
+use toolkit_db::secure::{AccessScope, DBRunner, TxConfig};
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
@@ -71,6 +86,8 @@ use crate::domain::taxonomy::{
     delete_verdict, depth_of, limit_verdict, retire_verdict, subtree_height,
 };
 use crate::domain::validation::ValidationReport;
+use crate::infra::broker::EventSink;
+use crate::infra::events::{self, TaxonomyEventBody};
 use crate::infra::storage::{RepoError, repo};
 
 /// The gear namespace every lock this module takes is scoped to.
@@ -164,7 +181,91 @@ async fn take_writer_lock(
     }
 }
 
-/// Re-parent one category under the writer lock, refusing a cycle.
+/// The transactions' error channel, for `transaction_with_retry`.
+///
+/// A refusal is an **error** here on purpose: returning `Err(Refused)` rolls
+/// the transaction back — nothing was announced for an act that did not
+/// happen — and [`settle`] turns it back into the `Ok(Err(refusal))` the door
+/// audits. See the module doc.
+enum TaxonomyTxError {
+    Refused(DomainError),
+    Repo(RepoError),
+    Events(events::EventsError),
+}
+
+impl From<DbError> for TaxonomyTxError {
+    fn from(error: DbError) -> Self {
+        Self::Repo(RepoError::Db(error.to_string()))
+    }
+}
+
+impl From<RepoError> for TaxonomyTxError {
+    fn from(error: RepoError) -> Self {
+        Self::Repo(error)
+    }
+}
+
+/// The retryable-contention extractor, mirroring
+/// `recognized_sets::member_contention_db_err`: only a driver error can be
+/// contention. A refusal is a decided answer and an outbox failure is not a
+/// row conflict.
+fn taxonomy_contention_db_err(error: &TaxonomyTxError) -> Option<&sea_orm::DbErr> {
+    match error {
+        TaxonomyTxError::Repo(RepoError::Driver { source, .. }) => Some(source),
+        TaxonomyTxError::Repo(_) | TaxonomyTxError::Refused(_) | TaxonomyTxError::Events(_) => None,
+    }
+}
+
+/// Fold a transaction's outcome into the shape every door here reads:
+/// storage failures outside, refusals inside.
+fn settle<T>(outcome: Result<T, TaxonomyTxError>) -> Result<Result<T, DomainError>, RepoError> {
+    match outcome {
+        Ok(value) => Ok(Ok(value)),
+        Err(TaxonomyTxError::Refused(refusal)) => Ok(Err(refusal)),
+        Err(TaxonomyTxError::Repo(repo)) => Err(repo),
+        // An event that could not be enqueued rolled the act back; the door
+        // renders it as the storage failure it is — the split
+        // `dod-create-doors` exists to prevent is an act with no announcement.
+        Err(TaxonomyTxError::Events(e)) => Err(RepoError::Db(format!("taxonomy event: {e}"))),
+    }
+}
+
+/// Announce one tree act on [`TAXONOMY_TREE_AGGREGATE`], inside the caller's
+/// transaction.
+#[allow(clippy::too_many_arguments)]
+async fn announce_tree_act(
+    sink: &EventSink,
+    tx: &(impl DBRunner + Sync),
+    tenant_id: Uuid,
+    category_id: Uuid,
+    payload_type: &str,
+    act: &'static str,
+    state: &'static str,
+    operation_kind: Option<&'static str>,
+    actor_ref: Uuid,
+) -> Result<(), TaxonomyTxError> {
+    events::enqueue_taxonomy(
+        sink,
+        tx,
+        TAXONOMY_TREE_AGGREGATE,
+        payload_type,
+        &TaxonomyEventBody {
+            tenant_id,
+            entity_kind: "category",
+            entity_id: category_id,
+            act,
+            state,
+            mutation_seq: None,
+            operation_kind,
+        },
+        actor_ref,
+    )
+    .await
+    .map_err(TaxonomyTxError::Events)
+}
+
+/// Re-parent one category under the writer lock, refusing a cycle, and
+/// announce it in the same transaction.
 ///
 /// The order is the instruction's: take the lock, **then** read the tree,
 /// **then** judge, **then** write. Reading before the lock would judge a
@@ -177,17 +278,19 @@ async fn take_writer_lock(
 /// node; [`DomainError::DuplicateCategoryName`] when the node's name is
 /// taken in the new sibling set. [`RepoError`] on a lock, storage or scope
 /// failure.
+#[allow(clippy::too_many_arguments)]
 pub async fn reparent_under_lock(
     db: &DBProvider<DbError>,
+    sink: &EventSink,
     scope: &AccessScope,
     tenant_id: Uuid,
+    actor_ref: Uuid,
     category_id: Uuid,
     new_parent: Option<Uuid>,
     limits: TaxonomyLimits,
     now: DateTime<Utc>,
 ) -> Result<Result<repo::CategoryWrite, DomainError>, RepoError> {
     let _guard = take_writer_lock(db, tenant_id).await?;
-
     let conn = db
         .conn()
         .map_err(|e| RepoError::Db(format!("taxonomy connection: {e}")))?;
@@ -213,10 +316,51 @@ pub async fn reparent_under_lock(
         return Ok(Err(refusal));
     }
 
-    repo::reparent_category(&conn, scope, tenant_id, category_id, new_parent, now).await
+    let sink = sink.clone();
+    let scope_tx = scope.clone();
+    settle(
+        db.db()
+            .transaction_with_retry::<repo::CategoryWrite, TaxonomyTxError, _, _>(
+                TxConfig::default(),
+                taxonomy_contention_db_err,
+                move |tx| {
+                    let sink = sink.clone();
+                    let scope = scope_tx.clone();
+                    Box::pin(async move {
+                        let written = repo::reparent_category(
+                            tx,
+                            &scope,
+                            tenant_id,
+                            category_id,
+                            new_parent,
+                            now,
+                        )
+                        .await?
+                        .map_err(TaxonomyTxError::Refused)?;
+                        if matches!(written, repo::CategoryWrite::Applied) {
+                            announce_tree_act(
+                                &sink,
+                                tx,
+                                tenant_id,
+                                category_id,
+                                events::CATEGORY_REPARENTED_PAYLOAD_TYPE,
+                                "reparented",
+                                "active",
+                                Some("category.reparent"),
+                                actor_ref,
+                            )
+                            .await?;
+                        }
+                        Ok(written)
+                    })
+                },
+            )
+            .await,
+    )
 }
 
-/// Rename one category under the writer lock.
+/// Rename one category under the writer lock, and announce it in the same
+/// transaction.
 ///
 /// The rename cannot close a cycle, so there is no walk — but it takes the
 /// same lock: `inst-tc-writer-lock` serializes *"taxonomy mutations"*, and a
@@ -227,20 +371,64 @@ pub async fn reparent_under_lock(
 ///
 /// [`DomainError::DuplicateCategoryName`] on a collision; [`RepoError`] on a
 /// lock, storage or scope failure.
+#[allow(clippy::too_many_arguments)]
 pub async fn rename_under_lock(
     db: &DBProvider<DbError>,
+    sink: &EventSink,
     scope: &AccessScope,
     tenant_id: Uuid,
+    actor_ref: Uuid,
     category_id: Uuid,
     name: &str,
     now: DateTime<Utc>,
 ) -> Result<Result<repo::CategoryWrite, DomainError>, RepoError> {
     let _guard = take_writer_lock(db, tenant_id).await?;
-    let conn = db
-        .conn()
-        .map_err(|e| RepoError::Db(format!("taxonomy connection: {e}")))?;
     let normalized = crate::domain::name::normalize(name);
-    repo::rename_category(&conn, scope, tenant_id, category_id, name, &normalized, now).await
+    let name = name.to_owned();
+    let sink = sink.clone();
+    let scope_tx = scope.clone();
+    settle(
+        db.db()
+            .transaction_with_retry::<repo::CategoryWrite, TaxonomyTxError, _, _>(
+                TxConfig::default(),
+                taxonomy_contention_db_err,
+                move |tx| {
+                    let sink = sink.clone();
+                    let scope = scope_tx.clone();
+                    let name = name.clone();
+                    let normalized = normalized.clone();
+                    Box::pin(async move {
+                        let written = repo::rename_category(
+                            tx,
+                            &scope,
+                            tenant_id,
+                            category_id,
+                            &name,
+                            &normalized,
+                            now,
+                        )
+                        .await?
+                        .map_err(TaxonomyTxError::Refused)?;
+                        if matches!(written, repo::CategoryWrite::Applied) {
+                            announce_tree_act(
+                                &sink,
+                                tx,
+                                tenant_id,
+                                category_id,
+                                events::CATEGORY_RENAMED_PAYLOAD_TYPE,
+                                "renamed",
+                                "active",
+                                Some("category.rename"),
+                                actor_ref,
+                            )
+                            .await?;
+                        }
+                        Ok(written)
+                    })
+                },
+            )
+            .await,
+    )
 }
 
 /// Judge a node's landing place against the configured ceilings.
@@ -302,7 +490,8 @@ fn limits_verdict_for(
     })
 }
 
-/// Create one category under the writer lock, refusing a limit breach.
+/// Create one category under the writer lock, refusing a limit breach, and
+/// announce it in the same transaction.
 ///
 /// The same order as [`reparent_under_lock`] and for the same reason: lock,
 /// read, judge, write. A create cannot close a cycle — it has no descendants
@@ -310,15 +499,16 @@ fn limits_verdict_for(
 ///
 /// # Errors
 ///
-/// [`crate::domain::taxonomy::TaxonomyLimitExceeded`] (`TAXONOMY_LIMIT` — no
-/// `DomainError` variant exists for it yet, one of the ten still owed) when the
-/// landing place breaks a configured
+/// [`crate::domain::taxonomy::TaxonomyLimitExceeded`] (`TAXONOMY_LIMIT`, as a
+/// `Validation` violation) when the landing place breaks a configured
 /// ceiling, [`DomainError::DuplicateCategoryName`] on a name already taken in
 /// the sibling set. [`RepoError`] on a lock, storage or scope failure.
 pub async fn create_under_lock(
     db: &DBProvider<DbError>,
+    sink: &EventSink,
     scope: &AccessScope,
     new: repo::NewCategory<'_>,
+    actor_ref: Uuid,
     limits: TaxonomyLimits,
     now: DateTime<Utc>,
 ) -> Result<Result<(), DomainError>, RepoError> {
@@ -333,10 +523,60 @@ pub async fn create_under_lock(
         return Ok(Err(refusal));
     }
 
-    repo::insert_category(&conn, scope, new, now).await
+    // Owned copies: the closure below runs once per attempt and may not
+    // borrow from this frame (see the module doc).
+    let category_id = new.category_id;
+    let parent_id = new.parent_id;
+    let name = new.name.to_owned();
+    let normalized = new.name_normalized.to_owned();
+    let sink = sink.clone();
+    let scope_tx = scope.clone();
+    settle(
+        db.db()
+            .transaction_with_retry::<(), TaxonomyTxError, _, _>(
+                TxConfig::default(),
+                taxonomy_contention_db_err,
+                move |tx| {
+                    let sink = sink.clone();
+                    let scope = scope_tx.clone();
+                    let name = name.clone();
+                    let normalized = normalized.clone();
+                    Box::pin(async move {
+                        repo::insert_category(
+                            tx,
+                            &scope,
+                            repo::NewCategory {
+                                tenant_id,
+                                category_id,
+                                parent_id,
+                                name: &name,
+                                name_normalized: &normalized,
+                            },
+                            now,
+                        )
+                        .await?
+                        .map_err(TaxonomyTxError::Refused)?;
+                        announce_tree_act(
+                            &sink,
+                            tx,
+                            tenant_id,
+                            category_id,
+                            events::CATEGORY_CREATED_PAYLOAD_TYPE,
+                            "created",
+                            "active",
+                            None,
+                            actor_ref,
+                        )
+                        .await
+                    })
+                },
+            )
+            .await,
+    )
 }
 
-/// Retire one category under the writer lock, refusing a referenced node.
+/// Retire one category under the writer lock, refusing a referenced node, and
+/// announce it in the same transaction.
 ///
 /// The census and the retire share the lock so the count a refusal reports
 /// and the state a success writes are the same instant's: a product assigned
@@ -350,10 +590,13 @@ pub async fn create_under_lock(
 /// `design/02` §3.3's status; it rode `Validation` as a 400 until 2026-09-03)
 /// when a non-terminal product or an active child still holds the node.
 /// [`RepoError`] on a lock, storage or scope failure.
+#[allow(clippy::too_many_arguments)]
 pub async fn retire_under_lock(
     db: &DBProvider<DbError>,
+    sink: &EventSink,
     scope: &AccessScope,
     tenant_id: Uuid,
+    actor_ref: Uuid,
     category_id: Uuid,
     sample: u64,
     now: DateTime<Utc>,
@@ -368,19 +611,43 @@ pub async fn retire_under_lock(
     if let Err(referenced) = retire_verdict(&census) {
         return Ok(Err(DomainError::from(referenced)));
     }
-
-    Ok(Ok(repo::retire_category(
-        &conn,
-        scope,
-        tenant_id,
-        category_id,
-        now,
+    let sink = sink.clone();
+    let scope_tx = scope.clone();
+    settle(
+        db.db()
+            .transaction_with_retry::<repo::CategoryWrite, TaxonomyTxError, _, _>(
+                TxConfig::default(),
+                taxonomy_contention_db_err,
+                move |tx| {
+                    let sink = sink.clone();
+                    let scope = scope_tx.clone();
+                    Box::pin(async move {
+                        let written =
+                            repo::retire_category(tx, &scope, tenant_id, category_id, now).await?;
+                        if matches!(written, repo::CategoryWrite::Applied) {
+                            announce_tree_act(
+                                &sink,
+                                tx,
+                                tenant_id,
+                                category_id,
+                                events::CATEGORY_RETIRED_PAYLOAD_TYPE,
+                                "retired",
+                                "retired",
+                                Some("category.retire"),
+                                actor_ref,
+                            )
+                            .await?;
+                        }
+                        Ok(written)
+                    })
+                },
+            )
+            .await,
     )
-    .await?))
 }
 
 /// Delete one **retired** category under the writer lock, refusing a node
-/// with history.
+/// with history, and announce it in the same transaction.
 ///
 /// **The delete has its own census, and it reads presence** (**P-D-116 row
 /// 21**): any `products_product_category` row naming the node, in any Product
@@ -405,8 +672,10 @@ pub async fn retire_under_lock(
 /// names the node. [`RepoError`] on a lock, storage or scope failure.
 pub async fn delete_under_lock(
     db: &DBProvider<DbError>,
+    sink: &EventSink,
     scope: &AccessScope,
     tenant_id: Uuid,
+    actor_ref: Uuid,
     category_id: Uuid,
     sample: u64,
 ) -> Result<Result<repo::CategoryWrite, DomainError>, RepoError> {
@@ -420,14 +689,40 @@ pub async fn delete_under_lock(
     if let Err(referenced) = delete_verdict(&census) {
         return Ok(Err(DomainError::from(referenced)));
     }
-
-    Ok(Ok(repo::delete_retired_category(
-        &conn,
-        scope,
-        tenant_id,
-        category_id,
+    let sink = sink.clone();
+    let scope_tx = scope.clone();
+    settle(
+        db.db()
+            .transaction_with_retry::<repo::CategoryWrite, TaxonomyTxError, _, _>(
+                TxConfig::default(),
+                taxonomy_contention_db_err,
+                move |tx| {
+                    let sink = sink.clone();
+                    let scope = scope_tx.clone();
+                    Box::pin(async move {
+                        let written =
+                            repo::delete_retired_category(tx, &scope, tenant_id, category_id)
+                                .await?;
+                        if matches!(written, repo::CategoryWrite::Applied) {
+                            announce_tree_act(
+                                &sink,
+                                tx,
+                                tenant_id,
+                                category_id,
+                                events::CATEGORY_DELETED_PAYLOAD_TYPE,
+                                "deleted",
+                                "deleted",
+                                Some("category.delete"),
+                                actor_ref,
+                            )
+                            .await?;
+                        }
+                        Ok(written)
+                    })
+                },
+            )
+            .await,
     )
-    .await?))
 }
 
 #[cfg(test)]

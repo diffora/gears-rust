@@ -14,11 +14,12 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::{
-    EntityKind, EventBodyCore, EventEnvelope, PARTITIONS, PRODUCT_CREATED_PAYLOAD_TYPE,
-    PRODUCT_DISCARDED_PAYLOAD_TYPE, PRODUCT_HEAD_SAVED_PAYLOAD_TYPE,
+    CATEGORY_DISPLAY_UPDATED_PAYLOAD_TYPE, EntityKind, EventBodyCore, EventEnvelope, PARTITIONS,
+    PRODUCT_CREATED_PAYLOAD_TYPE, PRODUCT_DISCARDED_PAYLOAD_TYPE, PRODUCT_HEAD_SAVED_PAYLOAD_TYPE,
     PRODUCT_PUBLISHED_PAYLOAD_TYPE, PublishedEventBody, RetiredEventBody, SCHEMA_REFS,
     SKU_CREATED_PAYLOAD_TYPE, SKU_DISCARDED_PAYLOAD_TYPE, SKU_HEAD_SAVED_PAYLOAD_TYPE,
-    SKU_PUBLISHED_PAYLOAD_TYPE, SKU_RETIRED_PAYLOAD_TYPE, partition_for, schema_ref_for,
+    SKU_PUBLISHED_PAYLOAD_TYPE, SKU_RETIRED_PAYLOAD_TYPE, TaxonomyEventBody, partition_for,
+    schema_ref_for,
 };
 
 /// §4.5's roster, written out here rather than read from the code under test.
@@ -78,27 +79,24 @@ const THE_SET_TRIO: &[&str] = &[
 /// uncountable.
 const THE_BULK_SUMMARY: &[&str] = &["CatalogBulkOperationCompleted"];
 
-/// Slice `02`'s six (`dod-taxonomy-events`), its own list for the reason
-/// every list above is its own: folding them into [`THE_EIGHT`] would claim
-/// §4.5 announces them, and §4.5 announces eight.
+/// Slice `02`'s eight (`dod-taxonomy-events`), transcribed from its §4.3
+/// roster — its own list for the reason every list above is its own: folding
+/// them into [`THE_EIGHT`] would claim §4.5 announces them, and §4.5
+/// announces eight.
 ///
-/// **Six of eight.** The `DoD` names eight; `CategoryDisplayUpdated` and
-/// `AttributeDefinitionUpdated` are **deliberately absent** and stay so —
-/// `features/taxonomy-attributes.md` §7 row 15 asks which aggregate orders
-/// them and states why it is not a free choice: *"display writes do not take
-/// the taxonomy writer lock, so the tree key would claim a serialization the
-/// door does not provide"*. A payload type declared without an aggregate
-/// would leave that choice to whichever door emitted first, which is the
-/// choice the row reserves. Read six here as six, not as a mislaid eight.
-///
-/// All six are **registered ahead of their enqueue**, exactly as `04`'s
-/// remaining five are: the taxonomy's doors have no REST routes (§7 row 16).
-const THE_TAXONOMY_SIX: &[&str] = &[
+/// **Eight of eight since 2026-09-03.** Two were held out while §7 row 15
+/// asked which aggregate orders `CategoryDisplayUpdated` and
+/// `AttributeDefinitionUpdated`; **P-D-116** row 15 answered *their own
+/// entity's id*, and both joined with that aggregate. All eight are emitted
+/// through `enqueue_taxonomy`, inside their acts' transactions.
+const THE_TAXONOMY_EIGHT: &[&str] = &[
     "CategoryCreated",
     "CategoryRenamed",
     "CategoryReparented",
     "CategoryRetired",
     "CategoryDeleted",
+    "CategoryDisplayUpdated",
+    "AttributeDefinitionUpdated",
     "MetadataUpdated",
 ];
 
@@ -143,12 +141,14 @@ fn every_declared_token_belongs_to_exactly_one_entry_point() {
     let deprecated = THE_LIFECYCLE_PAIR;
     let set_events = THE_SET_TRIO;
     let bulk = THE_BULK_SUMMARY;
+    let taxonomy = THE_TAXONOMY_EIGHT;
 
     for (token, _) in SCHEMA_REFS {
         let owners = usize::from(published.contains(token))
             + usize::from(deprecated.contains(token))
             + usize::from(set_events.contains(token))
-            + usize::from(bulk.contains(token));
+            + usize::from(bulk.contains(token))
+            + usize::from(taxonomy.contains(token));
         assert!(
             owners <= 1,
             "{token} is claimed by more than one entry point's guard"
@@ -156,7 +156,7 @@ fn every_declared_token_belongs_to_exactly_one_entry_point() {
         // Zero owners is the core-only default: `enqueue` builds that shape,
         // so a token no specialised guard claims is legitimately its own.
         let core_only = owners == 0;
-        let rest = THE_LIFECYCLE_REST.contains(token) || THE_TAXONOMY_SIX.contains(token);
+        let rest = THE_LIFECYCLE_REST.contains(token);
         assert_eq!(
             core_only,
             (THE_EIGHT.contains(token) && !published.contains(token)) || rest,
@@ -208,7 +208,7 @@ fn the_schema_roster_names_exactly_the_declared_events() {
             "{event} is 09's only event and carries no schema reference"
         );
     }
-    for event in THE_TAXONOMY_SIX {
+    for event in THE_TAXONOMY_EIGHT {
         assert!(
             registered.contains(event),
             "{event} is 02's taxonomy event and carries no schema reference"
@@ -221,7 +221,7 @@ fn the_schema_roster_names_exactly_the_declared_events() {
                 || THE_LIFECYCLE_REST.contains(token)
                 || THE_SET_TRIO.contains(token)
                 || THE_BULK_SUMMARY.contains(token)
-                || THE_TAXONOMY_SIX.contains(token),
+                || THE_TAXONOMY_EIGHT.contains(token),
             "{token} carries a schema reference and belongs to no declared roster: an \
              event no design document announces is a promise nothing backs"
         );
@@ -233,7 +233,7 @@ fn the_schema_roster_names_exactly_the_declared_events() {
             + THE_LIFECYCLE_REST.len()
             + THE_SET_TRIO.len()
             + THE_BULK_SUMMARY.len()
-            + THE_TAXONOMY_SIX.len(),
+            + THE_TAXONOMY_EIGHT.len(),
         "the roster must carry each declared event exactly once"
     );
 }
@@ -384,6 +384,37 @@ fn a_publish_events_version_stays_flat_inside_the_body() {
         "the core's five must still be flat beside it"
     );
     assert_eq!(json["schemaRef"], "bss-products.ProductPublished.v1.0.0");
+}
+
+/// **A taxonomy body renders flat under `data`, omits its absent optionals,
+/// and carries its own versioned schema reference** (P-D-122).
+///
+/// `mutationSeq` present and `operationKind` absent is the display door's
+/// shape exactly: it spends a token and rides no envelope.
+#[test]
+fn a_taxonomy_body_renders_flat_and_omits_its_absent_optionals() {
+    let body = TaxonomyEventBody {
+        tenant_id: Uuid::from_u128(0x7e_42),
+        entity_kind: "category",
+        entity_id: Uuid::from_u128(0x_1111),
+        act: "display_updated",
+        state: "active",
+        mutation_seq: Some(4),
+        operation_kind: None,
+    };
+    let json = rendered(&body, CATEGORY_DISPLAY_UPDATED_PAYLOAD_TYPE);
+    assert_eq!(json["data"]["entityKind"], "category");
+    assert_eq!(json["data"]["act"], "display_updated");
+    assert_eq!(json["data"]["state"], "active");
+    assert_eq!(json["data"]["mutationSeq"], 4);
+    assert!(
+        json["data"].get("operationKind").is_none(),
+        "absence is omitted, not null"
+    );
+    assert_eq!(
+        json["schemaRef"],
+        "bss-products.CategoryDisplayUpdated.v1.0.0"
+    );
 }
 
 /// v1 retirement omits `mustMigrateBy` and a Product-side `replacedBy`.

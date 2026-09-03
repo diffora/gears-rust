@@ -93,14 +93,14 @@ use uuid::Uuid;
 /// the prefix this door enqueues against cannot disagree. The duplication an
 /// earlier revision of this doc warned about was closed when `gear.rs` came
 /// into scope; the warning outlived it and is removed here.
-pub(crate) const OUTBOX_TABLE_PREFIX: &str = "bss_products_outbox";
+pub const OUTBOX_TABLE_PREFIX: &str = "bss_products_outbox";
 
 /// The one queue every Foundation event on this gear's Product/SKU surface
 /// enqueues onto. One queue rather than one per entity: P-D-27's ordering
 /// key is `(tenant, aggregate)`, not `(tenant, aggregate, entity_kind)`, and
 /// splitting the queue would not change the partitioning, only the registry
 /// entry a consumer subscribes to.
-pub(crate) const QUEUE_NAME: &str = "bss_products_events";
+pub const QUEUE_NAME: &str = "bss_products_events";
 
 /// The fixed partition count P-D-22's modulus divides by. Chosen once, here,
 /// so [`partition_for`] and the queue's own registration in `gear.rs` — which
@@ -108,7 +108,7 @@ pub(crate) const QUEUE_NAME: &str = "bss_products_events";
 /// registration with a
 /// different count fails closed with `OutboxError::PartitionCountMismatch`
 /// rather than silently reassigning aggregates to different partitions.
-pub(crate) const PARTITIONS: u16 = 8;
+pub const PARTITIONS: u16 = 8;
 
 /// The queue's processor until Phase 8 binds the real one.
 ///
@@ -146,7 +146,7 @@ pub(crate) const PARTITIONS: u16 = 8;
 ///    the broker leg this handler does not yet make. Recorded rather than
 ///    estimated — a number produced against a handler that holds every
 ///    message would describe this stub, not the system.
-pub(crate) struct PendingBrokerProducer;
+pub struct PendingBrokerProducer;
 
 #[async_trait::async_trait]
 impl toolkit_db::outbox::LeasedMessageHandler for PendingBrokerProducer {
@@ -263,19 +263,20 @@ pub(crate) const SKU_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE: &str = "SkuRetirementEff
 /// tenant, matching `inst-tc-writer-lock`'s per-tenant serialization. A
 /// per-node key would promise an ordering across nodes that nothing enforces.
 ///
-/// **Declared, not yet emitted — and the reason has changed.** It read *"the
-/// taxonomy's doors have no REST routes (§7 row 16), so nothing calls
-/// [`enqueue_body`] with these yet"*. **P-D-106** doored them and
-/// `api::rest::taxonomy` ships; what blocks the emit now is the other sink.
-/// `EventSink::Broker`'s arm needs one **typed** struct per payload type in
-/// `infra::broker`, as `RecognizedUnitUpdated` and its two siblings have, and
-/// that file is not slice `02`'s. Emitting on the interim sink alone would be
-/// a door that announces in one deployment shape and is silent in the other,
-/// which is worse than not announcing at all. They are declared with their
-/// [`SCHEMA_REFS`] entries anyway, together, because that pairing is the one
-/// an exhaustive `match` cannot enforce: a type added without its entry
-/// compiles clean, `schema_ref_for` answers `None`, and the act rolls back at
-/// runtime rather than at build time.
+/// **Emitted since 2026-09-03, on both sinks, through [`enqueue_taxonomy`].**
+/// The history matters: they were declared with no emitter twice over —
+/// first because the doors had no route (P-D-106 gave them one), then because
+/// the broker arm had no typed struct for them and the argument ran *"a door
+/// that announces in one deployment shape and is silent in the other"*. That
+/// argument was wrong in one word: the broker arm answers
+/// [`EventsError::NoTypedEvent`], which is a **refusal** that rolls the act
+/// back, not silence — `04`'s retirement events shipped on exactly that
+/// footing. Still, the completion is the typed structs, and `infra::broker`
+/// carries all eight now (**P-D-122**). Declared with their [`SCHEMA_REFS`]
+/// entries together, because that pairing is the one an exhaustive `match`
+/// cannot enforce: a type added without its entry compiles clean,
+/// `schema_ref_for` answers `None`, and the act rolls back at runtime rather
+/// than at build time.
 pub(crate) const CATEGORY_CREATED_PAYLOAD_TYPE: &str = "CategoryCreated";
 /// See [`CATEGORY_CREATED_PAYLOAD_TYPE`].
 pub(crate) const CATEGORY_RENAMED_PAYLOAD_TYPE: &str = "CategoryRenamed";
@@ -286,14 +287,29 @@ pub(crate) const CATEGORY_RETIRED_PAYLOAD_TYPE: &str = "CategoryRetired";
 /// See [`CATEGORY_CREATED_PAYLOAD_TYPE`].
 pub(crate) const CATEGORY_DELETED_PAYLOAD_TYPE: &str = "CategoryDeleted";
 
+/// `CategoryDisplayUpdated` — the category live-value door's act. Orders on
+/// **its own entity's id** (**P-D-116** row 15), not the tree key: display
+/// writes take no writer lock, so the tree key would claim a serialization the
+/// door does not provide; `products_category.mutation_seq` is the door's own
+/// precondition and the row is what serializes the write. The body carries the
+/// token the act spent (`mutationSeq`), which is what a consumer can order on.
+pub(crate) const CATEGORY_DISPLAY_UPDATED_PAYLOAD_TYPE: &str = "CategoryDisplayUpdated";
+
+/// `AttributeDefinitionUpdated` — every applied change to a definition
+/// (`inst-ad-event`: create, deprecate, remove, re-list, label edit; the roster
+/// has no `Created`, so the first write is an update to the roster). Same
+/// aggregate rule as its sibling above: the definition's own id.
+pub(crate) const ATTRIBUTE_DEFINITION_UPDATED_PAYLOAD_TYPE: &str = "AttributeDefinitionUpdated";
+
 /// The metadata map's act, ordering on the owning entity
 /// ([`crate::infra::taxonomy::metadata_aggregate`]): a metadata write takes no
 /// taxonomy lock and rides the entity row's own `If-Match`, so the entity is
 /// both the serialization the door provides and the key the event claims.
 ///
-/// Declared and not yet emitted, for the reason above. Its own second reason
-/// is discharged: the metadata door's grant pair landed with the door itself
-/// under **P-D-106**, and `dod-metadata-door` is ticked.
+/// Emitted by the metadata door since 2026-09-03, inside the merge's own
+/// transaction. Its own second reason was discharged earlier: the metadata
+/// door's grant pair landed with the door itself under **P-D-106**, and
+/// `dod-metadata-door` is ticked.
 pub(crate) const METADATA_UPDATED_PAYLOAD_TYPE: &str = "MetadataUpdated";
 
 /// `RecognizedUnitUpdated`'s payload type token — `design/03` §4's roster,
@@ -346,7 +362,7 @@ pub(crate) const CATALOG_BULK_OPERATION_COMPLETED_PAYLOAD_TYPE: &str =
 /// **The version is per event, not per gear.** §4.5's own rule makes an added
 /// optional field a minor bump, so one event's schema may move while the
 /// others stand still; a single gear-wide version would force false bumps or
-/// hide a real one. All eighteen read `1.0.0` today because none has shipped a
+/// hide a real one. Every entry reads `1.0.0` today because none has shipped a
 /// second shape.
 pub(crate) const SCHEMA_REFS: &[(&str, &str)] = &[
     (
@@ -443,6 +459,27 @@ pub(crate) const SCHEMA_REFS: &[(&str, &str)] = &[
         METADATA_UPDATED_PAYLOAD_TYPE,
         "bss-products.MetadataUpdated.v1.0.0",
     ),
+    (
+        CATEGORY_DISPLAY_UPDATED_PAYLOAD_TYPE,
+        "bss-products.CategoryDisplayUpdated.v1.0.0",
+    ),
+    (
+        ATTRIBUTE_DEFINITION_UPDATED_PAYLOAD_TYPE,
+        "bss-products.AttributeDefinitionUpdated.v1.0.0",
+    ),
+];
+
+/// `02`'s eight, as one roster: the tokens [`enqueue_taxonomy`] owns and
+/// [`enqueue`] refuses.
+pub(crate) const TAXONOMY_PAYLOAD_TYPES: [&str; 8] = [
+    CATEGORY_CREATED_PAYLOAD_TYPE,
+    CATEGORY_RENAMED_PAYLOAD_TYPE,
+    CATEGORY_REPARENTED_PAYLOAD_TYPE,
+    CATEGORY_RETIRED_PAYLOAD_TYPE,
+    CATEGORY_DELETED_PAYLOAD_TYPE,
+    CATEGORY_DISPLAY_UPDATED_PAYLOAD_TYPE,
+    ATTRIBUTE_DEFINITION_UPDATED_PAYLOAD_TYPE,
+    METADATA_UPDATED_PAYLOAD_TYPE,
 ];
 
 /// The versioned schema reference for a payload type, or `None` for a token
@@ -706,6 +743,14 @@ pub(crate) enum EventsError {
         "{0} carries no retirement payload and belongs to the entry point owning its body shape"
     )]
     NotARetirementEvent(String),
+    /// One of `02`'s eight tokens reached [`enqueue`], which builds the
+    /// entity body core; those carry [`TaxonomyEventBody`] and go through
+    /// [`enqueue_taxonomy`]. Same fail-closed rule as the other five guards.
+    #[error("{0} carries a taxonomy body and must be enqueued through enqueue_taxonomy")]
+    TaxonomyEventNeedsBody(String),
+    /// A token outside `02`'s eight reached [`enqueue_taxonomy`].
+    #[error("{0} is not one of the taxonomy's eight events")]
+    NotATaxonomyEvent(String),
     /// The broker arm has no [`crate::infra::broker`] typed event for this
     /// payload type.
     ///
@@ -974,6 +1019,9 @@ pub(crate) async fn enqueue(
         PRODUCT_RETIRED_PAYLOAD_TYPE | SKU_RETIRED_PAYLOAD_TYPE
     ) {
         return Err(EventsError::RetirementNeedsBody(payload_type.to_owned()));
+    }
+    if TAXONOMY_PAYLOAD_TYPES.contains(&payload_type) {
+        return Err(EventsError::TaxonomyEventNeedsBody(payload_type.to_owned()));
     }
     match sink {
         EventSink::Interim(outbox) => {
@@ -1458,6 +1506,136 @@ pub(crate) async fn enqueue_retired(
             .await
         }
         EventSink::Broker(_) => Err(EventsError::NoTypedEvent(payload_type.to_owned())),
+    }
+}
+
+/// The body every one of `02`'s eight events carries (**P-D-122**).
+///
+/// One shape for eight tokens, because the eight announce the same kind of
+/// thing — *an act on a taxonomy entity* — and differ only in which act:
+/// `entityKind` says which table, `act` says what happened, `state` is the
+/// entity's state after it. Two optionals, omitted rather than null when
+/// absent: `mutationSeq`, the token the category live-value door spent, which
+/// is the only ordering a consumer of `CategoryDisplayUpdated` can rely on
+/// (P-D-116 row 15); and `operationKind`, the `GovernedLiveOp` kind where the
+/// act rode an envelope. `inst-tx-event` asks for *"the op envelope id"* and
+/// the envelope carries none — the kind is what exists; the request's
+/// `traceparent` is the correlation channel; minting an envelope id is `05`'s
+/// with the approval subject (P-D-122 routes it).
+///
+/// Borrowed, like [`EventBodyCore`]: this is serialized once and never read
+/// back. The broker arm's owned twin is `broker::TaxonomyEventPayload`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaxonomyEventBody<'a> {
+    pub tenant_id: Uuid,
+    /// `category`, `attribute_definition`, or the metadata map's owner —
+    /// `product` / `sku`.
+    pub entity_kind: &'a str,
+    /// The entity the act touched; also the subject on the broker arm.
+    pub entity_id: Uuid,
+    /// `created`, `renamed`, `reparented`, `retired`, `deleted`,
+    /// `display_updated`, `deprecated`, `removed`, `relisted`,
+    /// `label_updated`, `merged`.
+    pub act: &'a str,
+    /// The entity's state after the act (`deleted` for a row that is gone).
+    pub state: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mutation_seq: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_kind: Option<&'a str>,
+}
+
+/// Enqueue one of `02`'s eight events — [`enqueue`]'s twin for the taxonomy
+/// body shape ([`TaxonomyEventBody`]).
+///
+/// The aggregate is the caller's: the five tree acts pass
+/// `infra::taxonomy::TAXONOMY_TREE_AGGREGATE` (one aggregate per tenant,
+/// matching the writer lock), the two display events and `MetadataUpdated`
+/// pass the entity's own id (P-D-116 row 15; `metadata_aggregate`). On the
+/// broker arm the eight typed structs partition on the tenant alone (P-D-47),
+/// so every taxonomy event of one tenant is in publish order there — a
+/// stronger ordering than the interim arm's per-aggregate one, never a weaker.
+///
+/// # Errors
+///
+/// [`EventsError::NotATaxonomyEvent`] for any other token; otherwise as
+/// [`enqueue`].
+pub(crate) async fn enqueue_taxonomy(
+    sink: &EventSink,
+    runner: &(impl DBRunner + Sync),
+    aggregate_id: Uuid,
+    payload_type: &str,
+    body: &TaxonomyEventBody<'_>,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    if !TAXONOMY_PAYLOAD_TYPES.contains(&payload_type) {
+        return Err(EventsError::NotATaxonomyEvent(payload_type.to_owned()));
+    }
+    match sink {
+        EventSink::Interim(outbox) => {
+            enqueue_body(
+                outbox,
+                runner,
+                body.tenant_id,
+                aggregate_id,
+                payload_type,
+                body,
+                actor_ref,
+            )
+            .await
+        }
+        EventSink::Broker(producer) => {
+            let payload = broker::TaxonomyEventPayload::from_body(body, actor_ref);
+            match payload_type {
+                CATEGORY_CREATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::CategoryCreated { payload })
+                        .await
+                }
+                CATEGORY_RENAMED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::CategoryRenamed { payload })
+                        .await
+                }
+                CATEGORY_REPARENTED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::CategoryReparented { payload })
+                        .await
+                }
+                CATEGORY_RETIRED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::CategoryRetired { payload })
+                        .await
+                }
+                CATEGORY_DELETED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::CategoryDeleted { payload })
+                        .await
+                }
+                CATEGORY_DISPLAY_UPDATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::CategoryDisplayUpdated { payload })
+                        .await
+                }
+                ATTRIBUTE_DEFINITION_UPDATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::AttributeDefinitionUpdated { payload })
+                        .await
+                }
+                METADATA_UPDATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::MetadataUpdated { payload })
+                        .await
+                }
+                // Unreachable behind the guard above; kept so a ninth token
+                // added to the roster without its arm is a refusal, not a
+                // silent fall-through.
+                other => return Err(EventsError::NoTypedEvent(other.to_owned())),
+            }
+            .map(|_| ())
+            .map_err(EventsError::Broker)
+        }
     }
 }
 

@@ -147,6 +147,27 @@ pub(crate) const RECOGNIZED_SET_SUBJECT_TYPE: &str =
 /// rule, applied a second time).
 pub(crate) const BULK_SUBJECT_TYPE: &str = "gts.cf.core.events.subject.v1~cf.bss.products.bulk.v1";
 
+/// The subject type for an event about a category — derived from
+/// `cf.bss.products.category.v1~`, the GTS type `05` §3.2's authz catalog
+/// declares for the category grants P-D-106 doored (P-D-94's derivation
+/// rule, applied as for the set and bulk types; **P-D-122** records it).
+pub(crate) const CATEGORY_SUBJECT_TYPE: &str =
+    "gts.cf.core.events.subject.v1~cf.bss.products.category.v1";
+
+/// The subject type for an event about an attribute definition — derived
+/// from `cf.bss.products.attribute_definition.v1~` the same way.
+pub(crate) const ATTRIBUTE_DEFINITION_SUBJECT_TYPE: &str =
+    "gts.cf.core.events.subject.v1~cf.bss.products.attribute_definition.v1";
+
+/// The subject type for `MetadataUpdated` — derived from
+/// `cf.bss.products.metadata.v1~`, the grant's own type. The **subject** is
+/// the owning entity's id and the payload's `entityKind` says which table;
+/// a `TypedEvent`'s subject type is a constant, so it cannot follow the
+/// owner's kind, and the metadata map is the resource the act is on
+/// (**P-D-122**).
+pub(crate) const METADATA_SUBJECT_TYPE: &str =
+    "gts.cf.core.events.subject.v1~cf.bss.products.metadata.v1";
+
 /// §4.5's five body-core fields plus P-D-01's two payload-borne obligations, owned.
 ///
 /// Owned rather than borrowed because [`TypedEvent`] requires
@@ -394,6 +415,147 @@ set_event! {
     "gts.cf.core.events.event_type.v1~cf.bss.products.plan_tier_updated.v1"
 }
 
+/// `02`'s eight events share one body: which entity, which act, which state
+/// it now carries (`design/02` §4.3; **P-D-122** fixed the shape). Owned for
+/// [`CatalogEventCore`]'s reason — a consumer deserializes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaxonomyEventPayload {
+    /// The owning tenant — the partition input, through [`TypedEvent::tenant_id`].
+    pub tenant_id: Uuid,
+    /// `category`, `attribute_definition`, or the metadata map's owner
+    /// (`product` / `sku`).
+    pub entity_kind: String,
+    /// The entity the act touched; also the subject.
+    pub entity_id: Uuid,
+    /// The act, in the slice's vocabulary.
+    pub act: String,
+    /// The entity's state after the act.
+    pub state: String,
+    /// The token the category live-value door spent, where the act spent one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutation_seq: Option<i64>,
+    /// The `GovernedLiveOp` kind, where the act rode an envelope.
+    /// `inst-tx-event`'s *"op envelope id"* has no operand — the envelope
+    /// carries none (**P-D-122**) — and this is what does exist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_kind: Option<String>,
+    /// The acting principal, pseudonymously — payload-borne for
+    /// [`CatalogEventCore`]'s reason.
+    pub actor_ref: Uuid,
+}
+
+impl TaxonomyEventPayload {
+    /// Owned copy of the interim body, plus the actor the broker's `Event`
+    /// has no field for.
+    pub(crate) fn from_body(
+        body: &crate::infra::events::TaxonomyEventBody<'_>,
+        actor_ref: Uuid,
+    ) -> Self {
+        Self {
+            tenant_id: body.tenant_id,
+            entity_kind: body.entity_kind.to_owned(),
+            entity_id: body.entity_id,
+            act: body.act.to_owned(),
+            state: body.state.to_owned(),
+            mutation_seq: body.mutation_seq,
+            operation_kind: body.operation_kind.map(str::to_owned),
+            actor_ref,
+        }
+    }
+}
+
+/// A taxonomy event: [`TaxonomyEventPayload`] flat, the subject the entity's
+/// id, the subject type the entity's kind.
+///
+/// A fifth macro rather than a field on [`catalog_event`]'s expansion for the
+/// reason the set events give: the body is not entity-core-shaped — no
+/// revision, no lifecycle state, a state machine of its own — so a shared
+/// core would carry fields these events cannot fill honestly.
+macro_rules! taxonomy_event {
+    ($(#[$doc:meta])* $name:ident, $type_id:literal, $subject_type:expr) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        pub(crate) struct $name {
+            /// `02`'s body, flat.
+            #[serde(flatten)]
+            pub payload: TaxonomyEventPayload,
+        }
+
+        impl TypedEvent for $name {
+            const TYPE_ID: &'static str = $type_id;
+            const TOPIC: &'static str = TOPIC;
+            const SUBJECT_TYPE: &'static str = $subject_type;
+            const SOURCE: &'static str = SOURCE;
+
+            fn subject(&self) -> Cow<'_, str> {
+                Cow::Owned(self.payload.entity_id.to_string())
+            }
+
+            /// The entity's tenant, not the producer's — the catalog events'
+            /// own override, for the same partitioning reason.
+            fn tenant_id(&self) -> Option<Uuid> {
+                Some(self.payload.tenant_id)
+            }
+
+            fn trace_parent(&self) -> Option<Cow<'_, str>> {
+                crate::infra::events::traceparent().map(Cow::Owned)
+            }
+        }
+    };
+}
+
+taxonomy_event! {
+    /// A category row was created (`inst-tx-event`).
+    CategoryCreated,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.category_created.v1",
+    CATEGORY_SUBJECT_TYPE
+}
+taxonomy_event! {
+    /// A category was renamed.
+    CategoryRenamed,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.category_renamed.v1",
+    CATEGORY_SUBJECT_TYPE
+}
+taxonomy_event! {
+    /// A category was re-parented.
+    CategoryReparented,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.category_reparented.v1",
+    CATEGORY_SUBJECT_TYPE
+}
+taxonomy_event! {
+    /// A category was retired.
+    CategoryRetired,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.category_retired.v1",
+    CATEGORY_SUBJECT_TYPE
+}
+taxonomy_event! {
+    /// A retired, empty, unreferenced category row was deleted.
+    CategoryDeleted,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.category_deleted.v1",
+    CATEGORY_SUBJECT_TYPE
+}
+taxonomy_event! {
+    /// A category's display values moved (`inst-av-category-branch`).
+    CategoryDisplayUpdated,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.category_display_updated.v1",
+    CATEGORY_SUBJECT_TYPE
+}
+taxonomy_event! {
+    /// An attribute definition was created, flipped or re-labelled
+    /// (`inst-ad-event`).
+    AttributeDefinitionUpdated,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.attribute_definition_updated.v1",
+    ATTRIBUTE_DEFINITION_SUBJECT_TYPE
+}
+taxonomy_event! {
+    /// An entity's metadata map was merged (`inst-md-*`).
+    MetadataUpdated,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.metadata_updated.v1",
+    METADATA_SUBJECT_TYPE
+}
+
 /// The batch-completion summary as a typed event — slice 09's only one.
 ///
 /// Its own declaration rather than a macro's expansion: no other event of
@@ -557,7 +719,7 @@ fn producer_system_actor() -> SecurityContext {
 /// `api::rest::ApiState`, so no door has to know which of the two is live —
 /// and so a door cannot accidentally reach the wrong one.
 #[derive(Clone)]
-pub(crate) enum EventSink {
+pub enum EventSink {
     /// **P-D-47's own shape.** The toolkit outbox whose processor is the SDK's
     /// producer; the envelope is the broker's and the id is the SDK's.
     Broker(Box<ProducerOutbox>),

@@ -38,10 +38,14 @@ use std::sync::Arc;
 
 use bss_products::domain::name;
 use bss_products::domain::taxonomy::TaxonomyLimits;
+use bss_products::infra::broker::EventSink;
+use bss_products::infra::events;
 use bss_products::infra::storage::{RepoError, repo};
 use bss_products::infra::taxonomy;
 use chrono::{TimeZone as _, Utc};
 use pg_support::Pg;
+use toolkit_db::migration_runner::run_migrations_for_testing;
+use toolkit_db::outbox::{Outbox, OutboxHandle, Partitions, outbox_migrations_with_prefix};
 use toolkit_db::secure::AccessScope;
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
@@ -49,6 +53,35 @@ use uuid::Uuid;
 const TENANT: Uuid = Uuid::from_u128(0x7e42_0000_0000_0000_0000_0000_0000_0000);
 const A: Uuid = Uuid::from_u128(0xaa11);
 const B: Uuid = Uuid::from_u128(0xbb22);
+const ACTOR: Uuid = Uuid::from_u128(0xac70);
+
+/// The interim sink over this test's database, with the outbox facility's own
+/// chain applied. Every act under the lock writes its event in its own
+/// transaction since 2026-09-03 (`dod-taxonomy-events`), so the pg tier
+/// carries the outbox tables too and these races exercise the enqueue on
+/// real Postgres. The handle must outlive the acts.
+async fn interim_sink(pg: &Pg) -> (EventSink, OutboxHandle) {
+    let db = pg.db().await;
+    run_migrations_for_testing(
+        &db,
+        outbox_migrations_with_prefix(events::OUTBOX_TABLE_PREFIX)
+            .expect("OUTBOX_TABLE_PREFIX is a fixed, valid identifier"),
+    )
+    .await
+    .expect("apply the outbox facility's own chain");
+    let handle = Outbox::builder(db)
+        .table_prefix(events::OUTBOX_TABLE_PREFIX)
+        .expect("OUTBOX_TABLE_PREFIX is a fixed, valid identifier")
+        .queue(events::QUEUE_NAME, Partitions::of(events::PARTITIONS))
+        .leased(events::PendingBrokerProducer)
+        .start()
+        .await
+        .expect("start the outbox pipeline");
+    (
+        EventSink::Interim(std::sync::Arc::clone(handle.outbox())),
+        handle,
+    )
+}
 
 /// No configured ceilings, so a race case measures the lock and the cycle
 /// rule alone.
@@ -114,20 +147,43 @@ async fn parent_of(pg: &Pg, id: Uuid) -> Option<Uuid> {
 #[ignore = "requires Docker (testcontainers)"]
 async fn the_lock_is_what_refuses_the_second_reparent() {
     let pg = Pg::applied().await;
+    let (sink, _outbox) = interim_sink(&pg).await;
     seed_two_roots(&pg).await;
 
     let first = {
         let db = Arc::new(DBProvider::<DbError>::new(pg.db().await));
+        let sink = sink.clone();
         tokio::spawn(async move {
-            taxonomy::reparent_under_lock(&db, &scope(), TENANT, A, Some(B), no_limits(), at(10))
-                .await
+            taxonomy::reparent_under_lock(
+                &db,
+                &sink,
+                &scope(),
+                TENANT,
+                ACTOR,
+                A,
+                Some(B),
+                no_limits(),
+                at(10),
+            )
+            .await
         })
     };
     let second = {
         let db = Arc::new(DBProvider::<DbError>::new(pg.db().await));
+        let sink = sink.clone();
         tokio::spawn(async move {
-            taxonomy::reparent_under_lock(&db, &scope(), TENANT, B, Some(A), no_limits(), at(10))
-                .await
+            taxonomy::reparent_under_lock(
+                &db,
+                &sink,
+                &scope(),
+                TENANT,
+                ACTOR,
+                B,
+                Some(A),
+                no_limits(),
+                at(10),
+            )
+            .await
         })
     };
 
@@ -205,18 +261,23 @@ async fn without_the_lock_the_two_reparents_close_a_cycle() {
 #[ignore = "requires Docker (testcontainers)"]
 async fn two_concurrent_renames_to_one_name_leave_exactly_one() {
     let pg = Pg::applied().await;
+    let (sink, _outbox) = interim_sink(&pg).await;
     seed_two_roots(&pg).await;
 
     let first = {
         let db = Arc::new(DBProvider::<DbError>::new(pg.db().await));
+        let sink = sink.clone();
         tokio::spawn(async move {
-            taxonomy::rename_under_lock(&db, &scope(), TENANT, A, "Shared", at(10)).await
+            taxonomy::rename_under_lock(&db, &sink, &scope(), TENANT, ACTOR, A, "Shared", at(10))
+                .await
         })
     };
     let second = {
         let db = Arc::new(DBProvider::<DbError>::new(pg.db().await));
+        let sink = sink.clone();
         tokio::spawn(async move {
-            taxonomy::rename_under_lock(&db, &scope(), TENANT, B, "Shared", at(10)).await
+            taxonomy::rename_under_lock(&db, &sink, &scope(), TENANT, ACTOR, B, "Shared", at(10))
+                .await
         })
     };
     let outcomes = vec![
@@ -242,6 +303,7 @@ async fn two_concurrent_renames_to_one_name_leave_exactly_one() {
 #[ignore = "requires Docker (testcontainers)"]
 async fn a_reparent_into_a_taken_name_is_refused_and_a_free_one_lands() {
     let pg = Pg::applied().await;
+    let (sink, _outbox) = interim_sink(&pg).await;
     seed_two_roots(&pg).await;
 
     let db = DBProvider::<DbError>::new(pg.db().await);
@@ -294,11 +356,14 @@ async fn a_reparent_into_a_taken_name_is_refused_and_a_free_one_lands() {
 
     let first = {
         let db = Arc::new(DBProvider::<DbError>::new(pg.db().await));
+        let sink = sink.clone();
         tokio::spawn(async move {
             taxonomy::reparent_under_lock(
                 &db,
+                &sink,
                 &scope(),
                 TENANT,
+                ACTOR,
                 child_of_b,
                 Some(A),
                 no_limits(),
@@ -309,8 +374,19 @@ async fn a_reparent_into_a_taken_name_is_refused_and_a_free_one_lands() {
     };
     let second = {
         let db = Arc::new(DBProvider::<DbError>::new(pg.db().await));
+        let sink = sink.clone();
         tokio::spawn(async move {
-            taxonomy::rename_under_lock(&db, &scope(), TENANT, child_of_root, "Tier", at(11)).await
+            taxonomy::rename_under_lock(
+                &db,
+                &sink,
+                &scope(),
+                TENANT,
+                ACTOR,
+                child_of_root,
+                "Tier",
+                at(11),
+            )
+            .await
         })
     };
     let moved = first.await.expect("joins").expect("no storage failure");
@@ -339,11 +415,20 @@ async fn a_reparent_into_a_taken_name_is_refused_and_a_free_one_lands() {
     // The positive control: the same node moves to a root position, where no
     // sibling carries the name.
     let db = Arc::new(DBProvider::<DbError>::new(pg.db().await));
-    let write =
-        taxonomy::reparent_under_lock(&db, &scope(), TENANT, child_of_b, None, no_limits(), at(12))
-            .await
-            .expect("no storage failure")
-            .expect("a free sibling set admits the move");
+    let write = taxonomy::reparent_under_lock(
+        &db,
+        &sink,
+        &scope(),
+        TENANT,
+        ACTOR,
+        child_of_b,
+        None,
+        no_limits(),
+        at(12),
+    )
+    .await
+    .expect("no storage failure")
+    .expect("a free sibling set admits the move");
     assert_eq!(write, repo::CategoryWrite::Applied);
     assert_eq!(parent_of(&pg, child_of_b).await, None);
 }

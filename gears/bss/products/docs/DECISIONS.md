@@ -1569,6 +1569,59 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-122 — The taxonomy's eight events: one body, both sinks, in the transaction — and what "the op envelope id" turns out to be
+
+- **Date**: 2026-09-03 (owner call, closing `dod-taxonomy-events`' emission clause with strand A
+  stood down and the lead building its RELAY)
+- **Context**: six of `02`'s eight events were declared with no emitter twice over — first because
+  the doors had no route (P-D-106 gave them one), then because the broker arm had no typed struct
+  for them and strand A's `events.rs` doc argued *"emitting on the interim sink alone would be a
+  door that announces in one deployment shape and is silent in the other"*. That is wrong in one
+  word: the broker arm answers `NoTypedEvent`, a **refusal** that rolls the act back — and `04`'s
+  retirement events shipped on exactly that footing. Two strands, two policies on one plane, and
+  the RELAY listed the DoD as freed by row 15's decision alone when its first clause is *emission
+  in the mutating transaction*, which no taxonomy door did: every door wrote on a plain connection
+  with no transaction at all.
+- **Arm 1 — one body for eight tokens.** `TaxonomyEventBody { tenantId, entityKind, entityId, act,
+  state, mutationSeq?, operationKind? }` and a fifth entry point, `enqueue_taxonomy`; `enqueue`
+  refuses the eight the way it refuses the publish, deprecation, set, bulk and retirement bodies.
+  One shape because the eight announce one kind of thing — an act on a taxonomy entity — and
+  differ only in which act. `AttributeDefinitionUpdated` covers the create too: the roster has no
+  `Created`, and *"every applied change"* (`inst-ad-event`) includes the first.
+- **Arm 2 — both sinks, and the broker arm is completed rather than argued with.** Eight typed
+  structs in `infra::broker` (the lead's file), under a fifth macro; subject types derived by
+  **P-D-94**'s rule from the authz catalog's `category`, `attribute_definition` and `metadata`
+  types. `MetadataUpdated`'s subject type is the metadata resource with the **owner's id as
+  subject** and `entityKind` naming the table — a `TypedEvent`'s subject type is a constant and
+  cannot follow the owner's kind.
+- **Arm 3 — in the mutating transaction, everywhere.** The five infra acts and the three door acts
+  (definition create/operations, category display, metadata merge) each open one
+  `transaction_with_retry` for the write and its event. A refusal inside travels as an error so the
+  transaction **rolls back** — on Postgres a failed statement aborts the transaction and a later
+  `COMMIT` fails on its own — and the door audits it afterwards; `recognized_sets`' shape, the head
+  doors' shape. The closure owns every capture because the helper's bound is higher-ranked over the
+  transaction's lifetime.
+- **Arm 4 — `inst-tx-event`'s *"op envelope id rides the event"* has no operand.** `GovernedLiveOp`
+  carries `kind`, `target`, `payload`, `expected_state` and **no id**; nothing mints one. The event
+  carries the envelope's **kind** (`operationKind`), the request's `traceparent` is the correlation
+  channel, and an envelope id — if `05` wants one for approval traceability — is `05`'s to mint with
+  the approval subject, since that is the record it would be traced to. **Routed to B.**
+- **Arm 5 — the aggregate clause is amended in the DoD**, not read around: *"taxonomy events order
+  on `(tenant, category tree)`"* gains its P-D-116 row 15 exception for the two display events,
+  because the code now does what the decision said and the requirement should say what the code
+  does.
+- **The arguments against, stated.** A consumer of `MetadataUpdated` must read `entityKind` to
+  know which table — accepted, because the alternative is two events for one act. The taxonomy
+  events' `state` vocabulary is the slice's (`active`/`retired`/`deleted`;
+  `active`/`deprecated`/`removed`), not the head machine's — accepted and named in the body's doc.
+  And the policy asymmetry is now inverted: `04`'s retirement events remain `NoTypedEvent` on the
+  broker arm while `02`'s eight are typed — **routed to C** as the one remaining hole, with this
+  macro as the template.
+- **Propagated**: `design/02` §4.3's ordering sentence and `inst-tx-event`'s operand;
+  `dod-taxonomy-events`' clause, body and tick; `events.rs`, `broker.rs`, `infra/taxonomy.rs` and
+  the repo's display-write doc. `02` reaches 17 of 21.
+
+
 #### P-D-121 — `03`'s eight decidable rows, for a slice with no strand
 
 - **Date**: 2026-09-03 (owner call, answering `features/sku-classification.md` §7 **rows 8, 10, 13,
