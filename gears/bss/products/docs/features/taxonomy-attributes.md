@@ -692,7 +692,24 @@ apply re-validate the expected state against the live row, refusing `STALE_LIVE_
 mismatch. The mutation and its event **MUST** land in one transaction. The type **MUST** be
 exported for `03-sku-classification` to reuse without redefinition.
 
-**Three of the four halves ship and the fourth is measurably unbuildable, so this stays unticked.**
+**The gate submission is built 2026-09-03; the event half is what stands.** This paragraph read
+*"three of the four halves ship and the fourth is measurably unbuildable"* — the unbuildable one was
+the gate, because the doors had no routes. **P-D-106** doored them and both `operations` doors now
+submit their envelope through `api::rest::taxonomy`'s `submit_to_gate`, on
+`GateSubject::governed_live_op` — the seam `domain::governance` built for exactly this, a live op's
+target being a string and not an `EntityRef`, `EntityKind` being `Product | Sku`. The registered
+host is `NoMaterialityPolicyGate`, which authorizes and says so; the day `05` registers a policy,
+that call is the one that starts refusing.
+`every_op_door_submits_its_envelope_to_the_gate` asserts the call site count rather than a verdict,
+because a host that authorizes everything makes a green verdict test prove nothing.
+
+**What stays unticked is the fourth clause: *"the mutation and its event MUST land in one
+transaction"*.** The six decided payload types and both aggregates ship, and the routes now exist —
+but `EventSink::Broker`'s arm needs one **typed** struct per payload type in `infra::broker`, the
+way `RecognizedUnitUpdated` and its two siblings have theirs, and that file is not this slice's.
+Emitting on the interim sink alone would announce in one deployment shape and be silent in the
+other. **One line from the owner unblocks it**; it is not a design gap.
+
 `domain::live_op::GovernedLiveOp` is the envelope — kind, target, payload and the target's expected
 state, generic over that state so `03` passes its own rather than every slice's operations landing
 in this type; `check_still_current` refuses `STALE_LIVE_OP` (409, `design/02` §3.5's own code, and
@@ -1077,7 +1094,7 @@ find it.
 
 ### Locale resolver
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-locale-resolver`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-locale-resolver`
 
 The system **MUST** implement `LocaleResolver` walking `(locale, region, brand) → (locale, brand)
 → (default-locale, brand) → global`, with the tenant default locale consulted only as a
@@ -1098,13 +1115,17 @@ One case beyond the DoD's list, because it is the chain's one silent failure mod
 name a locale and a brand and no region, so both look for a value whose region is **absent**. A
 region-insensitive step 2 would hand an `eu` value to an `apac` reader.
 
-**One thing the DoD needs that does not exist, and it is not what §7 row 6 asked.** That row is
-answered and struck (**P-D-101**): the default-locale is the **tenant** default only and *"resolves
-per brand"* is gone from `inst-av-resolve`, so the per-brand store the row wanted is no longer
-owed. What remains is the gap this feature found beside it and no row carried: **`ProductsConfig`
-has no `default_locale` field**, so the chain's one input has no source and every caller supplies
-it as an argument. The resolver is correct for whatever arrives and nothing arrives — the same
-shape `TaxonomyLimits` takes. `config.rs` is not this strand's; the DoD ticks when the field lands.
+**Ticked 2026-09-03: the one thing it needed has landed.** The paragraph here said *"`ProductsConfig`
+has no `default_locale` field … the DoD ticks when the field lands"*. It landed —
+`ProductsConfig::default_locale` ships, with **P-D-101**'s struck per-brand half recorded in its own
+doc — so the chain's input has a source. §7 row 6 was answered and struck by that same decision.
+
+**And the caller is another slice's, which is not a clause of this `DoD`.** `resolve_localized` has
+no production call site in this gear and will not: `inst-av-resolve` names it *"Read-side resolution
+(**consumed by slice 08**)"*. The three obligations here are to **implement** the chain, to cover
+every step with a matrix fixture including the brand-B case, and to prove a tenant-default change
+non-retroactive — all three ship and none names a caller. A door of `02`'s own would be a route no
+document declares, taken from the slice that owns the read.
 
 **Implements**: `cpt-cf-bss-products-flow-attribute-values`
 

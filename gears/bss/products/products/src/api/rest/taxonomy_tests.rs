@@ -830,6 +830,45 @@ async fn the_fan_out_ceiling_admits_the_ceiling_and_refuses_one_over() {
     );
 }
 
+/// **Both op doors submit their envelope to the `05` gate**, and the
+/// submission is a **separate** obligation from the currency check.
+///
+/// The registered host is `NoMaterialityPolicyGate`, which authorizes and says
+/// so, so no case here can be a refusal — a green door test proves the call
+/// happens only if something else would change without it. So the assertion
+/// is on the **source**: `submit_to_gate` is called once per op door and
+/// nowhere else, and it is the only construction of `GateSubject` in this
+/// module. A door that dropped the call would move the count, and the day
+/// `05` registers a policy that call is the one that starts refusing.
+#[test]
+fn every_op_door_submits_its_envelope_to_the_gate() {
+    let source = include_str!("taxonomy.rs");
+    assert_eq!(
+        source
+            .matches("submit_to_gate(tenant_id, &op.target)")
+            .count(),
+        2,
+        "one per `operations` door -- the category door and the definition \
+         door -- and neither the live-value nor the metadata door, which are \
+         non-material and carry no envelope"
+    );
+    // Matched with its open paren: `submit_to_gate`'s own doc names the seam
+    // in prose, and a bare-name scan counts that too -- the same over-match
+    // that reddened `ContentPiiBlocked`'s privacy assertion on two innocent
+    // structs.
+    assert_eq!(
+        source.matches("GateSubject::governed_live_op(").count(),
+        1,
+        "one construction, in `submit_to_gate`: a second would be a second \
+         door reaching the ceremony its own way"
+    );
+    assert!(
+        !source.contains("GateSubject::entity_publish"),
+        "a live op's subject is a string target and not an `EntityRef` -- \
+         `EntityKind` is `Product | Sku` and a category is neither"
+    );
+}
+
 // ---------------------------------------------------------- definition ops
 
 /// **The state machine walks deprecate → remove → re-list**, and each flip

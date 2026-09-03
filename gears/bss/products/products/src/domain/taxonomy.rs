@@ -67,6 +67,7 @@
 //! `&str` through the repository until an owner closes the sets.
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-name-in-parent:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-locale-resolver:p1
 //! @cpt-cf-bss-products-dod-taxonomy-walk
 
 use toolkit_macros::domain_model;
