@@ -1472,7 +1472,7 @@ fn the_block_refuses_personal_data_and_admits_clean_text() {
     let blocked = content_pii_block(&doubles(), "attributes.description", "ssn 000-00-0000")
         .expect_err("personal data is refused");
     assert!(
-        blocked.detail.contains("attributes.description"),
+        blocked.detail().contains("attributes.description"),
         "{blocked:?}"
     );
     assert_eq!(ContentPiiBlocked::CODE, "CONTENT_PII_BLOCKED");
@@ -1494,10 +1494,10 @@ fn an_undecided_verdict_fails_closed() {
     let refused = content_pii_block(&doubles(), "metadata.owner", "perhaps a name")
         .expect_err("uncertainty is refused");
     assert!(
-        refused.detail.contains("could not decide"),
+        refused.detail().contains("could not decide"),
         "the two refusals are told apart: {refused:?}"
     );
-    assert!(refused.detail.contains("fails closed"), "{refused:?}");
+    assert!(refused.detail().contains("fails closed"), "{refused:?}");
 }
 
 /// **The default host admits everything and names the deviation.**
@@ -1546,5 +1546,34 @@ fn the_block_is_the_single_raiser_of_its_code() {
         2,
         "exactly two: the roster entry and the constant on the refusal. A third \
          would be a second raiser, which `dod-pii-write-block` forbids"
+    );
+    // -- The blind spot of the count above, closed structurally. A raiser that
+    // builds `ContentPiiBlocked` with a struct literal carries no code literal,
+    // so it moves the count by nothing and the assertion stays green while the
+    // hook's fail-closed-on-uncertainty rule has been bypassed. A private field
+    // makes the compiler refuse that construction outside this module; these
+    // two assertions are what keep the field private and the construction
+    // singular. --
+    // Scoped to this struct's own body on purpose: a bare scan for a public
+    // `detail` field matches `CategoryReferenced` and `DefinitionInUse` too,
+    // which carry one legitimately -- their codes reach the wire through a
+    // violation's own `code`, so neither has a single-raiser rule to bypass.
+    let body = source
+        .split_once("pub struct ContentPiiBlocked {")
+        .expect("the refusal is declared in this file")
+        .1
+        .split_once('}')
+        .expect("and its body closes")
+        .0;
+    assert!(
+        !body.contains("pub "),
+        "`ContentPiiBlocked` carries no public field: a public one is a second \
+         raiser the code-literal count cannot see, a struct literal needing no \
+         code literal. Body was: {body}"
+    );
+    assert_eq!(
+        source.matches("ContentPiiBlocked { detail }").count(),
+        1,
+        "one construction, and it is the hook's"
     );
 }
