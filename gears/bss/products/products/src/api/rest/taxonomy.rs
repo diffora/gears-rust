@@ -1562,6 +1562,27 @@ mod taxonomy_tests;
 /// Three ceilings, each named separately in the refusal: an operator told
 /// only *"a cap was exceeded"* cannot tell a key-count problem from a
 /// value-length one, and the three have different fixes.
+///
+/// # The operand is the **merged** map, in both senses, and both are choices
+///
+/// The count is post-merge, which `dod-metadata-door` requires: it is a
+/// per-key merge and *"a map standing at the cap can be reduced"*, so counting
+/// the payload or the pre-merge map would refuse the one act that fixes an
+/// over-full map. `a_map_at_the_key_cap_can_still_be_reduced` is that test.
+///
+/// The **byte** checks also run over the whole merged map rather than only the
+/// entries this act writes, and that is the less obvious half. It means a key
+/// stored under an earlier, larger ceiling blocks every later write until it
+/// is removed — self-healing, since a delete leaves it out of `merged` and
+/// passes, but a lowered ceiling does force a cleanup before any further edit.
+/// The alternative — judging only what this act writes — would let such a key
+/// sit over the ceiling for ever. Neither is stated by the `DoD`; this one is
+/// chosen because a ceiling nothing ever enforces is not a ceiling.
+///
+/// Iteration is over a `BTreeMap`, so the key a refusal names is the sorted
+/// first offender and two writes of one payload refuse identically. Not a
+/// precedence claim — `design/02` states none among this feature's sixteen
+/// codes — but reproducibility.
 fn cap_refusal(state: &ApiState, merged: &BTreeMap<String, String>) -> Option<DomainError> {
     let caps = state.taxonomy_caps;
     if merged.len() > caps.metadata_max_keys as usize {

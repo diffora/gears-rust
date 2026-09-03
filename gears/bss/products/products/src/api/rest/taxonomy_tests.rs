@@ -368,6 +368,51 @@ async fn the_byte_ceilings_refuse_and_say_which() {
     assert_eq!(error_code(over_value).await, "METADATA_LIMIT");
 }
 
+/// **The ceilings count bytes, not characters.**
+///
+/// The sibling case above builds its over-long strings with `"k".repeat(n)`,
+/// which is ASCII — so bytes and characters are the same number and an
+/// implementation using `chars().count()` would satisfy it. This one is under
+/// the ceiling by character count and over it by bytes, so it fails on
+/// `chars().count()` and passes on `len()`.
+///
+/// Ported from a domain rule that briefly held this property and was removed
+/// when this door made it dead: it was the one thing the door's own tests did
+/// not pin.
+#[tokio::test]
+async fn the_byte_ceilings_count_bytes_and_not_characters() {
+    let h = harness().await;
+    let product = seed_product(&h).await;
+    let uri = format!("/bss-products/v1/products/{product}/metadata");
+    let cfg = ProductsConfig::default();
+
+    // Three bytes per character, so half the cap in characters is over it in
+    // bytes. Escaped because `clippy::non_ascii_literal` is denied here.
+    // `div_ceil` rather than `/`: `clippy::integer_division` is denied here,
+    // and the `+ 1` keeps it over the ceiling when the cap divides evenly.
+    let per_char = 3_usize;
+    let chars = (cfg.metadata_max_value_bytes as usize).div_ceil(per_char) + 1;
+    let value = "\u{20ac}".repeat(chars);
+    assert!(
+        value.chars().count() <= cfg.metadata_max_value_bytes as usize,
+        "the premise: under the ceiling by character count"
+    );
+    assert!(
+        value.len() > cfg.metadata_max_value_bytes as usize,
+        "and over it by bytes"
+    );
+
+    let refused = send(
+        app(&h),
+        "PATCH",
+        &uri,
+        &json!({ "entries": { "k": value } }),
+    )
+    .await;
+    assert_eq!(refused.status(), axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(error_code(refused).await, "METADATA_LIMIT");
+}
+
 /// **An entity that is not there is a 404, not a silent write.**
 ///
 /// The first shape of this door read the head's state, filtered it for
