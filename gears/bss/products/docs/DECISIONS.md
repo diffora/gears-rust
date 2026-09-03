@@ -1569,6 +1569,131 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-124 — The propagation budget's meter: declared by `01`, asserted by `08`, composed by `06`, with the outbox row's own clock as its origin
+
+- **Date**: 2026-09-03 (owner call over `features/catalog-version.md` §7 rows 2 and 17 and
+  `features/read-models.md` §7 rows 4, 5 and 23, and the matching `design/06` and `design/08` §6
+  items — five rows asking one question from three sides)
+- **Arm 1 — the budget sentence is read jointly, and that costs nothing.** `DESIGN.md` §1.2's
+  *"< 3 s propagation and < 5 s posting-safe budgets on the slice-01 outbox + slice-06 freeze
+  machine"* names two thresholds and one machine. The **< 3 s** budget is the outbox segment and
+  is `01`'s; the **< 5 s** posting-safe budget is `06`'s composite, derived from that segment plus
+  `06` §3.3's two freeze meters. One meter asserted against two thresholds is a measurement with
+  two assertions, not a contradiction — no second probe is owed.
+- **Arm 2 — the `commit → durable-acceptance` meter is declared by `01`.** The outbox is `01`'s
+  plane and the meter's two ends are both on it. `08`'s convergence probe instruments it and
+  asserts it against the < 3 s budget; `06` derives its composite from it. **The build is the
+  lead's** (`01` has no observability surface today) and lands with `dod-nfr-meters`' first
+  consumer.
+- **Arm 3 — the origin is the outbox body row's `created_at`.** Written inside the mutating
+  transaction on both engines by the toolkit's own migration (`TIMESTAMPTZ NOT NULL DEFAULT now()`
+  on Postgres, `TIMESTAMP(6)` on SQLite), so it is commit-adjacent for **every** event class — a
+  head save as much as a publish. `08` row 23's finding that *"the non-publish event classes have no
+  origin"* was true of the envelope and the entity tables and not of the row the event actually
+  rides in.
+- **The arguments against, stated.** A row's `created_at` precedes the commit by the transaction's
+  remaining duration — accepted; the meter's tolerance is seconds and the error is milliseconds,
+  and the alternative is a timestamp field on every body, which P-D-01's envelope deliberately does
+  not carry. Declaring the meter in `01` puts an observability surface on the slice that has none —
+  accepted, because that is the finding rows 17 and 5 made and the fix is to give it one.
+- **Propagated**: the five rows and four §6 items struck; the meter's build is in the lead's queue.
+
+
+#### P-D-125 — `06`'s open set: a spurious grant, the lint as a dry-run, a second body core, the roster convention, and a pin the gate's subject must carry
+
+- **Date**: 2026-09-03 (owner call over `features/catalog-version.md` §7 rows 13, 14, 27, 34, 35, 39,
+  47, 48, 50, 51 and 52, and `design/06` §6's matching items)
+- **Row 13 — `catalog_version × publish` is struck from `05`'s roster.** No door consumes it by
+  design: the operator lane is the request door and *"an entity publish NEVER enqueues an
+  increment"*. Measured: `gts/permissions.rs` already carries **four** `catalog_version` grants
+  (`request`, `ack`, `release`, `read`) — the roster's sixth was never in code, and
+  `force_complete` is `05`'s two-person elevation, not a grant.
+- **Row 14 — the pre-publish lint is a dry-run of `01`'s publish pipeline.** `POST
+  /bss-products/v1/{products|skus}/{id}/validate` runs the `→ published` phases up to the gate
+  **exclusive**, writes nothing, and returns the `ValidationReport` — which *is* the structured
+  per-entity report `PRD` §6.13 requires, and the only report this gear can produce. `06`'s freeze
+  aggregates per-entity reports for a version; `09` consumes them per row. **`01` gains the
+  per-entity half of `fr-prepublish-lint`** in `DECOMPOSITION.md`; `06` keeps the per-version half.
+  *Against*: `DECOMPOSITION` assigned the FR to `06` alone — moved because the report's content
+  belongs to the pipeline that computes it, and a second validator roster in `06` would drift.
+- **Row 27 — a second body core, per family (P-D-122's precedent).** `CatalogVersionPublished`,
+  `FreezeForceCompleted` and `FreezeParticipantSetChanged` carry a catalog-version body (`tenantId`,
+  `catalogVersionId`, `act`, and the changed-entity list where `06` §4 names it);
+  `SkuCompositionCleared` stays on the entity core. §4.5's *"one body core"* sentence is **scoped to
+  Foundation events**, not amended.
+- **Row 35, with `08` row 16 — "exactly four" binds `06`'s own roster, and the composition clear
+  emits two events.** It runs through `01`'s publish door, so `SkuPublished` announces the publish
+  and `SkuCompositionCleared` announces the clear — two facts, two events, and the projector
+  receives the re-publish it keys on.
+- **Row 39 — no: `06`'s four get their own roster array.** `THE_EIGHT` stays §4.5's transcription;
+  `02`, `03`, `04` and `09` already ship as their own arrays for exactly this reason.
+- **Row 47 — subject types by P-D-94's rule, obligations on the payload by P-D-51 arm 1.**
+  `gts.cf.core.events.subject.v1~cf.bss.products.catalog_version.v1` and
+  `…freeze_participant.v1`; `causationId` and `actorRef` ride the body as `TaxonomyEventPayload`'s
+  do.
+- **Row 48 — a `Doors` cell is per action and lists every route that consumes it.** Lint 3 counts
+  routes per action; `× read` at the export, the diff and the resolver is one cell, three routes.
+- **Row 34 — no further `06` DoD.** The archival half of `nfr-snapshot-archival-dr` is `10`'s (its
+  live DR item); the manifest DoDs discharge the version-binding half; the scale half is out of v1
+  by row 4.
+- **Rows 50 and 51 — two conventions, stated once.** §6 is a **selected set**: a DoD without a §6
+  criterion is complete when its own clauses are. `pN` is a **per-id importance**, not a delivery
+  wave; nothing is misassigned.
+- **Row 52 — the pin belongs to the subject.** `GateSubject` gains a per-kind pin — `InternalRevision`
+  for an entity, `mutation_seq` for a category, the approval store's own `pinned_revision` for a
+  catalog version, a participant set or a materiality policy — and `evaluate`'s `expected_revision`
+  parameter folds into it. **Strand B's seam build**, with `design/05`'s wording owed; P-D-105's
+  scheduled-flip predicate is unchanged.
+- **Propagated**: eleven rows struck; `design/05` §3.2's `× publish` row struck; `DECOMPOSITION`'s
+  `01` roster gains the lint's per-entity half. Left live on purpose: rows 3 (launch sequencing,
+  the product owner's), 4 and 5 (recorded risks with no question).
+
+
+#### P-D-126 — `08`'s projection mechanics and the design-set's conventions it was waiting on
+
+- **Date**: 2026-09-03 (owner call over `features/read-models.md` §7 rows 2, 8, 9, 10, 11, 12, 17, 18,
+  19, 22, 24 and 25, and `design/08` §6's matching items; rows 4, 5, 16 and 23 are P-D-124's and
+  P-D-125's)
+- **Row 8 — shadow-then-swap.** A rebuild projects into a shadow projection from the replay
+  contract's starting point, tails live events into the shadow until it is caught up, swaps
+  atomically, and installs the checkpoint at the last consumed `(topic, partition)` position;
+  the `StalenessStamp` is rebuilt with the rows. Live-tail-follow would serve a half-built
+  projection.
+- **Rows 9 and 12 — a poison message is parked with a bound and alarmed, never silent.** A
+  `*Published` whose frozen row has been collected, and a browse row whose join target never
+  projects, are the same posture: parked, bounded by a configured retry ceiling on the P-D-107
+  idiom, and surfaced through `products_read_delivery_state`. The invariant that prevents the first
+  case — event-log retention ≥ version-row retention — is `12`'s §15 number and is **routed there**.
+- **Row 10 — the pollers are ticks in `gear.rs`'s lifecycle loop** (P-D-113's precedent) at a
+  configured cadence; the dashboards are `08`'s read endpoints behind the limiter, each reading its
+  source table under that table's own `× read` grant (`04`'s for scheduled transitions).
+- **Row 11 — the single-entity read joins `products_metadata` live.** P-D-06 places the map beside
+  the entity, outside frozen content; nothing is projected and `MetadataUpdated` need not be
+  consumed.
+- **Row 19 — not a defect.** C6 projects the **published** version; a head edit is unpublished
+  content until published, and the wider scope a consumer sees is the published truth. Narrowing
+  takes effect at publish, which is the stale-but-safe property §1.2 asks for.
+- **Row 24 — a resume position per `(topic, partition)`**, the platform's shape; per-aggregate order
+  holds within the partition. Rows 8 and 15's *"per aggregate"* reads as *"per partition"*.
+- **Row 25 — answered by P-D-117**: only the compliance export resolves through the map; the
+  timeline renders pseudonyms.
+- **Row 2 — the active-locale set is a `ProductsConfig` field** on the P-D-107 idiom when `08`
+  builds, an empty set refused at boot.
+- **Rows 17, 18 and 22 — the design-set's answers.** `DECOMPOSITION` prices features and a
+  feature's items carry the feature's priority; the PRD prices requirements; under P-D-125's
+  importance reading nothing is misassigned. The limiter is **`ReadPathLimiter`**, added to
+  `design/08` §1.7. Facets are a browse **parameter** and the dashboards are **endpoints**: the read
+  doors are browse, the entity read, the history timeline and one per dashboard; `DECOMPOSITION`
+  §2.8's *"two"* is the projection pair and is owed the dashboards.
+- **The arguments against, stated.** Parking a poison message hides a defect behind an alarm —
+  accepted because failing the projector on one message halts every tenant's browse. A live join for
+  metadata costs the single-entity read one query — accepted; the map is small by construction
+  (P-D-107's caps). Reading row 19 as *not a defect* means a narrowed head is invisible to browse
+  until publish — that is the design, stated in C6.
+- **Propagated**: twelve rows and eight §6 items struck; `design/08` §1.7 gains the limiter; rows 1
+  and 3 stay live for the NFR workshop, now with an owner named.
+
+
 #### P-D-123 — `01`'s twelve open items: eight answered by the crate and the platform, two routed, two already struck
 
 - **Date**: 2026-09-03 (owner call over `design/01-foundation.md` §6's *"Open here — twelve"* and the five

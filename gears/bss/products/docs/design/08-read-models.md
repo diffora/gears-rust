@@ -106,6 +106,7 @@ mislabeled content is never acceptable at any load.
 | `BrowseProjection` | The denormalized per-tenant serving rows: entity content + display attributes (resolved per `LocaleResolver`) + category paths + state + flags |
 | `StalenessStamp` | The per-tenant high-water mark `(asOfCatalogVersion, projectedAt)` every response carries |
 | `VisibilityFilter` | The per-state contract applied at query build time — not post-filtering |
+| `ReadPathLimiter` | The single per-tenant-partition limiter component in front of every read endpoint (§3.2; named by **P-D-126**, 2026-09-03) |
 
 ### 1.8 Context & Dependencies
 
@@ -277,12 +278,12 @@ clause — M5); the §5.1 p2 rows "Advanced search, filter & faceting" and the r
   active-locale set per tenant needs a config home — implementation note.
 - Search-engine choice (LIKE/FTS vs external) is deliberately behind the projection contract;
   the NFR #2 load test decides, not this document.
-- **Open above this slice: who measures the < 3 s propagation budget, and against which meter?**
+- ~~**Open above this slice: who measures the < 3 s propagation budget, and against which meter?**~~ **Answered (P-D-124, 2026-09-03): this slice, against the one meter `01` declares**; no second probe is owed. *The item's text stood as:*
   `PRD` §15 names this slice with 01 and 06 — §5's convergence probe instruments the
   commit→durable-acceptance segment and asserts it against this slice's own budget; whether one
   meter may be asserted against two thresholds, or a second probe is owed, is the Program Lead's.
   Both siblings register it and this slice did not. *(Two lenses raised it independently.)*
-- **The `commit → durable-acceptance` meter C5 attributes to slice 01 is declared by no slice.**
+- ~~**The `commit → durable-acceptance` meter C5 attributes to slice 01 is declared by no slice.**~~ **Answered (P-D-124, 2026-09-03): declared by `01`**; its origin is the outbox body row's `created_at`. *The item's text stood as:*
   01 declares no observability surface and records its NFR #3 probe as owed; 06 §6 registers the
   same gap and names this slice. Without it the p99 < 2 s show-stopper budget has no measurement
   point for its first segment. Owner: the Program Lead with 01 and 06. *(Raised by the slice-08 first lens pass.)*
@@ -299,26 +300,26 @@ clause — M5); the §5.1 p2 rows "Advanced search, filter & faceting" and the r
   SKU-only `SkuRetirementEffective` and 04 §6 registers that it has no Product analogue and no
   explicit "no event". As it stands a retired Product stays browsable forever. Owner: the lifecycle
   owner with the events consumer set — this slice is the surface that fails. *(Raised by the slice-08 first lens pass.)*
-- **What happens to live events during a bootstrap rebuild, and what checkpoint does cutover
-  install?** `inst-rp-bootstrap` says the rebuild serves the old projection until cutover and 12's
+- ~~**What happens to live events during a bootstrap rebuild, and what checkpoint does cutover
+  install?**~~ **Answered (P-D-126, 2026-09-03): shadow-then-swap**, checkpoint at the last consumed `(topic, partition)`, `StalenessStamp` rebuilt with the rows. *The item's text stood as:* `inst-rp-bootstrap` says the rebuild serves the old projection until cutover and 12's
   replay contract defines only the starting point; neither states the concurrency model
   (shadow-then-swap vs live-tail-follow), the cutover checkpoint, or whether the `StalenessStamp` is
   rebuilt with the rows. Owner: this slice with 12. *(Raised by the slice-08 first lens pass.)*
-- **What does the projector do when a `*Published` event's frozen row has been collected?** Version
+- ~~**What does the projector do when a `*Published` event's frozen row has been collected?**~~ **Answered (P-D-126, 2026-09-03): a poison message — parked with a bound and alarmed**; the retention invariant is `12`'s number. *The item's text stood as:* Version
   rows are retained only while a manifest references them, and under the anchorless rebuild arm no
   manifest exists — so every frozen row is collectable while the events naming them are still in the
   retained tail. Owner: this slice with 10 and 12 — skip, fail the rebuild, or bound event-log
   retention by version-row retention. *(Raised by the slice-08 first lens pass.)*
-- **Who runs the polled dashboards, at what cadence, behind which door?** `inst-ps-dashboards` names
+- ~~**Who runs the polled dashboards, at what cadence, behind which door?**~~ **Answered (P-D-126, 2026-09-03): ticks in `gear.rs`'s lifecycle loop at a configured cadence; this slice's read endpoints behind `ReadPathLimiter`, each under its source table's `× read` grant.** *The item's text stood as:* `inst-ps-dashboards` names
   three tables and their sources and no component, no interval, no route and no staleness bound,
   while §3.2 fronts them with the limiter and 04 states it owns the deferred-intent query surface.
   05 already records `scheduled_transition × write|cancel|read` as pairs no slice names on a door.
   Owner: this slice with 04, 06 and 05. *(Raised by the slice-08 first lens pass.)*
-- **Where does the single-entity metadata read come from?** `inst-ps-metadata` makes the map
+- ~~**Where does the single-entity metadata read come from?**~~ **Answered (P-D-126, 2026-09-03): a live join on `products_metadata`** (P-D-06); nothing projected, `MetadataUpdated` not consumed. *The item's text stood as:* `inst-ps-metadata` makes the map
   retrievable "on the single-entity read only" and 02 books that read against this slice; §2 declares
   no such flow, the row shape carries no metadata field, and `MetadataUpdated` is absent from §1.8's
   Consumed list. Owner: this slice with 02. *(Raised by the slice-08 first lens pass.)*
-- **A parked browse row has no bound and no exit.** A row whose join target has not projected is
+- ~~**A parked browse row has no bound and no exit.**~~ **Answered (P-D-126, 2026-09-03): a configured bound and an alarm through `products_read_delivery_state`**, the same posture as a collected frozen row. *The item's text stood as:* A row whose join target has not projected is
   withheld and re-attempted, "bounded by the convergence monitoring" — but the only lag rule is keyed
   to the projector, so a caught-up projector holding a row whose target was dead-lettered trips no
   alarm and withholds it indefinitely. Nothing defines the projector's poison-message posture.
@@ -338,7 +339,7 @@ clause — M5); the §5.1 p2 rows "Advanced search, filter & faceting" and the r
   and `AttributeDefinitionUpdated` fall under neither of its two stated ordering keys. Without one
   a rename and a display edit on the same category can land in either order. Owner: 02 with 12 —
   this slice is the only consumer of both. *(Raised by the slice-08 first lens pass.)*
-- **Does the composition-clear re-publish reach this projector?** The browse row carries
+- ~~**Does the composition-clear re-publish reach this projector?**~~ **Answered (P-D-125, 2026-09-03): yes** — the clear emits `SkuPublished` beside `SkuCompositionCleared`. *The item's text stood as:* The browse row carries
   `compositionPending` and the projector keys on `*Published`; 06 §6 registers that neither slice
   says whether the clear emits `SkuPublished` beside `SkuCompositionCleared`. If only the latter
   fires, every composed bundle stays flagged in browse. Owner: as 06 states it, with this slice.

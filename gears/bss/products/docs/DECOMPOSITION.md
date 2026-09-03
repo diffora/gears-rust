@@ -142,6 +142,7 @@ authored downstream of this document, in the order §3 establishes.
 
   - [ ] `p1` - `cpt-cf-bss-products-fr-identifier-contract`
   - [ ] `p1` - `cpt-cf-bss-products-fr-idempotent-authoring`
+  - [ ] `p1` - `cpt-cf-bss-products-fr-prepublish-lint` — **the per-entity half** (P-D-125, 2026-09-03): the dry-run `validate` door over this slice's publish pipeline, returning the `ValidationReport`; the per-version aggregate stays with 2.6
   - [ ] `p1` - `cpt-cf-bss-products-fr-skucode-reservation-concurrency`
   - [ ] `p1` - `cpt-cf-bss-products-fr-registry-eventing-audit`
   - [ ] `p1` - `cpt-cf-bss-products-fr-create-product` — uniqueness clause only; the category and

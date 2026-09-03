@@ -227,7 +227,7 @@ multi-action row would otherwise read as if the whole row were doored.
 | `catalog_version × request` | `POST /bss-products/v1/catalog-version-requests` | 06 |
 | `catalog_version × ack`, `× release` | `POST /bss-products/v1/catalog-versions/{catalogVersionId}/acks` and `…/releases` (**P-D-67** — S2S under the participant's identity; `release` is **P-D-18**'s door) | 06 |
 | `catalog_version × read`, `× force_complete` | `GET /bss-products/v1/bulk/exports?catalogVersionId=` (09's export door) spends **`× read`** (**P-D-50**); **`× force_complete`** is `POST /bss-products/v1/catalog-versions/{catalogVersionId}/force-completions` (**P-D-67** — the operator ceremony's door) | 06 |
-| `catalog_version × publish` | **none** — 06 §6 records that no door consumes it | 06 |
+| ~~`catalog_version × publish`~~ | **struck (P-D-125, 2026-09-03)** — no door consumes it by design: the operator lane is the request door, and the code roster carries four `catalog_version` grants without it | 06 |
 | `category × read\|write` | `GET /bss-products/v1/browse…` (08's browse door, which names `category × read` explicitly) spends **`× read`** (**P-D-50**); **`× write`** is doored by **P-D-106** — `POST /bss-products/v1/categories`, `POST /bss-products/v1/categories/{categoryId}/operations` (the taxonomy ops) and `PATCH /bss-products/v1/categories/{categoryId}/attribute-values` (the live-value door) | 02 |
 | `attribute_definition × write` | **P-D-106**: `POST /bss-products/v1/attribute-definitions` and `POST /bss-products/v1/attribute-definitions/{key}/operations` | 02 |
 | `recognized_set × write`, `plan_tier × write` | `POST /bss-products/v1/recognized-sets/{setKind}/members` and `POST /bss-products/v1/recognized-sets/{setKind}/members/{memberCode}/transitions` (**P-D-90** — one route family, the grant chosen by `setKind`; both spelled in full because an elided span is invisible to a route census) | 03 |
@@ -355,7 +355,7 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
   `approval × submit|decide`, `materiality_policy`, `breakglass`, 07's three (one row),
   `pii_allowlist` and `audit × read` — the `recognized_set`+`plan_tier` row left this list with
   **P-D-90** — plus the two known absences spelled differently
-  (`scheduled_transition`, and `catalog_version × publish`, which no door consumes). An authorization
+  (`scheduled_transition`; `catalog_version × publish`, which no door consumed, is struck by P-D-125). An authorization
   surface nobody can enumerate is one nobody can review. Whether the fix is declaring the routes or admitting the grants are unspent is not a review's call. Owner: this slice with each door's owner. *(Raised by the P-D-45 round; re-measured by the P-D-43…49 propagation audit; the three contradictions closed by **P-D-50**.)*
 - **Does the discard door get its own grant, or inherit `product|sku × write`?** 01 §2 declares
   `POST /bss-products/v1/{products|skus}/{id}/discard` under **`… × discard`**, and this slice's

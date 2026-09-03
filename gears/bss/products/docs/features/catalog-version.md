@@ -1782,14 +1782,14 @@ resolved record elsewhere can retract a decision's propagation, so none was touc
    **Owner**: was this feature with the events/audit consumer owner and `08-read-models`;
    **closed**.
 
-2. **OPEN — which budget this slice carries.** `DESIGN.md` §1.2 reads "the < 3 s propagation and
+2. ~~**OPEN — which budget this slice carries.**~~ **Answered (P-D-124, 2026-09-03): read jointly** — the < 3 s budget is `01`'s outbox segment, the < 5 s posting-safe budget is `06`'s composite derived from it; one meter, two assertions, no second probe owed. *The item's text stood as:* `DESIGN.md` §1.2 reads "the < 3 s propagation and
    < 5 s posting-safe budgets on the slice-01 outbox + slice-06 freeze machine". Read distributively
    it gives the < 3 s budget to the outbox alone and this slice only `nfr-posting-safe-budget`; read
    jointly it splits both across both, which is how the sibling clause in the same sentence
    ("slice 06/10 storage posture") is claimed. The set has been written both ways in the last two
    days. **No slice §5 measures the < 3 s budget either way**, which is the owed probe and the
    thing that would settle it.
-   **Blocks**: `cpt-cf-bss-products-dod-posting-safe-observability`.
+   **Blocks**: no DoD — **resolved by P-D-124** *(was: `cpt-cf-bss-products-dod-posting-safe-observability`.)*
    **Owner**: BSS Program Lead, with slices 01/06/08 — PRD §15's own routing.
 
 3. **The v1 freeze participant, pricing, is §15-silent** (**P-D-48** narrowed the registered set to
@@ -1935,7 +1935,7 @@ resolved record elsewhere can retract a decision's propagation, so none was touc
     **Blocks**: no DoD — **resolved by P-D-84**.
     **Owner**: was this feature, with `01-foundation`; **closed**.
 
-13. **What door consumes `catalog_version × publish`?** 05's RBAC roster grants six actions on this
+13. ~~**What door consumes `catalog_version × publish`?**~~ **Answered (P-D-125, 2026-09-03): the grant is struck from `05`'s roster** — no door consumes it by design, and `gts/permissions.rs` carries four `catalog_version` grants without it. *The item's text stood as:* 05's RBAC roster grants six actions on this
     slice's resource; this slice names doors for five, and its operator lane goes through the request
     door instead ("an entity publish NEVER enqueues an increment"). Either the roster grants an
     action no route consumes, or this slice is missing a door. *Re-measured at `41d1baa5e`: the
@@ -1943,10 +1943,10 @@ resolved record elsewhere can retract a decision's propagation, so none was touc
     grep for the full token `catalog_version × <action>` returns only **five**, because 05 §3.2
     spells the ack/release row as `` `catalog_version × ack`, `× release` `` with the prefix elided.
     The count is six; do not correct it down.*
-    **Blocks**: `cpt-cf-bss-products-dod-cv-authz`.
+    **Blocks**: no DoD — **resolved by P-D-125** *(was: `cpt-cf-bss-products-dod-cv-authz`.)*
     **Owner**: this feature, with 05's roster owner.
 
-14. **Which slice builds the `validate(lint)` door?** §6 claims `fr-prepublish-lint` and AC #45 —
+14. ~~**Which slice builds the `validate(lint)` door?**~~ **Answered (P-D-125, 2026-09-03): a dry-run of `01`'s publish pipeline** — `POST …/{id}/validate` runs the phases up to the gate exclusive, writes nothing, returns the `ValidationReport`; `06` aggregates per version, `09` consumes per row; `01` gains the per-entity half in `DECOMPOSITION`. *The item's text stood as:* §6 claims `fr-prepublish-lint` and AC #45 —
     the claim is now matched by a §1.5 scope line — but no instruction, store, RBAC pair, error code
     or probe in this slice delivers the structured per-entity report `PRD` §6.13 requires, and 09
     consumes a report from a producer that does not exist.
@@ -1989,14 +1989,14 @@ resolved record elsewhere can retract a decision's propagation, so none was touc
     **Blocks**: no DoD — **resolved by P-D-67**; the table and counter DoDs carry the strike.
     **Owner**: was this feature; **closed**.
 
-17. **The `commit → durable-acceptance` meter is declared by no slice.** `design/06` §3.3
+17. ~~**The `commit → durable-acceptance` meter is declared by no slice.**~~ **Answered (P-D-124, 2026-09-03): declared by `01`** — the outbox is its plane; `08`'s convergence probe asserts it, `06` composes from it; the build is the lead's. *The item's text stood as:* `design/06` §3.3
     decomposes NFR #4's
     program SLO into three meters and attributes this one to 01; 01 declares no observability
     surface and records its NFR #3 probe as owed, while 08 also names the meter as 01's. The
     posting-safe composite is declared derivable from three meters when one is declared nowhere.
     *Re-measured at `41d1baa5e`: `design/01` carries no observability section; its only mention is
     `inst-fd-rule-registry`'s "`rule_names()` for observability only".*
-    **Blocks**: `cpt-cf-bss-products-dod-posting-safe-observability`.
+    **Blocks**: no DoD — **resolved by P-D-124** *(was: `cpt-cf-bss-products-dod-posting-safe-observability`.)*
     **Owner**: this feature, with `01-foundation` and `08-read-models`.
 
 18. ~~**`freezeComplete` and `freeze_state` are one concept with two names and two shapes.**~~
@@ -2159,7 +2159,7 @@ against source at `41d1baa5e`.
     **Blocks**: no DoD — **resolved by P-D-67**; `cpt-cf-bss-products-dod-force-completion` carries the widened subject.
     **Owner**: was `05-governance`, with this feature; **closed**.
 
-27. **Three of this feature's four events need a body with no entity dimension.** `EventBodyCore` is
+27. ~~**Three of this feature's four events need a body with no entity dimension.**~~ **Answered (P-D-125, 2026-09-03): a second body core per family**, P-D-122's precedent — a catalog-version body for the three, `SkuCompositionCleared` on the entity core; §4.5's sentence is scoped to Foundation events. *The item's text stood as:* `EventBodyCore` is
     `{tenantId, entityKind, entityId, internalRevision, lifecycleState}`, and its module doc rules
     out putting **`publishedVersion`** on it as a sixth field, on the ground that
     `ProductDiscarded` *"writes no version at all"* and would have to invent a value. That argument
@@ -2169,7 +2169,7 @@ against source at `41d1baa5e`.
     second core rather than an extension of the first. `SkuCompositionCleared` fits the existing
     shape. What the new core's field set is, and whether §4.5's "one body core" sentence is amended
     or scoped to Foundation events, is open.
-    **Blocks**: `cpt-cf-bss-products-dod-cv-events`.
+    **Blocks**: no DoD — **resolved by P-D-125** *(was: `cpt-cf-bss-products-dod-cv-events`.)*
     **Owner**: this feature, with the events/audit owner and the PRD §4.5 owner.
 
 28. ~~**This feature adds the SDK's first write method, and the trait's shape is undecided.**~~
@@ -2272,8 +2272,8 @@ against source at `41d1baa5e`.
     **Blocks**: no DoD — **resolved by P-D-67**; `cpt-cf-bss-products-dod-liveness-and-release` and `dod-freeze-ledger-tables` carry the answer.
     **Owner**: was `10-retention-erasure`, jointly with this feature — its gate reads the pair; **closed**.
 
-34. **Do the manifest DoDs discharge `nfr-snapshot-archival-dr` and `nfr-scale-extensibility`, or is
-    a further DoD owed?** Both ids are in §1.2's roster and both are divided at §1.2's table, yet no
+34. ~~**Do the manifest DoDs discharge `nfr-snapshot-archival-dr` and `nfr-scale-extensibility`, or is
+    a further DoD owed?**~~ **Answered (P-D-125, 2026-09-03): no further `06` DoD** — the archival half is `10`'s live DR item, the manifest DoDs discharge the version-binding half, the scale half is out of v1 by row 4. *The item's text stood as:* Both ids are in §1.2's roster and both are divided at §1.2's table, yet no
     DoD in §5 and no criterion in §6 names archival, durability, restore, scale or capacity. Row 4
     records the scale half as deliberately out of v1; the archival half is recorded nowhere. So the
     arithmetic above, which presents row 14 as the single requirement with no deliverer, may
@@ -2282,11 +2282,11 @@ against source at `41d1baa5e`.
     **Blocks**: no DoD — it asks whether one is missing.
     **Owner**: the design-set owner, with `10-retention-erasure`.
 
-35. **Does "exactly four broker events" bind this feature's emissions or a consumer's observed
-    count?** `cpt-cf-bss-products-dod-cv-events` states the four as an absolute MUST while row 1
+35. ~~**Does "exactly four broker events" bind this feature's emissions or a consumer's observed
+    count?**~~ **Answered (P-D-125, 2026-09-03): the four bind `06`'s own roster, and the clear emits two events** — `SkuPublished` for the publish it runs through, `SkuCompositionCleared` for the clear. *The item's text stood as:* `cpt-cf-bss-products-dod-cv-events` states the four as an absolute MUST while row 1
     records that the composition clear may emit `SkuPublished` beside `SkuCompositionCleared`,
     because it runs through 01's publish door. `design/06` §4 lists the four with the same silence.
-    **Blocks**: `cpt-cf-bss-products-dod-cv-events`.
+    **Blocks**: no DoD — **resolved by P-D-125** *(was: `cpt-cf-bss-products-dod-cv-events`.)*
     **Owner**: the events/audit consumer owner, with `08-read-models` — the same pair row 1 names.
 
 36. ~~**What is the freeze timeout's config field, its owner and its unit, so the export has a
@@ -2339,13 +2339,13 @@ against source at `41d1baa5e`.
     **Blocks**: no DoD — **resolved by P-D-73**; `cpt-cf-bss-products-dod-ack-door` carries the refresh.
     **Owner**: was this feature, with the PRD owner — the pairing row 18 already names; **closed**.
 
-39. **When four non-Foundation events join the roster, does `design/01` §4.5's list become the
-    gear's list?** `events_tests`' own doc says the eight names are *"transcribed from the design's
+39. ~~**When four non-Foundation events join the roster, does `design/01` §4.5's list become the
+    gear's list?**~~ **Answered (P-D-125, 2026-09-03): no** — `06`'s four get their own roster array, as `02`, `03`, `04` and `09` do; `THE_EIGHT` stays §4.5's transcription. *The item's text stood as:* `events_tests`' own doc says the eight names are *"transcribed from the design's
     own sentence"*, and that section is titled **Foundation-owned events**. Extending the constant
     changes what it transcribes from one section's sentence to the union of two documents, which is
     the property that doc says makes the test more than a tautology. Row 27 asks only whether the
     "one body core" sentence is amended.
-    **Blocks**: `cpt-cf-bss-products-dod-cv-events`.
+    **Blocks**: no DoD — **resolved by P-D-125** *(was: `cpt-cf-bss-products-dod-cv-events`.)*
     **Owner**: the events/audit owner, with `01-foundation`'s.
 
 40. ~~**Does a slice's §2 instruction step or its §4 storage shape govern a column-level fact?**~~
@@ -2450,23 +2450,23 @@ against source at `41d1baa5e`.
     **Blocks**: no DoD — **resolved by P-D-67**; `cpt-cf-bss-products-dod-ack-door` and `dod-liveness-and-release` carry the seeding.
     **Owner**: was this feature, with `10-retention-erasure` — its gate reads the pair; **closed**.
 
-47. **Do the `SUBJECT_TYPE` ids P-D-51 pins extend to a subject that is not an entity, and where do
-    causation and actor land for a body that does not exist yet?** **P-D-51** is not in §1.4's
+47. ~~**Do the `SUBJECT_TYPE` ids P-D-51 pins extend to a subject that is not an entity, and where do
+    causation and actor land for a body that does not exist yet?**~~ **Answered (P-D-125, 2026-09-03): subject types by P-D-94's rule** (`…catalog_version.v1`, `…freeze_participant.v1`); `causationId` and `actorRef` ride the payload, P-D-51 arm 1. *The item's text stood as:* **P-D-51** is not in §1.4's
     decision roster, which stops at P-D-50, and both its arms bear on this feature: arm 1 moves
     causation and the pseudonymous actor onto the **payload** because the transport has no slot for
     them, and arm 2 pins `subject_type` as the Product and SKU namespaces — neither of which a
     catalog version or a participant set is. Row 27 asks for the body core and does not reach
     either arm.
-    **Blocks**: `cpt-cf-bss-products-dod-cv-events`.
+    **Blocks**: no DoD — **resolved by P-D-125** *(was: `cpt-cf-bss-products-dod-cv-events`.)*
     **Owner**: the events/audit owner with the PRD §4.5 owner — the pair row 27 names.
 
-48. **May a per-action `Doors` cell in `05-governance` §3.2 carry several routes?** **P-D-50** fixed
+48. ~~**May a per-action `Doors` cell in `05-governance` §3.2 carry several routes?**~~ **Answered (P-D-125, 2026-09-03): a cell is per action and lists every route that consumes it**; lint 3 counts routes per action. *The item's text stood as:* **P-D-50** fixed
     that *"a cell is per action"*, and `× read`'s cell names 09's export door. This feature spends
     `× read` at two further doors — the diff, which is routed, and the resolver, which is not — so
     either the cell's grammar admits several routes, or lint 3's route population is short, or rows
     12, 13 and 31 should have counted `× read` as routed-but-under-declared. This feature cannot
     widen another slice's table grammar.
-    **Blocks**: `cpt-cf-bss-products-dod-cv-authz`, `cpt-cf-bss-products-dod-diff-door`.
+    **Blocks**: no DoD — **resolved by P-D-125** *(was: `cpt-cf-bss-products-dod-cv-authz`, `cpt-cf-bss-products-dod-diff-door`.)*
     **Owner**: 05's roster owner, with the P-D-45/P-D-50 owner.
 
 49. ~~**Does "column-level fact" reach a row population?**~~
@@ -2484,7 +2484,7 @@ against source at `41d1baa5e`.
     **Blocks**: no DoD — **resolved by P-D-83**; `cpt-cf-bss-products-dod-diff-door` keeps its other rows.
     **Owner**: was the design-set owner — row 40's owner; **closed**.
 
-50. **Is §6 owed one criterion per DoD, or is it a deliberately selected set?** §6 states its own
+50. ~~**Is §6 owed one criterion per DoD, or is it a deliberately selected set?**~~ **Answered (P-D-125, 2026-09-03): a selected set** — a DoD without a §6 criterion is complete when its own clauses are. *The item's text stood as:* §6 states its own
     completeness only for the positive controls — *"seven codes, seven lines"* — while several DoDs have
     no criterion, among them `cpt-cf-bss-products-dod-cv-authz`, whose body argues the opposite
     discipline (*"the DoD names them as lines because a blanket criterion is ticked by
@@ -2496,7 +2496,7 @@ against source at `41d1baa5e`.
     **Blocks**: no DoD directly; it decides whether §6 is short.
     **Owner**: the design-set owner.
 
-51. **Does `pN` bind a delivery wave or a per-id importance?** `cpt-cf-bss-products-dod-cv-events`
+51. ~~**Does `pN` bind a delivery wave or a per-id importance?**~~ **Answered (P-D-125, 2026-09-03): a per-id importance, not a delivery wave**; nothing is misassigned. *The item's text stood as:* `cpt-cf-bss-products-dod-cv-events`
     and `cpt-cf-bss-products-dod-cv-audit` are `p1` and both oblige work whose flow and DoD are
     `p2` — `cpt-cf-bss-products-flow-composition-clear` and
     `cpt-cf-bss-products-dod-composition-clear`. Neither this document, the FEATURE template nor
@@ -2507,8 +2507,8 @@ against source at `41d1baa5e`.
     **Blocks**: no DoD; it decides whether four markers are misassigned.
     **Owner**: the design-set owner.
 
-52. **`GovernanceGate::evaluate`'s second argument cannot be formed for either of this
-    feature's governed acts, and no row has ever asked.** Row 26 widened the *subject* and
+52. ~~**`GovernanceGate::evaluate`'s second argument cannot be formed for either of this
+    feature's governed acts, and no row has ever asked.**~~ **Answered (P-D-125, 2026-09-03): the pin belongs to the subject** — `GateSubject` gains a per-kind pin and `expected_revision` folds into it; strand B's seam build, `design/05` owes the wording. *The item's text stood as:* Row 26 widened the *subject* and
     P-D-67 arm 4 answered exactly that; the crate now ships `GateSubject` with the store's five
     kinds. But `evaluate`'s other parameter is `expected_revision: InternalRevision` — the door's
     `If-Match` (**P-D-33**), which the seam's own doc calls *"not advisory: an approval is only
@@ -2520,7 +2520,7 @@ against source at `41d1baa5e`.
     slice 05's host is specified to read it, and a value invented now becomes a pin then. Three
     shapes are available — the parameter goes optional, `GateSubject` carries its own pin per
     kind, or these acts declare a revision of their own — and the seam is `05-governance`'s.
-    **Blocks**: `cpt-cf-bss-products-dod-force-completion`, `cpt-cf-bss-products-dod-participant-set`
+    **Blocks**: no DoD — **resolved by P-D-125** *(was: `cpt-cf-bss-products-dod-force-completion`, `cpt-cf-bss-products-dod-participant-set`)*
     **Owner**: `05-governance`, with this feature — row 26's owner, for row 26's other half.
 ### Owed to other documents, recorded and deliberately not edited
 

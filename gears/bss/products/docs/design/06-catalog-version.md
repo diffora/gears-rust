@@ -376,7 +376,7 @@ struck. Branch review.)*
   consumer sees one event or two, and 12's additivity rule is scoped to 09's coalesced summary. Owner:
   was this slice with the events/audit consumer owner and 08; **closed**.
 
-- **OPEN — which budget this slice carries.** `DESIGN.md` §1.2 reads "the < 3 s
+- ~~**OPEN — which budget this slice carries.**~~ **Answered (P-D-124, 2026-09-03): read jointly** — the < 3 s budget is `01`'s outbox segment, the < 5 s posting-safe budget is this slice's composite; one meter, two assertions. *The item's text stood as:* `DESIGN.md` §1.2 reads "the < 3 s
   propagation and < 5 s posting-safe budgets on the slice-01 outbox + slice-06 freeze machine". Read
   distributively it gives the < 3 s budget to the outbox alone and this slice only
   `nfr-posting-safe-budget`; read jointly it splits both across both, which is how the sibling
@@ -466,12 +466,12 @@ struck. Branch review.)*
   surface out of its scope, and 01 hands this slice the intent clause without a surface. 12's
   qualifier grammar means this slice cannot simply add the authoring-publish contract id while 01
   claims it unqualified. Owner: this slice with 01. *(Raised by the slice-06 first lens pass.)*
-- **What door consumes `catalog_version × publish`?** 05's RBAC roster grants six actions on this
+- ~~**What door consumes `catalog_version × publish`?**~~ **Answered (P-D-125, 2026-09-03): none, by design — the grant is struck from `05`'s roster**; the code roster carries four `catalog_version` grants without it. *The item's text stood as:* 05's RBAC roster grants six actions on this
   slice's resource; this slice names doors for five, and its operator lane goes through the request
   door instead ("an entity publish NEVER enqueues an increment"). Either the roster grants an
   action no route consumes, or this slice is missing a door. Owner: this slice with 05's roster
   owner. *(Raised by the slice-06 first lens pass.)*
-- **Which slice builds the `validate(lint)` door?** §6 claims `fr-prepublish-lint` and AC #45 — the
+- ~~**Which slice builds the `validate(lint)` door?**~~ **Answered (P-D-125, 2026-09-03): `01`, as a dry-run of its publish pipeline** returning the `ValidationReport`; this slice aggregates per version, `09` consumes per row. *The item's text stood as:* §6 claims `fr-prepublish-lint` and AC #45 — the
   claim is now matched by a §1.5 scope line — but no instruction, store, RBAC pair, error code or
   probe in this slice delivers the structured per-entity report `PRD` §6.13 requires, and 09
   consumes a report from a producer that does not exist. Owner: the design-set owner with this
@@ -494,7 +494,7 @@ struck. Branch review.)*
   `freeze_state`'s roster has no staged value for such a row to occupy — and an insert at stage
   would burn an id on every `STAGED_ENTITY_CHANGED` refusal, against the gapless guarantee C1 and
   `inst-cvc-serial` both assert. Owner: this slice. *(Raised by the slice-06 first lens pass.)*
-- **The `commit → durable-acceptance` meter is declared by no slice.** §3.3 decomposes NFR #4's
+- ~~**The `commit → durable-acceptance` meter is declared by no slice.**~~ **Answered (P-D-124, 2026-09-03): declared by `01`**, asserted by `08`, composed here; the build is the lead's. *The item's text stood as:* §3.3 decomposes NFR #4's
   program SLO into three meters and attributes this one to 01; 01 declares no observability surface
   and records its NFR #3 probe as owed, while 08 also names the meter as 01's. The posting-safe
   composite is declared derivable from three meters when one is declared nowhere. Owner: this slice

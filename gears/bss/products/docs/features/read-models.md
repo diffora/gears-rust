@@ -946,33 +946,33 @@ citation discipline, not as a live blocker.
     delivery/DLQ state, which is not in this gear's database).
     **Blocks**: no DoD — a `PRD` §15 question above this feature, on whether the serving store is
     needed at all.
-    **Owner**: not stated in the slice; carried unassigned.
+    **Owner**: the NFR workshop (`PRD` §15) — assigned by P-D-126, 2026-09-03.
 
-2. **Locale materialization** (per active locale) trades storage for the p95 budget; the
+2. ~~**Locale materialization**~~ **Answered (P-D-126, 2026-09-03): a `ProductsConfig` field on the P-D-107 idiom** when `08` builds, an empty set refused at boot. *The item's text stood as:* (per active locale) trades storage for the p95 budget; the
     active-locale set per tenant needs a config home — implementation note.
-    **Blocks**: `cpt-cf-bss-products-dod-projection-table`.
+    **Blocks**: no DoD — **resolved by P-D-126** *(was: `cpt-cf-bss-products-dod-projection-table`.)*
     **Owner**: not stated in the slice; carried unassigned.
 
 3. Search-engine choice (LIKE/FTS vs external) is deliberately behind the projection contract; the
     NFR #2 load test decides, not this document.
     **Blocks**: no DoD — the row's own text says the NFR #2 load test decides, not a document.
-    **Owner**: not stated in the slice; carried unassigned.
+    **Owner**: the NFR workshop (`PRD` §15) — assigned by P-D-126, 2026-09-03.
 
-4. **Open above this slice: who measures the < 3 s propagation budget, and against which meter?**
+4. ~~**Open above this slice: who measures the < 3 s propagation budget, and against which meter?**~~ **Answered (P-D-124, 2026-09-03): `08` asserts the one meter against the < 3 s threshold; no second probe is owed** — the Program Lead's routing is answered by the arm that reads the budget sentence jointly. *The item's text stood as:*
     `PRD` §15 names this slice with 01 and 06 — §5's convergence probe instruments the
     commit→durable-acceptance segment and asserts it against this slice's own budget; whether one
     meter may be asserted against two thresholds, or a second probe is owed, is the Program
     Lead's. Both siblings register it and this slice did not.
-    **Blocks**: `cpt-cf-bss-products-dod-nfr-meters`.
+    **Blocks**: no DoD — **resolved by P-D-124** *(was: `cpt-cf-bss-products-dod-nfr-meters`.)*
     **Owner**: the Program Lead — stated in the row's own words (*"is the Program Lead's"*) rather
     than with an `Owner:` token, so the mechanical carry did not pick it up. *(Two lenses raised
     it independently.)*
 
-5. **The `commit → durable-acceptance` meter C5 attributes to slice 01 is declared by no slice.**
+5. ~~**The `commit → durable-acceptance` meter C5 attributes to slice 01 is declared by no slice.**~~ **Answered (P-D-124, 2026-09-03): declared by `01`**, instrumented by `08`'s convergence probe, composed by `06`; the build is the lead's. *The item's text stood as:*
     01 declares no observability surface and records its NFR #3 probe as owed; 06 §6 registers the
     same gap and names this slice. Without it the p99 < 2 s show-stopper budget has no measurement
     point for its first segment.
-    **Blocks**: `cpt-cf-bss-products-dod-nfr-meters`.
+    **Blocks**: no DoD — **resolved by P-D-124** *(was: `cpt-cf-bss-products-dod-nfr-meters`.)*
     **Owner**: the Program Lead with 01 and 06. *(Raised by the slice-08 first lens pass.)*
 
 6. ~~**Is the history timeline a materialized projection or a request-time read?**~~
@@ -1001,43 +1001,43 @@ citation discipline, not as a live blocker.
     **Owner**: was the lifecycle owner with the events consumer set — this slice is the surface that
     fails. *(Raised by the slice-08 first lens pass.)*; **closed**.
 
-8. **What happens to live events during a bootstrap rebuild, and what checkpoint does cutover
-    install?** `inst-rp-bootstrap` says the rebuild serves the old projection until cutover and
+8. ~~**What happens to live events during a bootstrap rebuild, and what checkpoint does cutover
+    install?**~~ **Answered (P-D-126, 2026-09-03): shadow-then-swap** — rebuild into a shadow from the replay start, tail live events into it, swap atomically, checkpoint at the last consumed `(topic, partition)`; the `StalenessStamp` is rebuilt with the rows. *The item's text stood as:* `inst-rp-bootstrap` says the rebuild serves the old projection until cutover and
     12's replay contract defines only the starting point; neither states the concurrency model
     (shadow-then-swap vs live-tail-follow), the cutover checkpoint, or whether the
     `StalenessStamp` is rebuilt with the rows.
-    **Blocks**: `cpt-cf-bss-products-dod-projector`.
+    **Blocks**: no DoD — **resolved by P-D-126** *(was: `cpt-cf-bss-products-dod-projector`.)*
     **Owner**: this slice with 12. *(Raised by the slice-08 first lens pass.)*
 
-9. **What does the projector do when a `*Published` event's frozen row has been collected?**
+9. ~~**What does the projector do when a `*Published` event's frozen row has been collected?**~~ **Answered (P-D-126, 2026-09-03): a poison message** — parked with a configured bound and alarmed through `products_read_delivery_state`; the retention invariant that prevents it is `12`'s number, routed there. *The item's text stood as:*
     Version rows are retained only while a manifest references them, and under the anchorless
     rebuild arm no manifest exists — so every frozen row is collectable while the events naming
     them are still in the retained tail.
-    **Blocks**: `cpt-cf-bss-products-dod-frozen-read-path`.
+    **Blocks**: no DoD — **resolved by P-D-126** *(was: `cpt-cf-bss-products-dod-frozen-read-path`.)*
     **Owner**: this slice with 10 and 12 — skip, fail the rebuild, or bound event-log retention by
     version-row retention. *(Raised by the slice-08 first lens pass.)*
 
-10. **Who runs the polled dashboards, at what cadence, behind which door?** `inst-ps-dashboards`
+10. ~~**Who runs the polled dashboards, at what cadence, behind which door?**~~ **Answered (P-D-126, 2026-09-03): ticks in `gear.rs`'s lifecycle loop at a configured cadence** (P-D-113's precedent); the dashboards are `08`'s read endpoints behind the limiter, each under its source table's `× read` grant. *The item's text stood as:* `inst-ps-dashboards`
     names three tables and their sources and no component, no interval, no route and no staleness
     bound, while §3.2 fronts them with the limiter and 04 states it owns the deferred-intent query
     surface. 05 already records `scheduled_transition × write|cancel|read` as pairs no slice names
     on a door.
-    **Blocks**: `cpt-cf-bss-products-dod-dashboards`.
+    **Blocks**: no DoD — **resolved by P-D-126** *(was: `cpt-cf-bss-products-dod-dashboards`.)*
     **Owner**: this slice with 04, 06 and 05. *(Raised by the slice-08 first lens pass.)*
 
-11. **Where does the single-entity metadata read come from?** `inst-ps-metadata` makes the map
+11. ~~**Where does the single-entity metadata read come from?**~~ **Answered (P-D-126, 2026-09-03): a live join on `products_metadata`** — P-D-06 places the map beside the entity; nothing is projected and `MetadataUpdated` need not be consumed. *The item's text stood as:* `inst-ps-metadata` makes the map
     retrievable "on the single-entity read only" and 02 books that read against this slice; §2
     declares no such flow, the row shape carries no metadata field, and `MetadataUpdated` is
     absent from §1.8's Consumed list.
-    **Blocks**: `cpt-cf-bss-products-dod-projection-table`.
+    **Blocks**: no DoD — **resolved by P-D-126** *(was: `cpt-cf-bss-products-dod-projection-table`.)*
     **Owner**: this slice with 02. *(Raised by the slice-08 first lens pass.)*
 
-12. **A parked browse row has no bound and no exit.** A row whose join target has not projected is
+12. ~~**A parked browse row has no bound and no exit.**~~ **Answered (P-D-126, 2026-09-03): parked with a bound and alarmed, never silent** — the same posture as row 9, on the P-D-107 idiom for the ceiling. *The item's text stood as:* A row whose join target has not projected is
     withheld and re-attempted, "bounded by the convergence monitoring" — but the only lag rule is
     keyed to the projector, so a caught-up projector holding a row whose target was dead-lettered
     trips no alarm and withholds it indefinitely. Nothing defines the projector's poison-message
     posture.
-    **Blocks**: `cpt-cf-bss-products-dod-projection-table`.
+    **Blocks**: no DoD — **resolved by P-D-126** *(was: `cpt-cf-bss-products-dod-projection-table`.)*
     **Owner**: this slice with the events consumer owner. *(Raised by the slice-08 first lens
     pass.)*
 
@@ -1072,16 +1072,16 @@ citation discipline, not as a live blocker.
     **Owner**: was 02 with 12 — this slice is the only consumer of both. *(Raised by the slice-08
     first lens pass.)*
 
-16. **Does the composition-clear re-publish reach this projector?** The browse row carries
+16. ~~**Does the composition-clear re-publish reach this projector?**~~ **Answered (P-D-125, 2026-09-03): yes** — the clear runs through `01`'s publish door and emits `SkuPublished` beside `SkuCompositionCleared`. *The item's text stood as:* The browse row carries
     `compositionPending` and the projector keys on `*Published`; 06 §6 registers that neither
     slice says whether the clear emits `SkuPublished` beside `SkuCompositionCleared`. If only the
     latter fires, every composed bundle stays flagged in browse.
-    **Blocks**: `cpt-cf-bss-products-dod-projector`.
+    **Blocks**: no DoD — **resolved by P-D-125** *(was: `cpt-cf-bss-products-dod-projector`.)*
     **Owner**: as 06 states it, with this slice. *(Raised by the slice-08 first lens pass.)*
 
 ### Raised here rather than carried
 
-17. **Which register sets a feature's priority when the PRD and DECOMPOSITION disagree?** `PRD.md`
+17. ~~**Which register sets a feature's priority when the PRD and DECOMPOSITION disagree?**~~ **Answered (P-D-126, 2026-09-03): `DECOMPOSITION` prices features and a feature's items carry the feature's priority; the PRD prices requirements** — under P-D-125's importance reading nothing is misassigned. *The item's text stood as:* `PRD.md`
     prices `nfr-graceful-degradation`, `fr-event-delivery-resilience` and
     `usecase-catalog-browser-history` at **`p2`**; DECOMPOSITION §2.8 lists all eight of its
     Requirements Covered at **`p1`**. This document then splits — the degradation flow, its DoD, the
@@ -1090,21 +1090,21 @@ citation discipline, not as a live blocker.
     **Blocks**: no DoD — every DoD builds the same thing under either answer.
     **Owner**: the PRD owner with the DECOMPOSITION owner.
 
-18. **Does the read-path limiter get a name?** `design/08` §1.7 introduces four design-introduced
+18. ~~**Does the read-path limiter get a name?**~~ **Answered (P-D-126, 2026-09-03): `ReadPathLimiter`**, added to `design/08` §1.7. *The item's text stood as:* `design/08` §1.7 introduces four design-introduced
     names and none is a limiter; §3.2 calls it only *"the **single per-tenant-partition limiter
     component in front of every read endpoint**"*. So
     `cpt-cf-bss-products-dod-degradation` names no entity, and a fifth §1.7 name would be
     `design/08`'s edit rather than this document's.
-    **Blocks**: `cpt-cf-bss-products-dod-degradation`.
+    **Blocks**: no DoD — **resolved by P-D-126** *(was: `cpt-cf-bss-products-dod-degradation`.)*
     **Owner**: `design/08`'s owner.
 
-19. **Can a published entity be rescoped without the projection noticing?** `brand_scope` and
+19. ~~**Can a published entity be rescoped without the projection noticing?**~~ **Answered (P-D-126, 2026-09-03): not a defect** — C6 projects the published version; a head edit is unpublished until published and narrowing takes effect at publish, which is the stale-but-safe property. *The item's text stood as:* `brand_scope` and
     `region_scope` are **inside** the frozen roster, and the shipped head door admits them *"on any
     non-terminal head, published or not"* while writing **no version row**. The head carve-out is
     exactly three columns and neither scope column is among them, so a narrowing rescope leaves the
     browse row matching the **old, wider** scope until the next publish. That is staleness in the
     direction §1.2 closes and C4 calls structural.
-    **Blocks**: `cpt-cf-bss-products-dod-frozen-read-path`,
+    **Blocks**: no DoD — **resolved by P-D-126** *(was: `cpt-cf-bss-products-dod-frozen-read-path`,)*
     `cpt-cf-bss-products-dod-browse-door`.
     **Owner**: **P-D-24**'s and **P-D-35**'s owner with `01-foundation` — it is that enumeration
     that is at stake.
@@ -1134,38 +1134,38 @@ citation discipline, not as a live blocker.
     **Blocks**: no DoD — **resolved by P-D-70**; `cpt-cf-bss-products-dod-staleness-stamp` is freed.
     **Owner**: was this feature with **P-D-07**'s owner — the pairing carried row 13 already names; **closed**.
 
-22. **Is faceting a route or a browse parameter, and are the dashboards endpoints at all?**
+22. ~~**Is faceting a route or a browse parameter, and are the dashboards endpoints at all?**~~ **Answered (P-D-126, 2026-09-03): facets are a browse parameter, dashboards are endpoints** — browse, the entity read, the history timeline and one per dashboard; `DECOMPOSITION` §2.8's *"two"* is the projection pair and is owed the dashboards. *The item's text stood as:*
     `design/08` §3.2 and this document both count **four** read endpoints, while DECOMPOSITION
     §2.8's API field lists **two** and `cpt-cf-bss-products-dod-browse-door` folds the facet half
     into the browse route. `cpt-cf-bss-products-dod-facets` names no API. Until the door count is
     fixed, the limiter's coverage criterion cannot be written.
-    **Blocks**: `cpt-cf-bss-products-dod-degradation`, `cpt-cf-bss-products-dod-facets`.
+    **Blocks**: no DoD — **resolved by P-D-126** *(was: `cpt-cf-bss-products-dod-degradation`, `cpt-cf-bss-products-dod-facets`.)*
     **Owner**: `design/08`'s owner, with `04`, `05` and `06` for the dashboard door of row 10.
 
-23. **The convergence meter's stated origin has no operand on anything the projector receives.**
+23. ~~**The convergence meter's stated origin has no operand on anything the projector receives.**~~ **Answered (P-D-124, 2026-09-03): the outbox body row's `created_at`**, written inside the mutating transaction by the toolkit's own migration — every event class has it, not only publishes. *The item's text stood as:*
     The clock starts at **write commit**, and neither the interim envelope nor the broker's event
     core carries a timestamp. The only commit-adjacent stamp in the crate is
     `products_entity_version.published_at`, which exists on the publish path alone — and a head save
     writes no version row at all, so the non-publish event classes have no origin.
-    **Blocks**: `cpt-cf-bss-products-dod-nfr-meters`.
+    **Blocks**: no DoD — **resolved by P-D-124** *(was: `cpt-cf-bss-products-dod-nfr-meters`.)*
     **Owner**: this feature with `01-foundation`, whose outbox owns the first segment.
 
-24. **Is a "consumer checkpoint per aggregate" a resume position or a dedup marker?** Only a resume
+24. ~~**Is a "consumer checkpoint per aggregate" a resume position or a dedup marker?**~~ **Answered (P-D-126, 2026-09-03): a resume position per `(topic, partition)`**, the platform's shape; per-aggregate order holds within the partition. *The item's text stood as:* Only a resume
     position can *"predate the available event tail"* and trigger a rebuild, and the platform's only
     checkpoint shape is per `(topic, partition)` — with one partition per tenant. So a per-aggregate
     coordinate exists in this gear's outbox and not at the broker the projector consumes. Carried
     rows 8 and 15 both presume one.
-    **Blocks**: `cpt-cf-bss-products-dod-projector`.
+    **Blocks**: no DoD — **resolved by P-D-126** *(was: `cpt-cf-bss-products-dod-projector`.)*
     **Owner**: this feature with `12-consumer-contracts`, which owns the replay contract the rebuild
     starts from.
 
-25. **May a timeline render resolve an identity through the map, and under which grant?**
+25. ~~**May a timeline render resolve an identity through the map, and under which grant?**~~ **Answered by P-D-117 (recorded by P-D-126, 2026-09-03): only the compliance export resolves through the map**; the timeline renders pseudonyms. *The item's text stood as:*
     `design/10` §6 registers that *"the two slices disagree about what 08 does"* — `compliance ×
     export` being the only grant any document attaches to a map read, while `inst-im-render` has 08's
     projections resolving at render time and `design/08` says only *"actor pseudonyms"*. The owner it
     names is *"05's RBAC catalog owner with this slice and 08"*, so this feature is a co-owner and
     the question is cited rather than answered.
-    **Blocks**: `cpt-cf-bss-products-dod-history-timeline`.
+    **Blocks**: no DoD — **resolved by P-D-126** *(was: `cpt-cf-bss-products-dod-history-timeline`.)*
     **Owner**: `05-governance`'s RBAC catalog owner with `10-retention-erasure`'s and this feature.
 
 ### Owed to other documents, recorded and deliberately not edited
