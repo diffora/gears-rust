@@ -1569,6 +1569,163 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-113 — The activation runner: hosted in the lifecycle loop, under a stable system principal, with a budget that can actually be spent
+
+- **Date**: 2026-09-03 (owner call, answering `features/lifecycle.md` §7 **rows 4, 8, 28, 29 and
+  37**, which together are everything that blocks `dod-activation-runner` and
+  `dod-runner-failure-posture` on the lead's side)
+- **Context**: row 29 says *"nothing names what hosts the activation runner, or the identity it
+  drives the doors under."* Measured at `98385049b`, both halves have an answer in the gear already
+  and one of them is a defect:
+  - **The host exists.** `gear.rs`'s lifecycle task runs one `tokio::time::interval` at
+    `COALESCER_TICK = 1s` under a `CancellationToken`, and each tick calls `coalescer_tick`,
+    `batch_tick(&worker_ctx, rt.system_actor_ref, &cancel)` and, every sixty ticks,
+    `report_overdue_freezes`. **The bulk worker is already hosted exactly this way.**
+  - **The identity is minted fresh every boot.** `ProductsRuntime { system_actor_ref:
+    uuid::Uuid::new_v4(), .. }` at `gear.rs:536`, in production construction. Every restart gives
+    the gear's own acts a new actor that resolves to nothing, so the audit trail cannot say two
+    sweeps were the same principal. Row 29 asked the question; the code had a wrong answer.
+  - **`attempt` never moves.** `repo/lifecycle.rs` writes `attempt: Set(0)` at insert and nothing
+    increments it — row 28's *"one increment rule"* was generous. The budget can never be spent,
+    so `dod-runner-failure-posture`'s bounded arm cannot exist.
+  - `ClaimLease { ttl }` and `AttemptBudget { max }` are declared with **no values** (row 8), the
+    same shape P-D-107 arm 1 corrected for the taxonomy and metadata caps.
+- **Arm 1 — the runner is a fourth call in that loop**: `activation_tick(&ctx, rt.system_actor_ref,
+  &cancel)` beside `batch_tick`, on the same interval and the same cancel token. Not a new task,
+  not a new capability: the gear implements `DatabaseCapability` and `RestApiCapability` and the
+  bulk worker showed that a poll loop needs neither. If the platform later offers a scheduler
+  capability, this is the one call site that moves.
+- **Arm 2 — the system principal is stable: a UUID v5 from a fixed namespace and the name
+  `bss-products:system`**, computed once and the same in every process on every host. Not a
+  config field: one more value to misconfigure, for a principal that has no reason to differ
+  between deployments. `seeded_by = 'registry'` is the precedent — a fixed system name for acts
+  the gear performs on its own behalf. The `new_v4()` at `gear.rs:536` is a defect and is replaced
+  here.
+- **Arm 3 — `attempt` increments on every claim**, persisted by the claim statement itself, so
+  each try — first claim, lease reclaim, or re-poll after a deferral — spends one. Row 28's two
+  populations then share one counter honestly: the budget is *"how many times has a worker picked
+  this row up"*, which is the only reading under which both the transient arm and the reclaim arm
+  can exhaust it.
+- **Arm 4 — the numbers, interim, in `ProductsConfig`** on the P-D-107 idiom: `activation_claim_lease_secs`
+  **60** and `activation_attempt_budget` **5**. Sixty because the loop ticks every second and a
+  flip is one transaction — a minute tolerates a slow flip and frees a crashed worker's row within
+  a minute, which is the trade the lease exists to make. Five because a pin mismatch is
+  **terminal on the first try** (C's `Failed`, not `Deferred`, with its stated reason), so the
+  budget bounds only the transient-dependency arm, and a dependency that has not returned in five
+  polls a second apart is not transient in any sense the runner can act on. Zero refused at boot.
+- **Arm 5 — the no-orphan flip is a deferral, not a wire refusal (row 37)**, and the code half
+  agrees with the runner already: `defer_flip_guard` finishes `Deferred` with
+  `RetentionHold::REASON = "retention_orphan_blocked"` as the `outcome_reason`. The runner is not
+  a wire door — nothing receives a code — so *"which declared code refuses it"* has no operand.
+  `no_orphan_at_flip` today returns `DomainError::ParentTerminal`, which is the **wrong code
+  pointing the wrong way** (a live child is not a terminal parent), and it is *"called from no door
+  yet"* by C's own account; it becomes the deferral's judge and stops minting a `DomainError`.
+- **Arm 6 — the reserved lane `internal:cascade-leg` (row 4)** is written by the runner when it
+  activates a cascade leg — the writer `01` names this feature as, and the only place a leg is
+  ever activated. Measured: nothing writes it today because nothing activates anything.
+- **The arguments against, stated.** A v5 principal shared by every process means the audit trail
+  cannot distinguish two hosts' workers — accepted, because *which host* is an operational fact for
+  logs and *which principal* is an audit fact for records, and the v4 conflated them into
+  neither. Sixty seconds and five tries are guesses bounded from one side each and say so. And
+  hosting a second worker in one loop couples their tick: a slow activation delays a batch sweep by
+  the same amount, which the bulk worker's own design already accepted for the coalescer.
+- **Not changed**: `dod-scheduled-publish-pin`, which stays blocked on consume-at-schedule (P-D-105
+  is inert until a row names a real record); `ACTIVATION_LANE`; P-D-105's predicate.
+- **Propagated**: rows 4, 8, 28, 29 and 37 struck; the two config fields and the stable principal
+  are the lead's and land with this entry. The runner itself is **strand C's build**.
+
+
+#### P-D-114 — The cascade's six open operands
+
+- **Date**: 2026-09-03 (owner call, answering `features/lifecycle.md` §7 **rows 2, 9, 11, 15, 31
+  and 32** — everything left on `dod-cascade-plan` and `dod-undeprecation` that is a decision)
+- **Row 9 — the trigger is keyed on non-terminal children, and the DoD's "non-`retired`" is
+  corrected.** A `discarded` child is terminal and non-retired: firing over it would try to retire
+  a row the state machine admits no edge from, and the plan's three arms — retire, leave-and-list,
+  auto-discard — give it no disposition because it needs none. The narrowing instruction already
+  read non-terminal; the plan instruction and the DoD follow it.
+- **Row 11 — the operator resumes, and the resume writes `resolution = children_cleared`.**
+  `inst-cp-deferred` says so — *"resumable by an operator once the listed children clear"*. The
+  failure instruction's *"deferred re-evaluates automatically"* is the **flip guard's re-check on
+  the next poll**, which decides whether the deferral still holds; it is not the resolution, which
+  is an act with an actor. Two sentences about two different things, read as one.
+- **Row 2 — answered by `inst-cp-plan`'s own two clauses**: the plan *"supersedes, for every child
+  in all three arms, that child's live `publish` intent"*, and *"plan application at confirmation
+  is one transaction."* So the ordering is **supersede, then schedule, atomically** — a pending
+  child publish cannot interleave because the confirmation is the only writer and it is one
+  transaction. Struck with the pointer.
+- **Row 31 — the auto-discard arm is not a second ceremony.** It runs *inside* the confirmed
+  cascade-retire act's transaction, as `apply_cascade_plan` already does for the legs' scheduling,
+  under the gate that act passed. The discard **door**'s `GateMode::Gate` literal is not this
+  caller — the door is the wire surface and the cascade never calls it. So no pre-authorized
+  discard is needed and P-D-105 was right not to reach for one. This is the row that held
+  `dod-cascade-plan` after P-D-105; it holds it no longer.
+- **Row 15 — the catalog-admin performs the governed cancel**, under the N-governed ceremony the
+  un-deprecation instruction already registers. The actor who initiates a retirement or a cascade
+  is the actor who may abort one; the roster gains that clause and the FEATURE's actor table
+  follows.
+- **Row 32 — the clause is corrected, and `dod-undeprecation` is re-ticked.** The DoD required the
+  cancel to clear `replaced_by_sku_id` *"for the parent and every child leg"*; the parent is a
+  Product and has no such column, which is why P-D-109's pass withdrew the tick. The clause now
+  reads *"for every child leg the reversal touches"*, matching `dod-lifecycle-columns`. Its other
+  clauses were verified at the original tick and nothing has moved them; re-ticked on the corrected
+  text, marker restored to `:p1`.
+- **The arguments against, stated.** Row 9 changes a `DoD`'s wording, and the discipline here is
+  that decisions do not rewrite requirements — accepted because the wording contradicted the
+  slice's own narrowing instruction and the state machine, so one of the three had to move and the
+  requirement was the one that was wrong. Row 31 relies on `apply_cascade_plan` having exactly one
+  caller inside a gated act, which is true today and is the same class of invariant P-D-105
+  guards for `insert_scheduled_transition` — **so the guard is widened** to count
+  `apply_cascade_plan`'s callers too.
+- **Propagated**: rows 2, 9, 11, 15, 31 and 32 struck; `dod-undeprecation` re-ticked with its
+  clause corrected; `inst-cp-plan`'s trigger wording and the actor roster follow in `design/04`
+  and the FEATURE.
+
+
+#### P-D-115 — Retirement's remaining edges: the Product flip's event, the replacement walk, the confirmation, and where narrowing runs
+
+- **Date**: 2026-09-03 (owner call, answering `features/lifecycle.md` §7 **rows 5, 12, 26, 27, 30
+  and 34**)
+- **Row 5 — the Product flip announces `ProductRetirementEffective`**, the analogue of the shipped
+  `SkuRetirementEffective`, whose doc reads *"No Product analogue (row 5)."* `01` §4.5 makes this
+  feature the announcer of all three floor edges, so the analogue is owed rather than optional. A
+  new event type: its own `SCHEMA_REFS` entry and its `events_tests` roster line, since an
+  exhaustive `match` constrains the arm list and not that array.
+- **Row 30 — the Product retirement payload is `RetiredEventBody` with `replacedBy` absent**, i.e.
+  `{productId, fromVersion, reason, effectiveAt}`. **Answered by the crate already**: `events.rs`
+  documents *"`replaced_by` is SKU-only. Product initiation leaves it `None`"*, and C's
+  re-announcement emits exactly that. The design owed the sentence; it has it now.
+- **Row 12 — two halves answered by the crate, one routed.** `domain::retirement::resolve_replacement_chain(start, next, bound)`
+  exists and answers both questions the row asked of the walk: a repeat visit returns
+  `ReplacementWalk::Cycle { seen }`, and exhausting `bound` returns `Bounded { seen }`, so a cycle
+  and an over-long chain are both **`replacement_chain_broken`** with the path in hand. *Which
+  surface walks it* is `08-read-models`' — the walk has no caller yet — and that half is routed
+  there with the answer to row 13 (where the broken fact is stored) as one question.
+- **Row 34 — the confirmation stays a boolean; the count is displayed, not pinned.** The crate's
+  own narrowest reading (`confirmed: bool`, *"the count pin is §6"*). A count-pinned token is a
+  TOCTOU guard the PRD does not ask for, and the guard the cascade actually needs is already
+  physical: the plan **supersedes every child's live intents at confirmation, in one
+  transaction**, so a reference that appears between display and confirmation is judged at
+  confirmation, not at display.
+- **Rows 26 and 27 — narrowing runs at publish and stays at save, and its refusal names the
+  falling-out children.** `inst-pc-narrowing` and this document's §2 both put the check on publish,
+  and publish is where a head becomes visible; the shipped save-door check is an **early refusal**
+  and stays, but it is not the obligation. And §5 obliges *"the validator MUST name the falling-out
+  children"*; the shipped door deliberately does not, and `scope_not_contained_domain_err` builds
+  its detail from dimension and scope sets alone. The children are named — the refusal's whole
+  operator value is knowing *which* SKUs fall out.
+- **The arguments against, stated.** Row 5 adds a ninth payload type to a roster row 25 already
+  finds inconsistent with the broker's seven — row 25 is a measurement and is routed, but this
+  entry makes its count worse before it is taken. Row 34 leaves a display-then-confirm gap a
+  distracted operator can fall into; accepted because the plan's supersession makes the gap
+  harmless to the data and only surprising to the operator. Rows 26/27 put the same rule at two
+  doors, which is the shape `content_save_pipeline` was created to avoid — accepted because the
+  save-door check is a courtesy and the publish check is the obligation, and one registration
+  list serves both.
+- **Propagated**: rows 5, 26, 27, 30 and 34 struck; row 12 narrowed to its `08` half. The event,
+  the naming and the publish placement are **strand C's build**.
+
+
 #### P-D-112 — The materiality policy is a fourth table, and an absent row is the default rather than an unresolved lookup
 
 - **Date**: 2026-09-03 (owner call, answering `features/governance.md` §7 **row 33**, whose owner

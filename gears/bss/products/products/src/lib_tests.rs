@@ -150,7 +150,7 @@ fn the_guard_fires_on_what_shipped_and_not_on_alignment() {
     );
 }
 
-/// **P-D-105's safety is a count, so the count is measured.**
+/// **P-D-105's safety is a count, so the count is measured — and P-D-114 row 31 adds a second.**
 ///
 /// That entry drops `PreAuthorized`'s subject/revision equality for a scheduled
 /// flip and puts the authorization on the flipped row's stored `approval_ref`
@@ -199,6 +199,30 @@ fn every_writer_of_a_scheduled_transition_is_counted_for_p_d_105() {
         }
     }
     sites.retain(|s| !s.contains("_tests.rs"));
+    // P-D-114 row 31 rests on the same shape one level up: the cascade's
+    // auto-discard arm is not a second ceremony *because* `apply_cascade_plan`
+    // runs only inside the gated `run_retire`. Count its callers here too.
+    let mut cascade_callers = Vec::new();
+    for path in crate_sources() {
+        let text = std::fs::read_to_string(&path).expect("a readable crate source");
+        for (index, line) in text.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with("async fn apply_cascade_plan") {
+                continue;
+            }
+            if line.contains("apply_cascade_plan(") && !path.to_string_lossy().contains("_tests.rs")
+            {
+                cascade_callers.push(format!("{}:{}", path.display(), index + 1));
+            }
+        }
+    }
+    assert_eq!(
+        cascade_callers.len(),
+        1,
+        "P-D-114 row 31: `apply_cascade_plan` performs the auto-discard under the gate its one \
+         caller passed, so it must have exactly one caller and that caller must be gated. Found:\n  {}",
+        cascade_callers.join("\n  ")
+    );
     assert_eq!(
         sites.len(),
         3,
@@ -207,5 +231,25 @@ fn every_writer_of_a_scheduled_transition_is_counted_for_p_d_105() {
          `apply_cascade_plan`, whose only caller is that same gated function. Found:\n  {}\n\
          Read this test's doc before changing the number.",
         sites.join("\n  ")
+    );
+}
+
+/// **The system principal is the same value every time** (P-D-113 arm 2).
+///
+/// The property the v4 lacked, and the whole reason for the change: two
+/// runtimes, two hosts, two restarts must write their audit rows under one
+/// actor. Asserted by calling the derivation twice rather than against a
+/// literal, so a deliberate change of name or namespace is a one-line edit
+/// here and not a silent drift.
+#[test]
+fn the_system_principal_is_stable_across_calls() {
+    let first = crate::gear::system_actor_ref();
+    let second = crate::gear::system_actor_ref();
+    assert_eq!(first, second, "a v5 derivation is a function of its inputs");
+    assert!(!first.is_nil());
+    assert_eq!(
+        first.get_version(),
+        Some(uuid::Version::Sha1),
+        "v5 - derived, not random; a v4 here would mean the per-boot principal is back"
     );
 }

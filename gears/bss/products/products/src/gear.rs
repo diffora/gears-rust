@@ -260,6 +260,27 @@ impl BssProductsGear {
 /// One batch-worker tick: stage every tenant's oldest `staging` batch
 /// (`dod-stage-phase`). A failed sweep is logged and retried next tick —
 /// the ledger is the record, so nothing is lost.
+/// The principal the gear acts under when nobody asked it to — the bulk
+/// worker's sweeps, the activation runner's flips, and every audit row they
+/// write (**P-D-113** arm 2).
+///
+/// A UUID **v5** from a fixed namespace and the name `bss-products:system`:
+/// the same value in every process on every host, computed rather than
+/// configured. Until 2026-09-03 this was `Uuid::new_v4()` at runtime
+/// construction, so every restart gave the gear's own acts a fresh actor that
+/// resolved to nothing and the audit trail could not say two sweeps were the
+/// same principal. `seeded_by = 'registry'` is the precedent — a fixed system
+/// name for acts the gear performs on its own behalf.
+///
+/// Not a config field, deliberately: one more value to misconfigure, for a
+/// principal that has no reason to differ between deployments. Which *host*
+/// ran a sweep is an operational fact for logs; which *principal* did is an
+/// audit fact for records, and the v4 served neither.
+#[must_use]
+pub(crate) fn system_actor_ref() -> uuid::Uuid {
+    uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"bss-products:system")
+}
+
 async fn batch_tick(
     ctx: &crate::infra::bulk_worker::BulkWorkerContext,
     actor_ref: uuid::Uuid,
@@ -533,7 +554,7 @@ impl Gear for BssProductsGear {
             watermark_skew_tolerance: cfg.watermark_skew_tolerance(),
             sdk_state: Arc::clone(&sdk_state),
             taxonomy_caps: crate::api::rest::TaxonomyCaps::from(&cfg),
-            system_actor_ref: uuid::Uuid::new_v4(),
+            system_actor_ref: system_actor_ref(),
             pipeline,
             db: db_provider,
             idempotency_retention_hours,

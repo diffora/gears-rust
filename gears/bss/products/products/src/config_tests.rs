@@ -243,6 +243,20 @@ fn a_zero_cap_is_refused_at_boot() {
                 ..ProductsConfig::default()
             },
         ),
+        (
+            "activation_claim_lease_secs",
+            ProductsConfig {
+                activation_claim_lease_secs: 0,
+                ..ProductsConfig::default()
+            },
+        ),
+        (
+            "activation_attempt_budget",
+            ProductsConfig {
+                activation_attempt_budget: 0,
+                ..ProductsConfig::default()
+            },
+        ),
     ];
     for (name, cfg) in cases {
         let message = cfg
@@ -270,4 +284,8 @@ fn the_interim_ceilings_are_the_justified_numbers() {
     assert_eq!(cfg.metadata_max_keys, 50);
     assert_eq!(cfg.metadata_max_key_bytes, 128);
     assert_eq!(cfg.metadata_max_value_bytes, 2_048);
+    // P-D-113 arm 4: the runner's two, anchored to the 1s tick and to a
+    // pin mismatch being terminal on its first try.
+    assert_eq!(cfg.activation_claim_lease_secs, 60);
+    assert_eq!(cfg.activation_attempt_budget, 5);
 }

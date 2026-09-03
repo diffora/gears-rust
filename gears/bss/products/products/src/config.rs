@@ -51,6 +51,14 @@ pub const METADATA_MAX_KEY_BYTES_DEFAULT: u32 = 128;
 /// `METADATA_LIMIT`'s value-length ceiling, in bytes — **interim, P-D-107 arm 1**.
 pub const METADATA_MAX_VALUE_BYTES_DEFAULT: u32 = 2_048;
 
+/// The runner's claim lease, in seconds — **interim, P-D-113 arm 4**. See
+/// [`ProductsConfig::activation_claim_lease_secs`].
+pub const ACTIVATION_CLAIM_LEASE_SECS_DEFAULT: u32 = 60;
+
+/// The runner's per-row attempt budget — **interim, P-D-113 arm 4**. See
+/// [`ProductsConfig::activation_attempt_budget`].
+pub const ACTIVATION_ATTEMPT_BUDGET_DEFAULT: u32 = 5;
+
 /// `design/07` §17.1's interim freshness threshold, in minutes.
 pub const REFERENCE_FRESHNESS_MINUTES_DEFAULT: u32 = 15;
 
@@ -257,6 +265,23 @@ pub struct ProductsConfig {
     /// operand). **Interim 2048 — P-D-107 arm 1**; see
     /// [`Self::metadata_max_keys`] for the shared reason.
     pub metadata_max_value_bytes: u32,
+
+    /// How long a worker's claim on a `products_scheduled_transition` row
+    /// holds before another worker may reclaim it, in seconds.
+    /// **Interim 60 — P-D-113 arm 4.** The lifecycle loop ticks every second
+    /// and a flip is one transaction, so a minute tolerates a slow flip and
+    /// frees a crashed worker's row within a minute — which is the trade a
+    /// lease exists to make. `ClaimLease` carried no value before this.
+    pub activation_claim_lease_secs: u32,
+
+    /// How many times a worker may pick up one scheduled row before the
+    /// transition finishes `failed` for exhausting its budget.
+    /// **Interim 5 — P-D-113 arm 4.** A pin mismatch is terminal on its first
+    /// try, so this bounds only the transient-dependency arm, and a dependency
+    /// that has not returned in five polls a second apart is not transient in
+    /// any sense the runner can act on. `attempt` increments on every claim
+    /// (arm 3), so this is *"how many times has a worker picked this up"*.
+    pub activation_attempt_budget: u32,
 }
 
 impl Default for ProductsConfig {
@@ -279,6 +304,8 @@ impl Default for ProductsConfig {
             metadata_max_keys: METADATA_MAX_KEYS_DEFAULT,
             metadata_max_key_bytes: METADATA_MAX_KEY_BYTES_DEFAULT,
             metadata_max_value_bytes: METADATA_MAX_VALUE_BYTES_DEFAULT,
+            activation_claim_lease_secs: ACTIVATION_CLAIM_LEASE_SECS_DEFAULT,
+            activation_attempt_budget: ACTIVATION_ATTEMPT_BUDGET_DEFAULT,
         }
     }
 }
@@ -359,6 +386,11 @@ impl ProductsConfig {
             ("metadata_max_keys", self.metadata_max_keys),
             ("metadata_max_key_bytes", self.metadata_max_key_bytes),
             ("metadata_max_value_bytes", self.metadata_max_value_bytes),
+            (
+                "activation_claim_lease_secs",
+                self.activation_claim_lease_secs,
+            ),
+            ("activation_attempt_budget", self.activation_attempt_budget),
         ] {
             if value == 0 {
                 return Err(format!(

@@ -9,14 +9,7 @@
 //! The `DomainError` arm is a D7 patch; continuations return
 //! [`LifecycleRefusal`].
 //!
-//! @cpt-dod:cpt-cf-bss-products-dod-undeprecation
-//!
-//! **Bare on purpose — the tick was withdrawn by the lead on 2026-09-03.** `features/lifecycle.md` §7 row 32: the `DoD`'s last clause requires the governed cancel to
-//! clear `replaced_by_sku_id` *"for the parent and every child leg"*, and the parent is a
-//! **Product**, which has no such column — `dod-lifecycle-columns` pins it to `products_sku`
-//! and §1.4 records the slice being corrected once already for listing it on both. The clause
-//! is **unsatisfiable as written**, so this is a clause defeated and not a pointer (P-D-109).
-//! A `:p1` marker is itself a done-claim, so it returns when the clause does.
+//! @cpt-dod:cpt-cf-bss-products-dod-undeprecation:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-provenance-reversal:p1
 
 use uuid::Uuid;
