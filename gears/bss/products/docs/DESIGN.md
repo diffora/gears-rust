@@ -457,7 +457,7 @@ tiers into `products_recognized_set` under `set_kind`, and omitted about twenty 
 - **02** — `products_attribute_definition`, `products_attribute_value`, `products_category`, `products_metadata`
 - **03** — `products_recognized_set`
 - **04** — `products_deferred_retirement`, `products_scheduled_transition`
-- **05** — `products_approval`, `products_approval_decision`, `products_breakglass_session`
+- **05** — `products_approval`, `products_approval_decision`, `products_breakglass_session`, `products_materiality_policy` (**P-D-112** — a fourth table rather than a `ProductsConfig` home, because C4 makes the policy's own mutation material and configuration is single-person-editable by construction; it lands with its door)
 - **06** — `products_catalog_version`, `products_catalog_version_counter`, `products_catalog_version_entry`, `products_catalog_version_request`, `products_freeze_ack`, `products_freeze_participant`
 - **07** — `products_correction_override`, `products_reference_member`, `products_reference_producer`, `products_reference_watermark`
 - **08** — `products_read_deferred_intent`, `products_read_delivery_state`, `products_read_entity`, `products_read_freeze_status`

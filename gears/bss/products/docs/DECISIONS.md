@@ -1569,6 +1569,70 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-112 — The materiality policy is a fourth table, and an absent row is the default rather than an unresolved lookup
+
+- **Date**: 2026-09-03 (owner call, answering `features/governance.md` §7 **row 33**, whose owner
+  it records as *"this feature with the schema owner"*)
+- **Context**: the whole `05` gate seam is blocked here, and one link down from where I had it in
+  the queue. Measured at `2ca0e51c1`:
+  - `MaterialityEvaluator` **is registered at no door** — every one of the **fifteen** production
+    registrations in `products.rs`, `skus.rs` and `taxonomy.rs` is `NoMaterialityPolicyGate`.
+  - `MaterialityEvaluator::verdict` **requires the policy to resolve**, in its own words: *"an act
+    that would answer `Material` on its shape alone must still refuse when the policy is missing,
+    since the count the verdict feeds comes from the policy and a verdict without one cannot be
+    spent."*
+  - And **the policy has no store**: no entity, no repo read, and `DESIGN.md` §3.5 gives this
+    slice exactly `products_approval`, `products_approval_decision` and
+    `products_breakglass_session`. Row 33 states the consequence — *"the shipped
+    `MaterialityPolicy` is a value with a default and a floor that nothing can persist or mutate,
+    and the evaluator refuses every act until one is supplied."*
+  So the chain is **policy store → evaluator → gate host → doors**, and nothing above the first
+  link can be built. Registering `StoredApprovalGate` today would refuse every governed act.
+- **Decision, arm 1 — a fourth table, `products_materiality_policy`**, per tenant, mutated through
+  a `GovernedLiveOp` door on the **existing** `materiality_policy × write` pair, which `authz.rs`
+  already mints and `design/05` §3.2 records as having *"no route declared"*. The table and the
+  door land **together**, per `authz_tests`' census rule, and that §3.2 cell loses its "no route"
+  the way P-D-106's three did.
+- **Not `ProductsConfig`, and the reason is C4 rather than cost.** C4 reads: *"the policy's own
+  mutation is material (the two-person rule's foundation must not be single-person-editable — the
+  pricing D-10 lesson, adopted)."* **Configuration is single-person-editable by construction** —
+  whoever deploys it — so a config home would put the two-person rule's own foundation outside the
+  two-person rule. `inst-mt-once` compounds it: the evaluation runs *"against the policy in force
+  at the submission instant, never the reader's clock"*, and a process's configuration has no
+  historical value to re-read. Two independent clauses, same answer.
+- **Decision, arm 2 — an absent row resolves to the default; only a failed read is unresolved.**
+  This is the clause that makes the chain work, and it is the one a builder will get wrong.
+  **P-D-11** already says `N` is *"reachable only by explicit configuration, absent ⇒ default"*
+  with the §17.1 interim default of 2 and a floor of 0. So *"no row for this tenant"* is a
+  **resolved** policy carrying the default — not `Resolution::Unresolved`. Only a storage failure
+  is unresolved, and that still fails closed.
+  Without this the gate refuses every act in every tenant that has never configured anything,
+  which is every tenant at launch, and C4's *"enforceable at launch"* would be unmeetable. It is
+  also the distinction an `Option<Row>` invites getting backwards: a missing row is a **domain
+  value**, and a `None` from the read is not the same fact as a driver error.
+- **The arguments against, stated.**
+  1. **A whole table for one row per tenant** is heavy, and the alternative of hanging the value
+     off an existing row was considered — it fails because there is no per-tenant row in this
+     gear to hang it on: no schema here has a tenant registry, which **P-D-104** established when
+     it withdrew a migration that needed one.
+  2. **Arm 2 makes the shipped default silently authoritative.** A tenant that believes it
+     configured a policy and did not gets the default rather than a refusal, and the record's
+     stored `quorum_descriptor` is the only place that distinguishes them after the fact. Accepted
+     because the alternative is a gear that refuses everything until every tenant is provisioned,
+     and because the descriptor **does** record the count in force — which is exactly what
+     P-D-110 arm 2 ruled it carries.
+  3. **`DESIGN.md` §3.5's table list changes**, and that document is the lead's. Paid here.
+- **Not changed**: P-D-11's default and floor, C1's quorum shape, `inst-mt-once`'s submission-instant
+  reading, P-D-110 arm 2's `configuredQuorum`, and the gate host itself — B built it and this
+  decision gives its operand a source rather than altering the host.
+- **Propagated**: `features/governance.md` §7 row 33 **struck**; `DESIGN.md` §3.5 gains the fourth
+  table; `design/05` §3.2's `materiality_policy × write` cell keeps *"no route declared"* **until
+  the door lands**, because the census forbids doing otherwise and this entry does not build it.
+- **Owed, and routed to the same change**: the two indexes P-D-110 arm 3 and P-D-111 named — for
+  `gate_candidates` and for `products_breakglass_session.two_person_approval_ref` — ride this
+  migration, since it is the change that makes both reads live.
+
+
 #### P-D-111 — The elevation's authority is recorded on the session row, not in the quorum descriptor
 
 - **Date**: 2026-09-03 (owner call, on `O-B-04` — the sharpest of strand B's five entries, and the
