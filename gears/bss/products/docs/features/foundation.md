@@ -927,21 +927,22 @@ age-based erasure reads.
 
 ## 7. Known unknowns
 
-Slice 01 carries one standing risk and twelve open items. Five of them bind implementation and are
-restated here so they reach the implementer rather than only the design reader; the rest are
-outbound and stay at their owners.
+Slice 01 carried one standing risk and twelve open items; **as of P-D-123 (2026-09-03) ten are
+answered and two are routed** (item 4 to `05`, item 7 to strand C's runner). The five that bound
+implementation were restated here and are struck below with their answers; the rest are at
+`design/01` §6.
 
-- **Open item 1** — whether this feature should own `PARENT_NOT_PUBLISHED`, a code whose raising
+- ~~**Open item 1**~~ **Answered (P-D-97): `01` declares `PARENT_NOT_PUBLISHED`, `04`'s parent guard raises it as a publish-phase continuation.** *(stood as:)* — whether this feature should own `PARENT_NOT_PUBLISHED`, a code whose raising
   rule belongs to `04-lifecycle`. *Owner: this feature with 04.*
-- **Open item 2** — whether any phase other than `state` owes a code precedence. *Owner: this
+- ~~**Open item 2**~~ **Answered (P-D-123, 2026-09-03): the audit row stores the refusal's own code, and the order of evaluation is the precedence; no precedence beyond the four `state` codes is owed.** *(stood as:)* — whether any phase other than `state` owes a code precedence. *Owner: this
   feature.*
-- **Open item 6** — whether the mutating doors return the new `ETag` on success, or whether an
+- ~~**Open item 6**~~ **Answered by the crate (P-D-123, 2026-09-03): every mutating door returns the new `ETag`** — create, `GET`, save and the head acts, both entities. *(stood as:)* — whether the mutating doors return the new `ETag` on success, or whether an
   author must re-read. *Owner: this feature.*
-- **Open item 11** — whether the create door writes content as the save door does. Until it
+- ~~**Open item 11**~~ **Answered (P-D-123, 2026-09-03): no — create stays entity-only; the clone door is the second content writer, inside its own transaction on the save door's terms, so 11's `internal_revision = 1` holds.** *(stood as:)* — whether the create door writes content as the save door does. Until it
   resolves, create writes the entity row and its outbox row only, which leaves an entity whose
   content arrives at creation — `11-clone`'s case — with no admitted writer. *Owner: this feature
   with 11.*
-- **Open item 12** — which GTS type the envelope's `subject_type` names for a Product or a SKU.
+- ~~**Open item 12**~~ **Answered (P-D-51, 2026-08-30): `gts.cf.core.events.subject.v1~cf.bss.products.product.v1` and `…sku.v1`**; the broker-side registration is the half still owed. *(stood as:)* — which GTS type the envelope's `subject_type` names for a Product or a SKU.
   *Owner: this feature.*
 
 The standing risk and the remaining items are stated in

@@ -1569,6 +1569,64 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-123 — `01`'s twelve open items: eight answered by the crate and the platform, two routed, two already struck
+
+- **Date**: 2026-09-03 (owner call over `design/01-foundation.md` §6's *"Open here — twelve"* and the five
+  `features/foundation.md` §7 restates, the lead's own slice; every answer below is a measurement
+  at `ad8c446af`)
+- **Item 2 — the audit row stores the refusal's own code, and the order of evaluation is the
+  precedence.** `refuse` writes `error_code = refusal.code()`: for a `Validation` report that is
+  `VALIDATION`, and each violation's own code rides the response body. Across phases the run stops
+  at the first failing phase, so two phases never compete. Inside `identity`, the SKU create judges
+  containment (`check_containment`, `ScopeNotContained`) **before** the insert whose unique index
+  answers `DuplicateCode` — a request violating both answers `SCOPE_NOT_CONTAINED`, by the door's
+  order and not by a table. No precedence beyond the four `state` codes is owed.
+- **Item 3 — an absent `If-Match` is `VALIDATION`, at the shape phase.** The doors' own `OpenAPI`
+  text already says so (*"requires `If-Match`: absent is `VALIDATION`"*); the precondition phase
+  judges a **mismatch**, absence is a shape defect. §2 and §3.1 were two readings of one door.
+- **Item 5 — the SQLite busy timeout is the platform's, bounded twice.** `toolkit-db` sets
+  `busy_timeout` from its `busy_timeout_ms` pragma and `acquire_timeout` (30 s default); exhaustion
+  is a driver error, which `transaction_with_retry` retries a bounded number of times for the acts
+  that use it and every door renders as a **500** with no registry code — a storage failure, not a
+  refusal. The *"unterminated retry"* the item feared does not exist.
+- **Item 6 — every mutating door already returns the new `ETag`.** Measured: the Product and SKU
+  create doors, the authoring `GET`, the save, and the head acts (`HEAD_ACT_RESPONSE_STATUS` /
+  `ACT_RESPONSE_STATUS`) all carry `ETAG` from `preconditions::etag(internal_revision)`. P-D-33's
+  premise holds; nothing is owed.
+- **Item 8 — the guard was installed in place once the referenced table existed.**
+  `m20260829_000007` carries P-D-40's predicate on both engines, edited on 2026-09-01 when
+  `m20260901_000013` landed `products_catalog_version_entry` — the chain's own convention, no
+  tightening chase; Postgres resolves the function body at execution and both tiers are green.
+- **Item 9 — `clonedFrom` is two columns.** `cloned_from` (uuid, nullable) and
+  `cloned_from_version` (nullable bigint; `NULL` under a non-null `cloned_from` means *read at the
+  head*) on both entity tables; the append-only whitelist admits neither.
+- **Item 10 — an `actor_ref` resolution failure is a 500 with no code and no audit row.**
+  `resolve_creator_actor_ref` renders `CanonicalError::internal`. The 503 set is closed at three
+  and `products_identity_ref` is this gear's own table, not a dependency: its failure is the
+  gear's storage failing, and a refusal record it cannot attribute is not written — the one act
+  the gear performs without an audit row, stated here so it is not discovered.
+- **Item 11 — the create door stays entity-only; the clone door is the second content writer.**
+  `CreateProductRequest` carries `id`, `brandId`, `name`, `productCode` and no content, and that
+  stands. `11`'s clone writes its content **inside its own transaction on the save door's terms**
+  — the same repository writers under `content_save_pipeline`, with no save act and no revision
+  bump — so `internal_revision = 1` holds and 11's C3 does not change. The admitted content
+  writers are two: the save door and the clone door. *Against*: a third writer of content is a
+  third place the pipeline must be registered; accepted, because the alternative is either a
+  create door that half-duplicates the save door or a clone that ships at revision 2 and lies
+  about its own history.
+- **Routed, not decided.** **Item 4** — the `brand_id` write validated against the caller's brand
+  claims — has **no operand**: `SecurityContext` carries no brand claim and every door builds a
+  tenant scope, so the create-flow clause of `inst-fd-mint-id` is inert too. **`05`'s**, beside its
+  row 25 (a principal's role is on no surface either). **Item 7** — the `internal:` lane's stored
+  response body — is defined by the activation runner's write, **strand C's build** (P-D-113).
+- **Already struck in the design and now in the feature**: item 1 (P-D-97, `PARENT_NOT_PUBLISHED`
+  declared by `01`, raised by `04`) and item 12 (P-D-51, the two subject types; the broker-side
+  registration stays owed in the register).
+- **Propagated**: `design/01` §6 items 2, 3, 5, 6, 8, 9, 10, 11 struck; 4 and 7 re-owned;
+  `features/foundation.md` §7's five bullets struck. `01`'s open set is two routed items and one
+  standing risk.
+
+
 #### P-D-122 — The taxonomy's eight events: one body, both sinks, in the transaction — and what "the op envelope id" turns out to be
 
 - **Date**: 2026-09-03 (owner call, closing `dod-taxonomy-events`' emission clause with strand A

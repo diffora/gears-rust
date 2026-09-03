@@ -1268,46 +1268,46 @@ residual, and four of the ten are consequences of those rounds:
    `RETIREMENT_PENDING` sits in the identical position and resolves the other way, the only stated
    distinguisher being "unless the register moves it". 12 `inst-cc-errors` lints the pair and gets
    two answers. *(Owner: the owner of P-D-35/P-D-36.)*
-2. **Which code does the audit row store when a phase other than `state` collects two?** §3.1 says
+2. ~~**Which code does the audit row store when a phase other than `state` collects two?**~~ **Answered (P-D-123, 2026-09-03): the refusal's own code** — `VALIDATION` for a report, each violation's code in the body — and the order of evaluation is the precedence: the run stops at the first failing phase, and inside `identity` containment is judged before the insert whose index answers `DUPLICATE_CODE`. *The item's text stood as:* §3.1 says
    only the `state` phase can, but the registered-validators phase hosts every slice's rules and
    the run stops at the first failing *phase*, and the `identity` phase hosts containment beside
    uniqueness — a create can satisfy `SCOPE_NOT_CONTAINED` and `DUPLICATE_CODE` at once. §3.3
    states a precedence for the four `state` codes only. *(Two lenses, two counterexamples. Owner: this slice with the error-contract owner.)*
-3. **Which phase judges an absent `If-Match`?** §2 says it rides `VALIDATION`; §3.1 puts `If-Match`
+3. ~~**Which phase judges an absent `If-Match`?**~~ **Answered (P-D-123, 2026-09-03): the shape phase, as `VALIDATION`** — the doors' own `OpenAPI` text says so; the precondition phase judges a mismatch, absence is a shape defect. *The item's text stood as:* §2 says it rides `VALIDATION`; §3.1 puts `If-Match`
    in the **precondition** phase and `VALIDATION` in **shape**, two phases later, while §3.1 also
    stops the run at the first failing phase. P-D-36 removed the taxonomy obstacle to either
    answer without naming one. *(Lens split: one filed it as a defect with a fix, one as a question;
    the register does not settle it. Owner: this slice.)*
-4. **Is the save door's `brand_id` write validated against the caller's brand claims?** The check is
+4. **Is the save door's `brand_id` write validated against the caller's brand claims?** *(P-D-123, 2026-09-03: **routed to `05`, with a measurement** — the check has no operand: `SecurityContext` carries no brand claim and every door builds a tenant scope, so the create-flow clause of `inst-fd-mint-id` is inert too; beside `05` §7 row 25.)* The check is
    written into `inst-fd-mint-id` in the create flow only, while §4.2 makes the save door the sole
    admitting door for that bucket-i column while `published_version = 0`. *(Owner: this slice with
    05, who own the grants.)*
-5. **What happens when the SQLite busy timeout expires?** §3.2 gives it no value, no exhaustion
+5. ~~**What happens when the SQLite busy timeout expires?**~~ **Answered (P-D-123, 2026-09-03): the platform bounds it twice** — `toolkit-db`'s `busy_timeout_ms` pragma and its 30 s `acquire_timeout`; exhaustion is a driver error, retried a bounded number of times by `transaction_with_retry` and rendered 500 with no code. No unterminated retry exists. *The item's text stood as:* §3.2 gives it no value, no exhaustion
    behaviour, no code and no status, and says two rows later that no door timeout exists anywhere in
    the set to derive one from. An unterminated retry on the dual-engine tier is the default an
    implementer builds. *(Owner: this slice.)*
-6. **Do the mutating doors return the new `ETag`?** P-D-33's stated premise for adding the
+6. ~~**Do the mutating doors return the new `ETag`?**~~ **Answered by the crate (P-D-123, 2026-09-03): yes, all of them** — create, the authoring `GET`, save and the head acts carry `ETAG` from `preconditions::etag(internal_revision)` on both entities. *The item's text stood as:* P-D-33's stated premise for adding the
     authoring `GET` is that an author who *had* just written holds a precondition, yet no door in §2
     is stated to return one. Leaving it makes a second `GET` mandatory between consecutive edits and
     leaves 04's and 09's in-process callers deriving the revision some other way. *(Owner: this
     slice.)*
-7. **What is the `internal:` lane's stored response body?** §4.4 has it store "a synthetic `200`
+7. **What is the `internal:` lane's stored response body?** *(P-D-123, 2026-09-03: **routed to strand C** — the body is defined by the activation runner's write, P-D-113's build.)* §4.4 has it store "a synthetic `200`
     and its own outcome record as the body" (P-D-42); `response_body` is NOT NULL on an `answered`
     row, and 05 `inst-gv-one-shot` has the `ActivationRunner` read it back after a crash. No
     document defines that record's shape for any of the three lanes. *(Owner: this slice with 04
     and 09.)*
-8. **When is §4.3's DELETE guard installed?** Its predicate reads `products_catalog_version_entry`,
+8. ~~**When is §4.3's DELETE guard installed?**~~ **Answered (P-D-123, 2026-09-03): in `m20260829_000007`, edited in place on 2026-09-01 once `m20260901_000013` had landed the referenced table** — the chain's own convention; Postgres resolves the function body at execution and both tiers are green. *The item's text stood as:* Its predicate reads `products_catalog_version_entry`,
     which `DESIGN.md`'s census assigns to slice 06, while C1 requires one migration per table with
     guards defined once — so a trigger in this slice's first migration references a table 06 has not
     created. §5 already presumes the guard exists from the start. *(A P-D-40 consequence. Owner:
     whoever owns the migration chain.)*
-9. **How is `clonedFrom` physically stored?** 11 `inst-cn-lineage` records a pair
+9. ~~**How is `clonedFrom` physically stored?**~~ **Answered by the crate (P-D-123, 2026-09-03): two columns** — `cloned_from` (uuid, nullable) and `cloned_from_version` (nullable bigint; `NULL` under a non-null `cloned_from` means *read at the head*) on both entity tables, outside the append-only whitelist. *The item's text stood as:* 11 `inst-cn-lineage` records a pair
    `(entity id, published_version | 'draft')` while §4.1 and §4.2 provision one nullable column with
    no type — so the version half has no home, and the choice (two columns, a composite, an encoded
    text form) is load-bearing for the dual-engine rule and the append-only column whitelist.
    *(Owner: this slice, which owns the column. Filed from 11 §6, where two lenses raised it.)*
 
-10. **What refuses a request when `actor_ref` resolution itself fails?** §2 runs it in its own
+10. ~~**What refuses a request when `actor_ref` resolution itself fails?**~~ **Answered (P-D-123, 2026-09-03): a 500 with no code and no audit row** — `resolve_creator_actor_ref` renders `CanonicalError::internal`; `products_identity_ref` is the gear's own table, the 503 set is closed at three, and a refusal the gear cannot attribute is not recorded. *The item's text stood as:* §2 runs it in its own
     transaction before any phase that can refuse, and the refusal's own audit row requires an
     `actor_ref` — so an unavailable `products_identity_ref` blocks both the act and its refusal
     record, the shape the gear terminated for the audit write with `AUDIT_UNAVAILABLE` (503). No
@@ -1325,7 +1325,7 @@ with 12, as is what "the taxonomy" denotes when a count is stated against it (§
 the response map, and AC #38's rows are three different sets, and `inst-cc-errors` will be built
 against a number).
 
-11. **Does the create door write content too?** **P-D-46** made `inst-fd-save-txn` the content
+11. ~~**Does the create door write content too?**~~ **Answered (P-D-123, 2026-09-03): no — the create door stays entity-only, and the clone door is the second admitted content writer**, writing inside its own transaction on the save door's terms with no save act and no revision bump, so 11's `internal_revision = 1` holds. *The item's text stood as:* **P-D-46** made `inst-fd-save-txn` the content
    writer, which settles the freeze input set for anything that has been saved. The create flow
    still writes the entity row and its outbox row and nothing else — so an entity whose content
    arrives *at creation*, which is exactly 11's clone, has no admitted writer and cannot satisfy
