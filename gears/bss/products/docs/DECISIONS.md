@@ -1569,6 +1569,76 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-109 — When a live §7 row blocks a tick, and when it does not
+
+- **Date**: 2026-09-03 (owner call, on strand C's finding in its `C+1` handback, and correcting a
+  rule this session had stated too crudely)
+- **Context**: withdrawing `dod-cascade-plan`'s tick (`27c785b87`) was justified partly as *"eight
+  live §7 rows name it in their `Blocks` column"*. Strand C then reported that **several
+  already-ticked `DoD`s sit in a live `Blocks` cell** and — correctly — declined to un-tick them,
+  naming them instead *"so the next tick is not taken the same way"*.
+  Measured gear-wide at `3d517696e`: **twelve of eighty-six ticks** sit in a live `Blocks` cell —
+  nine in `04-lifecycle`, two in `05-governance`, one in `03-sku-classification`. A count-based
+  rule would withdraw all twelve, and that is plainly wrong.
+- **Decision — the test is the question's bearing, not the row's existence.** A live §7 row
+  withdraws a tick only when **the open question defeats a clause the `DoD` itself requires**. It
+  does not when the row asks:
+  - **where** something is declared, or **whose** document owes it — a pointer, an owed
+    instruction row, an attribution;
+  - **who owns a door** whose obligations the code independently satisfies;
+  - how a correct behaviour is **surfaced** or observed;
+  - anything the row's own text already records as answered.
+  The corresponding positive obligation: a tick is taken **obligation by obligation against the
+  `DoD`'s clauses**, and the `Blocks` column is read as evidence rather than used as the test. The
+  model is already in this register's practice — `0b603dd19` ticked `dod-deprecation-provenance`
+  and `dod-deprecation-cascade` by naming a call site for each clause, and stated which sibling
+  `DoD`s stayed on the bare marker and why.
+- **`dod-cascade-plan`'s withdrawal stands, on the corrected test.** Row 31 asks for a
+  **pre-authorized discard** on a door whose mode was fixed shut *"because no such caller was
+  believed to exist"*, while `dod-cascade-plan` requires the whole plan — auto-discard included —
+  in one transaction. That is a clause defeated, not a pointer. **The count was the wrong
+  justification for a right conclusion**, and saying so is this entry's point.
+- **The twelve, classified.**
+  1. **Already answered, the row never struck** — `04` rows 20 and 33, `05` rows 20 and 23. Each
+     carries *"Closed"* or *"Answered (owner call …)"* in its own body while its number stands.
+     Struck here. The same propagation lag left six of `02`'s rows open a day past their answers.
+  2. **Live question, not a blocker** — `04` rows 1 (deferred flips are *"correct by constraint"*;
+     the row is about surfacing and is part-owned by `08`), 3 (an **owed instruction row**, not a
+     store clause), 7 (whether one further door also registers the validator — a coverage gap, not
+     a defect in the registration host), 18 (a **pointer** to which slice declares
+     `PARENT_NOT_PUBLISHED`), and 36 (whose two `DoD`s were verified clause by clause in
+     `0b603dd19`; its *"carry bare markers rather than ticks"* was true when written on 2026-09-01
+     and stale from the tick the next day). These rows keep their questions and lose these `DoD`s
+     from their `Blocks` columns.
+  3. **Bears on a required clause — six rows, and the ticks are not withdrawn here.** `04` rows 11
+     (`resolution = children_cleared` has no writer), 15 (the governed cancel's actor is
+     undecided), 23 (the slice says two things about superseding a `deferred` row), 24 (three of
+     four owned edges have no admitted writer), 32 (the cancel must clear a column the parent does
+     not have), and `03` row 21 (nothing closes the de-list window across two transactions). Each
+     is a candidate withdrawal against `dod-deferred-retirement-store`, `dod-undeprecation`,
+     `dod-scheduled-transition-store`, `dod-flip-guard`, `dod-lifecycle-columns` and
+     `dod-unit-delist`.
+     **They are routed, not adjudicated**, because this entry's own rule requires reading each
+     `DoD`'s clauses against each row, and doing that from a count is the error being corrected.
+     The first-order reading above is recorded so the next pass starts from evidence.
+- **The arguments against, stated.**
+  1. **The corrected test is a judgement where the count was mechanical**, so it can be applied
+     inconsistently in a way a count cannot. Accepted: the count's consistency was consistency
+     about the wrong thing, and the positive obligation — clause by clause, call site named — is
+     checkable after the fact.
+  2. **Six ticks are left standing that may be false.** That is a real cost, and the defence is
+     only that withdrawing them on the discredited rule would be the same error twice. They are a
+     queue item, not a residue to forget.
+  3. **No gate enforces any of this.** `cfs validate` passes on a false tick — measured: 0 errors
+     and 247/247 coverage with `dod-cascade-plan` ticked, because the marker was present and
+     paired. No cargo test reads the feature docs, and inventing a cross-tree one was rejected as
+     fragile. So the census stays a command a reader runs, kept in the handoff folder, and this
+     entry is the standard it is run against.
+- **Propagated**: `features/lifecycle.md` rows 1, 3, 7, 18, 20, 33 and 36;
+  `features/governance.md` rows 20 and 23.
+- **Owed**: the six class-3 pairs, adjudicated clause by clause. Named in the lead's queue.
+
+
 #### P-D-108 — The attribute-definition machine's three gaps: removal is material, the label is a value, and the kind set is closed
 
 - **Date**: 2026-09-03 (owner call, answering `features/taxonomy-attributes.md` §7 **rows 10, 13
