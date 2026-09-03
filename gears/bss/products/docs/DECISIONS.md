@@ -1569,6 +1569,52 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-131 — The recognized sets and their codes: eight product-owner calls, taken on the lead's recommendations
+
+- **Date**: 2026-09-03 (**the product owner's decision**, accepted as recommended after reading the lead's
+  research; `features/sku-classification.md` §7 rows 1, 3, 5, 11, 12 and 18,
+  `features/taxonomy-attributes.md` §7 rows 12 and 18, and the matching design §6 items)
+- **Set owners and the approver predicate (`03` row 1).** The owners were already in `PRD` §15:
+  metering units → Product + Rating, tax/GL codes → Finance, `PlanTier` → Product. The approver
+  predicate per set is **the set owner's reviewer role, enforced at the decide door through
+  `APPROVER_ROLE_REQUIRED` (P-D-119) once roles reach `SecurityContext`** (`05` §7 row 25); until
+  then any approver in the tenant's quorum. *Accepted risk*: a non-Finance approver can approve a
+  Finance code until roles exist.
+- **`taxCategory` and `glCode` stay in the registry (`03` row 5).** `PRD` §2.1's *"owned elsewhere"*
+  is about the **descriptor** (line 367: *"Catalog supplies only the tax-category/GL **code** on the
+  SKU"*); `fr-accounting-codes` requires the **reference** to Finance's recognized set. Both
+  sentences hold; §2.1 gains the clarifying parenthetical. *Accepted risk*: Finance may consider the
+  code its own — the reference is the registry's, the meaning is theirs.
+- **`PlanTier` seeds `standard` (`03` row 11).** `PlanTier` is mandatory on every SKU, so an empty
+  set makes the first publish impossible; `standard` is a default every consumer reads without a
+  special case, while a tier named `none` is one Subscriptions and the SLA policies would have to
+  special-case. `PRD` §17.1's row is settled. *Accepted risk*: `standard` presumes a ladder some
+  tenants lack. The seed itself is `03`'s build (P-D-104's first-write mechanism).
+- **`UsageType` deletion (`03` row 3).** The registry's half is built: a deleted type is the
+  correction door's `unresolvable_target` arm, and `products_correction_override` carries it. The
+  collector's obligation is recorded in `PRD` §15 for the collector's PRD owner: **a `UsageType`
+  with live bindings is never hard-deleted, only tombstoned with a signal.**
+- **The unavailable resolver (`03` row 12).** The causes are not distinguished on the wire: an
+  interactive publish of a **usage** SKU refuses through the gear's existing fail-closed 503
+  channel (non-usage SKUs never call the resolver); on the bulk lane the row takes disposition
+  `failed` and the batch continues, a retry being a resubmission. *Accepted risk*: an unwired
+  deployment answers 503 for years where *"not configured"* would be more honest.
+- **The live-reference condition is design-introduced and the PRD adopts it (`02` row 12).**
+  `fr-localized-attributes` gains one sentence: *a definition carrying a value on any non-terminal
+  head MUST NOT be removed* — the fixation of what is built.
+- **`CATEGORY_RETIRED` and `ATTRIBUTE_DEFINITION_DEPRECATED` stay 422 (`02` row 18).** The target
+  of the save is the Product; the category or definition is a reference in the payload, exactly as
+  `ATTRIBUTE_DEFINITION_UNKNOWN` is, and `05`'s 409 rule speaks of the *target's* state. Moving them
+  would pull both codes out of the pipeline into variants with no gain for a client. *Accepted
+  risk*: a client expecting 409 by analogy with `STALE_LIVE_OP`.
+- **The seeded member's removal refuses `ILLEGAL_FIELD_MUTATION` (`03` row 18)**, uniformly with
+  `02`'s seeded definition (measured 2026-09-03): the Foundation's variant, no sixteenth code.
+  *Accepted risk*: a code named for a field on an act over a set member.
+- **Propagated**: the eight rows and eight design items struck; `PRD.md` §2.1, `fr-localized-attributes`,
+  §15 (two rows answered, one collector obligation added) and §17.1 edited. `03`'s builder owes
+  the `standard` seed and the `ILLEGAL_FIELD_MUTATION` arm.
+
+
 #### P-D-129 — `07`'s open set: a producer retires empty or under break-glass, the correction is a `GovernedLiveOp`, and the guards that shared one question
 
 - **Date**: 2026-09-03 (owner call over `features/reference-signal.md` §7 rows 2, 5, 6, 8, 9, 10, 11,

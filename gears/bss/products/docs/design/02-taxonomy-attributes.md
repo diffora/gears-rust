@@ -439,7 +439,7 @@ no event of their own (category display values emit `CategoryDisplayUpdated`, ab
   row already carries `DEFINITION_IN_USE`), and none appears in AC #38's enumeration, so no lint
   will report them. Owner: this slice with the error-contract owner — slice-owned codes, 01's
   `VALIDATION`, or a 404 path-segment case. *(Two lenses raised it independently.)*
-- **Are `CATEGORY_RETIRED` and `ATTRIBUTE_DEFINITION_DEPRECATED` 422 or 409?** Both are the target's
+- ~~**Are `CATEGORY_RETIRED` and `ATTRIBUTE_DEFINITION_DEPRECATED` 422 or 409?**~~ **Answered (P-D-131, 2026-09-03): 422 stays** — payload references, not the target's state. *The item's text stood as:* Both are the target's
   *current state* refusing the act — the shape §3.3's own convention puts at 409, and where the
   sibling `DEFINITION_IN_USE` already sits. The note calls the mapping "Proposed per row and open to correction". Owner: the API-contract owner. *(Raised by the slice-02 first lens pass.)*
 - ~~**Does the type-change operand mean the same thing as the removal operand?**~~ **Answered (P-D-116 row 11, 2026-09-03): yes — one operand, the non-terminal head carrying a value, and one rule, `definition_in_use_verdict`**; *"live values"* means that head. *The item's text stood as:* One row states two:
@@ -480,7 +480,7 @@ no event of their own (category display values emit `CategoryDisplayUpdated`, ab
   as: `inst-tx-retire-guard` read "unreferenced" from the Product's lifecycle state, never the link
   row, so discarded and retired Products still held rows in the single source of truth, and §4.1
   gave `category_id` no referential action.*
-- **Does the PRD carry a live-reference condition for attribute definitions?**
+- ~~**Does the PRD carry a live-reference condition for attribute definitions?**~~ **Answered (P-D-131, 2026-09-03): design-introduced, and the PRD adopts it** in `fr-localized-attributes`. *The item's text stood as:*
   `inst-ad-deprecate-then-remove` credited its "non-terminal head" operand to the PRD, and that
   attribution is struck this pass: the PRD's definition clauses (`fr-localized-attributes`, AC #12)
   carry only "backward-compatible … deprecate-then-remove", and §17.1's "de-list blocked while

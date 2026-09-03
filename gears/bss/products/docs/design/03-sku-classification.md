@@ -271,18 +271,18 @@ actor, the scenarios and the boundary.
 #7 (typing clauses; identity/link clauses = 01), #8–#11; AC #38 (unit rows); P-D-02 (override registration), P-D-05 (resolver semantics).
 
 **Risks & open items**:
-- **Recognized-set owners + add/de-list workflows** are PRD §15 opens (Finance for codes,
+- ~~**Recognized-set owners + add/de-list workflows**~~ **Answered (P-D-131, 2026-09-03): owners as `PRD` §15 names them; the approver predicate is the owner's reviewer role at the decide door once roles exist.** *The item's text stood as:* are PRD §15 opens (Finance for codes,
   Product + Rating for units) — the `GovernedLiveOp` machinery is ready either way; only the
   approver-role predicates per set await the owners' sign-off.
 - **Collector in the publish path**: a synchronous dependency bounds publish availability by
   collector availability for usage SKUs; acceptable at authoring rates, but slice 08/12 should
   surface resolver latency in the publish SLO breakdown.
-- **UsageType deletion** (PRD §15, P-D-05 residue): `inst-cd-stamp` gives the remediation path
+- ~~**UsageType deletion**~~ **Answered (P-D-131, 2026-09-03): the registry's half is the correction door's `unresolvable_target` arm; the collector's tombstone obligation is in `PRD` §15.** *The item's text stood as:* (PRD §15, P-D-05 residue): `inst-cd-stamp` gives the remediation path
   its evidence, but the negotiation with the collector is still open.
 - **`sellable`, `usage_type_ref` and `type` missing in pricing's `CatalogSku`** — this slice's three
   of the four members 12 `inst-sdk-catalogsku` names; owed consumer-side, and our SDK shape carries
   them from day one so the fix stays additive.
-- **`tax_category_ref` and `gl_code_ref` may not belong to this registry at all.** 01 §4.2 marks both
+- ~~**`tax_category_ref` and `gl_code_ref` may not belong to this registry at all.**~~ **Answered (P-D-131, 2026-09-03): they stay** — §2.1 forbids the descriptor, `fr-accounting-codes` requires the reference. *The item's text stood as:* 01 §4.2 marks both
   columns **contingent** and `PRD` §15 carries the question — `PRD` §2.1 says they are owned elsewhere while
   `fr-accounting-codes` requires the registry to persist and validate them. This slice owns the
   validators, the two `set_kind` values, `inst-ac-required` and a publish-blocking requirement, all of
@@ -324,14 +324,14 @@ actor, the scenarios and the boundary.
   are load-bearing: `inst-mt-recognized` refuses every declaration outside the set, so a tenant
   provisioned after the migration could declare no meter. 02 registers the identical question and
   names this slice in it. Owner: this slice with 01. *(Raised by the slice-03 first lens pass.)*
-- **Which seed value does the PlanTier taxonomy get?** `PRD` §17.1 offers `standard`/`none` and this
+- ~~**Which seed value does the PlanTier taxonomy get?**~~ **Answered (P-D-131, 2026-09-03): `standard`.** *The item's text stood as:* `PRD` §17.1 offers `standard`/`none` and this
   slice pins neither; the seeded `member_code` is a live contract value — the pin compares the string,
   and pricing's `tier_divergent` guard would compare it, though that flag plane is unbuilt (its own
   register records "no repository, no writer and no reader", and the token appears in pricing's source
   only in a migration `CHECK` and two doc comments). Owner: the Product owner named on that row.
   *(Raised by the slice-03 first lens pass.)*
-- **What is the resolver's timeout, and what is its unavailable-path on the bulk lane and on an
-  unwired deployment?** Two lanes are dispositioned and the bulk lane is not: 09 consumes the batch
+- ~~**What is the resolver's timeout, and what is its unavailable-path on the bulk lane and on an
+  unwired deployment?**~~ **Answered (P-D-121 and P-D-131, 2026-09-03): 2000 ms interim; unavailable refuses through the fail-closed 503 channel interactively and takes `failed` per row on the bulk lane.** *The item's text stood as:* Two lanes are dispositioned and the bulk lane is not: 09 consumes the batch
   approval once at the commit flip, so a collector blip mid-commit fails rows under an approval already
   spent. No number is given for "a short timeout" and §17.1 carries no row; and "not wired" is not
   separated from "unreachable", which 06 makes explicit for its own inbound client. Owner: this slice
@@ -376,7 +376,7 @@ actor, the scenarios and the boundary.
   `min(N, 1)`. PRD §6.7 names category ops and material attribute-definition changes and says nothing
   about `RecognizedSet` label edits. Owner: this slice with 02 and 05 — one rule for a `display_label`-only
   op across every vocabulary, or a stated exception. *(Raised by the slice-03 second lens pass.)*
-- **Which code refuses the removal of a seeded, unreferenced member?** `inst-rs-seeded` refuses it and
+- ~~**Which code refuses the removal of a seeded, unreferenced member?**~~ **Answered (P-D-131, 2026-09-03): `ILLEGAL_FIELD_MUTATION`**, as `02` does for a seeded definition. *The item's text stood as:* `inst-rs-seeded` refuses it and
   names none; the three delist codes are all predicated on holders, so none fits a seeded member with
   no holders, and no `UNRECOGNIZED_*`/`*_UNKNOWN` code describes the act. 02 carries the identical
   silence for `WellKnownSeed`, and registers it among its own code-less refusals. Owner: this slice with
