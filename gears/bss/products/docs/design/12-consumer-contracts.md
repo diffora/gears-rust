@@ -267,7 +267,7 @@ slice is that suite's specification.
 
 **Risks & open items**:
 - **The `EventRegister` is declared and empty.** P-D-45 made lint 4 read a table that does not yet have rows, and the measurement that forced it (five harvests, five populations) is also the reason nobody can fill it in one pass: an event's emitting instruction is only known to whoever wrote the rule. Each slice owes its own rows — event, emitting `inst-*`, and an explicit no-event where a state change emits nothing. Until it is written lint 4 is declared and inert, which is a better state than prose but is not a working gate. Owner: every slice owner, coordinated by this one. *(Raised by the P-D-45 round.)*
-- **The suite's final owner/home is a §15 open** (proposed `api-contracts` CI) — the design is
+- ~~**The suite's final owner/home is a §15 open**~~ **Answered (P-D-132, 2026-09-03): no CI job, by the owner's decision** — the products-side crate, run on demand. *The item's text stood as:* (proposed `api-contracts` CI) — the design is
   home-agnostic, but an unowned CI job is an unrun one; this is the set's last
   organizational dependency.
 - **Most obligations are OWED** by construction (C4): the register makes the debt legible, and

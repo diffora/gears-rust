@@ -1195,7 +1195,7 @@ duplicating it.
     `cpt-cf-bss-products-dod-disposition-rules`.
     **Owner**: `02-taxonomy-attributes`' owner.
 
-21. **Is a `p3` feature the right priority for the only exit from a terminal state?** Every id this
+21. ~~**Is a `p3` feature the right priority for the only exit from a terminal state?**~~ **Answered (P-D-132, 2026-09-03, the product owner): p2** — a repair path is a v1 commitment, not a day-one one; `PRD` amended, `design/11` and this document follow with `11`'s builder. *The item's text stood as:* Every id this
     document **declares** is `p3`, following `design/11` (six of six) and `PRD.md` §6.10's
     `fr-clone`; the two head lines carry `p2` because they mirror DECOMPOSITION §2.11's own token,
     which is a third value again. But two **`p1`** functional

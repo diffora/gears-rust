@@ -1136,10 +1136,10 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     **Blocks**: `cpt-cf-bss-products-dod-lint-declarations`.
     **Owner**: every slice owner, coordinated by this one. *(Raised by the P-D-45 round.)*
 
-2. **The suite's final owner/home is a §15 open** (proposed `api-contracts` CI) — the design is
+2. ~~**The suite's final owner/home is a §15 open**~~ **Answered (P-D-132, 2026-09-03, the product owner): no CI job** — the owner refused the lead's `products-seam` job; the suite lives in the products-side crate (P-D-130) and runs on demand, and `dod-seam-suite-home`'s CI clause is unsatisfiable by decision. *The item's text stood as:* (proposed `api-contracts` CI) — the design is
     home-agnostic, but an unowned CI job is an unrun one; this is the set's last organizational
     dependency.
-    **Blocks**: `cpt-cf-bss-products-dod-seam-suite-home`.
+    **Blocks**: no DoD — **resolved by P-D-132** *(was: `cpt-cf-bss-products-dod-seam-suite-home`.)*
     **Owner**: the `PRD` §15 owner (assigned by P-D-130, 2026-09-03).
 
 3. **Most obligations are OWED** by construction (C4): the register makes the debt legible, and

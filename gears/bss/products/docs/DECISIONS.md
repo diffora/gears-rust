@@ -1569,6 +1569,45 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-132 — Governance, lifecycle, launch and priority: seven product-owner calls, and one refusal
+
+- **Date**: 2026-09-03 (**the product owner's decision** on the lead's second batch; accepted as
+  recommended except item 7, which the owner refused)
+- **AC #26's last bullet is rewritten (`05` row 17).** A rejection **leaves the head in its current
+  state** — the head-row model has no unpublish edge — and records the reason on the decision row;
+  the approval record is voided and a later publish queues a new one; the quorum is the configured
+  `N` the same AC's first bullet already states (P-D-11). *"v1 uses a single two-person step"* is
+  struck as superseded.
+- **The break-glass window is configuration (`05` row 22).** `breakglass_window_hours`, **4**
+  interim, in `ProductsConfig` on the P-D-107 idiom, zero refused at boot; and `design/05`'s
+  elevation instruction says what §17.1 said: **no renewal** — a session is not extended, a new
+  session is a new two-person ceremony. *Accepted risk*: four hours is short for a real incident.
+- **`leave-and-list` covers referenced children (`04` row 16).** The design's operand — children
+  whose flip guard cannot clear — is the one with a v1 population; EOL-requiring children are its
+  post-v1 subset. The PRD's two sentences are widened to say so.
+- **EOL stays post-v1, explicitly (`04` row 6).** Nothing is decided until Subscriptions' AC, the
+  consumer-ack contract and the suspension event exist; `dod-eol-lockout` is re-priced **p3** so it
+  stops reading as blocked.
+- **A v1 launch criterion (`06` row 3).** Pricing's freeze ack must be registered and observed on
+  one real catalog version before the first posted use; until then every version is
+  posting-unsafe by construction, which is the protocol's intended loud state. Recorded in `PRD`
+  §15.
+- **`fr-clone` is p2 (`11` row 21).** Two `p1` requirements name the clone as their only remedy;
+  DECOMPOSITION §2.11 already carried p2. Not p1: a repair path is a v1 commitment, not a day-one
+  one. `design/11` and `features/clone.md` follow with `11`'s builder.
+- **The seam suite gets no CI job — the owner's refusal (`12` row 2).** The lead recommended a
+  `products-seam` job in `gear-scoped-ci.yml`; the owner decided **nothing is added to CI**. The
+  suite lives in the products-side crate (P-D-130) and runs on demand; `dod-seam-suite-home`'s CI
+  clause is unsatisfiable by decision and the DoD stays unticked with that reason, not as a gap.
+- **The NFR workshop (`08` rows 1 and 3, `06` row 4, `10`'s DR rows).** The owner will name the DRI
+  and the date; until it is held, every interim number set by P-D-107, 113, 118, 121, 127 and this
+  entry stands as a binding design target, `PRD` §15's own rule. Those rows stay live as the
+  workshop's, annotated.
+- **Propagated**: `PRD.md` (AC #26, §15 three rows, `fr-clone`, the two cascade sentences);
+  `design/05` §6 two items and the elevation instruction; `design/04`, `06`, `12`, `08` §6 items;
+  the feature rows; `config.rs`.
+
+
 #### P-D-131 — The recognized sets and their codes: eight product-owner calls, taken on the lead's recommendations
 
 - **Date**: 2026-09-03 (**the product owner's decision**, accepted as recommended after reading the lead's

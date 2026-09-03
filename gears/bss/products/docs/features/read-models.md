@@ -946,7 +946,7 @@ citation discipline, not as a live blocker.
     delivery/DLQ state, which is not in this gear's database).
     **Blocks**: no DoD — a `PRD` §15 question above this feature, on whether the serving store is
     needed at all.
-    **Owner**: the NFR workshop (`PRD` §15) — assigned by P-D-126, 2026-09-03.
+    **Owner**: *(P-D-132, 2026-09-03: the Program Lead names the workshop's DRI and date; until it is held the interim numbers are binding design targets.)* the NFR workshop (`PRD` §15) — assigned by P-D-126, 2026-09-03.
 
 2. ~~**Locale materialization**~~ **Answered (P-D-126, 2026-09-03): a `ProductsConfig` field on the P-D-107 idiom** when `08` builds, an empty set refused at boot. *The item's text stood as:* (per active locale) trades storage for the p95 budget; the
     active-locale set per tenant needs a config home — implementation note.
@@ -956,7 +956,7 @@ citation discipline, not as a live blocker.
 3. Search-engine choice (LIKE/FTS vs external) is deliberately behind the projection contract; the
     NFR #2 load test decides, not this document.
     **Blocks**: no DoD — the row's own text says the NFR #2 load test decides, not a document.
-    **Owner**: the NFR workshop (`PRD` §15) — assigned by P-D-126, 2026-09-03.
+    **Owner**: *(P-D-132, 2026-09-03: the workshop's, as row 1.)* the NFR workshop (`PRD` §15) — assigned by P-D-126, 2026-09-03.
 
 4. ~~**Open above this slice: who measures the < 3 s propagation budget, and against which meter?**~~ **Answered (P-D-124, 2026-09-03): `08` asserts the one meter against the < 3 s threshold; no second probe is owed** — the Program Lead's routing is answered by the arm that reads the budget sentence jointly. *The item's text stood as:*
     `PRD` §15 names this slice with 01 and 06 — §5's convergence probe instruments the

@@ -407,7 +407,7 @@ pricing D-47 (joint contract), P-D-04 (containment residue).
   itself and records no explicit "no event" for it — which §4.5's own rule and slice 12's
   completeness check both require. Naming one would invent normative content. Owner: the lifecycle
   owner, with the events/audit consumer set. *(Raised by the slice-01 fifth-pass review.)*
-- EOL (post-v1) will need: the subscriptions-lifecycle AC by number, the consumer-ack contract,
+- EOL (post-v1) will need *(P-D-132, 2026-09-03: post-v1 explicitly; `dod-eol-lockout` re-priced p3.)*: the subscriptions-lifecycle AC by number, the consumer-ack contract,
   and `SkuEolSuspended` — the schema field is already vN-compatible.
 - **Does the create-door retire-intent validator also register on the save door?** 01
   `inst-fd-save-txn` is the only door that may change a SKU's `product_id`, so a draft SKU can be
@@ -487,7 +487,7 @@ pricing D-47 (joint contract), P-D-04 (containment residue).
   makes the cancel a `GovernedLiveOp` registered material by this slice; §1.3's roster gives it to
   nobody — the catalog-admin row carries "initiates retirement/cascades" and "resumes deferred
   cascades", both forward acts. Owner: this slice with 05. *(Raised by the slice-04 first lens pass.)*
-- **Does `leave-and-list` cover referenced children or only EOL-requiring ones?** `inst-cp-plan`
+- ~~**Does `leave-and-list` cover referenced children or only EOL-requiring ones?**~~ **Answered (P-D-132, 2026-09-03): referenced children**; EOL-requiring is the post-v1 subset; the PRD is widened. *The item's text stood as:* `inst-cp-plan`
   scopes the arm to "children whose flip guard cannot clear — referenced SKUs"; the PRD and AC #15
   both scope it to "EOL-requiring children left un-retired", and C3 disables EOL in v1 — so on the
   PRD's wording the arm has no v1 population at all. Owner: the PRD owner, as a wording call.

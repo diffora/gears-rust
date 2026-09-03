@@ -299,6 +299,13 @@ fn a_zero_cap_is_refused_at_boot() {
                 ..ProductsConfig::default()
             },
         ),
+        (
+            "breakglass_window_hours",
+            ProductsConfig {
+                breakglass_window_hours: 0,
+                ..ProductsConfig::default()
+            },
+        ),
     ];
     for (name, cfg) in cases {
         let message = cfg
@@ -340,4 +347,6 @@ fn the_interim_ceilings_are_the_justified_numbers() {
     // P-D-121: the resolve runs before the transaction, so this bounds latency,
     // not a lock.
     assert_eq!(cfg.usage_type_resolver_timeout_ms, 2_000);
+    // P-D-132: PRD §17.1's four hours, no renewal.
+    assert_eq!(cfg.breakglass_window_hours, 4);
 }

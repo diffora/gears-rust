@@ -383,7 +383,7 @@ struck. Branch review.)*
   clause in the same sentence ("slice 06/10 storage posture") is claimed. The set has been written
   both ways in the last two days. **No slice §5 measures the < 3 s budget either way**, which is the
   owed probe and the thing that would settle it.
-- **The v1 freeze participant, pricing, is §15-silent** (**P-D-48** narrowed the registered set to
+- ~~**The v1 freeze participant, pricing, is §15-silent**~~ **Answered (P-D-132, 2026-09-03): a v1 launch criterion** — pricing's ack observed on one real version before the first posted use. *The item's text stood as:* (**P-D-48** narrowed the registered set to
   it; Contracts and Billing register at their own build time): the protocol ships registry-complete
   with `freeze_overdue` naming it from day one; until pricing's ack lands, every version is
   posting-unsafe by construction — correct, loud, and worth a product decision on v1 launch

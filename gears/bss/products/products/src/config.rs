@@ -75,6 +75,9 @@ pub const DRILL_CADENCE_HOURS_DEFAULT: u32 = 24;
 /// The usage-type resolver's bound, in milliseconds — **interim, P-D-121**.
 pub const USAGE_TYPE_RESOLVER_TIMEOUT_MS_DEFAULT: u32 = 2_000;
 
+/// The break-glass window's interim, in hours — **P-D-132**, `PRD` §17.1.
+pub const BREAKGLASS_WINDOW_HOURS_DEFAULT: u32 = 4;
+
 /// `design/07` §17.1's interim freshness threshold, in minutes.
 pub const REFERENCE_FRESHNESS_MINUTES_DEFAULT: u32 = 15;
 
@@ -336,6 +339,11 @@ pub struct ProductsConfig {
     /// (P-D-121 row 19, `MaterialityEvaluator`'s shape), so the bound costs
     /// latency on the publish path and not a held lock.
     pub usage_type_resolver_timeout_ms: u32,
+
+    /// The break-glass elevation window, in hours. **Interim 4 — P-D-132**,
+    /// `PRD` §17.1's row made configuration. Hard expiry and **no renewal**:
+    /// a second window is a second session and a second two-person ceremony.
+    pub breakglass_window_hours: u32,
 }
 
 impl Default for ProductsConfig {
@@ -366,6 +374,7 @@ impl Default for ProductsConfig {
             pseudonymization_age_days: PSEUDONYMIZATION_AGE_DAYS_DEFAULT,
             drill_cadence_hours: DRILL_CADENCE_HOURS_DEFAULT,
             usage_type_resolver_timeout_ms: USAGE_TYPE_RESOLVER_TIMEOUT_MS_DEFAULT,
+            breakglass_window_hours: BREAKGLASS_WINDOW_HOURS_DEFAULT,
         }
     }
 }
@@ -460,6 +469,7 @@ impl ProductsConfig {
                 "usage_type_resolver_timeout_ms",
                 self.usage_type_resolver_timeout_ms,
             ),
+            ("breakglass_window_hours", self.breakglass_window_hours),
         ] {
             if value == 0 {
                 return Err(format!(

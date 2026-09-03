@@ -185,7 +185,7 @@ actor, the scenarios and the boundary.
 
 1. [ ] - `p1` - Elevation opens a `BreakGlassSession`: mandatory reason, time-boxed window (configured), scope named (which tenant); itself **two-person-approved or post-hoc-reviewed** — and this "two-person" is a **fixed floor of two distinct platform principals, outside the tenant's configured `N` entirely** (P-D-13: the acting principal is a platform owner and the subject is another tenant's data, so no tenant configuration has standing over it; the post-hoc-review arm is the escape the floor needs, so the floor blocks nobody) — (both paths recorded; the post-hoc path raises the review obligation as an alert, not a silent log line); `BreakGlassElevated` emitted + a distinct alert channel; the reason passes 02's `inst-av-pii-block` before the row is written, a hit failing `CONTENT_PII_BLOCKED` (**P-D-50**; 02 `inst-av-pii-reason` enumerates this door) - `inst-bg-open`
 2. [ ] - `p1` - Under elevation: cross-tenant **read and audit-export only**; every access is individually audited with the session id, reason, and correlation id; any write attempt is refused `BREAKGLASS_WRITE_FORBIDDEN` — no exception in v1 (C5) - `inst-bg-readonly`
-3. [ ] - `p1` - Expiry is hard: past the window every elevated call fails `BREAKGLASS_EXPIRED`; `BreakGlassExpired` is emitted **exactly once, by the first post-expiry act, via a CAS flip of the session's `expired_emitted` stamp in the same transaction as its refusal — the winner emits, a replay emits nothing, and a session never touched after expiry emits no event at all, its expiry being a stored fact observable as a gauge with the alerting rule on top** (**P-D-68**, on P-D-54's and P-D-59's mechanisms); **expiry gates admission, not completion** — an elevated read admitted inside the window finishes (P-D-68); standing cross-tenant access is not grantable in the catalog at all — the grant model has no such shape - `inst-bg-expiry`
+3. [ ] - `p1` - Expiry is hard: past the window every elevated call fails `BREAKGLASS_EXPIRED`; `BreakGlassExpired` is emitted **exactly once, by the first post-expiry act, via a CAS flip of the session's `expired_emitted` stamp in the same transaction as its refusal — the winner emits, a replay emits nothing, and a session never touched after expiry emits no event at all, its expiry being a stored fact observable as a gauge with the alerting rule on top** (**P-D-68**, on P-D-54's and P-D-59's mechanisms); **expiry gates admission, not completion** — an elevated read admitted inside the window finishes (P-D-68); standing cross-tenant access is not grantable in the catalog at all — the grant model has no such shape - `inst-bg-expiry` **No renewal (P-D-132, 2026-09-03):** a session is never extended; a second window is a second session and a second two-person ceremony; the window is `breakglass_window_hours`, 4 interim.
 
 ## 3. Processes / Business Logic
 
@@ -466,11 +466,11 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
   discharge, and no values are enumerated — §6 books only an owner and an SLA. Owner: was this
   slice; **closed**.
   *(Raised by the slice-05 first lens pass.)*
-- **The break-glass window's two normative facts live only in `PRD` §17.1.** That row carries a
+- ~~**The break-glass window's two normative facts live only in `PRD` §17.1.**~~ **Answered (P-D-132, 2026-09-03): `breakglass_window_hours` = 4 interim in `ProductsConfig`; no renewal, stated in the elevation instruction.** *The item's text stood as:* That row carries a
   4-hour interim **and** "no renewal without a new session", crediting this slice's own review with
   raising it; `inst-bg-open` states neither, and renewal is neither forbidden nor admitted here.
   Owner: the governance owner with the §17.1 owner. *(Raised by the slice-05 first lens pass.)*
-- **Does AC #26's third bullet still bind after P-D-11 rewrote the first two?** It carries both a
+- ~~**Does AC #26's third bullet still bind after P-D-11 rewrote the first two?**~~ **Answered (P-D-132, 2026-09-03): no — rewritten**: a rejection leaves the head where it is, the reason on the decision row, the quorum the configured `N`. *The item's text stood as:* It carries both a
   pre-P-D-11 count ("v1 uses a single two-person step") and the `draft` return the head-row model
   cannot honour; P-D-11's propagation names two bullets of AC #26 and not this one. Owner: the PRD
   owner with the governance owner, in the register. *(Raised by the slice-05 first lens pass.)*

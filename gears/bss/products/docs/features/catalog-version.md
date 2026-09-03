@@ -1792,7 +1792,7 @@ resolved record elsewhere can retract a decision's propagation, so none was touc
    **Blocks**: no DoD — **resolved by P-D-124** *(was: `cpt-cf-bss-products-dod-posting-safe-observability`.)*
    **Owner**: BSS Program Lead, with slices 01/06/08 — PRD §15's own routing.
 
-3. **The v1 freeze participant, pricing, is §15-silent** (**P-D-48** narrowed the registered set to
+3. ~~**The v1 freeze participant, pricing, is §15-silent**~~ **Answered (P-D-132, 2026-09-03, the product owner): a v1 launch criterion** — pricing's ack registered and observed on one real version before the first posted use; recorded in `PRD` §15. *The item's text stood as:* (**P-D-48** narrowed the registered set to
    it; Contracts and Billing register at their own build time): the protocol ships registry-complete
    with `freeze_overdue` naming it from day one; until pricing's ack lands, every version is
    posting-unsafe by construction — correct, loud, and worth a product decision on v1 launch
