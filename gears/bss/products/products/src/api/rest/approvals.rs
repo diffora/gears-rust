@@ -608,7 +608,7 @@ impl ActSpec {
 /// between the head as it stands and the version last frozen. A first publish
 /// has no basis, so **every** column counts as touched, which is right: it is
 /// all new content and the slice makes a first publish material outright.
-async fn resolve_entity_subject(
+pub(crate) async fn resolve_entity_subject(
     runner: &impl toolkit_db::secure::DBRunner,
     scope: &AccessScope,
     entity: EntityRef,
@@ -651,8 +651,17 @@ async fn resolve_entity_subject(
         // frozen content had and the head no longer does: a removal is a
         // touch, and a set built from the head alone would miss it.
         Some((_, frozen)) => match canonical::decode_rendering(frozen) {
-            Ok(before) => {
-                let after = canonical::decode_rendering(&snapshot).unwrap_or_default();
+            Ok(mut before) => {
+                // The frozen row is §4.3's *complete* set — a name with no value
+                // is a `null` member (`Absence::Null`) — while `snapshot` is the
+                // parsed shape that omits it (`Absence::Omit`, P-D-34). The two
+                // spell one fact two ways; dropping the null members makes the
+                // diff like-for-like, so an unmetered SKU's `metering_unit`
+                // is not "touched" on every re-publish (which had raised
+                // `CorrectableTouch` against a column nobody moved).
+                before.retain(|_, value| !value.is_null());
+                let mut after = canonical::decode_rendering(&snapshot).unwrap_or_default();
+                after.retain(|_, value| !value.is_null());
                 let mut names: Vec<String> = after
                     .iter()
                     .filter(|(key, value)| before.get(*key) != Some(*value))
@@ -678,9 +687,22 @@ async fn resolve_entity_subject(
                 .cloned()
                 .collect(),
         },
+        // A first publish: every column is new, so every column counts as
+        // touched — **except bucket ii**. P-D-41 admits `metering_unit` and
+        // `usage_type_ref` through the save door while `published_version = 0`,
+        // so their first appearance is not a correction, and judging them as
+        // one would refuse every usage SKU's first publish with
+        // `CorrectableTouch` (P-D-142). After first publish the head guard
+        // admits no bucket-ii save, so the exclusion has no second case.
         None => canonical::decode_rendering(&snapshot)
             .unwrap_or_default()
             .keys()
+            .filter(|column| {
+                crate::domain::bucket::classify(entity.entity_kind, column)
+                    .ok()
+                    .and_then(crate::domain::bucket::FieldClass::bucket)
+                    != Some(crate::domain::bucket::FieldBucket::Correctable)
+            })
             .cloned()
             .collect(),
     };

@@ -1744,7 +1744,7 @@ async fn head_of(harness: &TestHarness, product_id: Uuid) -> repo::ProductRecord
 /// door pair is one slice: every case below drives the same request shape
 /// against the two paths, and a second copy of this helper would only be a
 /// copy to keep in sync.
-async fn post_head_act(
+async fn post_head_act_via(
     app: Router,
     tenant: Uuid,
     product_id: Uuid,
@@ -1765,6 +1765,79 @@ async fn post_head_act(
     )
     .await
     .expect("the router answers")
+}
+
+/// A routed head act under the door's **real** host (P-D-142): a governed
+/// act needs a satisfied record for its subject, seeded here at the revision
+/// the `If-Match` header asserts. `discard` runs ungoverned and gets none; an
+/// act without a parsable tag is refused before the gate and gets none.
+async fn post_head_act(
+    harness: &TestHarness,
+    tenant: Uuid,
+    product_id: Uuid,
+    act: &str,
+    headers: &[(&str, &str)],
+) -> axum::http::Response<Body> {
+    seed_for_routed_act(harness, tenant, product_id, act, headers).await;
+    post_head_act_via(app_for(harness, tenant), tenant, product_id, act, headers).await
+}
+
+async fn seed_for_routed_act(
+    harness: &TestHarness,
+    tenant: Uuid,
+    product_id: Uuid,
+    act: &str,
+    headers: &[(&str, &str)],
+) {
+    if act == "discard" {
+        return;
+    }
+    let Some((_, tag)) = headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("if-match"))
+    else {
+        return;
+    };
+    let mut map = axum::http::HeaderMap::new();
+    let Ok(value) = axum::http::HeaderValue::from_str(tag) else {
+        return;
+    };
+    map.insert(axum::http::header::IF_MATCH, value);
+    let Ok(revision) = preconditions::if_match(&map) else {
+        return;
+    };
+    crate::test_support::seed_satisfied_publish_approval(
+        &harness.db,
+        tenant,
+        bss_products_sdk::models::EntityKind::Product,
+        product_id,
+        revision.get(),
+    )
+    .await;
+}
+
+/// [`seed_for_routed_act`]'s SKU-side twin for the child acts these cases
+/// drive through the shared router.
+async fn seed_sku_act(harness: &TestHarness, sku_id: Uuid, act: &str, if_match: &str) {
+    if act == "discard" {
+        return;
+    }
+    let mut map = axum::http::HeaderMap::new();
+    let Ok(value) = axum::http::HeaderValue::from_str(if_match) else {
+        return;
+    };
+    map.insert(axum::http::header::IF_MATCH, value);
+    let Ok(revision) = preconditions::if_match(&map) else {
+        return;
+    };
+    crate::test_support::seed_satisfied_publish_approval(
+        &harness.db,
+        TENANT,
+        bss_products_sdk::models::EntityKind::Sku,
+        sku_id,
+        revision.get(),
+    )
+    .await;
 }
 
 /// The `If-Match` value a caller holding `revision` would send — built the
@@ -1824,7 +1897,7 @@ async fn a_first_publish_freezes_one_version_row_and_moves_both_counters_by_exac
     );
 
     let response = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "publish",
@@ -1912,7 +1985,7 @@ async fn the_frozen_rows_digest_is_the_digest_of_the_rendering_the_row_stores() 
     assign_primary_category(&harness, product_id).await;
 
     let response = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "publish",
@@ -2019,7 +2092,7 @@ async fn a_republish_moves_the_version_again_and_leaves_the_state_published() {
     assign_primary_category(&harness, product_id).await;
 
     let first = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "publish",
@@ -2029,7 +2102,7 @@ async fn a_republish_moves_the_version_again_and_leaves_the_state_published() {
     assert_eq!(first.status(), StatusCode::OK);
 
     let second = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "publish",
@@ -2076,7 +2149,7 @@ async fn a_publish_with_a_stale_if_match_is_refused_and_writes_nothing() {
     seed_draft(&harness, product_id).await;
 
     let response = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "publish",
@@ -2137,14 +2210,7 @@ async fn a_publish_without_if_match_is_refused_validation_and_audited() {
     let product_id = Uuid::now_v7();
     seed_draft(&harness, product_id).await;
 
-    let response = post_head_act(
-        app_for(&harness, TENANT),
-        TENANT,
-        product_id,
-        "publish",
-        &[],
-    )
-    .await;
+    let response = post_head_act(&harness, TENANT, product_id, "publish", &[]).await;
     assert_eq!(
         response.status(),
         StatusCode::BAD_REQUEST,
@@ -2180,7 +2246,7 @@ async fn a_publish_on_a_terminal_head_is_refused_entity_terminal() {
     seed_draft(&harness, product_id).await;
 
     let discarded = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "discard",
@@ -2194,7 +2260,7 @@ async fn a_publish_on_a_terminal_head_is_refused_entity_terminal() {
     );
 
     let response = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "publish",
@@ -2262,7 +2328,7 @@ async fn a_gate_that_answers_no_refuses_approval_required_and_writes_nothing() {
         &ctx,
         product_id,
         &headers,
-        &gate,
+        crate::api::rest::GateHost::Given(Arc::clone(&gate)),
         GateMode::Gate,
     )
     .await
@@ -2374,7 +2440,7 @@ async fn a_gate_host_that_fails_is_an_internal_failure_not_a_refusal() {
         &ctx,
         product_id,
         &headers,
-        &gate,
+        crate::api::rest::GateHost::Given(Arc::clone(&gate)),
         GateMode::Gate,
     )
     .await
@@ -2463,7 +2529,7 @@ async fn a_publish_whose_revalidation_fails_is_refused_incomplete_entity() {
     // write, so the caller's precondition has to be the post-corruption one
     // or this case would measure STALE_REVISION instead.
     let response = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "publish",
@@ -2525,7 +2591,7 @@ async fn a_draft_discards_and_a_published_head_does_not() {
     assign_primary_category(&harness, draft_id).await;
 
     let discarded = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         draft_id,
         "discard",
@@ -2578,7 +2644,7 @@ async fn a_draft_discards_and_a_published_head_does_not() {
     }
     assign_primary_category(&harness, published_id).await;
     let published = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         published_id,
         "publish",
@@ -2588,7 +2654,7 @@ async fn a_draft_discards_and_a_published_head_does_not() {
     assert_eq!(published.status(), StatusCode::OK);
 
     let refused = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         published_id,
         "discard",
@@ -2642,7 +2708,7 @@ async fn a_discarded_products_name_and_code_are_free_for_the_next_product() {
     );
 
     let discarded = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "discard",
@@ -2686,7 +2752,7 @@ async fn a_replayed_publish_serves_the_stored_answer_and_does_not_publish_twice(
     assign_primary_category(&harness, product_id).await;
 
     let first = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "publish",
@@ -2720,7 +2786,7 @@ async fn a_replayed_publish_serves_the_stored_answer_and_does_not_publish_twice(
     // The retry carries the *original* precondition, which is what a client
     // that never saw the first response would still hold.
     let retry = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "publish",
@@ -2974,7 +3040,7 @@ async fn the_published_event_carries_the_post_act_published_version() {
     assign_primary_category(&harness, product_id).await;
 
     let first = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "publish",
@@ -3003,7 +3069,7 @@ async fn the_published_event_carries_the_post_act_published_version() {
     assert_eq!(body["internalRevision"], json!(2));
 
     let second = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "publish",
@@ -3036,7 +3102,7 @@ async fn a_discarded_event_carries_no_published_version() {
     seed_draft(&harness, product_id).await;
 
     let response = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "discard",
@@ -3161,7 +3227,7 @@ async fn a_preauthorized_publish_reaches_the_host_in_that_mode_and_consumes_noth
         &ctx,
         product_id,
         &headers,
-        &gate,
+        crate::api::rest::GateHost::Given(Arc::clone(&gate)),
         GateMode::PreAuthorized(approval),
     )
     .await
@@ -3309,7 +3375,7 @@ async fn the_discard_doors_gate_phase_passes_trivially_under_the_default_host() 
     seed_draft(&harness, product_id).await;
 
     let response = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "discard",
@@ -3407,7 +3473,7 @@ async fn the_state_phase_outranks_the_gate_on_the_publish_door() {
     seed_draft(&harness, product_id).await;
 
     let discarded = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "discard",
@@ -3439,7 +3505,7 @@ async fn the_state_phase_outranks_the_gate_on_the_publish_door() {
         &ctx,
         product_id,
         &headers,
-        &gate,
+        crate::api::rest::GateHost::Given(Arc::clone(&gate)),
         GateMode::Gate,
     )
     .await
@@ -3588,7 +3654,7 @@ async fn a_bucket_iii_save_on_a_published_head_writes_no_version_row() {
     assign_primary_category(&harness, product_id).await;
 
     let published = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "publish",
@@ -3675,7 +3741,7 @@ async fn a_bucket_i_save_is_admitted_before_first_publish_and_refused_after_it()
     );
 
     let published = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "publish",
@@ -3786,7 +3852,7 @@ async fn a_save_with_one_refused_field_applies_none_of_the_others() {
     assign_primary_category(&harness, product_id).await;
 
     let published = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "publish",
@@ -3900,7 +3966,7 @@ async fn a_save_on_a_terminal_head_is_refused_entity_terminal() {
     seed_draft(&harness, product_id).await;
 
     let discarded = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "discard",
@@ -4132,6 +4198,7 @@ async fn create_product_scoped(harness: &TestHarness, region_scope: &str) -> Uui
 /// A Product head act through the door, asserting the setup step landed —
 /// [`sku_head_act`]'s Product-side twin, and never the property under test.
 async fn product_head_act(harness: &TestHarness, product_id: Uuid, act: &str, if_match: &str) {
+    seed_for_routed_act(harness, TENANT, product_id, act, &[("If-Match", if_match)]).await;
     let response = both_doors_app_for(harness, TENANT)
         .oneshot(
             Request::builder()
@@ -4201,6 +4268,7 @@ async fn create_sku_scoped(
 /// `POST /bss-products/v1/skus/{id}/{act}` with `If-Match`, asserted
 /// admitted — the setup step, never the property under test.
 async fn sku_head_act(harness: &TestHarness, sku_id: Uuid, act: &str, if_match: &str) {
+    seed_sku_act(harness, sku_id, act, if_match).await;
     let response = both_doors_app_for(harness, TENANT)
         .oneshot(
             Request::builder()
@@ -4811,7 +4879,7 @@ async fn a_blank_name_beside_a_bucket_i_column_stops_at_the_shape_phase() {
     assign_primary_category(&harness, product_id).await;
 
     let published = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "publish",
@@ -5083,7 +5151,7 @@ async fn a_save_enqueues_one_product_head_saved_carrying_the_committed_revision_
     );
 
     let published = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "publish",
@@ -5377,7 +5445,7 @@ mod clone_door_tests {
         assign_primary_category(&harness, source_id).await;
 
         let publish = post_head_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             source_id,
             "publish",
@@ -5447,7 +5515,7 @@ mod clone_door_tests {
         let source_id = Uuid::now_v7();
         seed_draft(&harness, source_id).await;
         let discard = post_head_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             source_id,
             "discard",
@@ -5968,7 +6036,7 @@ async fn a_publish_needs_a_primary_category_and_a_draft_does_not() {
     );
 
     let refused = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "publish",
@@ -6000,7 +6068,7 @@ async fn a_publish_needs_a_primary_category_and_a_draft_does_not() {
 
     assign_primary_category(&harness, product_id).await;
     let published = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "publish",
@@ -6062,6 +6130,133 @@ async fn approval_state(harness: &TestHarness, approval_id: Uuid) -> String {
         .expect("the row is there")
         .try_get::<String>("", "state")
         .expect("state is text")
+}
+
+/// The state of the newest approval row for a Product's publish subject —
+/// for cases whose record was seeded by the routed helper rather than by the
+/// case itself.
+async fn latest_approval_state(harness: &TestHarness, product_id: Uuid) -> String {
+    let conn = Database::connect(&harness.dsn)
+        .await
+        .expect("open an auxiliary connection to read the approval");
+    let rows = conn
+        .query_all_raw(sea_orm::Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            format!(
+                "SELECT state FROM products_approval WHERE subject_ref = 'product/{product_id}' \
+                 ORDER BY submitted_at DESC LIMIT 1"
+            ),
+        ))
+        .await
+        .expect("read the approval");
+    rows.first()
+        .expect("the row is there")
+        .try_get::<String>("", "state")
+        .expect("state is text")
+}
+
+/// `dod-one-shot-consumption`'s named probe, at the publish door: two publishes
+/// off one satisfied approval. The first spends the record in its own
+/// transaction; the second — driven through a host whose picture of the store
+/// predates the first, so it still holds the record as `satisfied` — is
+/// refused, and nothing it did survives. The second refusal is the pin's: the
+/// first publish moved the revision the record was pinned to. The spent arm
+/// itself — a host presenting an already-`consumed` record at a matching pin —
+/// is proved where the act does not move the pin, at the retire door
+/// (`skus_tests::a_record_spent_under_the_act_refuses_the_retirement_and_writes_nothing`)
+/// and at the store (`repo::consume_approval`'s own probes).
+#[tokio::test]
+async fn two_publishes_off_one_satisfied_record_spend_it_once_and_the_second_is_refused() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+    assign_primary_category(&harness, product_id).await;
+    let approval = seed_open_approval(&harness, product_id, "satisfied").await;
+
+    // One picture of the store, read before either act.
+    let stale_host: Arc<dyn GovernanceGate + Send + Sync> = {
+        let conn = harness.db.conn().expect("connection");
+        let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+        let subject = crate::domain::governance::GateSubject::entity_publish(
+            crate::domain::governance::EntityRef {
+                tenant_id: TENANT,
+                entity_kind: bss_products_sdk::models::EntityKind::Product,
+                entity_id: product_id,
+            },
+            InternalRevision::new(1),
+        );
+        let candidates = repo::gate_candidates(&conn, &scope, &subject)
+            .await
+            .expect("read the candidates");
+        assert_eq!(
+            candidates.len(),
+            1,
+            "the seeded record is the subject's one candidate"
+        );
+        Arc::new(crate::domain::approval::StoredApprovalGate::governed(
+            candidates,
+        ))
+    };
+    let state = api_state(&harness);
+    let enforcer = flat_in_enforcer(TENANT);
+    let ctx = authed_ctx(TENANT);
+    let headers_for = |revision: i64| {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::IF_MATCH,
+            if_match(revision)
+                .parse()
+                .expect("the ETag is a valid header value"),
+        );
+        headers
+    };
+
+    let first = super::publish_product_under_gate(
+        &state,
+        &enforcer,
+        &ctx,
+        product_id,
+        &headers_for(1),
+        crate::api::rest::GateHost::Given(Arc::clone(&stale_host)),
+        GateMode::Gate,
+    )
+    .await
+    .expect("the first publish is admitted");
+    assert_eq!(first.status(), StatusCode::OK);
+    assert_eq!(
+        approval_state(&harness, approval).await,
+        "consumed",
+        "the first publish spends the record in its own transaction"
+    );
+    let head = head_of(&harness, product_id).await;
+    assert_eq!(head.published_version, 1);
+
+    let second = super::publish_product_under_gate(
+        &state,
+        &enforcer,
+        &ctx,
+        product_id,
+        &headers_for(head.internal_revision),
+        crate::api::rest::GateHost::Given(stale_host),
+        GateMode::Gate,
+    )
+    .await
+    .expect_err("the second publish off the same record is refused");
+    assert_eq!(
+        second.into_response().status(),
+        StatusCode::FORBIDDEN,
+        "APPROVAL_REQUIRED is a 403"
+    );
+    assert_eq!(
+        approval_state(&harness, approval).await,
+        "consumed",
+        "the refusal re-spends nothing and reopens nothing"
+    );
+    assert_eq!(
+        head_of(&harness, product_id).await.published_version,
+        1,
+        "the second publish wrote nothing"
+    );
 }
 
 /// `dod-supersede`: a frozen-content write to the subject supersedes its open
@@ -6128,7 +6323,7 @@ async fn a_publish_does_not_supersede_the_record_it_consumes() {
     let approval = seed_open_approval(&harness, product_id, "satisfied").await;
 
     let published = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "publish",
@@ -6143,9 +6338,10 @@ async fn a_publish_does_not_supersede_the_record_it_consumes() {
 
     assert_eq!(
         approval_state(&harness, approval).await,
-        "satisfied",
-        "the publish consumes rather than supersedes: a hook firing against the record the act \
-         is spending has no defined ordering (05 C3)"
+        "consumed",
+        "the publish consumes rather than supersedes: the record it spends is `consumed`, never \
+         `superseded`: a hook firing against the record the act is spending has no defined \
+         ordering (05 C3), and the real host's one-shot flips it in the act's transaction"
     );
 }
 
@@ -6297,7 +6493,7 @@ mod deprecate_door_tests {
         seed_draft(harness, product_id).await;
         assign_primary_category(harness, product_id).await;
         let published = post_head_act(
-            app_for(harness, TENANT),
+            harness,
             TENANT,
             product_id,
             "publish",
@@ -6321,7 +6517,7 @@ mod deprecate_door_tests {
         let product_id = published_product(&harness).await;
 
         let response = post_head_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "deprecate",
@@ -6402,7 +6598,7 @@ mod deprecate_door_tests {
         let draft = seed_child(&harness, product_id, "SKU-DRAFT").await;
 
         let response = post_head_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "deprecate",
@@ -6485,7 +6681,7 @@ mod deprecate_door_tests {
         let child = seed_child(&harness, product_id, "SKU-UNDER-DRAFT").await;
 
         let refused = post_head_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "deprecate",
@@ -6525,7 +6721,7 @@ mod deprecate_door_tests {
         let product_id = published_product(&harness).await;
 
         let first = post_head_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "deprecate",
@@ -6535,7 +6731,7 @@ mod deprecate_door_tests {
         assert_eq!(first.status(), StatusCode::OK);
 
         let second = post_head_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "deprecate",
@@ -6574,24 +6770,10 @@ mod deprecate_door_tests {
             ("Idempotency-Key", "dep-replay-1".to_owned()),
         ];
         let borrowed: Vec<(&str, &str)> = headers.iter().map(|(n, v)| (*n, v.as_str())).collect();
-        let first = post_head_act(
-            app_for(&harness, TENANT),
-            TENANT,
-            product_id,
-            "deprecate",
-            &borrowed,
-        )
-        .await;
+        let first = post_head_act(&harness, TENANT, product_id, "deprecate", &borrowed).await;
         assert_eq!(first.status(), StatusCode::OK);
 
-        let retry = post_head_act(
-            app_for(&harness, TENANT),
-            TENANT,
-            product_id,
-            "deprecate",
-            &borrowed,
-        )
-        .await;
+        let retry = post_head_act(&harness, TENANT, product_id, "deprecate", &borrowed).await;
         assert_eq!(
             retry.status(),
             StatusCode::OK,
@@ -6711,7 +6893,7 @@ mod undeprecate_door_tests {
         let harness = harness().await;
         let product_id = published_product(&harness).await;
         let deprecated = post_head_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "deprecate",
@@ -6721,7 +6903,7 @@ mod undeprecate_door_tests {
         assert_eq!(deprecated.status(), StatusCode::OK);
 
         let response = post_head_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "undeprecate",
@@ -6764,7 +6946,7 @@ mod undeprecate_door_tests {
         .await;
 
         let deprecated = post_head_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "deprecate",
@@ -6774,7 +6956,7 @@ mod undeprecate_door_tests {
         assert_eq!(deprecated.status(), StatusCode::OK);
 
         let response = post_head_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "undeprecate",
@@ -6807,7 +6989,7 @@ mod undeprecate_door_tests {
         let harness = harness().await;
         let product_id = published_product(&harness).await;
         let deprecated = post_head_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "deprecate",
@@ -6818,7 +7000,7 @@ mod undeprecate_door_tests {
         seed_retire_intent(&harness, "product", product_id).await;
 
         let refused = post_head_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "undeprecate",
@@ -6840,7 +7022,7 @@ mod undeprecate_door_tests {
         publish_child(&harness, child).await;
 
         let deprecated = post_head_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "deprecate",
@@ -6851,7 +7033,7 @@ mod undeprecate_door_tests {
         seed_retire_intent(&harness, "sku", child).await;
 
         let refused = post_head_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "undeprecate",
@@ -6870,7 +7052,7 @@ mod undeprecate_door_tests {
         let harness = harness().await;
         let product_id = published_product(&harness).await;
         let refused = post_head_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "undeprecate",
@@ -6886,25 +7068,27 @@ mod retire_door_tests {
     use super::*;
 
     async fn post_json_act(
-        app: Router,
+        harness: &TestHarness,
         tenant: Uuid,
         product_id: Uuid,
         act: &str,
         if_match: &str,
         body: &serde_json::Value,
     ) -> axum::http::Response<Body> {
-        app.oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/bss-products/v1/products/{product_id}/{act}"))
-                .header(axum::http::header::CONTENT_TYPE, "application/json")
-                .header(axum::http::header::IF_MATCH, if_match)
-                .extension(authed_ctx(tenant))
-                .body(Body::from(body.to_string()))
-                .expect("build the act request"),
-        )
-        .await
-        .expect("the router answers")
+        seed_for_routed_act(harness, tenant, product_id, act, &[("If-Match", if_match)]).await;
+        app_for(harness, tenant)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/bss-products/v1/products/{product_id}/{act}"))
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .header(axum::http::header::IF_MATCH, if_match)
+                    .extension(authed_ctx(tenant))
+                    .body(Body::from(body.to_string()))
+                    .expect("build the act request"),
+            )
+            .await
+            .expect("the router answers")
     }
 
     async fn live_intent_count(harness: &TestHarness, entity_id: Uuid) -> i64 {
@@ -6927,7 +7111,7 @@ mod retire_door_tests {
         publish_child(&harness, child).await;
 
         let response = post_json_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "retire",
@@ -6985,7 +7169,7 @@ mod retire_door_tests {
         publish_child(&harness, child).await;
 
         let refused = post_json_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "retire",
@@ -7010,7 +7194,7 @@ mod retire_door_tests {
         let draft = seed_child(&harness, product_id, "SKU-AUTO-DISC").await;
 
         let response = post_json_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "retire",
@@ -7033,7 +7217,7 @@ mod retire_door_tests {
         let harness = harness().await;
         let product_id = published_product(&harness).await;
         let retired = post_json_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "retire",
@@ -7064,7 +7248,7 @@ mod retire_door_tests {
         let announced_at = intent.at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
         let republished = post_head_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "publish",
@@ -7100,7 +7284,7 @@ mod retire_door_tests {
         let harness = harness().await;
         let product_id = published_product(&harness).await;
         let republished = post_head_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "publish",
@@ -7120,7 +7304,7 @@ mod retire_door_tests {
         let harness = harness().await;
         let product_id = published_product(&harness).await;
         let refused = post_json_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "retire",
@@ -7144,7 +7328,7 @@ mod retire_door_tests {
         let harness = harness().await;
         let product_id = published_product(&harness).await;
         let retired = post_json_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "retire",
@@ -7204,7 +7388,7 @@ mod retire_door_tests {
         assert_eq!(live_intent_count(&harness, child).await, 1);
 
         let response = post_json_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "retire",
@@ -7244,25 +7428,27 @@ mod cancel_retire_door_tests {
     use super::*;
 
     async fn post_json_act(
-        app: Router,
+        harness: &TestHarness,
         tenant: Uuid,
         product_id: Uuid,
         act: &str,
         if_match: &str,
         body: &serde_json::Value,
     ) -> axum::http::Response<Body> {
-        app.oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/bss-products/v1/products/{product_id}/{act}"))
-                .header(axum::http::header::CONTENT_TYPE, "application/json")
-                .header(axum::http::header::IF_MATCH, if_match)
-                .extension(authed_ctx(tenant))
-                .body(Body::from(body.to_string()))
-                .expect("build the act request"),
-        )
-        .await
-        .expect("the router answers")
+        seed_for_routed_act(harness, tenant, product_id, act, &[("If-Match", if_match)]).await;
+        app_for(harness, tenant)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/bss-products/v1/products/{product_id}/{act}"))
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .header(axum::http::header::IF_MATCH, if_match)
+                    .extension(authed_ctx(tenant))
+                    .body(Body::from(body.to_string()))
+                    .expect("build the act request"),
+            )
+            .await
+            .expect("the router answers")
     }
 
     #[tokio::test]
@@ -7270,7 +7456,7 @@ mod cancel_retire_door_tests {
         let harness = harness().await;
         let product_id = published_product(&harness).await;
         let retired = post_json_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "retire",
@@ -7284,7 +7470,7 @@ mod cancel_retire_door_tests {
         assert_eq!(retired.status(), StatusCode::OK);
 
         let cancelled = post_json_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "retire/cancel",
@@ -7304,7 +7490,7 @@ mod cancel_retire_door_tests {
         );
 
         let revived = post_head_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "undeprecate",
@@ -7360,7 +7546,7 @@ mod cancel_retire_door_tests {
         }
 
         let resumed = post_json_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             product_id,
             "retire/resume",
@@ -7538,7 +7724,7 @@ async fn a_product_filed_through_the_save_door_can_be_published() {
     assert_eq!(filed.status(), StatusCode::OK);
 
     let published = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "publish",
@@ -7864,7 +8050,7 @@ async fn a_publish_needs_the_global_value_for_every_localized_definition() {
     assert_eq!(filed.status(), StatusCode::OK, "a draft may be incomplete");
 
     let refused = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "publish",
@@ -7890,7 +8076,7 @@ async fn a_publish_needs_the_global_value_for_every_localized_definition() {
     assert_eq!(completed.status(), StatusCode::OK);
 
     let published = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "publish",
@@ -7943,7 +8129,7 @@ async fn a_non_localized_definition_does_not_hold_a_publish() {
     .await;
 
     let published = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "publish",
@@ -8257,7 +8443,7 @@ async fn a_brand_scoped_entity_publishes_on_the_global_value_alone() {
     );
 
     let published = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         product_id,
         "publish",
@@ -8299,7 +8485,15 @@ async fn a_product_publish_names_falling_out_children() {
 
     narrow_region_out_of_band(&harness.dsn, product_id, "eu").await;
     let head = head_of(&harness, product_id).await;
-    let refused = post_head_act(
+    seed_for_routed_act(
+        &harness,
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(head.internal_revision))],
+    )
+    .await;
+    let refused = post_head_act_via(
         both_doors_app_for(&harness, TENANT),
         TENANT,
         product_id,
@@ -8312,6 +8506,12 @@ async fn a_product_publish_names_falling_out_children() {
     assert_eq!(
         view["context"]["violations"][0]["type"],
         json!("SCOPE_NOT_CONTAINED")
+    );
+    assert_eq!(
+        latest_approval_state(&harness, product_id).await,
+        "satisfied",
+        "a refused publish consumes nothing: the record the gate would have spent is still \
+         `satisfied` (dod-one-shot-consumption, 05 C3)"
     );
     let named = view["context"]["violations"][0]["description"]
         .as_str()
@@ -8332,7 +8532,15 @@ async fn a_product_publish_admits_when_the_only_outside_child_is_discarded() {
 
     narrow_region_out_of_band(&harness.dsn, product_id, "eu").await;
     let head = head_of(&harness, product_id).await;
-    let published = post_head_act(
+    seed_for_routed_act(
+        &harness,
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(head.internal_revision))],
+    )
+    .await;
+    let published = post_head_act_via(
         both_doors_app_for(&harness, TENANT),
         TENANT,
         product_id,

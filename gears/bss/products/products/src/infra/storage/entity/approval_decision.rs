@@ -1,5 +1,7 @@
 //! `SeaORM` entity for `bss.products_approval_decision` — one principal's
 //! verdict (`design/05` §4; the UNIQUE is C2's physical floor).
+//!
+//! @cpt-dod:cpt-cf-bss-products-dod-decision-store:p1
 
 use sea_orm::entity::prelude::*;
 use toolkit_db_macros::Scopable;

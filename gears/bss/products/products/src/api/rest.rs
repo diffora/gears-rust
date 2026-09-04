@@ -478,6 +478,142 @@ pub(crate) struct RefusalAuditContext<'a> {
 /// authorization denial's own 403 — so this function stays generic over both
 /// callers, which build different response shapes for the identical audit
 /// discipline.
+/// Which governance host a door runs under (P-D-142).
+///
+/// A route handler passes [`GateHost::Real`]: the door builds the **stored**
+/// host for its act once it knows the subject — the head's revision from
+/// `If-Match`, the entity's id — and the act's materiality. A probe passes
+/// [`GateHost::Given`] to drive the door under a double (`NoMaterialityPolicyGate`,
+/// an overriding gate, a refusing one); that is the only route to a
+/// non-stored host, and it is a test's.
+pub(crate) enum GateHost {
+    /// The stored host, built by [`resolve_host`] for the act.
+    Real,
+    /// A host the caller supplies — the in-process seam the probes enter
+    /// through; no routed handler constructs it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Given(std::sync::Arc<dyn crate::domain::governance::GovernanceGate + Send + Sync>),
+}
+
+/// What a door is about to do, as the host builder needs to know it.
+pub(crate) enum HostFor {
+    /// A governed act whose materiality is settled by enumeration — every
+    /// lifecycle transition, a governed cancel, a live op, a set write: the
+    /// stored host over the store's candidates for `subject`.
+    Governed(crate::domain::governance::GateSubject),
+    /// An entity publish: material or not by the columns it touches against
+    /// the last frozen version (`MaterialityEvaluator::verdict`), under the
+    /// tenant's policy. `NonMaterial` publishes run ungoverned; `Material` ones
+    /// run the stored host.
+    Publish {
+        entity: crate::domain::governance::EntityRef,
+        revision: crate::domain::concurrency::InternalRevision,
+    },
+}
+
+/// [`resolve_host`]'s two failure classes — the doors map them apart.
+pub(crate) enum HostError {
+    /// The act is refused before any host is consulted: a publish touching a
+    /// bucket-ii column outside the correction door, an unregistered column.
+    Refused(DomainError),
+    /// A storage failure reading the policy, the candidates or the head.
+    Repo(RepoError),
+}
+
+/// Build the host a door runs under (P-D-142).
+///
+/// `Given` is returned as is. `Real` is built from the store:
+/// - `Ungoverned` → [`crate::domain::approval::StoredApprovalGate::ungoverned`].
+/// - `Governed(subject)` → the stored host over `repo::gate_candidates` for
+///   that subject — the record must be `satisfied` and pinned to the subject,
+///   or the gate refuses `APPROVAL_REQUIRED`.
+/// - `Publish { entity, revision }` → the tenant's materiality policy is read
+///   (an absent row is the default, P-D-112 arm 2), the touched set is
+///   measured against the last frozen version through the submit door's own
+///   `resolve_entity_subject`, and the evaluator judges it: `NonMaterial`
+///   runs ungoverned, `Material` runs the stored host for
+///   `GateSubject::entity_publish(entity, revision)`. A bucket-ii touch is
+///   refused `ILLEGAL_FIELD_MUTATION` naming the correction door — it cannot
+///   arise on a first publish (P-D-142 excludes bucket ii from a first
+///   publish's touched set) and after one the head guard admits no such save,
+///   so reaching it means the head and its last version disagree on a column
+///   only the correction door may move.
+pub(crate) async fn resolve_host(
+    runner: &(impl toolkit_db::secure::DBRunner + Sync),
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    host: GateHost,
+    act: HostFor,
+) -> Result<std::sync::Arc<dyn crate::domain::governance::GovernanceGate + Send + Sync>, HostError>
+{
+    use crate::domain::approval::StoredApprovalGate;
+    use crate::domain::governance::GateSubject;
+    use crate::domain::materiality::{
+        MaterialAct, Materiality, MaterialityEvaluator, MaterialityRefusal, Resolution,
+    };
+    if let GateHost::Given(gate) = host {
+        return Ok(gate);
+    }
+    let subject = match act {
+        HostFor::Governed(subject) => subject,
+        HostFor::Publish { entity, revision } => {
+            let policy = repo::resolve_materiality_policy(runner, scope, tenant_id)
+                .await
+                .map_err(HostError::Repo)?;
+            let Resolution::Resolved(policy) = policy else {
+                return Err(HostError::Repo(RepoError::Db(
+                    "the materiality policy could not be read: a failed read is not a verdict \
+                     (P-D-119 row 3), so the act does not run"
+                        .to_owned(),
+                )));
+            };
+            let resolved =
+                crate::api::rest::approvals::resolve_entity_subject(runner, scope, entity)
+                    .await
+                    .map_err(HostError::Repo)?;
+            let Some((_, _, _, touched)) = resolved else {
+                // The head vanished under the door; the door's own read
+                // answers its 404, and an ungoverned host lets it get there.
+                return Ok(std::sync::Arc::new(StoredApprovalGate::ungoverned()));
+            };
+            let touched: Vec<&str> = touched.iter().map(String::as_str).collect();
+            let verdict = MaterialityEvaluator::new(Resolution::Resolved(&policy)).verdict(
+                &MaterialAct::EntityPublish {
+                    kind: entity.entity_kind,
+                    touched: &touched,
+                },
+            );
+            match verdict {
+                Ok(Materiality::NonMaterial) => {
+                    return Ok(std::sync::Arc::new(StoredApprovalGate::ungoverned()));
+                }
+                Ok(Materiality::Material) => GateSubject::entity_publish(entity, revision),
+                Err(MaterialityRefusal::CorrectableTouch(column)) => {
+                    return Err(HostError::Refused(DomainError::IllegalFieldMutation(
+                        format!(
+                            "{column} is bucket ii and differs from the last frozen version: after \
+                         first publish it moves only through the correction door \
+                         (POST .../corrections, slice 07), never through a publish"
+                        ),
+                    )));
+                }
+                Err(MaterialityRefusal::Registry(error)) => return Err(HostError::Refused(error)),
+                Err(other) => {
+                    return Err(HostError::Repo(RepoError::Db(format!(
+                        "the materiality verdict could not be formed: {other}"
+                    ))));
+                }
+            }
+        }
+    };
+    let candidates = repo::gate_candidates(runner, scope, &subject)
+        .await
+        .map_err(HostError::Repo)?;
+    Ok(std::sync::Arc::new(StoredApprovalGate::governed(
+        candidates,
+    )))
+}
+
 /// Settle what an authorized act owes its record: the id it pins on what it
 /// writes, and the `consumed` flip it spends **in the act's own transaction**
 /// (`inst-fd-publish-consume`, `05` `inst-gv-one-shot`; P-D-105's pin on a

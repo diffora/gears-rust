@@ -211,6 +211,9 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-idempotency-store:p1
 //! @cpt-cf-bss-products-dod-publish-door
 //! @cpt-dod:cpt-cf-bss-products-dod-transition-guard:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-save-door:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-publish-door:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-one-shot-consumption:p1
 //! @cpt-cf-bss-products-dod-save-door
 
 use std::sync::Arc;
@@ -255,9 +258,7 @@ use crate::domain::containment::{
 use crate::domain::deprecation::{Provenance, stamp_for};
 use crate::domain::disposition::{self, CLONE_SUGGESTION_ATTEMPTS, SkuCloneSource};
 use crate::domain::error::DomainError;
-use crate::domain::governance::{
-    ApprovalId, EntityRef, GateMode, GateSubject, GovernanceGate, NoMaterialityPolicyGate,
-};
+use crate::domain::governance::{ApprovalId, EntityRef, GateMode, GateSubject, GovernanceGate};
 use crate::domain::idempotency;
 use crate::domain::live_op::GovernedLiveOp;
 use crate::domain::retirement::refuse_create_under_retiring_parent;
@@ -3392,7 +3393,7 @@ fn head_act_internal(detail: String) -> HeadActError {
 /// write"* as this slice's, so the debt is paid here rather than deferred.
 ///
 /// `approval_to_consume` is the one accessor this act still does not read, and
-/// that is slice 05's: [`NoMaterialityPolicyGate`] answers
+/// that is slice 05's: [`NoMaterialityPolicyGate`](crate::domain::governance::NoMaterialityPolicyGate) answers
 /// `ApprovalDisposition::NoRecord`, so there is nothing to spend.
 ///
 /// # Errors
@@ -3518,6 +3519,7 @@ pub(crate) async fn run_publish(
     let authorization = verdict
         .into_authorization()
         .map_err(HeadActError::Refused)?;
+    settle_sku_authorization(runner, inputs, &authorization).await?;
 
     // The one operand of the verdict this act carries into the head row
     // (`inst-fd-publish-freeze`, §4.2, **P-D-32**): *"On a `bundle` SKU that
@@ -3711,9 +3713,10 @@ async fn run_discard(
     // verdict may name has no column to reach. The day slice 05 gates a
     // transition, the refusal arm above is already wired and only the
     // record's destination is new.
-    verdict
+    let authorization = verdict
         .into_authorization()
         .map_err(HeadActError::Refused)?;
+    settle_sku_authorization(runner, inputs, &authorization).await?;
 
     let image = post_discard_image(&head, inputs.now);
 
@@ -4040,7 +4043,7 @@ fn build_claim(
 /// mode** as arguments — the in-process entry point every non-wire caller of
 /// this door uses.
 ///
-/// The handler [`publish_sku`] passes [`NoMaterialityPolicyGate`], which is
+/// The handler [`publish_sku`] passes [`NoMaterialityPolicyGate`](crate::domain::governance::NoMaterialityPolicyGate), which is
 /// the only host that exists at this commit, and [`GateMode::Gate`], which
 /// is the only mode a wire surface may ever pass. The **host** parameter is
 /// what lets a test drive a refusing host, since the default one never
@@ -4094,7 +4097,7 @@ fn build_claim(
 ///   subject widened to every SKU. Owed to slice **03**; see
 ///   `repo::publish_sku_head`'s own doc for where the condition lands.
 /// - **Consuming the gate's `satisfied` record** (`inst-fd-publish-consume`)
-///   has nothing to consume: [`NoMaterialityPolicyGate`] answers
+///   has nothing to consume: [`NoMaterialityPolicyGate`](crate::domain::governance::NoMaterialityPolicyGate) answers
 ///   `ApprovalDisposition::NoRecord`, and
 ///   `GateAuthorization::approval_to_consume` is `None` by construction.
 ///   The consume flip lands with slice **05**'s record store, in this same
@@ -4105,13 +4108,57 @@ fn build_claim(
 /// Every refusal this door raises, each audited on its own transaction
 /// through [`audit_act_refusal`], plus the `404` a miss answers and the `500`
 /// a storage or gate-host failure raises.
+/// Build the host a SKU door runs under (P-D-142): `GateHost::Real` becomes
+/// the stored host for the act, a `Given` one passes through. A refusal before
+/// the host exists — a bucket-ii touch outside the correction door, an
+/// unregistered column — is the act's own, answered through
+/// [`answer_head_act`] like every other; a storage failure is the door's `500`.
+async fn resolve_sku_host(
+    state: &ApiState,
+    act: &ActContext,
+    host: crate::api::rest::GateHost,
+    for_act: crate::api::rest::HostFor,
+) -> Result<Arc<dyn GovernanceGate + Send + Sync>, HeadActError> {
+    let conn = state.db.conn().map_err(|e| {
+        HeadActError::Db(DbError::Sea(DbErr::Custom(format!("host connection: {e}"))))
+    })?;
+    crate::api::rest::resolve_host(&conn, &act.scope, act.tenant_id, host, for_act)
+        .await
+        .map_err(|e| match e {
+            crate::api::rest::HostError::Refused(refusal) => HeadActError::Refused(refusal),
+            crate::api::rest::HostError::Repo(error) => HeadActError::from_repo(&error),
+        })
+}
+
+/// The one-shot at every governed SKU door (`dod-one-shot-consumption`,
+/// P-D-139/P-D-142): the record the host named is spent in the act's own
+/// transaction, and a record spent under the act refuses it.
+async fn settle_sku_authorization(
+    runner: &(impl toolkit_db::secure::DBRunner + Sync),
+    inputs: &HeadActInputs,
+    authorization: &crate::domain::governance::GateAuthorization,
+) -> Result<Option<ApprovalId>, HeadActError> {
+    crate::api::rest::settle_authorization(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        authorization,
+        inputs.now,
+    )
+    .await
+    .map_err(|e| match e {
+        crate::api::rest::SettleError::Refused(refusal) => HeadActError::Refused(refusal),
+        crate::api::rest::SettleError::Repo(error) => HeadActError::from_repo(&error),
+    })
+}
+
 async fn publish_sku_gated(
     state: &ApiState,
     enforcer: &authz_resolver_sdk::PolicyEnforcer,
     ctx: &SecurityContext,
     headers: &HeaderMap,
     sku_id: Uuid,
-    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+    host: crate::api::rest::GateHost,
     mode: GateMode,
 ) -> Result<Response, CanonicalError> {
     let now = canonical::write_instant(Utc::now());
@@ -4161,7 +4208,18 @@ async fn publish_sku_gated(
         claim,
     };
 
-    let outcome = publish_in_one_transaction(state, ctx, &inputs, gate, mode).await;
+    let for_act = crate::api::rest::HostFor::Publish {
+        entity: EntityRef {
+            tenant_id: act.tenant_id,
+            entity_kind: EntityKind::Sku,
+            entity_id: sku_id,
+        },
+        revision: expected,
+    };
+    let outcome = match resolve_sku_host(state, &act, host, for_act).await {
+        Ok(gate) => publish_in_one_transaction(state, ctx, &inputs, &gate, mode).await,
+        Err(refused) => Err(refused),
+    };
     answer_head_act(state, &act, sku_id, head.internal_revision, outcome).await
 }
 
@@ -4171,7 +4229,7 @@ async fn publish_sku_gated(
 /// The thin `axum` shell over [`publish_sku_gated`], which carries the whole
 /// pipeline and its reasoning. The only things decided here are the two a
 /// wire request may not choose — the governance host and the gate mode —
-/// and they are decided the same way: [`NoMaterialityPolicyGate`] and
+/// and they are decided the same way: [`NoMaterialityPolicyGate`](crate::domain::governance::NoMaterialityPolicyGate) and
 /// [`GateMode::Gate`], both literals at this one call site.
 ///
 /// # Errors
@@ -4191,7 +4249,7 @@ async fn publish_sku(
         &ctx,
         &headers,
         sku_id,
-        &(Arc::new(NoMaterialityPolicyGate) as Arc<dyn GovernanceGate + Send + Sync>),
+        crate::api::rest::GateHost::Real,
         GateMode::Gate,
     )
     .await
@@ -4202,7 +4260,7 @@ async fn publish_sku(
 ///
 /// The thin `axum` shell over [`discard_sku_gated`]. The only thing decided
 /// here is the governance host, and it is decided the way [`publish_sku`]
-/// decides it: [`NoMaterialityPolicyGate`] as a literal, so no wire input
+/// decides it: [`NoMaterialityPolicyGate`](crate::domain::governance::NoMaterialityPolicyGate) as a literal, so no wire input
 /// chooses one.
 ///
 /// # The grant is `write`, not `discard`
@@ -4232,7 +4290,8 @@ async fn discard_sku(
         &ctx,
         &headers,
         sku_id,
-        &(Arc::new(NoMaterialityPolicyGate) as Arc<dyn GovernanceGate + Send + Sync>),
+        &(Arc::new(crate::domain::approval::StoredApprovalGate::ungoverned())
+            as Arc<dyn GovernanceGate + Send + Sync>),
     )
     .await
 }
@@ -4343,7 +4402,7 @@ async fn undeprecate_sku(
         &ctx,
         &headers,
         sku_id,
-        &(Arc::new(NoMaterialityPolicyGate) as Arc<dyn GovernanceGate + Send + Sync>),
+        crate::api::rest::GateHost::Real,
     )
     .await
 }
@@ -4359,7 +4418,7 @@ async fn undeprecate_sku_gated(
     ctx: &SecurityContext,
     headers: &HeaderMap,
     sku_id: Uuid,
-    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+    host: crate::api::rest::GateHost,
 ) -> Result<Response, CanonicalError> {
     let now = canonical::write_instant(Utc::now());
     let act = open_act(
@@ -4403,7 +4462,20 @@ async fn undeprecate_sku_gated(
         claim,
     };
 
-    let outcome = undeprecate_in_one_transaction(state, &inputs, gate).await;
+    let for_act = crate::api::rest::HostFor::Governed(
+        crate::domain::governance::GateSubject::entity_publish(
+            EntityRef {
+                tenant_id: act.tenant_id,
+                entity_kind: EntityKind::Sku,
+                entity_id: sku_id,
+            },
+            expected,
+        ),
+    );
+    let outcome = match resolve_sku_host(state, &act, host, for_act).await {
+        Ok(gate) => undeprecate_in_one_transaction(state, &inputs, &gate).await,
+        Err(refused) => Err(refused),
+    };
     answer_head_act(state, &act, sku_id, head.internal_revision, outcome).await
 }
 
@@ -4430,7 +4502,7 @@ async fn deprecate_sku(
         &ctx,
         &headers,
         sku_id,
-        &(Arc::new(NoMaterialityPolicyGate) as Arc<dyn GovernanceGate + Send + Sync>),
+        crate::api::rest::GateHost::Real,
     )
     .await
 }
@@ -4446,7 +4518,7 @@ async fn deprecate_sku_gated(
     ctx: &SecurityContext,
     headers: &HeaderMap,
     sku_id: Uuid,
-    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+    host: crate::api::rest::GateHost,
 ) -> Result<Response, CanonicalError> {
     let now = canonical::write_instant(Utc::now());
     let act = open_act(
@@ -4490,7 +4562,20 @@ async fn deprecate_sku_gated(
         claim,
     };
 
-    let outcome = deprecate_in_one_transaction(state, &inputs, gate).await;
+    let for_act = crate::api::rest::HostFor::Governed(
+        crate::domain::governance::GateSubject::entity_publish(
+            EntityRef {
+                tenant_id: act.tenant_id,
+                entity_kind: EntityKind::Sku,
+                entity_id: sku_id,
+            },
+            expected,
+        ),
+    );
+    let outcome = match resolve_sku_host(state, &act, host, for_act).await {
+        Ok(gate) => deprecate_in_one_transaction(state, &inputs, &gate).await,
+        Err(refused) => Err(refused),
+    };
     answer_head_act(state, &act, sku_id, head.internal_revision, outcome).await
 }
 
@@ -4569,9 +4654,10 @@ async fn run_deprecate(
                 "bss-products: the governance gate host failed: {e}"
             ))))
         })?;
-    verdict
+    let authorization = verdict
         .into_authorization()
         .map_err(HeadActError::Refused)?;
+    settle_sku_authorization(runner, inputs, &authorization).await?;
 
     let written = repo::deprecate_sku_head(
         runner,
@@ -4726,9 +4812,10 @@ async fn run_undeprecate(
                 "bss-products: the governance gate host failed: {e}"
             ))))
         })?;
-    verdict
+    let authorization = verdict
         .into_authorization()
         .map_err(HeadActError::Refused)?;
+    settle_sku_authorization(runner, inputs, &authorization).await?;
 
     let written = repo::undeprecate_sku_head(
         runner,
@@ -4790,7 +4877,7 @@ async fn retire_sku(
         &headers,
         sku_id,
         request,
-        &(Arc::new(NoMaterialityPolicyGate) as Arc<dyn GovernanceGate + Send + Sync>),
+        crate::api::rest::GateHost::Real,
     )
     .await
 }
@@ -4808,7 +4895,7 @@ async fn retire_sku_gated(
     headers: &HeaderMap,
     sku_id: Uuid,
     request: RetireSkuRequest,
-    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+    host: crate::api::rest::GateHost,
 ) -> Result<Response, CanonicalError> {
     let now = canonical::write_instant(Utc::now());
     let act = open_act(
@@ -4854,7 +4941,20 @@ async fn retire_sku_gated(
 
     let detector =
         crate::api::rest::retention::tenant_pii_detector(state, inputs.tenant_id).await?;
-    let outcome = retire_in_one_transaction(state, &inputs, gate, &detector, request).await;
+    let for_act = crate::api::rest::HostFor::Governed(
+        crate::domain::governance::GateSubject::entity_publish(
+            EntityRef {
+                tenant_id: act.tenant_id,
+                entity_kind: EntityKind::Sku,
+                entity_id: sku_id,
+            },
+            expected,
+        ),
+    );
+    let outcome = match resolve_sku_host(state, &act, host, for_act).await {
+        Ok(gate) => retire_in_one_transaction(state, &inputs, &gate, &detector, request).await,
+        Err(refused) => Err(refused),
+    };
     answer_head_act(state, &act, sku_id, head.internal_revision, outcome).await
 }
 
@@ -5157,7 +5257,7 @@ async fn cancel_sku_retirement(
         &headers,
         sku_id,
         request,
-        &(Arc::new(NoMaterialityPolicyGate) as Arc<dyn GovernanceGate + Send + Sync>),
+        crate::api::rest::GateHost::Real,
     )
     .await
 }
@@ -5173,7 +5273,7 @@ async fn cancel_sku_retirement_gated(
     headers: &HeaderMap,
     sku_id: Uuid,
     request: CancelRetirementRequest,
-    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+    host: crate::api::rest::GateHost,
 ) -> Result<Response, CanonicalError> {
     let now = canonical::write_instant(Utc::now());
     let act = open_act(
@@ -5217,7 +5317,20 @@ async fn cancel_sku_retirement_gated(
         claim,
     };
 
-    let outcome = cancel_retire_in_one_transaction(state, &inputs, gate, request).await;
+    let for_act = crate::api::rest::HostFor::Governed(
+        crate::domain::governance::GateSubject::entity_publish(
+            EntityRef {
+                tenant_id: act.tenant_id,
+                entity_kind: EntityKind::Sku,
+                entity_id: sku_id,
+            },
+            expected,
+        ),
+    );
+    let outcome = match resolve_sku_host(state, &act, host, for_act).await {
+        Ok(gate) => cancel_retire_in_one_transaction(state, &inputs, &gate, request).await,
+        Err(refused) => Err(refused),
+    };
     answer_cancel_act(state, &act, sku_id, head.internal_revision, outcome).await
 }
 
@@ -5303,9 +5416,10 @@ async fn run_cancel_retire(
                 "bss-products: the governance gate host failed: {e}"
             ))))
         })?;
-    verdict
+    let authorization = verdict
         .into_authorization()
         .map_err(HeadActError::Refused)?;
+    settle_sku_authorization(runner, inputs, &authorization).await?;
 
     repo::supersede_live_intents(
         runner,
@@ -6271,9 +6385,10 @@ async fn run_save(
     // Collapsed into the control flow and dropped, as at the discard door: a
     // save freezes no version row, so the `approval_ref` the verdict may name
     // has no column to reach.
-    verdict
+    let authorization = verdict
         .into_authorization()
         .map_err(HeadActError::Refused)?;
+    settle_sku_authorization(runner, inputs, &authorization).await?;
 
     // -- Exactly one head-row `UPDATE`: the routed columns, the revision bump
     // and `updated_at` together, because the guard bumps `internal_revision`
@@ -6379,7 +6494,7 @@ async fn save_in_one_transaction(
 ///
 /// The thin `axum` shell over [`save_sku_gated`]. The only thing decided here
 /// is the governance host, and it is decided the way [`publish_sku`] and
-/// [`discard_sku`] decide it: the [`NoMaterialityPolicyGate`] literal, so no
+/// [`discard_sku`] decide it: the [`NoMaterialityPolicyGate`](crate::domain::governance::NoMaterialityPolicyGate) literal, so no
 /// wire input chooses one.
 ///
 /// # Errors
@@ -6401,7 +6516,8 @@ async fn save_sku(
         &headers,
         sku_id,
         request,
-        &(Arc::new(NoMaterialityPolicyGate) as Arc<dyn GovernanceGate + Send + Sync>),
+        &(Arc::new(crate::domain::approval::StoredApprovalGate::ungoverned())
+            as Arc<dyn GovernanceGate + Send + Sync>),
     )
     .await
 }

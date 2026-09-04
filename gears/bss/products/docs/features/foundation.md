@@ -641,7 +641,7 @@ success is slice 01's open item 6.
 
 ### Save door with field-mutability routing
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-save-door`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-save-door`
 
 The system **MUST** serve `PATCH /bss-products/v1/{products|skus}/{id}`, require `If-Match` on the
 internal revision, refuse a mismatch as `STALE_REVISION` and an absent precondition as
@@ -657,6 +657,16 @@ The door writes; the owning feature registers the validators; no third registrat
 A `BucketRegistry` lookup that finds no tag for a published-state column **MUST fail closed**
 (P-D-50) — the write is refused at the door rather than routed to a default bucket.
 
+**Ticked with P-D-142**, clause by clause against the probes: the precondition pair
+(`a_save_without_if_match_is_refused_validation`, `a_save_with_a_stale_if_match_is_refused_and_writes_nothing`,
+and their SKU twins); bucket routing (`a_bucket_iii_save_on_a_draft_is_admitted_and_bumps_the_revision_once`,
+`a_bucket_i_save_is_admitted_before_first_publish_and_refused_after_it` — the SKU twin drives
+`sku_code`, the code column); the create-only pair (`a_save_naming_the_lineage_pair_is_refused_by_the_create_only_rule`);
+the bucket-ii refusal naming the correction door (the refusal text every re-publish probe reads);
+the fail-closed miss (`an_unregistered_field_is_refused_by_the_fail_closed_miss`, P-D-50); the owning
+features' rows in the same transaction (`a_save_naming_categories_files_them_in_the_same_transaction`);
+and the invalidation of an open approval (`a_frozen_content_write_supersedes_the_open_approval_and_resubmits_nothing`).
+
 **Implements**: `cpt-cf-bss-products-flow-save-draft`
 
 **Touches**:
@@ -667,7 +677,7 @@ A `BucketRegistry` lookup that finds no tag for a published-state column **MUST 
 
 ### Publish door and frozen version history
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-publish-door`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-publish-door`
 
 The system **MUST** serve `POST /bss-products/v1/{products|skus}/{id}/publish`, pin the revision
 through the same `If-Match` header (P-D-33), run the governance gate phase, and in one
@@ -686,6 +696,17 @@ terminally. The REST and SDK publish surfaces always call in `Gate` mode.
 
 Where the act is a retirement re-announcement (P-D-48), the door **MUST** re-emit rather than
 treat the unchanged content as a no-op.
+
+**Ticked with P-D-142.** The gate phase is the stored host (`api::rest::resolve_host`) rather than
+`NoMaterialityPolicyGate`; under `Gate` the door consumes the satisfied record in its own
+transaction and under `PreAuthorized` it verifies without consuming
+(`api::rest::settle_authorization`). Probes: the pin (`a_publish_with_a_stale_if_match_is_refused_and_writes_nothing`,
+`a_publish_without_if_match_is_refused_validation_and_audited`); the one transaction and the two
+counters (`a_first_publish_freezes_one_version_row_and_moves_both_counters_by_exactly_one`); the gate
+(`a_gate_that_answers_no_refuses_approval_required_and_writes_nothing`,
+`a_preauthorized_publish_reaches_the_host_in_that_mode_and_consumes_nothing`,
+`two_publishes_off_one_satisfied_record_spend_it_once_and_the_second_is_refused`); the
+re-announcement (`a_publish_during_the_lead_window_reannounces_retirement`).
 
 **Implements**: `cpt-cf-bss-products-flow-publish`
 
@@ -878,19 +899,19 @@ age-based erasure reads.
 - [ ] The same race is proven with a real concurrency probe, not a read-then-assert
 - [ ] `name_normalized` is byte-identical across SQLite and Postgres for a case-varied,
       whitespace-varied, NFKC-decomposable input
-- [ ] A `GET` on a head returns an `ETag` that a subsequent `PATCH` accepts as `If-Match`
-- [ ] A save without `If-Match` is refused `VALIDATION`; a save with a stale `If-Match` is refused
+- [x] A `GET` on a head returns an `ETag` that a subsequent `PATCH` accepts as `If-Match`
+- [x] A save without `If-Match` is refused `VALIDATION`; a save with a stale `If-Match` is refused
       `STALE_REVISION`
-- [ ] A save writes the entity's category assignments and attribute values in the same transaction
+- [x] A save writes the entity's category assignments and attribute values in the same transaction
       as the head-row update, and a rollback leaves neither
-- [ ] A bucket-i write on a head with `published_version > 0` is refused
+- [x] A bucket-i write on a head with `published_version > 0` is refused
       `ILLEGAL_FIELD_MUTATION`, and the same write on a head with `published_version = 0` succeeds
 - [ ] A bucket-ii write after first publish is refused `ILLEGAL_FIELD_MUTATION` and the reason
       names the correction door; the same column moves when the statement also bumps
       `published_version`
-- [ ] An untagged published-state column is refused at the head door rather than routed to a
+- [x] An untagged published-state column is refused at the head door rather than routed to a
       default bucket
-- [ ] A code column is refused after first publish
+- [x] A code column is refused after first publish
 - [ ] Every refusal enumerated in §2 has a paired positive control proving the door admits the
       corresponding legal act
 - [ ] Publishing writes one frozen version row **before** the head-row update, increments

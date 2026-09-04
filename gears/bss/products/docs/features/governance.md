@@ -464,7 +464,7 @@ shipped rows, and each pair resolving to a door or being marked unspent — is t
 
 ### Approval record store
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-approval-store`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-approval-store`
 
 The system **MUST** create `products_approval` on both engines with the subject kind and ref, the
 pinned `internal_revision`, the **stored** `content_snapshot`, the `diff_basis`, the **stored**
@@ -473,14 +473,16 @@ pinned `internal_revision`, the **stored** `content_snapshot`, the `diff_basis`,
 admit one open approval per subject. The row **MUST** be append-only after finalization. A
 schema-oracle golden **MUST** exist on both engines with a perturbation case proving it can fail.
 
-**The table ships and the tick does not: rows 9, 11 and 14 are live and are about this table's own
-columns.** Row 11 asks which transaction writes `state = satisfied` — every other value has a named
-writer and this one has only an evaluator, *"and nothing says whether a record at `required = 0` is
-born satisfied"*; row 14 asks what the **entity-shaped** columns (pinned revision, content snapshot,
-diff basis) hold for the subject kinds that are **not entities**, which is at least three of the
-five; row 9 asks whether a break-glass two-person approval is an `ApprovalRecord` at all. The DDL
-admits all five kinds and pins the shapes it can, and the three questions are about what the columns
-MEAN rather than what they permit — so the table is usable and the DoD is not met.
+**Ticked with P-D-142.** The three rows that held it are answered: row 11 — the decide door's
+transaction writes `satisfied`, on the decision that meets the descriptor (P-D-120); row 14 — for
+the non-entity kinds `content_snapshot` is the op payload and the pins are the kind's own (P-D-120);
+row 9 — a break-glass two-person approval is not an `ApprovalRecord`, the two platform approvers
+live on the session row (P-D-133). The clauses hold as built: both engines, the partial `UNIQUE`
+(`m20260829_000007`), append-only after finalization by the trigger whitelist, and the schema-oracle
+golden with its perturbation case (`tests/postgres_governance_schema.rs`, `the_governance_rosters_match_on_postgres`).
+One read is still owed to the host and not to this table: a `bulk_batch` record's digest pin rides
+`content_snapshot`'s `ChangeReport` (P-D-137 row 41), and the host's `LedgerDigest` comparison
+lands with the remaining doors.
 
 **Implements**: `cpt-cf-bss-products-flow-submit`,
 `cpt-cf-bss-products-state-approval-record`
@@ -493,7 +495,7 @@ MEAN rather than what they permit — so the table is usable and the DoD is not 
 
 ### Decision store and the one-principal-one-decision floor
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-decision-store`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-decision-store`
 
 The system **MUST** create `products_approval_decision` carrying the approver principal **as an
 `actor_ref` — pseudonymous, never a raw identifier**, these rows being append-only, so one raw
@@ -501,11 +503,10 @@ identifier written is unreachable by erasure forever — the verdict, the reason
 `UNIQUE (approval_id, approver_principal)`. **That index is the physical floor under
 distinctness-by-principal**: one principal, one decision, whatever roles they hold.
 
-**The table ships and the tick does not: row 6 is live**, routing the approval retention-and-erasure
-interplay to `10-retention-erasure` while this feature guarantees only that approver refs are
-pseudonymous from birth. That guarantee is built — the column is an `actor_ref` and the rows are
-append-only, so one raw identifier written would be unreachable by erasure forever — but the
-interplay the row names is `10`'s to state.
+**Ticked with P-D-142.** Row 6 is answered by P-D-138: approvals and decisions are candidates of
+the retention collector's audit class, held by their own guard (P-D-136), and approver refs are
+pseudonymous from birth — the column is an `actor_ref`, the rows are append-only, and the
+`UNIQUE (approval_id, approver_principal)` is the physical floor under distinctness-by-principal.
 
 **Implements**: `cpt-cf-bss-products-flow-decide`
 
@@ -1019,16 +1020,15 @@ build a byte-identical triple — `GateSubject::entity_publish(EntityRef { .. })
 `InternalRevision::new(inputs.expected)`, `Gate` — so nothing in `(subject, revision, mode)`
 separates a publish from a save, a discard or a deprecate, and the mode does not either.
 
-**What the build does about it, and what is owed to `01`.** The act operand rides the host's
-**construction** — `StoredApprovalGate::governed(candidates)` or `::ungoverned()` — so a caller
-cannot build a host without saying which kind of act it holds it for, and row 26's two wrong
-answers stop being reachable by default. A paired probe drives the identical triple through both
-constructions and asserts two different correct answers. But **the doors must then choose at each of
-the seven sites**, and the doors are `01`'s. Named for the lead: either `GovernanceGate::evaluate`
-gains a fourth argument carrying that distinction, or each door constructs the host it needs. The
-first puts the operand where a host can be sure of it; the second needs no seam change and is what
-the built type is shaped for. **Until one is taken, wiring any store-backed host is a choice between
-refusing every save in the gear and preserving the no-policy deviation on the publish path.**
+**P-D-142 took the second option: each door constructs the host it needs.** `api::rest::resolve_host`
+builds `StoredApprovalGate::governed(candidates)` for a lifecycle transition and, for a publish,
+judges materiality against the tenant's stored policy by the columns the head touches since its
+last frozen version — `NonMaterial` runs `ungoverned()`, `Material` runs the stored host, a
+bucket-ii touch is refused `ILLEGAL_FIELD_MUTATION` naming the correction door; a save and a discard
+run `ungoverned()` by construction. Twelve head-act doors are switched (publish, deprecate,
+undeprecate, retire, cancel — both entities — and the Product resume). **The tick waits on four
+doors that still build `NoMaterialityPolicyGate`**: `taxonomy.rs`, `materiality_policy.rs`,
+`retention.rs` and `scheduled_transitions.rs` — the next group's, with the `LedgerDigest` read.
 
 **Implements**: `cpt-cf-bss-products-flow-gate`
 
@@ -1037,7 +1037,7 @@ refusing every save in the gear and preserving the no-policy deviation on the pu
 
 ### One-shot consumption
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-one-shot-consumption`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-one-shot-consumption`
 
 The system **MUST** flip a satisfied record `consumed` **in the same transaction as the authorized
 act**, and a failed attempt **MUST** consume nothing. A probe **MUST** drive two publishes off one
@@ -1051,18 +1051,24 @@ in — the DoD's own probe, at the store. Zero rows matched answers
 meaning: a second publish must refuse while a `PreAuthorized` stage that raced a peer has the answer
 it wanted, and reporting a driver failure would send both to a 500. Its companion probe drives a
 **`pending`** record, without which a predicate that had drifted to "any state" would pass the
-first probe unchanged. *"In the same transaction as the authorized act"* is **not** measurable
-here and is not claimed: this function opens no transaction, and the module says so.
+first probe unchanged. *"In the same transaction as the authorized act"* is now the doors' and is claimed: every
+governed head-act door settles its authorization on the act's own runner (`api::rest::settle_authorization`
+through `settle_sku_authorization` / `settle_product_authorization`), so the flip commits with the act
+or rolls back with it.
 
 **P-D-105's arm consumes nothing, and the type is what holds that.** A mechanical stage answers
 `ApprovalDisposition::Verified`, whose `approval_to_consume()` is `None` by construction, so
 `inst-gv-one-shot`'s *"consuming nothing further"* is a property of the verdict rather than a rule
 each stage must remember. Asserted on the scheduled-flip arm as well as the ordinary one.
 
-**Still no tick**, and the blocker is unchanged: every door in the gear registers
-`NoMaterialityPolicyGate` (measured at `052666dba`), so no authorized act's transaction reaches
-`consume_approval`, and the DoD's probe — *"two publishes off one satisfied approval"* — has no
-publish to drive.
+**Ticked with P-D-142.** The routed publish and lifecycle doors run the stored host, so an
+authorized act's transaction reaches `consume_approval`. The DoD's probe exists at the publish
+door — `products_tests::two_publishes_off_one_satisfied_record_spend_it_once_and_the_second_is_refused`:
+one success, the record `consumed`, the second refused `APPROVAL_REQUIRED` and writing nothing —
+and the spent arm at a door whose act does not move the pin is
+`skus_tests::a_record_spent_under_the_act_refuses_the_retirement_and_writes_nothing`. A refused
+publish consumes nothing: `a_product_publish_names_falling_out_children` reads the seeded record
+back as `satisfied` after the `SCOPE_NOT_CONTAINED` refusal.
 
 **Implements**: `cpt-cf-bss-products-flow-gate`,
 `cpt-cf-bss-products-state-approval-record`
@@ -1623,8 +1629,8 @@ says — immutability is the trigger whitelist on both engines and nothing crypt
       at the gate; with the predicate met it publishes
 - [ ] A rejection finalizes the record with its reason, leaves the subject unchanged, and emits
       `ApprovalDecided`; an approval emits it too
-- [ ] Two publishes off one satisfied approval produce one success; the second fails
-- [ ] A failed publish attempt consumes nothing, and the record is still `satisfied` afterwards
+- [x] Two publishes off one satisfied approval produce one success; the second fails
+- [x] A failed publish attempt consumes nothing, and the record is still `satisfied` afterwards
 - [ ] A `PreAuthorized` stage naming a consumed record that authorized this subject at this pinned
       revision succeeds and consumes nothing further
 - [ ] No wire surface can select `PreAuthorized` — asserted against the request shape, not by

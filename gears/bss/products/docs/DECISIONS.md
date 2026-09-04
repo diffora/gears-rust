@@ -1636,6 +1636,82 @@ per-decision anchors, and it was corrected by running the command it prescribed.
 - **Propagated**: `DESIGN.md` (rewritten in place); `design/05-governance.md` §4;
   `DECOMPOSITION.md` and this register (six citation retargets); the lead handoff's DESIGN row.
 
+#### P-D-142 — Each door constructs the host it needs: the stored gate at twelve head-act doors, materiality by the columns a publish touches, the record spent in the act's transaction
+
+- **Date**: 2026-09-04 (the lead, group 2a of the solo plan; `features/governance.md`
+  `dod-gate-host`'s named choice, P-D-139's second half, `05` rows 26 and 40's residue)
+- **The choice `dod-gate-host` left the lead is taken the second way: the door constructs the
+  host, the seam does not grow.** `api::rest::resolve_host(runner, scope, tenant, GateHost, HostFor)`
+  is the one constructor site. A lifecycle transition, a cancel and the Product resume are
+  `HostFor::Governed(subject)` — material by enumeration (`inst-mt-inputs`) — and run
+  `StoredApprovalGate::governed(gate_candidates(subject))`. A publish is `HostFor::Publish { entity,
+  revision }`: the door resolves the tenant's stored policy (`resolve_materiality_policy`; an
+  unresolvable policy is a storage failure, not a permissive default), reads the columns the head
+  touches since its last frozen version (`approvals::resolve_entity_subject`, now `pub(crate)`),
+  and asks `MaterialityEvaluator::verdict(EntityPublish { kind, touched })`: `NonMaterial` runs
+  `ungoverned()`, `Material` runs the stored host, and a bucket-ii touch is refused
+  `ILLEGAL_FIELD_MUTATION` naming the correction door before any transaction opens. A save and a
+  discard are ungoverned by construction (`05` §3.1) and take the ungoverned host at the handler;
+  `HostFor::Ungoverned` was a variant nothing constructed and is gone. `GateHost::Given(host)` is
+  the in-process seam the probes enter through; no routed handler builds it, and the variant says
+  so (`allow(dead_code)` outside `cfg(test)`).
+- **A first publish touches every column and is Material, and its bucket-ii columns are not a
+  touch.** With no frozen version to diff against, `touched` is the whole content; the correctable
+  columns (`metering_unit`, `sku_code`, …) are excluded from that set, because there is no earlier
+  frozen value they could differ from and the save door admits no bucket-ii write after first
+  publish, so the exclusion has no second case.
+- **The diff is like-for-like, and that fixed a defect the submit door already had.** A frozen row
+  is §4.3's *complete* set (`Absence::Null` — a name with no value is a `null` member) while the
+  head is rendered as the parsed shape (`Absence::Omit`, P-D-34); comparing them raw made an
+  unmetered SKU's `metering_unit` "touched" on every re-publish and refused it `CorrectableTouch`.
+  Eight routed re-publish probes went red the moment the door judged materiality, and the same
+  computation had been answering B's approval-submit door. Both maps drop their `null` members
+  before the diff.
+- **The record is spent where the act commits.** Every governed door settles its authorization on
+  the act's own runner — `settle_sku_authorization` / `settle_product_authorization` over P-D-139's
+  `settle_authorization`: `Consume` flips `consumed` in the act's transaction and refuses
+  `APPROVAL_REQUIRED` when the record is already spent; `Verified` pins without consuming;
+  `NoRecord` leaves the placeholder. A refused act rolls the flip back with everything else.
+- **What the suite had to learn.** A routed governed act now needs a satisfied record for its
+  subject, so the test helpers seed one at the revision the `If-Match` asserts
+  (`test_support::seed_satisfied_publish_approval`, never superseding a record the case seeded
+  itself) — and the census of who bypasses the helpers was the request builders, not the helper
+  names: four raw `oneshot(` helpers (`product_head_act`, `sku_head_act`, `post_json_act`,
+  `post_retire`/`post_cancel`) and two `both_doors` calls carried fifteen red probes until they
+  seeded too. The retire probes' *"one candidate for the subject"* became *"one satisfied
+  candidate"*, because the publish that made the SKU leaves its spent record on the same subject.
+  `a_publish_does_not_supersede_the_record_it_consumes` now expects `consumed`: its `satisfied` was
+  the stand-in for a door that consumed nothing.
+- **Ticked, clause by clause**: `dod-one-shot-consumption` (the flip in the act's transaction; the
+  publish probe `two_publishes_off_one_satisfied_record_spend_it_once_and_the_second_is_refused`;
+  the refused publish that leaves the record `satisfied`), `dod-publish-door`, `dod-save-door`,
+  `dod-approval-store` (rows 9, 11, 14 answered by P-D-120/P-D-133), `dod-decision-store` (row 6 by
+  P-D-138); `governance` §6 criteria 25 and 26; `foundation` §6 criteria 15, 16, 18, 20, 25 and 27.
+  Markers on the module docs of `api/rest/skus.rs`, `entity/approval.rs`, `entity/approval_decision.rs`.
+- **Not ticked, and why**: `dod-gate-host` — four doors still build `NoMaterialityPolicyGate`
+  (`taxonomy.rs`, `materiality_policy.rs`, `retention.rs`, `scheduled_transitions.rs`; group 2b,
+  with the `LedgerDigest` read of P-D-137 row 41); `dod-quorum-evaluator` — its inbox-envelope
+  visibility clause is `dod-inbox-envelope`'s half; `dod-finance-predicate` — `03`'s
+  classification columns are not in `domain::bucket`'s roster, so `finance_material` is still an
+  argument nobody can compute. `foundation` §6 criteria 30 and 33 stay open: no probe drives a
+  `PreAuthorized` publish against an already-`consumed` record, and "refused by any update on both
+  engines" is asserted by the whitelist probes, not by a publish-door probe.
+- **The arguments against, stated.** Widening `GovernanceGate::evaluate` with the act would have put
+  the operand where the host is sure of it — rejected; it is `01`'s trait, every implementor and
+  probe changes, and the constructor already carries the operand. Judging a publish's materiality at
+  the door rather than at submission duplicates the submit door's computation — accepted, the same
+  function serves both, and a publish with no submission behind it (a `NonMaterial` one) has no
+  other place to be judged. Seeding records in test helpers hides the gate from routed probes —
+  accepted narrowly: the helpers seed exactly one record per act at the asserted revision, the
+  gate-specific probes enter through the seam with their own hosts, and the spent and refused
+  arms have named probes of their own.
+- **Not changed**: `01`'s `GovernanceGate` trait and vocabulary; `StoredApprovalGate`'s rules;
+  P-D-139's settle; P-D-141's door order (resolve, gate, claim).
+- **Propagated**: `features/governance.md` (`dod-gate-host`, `dod-one-shot-consumption`,
+  `dod-approval-store`, `dod-decision-store`; §6 rows 25, 26); `features/foundation.md`
+  (`dod-save-door`, `dod-publish-door`; §6 rows 15, 16, 18, 20, 25, 27); `skus_tests`' seam
+  comment; the solo plan's group 2b list.
+
 #### P-D-141 — The usage-type resolver is a trait on `ApiState`, the collector's client behind it, and no `cfg(test)` in the path
 
 - **Date**: 2026-09-04 (the lead, closing the one clause strand C's `052c40d64` was held on, and

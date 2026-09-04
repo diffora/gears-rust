@@ -1,5 +1,7 @@
 //! `SeaORM` entity for `bss.products_approval` — the approval record
 //! (`design/05` §4, P-D-13, P-D-14, P-D-68).
+//!
+//! @cpt-dod:cpt-cf-bss-products-dod-approval-store:p1
 
 use sea_orm::entity::prelude::*;
 use toolkit_db_macros::Scopable;

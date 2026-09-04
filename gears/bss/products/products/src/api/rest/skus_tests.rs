@@ -1385,13 +1385,72 @@ async fn seed_draft_sku(harness: &TestHarness, parent_id: Uuid, sku_code: &str) 
 /// `if_match` is an `Option` rather than a `&str` because the **absent**
 /// header is itself a case (`VALIDATION`), and a helper that always sent one
 /// could not reach it.
+/// A routed head act under the door's **real** host (P-D-142): every
+/// governed act needs a satisfied record for its subject, so the helper
+/// seeds one at the revision `if_match` asserts before it knocks. `discard`
+/// runs ungoverned and gets no record; an act without a tag is refused
+/// before the gate and gets none either.
+async fn post_head_act(
+    harness: &TestHarness,
+    tenant: Uuid,
+    sku_id: Uuid,
+    act: &str,
+    if_match: Option<&str>,
+    key: Option<&str>,
+) -> axum::http::Response<Body> {
+    seed_for_routed_act(harness, tenant, sku_id, act, if_match).await;
+    post_head_act_via(app_for(harness, tenant), tenant, sku_id, act, if_match, key).await
+}
+
+/// The record a governed routed act consumes — seeded only when the act is
+/// governed and the tag parses to a revision.
+async fn seed_for_routed_act(
+    harness: &TestHarness,
+    tenant: Uuid,
+    sku_id: Uuid,
+    act: &str,
+    if_match: Option<&str>,
+) {
+    if act == "discard" {
+        return;
+    }
+    let Some(tag) = if_match else { return };
+    let mut headers = axum::http::HeaderMap::new();
+    let Ok(value) = axum::http::HeaderValue::from_str(tag) else {
+        return;
+    };
+    headers.insert(axum::http::header::IF_MATCH, value);
+    let Ok(revision) = preconditions::if_match(&headers) else {
+        return;
+    };
+    crate::test_support::seed_satisfied_publish_approval(
+        &harness.db,
+        tenant,
+        bss_products_sdk::models::EntityKind::Sku,
+        sku_id,
+        revision.get(),
+    )
+    .await;
+}
+
 async fn post_publish(
+    harness: &TestHarness,
+    tenant: Uuid,
+    sku_id: Uuid,
+    if_match: Option<&str>,
+) -> axum::http::Response<Body> {
+    post_head_act(harness, tenant, sku_id, "publish", if_match, None).await
+}
+
+/// [`post_publish`] over a caller-built router — for the cross-tenant
+/// probes whose app is not the acting tenant's.
+async fn post_publish_via(
     app: Router,
     tenant: Uuid,
     sku_id: Uuid,
     if_match: Option<&str>,
 ) -> axum::http::Response<Body> {
-    post_head_act(app, tenant, sku_id, "publish", if_match, None).await
+    post_head_act_via(app, tenant, sku_id, "publish", if_match, None).await
 }
 
 /// [`post_publish`]'s discard twin.
@@ -1401,11 +1460,11 @@ async fn post_discard(
     sku_id: Uuid,
     if_match: Option<&str>,
 ) -> axum::http::Response<Body> {
-    post_head_act(app, tenant, sku_id, "discard", if_match, None).await
+    post_head_act_via(app, tenant, sku_id, "discard", if_match, None).await
 }
 
 /// One head act, over the same builder both doors' helpers use.
-async fn post_head_act(
+async fn post_head_act_via(
     app: Router,
     tenant: Uuid,
     sku_id: Uuid,
@@ -1511,7 +1570,7 @@ async fn a_first_publish_freezes_one_version_and_moves_both_counters_by_exactly_
     let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
     let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
 
-    let response = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+    let response = post_publish(&harness, TENANT, sku_id, Some(&etag)).await;
 
     assert_eq!(
         response.status(),
@@ -1577,7 +1636,7 @@ async fn the_frozen_rows_digest_is_the_digest_of_the_stored_rendering() {
     let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
     let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
 
-    let response = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+    let response = post_publish(&harness, TENANT, sku_id, Some(&etag)).await;
     assert_eq!(response.status(), StatusCode::OK, "the publish must land");
 
     let stored_content = raw_string_opt(
@@ -1651,7 +1710,7 @@ async fn a_republish_moves_the_version_to_two_and_leaves_the_state_published() {
     let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
     let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
 
-    let first = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+    let first = post_publish(&harness, TENANT, sku_id, Some(&etag)).await;
     assert_eq!(
         first.status(),
         StatusCode::OK,
@@ -1665,7 +1724,7 @@ async fn a_republish_moves_the_version_to_two_and_leaves_the_state_published() {
         .expect("the ETag is ASCII")
         .to_owned();
 
-    let second = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&next_etag)).await;
+    let second = post_publish(&harness, TENANT, sku_id, Some(&next_etag)).await;
 
     assert_eq!(
         second.status(),
@@ -1703,7 +1762,7 @@ async fn a_publish_with_a_stale_if_match_is_refused_and_writes_nothing() {
     let (sku_id, _etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
 
     let stale = super::preconditions::etag(crate::domain::concurrency::InternalRevision::new(99));
-    let response = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&stale)).await;
+    let response = post_publish(&harness, TENANT, sku_id, Some(&stale)).await;
 
     assert_eq!(
         response.status(),
@@ -1753,7 +1812,7 @@ async fn a_publish_with_no_if_match_is_refused_validation() {
     let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
     let (sku_id, _etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
 
-    let response = post_publish(app_for(&harness, TENANT), TENANT, sku_id, None).await;
+    let response = post_publish(&harness, TENANT, sku_id, None).await;
 
     assert_eq!(
         response.status(),
@@ -1799,13 +1858,7 @@ async fn a_publish_on_a_terminal_head_is_refused_entity_terminal_and_audited() {
         .expect("the ETag is ASCII")
         .to_owned();
 
-    let response = post_publish(
-        app_for(&harness, TENANT),
-        TENANT,
-        sku_id,
-        Some(&terminal_etag),
-    )
-    .await;
+    let response = post_publish(&harness, TENANT, sku_id, Some(&terminal_etag)).await;
 
     assert_eq!(response.status(), StatusCode::CONFLICT);
     let view = body_json(response).await;
@@ -1861,8 +1914,9 @@ async fn a_publish_under_a_draft_parent_is_refused_parent_not_published() {
         &authed_ctx(TENANT),
         &headers,
         sku_id,
-        &(Arc::new(crate::domain::governance::NoMaterialityPolicyGate)
-            as Arc<dyn crate::domain::governance::GovernanceGate + Send + Sync>),
+        crate::api::rest::GateHost::Given(Arc::new(
+            crate::domain::governance::NoMaterialityPolicyGate,
+        )),
         crate::domain::governance::GateMode::Gate,
     )
     .await;
@@ -1909,8 +1963,7 @@ async fn a_publish_a_gate_refuses_is_approval_required_and_writes_nothing() {
         &authed_ctx(TENANT),
         &headers,
         sku_id,
-        &(Arc::new(RefusingGate)
-            as Arc<dyn crate::domain::governance::GovernanceGate + Send + Sync>),
+        crate::api::rest::GateHost::Given(Arc::new(RefusingGate)),
         crate::domain::governance::GateMode::Gate,
     )
     .await;
@@ -1981,7 +2034,7 @@ async fn a_discard_of_a_published_head_is_refused_illegal_transition() {
     let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
     let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
 
-    let published = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+    let published = post_publish(&harness, TENANT, sku_id, Some(&etag)).await;
     assert_eq!(
         published.status(),
         StatusCode::OK,
@@ -2079,7 +2132,7 @@ async fn a_replayed_publish_returns_the_stored_answer_and_does_not_publish_twice
     let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
 
     let first = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         sku_id,
         "publish",
@@ -2095,7 +2148,7 @@ async fn a_replayed_publish_returns_the_stored_answer_and_does_not_publish_twice
     let first_body = body_json(first).await;
 
     let replay = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         sku_id,
         "publish",
@@ -2397,7 +2450,7 @@ async fn the_published_event_carries_the_post_act_published_version() {
     let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
     let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
 
-    let first = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+    let first = post_publish(&harness, TENANT, sku_id, Some(&etag)).await;
     assert_eq!(first.status(), StatusCode::OK, "this case's premise");
     let published_etag = first
         .headers()
@@ -2426,13 +2479,7 @@ async fn the_published_event_carries_the_post_act_published_version() {
     assert_eq!(body["lifecycleState"], json!("published"));
     assert_eq!(body["internalRevision"], json!(2));
 
-    let second = post_publish(
-        app_for(&harness, TENANT),
-        TENANT,
-        sku_id,
-        Some(&published_etag),
-    )
-    .await;
+    let second = post_publish(&harness, TENANT, sku_id, Some(&published_etag)).await;
     assert_eq!(second.status(), StatusCode::OK, "a re-publish is admitted");
 
     let after = raw_string_opt(
@@ -2559,7 +2606,7 @@ async fn a_retry_under_a_different_if_match_replays_the_stored_answer() {
     let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
 
     let first = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         sku_id,
         "publish",
@@ -2588,7 +2635,7 @@ async fn a_retry_under_a_different_if_match_replays_the_stored_answer() {
     let first_body = body_json(first).await;
 
     let retry = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         sku_id,
         "publish",
@@ -2635,7 +2682,7 @@ async fn a_retried_publish_replays_after_the_head_has_gone_terminal() {
     let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
 
     let first = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         sku_id,
         "publish",
@@ -2663,7 +2710,7 @@ async fn a_retried_publish_replays_after_the_head_has_gone_terminal() {
     );
 
     let retry = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         sku_id,
         "publish",
@@ -2709,7 +2756,7 @@ async fn a_retried_discard_replays_rather_than_refusing_its_own_terminal_head() 
     let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
 
     let first = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         sku_id,
         "discard",
@@ -2730,7 +2777,7 @@ async fn a_retried_discard_replays_rather_than_refusing_its_own_terminal_head() 
     );
 
     let retry = post_head_act(
-        app_for(&harness, TENANT),
+        &harness,
         TENANT,
         sku_id,
         "discard",
@@ -2787,7 +2834,8 @@ async fn a_publish_whose_target_tenant_is_outside_the_compiled_scope_is_denied_a
     let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
 
     // `TENANT` is the caller; `OTHER_TENANT` is all the compiled scope names.
-    let response = post_publish(app_for(&harness, OTHER_TENANT), TENANT, sku_id, Some(&etag)).await;
+    let response =
+        post_publish_via(app_for(&harness, OTHER_TENANT), TENANT, sku_id, Some(&etag)).await;
 
     assert_eq!(
         response.status(),
@@ -2920,7 +2968,7 @@ async fn a_preauthorized_publish_reaches_the_host_in_that_mode_and_consumes_noth
         &authed_ctx(TENANT),
         &headers,
         sku_id,
-        &(Arc::clone(&recorder)
+        crate::api::rest::GateHost::Given(Arc::clone(&recorder)
             as Arc<dyn crate::domain::governance::GovernanceGate + Send + Sync>),
         GateMode::PreAuthorized(approval),
     )
@@ -3153,7 +3201,7 @@ async fn a_publish_whose_parent_narrowed_out_of_band_is_refused_scope_not_contai
 
     narrow_parent_region(&harness.dsn, parent_id, "eu").await;
 
-    let response = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+    let response = post_publish(&harness, TENANT, sku_id, Some(&etag)).await;
 
     assert_eq!(
         response.status(),
@@ -3211,7 +3259,7 @@ async fn a_publish_whose_parent_went_terminal_is_refused_parent_terminal() {
     let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
     walk_parent_to(&harness.db, &scope, parent_id, "retired").await;
 
-    let response = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+    let response = post_publish(&harness, TENANT, sku_id, Some(&etag)).await;
 
     assert_eq!(
         response.status(),
@@ -3289,9 +3337,9 @@ async fn head_composition_pending(dsn: &str, sku_id: Uuid) -> i64 {
 
 /// Drive [`super::publish_sku_gated`] against `gate` in `GateMode::Gate`.
 ///
-/// The routed handler wires `NoMaterialityPolicyGate` as a literal — that is
-/// `inst-fd-gate-mode`'s wire-invisibility holding — so a case that needs a
-/// different host has to enter through the in-process seam, exactly as
+/// The routed handler resolves the stored host for the act (P-D-142) and
+/// the seam takes a host the case supplies (`GateHost::Given`), so a case that
+/// needs a different picture of the store enters here, exactly as
 /// `a_preauthorized_publish_reaches_the_host_in_that_mode_and_consumes_nothing`
 /// does. Everything else is what a routed request would produce.
 async fn publish_under_gate(
@@ -3311,7 +3359,7 @@ async fn publish_under_gate(
         &authed_ctx(TENANT),
         &headers,
         sku_id,
-        &gate,
+        crate::api::rest::GateHost::Given(gate),
         crate::domain::governance::GateMode::Gate,
     )
     .await
@@ -3395,7 +3443,7 @@ async fn a_publish_without_the_override_freezes_the_cleared_flag() {
     let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
     let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
 
-    let response = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+    let response = post_publish(&harness, TENANT, sku_id, Some(&etag)).await;
     assert_eq!(response.status(), StatusCode::OK);
 
     assert_eq!(
@@ -3551,7 +3599,7 @@ async fn a_bucket_iii_sku_save_on_a_published_head_writes_no_version_row() {
     let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
     let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
 
-    let published = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+    let published = post_publish(&harness, TENANT, sku_id, Some(&etag)).await;
     assert_eq!(
         published.status(),
         StatusCode::OK,
@@ -3631,13 +3679,7 @@ async fn a_bucket_i_sku_save_is_admitted_before_first_publish_and_refused_after_
         "the bucket-i column was written"
     );
 
-    let published = post_publish(
-        app_for(&harness, TENANT),
-        TENANT,
-        sku_id,
-        Some(&if_match_for(2)),
-    )
-    .await;
+    let published = post_publish(&harness, TENANT, sku_id, Some(&if_match_for(2))).await;
     assert_eq!(
         published.status(),
         StatusCode::OK,
@@ -3731,7 +3773,7 @@ async fn a_sku_save_with_one_refused_field_applies_none_of_the_others() {
     let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
     let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-500").await;
 
-    let published = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+    let published = post_publish(&harness, TENANT, sku_id, Some(&etag)).await;
     assert_eq!(published.status(), StatusCode::OK);
 
     let refused = save_sku_at(
@@ -4182,13 +4224,7 @@ async fn a_save_enqueues_one_sku_head_saved_carrying_the_committed_revision_and_
         "a save takes no edge, so the state is the one the head was already in"
     );
 
-    let published = post_publish(
-        app_for(&harness, TENANT),
-        TENANT,
-        sku_id,
-        Some(&if_match_for(2)),
-    )
-    .await;
+    let published = post_publish(&harness, TENANT, sku_id, Some(&if_match_for(2))).await;
     assert_eq!(
         published.status(),
         StatusCode::OK,
@@ -4456,15 +4492,8 @@ mod clone_door_tests {
         let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
         let (source_id, etag) = seed_draft_sku(&harness, parent_id, "LINE-3").await;
 
-        let publish = post_head_act(
-            app_for(&harness, TENANT),
-            TENANT,
-            source_id,
-            "publish",
-            Some(&etag),
-            None,
-        )
-        .await;
+        let publish =
+            post_head_act(&harness, TENANT, source_id, "publish", Some(&etag), None).await;
         assert_eq!(
             publish.status(),
             StatusCode::OK,
@@ -4504,15 +4533,8 @@ mod clone_door_tests {
         let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
         let (source_id, etag) = seed_draft_sku(&harness, parent_id, "LINE-4").await;
 
-        let discard = post_head_act(
-            app_for(&harness, TENANT),
-            TENANT,
-            source_id,
-            "discard",
-            Some(&etag),
-            None,
-        )
-        .await;
+        let discard =
+            post_head_act(&harness, TENANT, source_id, "discard", Some(&etag), None).await;
         assert_eq!(
             discard.status(),
             StatusCode::OK,
@@ -4829,7 +4851,7 @@ mod meter_declaration_tests {
         .await
         .expect("the member guard admits a state flip");
 
-        let refused = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&fresh)).await;
+        let refused = post_publish(&harness, TENANT, sku_id, Some(&fresh)).await;
         assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
         assert_eq!(
             body_json(refused).await["context"]["violations"][0]["type"],
@@ -4860,8 +4882,7 @@ mod meter_declaration_tests {
                 .as_i64()
                 .expect("a revision")
         );
-        let published =
-            post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&first_etag)).await;
+        let published = post_publish(&harness, TENANT, sku_id, Some(&first_etag)).await;
         assert_eq!(published.status(), StatusCode::OK);
         let fresh = format!(
             "\"{}\"",
@@ -4881,8 +4902,7 @@ mod meter_declaration_tests {
         .await
         .expect("deprecate the unit after it was declared");
 
-        let republished =
-            post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&fresh)).await;
+        let republished = post_publish(&harness, TENANT, sku_id, Some(&fresh)).await;
         assert_eq!(
             republished.status(),
             StatusCode::OK,
@@ -4957,7 +4977,7 @@ mod meter_declaration_tests {
         let harness = harness().await;
         seed_unit(&harness, "gib_month", "active").await;
         let (sku_id, etag) = draft_with_etag(&harness).await;
-        let published = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+        let published = post_publish(&harness, TENANT, sku_id, Some(&etag)).await;
         assert_eq!(published.status(), StatusCode::OK);
         let fresh = format!(
             "\"{}\"",
@@ -5011,8 +5031,9 @@ mod meter_declaration_tests {
             &authed_ctx(TENANT),
             &headers,
             sku_id,
-            &(Arc::new(crate::domain::governance::NoMaterialityPolicyGate)
-                as Arc<dyn crate::domain::governance::GovernanceGate + Send + Sync>),
+            crate::api::rest::GateHost::Given(Arc::new(
+                crate::domain::governance::NoMaterialityPolicyGate,
+            )),
             crate::domain::governance::GateMode::Gate,
         )
         .await
@@ -5144,14 +5165,14 @@ mod deprecate_door_tests {
         let harness = harness().await;
         let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
         let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-DEP").await;
-        let published = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+        let published = post_publish(&harness, TENANT, sku_id, Some(&etag)).await;
         assert_eq!(published.status(), StatusCode::OK);
         let published_rev = body_json(published).await["internal_revision"]
             .as_i64()
             .expect("revision");
 
         let response = post_head_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             sku_id,
             "deprecate",
@@ -5186,15 +5207,7 @@ mod deprecate_door_tests {
         let harness = harness().await;
         let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
         let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-DRAFT-DEP").await;
-        let refused = post_head_act(
-            app_for(&harness, TENANT),
-            TENANT,
-            sku_id,
-            "deprecate",
-            Some(&etag),
-            None,
-        )
-        .await;
+        let refused = post_head_act(&harness, TENANT, sku_id, "deprecate", Some(&etag), None).await;
         assert_eq!(refused.status(), StatusCode::CONFLICT);
     }
 }
@@ -5261,7 +5274,7 @@ mod undeprecate_door_tests {
         let harness = harness().await;
         let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
         let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-UNDEP").await;
-        let published = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+        let published = post_publish(&harness, TENANT, sku_id, Some(&etag)).await;
         assert_eq!(published.status(), StatusCode::OK);
         let published_rev = body_json(published).await["internal_revision"]
             .as_i64()
@@ -5269,7 +5282,7 @@ mod undeprecate_door_tests {
         force_deprecated(&harness, sku_id).await;
 
         let response = post_head_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             sku_id,
             "undeprecate",
@@ -5299,7 +5312,7 @@ mod undeprecate_door_tests {
         let harness = harness().await;
         let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
         let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-HELD").await;
-        let published = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+        let published = post_publish(&harness, TENANT, sku_id, Some(&etag)).await;
         assert_eq!(published.status(), StatusCode::OK);
         let published_rev = body_json(published).await["internal_revision"]
             .as_i64()
@@ -5308,7 +5321,7 @@ mod undeprecate_door_tests {
         seed_retire_intent(&harness, sku_id).await;
 
         let refused = post_head_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             sku_id,
             "undeprecate",
@@ -5356,24 +5369,26 @@ mod retire_door_tests {
     }
 
     async fn post_retire(
-        app: Router,
+        harness: &TestHarness,
         tenant: Uuid,
         sku_id: Uuid,
         if_match: &str,
         body: &serde_json::Value,
     ) -> axum::http::Response<Body> {
-        app.oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/bss-products/v1/skus/{sku_id}/retire"))
-                .header(axum::http::header::CONTENT_TYPE, "application/json")
-                .header(axum::http::header::IF_MATCH, if_match)
-                .extension(authed_ctx(tenant))
-                .body(Body::from(body.to_string()))
-                .expect("build the retire request"),
-        )
-        .await
-        .expect("the router answers")
+        seed_for_routed_act(harness, tenant, sku_id, "retire", Some(if_match)).await;
+        app_for(harness, tenant)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/bss-products/v1/skus/{sku_id}/retire"))
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .header(axum::http::header::IF_MATCH, if_match)
+                    .extension(authed_ctx(tenant))
+                    .body(Body::from(body.to_string()))
+                    .expect("build the retire request"),
+            )
+            .await
+            .expect("the router answers")
     }
 
     async fn live_intent_count(harness: &TestHarness, sku_id: Uuid) -> i64 {
@@ -5391,7 +5406,7 @@ mod retire_door_tests {
     async fn published_sku(harness: &TestHarness, code: &str) -> (Uuid, i64) {
         let parent_id = seed_parent(harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
         let (sku_id, etag) = seed_draft_sku(harness, parent_id, code).await;
-        let published = post_publish(app_for(harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+        let published = post_publish(harness, TENANT, sku_id, Some(&etag)).await;
         assert_eq!(published.status(), StatusCode::OK);
         let rev = body_json(published).await["internal_revision"]
             .as_i64()
@@ -5407,14 +5422,8 @@ mod retire_door_tests {
     async fn a_publish_during_the_lead_window_reannounces_retirement() {
         let harness = harness().await;
         let (sku_id, rev) = published_sku(&harness, "SKU-REANNOUNCE").await;
-        let retired = post_retire(
-            app_for(&harness, TENANT),
-            TENANT,
-            sku_id,
-            &if_match_for(rev),
-            &retire_body(),
-        )
-        .await;
+        let retired =
+            post_retire(&harness, TENANT, sku_id, &if_match_for(rev), &retire_body()).await;
         assert_eq!(
             retired.status(),
             StatusCode::OK,
@@ -5434,13 +5443,8 @@ mod retire_door_tests {
             .expect("retire wrote a live intent");
         let announced_at = intent.at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
-        let republished = post_publish(
-            app_for(&harness, TENANT),
-            TENANT,
-            sku_id,
-            Some(&if_match_for(rev + 1)),
-        )
-        .await;
+        let republished =
+            post_publish(&harness, TENANT, sku_id, Some(&if_match_for(rev + 1))).await;
         assert_eq!(
             republished.status(),
             StatusCode::OK,
@@ -5487,8 +5491,7 @@ mod retire_door_tests {
             let harness = &harness;
             async move {
                 let (sku_id, etag) = seed_draft_sku(harness, parent_id, code).await;
-                let published =
-                    post_publish(app_for(harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+                let published = post_publish(harness, TENANT, sku_id, Some(&etag)).await;
                 assert_eq!(published.status(), StatusCode::OK, "{code} is the premise");
                 let rev = body_json(published).await["internal_revision"]
                     .as_i64()
@@ -5500,7 +5503,7 @@ mod retire_door_tests {
         let (sku_id, rev) = publish_under("SKU-REANNOUNCE-SUCC").await;
 
         let retired = post_retire(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             sku_id,
             &if_match_for(rev),
@@ -5517,13 +5520,8 @@ mod retire_door_tests {
             "initiation with a published successor is the premise"
         );
 
-        let republished = post_publish(
-            app_for(&harness, TENANT),
-            TENANT,
-            sku_id,
-            Some(&if_match_for(rev + 1)),
-        )
-        .await;
+        let republished =
+            post_publish(&harness, TENANT, sku_id, Some(&if_match_for(rev + 1))).await;
         assert_eq!(republished.status(), StatusCode::OK);
 
         let body = enqueued_event_body(&harness.dsn, "SkuRetired").await;
@@ -5545,13 +5543,7 @@ mod retire_door_tests {
     async fn a_publish_outside_any_window_emits_no_retirement() {
         let harness = harness().await;
         let (sku_id, rev) = published_sku(&harness, "SKU-NO-WINDOW").await;
-        let republished = post_publish(
-            app_for(&harness, TENANT),
-            TENANT,
-            sku_id,
-            Some(&if_match_for(rev)),
-        )
-        .await;
+        let republished = post_publish(&harness, TENANT, sku_id, Some(&if_match_for(rev))).await;
         assert_eq!(republished.status(), StatusCode::OK);
         assert_eq!(
             enqueued_event_count(&harness.dsn, "SkuRetired").await,
@@ -5565,14 +5557,8 @@ mod retire_door_tests {
         let harness = harness().await;
         let (sku_id, rev) = published_sku(&harness, "SKU-RETIRE").await;
 
-        let response = post_retire(
-            app_for(&harness, TENANT),
-            TENANT,
-            sku_id,
-            &if_match_for(rev),
-            &retire_body(),
-        )
-        .await;
+        let response =
+            post_retire(&harness, TENANT, sku_id, &if_match_for(rev), &retire_body()).await;
         assert_eq!(response.status(), StatusCode::OK);
 
         let head = sku_of(&harness, sku_id).await;
@@ -5593,7 +5579,7 @@ mod retire_door_tests {
         force_deprecated(&harness, sku_id).await;
 
         let response = post_retire(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             sku_id,
             &if_match_for(rev + 1),
@@ -5613,7 +5599,7 @@ mod retire_door_tests {
         let harness = harness().await;
         let (sku_id, rev) = published_sku(&harness, "SKU-LEAD").await;
         let refused = post_retire(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             sku_id,
             &if_match_for(rev),
@@ -5636,7 +5622,7 @@ mod retire_door_tests {
         let harness = harness().await;
         let (sku_id, rev) = published_sku(&harness, "SKU-EOL").await;
         let refused = post_retire(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             sku_id,
             &if_match_for(rev),
@@ -5659,14 +5645,14 @@ mod retire_door_tests {
         let harness = harness().await;
         let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
         let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-OLD").await;
-        let published = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+        let published = post_publish(&harness, TENANT, sku_id, Some(&etag)).await;
         let rev = body_json(published).await["internal_revision"]
             .as_i64()
             .expect("revision");
         let (draft_id, _) = seed_draft_sku(&harness, parent_id, "SKU-NEW").await;
 
         let refused = post_retire(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             sku_id,
             &if_match_for(rev),
@@ -5688,21 +5674,14 @@ mod retire_door_tests {
     async fn a_second_live_intent_is_retirement_pending() {
         let harness = harness().await;
         let (sku_id, rev) = published_sku(&harness, "SKU-DUP").await;
-        let first = post_retire(
-            app_for(&harness, TENANT),
-            TENANT,
-            sku_id,
-            &if_match_for(rev),
-            &retire_body(),
-        )
-        .await;
+        let first = post_retire(&harness, TENANT, sku_id, &if_match_for(rev), &retire_body()).await;
         assert_eq!(first.status(), StatusCode::OK);
         let next = body_json(first).await["internal_revision"]
             .as_i64()
             .expect("revision");
 
         let refused = post_retire(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             sku_id,
             &if_match_for(next),
@@ -5721,7 +5700,7 @@ mod retire_door_tests {
         let harness = harness().await;
         let (sku_id, rev) = published_sku(&harness, "SKU-NOCONF").await;
         let refused = post_retire(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             sku_id,
             &if_match_for(rev),
@@ -5736,45 +5715,49 @@ mod cancel_retire_door_tests {
     use super::*;
 
     async fn post_retire(
-        app: Router,
+        harness: &TestHarness,
         tenant: Uuid,
         sku_id: Uuid,
         if_match: &str,
         body: &serde_json::Value,
     ) -> axum::http::Response<Body> {
-        app.oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/bss-products/v1/skus/{sku_id}/retire"))
-                .header(axum::http::header::CONTENT_TYPE, "application/json")
-                .header(axum::http::header::IF_MATCH, if_match)
-                .extension(authed_ctx(tenant))
-                .body(Body::from(body.to_string()))
-                .expect("build the retire request"),
-        )
-        .await
-        .expect("the router answers")
+        seed_for_routed_act(harness, tenant, sku_id, "retire", Some(if_match)).await;
+        app_for(harness, tenant)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/bss-products/v1/skus/{sku_id}/retire"))
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .header(axum::http::header::IF_MATCH, if_match)
+                    .extension(authed_ctx(tenant))
+                    .body(Body::from(body.to_string()))
+                    .expect("build the retire request"),
+            )
+            .await
+            .expect("the router answers")
     }
 
     async fn post_cancel(
-        app: Router,
+        harness: &TestHarness,
         tenant: Uuid,
         sku_id: Uuid,
         if_match: &str,
         body: &serde_json::Value,
     ) -> axum::http::Response<Body> {
-        app.oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/bss-products/v1/skus/{sku_id}/retire/cancel"))
-                .header(axum::http::header::CONTENT_TYPE, "application/json")
-                .header(axum::http::header::IF_MATCH, if_match)
-                .extension(authed_ctx(tenant))
-                .body(Body::from(body.to_string()))
-                .expect("build the cancel request"),
-        )
-        .await
-        .expect("the router answers")
+        seed_for_routed_act(harness, tenant, sku_id, "retire/cancel", Some(if_match)).await;
+        app_for(harness, tenant)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/bss-products/v1/skus/{sku_id}/retire/cancel"))
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .header(axum::http::header::IF_MATCH, if_match)
+                    .extension(authed_ctx(tenant))
+                    .body(Body::from(body.to_string()))
+                    .expect("build the cancel request"),
+            )
+            .await
+            .expect("the router answers")
     }
 
     fn cancel_body() -> serde_json::Value {
@@ -5791,13 +5774,13 @@ mod cancel_retire_door_tests {
         let harness = harness().await;
         let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
         let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-CANCEL").await;
-        let published = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+        let published = post_publish(&harness, TENANT, sku_id, Some(&etag)).await;
         let rev = body_json(published).await["internal_revision"]
             .as_i64()
             .expect("revision");
 
         let retired = post_retire(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             sku_id,
             &if_match_for(rev),
@@ -5810,7 +5793,7 @@ mod cancel_retire_door_tests {
             .expect("revision");
 
         let cancelled = post_cancel(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             sku_id,
             &if_match_for(retired_rev),
@@ -5843,7 +5826,7 @@ mod cancel_retire_door_tests {
         )
         .await;
         let revived = post_head_act(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             sku_id,
             "undeprecate",
@@ -5859,12 +5842,12 @@ mod cancel_retire_door_tests {
         let harness = harness().await;
         let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
         let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-STALEOP").await;
-        let published = post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+        let published = post_publish(&harness, TENANT, sku_id, Some(&etag)).await;
         let rev = body_json(published).await["internal_revision"]
             .as_i64()
             .expect("revision");
         let retired = post_retire(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             sku_id,
             &if_match_for(rev),
@@ -5876,7 +5859,7 @@ mod cancel_retire_door_tests {
             .expect("revision");
 
         let refused = post_cancel(
-            app_for(&harness, TENANT),
+            &harness,
             TENANT,
             sku_id,
             &if_match_for(retired_rev),
@@ -6262,7 +6245,7 @@ async fn a_record_spent_under_the_act_refuses_the_retirement_and_writes_nothing(
 async fn published_sku_for_retirement(harness: &TestHarness, code: &str) -> (Uuid, String, i64) {
     let parent_id = seed_parent(harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
     let (sku_id, etag) = seed_draft_sku(harness, parent_id, code).await;
-    let published = post_publish(app_for(harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+    let published = post_publish(harness, TENANT, sku_id, Some(&etag)).await;
     assert_eq!(published.status(), StatusCode::OK);
     let etag = published.headers()[axum::http::header::ETAG]
         .to_str()
@@ -6278,53 +6261,14 @@ async fn published_sku_for_retirement(harness: &TestHarness, code: &str) -> (Uui
 /// through the store's own submit and then satisfied by the same statement
 /// the decide door would run — the runner's probes seed theirs the same way.
 async fn seed_satisfied_record(harness: &TestHarness, sku_id: Uuid, revision: i64) -> ApprovalId {
-    use crate::domain::materiality::{
-        MaterialAct, MaterialityEvaluator, MaterialityPolicy, Resolution,
-    };
-    use crate::infra::storage::entity::approval;
-    use sea_orm::{ColumnTrait as _, Condition, EntityTrait as _};
-    use toolkit_db::secure::SecureUpdateExt as _;
-
-    let conn = harness.db.conn().expect("connection");
-    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
-    let approval_id = ApprovalId::new(Uuid::now_v7());
-    let subject = publish_subject(sku_id, revision);
-    let policy = MaterialityPolicy::default();
-    let evaluator = MaterialityEvaluator::new(Resolution::Resolved(&policy));
-    let act = MaterialAct::PolicyMutation;
-    repo::submit_approval(
-        &conn,
-        &scope,
-        repo::NewApproval {
-            approval_id,
-            subject: &subject,
-            internal_revision: revision,
-            content_snapshot: "{}",
-            diff_basis: None,
-            act: &act,
-            evaluator,
-            finance_material: false,
-            approver_count: 2,
-            submitter: Uuid::from_u128(0xd1_77),
-            author_override_ack: None,
-        },
-        Utc::now(),
+    crate::test_support::seed_satisfied_publish_approval(
+        &harness.db,
+        TENANT,
+        bss_products_sdk::models::EntityKind::Sku,
+        sku_id,
+        revision,
     )
     .await
-    .expect("submit the record");
-    approval::Entity::update_many()
-        .secure()
-        .scope_with(&scope)
-        .col_expr(approval::Column::State, Expr::value("satisfied".to_owned()))
-        .filter(
-            Condition::all()
-                .add(approval::Column::TenantId.eq(TENANT))
-                .add(approval::Column::ApprovalId.eq(approval_id.get())),
-        )
-        .exec(&conn)
-        .await
-        .expect("satisfy the record");
-    approval_id
 }
 
 fn publish_subject(sku_id: Uuid, revision: i64) -> GateSubject {
@@ -6351,7 +6295,19 @@ async fn governed_host_over(
     let candidates = repo::gate_candidates(&conn, &scope, &publish_subject(sku_id, revision))
         .await
         .expect("read the candidates");
-    assert_eq!(candidates.len(), 1, "one candidate for the subject");
+    assert_eq!(
+        candidates
+            .iter()
+            .filter(|candidate| {
+                matches!(
+                    candidate.state,
+                    crate::domain::approval::ApprovalState::Satisfied
+                )
+            })
+            .count(),
+        1,
+        "one satisfied candidate for the subject (the publish's spent record may share it)"
+    );
     Arc::new(crate::domain::approval::StoredApprovalGate::governed(
         candidates,
     ))
@@ -6381,7 +6337,7 @@ async fn retire_under(
             must_migrate_by: None,
             confirmed: true,
         },
-        gate,
+        crate::api::rest::GateHost::Given(Arc::clone(gate)),
     )
     .await
 }

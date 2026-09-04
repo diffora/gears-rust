@@ -334,3 +334,92 @@ impl crate::infra::usage_types::UsageTypeResolver for StubUsageTypes {
         next.unwrap_or(self.last)
     }
 }
+
+/// Seed a **satisfied** approval record for `entity`'s publish subject at
+/// `revision`, so a routed act under the real host (`GateHost::Real`,
+/// P-D-142) finds the record the door's `governed` constructor demands.
+///
+/// The record is submitted through `repo::submit_approval` and then flipped
+/// to `satisfied` directly — the decision doors are a different suite's
+/// concern; this helper stands in for a quorum that has already spoken.
+pub async fn seed_satisfied_publish_approval(
+    db: &toolkit_db::DBProvider<toolkit_db::DbError>,
+    tenant_id: Uuid,
+    entity_kind: bss_products_sdk::models::EntityKind,
+    entity_id: Uuid,
+    revision: i64,
+) -> crate::domain::governance::ApprovalId {
+    use crate::domain::concurrency::InternalRevision;
+    use crate::domain::governance::{ApprovalId, EntityRef, GateSubject};
+    use crate::domain::materiality::{
+        MaterialAct, MaterialityEvaluator, MaterialityPolicy, Resolution,
+    };
+    use crate::infra::storage::entity::approval;
+    use crate::infra::storage::repo;
+    use sea_orm::sea_query::Expr;
+    use sea_orm::{ColumnTrait as _, Condition, EntityTrait as _};
+    use toolkit_db::secure::SecureUpdateExt as _;
+
+    let conn = db.conn().expect("connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(tenant_id);
+    let approval_id = ApprovalId::new(Uuid::now_v7());
+    let subject = GateSubject::entity_publish(
+        EntityRef {
+            tenant_id,
+            entity_kind,
+            entity_id,
+        },
+        InternalRevision::new(revision),
+    );
+    // A case that seeded its own record for this subject keeps it: a second
+    // submission would supersede the open one (L-4) and change what the case
+    // is measuring.
+    let existing = repo::gate_candidates(&conn, &scope, &subject)
+        .await
+        .expect("read the subject's candidates");
+    if let Some(open) = existing.iter().find(|candidate| {
+        matches!(
+            candidate.state,
+            crate::domain::approval::ApprovalState::Pending
+                | crate::domain::approval::ApprovalState::Satisfied
+        )
+    }) {
+        return open.approval_id;
+    }
+    let policy = MaterialityPolicy::default();
+    let evaluator = MaterialityEvaluator::new(Resolution::Resolved(&policy));
+    let act = MaterialAct::PolicyMutation;
+    repo::submit_approval(
+        &conn,
+        &scope,
+        repo::NewApproval {
+            approval_id,
+            subject: &subject,
+            internal_revision: revision,
+            content_snapshot: "{}",
+            diff_basis: None,
+            act: &act,
+            evaluator,
+            finance_material: false,
+            approver_count: 2,
+            submitter: Uuid::from_u128(0xd1_77),
+            author_override_ack: None,
+        },
+        chrono::Utc::now(),
+    )
+    .await
+    .expect("submit the record");
+    approval::Entity::update_many()
+        .secure()
+        .scope_with(&scope)
+        .col_expr(approval::Column::State, Expr::value("satisfied".to_owned()))
+        .filter(
+            Condition::all()
+                .add(approval::Column::TenantId.eq(tenant_id))
+                .add(approval::Column::ApprovalId.eq(approval_id.get())),
+        )
+        .exec(&conn)
+        .await
+        .expect("satisfy the record");
+    approval_id
+}
