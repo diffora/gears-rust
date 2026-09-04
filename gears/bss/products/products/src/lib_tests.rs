@@ -8,7 +8,7 @@
 /// would report a hole it never looked into as absent. Here that matters
 /// because the class below has appeared in `api/rest`, in `infra/storage` and
 /// in `domain` alike.
-fn crate_sources() -> Vec<std::path::PathBuf> {
+pub fn crate_sources() -> Vec<std::path::PathBuf> {
     let mut found = Vec::new();
     let mut stack = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
     while let Some(dir) = stack.pop() {
@@ -308,5 +308,69 @@ fn the_system_principal_is_stable_across_calls() {
         first.get_version(),
         Some(uuid::Version::Sha1),
         "v5 - derived, not random; a v4 here would mean the per-boot principal is back"
+    );
+}
+
+/// **Every writer of `products_catalog_version.retention_released_at` is
+/// counted** (**P-D-137**, on P-D-105's pattern).
+///
+/// # Why an invariant and not a schema rule
+///
+/// The stamp is what `m20260901_000010`'s `DELETE` arm reads, and the `UPDATE`
+/// whitelist admits it moving `NULL` → a value once. So **any** caller who may
+/// update that table can make a version deletable — the arm buys a deliberate
+/// two-step recorded in the row, not an authorisation. P-D-31 is why it cannot
+/// buy more: the session variable that would carry the deleter's identity
+/// exists on Postgres and not on `SQLite`, so neither trigger reads one.
+///
+/// What keeps the stamp to the retention sweep is therefore a **code**
+/// invariant, and the day a second writer appears the arm silently becomes a
+/// bearer token with no test failing and no reviewer prompted. So the
+/// invariant is counted here, and this test is the prompt.
+///
+/// # What it does not cover
+///
+/// One column on one table. It says *one call site*, and it says nothing
+/// about whether that site ran a clock first — `dod-retention-clock`'s own
+/// probes are what assert the candidate had passed its window and the freeze
+/// gate.
+///
+/// # If this fails
+///
+/// A call site was added or removed. Do not just move the number. Establish
+/// that the new writer is the GC's release path — and if a second legitimate
+/// writer exists, the alternative P-D-137 did not take is a column the
+/// application cannot write at all, with the release expressed as its own
+/// governed act.
+#[test]
+fn every_writer_of_a_release_stamp_is_counted() {
+    let mut sites = Vec::new();
+    for path in crate_sources() {
+        let text = std::fs::read_to_string(&path).expect("a readable crate source");
+        for (index, line) in text.lines().enumerate() {
+            let trimmed = line.trim_start();
+            // The declaration and doc mentions are not call sites.
+            if trimmed.starts_with("//") || trimmed.starts_with("pub async fn") {
+                continue;
+            }
+            if line.contains("stamp_retention_release(") {
+                let name = path
+                    .strip_prefix(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+                    .unwrap_or(&path);
+                sites.push(format!("{}:{}", name.display(), index + 1));
+            }
+        }
+    }
+    sites.retain(|s| !s.contains("_tests.rs"));
+    assert_eq!(
+        sites.len(),
+        1,
+        "exactly one production writer of the release stamp — the retention sweep's own \
+         collect_catalog_version, inside the transaction that then deletes the chain. \
+         Found: {sites:?}"
+    );
+    assert!(
+        sites[0].contains("infra/retention.rs"),
+        "and it is the sweep's, not a door's: {sites:?}"
     );
 }

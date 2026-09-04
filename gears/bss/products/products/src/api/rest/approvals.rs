@@ -92,7 +92,7 @@ use crate::domain::governance::{ApprovalId, EntityRef, GateSubject, SubjectKind,
 use crate::domain::materiality::{
     EnumeratedOp, LiveOpEdit, MaterialAct, MaterialLiveOp, MaterialityEvaluator,
 };
-use crate::domain::taxonomy::{NoPiiPolicyDetector, PiiDetector, content_pii_block};
+use crate::domain::taxonomy::{PiiDetector, content_pii_block};
 use crate::domain::validation::ValidationReport;
 use crate::infra::events::{self, GovernanceEventBody};
 use crate::infra::storage::repo::{
@@ -484,13 +484,18 @@ fn violation(field: &'static str, detail: impl Into<String>) -> DomainError {
 /// no `reason` column and a column for text nobody writes being the wrong
 /// fix.
 ///
-/// The registered detector is `NoPiiPolicyDetector`, which admits everything
-/// and says so. That is why the clean-text positive control is part of the
-/// obligation: a stub that refused every string would satisfy a refusal probe
-/// alone.
-fn pii_block(reason: &str) -> Result<(), DomainError> {
-    let detector: Arc<dyn PiiDetector + Send + Sync> = Arc::new(NoPiiPolicyDetector);
-    content_pii_block(detector.as_ref(), "reason", reason)
+/// The detector is **`10-retention-erasure`'s**, over the acting tenant's
+/// Legal-signed-off allow-list (`dod-pii-detector`), and it is the caller's
+/// to build: the read that builds it is asynchronous and
+/// `PiiDetector::inspect` deliberately is not, so a detector constructed here
+/// would make a synchronous rule reach a store.
+///
+/// It was `NoPiiPolicyDetector` when this door landed — the seventh
+/// construction site of a host slice 10 had already replaced at six — and the
+/// census that should have caught it named its files by hand. Both are fixed;
+/// the census now discovers its own population.
+fn pii_block(detector: &(dyn PiiDetector + Send + Sync), reason: &str) -> Result<(), DomainError> {
+    content_pii_block(detector, "reason", reason)
         .map_err(|blocked| DomainError::ContentPiiBlocked(blocked.into_detail()))
 }
 
@@ -1082,8 +1087,9 @@ async fn decide_approval(
     // `dod-pii-on-reasons`' first stored reason. Refused **before the row is
     // written**, which is the whole reach erasure has over these records:
     // they are never edited and erasure is a map-only tombstone.
+    let detector = crate::api::rest::retention::tenant_pii_detector(&state, tenant_id).await?;
     if let Some(reason) = reason.as_deref()
-        && let Err(blocked) = pii_block(reason)
+        && let Err(blocked) = pii_block(detector.as_ref(), reason)
     {
         {
             return Err(refuse(
@@ -1365,8 +1371,12 @@ async fn open_breakglass(
         )
         .await);
     }
-    // `dod-pii-on-reasons`' second stored reason.
-    if let Err(blocked) = pii_block(&reason) {
+    // `dod-pii-on-reasons`' second stored reason, judged against the
+    // **caller's** allow-list: an elevation is authored in the caller's
+    // tenant, and the target tenant's Legal sign-offs are not the caller's to
+    // spend.
+    let detector = crate::api::rest::retention::tenant_pii_detector(&state, caller_tenant).await?;
+    if let Err(blocked) = pii_block(detector.as_ref(), &reason) {
         return Err(refuse(
             &state,
             &scope,

@@ -34,7 +34,9 @@
 
 use chrono::{DateTime, Utc};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, FromQueryResult, QuerySelect};
-use toolkit_db::secure::{AccessScope, DBRunner, SecureDeleteExt, SecureEntityExt};
+use toolkit_db::secure::{
+    AccessScope, DBRunner, SecureDeleteExt, SecureEntityExt, SecureUpdateExt,
+};
 use uuid::Uuid;
 
 use super::driver_failure;
@@ -42,7 +44,7 @@ use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
     approval, approval_decision, audit_log, breakglass_session, catalog_version,
     catalog_version_capture, catalog_version_entry, correction_override, entity_version,
-    identity_ref,
+    identity_ref, product, sku,
 };
 
 /// One `tenant_id`, projected.
@@ -148,16 +150,31 @@ pub async fn catalog_version_candidates(
     Ok(rows.into_iter().map(|row| row.catalog_version_id).collect())
 }
 
-/// Entity versions published before `cutoff`, oldest first.
+/// Entity versions published before `cutoff`, oldest first — **excluding any
+/// row a head names as its current `published_version`**.
 ///
-/// **Unfiltered by manifest reference on purpose.** The derive rule
+/// # Two exclusions with two different homes, and that is deliberate
+///
+/// **The manifest reference is NOT filtered here.** The derive rule
 /// (`dod-retention-order`: version-row retention is never shorter than the
 /// catalog version's) is enforced by `m20260829_000007`'s own predicate, and
-/// pre-filtering here would make the sweep's own ordering the guarantee — the
-/// thing §6's criterion refuses: *"refused **by the guard**, not merely
-/// skipped by the GC — the probe passes even when the GC is bypassed
-/// entirely"*. So the sweep offers each candidate to the engine and reports
-/// the refusal.
+/// pre-filtering it would make the sweep's ordering the guarantee — the thing
+/// §6's criterion refuses: *"refused **by the guard**, not merely skipped by
+/// the GC — the probe passes even when the GC is bypassed entirely"*. So the
+/// sweep offers each candidate to the engine and reports the refusal.
+///
+/// **The live head's version IS filtered here, because no guard holds it**
+/// (**P-D-137**). The schema's only `DELETE` predicate on this table is
+/// P-D-40's — *no catalog-version entry references the row* — so an entity
+/// published once, longer ago than `retention_days_version`, and never
+/// captured into a manifest would have its **only** frozen content collected
+/// and its head would name a `published_version` that does not exist. A head
+/// is a reference the way a manifest is; the cost of honouring it is one row
+/// per entity. Whether a **retired** head's last version expires with its
+/// window is `10` §7 item 35, the owner's.
+///
+/// Both head tables, because either kind can name a version:
+/// `products_product` and `products_sku`.
 ///
 /// # Errors
 ///
@@ -186,7 +203,122 @@ pub async fn entity_version_candidates(
         })
         .await
         .map_err(|e| driver_failure(format!("read entity-version candidates of {tenant_id}"), e))?;
-    Ok(rows)
+
+    // The heads' current versions, read once and subtracted, rather than a
+    // `NOT EXISTS` per candidate: two reads against a primary-key-ordered
+    // table beat one correlated subquery per row, and the set is small — one
+    // entry per entity, and only entities that have ever published.
+    let live = live_head_versions(runner, scope, tenant_id).await?;
+    Ok(rows
+        .into_iter()
+        .filter(|key| {
+            !live.contains(&(
+                key.entity_kind.clone(),
+                key.entity_id,
+                key.published_version,
+            ))
+        })
+        .collect())
+}
+
+/// Every `(entity_kind, entity_id, published_version)` a head currently
+/// names.
+///
+/// `published_version = 0` means *never published* (P-D-134 `03` row 20's
+/// vocabulary), and no version row carries a zero — `m20260829_000007`'s
+/// `CHECK` floors it at one — so a zero here would subtract nothing. It is
+/// filtered out anyway, so the set is exactly what it says it is rather than
+/// a set with a member that happens to match nothing.
+async fn live_head_versions(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+) -> Result<std::collections::HashSet<(String, Uuid, i64)>, RepoError> {
+    let mut live = std::collections::HashSet::new();
+
+    let products = product::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(product::Column::TenantId.eq(tenant_id))
+                .add(product::Column::PublishedVersion.gt(0)),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read live product heads of {tenant_id}"), e))?;
+    for row in products {
+        live.insert(("product".to_owned(), row.product_id, row.published_version));
+    }
+
+    let skus = sku::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(sku::Column::TenantId.eq(tenant_id))
+                .add(sku::Column::PublishedVersion.gt(0)),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read live sku heads of {tenant_id}"), e))?;
+    for row in skus {
+        live.insert(("sku".to_owned(), row.sku_id, row.published_version));
+    }
+
+    Ok(live)
+}
+
+/// Stamp a catalog version's retention release (**P-D-137**).
+///
+/// # This is the one writer, and that is an invariant no schema holds
+///
+/// The `UPDATE` whitelist admits the stamp moving `NULL` → a value **once**,
+/// and the `DELETE` arm then admits the row — so any caller who may update
+/// this table could make a version deletable. What keeps that to the GC is a
+/// **writer count**: `lib_tests::every_writer_of_a_release_stamp_is_counted`,
+/// P-D-105's pattern, armed against a second call site.
+///
+/// Answers `false` when the row is already stamped or absent — a racer got
+/// there first, which is not an error: the version is releasable either way,
+/// and re-stamping is what the trigger refuses.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn stamp_retention_release(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    catalog_version_id: i64,
+    now: DateTime<Utc>,
+) -> Result<bool, RepoError> {
+    let outcome = catalog_version::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            catalog_version::Column::RetentionReleasedAt,
+            sea_orm::sea_query::Expr::value(now),
+        )
+        .filter(
+            Condition::all()
+                .add(catalog_version::Column::TenantId.eq(tenant_id))
+                .add(catalog_version::Column::CatalogVersionId.eq(catalog_version_id))
+                // Re-asserted in the WHERE for `tombstone_principal`'s
+                // reason: two passes racing would otherwise both issue the
+                // stamp and the loser would meet the trigger's once-only
+                // refusal as a driver error rather than as a lost race.
+                .add(catalog_version::Column::RetentionReleasedAt.is_null()),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| {
+            driver_failure(
+                format!("stamp the retention release of {catalog_version_id}"),
+                e,
+            )
+        })?;
+    Ok(outcome.rows_affected > 0)
 }
 
 /// The audit class's candidates, across all five of its stores.

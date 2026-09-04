@@ -1125,132 +1125,190 @@ collided with a field every consumer already reads as *"who did this"*.
 
 ## 6. Acceptance Criteria
 
+**33 of 34 ticked, each against a named probe** (**P-D-137**'s convention: a criterion ticks with
+its `DoD`, by the strand, clause by clause, and never by inspection — so every ticked line below
+carries the case that proves it). The one that is not ticked is the detector's enumerated door set:
+four of the five doors it names are `07`'s and `04`'s and do not exist yet. **That is why this
+feature's status box is still unticked**, and it is a finding rather than an omission — see the
+criterion's own note.
+
 **The reproducibility-vs-erasure flagship**
 
-- [ ] Freeze a version, erase its approver, then assert **both halves in one probe**: the old
+- [x] Freeze a version, erase its approver, then assert **both halves in one probe**: the old
       snapshot's checksum is **unchanged**, and the rendered audit shows the **tombstone**. C1 is
       only proven by asserting both — either half alone passes on a build that got the other wrong.
+      *Probe:* an_erasure_leaves_a_frozen_record_byte_identical.
 
 **The detector**
 
-- [ ] A matrix of block / allow / allow-by-list / uncertainty-blocks, **each with a positive
+- [x] A matrix of block / allow / allow-by-list / uncertainty-blocks, **each with a positive
       control**, so no arm passes because the fixture could not reach the permissive branch.
-- [ ] A block names the **field** and the assertion checks the refusal does **not** carry the
+      *Probe:* the_four_arms_each_have_a_positive_control.
+- [x] A block names the **field** and the assertion checks the refusal does **not** carry the
       detected value.
+      *Probe:* no_verdict_reason_carries_the_matched_text,
+      a_pii_refusal_names_the_field_and_its_audit_row_carries_no_detected_value.
 - [ ] Every `reason`-bearing door in the enumerated set raises the same code: audit rows, approval
       rejections, break-glass sessions, correction overrides, and the `SkuRetired` payload — and
       **not** bulk or promotion rows, which P-D-50 struck.
+      **No probe, and this is the one criterion that keeps the feature's status box
+      unticked.** Measured 2026-09-04: the hook runs at **seven** production doors, and
+      four of the five this criterion enumerates have no door to run it at yet —
+      `products_correction_override`'s reason belongs to `07`'s unbuilt correction door,
+      and the `SkuRetired` payload's to `04`. Two of the five now exist and are covered:
+      the audit-row reasons (every door in this feature) and the approval rejection and
+      break-glass reasons (`api::rest::approvals`, whose site this commit swapped off the
+      permissive host). A criterion cannot be ticked against doors that do not exist, and
+      ticking it by inspection is what P-D-137's convention forbids.
 
 **The allow-list**
 
-- [ ] A mutation runs the **base quorum** and is refused when the Legal sign-off reference is
+- [x] A mutation runs the **base quorum** and is refused when the Legal sign-off reference is
       absent, **asserted with its positive control** — a mandatory-field rule proven only by its
       refusal is a rule that may never admit anything.
-- [ ] An admitted entry is exportable for the Legal review.
+      *Probe:*
+      a_missing_sign_off_reference_is_refused_by_field_and_a_complete_entry_is_admitted,
+      both_allowlist_doors_submit_their_act_to_the_gate.
+- [x] An admitted entry is exportable for the Legal review.
+      *Probe:* a_revocation_keeps_the_row_and_its_sign_off_in_the_review.
 
 **The retention gate, RED first**
 
-- [ ] A candidate version with one live freeze-registration is **skipped and alarmed**.
-- [ ] The same version GCs cleanly once **every** registration satisfies the pair — `state =
+- [x] A candidate version with one live freeze-registration is **skipped and alarmed**.
+      *Probe:* a_freeze_held_catalog_version_keeps_its_entries.
+- [x] The same version GCs cleanly once **every** registration satisfies the pair — `state =
       released`, or `state = not_frozen(forced)` with `released_at` stamped.
-- [ ] A registration at `state = acked` **beside a stamped `released_at`** is **still skipped and
+      *Probe:* a_released_catalog_version_collects_whole.
+- [x] A registration at `state = acked` **beside a stamped `released_at`** is **still skipped and
       alarmed**. This is the correction's own regression probe: reading the timestamp alone collects
       a version holding live grandfathered references.
-- [ ] An **empty** `participant_set_snapshot` is **collectable**; an empty **registration ledger**
+      *Probe:* domain::retention_tests' recovered-forced-participant case.
+- [x] An **empty** `participant_set_snapshot` is **collectable**; an empty **registration ledger**
       under a non-empty snapshot is **not**. The two are asserted apart, because quantifying over the
       wrong one satisfies the gate vacuously.
+      *Probe:* domain::retention_tests' two vacuity cases.
 
 **Derived retention and order**
 
-- [ ] An entity-version row referenced only by a **retained** catalog version survives its own class
+- [x] An entity-version row referenced only by a **retained** catalog version survives its own class
       clock.
-- [ ] A GC attempting an entity-version `DELETE` while a manifest entry still references it is
+      *Probe:* a_referenced_version_is_refused_by_the_guard_and_not_by_the_sweep.
+- [x] A GC attempting an entity-version `DELETE` while a manifest entry still references it is
       refused **by the guard**, not merely skipped by the GC — the probe passes even when the GC is
       bypassed entirely.
+      *Probe:* the same case's second half, with the sweep bypassed.
 
 **The drill**
 
-- [ ] A deliberately **corrupted** backup sample fails the drill loudly. The oracle must be seen to
+- [x] A deliberately **corrupted** backup sample fails the drill loudly. The oracle must be seen to
       fail.
-- [ ] A row written under an earlier `digest_version` produces a **version mismatch**, distinguished
+      *Probe:* a_corrupted_restore_raises_the_alarm, controlled by
+      a_clean_restore_verifies_both_halves.
+- [x] A row written under an earlier `digest_version` produces a **version mismatch**, distinguished
       from a corruption alarm in the result, not only in a log line.
-- [ ] The drill does **not** expect `lifecycle_state`, `deprecation_provenance`,
+      *Probe:* a_foreign_digest_version_is_unverifiable_and_not_corruption.
+- [x] The drill does **not** expect `lifecycle_state`, `deprecation_provenance`,
       `replaced_by_sku_id` or `internal_revision` in the digested content.
+      *Probe:* the_drill_recomputes_over_the_stored_content_and_nothing_else.
 
 **Erasure**
 
-- [ ] Age-based pseudonymization fires **without a request** and produces the same map state as the
+- [x] Age-based pseudonymization fires **without a request** and produces the same map state as the
       requested path. What "byte-identical in effect" covers beyond map state is §7's.
-- [ ] A principal acting **after** its erasure mints a **fresh** ref rather than reviving the
+      *Probe:* the_age_trigger_tombstones_the_aged_principal_and_only_that_one,
+      the_age_path_writes_the_same_map_state_and_announces_the_same_event.
+- [x] A principal acting **after** its erasure mints a **fresh** ref rather than reviving the
       tombstoned row, and render-time joins of historical records still show the tombstone.
-- [ ] A repeat DSAR **after** an erasure still resolves by principal — which is what
+      *Probe:* the_export_read_sees_the_tombstone_and_a_later_mint_is_a_second_entry.
+- [x] A repeat DSAR **after** an erasure still resolves by principal — which is what
       `principal_ref` surviving the tombstone is for.
-- [ ] `last_seen_at` advances on a **resolve** and not on a mint, asserted directly, since the
+      *Probe:* the same case, with
+      an_erasure_destroys_a_seeded_payload_and_stamps_the_tombstone.
+- [x] `last_seen_at` advances on a **resolve** and not on a mint, asserted directly, since the
       age trigger reads it.
+      *Probe:* repo_tests' shipped pair,
+      one_writer_advances_last_seen_at_and_one_door_reaches_it.
 
 **Positive control, one line per declared code** — one code, one line.
 
-- [ ] `ERASURE_UNKNOWN_ACTOR` — a principal with no `actor_ref` in this tenant is refused **naming
+- [x] `ERASURE_UNKNOWN_ACTOR` — a principal with no `actor_ref` in this tenant is refused **naming
       the principal**; the same request for a principal that has one succeeds.
+      *Probe:* an_unknown_principal_is_refused_and_nothing_is_minted.
 
 **The retention clocks** *(added 2026-09-04 under §7 item 32 — this DoD had no criterion)*
 
-- [ ] Each record class produces candidates at **its own** configured window, asserted by moving
+- [x] Each record class produces candidates at **its own** configured window, asserted by moving
       one window and watching only that class's candidate set change. A sweep that read one
       number for every class would pass a single-class probe.
-- [ ] The two deliberately-excluded populations produce **no** candidates: outbox-delivered rows
+      *Probe:* each_class_reads_its_own_window.
+- [x] The two deliberately-excluded populations produce **no** candidates: outbox-delivered rows
       (the toolkit vacuum's horizon, **P-D-22**) and `07`'s watermark and member tables
       (operational current state). Asserted as absence, because an over-broad clock deletes
       records nobody asked it to.
-- [ ] A class whose table refuses `DELETE` is reported **held**, and the sweep's other candidates
+      *Probe:* the_excluded_populations_are_never_candidates.
+- [x] A class whose table refuses `DELETE` is reported **held**, and the sweep's other candidates
       still complete. The failure this guards is the one §7 row 38 describes: one `P0001` from a
       flat-refusal guard is not retryable contention, so an un-isolated sweep aborts and takes
       every unrelated candidate with it.
+      *Probe:* a_refusing_class_is_held_and_the_others_still_collect, on the audit class.
 
 **The compliance export** *(added 2026-09-04 under §7 item 32 — this DoD had no criterion)*
 
-- [ ] The door is refused without a **justification**, and the justification it demands is the one
+- [x] The door is refused without a **justification**, and the justification it demands is the one
       that lands on the access's audit row — **both halves**, because a door that required the
       field and then dropped it passes a refusal-only probe (**P-D-133**).
-- [ ] Three accesses write **three** audit rows. *Individually* audited is a count, and a probe
+      *Probe:* the_export_requires_a_justification_and_records_it_on_the_access_row.
+- [x] Three accesses write **three** audit rows. *Individually* audited is a count, and a probe
       that reads *an* audit row cannot tell one write from three.
-- [ ] The export spends `compliance × export` and the allow-list review spends it too; neither is
+      *Probe:* three_exports_write_three_access_rows.
+- [x] The export spends `compliance × export` and the allow-list review spends it too; neither is
       served under `audit × export`.
+      *Probe:* the_compliance_doors_spend_their_own_grant_and_never_the_audit_one.
 
 **The two events** *(added 2026-09-04 under §7 item 32 — this DoD had no criterion)*
 
-- [ ] Each event is enqueued **inside its act's transaction**, asserted from the other side: a
+- [x] Each event is enqueued **inside its act's transaction**, asserted from the other side: a
       **refused** act enqueues none. An `ActorErased` beside a rolled-back tombstone tells every
       cache to drop a ref that is still live.
-- [ ] Each carries a versioned schema reference and appears in **both** rosters — the interim
+      *Probe:* an_erasure_announces_itself_and_a_refused_one_does_not.
+- [x] Each carries a versioned schema reference and appears in **both** rosters — the interim
       arm's and the broker arm's — with the subject type its grant derives (**P-D-94**).
-- [ ] Neither payload has a field an identity could reach. `ActorErased` is a defensive
+      *Probe:* the_schema_roster_names_exactly_the_declared_events,
+      each_event_declares_its_derived_type_id_and_subject_type.
+- [x] Neither payload has a field an identity could reach. `ActorErased` is a defensive
       cache-buster, and a field added later is how it would stop being one.
+      *Probe:* neither_retention_payload_has_a_field_an_identity_could_reach.
 
 **The authz surface** *(added 2026-09-04 under §7 item 32 — the DoD whose own body argues that
 unnamed obligations are ticked by inspection)*
 
-- [ ] Each of the three grants is spent by a door that **exists**, and a caller without the grant
+- [x] Each of the three grants is spent by a door that **exists**, and a caller without the grant
       is refused with the refusal **audited**. The four roster tests the DoD names are the
       declaration half; this is the spending half, and the DoD had only the first.
+      *Probe:* each_grant_is_spent_by_a_door_and_a_denial_is_audited.
 
 **The identity map's remainder** *(added 2026-09-04 under §7 item 32 — the DSAR criterion below
 asserts the column, not the read)*
 
-- [ ] The tombstone-inclusive read returns a **tombstoned** entry, and the shipped
+- [x] The tombstone-inclusive read returns a **tombstoned** entry, and the shipped
       `resolve_actor_ref` does not. The two differ by exactly the predicate that makes a DSAR
       after an erasure answer *"no entries"* — the one wrong answer that looks right.
-- [ ] Exactly one writer advances `last_seen_at` and exactly one door reaches it. *"Every stamping
+      *Probe:* the_two_reads_keep_their_separate_predicates.
+- [x] Exactly one writer advances `last_seen_at` and exactly one door reaches it. *"Every stamping
       door honours it"* is a claim about a set; a singleton is the property that makes it true,
       and the assertion is what fails the day a second writer appears.
+      *Probe:* one_writer_advances_last_seen_at_and_one_door_reaches_it.
 
 **Controls on the shipped seam**
 
-- [ ] `chk_products_identity_ref_tombstone` refuses a row carrying both a payload and a
+- [x] `chk_products_identity_ref_tombstone` refuses a row carrying both a payload and a
       `tombstoned_at`, on **both** engines.
-- [ ] `uq_products_identity_ref_active` admits a second row for the same
+      *Probe:* a_row_with_both_tombstone_and_payload_is_refused_by_the_tombstone_check.
+- [x] `uq_products_identity_ref_active` admits a second row for the same
       `(tenant_id, principal_ref)` **once the first is tombstoned**, and refuses it while the first
       is live. Both arms, because the partial predicate is the whole mechanism.
+      *Probe:* a_second_live_ref_for_the_same_principal_is_refused_by_the_active_unique_index,
+      a_fresh_ref_after_tombstoning_the_first_inserts_successfully.
 
 ## 7. Known unknowns
 

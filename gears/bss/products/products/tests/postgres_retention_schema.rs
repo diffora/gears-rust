@@ -201,3 +201,166 @@ async fn the_state_check_is_closed_at_two_on_postgres() {
         "the refusal must be the CHECK's, by name: {err}"
     );
 }
+
+/// **The release stamp's three arms, on Postgres, both ways** (**P-D-137**).
+///
+/// The `SQLite` suite proves the same three, and both are needed: the two
+/// engines express the guard differently — one PL/pgSQL function branching on
+/// `TG_OP`, three triggers with `WHEN` clauses — and a rule that holds in one
+/// spelling and not the other is the failure mode this schema's whole
+/// two-dialect discipline exists to catch.
+///
+/// The arms: an unstamped version refuses `DELETE`; a stamp moves `NULL` → a
+/// value once and never again; a stamped version admits `DELETE`, and its
+/// entries admit theirs only because their parent carries the stamp.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn the_release_stamp_admits_the_delete_only_once_stamped_on_postgres() {
+    let pg = Pg::applied().await;
+    let conn = pg.raw().await;
+    let tenant = "00000000-0000-0000-0000-0000000000d1";
+
+    let exec = |sql: String| {
+        let conn = &conn;
+        async move {
+            conn.execute_raw(Statement::from_string(
+                sea_orm::DatabaseBackend::Postgres,
+                sql,
+            ))
+            .await
+        }
+    };
+
+    exec(format!(
+        "INSERT INTO bss.products_catalog_version \
+         (tenant_id, catalog_version_id, checksum, digest_version, published_at, \
+          participant_set_snapshot, freeze_state) \
+         VALUES ('{tenant}', 1, 'abc', 1, now(), '[]', 'complete')"
+    ))
+    .await
+    .expect("the version lands");
+    exec(format!(
+        "INSERT INTO bss.products_catalog_version_entry \
+         (tenant_id, catalog_version_id, entity_kind, entity_id, published_version) \
+         VALUES ('{tenant}', 1, 'product', gen_random_uuid(), 1)"
+    ))
+    .await
+    .expect("its entry lands");
+
+    // Arm one: unstamped, both tables refuse.
+    let refused = exec(format!(
+        "DELETE FROM bss.products_catalog_version WHERE tenant_id = '{tenant}'"
+    ))
+    .await
+    .expect_err("an unstamped version must be refused");
+    assert!(
+        refused
+            .to_string()
+            .contains("retention_released_at is stamped"),
+        "the refusal names the arm: {refused}"
+    );
+    let entry_refused = exec(format!(
+        "DELETE FROM bss.products_catalog_version_entry WHERE tenant_id = '{tenant}'"
+    ))
+    .await
+    .expect_err("an entry whose parent is unstamped must be refused");
+    assert!(
+        entry_refused
+            .to_string()
+            .contains("carries retention_released_at"),
+        "the entry's refusal reads the PARENT's stamp: {entry_refused}"
+    );
+
+    // Arm two: the stamp moves once, and neither moves again nor clears.
+    exec(format!(
+        "UPDATE bss.products_catalog_version SET retention_released_at = now() \
+         WHERE tenant_id = '{tenant}'"
+    ))
+    .await
+    .expect("NULL -> a value is admitted");
+    let moved = exec(format!(
+        "UPDATE bss.products_catalog_version SET retention_released_at = now() \
+         WHERE tenant_id = '{tenant}'"
+    ))
+    .await
+    .expect_err("a second stamp must be refused");
+    assert!(
+        moved.to_string().contains("stamped once and never moved"),
+        "the refusal names the once-only rule: {moved}"
+    );
+    let cleared = exec(format!(
+        "UPDATE bss.products_catalog_version SET retention_released_at = NULL \
+         WHERE tenant_id = '{tenant}'"
+    ))
+    .await
+    .expect_err("a clear must be refused");
+    assert!(
+        cleared.to_string().contains("stamped once and never moved"),
+        "a stamp that could be withdrawn is a toggle, not a release: {cleared}"
+    );
+
+    // Arm three: stamped, the chain goes — entries before the parent, which
+    // is the order the FK requires and P-D-118 item 25 names.
+    exec(format!(
+        "DELETE FROM bss.products_catalog_version_entry WHERE tenant_id = '{tenant}'"
+    ))
+    .await
+    .expect("the entry's parent carries the stamp");
+    exec(format!(
+        "DELETE FROM bss.products_catalog_version WHERE tenant_id = '{tenant}'"
+    ))
+    .await
+    .expect("and the stamped version itself");
+}
+
+/// **`freeze_state` still moves, and the frozen columns still do not.**
+///
+/// The regression the release stamp could have caused: the `UPDATE` arm grew
+/// a second admitted column, and an arm rewritten to admit one thing can stop
+/// admitting another. Both halves.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn the_update_arm_still_admits_freeze_state_and_still_refuses_the_rest() {
+    let pg = Pg::applied().await;
+    let conn = pg.raw().await;
+    let tenant = "00000000-0000-0000-0000-0000000000d2";
+
+    conn.execute_raw(Statement::from_string(
+        sea_orm::DatabaseBackend::Postgres,
+        format!(
+            "INSERT INTO bss.products_catalog_version \
+             (tenant_id, catalog_version_id, checksum, digest_version, published_at, \
+              participant_set_snapshot, freeze_state) \
+             VALUES ('{tenant}', 1, 'abc', 1, now(), '[]', 'open')"
+        ),
+    ))
+    .await
+    .expect("the version lands");
+
+    conn.execute_raw(Statement::from_string(
+        sea_orm::DatabaseBackend::Postgres,
+        format!(
+            "UPDATE bss.products_catalog_version SET freeze_state = 'complete' \
+             WHERE tenant_id = '{tenant}'"
+        ),
+    ))
+    .await
+    .expect("freeze_state still moves");
+
+    let refused = conn
+        .execute_raw(Statement::from_string(
+            sea_orm::DatabaseBackend::Postgres,
+            format!(
+                "UPDATE bss.products_catalog_version SET checksum = 'rewritten' \
+                 WHERE tenant_id = '{tenant}'"
+            ),
+        ))
+        .await
+        .expect_err("a frozen column must still be refused");
+    assert!(
+        refused
+            .to_string()
+            .contains("the only columns the UPDATE arm admits"),
+        "the frozen-column arm survived the edit: {refused}"
+    );
+}

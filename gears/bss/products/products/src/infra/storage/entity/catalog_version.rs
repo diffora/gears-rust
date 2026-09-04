@@ -34,6 +34,16 @@ pub struct Model {
     /// cache, refreshed in-transaction by ack, release and force-completion
     /// (P-D-73 arm 2).
     pub freeze_state: String,
+    /// The retention release stamp (**P-D-137**). `NULL` until the GC's
+    /// release function sets it, and then never moved: the `UPDATE`
+    /// whitelist admits `NULL` → a value exactly once, and the `DELETE` arm
+    /// admits only a row that carries one.
+    ///
+    /// Not an authorisation — any caller who may `UPDATE` may stamp — but a
+    /// deletion is then always a deliberate two-step recorded in the row.
+    /// That only the GC stamps is a code invariant, counted by
+    /// `lib_tests::every_writer_of_a_release_stamp_is_counted`.
+    pub retention_released_at: Option<ChronoDateTimeUtc>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

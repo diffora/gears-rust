@@ -31,15 +31,27 @@
 //! the predicate installed one migration over (the edited
 //! `m20260829_000007`) rides it.
 //!
-//! # Append-only, on the unconditional model — and the interim DELETE text
+//! # Append-only, and the `DELETE` arm slice 10 landed
 //!
 //! Neither half has an admitted `UPDATE` — a manifest is immutable once
-//! published — so both guards are `m20260829_000007`'s unconditional shape,
-//! not the head tables' whitelist. `DELETE` is refused **with an interim
-//! message naming its future admitter**: slice 10's manifest retention is
-//! the only design-admitted collector of manifest rows, and it has no code
-//! yet — the same landing `000007` gave the entity-version DELETE until the
-//! referential predicate arrived.
+//! published — so both `UPDATE` guards are `m20260829_000007`'s unconditional
+//! shape, not the head tables' whitelist.
+//!
+//! **`DELETE` runs under a referential predicate on the parent's release
+//! stamp** (**P-D-137**, 2026-09-04): a row is deletable exactly when its
+//! `products_catalog_version` carries `retention_released_at`. Until then the
+//! guard refused unconditionally, *"with an interim message naming its future
+//! admitter"* — slice 10's manifest retention — and that message was right:
+//! strand D measured that a chain refusing every `DELETE` made P-D-118 item
+//! 25's *"one catalog version at a time, whole"* a transaction that always
+//! rolled back, and P-D-137 opened both arms rather than reclassifying the
+//! chain as evidence.
+//!
+//! The predicate reads the **parent**, not this row, for the reason P-D-31
+//! gives: a trigger can express properties of a row and never of the deleter,
+//! and the parent's stamp is the one row-image fact the GC can make true. The
+//! release is stamped first, then these rows go, then the parent — which the
+//! FK requires in that order anyway, and which is exactly item 25's "whole".
 //!
 //! # Backend differences
 //!
@@ -97,7 +109,13 @@ const PG_UP_STATEMENTS: &[&str] = &[
           IF TG_OP = 'UPDATE' THEN
             RAISE EXCEPTION 'products_catalog_version_entry is frozen: UPDATE is not permitted';
           END IF;
-          RAISE EXCEPTION 'products_catalog_version_entry is frozen: DELETE is not permitted until slice 10''s manifest retention lands';
+          IF NOT EXISTS (SELECT 1 FROM bss.products_catalog_version v
+                         WHERE v.tenant_id = OLD.tenant_id
+                           AND v.catalog_version_id = OLD.catalog_version_id
+                           AND v.retention_released_at IS NOT NULL) THEN
+            RAISE EXCEPTION 'products_catalog_version_entry: DELETE is admitted only when its catalog version carries retention_released_at (P-D-137)';
+          END IF;
+          RETURN OLD;
         END;
      $$ LANGUAGE plpgsql",
     "CREATE TRIGGER trg_products_catalog_version_entry_frozen BEFORE DELETE OR UPDATE ON bss.products_catalog_version_entry FOR EACH ROW EXECUTE FUNCTION bss.products_catalog_version_entry_frozen()",
@@ -106,7 +124,13 @@ const PG_UP_STATEMENTS: &[&str] = &[
           IF TG_OP = 'UPDATE' THEN
             RAISE EXCEPTION 'products_catalog_version_capture is frozen: UPDATE is not permitted';
           END IF;
-          RAISE EXCEPTION 'products_catalog_version_capture is frozen: DELETE is not permitted until slice 10''s manifest retention lands';
+          IF NOT EXISTS (SELECT 1 FROM bss.products_catalog_version v
+                         WHERE v.tenant_id = OLD.tenant_id
+                           AND v.catalog_version_id = OLD.catalog_version_id
+                           AND v.retention_released_at IS NOT NULL) THEN
+            RAISE EXCEPTION 'products_catalog_version_capture: DELETE is admitted only when its catalog version carries retention_released_at (P-D-137)';
+          END IF;
+          RETURN OLD;
         END;
      $$ LANGUAGE plpgsql",
     "CREATE TRIGGER trg_products_catalog_version_capture_frozen BEFORE DELETE OR UPDATE ON bss.products_catalog_version_capture FOR EACH ROW EXECUTE FUNCTION bss.products_catalog_version_capture_frozen()",
@@ -146,9 +170,9 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
                 REFERENCES products_catalog_version (tenant_id, catalog_version_id)
         )",
     "CREATE TRIGGER trg_products_catalog_version_entry_no_update BEFORE UPDATE ON products_catalog_version_entry FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'products_catalog_version_entry is frozen: UPDATE is not permitted'); END",
-    "CREATE TRIGGER trg_products_catalog_version_entry_no_delete BEFORE DELETE ON products_catalog_version_entry FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'products_catalog_version_entry is frozen: DELETE is not permitted until slice 10''s manifest retention lands'); END",
+    "CREATE TRIGGER trg_products_catalog_version_entry_no_delete BEFORE DELETE ON products_catalog_version_entry FOR EACH ROW WHEN NOT EXISTS (SELECT 1 FROM products_catalog_version v WHERE v.tenant_id = OLD.tenant_id AND v.catalog_version_id = OLD.catalog_version_id AND v.retention_released_at IS NOT NULL) BEGIN SELECT RAISE(ABORT, 'products_catalog_version_entry: DELETE is admitted only when its catalog version carries retention_released_at (P-D-137)'); END",
     "CREATE TRIGGER trg_products_catalog_version_capture_no_update BEFORE UPDATE ON products_catalog_version_capture FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'products_catalog_version_capture is frozen: UPDATE is not permitted'); END",
-    "CREATE TRIGGER trg_products_catalog_version_capture_no_delete BEFORE DELETE ON products_catalog_version_capture FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'products_catalog_version_capture is frozen: DELETE is not permitted until slice 10''s manifest retention lands'); END",
+    "CREATE TRIGGER trg_products_catalog_version_capture_no_delete BEFORE DELETE ON products_catalog_version_capture FOR EACH ROW WHEN NOT EXISTS (SELECT 1 FROM products_catalog_version v WHERE v.tenant_id = OLD.tenant_id AND v.catalog_version_id = OLD.catalog_version_id AND v.retention_released_at IS NOT NULL) BEGIN SELECT RAISE(ABORT, 'products_catalog_version_capture: DELETE is admitted only when its catalog version carries retention_released_at (P-D-137)'); END",
 ];
 
 const SQLITE_DOWN_STATEMENTS: &[&str] = &[

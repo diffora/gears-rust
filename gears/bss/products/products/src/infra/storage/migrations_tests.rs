@@ -4452,7 +4452,7 @@ mod catalog_version_guard_tests {
             .expect_err("a frozen column must be refused");
             let text = err.to_string();
             assert!(
-                text.contains("freeze_state is the only column the UPDATE arm admits"),
+                text.contains("are the only columns the UPDATE arm admits"),
                 "{column}: the refusal must be the UPDATE arm's own message: {text}"
             );
         }
@@ -4460,6 +4460,14 @@ mod catalog_version_guard_tests {
 
     /// The delete arm refuses with its own message, told apart from the
     /// update arm's by text — the assertion the `DoD` requires separately.
+    ///
+    /// **Amended 2026-09-04 under P-D-137.** The arm was unconditional when
+    /// this case was written and is now the release stamp's: an **unstamped**
+    /// version is refused, a stamped one is admitted. The obligation the case
+    /// carries is unchanged — the delete refusal must be the delete arm's own
+    /// message and must not ride the update arm's — and the positive control
+    /// is new, because an arm that refuses everything is one no probe can
+    /// tell from a table with no delete path at all.
     #[tokio::test]
     async fn delete_is_refused_with_the_delete_arms_own_message() {
         let db = harness().await;
@@ -4471,16 +4479,32 @@ mod catalog_version_guard_tests {
              WHERE tenant_id = 't-a' AND catalog_version_id = 1",
         )
         .await
-        .expect_err("DELETE must be refused outright");
+        .expect_err("an unstamped version's DELETE must be refused");
         let text = err.to_string();
         assert!(
-            text.contains("append-only: DELETE is not permitted"),
+            text.contains("retention_released_at is stamped"),
             "the refusal must be the delete arm's: {text}"
         );
         assert!(
             !text.contains("UPDATE arm admits"),
             "the delete refusal must not ride the update arm's message: {text}"
         );
+
+        // The positive control: stamped, the same statement is admitted.
+        exec(
+            &db,
+            "UPDATE products_catalog_version SET retention_released_at = '2036-01-01T00:00:00Z' \
+             WHERE tenant_id = 't-a' AND catalog_version_id = 1",
+        )
+        .await
+        .expect("NULL -> a value is the one admitted move");
+        exec(
+            &db,
+            "DELETE FROM products_catalog_version \
+             WHERE tenant_id = 't-a' AND catalog_version_id = 1",
+        )
+        .await
+        .expect("a stamped version is collectable (P-D-137)");
     }
 
     /// The id floor pins the P-D-67 counter start and the digest floor pins
@@ -4898,11 +4922,21 @@ mod referential_predicate_guard_tests {
         );
     }
 
-    /// The manifest body is immutable: both halves refuse UPDATE and refuse
-    /// DELETE with the interim message naming slice 10's retention — the
-    /// same landing 000007 gave this predicate until it landed.
+    /// The manifest body is immutable, and its `DELETE` reads the **parent's**
+    /// release stamp.
+    ///
+    /// **Amended 2026-09-04 under P-D-137.** The arm carried an interim
+    /// message naming *"slice 10's manifest retention"* as its future
+    /// admitter; slice 10 landed it, and this is that predicate. The `UPDATE`
+    /// half is unchanged — a manifest is immutable once published — and the
+    /// `DELETE` half is now conditional, with both ways asserted: refused
+    /// while the parent version is unstamped, admitted once it carries one.
+    ///
+    /// The predicate reads the parent rather than this row because P-D-31
+    /// leaves a trigger no way to know its deleter, and the parent's stamp is
+    /// the one row-image fact the GC can make true.
     #[tokio::test]
-    async fn the_manifest_body_is_frozen_with_the_interim_delete_text() {
+    async fn the_manifest_body_is_frozen_and_its_delete_reads_the_parents_stamp() {
         let db = harness().await;
         exec(
             &db,
@@ -4937,12 +4971,29 @@ mod referential_predicate_guard_tests {
              WHERE tenant_id = 't-a' AND catalog_version_id = 1",
         )
         .await
-        .expect_err("a capture row's DELETE waits for slice 10");
+        .expect_err("a capture row whose parent is unstamped must be refused");
         assert!(
-            err.to_string()
-                .contains("until slice 10's manifest retention lands"),
-            "the refusal must be the interim message: {err}"
+            err.to_string().contains("carries retention_released_at"),
+            "the refusal must name the parent's stamp: {err}"
         );
+
+        // The other way: stamp the parent, and the same statement is
+        // admitted. Without this half the arm is indistinguishable from the
+        // unconditional refusal it replaced.
+        exec(
+            &db,
+            "UPDATE products_catalog_version SET retention_released_at = '2036-01-01T00:00:00Z' \
+             WHERE tenant_id = 't-a' AND catalog_version_id = 1",
+        )
+        .await
+        .expect("the parent takes its stamp");
+        exec(
+            &db,
+            "DELETE FROM products_catalog_version_capture \
+             WHERE tenant_id = 't-a' AND catalog_version_id = 1",
+        )
+        .await
+        .expect("a capture rides its released parent (P-D-137)");
     }
 }
 

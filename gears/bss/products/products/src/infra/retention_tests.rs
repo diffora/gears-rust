@@ -186,6 +186,19 @@ async fn seed_catalog_version(
     at: chrono::DateTime<Utc>,
     entries: &[(Uuid, i64)],
 ) {
+    seed_catalog_version_with_participants(h, catalog_version_id, at, entries, "[]").await;
+}
+
+/// The same, with an explicit participant snapshot — a **non-empty** one has
+/// members who owe an ack, so `domain::retention::evaluate` holds the version
+/// until the ledger says otherwise.
+async fn seed_catalog_version_with_participants(
+    h: &Harness,
+    catalog_version_id: i64,
+    at: chrono::DateTime<Utc>,
+    entries: &[(Uuid, i64)],
+    participants: &str,
+) {
     let conn = h.db.conn().expect("connection");
     let refs: Vec<repo::SnapshotEntityRef> = entries
         .iter()
@@ -210,11 +223,10 @@ async fn seed_catalog_version(
             checksum: manifest.checksum(),
             digest_version: canonical::DIGEST_VERSION,
             published_at: at,
-            // An EMPTY participant set: `domain::retention::evaluate` reads
-            // that as collectable (nobody ever owed an ack), so these cases
-            // measure the STORAGE guard rather than the freeze gate. A case
-            // about the gate seeds a non-empty one.
-            participant_set_snapshot: "[]".to_owned(),
+            // An EMPTY participant set reads as collectable — nobody ever
+            // owed an ack — so a case seeding `[]` measures the storage arm
+            // and one seeding a member measures the freeze gate.
+            participant_set_snapshot: participants.to_owned(),
             freeze_state: crate::domain::states::FreezeState::Complete,
         },
     )
@@ -225,6 +237,37 @@ async fn seed_catalog_version(
             .await
             .expect("write the manifest entries");
     }
+}
+
+/// Run one statement and answer the engine's refusal message.
+///
+/// `test_support::raw_string_opt` **panics** on a driver error, so it cannot
+/// assert that a guard fired — it can only assert that one did not. Every
+/// case below that names a trigger by its own message needs the error back.
+async fn raw_exec_err(dsn: &str, sql: &str) -> String {
+    use sea_orm::ConnectionTrait as _;
+    let conn = sea_orm::Database::connect(dsn)
+        .await
+        .expect("open an auxiliary connection for test introspection");
+    let refusal = conn
+        .execute_raw(sea_orm::Statement::from_string(
+            sea_orm::DbBackend::Sqlite,
+            sql.to_owned(),
+        ))
+        .await
+        .expect_err("this statement must be refused")
+        .to_string();
+    conn.close().await.ok();
+    refusal
+}
+
+/// One capture row on a version, so the "whole" assertion has all three
+/// halves of the chain to lose.
+async fn seed_capture(h: &Harness, catalog_version_id: i64, kind: &str) {
+    let conn = h.db.conn().expect("connection");
+    repo::insert_catalog_version_capture(&conn, &scope(), TENANT, catalog_version_id, kind, "{}")
+        .await
+        .expect("write a capture");
 }
 
 /// One audit row, so the tenant exists for discovery and the audit class has
@@ -535,21 +578,77 @@ async fn a_referenced_version_is_refused_by_the_guard_and_not_by_the_sweep() {
     );
 }
 
-/// **The catalog-version chain is held whole, and its captures survive the
-/// hold.**
+/// **A released catalog version collects whole** — the manifest row, its
+/// entries and its captures, in one transaction (**P-D-137**, P-D-118 item
+/// 25).
 ///
-/// P-D-118 item 25's boundary is *"one catalog version at a time, whole"* —
-/// so a refused version must leave its manifest **and** its entries exactly
-/// as they were. A delete that got as far as the entries before the manifest
-/// row refused would leave the surviving-manifest state item 25 exists to
-/// forbid.
+/// Before P-D-137 this case asserted the opposite, and correctly: the chain
+/// refused every `DELETE`, so *"one catalog version at a time, whole"*
+/// described a transaction that always rolled back. The arms are open now and
+/// the assertion is the other half of the same claim.
 #[tokio::test]
-async fn a_held_catalog_version_keeps_its_entries() {
+async fn a_released_catalog_version_collects_whole() {
     let h = harness().await;
     let entity_id = Uuid::from_u128(0xfa_05);
     seed_audit_row(&h, days_ago(100)).await;
     seed_entity_version(&h, entity_id, 1, days_ago(100)).await;
     seed_catalog_version(&h, 1, days_ago(100), &[(entity_id, 1)]).await;
+    seed_capture(&h, 1, "roster").await;
+
+    let outcome = sweep_class(
+        &h.db,
+        &caps(1),
+        TENANT,
+        RecordClass::Financial,
+        SYSTEM,
+        Utc::now(),
+    )
+    .await
+    .expect("the pass runs");
+    assert_eq!(
+        (outcome.candidates, outcome.collected, outcome.held),
+        (1, 1, 0),
+        "the release stamp admits the whole chain"
+    );
+
+    let conn = h.db.conn().expect("connection");
+    assert!(
+        repo::find_catalog_version(&conn, &scope(), TENANT, 1)
+            .await
+            .expect("read the version back")
+            .is_none(),
+        "the manifest row is gone"
+    );
+    let (entries, captures) = repo::catalog_version_manifest_rows(&conn, &scope(), TENANT, 1)
+        .await
+        .expect("read the manifest back");
+    assert!(
+        entries.is_empty() && captures.is_empty(),
+        "and so are its entries and captures - a surviving entry beside a deleted manifest is \
+         the orphan the FK forbids and item 25's boundary exists to prevent"
+    );
+}
+
+/// **A version the freeze gate holds keeps its entries — and the hold is the
+/// gate's, not the storage's.**
+///
+/// The distinction is the whole of C4: a snapshot member with no registration
+/// row **holds** the version, and the sweep must not have started deleting on
+/// the way to finding out. The reason token separates the two causes.
+#[tokio::test]
+async fn a_freeze_held_catalog_version_keeps_its_entries() {
+    let h = harness().await;
+    let entity_id = Uuid::from_u128(0xfa_06);
+    seed_audit_row(&h, days_ago(100)).await;
+    seed_entity_version(&h, entity_id, 1, days_ago(100)).await;
+    seed_catalog_version_with_participants(
+        &h,
+        1,
+        days_ago(100),
+        &[(entity_id, 1)],
+        "[\"pricing\"]",
+    )
+    .await;
 
     let outcome = sweep_class(
         &h.db,
@@ -564,7 +663,13 @@ async fn a_held_catalog_version_keeps_its_entries() {
     assert_eq!(
         (outcome.candidates, outcome.collected, outcome.held),
         (1, 0, 1),
-        "m20260901_000010 refuses every DELETE at this commit"
+        "a snapshot member with no registration row holds the version"
+    );
+    assert_eq!(
+        outcome.held_reason,
+        Some(crate::domain::retention::RetentionHold::REASON),
+        "the hold is the GATE's alarm, not the storage guard's - an operator filtering on \
+         retention_orphan_blocked must find it"
     );
 
     let conn = h.db.conn().expect("connection");
@@ -574,8 +679,116 @@ async fn a_held_catalog_version_keeps_its_entries() {
     assert_eq!(
         entries.len(),
         1,
-        "the refused delete rolled back whole: an entry lost on the way to a refused manifest \
-         row IS the state P-D-118 item 25 forbids"
+        "nothing was deleted on the way to the hold"
+    );
+    assert!(
+        repo::find_catalog_version(&conn, &scope(), TENANT, 1)
+            .await
+            .expect("read the version back")
+            .is_some(),
+        "the version row stands"
+    );
+    // Read the stamp with a COUNT rather than off `CatalogVersionRecord`:
+    // that struct is `06`'s and carries what the resolver needs, and a
+    // column no production reader wants does not belong on it. `COUNT`
+    // rather than the value, because `raw_string_opt` panics on no row and
+    // this assertion needs zero to be an answer.
+    assert_eq!(
+        crate::test_support::raw_i64(
+            &h.dsn,
+            "SELECT COUNT(*) AS v FROM products_catalog_version \
+             WHERE retention_released_at IS NOT NULL",
+        )
+        .await,
+        0,
+        "and it was never stamped: the stamp is what makes a version deletable, so stamping one \
+         the gate holds would leave a released version behind for the next pass to collect \
+         without ever re-asking the gate"
+    );
+}
+
+/// **An unreleased version's `DELETE` is refused by the guard, with the GC
+/// bypassed entirely** — and a released one's is admitted.
+///
+/// The same shape `dod-retention-order`'s entity-version case takes, for the
+/// same reason: a green sweep over a table that admits everything proves only
+/// that the sweep skipped.
+#[tokio::test]
+async fn the_release_stamp_is_what_the_delete_arm_reads() {
+    let h = harness().await;
+    seed_audit_row(&h, days_ago(100)).await;
+    seed_catalog_version(&h, 1, days_ago(100), &[]).await;
+    let conn = h.db.conn().expect("connection");
+
+    let unreleased = repo::delete_catalog_version(&conn, &scope(), TENANT, 1).await;
+    assert!(
+        unreleased.is_err(),
+        "an unstamped version is refused by m20260901_000010's arm, with no GC in the picture"
+    );
+
+    assert!(
+        repo::stamp_retention_release(
+            &conn,
+            &scope(),
+            TENANT,
+            1,
+            canonical::write_instant(Utc::now())
+        )
+        .await
+        .expect("the stamp is admitted once"),
+        "the whitelist admits NULL -> a value"
+    );
+    repo::delete_catalog_version(&conn, &scope(), TENANT, 1)
+        .await
+        .expect("a stamped version is admitted");
+}
+
+/// **The stamp moves once and never again.**
+///
+/// `NULL` → a value is admitted; a second stamp is not. Without the once-only
+/// arm the column is a toggle a caller could flip around a delete, and the
+/// "deliberate two-step" the arm buys would be worth nothing.
+#[tokio::test]
+async fn the_release_stamp_cannot_be_moved_or_cleared() {
+    let h = harness().await;
+    seed_audit_row(&h, days_ago(100)).await;
+    seed_catalog_version(&h, 1, days_ago(100), &[]).await;
+    let conn = h.db.conn().expect("connection");
+    let now = canonical::write_instant(Utc::now());
+
+    assert!(
+        repo::stamp_retention_release(&conn, &scope(), TENANT, 1, now)
+            .await
+            .expect("the first stamp is admitted")
+    );
+    // The repo's own `WHERE retention_released_at IS NULL` makes a second
+    // call a lost race rather than a driver error - which is the behaviour a
+    // racing pass needs. The TRIGGER is what refuses a rewrite, and it is
+    // reached by an update that does not carry that predicate.
+    assert!(
+        !repo::stamp_retention_release(&conn, &scope(), TENANT, 1, now)
+            .await
+            .expect("a second call is a lost race, not a failure"),
+        "the second stamp affects no row"
+    );
+    let rewrite = raw_exec_err(
+        &h.dsn,
+        "UPDATE products_catalog_version SET retention_released_at = '2030-01-01T00:00:00Z'",
+    )
+    .await;
+    assert!(
+        rewrite.contains("stamped once and never moved"),
+        "the trigger refuses a rewrite that bypasses the repo's predicate, by name: {rewrite}"
+    );
+    let clear = raw_exec_err(
+        &h.dsn,
+        "UPDATE products_catalog_version SET retention_released_at = NULL",
+    )
+    .await;
+    assert!(
+        clear.contains("stamped once and never moved"),
+        "and refuses a clear - a stamp that could be withdrawn is a toggle, not a release: \
+         {clear}"
     );
 }
 
@@ -960,4 +1173,156 @@ fn the_drill_recomputes_over_the_stored_content_and_nothing_else() {
              drill reading it would alarm on every ordinary deprecation"
         );
     }
+}
+
+/// A published Product head at `published_version`.
+async fn seed_published_product(h: &Harness, product_id: Uuid, published_version: i64) {
+    let conn = h.db.conn().expect("connection");
+    repo::insert_product(
+        &conn,
+        &scope(),
+        repo::NewProduct {
+            product_id,
+            tenant_id: TENANT,
+            brand_id: Uuid::from_u128(0xb1),
+            name: format!("p{product_id}"),
+            name_normalized: format!("p{product_id}"),
+            product_code: None,
+            region_scope: String::new(),
+            brand_scope: String::new(),
+            created_by: SYSTEM.to_string(),
+            created_at: days_ago(400),
+            cloned_from: None,
+            cloned_from_version: None,
+        },
+    )
+    .await
+    .expect("create the head");
+    // `published_version` **only moves by +1** — the head guard's own rule —
+    // so the row is walked up one publish at a time rather than set. That is
+    // the schema teaching the fixture what a real head looks like.
+    for step in 1..=published_version {
+        set_published_version(h, product_id, step).await;
+    }
+}
+
+/// **A version row a live head names as its current `published_version` is
+/// never a candidate** (**P-D-137** (i)).
+///
+/// The failure it prevents: the schema's only `DELETE` predicate here is
+/// P-D-40's manifest reference, so an entity published once — longer ago than
+/// `retention_days_version` — and never captured into a manifest would lose
+/// its **only** frozen content, and its head would name a `published_version`
+/// that does not exist. Both halves: the live head's version survives, and a
+/// superseded predecessor of the same entity does not.
+#[tokio::test]
+async fn a_live_heads_current_version_is_never_a_candidate() {
+    let h = harness().await;
+    let product_id = Uuid::from_u128(0xfc_01);
+    seed_audit_row(&h, days_ago(100)).await;
+    // Two frozen versions of one entity, both past the window.
+    seed_entity_version(&h, product_id, 1, days_ago(300)).await;
+    seed_entity_version(&h, product_id, 2, days_ago(200)).await;
+    seed_published_product(&h, product_id, 2).await;
+
+    let conn = h.db.conn().expect("connection");
+    let candidates = repo::entity_version_candidates(&conn, &scope(), TENANT, days_ago(1))
+        .await
+        .expect("the candidate read runs");
+    let versions: Vec<i64> = candidates.iter().map(|k| k.published_version).collect();
+    assert_eq!(
+        versions,
+        vec![1],
+        "the superseded predecessor is a candidate and the head's current version is not; a \
+         sweep without this exclusion collects the only frozen content a live head names"
+    );
+}
+
+/// Move a head one publish forward through the raw channel.
+///
+/// This suite is about the sweep rather than about publishing, so the columns
+/// are set directly — but **the head guard still judges the write**, and two
+/// of its rules shaped this helper rather than being worked around:
+/// `published_version` moves by `+1` and `internal_revision` moves by exactly
+/// one on every admitted update. A fixture that could not satisfy them would
+/// be building a head no door could ever produce, and the sweep's exclusion
+/// would then be tested against a row that cannot exist.
+async fn set_published_version(h: &Harness, product_id: Uuid, version: i64) {
+    use sea_orm::ConnectionTrait as _;
+    let conn = sea_orm::Database::connect(&h.dsn)
+        .await
+        .expect("open an auxiliary connection");
+    conn.execute_raw(sea_orm::Statement::from_string(
+        sea_orm::DbBackend::Sqlite,
+        format!(
+            "UPDATE products_product SET published_version = {version}, \
+             internal_revision = internal_revision + 1, updated_at = updated_at, \
+             lifecycle_state = 'published' WHERE product_id = X'{}'",
+            product_id.simple()
+        ),
+    ))
+    .await
+    .expect("publish the head");
+    conn.close().await.ok();
+}
+
+/// **A failure that is not P-D-40's refusal is `StorageRefused`, never the
+/// derive rule** (**P-D-137** (ii)).
+///
+/// Error class follows provenance. Before the fix `collect_entity_version`
+/// mapped **every** failure to `ReferencedByRetainedManifest`, so a
+/// connection error was audited as a design hold — a row an operator would
+/// read as correctly retained when it was never judged at all.
+///
+/// The forced failure is the table's absence, which is as far from "a
+/// manifest references this row" as a failure gets.
+#[tokio::test]
+async fn a_failure_that_is_not_the_derive_rule_is_reported_as_a_storage_refusal() {
+    let h = harness().await;
+    let entity_id = Uuid::from_u128(0xfc_02);
+    seed_audit_row(&h, days_ago(100)).await;
+    seed_entity_version(&h, entity_id, 1, days_ago(100)).await;
+
+    // The candidate read happens first and succeeds; the delete then meets a
+    // table that is gone.
+    let conn = h.db.conn().expect("connection");
+    let candidates = repo::entity_version_candidates(&conn, &scope(), TENANT, days_ago(1))
+        .await
+        .expect("the candidate read runs");
+    assert_eq!(candidates.len(), 1);
+    crate::test_support::drop_table(&h.dsn, "products_entity_version").await;
+
+    let outcome = sweep_class(
+        &h.db,
+        &caps(1),
+        TENANT,
+        RecordClass::Version,
+        SYSTEM,
+        Utc::now(),
+    )
+    .await;
+    // The candidate read itself now fails, which is the pass's own error --
+    // so the classification is asserted one level down, where the decision
+    // actually lives.
+    assert!(outcome.is_err(), "the pass reports a failed discovery read");
+
+    let held = super::classify_entity_version_failure("no such table: products_entity_version");
+    assert!(
+        matches!(
+            held,
+            crate::domain::retention::HeldReason::StorageRefused(_)
+        ),
+        "a missing table is a storage refusal, not the derive rule"
+    );
+    let derive = super::classify_entity_version_failure(
+        "products_entity_version: DELETE is admitted only when no products_catalog_version_entry \
+         references the row (P-D-40)",
+    );
+    assert!(
+        matches!(
+            derive,
+            crate::domain::retention::HeldReason::ReferencedByRetainedManifest
+        ),
+        "and P-D-40's own refusal still is - its message is the operand"
+    );
 }
