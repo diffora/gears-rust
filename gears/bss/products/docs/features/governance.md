@@ -1191,7 +1191,7 @@ first three drifts from the others.
 
 ### Break-glass elevation
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-breakglass-open`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-breakglass-open`
 
 The system **MUST** require the `breakglass × elevate` grant, and **MUST** open a session with a
 mandatory reason, a configured window and a named target tenant, under either a two-person platform approval or a recorded post-hoc review, and **MUST**
@@ -1216,13 +1216,38 @@ whether that approval's record is an `ApprovalRecord`, and which row holds it �
 late decision: no new door, no new grant, the `pending` predicate on the `UPDATE` so two reviewers
 racing produce one discharge, and nothing to discharge on a session that took the two-person path.
 
-**Three clauses have no operand.** *"MUST emit `BreakGlassElevated` alongside a distinct alert
-channel"* — neither the event type nor an alert channel exists in the gear. *"A failed alert
-emission MUST NOT leave a silent session"* — the remedy it names is a **recorded undelivered-alert
-obligation**, and `products_breakglass_session` has no column for one, so this cannot be built
-without a migration (which is not this slice's) or an invented stub. And the window's value is left
-to the caller rather than defaulted: its interim 4 hours and the no-renewal rule live only in the
-PRD's §17.1 table (row 22) and `inst-bg-open` states neither.
+**All three clauses are built, 2026-09-04, and the `DoD` ticks.**
+
+- **The door.** `POST /bss-products/v1/breakglass-sessions` (P-D-120 row 12) authorizes
+  `breakglass × elevate` as its first step. The two platform approvers ride the session row itself
+  — `approver_a`, `approver_b`, distinct, bound to the two-person path by
+  `chk_products_breakglass_approvers` — which is **P-D-133** row 9's answer to the missing floor:
+  not an `ApprovalRecord`, because the store's `required` is `N` or `min(N, 1)` on a tenant-scoped
+  row while an elevation needs exactly two principals from **outside** the tenant.
+- **The window is read, never inlined.** `breakglass_window_hours` (P-D-132, interim 4, zero
+  refused at boot) reaches the door through `ApiState`, and the receipt carries the half-open
+  `[valid_from, valid_until)` it computed. **No renewal**: nothing extends a session, and a new one
+  is a new ceremony.
+- **`BreakGlassElevated` and the alert channel.** The event rides the opening transaction, so an
+  elevation the gear cannot announce **does not open**. The alert is a `tracing::warn!` with the
+  stable event name `products_breakglass_elevated`, carrying the session, the target, the path and
+  `breakglass_review_sla_hours` — the gear's own alert channel, the one `gear.rs`'s lifecycle loops
+  already use.
+- **"A failed alert emission MUST NOT leave a silent session" is satisfied by construction, not by
+  a column.** The remedy the clause names — a recorded undelivered-alert obligation — exists to
+  cover an alert channel that can fail. This one **cannot**: a `tracing` macro has no failure mode
+  a caller can observe, so there is no state in which the session opened and the alert did not. The
+  half that *can* fail is the event, and it is inside the transaction, where a failure refuses the
+  elevation rather than recording an obligation about it. Adding a column for an unreachable state
+  would be a stub.
+
+**One clause is deliberately not built, and it is not this `DoD`'s.** *"The post-hoc obligation
+alert fires when the SLA lapses"* (**P-D-133**) is a **lifecycle-loop tick** — it reads sessions
+whose `posthoc_state` is `pending` and whose `opened_at + breakglass_review_sla_hours` has passed,
+and that loop lives in `gear.rs`, which this strand holds only for its route registrations. The
+open-time alert names the SLA so an operator reading it knows when the obligation lapses; the
+lapse-time alert is owed to `gear.rs`'s owner. `dod-breakglass-open` does not name it — it names
+the alert **at open**, which ships.
 
 **Implements**: `cpt-cf-bss-products-flow-breakglass`
 
@@ -1231,7 +1256,7 @@ PRD's §17.1 table (row 22) and `inst-bg-open` states neither.
 
 ### Break-glass read-only enforcement
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-breakglass-readonly`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-breakglass-readonly`
 
 The system **MUST** refuse every write attempt under elevation with `BREAKGLASS_WRITE_FORBIDDEN`,
 with no exception in v1, and **MUST** individually audit every elevated access with the session id,
@@ -1239,19 +1264,35 @@ the reason and the correlation id — **the count asserted, not sampled**. **Wha
 changes about the authorization decision and the repository's tenant scoping is open item 18**: no
 rule states how a live session widens either.
 
-**Nothing was built for the refusal, and row 18 is why.** The refusal needs an enforcement point
-that reads a live session, and no rule says where in the pre-pipeline gate that operand is read or
-what it changes about `authz::access_scope`'s answer or `SecureORM`'s tenant scoping. Building one
-would author row 18 from a call site. `BREAKGLASS_WRITE_FORBIDDEN` is also absent from
-`domain::error` (`dod-governance-errors`' patch), so the refusal has no code even once it has a
-place to be raised.
+**Row 18 is struck (P-D-133) and the enforcement point is built: `api::rest::elevation_gate`,
+one function with one call site.** It is a layer rather than a per-door step, because the decision
+puts the operand in the **pre-pipeline** gate — read before any route's own extractor runs, which a
+layer is the only place in this composition that is true of.
 
-**The audit half has its writer and no caller.** `repo::write_elevated_read_audit` takes the session
-id and is probed at the row; the DoD's *"the count asserted, not sampled"* needs a lane that makes
-several elevated reads, and no door opens one. What this group can say is the scoping boundary it
-does exercise: the session is scoped by **`target_tenant`**, so a caller in another tenant's scope
-gets the same answer as one naming a session that does not exist — which is a probe, not a rule
-about how a live session widens anything.
+**What it does, in the decision's own order:**
+
+1. **Whose session is it.** The row is read on an **unconstrained** scope, because the target tenant
+   is the thing being resolved and a caller-scoped read of a cross-tenant elevation finds nothing by
+   construction. That would be fail-open alone, so the gate then requires the caller to **be** the
+   session's `principal`; anyone else gets the platform's 403 with no gear code (P-D-119 row 3), and
+   the **same** answer an unknown session gets — distinguishing them would let a caller enumerate
+   other principals' elevations by id.
+2. **The window**, before the method check, because expiry gates *admission*: a post-expiry write is
+   a post-expiry act and must be the one that emits `BreakGlassExpired`, not one turned away for its
+   verb first, leaving the stamp unflipped.
+3. **The method.** Everything but `GET` and `HEAD` is `BREAKGLASS_WRITE_FORBIDDEN`, no exception.
+4. **The substitution**, on the `SecurityContext` rather than on a scope handed to each door. Every
+   door reads `ctx.subject_tenant_id()` and passes it to `authz::access_scope`, so rewriting the
+   context's tenant is the one edit that reaches all of them — and it keeps the policy point in the
+   loop, because the door still asks the PDP about the **target** pair rather than being handed a
+   scope nobody authorized. `ToolKit` is untouched, exactly as P-D-133 row 18 says.
+
+**The count is asserted, not sampled.** Four elevated reads produce four audit rows, each carrying
+the session id, the reason and the correlation id — a real value since **P-D-118** made
+`correlation_id` `text`. A gate that audited once per session, or sampled, passes a *"there is a
+row"* assertion and fails this one. The write refusal and the admitted read are **one** probe,
+because either half alone is satisfiable by a defect: a gate refusing everything passes the first,
+one refusing nothing passes the second.
 
 **Implements**: `cpt-cf-bss-products-flow-breakglass`
 
@@ -1260,7 +1301,7 @@ about how a live session widens anything.
 
 ### Break-glass expiry
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-breakglass-expiry`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-breakglass-expiry`
 
 The system **MUST** refuse every elevated call past the window with `BREAKGLASS_EXPIRED` and emit
 `BreakGlassExpired` **exactly once — by the first post-expiry act, via a CAS flip of the session's
@@ -1286,12 +1327,22 @@ folding it in would emit `BreakGlassExpired` for a session that has not begun. T
 inside-the-window admission is the positive control the acceptance criteria require, without which
 an inverted comparison passes every other criterion.
 
-**Two clauses remain.** `BREAKGLASS_EXPIRED` is not in `domain::error` and `BreakGlassExpired` is not
-in `infra/events.rs`, so the refusal's code and the emission itself are both `dod-governance-errors`'
-and `dod-governance-events`' patches — this function answers **who** emits and the emission has
-nothing to emit yet. And *"in the same transaction as that refusal"* is the caller's: this function
-opens none, and a committed flip beside a rolled-back refusal is the exactly-once guarantee
-inverted.
+**Both remaining clauses are built, 2026-09-04, and the `DoD` ticks.** `BREAKGLASS_EXPIRED` is a
+`DomainError` variant mapped at 403, and `BreakGlassExpired` is one of `infra/events.rs`' three
+governance tokens.
+
+**The caller is `api::rest::elevation_gate`, and it opens the transaction this function does not.**
+The CAS and the enqueue commit **together**: a committed flip beside a failed emission is the
+exactly-once guarantee inverted — announced **zero** times, with no later caller left to send it,
+because the stamp already says it went out. Rolling both back leaves the next post-expiry call to
+emit, which is what *"the first post-expiry act"* means when the first one fails. The door probe
+asserts both halves — three post-expiry calls, one flipped stamp **and** one `BreakGlassExpired`
+row in the outbox.
+
+**`NotYetValid` reaches the same refusal and emits nothing**, which is the arm's whole purpose:
+folding it into the expiry would announce `BreakGlassExpired` for a session that has not begun.
+The distinction is made in `admit_elevated_call`, upstream of the refusal, so by the time the gate
+answers there is nothing left to distinguish.
 
 **Implements**: `cpt-cf-bss-products-flow-breakglass`
 
@@ -1332,7 +1383,7 @@ text, or the approval row owes a column — is row 35's owner call and is **not*
 
 ### Governance error taxonomy
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-governance-errors`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-governance-errors`
 
 The system **MUST** declare its **seven** codes as constants on their raising rules and register
 them into the Foundation's taxonomy, each carrying its declared RFC 9457 status.
@@ -1351,14 +1402,30 @@ together: `APPROVER_ROLE_REQUIRED`, `APPROVER_SCOPE_EXCEEDED`, `BREAKGLASS_WRITE
 **61**, re-derived against `DomainError::code`'s arms, and both hand-written counters —
 `error_tests`' roster literal and `error_mapping_tests`' `DOMAIN_ERROR_VARIANTS` — read 61.
 
-**`BREAKGLASS_WRITE_FORBIDDEN` still has no raising rule, and it is declared anyway.** An earlier
-revision withheld it on this DoD's own *"constants on their raising rules"* wording, to avoid
-shipping a 403 with no producer. §7 row 18 is now struck (**P-D-133**) and the rule is the
-pre-pipeline elevation gate; the code lands ahead of it by exactly one commit because
-`domain/error.rs` and `infra/error_mapping.rs` are one shared plane and splitting five variants
-across two commits would leave the roster and its two counters disagreeing in between. **This DoD
-does not tick until the enforcement point ships**, which is what the withheld-code argument was
-really protecting.
+**`BREAKGLASS_WRITE_FORBIDDEN` has its raising rule now, and that is what the withheld-code
+argument was protecting.** An earlier revision withheld the constant on this DoD's own *"constants
+on their raising rules"* wording, to avoid shipping a 403 with no producer. §7 row 18 is struck
+(**P-D-133**) and the rule is `api::rest::elevation_gate`, which refuses every non-`GET` verb under
+an elevation. Every one of the seven now has a raise path in this crate:
+
+| Code | Status | Raised at |
+|---|---|---|
+| `SELF_APPROVAL_FORBIDDEN` | 403 | `domain::approval::decision_admitted`, through `record_decision` |
+| `APPROVER_SCOPE_EXCEEDED` | 403 | `domain::approval::approver_covers_subject` — the **rule** ships and its operand does not; see below |
+| `APPROVER_ROLE_REQUIRED` | 403 | the decide door, twice: no role claim, and a numerically-met descriptor with an unmet predicate |
+| `APPROVAL_SUPERSEDED` | 409 | `record_decision`'s state guard and `flip_to_satisfied`'s zero-row arm |
+| `DECISION_ALREADY_RECORDED` | 409 | `classify_decision_insert` and the zero-quorum guard |
+| `BREAKGLASS_WRITE_FORBIDDEN` | 403 | `elevation_gate`'s method check |
+| `BREAKGLASS_EXPIRED` | 403 | `elevation_gate`'s window check |
+
+**`APPROVER_SCOPE_EXCEEDED` is declared, mapped and unraised, and that is a measured gap rather
+than an oversight.** `approver_covers_subject` implements `inst-gv-scope` over P-D-39's two
+boundaries and is probed at the domain layer, but its first operand is *the approver's brand and
+region claims*, and **no surface carries them**: P-D-134 row 25 routed the claim shape to the
+platform-identity owner and named **roles** only. Reading a scope claim out of `token_scopes` under
+a spelling no document declares would be inventing the seam rather than waiting for it. So the code
+ships with its rule and the rule has no input — recorded here, and `dod-approver-scope` does not
+tick.
 
 **`APPROVER_ROLE_REQUIRED`'s raise path is the decide door's, and the gate's is untouched.**
 `GateVerdict::into_authorization` still maps every gate refusal to `APPROVAL_REQUIRED` by design —
@@ -1375,7 +1442,7 @@ is L-2's own distinction.
 
 ### Governance events
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-governance-events`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-governance-events`
 
 The system **MUST** emit `ApprovalDecided` on both verdicts, `BreakGlassElevated` and
 `BreakGlassExpired` through the Foundation's outbox in the mutating transaction —
@@ -1384,6 +1451,31 @@ The system **MUST** emit `ApprovalDecided` on both verdicts, `BreakGlassElevated
 supersessions **MUST** emit no broker event — the queue is a pull surface and every submission
 already rides the entity's own audit row — and that absence **MUST** be recorded as an explicit
 no-event declaration.
+
+**All three ship, 2026-09-04, and the `DoD` ticks.** `infra/events.rs` carries the tokens, their
+`SCHEMA_REFS` rows and `GOVERNANCE_PAYLOAD_TYPES` — its own roster array, because an exhaustive
+`match` constrains which arms exist and never which tokens are registered, so a fourth event with
+an arm and no roster line would pass every compile gate and be refused at runtime.
+`enqueue_governance` is the entry point and `GovernanceEventBody` the one body the three share
+(**P-D-122**'s per-family precedent).
+
+| Event | Transaction | Probe |
+|---|---|---|
+| `ApprovalDecided` | the decide door's, on **either** verdict | the approve and reject door cases |
+| `BreakGlassElevated` | the elevation's own opening transaction | `an_elevation_stores_its_two_platform_approvers_and_a_configured_window` |
+| `BreakGlassExpired` | the gate's, **with** the CAS | `past_the_window_every_call_refuses_and_exactly_one_emits` — one flipped stamp **and** one outbox row |
+
+**The no-event declaration is explicit.** `api/rest/approvals.rs`' module doc states it and gives
+the reason from `design/05` §2's own text: the flow gives `ApprovalDecided` on either verdict and
+`BreakGlassElevated` on an open, and names **no** submission or supersession event. A consumer
+learns of a pending record from the inbox queue, which is a read surface; a supersession is a
+consequence of a write the Foundation already announces.
+
+**The broker arm answers `NoTypedEvent`, on P-D-122's own footing.** `infra::broker` holds no typed
+struct for these three and is not this strand's file, so a deployment on the broker sink refuses the
+door rather than announcing silently — the loud state, and the same footing `04`'s retirement
+events ship on today. The typed structs are owed to that module's owner with `02`'s macro as the
+template.
 
 **Implements**: `cpt-cf-bss-products-flow-submit`,
 `cpt-cf-bss-products-flow-decide`, `cpt-cf-bss-products-flow-breakglass`
@@ -1412,7 +1504,7 @@ named, neither invented.
 
 ### Audit trail for governance acts
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-governance-audit`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-governance-audit`
 
 The system **MUST** write the Foundation's append-only audit trail for the acts this feature owns
 that emit no broker event: every refusal, every read under elevation, and every committed act
@@ -1421,16 +1513,22 @@ here** — v1 ships completeness over a reserved, unwritten sealing seam, and ta
 not ship. Until that capability activates, immutability is the trigger whitelist on both engines
 and nothing cryptographic.
 
-**All three writers ship, and one of them already has a production caller.** Corrected on
-re-measurement 2026-09-02: an earlier revision of this paragraph said none did.
-`repo::write_refusal_audit` is called from `api/rest.rs`'s
-`audit_refusal_of_action_and_report`, which 30 door sites reach — so the refusal-audit lane is
-**live**, and what this DoD still owes is that *this feature's* refusals ride it, which needs the
-decide, submit and elevate doors (§7 row 12). `write_eventless_act_audit` and
-`write_elevated_read_audit` genuinely have no production caller. None of the three needs a
-shared-plane change, so this DoD needs **no patch** — it needs doors. The elevated-read writer takes the session id and
-is probed at the row; the DoD's *"the count asserted, not sampled"* needs a lane that makes several
-elevated reads, and none opens one. C7's sealing seam stays deliberately unwritten (§7 row 21*).
+**All three lanes are live, 2026-09-04, and the `DoD` ticks.** The doors §7 row 12 was waiting for
+exist, so this feature's own acts ride the writers rather than the writers waiting for callers:
+
+- **Every refusal.** The submit, decide and elevation doors route every refusal through
+  `audit_refusal_and_report`, which reaches `repo::write_refusal_audit` — the lane 30 other door
+  sites already used.
+- **Every read under elevation.** `api::rest::elevation_gate` writes one row per **access**, not
+  per session, carrying the session id, the reason and the correlation id. The count is asserted
+  over four reads.
+- **Every committed act declared to emit none.** The submission writes an eventless-act row
+  (`approval.submit`), which is the audit half of this feature's own no-event declaration.
+
+**Sealing stays deliberately unwritten** (C7, §7 row 21*, **P-D-08** recorded by **P-D-133**): not
+built per gear, a reserved seam and requirements S1–S9 to the platform, with the organisational half
+Architecture's. This `DoD` ships **completeness** over that unwritten seam, exactly as its own text
+says — immutability is the trigger whitelist on both engines and nothing cryptographic.
 
 **Implements**: `cpt-cf-bss-products-flow-decide`,
 `cpt-cf-bss-products-flow-breakglass`

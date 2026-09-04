@@ -636,3 +636,396 @@ pub(crate) fn replay_response(status: i32, body: JsonValue) -> Response {
     .create()
     .into_response()
 }
+
+// ---------------------------------------------------------------------------
+// The break-glass elevation gate (`design/05` §2's break-glass flow;
+// **P-D-133** row 18, **P-D-68** arm 2, **P-D-132**'s window).
+// ---------------------------------------------------------------------------
+
+/// The platform's own 403 for a session that is unknown, unparseable, or not
+/// the caller's.
+///
+/// **One answer for all three**, and no gear code. P-D-119 row 3: the gear
+/// mints codes for its own refusals and never for an authorization denial, so
+/// this carries `permission_denied`'s shape. One answer, because
+/// distinguishing "no such session" from "not yours" would let a caller
+/// enumerate other principals' elevations by id.
+fn break_glass_session_unknown() -> CanonicalError {
+    ElevationResource::permission_denied()
+        .with_reason("BREAK_GLASS_SESSION_UNKNOWN")
+        .create()
+}
+
+/// The canonical-error identity the elevation gate's own refusals carry.
+#[toolkit::api::canonical_prelude::resource_error(gts_id!("cf.bss.products.breakglass.v1~"))]
+struct ElevationResource;
+
+/// The header an elevated call names its session in.
+///
+/// A header rather than a query parameter or a body field, for the reason
+/// P-D-133 row 18 gives: the operand is read in the **pre-pipeline gate**,
+/// before any route's own extractor runs, and a header is the only part of a
+/// request that layer can read without knowing which door it is bound for.
+/// @cpt-dod:cpt-cf-bss-products-dod-breakglass-readonly:p1
+/// @cpt-dod:cpt-cf-bss-products-dod-breakglass-expiry:p1
+/// @cpt-dod:cpt-cf-bss-products-dod-governance-audit:p1
+pub(crate) const BREAK_GLASS_SESSION_HEADER: &str = "x-break-glass-session";
+
+/// The pre-pipeline elevation gate — **one function, one call site**.
+///
+/// # What an elevation changes, and what it deliberately does not
+///
+/// **P-D-133** row 18: *"the session names its target tenant; the door reads
+/// the session id from a header in the pre-pipeline gate, checks the window
+/// and substitutes `AccessScope::for_tenant(target)` **read-only** for the
+/// caller's own scope; every write is refused; `ToolKit` is unchanged."*
+///
+/// The substitution happens **on the `SecurityContext`**, not on a scope
+/// handed to each door. Every door in this gear reads `ctx.subject_tenant_id()`
+/// and passes it to `crate::authz::access_scope`, so rewriting the context's
+/// tenant is the one edit that reaches all of them — and it keeps the policy
+/// point in the loop, because the door still asks the PDP about the *target*
+/// pair rather than being handed a scope nobody authorized. `AccessScope`
+/// already builds for any tenant, so `ToolKit` is untouched exactly as the
+/// decision says.
+///
+/// # The order of the three refusals is the decision's order
+///
+/// 1. **Whose session is it.** The row is read on an unconstrained scope,
+///    because the target tenant is the thing being looked up and a
+///    caller-scoped read could never find a cross-tenant session. That would
+///    be fail-open on its own, so the gate then requires the caller to be the
+///    session's own `principal`; anyone else gets the platform's 403 with no
+///    gear code (**P-D-119** row 3 — the gear mints codes for its own
+///    refusals, never for an authorization denial).
+/// 2. **The window**, before the method check, because *expiry gates
+///    admission* (P-D-68 arm 2): a post-expiry **write** is a post-expiry act
+///    and must be the one that emits `BreakGlassExpired`, not one that is
+///    turned away for its verb first and leaves the stamp unflipped.
+/// 3. **The method.** v1 is read and audit-export only, so every mutating
+///    verb is `BREAKGLASS_WRITE_FORBIDDEN` with no exception.
+///
+/// An admitted read is audited **individually** — session id, reason and
+/// correlation id — before it runs, which is `dod-breakglass-readonly`'s
+/// *"every access is individually audited"* rather than a sampled one.
+///
+/// # Errors
+///
+/// [`CanonicalError`] when the session is unknown or not the caller's (403,
+/// the platform's), past its window (`BREAKGLASS_EXPIRED`), or the request is
+/// a write (`BREAKGLASS_WRITE_FORBIDDEN`).
+pub(crate) async fn elevation_gate(
+    axum::extract::State(state): axum::extract::State<std::sync::Arc<ApiState>>,
+    mut request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<Response, CanonicalError> {
+    let Some(session_id) = request
+        .headers()
+        .get(BREAK_GLASS_SESSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        // No header, no elevation. The overwhelming majority of requests take
+        // this arm and must cost nothing.
+        return Ok(next.run(request).await);
+    };
+    let Ok(session_id) = uuid::Uuid::parse_str(session_id) else {
+        return Err(break_glass_session_unknown());
+    };
+    // The **bare** `SecurityContext`, not an `Extension<_>` wrapper: axum's
+    // `Extension` extractor looks the inner type up directly, so that is what
+    // the authenticating layer inserts and what every door reads. Asking for
+    // the wrapper finds nothing and answers 401 on every elevated call.
+    let Some(ctx) = request.extensions().get::<SecurityContext>().cloned() else {
+        return Err(unauthenticated());
+    };
+    let now = crate::domain::canonical::write_instant(Utc::now());
+
+    let conn = state.db.conn().map_err(|e| {
+        repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
+    })?;
+    // Unconstrained, because the target tenant is what this read resolves and
+    // a caller-scoped read of a cross-tenant session finds nothing by
+    // construction. The fail-open this could be is closed by the principal
+    // check immediately below, not by the scope.
+    let platform_scope = AccessScope::allow_all();
+    let session =
+        crate::infra::storage::repo::read_breakglass_session(&conn, &platform_scope, session_id)
+            .await
+            .map_err(|e| repo_error_to_canonical(&e))?;
+    let Some(session) = session else {
+        return Err(break_glass_session_unknown());
+    };
+
+    let actor_ref =
+        resolve_creator_actor_ref(&state, session.target_tenant, ctx.subject_id(), now).await?;
+    if actor_ref != session.principal {
+        // Not the platform principal who opened it. The platform's own 403,
+        // and no gear code: this is an authorization denial, and P-D-119
+        // row 3 reserves the gear's roster for the gear's own refusals.
+        return Err(break_glass_session_unknown());
+    }
+
+    let target_scope = AccessScope::for_tenant(session.target_tenant);
+    // **The CAS and the emission are one transaction** — `dod-breakglass-expiry`'s
+    // *"in the same transaction as that refusal"*, which `admit_elevated_call`
+    // leaves to its caller because it opens none itself. A committed flip
+    // beside a failed enqueue is the exactly-once guarantee **inverted**: the
+    // stamp says the event went out and no later caller will send it, so the
+    // expiry is announced zero times. Rolling both back leaves the next
+    // post-expiry call to emit, which is what "the first post-expiry act"
+    // means when the first one fails.
+    let scope_tx = target_scope.clone();
+    let sink = state.sink.clone();
+    let target_tenant = session.target_tenant;
+    let admission = state
+        .db
+        .db()
+        .transaction_with_retry::<crate::infra::storage::repo::Elevation, ElevationTxError, _, _>(
+            toolkit_db::secure::TxConfig::default(),
+            elevation_contention,
+            move |tx| {
+                let scope = scope_tx.clone();
+                let sink = sink.clone();
+                Box::pin(async move {
+                    let admission = crate::infra::storage::repo::admit_elevated_call(
+                        tx, &scope, session_id, now,
+                    )
+                    .await
+                    .map_err(ElevationTxError::Repo)?;
+                    if matches!(
+                        admission,
+                        crate::infra::storage::repo::Elevation::Expired { emit_expired: true }
+                    ) {
+                        crate::infra::events::enqueue_governance(
+                            &sink,
+                            tx,
+                            session_id,
+                            crate::infra::events::BREAK_GLASS_EXPIRED_PAYLOAD_TYPE,
+                            &crate::infra::events::GovernanceEventBody {
+                                tenant_id: target_tenant,
+                                act: "expired",
+                                approval_id: None,
+                                session_id: Some(session_id),
+                                verdict: None,
+                                state: None,
+                                target_tenant_id: Some(target_tenant),
+                            },
+                            actor_ref,
+                        )
+                        .await
+                        .map_err(ElevationTxError::Events)?;
+                    }
+                    Ok(admission)
+                })
+            },
+        )
+        .await
+        .map_err(|error| match error {
+            ElevationTxError::Repo(e) => repo_error_to_canonical(&e),
+            ElevationTxError::Events(e) => {
+                repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
+            }
+        })?;
+
+    // `NotYetValid` refuses with the same code and emits **nothing**: a
+    // session that has not begun has not expired, and folding the two arms
+    // would announce `BreakGlassExpired` for a window still ahead.
+    match admission {
+        crate::infra::storage::repo::Elevation::Admitted => {}
+        // Both refuse `BREAKGLASS_EXPIRED`, and the two are kept **distinct
+        // upstream rather than here**: `admit_elevated_call` answers
+        // `NotYetValid` for a window still ahead precisely so nothing flips
+        // the stamp or emits for a session that has not begun. By the time
+        // the answer reaches this `match` the difference has already been
+        // acted on — the emission, if this caller won the CAS, committed with
+        // the flip inside the transaction above — so one arm is the honest
+        // shape and two identical ones would be a distinction that no longer
+        // exists.
+        crate::infra::storage::repo::Elevation::NotYetValid
+        | crate::infra::storage::repo::Elevation::Expired { .. } => {
+            return Err(elevation_outside_window(
+                &state,
+                &target_scope,
+                ElevationRefusal {
+                    session: &session,
+                    actor_ref,
+                    now,
+                },
+            )
+            .await);
+        }
+    }
+
+    if !matches!(
+        request.method(),
+        &axum::http::Method::GET | &axum::http::Method::HEAD
+    ) {
+        return Err(
+            elevated_write_forbidden(&state, &target_scope, &session, actor_ref, now).await,
+        );
+    }
+
+    // `dod-breakglass-readonly`: **every** admitted access, not a sample.
+    audit_elevated_access(&state, &target_scope, &session, actor_ref, now, "read").await?;
+
+    // The substitution. Everything below this line runs under the target
+    // tenant, through the policy point, read-only by the check above.
+    let elevated = SecurityContext::builder()
+        .subject_id(ctx.subject_id())
+        .subject_tenant_id(session.target_tenant)
+        .token_scopes(ctx.token_scopes().to_vec());
+    let elevated = match ctx.subject_type() {
+        Some(subject_type) => elevated.subject_type(subject_type),
+        None => elevated,
+    };
+    let elevated = elevated.build().map_err(|_| unauthenticated())?;
+    request.extensions_mut().insert(elevated);
+    Ok(next.run(request).await)
+}
+
+/// The elevation gate's own transaction error.
+enum ElevationTxError {
+    Repo(crate::infra::storage::RepoError),
+    Events(crate::infra::events::EventsError),
+}
+
+impl From<toolkit_db::DbError> for ElevationTxError {
+    fn from(error: toolkit_db::DbError) -> Self {
+        Self::Repo(crate::infra::storage::RepoError::Db(error.to_string()))
+    }
+}
+
+/// The retry loop classifies `sea-orm`'s own error.
+fn elevation_contention(error: &ElevationTxError) -> Option<&sea_orm::DbErr> {
+    match error {
+        ElevationTxError::Repo(crate::infra::storage::RepoError::Driver { source, .. }) => {
+            Some(source)
+        }
+        ElevationTxError::Repo(_) | ElevationTxError::Events(_) => None,
+    }
+}
+
+/// What an out-of-window refusal needs, grouped so the two `Uuid`s cannot be
+/// transposed at the call site.
+///
+/// **It carries no `emit_expired` flag.** It used to, and the flag was the
+/// operand of an emission this function no longer makes: the CAS and
+/// `BreakGlassExpired` now commit together in the gate's own transaction, so
+/// by the time a refusal is built the emission has already happened or the
+/// whole thing rolled back.
+struct ElevationRefusal<'a> {
+    session: &'a crate::infra::storage::entity::breakglass_session::Model,
+    actor_ref: uuid::Uuid,
+    now: DateTime<Utc>,
+}
+
+/// Refuse a call past the window, emitting `BreakGlassExpired` for exactly
+/// the caller that won the CAS (**P-D-68** arm 2).
+async fn elevation_outside_window(
+    state: &ApiState,
+    scope: &AccessScope,
+    refusal: ElevationRefusal<'_>,
+) -> CanonicalError {
+    // **No emission here.** The CAS and `BreakGlassExpired` commit together
+    // in the caller's transaction; this function only answers the refusal
+    // that accompanied them.
+    audit_refusal_and_report_for_elevation(
+        state,
+        scope,
+        refusal.session,
+        refusal.actor_ref,
+        refusal.now,
+        DomainError::BreakGlassExpired(format!(
+            "elevation {} is outside its window [{}, {})",
+            refusal.session.session_id, refusal.session.valid_from, refusal.session.valid_until
+        )),
+    )
+    .await
+}
+
+/// Refuse a write under an elevation. **No exception in v1.**
+async fn elevated_write_forbidden(
+    state: &ApiState,
+    scope: &AccessScope,
+    session: &crate::infra::storage::entity::breakglass_session::Model,
+    actor_ref: uuid::Uuid,
+    now: DateTime<Utc>,
+) -> CanonicalError {
+    audit_refusal_and_report_for_elevation(
+        state,
+        scope,
+        session,
+        actor_ref,
+        now,
+        DomainError::BreakGlassWriteForbidden(format!(
+            "elevation {} is read and audit-export only",
+            session.session_id
+        )),
+    )
+    .await
+}
+
+/// Audit one elevated refusal and answer it.
+async fn audit_refusal_and_report_for_elevation(
+    state: &ApiState,
+    scope: &AccessScope,
+    session: &crate::infra::storage::entity::breakglass_session::Model,
+    actor_ref: uuid::Uuid,
+    now: DateTime<Utc>,
+    refusal: DomainError,
+) -> CanonicalError {
+    let code = refusal.code();
+    // **The refusal is answered whether or not its audit row landed.** An
+    // audit failure here would otherwise turn a legitimate 403 into a 500 and
+    // tell the operator the wrong thing about their own request; the loss is
+    // named on the alert channel instead, which is where a missing audit row
+    // is actionable.
+    if let Err(error) = audit_elevated_access(state, scope, session, actor_ref, now, code).await {
+        tracing::warn!(
+            event = "products_breakglass_access_unaudited",
+            session_id = %session.session_id,
+            %error,
+            "an elevated refusal could not be audited"
+        );
+    }
+    CanonicalError::from(refusal)
+}
+
+/// One audit row per elevated access — admitted or refused.
+///
+/// `dod-breakglass-readonly` names the three operands: the session id, the
+/// reason, and the correlation id. All three are real values now —
+/// `correlation_id` became `text` under **P-D-118**, so the row carries the
+/// trace rather than the `None` the old doc excused.
+async fn audit_elevated_access(
+    state: &ApiState,
+    scope: &AccessScope,
+    session: &crate::infra::storage::entity::breakglass_session::Model,
+    actor_ref: uuid::Uuid,
+    now: DateTime<Utc>,
+    action: &str,
+) -> Result<(), CanonicalError> {
+    let conn = state.db.conn().map_err(|e| {
+        repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
+    })?;
+    crate::infra::storage::repo::write_eventless_act_audit(
+        &conn,
+        scope,
+        crate::infra::storage::repo::AuditCommon {
+            audit_id: uuid::Uuid::now_v7(),
+            tenant_id: session.target_tenant,
+            actor_ref,
+            action: format!("breakglass.{action}"),
+            subject_kind: "breakglass".to_owned(),
+            reason: Some(session.reason.clone()),
+            correlation_id: crate::infra::events::correlation_id(),
+            written_at: now,
+        },
+        session.session_id,
+        None,
+    )
+    .await
+    .map_err(|e| repo_error_to_canonical(&e))
+}

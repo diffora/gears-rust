@@ -1391,6 +1391,37 @@ pub async fn open_breakglass_session(
     Ok(())
 }
 
+/// Read one elevation session by id.
+///
+/// # The scope is the caller's choice, and the pre-pipeline gate's is
+/// unconstrained on purpose
+///
+/// A session's row is scoped by **`target_tenant`**, and the gate that reads
+/// it is looking the target up: it holds the session id and nothing else, so a
+/// caller-scoped read of a cross-tenant elevation finds nothing by
+/// construction. The gate therefore reads unconstrained and then requires the
+/// caller to **be** the session's `principal` — the fail-open is closed by
+/// that check, not by the scope, and this function does not make it, because a
+/// repository read that silently applied an identity rule would be a second
+/// place the rule lives.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn read_breakglass_session(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    session_id: Uuid,
+) -> Result<Option<breakglass_session::Model>, RepoError> {
+    breakglass_session::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(breakglass_session::Column::SessionId.eq(session_id)))
+        .one(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read elevation {session_id}"), e))
+}
+
 /// Whether an elevated call is admitted, and who emits `BreakGlassExpired`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Elevation {

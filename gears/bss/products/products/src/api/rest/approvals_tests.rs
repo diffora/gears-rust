@@ -714,3 +714,320 @@ async fn an_elevation_without_a_reason_is_refused() {
     .await;
     assert_eq!(response.status(), 400);
 }
+
+// ---------------------------------------------------------------------------
+// The pre-pipeline elevation gate (`api::rest::elevation_gate`)
+// ---------------------------------------------------------------------------
+
+/// The three doors **plus the elevation gate and a read probe**.
+///
+/// The gate is a layer in production (`gear.rs`'s one call site), so a
+/// harness that merged the routes without it would test the doors and not the
+/// gate. The probe route exists because this module's three doors are all
+/// `POST`, and v1's whole posture is that a `GET` is admitted and everything
+/// else is not — an admitted arm needs a `GET` to be admitted on.
+fn elevated_app(harness: &TestHarness, tenant: Uuid) -> Router {
+    let state = Arc::new(ApiState {
+        db: harness.db.clone(),
+        sink: crate::infra::broker::EventSink::Interim(Arc::clone(&harness.outbox)),
+        taxonomy_caps: crate::api::rest::TaxonomyCaps::from(&ProductsConfig::default()),
+        idempotency_retention_hours: ProductsConfig::default().idempotency_retention_hours,
+        bulk_max_rows_per_batch: ProductsConfig::default().bulk_max_rows_per_batch,
+        bulk_max_concurrent_batches_per_tenant: ProductsConfig::default()
+            .bulk_max_concurrent_batches_per_tenant,
+        watermark_skew_tolerance: ProductsConfig::default().watermark_skew_tolerance(),
+        breakglass_window_hours: crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT,
+        breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
+    });
+    let openapi = OpenApiRegistryImpl::new();
+    router(Arc::clone(&state), &openapi)
+        .route(
+            "/bss-products/v1/_probe/tenant",
+            axum::routing::get(probe_tenant),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            state,
+            crate::api::rest::elevation_gate,
+        ))
+        .layer(axum::Extension(flat_in_enforcer(tenant)))
+}
+
+/// Answer the tenant the request's `SecurityContext` names — which is exactly
+/// what the gate substitutes.
+async fn probe_tenant(
+    ctx: Option<axum::Extension<SecurityContext>>,
+) -> axum::Json<serde_json::Value> {
+    let tenant = ctx.map_or_else(Uuid::nil, |axum::Extension(c)| c.subject_tenant_id());
+    axum::Json(json!({ "tenant": tenant }))
+}
+
+/// Open a session directly in the store, so a case can choose its window.
+async fn open_session(harness: &TestHarness, opener: Uuid, from_h: i64, until_h: i64) -> Uuid {
+    let conn = harness.db.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TARGET_TENANT);
+    let session_id = Uuid::now_v7();
+    repo::open_breakglass_session(
+        &conn,
+        &scope,
+        repo::NewElevation {
+            session_id,
+            principal: opener,
+            target_tenant: TARGET_TENANT,
+            valid_from: chrono::Utc::now() + chrono::TimeDelta::try_hours(from_h).expect("hours"),
+            valid_until: chrono::Utc::now() + chrono::TimeDelta::try_hours(until_h).expect("hours"),
+            path: repo::ApprovalPath::PostHoc,
+            opened_at: chrono::Utc::now(),
+        },
+        "incident 4471",
+    )
+    .await
+    .expect("the session opens");
+    session_id
+}
+
+/// The `actor_ref` the gate resolves for `subject` in the target tenant —
+/// the value it compares against the session's `principal`.
+async fn actor_ref_of(harness: &TestHarness, subject: Uuid) -> Uuid {
+    let conn = harness.db.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TARGET_TENANT);
+    repo::resolve_actor_ref(
+        &conn,
+        &scope,
+        TARGET_TENANT,
+        &subject.to_string(),
+        chrono::Utc::now(),
+    )
+    .await
+    .expect("resolve the pseudonym")
+}
+
+async fn elevated(
+    app: Router,
+    method: &str,
+    uri: &str,
+    subject: Uuid,
+    session: Uuid,
+    body: JsonValue,
+) -> axum::http::Response<Body> {
+    app.oneshot(
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .header(
+                crate::api::rest::BREAK_GLASS_SESSION_HEADER,
+                session.to_string(),
+            )
+            .extension(ctx_without_roles(subject))
+            .body(Body::from(body.to_string()))
+            .expect("build the request"),
+    )
+    .await
+    .expect("the router answers")
+}
+
+async fn audit_rows(harness: &TestHarness) -> i64 {
+    crate::test_support::raw_i64(
+        &harness.dsn,
+        "SELECT COUNT(*) AS v FROM products_audit_log WHERE subject_kind = 'breakglass'",
+    )
+    .await
+}
+
+/// **Every write under an elevation is refused `BREAKGLASS_WRITE_FORBIDDEN`,
+/// with no exception in v1** — and a `GET` through the same session is
+/// admitted, under the **target** tenant.
+///
+/// The two halves are one case because either alone is satisfiable by a
+/// defect: a gate that refused everything would pass the first, and one that
+/// refused nothing would pass the second.
+#[tokio::test]
+async fn an_elevation_refuses_every_write_and_admits_a_read_under_the_target() {
+    let harness = harness().await;
+    let subject = Uuid::from_u128(0x5a_b0);
+    let opener = actor_ref_of(&harness, subject).await;
+    let session = open_session(&harness, opener, -1, 3).await;
+
+    let write = elevated(
+        elevated_app(&harness, TENANT),
+        "POST",
+        "/bss-products/v1/approvals",
+        subject,
+        session,
+        submission_body(),
+    )
+    .await;
+    let status = write.status();
+    let body = body_of(write).await;
+    assert_eq!(status, 403, "{body}");
+    assert_eq!(body["context"]["reason"], "BREAKGLASS_WRITE_FORBIDDEN");
+
+    let read = elevated(
+        elevated_app(&harness, TENANT),
+        "GET",
+        "/bss-products/v1/_probe/tenant",
+        subject,
+        session,
+        json!({}),
+    )
+    .await;
+    assert_eq!(read.status(), 200, "a read inside the window is admitted");
+    assert_eq!(
+        body_of(read).await["tenant"],
+        json!(TARGET_TENANT),
+        "the gate substitutes the session's target tenant for the caller's own, which is the \
+         whole of what an elevation changes (P-D-133 row 18)"
+    );
+}
+
+/// **A session that is not the caller's is refused**, and refused the same
+/// way a session that does not exist is.
+///
+/// The gate reads the row unconstrained — it is looking the target tenant up
+/// — so this check is the only thing standing between a session id and
+/// another principal's elevation.
+#[tokio::test]
+async fn a_session_opened_by_someone_else_is_refused() {
+    let harness = harness().await;
+    let opener = actor_ref_of(&harness, Uuid::from_u128(0x5a_b0)).await;
+    let session = open_session(&harness, opener, -1, 3).await;
+
+    let response = elevated(
+        elevated_app(&harness, TENANT),
+        "GET",
+        "/bss-products/v1/_probe/tenant",
+        Uuid::from_u128(0x5a_be),
+        session,
+        json!({}),
+    )
+    .await;
+    assert_eq!(response.status(), 403);
+    assert_eq!(
+        body_of(response).await["context"]["reason"],
+        "BREAK_GLASS_SESSION_UNKNOWN",
+        "one answer for unknown and not-yours alike, so a caller cannot enumerate elevations by id"
+    );
+
+    let unknown = elevated(
+        elevated_app(&harness, TENANT),
+        "GET",
+        "/bss-products/v1/_probe/tenant",
+        Uuid::from_u128(0x5a_b0),
+        Uuid::now_v7(),
+        json!({}),
+    )
+    .await;
+    assert_eq!(unknown.status(), 403);
+}
+
+/// **Past the window every call refuses `BREAKGLASS_EXPIRED`, and
+/// `expired_emitted` flips for exactly one of them** (**P-D-68** arm 2).
+///
+/// Three calls, one stamp. The count is what the CAS buys and a
+/// read-then-write would give three.
+#[tokio::test]
+async fn past_the_window_every_call_refuses_and_exactly_one_emits() {
+    let harness = harness().await;
+    let subject = Uuid::from_u128(0x5a_b0);
+    let opener = actor_ref_of(&harness, subject).await;
+    let session = open_session(&harness, opener, -5, -1).await;
+
+    for _ in 0..3 {
+        let response = elevated(
+            elevated_app(&harness, TENANT),
+            "GET",
+            "/bss-products/v1/_probe/tenant",
+            subject,
+            session,
+            json!({}),
+        )
+        .await;
+        assert_eq!(response.status(), 403);
+        assert_eq!(
+            body_of(response).await["context"]["reason"],
+            "BREAKGLASS_EXPIRED"
+        );
+    }
+
+    let emitted = crate::test_support::raw_i64(
+        &harness.dsn,
+        "SELECT COUNT(*) AS v FROM products_breakglass_session WHERE expired_emitted = 1",
+    )
+    .await;
+    assert_eq!(
+        emitted, 1,
+        "the CAS on the write gives one emission however many callers arrive; reading the column \
+         and then writing it would give three"
+    );
+
+    // **And the event actually went out, once.** The stamp and the enqueue
+    // commit in one transaction, so a flipped stamp beside no outbox row
+    // would be the exactly-once guarantee inverted — announced zero times,
+    // with no later caller left to send it.
+    let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
+    let announced = crate::test_support::raw_i64(
+        &harness.dsn,
+        &format!("SELECT COUNT(*) AS v FROM {body_table} WHERE payload_type = 'BreakGlassExpired'"),
+    )
+    .await;
+    assert_eq!(announced, 1, "one flip, one BreakGlassExpired");
+}
+
+/// **Every elevated access is audited individually** — the probe asserts the
+/// **count**, not a sample (`dod-breakglass-readonly`).
+///
+/// Four calls, four rows. A gate that audited the session once at open, or
+/// that sampled, passes a "there is a row" assertion and fails this one.
+#[tokio::test]
+async fn every_elevated_access_writes_its_own_audit_row() {
+    let harness = harness().await;
+    let subject = Uuid::from_u128(0x5a_b0);
+    let opener = actor_ref_of(&harness, subject).await;
+    let session = open_session(&harness, opener, -1, 3).await;
+    let before = audit_rows(&harness).await;
+
+    for _ in 0..4 {
+        let response = elevated(
+            elevated_app(&harness, TENANT),
+            "GET",
+            "/bss-products/v1/_probe/tenant",
+            subject,
+            session,
+            json!({}),
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+    }
+
+    assert_eq!(
+        audit_rows(&harness).await - before,
+        4,
+        "one row per access, not one per session"
+    );
+}
+
+/// **A request with no elevation header is untouched** — the arm every other
+/// request in the gear takes, and the one a gate that mis-read an absent
+/// header would break.
+#[tokio::test]
+async fn a_request_without_the_header_passes_through_unchanged() {
+    let harness = harness().await;
+    let response = elevated_app(&harness, TENANT)
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/bss-products/v1/_probe/tenant")
+                .extension(ctx_without_roles(Uuid::from_u128(0x5a_b0)))
+                .body(Body::empty())
+                .expect("build the request"),
+        )
+        .await
+        .expect("the router answers");
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        body_of(response).await["tenant"],
+        json!(TENANT),
+        "the caller's own tenant, unsubstituted"
+    );
+    assert_eq!(audit_rows(&harness).await, 0, "and no elevation audit row");
+}

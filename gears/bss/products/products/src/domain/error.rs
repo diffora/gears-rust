@@ -284,6 +284,8 @@ pub enum DomainError {
     /// This record cannot take that decision — **P-D-119** row 37, the
     /// seventh code `design/05` §3.3's roster opens for.
     ///
+    /// @cpt-dod:cpt-cf-bss-products-dod-governance-errors:p1
+    ///
     /// Two refusals the ceremony raises, one user-facing fact. A **second
     /// verdict from one principal** collides with
     /// `uq_products_approval_decision_principal`, C2's physical floor under

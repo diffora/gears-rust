@@ -692,6 +692,17 @@ impl RestApiCapability for BssProductsGear {
                 Arc::clone(&api_state),
                 openapi,
             ))
+            // **The elevation gate's one call site** (P-D-133 row 18). A
+            // layer rather than a per-door step, because the decision puts
+            // the operand in the **pre-pipeline** gate: it is read before any
+            // route's own extractor runs, and a layer is the only place in
+            // this composition that is true of. Applied outside the enforcer
+            // extension so the gate's own tenant substitution is in place
+            // before a door asks the policy point anything.
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&api_state),
+                crate::api::rest::elevation_gate,
+            ))
             .layer(axum::Extension((*rt.enforcer).clone())))
     }
 }

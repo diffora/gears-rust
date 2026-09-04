@@ -1760,6 +1760,7 @@ pub(crate) struct GovernanceEventBody<'a> {
 /// [`EventsError::NotAGovernanceEvent`] for any other token;
 /// [`EventsError::NoTypedEvent`] on the broker sink; otherwise as
 /// [`enqueue`].
+/// @cpt-dod:cpt-cf-bss-products-dod-governance-events:p1
 pub(crate) async fn enqueue_governance(
     sink: &EventSink,
     runner: &(impl DBRunner + Sync),

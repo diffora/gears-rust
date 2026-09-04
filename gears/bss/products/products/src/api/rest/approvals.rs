@@ -61,6 +61,7 @@
 //! is a consequence of a write the Foundation already announces.
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-decide:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-breakglass-open:p1
 //! @cpt-cf-bss-products-flow-submit
 //! @cpt-cf-bss-products-flow-decide
 //! @cpt-cf-bss-products-flow-breakglass
