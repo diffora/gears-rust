@@ -1545,3 +1545,18 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
   `pattern = "design/*.md"` and `traceability = "FULL"`. It is the shape donor for the four unwritten
   FEATUREs, so the cost compounds.
 - **`repo::AuditCommon::correlation_id`**'s owed migration — see row 16. Owner: `01-foundation`. **Landed 2026-09-04** (P-D-118: `text` on both engines; the door writers fill it, background acts write `NULL`).
+
+33. **The detector's run heuristic, measured after it shipped (P-D-136, 2026-09-04): how much
+    friction is the owner buying?** `RegistryPiiDetector` returns `Uncertain` for **any run of two
+    or more adjacent capitalized words** no active entry covers, and the hook refuses. Under the
+    hook are localized attribute values, every operator reason, `displayLabel`, metadata values,
+    the allow-list's own free text and the export justification — not names or codes. So with an
+    empty allow-list an attribute value carrying *"Premium Cloud Backup"* is refused until Legal
+    signs `premium cloud backup` off; a surname spelled *"McDonald"*, or a name in lowercase, is
+    not a run at all and passes. This is C2's posture and item 1's recorded friction, shipped at
+    its crudest so the allow-list loop is exercised before GA rather than after. **The question
+    is the owner's**: keep the heuristic as the deliberate friction, or narrow it — a cap on the
+    run's length, a field class it applies to, a dictionary of common words — before GA. Nothing
+    here is a design gap; a narrower heuristic is a one-function change in `domain/retention.rs`.
+    **Blocks**: no DoD — the detector's DoD is satisfied by the fail-closed hook whatever the
+    heuristic. **Owner**: the product owner, with Legal's allow-list loop (item 1).

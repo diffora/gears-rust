@@ -219,7 +219,7 @@ multi-action row would otherwise read as if the whole row were doored.
 | `product × write`, `sku × write` | `POST /bss-products/v1/products`, `POST /bss-products/v1/skus`, `PATCH /bss-products/v1/{products\|skus}/{id}`, `POST /bss-products/v1/{products\|skus}/{id}/clone`, `POST /bss-products/v1/{products\|skus}/{id}/discard` | 01, 11 |
 | `product × publish`, `sku × publish` | `POST /bss-products/v1/{products\|skus}/{id}/publish` | 01 |
 | `metadata × write` | `PATCH /bss-products/v1/{products\|skus}/{id}/metadata` | 02 |
-| `compliance × export` | `GET /bss-products/v1/compliance/identity-export` | 10 |
+| `compliance × export` | `GET /bss-products/v1/compliance/identity-export`, and since `dd464c108` `GET /bss-products/v1/compliance/pii-allowlist` — the allow-list review **is** the compliance surface (P-D-117 item 12); both require a justification and write an access row (P-D-133) | 10 |
 | `erasure × execute` | `POST /bss-products/v1/erasure-requests` | 10 |
 | `bulk × execute` | `POST /bss-products/v1/bulk/imports` | 09 |
 | `bulk × read` | `GET /bss-products/v1/bulk/batches/{batchId}` (**P-D-61** — the `RowLedger` reader C1 requires; one route for both lanes, and a reader is not an executor) | 09 |
@@ -237,7 +237,7 @@ multi-action row would otherwise read as if the whole row were doored.
 | `scheduled_transition × write\|cancel\|read` | **P-D-134**: `GET /bss-products/v1/scheduled-transitions` (`× read`) and `POST /bss-products/v1/scheduled-transitions/{id}/operations` with `op: cancel` (`× cancel`) — 04's doors, strand C's build, **unbuilt**; `× write` is measured with them, not minted (P-D-135) | 04 |
 | `freeze_participant × write` | `POST /bss-products/v1/freeze-participants` (**P-D-67** — the governed set write) | 06 |
 | `reference_signal × post`, `reference_producer × write`, `sku × correct` | **no route declared** — 07's watermark, producer and correction doors, named in prose | 07 |
-| `pii_allowlist × write` | **no route declared** | 10 |
+| `pii_allowlist × write` | `POST /bss-products/v1/pii-allowlist-entries` and `POST /bss-products/v1/pii-allowlist-entries/{entryId}/operations` (strand D, `dd464c108` — a `GovernedLiveOp` under `inst-mt-inputs` (d); P-D-136) | 10 |
 | `audit × read\|export` | **no route declared** (M-4 fix) | 05 |
 
 **What the column measures, and what it does not** (**P-D-45**): the set declares **fourteen**
