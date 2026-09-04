@@ -132,6 +132,15 @@ pub(crate) struct ProductsRuntime {
     /// threshold, resolved once from `ProductsConfig` (P-D-87 arm 1).
     pub watermark_skew_tolerance: std::time::Duration,
 
+    /// The elevation window and the post-hoc review SLA, in hours
+    /// (**P-D-132**, **P-D-133**). Carried for the same reason
+    /// `watermark_skew_tolerance` is: `register_rest` has no `cfg` in scope,
+    /// so the break-glass door reaches the operator's own numbers here rather
+    /// than inlining the interim ones.
+    pub breakglass_window_hours: u32,
+    /// The post-hoc review SLA, in hours.
+    pub breakglass_review_sla_hours: u32,
+
     /// The `ApiState` the in-process SDK bindings and the batch worker
     /// share — built once at `init` so the lifecycle's own passes reach
     /// the same database, outbox and bounds a door does.
@@ -548,6 +557,8 @@ impl Gear for BssProductsGear {
             bulk_max_rows_per_batch: cfg.bulk_max_rows_per_batch,
             bulk_max_concurrent_batches_per_tenant: cfg.bulk_max_concurrent_batches_per_tenant,
             watermark_skew_tolerance: cfg.watermark_skew_tolerance(),
+            breakglass_window_hours: cfg.breakglass_window_hours,
+            breakglass_review_sla_hours: cfg.breakglass_review_sla_hours,
         });
         ctx.client_hub()
             .register::<dyn bss_products_sdk::watermarks::WatermarkPosts>(Arc::new(
@@ -568,6 +579,8 @@ impl Gear for BssProductsGear {
                         bulk_max_concurrent_batches_per_tenant: cfg
                             .bulk_max_concurrent_batches_per_tenant,
                         watermark_skew_tolerance: cfg.watermark_skew_tolerance(),
+                        breakglass_window_hours: cfg.breakglass_window_hours,
+                        breakglass_review_sla_hours: cfg.breakglass_review_sla_hours,
                     }),
                     enforcer: (*enforcer).clone(),
                 },
@@ -580,6 +593,8 @@ impl Gear for BssProductsGear {
             bulk_max_rows_per_batch: cfg.bulk_max_rows_per_batch,
             bulk_max_concurrent_batches_per_tenant: cfg.bulk_max_concurrent_batches_per_tenant,
             watermark_skew_tolerance: cfg.watermark_skew_tolerance(),
+            breakglass_window_hours: cfg.breakglass_window_hours,
+            breakglass_review_sla_hours: cfg.breakglass_review_sla_hours,
             sdk_state: Arc::clone(&sdk_state),
             taxonomy_caps: crate::api::rest::TaxonomyCaps::from(&cfg),
             system_actor_ref: system_actor_ref(),
@@ -633,6 +648,8 @@ impl RestApiCapability for BssProductsGear {
             bulk_max_rows_per_batch: rt.bulk_max_rows_per_batch,
             bulk_max_concurrent_batches_per_tenant: rt.bulk_max_concurrent_batches_per_tenant,
             watermark_skew_tolerance: rt.watermark_skew_tolerance,
+            breakglass_window_hours: rt.breakglass_window_hours,
+            breakglass_review_sla_hours: rt.breakglass_review_sla_hours,
         });
         Ok(router
             .merge(crate::api::rest::products::router(
@@ -667,9 +684,24 @@ impl RestApiCapability for BssProductsGear {
                 Arc::clone(&api_state),
                 openapi,
             ))
+            .merge(crate::api::rest::approvals::router(
+                Arc::clone(&api_state),
+                openapi,
+            ))
             .merge(crate::api::rest::materiality_policy::router(
                 Arc::clone(&api_state),
                 openapi,
+            ))
+            // **The elevation gate's one call site** (P-D-133 row 18). A
+            // layer rather than a per-door step, because the decision puts
+            // the operand in the **pre-pipeline** gate: it is read before any
+            // route's own extractor runs, and a layer is the only place in
+            // this composition that is true of. Applied outside the enforcer
+            // extension so the gate's own tenant substitution is in place
+            // before a door asks the policy point anything.
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::clone(&api_state),
+                crate::api::rest::elevation_gate,
             ))
             .layer(axum::Extension((*rt.enforcer).clone())))
     }

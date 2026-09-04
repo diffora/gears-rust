@@ -1654,6 +1654,8 @@ fn api_state(harness: &TestHarness) -> Arc<ApiState> {
         bulk_max_concurrent_batches_per_tenant: ProductsConfig::default()
             .bulk_max_concurrent_batches_per_tenant,
         watermark_skew_tolerance: ProductsConfig::default().watermark_skew_tolerance(),
+        breakglass_window_hours: crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT,
+        breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
     })
 }
 
@@ -1789,12 +1791,7 @@ async fn version_rows(dsn: &str) -> i64 {
 struct RefusingGate;
 
 impl GovernanceGate for RefusingGate {
-    fn evaluate(
-        &self,
-        _subject: GateSubject,
-        _expected_revision: InternalRevision,
-        _mode: GateMode,
-    ) -> Result<GateVerdict, DomainError> {
+    fn evaluate(&self, _subject: GateSubject, _mode: GateMode) -> Result<GateVerdict, DomainError> {
         Ok(GateVerdict::Refused {
             reason: "this double refuses every act".to_owned(),
         })
@@ -2320,12 +2317,7 @@ async fn a_gate_that_answers_no_refuses_approval_required_and_writes_nothing() {
 struct FailingGate;
 
 impl GovernanceGate for FailingGate {
-    fn evaluate(
-        &self,
-        _subject: GateSubject,
-        _expected_revision: InternalRevision,
-        _mode: GateMode,
-    ) -> Result<GateVerdict, DomainError> {
+    fn evaluate(&self, _subject: GateSubject, _mode: GateMode) -> Result<GateVerdict, DomainError> {
         Err(DomainError::AuditUnavailable(
             "this double cannot reach its record store".to_owned(),
         ))
@@ -3095,12 +3087,7 @@ impl RecordingGate {
 }
 
 impl GovernanceGate for RecordingGate {
-    fn evaluate(
-        &self,
-        _subject: GateSubject,
-        _expected_revision: InternalRevision,
-        mode: GateMode,
-    ) -> Result<GateVerdict, DomainError> {
+    fn evaluate(&self, _subject: GateSubject, mode: GateMode) -> Result<GateVerdict, DomainError> {
         self.asked
             .lock()
             .expect("no case poisons this lock")
@@ -3197,12 +3184,14 @@ async fn a_preauthorized_publish_reaches_the_host_in_that_mode_and_consumes_noth
     // nothing to spend.
     let verdict = recorder
         .evaluate(
-            GateSubject::entity_publish(EntityRef {
-                tenant_id: TENANT,
-                entity_kind: bss_products_sdk::models::EntityKind::Product,
-                entity_id: product_id,
-            }),
-            InternalRevision::new(1),
+            GateSubject::entity_publish(
+                EntityRef {
+                    tenant_id: TENANT,
+                    entity_kind: bss_products_sdk::models::EntityKind::Product,
+                    entity_id: product_id,
+                },
+                InternalRevision::new(1),
+            ),
             GateMode::PreAuthorized(approval),
         )
         .expect("this double never fails to reach an answer");
@@ -3365,12 +3354,7 @@ impl CountingRefusingGate {
 }
 
 impl GovernanceGate for CountingRefusingGate {
-    fn evaluate(
-        &self,
-        _subject: GateSubject,
-        _expected_revision: InternalRevision,
-        _mode: GateMode,
-    ) -> Result<GateVerdict, DomainError> {
+    fn evaluate(&self, _subject: GateSubject, _mode: GateMode) -> Result<GateVerdict, DomainError> {
         self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(GateVerdict::Refused {
             reason: "this double refuses every act it is asked about".to_owned(),

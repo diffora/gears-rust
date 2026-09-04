@@ -89,6 +89,16 @@ const THE_BULK_SUMMARY: &[&str] = &["CatalogBulkOperationCompleted"];
 /// `AttributeDefinitionUpdated`; **P-D-116** row 15 answered *their own
 /// entity's id*, and both joined with that aggregate. All eight are emitted
 /// through `enqueue_taxonomy`, inside their acts' transactions.
+/// `05`'s three, announced by the ceremony's doors and by the pre-pipeline
+/// elevation gate (`design/05` §2; **P-D-68** arm 2 for the third).
+///
+/// A roster of its own for the reason `02`'s and `03`'s are: the partition
+/// below is what stops a token reaching an entry point whose body shape it
+/// does not have, and a token that belongs to no roster is invisible to it in
+/// both directions.
+const THE_GOVERNANCE_THREE: &[&str] =
+    &["ApprovalDecided", "BreakGlassElevated", "BreakGlassExpired"];
+
 const THE_TAXONOMY_EIGHT: &[&str] = &[
     "CategoryCreated",
     "CategoryRenamed",
@@ -154,6 +164,7 @@ fn every_declared_token_belongs_to_exactly_one_entry_point() {
     let bulk = THE_BULK_SUMMARY;
     let taxonomy = THE_TAXONOMY_EIGHT;
     let retention = THE_RETENTION_PAIR;
+    let governance = THE_GOVERNANCE_THREE;
 
     for (token, _) in SCHEMA_REFS {
         let owners = usize::from(published.contains(token))
@@ -161,7 +172,8 @@ fn every_declared_token_belongs_to_exactly_one_entry_point() {
             + usize::from(set_events.contains(token))
             + usize::from(bulk.contains(token))
             + usize::from(taxonomy.contains(token))
-            + usize::from(retention.contains(token));
+            + usize::from(retention.contains(token))
+            + usize::from(governance.contains(token));
         assert!(
             owners <= 1,
             "{token} is claimed by more than one entry point's guard"
@@ -233,6 +245,12 @@ fn the_schema_roster_names_exactly_the_declared_events() {
             "{event} is 10's retention event and carries no schema reference"
         );
     }
+    for event in THE_GOVERNANCE_THREE {
+        assert!(
+            registered.contains(event),
+            "{event} is 05's governance event and carries no schema reference"
+        );
+    }
     for token in &registered {
         assert!(
             THE_EIGHT.contains(token)
@@ -241,7 +259,8 @@ fn the_schema_roster_names_exactly_the_declared_events() {
                 || THE_SET_TRIO.contains(token)
                 || THE_BULK_SUMMARY.contains(token)
                 || THE_TAXONOMY_EIGHT.contains(token)
-                || THE_RETENTION_PAIR.contains(token),
+                || THE_RETENTION_PAIR.contains(token)
+                || THE_GOVERNANCE_THREE.contains(token),
             "{token} carries a schema reference and belongs to no declared roster: an \
              event no design document announces is a promise nothing backs"
         );
@@ -254,7 +273,8 @@ fn the_schema_roster_names_exactly_the_declared_events() {
             + THE_SET_TRIO.len()
             + THE_BULK_SUMMARY.len()
             + THE_TAXONOMY_EIGHT.len()
-            + THE_RETENTION_PAIR.len(),
+            + THE_RETENTION_PAIR.len()
+            + THE_GOVERNANCE_THREE.len(),
         "the roster must carry each declared event exactly once"
     );
 }

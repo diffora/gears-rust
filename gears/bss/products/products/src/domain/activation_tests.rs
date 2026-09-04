@@ -3,6 +3,8 @@
 use chrono::{Duration, TimeZone, Utc};
 use uuid::Uuid;
 
+use crate::domain::concurrency::InternalRevision;
+
 use super::{
     ACTIVATION_LANE, AttemptBudget, ClaimDecision, ClaimLease, DeferralPopulation, DoorRefusal,
     PreAuthorizedCall, RunFinish, ScheduledActivation, ScheduledFinishState, StoredRunState,
@@ -172,17 +174,19 @@ fn the_preauthorized_call_names_the_mode_and_does_not_consume() {
 }
 
 fn entity_subject(entity_id: Uuid) -> crate::domain::governance::GateSubject {
-    crate::domain::governance::GateSubject::entity_publish(crate::domain::governance::EntityRef {
-        tenant_id: Uuid::from_u128(0x10),
-        entity_kind: bss_products_sdk::models::EntityKind::Product,
-        entity_id,
-    })
+    crate::domain::governance::GateSubject::entity_publish(
+        crate::domain::governance::EntityRef {
+            tenant_id: Uuid::from_u128(0x10),
+            entity_kind: bss_products_sdk::models::EntityKind::Product,
+            entity_id,
+        },
+        InternalRevision::new(1),
+    )
 }
 
 #[test]
 fn a_host_refusal_defers_even_when_the_row_pin_holds() {
     use crate::domain::approval::{ApprovalState, CandidateApproval, StoredApprovalGate};
-    use crate::domain::concurrency::InternalRevision;
     use crate::domain::governance::{ApprovalId, GateMode, GateVerdict, GovernanceGate};
 
     let parent_id = Uuid::from_u128(0x21);
@@ -210,7 +214,6 @@ fn a_host_refusal_defers_even_when_the_row_pin_holds() {
     let old = host
         .evaluate(
             child_subject.clone(),
-            InternalRevision::new(1),
             GateMode::PreAuthorized(ApprovalId::new(approval)),
         )
         .expect("the host reaches a verdict");
@@ -222,7 +225,7 @@ fn a_host_refusal_defers_even_when_the_row_pin_holds() {
     let GateVerdict::Refused { reason } = old else {
         panic!("the host still refuses a child subject");
     };
-    let finish = verify_activation_pin(&host, child_subject, InternalRevision::new(1), &pin);
+    let finish = verify_activation_pin(&host, child_subject, &pin);
     assert_eq!(
         finish,
         RunFinish::Deferred {
@@ -235,7 +238,6 @@ fn a_host_refusal_defers_even_when_the_row_pin_holds() {
 
 #[test]
 fn an_authorized_pin_that_holds_is_admitted() {
-    use crate::domain::concurrency::InternalRevision;
     use crate::domain::error::DomainError;
     use crate::domain::governance::{
         ApprovalDisposition, ApprovalId, GateMode, GateVerdict, GovernanceGate,
@@ -246,7 +248,6 @@ fn an_authorized_pin_that_holds_is_admitted() {
         fn evaluate(
             &self,
             _subject: crate::domain::governance::GateSubject,
-            _expected: InternalRevision,
             _mode: GateMode,
         ) -> Result<GateVerdict, DomainError> {
             Ok(GateVerdict::authorized(
@@ -267,7 +268,6 @@ fn an_authorized_pin_that_holds_is_admitted() {
     let finish = verify_activation_pin(
         &AuthorizingGate,
         entity_subject(Uuid::from_u128(0x42)),
-        InternalRevision::new(1),
         &pin,
     );
     assert_eq!(finish, RunFinish::Applied);
@@ -275,7 +275,6 @@ fn an_authorized_pin_that_holds_is_admitted() {
 
 #[test]
 fn a_pin_that_does_not_verify_fails_terminally() {
-    use crate::domain::concurrency::InternalRevision;
     use crate::domain::error::DomainError;
     use crate::domain::governance::{
         ApprovalDisposition, ApprovalId, GateMode, GateVerdict, GovernanceGate,
@@ -288,7 +287,6 @@ fn a_pin_that_does_not_verify_fails_terminally() {
         fn evaluate(
             &self,
             _subject: crate::domain::governance::GateSubject,
-            _expected: InternalRevision,
             mode: GateMode,
         ) -> Result<GateVerdict, DomainError> {
             *self.seen.borrow_mut() = Some(mode);
@@ -310,12 +308,7 @@ fn a_pin_that_does_not_verify_fails_terminally() {
         record_id: Uuid::from_u128(0x33),
         record_consumed: true,
     };
-    let finish = verify_activation_pin(
-        &gate,
-        subject.clone(),
-        InternalRevision::new(1),
-        &mismatched,
-    );
+    let finish = verify_activation_pin(&gate, subject.clone(), &mismatched);
     assert!(matches!(finish, RunFinish::Failed { .. }));
     assert!(!matches!(finish, RunFinish::Deferred { .. }));
     assert_eq!(
@@ -331,7 +324,7 @@ fn a_pin_that_does_not_verify_fails_terminally() {
         record_consumed: false,
     };
     assert!(matches!(
-        verify_activation_pin(&gate, subject, InternalRevision::new(1), &unconsumed),
+        verify_activation_pin(&gate, subject, &unconsumed),
         RunFinish::Failed { .. }
     ));
 }

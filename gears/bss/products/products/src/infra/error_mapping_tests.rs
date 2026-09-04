@@ -73,6 +73,11 @@ fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
         D::ApprovalRequired(_) => (403, Some("APPROVAL_REQUIRED")),
         D::SelfApprovalForbidden(_) => (403, Some("SELF_APPROVAL_FORBIDDEN")),
         D::ApprovalSuperseded(_) => (409, Some("APPROVAL_SUPERSEDED")),
+        D::ApproverRoleRequired(_) => (403, Some("APPROVER_ROLE_REQUIRED")),
+        D::ApproverScopeExceeded(_) => (403, Some("APPROVER_SCOPE_EXCEEDED")),
+        D::BreakGlassWriteForbidden(_) => (403, Some("BREAKGLASS_WRITE_FORBIDDEN")),
+        D::BreakGlassExpired(_) => (403, Some("BREAKGLASS_EXPIRED")),
+        D::DecisionAlreadyRecorded(_) => (409, Some("DECISION_ALREADY_RECORDED")),
         D::DuplicateCategoryName(_) => (409, Some("DUPLICATE_CATEGORY_NAME")),
         D::TaxonomyCycle(_) => (400, Some("TAXONOMY_CYCLE")),
         D::ErasureUnknownActor(_) => (400, Some("ERASURE_UNKNOWN_ACTOR")),
@@ -155,6 +160,11 @@ fn one_of_every_variant() -> Vec<DomainError> {
         D::ApprovalRequired(d()),
         D::SelfApprovalForbidden(d()),
         D::ApprovalSuperseded(d()),
+        D::ApproverRoleRequired(d()),
+        D::ApproverScopeExceeded(d()),
+        D::BreakGlassWriteForbidden(d()),
+        D::BreakGlassExpired(d()),
+        D::DecisionAlreadyRecorded(d()),
         D::DuplicateCategoryName(d()),
         D::TaxonomyCycle(d()),
         // The six 03 variants the roster never carried. Each has had an arm
@@ -214,7 +224,20 @@ fn one_of_every_variant() -> Vec<DomainError> {
 /// file's guard is the strong one — `declared_status_and_code`'s match is
 /// exhaustive, so a new variant does not compile until it is handled — and the
 /// sibling's is a roster nothing ties to the enum. Move both.
-const DOMAIN_ERROR_VARIANTS: usize = 56;
+///
+/// # There are **two** numeric counters, not three
+///
+/// `features/governance.md` §7 row 37 says *"all three counters move"* and the
+/// 2026-09-04 strand brief repeats it, naming
+/// `domain::taxonomy_tests`' expected lists as the third. Measured 2026-09-04:
+/// that file pins **`TAXONOMY_ERROR_CODES`**, a sixteen-entry roster of
+/// *taxonomy* codes — a different set, which a governance variant does not
+/// move, and which stayed at sixteen while this number went 56 → 61. Its own
+/// line 1352 says *"the **two** enum rosters"*. Row 37 is struck and its
+/// arithmetic is frozen history; this note exists so the miscount does not
+/// travel into the next brief, and so a strand that moves one number does not
+/// go looking for a third that is not there.
+const DOMAIN_ERROR_VARIANTS: usize = 61;
 
 /// Covers all 14 variants (§3.3's own count, `DomainError::code`'s own
 /// exhaustiveness note): every one lands on the status the design ladder

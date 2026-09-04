@@ -22,10 +22,35 @@
 //! number of finalized approvals and hold **one** open one, so L-4's *"a new
 //! submission explicitly supersedes the open one"* is enforced by the engine
 //! rather than by a door's read-then-write. `subject_kind`'s roster is the
-//! five §4 names — the fifth, `bulk_batch`, is 09's and its writer already
-//! ships (`products_bulk_batch.approval_ref` carries no FK precisely because
-//! this table did not exist yet; it does now, and the FK stays absent because
-//! the reference points the other way).
+//! five §4 names plus **`materiality_policy`** (**P-D-120** row 38, edited
+//! into this `CHECK` in place, 2026-09-04). The fifth, `bulk_batch`, is 09's
+//! and its writer already ships (`products_bulk_batch.approval_ref` carries
+//! no FK precisely because this table did not exist yet; it does now, and the
+//! FK stays absent because the reference points the other way).
+//!
+//! # The revision floor is **zero**, not one
+//!
+//! `chk_products_approval_revision` read `>= 1` and **P-D-120** row 14
+//! requires `0`: *"`internal_revision` is the op's own pin — the envelope's
+//! revision where it has one, **`0` where the subject has no counter**"*,
+//! because the column exists to detect a stale submission and an op with no
+//! counter cannot go stale. The constraint as shipped made every non-entity
+//! submission unwritable — measured 2026-09-04, when the submit door's first
+//! `materiality_policy` record answered a 500 through the `CHECK`. The floor
+//! is widened in place on both dialects; nothing wrote a zero before, so no
+//! row moves.
+//!
+//! Zero is **not** a nullable revision, and P-D-120 says why it is a sentinel
+//! rather than a `NULL`: a nullable column would put `NULL` into P-D-105's
+//! equality clause, where it compares unequal to everything including itself.
+//!
+//! **Why the policy is a kind and not a `governed_live_op`.** `subject_kind`
+//! names *what is approved*, which is P-D-14's own reason for making
+//! `system_signal` a kind; a policy mutation is a thing approved, and it is
+//! the one thing whose approval governs the count every other approval is
+//! judged by. Folding it into `governed_live_op` would leave the record that
+//! raised `N` indistinguishable from a taxonomy rename in the one column an
+//! auditor filters on.
 //!
 //! # `N = 0` puts the acknowledgment on the record, not on a decision
 //!
@@ -99,10 +124,10 @@ const PG_UP_STATEMENTS: &[&str] = &[
             submitted_at          timestamptz NOT NULL,
             finalized_at          timestamptz,
             CONSTRAINT products_approval_pkey PRIMARY KEY (tenant_id, approval_id),
-            CONSTRAINT chk_products_approval_subject_kind CHECK (subject_kind IN ('entity_publish', 'governed_live_op', 'system_signal', 'sku_correction', 'bulk_batch')),
+            CONSTRAINT chk_products_approval_subject_kind CHECK (subject_kind IN ('entity_publish', 'governed_live_op', 'system_signal', 'sku_correction', 'bulk_batch', 'materiality_policy')),
             CONSTRAINT chk_products_approval_subject_ref CHECK (subject_ref <> ''),
             CONSTRAINT chk_products_approval_state CHECK (state IN ('pending', 'satisfied', 'consumed', 'rejected', 'superseded')),
-            CONSTRAINT chk_products_approval_revision CHECK (internal_revision >= 1),
+            CONSTRAINT chk_products_approval_revision CHECK (internal_revision >= 0),
             CONSTRAINT chk_products_approval_snapshot CHECK (content_snapshot <> ''),
             CONSTRAINT chk_products_approval_descriptor CHECK (quorum_descriptor <> ''),
             CONSTRAINT chk_products_approval_override_pair CHECK ((author_override_ack IS NULL) = (author_override_ack_at IS NULL)),
@@ -176,10 +201,10 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             submitted_at          text    NOT NULL,
             finalized_at          text,
             PRIMARY KEY (tenant_id, approval_id),
-            CONSTRAINT chk_products_approval_subject_kind CHECK (subject_kind IN ('entity_publish', 'governed_live_op', 'system_signal', 'sku_correction', 'bulk_batch')),
+            CONSTRAINT chk_products_approval_subject_kind CHECK (subject_kind IN ('entity_publish', 'governed_live_op', 'system_signal', 'sku_correction', 'bulk_batch', 'materiality_policy')),
             CONSTRAINT chk_products_approval_subject_ref CHECK (subject_ref <> ''),
             CONSTRAINT chk_products_approval_state CHECK (state IN ('pending', 'satisfied', 'consumed', 'rejected', 'superseded')),
-            CONSTRAINT chk_products_approval_revision CHECK (internal_revision >= 1),
+            CONSTRAINT chk_products_approval_revision CHECK (internal_revision >= 0),
             CONSTRAINT chk_products_approval_snapshot CHECK (content_snapshot <> ''),
             CONSTRAINT chk_products_approval_descriptor CHECK (quorum_descriptor <> ''),
             CONSTRAINT chk_products_approval_override_pair CHECK ((author_override_ack IS NULL) = (author_override_ack_at IS NULL)),

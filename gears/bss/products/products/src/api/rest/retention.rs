@@ -862,16 +862,16 @@ async fn export_identity_map(
 /// the base approver quorum starts applying (P-D-10 — there is no gear-side
 /// Legal role, and the quorum is the tenant's approvers).
 ///
-/// `InternalRevision::new(0)` is named at the call because a live op has no
-/// entity head to read one from.
+/// The pin is [`SubjectPin::Unpinned`] — a live op has no entity head to
+/// read a revision from, and P-D-125 row 52 folded the pin into the subject
+/// (strand B, merged 2026-09-04; this call was reconstructed at that merge).
 fn submit_allowlist_to_gate(tenant_id: Uuid) -> Result<(), DomainError> {
     use crate::domain::governance::{
-        GateMode, GateSubject, GateVerdict, GovernanceGate, NoMaterialityPolicyGate,
+        GateMode, GateSubject, GateVerdict, GovernanceGate, NoMaterialityPolicyGate, SubjectPin,
     };
     let gate: Arc<dyn GovernanceGate + Send + Sync> = Arc::new(NoMaterialityPolicyGate);
     match gate.evaluate(
-        GateSubject::governed_live_op(tenant_id, ALLOWLIST_LIVE_OP_TARGET),
-        crate::domain::concurrency::InternalRevision::new(0),
+        GateSubject::governed_live_op(tenant_id, ALLOWLIST_LIVE_OP_TARGET, SubjectPin::Unpinned),
         GateMode::Gate,
     )? {
         GateVerdict::Authorized(_) => Ok(()),

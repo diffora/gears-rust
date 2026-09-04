@@ -51,10 +51,9 @@ use uuid::Uuid;
 
 use crate::api::rest::{ApiState, repo_error_to_canonical, require_authenticated};
 use crate::domain::canonical;
-use crate::domain::concurrency::InternalRevision;
 use crate::domain::error::DomainError;
 use crate::domain::governance::{
-    GateMode, GateSubject, GateVerdict, GovernanceGate, NoMaterialityPolicyGate,
+    GateMode, GateSubject, GateVerdict, GovernanceGate, NoMaterialityPolicyGate, SubjectPin,
 };
 use crate::domain::live_op::GovernedLiveOp;
 use crate::domain::taxonomy::{DefinitionState, TaxonomyLimits};
@@ -546,8 +545,7 @@ async fn door_scope(
 fn submit_to_gate(tenant_id: Uuid, target: &str) -> Result<(), DomainError> {
     let gate: Arc<dyn GovernanceGate + Send + Sync> = Arc::new(NoMaterialityPolicyGate);
     match gate.evaluate(
-        GateSubject::governed_live_op(tenant_id, target),
-        InternalRevision::new(0),
+        GateSubject::governed_live_op(tenant_id, target, SubjectPin::Unpinned),
         GateMode::Gate,
     )? {
         GateVerdict::Authorized(_) => Ok(()),

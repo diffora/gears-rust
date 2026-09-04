@@ -1319,7 +1319,6 @@ impl crate::domain::governance::GovernanceGate for RefusingGate {
     fn evaluate(
         &self,
         _subject: crate::domain::governance::GateSubject,
-        _expected_revision: crate::domain::concurrency::InternalRevision,
         _mode: crate::domain::governance::GateMode,
     ) -> Result<crate::domain::governance::GateVerdict, crate::domain::error::DomainError> {
         Ok(crate::domain::governance::GateVerdict::Refused {
@@ -1342,6 +1341,8 @@ fn api_state(harness: &TestHarness) -> ApiState {
         bulk_max_concurrent_batches_per_tenant: ProductsConfig::default()
             .bulk_max_concurrent_batches_per_tenant,
         watermark_skew_tolerance: ProductsConfig::default().watermark_skew_tolerance(),
+        breakglass_window_hours: crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT,
+        breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
     }
 }
 
@@ -2858,7 +2859,6 @@ impl crate::domain::governance::GovernanceGate for RecordingGate {
     fn evaluate(
         &self,
         _subject: crate::domain::governance::GateSubject,
-        _expected_revision: crate::domain::concurrency::InternalRevision,
         mode: crate::domain::governance::GateMode,
     ) -> Result<crate::domain::governance::GateVerdict, crate::domain::error::DomainError> {
         use crate::domain::governance::{ApprovalDisposition, GateMode, GateVerdict};
@@ -2946,8 +2946,8 @@ async fn a_preauthorized_publish_reaches_the_host_in_that_mode_and_consumes_noth
                     entity_kind: bss_products_sdk::models::EntityKind::Sku,
                     entity_id: sku_id,
                 },
+                crate::domain::concurrency::InternalRevision::new(1),
             ),
-            crate::domain::concurrency::InternalRevision::new(1),
             GateMode::PreAuthorized(approval),
         )
         .expect("this double never fails to reach an answer");
@@ -3249,7 +3249,6 @@ impl crate::domain::governance::GovernanceGate for OverridingGate {
     fn evaluate(
         &self,
         _subject: crate::domain::governance::GateSubject,
-        _expected_revision: crate::domain::concurrency::InternalRevision,
         _mode: crate::domain::governance::GateMode,
     ) -> Result<crate::domain::governance::GateVerdict, crate::domain::error::DomainError> {
         Ok(crate::domain::governance::GateVerdict::authorized(

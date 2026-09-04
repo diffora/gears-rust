@@ -38,12 +38,7 @@ fn entity() -> EntityRef {
 /// The same subject as the seam now expresses it (P-D-67 arm 4), built
 /// through the entity constructor the arm keeps.
 fn subject() -> GateSubject {
-    GateSubject::entity_publish(entity())
-}
-
-/// The revision a door would have pinned through its `If-Match`.
-fn pinned() -> InternalRevision {
-    InternalRevision::new(7)
+    GateSubject::entity_publish(entity(), InternalRevision::new(1))
 }
 
 /// A host that refuses every question, whatever the mode.
@@ -56,12 +51,7 @@ fn pinned() -> InternalRevision {
 struct AlwaysRefusesGate;
 
 impl GovernanceGate for AlwaysRefusesGate {
-    fn evaluate(
-        &self,
-        _subject: GateSubject,
-        _expected_revision: InternalRevision,
-        _mode: GateMode,
-    ) -> Result<GateVerdict, DomainError> {
+    fn evaluate(&self, _subject: GateSubject, _mode: GateMode) -> Result<GateVerdict, DomainError> {
         Ok(GateVerdict::Refused {
             reason: "no satisfied approval record pinned to this revision".to_owned(),
         })
@@ -76,12 +66,7 @@ struct AuthorizesAndNamesARecord {
 }
 
 impl GovernanceGate for AuthorizesAndNamesARecord {
-    fn evaluate(
-        &self,
-        _subject: GateSubject,
-        _expected_revision: InternalRevision,
-        mode: GateMode,
-    ) -> Result<GateVerdict, DomainError> {
+    fn evaluate(&self, _subject: GateSubject, mode: GateMode) -> Result<GateVerdict, DomainError> {
         let disposition = match mode {
             GateMode::Gate => ApprovalDisposition::Consume(self.approval),
             GateMode::PreAuthorized(id) => ApprovalDisposition::Verified(id),
@@ -104,7 +89,7 @@ impl GovernanceGate for AuthorizesAndNamesARecord {
 #[test]
 fn the_default_host_authorizes_under_gate_with_no_record_to_consume() {
     let verdict = NoMaterialityPolicyGate
-        .evaluate(subject(), pinned(), GateMode::Gate)
+        .evaluate(subject(), GateMode::Gate)
         .expect("the default host reaches an answer without a store");
 
     let authorization = verdict
@@ -125,7 +110,7 @@ fn the_default_host_authorizes_under_gate_with_no_record_to_consume() {
 fn the_default_host_refuses_under_preauthorized_because_it_can_verify_nothing() {
     let id = ApprovalId::new(Uuid::from_u128(0x33));
     let verdict = NoMaterialityPolicyGate
-        .evaluate(subject(), pinned(), GateMode::PreAuthorized(id))
+        .evaluate(subject(), GateMode::PreAuthorized(id))
         .expect("refusing is an answer, not a host failure");
 
     let error = verdict
@@ -142,7 +127,7 @@ fn the_default_host_refuses_under_preauthorized_because_it_can_verify_nothing() 
 #[test]
 fn a_host_that_refuses_under_gate_produces_approval_required() {
     let verdict = AlwaysRefusesGate
-        .evaluate(subject(), pinned(), GateMode::Gate)
+        .evaluate(subject(), GateMode::Gate)
         .expect("a refusal is an answer, not a host failure");
 
     let error = verdict
@@ -170,7 +155,7 @@ fn an_authorized_gate_verdict_names_the_record_the_transaction_must_consume() {
     };
 
     let authorization = host
-        .evaluate(subject(), pinned(), GateMode::Gate)
+        .evaluate(subject(), GateMode::Gate)
         .expect("the double reaches an answer")
         .into_authorization()
         .expect("the double authorizes");
@@ -196,7 +181,7 @@ fn a_preauthorized_verdict_names_a_record_but_offers_nothing_to_consume() {
     };
 
     let authorization = host
-        .evaluate(subject(), pinned(), GateMode::PreAuthorized(id))
+        .evaluate(subject(), GateMode::PreAuthorized(id))
         .expect("the double reaches an answer")
         .into_authorization()
         .expect("the double authorizes");
@@ -228,7 +213,7 @@ fn a_verdict_with_no_record_is_spendable_nowhere() {
 #[test]
 fn an_authorized_verdict_still_carries_its_reason() {
     let authorization = NoMaterialityPolicyGate
-        .evaluate(subject(), pinned(), GateMode::Gate)
+        .evaluate(subject(), GateMode::Gate)
         .expect("the default host reaches an answer")
         .into_authorization()
         .expect("the default host authorizes under Gate");

@@ -82,6 +82,8 @@ const PG_UP_STATEMENTS: &[&str] = &[
             valid_from              timestamptz NOT NULL,
             valid_until             timestamptz NOT NULL,
             two_person_approval_ref uuid,
+            approver_a              uuid,
+            approver_b              uuid,
             posthoc_state           text,
             reviewed_by             uuid,
             reviewed_at             timestamptz,
@@ -92,6 +94,8 @@ const PG_UP_STATEMENTS: &[&str] = &[
             CONSTRAINT chk_products_breakglass_window CHECK (valid_until > valid_from),
             CONSTRAINT chk_products_breakglass_posthoc_state CHECK (posthoc_state IS NULL OR posthoc_state IN ('pending', 'reviewed')),
             CONSTRAINT chk_products_breakglass_path CHECK ((two_person_approval_ref IS NULL) <> (posthoc_state IS NULL)),
+            CONSTRAINT chk_products_breakglass_approvers CHECK ((approver_a IS NULL) = (two_person_approval_ref IS NULL) AND (approver_b IS NULL) = (two_person_approval_ref IS NULL)),
+            CONSTRAINT chk_products_breakglass_approvers_distinct CHECK (approver_a IS NULL OR approver_a <> approver_b),
             CONSTRAINT chk_products_breakglass_review CHECK (
                 (posthoc_state = 'reviewed' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL)
                 OR (posthoc_state IS DISTINCT FROM 'reviewed' AND reviewed_by IS NULL AND reviewed_at IS NULL)
@@ -109,6 +113,8 @@ const PG_UP_STATEMENTS: &[&str] = &[
              OR NEW.reason <> OLD.reason
              OR NEW.valid_from <> OLD.valid_from
              OR NEW.valid_until <> OLD.valid_until
+             OR NEW.approver_a IS DISTINCT FROM OLD.approver_a
+             OR NEW.approver_b IS DISTINCT FROM OLD.approver_b
              OR NEW.opened_at <> OLD.opened_at THEN
             RAISE EXCEPTION 'products_breakglass_session: an opened session''s terms are immutable';
           END IF;
@@ -135,6 +141,8 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             valid_from              text    NOT NULL,
             valid_until             text    NOT NULL,
             two_person_approval_ref text,
+            approver_a              text,
+            approver_b              text,
             posthoc_state           text,
             reviewed_by             text,
             reviewed_at             text,
@@ -145,6 +153,8 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             CONSTRAINT chk_products_breakglass_window CHECK (valid_until > valid_from),
             CONSTRAINT chk_products_breakglass_posthoc_state CHECK (posthoc_state IS NULL OR posthoc_state IN ('pending', 'reviewed')),
             CONSTRAINT chk_products_breakglass_path CHECK ((two_person_approval_ref IS NULL) <> (posthoc_state IS NULL)),
+            CONSTRAINT chk_products_breakglass_approvers CHECK ((approver_a IS NULL) = (two_person_approval_ref IS NULL) AND (approver_b IS NULL) = (two_person_approval_ref IS NULL)),
+            CONSTRAINT chk_products_breakglass_approvers_distinct CHECK (approver_a IS NULL OR approver_a <> approver_b),
             CONSTRAINT chk_products_breakglass_review CHECK (
                 (posthoc_state = 'reviewed' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL)
                 OR ((posthoc_state IS NULL OR posthoc_state <> 'reviewed') AND reviewed_by IS NULL AND reviewed_at IS NULL)
@@ -164,6 +174,8 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
              OR NEW.reason <> OLD.reason
              OR NEW.valid_from <> OLD.valid_from
              OR NEW.valid_until <> OLD.valid_until
+             OR NEW.approver_a IS NOT OLD.approver_a
+             OR NEW.approver_b IS NOT OLD.approver_b
              OR NEW.opened_at <> OLD.opened_at
         BEGIN
           SELECT RAISE(ABORT, 'products_breakglass_session: an opened session''s terms are immutable');

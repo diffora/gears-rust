@@ -1890,7 +1890,12 @@ fn bodiless_payload_digest() -> Vec<u8> {
 /// the field, so the rendering writes `null` for it — and a door that
 /// pre-filled the nulls itself would make the roster a no-op precisely in
 /// the case it exists for.
-fn product_content(record: &ProductRecord) -> JsonValue {
+///
+/// `pub(crate)` since 2026-09-04: `05`'s submit door stores the head's
+/// content as the record's `content_snapshot`, and that snapshot must be the
+/// **same rendering** the publish door will freeze — a second renderer would
+/// let an approver sign bytes the publish never produces.
+pub(crate) fn product_content(record: &ProductRecord) -> JsonValue {
     let mut content = JsonMap::new();
     content.insert(
         "brand_id".to_owned(),
@@ -3080,11 +3085,14 @@ async fn fire_invalidation_hook(
     if invalidation != ApprovalInvalidation::Fire {
         return Ok(());
     }
-    let subject = GateSubject::entity_publish(EntityRef {
-        tenant_id: inputs.tenant_id,
-        entity_kind: CatalogEntityKind::Product,
-        entity_id: inputs.product_id,
-    });
+    let subject = GateSubject::entity_publish(
+        EntityRef {
+            tenant_id: inputs.tenant_id,
+            entity_kind: CatalogEntityKind::Product,
+            entity_id: inputs.product_id,
+        },
+        InternalRevision::new(inputs.expected),
+    );
     // The domain seam still runs: it is the pure part of the act, and a host
     // that ever refuses is a refusal of the transition.
     NoApprovalStoreHook
@@ -3312,12 +3320,14 @@ async fn run_deprecate(
 
     let verdict = gate
         .evaluate(
-            GateSubject::entity_publish(EntityRef {
-                tenant_id: inputs.tenant_id,
-                entity_kind: CatalogEntityKind::Product,
-                entity_id: inputs.product_id,
-            }),
-            InternalRevision::new(inputs.expected),
+            GateSubject::entity_publish(
+                EntityRef {
+                    tenant_id: inputs.tenant_id,
+                    entity_kind: CatalogEntityKind::Product,
+                    entity_id: inputs.product_id,
+                },
+                InternalRevision::new(inputs.expected),
+            ),
             GateMode::Gate,
         )
         .map_err(|e| {
@@ -3509,11 +3519,18 @@ async fn cascade_onto_children(
             runner,
             sku_scope,
             inputs.tenant_id,
-            &GateSubject::entity_publish(EntityRef {
-                tenant_id: inputs.tenant_id,
-                entity_kind: CatalogEntityKind::Sku,
-                entity_id: sku_id,
-            }),
+            // `SubjectPin::Unpinned` on purpose: the supersede filters on
+            // `(tenant, kind, subject_ref)` alone, because a head edit
+            // invalidates whatever revision the open record pinned — naming a
+            // revision here would suggest the hook is selective and it is not.
+            &GateSubject::entity_publish(
+                EntityRef {
+                    tenant_id: inputs.tenant_id,
+                    entity_kind: CatalogEntityKind::Sku,
+                    entity_id: sku_id,
+                },
+                InternalRevision::new(0),
+            ),
             inputs.now,
         )
         .await
@@ -3731,12 +3748,14 @@ async fn run_undeprecate(
 
     let verdict = gate
         .evaluate(
-            GateSubject::entity_publish(EntityRef {
-                tenant_id: inputs.tenant_id,
-                entity_kind: CatalogEntityKind::Product,
-                entity_id: inputs.product_id,
-            }),
-            InternalRevision::new(inputs.expected),
+            GateSubject::entity_publish(
+                EntityRef {
+                    tenant_id: inputs.tenant_id,
+                    entity_kind: CatalogEntityKind::Product,
+                    entity_id: inputs.product_id,
+                },
+                InternalRevision::new(inputs.expected),
+            ),
             GateMode::Gate,
         )
         .map_err(|e| {
@@ -3892,8 +3911,8 @@ fn retire_product_payload_digest(request: &RetireProductRequest) -> Vec<u8> {
 
 /// `POST /bss-products/v1/products/{id}/retire` — §3.3 body.
 ///
-/// Gate call: `gate.evaluate(GateSubject::entity_publish(EntityRef {
-/// tenant_id, entity_kind: Product, entity_id }), InternalRevision::new(expected),
+/// Gate call: `gate.evaluate(GateSubject::entity_publish(EntityRef { tenant_id,
+/// entity_kind: Product, entity_id }, InternalRevision::new(expected)),
 /// GateMode::Gate)` after the edge and domain refusals, before the write.
 ///
 /// 07's reference predicate is not a live operand; children are classified
@@ -4071,12 +4090,14 @@ async fn run_retire(
 
     let verdict = gate
         .evaluate(
-            GateSubject::entity_publish(EntityRef {
-                tenant_id: inputs.tenant_id,
-                entity_kind: CatalogEntityKind::Product,
-                entity_id: inputs.product_id,
-            }),
-            InternalRevision::new(inputs.expected),
+            GateSubject::entity_publish(
+                EntityRef {
+                    tenant_id: inputs.tenant_id,
+                    entity_kind: CatalogEntityKind::Product,
+                    entity_id: inputs.product_id,
+                },
+                InternalRevision::new(inputs.expected),
+            ),
             GateMode::Gate,
         )
         .map_err(|e| {
@@ -4270,8 +4291,8 @@ async fn answer_product_without_event(
 
 /// `POST /bss-products/v1/products/{id}/retire/cancel`.
 ///
-/// Gate call: `gate.evaluate(GateSubject::entity_publish(EntityRef {
-/// tenant_id, entity_kind: Product, entity_id }), InternalRevision::new(expected),
+/// Gate call: `gate.evaluate(GateSubject::entity_publish(EntityRef { tenant_id,
+/// entity_kind: Product, entity_id }, InternalRevision::new(expected)),
 /// GateMode::Gate)` after the live-op pin, before the write.
 ///
 /// # Errors
@@ -4409,12 +4430,14 @@ async fn run_cancel_retire(
 
     let verdict = gate
         .evaluate(
-            GateSubject::entity_publish(EntityRef {
-                tenant_id: inputs.tenant_id,
-                entity_kind: CatalogEntityKind::Product,
-                entity_id: inputs.product_id,
-            }),
-            InternalRevision::new(inputs.expected),
+            GateSubject::entity_publish(
+                EntityRef {
+                    tenant_id: inputs.tenant_id,
+                    entity_kind: CatalogEntityKind::Product,
+                    entity_id: inputs.product_id,
+                },
+                InternalRevision::new(inputs.expected),
+            ),
             GateMode::Gate,
         )
         .map_err(|e| {
@@ -4790,8 +4813,7 @@ async fn run_publish(
     };
     let verdict = gate
         .evaluate(
-            GateSubject::entity_publish(subject),
-            InternalRevision::new(inputs.expected),
+            GateSubject::entity_publish(subject, InternalRevision::new(inputs.expected)),
             mode,
         )
         .map_err(|e| {
@@ -4928,12 +4950,14 @@ async fn run_discard(
     // `APPROVAL_REQUIRED`. --
     let verdict = gate
         .evaluate(
-            GateSubject::entity_publish(EntityRef {
-                tenant_id: inputs.tenant_id,
-                entity_kind: CatalogEntityKind::Product,
-                entity_id: inputs.product_id,
-            }),
-            InternalRevision::new(inputs.expected),
+            GateSubject::entity_publish(
+                EntityRef {
+                    tenant_id: inputs.tenant_id,
+                    entity_kind: CatalogEntityKind::Product,
+                    entity_id: inputs.product_id,
+                },
+                InternalRevision::new(inputs.expected),
+            ),
             GateMode::Gate,
         )
         .map_err(|e| {
@@ -6666,12 +6690,14 @@ async fn run_save(
     // `no` is `APPROVAL_REQUIRED`. --
     let verdict = gate
         .evaluate(
-            GateSubject::entity_publish(EntityRef {
-                tenant_id: inputs.tenant_id,
-                entity_kind: CatalogEntityKind::Product,
-                entity_id: inputs.product_id,
-            }),
-            InternalRevision::new(inputs.expected),
+            GateSubject::entity_publish(
+                EntityRef {
+                    tenant_id: inputs.tenant_id,
+                    entity_kind: CatalogEntityKind::Product,
+                    entity_id: inputs.product_id,
+                },
+                InternalRevision::new(inputs.expected),
+            ),
             GateMode::Gate,
         )
         .map_err(|e| {

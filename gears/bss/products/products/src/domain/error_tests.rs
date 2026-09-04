@@ -9,7 +9,7 @@ use crate::domain::validation::ValidationReport;
 /// is long enough that holding it inline puts the test over
 /// `clippy::too_many_lines`, which this crate denies.
 fn wire_code_roster() -> Vec<(DomainError, &'static str)> {
-    vec![
+    let mut roster = vec![
         (
             DomainError::Validation(ValidationReport::new()),
             "VALIDATION",
@@ -182,10 +182,6 @@ fn wire_code_roster() -> Vec<(DomainError, &'static str)> {
             "SELF_APPROVAL_FORBIDDEN",
         ),
         (
-            DomainError::ApprovalSuperseded("a".into()),
-            "APPROVAL_SUPERSEDED",
-        ),
-        (
             DomainError::DuplicateCategoryName("d".into()),
             "DUPLICATE_CATEGORY_NAME",
         ),
@@ -206,6 +202,43 @@ fn wire_code_roster() -> Vec<(DomainError, &'static str)> {
         (
             DomainError::StaleCategoryToken("t".into()),
             "STALE_CATEGORY_TOKEN",
+        ),
+    ];
+    roster.extend(governance_wire_codes());
+    roster
+}
+
+/// `05`'s own six, split out so the roster above stays under
+/// `clippy::too_many_lines`.
+///
+/// **A split, not a second roster.** `wire_code_roster` concatenates this, so
+/// the count asserted below still covers every variant; a governance code
+/// added here and nowhere else still moves that number.
+fn governance_wire_codes() -> Vec<(DomainError, &'static str)> {
+    vec![
+        (
+            DomainError::ApprovalSuperseded("a".into()),
+            "APPROVAL_SUPERSEDED",
+        ),
+        (
+            DomainError::DecisionAlreadyRecorded("a".into()),
+            "DECISION_ALREADY_RECORDED",
+        ),
+        (
+            DomainError::ApproverRoleRequired("a".into()),
+            "APPROVER_ROLE_REQUIRED",
+        ),
+        (
+            DomainError::ApproverScopeExceeded("a".into()),
+            "APPROVER_SCOPE_EXCEEDED",
+        ),
+        (
+            DomainError::BreakGlassWriteForbidden("a".into()),
+            "BREAKGLASS_WRITE_FORBIDDEN",
+        ),
+        (
+            DomainError::BreakGlassExpired("a".into()),
+            "BREAKGLASS_EXPIRED",
         ),
     ]
 }
@@ -231,7 +264,7 @@ fn every_variant_carries_its_design_set_wire_code() {
     // until today. Read that file's own note before changing either.
     assert_eq!(
         cases.len(),
-        56,
+        61,
         "the Foundation owns fourteen raiseable codes and hosts two guests \
          (retention-erasure's ERASURE_UNKNOWN_ACTOR, P-D-64 keeping that \
          roster at one, and the clone door's CLONE_SOURCE_DISCARDED, \

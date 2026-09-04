@@ -2486,7 +2486,11 @@ fn post_discard_image(head: &SkuRecord, now: DateTime<Utc>) -> SkuRecord {
 /// a_publish_carrying_the_uncomposed_bundle_override_freezes_the_raised_flag`
 /// is what holds this closed, by reading the flag back out of
 /// `products_entity_version` rather than off any in-memory value.
-fn sku_version_content(image: &SkuRecord) -> JsonValue {
+///
+/// `pub(crate)` since 2026-09-04, for the reason `products::product_content`
+/// states: `05`'s submit door renders the submitted snapshot through the same
+/// function the freeze uses.
+pub(crate) fn sku_version_content(image: &SkuRecord) -> JsonValue {
     let mut fields = JsonMap::new();
     fields.insert(
         "sku_id".to_owned(),
@@ -2918,7 +2922,9 @@ async fn fire_invalidation_hook(
         runner,
         &inputs.scope,
         inputs.tenant_id,
-        &GateSubject::entity_publish(entity),
+        // Unpinned, for the reason `products::` states at its own hook call:
+        // the supersede filters on the subject's identity and not its pin.
+        &GateSubject::entity_publish(entity, InternalRevision::new(0)),
         inputs.now,
     )
     .await
@@ -3454,12 +3460,14 @@ async fn run_publish(
     // `PreAuthorized` only from an in-process caller. --
     let verdict = gate
         .evaluate(
-            GateSubject::entity_publish(EntityRef {
-                tenant_id: inputs.tenant_id,
-                entity_kind: EntityKind::Sku,
-                entity_id: inputs.sku_id,
-            }),
-            InternalRevision::new(inputs.expected),
+            GateSubject::entity_publish(
+                EntityRef {
+                    tenant_id: inputs.tenant_id,
+                    entity_kind: EntityKind::Sku,
+                    entity_id: inputs.sku_id,
+                },
+                InternalRevision::new(inputs.expected),
+            ),
             mode,
         )
         .map_err(|e| {
@@ -3642,12 +3650,14 @@ async fn run_discard(
     // and carry its reasoning. --
     let verdict = gate
         .evaluate(
-            GateSubject::entity_publish(EntityRef {
-                tenant_id: inputs.tenant_id,
-                entity_kind: EntityKind::Sku,
-                entity_id: inputs.sku_id,
-            }),
-            InternalRevision::new(inputs.expected),
+            GateSubject::entity_publish(
+                EntityRef {
+                    tenant_id: inputs.tenant_id,
+                    entity_kind: EntityKind::Sku,
+                    entity_id: inputs.sku_id,
+                },
+                InternalRevision::new(inputs.expected),
+            ),
             GateMode::Gate,
         )
         .map_err(|e| {
@@ -4238,8 +4248,7 @@ async fn discard_sku_gated(
 /// `POST /bss-products/v1/skus/{id}/undeprecate` — empty body.
 ///
 /// Gate call: `gate.evaluate(GateSubject::entity_publish(EntityRef {
-/// tenant_id, entity_kind: Sku, entity_id }), InternalRevision::new(expected),
-/// GateMode::Gate)` after the edge and the live-intent guard, before the
+/// tenant_id, entity_kind: Sku, entity_id }, InternalRevision::new(expected)), GateMode::Gate)` after the edge and the live-intent guard, before the
 /// write. `NoMaterialityPolicyGate` authorizes under `Gate`.
 ///
 /// # Errors
@@ -4327,8 +4336,7 @@ async fn undeprecate_sku_gated(
 /// `inst-lc-deprecate` with provenance `direct`.
 ///
 /// Gate call: `gate.evaluate(GateSubject::entity_publish(EntityRef {
-/// tenant_id, entity_kind: Sku, entity_id }), InternalRevision::new(expected),
-/// GateMode::Gate)` after the edge, before the write.
+/// tenant_id, entity_kind: Sku, entity_id }, InternalRevision::new(expected)), GateMode::Gate)` after the edge, before the write.
 ///
 /// # Errors
 ///
@@ -4471,12 +4479,14 @@ async fn run_deprecate(
 
     let verdict = gate
         .evaluate(
-            GateSubject::entity_publish(EntityRef {
-                tenant_id: inputs.tenant_id,
-                entity_kind: EntityKind::Sku,
-                entity_id: inputs.sku_id,
-            }),
-            InternalRevision::new(inputs.expected),
+            GateSubject::entity_publish(
+                EntityRef {
+                    tenant_id: inputs.tenant_id,
+                    entity_kind: EntityKind::Sku,
+                    entity_id: inputs.sku_id,
+                },
+                InternalRevision::new(inputs.expected),
+            ),
             GateMode::Gate,
         )
         .map_err(|e| {
@@ -4626,12 +4636,14 @@ async fn run_undeprecate(
 
     let verdict = gate
         .evaluate(
-            GateSubject::entity_publish(EntityRef {
-                tenant_id: inputs.tenant_id,
-                entity_kind: EntityKind::Sku,
-                entity_id: inputs.sku_id,
-            }),
-            InternalRevision::new(inputs.expected),
+            GateSubject::entity_publish(
+                EntityRef {
+                    tenant_id: inputs.tenant_id,
+                    entity_kind: EntityKind::Sku,
+                    entity_id: inputs.sku_id,
+                },
+                InternalRevision::new(inputs.expected),
+            ),
             GateMode::Gate,
         )
         .map_err(|e| {
@@ -4678,8 +4690,7 @@ async fn run_undeprecate(
 /// `POST /bss-products/v1/skus/{id}/retire` — §3.3 body.
 ///
 /// Gate call: `gate.evaluate(GateSubject::entity_publish(EntityRef {
-/// tenant_id, entity_kind: Sku, entity_id }), InternalRevision::new(expected),
-/// GateMode::Gate)` after the edge and domain refusals, before the write.
+/// tenant_id, entity_kind: Sku, entity_id }, InternalRevision::new(expected)), GateMode::Gate)` after the edge and domain refusals, before the write.
 /// `NoMaterialityPolicyGate` authorizes under `Gate`.
 ///
 /// 02's content-PII write block has no callable hook in this crate; `reason`
@@ -4862,12 +4873,14 @@ async fn run_retire(
 
     let verdict = gate
         .evaluate(
-            GateSubject::entity_publish(EntityRef {
-                tenant_id: inputs.tenant_id,
-                entity_kind: EntityKind::Sku,
-                entity_id: inputs.sku_id,
-            }),
-            InternalRevision::new(inputs.expected),
+            GateSubject::entity_publish(
+                EntityRef {
+                    tenant_id: inputs.tenant_id,
+                    entity_kind: EntityKind::Sku,
+                    entity_id: inputs.sku_id,
+                },
+                InternalRevision::new(inputs.expected),
+            ),
             GateMode::Gate,
         )
         .map_err(|e| {
@@ -4982,8 +4995,7 @@ async fn answer_head_without_event(
 /// `POST /bss-products/v1/skus/{id}/retire/cancel` — 02's envelope.
 ///
 /// Gate call: `gate.evaluate(GateSubject::entity_publish(EntityRef {
-/// tenant_id, entity_kind: Sku, entity_id }), InternalRevision::new(expected),
-/// GateMode::Gate)` after the live-op pin, before the write.
+/// tenant_id, entity_kind: Sku, entity_id }, InternalRevision::new(expected)), GateMode::Gate)` after the live-op pin, before the write.
 ///
 /// # Errors
 ///
@@ -5135,12 +5147,14 @@ async fn run_cancel_retire(
 
     let verdict = gate
         .evaluate(
-            GateSubject::entity_publish(EntityRef {
-                tenant_id: inputs.tenant_id,
-                entity_kind: EntityKind::Sku,
-                entity_id: inputs.sku_id,
-            }),
-            InternalRevision::new(inputs.expected),
+            GateSubject::entity_publish(
+                EntityRef {
+                    tenant_id: inputs.tenant_id,
+                    entity_kind: EntityKind::Sku,
+                    entity_id: inputs.sku_id,
+                },
+                InternalRevision::new(inputs.expected),
+            ),
             GateMode::Gate,
         )
         .map_err(|e| {
@@ -6087,12 +6101,14 @@ async fn run_save(
     // `run_publish`'s and carry its reasoning. --
     let verdict = gate
         .evaluate(
-            GateSubject::entity_publish(EntityRef {
-                tenant_id: inputs.tenant_id,
-                entity_kind: EntityKind::Sku,
-                entity_id: inputs.sku_id,
-            }),
-            InternalRevision::new(inputs.expected),
+            GateSubject::entity_publish(
+                EntityRef {
+                    tenant_id: inputs.tenant_id,
+                    entity_kind: EntityKind::Sku,
+                    entity_id: inputs.sku_id,
+                },
+                InternalRevision::new(inputs.expected),
+            ),
             GateMode::Gate,
         )
         .map_err(|e| {

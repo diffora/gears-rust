@@ -358,8 +358,10 @@ async fn read_path_returns_pdp_scope_without_membership_check() {
 ///
 /// @cpt-dod:cpt-cf-bss-products-dod-retention-authz:p1
 ///
-/// No marker for `dod-rbac-catalog`: it waits on seven live §7 rows (1, 2, 3, 7, 12,
-/// 18 and 24), so this census is coverage without a tick. One row IS declared
+/// No marker for `dod-rbac-catalog`: it waited on seven live §7 rows (1, 2, 3, 7,
+/// 12, 18 and 24), **all struck by P-D-119, P-D-120, P-D-133 and P-D-134** as
+/// of 2026-09-04, so the tick is now a question about that `DoD`'s own
+/// clauses rather than about a live row. One row IS declared
 /// though its door does not ship — `bulk_lifecycle × execute`, because
 /// **P-D-69** arm 7 assigns *"all four of this feature's grant instances"* to
 /// this catalog, the roster being *"one closed set under a two-way
