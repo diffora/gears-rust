@@ -84,8 +84,9 @@ use uuid::Uuid;
 use crate::api::rest::{ApiState, repo_error_to_canonical, require_authenticated};
 use crate::domain::approval::{ApprovalState, ApproverRole, diff_basis_for};
 use crate::domain::canonical;
+use crate::domain::concurrency::InternalRevision;
 use crate::domain::error::DomainError;
-use crate::domain::governance::{ApprovalId, EntityRef, GateSubject, SubjectKind};
+use crate::domain::governance::{ApprovalId, EntityRef, GateSubject, SubjectKind, SubjectPin};
 use crate::domain::materiality::{
     EnumeratedOp, LiveOpEdit, MaterialAct, MaterialLiveOp, MaterialityEvaluator,
 };
@@ -969,7 +970,7 @@ async fn resolve_submission(
             )));
         };
         return Ok(Ok(Submission {
-            subject: GateSubject::entity_publish(entity),
+            subject: GateSubject::entity_publish(entity, InternalRevision::new(revision)),
             internal_revision: revision,
             content_snapshot: snapshot,
             diff_basis: basis,
@@ -991,6 +992,14 @@ async fn resolve_submission(
             tenant_id,
             kind,
             reference: body.subject_ref.clone(),
+            // The op's own pin, or none. **P-D-125** row 52 puts the shape on
+            // the kind, and this door has one wire field for it, so a caller
+            // that supplies a number gets `PinnedRevision` and one that does
+            // not gets `Unpinned` — never `Revision(0)`, which would claim a
+            // head revision the subject does not have.
+            pin: body
+                .internal_revision
+                .map_or(SubjectPin::Unpinned, SubjectPin::PinnedRevision),
         },
         // The op's own pin, or `0` where the subject has no counter: the
         // column exists to detect a stale submission and an op with no

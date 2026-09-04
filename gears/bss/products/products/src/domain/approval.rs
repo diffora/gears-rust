@@ -94,7 +94,6 @@ use toolkit_macros::domain_model;
 use uuid::Uuid;
 
 use crate::domain::canonical;
-use crate::domain::concurrency::InternalRevision;
 use crate::domain::containment::{ResolvedScope, ScopeContainment, ScopeDimension, ScopePair};
 use crate::domain::error::DomainError;
 use crate::domain::governance::{
@@ -1067,8 +1066,55 @@ pub enum GatedAct {
         /// The approval the row being flipped pins in its own `approval_ref`.
         row_approval_ref: ApprovalId,
     },
+    /// One **row of a bulk batch** (**P-D-127** row 10), carrying the
+    /// `approval_ref` the batch record stores.
+    ///
+    /// # Why this is P-D-105's predicate and not a second one
+    ///
+    /// Row 10: *"the batch's record is the subject for every row it contains,
+    /// live-entity ops included, in `PreAuthorized` mode under **P-D-105's own
+    /// predicate** — the row's stored `approval_ref` names the consumed
+    /// record."* A batch row's subject is the **entity** it touches while the
+    /// record's subject is the **batch**, so the ordinary predicate — *this
+    /// subject at this pin* — fails for every row, always, exactly as it does
+    /// for a cascade leg. The decision extends P-D-105 rather than inventing
+    /// a second exception, so this arm shares
+    /// [`StoredApprovalGate::evaluate`]'s scheduled-flip branch verbatim.
+    ///
+    /// # The guard the extension was conditioned on
+    ///
+    /// P-D-105 scoped itself to one table *because
+    /// `products_bulk_batch.approval_ref` has different writers*, and row 10
+    /// extends it **"with its own writer-count guard"**. That guard is
+    /// `lib_tests`' `every_writer_of_a_bulk_batch_is_counted_for_p_d_127`,
+    /// which fails if a second writer of `insert_bulk_batch` appears. **Do
+    /// not add an ungated writer of that table** — the same sentence
+    /// [`Self::ScheduledFlip`] carries, for the same reason.
+    Bulk {
+        /// The approval the batch record stores in its own `approval_ref`.
+        row_approval_ref: ApprovalId,
+    },
 }
 
+impl GatedAct {
+    /// The record a composite act's mechanical stage re-enters on, or `None`
+    /// for an act that is not one.
+    ///
+    /// The two composite arms are **one predicate**, and this accessor is why
+    /// they can be: P-D-127 row 10 extends P-D-105 rather than adding a rule,
+    /// so a second branch in `evaluate` would be two copies of one decision.
+    const fn composite_pin(self) -> Option<ApprovalId> {
+        match self {
+            Self::ScheduledFlip { row_approval_ref } | Self::Bulk { row_approval_ref } => {
+                Some(row_approval_ref)
+            }
+            Self::Governed | Self::Ungoverned => None,
+        }
+    }
+}
+
+/// @cpt-dod:cpt-cf-bss-products-dod-preauthorized-mode:p1
+///
 /// The gate host `dod-gate-host` obliges: `01-foundation`'s
 /// [`GovernanceGate`] over records the door already loaded.
 ///
@@ -1130,6 +1176,23 @@ impl StoredApprovalGate {
         }
     }
 
+    /// A host for **one row of a bulk batch** (**P-D-127** row 10), over the
+    /// record the batch's own `approval_ref` pins.
+    ///
+    /// The same operand rule as [`Self::scheduled_flip`]: `row_approval_ref`
+    /// **must** be read from `products_bulk_batch.approval_ref`, and the
+    /// candidate is the single record
+    /// [`crate::infra::storage::repo::gate_candidate_by_id`] answers for it —
+    /// never `gate_candidates`, which filters by subject and would find
+    /// nothing for a row whose record names the batch.
+    #[must_use]
+    pub fn bulk_row(candidates: Vec<CandidateApproval>, row_approval_ref: ApprovalId) -> Self {
+        Self {
+            act: GatedAct::Bulk { row_approval_ref },
+            candidates,
+        }
+    }
+
     /// A host for the mechanical stage of a composite act (**P-D-105**), over
     /// the record the row's own `approval_ref` pins.
     ///
@@ -1161,8 +1224,15 @@ impl StoredApprovalGate {
             .find(|candidate| candidate.state == state && candidate.approval_id == id)
     }
 
-    /// The record matching this subject at this pinned revision in the named
-    /// state — and, where `named` is set, that id and no other.
+    /// The record matching this subject in the named state — and, where
+    /// `named` is set, that id and no other.
+    ///
+    /// **The pin is inside `subject`** (**P-D-125** row 52), so equality on
+    /// the subject is equality on `(tenant, kind, reference, pin)`. That is
+    /// stricter than the pair of clauses it replaces, not looser: the earlier
+    /// form compared the subject and then the revision as an `i64`, which
+    /// silently equated a category's `mutation_seq` with an entity's
+    /// `internal_revision` whenever the numbers happened to agree.
     ///
     /// **`named` is part of the predicate, not a filter over the answer.** An
     /// earlier revision did `find(shape).filter(id == named)`, so the first
@@ -1175,14 +1245,12 @@ impl StoredApprovalGate {
     fn matching(
         &self,
         subject: &GateSubject,
-        expected_revision: InternalRevision,
         state: ApprovalState,
         named: Option<ApprovalId>,
     ) -> Option<&CandidateApproval> {
         self.candidates.iter().find(|candidate| {
             candidate.state == state
                 && candidate.subject == *subject
-                && candidate.internal_revision == expected_revision.get()
                 && named.is_none_or(|id| candidate.approval_id == id)
         })
     }
@@ -1204,13 +1272,12 @@ impl GovernanceGate for StoredApprovalGate {
     /// door's own transaction before it was built — so it cannot fail to
     /// reach an answer, and every `no` below is a verdict rather than a host
     /// failure.
-    fn evaluate(
-        &self,
-        subject: GateSubject,
-        expected_revision: InternalRevision,
-        mode: GateMode,
-    ) -> Result<GateVerdict, DomainError> {
-        if let GatedAct::ScheduledFlip { row_approval_ref } = self.act {
+    fn evaluate(&self, subject: GateSubject, mode: GateMode) -> Result<GateVerdict, DomainError> {
+        // **Both composite arms, one predicate** (P-D-105, extended to the
+        // bulk table by P-D-127 row 10). A second branch would be two copies
+        // of one decision, and the decision's own words are *"under P-D-105's
+        // own predicate"*.
+        if let Some(row_approval_ref) = self.act.composite_pin() {
             // **P-D-105's two conjuncts, both checked.** The named record must
             // be `consumed`, *and* it must be the one the row being flipped
             // pins. The runner sources the mode's id from that same column, so
@@ -1296,13 +1363,12 @@ impl GovernanceGate for StoredApprovalGate {
             // `inst-fd-gate-mode-gate`: a `satisfied`, non-superseded record
             // pinned to the door's expected revision, and it is **spent**.
             GateMode::Gate => self
-                .matching(&subject, expected_revision, ApprovalState::Satisfied, None)
+                .matching(&subject, ApprovalState::Satisfied, None)
                 .map_or_else(
                     || GateVerdict::Refused {
                         reason: format!(
-                            "no satisfied approval record for {} at revision {}",
-                            subject.reference,
-                            expected_revision.get()
+                            "no satisfied approval record for {} at pin {:?}",
+                            subject.reference, subject.pin
                         ),
                     },
                     |candidate| {
@@ -1310,9 +1376,8 @@ impl GovernanceGate for StoredApprovalGate {
                             ApprovalDisposition::Consume(candidate.approval_id),
                             candidate.override_acknowledged,
                             format!(
-                                "approval {} is satisfied and pinned to revision {}",
-                                candidate.approval_id,
-                                expected_revision.get()
+                                "approval {} is satisfied and pinned to {:?}",
+                                candidate.approval_id, subject.pin
                             ),
                         )
                     },
@@ -1323,18 +1388,12 @@ impl GovernanceGate for StoredApprovalGate {
             // of the predicate, so a stage naming some other consumed record
             // of the same subject is refused however the list is ordered.
             GateMode::PreAuthorized(named) => self
-                .matching(
-                    &subject,
-                    expected_revision,
-                    ApprovalState::Consumed,
-                    Some(named),
-                )
+                .matching(&subject, ApprovalState::Consumed, Some(named))
                 .map_or_else(
                     || GateVerdict::Refused {
                         reason: format!(
-                            "approval {named} did not authorize {} at revision {}",
-                            subject.reference,
-                            expected_revision.get()
+                            "approval {named} did not authorize {} at pin {:?}",
+                            subject.reference, subject.pin
                         ),
                     },
                     |candidate| {
@@ -1342,11 +1401,9 @@ impl GovernanceGate for StoredApprovalGate {
                             ApprovalDisposition::Verified(candidate.approval_id),
                             candidate.override_acknowledged,
                             format!(
-                                "approval {} already authorized {} at revision {}; \
+                                "approval {} already authorized {} at pin {:?}; \
                                  this stage consumes nothing further",
-                                candidate.approval_id,
-                                subject.reference,
-                                expected_revision.get()
+                                candidate.approval_id, subject.reference, subject.pin
                             ),
                         )
                     },

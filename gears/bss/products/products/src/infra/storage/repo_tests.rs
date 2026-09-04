@@ -63,6 +63,7 @@ use super::{
     take_over_expired_idempotency_claim, write_elevated_read_audit, write_eventless_act_audit,
     write_refusal_audit,
 };
+use crate::domain::concurrency::InternalRevision;
 use crate::domain::error::DomainError;
 use crate::infra::storage::entity::{
     audit_log, entity_version, idempotency, identity_ref, product, sku,
@@ -3616,11 +3617,14 @@ mod approval_store_tests {
     const APPROVER: Uuid = Uuid::from_u128(0x9002);
 
     fn subject() -> GateSubject {
-        GateSubject::entity_publish(EntityRef {
-            tenant_id: TENANT,
-            entity_kind: bss_products_sdk::models::EntityKind::Product,
-            entity_id: PRODUCT,
-        })
+        GateSubject::entity_publish(
+            EntityRef {
+                tenant_id: TENANT,
+                entity_kind: bss_products_sdk::models::EntityKind::Product,
+                entity_id: PRODUCT,
+            },
+            InternalRevision::new(1),
+        )
     }
 
     /// A material act, so every probe below judges the same way and the
@@ -4246,11 +4250,14 @@ mod approval_store_tests {
         let ev = MaterialityEvaluator::new(Resolution::Resolved(&policy));
 
         let product = subject();
-        let sku = GateSubject::entity_publish(EntityRef {
-            tenant_id: TENANT,
-            entity_kind: bss_products_sdk::models::EntityKind::Sku,
-            entity_id: SKU,
-        });
+        let sku = GateSubject::entity_publish(
+            EntityRef {
+                tenant_id: TENANT,
+                entity_kind: bss_products_sdk::models::EntityKind::Sku,
+                entity_id: SKU,
+            },
+            InternalRevision::new(1),
+        );
 
         // The LATER submission goes in FIRST, so an unordered read cannot
         // pass by insertion accident.

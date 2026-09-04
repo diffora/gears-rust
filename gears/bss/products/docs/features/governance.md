@@ -1045,7 +1045,7 @@ publish to drive.
 
 ### PreAuthorized mode
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-preauthorized-mode`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-preauthorized-mode`
 
 The system **MUST** answer yes to a stage entering in `PreAuthorized` mode that names a
 **consumed** record which authorized this subject at this pinned revision, and **MUST** consume
@@ -1080,14 +1080,32 @@ three clauses were confirmed by perturbation.
 cascade leg's record names the **parent**, so a query on the leg's own subject finds nothing. The
 two readers share one row-to-candidate conversion so they cannot drift.
 
-**The tick does not follow, and the reason is now narrow.** This DoD's third clause names three
-composite acts — *"a scheduled act, a cascade and a bulk batch"*. P-D-105's predicate and its
-writer-count guard are scoped to `insert_scheduled_transition`, so the **bulk** population is
-untouched: `products_bulk_batch.approval_ref` has the same shape, but its writers are not the
-counted three, so the decision's safety argument does not transfer for free. Extending the arm to
-it would be authoring, not implementing. The clause *"MUST NOT be reachable from any wire surface"*
-is unchanged and holds structurally: `GateMode` is reachable from no request DTO, header reader or
-query extractor, and the two routed handlers pass the `Gate` literal.
+**The third clause is closed and the `DoD` ticks** (**P-D-127** row 10, 2026-09-04). The clause
+named three composite acts — *"a scheduled act, a cascade and a bulk batch"* — and the bulk
+population was the one P-D-105's predicate did not reach, because its writer-count guard was scoped
+to `insert_scheduled_transition` and `products_bulk_batch.approval_ref` *"has different writers"*.
+Row 10 extends the arm to that table **with its own writer-count guard**, which is the condition
+the extension is granted on and not an aside: `lib_tests`'
+`every_writer_of_a_bulk_batch_is_counted_for_p_d_127` fails the day a second, ungated writer
+appears, exactly as its sibling does one table over. Two guards rather than one merged assertion —
+they rest on different decisions and one number for two invariants reports neither.
+
+`GatedAct::Bulk { row_approval_ref }` shares `ScheduledFlip`'s branch **verbatim**, through
+`GatedAct::composite_pin`. That is the decision's own wording — *"under P-D-105's own predicate"* —
+and a second branch would be two copies of one rule. Both of P-D-105's conjuncts therefore bind a
+bulk row too, and the probe that a row naming **another** consumed record is refused is what
+separates the arm from §7 row 27's bearer token.
+
+**Clause by clause, with the call site** (P-D-109):
+
+| Clause | Where | Probe |
+|---|---|---|
+| a `consumed` record that authorized this subject at this pin | `StoredApprovalGate::matching`, `Gate`'s own arm | `preauthorized_verifies_a_consumed_record_and_spends_nothing` |
+| **consume nothing further** | `ApprovalDisposition::Verified` → `approval_to_consume()` is `None` **by type** | the same probe, and the bulk one |
+| unreachable from any wire surface | `GateMode` is built at no request DTO, header reader or query extractor; every routed handler passes the `Gate` literal | the census of `GateMode::PreAuthorized` construction sites |
+| a scheduled act is one composite act | `GatedAct::ScheduledFlip`, over `insert_scheduled_transition`'s three counted writers | `a_scheduled_flip_verifies_the_pin_across_a_different_subject_and_revision` |
+| a cascade is one composite act | the same arm — a leg's row pins the **parent's** record, which is why subject equality is dropped | the same probe |
+| a bulk batch is one composite act | `GatedAct::Bulk`, over `insert_bulk_batch`'s one counted writer | `a_bulk_row_verifies_the_batchs_record_across_a_different_subject` |
 
 **Implements**: `cpt-cf-bss-products-flow-gate`
 

@@ -227,8 +227,11 @@ async fn policy_scope(
 fn submit_to_gate(tenant_id: Uuid) -> Result<(), DomainError> {
     let gate: Arc<dyn GovernanceGate + Send + Sync> = Arc::new(NoMaterialityPolicyGate);
     match gate.evaluate(
-        GateSubject::governed_live_op(tenant_id, LIVE_OP_TARGET),
-        crate::domain::concurrency::InternalRevision::new(0),
+        // **The subject's own kind now** (**P-D-120** row 38): a policy
+        // mutation is a thing approved, so it is `materiality_policy` and not
+        // a `governed_live_op`. The pin is the store's `pinned_revision`, and
+        // `0` is P-D-120 row 14's *"no pin"* until a record exists to carry one.
+        GateSubject::materiality_policy(tenant_id, 0),
         GateMode::Gate,
     )? {
         GateVerdict::Authorized(_) => Ok(()),

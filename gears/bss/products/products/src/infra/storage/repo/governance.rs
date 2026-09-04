@@ -58,8 +58,9 @@ use crate::domain::approval::{
     descriptor_from_stored, evaluate_quorum,
 };
 use crate::domain::canonical;
+use crate::domain::concurrency::InternalRevision;
 use crate::domain::error::DomainError;
-use crate::domain::governance::{ApprovalId, GateSubject, SubjectKind};
+use crate::domain::governance::{ApprovalId, GateSubject, SubjectKind, SubjectPin};
 use crate::domain::materiality::{
     MaterialAct, Materiality, MaterialityEvaluator, MaterialityPolicy, MaterialityRefusal,
     Resolution,
@@ -1086,6 +1087,15 @@ pub async fn gate_candidates(
                 tenant_id: row.tenant_id,
                 kind,
                 reference: row.subject_ref,
+                // **The pin's shape follows the row's kind** (**P-D-125**
+                // row 52), rebuilt from the one column the store has. A
+                // `bulk_batch`'s pin is a ledger digest and
+                // `internal_revision` is `bigint`, so that kind reads back as
+                // the stored number and the digest is not reconstructible —
+                // recorded in `SubjectPin`'s own doc, and harmless here
+                // because P-D-127 row 10 gates a batch in `PreAuthorized`
+                // under P-D-105's predicate, which compares no pin at all.
+                pin: pin_for_kind(kind, row.internal_revision),
             },
             internal_revision: row.internal_revision,
             state,
@@ -1165,6 +1175,7 @@ fn candidate_from_row(
             tenant_id: row.tenant_id,
             kind,
             reference: row.subject_ref.clone(),
+            pin: pin_for_kind(kind, row.internal_revision),
         },
         internal_revision: row.internal_revision,
         state,
@@ -1190,6 +1201,26 @@ fn subject_kind_from_stored(stored: &str) -> Option<SubjectKind> {
     SubjectKind::ALL
         .into_iter()
         .find(|kind| kind.as_str() == stored)
+}
+
+/// The pin shape a stored row's kind carries (**P-D-125** row 52).
+///
+/// Exhaustive over the roster, so a seventh kind must say which shape it
+/// pins in rather than inheriting `Revision` by falling through.
+const fn pin_for_kind(kind: SubjectKind, stored_revision: i64) -> SubjectPin {
+    match kind {
+        SubjectKind::EntityPublish | SubjectKind::SkuCorrection => {
+            SubjectPin::Revision(InternalRevision::new(stored_revision))
+        }
+        // `02`'s category ops spend a `mutation_seq`; a definition op has no
+        // counter and stores `0`, which reads back as a `MutationSeq(0)` no
+        // door ever compares.
+        SubjectKind::GovernedLiveOp => SubjectPin::MutationSeq(stored_revision),
+        SubjectKind::MaterialityPolicy => SubjectPin::PinnedRevision(stored_revision),
+        // A signal pins nothing, and `BulkBatch`'s digest is not in this
+        // column — see `candidate_from_row`'s note.
+        SubjectKind::SystemSignal | SubjectKind::BulkBatch => SubjectPin::Unpinned,
+    }
 }
 
 /// Whether a stored acknowledgment column holds an acknowledgment.

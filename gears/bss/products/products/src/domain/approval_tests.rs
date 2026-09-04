@@ -13,6 +13,7 @@ use super::{
 };
 use crate::domain::concurrency::InternalRevision;
 use crate::domain::containment::{ResolvedScope, ScopeDimension, ScopePair};
+use crate::domain::governance::SubjectPin;
 use bss_products_sdk::models::EntityKind;
 
 use crate::domain::governance::{
@@ -29,18 +30,43 @@ const GATE_ENTITY: Uuid = Uuid::from_u128(0x6a_e1);
 /// The subject every host probe below asks about — the same shape all seven
 /// production call sites build.
 fn gate_subject() -> GateSubject {
-    GateSubject::entity_publish(EntityRef {
-        tenant_id: GATE_TENANT,
-        entity_kind: EntityKind::Product,
-        entity_id: GATE_ENTITY,
-    })
+    GateSubject::entity_publish(
+        EntityRef {
+            tenant_id: GATE_TENANT,
+            entity_kind: EntityKind::Product,
+            entity_id: GATE_ENTITY,
+        },
+        InternalRevision::new(1),
+    )
+}
+
+/// [`gate_subject`] pinned at `revision`, so a case can ask the host about
+/// the same revision its candidate carries.
+///
+/// Since **P-D-125** row 52 folded the pin into the subject, a probe's two
+/// operands — the question and the record — carry the revision in the **same**
+/// place, and a case that means them to agree has to say so once rather than
+/// passing the number twice.
+fn subject_at(revision: i64) -> GateSubject {
+    let mut subject = gate_subject();
+    subject.pin = SubjectPin::Revision(InternalRevision::new(revision));
+    subject
 }
 
 /// One candidate on [`gate_subject`] at `revision` in `state`.
+///
+/// **The revision goes into the subject's pin as well as the column**
+/// (**P-D-125** row 52). It used to go only into `internal_revision`, which
+/// the host compared as a separate clause; the pin now rides the subject, so
+/// a helper that left the subject at `gate_subject()`'s revision would build
+/// a candidate whose pin always matched — and every "wrong revision" probe
+/// here would pass whatever the host did.
 fn candidate(id: u128, revision: i64, state: ApprovalState) -> CandidateApproval {
+    let mut subject = gate_subject();
+    subject.pin = SubjectPin::Revision(InternalRevision::new(revision));
     CandidateApproval {
         approval_id: ApprovalId::new(Uuid::from_u128(id)),
-        subject: gate_subject(),
+        subject,
         internal_revision: revision,
         state,
         override_acknowledged: false,
@@ -676,7 +702,7 @@ fn the_brand_dimension_is_judged_on_its_own_and_is_named() {
 fn an_ungoverned_act_is_authorized_with_nothing_to_spend() {
     let host = StoredApprovalGate::ungoverned();
     let verdict = host
-        .evaluate(gate_subject(), InternalRevision::new(3), GateMode::Gate)
+        .evaluate(gate_subject(), GateMode::Gate)
         .expect("this host reads nothing and cannot fail to reach an answer");
     match verdict {
         GateVerdict::Authorized(authorization) => {
@@ -717,7 +743,7 @@ fn an_ungoverned_act_is_authorized_with_nothing_to_spend() {
 #[test]
 fn a_governed_act_with_no_record_is_refused_on_the_same_triple() {
     let refused = StoredApprovalGate::governed(Vec::new())
-        .evaluate(gate_subject(), InternalRevision::new(3), GateMode::Gate)
+        .evaluate(gate_subject(), GateMode::Gate)
         .expect("a verdict, not a host failure");
     assert!(
         matches!(refused, GateVerdict::Refused { .. }),
@@ -727,7 +753,7 @@ fn a_governed_act_with_no_record_is_refused_on_the_same_triple() {
     // The identical triple, the other construction: authorized.
     assert!(matches!(
         StoredApprovalGate::ungoverned()
-            .evaluate(gate_subject(), InternalRevision::new(3), GateMode::Gate)
+            .evaluate(gate_subject(), GateMode::Gate)
             .expect("a verdict"),
         GateVerdict::Authorized(_)
     ));
@@ -739,7 +765,7 @@ fn a_governed_act_with_no_record_is_refused_on_the_same_triple() {
 fn a_satisfied_record_at_the_pinned_revision_is_spent() {
     let host = StoredApprovalGate::governed(vec![candidate(0xf1, 3, ApprovalState::Satisfied)]);
     let verdict = host
-        .evaluate(gate_subject(), InternalRevision::new(3), GateMode::Gate)
+        .evaluate(subject_at(3), GateMode::Gate)
         .expect("a verdict");
     match verdict {
         GateVerdict::Authorized(authorization) => assert_eq!(
@@ -762,7 +788,7 @@ fn a_satisfied_record_at_the_pinned_revision_is_spent() {
 fn a_record_pinned_to_another_revision_does_not_authorize() {
     let host = StoredApprovalGate::governed(vec![candidate(0xf2, 2, ApprovalState::Satisfied)]);
     assert!(matches!(
-        host.evaluate(gate_subject(), InternalRevision::new(3), GateMode::Gate)
+        host.evaluate(gate_subject(), GateMode::Gate)
             .expect("a verdict"),
         GateVerdict::Refused { .. }
     ));
@@ -782,7 +808,7 @@ fn no_state_but_satisfied_authorizes_under_gate() {
         let host = StoredApprovalGate::governed(vec![candidate(0xf3, 3, state)]);
         assert!(
             matches!(
-                host.evaluate(gate_subject(), InternalRevision::new(3), GateMode::Gate)
+                host.evaluate(gate_subject(), GateMode::Gate)
                     .expect("a verdict"),
                 GateVerdict::Refused { .. }
             ),
@@ -803,11 +829,7 @@ fn preauthorized_verifies_a_consumed_record_and_spends_nothing() {
     let id = ApprovalId::new(Uuid::from_u128(0xf4));
     let host = StoredApprovalGate::governed(vec![candidate(0xf4, 3, ApprovalState::Consumed)]);
     let verdict = host
-        .evaluate(
-            gate_subject(),
-            InternalRevision::new(3),
-            GateMode::PreAuthorized(id),
-        )
+        .evaluate(subject_at(3), GateMode::PreAuthorized(id))
         .expect("a verdict");
     match verdict {
         GateVerdict::Authorized(authorization) => {
@@ -840,7 +862,6 @@ fn preauthorized_refuses_a_consumed_record_it_did_not_name() {
     let refused = host
         .evaluate(
             gate_subject(),
-            InternalRevision::new(3),
             GateMode::PreAuthorized(ApprovalId::new(Uuid::from_u128(0xf6))),
         )
         .expect("a verdict");
@@ -861,11 +882,7 @@ fn the_two_modes_read_disjoint_states() {
         StoredApprovalGate::governed(vec![candidate(0xf7, 3, ApprovalState::Satisfied)]);
     assert!(matches!(
         satisfied
-            .evaluate(
-                gate_subject(),
-                InternalRevision::new(3),
-                GateMode::PreAuthorized(id)
-            )
+            .evaluate(gate_subject(), GateMode::PreAuthorized(id))
             .expect("a verdict"),
         GateVerdict::Refused { .. }
     ));
@@ -873,7 +890,7 @@ fn the_two_modes_read_disjoint_states() {
     let consumed = StoredApprovalGate::governed(vec![candidate(0xf7, 3, ApprovalState::Consumed)]);
     assert!(matches!(
         consumed
-            .evaluate(gate_subject(), InternalRevision::new(3), GateMode::Gate)
+            .evaluate(gate_subject(), GateMode::Gate)
             .expect("a verdict"),
         GateVerdict::Refused { .. }
     ));
@@ -889,7 +906,7 @@ fn the_override_acknowledgment_travels_and_defaults_false_with_no_record() {
     let mut acked = candidate(0xf8, 3, ApprovalState::Satisfied);
     acked.override_acknowledged = true;
     match StoredApprovalGate::governed(vec![acked])
-        .evaluate(gate_subject(), InternalRevision::new(3), GateMode::Gate)
+        .evaluate(subject_at(3), GateMode::Gate)
         .expect("a verdict")
     {
         GateVerdict::Authorized(authorization) => {
@@ -899,7 +916,7 @@ fn the_override_acknowledgment_travels_and_defaults_false_with_no_record() {
     }
 
     match StoredApprovalGate::ungoverned()
-        .evaluate(gate_subject(), InternalRevision::new(3), GateMode::Gate)
+        .evaluate(subject_at(3), GateMode::Gate)
         .expect("a verdict")
     {
         GateVerdict::Authorized(authorization) => assert!(
@@ -954,11 +971,7 @@ fn preauthorized_finds_the_named_record_behind_a_newer_consumed_one() {
         candidate(0x9b, 3, ApprovalState::Consumed),
     ]);
     match host
-        .evaluate(
-            gate_subject(),
-            InternalRevision::new(3),
-            GateMode::PreAuthorized(named),
-        )
+        .evaluate(subject_at(3), GateMode::PreAuthorized(named))
         .expect("a verdict")
     {
         GateVerdict::Authorized(authorization) => {
@@ -979,8 +992,10 @@ fn preauthorized_finds_the_named_record_behind_a_newer_consumed_one() {
 /// guard `gate_candidates` had made a tautology by stamping the queried
 /// subject onto every candidate.
 ///
-/// All three axes of `GateSubject` are perturbed one at a time, because a
-/// guard comparing only the reference would pass a cross-tenant record.
+/// **All four axes** of `GateSubject` are perturbed one at a time, because a
+/// guard comparing only the reference would pass a cross-tenant record — and
+/// since **P-D-125** row 52 folded the pin in, the pin is the fourth, which is
+/// the clause that used to be a separate `expected_revision` argument.
 #[test]
 fn a_candidate_on_another_subject_authorizes_nothing() {
     let id = ApprovalId::new(Uuid::from_u128(0x9c));
@@ -989,16 +1004,23 @@ fn a_candidate_on_another_subject_authorizes_nothing() {
             tenant_id: Uuid::from_u128(0x6a_99),
             kind: SubjectKind::EntityPublish,
             reference: gate_subject().reference,
+            pin: gate_subject().pin,
         },
         GateSubject {
             tenant_id: GATE_TENANT,
             kind: SubjectKind::BulkBatch,
             reference: gate_subject().reference,
+            pin: gate_subject().pin,
         },
         GateSubject {
             tenant_id: GATE_TENANT,
             kind: SubjectKind::EntityPublish,
             reference: "product/00000000-0000-0000-0000-0000000000ff".to_owned(),
+            pin: gate_subject().pin,
+        },
+        GateSubject {
+            pin: SubjectPin::Revision(InternalRevision::new(99)),
+            ..gate_subject()
         },
     ];
     for other in others {
@@ -1011,8 +1033,7 @@ fn a_candidate_on_another_subject_authorizes_nothing() {
             let host = StoredApprovalGate::governed(vec![foreign]);
             assert!(
                 matches!(
-                    host.evaluate(gate_subject(), InternalRevision::new(3), mode)
-                        .expect("a verdict"),
+                    host.evaluate(gate_subject(), mode).expect("a verdict"),
                     GateVerdict::Refused { .. }
                 ),
                 "a candidate on {other:?} must not authorize an act on {:?}",
@@ -1035,7 +1056,6 @@ fn an_ungoverned_host_refuses_a_preauthorized_stage() {
     let refused = host
         .evaluate(
             gate_subject(),
-            InternalRevision::new(3),
             GateMode::PreAuthorized(ApprovalId::new(Uuid::from_u128(0xdead))),
         )
         .expect("a verdict");
@@ -1046,7 +1066,7 @@ fn an_ungoverned_host_refuses_a_preauthorized_stage() {
 
     assert!(matches!(
         StoredApprovalGate::ungoverned()
-            .evaluate(gate_subject(), InternalRevision::new(3), GateMode::Gate)
+            .evaluate(gate_subject(), GateMode::Gate)
             .expect("a verdict"),
         GateVerdict::Authorized(_)
     ));
@@ -1060,7 +1080,6 @@ fn preauthorized_over_no_candidates_refuses() {
         StoredApprovalGate::governed(Vec::new())
             .evaluate(
                 gate_subject(),
-                InternalRevision::new(3),
                 GateMode::PreAuthorized(ApprovalId::new(Uuid::from_u128(0x9d)))
             )
             .expect("a verdict"),
@@ -1079,11 +1098,7 @@ fn the_override_acknowledgment_travels_under_preauthorized() {
     let mut acked = candidate(0x9e, 3, ApprovalState::Consumed);
     acked.override_acknowledged = true;
     match StoredApprovalGate::governed(vec![acked])
-        .evaluate(
-            gate_subject(),
-            InternalRevision::new(3),
-            GateMode::PreAuthorized(id),
-        )
+        .evaluate(subject_at(3), GateMode::PreAuthorized(id))
         .expect("a verdict")
     {
         GateVerdict::Authorized(authorization) => {
@@ -1261,6 +1276,7 @@ fn a_scheduled_flip_verifies_the_pin_across_a_different_subject_and_revision() {
         tenant_id: GATE_TENANT,
         kind: SubjectKind::EntityPublish,
         reference: "product/00000000-0000-0000-0000-00000000dead".to_owned(),
+        pin: SubjectPin::Revision(InternalRevision::new(7)),
     };
 
     let host = StoredApprovalGate::scheduled_flip(vec![parents], pinned);
@@ -1268,7 +1284,6 @@ fn a_scheduled_flip_verifies_the_pin_across_a_different_subject_and_revision() {
         .evaluate(
             // The leg's own subject and revision, neither matching the record.
             gate_subject(),
-            InternalRevision::new(3),
             GateMode::PreAuthorized(pinned),
         )
         .expect("a verdict")
@@ -1296,11 +1311,7 @@ fn a_scheduled_flip_verifies_the_pin_across_a_different_subject_and_revision() {
     // clauses — the drop is scoped to this act and to no other.
     assert!(matches!(
         StoredApprovalGate::governed(vec![candidate(0x105a, 7, ApprovalState::Consumed)])
-            .evaluate(
-                gate_subject(),
-                InternalRevision::new(3),
-                GateMode::PreAuthorized(pinned)
-            )
+            .evaluate(gate_subject(), GateMode::PreAuthorized(pinned))
             .expect("a verdict"),
         GateVerdict::Refused { .. }
     ));
@@ -1328,11 +1339,7 @@ fn a_scheduled_flip_refuses_a_record_the_row_does_not_pin() {
         pinned,
     );
     let refused = host
-        .evaluate(
-            gate_subject(),
-            InternalRevision::new(3),
-            GateMode::PreAuthorized(other),
-        )
+        .evaluate(gate_subject(), GateMode::PreAuthorized(other))
         .expect("a verdict");
     assert!(
         matches!(refused, GateVerdict::Refused { .. }),
@@ -1358,12 +1365,8 @@ fn a_scheduled_flip_requires_the_pinned_record_to_be_consumed() {
         let host = StoredApprovalGate::scheduled_flip(vec![candidate(0x105d, 3, state)], pinned);
         assert!(
             matches!(
-                host.evaluate(
-                    gate_subject(),
-                    InternalRevision::new(3),
-                    GateMode::PreAuthorized(pinned)
-                )
-                .expect("a verdict"),
+                host.evaluate(gate_subject(), GateMode::PreAuthorized(pinned))
+                    .expect("a verdict"),
                 GateVerdict::Refused { .. }
             ),
             "state {} must not authorize a mechanical stage",
@@ -1385,7 +1388,7 @@ fn a_scheduled_flip_never_demands_a_satisfied_record_of_its_own() {
         vec![candidate(0x105e, 3, ApprovalState::Consumed)],
         pinned,
     )
-    .evaluate(gate_subject(), InternalRevision::new(3), GateMode::Gate)
+    .evaluate(gate_subject(), GateMode::Gate)
     .expect("a verdict");
     assert!(
         matches!(refused, GateVerdict::Refused { .. }),
@@ -1399,12 +1402,122 @@ fn a_scheduled_flip_over_no_candidate_refuses() {
     let pinned = ApprovalId::new(Uuid::from_u128(0x105f));
     assert!(matches!(
         StoredApprovalGate::scheduled_flip(Vec::new(), pinned)
-            .evaluate(
-                gate_subject(),
-                InternalRevision::new(3),
-                GateMode::PreAuthorized(pinned)
-            )
+            .evaluate(gate_subject(), GateMode::PreAuthorized(pinned))
             .expect("a verdict"),
         GateVerdict::Refused { .. }
     ));
+}
+
+/// **A bulk row re-enters on the batch's record and consumes nothing**
+/// (**P-D-127** row 10), on exactly the predicate P-D-105 gave a scheduled
+/// flip.
+///
+/// The record's subject is the **batch** and the row's is the entity it
+/// touches, so the ordinary *this-subject-at-this-pin* clause fails for every
+/// row by construction — which is why the decision extends P-D-105 rather
+/// than asking the batch to name each row.
+#[test]
+fn a_bulk_row_verifies_the_batchs_record_across_a_different_subject() {
+    let pinned = ApprovalId::new(Uuid::from_u128(0xb01c));
+    // The batch's own record: another subject, another pin, consumed.
+    let mut batch = candidate(0xb01c, 9, ApprovalState::Consumed);
+    batch.subject = GateSubject::bulk_batch(
+        GATE_TENANT,
+        Uuid::from_u128(0xba7c),
+        "sha256:ledger".to_owned(),
+    );
+
+    let host = StoredApprovalGate::bulk_row(vec![batch], pinned);
+    match host
+        .evaluate(subject_at(3), GateMode::PreAuthorized(pinned))
+        .expect("a verdict")
+    {
+        GateVerdict::Authorized(authorization) => assert_eq!(
+            authorization.approval_to_consume(),
+            None,
+            "a bulk row consumes nothing further: the batch's record was already spent"
+        ),
+        GateVerdict::Refused { reason } => panic!("{reason}"),
+    }
+}
+
+/// **And the bulk arm is not a bearer token either.** A row naming any record
+/// other than the one its batch stores is refused — the conjunct that
+/// separates P-D-105's predicate from the form §7 row 27 forbids.
+#[test]
+fn a_bulk_row_naming_another_record_is_refused() {
+    let pinned = ApprovalId::new(Uuid::from_u128(0xb01c));
+    let other = ApprovalId::new(Uuid::from_u128(0xb02d));
+    let host =
+        StoredApprovalGate::bulk_row(vec![candidate(0xb02d, 9, ApprovalState::Consumed)], pinned);
+    assert!(matches!(
+        host.evaluate(subject_at(3), GateMode::PreAuthorized(other))
+            .expect("a verdict"),
+        GateVerdict::Refused { .. }
+    ));
+}
+
+/// **A bulk row is refused under `Gate`**, like every other mechanical stage:
+/// the ceremony ran on the human act that submitted the batch.
+#[test]
+fn a_bulk_row_never_demands_a_satisfied_record_of_its_own() {
+    let pinned = ApprovalId::new(Uuid::from_u128(0xb01c));
+    let host =
+        StoredApprovalGate::bulk_row(vec![candidate(0xb01c, 9, ApprovalState::Satisfied)], pinned);
+    assert!(matches!(
+        host.evaluate(subject_at(3), GateMode::Gate)
+            .expect("a verdict"),
+        GateVerdict::Refused { .. }
+    ));
+}
+
+/// **The pin travels with the subject, per kind** (**P-D-125** row 52), and
+/// the store's own column round-trips it.
+///
+/// Asserted over the roster rather than on one kind, so a `pin_for_kind`
+/// arm that fell through to `Revision` for a category — which would compare a
+/// `mutation_seq` against an `internal_revision` — fails here.
+#[test]
+fn each_subject_kind_carries_its_own_pin_shape() {
+    let entity = GateSubject::entity_publish(
+        EntityRef {
+            tenant_id: GATE_TENANT,
+            entity_kind: EntityKind::Product,
+            entity_id: GATE_ENTITY,
+        },
+        InternalRevision::new(4),
+    );
+    assert_eq!(entity.pin, SubjectPin::Revision(InternalRevision::new(4)));
+    assert_eq!(entity.pin.stored_revision(), 4);
+
+    let live_op = GateSubject::governed_live_op(GATE_TENANT, "cat/7", SubjectPin::MutationSeq(11));
+    assert_eq!(live_op.pin.stored_revision(), 11);
+
+    let policy = GateSubject::materiality_policy(GATE_TENANT, 2);
+    assert_eq!(policy.pin, SubjectPin::PinnedRevision(2));
+
+    let signal = GateSubject::system_signal(GATE_TENANT, "sig-1");
+    assert_eq!(
+        signal.pin,
+        SubjectPin::Unpinned,
+        "a signal is not a revision of anything, and `Revision(0)` would claim it was"
+    );
+    assert_eq!(signal.pin.stored_revision(), 0, "P-D-120 row 14's sentinel");
+
+    let batch = GateSubject::bulk_batch(GATE_TENANT, GATE_ENTITY, "sha256:abc".to_owned());
+    assert_eq!(batch.pin, SubjectPin::LedgerDigest("sha256:abc".to_owned()));
+    assert_eq!(
+        batch.pin.stored_revision(),
+        0,
+        "a digest has no i64 rendering, and inventing one would put a number in the column that \
+         means nothing (see SubjectPin's own doc)"
+    );
+
+    // Two kinds at the same stored number are **not** the same pin, which is
+    // the whole of what folding the revision into the subject buys.
+    assert_ne!(SubjectPin::MutationSeq(4), SubjectPin::PinnedRevision(4));
+    assert_ne!(
+        SubjectPin::Revision(InternalRevision::new(4)),
+        SubjectPin::MutationSeq(4)
+    );
 }

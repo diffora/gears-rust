@@ -1,7 +1,9 @@
 //! Tests for the `GovernedLiveOp` envelope (`dod-governed-live-op`).
 
 use super::GovernedLiveOp;
+use crate::domain::concurrency::InternalRevision;
 use crate::domain::error::DomainError;
+use crate::domain::governance::SubjectPin;
 
 /// A set member's state, standing in for any live row's — the envelope is
 /// generic precisely so 03 can pass its own.
@@ -173,7 +175,7 @@ fn the_envelopes_target_is_a_gate_subject_of_its_own_kind() {
 
     let tenant = uuid::Uuid::from_u128(0x7e_11);
     let envelope = op(MemberState::Active);
-    let subject = GateSubject::governed_live_op(tenant, &envelope.target);
+    let subject = GateSubject::governed_live_op(tenant, &envelope.target, SubjectPin::Unpinned);
 
     assert_eq!(subject.kind, SubjectKind::GovernedLiveOp);
     assert_eq!(
@@ -182,11 +184,14 @@ fn the_envelopes_target_is_a_gate_subject_of_its_own_kind() {
     );
     assert_eq!(subject.tenant_id, tenant);
 
-    let entity = GateSubject::entity_publish(EntityRef {
-        tenant_id: tenant,
-        entity_kind: EntityKind::Product,
-        entity_id: uuid::Uuid::from_u128(0xf0_01),
-    });
+    let entity = GateSubject::entity_publish(
+        EntityRef {
+            tenant_id: tenant,
+            entity_kind: EntityKind::Product,
+            entity_id: uuid::Uuid::from_u128(0xf0_01),
+        },
+        InternalRevision::new(1),
+    );
     assert_ne!(
         entity.kind, subject.kind,
         "a live op is not an entity publish: if these collapsed, the seam \

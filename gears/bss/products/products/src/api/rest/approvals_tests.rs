@@ -380,11 +380,7 @@ async fn a_materiality_policy_subject_round_trips_through_the_store() {
     let candidates = repo::gate_candidates(
         &conn,
         &scope,
-        &crate::domain::governance::GateSubject {
-            tenant_id: TENANT,
-            kind: crate::domain::governance::SubjectKind::MaterialityPolicy,
-            reference: "materiality_policy".to_owned(),
-        },
+        &crate::domain::governance::GateSubject::materiality_policy(TENANT, 0),
     )
     .await
     .expect("the gate read runs");

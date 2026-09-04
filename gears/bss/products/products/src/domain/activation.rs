@@ -27,7 +27,6 @@
 use chrono::{DateTime, Duration, Utc};
 use uuid::Uuid;
 
-use crate::domain::concurrency::InternalRevision;
 use crate::domain::governance::{ApprovalId, GateMode, GateSubject, GateVerdict, GovernanceGate};
 
 use super::lifecycle::LifecycleRefusal;
@@ -303,11 +302,10 @@ pub fn scheduled_pin_holds(pin: &ScheduledActivation) -> bool {
 pub fn verify_activation_pin(
     gate: &dyn GovernanceGate,
     subject: GateSubject,
-    expected_revision: InternalRevision,
     pin: &ScheduledActivation,
 ) -> RunFinish {
     let call = PreAuthorizedCall::from_row(pin.row_approval_ref);
-    match gate.evaluate(subject, expected_revision, call.mode()) {
+    match gate.evaluate(subject, call.mode()) {
         Ok(GateVerdict::Authorized(_)) => {}
         Ok(GateVerdict::Refused { reason }) => {
             return RunFinish::Deferred {

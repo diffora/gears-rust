@@ -237,6 +237,67 @@ impl SubjectKind {
     }
 }
 
+/// The **pin** a subject carries — one shape per kind (**P-D-125** row 52).
+///
+/// # Why the pin belongs to the subject
+///
+/// [`GovernanceGate::evaluate`] took `expected_revision` as a second
+/// argument, and row 52 folds it in here. The reason is that the parameter
+/// was an `InternalRevision` for **every** kind, and only one of the six has
+/// one: a category has a `mutation_seq`, a catalog version and a participant
+/// set and a materiality policy have the approval store's own
+/// `pinned_revision`, and a bulk batch has a ledger digest. A single
+/// `InternalRevision` parameter therefore asked five of the six subjects for a
+/// number they do not have, and every caller answered `0` — which is a pin
+/// that pins nothing, dressed as one that does.
+///
+/// # `LedgerDigest` is declared and has no store operand
+///
+/// **P-D-127** row 11 makes a batch's scalar pin the ledger digest.
+/// `products_approval.internal_revision` is `bigint` and holds no digest, and
+/// no other column on that table can — so this arm is the seam expressing the
+/// decision while the store cannot record it. It is **not inert**: P-D-127
+/// row 10 puts a bulk batch in [`GateMode::PreAuthorized`] under **P-D-105**'s
+/// own predicate, which drops subject-and-pin equality entirely and reads the
+/// row's stored `approval_ref` instead — so the digest is what the *record*
+/// would carry, not what the gate compares. Recorded here rather than
+/// silently rendered into an `i64`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SubjectPin {
+    /// An entity head's `internal_revision` — the door's `If-Match`
+    /// (**P-D-33**), and the only kind that had one before row 52.
+    Revision(InternalRevision),
+    /// A category's `mutation_seq`, the token its live-value door spends.
+    MutationSeq(i64),
+    /// The approval store's own `pinned_revision`, for a catalog version, a
+    /// participant set or a materiality policy.
+    PinnedRevision(i64),
+    /// A bulk batch's ledger digest (**P-D-127** row 11). See the type's own
+    /// doc for why this arm has no store operand.
+    LedgerDigest(String),
+    /// The subject has no counter to pin. **Not the same as
+    /// `Revision(0)`**, which claims a revision and names zero; this claims
+    /// nothing, and `products_approval.internal_revision` records it as the
+    /// `0` P-D-120 row 14 gives as *"no pin"*.
+    Unpinned,
+}
+
+impl SubjectPin {
+    /// The value `products_approval.internal_revision` stores for this pin.
+    ///
+    /// `0` for the two arms that carry no number, which is P-D-120 row 14's
+    /// own sentinel: the column exists to detect a **stale submission**, and a
+    /// subject with no counter cannot go stale.
+    #[must_use]
+    pub fn stored_revision(&self) -> i64 {
+        match self {
+            Self::Revision(revision) => revision.get(),
+            Self::MutationSeq(value) | Self::PinnedRevision(value) => *value,
+            Self::LedgerDigest(_) | Self::Unpinned => 0,
+        }
+    }
+}
+
 /// What a gate question is about: the approval store's own
 /// `(subject_kind, subject_ref)` pair (**P-D-67** arm 4).
 ///
@@ -246,70 +307,98 @@ impl SubjectKind {
 /// convenience: a door holding a head row must not have to render an id by
 /// hand and risk transposing the two `Uuid`s.
 ///
-/// **What this type deliberately does not carry is the pinned revision.**
-/// `governance` §7 row 14 asks what the entity-shaped columns — the pinned
-/// revision, the content snapshot, the diff basis — hold for a subject that is
-/// not an entity, and that row is live. So the revision stays a separate
-/// argument of [`GovernanceGate::evaluate`], supplied by the entity doors that
-/// have one; folding it in here would answer row 14 from a type definition.
+/// **It carries the pin** (**P-D-125** row 52). An earlier revision left the
+/// revision a separate argument of [`GovernanceGate::evaluate`], on the
+/// grounds that §7 row 14 — what the entity-shaped columns hold for a
+/// non-entity subject — was live and folding it in would answer that row from
+/// a type definition. Row 14 is struck by **P-D-120** and row 52 gives the
+/// answer: the pin varies by kind, so it belongs to the thing whose kind it
+/// varies with.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GateSubject {
     /// The tenant every subject is scoped to.
     pub tenant_id: Uuid,
-    /// Which of the five the subject is.
+    /// Which of the six the subject is.
     pub kind: SubjectKind,
     /// The subject's own identifier, rendered as the store stores it.
     pub reference: String,
+    /// What this subject is pinned at, in its own kind's shape.
+    pub pin: SubjectPin,
 }
 
 impl GateSubject {
-    /// The entity constructor arm 4 keeps.
+    /// The entity constructor arm 4 keeps, at the door's own `If-Match`.
     #[must_use]
-    pub fn entity_publish(entity: EntityRef) -> Self {
+    pub fn entity_publish(entity: EntityRef, revision: InternalRevision) -> Self {
         Self {
             tenant_id: entity.tenant_id,
             kind: SubjectKind::EntityPublish,
             reference: format!("{}/{}", entity.entity_kind.as_str(), entity.entity_id),
+            pin: SubjectPin::Revision(revision),
         }
     }
 
     /// A live-entity operation's subject — `02`'s envelope target.
+    ///
+    /// The pin is the caller's, because the envelope's kinds differ: a
+    /// category op spends a `mutation_seq` and a definition op has no counter
+    /// at all.
     #[must_use]
-    pub fn governed_live_op(tenant_id: Uuid, target: &str) -> Self {
+    pub fn governed_live_op(tenant_id: Uuid, target: &str, pin: SubjectPin) -> Self {
         Self {
             tenant_id,
             kind: SubjectKind::GovernedLiveOp,
             reference: target.to_owned(),
+            pin,
         }
     }
 
     /// An inbound system signal's subject (**P-D-14**).
+    ///
+    /// Unpinned: a signal is not a revision of anything, and the publish it
+    /// auto-satisfies re-reads the head under the door's own precondition.
     #[must_use]
     pub fn system_signal(tenant_id: Uuid, signal_ref: &str) -> Self {
         Self {
             tenant_id,
             kind: SubjectKind::SystemSignal,
             reference: signal_ref.to_owned(),
+            pin: SubjectPin::Unpinned,
         }
     }
 
-    /// A SKU correction's subject.
+    /// A SKU correction's subject, pinned at the head it corrects.
     #[must_use]
-    pub fn sku_correction(tenant_id: Uuid, sku_id: Uuid) -> Self {
+    pub fn sku_correction(tenant_id: Uuid, sku_id: Uuid, revision: InternalRevision) -> Self {
         Self {
             tenant_id,
             kind: SubjectKind::SkuCorrection,
             reference: sku_id.to_string(),
+            pin: SubjectPin::Revision(revision),
         }
     }
 
-    /// A bulk batch's subject.
+    /// A bulk batch's subject, pinned at its ledger digest (**P-D-127**
+    /// row 11).
     #[must_use]
-    pub fn bulk_batch(tenant_id: Uuid, batch_id: Uuid) -> Self {
+    pub fn bulk_batch(tenant_id: Uuid, batch_id: Uuid, ledger_digest: String) -> Self {
         Self {
             tenant_id,
             kind: SubjectKind::BulkBatch,
             reference: batch_id.to_string(),
+            pin: SubjectPin::LedgerDigest(ledger_digest),
+        }
+    }
+
+    /// The tenant's materiality policy (**P-D-120** row 38), at the store's
+    /// own `pinned_revision`.
+    #[must_use]
+    pub fn materiality_policy(tenant_id: Uuid, pinned_revision: i64) -> Self {
+        Self {
+            tenant_id,
+            kind: SubjectKind::MaterialityPolicy,
+            reference: SubjectKind::MaterialityPolicy.as_str().to_owned(),
+            pin: SubjectPin::PinnedRevision(pinned_revision),
         }
     }
 }
@@ -499,10 +588,14 @@ impl GateVerdict {
 pub trait GovernanceGate {
     /// Ask the ceremony layer whether this act may proceed.
     ///
-    /// `expected_revision` is the door's `If-Match` (P-D-33) and is not
-    /// advisory: an approval is only usable against the exact revision it
-    /// pinned (`inst-fd-publish-pin`), so a host with a record store matches
-    /// on it rather than merely reporting it.
+    /// **The pin rides `subject`** (**P-D-125** row 52). It is the door's
+    /// `If-Match` for an entity (P-D-33) and is not advisory: an approval is
+    /// only usable against the exact revision it pinned
+    /// (`inst-fd-publish-pin`), so a host with a record store matches on it
+    /// rather than merely reporting it. For the other kinds it is that kind's
+    /// own counter, which is why it moved out of this signature: one
+    /// `InternalRevision` parameter asked five of the six subjects for a
+    /// number they do not have.
     ///
     /// # Errors
     ///
@@ -513,12 +606,7 @@ pub trait GovernanceGate {
     /// infrastructure and must not be reported as `APPROVAL_REQUIRED`, which
     /// would tell an operator an approval was missing when none was ever
     /// looked at.
-    fn evaluate(
-        &self,
-        subject: GateSubject,
-        expected_revision: InternalRevision,
-        mode: GateMode,
-    ) -> Result<GateVerdict, DomainError>;
+    fn evaluate(&self, subject: GateSubject, mode: GateMode) -> Result<GateVerdict, DomainError>;
 }
 
 /// The host the gear runs until slice 05 registers a materiality policy.
@@ -585,12 +673,7 @@ impl GovernanceGate for NoMaterialityPolicyGate {
     /// Never. This host reads nothing and so cannot fail to reach an answer;
     /// its `no` under [`GateMode::PreAuthorized`] is a verdict, not a host
     /// failure.
-    fn evaluate(
-        &self,
-        _subject: GateSubject,
-        _expected_revision: InternalRevision,
-        mode: GateMode,
-    ) -> Result<GateVerdict, DomainError> {
+    fn evaluate(&self, _subject: GateSubject, mode: GateMode) -> Result<GateVerdict, DomainError> {
         match mode {
             GateMode::Gate => Ok(GateVerdict::authorized(
                 ApprovalDisposition::NoRecord,

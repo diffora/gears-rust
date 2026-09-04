@@ -168,10 +168,13 @@ fn the_guard_fires_on_what_shipped_and_not_on_alignment() {
 /// # What it does **not** cover
 ///
 /// One table. `products_bulk_batch.approval_ref` has the same shape and the same
-/// role, and its writer — `repo::insert_bulk_batch` — is not counted here, because
-/// P-D-105's arm does not reach a bulk row and extending it there is an open
-/// decision. Do not read a green run of this test as "every pinned approval in the
-/// gear is written behind a gate". It says three sites, on one table.
+/// role, and its writer — `repo::insert_bulk_batch` — is counted by
+/// [`every_writer_of_a_bulk_batch_is_counted_for_p_d_127`] since **P-D-127**
+/// row 10 extended P-D-105's arm to that table. **Two tables, two guards**,
+/// rather than one test counting both: they rest on different decisions and a
+/// merged assertion would report one number for two invariants. Do not read a
+/// green run of this test alone as *"every pinned approval in the gear is
+/// written behind a gate"*. It says three sites, on one table.
 ///
 /// # If this fails
 ///
@@ -230,6 +233,60 @@ fn every_writer_of_a_scheduled_transition_is_counted_for_p_d_105() {
          `products_scheduled_transition` — two in `run_retire` (Product and SKU) and one in \
          `apply_cascade_plan`, whose only caller is that same gated function. Found:\n  {}\n\
          Read this test's doc before changing the number.",
+        sites.join("\n  ")
+    );
+}
+
+/// **P-D-127 row 10's extension is a count too, and this is it.**
+///
+/// Row 10 puts every row of a bulk batch under the batch record in
+/// `PreAuthorized` mode *"under P-D-105's own predicate — the row's stored
+/// `approval_ref` names the consumed record"*, and it grants that extension
+/// **"with its own writer-count guard"**. P-D-105 had scoped itself to one
+/// table precisely because `products_bulk_batch.approval_ref` *"has different
+/// writers"*, so the extension is conditional on that sentence staying false.
+///
+/// The same argument as the sibling guard above, one table over: the
+/// predicate is not a bearer token **because a caller cannot write such a
+/// row**. Nothing in either schema enforces that; it is a code invariant, and
+/// the day a second, ungated writer of `products_bulk_batch` appears the
+/// predicate silently *becomes* the bearer token, with no test failing and no
+/// reviewer prompted.
+///
+/// # If this fails
+///
+/// A call site was added or removed. Do not just move the number. Establish
+/// that the new writer runs `GovernanceGate` before it writes — the import
+/// door's does, inside its own transaction — and if it cannot, say so to the
+/// decision's owner rather than widening the count.
+#[test]
+fn every_writer_of_a_bulk_batch_is_counted_for_p_d_127() {
+    let mut sites = Vec::new();
+    for path in crate_sources() {
+        if path.to_string_lossy().contains("_tests.rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("a readable crate source");
+        for (index, line) in text.lines().enumerate() {
+            let trimmed = line.trim_start();
+            // The declaration and doc mentions are not call sites.
+            if trimmed.starts_with("//") || trimmed.starts_with("pub async fn") {
+                continue;
+            }
+            if line.contains("insert_bulk_batch(") {
+                let name = path
+                    .strip_prefix(std::path::Path::new(env!("CARGO_MANIFEST_DIR")))
+                    .unwrap_or(&path);
+                sites.push(format!("{}:{}", name.display(), index + 1));
+            }
+        }
+    }
+    assert_eq!(
+        sites.len(),
+        1,
+        "P-D-127 row 10 extends P-D-105 to `products_bulk_batch` on the condition that its \
+         writers are counted. There is exactly one — the import door's, inside its own \
+         transaction. Found:\n  {}\nRead this test's doc before changing the number.",
         sites.join("\n  ")
     );
 }

@@ -76,6 +76,7 @@ use super::{
     write_materiality_policy,
 };
 use crate::domain::approval::{ApprovalState, ApproverDiff, diff_basis_for, render_diff};
+use crate::domain::concurrency::InternalRevision;
 use crate::domain::governance::{ApprovalId, EntityRef, GateSubject, SubjectKind};
 use crate::domain::materiality::{
     DEFAULT_AFFECTED_ENTITY_TRIGGER, DEFAULT_APPROVER_COUNT, MaterialAct, MaterialityEvaluator,
@@ -123,11 +124,14 @@ async fn harness() -> DBProvider<DbError> {
 }
 
 fn subject() -> GateSubject {
-    GateSubject::entity_publish(EntityRef {
-        tenant_id: TENANT,
-        entity_kind: bss_products_sdk::models::EntityKind::Product,
-        entity_id: PRODUCT,
-    })
+    GateSubject::entity_publish(
+        EntityRef {
+            tenant_id: TENANT,
+            entity_kind: bss_products_sdk::models::EntityKind::Product,
+            entity_id: PRODUCT,
+        },
+        InternalRevision::new(1),
+    )
 }
 
 /// A material act, so the descriptor's count comes from `approver_count`
@@ -1434,11 +1438,14 @@ async fn the_by_id_reader_finds_what_the_by_subject_reader_cannot() {
     let id = submit_one(&conn, &scope, &subject).await;
 
     // A leg's own subject: same tenant, different entity.
-    let leg = GateSubject::entity_publish(EntityRef {
-        tenant_id: TENANT,
-        entity_kind: bss_products_sdk::models::EntityKind::Sku,
-        entity_id: Uuid::from_u128(0x9e_c1),
-    });
+    let leg = GateSubject::entity_publish(
+        EntityRef {
+            tenant_id: TENANT,
+            entity_kind: bss_products_sdk::models::EntityKind::Sku,
+            entity_id: Uuid::from_u128(0x9e_c1),
+        },
+        InternalRevision::new(1),
+    );
     assert!(
         gate_candidates(&conn, &scope, &leg)
             .await
