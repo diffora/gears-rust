@@ -1569,6 +1569,74 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-139 — Consume-at-schedule: the retire doors pin the record that authorized them and spend it in the scheduling transaction
+
+- **Date**: 2026-09-04 (the lead; the decision-before-code item the queue has carried since
+  P-D-105, taken once B's submit door made a record exist)
+- **One function settles what an authorized act owes its record**:
+  `api::rest::settle_authorization` reads the `ApprovalDisposition` once for every governed door —
+  `Consume(id)` flips the record `consumed` **in the act's transaction** and answers the id;
+  `Verified(id)` answers the id and consumes nothing; `NoRecord` answers nothing. A record that is
+  no longer `satisfied` when the consume statement runs was spent by a concurrent act or closed
+  under this one, and the act **refuses `APPROVAL_REQUIRED` inside its transaction** — the
+  one-shot's losing side, rolled back with the act's own writes. B's host switch reuses the
+  function at the publish, deprecate and discard doors rather than re-deciding it per door.
+- **The scheduled row names the consumed record.** Both retire doors call the function before
+  they write; the row's `approval_ref` is the consumed record's id — one record for a Product's
+  row and every cascade leg, the legs being the mechanical stages of one composite act — and the
+  activation runner then verifies it in `PreAuthorized` mode under P-D-105's predicate and consumes
+  nothing further. `dod-scheduled-publish-pin` ticks on those three clauses; the only scheduling
+  door the crate has is retirement's, and a scheduled publish takes the same call when it gets one.
+- **Under the default host the placeholder stays, and it stays fail-closed.** `NoRecord` is the
+  only answer `NoMaterialityPolicyGate` gives; the row keeps P-D-105's `Uuid::now_v7()` placeholder
+  and the runner defers it as before. After B's switch a governed act never gets that answer.
+- **The arguments against, stated.** Refusing on the consume race rather than proceeding under
+  `Verified` semantics — accepted; an act that did not spend its record has no authority for it.
+  A placeholder that survives into the switch window — accepted; it is fail-closed at the runner,
+  and the alternative (a nullable column) would let a row exist with no record at all.
+- **Not changed**: P-D-105's predicate and its writer count (three, unchanged); `dod-one-shot-consumption`
+  stays B's — this entry wires its retire instance, the doors' remainder rides the host switch.
+- **Propagated**: `dod-scheduled-publish-pin` ticked, its marker on the function; the lead
+  handoff's queue item 2 struck; `RELAY-governance.md` names the function for the switch.
+
+
+#### P-D-138 — The owner's three: the detector's run heuristic narrows to a name dictionary, a head keeps its last version, and a registered producer is a launch criterion
+
+- **Date**: 2026-09-04 (**the product owner's decision** on the lead's recommendations; `10` §7
+  items 33 and 35, and the C6 consequence P-D-137 recorded)
+- **Item 33 — the `Uncertain` arm narrows to runs that carry a given name.** `RegistryPiiDetector`
+  returned `Uncertain` for any run of two or more adjacent capitalized words, so an attribute value
+  reading *"Premium Cloud Backup"* was refused until Legal signed the string off. The arm now fires
+  only for a run in which **at least one word is in a given-name dictionary shipped with the gear**
+  — a few thousand common given names across the deployment's locales, a constant in
+  `domain/retention.rs`, not configuration. Email and telephone stay `Blocked`; uncertainty still
+  blocks; the allow-list's exact match still lifts a signed-off run. Strand D's build, one function.
+- **Item 35 — a head keeps its last version for as long as the head exists.** P-D-137 excluded any
+  head-named version from the GC's candidates; this extends it to **retired** heads. Head rows are
+  physically append-only, so the cost is one frozen row per entity, ever; the alternative left a
+  retired head naming a row that no longer existed, or asked the GC for a write the head guard
+  refuses on a terminal row. Nothing further to build: D's exclusion covers every head state.
+- **A registered reference producer is a v1 launch criterion.** D-47's flip guard defers every SKU
+  retirement as `no_producers` while the producer registry is empty — C6's fail-closed posture,
+  which stands — and the `retirement_held` alert names the hold after `retirement_held_alert_hours`.
+  So pricing (or whichever producer owns the watermark) **MUST be registered before the first
+  retirement is scheduled**; `PRD` §15's launch table gains the row beside P-D-132's ack criterion.
+  No code change.
+- **The arguments against, stated.** A dictionary is blind to a rare or foreign-spelled name —
+  accepted; that is item 1's recorded risk and it stays on Legal's allow-list loop, and a detector
+  that guessed `Clean` for it is no worse than the one that refused every marketing title. Keeping
+  a retired head's version reads against a literal *"retention for retired entities/versions"* —
+  accepted; every earlier version of that entity still expires, and the retained row is the one
+  the head's own record names. Making a producer registration a launch criterion rather than
+  admitting flips on an empty registry — accepted; an unregistered producer is the case D-47
+  exists for.
+- **Not changed**: C2's fail-closed hook; P-D-136's detector at six doors; P-D-137's exclusion.
+- **Propagated**: `10` §7 items 33 and 35 struck; `PRD` §15 launch table gains the producer row;
+  `05` §7 row 6 struck on the same commit (the retention interplay it deferred to `10` is built:
+  approvals and decisions are candidates of the audit class and held by their guard);
+  `RELAY-retention.md` §2.1c carries the dictionary arm.
+
+
 #### P-D-137 — Three deliveries accepted in one afternoon: B's two contradictions, D's financial class, C's three findings, and two conventions the first finished feature needed
 
 - **Date**: 2026-09-04 (the lead, accepting strand B's six commits (merged `c1b86fcbb`), strand D's

@@ -54,6 +54,7 @@ use crate::api::rest::ApiState;
 use crate::api::rest::preconditions;
 use crate::config::ProductsConfig;
 use crate::domain::concurrency::InternalRevision;
+use crate::domain::governance::{ApprovalId, EntityRef, GateSubject, GovernanceGate};
 use crate::infra::events;
 use crate::infra::storage::migrations::Migrator;
 use crate::infra::storage::repo::{self, NewProduct};
@@ -5961,4 +5962,233 @@ async fn reparenting_a_sku_onto_a_retiring_parent_is_retirement_pending() {
         stayed.product_id, home,
         "a refused re-parent leaves the SKU where it was"
     );
+}
+
+/// **A retirement pins the record that authorized it and spends it in the
+/// scheduling transaction** (`dod-scheduled-publish-pin`, P-D-105, P-D-139).
+///
+/// The host is the real one — `StoredApprovalGate::governed` over the store's
+/// own candidates — because under `NoMaterialityPolicyGate` there is no
+/// record to pin and the placeholder path proves nothing. Both halves are
+/// asserted from the rows: the scheduled row's `approval_ref` **is** the
+/// record's id, and the record's `state` is `consumed` when the door has
+/// answered.
+#[tokio::test]
+async fn a_retirement_pins_the_satisfied_record_and_spends_it_in_the_scheduling_transaction() {
+    let harness = harness().await;
+    let (sku_id, etag, revision) = published_sku_for_retirement(&harness, "SKU-PIN-1").await;
+    let approval_id = seed_satisfied_record(&harness, sku_id, revision).await;
+    let gate = governed_host_over(&harness, sku_id, revision).await;
+
+    let response = retire_under(&harness, sku_id, &etag, &gate)
+        .await
+        .expect("a satisfied record authorizes the retirement");
+    assert!(
+        response.status().is_success(),
+        "the retirement is scheduled: {}",
+        response.status()
+    );
+
+    let conn = harness.db.conn().expect("connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    let intents = repo::find_live_retire_intents(&conn, &scope, TENANT, sku_id)
+        .await
+        .expect("read the live retire intents");
+    assert_eq!(intents.len(), 1, "one scheduled row");
+    assert_eq!(
+        intents[0].approval_ref,
+        approval_id.get(),
+        "the row names the record that authorized it, not a placeholder"
+    );
+    assert_eq!(
+        raw_string_opt(
+            &harness.dsn,
+            &format!(
+                "SELECT state AS v FROM products_approval WHERE {}",
+                id_matches("approval_id", approval_id.get())
+            ),
+        )
+        .await
+        .as_deref(),
+        Some("consumed"),
+        "the record was spent in the scheduling transaction"
+    );
+}
+
+/// **The one-shot's losing side**: a host that read a `satisfied` record which
+/// a concurrent act then spent refuses `APPROVAL_REQUIRED`, and the refusal
+/// rolls the scheduling back — no row, no state flip.
+///
+/// The race is staged rather than raced: the candidates are read while the
+/// record is `satisfied`, the record is consumed out of band, and the door is
+/// driven with the stale host. The `consume` statement's zero-row answer is
+/// the operand (`repo::Consumption::AlreadySpentOrClosed`), and the assertion
+/// that nothing was written is what separates *refused* from *refused after
+/// scheduling*.
+#[tokio::test]
+async fn a_record_spent_under_the_act_refuses_the_retirement_and_writes_nothing() {
+    let harness = harness().await;
+    let (sku_id, etag, revision) = published_sku_for_retirement(&harness, "SKU-PIN-2").await;
+    let approval_id = seed_satisfied_record(&harness, sku_id, revision).await;
+    let stale_gate = governed_host_over(&harness, sku_id, revision).await;
+
+    let conn = harness.db.conn().expect("connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    let spent = repo::consume_approval(&conn, &scope, TENANT, approval_id, Utc::now())
+        .await
+        .expect("consume out of band");
+    assert_eq!(spent, repo::Consumption::Spent);
+
+    let Err(refusal) = retire_under(&harness, sku_id, &etag, &stale_gate).await else {
+        panic!("a record spent under the act must refuse the retirement");
+    };
+    let response = refusal.into_response();
+    let view = body_json(response).await;
+    assert_eq!(view["context"]["reason"], json!("APPROVAL_REQUIRED"));
+
+    let intents = repo::find_live_retire_intents(&conn, &scope, TENANT, sku_id)
+        .await
+        .expect("read the live retire intents");
+    assert!(
+        intents.is_empty(),
+        "the refusal inside the transaction rolled the scheduling back"
+    );
+    let head = repo::find_sku(&conn, &scope, TENANT, sku_id)
+        .await
+        .expect("read the head")
+        .expect("the head exists");
+    assert_eq!(
+        head.lifecycle_state,
+        bss_products_sdk::models::LifecycleState::Published,
+        "no state flip rode the refused act"
+    );
+}
+
+/// A published SKU with its `ETag` and revision — the operand every
+/// retirement probe above starts from.
+async fn published_sku_for_retirement(harness: &TestHarness, code: &str) -> (Uuid, String, i64) {
+    let parent_id = seed_parent(harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let (sku_id, etag) = seed_draft_sku(harness, parent_id, code).await;
+    let published = post_publish(app_for(harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+    assert_eq!(published.status(), StatusCode::OK);
+    let etag = published.headers()[axum::http::header::ETAG]
+        .to_str()
+        .expect("an ETag is ASCII")
+        .to_owned();
+    let revision = body_json(published).await["internal_revision"]
+        .as_i64()
+        .expect("the published head carries its revision");
+    (sku_id, etag, revision)
+}
+
+/// One `satisfied` record for the SKU's publish subject at `revision`, seeded
+/// through the store's own submit and then satisfied by the same statement
+/// the decide door would run — the runner's probes seed theirs the same way.
+async fn seed_satisfied_record(harness: &TestHarness, sku_id: Uuid, revision: i64) -> ApprovalId {
+    use crate::domain::materiality::{
+        MaterialAct, MaterialityEvaluator, MaterialityPolicy, Resolution,
+    };
+    use crate::infra::storage::entity::approval;
+    use sea_orm::{ColumnTrait as _, Condition, EntityTrait as _};
+    use toolkit_db::secure::SecureUpdateExt as _;
+
+    let conn = harness.db.conn().expect("connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    let approval_id = ApprovalId::new(Uuid::now_v7());
+    let subject = publish_subject(sku_id, revision);
+    let policy = MaterialityPolicy::default();
+    let evaluator = MaterialityEvaluator::new(Resolution::Resolved(&policy));
+    let act = MaterialAct::PolicyMutation;
+    repo::submit_approval(
+        &conn,
+        &scope,
+        repo::NewApproval {
+            approval_id,
+            subject: &subject,
+            internal_revision: revision,
+            content_snapshot: "{}",
+            diff_basis: None,
+            act: &act,
+            evaluator,
+            finance_material: false,
+            approver_count: 2,
+            submitter: Uuid::from_u128(0xd1_77),
+            author_override_ack: None,
+        },
+        Utc::now(),
+    )
+    .await
+    .expect("submit the record");
+    approval::Entity::update_many()
+        .secure()
+        .scope_with(&scope)
+        .col_expr(approval::Column::State, Expr::value("satisfied".to_owned()))
+        .filter(
+            Condition::all()
+                .add(approval::Column::TenantId.eq(TENANT))
+                .add(approval::Column::ApprovalId.eq(approval_id.get())),
+        )
+        .exec(&conn)
+        .await
+        .expect("satisfy the record");
+    approval_id
+}
+
+fn publish_subject(sku_id: Uuid, revision: i64) -> GateSubject {
+    GateSubject::entity_publish(
+        EntityRef {
+            tenant_id: TENANT,
+            entity_kind: bss_products_sdk::models::EntityKind::Sku,
+            entity_id: sku_id,
+        },
+        InternalRevision::new(revision),
+    )
+}
+
+/// The real host over the store's candidates for the SKU's subject — read
+/// **now**, so a probe can spend the record afterwards and drive the door
+/// with a host whose picture is stale.
+async fn governed_host_over(
+    harness: &TestHarness,
+    sku_id: Uuid,
+    revision: i64,
+) -> Arc<dyn GovernanceGate + Send + Sync> {
+    let conn = harness.db.conn().expect("connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    let candidates = repo::gate_candidates(&conn, &scope, &publish_subject(sku_id, revision))
+        .await
+        .expect("read the candidates");
+    assert_eq!(candidates.len(), 1, "one candidate for the subject");
+    Arc::new(crate::domain::approval::StoredApprovalGate::governed(
+        candidates,
+    ))
+}
+
+async fn retire_under(
+    harness: &TestHarness,
+    sku_id: Uuid,
+    etag: &str,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+) -> Result<axum::response::Response, toolkit::api::canonical_prelude::CanonicalError> {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::IF_MATCH,
+        etag.parse().expect("the ETag is a valid header value"),
+    );
+    super::retire_sku_gated(
+        &api_state(harness),
+        &flat_in_enforcer(TENANT),
+        &authed_ctx(TENANT),
+        &headers,
+        sku_id,
+        super::RetireSkuRequest {
+            reason: "end of sale".to_owned(),
+            replaced_by: None,
+            effective_at: None,
+            must_migrate_by: None,
+            confirmed: true,
+        },
+        gate,
+    )
+    .await
 }

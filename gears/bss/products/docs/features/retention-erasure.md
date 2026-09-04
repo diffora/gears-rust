@@ -1707,8 +1707,7 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
   FEATUREs, so the cost compounds.
 - **`repo::AuditCommon::correlation_id`**'s owed migration — see row 16. Owner: `01-foundation`. **Landed 2026-09-04** (P-D-118: `text` on both engines; the door writers fill it, background acts write `NULL`).
 
-33. **The detector's run heuristic, measured after it shipped (P-D-136, 2026-09-04): how much
-    friction is the owner buying?** `RegistryPiiDetector` returns `Uncertain` for **any run of two
+33. ~~**The detector's run heuristic, measured after it shipped (P-D-136, 2026-09-04): how much friction is the owner buying?**~~ **Answered (P-D-138, 2026-09-04, the owner): the `Uncertain` arm narrows to runs carrying a given-name dictionary word** — email and phone stay `Blocked`, uncertainty still blocks, the allow-list still lifts a signed-off run; strand D's build. *The item's text stood as:* `RegistryPiiDetector` returns `Uncertain` for **any run of two
     or more adjacent capitalized words** no active entry covers, and the hook refuses. Under the
     hook are localized attribute values, every operator reason, `displayLabel`, metadata values,
     the allow-list's own free text and the export justification — not names or codes. So with an
@@ -1742,7 +1741,7 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
     right.
     **Owner**: the design-set owner with `06-catalog-version`.
 
-35. **Does a retired head's last version expire with its window, or does the head keep it?**
+35. ~~**Does a retired head's last version expire with its window, or does the head keep it?**~~ **Answered (P-D-138, 2026-09-04, the owner): the head keeps it for as long as the head exists** — heads are append-only, so one frozen row per entity, ever; D's exclusion already covers every head state. *The item's text stood as:*
     P-D-137 (2026-09-04) rules that a version row **any head names as its current
     `published_version` is never a GC candidate** — the schema's only `DELETE` predicate is the
     manifest reference (P-D-40), and without the rule a live entity published once, long ago,

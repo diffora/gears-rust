@@ -471,6 +471,74 @@ pub(crate) struct RefusalAuditContext<'a> {
 /// authorization denial's own 403 — so this function stays generic over both
 /// callers, which build different response shapes for the identical audit
 /// discipline.
+/// Settle what an authorized act owes its record: the id it pins on what it
+/// writes, and the `consumed` flip it spends **in the act's own transaction**
+/// (`inst-fd-publish-consume`, `05` `inst-gv-one-shot`; P-D-105's pin on a
+/// scheduled row). One function for every governed door, so the three
+/// answers an [`crate::domain::governance::ApprovalDisposition`] can give are
+/// read in one place and B's host switch reuses it rather than re-deciding
+/// them per door (P-D-139):
+///
+/// - `Consume(id)` — the record is flipped `consumed` **here**. A record that
+///   is no longer `satisfied` when the statement runs was spent by a
+///   concurrent act or closed under this one, and this act **refuses
+///   `APPROVAL_REQUIRED`** rather than proceed on a record it did not spend:
+///   that is the one-shot's losing side, and refusing inside the transaction
+///   is what rolls the act's own writes back with it.
+/// - `Verified(id)` — the `PreAuthorized` answer: the id is pinned, nothing is
+///   consumed. The type already makes that so.
+/// - `NoRecord` — nothing to pin. The caller keeps whatever placeholder its
+///   `NOT NULL` column requires and says so at the call site; under the real
+///   host a governed act never gets this answer.
+///
+/// The scheduled-transition pin (`dod-scheduled-publish-pin`) is this
+/// function called from the two retire doors: the row's `approval_ref` is the
+/// consumed record's id, written by the same statement list that consumed it,
+/// and the activation runner then verifies that record in `PreAuthorized`
+/// mode and consumes nothing further (`infra::activation_runner`). The only
+/// scheduling door the crate has is retirement's; a scheduled publish has no
+/// door yet and takes the same call when it does.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-scheduled-publish-pin:p1
+pub(crate) async fn settle_authorization(
+    runner: &(impl toolkit_db::secure::DBRunner + Sync),
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    authorization: &crate::domain::governance::GateAuthorization,
+    now: DateTime<Utc>,
+) -> Result<Option<crate::domain::governance::ApprovalId>, SettleError> {
+    use crate::domain::governance::ApprovalDisposition;
+    match &authorization.disposition {
+        ApprovalDisposition::NoRecord => Ok(None),
+        ApprovalDisposition::Verified(id) => Ok(Some(*id)),
+        ApprovalDisposition::Consume(id) => {
+            let id = *id;
+            match repo::consume_approval(runner, scope, tenant_id, id, now)
+                .await
+                .map_err(SettleError::Repo)?
+            {
+                repo::Consumption::Spent => Ok(Some(id)),
+                repo::Consumption::AlreadySpentOrClosed => Err(SettleError::Refused(
+                    DomainError::ApprovalRequired(format!(
+                        "approval {id} is no longer satisfied: it was spent by a concurrent act \
+                         or closed under this one, so this act did not consume it"
+                    )),
+                )),
+            }
+        }
+    }
+}
+
+/// [`settle_authorization`]'s two failure classes, kept apart because the
+/// doors map them apart: a refusal is the act's own `4xx` and is audited as
+/// one; a repository failure is the storage's `500`.
+pub(crate) enum SettleError {
+    /// The record could not be spent by this act.
+    Refused(DomainError),
+    /// The consume statement itself failed.
+    Repo(RepoError),
+}
+
 pub(crate) async fn audit_refusal_and_report(
     state: &ApiState,
     scope: &AccessScope,

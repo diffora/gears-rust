@@ -4163,11 +4163,27 @@ async fn run_retire(
                 "bss-products: the governance gate host failed: {e}"
             ))))
         })?;
-    verdict
+    let authorization = verdict
         .into_authorization()
         .map_err(HeadActError::Refused)?;
+    // P-D-105's pin and the one-shot's flip, in this transaction (P-D-139).
+    // One record for the parent's row and every cascade leg: the legs are
+    // the mechanical stages of this one composite act and re-enter in
+    // `PreAuthorized` mode against the same consumed record.
+    let pinned = crate::api::rest::settle_authorization(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        &authorization,
+        inputs.now,
+    )
+    .await
+    .map_err(|e| match e {
+        crate::api::rest::SettleError::Refused(refusal) => HeadActError::Refused(refusal),
+        crate::api::rest::SettleError::Repo(error) => HeadActError::from_repo(&error),
+    })?;
 
-    let approval_ref = Uuid::now_v7();
+    let approval_ref = pinned.map_or_else(Uuid::now_v7, ApprovalId::get);
     let parent_transition_id = Uuid::now_v7();
     apply_cascade_plan(
         runner,
