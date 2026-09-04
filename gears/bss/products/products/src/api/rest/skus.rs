@@ -4945,9 +4945,24 @@ async fn run_retire(
                 "bss-products: the governance gate host failed: {e}"
             ))))
         })?;
-    verdict
+    let authorization = verdict
         .into_authorization()
         .map_err(HeadActError::Refused)?;
+    // P-D-105's pin, and the one-shot's flip, in this transaction (P-D-139):
+    // the record that authorized the retirement is what the scheduled row
+    // names, and it is `consumed` by the same statement list that writes it.
+    let pinned = crate::api::rest::settle_authorization(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        &authorization,
+        inputs.now,
+    )
+    .await
+    .map_err(|e| match e {
+        crate::api::rest::SettleError::Refused(refusal) => HeadActError::Refused(refusal),
+        crate::api::rest::SettleError::Repo(error) => HeadActError::from_repo(&error),
+    })?;
 
     match stamp {
         Some(provenance) => {
@@ -4999,7 +5014,10 @@ async fn run_retire(
             kind: "retire".to_owned(),
             at,
             // Host is NoRecord; mint a placeholder so the NOT NULL column writes.
-            approval_ref: Uuid::now_v7(),
+            // The consumed record's id where the host named one; under the
+            // default host (`NoRecord`) the placeholder P-D-105 records, which
+            // the runner defers fail-closed (P-D-139).
+            approval_ref: pinned.map_or_else(Uuid::now_v7, ApprovalId::get),
             retirement_reason: Some(request.reason.clone()),
             now: inputs.now,
         },

@@ -1569,6 +1569,37 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-139 — Consume-at-schedule: the retire doors pin the record that authorized them and spend it in the scheduling transaction
+
+- **Date**: 2026-09-04 (the lead; the decision-before-code item the queue has carried since
+  P-D-105, taken once B's submit door made a record exist)
+- **One function settles what an authorized act owes its record**:
+  `api::rest::settle_authorization` reads the `ApprovalDisposition` once for every governed door —
+  `Consume(id)` flips the record `consumed` **in the act's transaction** and answers the id;
+  `Verified(id)` answers the id and consumes nothing; `NoRecord` answers nothing. A record that is
+  no longer `satisfied` when the consume statement runs was spent by a concurrent act or closed
+  under this one, and the act **refuses `APPROVAL_REQUIRED` inside its transaction** — the
+  one-shot's losing side, rolled back with the act's own writes. B's host switch reuses the
+  function at the publish, deprecate and discard doors rather than re-deciding it per door.
+- **The scheduled row names the consumed record.** Both retire doors call the function before
+  they write; the row's `approval_ref` is the consumed record's id — one record for a Product's
+  row and every cascade leg, the legs being the mechanical stages of one composite act — and the
+  activation runner then verifies it in `PreAuthorized` mode under P-D-105's predicate and consumes
+  nothing further. `dod-scheduled-publish-pin` ticks on those three clauses; the only scheduling
+  door the crate has is retirement's, and a scheduled publish takes the same call when it gets one.
+- **Under the default host the placeholder stays, and it stays fail-closed.** `NoRecord` is the
+  only answer `NoMaterialityPolicyGate` gives; the row keeps P-D-105's `Uuid::now_v7()` placeholder
+  and the runner defers it as before. After B's switch a governed act never gets that answer.
+- **The arguments against, stated.** Refusing on the consume race rather than proceeding under
+  `Verified` semantics — accepted; an act that did not spend its record has no authority for it.
+  A placeholder that survives into the switch window — accepted; it is fail-closed at the runner,
+  and the alternative (a nullable column) would let a row exist with no record at all.
+- **Not changed**: P-D-105's predicate and its writer count (three, unchanged); `dod-one-shot-consumption`
+  stays B's — this entry wires its retire instance, the doors' remainder rides the host switch.
+- **Propagated**: `dod-scheduled-publish-pin` ticked, its marker on the function; the lead
+  handoff's queue item 2 struck; `RELAY-governance.md` names the function for the switch.
+
+
 #### P-D-138 — The owner's three: the detector's run heuristic narrows to a name dictionary, a head keeps its last version, and a registered producer is a launch criterion
 
 - **Date**: 2026-09-04 (**the product owner's decision** on the lead's recommendations; `10` §7

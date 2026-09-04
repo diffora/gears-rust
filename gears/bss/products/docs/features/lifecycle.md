@@ -688,7 +688,7 @@ the operand.
 
 ### Scheduled-publish approval pin
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-scheduled-publish-pin`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-scheduled-publish-pin`
 
 The system **MUST** pin the approval at scheduling time onto the `ScheduledTransition` and mark
 that record `consumed` **in the scheduling transaction**, leaving the entity's lifecycle state
