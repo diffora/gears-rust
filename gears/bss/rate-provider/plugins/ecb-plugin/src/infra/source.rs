@@ -12,7 +12,8 @@ use bss_rate_provider_sdk::error::map_http_error;
 use bss_rate_provider_sdk::fetch::fetch_and_parse;
 use bss_rate_provider_sdk::metrics::SharedFetchMetrics;
 use bss_rate_provider_sdk::publication_time::reject_future_publication_time;
-use chrono::{NaiveDate, NaiveTime, Utc};
+use chrono::{Datelike, NaiveDate};
+use time::{Date, Month, OffsetDateTime, PrimitiveDateTime, Time};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use toolkit_http::HttpClient;
@@ -276,6 +277,24 @@ fn record_currency_rate(
     }
 }
 
+/// The feed's civil date, anchored at midnight UTC — the same instant chrono's
+/// `NaiveDate::and_time(MIN).and_utc()` produced.
+fn publication_instant(date: NaiveDate) -> OffsetDateTime {
+    let Ok(month) = u8::try_from(date.month()) else {
+        return OffsetDateTime::UNIX_EPOCH;
+    };
+    let Ok(month) = Month::try_from(month) else {
+        return OffsetDateTime::UNIX_EPOCH;
+    };
+    let Ok(day) = u8::try_from(date.day()) else {
+        return OffsetDateTime::UNIX_EPOCH;
+    };
+    let Ok(date) = Date::from_calendar_date(date.year(), month, day) else {
+        return OffsetDateTime::UNIX_EPOCH;
+    };
+    PrimitiveDateTime::new(date, Time::MIDNIGHT).assume_utc()
+}
+
 /// Convert parsed ECB rows into `ProviderRate`s (base = EUR), each stamped with
 /// `provider` as its provenance. When `pairs` is non-empty, keep only the
 /// requested EUR-based quotes (others omitted, not an error). `as_of` is the
@@ -302,7 +321,7 @@ pub fn ecb_rates_to_provider_rates(
     pairs: &[CurrencyPair],
     provider: &str,
 ) -> Result<Vec<ProviderRate>, RateProviderError> {
-    let as_of = date.and_time(NaiveTime::MIN).and_utc();
+    let as_of = publication_instant(date);
     let mut out = Vec::with_capacity(raw.len());
     let mut skipped: u64 = 0;
     for (quote, rate_str) in raw {
@@ -404,12 +423,12 @@ impl RateProviderV1 for EcbRateProvider {
         let request = self.client.get(&self.base_url);
         fetch_and_parse(request, &self.id, self.metrics.as_ref(), |bytes| {
             let (date, raw) = parse_ecb_xml(bytes)?;
-            let as_of = date.and_time(NaiveTime::MIN).and_utc();
+            let as_of = publication_instant(date);
             // A document dated far enough ahead reads as permanently fresh to
             // the ledger's age-based staleness rule.
-            reject_future_publication_time(as_of, Utc::now(), &self.id)?;
+            reject_future_publication_time(as_of, OffsetDateTime::now_utc(), &self.id)?;
             let rates = ecb_rates_to_provider_rates(date, &raw, pairs, &self.id)?;
-            Ok((rates, as_of.timestamp()))
+            Ok((rates, as_of.unix_timestamp()))
         })
         .await
     }

@@ -86,7 +86,7 @@
 //! `inst-cl-windows` leaves its billable rows without coverage; that is reported
 //! rather than prevented.
 
-use chrono::{DateTime, Utc};
+
 use toolkit_db::secure::{AccessScope, DBRunner, DbTx};
 use uuid::Uuid;
 
@@ -102,6 +102,7 @@ use crate::domain::scope_key::{PhaseId, PlanId, PriceEligibility, ScopeKey};
 use crate::infra::storage::repo::{
     NewBundle, NewPlanDraft, NewPriceDraft, bundle_repo, plan_repo, plan_shape_repo, price_repo,
 };
+use time::OffsetDateTime;
 use crate::infra::storage::repo_failure;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -308,7 +309,7 @@ pub async fn clone_plan_on(
     tenant_id: Uuid,
     source: PlanId,
     target: PlanId,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     stamp: AuditStamp,
 ) -> Result<CloneReceipt, DomainError> {
     let current = plan_repo::load_current(runner, scope, tenant_id, source)
@@ -915,7 +916,7 @@ async fn copy_rows_on(
     target: PlanId,
     travelling: &[PriceRecord],
     remap: &BTreeMap<Uuid, PhaseId>,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     stamp: AuditStamp,
 ) -> Result<(), DomainError> {
     for row in travelling {

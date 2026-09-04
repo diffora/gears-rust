@@ -58,7 +58,7 @@ use bss_ledger_sdk::posting::{
     RecordDisputePhase, SettlePayment, UnallocatedView,
 };
 use bss_ledger_sdk::{AccountClass, ProvisionOutcome, ProvisionRequest, Side};
-use chrono::{Datelike, Utc};
+use chrono::{Datelike};
 use sea_orm::{ConnectionTrait, Database, Statement};
 use sea_orm_migration::MigratorTrait;
 use testcontainers_modules::postgres::Postgres;
@@ -70,6 +70,7 @@ use toolkit_gts::gts_id;
 use toolkit_security::{PlatformSecurityContext, SecurityContext};
 use tower::ServiceExt;
 use uuid::Uuid;
+use time::OffsetDateTime;
 
 fn pg(sql: impl Into<String>) -> Statement {
     Statement::from_string(sea_orm::DatabaseBackend::Postgres, sql.into())
@@ -431,7 +432,7 @@ fn account(tenant: Uuid, id: Uuid, class: AccountClass, normal: Side) -> Account
 /// debit, UNALLOCATED credit, DISPUTE_HOLD debit). Mirrors
 /// `rest_payments.rs::setup_seller`.
 async fn setup_seller(raw: &sea_orm::DatabaseConnection, provider: &DBProvider<DbError>) -> Seller {
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let s = Seller {
         tenant: SUBJECT_TENANT,
         payer: Uuid::now_v7(),

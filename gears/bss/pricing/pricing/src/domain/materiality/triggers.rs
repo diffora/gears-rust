@@ -184,6 +184,7 @@ use toolkit_macros::domain_model;
 use super::delta::{RowDelta, row_delta};
 use super::{ChangeSet, PublishedPriceBaseline};
 use crate::domain::price_record::PriceRecord;
+use time::OffsetDateTime;
 
 /// One registered always-material trigger.
 ///
@@ -444,13 +445,16 @@ impl Trigger {
             | Self::BundleComposition
             | Self::GrandfatheringCutover
             | Self::PriceOverlayMutation
-            // The customer-group plane's **one** declared act.
+            // The customer-group plane's one-payer act.
             // `api::rest::customer_groups::immediate_membership_materiality`
             // builds `ChangeSet::of_act(Trigger::ImmediateMembershipReresolution,
-            // …)` on every arrival of `POST …/move`, which is the same
-            // "declared, not merely stored" bar `GrandfatheringCutover`'s note
-            // states. Its sibling is **not** here: see below.
+            // …)` on every arrival of `POST …/members/{payerId}/move`.
             | Self::ImmediateMembershipReresolution
+            // The bulk door: `api::rest::customer_groups::bulk_membership_materiality`
+            // builds `ChangeSet::of_act(Trigger::BulkGroupMove, …)` on every
+            // arrival of `POST …/members/move`. The route is the declaration;
+            // `MembershipMoveSet` being able to hold many proposals is not.
+            | Self::BulkGroupMove
             // **D-104's second bundle act, declared.** It is on this side because
             // `infra::bundle::rev_share_change_set` has a caller:
             // `infra::bundle::declared_act`, which diffs the composition being
@@ -479,30 +483,7 @@ impl Trigger {
             // The `false` said this crate has no surface for retirement while a
             // route was serving one.
             | Self::PlanRetirement => true,
-            // `inst-mm-bulk`'s subject is not built, and the comment that said
-            // otherwise is the reason this arm now carries an argument.
-            //
-            // It read: *"… `MembershipMoveSet` is this
-            // crate's subject for both, and `ApprovalService::submit_membership_move_on`
-            // is the writer that now declares one or the other via
-            // `ChangeSet::of_act`"*. Measured against the tree, every clause of
-            // that is false. `submit_membership_move_on` contains no `of_act`
-            // call — no writer in `infra::approval` does; the only `of_act` on
-            // this plane is the route's, and it passes
-            // `ImmediateMembershipReresolution` unconditionally; and
-            // `move_membership_immediate` builds a **single-payer**
-            // `MembershipMoveSet`, so no surface in the crate ever constructs the
-            // many-payer act `inst-mm-bulk` is about. The only other occurrence
-            // of the variant in the tree was a test.
-            //
-            // `MembershipMoveSet` being *able* to hold many proposals is exactly
-            // the distinction `GrandfatheringCutover` waited three commits on:
-            // **the predicate is about a declaration, not about a table.** So
-            // this answers `false` — the honest value — and the bulk surface
-            // (a many-payer route, its idempotency contract and its approval
-            // unit) is owed to Slice 9 rather than quietly attested to here.
-            Self::BulkGroupMove
-            | Self::RetirementUnwindingACutover
+            Self::RetirementUnwindingACutover
             | Self::GaGateClearingRepublish
             | Self::PrepaidGateClearingRepublish
             | Self::GrantNonPriceField => false,
@@ -660,8 +641,8 @@ fn moves_no_row(change: &ChangeSet, baseline: &PublishedPriceBaseline) -> bool {
 /// refuses it outright at publish, so a rule that also called it material would be
 /// a second owner of a refusal.
 fn tightens_horizon(
-    proposed: Option<chrono::DateTime<chrono::Utc>>,
-    published: Option<chrono::DateTime<chrono::Utc>>,
+    proposed: Option<OffsetDateTime>,
+    published: Option<OffsetDateTime>,
 ) -> bool {
     match (proposed, published) {
         (Some(proposed), Some(published)) => proposed < published,

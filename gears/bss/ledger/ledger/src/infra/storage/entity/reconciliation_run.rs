@@ -5,11 +5,11 @@
 //! covered. Tenant-scoped via `SecureORM`; the resource col is the business
 //! `run_id`.
 
-use chrono::{DateTime, Utc};
 use sea_orm::entity::prelude::*;
 use serde_json::Value as JsonValue;
 use toolkit_db_macros::Scopable;
 use uuid::Uuid;
+use time::OffsetDateTime;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Scopable)]
 #[sea_orm(table_name = "ledger_reconciliation_run")]
@@ -26,7 +26,7 @@ pub struct Model {
     pub status: String,
     pub watermark: Option<i64>,
     pub detail: Option<JsonValue>,
-    pub at_utc: DateTime<Utc>,
+    pub at_utc: OffsetDateTime,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

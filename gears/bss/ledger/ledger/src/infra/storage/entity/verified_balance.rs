@@ -5,10 +5,10 @@
 //! cache` instead of folding all-time. Written in the period-close txn right
 //! after the clean full tie-out passes. Tenant-scoped via `SecureORM`.
 
-use chrono::{DateTime, Utc};
 use sea_orm::entity::prelude::*;
 use toolkit_db_macros::Scopable;
 use uuid::Uuid;
+use time::OffsetDateTime;
 
 /// Grain discriminators — mirror the derived caches the tie-out folds, and the
 /// `chk_verified_balance_grain` CHECK. `ar_invoice` and `ar_invoice_disputed`
@@ -46,7 +46,7 @@ pub struct Model {
     /// Max in-period `created_seq` covered by this baseline (the incremental
     /// boundary — the open fold starts strictly after the closed periods).
     pub watermark_seq: i64,
-    pub updated_at_utc: DateTime<Utc>,
+    pub updated_at_utc: OffsetDateTime,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

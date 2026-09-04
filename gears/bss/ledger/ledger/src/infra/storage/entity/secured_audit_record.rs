@@ -3,11 +3,11 @@
 //! linked into the tenant's own per-tenant audit hash chain, and is never
 //! updated or deleted (the Postgres `reject_mutation()` trigger enforces it).
 
-use chrono::{DateTime, Utc};
 use sea_orm::entity::prelude::*;
 use serde_json::Value as JsonValue;
 use toolkit_db_macros::Scopable;
 use uuid::Uuid;
+use time::OffsetDateTime;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Scopable)]
 #[sea_orm(table_name = "secured_audit_record")]
@@ -23,8 +23,8 @@ pub struct Model {
     pub correlation_id: Option<Uuid>,
     pub row_hash: Vec<u8>,
     pub prev_hash: Vec<u8>,
-    pub at_utc: DateTime<Utc>,
-    pub retain_until: Option<DateTime<Utc>>,
+    pub at_utc: OffsetDateTime,
+    pub retain_until: Option<OffsetDateTime>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

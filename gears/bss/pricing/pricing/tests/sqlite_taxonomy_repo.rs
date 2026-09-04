@@ -16,7 +16,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use chrono::{DateTime, TimeZone, Utc};
+
 use sea_orm::ActiveValue::Set;
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use sea_orm_migration::MigratorTrait;
@@ -34,6 +34,8 @@ use bss_pricing::domain::scope_key::Region;
 use bss_pricing::domain::taxonomy::{
     RegionTaxMarkers, TAXONOMY_VALUE_IN_USE, TaxonomyClass, TaxonomyEntry, TaxonomyState, tag_of,
 };
+use bss_pricing::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 use bss_pricing::infra::storage::repo::taxonomy_repo::{
     Replaced, TaxonomyRepo, active_regions, customer_group_tag_of, references_to, region_readiness,
     rounding_policy_tag_of,
@@ -42,10 +44,8 @@ use bss_pricing::infra::storage::repo::taxonomy_repo::{
 const TENANT: Uuid = Uuid::from_u128(0x1111_1111_1111_1111_1111_1111_1111_1111);
 const OTHER_TENANT: Uuid = Uuid::from_u128(0x9999_9999_9999_9999_9999_9999_9999_9999);
 
-fn now() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 6, 12, 0, 0)
-        .single()
-        .expect("the fixed instant is unambiguous")
+fn now() -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 6, 12, 0, 0)
 }
 
 fn stamp() -> AuditStamp {
@@ -1360,8 +1360,8 @@ async fn seed_customer_group_membership(
     membership_id: u128,
     payer_tenant_id: u128,
     group_value: &str,
-    effective_from: DateTime<Utc>,
-    effective_to: Option<DateTime<Utc>>,
+    effective_from: OffsetDateTime,
+    effective_to: Option<OffsetDateTime>,
 ) {
     use bss_pricing::infra::storage::entity::group_membership;
 
@@ -1407,7 +1407,7 @@ async fn a_live_membership_blocks_a_customer_groups_retirement() {
         0x0c_2a,
         0x0c_2b,
         "gold",
-        now() - chrono::Duration::days(30),
+        now() - time::Duration::days(30),
         None,
     )
     .await;
@@ -1453,7 +1453,7 @@ async fn a_membership_that_has_not_started_yet_blocks_a_customer_groups_retireme
         0x0c_2c,
         0x0c_2d,
         "gold",
-        now() + chrono::Duration::days(30),
+        now() + time::Duration::days(30),
         None,
     )
     .await;
@@ -1488,8 +1488,8 @@ async fn an_ended_membership_does_not_block_a_customer_groups_retirement() {
         0x0c_2e,
         0x0c_2f,
         "gold",
-        now() - chrono::Duration::days(60),
-        Some(now() - chrono::Duration::days(1)),
+        now() - time::Duration::days(60),
+        Some(now() - time::Duration::days(1)),
     )
     .await;
 

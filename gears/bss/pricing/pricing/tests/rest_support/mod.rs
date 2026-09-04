@@ -29,6 +29,8 @@ use authz_resolver_sdk::constraints::{Constraint, InPredicate, Predicate};
 use authz_resolver_sdk::models::{
     DenyReason, EvaluationRequest, EvaluationResponse, EvaluationResponseContext,
 };
+use bss_pricing::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 use authz_resolver_sdk::{AuthZResolverApi, PolicyEnforcer};
 use axum::Router;
 use axum::body::{Body, to_bytes};
@@ -77,7 +79,7 @@ use bss_pricing::infra::storage::repo::{
 use bss_pricing::infra::window::WindowService;
 use bss_pricing_sdk::catalog_version::CatalogVersion;
 use bss_pricing_sdk::catalog_version_registry::{CatalogVersionRegistryV1, PendingVersionRef};
-use chrono::{DateTime, TimeZone, Utc};
+
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
 use sea_orm_migration::MigratorTrait;
@@ -148,7 +150,7 @@ const TEST_CORRELATION: uuid::Uuid = uuid::Uuid::from_u128(0x_c0_11_a7_10);
 /// refuses on identity rather than on role.
 pub fn stamp_of(
     actor: uuid::Uuid,
-    when: chrono::DateTime<chrono::Utc>,
+    when: OffsetDateTime,
 ) -> bss_pricing::domain::audit::AuditStamp {
     bss_pricing::domain::audit::AuditStamp {
         actor_principal_id: actor,
@@ -649,6 +651,7 @@ impl Harness {
         });
         let frontier = Arc::new(FrontierState {
             pin_frontier: PinFrontierRepo::new(db.clone()),
+            db: db.clone(),
         });
         let history = Arc::new(HistoryState {
             history: bss_pricing::infra::history::HistoryExporter::new(db.clone()),
@@ -1585,8 +1588,8 @@ pub fn violation_for(body: &serde_json::Value, subject: &str) -> Option<String> 
 }
 
 /// A seeded instant, quantized to the millisecond the catalog compares at.
-pub fn at(hour: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 3, hour, 0, 0).unwrap()
+pub fn at(hour: u32) -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 3, hour, 0, 0)
 }
 
 /// A draft plan carrying enough shape to be recognizable, seeded straight
@@ -2016,7 +2019,7 @@ pub async fn seed_price_keyed_with_horizon(
     region: &str,
     price_eligibility: PriceEligibility,
     cohort: Cohort,
-    grandfather_until: Option<DateTime<Utc>>,
+    grandfather_until: Option<OffsetDateTime>,
 ) -> PriceRecord {
     let key = ScopeKey::new(
         PlanId::new(plan_id),
@@ -2290,12 +2293,9 @@ pub async fn retire_customer_group(harness: &Harness, value: &str) {
 /// ages past it.
 pub async fn seed_window(harness: &Harness, price_id: Uuid) -> Uuid {
     /// Far enough out that no wall clock reaches it and no sweep activates the
-    /// row mid-suite. A **fact**, not a date derived from `Utc::now()`.
+    /// row mid-suite. A **fact**, not a date derived from `OffsetDateTime::now_utc()`.
     const SEEDED_WINDOW_YEAR: i32 = 2099;
-    let effective_from =
-        chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, SEEDED_WINDOW_YEAR, 1, 1, 0, 0, 0)
-            .single()
-            .expect("a real instant");
+    let effective_from = utc_ymd_hms(SEEDED_WINDOW_YEAR, 1, 1, 0, 0, 0);
     let window_id = Uuid::now_v7();
     let conn = harness.db.conn().expect("conn");
     bss_pricing::infra::storage::repo::window_repo::schedule(
@@ -2362,7 +2362,7 @@ pub fn seed_stamp() -> bss_pricing::domain::audit::AuditStamp {
 
 /// **A fixed instant, not the wall clock.** Every other instant this file seeds is
 /// `at(hour)`, and the neighbouring `stamp_of` takes the instant explicitly; a
-/// `Utc::now()` here put a different value on every audit row and shape mutation
+/// `OffsetDateTime::now_utc()` here put a different value on every audit row and shape mutation
 /// the harness seeds, so no suite could assert the recorded instant by equality
 /// and every fixture computed from it asserted something different each day it
 /// ran.

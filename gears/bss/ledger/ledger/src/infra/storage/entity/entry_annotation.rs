@@ -4,10 +4,10 @@
 //! append-only history of changes lives in the secured-audit chain
 //! (`metadata-change` records) — this table carries no append-only trigger.
 
-use chrono::{DateTime, Utc};
 use sea_orm::entity::prelude::*;
 use toolkit_db_macros::Scopable;
 use uuid::Uuid;
+use time::OffsetDateTime;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Scopable)]
 #[sea_orm(table_name = "entry_annotation")]
@@ -22,7 +22,7 @@ pub struct Model {
     pub target_period_id: String,
     pub description: Option<String>,
     pub actor_ref: String,
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: OffsetDateTime,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

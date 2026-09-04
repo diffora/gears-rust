@@ -13,6 +13,8 @@ use super::test_harness::MetricsHarness;
 use super::*;
 
 use crate::domain::ports::metrics::{AlarmSeverity, NoopPricingMetrics};
+use crate::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 
 // ---------------------------------------------------------------------------
 // The names, transcribed from §10 rather than from the identifiers.
@@ -535,7 +537,7 @@ fn two_harnesses_are_isolated_from_each_other() {
 mod publish_path {
     use std::collections::{BTreeMap, BTreeSet};
 
-    use chrono::{DateTime, TimeZone, Utc};
+    
     use uuid::Uuid;
 
     use super::MetricsHarness;
@@ -552,16 +554,16 @@ mod publish_path {
         ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
     };
     use crate::infra::metrics::report_market_metrics;
+    use crate::domain::instant::utc_ymd_hms;
+    use time::OffsetDateTime;
 
     const ADDON: Uuid = Uuid::from_u128(0x0add_000a);
     const BLOCKS: &str = "pricing_currency_binding_blocks_total";
     const ALARM: &str = "pricing_alarm_total";
     const GA_ALARM: &str = "pricing.tax.not_sellable_ga_active";
 
-    fn now() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 8, 6, 12, 0, 0)
-            .single()
-            .expect("the fixed instant is unambiguous")
+    fn now() -> OffsetDateTime {
+        utc_ymd_hms(2026, 8, 6, 12, 0, 0)
     }
 
     fn market(currency: &str, region: &str) -> Market {

@@ -29,13 +29,15 @@ use bss_pricing::domain::plan::PlanRevision;
 use bss_pricing::domain::scope_key::PlanId;
 use bss_pricing::infra::storage::entity::plan;
 use bss_pricing::infra::storage::repo::{NewPlanDraft, PlanRepo, plan_repo};
-use chrono::{DateTime, TimeZone, Utc};
+
 use pg_support::Pg;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use toolkit_db::secure::{AccessScope, DBRunner, SecureUpdateExt};
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
+use bss_pricing::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 
 const TENANT: Uuid = Uuid::from_u128(0x7e_51);
 const ACTOR: Uuid = Uuid::from_u128(0xac_50);
@@ -45,8 +47,8 @@ fn scope() -> AccessScope {
     AccessScope::for_tenant(TENANT)
 }
 
-fn at(hour: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 11, hour, 0, 0).unwrap()
+fn at(hour: u32) -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 11, hour, 0, 0)
 }
 
 fn stamp() -> AuditStamp {

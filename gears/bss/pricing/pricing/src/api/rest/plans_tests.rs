@@ -6,7 +6,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use chrono::{TimeZone, Utc};
+
 use uuid::Uuid;
 
 use super::{PlanSummaryView, PlanView};
@@ -16,6 +16,7 @@ use crate::domain::lifecycle::LifecycleState;
 use crate::domain::plan::PlanRevision;
 use crate::domain::plan_shape::{BillingCycle, CustomIntervalUnit, DescriptorSet, Frequency};
 use crate::domain::scope_key::PlanId;
+use crate::domain::instant::utc_ymd_hms;
 
 fn revision(plan_id: PlanId) -> PlanRevision {
     PlanRevision {
@@ -39,7 +40,7 @@ fn revision(plan_id: PlanId) -> PlanRevision {
         change_contract: PlanChangeContract::default(),
         lifecycle_state: LifecycleState::Draft,
         created_by: Uuid::from_u128(0xac_12),
-        created_at_utc: Utc.with_ymd_and_hms(2026, 8, 3, 9, 0, 0).unwrap(),
+        created_at_utc: utc_ymd_hms(2026, 8, 3, 9, 0, 0),
         cloned_from: None,
         row_version: RowVersion::new(4),
     }

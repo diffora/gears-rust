@@ -32,6 +32,7 @@ use rest_support::{
     Harness, approval_rows, at, audit_rows, body_json, problem_code, request,
     seed_publishable_plan, with_headers,
 };
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 const SUBMITTER: Uuid = Uuid::from_u128(0x5_c0);
@@ -39,7 +40,7 @@ const SUBMITTER: Uuid = Uuid::from_u128(0x5_c0);
 /// **Every seeded audit row carries the fixture's instant, not the wall clock.**
 ///
 /// `rest_support::stamp` is reached by every seeder in the harness, and it read
-/// `Utc::now()`: each run wrote a different `recorded_at`, so no suite could assert
+/// `OffsetDateTime::now_utc()`: each run wrote a different `recorded_at`, so no suite could assert
 /// the recorded instant by equality and a seeder that dropped the stamp entirely
 /// was indistinguishable from one that kept it. The instant is a fact of the
 /// fixture like `plan_id` is, and this is what makes it one.

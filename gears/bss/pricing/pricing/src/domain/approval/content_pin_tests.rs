@@ -41,7 +41,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use chrono::{DateTime, TimeZone, Utc};
+
 use uuid::Uuid;
 
 use super::{OVERLAY_PIN_DOMAIN_SEP, overlay_content_hash};
@@ -52,6 +52,8 @@ use crate::domain::contracts::{
     AnchorDay, BillingAnchorPolicy, GrantSet, ProrationBasis, ProrationContract,
     UsageCounterOnPlanChange,
 };
+use crate::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::materiality::{ThresholdBasis, ThresholdEntry, ThresholdVersion};
 use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
@@ -85,10 +87,8 @@ fn rate(minor_units: i64) -> RateMinor {
     RateMinor::from_minor_units(minor_units).expect("a non-negative rate")
 }
 
-fn at(hour: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 3, hour, 0, 0)
-        .single()
-        .expect("the fixed instant is unambiguous")
+fn at(hour: u32) -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 3, hour, 0, 0)
 }
 
 fn plan() -> PlanId {
@@ -1400,7 +1400,7 @@ fn the_encoding_is_frozen() {
 /// One version, built from the parts the pin frames.
 fn threshold_version(
     version: u64,
-    effective_from: DateTime<Utc>,
+    effective_from: OffsetDateTime,
     entries: Vec<(&str, ThresholdBasis)>,
 ) -> ThresholdVersion {
     ThresholdVersion::new(

@@ -23,17 +23,17 @@ use std::collections::BTreeMap;
 use axum::http::StatusCode;
 use bss_pricing::api::rest::preview::PLAN_PREVIEW;
 use bss_pricing::domain::contracts::{EntitlementGrants, PlanChangeContract};
-use chrono::{DateTime, TimeZone, Utc};
+
 use rest_support::{Harness, body_json, request};
 use uuid::Uuid;
+use bss_pricing::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 
 const CURRENCY: &str = "EUR";
 const REGION: &str = "EU";
 
-fn at() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0)
-        .single()
-        .expect("a valid instant")
+fn at() -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 1, 0, 0, 0)
 }
 
 fn preview_path(plan_id: Uuid, query: &str) -> String {

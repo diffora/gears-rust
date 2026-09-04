@@ -20,6 +20,8 @@ use crate::domain::publish::PlanPublishUnit;
 use crate::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
+use crate::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 
 #[test]
 fn the_candidate_row_set_is_the_shape_the_commit_will_leave_behind() {
@@ -347,7 +349,6 @@ fn row(id: u128, scope_key: &ScopeKey, state: LifecycleState) -> PriceRecord {
     }
 }
 
-fn now() -> chrono::DateTime<chrono::Utc> {
-    use chrono::TimeZone;
-    chrono::Utc.with_ymd_and_hms(2099, 1, 1, 0, 0, 0).unwrap()
+fn now() -> OffsetDateTime {
+    utc_ymd_hms(2099, 1, 1, 0, 0, 0)
 }

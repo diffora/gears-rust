@@ -4,10 +4,10 @@
 //! ACTIVE while `cleared_at IS NULL`; `period_id` is `'ALL'` for a tenant-wide
 //! freeze or a concrete period to freeze just that period.
 
-use chrono::{DateTime, Utc};
 use sea_orm::entity::prelude::*;
 use toolkit_db_macros::Scopable;
 use uuid::Uuid;
+use time::OffsetDateTime;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Scopable)]
 #[sea_orm(table_name = "scope_freeze")]
@@ -20,10 +20,10 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub period_id: String,
     pub reason: String,
-    pub frozen_at: DateTime<Utc>,
+    pub frozen_at: OffsetDateTime,
     pub set_by: String,
     pub cleared_by: Option<String>,
-    pub cleared_at: Option<DateTime<Utc>>,
+    pub cleared_at: Option<OffsetDateTime>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

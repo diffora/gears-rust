@@ -70,7 +70,7 @@
 //! rather than silently omitted: the payload carries `grantSetUnavailable` so a
 //! consumer cannot read the absence as "this plan grants nothing".
 
-use chrono::{DateTime, Utc};
+
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
 use serde_json::{Value as JsonValue, json};
 use toolkit_db::secure::{AccessScope, DBRunner, SecureEntityExt};
@@ -81,6 +81,7 @@ use crate::domain::scope_key::PlanId;
 use crate::domain::synthesis::{
     LiveCandidate, SelectedRow, SynthesisOutcome, UnresolvedKey, select_rows,
 };
+use time::OffsetDateTime;
 use crate::domain::window::WindowState;
 use crate::infra::storage::entity::{
     plan_descriptor_set, plan_period_floor_cap, price, price_tier_band,
@@ -159,7 +160,7 @@ async fn plan_plane(
 /// The read-free half, so [`resolve`] can drive it over one plane rather than
 /// re-reading that plane per key. Every filter below is a property of the key and
 /// the instant, which is why hoisting the reads changes nothing it decides.
-fn select_against(plane: &PlanPlane, key: &FrozenKey, at: DateTime<Utc>) -> Vec<SelectedRow> {
+fn select_against(plane: &PlanPlane, key: &FrozenKey, at: OffsetDateTime) -> Vec<SelectedRow> {
     let PlanPlane {
         windows,
         admissible,
@@ -205,7 +206,7 @@ pub async fn select_for_key(
     tenant_id: Uuid,
     plan_id: PlanId,
     key: &FrozenKey,
-    at: DateTime<Utc>,
+    at: OffsetDateTime,
 ) -> Result<Vec<SelectedRow>, DomainError> {
     let plane = plan_plane(runner, scope, tenant_id, plan_id).await?;
     Ok(select_against(&plane, key, at))
@@ -221,7 +222,7 @@ pub async fn resolve(
     tenant_id: Uuid,
     plan_id: PlanId,
     keys: &[FrozenKey],
-    at: DateTime<Utc>,
+    at: OffsetDateTime,
 ) -> Result<SynthesisOutcome, DomainError> {
     // Once for the whole subscription; see [`PlanPlane`]. Read even when `keys` is
     // empty, deliberately: the plane is what a later clause would judge an empty
@@ -774,7 +775,7 @@ pub struct SynthesisRequest {
     /// Its frozen `(currency, region)` keys.
     pub keys: Vec<FrozenKey>,
     /// D-81's instant `t`, chosen by the trigger.
-    pub at: DateTime<Utc>,
+    pub at: OffsetDateTime,
     /// Which trigger this is.
     pub trigger: crate::domain::synthesis::SynthesisTrigger,
     /// Who is acting — recorded on the provenance.

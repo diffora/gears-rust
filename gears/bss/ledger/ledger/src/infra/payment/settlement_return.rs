@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bss_ledger_sdk::{AccountClass, PostEntry, PostLine, PostingRef};
-use chrono::{Datelike, Utc};
+use chrono::{Datelike};
 use toolkit_db::secure::AccessScope;
 use toolkit_db::{DBProvider, DbError};
 use toolkit_security::SecurityContext;
@@ -43,6 +43,8 @@ use crate::infra::payment::sidecar::SettlementReturnSidecar;
 use crate::infra::posting::chart::{ChartIndex, load_chart};
 use crate::infra::posting::service::{PostSidecar, PostingService};
 use crate::infra::storage::repo::{PaymentRepo, ReferenceRepo};
+use time::OffsetDateTime;
+use crate::domain::instant::to_naive_date;
 
 /// Origin literal stamped on posts made through this service.
 const ORIGIN_SYSTEM: &str = "SYSTEM";
@@ -426,7 +428,7 @@ impl SettlementReturnService {
             source_business_id: entry.source_business_id.clone(),
             reverses_entry_id: entry.reverses_entry_id,
             reverses_period_id: entry.reverses_period_id.clone(),
-            posted_at_utc: Utc::now(),
+            posted_at_utc: OffsetDateTime::now_utc(),
             effective_at: entry.effective_at,
             origin: ORIGIN_SYSTEM.to_owned(),
             posted_by_actor_id: entry.posted_by_actor_id,
@@ -474,10 +476,10 @@ impl SettlementReturnService {
 fn overwrite_header(
     entry: &mut PostEntry,
     ctx: &SecurityContext,
-    effective_at: Option<chrono::DateTime<Utc>>,
+    effective_at: Option<OffsetDateTime>,
 ) {
-    let eff_instant = effective_at.unwrap_or_else(Utc::now);
-    let eff_date = eff_instant.date_naive();
+    let eff_instant = effective_at.unwrap_or_else(OffsetDateTime::now_utc);
+    let eff_date = to_naive_date(eff_instant);
     entry.effective_at = eff_date;
     entry.period_id = format!("{:04}{:02}", eff_date.year(), eff_date.month());
     entry.posted_by_actor_id = ctx.subject_id();

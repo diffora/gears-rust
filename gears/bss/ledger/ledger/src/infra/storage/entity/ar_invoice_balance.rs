@@ -1,9 +1,10 @@
 //! `SeaORM` entity for `bss.ledger_ar_invoice_balance` (per-invoice AR cache).
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{NaiveDate};
 use sea_orm::entity::prelude::*;
 use toolkit_db_macros::Scopable;
 use uuid::Uuid;
+use time::OffsetDateTime;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Scopable)]
 #[sea_orm(table_name = "ledger_ar_invoice_balance")]
@@ -32,7 +33,7 @@ pub struct Model {
     pub disputed_minor: i64,
     pub functional_balance_minor: Option<i64>,
     pub functional_currency: Option<String>,
-    pub original_posted_at: Option<DateTime<Utc>>,
+    pub original_posted_at: Option<OffsetDateTime>,
     pub due_date: Option<NaiveDate>,
     pub last_entry_seq: Option<i64>,
     pub version: i64,

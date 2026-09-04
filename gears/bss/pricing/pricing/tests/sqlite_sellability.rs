@@ -26,6 +26,8 @@ use bss_pricing::domain::read_model::SubjectRef;
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
+use bss_pricing::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 use bss_pricing::domain::sellability::{
     PlanMarketVerdict, Predicate, PredicateAnswer, SellabilitySurface,
 };
@@ -33,7 +35,7 @@ use bss_pricing::domain::window::{CoverageEnd, KeyWindows, WindowInterval, Windo
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::read_model_repo::{self, NewDelta, StoredDelta};
 use bss_pricing_sdk::CatalogVersion;
-use chrono::{DateTime, TimeDelta, TimeZone, Utc};
+use time::Duration;
 use sea_orm_migration::MigratorTrait;
 use std::collections::BTreeMap;
 use toolkit_db::migration_runner::run_migrations_for_testing;
@@ -56,11 +58,9 @@ async fn provider() -> DBProvider<DbError> {
 
 /// `2099-01-01T00:00:00Z` plus `day` whole days. Fixed, and every comparison below
 /// is against another instant from this function.
-fn at(day: i64) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2099, 1, 1, 0, 0, 0)
-        .single()
-        .expect("the fixed instant is unambiguous")
-        + TimeDelta::days(day)
+fn at(day: i64) -> OffsetDateTime {
+    utc_ymd_hms(2099, 1, 1, 0, 0, 0)
+        + time::Duration::days(day)
 }
 
 fn plan() -> PlanId {
@@ -104,7 +104,7 @@ fn row() -> PriceRecord {
 
 /// A published, monthly plan whose one recurring key is covered over
 /// `[at(0), coverage_to)` — or open-ended when `coverage_to` is `None`.
-fn delta_covering(coverage_to: Option<DateTime<Utc>>) -> PlanSubjectDelta {
+fn delta_covering(coverage_to: Option<OffsetDateTime>) -> PlanSubjectDelta {
     delta_covering_for(plan(), coverage_to)
 }
 
@@ -115,7 +115,7 @@ fn delta_covering(coverage_to: Option<DateTime<Utc>>) -> PlanSubjectDelta {
 /// an assertion reading it back could not tell them apart. It also made the
 /// fixture a state production cannot produce — a payload whose `planId` disagrees
 /// with its `subject_ref`.
-fn delta_covering_for(plan_id: PlanId, coverage_to: Option<DateTime<Utc>>) -> PlanSubjectDelta {
+fn delta_covering_for(plan_id: PlanId, coverage_to: Option<OffsetDateTime>) -> PlanSubjectDelta {
     PlanSubjectDelta {
         plan_id,
         revision: 1,
@@ -153,7 +153,7 @@ async fn project(
     provider: &DBProvider<DbError>,
     tenant: Uuid,
     version: u64,
-    projected_at: DateTime<Utc>,
+    projected_at: OffsetDateTime,
     delta: &PlanSubjectDelta,
 ) {
     project_subject_ref(
@@ -173,7 +173,7 @@ async fn project_subject_ref(
     provider: &DBProvider<DbError>,
     tenant: Uuid,
     version: u64,
-    projected_at: DateTime<Utc>,
+    projected_at: OffsetDateTime,
     subject: SubjectRef,
     delta: &PlanSubjectDelta,
 ) {
@@ -337,7 +337,7 @@ async fn a_row_that_is_not_warm_does_not_answer_a_pin() {
         )
         .col_expr(
             bss_pricing::infra::storage::entity::read_model::Column::WarmCompletedAt,
-            sea_orm::sea_query::Expr::value(Option::<DateTime<Utc>>::None),
+            sea_orm::sea_query::Expr::value(Option::<OffsetDateTime>::None),
         )
         .filter(
             Condition::all()

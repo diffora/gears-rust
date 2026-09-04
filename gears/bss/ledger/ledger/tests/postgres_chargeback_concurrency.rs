@@ -44,7 +44,7 @@ use bss_ledger::infra::storage::migrations::Migrator;
 use bss_ledger::infra::storage::repo::PaymentRepo;
 use bss_ledger::infra::storage::repo::ReferenceRepo;
 use bss_ledger_sdk::{AccountClass, Side};
-use chrono::{Datelike, Utc};
+use chrono::{Datelike};
 use sea_orm::{ConnectionTrait, Database, Statement};
 use sea_orm_migration::MigratorTrait;
 use testcontainers_modules::postgres::Postgres;
@@ -53,6 +53,7 @@ use toolkit_db::secure::AccessScope;
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
+use time::OffsetDateTime;
 
 fn pg(sql: impl Into<String>) -> Statement {
     Statement::from_string(sea_orm::DatabaseBackend::Postgres, sql.into())
@@ -107,7 +108,7 @@ fn account(tenant: Uuid, id: Uuid, class: AccountClass, normal: Side) -> Account
 /// credit, DISPUTE_HOLD debit, DISPUTE_LOSS_EXPENSE debit). Mirrors
 /// `postgres_payment_concurrency::setup_seller`.
 async fn setup_seller(raw: &sea_orm::DatabaseConnection, provider: &DBProvider<DbError>) -> Seller {
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let s = Seller {
         tenant: Uuid::now_v7(),
         payer: Uuid::now_v7(),

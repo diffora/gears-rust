@@ -47,7 +47,6 @@ use bss_pricing::config::LimitsConfig;
 use bss_pricing::infra::storage::RepoError;
 use bss_pricing::infra::storage::entity::idempotency_dedup;
 use bss_pricing::infra::storage::repo::{ClaimOutcome, IdempotencyGate};
-use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 use pg_support::Pg;
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use serde_json::json;
@@ -55,6 +54,8 @@ use tokio::sync::Notify;
 use toolkit_db::secure::{AccessScope, SecureEntityExt};
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
+use bss_pricing::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 
 /// A staged race must not hang a run: every wait in this file is bounded.
 const RACE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -80,8 +81,8 @@ fn ttl_hours() -> i64 {
         .expect("the shipped TTL must be a representable number of hours")
 }
 
-fn at(hours: i64) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 2, 10, 0, 0).unwrap() + TimeDelta::hours(hours)
+fn at(hours: i64) -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 2, 10, 0, 0) + time::Duration::hours(hours)
 }
 
 fn gate() -> IdempotencyGate {
@@ -98,7 +99,7 @@ fn other_payload() -> Vec<u8> {
 
 /// One claim, in its own committed transaction — the gear's contract with the
 /// guarded body empty.
-async fn claim(pg: &Pg, hash: Vec<u8>, now: DateTime<Utc>) -> Result<ClaimOutcome, RepoError> {
+async fn claim(pg: &Pg, hash: Vec<u8>, now: OffsetDateTime) -> Result<ClaimOutcome, RepoError> {
     let provider = DBProvider::<DbError>::new(pg.db().await);
     provider
         .transaction(move |txn| {

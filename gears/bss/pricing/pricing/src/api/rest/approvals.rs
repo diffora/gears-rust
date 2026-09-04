@@ -66,13 +66,17 @@
 //! of the two the transition names. Gating on `read` instead would let anyone
 //! who can see a unit close it, which is worse and is not what the map says.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::{Extension, Path, Query};
 use axum::{Json, Router, http::HeaderMap, http::StatusCode};
-use chrono::{DateTime, Utc};
+use bss_pricing_sdk::odata::ApprovalFilterField;
+
 use toolkit::api::canonical_prelude::CanonicalError;
+use toolkit::api::odata::OData;
+use toolkit::api::operation_builder::OperationBuilderODataExt;
 use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
 use toolkit_db::secure::AccessScope;
 use toolkit_odata::Page;
@@ -81,8 +85,12 @@ use uuid::Uuid;
 
 use crate::api::rest::auth_context::{audit_stamp, require_authenticated};
 use crate::api::rest::correlation::{CorrelationId, require_correlation};
-use crate::api::rest::cursor::{self, PageRequest};
 use crate::api::rest::error::authz_error_to_canonical;
+use crate::api::rest::odata_list::{
+    map_odata_page_err, refuse_zero_limit, reject_non_odata_list_params,
+};
+use time::OffsetDateTime;
+use time::serde::rfc3339;
 use crate::api::rest::plans::{
     AddonRuleView, DescriptorSetView, FrequencyView, PeriodFloorCapView, PlanPhaseView,
 };
@@ -309,9 +317,11 @@ pub struct ApprovalView {
     /// this shape — a later slice's writer, not an error.
     pub materiality: Option<MaterialityView>,
     /// When it was opened, UTC.
-    pub submitted_at: DateTime<Utc>,
+    #[serde(with = "rfc3339")]
+    pub submitted_at: OffsetDateTime,
     /// When it was decided, UTC; `null` exactly while pending.
-    pub decided_at: Option<DateTime<Utc>>,
+    #[serde(default, with = "rfc3339::option")]
+    pub decided_at: Option<OffsetDateTime>,
 }
 
 impl From<&ApprovalRecord> for ApprovalView {
@@ -497,9 +507,11 @@ pub struct PinnedContentView {
     /// override.
     pub plan_tier_override: bool,
     /// Start of the availability window, UTC.
-    pub available_from: Option<DateTime<Utc>>,
+    #[serde(default, with = "rfc3339::option")]
+    pub available_from: Option<OffsetDateTime>,
     /// End of the availability window, UTC.
-    pub available_to: Option<DateTime<Utc>>,
+    #[serde(default, with = "rfc3339::option")]
+    pub available_to: Option<OffsetDateTime>,
     /// Minimum purchasable quantity.
     pub purchase_min_qty: Option<u64>,
     /// Maximum purchasable quantity.
@@ -689,7 +701,8 @@ pub struct PinnedThresholdPolicyView {
     /// Which version of the tenant's policy this proposal is.
     pub version: u64,
     /// When its thresholds start applying, once approved.
-    pub effective_from: DateTime<Utc>,
+    #[serde(with = "rfc3339")]
+    pub effective_from: OffsetDateTime,
     /// The per-currency entries, in the order the pin frames them.
     pub entries: Vec<ThresholdEntryView>,
 }
@@ -849,18 +862,6 @@ pub struct WithdrawApprovalRequest {
     pub reason: Option<String>,
 }
 
-/// The two pagination query parameters plus the state filter (D-125).
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct ApprovalPageQuery {
-    /// Records per page; server default 100, hard cap 1,000.
-    pub limit: Option<String>,
-    /// The opaque token a previous page returned.
-    pub cursor: Option<String>,
-    /// One of `submitted` | `approved` | `rejected` | `voided`. Absent is every
-    /// state, which is what "pending/decided approvals" asks for.
-    pub state: Option<String>,
-}
-
 /// Build the Axum router for the approval surface and register its operations.
 ///
 /// No route declares a 422: §3.3's status-rendering rule makes every
@@ -879,9 +880,9 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
         .description(
             "One page of the tenant's approval records, in `approval_id` order, with an opaque \
              `cursor` and a `limit` whose server default is 100 and whose hard cap is 1,000 \
-             (D-125). `state` narrows the page to one of `submitted`, `approved`, `rejected` or \
-             `voided`; omitting it returns every state, which is what a reviewer's queue over \
-             pending **and** decided units asks for. The pinned content is **not** on this \
+             (D-125). Narrow with `$filter=state eq 'submitted'` (or `approved` / `rejected` / \
+             `voided`); omitting `$filter` returns every state, which is what a reviewer's queue \
+             over pending **and** decided units asks for. The pinned content is **not** on this \
              page - a page of a hundred units would be a hundred plan assemblies - so a \
              reviewer opens `GET /bss-pricing/v1/approvals/{approvalId}` before deciding, which \
              is the surface D-61's reviewability invariant binds.",
@@ -896,12 +897,9 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
             "integer",
         )
         .query_param("cursor", false, "Opaque base64url pagination cursor")
-        .query_param(
-            "state",
-            false,
-            "submitted | approved | rejected | voided; absent is every state",
-        )
         .handler(list_approvals)
+        .with_odata_filter::<ApprovalFilterField>()
+        .with_odata_orderby::<ApprovalFilterField>()
         .json_response_with_schema::<Page<ApprovalView>>(
             openapi,
             StatusCode::OK,
@@ -1062,39 +1060,26 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
 // ---------------------------------------------------------------------------
 
 /// `GET /approvals`.
+#[allow(clippy::implicit_hasher)]
 async fn list_approvals(
     Extension(state): Extension<Arc<GovernanceState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
-    Query(query): Query<ApprovalPageQuery>,
+    Query(extras): Query<HashMap<String, String>>,
+    OData(odata): OData,
 ) -> Result<Json<Page<ApprovalView>>, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    reject_non_odata_list_params(&extras)?;
+    refuse_zero_limit(&odata)?;
     let scope = read_scope(&enforcer, &ctx, None).await?;
-
-    let page = PageRequest::parse(
-        cursor::parse_limit(query.limit.as_deref())?,
-        query.cursor.as_deref(),
-    )?;
-    let states = state_filter(query.state.as_deref())?;
-    // One row more than the page, so "is there another page" is answered without
-    // a second query and without a page of `next_cursor` pointing at nothing.
-    let probe = page.limit.saturating_add(1);
-    let mut records = state
+    let page = state
         .approvals
-        .list(&scope, ctx.subject_tenant_id(), &states, page.after, probe)
+        .list_odata(&scope, ctx.subject_tenant_id(), &odata)
         .await
-        .map_err(CanonicalError::from)?;
-
-    let has_more = u64::try_from(records.len()).unwrap_or(u64::MAX) > page.limit;
-    if has_more {
-        records.pop();
-    }
-    let next = has_more
-        .then(|| records.last().map(|record| record.approval_id))
-        .flatten();
+        .map_err(map_odata_page_err)?;
     Ok(Json(Page {
-        items: records.iter().map(ApprovalView::from).collect(),
-        page_info: cursor::page_info(next, page.limit),
+        items: page.items.iter().map(ApprovalView::from).collect(),
+        page_info: page.page_info,
     }))
 }
 
@@ -1110,7 +1095,7 @@ async fn get_approval(
 
     let detail = state
         .approvals
-        .find(&scope, ctx.subject_tenant_id(), approval_id, Utc::now())
+        .find(&scope, ctx.subject_tenant_id(), approval_id, OffsetDateTime::now_utc())
         .await
         .map_err(CanonicalError::from)?
         .ok_or_else(|| CanonicalError::from(not_readable(approval_id)))?;
@@ -1331,7 +1316,7 @@ async fn decide_record(
     reason: Option<String>,
     withdraw_authority: WithdrawAuthority,
 ) -> Result<ApprovalRecord, CanonicalError> {
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let tenant = ctx.subject_tenant_id();
     state
         .approvals
@@ -1444,7 +1429,7 @@ async fn apply_approved_repricing_run(
     };
     let stamp = crate::domain::audit::AuditStamp {
         actor_principal_id: ctx.subject_id(),
-        recorded_at: Utc::now(),
+        recorded_at: OffsetDateTime::now_utc(),
         correlation_id: correlation,
     };
     if let Err(err) = crate::infra::repricing::begin_committing_in(
@@ -1574,7 +1559,7 @@ async fn advance_run_to_rejected(
         run.state,
         BulkState::Rejected,
         run.report.clone(),
-        Utc::now(),
+        OffsetDateTime::now_utc(),
     )
     .await
     .map(|_| ())
@@ -1703,32 +1688,6 @@ pub(crate) fn report_region_grant_transport(
         }
         RegionGrant::Explicit(_) => {}
     }
-}
-
-/// The state filter, read through [`ApprovalState::ALL`] rather than parsed.
-///
-/// One authority for what states exist, so a state added later cannot go missing
-/// from a literal list here while still compiling.
-fn state_filter(token: Option<&str>) -> Result<Vec<ApprovalState>, DomainError> {
-    let Some(token) = token else {
-        return Ok(Vec::new());
-    };
-    ApprovalState::ALL
-        .iter()
-        .copied()
-        .find(|state| state.as_str() == token)
-        .map(|state| vec![state])
-        .ok_or_else(|| {
-            let known: Vec<&str> = ApprovalState::ALL
-                .iter()
-                .copied()
-                .map(ApprovalState::as_str)
-                .collect();
-            DomainError::InvalidRequest(format!(
-                "state `{token}` is not one of {}",
-                known.join(", ")
-            ))
-        })
 }
 
 /// The composition a `bundleComposition` unit is being decided on (D-104, D-61).

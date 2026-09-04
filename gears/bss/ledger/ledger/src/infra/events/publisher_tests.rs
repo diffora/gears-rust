@@ -11,12 +11,12 @@
     clippy::doc_markdown
 )]
 
-use chrono::{DateTime, Utc};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
 use super::LedgerEventPublisher;
+use crate::domain::instant::{from_unix, from_unix_millis};
 use crate::infra::events::payloads::{
     AffectedItem, AlarmCategory, AlarmSeverity, LedgerEntryPosted, LedgerEntryReversed,
     LedgerInvariantAlarm, LedgerLineSummary,
@@ -30,7 +30,7 @@ fn sample_posted() -> LedgerEntryPosted {
         period_id: "2026-06".to_owned(),
         source_doc_type: "INVOICE".to_owned(),
         source_business_id: "inv-42".to_owned(),
-        posted_at_utc: DateTime::<Utc>::from_timestamp(1_700_000_000, 0).expect("ts"),
+        posted_at_utc: from_unix(1_700_000_000, 0).expect("ts"),
         created_seq: 7,
         lines: vec![
             LedgerLineSummary {
@@ -70,6 +70,18 @@ fn sample_alarm() -> LedgerInvariantAlarm {
 
 /// Open an in-memory SQLite `DBProvider`. The noop publisher never writes to
 /// the DB, so no migrations are needed.
+#[test]
+fn ledger_entry_posted_serializes_posted_at_as_rfc3339() {
+    let value = serde_json::to_value(sample_posted()).expect("serialize");
+    let posted = value["posted_at_utc"]
+        .as_str()
+        .expect("posted_at_utc must be an RFC3339 string, not a time component tuple");
+    assert!(
+        posted.contains('T') && (posted.ends_with('Z') || posted.contains('+')),
+        "posted_at_utc must stay RFC3339, got {posted}"
+    );
+}
+
 async fn sqlite_provider() -> DBProvider<DbError> {
     let db = connect_db("sqlite::memory:", ConnectOpts::default())
         .await

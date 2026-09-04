@@ -23,6 +23,8 @@ use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
+use bss_pricing::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 use bss_pricing::infra::bulk::{
     ABORT_NOTE, ABORTED_MEMBER, BULK_ROW_CONFLICT, CommitReceipt, PRIOR_REPORT_MEMBER,
     abandon_committing_run, commit_batch,
@@ -33,7 +35,7 @@ use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{
     IdempotencyGate, NewBulkOperation, NewPriceDraft, PriceRepo, bulk_repo,
 };
-use chrono::{DateTime, TimeZone, Utc};
+
 use sea_orm::{ColumnTrait, Condition, ConnectionTrait, DbErr, EntityTrait, Statement};
 use sea_orm_migration::{MigrationName, MigrationTrait, MigratorTrait, SchemaManager};
 use toolkit_db::migration_runner::run_migrations_for_testing;
@@ -51,8 +53,8 @@ fn plan() -> PlanId {
 fn phase() -> PhaseId {
     PhaseId::new(Uuid::from_u128(0xfa_90))
 }
-fn at(hour: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 9, hour, 0, 0).unwrap()
+fn at(hour: u32) -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 9, hour, 0, 0)
 }
 fn scope() -> AccessScope {
     AccessScope::for_tenant(TENANT)

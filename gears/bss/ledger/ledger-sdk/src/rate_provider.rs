@@ -10,6 +10,7 @@
 
 use async_trait::async_trait;
 use toolkit_security::SecurityContext;
+use time::OffsetDateTime;
 
 /// A currency pair to fetch a rate for (ISO 4217 codes).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,7 +27,7 @@ pub struct ProviderRate {
     pub base: String,
     pub quote: String,
     pub rate_micro: i64,
-    pub as_of: chrono::DateTime<chrono::Utc>,
+    pub as_of: OffsetDateTime,
     /// The concrete upstream that published THIS rate (`"ecb"`, `"bank-x"`, …),
     /// stamped by the serving source itself.
     ///

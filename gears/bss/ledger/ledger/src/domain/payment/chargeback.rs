@@ -70,12 +70,16 @@
 //! orchestrator overwrites before posting.
 
 use bss_ledger_sdk::{AccountClass, MappingStatus, PostEntry, PostLine, Side, SourceDocType};
-use chrono::{DateTime, Utc};
+
 use toolkit_macros::domain_model;
 use uuid::Uuid;
 
+use chrono::NaiveDate;
+
 use crate::domain::error::DomainError;
+use crate::domain::instant::to_naive_date;
 use crate::domain::status::{AR_STATUS_ACTIVE, AR_STATUS_DISPUTED};
+use time::OffsetDateTime;
 
 /// A dispute phase (the `phase` of one chargeback event). `opened` ships in
 /// Group B; `won`/`lost` arrive in Group C; `partial` is behind a flag
@@ -234,7 +238,7 @@ pub struct ChargebackInput {
     pub currency: String,
     /// Phase instant. `None` ⇒ a placeholder effective date the orchestrator
     /// overwrites before posting.
-    pub effective_at: Option<DateTime<Utc>>,
+    pub effective_at: Option<OffsetDateTime>,
 }
 
 impl ChargebackInput {
@@ -340,8 +344,8 @@ pub fn build_chargeback_entry(
         source_business_id: input.business_id(),
         effective_at: input
             .effective_at
-            .unwrap_or(DateTime::UNIX_EPOCH)
-            .date_naive(),
+            .map(to_naive_date)
+            .unwrap_or(NaiveDate::from_ymd_opt(1970, 1, 1).unwrap_or(NaiveDate::MIN)),
         posted_by_actor_id: Uuid::nil(),
         correlation_id: Uuid::nil(),
         reverses_entry_id: None,

@@ -68,12 +68,14 @@ use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
+use bss_pricing::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 use bss_pricing::domain::supersession::{ChangeoverMoment, NamedWindow, plan_supersession};
 use bss_pricing::domain::window::{WindowInterval, WindowState};
 use bss_pricing::infra::storage::RepoError;
 use bss_pricing::infra::storage::repo::{NewPriceDraft, NewWindow, price_repo, window_repo};
 use bss_pricing::infra::supersession::{SupersessionCommit, commit_supersession};
-use chrono::{DateTime, TimeZone, Utc};
+
 use pg_support::Pg;
 use tokio::sync::Notify;
 use toolkit_db::secure::AccessScope;
@@ -114,16 +116,16 @@ fn plan_id() -> PlanId {
     PlanId::new(Uuid::from_u128(0x9_3c6))
 }
 
-fn now() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2099, 1, 1, 0, 0, 0).unwrap()
+fn now() -> OffsetDateTime {
+    utc_ymd_hms(2099, 1, 1, 0, 0, 0)
 }
 
-fn coverage_from() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2098, 6, 1, 0, 0, 0).unwrap()
+fn coverage_from() -> OffsetDateTime {
+    utc_ymd_hms(2098, 6, 1, 0, 0, 0)
 }
 
-fn changeover() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2099, 4, 1, 0, 0, 0).unwrap()
+fn changeover() -> OffsetDateTime {
+    utc_ymd_hms(2099, 4, 1, 0, 0, 0)
 }
 
 fn stamp() -> AuditStamp {

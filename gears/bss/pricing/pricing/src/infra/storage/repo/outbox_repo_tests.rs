@@ -3,7 +3,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use chrono::{TimeZone, Utc};
+
 use serde_json::json;
 use uuid::Uuid;
 
@@ -11,6 +11,8 @@ use super::{
     NewOutboxEvent, PlanPublishedPayload, PriceWindowTransitionPayload, outbox_id,
     plan_published_dedup_key, price_window_transition_dedup_key,
 };
+use crate::domain::instant::{format_rfc3339, utc_ymd_hms};
+use time::OffsetDateTime;
 use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use crate::domain::events::CatalogEvent;
 use crate::domain::scope_key::PlanId;
@@ -33,12 +35,12 @@ fn payload() -> PlanPublishedPayload {
 
 /// The window interval this file renders. **2099**, so no assertion here can start
 /// answering differently on a date.
-fn from() -> chrono::DateTime<Utc> {
-    Utc.with_ymd_and_hms(2099, 9, 10, 0, 0, 0).unwrap()
+fn from() -> OffsetDateTime {
+    utc_ymd_hms(2099, 9, 10, 0, 0, 0)
 }
 
-fn to() -> chrono::DateTime<Utc> {
-    Utc.with_ymd_and_hms(2099, 9, 20, 0, 0, 0).unwrap()
+fn to() -> OffsetDateTime {
+    utc_ymd_hms(2099, 9, 20, 0, 0, 0)
 }
 
 fn window_payload() -> PriceWindowTransitionPayload {
@@ -177,14 +179,14 @@ fn the_payload_stamps_all_three_snapshot_segments() {
 /// checks.
 #[test]
 fn both_window_transition_events_carry_the_same_whole_body_under_different_names() {
-    let at = Utc.with_ymd_and_hms(2026, 8, 4, 9, 0, 0).unwrap();
+    let at = utc_ymd_hms(2026, 8, 4, 9, 0, 0);
     let payload = window_payload();
     let expected = json!({
         "windowId": WINDOW,
         "planId": PLAN,
         "priceId": PRICE,
-        "effectiveFrom": from(),
-        "effectiveTo": to(),
+        "effectiveFrom": format_rfc3339(from()),
+        "effectiveTo": format_rfc3339(to()),
         "correlationId": CORRELATION,
     });
 
@@ -221,7 +223,7 @@ fn both_window_transition_events_carry_the_same_whole_body_under_different_names
 /// cannot tell open-ended from a field the producer forgot.
 #[test]
 fn an_open_ended_windows_payload_says_null_rather_than_omitting_the_key() {
-    let at = Utc.with_ymd_and_hms(2026, 8, 4, 9, 0, 0).unwrap();
+    let at = utc_ymd_hms(2026, 8, 4, 9, 0, 0);
     let payload = PriceWindowTransitionPayload {
         effective_to: None,
         ..window_payload()
@@ -235,7 +237,7 @@ fn an_open_ended_windows_payload_says_null_rather_than_omitting_the_key() {
             "windowId": WINDOW,
             "planId": PLAN,
             "priceId": PRICE,
-            "effectiveFrom": from(),
+            "effectiveFrom": format_rfc3339(from()),
             "effectiveTo": null,
             "correlationId": CORRELATION,
         })
@@ -244,7 +246,7 @@ fn an_open_ended_windows_payload_says_null_rather_than_omitting_the_key() {
 
 #[test]
 fn the_constructor_fixes_the_name_the_aggregate_and_the_key() {
-    let at = Utc.with_ymd_and_hms(2026, 8, 3, 9, 0, 0).unwrap();
+    let at = utc_ymd_hms(2026, 8, 3, 9, 0, 0);
     let event = NewOutboxEvent::plan_published(TENANT, &payload(), at);
 
     assert_eq!(event.event, CatalogEvent::PlanPublished);
@@ -273,7 +275,7 @@ fn retired_payload() -> super::PlanRetiredPayload {
 
 #[test]
 fn the_retirement_constructor_fixes_the_name_the_aggregate_and_the_key() {
-    let at = Utc.with_ymd_and_hms(2026, 8, 7, 9, 0, 0).unwrap();
+    let at = utc_ymd_hms(2026, 8, 7, 9, 0, 0);
     let event = NewOutboxEvent::plan_retired(TENANT, &retired_payload(), at);
 
     assert_eq!(event.event, CatalogEvent::PlanRetired);

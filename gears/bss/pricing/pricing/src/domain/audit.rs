@@ -181,12 +181,13 @@
 //! "declare nothing until everything is built"; it is one token, one writer,
 //! landing together.
 
-use chrono::{DateTime, Utc};
+
 use std::fmt;
 use toolkit_macros::domain_model;
 use uuid::Uuid;
 
 use aws_lc_rs::digest::{SHA256, digest as sha256};
+use time::OffsetDateTime;
 
 /// Versioned domain-separation tag for this gear's audit chain.
 ///
@@ -574,7 +575,7 @@ pub struct AuditStamp {
     /// **Pseudonymous** principal id of the acting operator (`inst-au-pii`).
     pub actor_principal_id: Uuid,
     /// When the mutation was recorded, UTC — the caller's instant.
-    pub recorded_at: DateTime<Utc>,
+    pub recorded_at: OffsetDateTime,
     /// The correlation id of the causing request (D-178, `inst-au-complete`).
     ///
     /// **Not an `Option`, and that is the guard rather than a tidy-up.** D-178
@@ -653,7 +654,7 @@ pub struct AuditRecord<'a> {
     /// Position within the segment, `0` at genesis.
     pub seq: u64,
     /// When the mutation was recorded, UTC.
-    pub recorded_at: DateTime<Utc>,
+    pub recorded_at: OffsetDateTime,
     /// **Pseudonymous** principal id of the acting operator, never a display
     /// name and never an email (`inst-au-pii`).
     pub actor_principal_id: Uuid,
@@ -764,7 +765,7 @@ pub fn audit_row_hash(
     put_uuid(&mut buf, *tenant_id);
     put_uuid(&mut buf, *chain_id);
     put_u64(&mut buf, *seq);
-    put_i64(&mut buf, recorded_at.timestamp_micros());
+    put_i64(&mut buf, crate::domain::instant::timestamp_micros(*recorded_at));
     put_uuid(&mut buf, *actor_principal_id);
     put_str(&mut buf, action.as_str());
     put_str(&mut buf, subject_kind.as_str());

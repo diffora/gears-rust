@@ -105,17 +105,22 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use chrono::{DateTime, TimeZone, Utc};
+
 use sea_orm::ActiveValue::{NotSet, Set};
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, ExprTrait, Order, Value};
 use serde_json::{Value as JsonValue, json};
+use toolkit_db::odata::sea_orm_filter::paginate_odata;
 use toolkit_db::secure::{
     AccessScope, DBRunner, DbConn, DbTx, SecureDeleteExt, SecureEntityExt, SecureInsertExt,
     SecureUpdateExt, TxError,
 };
+use time::OffsetDateTime;
 use toolkit_db::{DBProvider, DbError};
+use toolkit_odata::{ODataQuery, Page, SortDir};
 use uuid::Uuid;
+
+use bss_pricing_sdk::odata::{HistoryFilterField, PlanPriceFilterField};
 
 use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind, subject_state};
 use crate::domain::concurrency::RowVersion;
@@ -138,6 +143,10 @@ use crate::domain::scope_key::{
 use crate::domain::tax_display::RegionTaxReadiness;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{price, price_tier_band, price_window};
+use crate::infra::storage::odata_mapping::{
+    HistoryODataMapper, LIST_LIMIT_CFG, OdataPageError, PlanPriceODataMapper,
+    filter_mentions_field, map_odata_err, query_with_default_order,
+};
 use crate::infra::storage::repo::check_authored_instant;
 use crate::infra::storage::repo::outbox_repo::{NewOutboxEvent, PriceCreatedPayload};
 use crate::infra::storage::repo::{NewAuditEntry, audit_repo, outbox_repo};
@@ -242,7 +251,7 @@ pub struct NewPriceDraft {
     /// Pseudonymous principal id of the authoring actor.
     pub created_by: Uuid,
     /// When the request was authored, UTC.
-    pub created_at_utc: DateTime<Utc>,
+    pub created_at_utc: OffsetDateTime,
     /// The causing request's correlation id (D-178).
     ///
     /// The third field of the [`AuditStamp`](crate::domain::audit::AuditStamp)
@@ -266,7 +275,7 @@ pub struct NewPriceDraft {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HistoryPosition {
     /// The authoring instant of the row the previous page ended at.
-    pub authored_at: DateTime<Utc>,
+    pub authored_at: OffsetDateTime,
     /// That row's id — the tie-break within one instant.
     pub price_id: Uuid,
 }
@@ -462,6 +471,114 @@ impl PriceRepo {
             Some(limit),
         )
         .await
+    }
+
+    /// One OData page of a plan's price rows. When `$filter` omits
+    /// `lifecycle_state`, `default_states` is ANDed (authoring default).
+    ///
+    /// # Errors
+    /// [`OdataPageError::Db`] on storage failure; [`OdataPageError::Odata`] on a
+    /// malformed `$filter` / `$orderby` / cursor.
+    pub async fn list_for_plan_odata(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        plan_id: PlanId,
+        query: &ODataQuery,
+        default_states: &[LifecycleState],
+    ) -> Result<Page<PriceRecord>, OdataPageError> {
+        let conn = self.conn().map_err(|e| OdataPageError::Db(e.to_string()))?;
+        let mut filter = Condition::all()
+            .add(price::Column::TenantId.eq(tenant_id))
+            .add(price::Column::PlanId.eq(plan_id.get()));
+        if !filter_mentions_field(
+            query.filter.as_deref(),
+            PlanPriceFilterField::LifecycleState,
+        ) && !default_states.is_empty()
+        {
+            let tokens: Vec<&str> = default_states
+                .iter()
+                .copied()
+                .map(LifecycleState::as_str)
+                .collect();
+            filter = filter.add(price::Column::LifecycleState.is_in(tokens));
+        }
+        let base_select = price::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(filter);
+        let query = query_with_default_order(query, &[PlanPriceFilterField::PriceId]);
+        let page = paginate_odata::<
+            PlanPriceFilterField,
+            PlanPriceODataMapper,
+            price::Entity,
+            price::Model,
+            _,
+            _,
+        >(
+            base_select,
+            &conn,
+            &query,
+            ("price_id", SortDir::Asc),
+            LIST_LIMIT_CFG,
+            |m| m,
+        )
+        .await
+        .map_err(map_odata_err)?;
+        let items = hydrate_bands(&conn, scope, tenant_id, &page.items)
+            .await
+            .map_err(|e| OdataPageError::Db(e.to_string()))?;
+        Ok(Page {
+            items,
+            page_info: page.page_info,
+        })
+    }
+
+    /// One OData page of the tenant's price history. Default order is
+    /// `authored_at asc, price_id asc`.
+    ///
+    /// # Errors
+    /// [`OdataPageError::Db`] on storage failure; [`OdataPageError::Odata`] on a
+    /// malformed `$filter` / `$orderby` / cursor.
+    pub async fn list_history_odata(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        query: &ODataQuery,
+    ) -> Result<Page<PriceRecord>, OdataPageError> {
+        let conn = self.conn().map_err(|e| OdataPageError::Db(e.to_string()))?;
+        let base_select = price::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(Condition::all().add(price::Column::TenantId.eq(tenant_id)));
+        let query = query_with_default_order(
+            query,
+            &[HistoryFilterField::AuthoredAt, HistoryFilterField::PriceId],
+        );
+        let page = paginate_odata::<
+            HistoryFilterField,
+            HistoryODataMapper,
+            price::Entity,
+            price::Model,
+            _,
+            _,
+        >(
+            base_select,
+            &conn,
+            &query,
+            ("price_id", SortDir::Asc),
+            LIST_LIMIT_CFG,
+            |m| m,
+        )
+        .await
+        .map_err(map_odata_err)?;
+        let items = hydrate_bands(&conn, scope, tenant_id, &page.items)
+            .await
+            .map_err(|e| OdataPageError::Db(e.to_string()))?;
+        Ok(Page {
+            items,
+            page_info: page.page_info,
+        })
     }
 
     /// One **page** of the tenant's price history, in commit order.
@@ -1598,7 +1715,7 @@ pub async fn commit_cutover_rows(
     predecessor: Uuid,
     successor: (Uuid, RowVersion),
     copy: (Uuid, RowVersion),
-    cutover_at: DateTime<Utc>,
+    cutover_at: OffsetDateTime,
     readiness: &RegionTaxReadiness,
     default_rounding_policy: Option<&str>,
 ) -> Result<(), RepoError> {
@@ -1644,7 +1761,7 @@ async fn refuse_ungenerational(
     tenant_id: Uuid,
     predecessor: Uuid,
     copy: Uuid,
-    cutover_at: DateTime<Utc>,
+    cutover_at: OffsetDateTime,
 ) -> Result<(), RepoError> {
     let rows: HashMap<Uuid, price::Model> =
         load_rows(runner, scope, tenant_id, [predecessor, copy].into_iter())
@@ -2868,8 +2985,8 @@ pub async fn tighten_grandfather_until(
     scope: &AccessScope,
     tenant_id: Uuid,
     price_id: Uuid,
-    prior: Option<DateTime<Utc>>,
-    horizon: DateTime<Utc>,
+    prior: Option<OffsetDateTime>,
+    horizon: OffsetDateTime,
 ) -> Result<PriceRecord, RepoError> {
     check_authored_instant("grandfatherUntil", Some(horizon))?;
     let prior_matches = prior.map_or_else(
@@ -2917,7 +3034,7 @@ async fn refuse_untightenable(
     scope: &AccessScope,
     tenant_id: Uuid,
     price_id: Uuid,
-    prior: Option<DateTime<Utc>>,
+    prior: Option<OffsetDateTime>,
 ) -> RepoError {
     let row = match load_row(runner, scope, tenant_id, price_id).await {
         Err(err) => return err,
@@ -2929,10 +3046,10 @@ async fn refuse_untightenable(
             "price row {price_id}: this transaction read a published generation whose \
              grandfatherUntil was {}, and the store now holds a {} row whose grandfatherUntil is \
              {}",
-            prior.map_or_else(|| "null".to_owned(), |at| at.to_rfc3339()),
+            prior.map_or_else(|| "null".to_owned(), |at| format_rfc3339(at)),
             row.lifecycle_state,
             row.grandfather_until
-                .map_or_else(|| "null".to_owned(), |at| at.to_rfc3339())
+                .map_or_else(|| "null".to_owned(), |at| format_rfc3339(at))
         ),
     }
 }
@@ -3171,7 +3288,7 @@ async fn mutable_draft(
 /// # Errors
 /// [`RepoError::GrandfatherHorizonOffClass`] naming the class the key holds.
 fn check_grandfather_horizon(
-    horizon: Option<DateTime<Utc>>,
+    horizon: Option<OffsetDateTime>,
     eligibility: PriceEligibility,
 ) -> Result<(), RepoError> {
     if horizon.is_none() || matches!(eligibility, PriceEligibility::ExistingGrandfathered) {
@@ -3568,6 +3685,7 @@ struct PreparedDraft {
 /// which may not reach into `infra` — and a second copy of the projection is the
 /// fault that produced the two Criticals its own documentation records.
 pub use crate::domain::price_record::authored_content;
+use crate::domain::instant::format_rfc3339;
 
 /// Render a create and refuse every value the store cannot take, statement-free.
 fn prepare_draft(tenant_id: Uuid, draft: NewPriceDraft) -> Result<PreparedDraft, RepoError> {
@@ -4549,8 +4667,7 @@ fn read_cohort(token: &str) -> Result<Cohort, RepoError> {
         ))
     };
     let millis: i64 = token.parse().map_err(|_| malformed())?;
-    Utc.timestamp_millis_opt(millis)
-        .single()
+    crate::domain::instant::from_unix_millis(millis)
         .map(Cohort::Generation)
         .ok_or_else(malformed)
 }

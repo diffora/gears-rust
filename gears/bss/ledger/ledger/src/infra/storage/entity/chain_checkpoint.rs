@@ -8,10 +8,10 @@
 //! nothing writes a checkpoint on a schedule yet. `signature` is `Option` —
 //! signing / WORM is post-MVP (Bucket A); an MVP checkpoint is unsigned.
 
-use chrono::{DateTime, Utc};
 use sea_orm::entity::prelude::*;
 use toolkit_db_macros::Scopable;
 use uuid::Uuid;
+use time::OffsetDateTime;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Scopable)]
 #[sea_orm(table_name = "chain_checkpoint")]
@@ -24,7 +24,7 @@ pub struct Model {
     pub to_row_hash: Vec<u8>,
     pub covered_entry_count: i64,
     pub signature: Option<Vec<u8>>,
-    pub created_at_utc: DateTime<Utc>,
+    pub created_at_utc: OffsetDateTime,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

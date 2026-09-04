@@ -12,13 +12,15 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use chrono::{DateTime, TimeZone, Utc};
+
 use uuid::Uuid;
 
 use super::{
     AddonConflictBothRequired, AddonDependencyAcyclic, AddonEdgeMembership, AddonQtyRange,
     MeterInjectivity, PLAN_NAME_MAX_CHARS, PlanNameWellFormed, PlanTierDeclared,
 };
+use crate::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 use crate::domain::concurrency::RowVersion;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::CurrencyCode;
@@ -57,17 +59,13 @@ fn addon(seed: u128) -> Uuid {
     Uuid::from_u128(seed)
 }
 
-fn now() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 3, 12, 0, 0)
-        .single()
-        .expect("the fixed instant is unambiguous")
+fn now() -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 3, 12, 0, 0)
 }
 
 fn cutover(day: u32) -> Cohort {
     Cohort::Generation(
-        Utc.with_ymd_and_hms(2026, 7, day, 0, 0, 0)
-            .single()
-            .expect("the fixed instant is unambiguous"),
+        utc_ymd_hms(2026, 7, day, 0, 0, 0),
     )
 }
 

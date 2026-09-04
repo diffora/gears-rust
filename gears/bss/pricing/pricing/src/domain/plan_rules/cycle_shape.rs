@@ -83,6 +83,7 @@ use crate::domain::plan_shape::{BillingCycle, CustomIntervalUnit, Frequency, Pla
 use crate::domain::price_record::PriceRecord;
 use crate::domain::scope_key::{ChargeKind, PhaseId, Region};
 use crate::domain::validation::{ValidationReport, ValidationRule};
+use crate::domain::instant::format_rfc3339;
 
 /// The `(meter, dimensionKey)` lines a plan prices, each carrying the markets
 /// its phase-invariant terminal-phase rows already cover.
@@ -737,8 +738,8 @@ impl ValidationRule<PlanShape> for AvailableFromNotBackdated {
                  {}: a plan may not be made available in the past. The historical-import path is \
                  the only sanctioned backdating; re-publishing the date this plan already \
                  published with is not backdating and is allowed",
-                available_from.to_rfc3339(),
-                subject.evaluated_at.to_rfc3339()
+                format_rfc3339(available_from),
+                format_rfc3339(subject.evaluated_at)
             ),
         );
     }

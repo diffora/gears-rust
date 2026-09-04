@@ -14,7 +14,7 @@ use std::sync::Arc;
 use axum::extract::{Extension, Path, Query};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router, http::StatusCode};
-use chrono::{DateTime, Utc};
+
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
 use toolkit_db::secure::AccessScope;
@@ -29,6 +29,8 @@ use crate::domain::approval::intent::ApprovalIntent;
 use crate::domain::error::DomainError;
 use crate::infra::approval::service::ApprovalService;
 use crate::infra::storage::entity::{dual_control_approval, dual_control_comment};
+use time::OffsetDateTime;
+use time::serde::rfc3339;
 
 /// `OpenAPI` tag applied to the approval operations.
 const TAG: &str = "BSS Ledger Approvals";
@@ -54,10 +56,12 @@ pub struct ApprovalDto {
     pub business_key: String,
     pub reason_code: String,
     pub prepared_by: Uuid,
-    pub prepared_at: DateTime<Utc>,
+    #[serde(with = "rfc3339")]
+    pub prepared_at: OffsetDateTime,
     pub approved_by: Option<Uuid>,
-    pub decided_at: Option<DateTime<Utc>>,
-    pub expires_at: DateTime<Utc>,
+    #[serde(default, with = "rfc3339::option")]
+    pub decided_at: Option<OffsetDateTime>,
+    pub expires_at: OffsetDateTime,
     pub amount_usd_eq_minor: Option<i64>,
 }
 
@@ -88,7 +92,8 @@ pub struct ApprovalCommentDto {
     pub revision: i32,
     pub author_actor: Uuid,
     pub body: String,
-    pub created_at: DateTime<Utc>,
+    #[serde(with = "rfc3339")]
+    pub created_at: OffsetDateTime,
 }
 
 impl From<dual_control_comment::Model> for ApprovalCommentDto {
@@ -154,7 +159,8 @@ pub struct SetDualControlPolicyRequest {
     pub d2_threshold_minor: i64,
     pub a6_backdating_biz_days: i32,
     pub pending_ttl_seconds: i64,
-    pub effective_from: Option<DateTime<Utc>>,
+    #[serde(default, with = "rfc3339::option")]
+    pub effective_from: Option<OffsetDateTime>,
 }
 
 /// The written dual-control policy version (the minted `version` + the thresholds
@@ -163,7 +169,8 @@ pub struct SetDualControlPolicyRequest {
 #[toolkit_macros::api_dto(response)]
 pub struct DualControlPolicyResponse {
     pub version: i64,
-    pub effective_from: DateTime<Utc>,
+    #[serde(with = "rfc3339")]
+    pub effective_from: OffsetDateTime,
     pub d2_threshold_minor: i64,
     pub a6_backdating_biz_days: i32,
     pub pending_ttl_seconds: i64,
@@ -565,7 +572,7 @@ async fn set_policy(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let scope = policy_scope(&enforcer, &ctx).await?;
-    let effective_from = body.effective_from.unwrap_or_else(Utc::now);
+    let effective_from = body.effective_from.unwrap_or_else(OffsetDateTime::now_utc);
     let version = state
         .service
         .set_policy(
@@ -621,7 +628,7 @@ async fn get_policy(
     .map_err(authz_error_to_canonical)?;
     let effective = state
         .service
-        .read_effective_policy(&scope, tenant_id, Utc::now())
+        .read_effective_policy(&scope, tenant_id, OffsetDateTime::now_utc())
         .await?;
     Ok(Json(DualControlPolicyView::from_effective(effective)))
 }

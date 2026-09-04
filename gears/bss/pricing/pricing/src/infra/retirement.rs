@@ -84,6 +84,7 @@ use crate::domain::retirement::{
     BlockingReferenceKind, GenerationCoverage, PlanReference, PresenceMap, ReferenceReport,
     ScheduledWindow, WindowVerdict, dispose_windows, strand_free_disposition,
 };
+use time::OffsetDateTime;
 use crate::domain::scope_key::{PlanId, PriceEligibility, ScopeKey};
 use crate::domain::window::{WindowInterval, WindowState};
 use crate::infra::approval::retirement_unit_ref;
@@ -100,6 +101,7 @@ use crate::infra::storage::repo::{
 };
 use crate::infra::storage::repo_failure;
 use crate::infra::window::VerdictJson;
+use crate::domain::instant::format_rfc3339;
 
 /// Everything that refers to `plan_id`, in the two weights
 /// `inst-re-references` gives them.
@@ -163,7 +165,7 @@ async fn ensure_no_live_migration_targets(
             format!(
                 "{} (effective {})",
                 record.migration_id,
-                record.effective_at.to_rfc3339()
+                format_rfc3339(record.effective_at)
             )
         })
         .collect::<Vec<_>>()
@@ -236,7 +238,7 @@ async fn ensure_no_live_cutover(
     scope: &AccessScope,
     tenant_id: Uuid,
     plan_id: PlanId,
-    now: chrono::DateTime<chrono::Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), DomainError> {
     let units = approval_repo::cutover_units_of_plan(
         runner,
@@ -268,7 +270,7 @@ async fn ensure_no_live_cutover(
          successor that was to take over from it standing on a retired plan, which is the \
          trailing void no gap check can see. Retire once the cutover has taken effect, or \
          withdraw the unit while it is still submitted",
-        at.to_rfc3339(),
+        format_rfc3339(at),
         unit.approval_id,
         unit.state.as_str()
     )))
@@ -550,7 +552,7 @@ impl RetirementService {
         // down; a read that writes nothing has no stamp to take one from, and
         // D-04's anchor is `max(cohort, now)` — so the screen answers about the
         // instant the operator is looking at it.
-        compose_preview(&conn, scope, tenant_id, plan_id, chrono::Utc::now()).await
+        compose_preview(&conn, scope, tenant_id, plan_id, OffsetDateTime::now_utc()).await
     }
 
     /// The confirm (`inst-rt-cancel`, `inst-rt-event`, `inst-rt-return`).
@@ -613,7 +615,7 @@ async fn compose_preview(
     scope: &AccessScope,
     tenant_id: Uuid,
     plan_id: PlanId,
-    now: chrono::DateTime<chrono::Utc>,
+    now: OffsetDateTime,
 ) -> Result<RetirementPreview, DomainError> {
     // **One call, a presence map** (D-131) — and in this system the call has no
     // callee. D-182 makes the absent D-79 lane D-131's fail-closed case, so every
@@ -655,7 +657,7 @@ pub async fn compose_preview_with(
     tenant_id: Uuid,
     plan_id: PlanId,
     presence: PresenceMap,
-    now: chrono::DateTime<chrono::Utc>,
+    now: OffsetDateTime,
 ) -> Result<RetirementPreview, DomainError> {
     let current = plan_repo::load_current(runner, scope, tenant_id, plan_id)
         .await
@@ -761,7 +763,7 @@ async fn generation_coverage(
     plan_id: PlanId,
     current: crate::domain::plan::PlanRevision,
     plane: &[window_repo::WindowRecord],
-    now: chrono::DateTime<chrono::Utc>,
+    now: OffsetDateTime,
 ) -> Result<Vec<GenerationCoverage>, DomainError> {
     // The **grandfathered** keys of the plane, in a stable order. Every other key
     // carries no horizon and nothing here to judge.
@@ -1207,7 +1209,7 @@ pub async fn cancel_windows_in(
     tenant_id: Uuid,
     verdicts: &[WindowVerdict],
     act: &str,
-    now: chrono::DateTime<chrono::Utc>,
+    now: OffsetDateTime,
     stamp: AuditStamp,
 ) -> Result<Vec<Uuid>, DomainError> {
     let mut cancelled = Vec::new();

@@ -61,11 +61,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use chrono::{DateTime, Utc};
+
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Set};
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
+use time::OffsetDateTime;
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
@@ -1229,7 +1230,7 @@ fn customer_group_entry(row: customer_group_taxonomy::Model) -> Result<TaxonomyE
 /// [`group_membership_repo::resolve_active_membership`](super::group_membership_repo::resolve_active_membership)
 /// and every interval check in that module hold to: the guard judges
 /// liveness against the instant the mutation is recorded at, not a second,
-/// unpinned `Utc::now()` read mid-transaction.
+/// unpinned `OffsetDateTime::now_utc()` read mid-transaction.
 ///
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure.
@@ -1238,7 +1239,7 @@ async fn references_to_customer_group(
     scope: &AccessScope,
     tenant_id: Uuid,
     value: &ScopeValue,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<CustomerGroupReferences, RepoError> {
     let active_overlay_scopes = price_overlay::Entity::find()
         .secure()

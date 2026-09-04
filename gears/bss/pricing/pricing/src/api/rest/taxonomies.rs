@@ -94,6 +94,7 @@ use crate::domain::overlay::ScopeValue;
 use crate::domain::taxonomy::{
     RegionTaxMarkers, TAXONOMY_VALUE_IN_USE, TaxonomyClass, TaxonomyEntry, TaxonomyState, tag_of,
 };
+use time::OffsetDateTime;
 use crate::infra::storage::repo_failure;
 
 /// `OpenAPI` tag applied to both operations (DE0205).
@@ -348,7 +349,7 @@ async fn put_taxonomy(
     let correlation = require_correlation(extension_correlation)?;
     let scope = write_scope(&enforcer, &ctx).await?;
     let tenant = ctx.subject_tenant_id();
-    let now = chrono::Utc::now();
+    let now = OffsetDateTime::now_utc();
 
     let class = parse_class(&class)?;
     let asserted = preconditions::if_match_policy(&headers).map_err(CanonicalError::from)?;

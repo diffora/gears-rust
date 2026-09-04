@@ -235,7 +235,7 @@
 //! nobody to report to, which is D-146's own line about the pin frontier.
 
 use bss_pricing_sdk::CatalogVersion;
-use chrono::{DateTime, Utc};
+
 use toolkit_db::secure::{AccessScope, DBRunner};
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
@@ -247,6 +247,7 @@ use crate::domain::projection::{
     MembershipSubjectDelta, OverlayIndexDelta, OverlayIndexEntry, OverlaySubjectDelta,
     PROJECTED_ROW_STATES, PROJECTED_WINDOW_STATES, PlanSubjectDelta, RowResolutionProjection,
 };
+use time::OffsetDateTime;
 use crate::domain::read_model::{OverlayIndexShard, SubjectKind, SubjectRef};
 use crate::domain::scope_key::PlanId;
 use crate::domain::tax_display::{TAX_ENGINE_GA, is_not_sellable_ga};
@@ -397,7 +398,7 @@ impl ReadModelProjector {
         catalog_version: CatalogVersion,
         newly_committed: &[PendingVersionRow],
         coverage: PassCoverage,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<VersionReport, DomainError> {
         let conn = self
             .db
@@ -632,7 +633,7 @@ struct VersionPass<'a> {
     /// Whether the pass could have seen that set whole.
     coverage: PassCoverage,
     /// The pass's instant, for the finalize and the warm marker.
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 }
 
 /// Say out loud that a version reads warm and was not judged complete.
@@ -793,7 +794,7 @@ enum ProjectedSubject {
         row_version: u64,
         /// The interval end that publish judged. `None` is an open-ended
         /// membership — a fact, not an absence.
-        effective_to: Option<DateTime<Utc>>,
+        effective_to: Option<OffsetDateTime>,
     },
 }
 
@@ -973,7 +974,7 @@ async fn project_membership_subject(
     tenant_id: Uuid,
     membership_id: Uuid,
     row_version: u64,
-    effective_to: Option<DateTime<Utc>>,
+    effective_to: Option<OffsetDateTime>,
 ) -> Result<MembershipSubjectDelta, DomainError> {
     let record = group_membership_repo::find(runner, scope, tenant_id, membership_id)
         .await
@@ -1490,7 +1491,7 @@ async fn advance_frontier(
     scope: &AccessScope,
     tenant_id: Uuid,
     completed: CatalogVersion,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<Option<CatalogVersion>, DomainError> {
     let standing = pin_frontier_repo::read_at(runner, scope, tenant_id)
         .await

@@ -30,6 +30,8 @@ use crate::infra::approval::service::ApprovalExecutor;
 use crate::infra::invoice_post::InvoicePoster;
 use crate::infra::period_close::PeriodCloseService;
 use crate::infra::storage::repo::PayerStateRepo;
+use time::OffsetDateTime;
+use crate::domain::instant::to_naive_date;
 
 /// Default advisory currency scale passed on replayed commands; the ledger
 /// resolves the authoritative per-line scale from the provisioned currency config.
@@ -134,7 +136,7 @@ impl ApprovalExecutor for LedgerApprovalExecutor {
                     .unwrap_or_else(|| original.period_id.clone());
                 let effective_on = i
                     .effective_at
-                    .unwrap_or_else(|| chrono::Utc::now().date_naive());
+                    .unwrap_or_else(|| to_naive_date(OffsetDateTime::now_utc()));
                 let reversal = build_reversal(
                     &original,
                     into_period,
