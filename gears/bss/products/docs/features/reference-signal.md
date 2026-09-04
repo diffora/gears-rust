@@ -1208,7 +1208,7 @@ leaves the specific ones looking open:
    **Blocks**: no DoD — the registry side is complete without it.
    **Owner**: *(P-D-133, 2026-09-04: scheduled by the Program Lead; the fixture runs on demand from P-D-130's crate.)* pricing, with `12-consumer-contracts` for the fixture.
 
-4. **Watermark set size**: full-set replacement at 10K SKUs × cadence is fine as rows, but the door
+4. ~~**Watermark set size**~~ **Struck as a note (P-D-134, 2026-09-04)**: booked to `dod-watermark-port`'s builder as an implementation instruction. *The item's text stood as:*: full-set replacement at 10K SKUs × cadence is fine as rows, but the door
    should accept a compressed set representation from day one (wire-level; no semantic change) —
    implementation note.
    **Blocks**: no DoD — it is a wire-level note, and `cpt-cf-bss-products-dod-watermark-port` is

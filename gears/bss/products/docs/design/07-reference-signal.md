@@ -299,7 +299,7 @@ events per §1.8. All tenant-scoped, append-only where evidential.
 - **The pricing watermark is a joint build** *(P-D-133, 2026-09-04: scheduled by the Program Lead.)* (P-D-03): the producer-side query ("complete live
   plan→SKU reference set") and its cadence are pricing's to design; this slice's door and the
   §15 mirror are ready — the joint fixture belongs to slice 12's seam suite.
-- **Watermark set size**: full-set replacement at 10K SKUs × cadence is fine as rows, but the
+- ~~**Watermark set size**~~ **Struck as a note (P-D-134, 2026-09-04)**: booked to `dod-watermark-port`'s builder. *The item's text stood as:*: full-set replacement at 10K SKUs × cadence is fine as rows, but the
   door should accept a compressed set representation from day one (wire-level; no semantic
   change) — implementation note.
 - ~~**`PRODUCER_RETIREMENT_WOULD_FREE`'s exception has no lane.**~~ **Answered (P-D-129, 2026-09-03): the exception exists for a dead producer only**, at the retirement door under break-glass elevation. *The item's text stood as:* The refusal is buildable; its escape

@@ -394,7 +394,7 @@ no event of their own (category display values emit `CategoryDisplayUpdated`, ab
   not rows, and two engines can serialize one content two ways, which is the failure the note exists
   to prevent. Amending it is a register change **and a 01 change**: **P-D-29** and 01 §4.3 state
   the same rule in the same words. Owner: P-D-29's owner. *(Raised by the slice-02 first lens pass.)*
-- **What does a category rename or delete do to entity versions already frozen against it?** The
+- ~~**What does a category rename or delete do to entity versions already frozen against it?**~~ **Answered (P-D-134, 2026-09-04): the frozen set carries name copies** (P-D-47's shape); `DIGEST_VERSION` bumps with `06`'s build. *The item's text stood as:* The
   frozen assignment set holds category **ids**, not copies, so a delete leaves an id resolving to
   nothing and a rename silently changes what an old version renders. The sibling case is answered
   explicitly for attribute definitions ("frozen versions are self-contained copies"); for categories
@@ -447,7 +447,7 @@ no event of their own (category display values emit `CategoryDisplayUpdated`, ab
   The stated reasoning for the removal operand — frozen versions are self-contained copies — applies
   equally to a type change, but the file never says the operand was narrowed. Owner: this slice.
   *(Raised by the slice-02 first lens pass.)*
-- **Does slice 09 have an operator free-text `reason` at all?** This slice's PII enumeration names
+- ~~**Does slice 09 have an operator free-text `reason` at all?**~~ **Answered (P-D-134, 2026-09-04): no** — a closed-set literal; the enumeration drops the `09` door. *The item's text stood as:* This slice's PII enumeration names
   "bulk/promotion row reasons (09)", while 09's only two `reason`s are a system-produced failure
   reason and a fixed literal — and 09's own owed item quotes this enumeration as its evidence, so
   nothing independent establishes the door. Slice 10 has an interest: its "only table in the gear where PII may live" guarantee rests on this enumeration being complete. Owner: 09's owner with this slice. *(Raised by the slice-02 first lens pass.)*

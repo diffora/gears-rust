@@ -287,8 +287,8 @@ actor, the scenarios and the boundary.
   `fr-accounting-codes` requires the registry to persist and validate them. This slice owns the
   validators, the two `set_kind` values, `inst-ac-required` and a publish-blocking requirement, all of
   which the answer may delete. Owner: the PRD owner. *(Two lenses raised it independently.)*
-- **Is the resolved-binding snapshot inside the digest, and what carries it across the phase
-  boundary?** `inst-cd-stamp`
+- ~~**Is the resolved-binding snapshot inside the digest, and what carries it across the phase
+  boundary?**~~ **Answered (P-D-134, 2026-09-04): outside** — provenance beside the version row; `DIGEST_VERSION` stays 1. *The item's text stood as:* `inst-cd-stamp`
   freezes `(gts_id, kind, metadata_fields)` into `products_entity_version`, and §4 declares no column
   on that table — nor does 01, whose roster is closed. If it joins the digested content then 01's own
   rule makes it a `digest_version` bump off `1` and re-pins §5's golden vector; beside the content,
@@ -340,7 +340,7 @@ actor, the scenarios and the boundary.
   `VALIDATION` and the run stops there, so `SKU_TYPE_UNKNOWN`'s "absent" arm is unreachable and AC #38's
   map gets two different readings. No document says whether `type` is in the shape phase's
   required-at-this-state set. Owner: this slice with the error-contract owner. *(Raised by the slice-03 first lens pass.)*
-- **The override ceremony reads findings from a report no slice builds.** `inst-cl-bundle-override`
+- ~~**The override ceremony reads findings from a report no slice builds.**~~ **Answered by P-D-125 (recorded by P-D-134, 2026-09-04)**: `01`'s dry-run door. *The item's text stood as:* `inst-cl-bundle-override`
   registers the gate condition whose ceremony 05 performs by acknowledging lint findings **by name**,
   and 06 §6 records that no instruction, store, RBAC pair, error code or probe in that slice delivers
   the report. Owner: the design-set owner with 06. *(Raised by the slice-03 first lens pass.)*
@@ -390,7 +390,7 @@ actor, the scenarios and the boundary.
   depending on that. Both cannot hold. On 07's reading this slice's resolver call sits inside an open
   publish transaction. Owner: 01 as the pipeline owner, with 07 and this slice.
   *(Raised by the slice-03 second lens pass.)*
-- **What operand tells a composed bundle from an uncomposed one?** `inst-cl-bundle-override` registers
+- ~~**What operand tells a composed bundle from an uncomposed one?**~~ **Answered (P-D-134, 2026-09-04): `composition_pending`, raised only by a composition-affecting publish**; never composed = `published_version = 0`. *The item's text stood as:* `inst-cl-bundle-override` registers
   the gate condition and says the door cannot judge composition itself, while 01 assigns that judgement
   to "03's validator"; the only registry-side record is `composition_pending`, whose default is `false`
   on an uncomposed draft, so it cannot distinguish never-composed from composed. Read literally ("every

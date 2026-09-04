@@ -1810,7 +1810,7 @@ resolved record elsewhere can retract a decision's propagation, so none was touc
    **Blocks**: no DoD — deliberately out of v1.
    **Owner**: this feature, at the NFR workshop.
 
-5. **Bulk-lane starvation**: a steady interactive trickle must not defer a bulk window past its
+5. ~~**Bulk-lane starvation**~~ **Struck as a note (P-D-134, 2026-09-04)**: the probe is `dod-coalescer`'s own §6 criterion; nothing further is owed. *The item's text stood as:*: a steady interactive trickle must not defer a bulk window past its
    5-min hard max — the coalescer's deadline logic gets a probe when built.
    **Blocks**: no DoD; the probe is already obliged by
    `cpt-cf-bss-products-dod-coalescer` and asserted in §6.

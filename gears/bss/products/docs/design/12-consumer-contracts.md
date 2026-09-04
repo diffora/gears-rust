@@ -290,7 +290,7 @@ slice is that suite's specification.
   nothing catches a question filed nowhere. Owner: the design-set owner with this slice.
   *(Filed from design 01 §6 by the slice-01 eighth lens pass; re-measured by the P-D-43…49
   propagation audit.)*
-- **The `CoverageChecks` are gated by nothing, and there is nothing to restore.** *(P-D-130, 2026-09-03: the `spec-check` skill runs a subset off-VCS; the CI gate stays repo tooling's.)* This item
+- ~~**The `CoverageChecks` are gated by nothing, and there is nothing to restore.**~~ **Answered (P-D-134, 2026-09-04): no CI gate, by the owner's decision (P-D-132).** *The item's text stood as:* *(P-D-130, 2026-09-03: the `spec-check` skill runs a subset off-VCS; the CI gate stays repo tooling's.)* This item
   previously read "restoring the job is owed", which was false in its premise and is corrected
   here. The `Spec Invariants` job was not lost: commit `21a149fda` removed it deliberately
   along with `tools/spec-check`, the workspace member and `make spec-check`, and stated the

@@ -269,7 +269,7 @@ either way).
   every GC act are audited, 01 makes the audit row's `actor_ref` non-nullable, and every ref in
   the set is minted for a human principal on first appearance. No document names a system ref or
   admits a null one. Owner: 01's owner with this slice. *(Raised by the slice-10 first lens pass.)*
-- **Where does a successful restore drill's state live?** `inst-rd-drill` puts "the last-verified
+- ~~**Where does a successful restore drill's state live?**~~ **Answered (P-D-134, 2026-09-04): an audit row per run**, P-D-21's class; the watermark is a query. *The item's text stood as:* `inst-rd-drill` puts "the last-verified
   watermark per tenant" on an operator surface; §4 says "retention/drill state is config + audit,
   no new record tables"; and a per-tenant watermark is neither config nor an append-only audit
   row. `DECISIONS.md` already records this as owed under P-D-21 and deliberately unapplied.
@@ -287,7 +287,7 @@ either way).
   a join, so the two slices disagree about what 08 does. 12 forbids *storing* an identity
   elsewhere and says nothing about resolving one. Owner: 05's RBAC catalog owner with this slice
   and 08. *(Two lenses raised it independently — slice-10 first lens pass.)*
-- **Who owns NFR #5's cold re-resolution MUST, and how does the clause split with 06?** Both
+- ~~**Who owns NFR #5's cold re-resolution MUST, and how does the clause split with 06?**~~ **Answered (P-D-134, 2026-09-04): by object** — identity here, content in `06`. *The item's text stood as:* Both
   slices claim the requirement as "shared", while 12 requires exactly one owner per clause. The
   word "cold" appears nowhere in the design set except this slice's Traces-to line: there is no
   instruction, no §4 shape and no §5 probe for cold resolution or its p95, and 06 — which owns the

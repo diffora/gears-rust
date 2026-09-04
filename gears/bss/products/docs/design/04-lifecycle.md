@@ -95,7 +95,7 @@ orphan published content or leak a child outside its parent's scope.
 | C2 | Retirement lead time ≥ 30 days (interim §17.1 policy); all scheduling in UTC | PRD §4.1 |
 | C3 | **v1 = plain retirement + grandfathering only**; EOL-with-`mustMigrateBy` is defined-but-deferred, disabled until the subscriptions-lifecycle AC exists and is referenced by number | PRD `fr-retirement-eol` |
 | C4 | The registry never flips a SKU to `retired` while the `SkuReferenceCount` predicate reads anything but fresh-zero (fresh > 0, stale, never-received, or the defensive `no_producers`) — D-47 joint contract | PRD `fr-retirement-eol` |
-| C5 | Scope containment: flat region/brand value sets, containment = subset, not-provably-subset ⇒ fail-closed (`SCOPE_NOT_CONTAINED`) — the final form of 01's interim check. **Containment is over restrictions** (01 **P-D-39**): the empty set means *unrestricted*, so an unrestricted parent contains every child and an unrestricted child is contained only by an unrestricted parent | P-D-04; 01 P-D-39 |
+| C5 | Scope containment: flat region/brand value sets, containment = subset, not-provably-subset ⇒ fail-closed (`SCOPE_NOT_CONTAINED`) — the final form of 01's interim check (**P-D-134**: `01` ships that form in `domain::containment`; this slice registers no operand of its own). **Containment is over restrictions** (01 **P-D-39**): the empty set means *unrestricted*, so an unrestricted parent contains every child and an unrestricted child is contained only by an unrestricted parent | P-D-04; 01 P-D-39 |
 
 ### 1.7 Naming & Design-Introduced Names
 
@@ -149,6 +149,7 @@ actor, the scenarios and the boundary.
 3. [ ] - `p1` - `replacedBy` is an optional input of retirement initiation (`inst-rt-initiate`), and `replaced_by_sku_id` is written by that act in the same statement as its `lifecycle_state` change; when given it MUST name a `published` SKU (`REPLACED_BY_NOT_PUBLISHED`); the registry is its SoR. **Validated once, and the row is terminal at the flip, so the pointer can come to name a later-retired SKU** — refusing to retire a live replacement target would make it un-retirable forever, so instead: retiring a SKU that any live `replaced_by_sku_id` names raises a **`replacement_chain_broken`** alert listing the pointing SKUs, and the read surface **resolves the pointer transitively** to the first non-`retired` successor (or reports the chain's end). The break is a stored fact with a consumer-usable resolution rather than a silent dangling pointer; repairing the frozen pointer itself is out of scope in v1, stated rather than implied (item 36 of the review) - `inst-rt-replacedby`
 4. [ ] - `p1` - At `effectiveAt` the flip runs the **D-47 guard**: if the slice-07 predicate reads anything but fresh-zero (fresh > 0, stale, never-received, or the defensive `no_producers`), the flip is **deferred** — state stays `deprecated`, a `retirement_held` alert names the blocking producers, and the runner re-evaluates on the predicate's freshness cadence; the flip happens only on a fresh all-zero — so the flip **may trail the announced `effectiveAt`**, and consumers key the state change on `SkuRetirementEffective`, never on the clock (L5 fix). C4 is unconditional: there is no force-retire door in v1 - `inst-rt-flip-guard`
 5. [ ] - `p1` - **EOL lockout (C3)**: `mustMigrateBy` and the consumer-acknowledgment machinery are refused in v1 (`EOL_DISABLED`) behind a feature flag OFF by default; the payload field exists in the event schema (vN-compatible widening later), never populated in v1 - `inst-rt-eol-lockout`
+6. [ ] - `p1` - **Retire-intent guard at create and save (P-D-134)**: creating a SKU under a Product that carries a live retire intent, or re-parenting a SKU there through the save door before first publish (the only door that may set `product_id`), is refused `RETIREMENT_PENDING` — a child admitted under a retiring parent is an orphan the flip guard would then have to refuse. Registered on both doors as a `Phase::Identity` continuation reading the parent's live retire intent (its scheduled `retire` transition or deferred-retirement row); the runner's own lane is exempt - `inst-rt-create-guard`
 
 ### Retire a Product (cascade with deferred intent)
 
@@ -385,7 +386,7 @@ pricing D-47 (joint contract), P-D-04 (containment residue).
 - ~~**Cascade + scheduled child publishes**~~ **Answered (P-D-114 row 2, 2026-09-03): supersede, then schedule, atomically** — `inst-cp-plan`'s own two clauses; the confirmation is the only writer and it is one transaction. *The item's text stood as:*: a `pending` scheduled publish on a child of a
   retiring Product is superseded by the cascade (auto-discard or listed) — stated here, but the
   supersession ordering deserves a probe when built.
-- **Owed: the instruction row registering the create-door live-retire-intent validator.**
+- ~~**Owed: the instruction row registering the create-door live-retire-intent validator.**~~ **Written (P-D-134, 2026-09-04): `inst-rt-create-guard`, §3 below.** *The item's text stood as:*
   **P-D-30 settled whose it is — this slice's**, its operand being the live retire intent in
   `products_scheduled_transition`, which this slice owns; the contrary note reading it as 01's own
   guard is corrected in §3.2 above. No `inst-lc-*`/`inst-rt-*`/`inst-cp-*` row registers it yet,
@@ -409,7 +410,7 @@ pricing D-47 (joint contract), P-D-04 (containment residue).
   owner, with the events/audit consumer set. *(Raised by the slice-01 fifth-pass review.)*
 - EOL (post-v1) will need *(P-D-132, 2026-09-03: post-v1 explicitly; `dod-eol-lockout` re-priced p3.)*: the subscriptions-lifecycle AC by number, the consumer-ack contract,
   and `SkuEolSuspended` — the schema field is already vN-compatible.
-- **Does the create-door retire-intent validator also register on the save door?** 01
+- ~~**Does the create-door retire-intent validator also register on the save door?**~~ **Answered (P-D-134, 2026-09-04): yes** — save may set `product_id` before first publish. *The item's text stood as:* 01
   `inst-fd-save-txn` is the only door that may change a SKU's `product_id`, so a draft SKU can be
   re-parented under a retire-pending Product by a door neither arm covers — the hazard
   `inst-fd-containment-retire-intent` itself describes. Owner: this slice. *(Filed from 01 §6 by the slice-01 eighth lens pass — the pointer claimed it was registered here and it was not.)*
@@ -467,8 +468,8 @@ pricing D-47 (joint contract), P-D-04 (containment residue).
   `cascade_cancelled` and none for `children_cleared`. No listed child acquires a retire intent of
   its own, so "once the listed children clear" names no act that retires them. Owner: this slice.
   *(Raised by the slice-04 first lens pass.)*
-- **What does the transitive `replacedBy` resolution return on a cycle, and which surface walks
-  it?** `inst-rt-replacedby` has the read surface resolve to the first non-`retired` successor. A
+- ~~**What does the transitive `replacedBy` resolution return on a cycle, and which surface walks
+  it?**~~ **Answered by P-D-115 and P-D-126 (recorded by P-D-134, 2026-09-04)**: the crate's walk and bound, `08`'s surface. *The item's text stood as:* `inst-rt-replacedby` has the read surface resolve to the first non-`retired` successor. A
   cycle is constructible on this slice's own admission that a cancelled, un-deprecated SKU keeps a
   successor no admitted write can clear. 08 claims no chain walk. Owner: this slice with the
   read-model owner — which surface walks it, what bounds it, and what a closed chain returns. *(Raised by the slice-04 first lens pass.)*

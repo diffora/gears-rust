@@ -344,7 +344,7 @@ row and open to correction; the requirement is that every code carries one.
 finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval pinning), 06 (force-completion, participant-set membership, the `system_signal` composition clear), 07 (`sku_correction`, reference-producer registration), 09 (`bulk_batch`), 10 (`pii_allowlist × write`).
 
 **Risks & open items**:
-- **Eleven of the twenty-three grant rows carry no route in the `Doors` column.** P-D-45's `Doors` column made this countable for the first time, and **P-D-50** then took the three contradictions the propagation audit found — `approval × read`, `category × read` and `catalog_version × read` each had a route declared elsewhere in the set while their own cell read "no route declared". *Re-measured 2026-08-31 after **P-D-61** (the `bulk × read` row) and **P-D-67** (routes for
+- ~~**Eleven of the twenty-three grant rows carry no route in the `Doors` column.**~~ **Answered (P-D-134, 2026-09-04): one of twenty-three today** — `04`'s scheduled-transition doors, routed and C's build. *The item's text stood as:* P-D-45's `Doors` column made this countable for the first time, and **P-D-50** then took the three contradictions the propagation audit found — `approval × read`, `category × read` and `catalog_version × read` each had a route declared elsewhere in the set while their own cell read "no route declared". *Re-measured 2026-08-31 after **P-D-61** (the `bulk × read` row) and **P-D-67** (routes for
   `catalog_version × ack`/`× release`, `× force_complete` and `freeze_participant × write`):* the
   roster is **twenty-four** rows, **sixteen** name a route, and the `Doors` column declares
   **twenty-four** routes (**P-D-90** doored `recognized_set`/`plan_tier`, whose row had none).
@@ -357,7 +357,7 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
   **P-D-90** — plus the two known absences spelled differently
   (`scheduled_transition`; `catalog_version × publish`, which no door consumed, is struck by P-D-125). An authorization
   surface nobody can enumerate is one nobody can review. Whether the fix is declaring the routes or admitting the grants are unspent is not a review's call. Owner: this slice with each door's owner. *(Raised by the P-D-45 round; re-measured by the P-D-43…49 propagation audit; the three contradictions closed by **P-D-50**.)*
-- **Does the discard door get its own grant, or inherit `product|sku × write`?** 01 §2 declares
+- ~~**Does the discard door get its own grant, or inherit `product|sku × write`?**~~ **Answered (P-D-134, 2026-09-04): its own action `× discard`.** *The item's text stood as:* 01 §2 declares
   `POST /bss-products/v1/{products|skus}/{id}/discard` under **`… × discard`**, and this slice's
   RBAC catalog carries only `product × read|write|publish` and `sku × read|write|publish` — so
   12 `inst-cc-rbac`, which since **P-D-45** requires every declared route to appear in the `Doors`
@@ -378,7 +378,7 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
   operational, not structural; noted for the ops runbook.
 - Approval retention/erasure interplay (approver principals are pseudonymous refs) is slice
   10's; this slice only guarantees the refs are pseudonymous from birth.
-- **Does the authoring head read need an action of its own in the RBAC catalog?** 01 §2's `GET` is
+- ~~**Does the authoring head read need an action of its own in the RBAC catalog?**~~ **Answered (P-D-134, 2026-09-04): no — `× read` is the authoring read.** *The item's text stood as:* 01 §2's `GET` is
   an authoring read, and 01 §4.3 says that read "is not a consumer read", while this slice's
   catalog lists only `read|write|publish` per kind. Owner: this slice. *(Filed from 01 §6 by the slice-01 eighth lens pass — the pointer claimed it was registered here and it was not.)*
 - ~~**What does `Gate` mode require of a gated transition?**~~ **Answered (P-D-105, 2026-09-02): for a scheduled flip, that the record is `consumed` and the flipped row's own `approval_ref` names it** — subject/revision equality is dropped there and kept everywhere else; the operand is a stored column no caller can write. *The item's text stood as:* 01 `inst-fd-gate-mode-gate` is worded for
@@ -418,7 +418,7 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
   `inst-gv-scope` to cover; and the auto-satisfied `system_signal` record's "signal reference as the
   authorizing principal" has no column, the decision key being `(approval_id, approver_principal)`.
   Owner: this slice with 12, which pins the envelope's `subjectKind`. *(Raised by the slice-05 first lens pass.)*
-- **Which slice mints a grant pair when the owning slice names none?** The roster carries
+- ~~**Which slice mints a grant pair when the owning slice names none?**~~ **Answered (P-D-134, 2026-09-04): the door's owner** — `04` for the scheduled-transition doors. *The item's text stood as:* The roster carries
   `scheduled_transition × write|cancel|read` and `product|sku × discard` for doors that name no
   pair, while §3.2 asserts "Every door names its pair" and 12's lint only runs door→catalog, so a
   catalog entry with no door is invisible to it in both directions. Owner: the governance owner with

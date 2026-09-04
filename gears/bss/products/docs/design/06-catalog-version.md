@@ -393,7 +393,7 @@ struck. Branch review.)*
   for dedup later (the entity half references immutable version rows; the capture half stores
   copies — H3 — and is the part a delta-encoding would compress; a compatible optimization,
   named to keep it out of v1).
-- **Bulk-lane starvation**: a steady interactive trickle must not defer a bulk window past its
+- ~~**Bulk-lane starvation**~~ **Struck as a note (P-D-134, 2026-09-04)**: the probe is `dod-coalescer`'s §6 criterion. *The item's text stood as:*: a steady interactive trickle must not defer a bulk window past its
   5-min hard max — the coalescer's deadline logic gets a probe when built.
 - ~~**`freezeComplete` = "all acked" regresses when a participant releases.**~~ **Answered (P-D-84 arm 1, 2026-09-01): the predicate ranges over SETTLED** — complete ⇔ no `pending` and no `not_frozen(forced)` row, a release settling exactly as an ack — so completeness is monotone and the regression cannot be expressed. *The item's text stood as:* `inst-fz-ack` defines
   the predicate over the ledger's current value, and §4 makes `state` "four values, one column" —

@@ -981,14 +981,14 @@ cited instead:
    safety and guarantees friction; the allow-list loop must exist before GA (the 02 risk restated as
    this slice's operational owner), and the §15 Legal sign-off covers the posture itself.
    **Blocks**: no DoD — it is a product and operational risk.
-   **Owner**: this feature, operationally.
+   **Owner**: *(P-D-134, 2026-09-04: a recorded risk, not a question.)* this feature, operationally.
 
 2. **Watermark/member tables (07) and bulk ledgers** carry `skuId`s and row payloads, not PII —
    asserted here so their retention rides ordinary classes; if a future producer's payload grew
    identity-bearing fields, the map discipline would apply — named to keep it from drifting in
    silently.
    **Blocks**: no DoD — it is an assertion recorded to stop a silent drift.
-   **Owner**: this feature, with `07-reference-signal` and `09-bulk-promotion` if a payload widens.
+   **Owner**: *(P-D-134, 2026-09-04: a recorded fact, re-measured when a payload widens.)* this feature, with `07-reference-signal` and `09-bulk-promotion` if a payload widens.
 
 3. **Encrypted-at-rest for the map** rides the platform storage posture; if a deployment lacks it,
    this table is the one that must not ship — a deployment gate, not a code path.
@@ -1025,11 +1025,11 @@ cited instead:
    `cpt-cf-bss-products-dod-retention-order`.
    **Owner**: `01-foundation`'s owner with this feature.
 
-6. **Where does a successful restore drill's state live?** `inst-rd-drill` puts "the last-verified
+6. ~~**Where does a successful restore drill's state live?**~~ **Answered (P-D-134, 2026-09-04): an audit row per drill run**, P-D-21's own class; the last-verified watermark is the newest row per tenant — a query, not a table. *The item's text stood as:* `inst-rd-drill` puts "the last-verified
    watermark per tenant" on an operator surface; §4 says "retention/drill state is config + audit, no
    new record tables"; and a per-tenant watermark is neither config nor an append-only audit row.
    `DECISIONS.md` already records this as owed under P-D-21 and deliberately unapplied.
-   **Blocks**: `cpt-cf-bss-products-dod-restore-drill`.
+   **Blocks**: no DoD — **resolved by P-D-134** *(was: `cpt-cf-bss-products-dod-restore-drill`.)*
    **Owner**: this feature with P-D-21's owner.
 
 7. ~~**What does the drill do on a digest-version mismatch, and what is the corruption alarm called?**~~ **Answered (P-D-133, 2026-09-04, the product owner): report, never skip, never re-render** — `unverifiable` rows raise `products_restore_drill_unverifiable`, a mismatch with code raises `products_restore_drill_corruption`; every row is scanned. *The item's text stood as:*
@@ -1054,12 +1054,12 @@ cited instead:
    `cpt-cf-bss-products-dod-compliance-export`.
    **Owner**: `05-governance`'s RBAC catalog owner with this feature and `08-read-models`.
 
-9. **Who owns NFR #5's cold re-resolution MUST, and how does the clause split with 06?** Both slices
+9. ~~**Who owns NFR #5's cold re-resolution MUST, and how does the clause split with 06?**~~ **Answered (P-D-134, 2026-09-04): by object** — `10` owns identity cold re-resolution (the compliance export is it, P-D-117), `06` owns content cold re-read; NFR #5's p95 is the workshop's. *The item's text stood as:* Both slices
    claim the requirement as "shared", while 12 requires exactly one owner per clause. The word "cold"
    appears nowhere in the design set except this slice's Traces-to line: there is no instruction, no
    §4 shape and no §5 probe for cold resolution or its p95, and 06 — which owns the resolver — claims
    only the durability half.
-   **Blocks**: `cpt-cf-bss-products-dod-restore-drill`.
+   **Blocks**: no DoD — **resolved by P-D-134** *(was: `cpt-cf-bss-products-dod-restore-drill`.)*
    **Owner**: the design-set owner with `06-catalog-version`.
 
 10. ~~**Who delivers the DR half of the durability mechanics?**~~ **Answered (P-D-133, 2026-09-04, the product owner): the platform's** — storage class, backups, RPO and RTO are deployment properties; the gear owns the restore drill as the probe. *The item's text stood as:* §1.1 promises "storage class, periodic
@@ -1132,14 +1132,14 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
     blocked by rows 12, 22 and 23.
     **Owner**: was `02-taxonomy-attributes`, which declares the code; **discharged**.
 
-16. **`repo::AuditCommon::correlation_id` is permanently `NULL`, and this feature owns the audit *(P-D-118 (2026-09-03): **the shape is decided** — `correlation_id` is a W3C trace id, the column becomes `text`, background acts write NULL by design. **The migration edit is `01`'s and the lead's**; it does not block `dod-retention-clock`.)*
+16. ~~**`repo::AuditCommon::correlation_id` is permanently `NULL`, and this feature owns the audit *(P-D-118 (2026-09-03): **~~ **Decided by P-D-118 (recorded by P-D-134, 2026-09-04)**; the migration is the lead's, with P-D-129's columns. *The item's text stood as:*the shape is decided** — `correlation_id` is a W3C trace id, the column becomes `text`, background acts write NULL by design. **The migration edit is `01`'s and the lead's**; it does not block `dod-retention-clock`.)*
     class's clock and its deletes.** The field is `Option<Uuid>` and its own doc names the blocker:
     *"the value is 32 hex characters and this column is `uuid` on Postgres"*, with two candidate
     migration shapes written up and the decision, the migration behind it and the wiring recorded as
     **owed**. A retention sweep over the audit class deletes rows whose correlation column never
     carried a value, so the class this feature retains is less useful than its schema implies. The
     debt is `01-foundation`'s.
-    **Blocks**: `cpt-cf-bss-products-dod-retention-clock` — not its correctness, its worth.
+    **Blocks**: no DoD — **resolved by P-D-134** *(was: `cpt-cf-bss-products-dod-retention-clock` — not its correctness, its worth.)*
     **Owner**: `01-foundation`'s code. One-line pointer only.
 
 17. ~~**The GC has no admitted `DELETE` until `06-catalog-version`'s predicate lands.**~~

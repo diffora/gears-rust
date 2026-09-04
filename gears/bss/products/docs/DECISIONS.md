@@ -1569,6 +1569,82 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-134 — The design-set owner's twenty-five: one pass, measured
+
+- **Date**: 2026-09-04 (the lead's own rows, decided under the standing *"decide what is plainly
+  answerable"* rule and shown to the owner as one list; every measurement is at `2770cef58`)
+- **`05` row 1 — one of twenty-three, not eleven.** Measured: `design/05` §3.2's `Doors` column
+  carries a route for every grant but `scheduled_transition × write|cancel|read`. P-D-106, 120 and
+  125 doored the rest. **The route**: `GET /bss-products/v1/scheduled-transitions` and
+  `POST /bss-products/v1/scheduled-transitions/{id}/operations` (`op: cancel`), `04`'s doors,
+  strand C's build — which also answers `05` row 24: **the door's owner mints the pair**, and here the
+  owner is `04`.
+- **`05` row 2 — `× discard` is its own action.** The design declares the route under it, a discard
+  destroys a draft irreversibly, and *"edit"* does not describe that; the code's positional action
+  roster gains `discard` with the door's grant (01's).
+- **`05` row 7 — no new action for the authoring head read**: `× read` *is* the authoring read;
+  consumer reads go through `08`'s doors under their own grants.
+- **`05` row 25 — roles arrive as claims.** A principal's role is not on any surface today; when
+  the platform's PDP encodes it in `token_scopes`, `APPROVER_ROLE_REQUIRED` (P-D-119) and P-D-131's
+  predicate read it from there. Routed to the platform-identity owner with that shape; the gear's
+  role checks say *"no role claim"* until then.
+- **`05` row 32 — two obligations attach to existing DoDs.** `approval_ref`'s `NOT NULL` tightening
+  on `products_entity_version` is a clause of B's `dod-approval-store`, applied in place when the
+  store lands; `authz_label_type_schemas()` having no production caller is **01's defect** — the
+  schemas register at gear init (`gear.rs`), the lead's build.
+- **`04` rows 3 and 7 — the retire-intent guard is written into `design/04` and it covers the save
+  door too.** Measured: `find_live_retire_intents` is read at publish, un-deprecate, retire and
+  cancel, and **no create or save door reads it**; the save door may set `product_id` before first
+  publish (`skus.rs` 5707, 5849). New instruction `inst-rt-create-guard`: creating a SKU under a
+  Product with a live retire intent, or re-parenting one there through save, refuses
+  `RETIREMENT_PENDING` (the variant exists). Strand C's build.
+- **`04` row 12 — answered by P-D-115 and P-D-126**: the walk's cycle and bound are the crate's,
+  the surface is `08`'s entity read.
+- **`04` row 21 — nothing is replaced, and one clause is unbuilt.** `domain::containment` ships
+  the final restriction-based rule at three sites (create, publish, the Product publish's child
+  re-check); C5's *"the final form of 01's interim check"* is corrected — `01` ships that form and
+  `04` registers no operand. **`dod-scope-containment-final` does not tick**: its *"evaluated on
+  save"* clause has no call site — a scope change saved on a non-terminal head is judged only at
+  publish. The save-time evaluation is **the lead's build** (01's save door).
+- **`03` row 6 — the binding snapshot is provenance, outside the digest.** The digest is the
+  content contract (P-D-29); the snapshot is evidence about the publish, stored beside the version
+  row and keyed by it. `DIGEST_VERSION` stays 1.
+- **`03` row 14 — answered by P-D-125** (the dry-run door is the lint producer).
+- **`03` row 20 — `composition_pending` is set only by a composition-affecting publish.** A publish
+  of a bundle whose member set or members' bucket-i/ii content changed raises it; an ordinary
+  bucket-iii re-publish does not; *composed* is a published head with the flag clear and
+  *never composed* is `published_version = 0`. The override ceremony reads the flag on a published
+  head — no third state.
+- **`02` row 22 — the frozen assignment set carries name copies, P-D-47's shape.** A category can
+  still be deleted once its link rows are gone while frozen versions still name its id, so ids
+  alone dangle. **`DIGEST_VERSION` bumps to 2 with `06`'s build** and the golden vector re-pins;
+  the cost is stated and accepted, because a frozen version that renders a name it can no longer
+  resolve is the defect P-D-47 already closed for definitions.
+- **`02` row 24 — `09` has no operator free-text `reason`.** Measured: `design/09` §4's `reason`
+  is *"a literal from a closed set, never operator text"*. `02`'s PII enumeration drops the `09`
+  door.
+- **`10` row 6 — the drill's state is an audit row per run**, P-D-21's own class (an act that emits
+  no event); *"the last-verified watermark"* is the newest such row per tenant, a query and not a
+  table — §4's *"config + audit, no new record tables"* holds.
+- **`10` row 9 — cold re-resolution splits by object.** `10` owns **identity** cold re-resolution —
+  the compliance export *is* it (P-D-117); `06` owns **content** cold re-read from the manifest.
+  Neither owes a further p95 probe beyond its own door's; NFR #5's number is the workshop's.
+- **`10` row 16 — decided by P-D-118**, the build the lead's (one migration, P-D-129's columns).
+- **`12` row 7 — no CI gate, by the owner's decision** (P-D-132's refusal reaches this row); the
+  `spec-check` skill runs the subset off-VCS.
+- **Notes, not questions — struck as such**: `06` row 5 (the starvation probe is `dod-coalescer`'s
+  §6 criterion), `07` row 4 (a compressed watermark representation, booked to `dod-watermark-port`'s
+  builder).
+- **Kept, with what they are written on them**: `12` row 1 (the `EventRegister`'s rows, work owed
+  per slice under P-D-130's container) and row 3 (a posture statement); `10` rows 1 and 2
+  (recorded risks) and row 12 (Legal's half).
+- **Propagated**: the rows and items struck or annotated; `design/04` gains `inst-rt-create-guard`
+  and its C5 wording; `design/05` §6 four items. Builds owed: the save-time containment check and
+  the label type-schema registration (the lead, `01`); the scheduled-transition doors and the
+  retire-intent guard (C); `approval_ref`'s tightening (B); the name copies and the digest bump
+  (`06`'s builder).
+
+
 #### P-D-133 — Ops, platform and the cross-team seams: thirteen product-owner calls
 
 - **Date**: 2026-09-04 (**the product owner's decision** on the lead's third batch, accepted as

@@ -1134,7 +1134,7 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     explicit no-event where a state change emits nothing. Until it is written lint 4 is declared
     and inert, which is a better state than prose but is not a working gate.
     **Blocks**: `cpt-cf-bss-products-dod-lint-declarations`.
-    **Owner**: every slice owner, coordinated by this one. *(Raised by the P-D-45 round.)*
+    **Owner**: *(P-D-134, 2026-09-04: work owed per slice under P-D-130's container — not a question.)* every slice owner, coordinated by this one. *(Raised by the P-D-45 round.)*
 
 2. ~~**The suite's final owner/home is a §15 open**~~ **Answered (P-D-132, 2026-09-03, the product owner): no CI job** — the owner refused the lead's `products-seam` job; the suite lives in the products-side crate (P-D-130) and runs on demand, and `dod-seam-suite-home`'s CI clause is unsatisfiable by decision. *The item's text stood as:* (proposed `api-contracts` CI) — the design is
     home-agnostic, but an unowned CI job is an unrun one; this is the set's last organizational
@@ -1173,7 +1173,7 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     **Owner**: the design-set owner with this slice. *(Filed from design 01 §6 by the slice-01
     eighth lens pass; re-measured by the P-D-43…49 propagation audit.)*
 
-7. **The `CoverageChecks` are gated by nothing, and there is nothing to restore.** This item
+7. ~~**The `CoverageChecks` are gated by nothing, and there is nothing to restore.**~~ **Answered (P-D-134, 2026-09-04): no CI gate, by the owner's decision** (P-D-132); the `spec-check` skill runs the subset off-VCS. *The item's text stood as:* This item
     previously read "restoring the job is owed", which was false in its premise and is corrected
     here. The `Spec Invariants` job was not lost: commit `21a149fda` removed it deliberately along
     with `tools/spec-check`, the workspace member and `make spec-check`, and stated the cost in as
@@ -1183,7 +1183,7 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
     nine lints is **building** something, not restoring it, and that is repo tooling work rather
     than anything this design set can decide. What this slice owes is only the honest statement
     that its checks are declared and unenforced — which §3.2 makes.
-    **Blocks**: `cpt-cf-bss-products-dod-lint-gate`.
+    **Blocks**: no DoD — **resolved by P-D-134** *(was: `cpt-cf-bss-products-dod-lint-gate`.)*
     **Owner**: *(P-D-130, 2026-09-03: the `spec-check` skill already runs a subset of these lints off-VCS; what is unenforced is the CI gate, which stays repo tooling's.)* whoever owns repo tooling, if and when the cost recorded in `21a149fda` is
     reconsidered. *(Premise corrected after the P-D-45 round.)*
 
