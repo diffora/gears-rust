@@ -77,7 +77,10 @@ use super::{
 };
 use crate::domain::approval::{ApprovalState, ApproverDiff, diff_basis_for, render_diff};
 use crate::domain::concurrency::InternalRevision;
-use crate::domain::governance::{ApprovalId, EntityRef, GateSubject, SubjectKind};
+use crate::domain::governance::{
+    ApprovalId, EntityRef, GateMode, GateSubject, GateVerdict, GovernanceGate, SubjectKind,
+    SubjectPin,
+};
 use crate::domain::materiality::{
     DEFAULT_AFFECTED_ENTITY_TRIGGER, DEFAULT_APPROVER_COUNT, MaterialAct, MaterialityEvaluator,
     MaterialityPolicy, Resolution,
@@ -1791,4 +1794,214 @@ async fn a_record_above_zero_is_born_pending() {
         .expect("the read runs")
         .expect("the record exists");
     assert_eq!(stored.state, "pending");
+}
+
+// ------------------------------------------------------------ P-D-144 store
+
+/// **A `system_signal` record is born `satisfied` with the signal as its
+/// principal** (`dod-system-signal`, P-D-14): `required = 0` whatever the
+/// tenant's `N`, which is recorded beside it and given no standing.
+#[tokio::test]
+async fn a_system_signal_record_is_born_satisfied_with_the_signal_as_its_principal() {
+    let db = harness().await;
+    let conn = db.conn().expect("connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let signal = Uuid::from_u128(0x9e_51);
+    let id = ApprovalId::new(Uuid::new_v4());
+    let stored = super::submit_system_signal(
+        &conn,
+        &scope,
+        super::NewSystemSignal {
+            tenant_id: TENANT,
+            approval_id: id,
+            signal_ref: signal,
+            configured_quorum: 2,
+            content_snapshot: r#"{"signal":"BundleCompositionCompleted"}"#,
+            actor_ref: ACTOR,
+            now: at(11),
+        },
+    )
+    .await
+    .expect("the signal record is stored");
+    assert_eq!(stored, id);
+    let record = super::read_approval(&conn, &scope, TENANT, id)
+        .await
+        .expect("read")
+        .expect("the row is there");
+    assert_eq!(
+        record.state, "satisfied",
+        "born satisfied: no human decides a signal"
+    );
+    assert_eq!(
+        record.submitter, signal,
+        "the signal is the authorizing principal"
+    );
+    assert_eq!(record.subject_kind, "system_signal");
+    let descriptor = crate::domain::approval::descriptor_from_stored(&record.quorum_descriptor)
+        .expect("the stored descriptor parses");
+    assert_eq!(descriptor.required(), 0, "N has no standing over a signal");
+    assert_eq!(
+        descriptor.configured_quorum(),
+        2,
+        "and N is recorded all the same"
+    );
+    assert!(descriptor.quorum_reduced());
+    let candidates = super::gate_candidates(
+        &conn,
+        &scope,
+        &GateSubject::system_signal(TENANT, &signal.to_string()),
+    )
+    .await
+    .expect("candidates");
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(
+        candidates[0].state,
+        crate::domain::approval::ApprovalState::Satisfied
+    );
+}
+
+/// **A `bulk_batch` record's pin is the ledger digest its snapshot carries**
+/// (P-D-137 row 41): the store reconstructs `SubjectPin::LedgerDigest` from
+/// `content_snapshot.ledgerDigest`, so a door presenting the same digest is
+/// authorized and one presenting another is refused — the comparison the
+/// `bigint` column could not hold.
+#[tokio::test]
+async fn a_bulk_batch_records_pin_is_its_ledger_digest() {
+    let db = harness().await;
+    let conn = db.conn().expect("connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let batch = Uuid::from_u128(0x9e_b7);
+    let subject = GateSubject::bulk_batch(TENANT, batch, "d1".to_owned());
+    let policy = MaterialityPolicy::default();
+    let evaluator = MaterialityEvaluator::new(Resolution::Resolved(&policy));
+    let id = ApprovalId::new(Uuid::new_v4());
+    submit_approval(
+        &conn,
+        &scope,
+        submission(
+            id,
+            &subject,
+            r#"{"ledgerDigest":"d1","rows":3}"#,
+            None,
+            evaluator,
+        ),
+        at(11),
+    )
+    .await
+    .expect("the batch record is stored");
+    mark_satisfied(&conn, &scope, id).await;
+    let candidates = super::gate_candidates(&conn, &scope, &subject)
+        .await
+        .expect("candidates");
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(
+        candidates[0].subject.pin,
+        SubjectPin::LedgerDigest("d1".to_owned()),
+        "the digest is read off the snapshot, not the bigint column"
+    );
+    let host = crate::domain::approval::StoredApprovalGate::governed(candidates);
+    let same = host
+        .evaluate(subject.clone(), GateMode::Gate)
+        .expect("the host answers");
+    assert!(
+        matches!(same, GateVerdict::Authorized(_)),
+        "the digest the door presents matches the record's"
+    );
+    let other = host
+        .evaluate(
+            GateSubject::bulk_batch(TENANT, batch, "d2".to_owned()),
+            GateMode::Gate,
+        )
+        .expect("the host answers");
+    assert!(
+        matches!(other, GateVerdict::Refused { .. }),
+        "a different ledger is a different act"
+    );
+}
+
+/// **A live-op record stored with no pin matches the door's unpinned
+/// subject** (P-D-120 row 14's `0`): the store reads `internal_revision = 0`
+/// back as `SubjectPin::Unpinned` for the live-op kind, which is what every
+/// live-op door presents — without it no stored record could authorize a
+/// taxonomy op, an allow-list act or a cancel.
+#[tokio::test]
+async fn a_live_op_record_with_no_pin_matches_an_unpinned_subject() {
+    let db = harness().await;
+    let conn = db.conn().expect("connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let subject = GateSubject::governed_live_op(TENANT, "pii_allowlist", SubjectPin::Unpinned);
+    let policy = MaterialityPolicy::default();
+    let evaluator = MaterialityEvaluator::new(Resolution::Resolved(&policy));
+    let id = ApprovalId::new(Uuid::new_v4());
+    submit_approval(
+        &conn,
+        &scope,
+        NewApproval {
+            approval_id: id,
+            subject: &subject,
+            internal_revision: 0,
+            content_snapshot: "{}",
+            diff_basis: None,
+            act: &MATERIAL,
+            evaluator,
+            finance_material: false,
+            approver_count: 2,
+            submitter: AUTHOR,
+            author_override_ack: None,
+        },
+        at(11),
+    )
+    .await
+    .expect("the live-op record is stored");
+    mark_satisfied(&conn, &scope, id).await;
+    let candidates = super::gate_candidates(&conn, &scope, &subject)
+        .await
+        .expect("candidates");
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].subject.pin, SubjectPin::Unpinned);
+    let host = crate::domain::approval::StoredApprovalGate::governed(candidates);
+    let verdict = host
+        .evaluate(subject, GateMode::Gate)
+        .expect("the host answers");
+    assert!(matches!(verdict, GateVerdict::Authorized(_)));
+}
+
+/// **A post-hoc review past its SLA is listed once and stamped once**
+/// (P-D-133, P-D-144): inside the SLA it is not listed; past it, the first
+/// stamp wins and the second finds nothing to stamp; a stamped session leaves
+/// the list.
+#[tokio::test]
+async fn an_overdue_posthoc_review_is_listed_and_stamped_once() {
+    let db = harness().await;
+    let conn = db.conn().expect("connection");
+    let scope = elevation_scope();
+    super::open_breakglass_session(&conn, &scope, elevation(ApprovalPath::PostHoc), "incident")
+        .await
+        .expect("the session opens");
+    let platform = AccessScope::allow_all();
+    let hours = chrono::Duration::hours;
+    let inside = super::overdue_posthoc_sessions(&conn, &platform, at(10) + hours(1), 24)
+        .await
+        .expect("read");
+    assert!(
+        inside.is_empty(),
+        "one hour in, the obligation is not overdue"
+    );
+    let overdue = super::overdue_posthoc_sessions(&conn, &platform, at(10) + hours(25), 24)
+        .await
+        .expect("read");
+    assert_eq!(overdue.len(), 1);
+    assert_eq!(overdue[0].session_id, SESSION);
+    let first = super::stamp_posthoc_overdue(&conn, &platform, SESSION, at(10) + hours(25))
+        .await
+        .expect("stamp");
+    assert!(first, "the first tick wins the stamp");
+    let second = super::stamp_posthoc_overdue(&conn, &platform, SESSION, at(10) + hours(26))
+        .await
+        .expect("stamp");
+    assert!(!second, "the second finds the stamp set");
+    let after = super::overdue_posthoc_sessions(&conn, &platform, at(10) + hours(26), 24)
+        .await
+        .expect("read");
+    assert!(after.is_empty(), "a stamped session is alerted no more");
 }

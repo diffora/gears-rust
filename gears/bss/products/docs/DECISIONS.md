@@ -1569,6 +1569,85 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-144 — Every door runs the stored host: the four live-op doors switch, the inbox envelope ships, the ledger-digest pin reads off the snapshot, a signal is born satisfied, and an SLA lapse is alerted once
+
+- **Date**: 2026-09-04 (the lead, group 2b of the solo plan; P-D-142's remainder, P-D-133's lapse
+  alert, P-D-137 row 41's read, `05` §7 rows 1–3, 7, 11–14, 18, 24, 25, 31 as already answered)
+- **The four live-op doors run `StoredApprovalGate::governed` and spend the record inside their
+  own transaction.** `api::rest::authorize_live_op` resolves the host over the store's candidates
+  for the envelope's subject and evaluates it before the door's transaction; the door then calls
+  `repo::settle_authorization` **inside** the transaction that writes the act — the taxonomy
+  category ops and definition ops through the lock functions (`infra::taxonomy::*_under_lock` and
+  `apply_definition_act` take the authorization), the materiality-policy `PUT` and the allow-list
+  sign-off and revoke inside their `transaction_with_retry`, and the scheduled-transition cancel,
+  which had run its supersede and its audit row as two statements on a connection and now runs
+  them and the one-shot as one transaction. No production door builds `NoMaterialityPolicyGate`.
+  `settle_authorization` moved from `api::rest` to `repo` (re-exported) so infra may call it.
+- **A stored live-op record had to read back as unpinned, or nothing would ever have matched.**
+  Every live-op door presents `SubjectPin::Unpinned` — a category or a definition has no counter
+  the ceremony pins — while the store rebuilt a `GovernedLiveOp` candidate's pin as
+  `MutationSeq(internal_revision)`, and the host compares subjects whole. `pin_for_kind` now reads
+  a stored `0` as `Unpinned` for that kind, which is P-D-120 row 14's own sentinel (*"`0` = no
+  pin"*), and `a_live_op_record_with_no_pin_matches_an_unpinned_subject` holds it.
+- **The ledger digest is read off the snapshot (P-D-137 row 41).** `pin_for_row` parses
+  `content_snapshot` for a `bulk_batch` record and returns `SubjectPin::LedgerDigest(ledgerDigest)`
+  — the key is fixed here, at the top level of the report object — so a bulk door presenting the
+  same digest is authorized and one presenting another is refused, with the `bigint` column never
+  holding a digest (`a_bulk_batch_records_pin_is_its_ledger_digest`).
+- **The inbox envelope ships as this slice's half.** `GET /bss-products/v1/approvals?state=pending`
+  under `approval × read`: one card per pending record, oldest first, the quorum block carrying
+  `required` as the **effective** count and `configured_quorum` as the raw `N`, `satisfied` as
+  distinct approving principals, `predicate_unsatisfiable` where the finance lens could not be
+  demanded. **Wire names are the gear's DTO convention — snake_case — not the design prose's
+  camelCase**; `12` pins the envelope and asserts merge-compatibility with pricing's queue.
+- **A `system_signal` is born satisfied at the store, and the REST door refuses to mint one.**
+  `repo::submit_system_signal` writes the record with the signal's id as `submitter` (P-D-120 row
+  14's answer), `required = 0` beside the raw `N` it gives no standing
+  (`QuorumDescriptor::system_signal`), audited as `approval.system_signal`; `POST /approvals` with
+  `subject_kind = system_signal` is refused `VALIDATION`. The head-cleanliness and deferral
+  clauses wait on the signal consumer (`06`); the DoD is not ticked.
+- **The SLA lapse is alerted once (P-D-133).** `products_breakglass_session` gains
+  `posthoc_overdue_alerted_at` (migration `m20260901_000017` edited in place, both engines, both
+  goldens); the lifecycle tick (`gear.rs::breakglass_sla_tick`, on the runner's loop) lists post-hoc
+  sessions still `pending` past `breakglass_review_sla_hours`, wins a CAS on the stamp and raises
+  `products_breakglass_review_overdue` on the same channel the open-time alert used; a lost CAS is
+  silent (`an_overdue_posthoc_review_is_listed_and_stamped_once`).
+- **`approval_ref` stays nullable — decided.** The tightening `m20260829_000007` owed to slice 05
+  is declined: a `NonMaterial` publish runs ungoverned and has no record, so `NULL` is the honest
+  value and a placeholder would write a false authority into a financial record. The header is
+  rewritten in place.
+- **A finding this group made and does not fix: P-D-45's convention is broken eight ways.** The
+  migrations hold `created_by` (three tables), `submitter`, `approver_principal`, `principal`,
+  `reviewed_by`, `approver_a`/`approver_b` and `updated_by`, every one a pseudonymous actor ref
+  under a name lint 7 cannot see; P-D-143 had counted one. Recorded as `05` §7 row 42 and corrected
+  in `DESIGN.md` §3.7; the choice — rename eight columns or give lint 7 a declared roster — is the
+  lead's with `12`, and this group takes neither.
+- **Ticked**: `dod-gate-host` (sixteen doors on the stored host, none permissive),
+  `dod-quorum-evaluator` (its blockers answered; the envelope shows the predicate),
+  `dod-rbac-catalog` (its seven rows answered by P-D-119/120/133/134),
+  `dod-inbox-envelope` (this slice's half). **Not ticked**: `dod-system-signal` (the `06`
+  clauses), `dod-finance-predicate` (`03`'s columns are still not in the bucket roster).
+- **Two more things measured and routed.** `recognized_sets.rs`' member door submits no envelope
+  at all while `03` prices set ops as governed — `03`'s group. The test suites' raw request
+  builders (`send`, `put_policy`, `post_op`, `sign_off`, `revoke`) now seed a satisfied record for
+  the live-op subject the door will present — the `[[census-the-request-builders]]` lesson applied
+  a second time.
+- **The arguments against, stated.** Running the gate before the transaction and settling inside
+  it leaves a window in which a concurrent decision could flip the record — accepted; the settle's
+  `UPDATE … WHERE state = 'satisfied'` is the one-shot, and a record spent meanwhile refuses the
+  act inside its own transaction. Reading `0` as `Unpinned` widens what a stored record matches —
+  accepted narrowly: only the live-op kind, and only the value P-D-120 already defines as "no
+  pin". Refusing `system_signal` at the REST door while the consumer is unbuilt leaves the kind
+  with no writer but a repo function — accepted; a REST writer would be the forgery the DoD
+  forbids. Snake-case wire names against camelCase design prose — accepted; every receipt the gear
+  ships is snake_case, and one envelope in another case would be the inconsistency.
+- **Not changed**: `01`'s `GovernanceGate` trait; the stored host's rules; the frozen-column set
+  of `products_breakglass_session`; the approval store's columns.
+- **Propagated**: `features/governance.md` (`dod-gate-host`, `dod-quorum-evaluator`,
+  `dod-rbac-catalog`, `dod-inbox-envelope`, `dod-system-signal`, `dod-approval-store`; §7 row 42
+  and the row counts); `DESIGN.md` §3.7; `design/05-governance.md` §4;
+  `m20260829_000007`'s header; the solo plan's group 2 entry.
+
 #### P-D-143 — `DESIGN.md` re-cut against the consolidated review: three sections restored, the census derived, the review log struck
 
 - **Date**: 2026-09-04 (the lead, acting on the consolidated design review of `DESIGN.md` — two

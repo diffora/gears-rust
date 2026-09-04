@@ -126,7 +126,57 @@ fn app_with_caps(harness: &TestHarness, caps: crate::api::rest::TaxonomyCaps) ->
     router(state, &openapi).layer(axum::Extension(flat_in_enforcer(TENANT)))
 }
 
+/// A request through the tenant's router. A `POST …/operations` is a governed
+/// live op and needs a satisfied record for its envelope under the stored host
+/// (P-D-144), so the helper seeds one for the op's target first; every other
+/// request goes straight through.
 async fn send(
+    h: &TestHarness,
+    method: &str,
+    uri: &str,
+    body: &JsonValue,
+) -> axum::http::Response<Body> {
+    seed_for_op(h, method, uri).await;
+    send_via(app(h), method, uri, body).await
+}
+
+/// [`send`] over a router built with `caps`, seeding the same record a
+/// governed op needs.
+async fn send_with_caps(
+    h: &TestHarness,
+    caps: crate::api::rest::TaxonomyCaps,
+    method: &str,
+    uri: &str,
+    body: &JsonValue,
+) -> axum::http::Response<Body> {
+    seed_for_op(h, method, uri).await;
+    send_via(app_with_caps(h, caps), method, uri, body).await
+}
+
+/// The satisfied record a `POST …/operations` needs under the stored host
+/// (P-D-144), keyed on the op's target; every other request seeds nothing.
+async fn seed_for_op(h: &TestHarness, method: &str, uri: &str) {
+    if method == "POST"
+        && let Some(target) = uri
+            .strip_suffix("/operations")
+            .and_then(|rest| rest.rsplit('/').next())
+    {
+        crate::test_support::seed_satisfied_approval(
+            &h.db,
+            TENANT,
+            crate::domain::governance::GateSubject::governed_live_op(
+                TENANT,
+                target,
+                crate::domain::governance::SubjectPin::Unpinned,
+            ),
+            0,
+        )
+        .await;
+    }
+}
+
+/// [`send`] over a caller-built router, seeding nothing.
+async fn send_via(
     app: Router,
     method: &str,
     uri: &str,
@@ -232,7 +282,7 @@ async fn seed_definition(harness: &TestHarness, key: &str) -> Uuid {
 }
 
 async fn create_category(app: Router, name: &str, parent: Option<Uuid>) -> JsonValue {
-    let response = send(
+    let response = send_via(
         app,
         "POST",
         "/bss-products/v1/categories",
@@ -258,7 +308,7 @@ async fn the_metadata_merge_sets_leaves_and_removes_per_key() {
     let uri = format!("/bss-products/v1/products/{product}/metadata");
 
     let first = send(
-        app(&h),
+        &h,
         "PATCH",
         &uri,
         &json!({ "entries": { "owner": "team-a", "tier": "gold" } }),
@@ -267,7 +317,7 @@ async fn the_metadata_merge_sets_leaves_and_removes_per_key() {
     assert_eq!(first.status(), axum::http::StatusCode::OK);
 
     let second = send(
-        app(&h),
+        &h,
         "PATCH",
         &uri,
         &json!({ "entries": { "owner": null, "note": "migrated" } }),
@@ -299,7 +349,7 @@ async fn a_map_at_the_key_cap_can_still_be_reduced() {
     for i in 0..cap {
         full.insert(format!("k{i}"), json!("v"));
     }
-    let filled = send(app(&h), "PATCH", &uri, &json!({ "entries": full })).await;
+    let filled = send(&h, "PATCH", &uri, &json!({ "entries": full })).await;
     assert_eq!(
         filled.status(),
         axum::http::StatusCode::OK,
@@ -307,7 +357,7 @@ async fn a_map_at_the_key_cap_can_still_be_reduced() {
     );
 
     let over = send(
-        app(&h),
+        &h,
         "PATCH",
         &uri,
         &json!({ "entries": { "one-too-many": "v" } }),
@@ -316,13 +366,7 @@ async fn a_map_at_the_key_cap_can_still_be_reduced() {
     assert_eq!(over.status(), axum::http::StatusCode::BAD_REQUEST);
     assert_eq!(error_code(over).await, "METADATA_LIMIT");
 
-    let reduced = send(
-        app(&h),
-        "PATCH",
-        &uri,
-        &json!({ "entries": { "k0": null } }),
-    )
-    .await;
+    let reduced = send(&h, "PATCH", &uri, &json!({ "entries": { "k0": null } })).await;
     assert_eq!(
         reduced.status(),
         axum::http::StatusCode::OK,
@@ -341,13 +385,7 @@ async fn the_byte_ceilings_refuse_and_say_which() {
     let cfg = ProductsConfig::default();
 
     let long_key = "k".repeat(cfg.metadata_max_key_bytes as usize + 1);
-    let over_key = send(
-        app(&h),
-        "PATCH",
-        &uri,
-        &json!({ "entries": { long_key: "v" } }),
-    )
-    .await;
+    let over_key = send(&h, "PATCH", &uri, &json!({ "entries": { long_key: "v" } })).await;
     assert_eq!(over_key.status(), axum::http::StatusCode::BAD_REQUEST);
     let body = body_json(over_key).await;
     assert_eq!(body["context"]["violations"][0]["type"], "METADATA_LIMIT");
@@ -361,7 +399,7 @@ async fn the_byte_ceilings_refuse_and_say_which() {
 
     let long_value = "v".repeat(cfg.metadata_max_value_bytes as usize + 1);
     let over_value = send(
-        app(&h),
+        &h,
         "PATCH",
         &uri,
         &json!({ "entries": { "k": long_value } }),
@@ -405,13 +443,7 @@ async fn the_byte_ceilings_count_bytes_and_not_characters() {
         "and over it by bytes"
     );
 
-    let refused = send(
-        app(&h),
-        "PATCH",
-        &uri,
-        &json!({ "entries": { "k": value } }),
-    )
-    .await;
+    let refused = send(&h, "PATCH", &uri, &json!({ "entries": { "k": value } })).await;
     assert_eq!(refused.status(), axum::http::StatusCode::BAD_REQUEST);
     assert_eq!(error_code(refused).await, "METADATA_LIMIT");
 }
@@ -426,7 +458,7 @@ async fn a_metadata_write_to_no_entity_is_not_found() {
     let h = harness().await;
     let uri = format!("/bss-products/v1/products/{}/metadata", Uuid::now_v7());
 
-    let response = send(app(&h), "PATCH", &uri, &json!({ "entries": { "k": "v" } })).await;
+    let response = send(&h, "PATCH", &uri, &json!({ "entries": { "k": "v" } })).await;
 
     assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
 }
@@ -446,8 +478,7 @@ async fn a_stale_category_token_is_refused_with_this_slices_own_code() {
     let definition = seed_definition(&h, "displayName").await;
     let uri = format!("/bss-products/v1/categories/{category_id}/attribute-values");
 
-    let stale = send(
-        app(&h),
+    let stale = send(&h,
         "PATCH",
         &uri,
         &json!({
@@ -476,8 +507,7 @@ async fn three_coordinates_in_one_patch_move_the_token_by_one() {
     let definition = seed_definition(&h, "displayName").await;
     let uri = format!("/bss-products/v1/categories/{category_id}/attribute-values");
 
-    let response = send(
-        app(&h),
+    let response = send(&h,
         "PATCH",
         &uri,
         &json!({
@@ -525,8 +555,7 @@ async fn a_value_against_a_deprecated_definition_is_refused() {
     }
     let uri = format!("/bss-products/v1/categories/{category_id}/attribute-values");
 
-    let response = send(
-        app(&h),
+    let response = send(&h,
         "PATCH",
         &uri,
         &json!({
@@ -559,7 +588,7 @@ async fn a_terminal_entity_refuses_a_metadata_write() {
     }
 
     let response = send(
-        app(&h),
+        &h,
         "PATCH",
         &format!("/bss-products/v1/products/{product}/metadata"),
         &json!({ "entries": { "k": "v" } }),
@@ -586,8 +615,7 @@ async fn the_first_write_of_a_definition_needs_its_global_coordinate() {
     let definition = seed_definition(&h, "displayName").await;
     let uri = format!("/bss-products/v1/categories/{category_id}/attribute-values");
 
-    let locale_only = send(
-        app(&h),
+    let locale_only = send(&h,
         "PATCH",
         &uri,
         &json!({
@@ -599,8 +627,7 @@ async fn the_first_write_of_a_definition_needs_its_global_coordinate() {
     assert_eq!(locale_only.status(), axum::http::StatusCode::BAD_REQUEST);
     assert_eq!(error_code(locale_only).await, "DEFAULT_LOCALE_MISSING");
 
-    let with_global = send(
-        app(&h),
+    let with_global = send(&h,
         "PATCH",
         &uri,
         &json!({
@@ -616,8 +643,7 @@ async fn the_first_write_of_a_definition_needs_its_global_coordinate() {
 
     // And now that the definition is known for this category, a narrower
     // write on its own is admitted.
-    let later = send(
-        app(&h),
+    let later = send(&h,
         "PATCH",
         &uri,
         &json!({
@@ -642,8 +668,7 @@ async fn a_null_value_removes_one_coordinate() {
     let definition = seed_definition(&h, "displayName").await;
     let uri = format!("/bss-products/v1/categories/{category_id}/attribute-values");
 
-    send(
-        app(&h),
+    send(&h,
         "PATCH",
         &uri,
         &json!({
@@ -656,8 +681,7 @@ async fn a_null_value_removes_one_coordinate() {
     )
     .await;
 
-    let removed = send(
-        app(&h),
+    let removed = send(&h,
         "PATCH",
         &uri,
         &json!({
@@ -698,7 +722,7 @@ async fn a_reparent_that_closes_a_cycle_is_refused() {
         .expect("uuid");
 
     let response = send(
-        app(&h),
+        &h,
         "POST",
         &format!("/bss-products/v1/categories/{root_id}/operations"),
         &json!({ "op": "reparent", "expected_state": "active", "parent_id": child_id }),
@@ -718,7 +742,7 @@ async fn an_envelope_pinned_to_the_wrong_state_is_stale() {
     let category_id = category["category_id"].as_str().expect("id").to_owned();
 
     let response = send(
-        app(&h),
+        &h,
         "POST",
         &format!("/bss-products/v1/categories/{category_id}/operations"),
         &json!({ "op": "rename", "expected_state": "retired", "name": "Kit" }),
@@ -757,7 +781,7 @@ async fn a_chain_past_the_configured_depth_is_refused() {
     }
 
     let over = send(
-        app(&h),
+        &h,
         "POST",
         "/bss-products/v1/categories",
         &json!({ "name": "One too deep", "parent_id": parent }),
@@ -813,8 +837,9 @@ async fn a_reparent_is_judged_at_the_leaves_of_what_it_drags() {
 
     // `Top` would land at depth 2 -- inside a ceiling of 2 -- while `Leaf`
     // would land at 4.
-    let response = send(
-        app_with_caps(&h, caps),
+    let response = send_with_caps(
+        &h,
+        caps,
         "POST",
         &format!("/bss-products/v1/categories/{top_id}/operations"),
         &json!({ "op": "reparent", "expected_state": "active", "parent_id": landing_id }),
@@ -846,8 +871,9 @@ async fn the_fan_out_ceiling_admits_the_ceiling_and_refuses_one_over() {
         .expect("uuid");
 
     for n in 0..2 {
-        let made = send(
-            app_with_caps(&h, caps),
+        let made = send_with_caps(
+            &h,
+            caps,
             "POST",
             "/bss-products/v1/categories",
             &json!({ "name": format!("Child {n}"), "parent_id": parent_id }),
@@ -860,8 +886,9 @@ async fn the_fan_out_ceiling_admits_the_ceiling_and_refuses_one_over() {
         );
     }
 
-    let over = send(
-        app_with_caps(&h, caps),
+    let over = send_with_caps(
+        &h,
+        caps,
         "POST",
         "/bss-products/v1/categories",
         &json!({ "name": "Child 3", "parent_id": parent_id }),
@@ -894,9 +921,7 @@ async fn the_fan_out_ceiling_admits_the_ceiling_and_refuses_one_over() {
 fn every_op_door_submits_its_envelope_to_the_gate() {
     let source = include_str!("taxonomy.rs");
     assert_eq!(
-        source
-            .matches("submit_to_gate(tenant_id, &op.target)")
-            .count(),
+        source.matches("= authorize_envelope(").count(),
         2,
         "one per `operations` door -- the category door and the definition \
          door -- and neither the live-value nor the metadata door, which are \
@@ -909,7 +934,7 @@ fn every_op_door_submits_its_envelope_to_the_gate() {
     assert_eq!(
         source.matches("GateSubject::governed_live_op(").count(),
         1,
-        "one construction, in `submit_to_gate`: a second would be a second \
+        "one construction, in `live_op_subject`: a second would be a second \
          door reaching the ceremony its own way"
     );
     assert!(
@@ -927,8 +952,7 @@ fn every_op_door_submits_its_envelope_to_the_gate() {
 async fn the_definition_walks_its_three_flips() {
     let h = harness().await;
     let key = "colour";
-    let created = send(
-        app(&h),
+    let created = send(&h,
         "POST",
         "/bss-products/v1/attribute-definitions",
         &json!({ "key": key, "value_type": "string", "localized": false, "region_scope": "", "brand_scope": "" }),
@@ -940,7 +964,7 @@ async fn the_definition_walks_its_three_flips() {
     // remove before deprecate is refused: the envelope pins `active` and the
     // flip demands `deprecated`.
     let early = send(
-        app(&h),
+        &h,
         "POST",
         &uri,
         &json!({ "op": "remove", "expected_state": "active" }),
@@ -955,7 +979,7 @@ async fn the_definition_walks_its_three_flips() {
         ("relist", "removed", "active"),
     ] {
         let response = send(
-            app(&h),
+            &h,
             "POST",
             &uri,
             &json!({ "op": op, "expected_state": from }),
@@ -976,8 +1000,7 @@ async fn the_definition_walks_its_three_flips() {
 async fn a_label_edit_writes_a_value_on_the_definition() {
     let h = harness().await;
     let key = "colour";
-    send(
-        app(&h),
+    send(&h,
         "POST",
         "/bss-products/v1/attribute-definitions",
         &json!({ "key": key, "value_type": "string", "localized": false, "region_scope": "", "brand_scope": "" }),
@@ -985,7 +1008,7 @@ async fn a_label_edit_writes_a_value_on_the_definition() {
     .await;
 
     let response = send(
-        app(&h),
+        &h,
         "POST",
         &format!("/bss-products/v1/attribute-definitions/{key}/operations"),
         &json!({ "op": "label", "expected_state": "active", "display_label": "Colour" }),
@@ -1054,7 +1077,7 @@ async fn a_seeded_definition_deprecates_and_never_removes() {
     let uri = "/bss-products/v1/attribute-definitions/imageUri/operations";
 
     let deprecated = send(
-        app(&h),
+        &h,
         "POST",
         uri,
         &json!({ "op": "deprecate", "expected_state": "active" }),
@@ -1067,7 +1090,7 @@ async fn a_seeded_definition_deprecates_and_never_removes() {
     );
 
     let removed = send(
-        app(&h),
+        &h,
         "POST",
         uri,
         &json!({ "op": "remove", "expected_state": "deprecated" }),
@@ -1103,7 +1126,7 @@ async fn a_removal_is_refused_while_a_draft_carries_the_value() {
     let uri = "/bss-products/v1/attribute-definitions/colour/operations";
 
     let deprecated = send(
-        app(&h),
+        &h,
         "POST",
         uri,
         &json!({ "op": "deprecate", "expected_state": "active" }),
@@ -1112,7 +1135,7 @@ async fn a_removal_is_refused_while_a_draft_carries_the_value() {
     assert_eq!(deprecated.status(), axum::http::StatusCode::OK);
 
     let held = send(
-        app(&h),
+        &h,
         "POST",
         uri,
         &json!({ "op": "remove", "expected_state": "deprecated" }),
@@ -1129,7 +1152,7 @@ async fn a_removal_is_refused_while_a_draft_carries_the_value() {
             .expect("the value goes");
     }
     let removed = send(
-        app(&h),
+        &h,
         "POST",
         uri,
         &json!({ "op": "remove", "expected_state": "deprecated" }),
@@ -1180,7 +1203,7 @@ async fn a_category_delete_is_held_by_a_discarded_products_link_row() {
     }
 
     let retired = send(
-        app(&h),
+        &h,
         "POST",
         &uri,
         &json!({ "op": "retire", "expected_state": "active" }),
@@ -1193,7 +1216,7 @@ async fn a_category_delete_is_held_by_a_discarded_products_link_row() {
     );
 
     let held = send(
-        app(&h),
+        &h,
         "POST",
         &uri,
         &json!({ "op": "delete", "expected_state": "retired" }),
@@ -1214,7 +1237,7 @@ async fn a_category_delete_is_held_by_a_discarded_products_link_row() {
             .expect("clear the assignment set");
     }
     let deleted = send(
-        app(&h),
+        &h,
         "POST",
         &uri,
         &json!({ "op": "delete", "expected_state": "retired" }),
@@ -1293,7 +1316,7 @@ async fn every_tree_act_announces_itself_once() {
     let uri = format!("/bss-products/v1/categories/{other}/operations");
 
     let renamed = send(
-        app(&h),
+        &h,
         "POST",
         &uri,
         &json!({ "op": "rename", "expected_state": "active", "name": "Renamed" }),
@@ -1308,7 +1331,7 @@ async fn every_tree_act_announces_itself_once() {
     assert_eq!(body["entityId"], other.to_string());
 
     let reparented = send(
-        app(&h),
+        &h,
         "POST",
         &uri,
         &json!({ "op": "reparent", "expected_state": "active", "parent_id": root }),
@@ -1318,7 +1341,7 @@ async fn every_tree_act_announces_itself_once() {
     assert_eq!(announced(&h, "CategoryReparented").await.0, 1);
 
     let retired = send(
-        app(&h),
+        &h,
         "POST",
         &uri,
         &json!({ "op": "retire", "expected_state": "active" }),
@@ -1330,7 +1353,7 @@ async fn every_tree_act_announces_itself_once() {
     assert_eq!(body.expect("a body")["state"], "retired");
 
     let deleted = send(
-        app(&h),
+        &h,
         "POST",
         &uri,
         &json!({ "op": "delete", "expected_state": "retired" }),
@@ -1367,7 +1390,7 @@ async fn a_refused_act_announces_nothing() {
     }
 
     let held = send(
-        app(&h),
+        &h,
         "POST",
         &format!("/bss-products/v1/categories/{category}/operations"),
         &json!({ "op": "retire", "expected_state": "active" }),
@@ -1382,8 +1405,7 @@ async fn a_refused_act_announces_nothing() {
     );
 
     let definition = seed_definition(&h, "displayName").await;
-    let stale = send(
-        app(&h),
+    let stale = send(&h,
         "PATCH",
         &format!("/bss-products/v1/categories/{category}/attribute-values"),
         &json!({
@@ -1423,8 +1445,7 @@ async fn a_display_write_announces_on_its_own_id_with_the_token_it_spent() {
     .parse()
     .expect("a number");
 
-    let written = send(
-        app(&h),
+    let written = send(&h,
         "PATCH",
         &uri,
         &json!({
@@ -1457,8 +1478,7 @@ async fn a_display_write_announces_on_its_own_id_with_the_token_it_spent() {
 #[tokio::test]
 async fn a_definition_announces_every_applied_change() {
     let h = harness().await;
-    let created = send(
-        app(&h),
+    let created = send(&h,
         "POST",
         "/bss-products/v1/attribute-definitions",
         &json!({ "key": "colour", "value_type": "string", "localized": false, "region_scope": "", "brand_scope": "" }),
@@ -1479,7 +1499,7 @@ async fn a_definition_announces_every_applied_change() {
 
     let uri = "/bss-products/v1/attribute-definitions/colour/operations";
     let deprecated = send(
-        app(&h),
+        &h,
         "POST",
         uri,
         &json!({ "op": "deprecate", "expected_state": "active" }),
@@ -1494,7 +1514,7 @@ async fn a_definition_announces_every_applied_change() {
     assert_eq!(body["operationKind"], "attribute_definition.deprecate");
 
     let labelled = send(
-        app(&h),
+        &h,
         "POST",
         uri,
         &json!({ "op": "label", "expected_state": "deprecated", "display_label": "Colour" }),
@@ -1514,7 +1534,7 @@ async fn a_metadata_merge_announces_on_the_owning_entity() {
     let h = harness().await;
     let product = seed_product(&h).await;
     let merged = send(
-        app(&h),
+        &h,
         "PATCH",
         &format!("/bss-products/v1/products/{product}/metadata"),
         &json!({ "entries": { "owner": "team-a" } }),

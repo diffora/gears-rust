@@ -26,9 +26,7 @@ use uuid::Uuid;
 use crate::api::rest::{ApiState, repo_error_to_canonical, require_authenticated};
 use crate::domain::canonical;
 use crate::domain::error::DomainError;
-use crate::domain::governance::{
-    GateMode, GateSubject, GateVerdict, GovernanceGate, NoMaterialityPolicyGate, SubjectPin,
-};
+use crate::domain::governance::{GateSubject, SubjectPin};
 use crate::domain::validation::ValidationReport;
 use crate::infra::storage::repo::{self, RefusalSubject};
 
@@ -214,9 +212,22 @@ async fn operate_scheduled_transition(
         .await);
     }
 
-    if let Err(error) = submit_cancel_to_gate(tenant_id) {
-        return Err(refuse(&state, &scope, tenant_id, actor_ref, error).await);
-    }
+    let authorization = match crate::api::rest::authorize_live_op(
+        &state,
+        &scope,
+        tenant_id,
+        GateSubject::governed_live_op(tenant_id, LIVE_OP_TARGET, SubjectPin::Unpinned),
+    )
+    .await
+    {
+        Ok(authorization) => authorization,
+        Err(crate::api::rest::HostError::Refused(refusal)) => {
+            return Err(refuse(&state, &scope, tenant_id, actor_ref, refusal).await);
+        }
+        Err(crate::api::rest::HostError::Repo(error)) => {
+            return Err(repo_error_to_canonical(&error));
+        }
+    };
 
     let conn = state.db.conn().map_err(|e| {
         repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
@@ -231,10 +242,70 @@ async fn operate_scheduled_transition(
         .with_resource(transition_id.to_string())
         .create());
     };
-    let superseded =
-        repo::supersede_scheduled_transition(&conn, &scope, tenant_id, transition_id, now)
-            .await
-            .map_err(|e| repo_error_to_canonical(&e))?;
+
+    // The supersede, the one-shot and the audit row commit together: a cancel
+    // whose record was spent while its row still runs — or the reverse — is
+    // the shape `inst-gv-one-shot` forbids.
+    let scope_tx = scope.clone();
+    let authorization_tx = authorization.clone();
+    let outcome = state
+        .db
+        .db()
+        .transaction_with_retry::<bool, TxError, _, _>(
+            toolkit_db::secure::TxConfig::default(),
+            contention_db_err,
+            move |tx| {
+                let scope = scope_tx.clone();
+                let authorization = authorization_tx.clone();
+                Box::pin(async move {
+                    let superseded = repo::supersede_scheduled_transition(
+                        tx,
+                        &scope,
+                        tenant_id,
+                        transition_id,
+                        now,
+                    )
+                    .await
+                    .map_err(TxError::Repo)?;
+                    if !superseded {
+                        return Ok(false);
+                    }
+                    repo::settle_authorization(tx, &scope, tenant_id, &authorization, now)
+                        .await
+                        .map_err(|error| match error {
+                            repo::SettleError::Refused(refusal) => TxError::Refused(refusal),
+                            repo::SettleError::Repo(error) => TxError::Repo(error),
+                        })?;
+                    repo::write_eventless_act_audit(
+                        tx,
+                        &scope,
+                        repo::AuditCommon {
+                            audit_id: Uuid::now_v7(),
+                            tenant_id,
+                            actor_ref,
+                            action: "scheduled_transition.cancel".to_owned(),
+                            subject_kind: SUBJECT_KIND.to_owned(),
+                            reason: Some("governed cancel".to_owned()),
+                            correlation_id: crate::infra::events::correlation_id(),
+                            written_at: now,
+                        },
+                        transition_id,
+                        None,
+                    )
+                    .await
+                    .map_err(TxError::Repo)?;
+                    Ok(true)
+                })
+            },
+        )
+        .await;
+    let superseded = match outcome {
+        Ok(superseded) => superseded,
+        Err(TxError::Refused(refusal)) => {
+            return Err(refuse(&state, &scope, tenant_id, actor_ref, refusal).await);
+        }
+        Err(TxError::Repo(error)) => return Err(repo_error_to_canonical(&error)),
+    };
     if !superseded {
         return Err(refuse(
             &state,
@@ -249,39 +320,29 @@ async fn operate_scheduled_transition(
         .await);
     }
 
-    repo::write_eventless_act_audit(
-        &conn,
-        &scope,
-        repo::AuditCommon {
-            audit_id: Uuid::now_v7(),
-            tenant_id,
-            actor_ref,
-            action: "scheduled_transition.cancel".to_owned(),
-            subject_kind: SUBJECT_KIND.to_owned(),
-            reason: Some("governed cancel".to_owned()),
-            correlation_id: crate::infra::events::correlation_id(),
-            written_at: now,
-        },
-        transition_id,
-        None,
-    )
-    .await
-    .map_err(|e| repo_error_to_canonical(&e))?;
-
     Ok(StatusCode::ACCEPTED.into_response())
 }
 
-fn submit_cancel_to_gate(tenant_id: Uuid) -> Result<(), DomainError> {
-    let gate: Arc<dyn GovernanceGate + Send + Sync> = Arc::new(NoMaterialityPolicyGate);
-    // `SubjectPin::Unpinned`: a live op has no entity head to read a revision
-    // from, and the pin rides the subject since P-D-125 row 52 (strand B,
-    // merged 2026-09-04; this call was reconstructed at that merge).
-    match gate.evaluate(
-        GateSubject::governed_live_op(tenant_id, LIVE_OP_TARGET, SubjectPin::Unpinned),
-        GateMode::Gate,
-    )? {
-        GateVerdict::Authorized(_) => Ok(()),
-        GateVerdict::Refused { reason } => Err(DomainError::ApprovalRequired(reason)),
+/// The cancel transaction's two failure classes, kept apart because the door
+/// maps them apart: a refusal is the act's own `4xx`, audited as one; a
+/// repository failure is the storage's `500`.
+enum TxError {
+    Refused(DomainError),
+    Repo(crate::infra::storage::RepoError),
+}
+
+impl From<toolkit_db::DbError> for TxError {
+    fn from(error: toolkit_db::DbError) -> Self {
+        Self::Repo(crate::infra::storage::RepoError::Db(error.to_string()))
+    }
+}
+
+/// The retry loop classifies `sea-orm`'s own error, which `RepoError::Driver`
+/// carries directly.
+fn contention_db_err(error: &TxError) -> Option<&sea_orm::DbErr> {
+    match error {
+        TxError::Repo(crate::infra::storage::RepoError::Driver { source, .. }) => Some(source),
+        TxError::Repo(_) | TxError::Refused(_) => None,
     }
 }
 

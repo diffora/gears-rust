@@ -699,6 +699,9 @@ async fn execute_erasure(
         )
         .await),
         Err(TxError::Repo(e)) => Err(repo_error_to_canonical(&e)),
+        // The erasure is ungoverned and spends no record; the arm exists
+        // because the tx error type is shared with the allow-list doors.
+        Err(TxError::Refused(refusal)) => Err(CanonicalError::from(refusal)),
         Err(TxError::Events(e)) => Err(repo_error_to_canonical(
             &crate::infra::storage::RepoError::Db(format!("retention event: {e}")),
         )),
@@ -865,20 +868,6 @@ async fn export_identity_map(
 /// The pin is [`SubjectPin::Unpinned`] — a live op has no entity head to
 /// read a revision from, and P-D-125 row 52 folded the pin into the subject
 /// (strand B, merged 2026-09-04; this call was reconstructed at that merge).
-fn submit_allowlist_to_gate(tenant_id: Uuid) -> Result<(), DomainError> {
-    use crate::domain::governance::{
-        GateMode, GateSubject, GateVerdict, GovernanceGate, NoMaterialityPolicyGate, SubjectPin,
-    };
-    let gate: Arc<dyn GovernanceGate + Send + Sync> = Arc::new(NoMaterialityPolicyGate);
-    match gate.evaluate(
-        GateSubject::governed_live_op(tenant_id, ALLOWLIST_LIVE_OP_TARGET, SubjectPin::Unpinned),
-        GateMode::Gate,
-    )? {
-        GateVerdict::Authorized(_) => Ok(()),
-        GateVerdict::Refused { reason } => Err(DomainError::ApprovalRequired(reason)),
-    }
-}
-
 /// Refuse an allow-list act, audit the refusal under its own subject kind,
 /// and answer.
 async fn refuse_allowlist(
@@ -995,17 +984,34 @@ async fn sign_off_allowlist_entry(
         }
     }
 
-    if let Err(refusal) = submit_allowlist_to_gate(tenant_id) {
-        return Err(refuse_allowlist(
-            &state,
-            &scope,
+    let authorization = match crate::api::rest::authorize_live_op(
+        &state,
+        &scope,
+        tenant_id,
+        crate::domain::governance::GateSubject::governed_live_op(
             tenant_id,
-            actor_ref,
-            ALLOWLIST_LIVE_OP_TARGET.to_owned(),
-            refusal,
-        )
-        .await);
-    }
+            ALLOWLIST_LIVE_OP_TARGET,
+            crate::domain::governance::SubjectPin::Unpinned,
+        ),
+    )
+    .await
+    {
+        Ok(authorization) => authorization,
+        Err(crate::api::rest::HostError::Refused(refusal)) => {
+            return Err(refuse_allowlist(
+                &state,
+                &scope,
+                tenant_id,
+                actor_ref,
+                ALLOWLIST_LIVE_OP_TARGET.to_owned(),
+                refusal,
+            )
+            .await);
+        }
+        Err(crate::api::rest::HostError::Repo(error)) => {
+            return Err(repo_error_to_canonical(&error));
+        }
+    };
 
     let entry_id = Uuid::now_v7();
     let audit_id = Uuid::now_v7();
@@ -1021,7 +1027,8 @@ async fn sign_off_allowlist_entry(
     let scope_tx = scope.clone();
     let sink_tx = state.sink.clone();
     let reason_tx = justification.clone();
-    state
+    let authorization_tx = authorization.clone();
+    let outcome = state
         .db
         .db()
         .transaction_with_retry::<(), TxError, _, _>(
@@ -1032,7 +1039,14 @@ async fn sign_off_allowlist_entry(
                 let sink = sink_tx.clone();
                 let entry = entry.clone();
                 let reason = reason_tx.clone();
+                let authorization = authorization_tx.clone();
                 Box::pin(async move {
+                    repo::settle_authorization(tx, &scope, tenant_id, &authorization, now)
+                        .await
+                        .map_err(|error| match error {
+                            repo::SettleError::Refused(refusal) => TxError::Refused(refusal),
+                            repo::SettleError::Repo(error) => TxError::Repo(error),
+                        })?;
                     repo::insert_entry(tx, &scope, entry)
                         .await
                         .map_err(TxError::Repo)?;
@@ -1055,8 +1069,23 @@ async fn sign_off_allowlist_entry(
                 })
             },
         )
-        .await
-        .map_err(tx_failure_to_canonical)?;
+        .await;
+    if let Err(error) = outcome {
+        return Err(match error {
+            TxError::Refused(refusal) => {
+                refuse_allowlist(
+                    &state,
+                    &scope,
+                    tenant_id,
+                    actor_ref,
+                    ALLOWLIST_LIVE_OP_TARGET.to_owned(),
+                    refusal,
+                )
+                .await
+            }
+            other => tx_failure_to_canonical(other),
+        });
+    }
 
     Ok((
         StatusCode::OK,
@@ -1128,23 +1157,41 @@ async fn operate_allowlist_entry(
         .await);
     }
 
-    if let Err(refusal) = submit_allowlist_to_gate(tenant_id) {
-        return Err(refuse_allowlist(
-            &state,
-            &scope,
+    let authorization = match crate::api::rest::authorize_live_op(
+        &state,
+        &scope,
+        tenant_id,
+        crate::domain::governance::GateSubject::governed_live_op(
             tenant_id,
-            actor_ref,
-            entry_id.to_string(),
-            refusal,
-        )
-        .await);
-    }
+            ALLOWLIST_LIVE_OP_TARGET,
+            crate::domain::governance::SubjectPin::Unpinned,
+        ),
+    )
+    .await
+    {
+        Ok(authorization) => authorization,
+        Err(crate::api::rest::HostError::Refused(refusal)) => {
+            return Err(refuse_allowlist(
+                &state,
+                &scope,
+                tenant_id,
+                actor_ref,
+                entry_id.to_string(),
+                refusal,
+            )
+            .await);
+        }
+        Err(crate::api::rest::HostError::Repo(error)) => {
+            return Err(repo_error_to_canonical(&error));
+        }
+    };
 
     let audit_id = Uuid::now_v7();
     let scope_tx = scope.clone();
     let sink_tx = state.sink.clone();
     let reason_tx = reason.clone();
-    let revoked = state
+    let authorization_tx = authorization.clone();
+    let outcome = state
         .db
         .db()
         .transaction_with_retry::<bool, TxError, _, _>(
@@ -1154,6 +1201,7 @@ async fn operate_allowlist_entry(
                 let scope = scope_tx.clone();
                 let sink = sink_tx.clone();
                 let reason = reason_tx.clone();
+                let authorization = authorization_tx.clone();
                 Box::pin(async move {
                     if !repo::revoke_entry(tx, &scope, tenant_id, entry_id, now)
                         .await
@@ -1161,6 +1209,14 @@ async fn operate_allowlist_entry(
                     {
                         return Ok(false);
                     }
+                    // Spent only once the row is really revoked: a not-found
+                    // answer must leave the record standing.
+                    repo::settle_authorization(tx, &scope, tenant_id, &authorization, now)
+                        .await
+                        .map_err(|error| match error {
+                            repo::SettleError::Refused(refusal) => TxError::Refused(refusal),
+                            repo::SettleError::Repo(error) => TxError::Repo(error),
+                        })?;
                     write_allowlist_audit(
                         tx,
                         &scope,
@@ -1181,8 +1237,22 @@ async fn operate_allowlist_entry(
                 })
             },
         )
-        .await
-        .map_err(tx_failure_to_canonical)?;
+        .await;
+    let revoked = match outcome {
+        Ok(revoked) => revoked,
+        Err(TxError::Refused(refusal)) => {
+            return Err(refuse_allowlist(
+                &state,
+                &scope,
+                tenant_id,
+                actor_ref,
+                entry_id.to_string(),
+                refusal,
+            )
+            .await);
+        }
+        Err(other) => return Err(tx_failure_to_canonical(other)),
+    };
 
     if !revoked {
         // A 404 rather than a minted code: `dod-retention-error-taxonomy`
@@ -1333,6 +1403,7 @@ async fn emit_allowlist_changed(
 /// way — they carry the subject `refuse_allowlist` needs.
 fn tx_failure_to_canonical(error: TxError) -> CanonicalError {
     match error {
+        TxError::Refused(refusal) => CanonicalError::from(refusal),
         TxError::Repo(e) => repo_error_to_canonical(&e),
         TxError::Events(e) => repo_error_to_canonical(&crate::infra::storage::RepoError::Db(
             format!("retention event: {e}"),
@@ -1345,11 +1416,13 @@ fn tx_failure_to_canonical(error: TxError) -> CanonicalError {
 fn contention_db_err(error: &TxError) -> Option<&sea_orm::DbErr> {
     match error {
         TxError::Repo(crate::infra::storage::RepoError::Driver { source, .. }) => Some(source),
-        TxError::Repo(_) | TxError::Events(_) => None,
+        TxError::Repo(_) | TxError::Events(_) | TxError::Refused(_) => None,
     }
 }
 
 enum TxError {
+    /// The record the act was authorized on could not be spent by it.
+    Refused(DomainError),
     Repo(crate::infra::storage::RepoError),
     /// The event could not be enqueued. It rides the act's transaction, so
     /// this rolls the act back rather than committing a tombstone whose

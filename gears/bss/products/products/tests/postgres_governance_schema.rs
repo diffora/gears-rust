@@ -82,6 +82,7 @@ const SESSION: &[(&str, bool)] = &[
     ("approver_b", true),
     ("expired_emitted", false),
     ("opened_at", false),
+    ("posthoc_overdue_alerted_at", true),
     ("posthoc_state", true),
     ("principal", false),
     ("reason", false),

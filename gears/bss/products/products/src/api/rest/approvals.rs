@@ -193,6 +193,56 @@ pub struct SubmitApprovalReceipt {
     pub quorum_reduced: bool,
 }
 
+/// `GET /approvals?state=pending`'s query. Only `pending` is admitted: the
+/// inbox is the open queue, and finalized records are read by id.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct ApprovalsQuery {
+    pub state: Option<String>,
+}
+
+/// The common inbox envelope (`inst-gv-queue`): one card per pending record,
+/// oldest first. Merge-compatibility with pricing's queue is
+/// `12-consumer-contracts`' half to assert.
+#[toolkit_macros::api_dto(response)]
+pub struct ApprovalInbox {
+    pub items: Vec<ApprovalInboxCard>,
+}
+
+/// One pending record as the inbox shows it.
+#[toolkit_macros::api_dto(response)]
+pub struct ApprovalInboxCard {
+    pub approval_id: Uuid,
+    pub subject_ref: String,
+    pub subject_kind: String,
+    pub state: String,
+    /// Pseudonymous.
+    pub submitter: Uuid,
+    pub submitted_at: DateTime<Utc>,
+    pub quorum: ApprovalInboxQuorum,
+    /// The per-kind diff payload: the stored snapshot and the published
+    /// version it is diffed against (`None` for a first publish or a
+    /// non-entity kind).
+    pub content_snapshot: String,
+    pub diff_basis: Option<i64>,
+}
+
+/// The card's quorum block. `required` is the record's **effective** count —
+/// `N` for a material change, `min(N, 1)` for a non-material one — never the
+/// raw `N`, so a card cannot show "2 required" for a record that closes on
+/// one; `configured_quorum` carries the raw `N` when a surface needs it
+/// (P-D-11). `predicate_unsatisfiable` stays visible where the finance lens
+/// could not be demanded (P-D-120 row 14, `dod-quorum-evaluator`).
+#[toolkit_macros::api_dto(response)]
+pub struct ApprovalInboxQuorum {
+    pub required: u32,
+    /// Distinct approving principals so far.
+    pub satisfied: u32,
+    pub finance_required: bool,
+    pub predicate_unsatisfiable: Option<String>,
+    pub quorum_reduced: bool,
+    pub configured_quorum: u32,
+}
+
 /// One principal's verdict.
 #[toolkit_macros::api_dto(request)]
 pub struct DecisionRequest {
@@ -341,7 +391,118 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .error_503(openapi)
         .register(router, openapi);
 
+    let router = OperationBuilder::get("/bss-products/v1/approvals")
+        .operation_id("bss_products.list_pending_approvals")
+        .summary("The pending-approvals inbox")
+        .description(
+            "`state=pending` only. Each card carries the record's **effective** count as \
+             `required` and the raw configured `N` as `configured_quorum`, so a card cannot \
+             show \"2 required\" for a record that closes on one (`inst-gv-queue`, P-D-11); \
+             `satisfied` counts distinct approving principals; `predicate_unsatisfiable` stays \
+             visible where the finance lens could not be demanded. Tenant-scoped under \
+             `approval x read`.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .handler(list_pending_approvals)
+        .json_response_with_schema::<ApprovalInbox>(
+            openapi,
+            StatusCode::OK,
+            "The tenant's pending records, oldest first.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_500(openapi)
+        .register(router, openapi);
+
     router.layer(Extension(state))
+}
+
+/// `GET /bss-products/v1/approvals?state=pending` (`dod-inbox-envelope`).
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-inbox-envelope:p1
+async fn list_pending_approvals(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    axum::extract::Query(query): axum::extract::Query<ApprovalsQuery>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let tenant_id = ctx.subject_tenant_id();
+    let now = canonical::write_instant(Utc::now());
+    let actor_ref =
+        crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
+            .await?;
+    let scope = authorize(
+        &state,
+        &enforcer,
+        &ctx,
+        AuthzAsk {
+            tenant_id,
+            actor_ref,
+            resource: &crate::authz::resource_types::APPROVAL,
+            action: crate::authz::actions::READ,
+            door: Door::Approval,
+            audit_subject_kind: AUDIT_SUBJECT_APPROVAL,
+            attempted: "pending",
+        },
+    )
+    .await?;
+    if query.state.as_deref() != Some("pending") {
+        return Err(refuse(
+            &state,
+            &scope,
+            tenant_id,
+            actor_ref,
+            AUDIT_SUBJECT_APPROVAL,
+            "pending".to_owned(),
+            violation(
+                "state",
+                "the inbox lists `state=pending` only; a finalized record is read by its id",
+            ),
+        )
+        .await);
+    }
+    let conn = state.db.conn().map_err(|e| {
+        repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
+    })?;
+    let pending = repo::pending_approvals_with_progress(&conn, &scope, tenant_id)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?;
+    let mut items = Vec::with_capacity(pending.len());
+    for entry in pending {
+        let record = entry.record;
+        let descriptor = crate::domain::approval::descriptor_from_stored(&record.quorum_descriptor)
+            .map_err(|e| {
+                repo_error_to_canonical(&crate::infra::storage::RepoError::CorruptRow(format!(
+                    "approval {} quorum_descriptor: {e}",
+                    record.approval_id
+                )))
+            })?;
+        items.push(ApprovalInboxCard {
+            approval_id: record.approval_id,
+            subject_ref: record.subject_ref,
+            subject_kind: record.subject_kind,
+            state: record.state,
+            submitter: record.submitter,
+            submitted_at: record.submitted_at,
+            quorum: ApprovalInboxQuorum {
+                required: descriptor.required(),
+                satisfied: entry.satisfied,
+                finance_required: descriptor.finance_required(),
+                predicate_unsatisfiable: descriptor
+                    .predicate_unsatisfiable()
+                    .map(|predicate| predicate.as_str().to_owned()),
+                quorum_reduced: descriptor.quorum_reduced(),
+                configured_quorum: descriptor.configured_quorum(),
+            },
+            content_snapshot: record.content_snapshot,
+            diff_basis: record.diff_basis,
+        });
+    }
+    Ok((StatusCode::OK, Json(ApprovalInbox { items })).into_response())
 }
 
 // ---------------------------------------------------------------------------
@@ -804,6 +965,25 @@ async fn submit_approval(
         )
         .await);
     };
+    // A `system_signal` record is written by the signal consumer at
+    // submission, born `satisfied` with the signal as its principal (P-D-14,
+    // P-D-120 row 14) — never by a caller of this door, who would otherwise be
+    // minting a directly consumable record with no human behind it.
+    if matches!(kind, SubjectKind::SystemSignal) {
+        return Err(refuse(
+            &state,
+            &scope,
+            tenant_id,
+            actor_ref,
+            AUDIT_SUBJECT_APPROVAL,
+            body.subject_ref.clone(),
+            violation(
+                "subjectKind",
+                "system_signal records are written by the signal consumer, not submitted",
+            ),
+        )
+        .await);
+    }
 
     let conn = state.db.conn().map_err(|e| {
         repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))

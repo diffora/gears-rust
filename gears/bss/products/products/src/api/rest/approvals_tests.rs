@@ -398,6 +398,107 @@ async fn a_materiality_policy_subject_round_trips_through_the_store() {
 // ---------------------------------------------------------------------------
 
 /// Submit and return the record's id.
+async fn get(app: Router, uri: &str, ctx: SecurityContext) -> axum::http::Response<Body> {
+    app.oneshot(
+        Request::builder()
+            .method("GET")
+            .uri(uri)
+            .extension(ctx)
+            .body(Body::empty())
+            .expect("build the request"),
+    )
+    .await
+    .expect("the router answers")
+}
+
+/// **`dod-inbox-envelope`**: the inbox lists the pending records with the
+/// record's **effective** count as `required`, the raw `N` beside it, and the
+/// distinct approving principals as `satisfied`; any other `state` is refused.
+#[tokio::test]
+async fn the_inbox_lists_pending_records_with_effective_counts_and_progress() {
+    let harness = harness().await;
+    seed_head(&harness).await;
+    set_quorum(&harness, 2).await;
+    let approval = submit(&harness, Uuid::from_u128(0x5a_a0)).await;
+
+    let response = get(
+        app_for(&harness, TENANT),
+        "/bss-products/v1/approvals?state=pending",
+        ctx_without_roles(Uuid::from_u128(0x5a_b0)),
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    let body = body_of(response).await;
+    let items = body["items"].as_array().expect("an items array");
+    assert_eq!(items.len(), 1, "one pending record");
+    let card = &items[0];
+    assert_eq!(card["approval_id"], json!(approval.to_string()));
+    assert_eq!(card["subject_kind"], "entity_publish");
+    assert_eq!(card["state"], "pending");
+    assert_eq!(card["quorum"]["required"], 2, "the effective count");
+    assert_eq!(
+        card["quorum"]["configured_quorum"], 2,
+        "the raw N beside it"
+    );
+    assert_eq!(card["quorum"]["satisfied"], 0);
+    assert_eq!(card["quorum"]["quorum_reduced"], false);
+    assert!(
+        card["quorum"]["predicate_unsatisfiable"].is_null(),
+        "no finance lens was demanded of this change"
+    );
+
+    let decided = post(
+        app_for(&harness, TENANT),
+        &format!("/bss-products/v1/approvals/{approval}/decisions"),
+        ctx_with_roles(Uuid::from_u128(0x5a_a1), &[ApproverRole::CatalogAdmin]),
+        json!({ "verdict": "approved" }),
+    )
+    .await;
+    assert_eq!(decided.status(), 200);
+    let body = body_of(
+        get(
+            app_for(&harness, TENANT),
+            "/bss-products/v1/approvals?state=pending",
+            ctx_without_roles(Uuid::from_u128(0x5a_b0)),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        body["items"][0]["quorum"]["satisfied"], 1,
+        "one distinct approving principal so far; the record is still pending at N = 2"
+    );
+
+    let refused = get(
+        app_for(&harness, TENANT),
+        "/bss-products/v1/approvals?state=satisfied",
+        ctx_without_roles(Uuid::from_u128(0x5a_b0)),
+    )
+    .await;
+    assert_eq!(refused.status(), 400, "the inbox is the open queue only");
+}
+
+/// **A `system_signal` cannot be submitted over REST** (`dod-system-signal`):
+/// the record is the signal consumer's to write, born satisfied with the
+/// signal as its principal; a caller minting one would be minting a directly
+/// consumable record with no human behind it.
+#[tokio::test]
+async fn a_system_signal_cannot_be_submitted_over_rest() {
+    let harness = harness().await;
+    let mut body = submission_body();
+    body["subject_kind"] = json!("system_signal");
+    body["subject_ref"] = json!(Uuid::from_u128(0x5a_51).to_string());
+    body["content_snapshot"] = json!("{}");
+    let response = post(
+        app_for(&harness, TENANT),
+        "/bss-products/v1/approvals",
+        ctx_without_roles(Uuid::from_u128(0x5a_a0)),
+        body,
+    )
+    .await;
+    assert_eq!(response.status(), 400);
+}
+
 async fn submit(harness: &TestHarness, author: Uuid) -> Uuid {
     let body = body_of(
         post(

@@ -57,6 +57,9 @@ pub struct Model {
     pub posthoc_state: Option<String>,
     pub reviewed_by: Option<Uuid>,
     pub reviewed_at: Option<ChronoDateTimeUtc>,
+    /// When the post-hoc review's SLA lapse was alerted (P-D-133) — a CAS
+    /// stamp the lifecycle tick sets once; `NULL` until then.
+    pub posthoc_overdue_alerted_at: Option<ChronoDateTimeUtc>,
     /// The CAS stamp `BreakGlassExpired`'s one emitter flips.
     pub expired_emitted: bool,
     pub opened_at: ChronoDateTimeUtc,

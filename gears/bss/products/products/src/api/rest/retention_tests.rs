@@ -179,7 +179,32 @@ async fn export_with(
 }
 
 /// Offer an allow-list entry, defaulting every field a case does not pin.
-async fn sign_off(app: Router, value: &str, signed_off_by: &str) -> axum::http::Response<Body> {
+/// One satisfied record for the allow-list's live-op subject — every
+/// allow-list act runs the stored host (P-D-144) and spends one.
+async fn seed_allowlist_record(harness: &TestHarness) {
+    crate::test_support::seed_satisfied_approval(
+        &harness.db,
+        TENANT,
+        crate::domain::governance::GateSubject::governed_live_op(
+            TENANT,
+            "pii_allowlist",
+            crate::domain::governance::SubjectPin::Unpinned,
+        ),
+        0,
+    )
+    .await;
+}
+
+async fn sign_off(
+    harness: &TestHarness,
+    value: &str,
+    signed_off_by: &str,
+) -> axum::http::Response<Body> {
+    seed_allowlist_record(harness).await;
+    sign_off_via(app_for(harness, TENANT), value, signed_off_by).await
+}
+
+async fn sign_off_via(app: Router, value: &str, signed_off_by: &str) -> axum::http::Response<Body> {
     let body = json!({
         "value": value,
         "justification": "product line named for its founder",
@@ -199,7 +224,12 @@ async fn sign_off(app: Router, value: &str, signed_off_by: &str) -> axum::http::
     .expect("the router answers")
 }
 
-async fn revoke(app: Router, entry_id: Uuid) -> axum::http::Response<Body> {
+async fn revoke(harness: &TestHarness, entry_id: Uuid) -> axum::http::Response<Body> {
+    seed_allowlist_record(harness).await;
+    revoke_via(app_for(harness, TENANT), entry_id).await
+}
+
+async fn revoke_via(app: Router, entry_id: Uuid) -> axum::http::Response<Body> {
     let body = json!({ "op": "revoke", "reason": "the sign-off lapsed" });
     app.oneshot(
         Request::builder()
@@ -576,7 +606,7 @@ async fn signed_entry_id(response: axum::http::Response<Body>) -> Uuid {
 async fn a_missing_sign_off_reference_is_refused_by_field_and_a_complete_entry_is_admitted() {
     let harness = harness().await;
 
-    let refused = sign_off(app_for(&harness, TENANT), "Ann Fritz", "   ").await;
+    let refused = sign_off(&harness, "Ann Fritz", "   ").await;
     assert_eq!(refused.status(), axum::http::StatusCode::BAD_REQUEST);
     let body = body_json(refused).await;
     assert_eq!(
@@ -594,7 +624,7 @@ async fn a_missing_sign_off_reference_is_refused_by_field_and_a_complete_entry_i
         "the caller's discriminator is the field, so the field is what the violation must name"
     );
 
-    let admitted = sign_off(app_for(&harness, TENANT), "Ann Fritz", "legal-2026-114").await;
+    let admitted = sign_off(&harness, "Ann Fritz", "legal-2026-114").await;
     assert_eq!(
         admitted.status(),
         axum::http::StatusCode::OK,
@@ -610,7 +640,7 @@ async fn a_missing_sign_off_reference_is_refused_by_field_and_a_complete_entry_i
 #[tokio::test]
 async fn the_receipt_echoes_the_normalized_value_the_detector_will_match() {
     let harness = harness().await;
-    let receipt = sign_off(app_for(&harness, TENANT), "  Ann   FRITZ  ", "legal-1").await;
+    let receipt = sign_off(&harness, "  Ann   FRITZ  ", "legal-1").await;
     assert_eq!(receipt.status(), axum::http::StatusCode::OK);
     let body = body_json(receipt).await;
     assert_eq!(body["value_normalized"], "ann fritz");
@@ -627,11 +657,11 @@ async fn the_receipt_echoes_the_normalized_value_the_detector_will_match() {
 async fn the_active_uniqueness_is_partial_and_a_revoked_value_may_be_signed_off_again() {
     let harness = harness().await;
 
-    let first = sign_off(app_for(&harness, TENANT), "Ann Fritz", "legal-1").await;
+    let first = sign_off(&harness, "Ann Fritz", "legal-1").await;
     assert_eq!(first.status(), axum::http::StatusCode::OK);
     let entry_id = signed_entry_id(first).await;
 
-    let duplicate = sign_off(app_for(&harness, TENANT), "ANN  fritz", "legal-2").await;
+    let duplicate = sign_off(&harness, "ANN  fritz", "legal-2").await;
     assert_ne!(
         duplicate.status(),
         axum::http::StatusCode::OK,
@@ -640,10 +670,10 @@ async fn the_active_uniqueness_is_partial_and_a_revoked_value_may_be_signed_off_
          spacing, so this also proves the index sees the normalized form"
     );
 
-    let revoked = revoke(app_for(&harness, TENANT), entry_id).await;
+    let revoked = revoke(&harness, entry_id).await;
     assert_eq!(revoked.status(), axum::http::StatusCode::OK);
 
-    let again = sign_off(app_for(&harness, TENANT), "Ann Fritz", "legal-3").await;
+    let again = sign_off(&harness, "Ann Fritz", "legal-3").await;
     assert_eq!(
         again.status(),
         axum::http::StatusCode::OK,
@@ -660,9 +690,8 @@ async fn the_active_uniqueness_is_partial_and_a_revoked_value_may_be_signed_off_
 #[tokio::test]
 async fn a_revocation_keeps_the_row_and_its_sign_off_in_the_review() {
     let harness = harness().await;
-    let entry_id =
-        signed_entry_id(sign_off(app_for(&harness, TENANT), "Ann Fritz", "legal-1").await).await;
-    revoke(app_for(&harness, TENANT), entry_id).await;
+    let entry_id = signed_entry_id(sign_off(&harness, "Ann Fritz", "legal-1").await).await;
+    revoke(&harness, entry_id).await;
 
     let review = allowlist_review(app_for(&harness, TENANT)).await;
     assert_eq!(review.status(), axum::http::StatusCode::OK);
@@ -685,13 +714,12 @@ async fn a_revocation_keeps_the_row_and_its_sign_off_in_the_review() {
 #[tokio::test]
 async fn revoking_a_missing_or_already_revoked_entry_is_a_404() {
     let harness = harness().await;
-    let unknown = revoke(app_for(&harness, TENANT), Uuid::now_v7()).await;
+    let unknown = revoke(&harness, Uuid::now_v7()).await;
     assert_eq!(unknown.status(), axum::http::StatusCode::NOT_FOUND);
 
-    let entry_id =
-        signed_entry_id(sign_off(app_for(&harness, TENANT), "Ann Fritz", "legal-1").await).await;
-    revoke(app_for(&harness, TENANT), entry_id).await;
-    let twice = revoke(app_for(&harness, TENANT), entry_id).await;
+    let entry_id = signed_entry_id(sign_off(&harness, "Ann Fritz", "legal-1").await).await;
+    revoke(&harness, entry_id).await;
+    let twice = revoke(&harness, entry_id).await;
     assert_eq!(
         twice.status(),
         axum::http::StatusCode::NOT_FOUND,
@@ -707,12 +735,11 @@ async fn revoking_a_missing_or_already_revoked_entry_is_a_404() {
 #[tokio::test]
 async fn each_allowlist_act_writes_one_audit_row_and_one_event() {
     let harness = harness().await;
-    let entry_id =
-        signed_entry_id(sign_off(app_for(&harness, TENANT), "Ann Fritz", "legal-1").await).await;
+    let entry_id = signed_entry_id(sign_off(&harness, "Ann Fritz", "legal-1").await).await;
     assert_eq!(audit_rows(&harness.dsn, "pii_allowlist.sign_off").await, 1);
     assert_eq!(outbox_rows(&harness.dsn, "PiiAllowlistChanged").await, 1);
 
-    revoke(app_for(&harness, TENANT), entry_id).await;
+    revoke(&harness, entry_id).await;
     assert_eq!(audit_rows(&harness.dsn, "pii_allowlist.revoke").await, 1);
     assert_eq!(
         outbox_rows(&harness.dsn, "PiiAllowlistChanged").await,
@@ -814,7 +841,7 @@ async fn a_doors_free_text_is_judged_against_this_tenants_allow_list() {
         "an unlisted person-shaped run is undecidable, and the hook fails closed on that"
     );
 
-    sign_off(app_for(&harness, TENANT), "Ann Fritz", "legal-1").await;
+    sign_off(&harness, "Ann Fritz", "legal-1").await;
     let admitted = erase(app_for(&harness, TENANT), ALICE, "requested by Ann Fritz").await;
     assert_eq!(
         admitted.status(),
@@ -952,7 +979,7 @@ fn both_allowlist_doors_submit_their_act_to_the_gate() {
     let production = source.split("#[cfg(test)]").next().unwrap_or(source);
     assert_eq!(
         production
-            .matches("submit_allowlist_to_gate(tenant_id)")
+            .matches("crate::api::rest::authorize_live_op(")
             .count(),
         2,
         "one call in each of the two mutating doors, and no more: the read door submits nothing \
@@ -987,7 +1014,7 @@ async fn each_grant_is_spent_by_a_door_and_a_denial_is_audited() {
     let export = export(denied(&harness), ALICE).await;
     assert_eq!(export.status(), axum::http::StatusCode::FORBIDDEN);
 
-    let allowlist = sign_off(denied(&harness), "Ann Fritz", "legal-1").await;
+    let allowlist = sign_off_via(denied(&harness), "Ann Fritz", "legal-1").await;
     assert_eq!(allowlist.status(), axum::http::StatusCode::FORBIDDEN);
 
     assert_eq!(

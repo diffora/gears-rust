@@ -36,6 +36,7 @@ mod pg_support;
 
 use std::sync::Arc;
 
+use bss_products::domain::governance::{ApprovalDisposition, GateAuthorization, GateVerdict};
 use bss_products::domain::name;
 use bss_products::domain::taxonomy::TaxonomyLimits;
 use bss_products::infra::broker::EventSink;
@@ -164,6 +165,7 @@ async fn the_lock_is_what_refuses_the_second_reparent() {
                 Some(B),
                 no_limits(),
                 at(10),
+                &ungoverned(),
             )
             .await
         })
@@ -182,6 +184,7 @@ async fn the_lock_is_what_refuses_the_second_reparent() {
                 Some(A),
                 no_limits(),
                 at(10),
+                &ungoverned(),
             )
             .await
         })
@@ -268,16 +271,36 @@ async fn two_concurrent_renames_to_one_name_leave_exactly_one() {
         let db = Arc::new(DBProvider::<DbError>::new(pg.db().await));
         let sink = sink.clone();
         tokio::spawn(async move {
-            taxonomy::rename_under_lock(&db, &sink, &scope(), TENANT, ACTOR, A, "Shared", at(10))
-                .await
+            taxonomy::rename_under_lock(
+                &db,
+                &sink,
+                &scope(),
+                TENANT,
+                ACTOR,
+                A,
+                "Shared",
+                at(10),
+                &ungoverned(),
+            )
+            .await
         })
     };
     let second = {
         let db = Arc::new(DBProvider::<DbError>::new(pg.db().await));
         let sink = sink.clone();
         tokio::spawn(async move {
-            taxonomy::rename_under_lock(&db, &sink, &scope(), TENANT, ACTOR, B, "Shared", at(10))
-                .await
+            taxonomy::rename_under_lock(
+                &db,
+                &sink,
+                &scope(),
+                TENANT,
+                ACTOR,
+                B,
+                "Shared",
+                at(10),
+                &ungoverned(),
+            )
+            .await
         })
     };
     let outcomes = vec![
@@ -368,6 +391,7 @@ async fn a_reparent_into_a_taken_name_is_refused_and_a_free_one_lands() {
                 Some(A),
                 no_limits(),
                 at(11),
+                &ungoverned(),
             )
             .await
         })
@@ -385,6 +409,7 @@ async fn a_reparent_into_a_taken_name_is_refused_and_a_free_one_lands() {
                 child_of_root,
                 "Tier",
                 at(11),
+                &ungoverned(),
             )
             .await
         })
@@ -425,6 +450,7 @@ async fn a_reparent_into_a_taken_name_is_refused_and_a_free_one_lands() {
         None,
         no_limits(),
         at(12),
+        &ungoverned(),
     )
     .await
     .expect("no storage failure")
@@ -436,3 +462,16 @@ async fn a_reparent_into_a_taken_name_is_refused_and_a_free_one_lands() {
 // Silence the unused-import warning on a build where the type is only named
 // in an assertion message.
 const _: Option<RepoError> = None;
+
+/// The race probes drive the lock functions directly, outside any door, so
+/// they carry an authorization that spends nothing — the settle inside the
+/// lock is a no-op on `NoRecord` (P-D-144).
+fn ungoverned() -> GateAuthorization {
+    GateVerdict::authorized(
+        ApprovalDisposition::NoRecord,
+        false,
+        "race probe: the lock's caller is not a governed door".to_owned(),
+    )
+    .into_authorization()
+    .expect("an authorized verdict converts")
+}

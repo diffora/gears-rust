@@ -349,8 +349,28 @@ pub async fn seed_satisfied_publish_approval(
     entity_id: Uuid,
     revision: i64,
 ) -> crate::domain::governance::ApprovalId {
-    use crate::domain::concurrency::InternalRevision;
-    use crate::domain::governance::{ApprovalId, EntityRef, GateSubject};
+    let subject = crate::domain::governance::GateSubject::entity_publish(
+        crate::domain::governance::EntityRef {
+            tenant_id,
+            entity_kind,
+            entity_id,
+        },
+        crate::domain::concurrency::InternalRevision::new(revision),
+    );
+    seed_satisfied_approval(db, tenant_id, subject, revision).await
+}
+
+/// [`seed_satisfied_publish_approval`] for any subject — a live op, the
+/// materiality policy, a bulk batch — since the routed live-op doors run the
+/// stored host too (P-D-144). `revision` is the stored pin (`0` for a subject
+/// with no counter, P-D-120 row 14).
+pub async fn seed_satisfied_approval(
+    db: &toolkit_db::DBProvider<toolkit_db::DbError>,
+    tenant_id: Uuid,
+    subject: crate::domain::governance::GateSubject,
+    revision: i64,
+) -> crate::domain::governance::ApprovalId {
+    use crate::domain::governance::ApprovalId;
     use crate::domain::materiality::{
         MaterialAct, MaterialityEvaluator, MaterialityPolicy, Resolution,
     };
@@ -363,14 +383,6 @@ pub async fn seed_satisfied_publish_approval(
     let conn = db.conn().expect("connection");
     let scope = toolkit_db::secure::AccessScope::for_tenant(tenant_id);
     let approval_id = ApprovalId::new(Uuid::now_v7());
-    let subject = GateSubject::entity_publish(
-        EntityRef {
-            tenant_id,
-            entity_kind,
-            entity_id,
-        },
-        InternalRevision::new(revision),
-    );
     // A case that seeded its own record for this subject keeps it: a second
     // submission would supersede the open one (L-4) and change what the case
     // is measuring.

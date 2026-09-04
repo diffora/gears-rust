@@ -84,7 +84,7 @@
 //! @cpt-cf-bss-products-dod-override-ceremony
 //! @cpt-cf-bss-products-dod-quorum-descriptor
 //! @cpt-cf-bss-products-dod-finance-predicate
-//! @cpt-cf-bss-products-dod-quorum-evaluator
+//! @cpt-dod:cpt-cf-bss-products-dod-quorum-evaluator:p1
 //! @cpt-cf-bss-products-dod-approver-scope
 
 use std::collections::BTreeSet;
@@ -153,6 +153,22 @@ pub struct QuorumDescriptor {
 }
 
 impl QuorumDescriptor {
+    /// The descriptor a `system_signal` record is born with (P-D-14, P-D-120
+    /// row 14): the configured `N` has no standing over a machine signal, so
+    /// the effective count is `0` and the record is born `satisfied`; the raw
+    /// `N` is kept for the envelope, and `quorumReduced` says what it always
+    /// says — the count sits below the retained default of two.
+    #[must_use]
+    pub const fn system_signal(configured_quorum: u32) -> Self {
+        Self {
+            configured_quorum,
+            required: 0,
+            finance_required: false,
+            predicate_unsatisfiable: None,
+            quorum_reduced: true,
+        }
+    }
+
     /// The effective count this record closes on.
     #[must_use]
     pub const fn required(&self) -> u32 {

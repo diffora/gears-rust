@@ -734,9 +734,10 @@ PRD AC #33a).
 identity** is named `*_actor_ref`. Slice 12's lint 7 asserts that exactly one table declares such
 a column — 10's `products_identity_ref`, the single erasure point. Two things a reader must know
 about that control: it is a review discipline, not a proof — a column named otherwise passes
-silently, and one such column exists today: `products_materiality_policy.updated_by` carries the
-pseudonymous `actor_ref` the policy door resolves, under a name the lint does not see (routed to
-slice 05's §7 as a rename); and **the lint has no CI gate by the owner's decision** (P-D-132,
+silently, and **eight** such column names exist today — `created_by` (three tables), `submitter`,
+`approver_principal`, `principal`, `reviewed_by`, `approver_a`/`approver_b`, `updated_by` — each
+holding a pseudonymous actor ref under a name the lint does not see (`features/governance.md` §7
+row 42, P-D-144: rename them or give lint 7 a declared roster; P-D-143 had counted one); and **the lint has no CI gate by the owner's decision** (P-D-132,
 P-D-134) — the interim control is the review discipline and the seam suite run by hand.
 
 **Table census — derived, not counted** (P-D-143). Two populations, read mechanically at each revision:

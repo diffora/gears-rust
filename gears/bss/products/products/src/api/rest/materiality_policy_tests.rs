@@ -106,7 +106,20 @@ fn app_for(harness: &TestHarness, tenant: Uuid) -> Router {
 }
 
 /// `PUT` the policy, as the wire does.
-async fn put_policy(app: Router, body: JsonValue) -> axum::http::Response<Body> {
+/// The governed `PUT` under the stored host (P-D-144): the helper seeds the
+/// satisfied record the policy's own mutation needs, then knocks.
+async fn put_policy(harness: &TestHarness, body: JsonValue) -> axum::http::Response<Body> {
+    crate::test_support::seed_satisfied_approval(
+        &harness.db,
+        TENANT,
+        crate::domain::governance::GateSubject::materiality_policy(TENANT, 0),
+        0,
+    )
+    .await;
+    put_policy_via(app_for(harness, TENANT), body).await
+}
+
+async fn put_policy_via(app: Router, body: JsonValue) -> axum::http::Response<Body> {
     app.oneshot(
         Request::builder()
             .method("PUT")
@@ -139,7 +152,7 @@ async fn body_of(response: axum::http::Response<Body>) -> JsonValue {
 async fn the_door_writes_a_policy_the_resolver_reads_back() {
     let harness = harness().await;
     let response = put_policy(
-        app_for(&harness, TENANT),
+        &harness,
         json!({
             "field_set": ["tax_category"],
             "affected_entity_trigger": 25,
@@ -206,7 +219,7 @@ async fn a_tenant_that_never_called_the_door_resolves_to_the_default() {
 async fn a_policy_mutation_without_a_reason_is_refused() {
     let harness = harness().await;
     let response = put_policy(
-        app_for(&harness, TENANT),
+        &harness,
         json!({
             "field_set": [],
             "affected_entity_trigger": 10,
@@ -224,7 +237,7 @@ async fn a_second_put_replaces_the_policy() {
     let harness = harness().await;
     for count in [3_u32, 1] {
         let response = put_policy(
-            app_for(&harness, TENANT),
+            &harness,
             json!({
                 "field_set": [],
                 "affected_entity_trigger": 10,

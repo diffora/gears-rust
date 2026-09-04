@@ -109,15 +109,17 @@
 //! drill re-verifies sampled rows against it, and without it version-history
 //! corruption is invisible to every checksum.
 //!
-//! # `approval_ref` is nullable today, and the tightening is owed to slice 05
+//! # `approval_ref` stays nullable — decided, not owed (P-D-144)
 //!
 //! §4.3 names the column and `inst-fd-gate-verdict` says what it stores: on a
-//! yes, the authorizing `ApprovalRecord`'s id. Neither passage states its
-//! nullability, and the gate that mints an `ApprovalRecord` is **slice 05's**.
-//! A `NOT NULL` here would make every publish written before slice 05 lands
-//! unwritable, so the column is nullable and the tightening — together with
-//! whatever referential constraint 05's own record table earns — is **owed to
-//! slice 05**, to be applied by editing this file in place.
+//! yes, the authorizing `ApprovalRecord`'s id. Slice 05's host is registered at
+//! the publish door since P-D-142, and the tightening this header once owed to
+//! that day is **declined**: a publish the materiality evaluator judges
+//! `NonMaterial` runs ungoverned and has no record, so `NULL` is the honest value
+//! for its frozen row — a placeholder would write a false authority into a
+//! financial record. The nullability is a domain fact ("no record was needed"),
+//! not a pre-05 accommodation, and the frozen-row whitelist keeps it immutable
+//! either way.
 //!
 //! # The key is the primary key
 //!

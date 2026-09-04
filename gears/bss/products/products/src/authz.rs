@@ -1,4 +1,6 @@
 //! Product & SKU Registry authorization: PEP resource-type labels, action
+//!
+//! @cpt-dod:cpt-cf-bss-products-dod-rbac-catalog:p1
 //! names and the authz-label stub type-schemas that let RBAC role-definitions
 //! target this gear's authz labels.
 //!

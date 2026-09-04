@@ -1095,7 +1095,7 @@ pub async fn gate_candidates(
                 // recorded in `SubjectPin`'s own doc, and harmless here
                 // because P-D-127 row 10 gates a batch in `PreAuthorized`
                 // under P-D-105's predicate, which compares no pin at all.
-                pin: pin_for_kind(kind, row.internal_revision),
+                pin: pin_for_row(kind, row.internal_revision, &row.content_snapshot),
             },
             internal_revision: row.internal_revision,
             state,
@@ -1207,6 +1207,22 @@ fn subject_kind_from_stored(stored: &str) -> Option<SubjectKind> {
 ///
 /// Exhaustive over the roster, so a seventh kind must say which shape it
 /// pins in rather than inheriting `Revision` by falling through.
+/// The candidate's pin as the store can reconstruct it. A `bulk_batch`
+/// record carries its ledger digest in `content_snapshot`'s `ChangeReport`
+/// under `ledgerDigest` (P-D-137 row 41) — the only place a textual pin can
+/// live while `internal_revision` is a `bigint` — and that is what
+/// `SubjectPin::LedgerDigest` compares; a report without the field reads as
+/// unpinned, which matches nothing a bulk door presents.
+fn pin_for_row(kind: SubjectKind, stored_revision: i64, content_snapshot: &str) -> SubjectPin {
+    if matches!(kind, SubjectKind::BulkBatch) {
+        return serde_json::from_str::<JsonValue>(content_snapshot)
+            .ok()
+            .and_then(|report| report.get("ledgerDigest")?.as_str().map(str::to_owned))
+            .map_or(SubjectPin::Unpinned, SubjectPin::LedgerDigest);
+    }
+    pin_for_kind(kind, stored_revision)
+}
+
 const fn pin_for_kind(kind: SubjectKind, stored_revision: i64) -> SubjectPin {
     match kind {
         SubjectKind::EntityPublish | SubjectKind::SkuCorrection => {
@@ -1215,7 +1231,17 @@ const fn pin_for_kind(kind: SubjectKind, stored_revision: i64) -> SubjectPin {
         // `02`'s category ops spend a `mutation_seq`; a definition op has no
         // counter and stores `0`, which reads back as a `MutationSeq(0)` no
         // door ever compares.
-        SubjectKind::GovernedLiveOp => SubjectPin::MutationSeq(stored_revision),
+        // `0` is P-D-120 row 14's "no pin". Every live-op door pins nothing
+        // today (`SubjectPin::Unpinned`), and a stored `0` has to read back
+        // as that same pin or no stored record could ever match a door's
+        // subject — the host compares subjects whole, pin included.
+        SubjectKind::GovernedLiveOp => {
+            if stored_revision == 0 {
+                SubjectPin::Unpinned
+            } else {
+                SubjectPin::MutationSeq(stored_revision)
+            }
+        }
         SubjectKind::MaterialityPolicy => SubjectPin::PinnedRevision(stored_revision),
         // A signal pins nothing, and `BulkBatch`'s digest is not in this
         // column — see `candidate_from_row`'s note.
@@ -1409,6 +1435,7 @@ pub async fn open_breakglass_session(
         posthoc_state: Set(posthoc_state),
         reviewed_by: Set(None),
         reviewed_at: Set(None),
+        posthoc_overdue_alerted_at: Set(None),
         expired_emitted: Set(false),
         opened_at: Set(new.opened_at),
     };
@@ -1869,3 +1896,269 @@ pub async fn pending_approvals(
 #[cfg(test)]
 #[path = "governance_tests.rs"]
 mod governance_tests;
+
+/// Settle what an authorized act owes its record: the id it pins on what it
+/// writes, and the `consumed` flip it spends **in the act's own transaction**
+/// (`inst-fd-publish-consume`, `05` `inst-gv-one-shot`; P-D-105's pin on a
+/// scheduled row). One function for every governed door, so the three
+/// answers an [`crate::domain::governance::ApprovalDisposition`] can give are
+/// read in one place and B's host switch reuses it rather than re-deciding
+/// them per door (P-D-139):
+///
+/// - `Consume(id)` — the record is flipped `consumed` **here**. A record that
+///   is no longer `satisfied` when the statement runs was spent by a
+///   concurrent act or closed under this one, and this act **refuses
+///   `APPROVAL_REQUIRED`** rather than proceed on a record it did not spend:
+///   that is the one-shot's losing side, and refusing inside the transaction
+///   is what rolls the act's own writes back with it.
+/// - `Verified(id)` — the `PreAuthorized` answer: the id is pinned, nothing is
+///   consumed. The type already makes that so.
+/// - `NoRecord` — nothing to pin. The caller keeps whatever placeholder its
+///   `NOT NULL` column requires and says so at the call site; under the real
+///   host a governed act never gets this answer.
+///
+/// The scheduled-transition pin (`dod-scheduled-publish-pin`) is this
+/// function called from the two retire doors: the row's `approval_ref` is the
+/// consumed record's id, written by the same statement list that consumed it,
+/// and the activation runner then verifies that record in `PreAuthorized`
+/// mode and consumes nothing further (`infra::activation_runner`). The only
+/// scheduling door the crate has is retirement's; a scheduled publish has no
+/// door yet and takes the same call when it does.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-scheduled-publish-pin:p1
+pub async fn settle_authorization(
+    runner: &(impl DBRunner + Sync),
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    authorization: &crate::domain::governance::GateAuthorization,
+    now: DateTime<Utc>,
+) -> Result<Option<crate::domain::governance::ApprovalId>, SettleError> {
+    use crate::domain::governance::ApprovalDisposition;
+    match &authorization.disposition {
+        ApprovalDisposition::NoRecord => Ok(None),
+        ApprovalDisposition::Verified(id) => Ok(Some(*id)),
+        ApprovalDisposition::Consume(id) => {
+            let id = *id;
+            match consume_approval(runner, scope, tenant_id, id, now)
+                .await
+                .map_err(SettleError::Repo)?
+            {
+                Consumption::Spent => Ok(Some(id)),
+                Consumption::AlreadySpentOrClosed => Err(SettleError::Refused(
+                    crate::domain::error::DomainError::ApprovalRequired(format!(
+                        "approval {id} is no longer satisfied: it was spent by a concurrent act \
+                         or closed under this one, so this act did not consume it"
+                    )),
+                )),
+            }
+        }
+    }
+}
+
+/// [`settle_authorization`]'s two failure classes, kept apart because the
+/// doors map them apart: a refusal is the act's own `4xx` and is audited as
+/// one; a repository failure is the storage's `500`.
+pub enum SettleError {
+    /// The record could not be spent by this act.
+    Refused(crate::domain::error::DomainError),
+    /// The consume statement itself failed.
+    Repo(RepoError),
+}
+
+/// A `system_signal` record (`dod-system-signal`, P-D-14): born `satisfied`
+/// with the signal reference as its authorizing principal — the `submitter`
+/// column, P-D-120 row 14 — and no human approver. The configured `N` has no
+/// standing over it: the descriptor records `required = 0` beside the raw `N`,
+/// and the row is audited like a decision. The head-cleanliness and deferral
+/// clauses are the signal consumer's (slice 06) and are not this function's.
+pub struct NewSystemSignal<'a> {
+    pub tenant_id: Uuid,
+    pub approval_id: ApprovalId,
+    /// The signal's own id — the authorizing principal.
+    pub signal_ref: Uuid,
+    /// The tenant's `N` in force, recorded and given no standing.
+    pub configured_quorum: u32,
+    /// The signal's payload, as the store stores it.
+    pub content_snapshot: &'a str,
+    /// The pseudonymous actor the audit row names — the system actor, since
+    /// no human acted.
+    pub actor_ref: Uuid,
+    pub now: DateTime<Utc>,
+}
+
+/// Write [`NewSystemSignal`]'s record and its audit row on `runner`.
+///
+/// # Errors
+///
+/// A storage failure, or the partial-`UNIQUE` refusal a lost race produces
+/// (`classify_submit_insert`).
+pub async fn submit_system_signal(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    new: NewSystemSignal<'_>,
+) -> Result<ApprovalId, ApprovalStoreError> {
+    let subject = GateSubject::system_signal(new.tenant_id, &new.signal_ref.to_string());
+    let descriptor = QuorumDescriptor::system_signal(new.configured_quorum);
+    supersede_open_approval(runner, scope, new.tenant_id, &subject, new.now).await?;
+    let model = approval::ActiveModel {
+        tenant_id: Set(new.tenant_id),
+        approval_id: Set(new.approval_id.get()),
+        subject_kind: Set(subject.kind.as_str().to_owned()),
+        subject_ref: Set(subject.reference.clone()),
+        internal_revision: Set(0),
+        content_snapshot: Set(new.content_snapshot.to_owned()),
+        diff_basis: Set(None),
+        quorum_descriptor: Set(descriptor.stored()),
+        state: Set(born_state(&descriptor).as_str().to_owned()),
+        submitter: Set(new.signal_ref),
+        author_override_ack: Set(None),
+        author_override_ack_at: Set(None),
+        submitted_at: Set(new.now),
+        finalized_at: Set(None),
+    };
+    approval::Entity::insert(model.clone())
+        .secure()
+        .scope_with_model(scope, &model)
+        .map_err(|e| driver_failure(format!("approval scope of {}", new.tenant_id), e))?
+        .exec(runner)
+        .await
+        .map_err(|e| {
+            classify_submit_insert(
+                new.approval_id,
+                driver_failure(format!("submit system signal {}", new.approval_id), e),
+            )
+        })?;
+    super::write_eventless_act_audit(
+        runner,
+        scope,
+        super::AuditCommon {
+            audit_id: Uuid::now_v7(),
+            tenant_id: new.tenant_id,
+            actor_ref: new.actor_ref,
+            action: "approval.system_signal".to_owned(),
+            subject_kind: SubjectKind::SystemSignal.as_str().to_owned(),
+            reason: Some(format!("auto-satisfied by signal {}", new.signal_ref)),
+            correlation_id: None,
+            written_at: new.now,
+        },
+        new.approval_id.get(),
+        None,
+    )
+    .await?;
+    Ok(new.approval_id)
+}
+
+/// One pending record with the distinct approving principals it has gathered
+/// so far — the inbox envelope's `satisfied` (`inst-gv-queue`).
+pub struct PendingApproval {
+    pub record: approval::Model,
+    pub satisfied: u32,
+}
+
+/// [`pending_approvals`] with each record's progress — the operand of
+/// `GET /approvals?state=pending`'s envelope.
+///
+/// # Errors
+///
+/// A storage failure.
+pub async fn pending_approvals_with_progress(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+) -> Result<Vec<PendingApproval>, RepoError> {
+    let rows = pending_approvals(runner, scope, tenant_id).await?;
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<Uuid> = rows.iter().map(|row| row.approval_id).collect();
+    let decisions = approval_decision::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(approval_decision::Column::TenantId.eq(tenant_id))
+                .add(approval_decision::Column::ApprovalId.is_in(ids))
+                .add(approval_decision::Column::Verdict.eq(DecisionVerdict::Approved.as_str())),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("pending approvals' decisions of {tenant_id}"), e))?;
+    let mut approvers: std::collections::BTreeMap<Uuid, BTreeSet<Uuid>> =
+        std::collections::BTreeMap::new();
+    for decision in decisions {
+        approvers
+            .entry(decision.approval_id)
+            .or_default()
+            .insert(decision.approver_principal);
+    }
+    Ok(rows
+        .into_iter()
+        .map(|record| {
+            let satisfied = approvers
+                .get(&record.approval_id)
+                .map_or(0, |set| u32::try_from(set.len()).unwrap_or(u32::MAX));
+            PendingApproval { record, satisfied }
+        })
+        .collect())
+}
+
+/// Post-hoc break-glass sessions whose review is still `pending` past the
+/// SLA and whose lapse has not been alerted (P-D-133). Platform-wide: the
+/// caller passes the runner's own scope.
+///
+/// # Errors
+///
+/// A storage failure.
+pub async fn overdue_posthoc_sessions(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    now: DateTime<Utc>,
+    sla_hours: u32,
+) -> Result<Vec<breakglass_session::Model>, RepoError> {
+    let deadline = now - chrono::Duration::hours(i64::from(sla_hours));
+    breakglass_session::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(breakglass_session::Column::PosthocState.eq("pending"))
+                .add(breakglass_session::Column::OpenedAt.lte(deadline))
+                .add(breakglass_session::Column::PosthocOverdueAlertedAt.is_null()),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure("overdue post-hoc sessions".to_owned(), e))
+}
+
+/// Stamp one session's lapse alert as raised — a CAS on the `NULL` stamp, so
+/// two ticks racing the same session raise it once. `true` when this call
+/// won the stamp.
+///
+/// # Errors
+///
+/// A storage failure.
+pub async fn stamp_posthoc_overdue(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    session_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<bool, RepoError> {
+    use toolkit_db::secure::SecureUpdateExt as _;
+    let result = breakglass_session::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            breakglass_session::Column::PosthocOverdueAlertedAt,
+            Expr::value(Some(now)),
+        )
+        .filter(
+            Condition::all()
+                .add(breakglass_session::Column::SessionId.eq(session_id))
+                .add(breakglass_session::Column::PosthocState.eq("pending"))
+                .add(breakglass_session::Column::PosthocOverdueAlertedAt.is_null()),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("stamp post-hoc lapse of {session_id}"), e))?;
+    Ok(result.rows_affected == 1)
+}

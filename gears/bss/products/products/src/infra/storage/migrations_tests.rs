@@ -5680,6 +5680,7 @@ mod governance_store_guard_tests {
                 "approver_b",
                 "expired_emitted",
                 "opened_at",
+                "posthoc_overdue_alerted_at",
                 "posthoc_state",
                 "principal",
                 "reason",

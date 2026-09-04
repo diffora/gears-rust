@@ -125,7 +125,31 @@ async fn get_list(app: Router, tenant: Uuid, query: &str) -> axum::http::Respons
     .expect("the router answers")
 }
 
+/// The governed cancel under the stored host (P-D-144): seeds the satisfied
+/// record the envelope needs when the op is a cancel, then knocks.
 async fn post_op(
+    harness: &TestHarness,
+    tenant: Uuid,
+    id: Uuid,
+    body: JsonValue,
+) -> axum::http::Response<Body> {
+    if body["op"] == "cancel" {
+        crate::test_support::seed_satisfied_approval(
+            &harness.db,
+            tenant,
+            crate::domain::governance::GateSubject::governed_live_op(
+                tenant,
+                "scheduled_transition.cancel",
+                crate::domain::governance::SubjectPin::Unpinned,
+            ),
+            0,
+        )
+        .await;
+    }
+    post_op_via(app_for(harness, tenant), tenant, id, body).await
+}
+
+async fn post_op_via(
     app: Router,
     tenant: Uuid,
     id: Uuid,
@@ -242,13 +266,7 @@ async fn cancel_supersedes_the_row_and_the_runner_never_claims_it() {
         .await
         .expect("insert");
 
-    let cancelled = post_op(
-        app_for(&harness, TENANT),
-        TENANT,
-        TRANSITION,
-        json!({ "op": "cancel" }),
-    )
-    .await;
+    let cancelled = post_op(&harness, TENANT, TRANSITION, json!({ "op": "cancel" })).await;
     assert_eq!(cancelled.status(), StatusCode::ACCEPTED);
 
     let row = repo::find_scheduled_transition(&conn, &scope, TENANT, TRANSITION)

@@ -480,9 +480,9 @@ row 9 — a break-glass two-person approval is not an `ApprovalRecord`, the two 
 live on the session row (P-D-133). The clauses hold as built: both engines, the partial `UNIQUE`
 (`m20260829_000007`), append-only after finalization by the trigger whitelist, and the schema-oracle
 golden with its perturbation case (`tests/postgres_governance_schema.rs`, `the_governance_rosters_match_on_postgres`).
-One read is still owed to the host and not to this table: a `bulk_batch` record's digest pin rides
-`content_snapshot`'s `ChangeReport` (P-D-137 row 41), and the host's `LedgerDigest` comparison
-lands with the remaining doors.
+A `bulk_batch` record's digest pin rides `content_snapshot`'s `ChangeReport` (P-D-137 row 41) and
+the store reads it back as `SubjectPin::LedgerDigest` (`pin_for_row`, P-D-144), so the host
+compares digests without the `bigint` column ever holding one.
 
 **Implements**: `cpt-cf-bss-products-flow-submit`,
 `cpt-cf-bss-products-state-approval-record`
@@ -798,7 +798,7 @@ finalized cases together.
 
 ### Quorum evaluator
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-quorum-evaluator`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-quorum-evaluator`
 
 The system **MUST** count **distinct principals** against the stored descriptor, roles included,
 and **MUST** treat a recorded `predicateUnsatisfiable` as met for the evaluator while it stays
@@ -817,21 +817,17 @@ merely unused, the marker never being recorded there. A count met with the lens 
 answer (`RolePredicateUnmet`), not a short count — L-2's distinction, without which a caller told
 "not enough approvers" adds a third CatalogAdmin and fails again.
 
-**Three blockers on the tick, and one deliberate non-answer.** §7 row 25 — no surface carries a
-role, so `roles` is a per-decision operand carrying *what was true when the decision was made*,
-which is what a gate-time evaluation needs and what row 25 says the decision row does not store.
-§7 rows 11 and 31 — this function answers the **arithmetic** and takes no position on which
-transaction writes `state = satisfied`, nor on whether a record at `required = 0` is born
-satisfied. **The non-answer is §7 row 16**: C1 scopes its base role set to material changes and the
-descriptor carries no `Materiality`, so the binding set is a **call operand** — `BaseRoleSet::C1`'s
-pair, or `::AnyDecider` for row 16's other reading. It was a `&[ApproverRole]` whose **empty** value
-meant "anyone counts", and the 2026-09-02 review measured why that was wrong in two directions: the
-empty slice is the only value a caller can supply today (§7 row 25 again), so a *material* change
-closed on two principals holding neither C1 role; and the permissive reading was defended by citing
-row 16, which is scoped to **non-material** changes only. There is deliberately no narrowing
-variant — C8 says predicates *"narrow within the C1 base set and never replace it"* and that v1
-registers no extension point that could, and a caller passing `[CatalogAdmin]` alone dropped a
-FinanceReviewer-only approver together with the lens `inst-gv-finance-predicate` needs.
+**Ticked with P-D-144; the three blockers are answered and the envelope clause is built.** §7
+row 25 — roles ride the decision as an operand of what was true when it was made (P-D-134); rows
+11 and 31 — the decide door's transaction writes `satisfied`, and a record at `required = 0` is
+born satisfied (P-D-119, P-D-120). *"Visible as unmet-by-policy in the record and the inbox
+envelope"*: the descriptor stores `predicateUnsatisfiable` and `GET /approvals?state=pending`
+renders it on every card (`ApprovalInboxQuorum::predicate_unsatisfiable`, P-D-144). **The
+deliberate non-answer stands**: §7 row 16 — C1 scopes its base role set to material changes and
+the descriptor carries no `Materiality`, so the binding set is a **call operand**
+(`BaseRoleSet::C1` or `::AnyDecider`), never an empty slice that means "anyone counts"; there is
+no narrowing variant, because C8 says predicates narrow within the C1 base set and never replace
+it.
 
 **Implements**: `cpt-cf-bss-products-flow-decide`
 
@@ -983,7 +979,7 @@ defect"* — is an assertion about the publish lanes, which are `01`'s and `09`'
 
 ### The gate host
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-gate-host`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-gate-host`
 
 The system **MUST** implement `01-foundation`'s `GovernanceGate` trait and register that host in
 place of `NoMaterialityPolicyGate`, which is what the gear runs until this feature exists. It
@@ -1020,15 +1016,21 @@ build a byte-identical triple — `GateSubject::entity_publish(EntityRef { .. })
 `InternalRevision::new(inputs.expected)`, `Gate` — so nothing in `(subject, revision, mode)`
 separates a publish from a save, a discard or a deprecate, and the mode does not either.
 
-**P-D-142 took the second option: each door constructs the host it needs.** `api::rest::resolve_host`
-builds `StoredApprovalGate::governed(candidates)` for a lifecycle transition and, for a publish,
-judges materiality against the tenant's stored policy by the columns the head touches since its
-last frozen version — `NonMaterial` runs `ungoverned()`, `Material` runs the stored host, a
-bucket-ii touch is refused `ILLEGAL_FIELD_MUTATION` naming the correction door; a save and a discard
-run `ungoverned()` by construction. Twelve head-act doors are switched (publish, deprecate,
-undeprecate, retire, cancel — both entities — and the Product resume). **The tick waits on four
-doors that still build `NoMaterialityPolicyGate`**: `taxonomy.rs`, `materiality_policy.rs`,
-`retention.rs` and `scheduled_transitions.rs` — the next group's, with the `LedgerDigest` read.
+**Ticked with P-D-144; P-D-142 took the second option — each door constructs the host it needs.**
+`api::rest::resolve_host` builds `StoredApprovalGate::governed(candidates)` for a lifecycle
+transition and, for a publish, judges materiality against the tenant's stored policy by the columns
+the head touches since its last frozen version — `NonMaterial` runs `ungoverned()`, `Material` runs
+the stored host, a bucket-ii touch is refused `ILLEGAL_FIELD_MUTATION` naming the correction door;
+a save and a discard run `ungoverned()` by construction. **Sixteen doors run the stored host**: the
+twelve head-act doors (publish, deprecate, undeprecate, retire, cancel — both entities — and the
+Product resume; P-D-142) and the four live-op doors — the taxonomy category and definition ops, the
+materiality-policy `PUT`, the allow-list sign-off and revoke, the scheduled-transition cancel — each
+through `api::rest::authorize_live_op` before its transaction and `repo::settle_authorization`
+inside it (P-D-144). **No production door builds `NoMaterialityPolicyGate`** — measured: zero
+constructions outside `domain/governance.rs` and the tests. The `LedgerDigest` arm compares the
+digest `pin_for_row` reads off `content_snapshot` (row 41). The census found one door with **no
+gate at all**: `recognized_sets.rs`' member door submits no envelope, though `03` prices its ops
+as governed — routed to `03`'s group, not built here.
 
 **Implements**: `cpt-cf-bss-products-flow-gate`
 
@@ -1155,16 +1157,16 @@ and no exemption from the gate. The head **MUST** be clean: such a publish carri
 nothing else, and on a dirty head is **deferred, never refused**. The configured `N` **MUST** have
 no standing over it, the principal not being a tenant principal.
 
-**Nothing was built for this, deliberately.** The auto-satisfy edge is the one arm §4 row 1 gives a
-named writer — *"or, for a `system_signal` subject, at submission"*, in the same transaction — so
-unlike the human arm it is not blocked by row 11. It is blocked by row 14: *"the auto-satisfied
-`system_signal`'s 'signal reference as the authorizing principal' **has no column**, the decision
-key being `(approval_id, approver_principal)`"*, and `approver_principal` is a `Uuid` while a signal
-reference is textual. A writer that flipped the record `satisfied` while silently dropping its
-authorizer would produce a **directly consumable record with no recorded authority** — the exact
-shape that makes a gap untraceable, and worse than an unbuilt DoD. The other two clauses have no
-operand either: *"the head MUST be clean"* needs the head, and *"on a dirty head is deferred, never
-refused"* needs a defer mechanism no artifact declares.
+**The store half is built (P-D-144) and the tick waits on `06`.** Row 14 is answered — the
+signal's authorizing principal is the `submitter` column (P-D-120) — so `repo::submit_system_signal`
+writes the record born `satisfied` with the signal's id as `submitter`, `required = 0` beside the
+raw `N` it gives no standing (`QuorumDescriptor::system_signal`), and audits it as
+`approval.system_signal`; the REST submit door refuses the kind, because a caller minting one would
+be minting a directly consumable record with no human behind it
+(`a_system_signal_cannot_be_submitted_over_rest`,
+`a_system_signal_record_is_born_satisfied_with_the_signal_as_its_principal`). The two head clauses
+— *"the head MUST be clean"* and *"on a dirty head is deferred, never refused"* — need the signal
+consumer `06` has not built, and the defer mechanism no artifact declares; the tick is theirs.
 
 **Implements**: `cpt-cf-bss-products-flow-gate`
 
@@ -1173,13 +1175,23 @@ refused"* needs a defer mechanism no artifact declares.
 
 ### Pending queue and the inbox envelope
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-inbox-envelope`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-inbox-envelope`
 
 The system **MUST** serve `GET /bss-products/v1/approvals?state=pending` under `approval × read`,
 returning the common envelope with the quorum block carrying `required` as the **effective** count
 and `configuredQuorum` as the raw `N`. **A card MUST NOT be able to show "2 required" for a record
 that closes on one.** The envelope **MUST** stay merge-compatible with the sibling gear's queue —
 that half is `12-consumer-contracts`' to assert.
+
+**Ticked with P-D-144 — this slice's half.** `GET /bss-products/v1/approvals?state=pending`
+under `approval × read` returns one card per pending record, oldest first: `subject_ref`,
+`subject_kind`, `state`, `submitter`, `submitted_at`, the quorum block — `required` as the
+**effective** count, `configured_quorum` as the raw `N`, `satisfied` as distinct approving
+principals, `finance_required`, `predicate_unsatisfiable`, `quorum_reduced` — and the per-kind
+diff payload (`content_snapshot`, `diff_basis`). The wire names follow the gear's DTO convention
+(snake_case, as every receipt does), not the design's camelCase prose; any other `state` is
+refused. Probe: `the_inbox_lists_pending_records_with_effective_counts_and_progress`. The
+merge-compatibility half is `12-consumer-contracts`' to assert.
 
 **Implements**: `cpt-cf-bss-products-flow-queue`
 
@@ -1189,7 +1201,7 @@ that half is `12-consumer-contracts`' to assert.
 
 ### RBAC catalog registration
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-rbac-catalog`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-rbac-catalog`
 
 The system **MUST** declare the GTS-typed resource-and-action catalog deny-by-default and check the
 pair at every door. `01-foundation`'s `authz.rs` already ships three rows and states that the rest
@@ -1199,12 +1211,12 @@ it. **Nine rows carry no route** (open item 1 — eleven when it was raised; **P
 the code comment as well as the design (open item 2); this DoD obliges the catalog, not the
 routes.
 
-**The catalog ships and the tick does not: seven live §7 rows name this DoD** — 1, 2, 3, 7, 12, 18
-and 24. Row 12 is the sharpest of them, asking which door carries submit, decide and
-break-glass elevation, and this DoD's own scope sentence (*"obliges the catalog, not the routes"*) does not
-dispose of it — a catalog whose grants no door spends is exactly what rows 1 and 12 are about. An
-earlier pass ticked this on the strength of that scope sentence alone, having read this §7 — **a
-table** — as empty; it is 23 rows.
+**Ticked with P-D-144.** The seven rows that held it are answered: 1, 2, 7 and 24 by P-D-134 (one
+routeless grant of twenty-three; `discard` has its own action; the authoring read is `× read`; the
+door's owner mints the pair), 3 by P-D-119 (the platform's 403, no gear code), 12 by P-D-120 (the
+three governance doors), 18 by P-D-133 (the pre-pipeline read-only scope). The clauses hold: the
+catalog is deny-by-default, extends `01`'s rows rather than replacing them, and every door checks
+its pair through the PEP — the four-site roster below is what the two paired tests hold together.
 
 **Built as an extension, and the withholding is asserted too.** `authz.rs` carries **sixteen**
 labels — measured 2026-09-02 — including `01`'s `product`/`sku`, `06`'s `catalog_version`, `09`'s
@@ -1692,12 +1704,12 @@ says — immutability is the trigger whitelist on both engines and nothing crypt
 ## 7. Known unknowns
 
 [`../design/05-governance.md`](../design/05-governance.md) §6 carries **23 open items**, and each is
-carried below with the DoD it blocks and its owner. The table has **41 rows**, and the arithmetic is
+carried below with the DoD it blocks and its owner. The table has **42 rows**, and the arithmetic is
 stated rather than left to a reader: §6's twenty-three are rows **1–20, 22, 23 and 24**; row **21\***
 comes from the slice's constraint C7 and not from §6; rows **25–32**, marked `**`, were raised by
 the 2026-08-31 review of this document; rows **33–39**, marked `***`, were raised on 2026-09-02 — three by the build of
 the evaluator and the approval store, each by an operand the code could not find, and four by the
-three-lens review of that build; and rows **40–41**, marked `****`, were raised on 2026-09-04 by the
+three-lens review of that build; and rows **40–42**, marked `****`, were raised on 2026-09-04 by the
 build of the ceremony's three doors, each by a decision the **store** cannot carry out.
 
 The first version of this section also claimed twenty-three and was **right by coincidence**: it
@@ -1713,7 +1725,7 @@ in it is a question about every other feature's gate.
 | ~~1~~ | **Eleven of the twenty-three grant rows carry no route.** Nine of the eleven are unmeasured, and an authorization surface nobody can enumerate is one nobody can review. Whether the fix is declaring the routes or admitting the grants are unspent is not a review's call **Answered (P-D-134, 2026-09-04): one of twenty-three, measured** — only `scheduled_transition × write\|cancel\|read` lacks a route; it gets `GET …/scheduled-transitions` and `POST …/scheduled-transitions/{id}/operations`, `04`'s doors, C's build. | ~~`dod-rbac-catalog`~~ | **struck** |
 | ~~2~~ | **Does the discard door get its own grant, or inherit `product\|sku × write`?** `01-foundation` §2 declares the route under `× discard` and the catalog carries only `read\|write\|publish`. `authz.rs` took `write` and recorded the contradiction in its own module doc. Minting `discard` lets a tenant withhold it; folding it into `write` does not **Answered (P-D-134, 2026-09-04): its own action `× discard`**, as the design declares the route; the code roster gains it. | ~~`dod-rbac-catalog`~~ | **struck** |
 | ~~3~~ | **What code does an authorization denial carry, and what status?** Every door opens by authorizing deny-by-default and no slice declares a denial code, while the Foundation requires every code to carry a status and every refusal to be audited with its reason. **So the first step of every registry door terminates in a refusal with no code for a consumer to match on** **Answered by P-D-119 (2026-09-03): the platform's 403 and no gear code.** Deny-by-default is the PEP's; the gear mints codes for its own refusals and never for the platform's. | ~~`dod-rbac-catalog`, `dod-inbox-envelope`~~ | **struck** |
-| 4 | **The studio inbox envelope is design-introduced.** The sibling gear's queue shape should be cross-checked when `12-consumer-contracts` pins the SDK; a field-name drift here costs a UI adapter later | `dod-inbox-envelope` | this feature with 12 |
+| 4 | **The studio inbox envelope is design-introduced.** The sibling gear's queue shape should be cross-checked when `12-consumer-contracts` pins the SDK; a field-name drift here costs a UI adapter later. *Narrowed (P-D-144): this slice's half ships with the gear's snake_case DTO names; what stays open is `12`'s cross-check against pricing's queue* | `12`'s merge-compatibility assertion — its half of the envelope | `12`, with this feature |
 | ~~5~~ | **Post-hoc break-glass review needs an owner and an SLA** for its obligation alert **Answered (P-D-133, 2026-09-04, the product owner): the owner is P-D-68's second platform principal; the SLA is `breakglass_review_sla_hours`, 24 interim, in config and §17.1; the alert fires when it lapses.** | ~~`dod-breakglass-open`~~ | **struck** |
 | ~~6~~ | **Answered (P-D-138, 2026-09-04): built by `10`** — approvals and decisions are candidates of the GC's audit class, held by their own guard (P-D-136), and approver refs are pseudonymous from birth. *Stood as:* **Approval retention and erasure interplay** is `10-retention-erasure`'s; this feature guarantees only that approver refs are pseudonymous from birth | `dod-decision-store` | 10 |
 | ~~7~~ | **Does the authoring head read need an action of its own?** The Foundation's `GET` is an authoring read and its own §4.3 says that read is not a consumer read, while the catalog lists only `read\|write\|publish` per kind **Answered (P-D-134, 2026-09-04): no** — `× read` is the authoring read; consumer reads are `08`'s. | ~~`dod-rbac-catalog`~~ | **struck** |
@@ -1752,6 +1764,7 @@ in it is a question about every other feature's gate.
 | ~~39~~*** | **Does `quorumReduced` mark an effective count below the retained-name default of 2, or a ceremony reduced by configuration?** The shipped descriptor implements the first — `required < 2` — so a non-material change at `N = 5` reads reduced. Row 15 holds the question open and frames the marker as one for the *reducible ceremonies*; nothing distinguishes reduced-by-configuration from reduced-by-non-materiality, and the descriptor carries no `Materiality` to tell them apart **Answered by P-D-120 (2026-09-03) with row 15**: below the retained-name default of two, whatever the cause. The descriptor's other fields carry the distinction the flag does not. | ~~`cpt-cf-bss-products-dod-quorum-descriptor`~~ | **struck** |
 | ~~40~~\**** | **Answered (P-D-137, 2026-09-04): the `>= 0` reading stands** — a `CHECK` that forbids a value a decision names is the schema's defect. *Stood as:* **`chk_products_approval_revision` floored `internal_revision` at 1 and P-D-120 row 14 requires 0.** Row 14 gives the column as *"the op's own pin — the envelope's revision where it has one, **`0` where the subject has no counter**"*, because the column exists to detect a stale submission and an op with no counter cannot go stale. The shipped `CHECK` read `>= 1` on both dialects, which made **every non-entity submission unwritable** — found when the submit door's first `materiality_policy` record answered a 500 through the constraint. **Widened to `>= 0` in place, 2026-09-04**, on the reading that a decision naming a value the schema forbids is the schema's defect; nothing had written a zero, so no row moved. What is open is whether that reading stands, because it edits a `CHECK` this feature did not decide | `dod-approval-store` | the design-set owner |
 | ~~41~~\**** | **Answered (P-D-137, 2026-09-04): the digest rides `content_snapshot`'s `ChangeReport`** beside the per-row pins; `internal_revision` is `0` for that kind and `SubjectPin::LedgerDigest` compares against the report's digest field — no column widens, the decision does not narrow. *Stood as:* **A bulk batch's scalar pin has no column to live in.** **P-D-127** row 11 makes the record's pin *"the ledger digest"* and **P-D-125** row 52 folds the pin into `GateSubject`; `products_approval.internal_revision` is `bigint` and no other column on that table can hold a digest. `SubjectPin::LedgerDigest` therefore expresses a decision the store cannot record. **It is not inert today** — row 10 gates every batch row in `PreAuthorized` under P-D-105's predicate, which compares no pin at all — so nothing is broken; what is missing is the record's own ability to say what it signed, which is the half a later reader of the batch's authority would want. Either the column widens, or the digest rides `content_snapshot`'s `ChangeReport` beside the per-row pins (row 23), or the decision narrows to "the pin is the gate's, not the record's" | `dod-approval-store` | the design-set owner with `09`'s builder |
+| 42\**** | **P-D-45's `*_actor_ref` convention is broken by eight column names, not one, and lint 7 sees none of them.** Measured 2026-09-04 in the migrations: `created_by` (`products_product`, `products_sku`, `products_deferred_retirement`), `submitter` and `approver_principal` (`products_approval`, `products_approval_decision`), `principal`, `reviewed_by`, `approver_a`/`approver_b` (`products_breakglass_session`) and `updated_by` (`products_materiality_policy`) all hold pseudonymous actor refs under names outside `*_actor_ref`; only `products_identity_ref`, `products_audit_log` and `products_entity_version` carry the name. The design's §4 annotations say *"(as `actor_ref`)"* of the **value**, the lint reads the **name**. Either the eight are renamed — migrations in place, both goldens regenerated — or lint 7 reads a declared roster of actor-bearing columns. P-D-144 records the census and takes neither. | none — a convention question; no tick rests on it | the lead with `12` (lint 7's owner) |
 
 *Rows marked `**` were **raised by the 2026-08-31 review of this document**, not carried from the
 slice. Eight of the nine come from reading the crate rather than the design set, and the three

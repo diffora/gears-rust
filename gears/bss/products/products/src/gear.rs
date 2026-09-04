@@ -283,6 +283,7 @@ impl BssProductsGear {
                     coalescer_tick(&db, &cancel).await;
                     batch_tick(&worker_ctx, rt.system_actor_ref, &cancel).await;
                     activation_tick(&rt, &cancel).await;
+                    breakglass_sla_tick(&rt).await;
                     if tick_count.is_multiple_of(OVERDUE_SCAN_EVERY_TICKS) {
                         let now = crate::domain::canonical::write_instant(chrono::Utc::now());
                         report_overdue_freezes(&db, now, rt.freeze_timeout_hours).await;
@@ -339,6 +340,65 @@ async fn activation_tick(rt: &ProductsRuntime, cancel: &tokio_util::sync::Cancel
         crate::infra::activation_runner::sweep(&ctx, rt.system_actor_ref, now, cancel).await
     {
         tracing::warn!(%error, "bss-products: activation runner sweep failed");
+    }
+}
+
+/// P-D-133's lapse alert (P-D-144): a post-hoc break-glass review still
+/// `pending` past `breakglass_review_sla_hours` raises the obligation alert
+/// **once**, on the channel the open-time alert used, stamped so a later tick
+/// is silent. Platform-wide — sessions name their target tenant, and the
+/// obligation is the platform principal's.
+async fn breakglass_sla_tick(rt: &ProductsRuntime) {
+    let now = crate::domain::canonical::write_instant(chrono::Utc::now());
+    let Ok(conn) = rt.sdk_state.db.conn() else {
+        return;
+    };
+    let scope = toolkit_db::secure::AccessScope::allow_all();
+    let overdue = match crate::infra::storage::repo::overdue_posthoc_sessions(
+        &conn,
+        &scope,
+        now,
+        rt.breakglass_review_sla_hours,
+    )
+    .await
+    {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::warn!(%error, "bss-products: break-glass SLA sweep failed");
+            return;
+        }
+    };
+    for session in overdue {
+        alert_overdue_session(rt, &conn, &scope, &session, now).await;
+    }
+}
+
+/// One session's lapse alert: win the CAS on the stamp, then warn; a lost CAS
+/// is another tick's alert and is silent here.
+async fn alert_overdue_session(
+    rt: &ProductsRuntime,
+    conn: &(impl toolkit_db::secure::DBRunner + Sync),
+    scope: &toolkit_db::secure::AccessScope,
+    session: &crate::infra::storage::entity::breakglass_session::Model,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    match crate::infra::storage::repo::stamp_posthoc_overdue(conn, scope, session.session_id, now)
+        .await
+    {
+        Ok(true) => tracing::warn!(
+            event = "products_breakglass_review_overdue",
+            session_id = %session.session_id,
+            target_tenant = %session.target_tenant,
+            opened_at = %session.opened_at,
+            review_sla_hours = rt.breakglass_review_sla_hours,
+            "a post-hoc break-glass review is past its SLA"
+        ),
+        Ok(false) => {}
+        Err(error) => tracing::warn!(
+            %error,
+            session_id = %session.session_id,
+            "bss-products: break-glass SLA stamp failed"
+        ),
     }
 }
 

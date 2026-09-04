@@ -9,6 +9,13 @@
 //! cut in half. A CHECK pins the ordering, because a window whose end
 //! precedes its start would admit nothing while looking open.
 //!
+//! # `posthoc_overdue_alerted_at` is the SLA-lapse stamp (P-D-133, P-D-144)
+//!
+//! A post-hoc review still `pending` past `breakglass_review_sla_hours` is
+//! alerted by the lifecycle tick exactly once: the tick sets this stamp with a
+//! CAS on its `NULL` and alerts only when it won. Nullable, outside the frozen
+//! set, edited in place with the tick's build.
+//!
 //! # `expired_emitted` is a CAS stamp, not a flag someone reads
 //!
 //! `BreakGlassExpired` has **one** emitter: the first post-expiry act flips
@@ -87,6 +94,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
             posthoc_state           text,
             reviewed_by             uuid,
             reviewed_at             timestamptz,
+            posthoc_overdue_alerted_at timestamptz,
             expired_emitted         boolean     NOT NULL DEFAULT false,
             opened_at               timestamptz NOT NULL,
             CONSTRAINT products_breakglass_session_pkey PRIMARY KEY (session_id),
@@ -146,6 +154,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             posthoc_state           text,
             reviewed_by             text,
             reviewed_at             text,
+            posthoc_overdue_alerted_at text,
             expired_emitted         integer NOT NULL DEFAULT 0,
             opened_at               text    NOT NULL,
             PRIMARY KEY (session_id),

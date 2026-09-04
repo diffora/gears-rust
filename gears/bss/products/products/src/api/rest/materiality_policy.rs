@@ -22,16 +22,15 @@
 //! `features/governance.md` §7 row 24, which asks precisely who mints a pair
 //! when the owning slice names none.
 //!
-//! # The mutation goes through the gate, and today the gate lets it through
+//! # The mutation goes through the gate, and the gate is the stored host
 //!
 //! `inst-mt-policy-material` makes the policy a `GovernedLiveOp` subject, so
 //! this door submits to the governance gate exactly as `02`'s taxonomy ops
-//! do. The registered host is still `NoMaterialityPolicyGate`, which
-//! **authorizes and says so** rather than pretending to judge — the posture
-//! every door in this gear takes. The day `05` registers a store-backed host
-//! this door becomes ceremony-gated like the rest, which is the point: the
-//! policy's own mutation must not be the one act that escapes the rule it
-//! configures.
+//! do. Since P-D-144 the host is `StoredApprovalGate::governed` over the
+//! store's candidates for `materiality_policy`: a `PUT` with no satisfied
+//! record is refused `APPROVAL_REQUIRED`, and the record it is authorized on
+//! is spent in the same transaction as the policy write — the policy's own
+//! mutation is not the one act that escapes the rule it configures.
 //!
 //! The revision is `InternalRevision::new(0)`, for `02`'s stated reason: a
 //! live op has no entity head and so no `If-Match` to pin, which is the
@@ -79,9 +78,7 @@ use uuid::Uuid;
 use crate::api::rest::{ApiState, repo_error_to_canonical, require_authenticated};
 use crate::domain::canonical;
 use crate::domain::error::DomainError;
-use crate::domain::governance::{
-    GateMode, GateSubject, GateVerdict, GovernanceGate, NoMaterialityPolicyGate,
-};
+use crate::domain::governance::GateSubject;
 use crate::domain::materiality::MaterialityPolicy;
 use crate::domain::taxonomy::content_pii_block;
 use crate::infra::storage::repo::{self, RefusalSubject};
@@ -224,21 +221,6 @@ async fn policy_scope(
 /// The shape is `02`'s `submit_to_gate`, and deliberately so: a second way of
 /// asking the same seam the same question is how two doors come to disagree
 /// about what a live op is.
-fn submit_to_gate(tenant_id: Uuid) -> Result<(), DomainError> {
-    let gate: Arc<dyn GovernanceGate + Send + Sync> = Arc::new(NoMaterialityPolicyGate);
-    match gate.evaluate(
-        // **The subject's own kind now** (**P-D-120** row 38): a policy
-        // mutation is a thing approved, so it is `materiality_policy` and not
-        // a `governed_live_op`. The pin is the store's `pinned_revision`, and
-        // `0` is P-D-120 row 14's *"no pin"* until a record exists to carry one.
-        GateSubject::materiality_policy(tenant_id, 0),
-        GateMode::Gate,
-    )? {
-        GateVerdict::Authorized(_) => Ok(()),
-        GateVerdict::Refused { reason } => Err(DomainError::ApprovalRequired(reason)),
-    }
-}
-
 /// Refuse, audit the refusal, and answer.
 async fn refuse(
     state: &ApiState,
@@ -321,9 +303,22 @@ async fn set_materiality_policy(
     // C4's ceremony. Today's host authorizes and records why; the day a
     // store-backed host is registered, this is where the policy's own
     // mutation starts needing the quorum it configures.
-    if let Err(refusal) = submit_to_gate(tenant_id) {
-        return Err(refuse(&state, &scope, tenant_id, actor_ref, refusal).await);
-    }
+    let authorization = match crate::api::rest::authorize_live_op(
+        &state,
+        &scope,
+        tenant_id,
+        GateSubject::materiality_policy(tenant_id, 0),
+    )
+    .await
+    {
+        Ok(authorization) => authorization,
+        Err(crate::api::rest::HostError::Refused(refusal)) => {
+            return Err(refuse(&state, &scope, tenant_id, actor_ref, refusal).await);
+        }
+        Err(crate::api::rest::HostError::Repo(error)) => {
+            return Err(repo_error_to_canonical(&error));
+        }
+    };
 
     let policy = MaterialityPolicy::new(fields, body.affected_entity_trigger, body.approver_count);
     // The write and its audit row commit together: a governed mutation whose
@@ -333,7 +328,8 @@ async fn set_materiality_policy(
     let scope_tx = scope.clone();
     let policy_tx = policy.clone();
     let reason_tx = reason.clone();
-    state
+    let authorization_tx = authorization.clone();
+    let outcome = state
         .db
         .db()
         .transaction_with_retry::<(), TxError, _, _>(
@@ -343,7 +339,16 @@ async fn set_materiality_policy(
                 let scope = scope_tx.clone();
                 let policy = policy_tx.clone();
                 let reason = reason_tx.clone();
+                let authorization = authorization_tx.clone();
                 Box::pin(async move {
+                    // The one-shot rides the write: the record is spent where
+                    // the policy commits (`inst-gv-one-shot`).
+                    repo::settle_authorization(tx, &scope, tenant_id, &authorization, now)
+                        .await
+                        .map_err(|error| match error {
+                            repo::SettleError::Refused(refusal) => TxError::Refused(refusal),
+                            repo::SettleError::Repo(error) => TxError::Repo(error),
+                        })?;
                     repo::write_materiality_policy(tx, &scope, tenant_id, &policy, actor_ref, now)
                         .await
                         .map_err(TxError::Repo)?;
@@ -373,8 +378,15 @@ async fn set_materiality_policy(
                 })
             },
         )
-        .await
-        .map_err(|TxError::Repo(e)| repo_error_to_canonical(&e))?;
+        .await;
+    if let Err(error) = outcome {
+        return Err(match error {
+            TxError::Refused(refusal) => {
+                refuse(&state, &scope, tenant_id, actor_ref, refusal).await
+            }
+            TxError::Repo(e) => repo_error_to_canonical(&e),
+        });
+    }
 
     Ok((
         StatusCode::OK,
@@ -390,6 +402,8 @@ async fn set_materiality_policy(
 
 /// This door's transaction error.
 enum TxError {
+    /// The record the act was authorized on could not be spent by it.
+    Refused(DomainError),
     Repo(crate::infra::storage::RepoError),
 }
 
@@ -404,7 +418,7 @@ impl From<toolkit_db::DbError> for TxError {
 fn contention_db_err(error: &TxError) -> Option<&sea_orm::DbErr> {
     match error {
         TxError::Repo(crate::infra::storage::RepoError::Driver { source, .. }) => Some(source),
-        TxError::Repo(_) => None,
+        TxError::Repo(_) | TxError::Refused(_) => None,
     }
 }
 

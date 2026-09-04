@@ -289,6 +289,7 @@ pub async fn reparent_under_lock(
     new_parent: Option<Uuid>,
     limits: TaxonomyLimits,
     now: DateTime<Utc>,
+    authorization: &crate::domain::governance::GateAuthorization,
 ) -> Result<Result<repo::CategoryWrite, DomainError>, RepoError> {
     let _guard = take_writer_lock(db, tenant_id).await?;
     let conn = db
@@ -318,15 +319,27 @@ pub async fn reparent_under_lock(
 
     let sink = sink.clone();
     let scope_tx = scope.clone();
+    let authorization_tx = authorization.clone();
     settle(
         db.db()
             .transaction_with_retry::<repo::CategoryWrite, TaxonomyTxError, _, _>(
                 TxConfig::default(),
                 taxonomy_contention_db_err,
                 move |tx| {
+                    let authorization = authorization_tx.clone();
                     let sink = sink.clone();
                     let scope = scope_tx.clone();
                     Box::pin(async move {
+                        // The one-shot rides the op's own transaction
+                        // (`inst-gv-one-shot`): spent where the write commits.
+                        repo::settle_authorization(tx, &scope, tenant_id, &authorization, now)
+                            .await
+                            .map_err(|error| match error {
+                                repo::SettleError::Refused(refusal) => {
+                                    TaxonomyTxError::Refused(refusal)
+                                }
+                                repo::SettleError::Repo(error) => TaxonomyTxError::Repo(error),
+                            })?;
                         let written = repo::reparent_category(
                             tx,
                             &scope,
@@ -381,23 +394,36 @@ pub async fn rename_under_lock(
     category_id: Uuid,
     name: &str,
     now: DateTime<Utc>,
+    authorization: &crate::domain::governance::GateAuthorization,
 ) -> Result<Result<repo::CategoryWrite, DomainError>, RepoError> {
     let _guard = take_writer_lock(db, tenant_id).await?;
     let normalized = crate::domain::name::normalize(name);
     let name = name.to_owned();
     let sink = sink.clone();
     let scope_tx = scope.clone();
+    let authorization_tx = authorization.clone();
     settle(
         db.db()
             .transaction_with_retry::<repo::CategoryWrite, TaxonomyTxError, _, _>(
                 TxConfig::default(),
                 taxonomy_contention_db_err,
                 move |tx| {
+                    let authorization = authorization_tx.clone();
                     let sink = sink.clone();
                     let scope = scope_tx.clone();
                     let name = name.clone();
                     let normalized = normalized.clone();
                     Box::pin(async move {
+                        // The one-shot rides the op's own transaction
+                        // (`inst-gv-one-shot`): spent where the write commits.
+                        repo::settle_authorization(tx, &scope, tenant_id, &authorization, now)
+                            .await
+                            .map_err(|error| match error {
+                                repo::SettleError::Refused(refusal) => {
+                                    TaxonomyTxError::Refused(refusal)
+                                }
+                                repo::SettleError::Repo(error) => TaxonomyTxError::Repo(error),
+                            })?;
                         let written = repo::rename_category(
                             tx,
                             &scope,
@@ -600,6 +626,7 @@ pub async fn retire_under_lock(
     category_id: Uuid,
     sample: u64,
     now: DateTime<Utc>,
+    authorization: &crate::domain::governance::GateAuthorization,
 ) -> Result<Result<repo::CategoryWrite, DomainError>, RepoError> {
     let _guard = take_writer_lock(db, tenant_id).await?;
     let conn = db
@@ -613,15 +640,27 @@ pub async fn retire_under_lock(
     }
     let sink = sink.clone();
     let scope_tx = scope.clone();
+    let authorization_tx = authorization.clone();
     settle(
         db.db()
             .transaction_with_retry::<repo::CategoryWrite, TaxonomyTxError, _, _>(
                 TxConfig::default(),
                 taxonomy_contention_db_err,
                 move |tx| {
+                    let authorization = authorization_tx.clone();
                     let sink = sink.clone();
                     let scope = scope_tx.clone();
                     Box::pin(async move {
+                        // The one-shot rides the op's own transaction
+                        // (`inst-gv-one-shot`): spent where the write commits.
+                        repo::settle_authorization(tx, &scope, tenant_id, &authorization, now)
+                            .await
+                            .map_err(|error| match error {
+                                repo::SettleError::Refused(refusal) => {
+                                    TaxonomyTxError::Refused(refusal)
+                                }
+                                repo::SettleError::Repo(error) => TaxonomyTxError::Repo(error),
+                            })?;
                         let written =
                             repo::retire_category(tx, &scope, tenant_id, category_id, now).await?;
                         if matches!(written, repo::CategoryWrite::Applied) {
@@ -670,6 +709,7 @@ pub async fn retire_under_lock(
 ///
 /// [`DomainError::CategoryReferenced`] when any link row or child row still
 /// names the node. [`RepoError`] on a lock, storage or scope failure.
+#[allow(clippy::too_many_arguments)]
 pub async fn delete_under_lock(
     db: &DBProvider<DbError>,
     sink: &EventSink,
@@ -678,6 +718,8 @@ pub async fn delete_under_lock(
     actor_ref: Uuid,
     category_id: Uuid,
     sample: u64,
+    now: DateTime<Utc>,
+    authorization: &crate::domain::governance::GateAuthorization,
 ) -> Result<Result<repo::CategoryWrite, DomainError>, RepoError> {
     let _guard = take_writer_lock(db, tenant_id).await?;
     let conn = db
@@ -691,15 +733,27 @@ pub async fn delete_under_lock(
     }
     let sink = sink.clone();
     let scope_tx = scope.clone();
+    let authorization_tx = authorization.clone();
     settle(
         db.db()
             .transaction_with_retry::<repo::CategoryWrite, TaxonomyTxError, _, _>(
                 TxConfig::default(),
                 taxonomy_contention_db_err,
                 move |tx| {
+                    let authorization = authorization_tx.clone();
                     let sink = sink.clone();
                     let scope = scope_tx.clone();
                     Box::pin(async move {
+                        // The one-shot rides the op's own transaction
+                        // (`inst-gv-one-shot`): spent where the write commits.
+                        repo::settle_authorization(tx, &scope, tenant_id, &authorization, now)
+                            .await
+                            .map_err(|error| match error {
+                                repo::SettleError::Refused(refusal) => {
+                                    TaxonomyTxError::Refused(refusal)
+                                }
+                                repo::SettleError::Repo(error) => TaxonomyTxError::Repo(error),
+                            })?;
                         let written =
                             repo::delete_retired_category(tx, &scope, tenant_id, category_id)
                                 .await?;

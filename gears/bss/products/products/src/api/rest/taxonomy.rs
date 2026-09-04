@@ -52,9 +52,7 @@ use uuid::Uuid;
 use crate::api::rest::{ApiState, repo_error_to_canonical, require_authenticated};
 use crate::domain::canonical;
 use crate::domain::error::DomainError;
-use crate::domain::governance::{
-    GateMode, GateSubject, GateVerdict, GovernanceGate, NoMaterialityPolicyGate, SubjectPin,
-};
+use crate::domain::governance::{GateSubject, SubjectPin};
 use crate::domain::live_op::GovernedLiveOp;
 use crate::domain::taxonomy::{DefinitionState, TaxonomyLimits};
 use crate::domain::validation::ValidationReport;
@@ -522,34 +520,39 @@ async fn door_scope(
     }
 }
 
-/// Submit one envelope to the `05-governance` gate.
-///
-/// `dod-governed-live-op` requires the envelope be **submitted**, not merely
-/// re-validated at apply: the two are different obligations and the currency
-/// check is the second. `GateSubject::governed_live_op` is the seam
-/// `domain::governance` built for exactly this — a live op's target is a
-/// string and not an `EntityRef`, `EntityKind` being `Product | Sku`.
-///
-/// The registered host is `NoMaterialityPolicyGate` until `05` registers a
-/// materiality policy, and it **authorizes and says so** rather than
-/// pretending to judge. That is the same posture every other door in this
-/// gear takes, and the same one `NoPiiPolicyDetector` takes on the other
-/// seam: a host that answered `Refused` would block every taxonomy op on a
-/// ceremony nothing runs, and one that silently skipped the call would make
-/// the day `05` registers a policy the day this door starts ignoring it.
-///
-/// The revision is `InternalRevision::new(0)`: a live op has no entity head
-/// and so no `If-Match` to pin, which is the poverty `05`'s own row 14
-/// records about the entity-shaped columns on a non-entity subject. Named
-/// here rather than left to a reader of the literal.
-fn submit_to_gate(tenant_id: Uuid, target: &str) -> Result<(), DomainError> {
-    let gate: Arc<dyn GovernanceGate + Send + Sync> = Arc::new(NoMaterialityPolicyGate);
-    match gate.evaluate(
-        GateSubject::governed_live_op(tenant_id, target, SubjectPin::Unpinned),
-        GateMode::Gate,
-    )? {
-        GateVerdict::Authorized(_) => Ok(()),
-        GateVerdict::Refused { reason } => Err(DomainError::ApprovalRequired(reason)),
+/// The envelope's subject: the op's target under the live-op kind, unpinned —
+/// a category or a definition has no counter the ceremony pins (P-D-120 row
+/// 14). One construction, so the two op doors reach the ceremony one way.
+fn live_op_subject(tenant_id: Uuid, target: &str) -> GateSubject {
+    GateSubject::governed_live_op(tenant_id, target, SubjectPin::Unpinned)
+}
+
+/// Run one op envelope through the stored host before the op's transaction
+/// (P-D-144): a refusal is audited against the door's own gate and subject; a
+/// storage failure is the storage's `500`. The record it returns is spent
+/// inside the op's transaction by the lock function.
+async fn authorize_envelope(
+    state: &ApiState,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    actor_ref: Uuid,
+    gate: Gate,
+    attempted: String,
+    target: &str,
+) -> Result<crate::domain::governance::GateAuthorization, CanonicalError> {
+    match crate::api::rest::authorize_live_op(
+        state,
+        scope,
+        tenant_id,
+        live_op_subject(tenant_id, target),
+    )
+    .await
+    {
+        Ok(authorization) => Ok(authorization),
+        Err(crate::api::rest::HostError::Refused(refusal)) => {
+            Err(refuse(state, scope, tenant_id, actor_ref, gate, attempted, refusal).await)
+        }
+        Err(crate::api::rest::HostError::Repo(error)) => Err(repo_error_to_canonical(&error)),
     }
 }
 
@@ -720,7 +723,9 @@ async fn apply_definition_act(
     actor_ref: Uuid,
     act: DefinitionAct,
     now: chrono::DateTime<Utc>,
+    authorization: &crate::domain::governance::GateAuthorization,
 ) -> Result<DefinitionState, TxError> {
+    let authorization_tx = authorization.clone();
     let sink = state.sink.clone();
     let scope_tx = scope.clone();
     let act = Arc::new(act);
@@ -731,10 +736,17 @@ async fn apply_definition_act(
             TxConfig::default(),
             door_contention_db_err,
             move |tx| {
+                let authorization = authorization_tx.clone();
                 let sink = sink.clone();
                 let scope = scope_tx.clone();
                 let act = Arc::clone(&act);
                 Box::pin(async move {
+                    repo::settle_authorization(tx, &scope, tenant_id, &authorization, now)
+                        .await
+                        .map_err(|error| match error {
+                            repo::SettleError::Refused(refusal) => TxError::Refused(refusal),
+                            repo::SettleError::Repo(error) => TxError::Repo(error),
+                        })?;
                     let definition_id = act.definition_id;
                     let state_after = if let Some((expected, to)) = act.flip {
                         let moved = repo::flip_definition_state(
@@ -1048,18 +1060,16 @@ async fn execute_category_operation(
     // judges the envelope and the currency check re-validates the pinned
     // state immediately before the mutation. They are two obligations, and
     // running only the second would leave the ceremony unasked.
-    if let Err(refusal) = submit_to_gate(tenant_id, &op.target) {
-        return Err(refuse(
-            &state,
-            &scope,
-            tenant_id,
-            actor_ref,
-            Gate::Category,
-            category_id.to_string(),
-            refusal,
-        )
-        .await);
-    }
+    let authorization = authorize_envelope(
+        &state,
+        &scope,
+        tenant_id,
+        actor_ref,
+        Gate::Category,
+        category_id.to_string(),
+        &op.target,
+    )
+    .await?;
     if let Err(stale) = op.check_still_current(&live_state.as_str().to_owned()) {
         return Err(refuse(
             &state,
@@ -1101,6 +1111,7 @@ async fn execute_category_operation(
                 category_id,
                 name,
                 now,
+                &authorization,
             )
             .await
         }
@@ -1115,6 +1126,7 @@ async fn execute_category_operation(
                 body.parent_id,
                 limits_of(&state),
                 now,
+                &authorization,
             )
             .await
         }
@@ -1127,6 +1139,7 @@ async fn execute_category_operation(
             category_id,
             RETIRE_SAMPLE,
             now,
+            &authorization,
         )
         .await
         .map(|r| r.map(|_| repo::CategoryWrite::Applied)),
@@ -1139,6 +1152,8 @@ async fn execute_category_operation(
                 actor_ref,
                 category_id,
                 RETIRE_SAMPLE,
+                now,
+                &authorization,
             )
             .await
         }
@@ -1354,18 +1369,16 @@ async fn execute_definition_operation(
     // judges the envelope and the currency check re-validates the pinned
     // state immediately before the mutation. They are two obligations, and
     // running only the second would leave the ceremony unasked.
-    if let Err(refusal) = submit_to_gate(tenant_id, &op.target) {
-        return Err(refuse(
-            &state,
-            &scope,
-            tenant_id,
-            actor_ref,
-            Gate::Definition,
-            key.clone(),
-            refusal,
-        )
-        .await);
-    }
+    let authorization = authorize_envelope(
+        &state,
+        &scope,
+        tenant_id,
+        actor_ref,
+        Gate::Definition,
+        key.clone(),
+        &op.target,
+    )
+    .await?;
     if let Err(stale) = op.check_still_current(&record.state.as_str().to_owned()) {
         return Err(refuse(
             &state,
@@ -1501,6 +1514,7 @@ async fn execute_definition_operation(
             op_kind: op.kind.clone(),
         },
         now,
+        &authorization,
     )
     .await;
     let state_after = match outcome {
