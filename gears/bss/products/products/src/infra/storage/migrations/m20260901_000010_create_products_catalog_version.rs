@@ -28,7 +28,33 @@
 //! `IS DISTINCT FROM`; on `SQLite`, one no-delete trigger and one
 //! `WHEN`-guarded trigger over the frozen column class, using `IS NOT`. Every
 //! column but `freeze_state` is refused by name — the byte-identity flagship
-//! rests on them — and `DELETE` is refused outright.
+//! rests on them.
+//!
+//! # `DELETE` runs under the release stamp (P-D-137)
+//!
+//! A catalog version is a **financial record with a statutory window**
+//! (`PRD` §330: *"Snapshots are financial records"*), not evidence — so
+//! unlike the approval, decision, break-glass and correction-override tables
+//! (P-D-136) this one is collectable, and the arm that admits the collector
+//! had to be expressible without the two channels earlier decisions closed:
+//! **P-D-31** removed the session variable that would carry the deleter's
+//! identity, and **P-D-118** removed the date constant that would carry the
+//! window. What is left is a property of the row itself, which the GC can
+//! make true: **`retention_released_at`**.
+//!
+//! Nullable, and the `UPDATE` whitelist admits it moving **exactly once**,
+//! `NULL` to a value — the sealing arm's shape one table over. A value may
+//! not be changed and may not be cleared, so a stamp is not a toggle a
+//! caller can flip back and forth around a delete. `DELETE` is then admitted
+//! for a row whose stamp is set, and refused for one whose stamp is `NULL`.
+//!
+//! **The stamp is not an authorisation and does not pretend to be.** Any
+//! caller who may `UPDATE` this table may stamp it; what the arm buys is that
+//! a deletion is always a *deliberate two-step*, recorded in the row itself,
+//! rather than a single statement a mistaken `WHERE` can perform. The
+//! application-side guarantee that only the GC stamps is a **writer count**
+//! (`lib_tests::every_writer_of_a_release_stamp_is_counted`, P-D-105's
+//! pattern), which is where an invariant no schema can hold belongs.
 //!
 //! The two refusal messages are distinct on purpose: a body that lost its
 //! `UPDATE` branch would still refuse an update, but with the delete
@@ -65,6 +91,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
             published_at              timestamptz NOT NULL,
             participant_set_snapshot  text        NOT NULL,
             freeze_state              text        NOT NULL,
+            retention_released_at     timestamptz,
             CONSTRAINT products_catalog_version_pkey PRIMARY KEY (tenant_id, catalog_version_id),
             CONSTRAINT chk_products_catalog_version_id_floor CHECK (catalog_version_id >= 1),
             CONSTRAINT chk_products_catalog_version_freeze_state CHECK (freeze_state IN ('open', 'complete', 'complete(forced)')),
@@ -73,7 +100,10 @@ const PG_UP_STATEMENTS: &[&str] = &[
     "CREATE OR REPLACE FUNCTION bss.products_catalog_version_append_only() RETURNS trigger AS $$
         BEGIN
           IF TG_OP = 'DELETE' THEN
-            RAISE EXCEPTION 'products_catalog_version is append-only: DELETE is not permitted';
+            IF OLD.retention_released_at IS NULL THEN
+              RAISE EXCEPTION 'products_catalog_version: DELETE is admitted only for a version whose retention_released_at is stamped (P-D-137)';
+            END IF;
+            RETURN OLD;
           END IF;
           IF NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
              OR NEW.catalog_version_id IS DISTINCT FROM OLD.catalog_version_id
@@ -81,7 +111,11 @@ const PG_UP_STATEMENTS: &[&str] = &[
              OR NEW.digest_version IS DISTINCT FROM OLD.digest_version
              OR NEW.published_at IS DISTINCT FROM OLD.published_at
              OR NEW.participant_set_snapshot IS DISTINCT FROM OLD.participant_set_snapshot THEN
-            RAISE EXCEPTION 'products_catalog_version: freeze_state is the only column the UPDATE arm admits';
+            RAISE EXCEPTION 'products_catalog_version: freeze_state and retention_released_at are the only columns the UPDATE arm admits';
+          END IF;
+          IF NEW.retention_released_at IS DISTINCT FROM OLD.retention_released_at
+             AND NOT (OLD.retention_released_at IS NULL AND NEW.retention_released_at IS NOT NULL) THEN
+            RAISE EXCEPTION 'products_catalog_version: retention_released_at is stamped once and never moved (P-D-137)';
           END IF;
           RETURN NEW;
         END;
@@ -106,6 +140,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             published_at              text    NOT NULL,
             participant_set_snapshot  text    NOT NULL,
             freeze_state              text    NOT NULL,
+            retention_released_at     text,
             PRIMARY KEY (tenant_id, catalog_version_id),
             CONSTRAINT chk_products_catalog_version_id_floor CHECK (catalog_version_id >= 1),
             CONSTRAINT chk_products_catalog_version_freeze_state CHECK (freeze_state IN ('open', 'complete', 'complete(forced)')),
@@ -113,8 +148,16 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
         )",
     "CREATE TRIGGER trg_products_catalog_version_no_delete
         BEFORE DELETE ON products_catalog_version
+        WHEN OLD.retention_released_at IS NULL
         BEGIN
-          SELECT RAISE(ABORT, 'products_catalog_version is append-only: DELETE is not permitted');
+          SELECT RAISE(ABORT, 'products_catalog_version: DELETE is admitted only for a version whose retention_released_at is stamped (P-D-137)');
+        END",
+    "CREATE TRIGGER trg_products_catalog_version_release_once
+        BEFORE UPDATE ON products_catalog_version
+        WHEN NEW.retention_released_at IS NOT OLD.retention_released_at
+          AND NOT (OLD.retention_released_at IS NULL AND NEW.retention_released_at IS NOT NULL)
+        BEGIN
+          SELECT RAISE(ABORT, 'products_catalog_version: retention_released_at is stamped once and never moved (P-D-137)');
         END",
     "CREATE TRIGGER trg_products_catalog_version_frozen_columns
         BEFORE UPDATE ON products_catalog_version
@@ -125,11 +168,12 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
           OR NEW.published_at IS NOT OLD.published_at
           OR NEW.participant_set_snapshot IS NOT OLD.participant_set_snapshot
         BEGIN
-          SELECT RAISE(ABORT, 'products_catalog_version: freeze_state is the only column the UPDATE arm admits');
+          SELECT RAISE(ABORT, 'products_catalog_version: freeze_state and retention_released_at are the only columns the UPDATE arm admits');
         END",
 ];
 
 const SQLITE_DOWN_STATEMENTS: &[&str] = &[
+    "DROP TRIGGER IF EXISTS trg_products_catalog_version_release_once",
     "DROP TRIGGER IF EXISTS trg_products_catalog_version_frozen_columns",
     "DROP TRIGGER IF EXISTS trg_products_catalog_version_no_delete",
     "DROP TABLE IF EXISTS products_catalog_version",

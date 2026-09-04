@@ -21,18 +21,23 @@
 //! whole class in one transaction would abort and take every unrelated
 //! candidate with it.
 //!
-//! # What can actually be deleted at this commit, measured
+//! # Two classes collect and one is held, and the shapes differ
 //!
-//! One table of four. `products_entity_version` has an opened referential
-//! predicate (`m20260829_000007`, **P-D-40**); `products_catalog_version`
-//! (`m20260901_000010`), `products_catalog_version_entry` and `_capture`
-//! (`m20260901_000013`) and the five evidence tables all refuse every
-//! `DELETE`. So the steady state today is: the version class collects rows no
-//! manifest references, and every other class is **held** with the guard's
-//! own message. That is P-D-136's decided posture for the evidence tables and
-//! it is **reported, not assumed** — the sweep offers the delete and
+//! **Financial** collects under a release stamp (**P-D-137**): a catalog
+//! version is a financial record with a statutory window, so the sweep stamps
+//! `retention_released_at` and then deletes captures, entries and the version
+//! in **one** transaction — item 25's *"whole"*, and the order the FK and
+//! both `DELETE` arms require anyway. **Version** collects under P-D-40's
+//! referential predicate, for rows no manifest references and no head names.
+//! **Audit** — the log and the four evidential stores — is **held**, and that
+//! is P-D-136's decided posture rather than a gap: evidence is not deletable
+//! in v1, and at a ten-year window no collector reaches one of those rows
+//! before 2036.
+//!
+//! The hold is **reported, not assumed**: the sweep offers the delete and
 //! classifies the refusal, so the day a migration opens an arm the sweep
-//! starts collecting without an edit here.
+//! starts collecting with no edit here — which is exactly how the financial
+//! class began collecting when P-D-137 opened its two.
 //!
 //! # One doomed statement per class per pass, not one per row
 //!
@@ -168,7 +173,8 @@ pub(crate) async fn sweep_class(
                     outcome.hold(reason);
                     continue;
                 }
-                match collect_catalog_version(db, &scope, tenant_id, catalog_version_id).await {
+                match collect_catalog_version(db, &scope, tenant_id, catalog_version_id, now).await
+                {
                     Ok(()) => outcome.collect(),
                     Err(reason) => {
                         outcome.hold(&reason);
@@ -234,6 +240,7 @@ async fn collect_catalog_version(
     scope: &AccessScope,
     tenant_id: Uuid,
     catalog_version_id: i64,
+    now: DateTime<Utc>,
 ) -> Result<(), HeldReason> {
     let conn = db
         .conn()
@@ -264,11 +271,20 @@ async fn collect_catalog_version(
         return Err(HeldReason::FreezeLive(first));
     }
 
+    // The release stamp and the three deletes, in **one** transaction
+    // (P-D-118 item 25's "whole"). The stamp goes first because it is what
+    // the arms read: `m20260901_000013`'s predicate admits an entry or a
+    // capture whose parent carries it, and `m20260901_000010`'s admits the
+    // parent itself — so a pass that deleted first would meet a refusal it
+    // had the authority to lift.
     let scope_tx = scope.clone();
     db.db()
         .transaction_ref_mapped::<_, (), TxError>(move |tx| {
             let scope = scope_tx.clone();
             Box::pin(async move {
+                repo::stamp_retention_release(tx, &scope, tenant_id, catalog_version_id, now)
+                    .await
+                    .map_err(TxError::Repo)?;
                 repo::delete_catalog_version(tx, &scope, tenant_id, catalog_version_id)
                     .await
                     .map_err(TxError::Repo)
@@ -298,9 +314,33 @@ async fn collect_entity_version(
             })
         })
         .await
-        // The engine's own refusal, and the only reason it raises one is the
-        // referential predicate: `dod-retention-order`'s derive rule.
-        .map_err(|_| HeldReason::ReferencedByRetainedManifest)
+        // **Error class follows provenance** (P-D-137): only P-D-40's
+        // refusal is the derive rule, and its own message is the operand
+        // that says so. A connection failure or a scope refusal mapped to
+        // `ReferencedByRetainedManifest` would be audited as a *design*
+        // hold — a row an operator would read as correctly retained when it
+        // was never judged at all.
+        .map_err(|error| classify_entity_version_failure(&error.to_string()))
+}
+
+/// Which hold a failed entity-version delete is.
+///
+/// **Error class follows provenance** (P-D-137 (ii)): only P-D-40's refusal
+/// is the derive rule, and the migration names itself in its message, so the
+/// message is the operand. Everything else — a connection failure, a scope
+/// refusal, a table that is gone — is a storage refusal, and mapping it to
+/// the derive rule would audit it as a **design** hold: a row an operator
+/// reads as correctly retained when it was never judged at all.
+///
+/// Its own function so the classification can be probed without a live
+/// engine: the failures that must NOT be the derive rule are exactly the ones
+/// hard to provoke through a working database.
+pub(crate) fn classify_entity_version_failure(rendered: &str) -> HeldReason {
+    if rendered.contains("P-D-40") {
+        HeldReason::ReferencedByRetainedManifest
+    } else {
+        HeldReason::StorageRefused(rendered.to_owned())
+    }
 }
 
 /// One audit-class row, offered to its guard.

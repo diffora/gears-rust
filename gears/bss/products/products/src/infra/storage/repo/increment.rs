@@ -477,6 +477,11 @@ pub async fn insert_catalog_version(
         published_at: Set(new.published_at),
         participant_set_snapshot: Set(new.participant_set_snapshot),
         freeze_state: Set(new.freeze_state.as_str().to_owned()),
+        // Never stamped at commit: the release is the GC's own act
+        // (P-D-137), and a version published already released would be
+        // collectable the instant its window opened without a pass ever
+        // judging it.
+        retention_released_at: Set(None),
     };
     catalog_version::Entity::insert(model.clone())
         .secure()

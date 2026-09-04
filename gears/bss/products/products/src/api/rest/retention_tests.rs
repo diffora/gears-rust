@@ -866,43 +866,63 @@ async fn a_pii_refusal_names_the_field_and_its_audit_row_carries_no_detected_val
 /// from this feature's own host, and no production path constructs the
 /// permissive one.**
 ///
-/// A source census rather than six behavioural probes, because the claim is
-/// about the *set*: a seventh door added next month with
+/// A source census rather than N behavioural probes, because the claim is
+/// about the *set*: a door added next month with
 /// `Arc::new(NoPiiPolicyDetector)` in it would pass every behavioural probe
 /// written today, and it is exactly the shape this change had to repair —
-/// `NoPiiPolicyDetector` was constructed at **six** production sites, each
-/// its own literal, so *"the registered detector"* named a phrase and not a
+/// the permissive host was constructed at **six** production sites, each its
+/// own literal, so *"the registered detector"* named a phrase and not a
 /// registry.
+///
+/// # The file list is DISCOVERED, and that is a correction
+///
+/// The first version of this census named five files. A seventh door then
+/// landed in a **sixth** file — `approvals.rs`, the approval-rejection reason
+/// — building the permissive host, and this test stayed green because the
+/// file was not on its list. A census with a hard-coded population cannot see
+/// the member that arrives outside it, which is the same defect one level up
+/// from the one it exists to catch. So the population is now every crate
+/// source that calls the hook.
 ///
 /// Scoped to the production half of each file: the permissive host is a
 /// legitimate **test** double and several suites drive it deliberately, so a
 /// whole-file scan would forbid the thing it is right to keep.
 #[test]
 fn no_production_door_builds_the_permissive_pii_host() {
-    let doors = [
-        ("api/rest/products.rs", include_str!("products.rs")),
-        ("api/rest/skus.rs", include_str!("skus.rs")),
-        ("api/rest/taxonomy.rs", include_str!("taxonomy.rs")),
-        (
-            "api/rest/materiality_policy.rs",
-            include_str!("materiality_policy.rs"),
-        ),
-        ("api/rest/retention.rs", include_str!("retention.rs")),
-    ];
-    for (name, source) in doors {
-        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+    let mut checked = 0_usize;
+    for path in crate::lib_tests::crate_sources() {
+        let name = path.display().to_string();
+        if name.ends_with("_tests.rs") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("a readable crate source");
+        let production = source.split("#[cfg(test)]").next().unwrap_or(&source);
+        if !production.contains("content_pii_block(") {
+            continue;
+        }
+        // The hook's own module declares it and is not a door.
+        if name.ends_with("domain/taxonomy.rs") {
+            continue;
+        }
+        checked += 1;
         assert!(
             !production.contains("Arc::new(NoPiiPolicyDetector)")
                 && !production.contains("Arc::new(crate::domain::taxonomy::NoPiiPolicyDetector)"),
-            "{name} builds the permissive host on a production path: `dod-pii-detector` obliges \
-             the whole door set, and a door left on it admits every string while its neighbours \
+            "{name} runs the write block on the permissive host: `dod-pii-detector` obliges the \
+             whole door set, and a door left on it admits every string while its neighbours \
              refuse"
         );
         assert!(
-            !production.contains("content_pii_block") || production.contains("tenant_pii_detector"),
+            production.contains("tenant_pii_detector"),
             "{name} runs the write block without building this feature's detector"
         );
     }
+    assert!(
+        checked >= 6,
+        "the census found only {checked} doors running the hook; it discovers its own \
+         population, so a number this low means the discovery broke rather than that the \
+         doors went away"
+    );
 }
 
 /// **The census can fail.** The perturbation the case above needs: the same
@@ -938,5 +958,128 @@ fn both_allowlist_doors_submit_their_act_to_the_gate() {
          because it changes nothing. The definition line does not match this pattern - it reads \
          `(tenant_id: Uuid)` - so this counts call sites and not the function's own existence, \
          which is what the assertion is for"
+    );
+}
+
+/// A tenant the harness's enforcer does **not** admit, for the denial half.
+const OTHER_TENANT: Uuid = Uuid::from_u128(0x7e_99);
+
+/// **Each of the three grants is spent by a door that exists, and a caller
+/// without it is refused — with the refusal audited.**
+///
+/// §6's criterion for `dod-retention-authz`. Its `DoD`'s own body asserts the
+/// four roster tests, which are the **declaration** half; this is the
+/// spending half, and the `DoD` had only the first. The audited refusal is the
+/// part a status-code assertion alone would miss: `PERMISSION_DENIED` is one
+/// of P-D-21's three audit classes, and a door that answered 403 without
+/// writing the row would satisfy every wire probe.
+#[tokio::test]
+async fn each_grant_is_spent_by_a_door_and_a_denial_is_audited() {
+    let harness = harness().await;
+    // The enforcer admits OTHER_TENANT; every call below authenticates as
+    // TENANT, so each door's own `access_scope` refuses.
+    let denied = |h: &TestHarness| app_for(h, OTHER_TENANT);
+
+    let erasure = erase(denied(&harness), ALICE, "why").await;
+    assert_eq!(erasure.status(), axum::http::StatusCode::FORBIDDEN);
+
+    let export = export(denied(&harness), ALICE).await;
+    assert_eq!(export.status(), axum::http::StatusCode::FORBIDDEN);
+
+    let allowlist = sign_off(denied(&harness), "Ann Fritz", "legal-1").await;
+    assert_eq!(allowlist.status(), axum::http::StatusCode::FORBIDDEN);
+
+    assert_eq!(
+        audit_rows(&harness.dsn, "").await,
+        0,
+        "the empty action matches nothing - the control for the count below"
+    );
+    assert_eq!(
+        raw_i64(
+            &harness.dsn,
+            "SELECT COUNT(*) AS v FROM products_audit_log WHERE error_code = 'PERMISSION_DENIED'",
+        )
+        .await,
+        3,
+        "one audited refusal per grant: three doors, three rows"
+    );
+}
+
+/// **The compliance surface spends its own grant, and neither of its two
+/// doors is served under `audit × export`.**
+///
+/// §6's criterion. `design/10` §4 excludes the map from `audit × export`'s
+/// output, and this is the one surface that returns real identities —
+/// folding either door into the audit grant would hand every auditor the
+/// identities the pseudonymisation scheme exists to withhold. A source census
+/// because the claim is about which constant a route reaches for, and a wire
+/// probe against a permissive enforcer cannot tell two grants apart.
+#[test]
+fn the_compliance_doors_spend_their_own_grant_and_never_the_audit_one() {
+    let source = include_str!("retention.rs");
+    let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+    let code: String = production
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !code.contains("resource_types::AUDIT"),
+        "no door in this feature may reach for the audit resource"
+    );
+    assert_eq!(
+        code.matches("Gate::Compliance").count(),
+        2,
+        "exactly two doors pass it - the identity export and the allow-list review. The enum's \
+         own arms spell it `Self::Compliance` and are asserted separately below, so this counts \
+         SPENDERS and not the mapping's existence"
+    );
+    assert!(
+        code.contains("Self::Compliance => crate::authz::resource_types::COMPLIANCE")
+            && code.contains("Self::Compliance => crate::authz::actions::EXPORT"),
+        "and the pair it maps to is `compliance x export`"
+    );
+}
+
+/// **Neither retention payload has a field an identity could reach.**
+///
+/// §6's criterion for `dod-retention-events`. `ActorErased` is a *defensive
+/// cache-buster* whose whole point is that it carries none, and a field added
+/// later is exactly how it would stop being one — so the assertion is over
+/// the payload's **shape**, not over one serialized instance.
+///
+/// The roster is every field name the struct declares; each is a pseudonym, a
+/// tenant, an act token or a rendered aggregate. `identity_payload` — the one
+/// column in the gear that may hold a real identity — must not appear.
+#[test]
+fn neither_retention_payload_has_a_field_an_identity_could_reach() {
+    let source = include_str!("../../infra/broker.rs");
+    let body = source
+        .split("pub(crate) struct RetentionEventPayload {")
+        .nth(1)
+        .expect("the payload is declared")
+        .split("\n}")
+        .next()
+        .expect("its body ends");
+    let fields: Vec<&str> = body
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("pub "))
+        .filter_map(|line| line.split(':').next())
+        .collect();
+    assert_eq!(
+        fields,
+        vec![
+            "tenant_id",
+            "subject_ref",
+            "act",
+            "erased_actor_ref",
+            "actor_ref"
+        ],
+        "the payload's whole field set, transcribed: a pseudonym, a tenant, an act token and a \
+         rendered aggregate. A sixth field is the review this assertion exists to force"
+    );
+    assert!(
+        !body.contains("identity_payload") && !body.contains("principal_identity"),
+        "the one column that may hold a real identity has no route into an event"
     );
 }
