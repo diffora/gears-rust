@@ -1569,6 +1569,48 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-140 — The detector swap is a standing rule the census enforces, and D's third delivery is accepted with its box honestly open
+
+- **Date**: 2026-09-04 (the lead, accepting strand D's `1e067c95f`, merged `34743cf3d`; the
+  question D put in its report, and the criterion that keeps `10`'s status box unticked)
+- **Any strand that finds a door building `NoPiiPolicyDetector` swaps it for
+  `api::rest::retention::tenant_pii_detector`, declares the swap in its commit, and leaves the
+  owning strand a line in its brief.** D asked whether the second reach into another strand's file
+  for this exact reason was a rule or a breach, and it is a rule: `dod-pii-detector` obliges *the
+  whole door set*, a permissive literal at one door is a hole in every other door's guarantee, and
+  the census (`no_production_door_builds_the_permissive_pii_host`) now **discovers its population**
+  — every crate source whose production half calls the hook — so a seventh door arriving with a
+  literal is red on the day it lands, whoever owns the file. The census with a hand-named
+  population had passed on B's `approvals.rs` for an afternoon; that is the defect one level up
+  from the one it exists to catch, and the discovered population is the fix. A door's **own** rule
+  stays its owner's: only the detector line is anyone's.
+- **The release stamp landed as P-D-137 decided**, on both engines and both ways, with the stamp
+  written first because it is what the arms read, and the release-stamp writer counted
+  (`every_writer_of_a_release_stamp_is_counted`: one site, and it is the sweep's).
+- **The live head's version is out of the candidates** (read once per pass from both head tables,
+  not a correlated `NOT EXISTS` per row) and **a storage failure is no longer a design hold**
+  (`classify_entity_version_failure` keys on the migration naming itself, P-D-40).
+- **The box stays unticked, and the reason stands — with one recount.** The criterion *"every
+  reason-bearing door in the enumerated set raises the same code"* names five doors: this
+  feature's audit reasons, approval rejections, break-glass sessions, correction overrides, and the
+  `SkuRetired` payload's reason. **Four of the five exist and run the hook**: D's audit reasons;
+  B's approval rejection and break-glass reasons (`approvals.rs`, after the swap); and `04`'s
+  retirement initiation, which runs `content_pii_block` over the retire reason before `SkuRetired`
+  carries it (`skus.rs run_retire`, since `5da022f6f`) — D's note counted that door as absent. The
+  fifth, `products_correction_override`'s reason, is `07`'s unbuilt correction door. The criterion
+  cannot be ticked against a door that does not exist, so `10`'s box waits on `07` — recorded
+  here so the wait is a fact about `07` and not a hole in `10`.
+- **The arguments against, stated.** A standing licence to edit any door's detector line loosens
+  the ownership table — accepted narrowly: one line, one function, declared, census-enforced; the
+  alternative is a green census over a permissive door. Reading D's recount against it —
+  accepted; the retire door's hook call is in the merged code and the criterion's own text names
+  the `SkuRetired` payload.
+- **Not changed**: P-D-136's detector; P-D-137's release stamp and conventions; the ownership
+  table otherwise.
+- **Propagated**: `RELAY-retention.md` (the recount, the standing rule); `RELAY-governance.md`
+  (B's `approvals.rs` detector line is D's swap); the lead handoff's rule 14 gains the exception.
+
+
 #### P-D-139 — Consume-at-schedule: the retire doors pin the record that authorized them and spend it in the scheduling transaction
 
 - **Date**: 2026-09-04 (the lead; the decision-before-code item the queue has carried since
