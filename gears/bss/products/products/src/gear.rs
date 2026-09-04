@@ -143,6 +143,14 @@ pub(crate) struct ProductsRuntime {
     /// so the runtime is where the doors reach them.
     pub taxonomy_caps: crate::api::rest::TaxonomyCaps,
 
+    /// `10-retention-erasure`'s operands for its three unattended acts — the
+    /// retention windows, the pseudonymization age, the drill's cadence and
+    /// its target. **One bundled field for the reason `taxonomy_caps` is
+    /// one**: six loose fields would appear in every harness that builds a
+    /// runtime, and the three sweeps read per-boot state rather than a
+    /// configuration source of their own.
+    pub retention_caps: crate::domain::retention::RetentionCaps,
+
     /// The pseudonymous ref the gear's own background acts attribute to.
     /// Server-minted per boot: the batch worker is not a person, and an
     /// audit row that named one would be a lie.
@@ -249,6 +257,7 @@ impl BssProductsGear {
                         let now = crate::domain::canonical::write_instant(chrono::Utc::now());
                         report_overdue_freezes(&db, now, rt.freeze_timeout_hours).await;
                     }
+                    retention_tick(&db, &rt, tick_count, &cancel).await;
                     tick_count += 1;
                 }
             }
@@ -335,6 +344,76 @@ async fn report_overdue_freezes(
 /// The coalescer's tick — well inside the interactive window so a lone
 /// request still lands within ≤ 5 s of itself.
 const COALESCER_TICK: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// How many coalescer ticks between retention sweeps — hourly at the
+/// one-second tick.
+///
+/// Not a configuration knob, and deliberately not the drill's
+/// `drill_cadence_hours`: the sweep's cadence changes only how promptly an
+/// expired row is collected, and at a ten-year window that is hours against a
+/// decade. What it must not be is *per tick* — a sweep runs a tenant
+/// discovery read and one candidate read per class, and doing that every
+/// second to find nothing is the shape `report_overdue_freezes` was given its
+/// own cadence to avoid.
+const RETENTION_SWEEP_EVERY_TICKS: u64 = 3_600;
+
+/// `10-retention-erasure`'s three unattended acts, on their own cadences.
+///
+/// Lifted out of [`BssProductsGear::serve`] because three guarded calls
+/// pushed that function past clippy's cognitive-complexity floor — and
+/// because the three share one rule: **the function owns its cadence, the
+/// loop owns the tick**, which is the shape `report_overdue_freezes` already
+/// uses. The cadences differ from the coalescer's one second by orders of
+/// magnitude, so a per-tick call would be ~86,000 discovery reads a day to
+/// find nothing.
+async fn retention_tick(
+    db: &toolkit_db::DBProvider<toolkit_db::DbError>,
+    rt: &ProductsRuntime,
+    tick_count: u64,
+    cancel: &tokio_util::sync::CancellationToken,
+) {
+    if tick_count.is_multiple_of(RETENTION_SWEEP_EVERY_TICKS) {
+        let now = crate::domain::canonical::write_instant(chrono::Utc::now());
+        crate::infra::retention::sweep(db, &rt.retention_caps, rt.system_actor_ref, now, cancel)
+            .await;
+        crate::infra::retention::tombstone_aged_principals(
+            db,
+            &rt.sink,
+            &rt.retention_caps,
+            rt.system_actor_ref,
+            now,
+            cancel,
+        )
+        .await;
+    }
+    if drill_due(tick_count, rt.retention_caps.drill_cadence_hours) {
+        let now = crate::domain::canonical::write_instant(chrono::Utc::now());
+        crate::infra::retention::run_restore_drill(
+            db,
+            &rt.retention_caps,
+            rt.system_actor_ref,
+            now,
+            cancel,
+        )
+        .await;
+    }
+}
+
+/// Whether this tick is a drill tick, at the operator's configured cadence.
+///
+/// A function rather than a constant because the cadence **is** configured
+/// (`drill_cadence_hours`, interim 24) while the loop's tick is one second.
+/// A zero cadence is refused at boot, so the guard below is reachable only
+/// from a runtime built past that check — a harness — and it drills on the
+/// first tick rather than never, because a drill that silently never runs is
+/// what P-D-135 forbids.
+fn drill_due(tick_count: u64, cadence_hours: u32) -> bool {
+    let period = u64::from(cadence_hours).saturating_mul(3_600);
+    if period == 0 {
+        return tick_count == 0;
+    }
+    tick_count.is_multiple_of(period)
+}
 
 /// How many coalescer ticks between overdue-freeze scans — roughly once a
 /// minute at the one-second tick, which is telemetry cadence for a state
@@ -582,6 +661,7 @@ impl Gear for BssProductsGear {
             watermark_skew_tolerance: cfg.watermark_skew_tolerance(),
             sdk_state: Arc::clone(&sdk_state),
             taxonomy_caps: crate::api::rest::TaxonomyCaps::from(&cfg),
+            retention_caps: crate::domain::retention::RetentionCaps::from(&cfg),
             system_actor_ref: system_actor_ref(),
             pipeline,
             db: db_provider,

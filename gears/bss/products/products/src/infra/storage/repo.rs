@@ -1718,6 +1718,7 @@ mod read_models;
 mod recognized;
 mod reference;
 mod retention;
+mod retention_gc;
 mod taxonomy;
 mod versions;
 
@@ -1730,6 +1731,7 @@ pub use read_models::*;
 pub use recognized::*;
 pub use reference::*;
 pub use retention::*;
+pub use retention_gc::*;
 pub use taxonomy::*;
 pub use versions::*;
 

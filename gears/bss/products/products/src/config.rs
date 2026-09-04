@@ -338,6 +338,25 @@ pub struct ProductsConfig {
     /// so a corrupt backup is found within a day.
     pub drill_cadence_hours: u32,
 
+    /// Where the restore drill reads its **restored copy** — the one the
+    /// platform provides (**P-D-133**: the gear owns the probe, the platform
+    /// owns the restore). **Optional and with no default** (**P-D-135**), on
+    /// the P-D-107 idiom: there is no value that is right for every
+    /// deployment, and a default pointing anywhere would make an unconfigured
+    /// drill silently verify the *live* database, which proves nothing about
+    /// a backup.
+    ///
+    /// `None` is a legitimate deployment state and not a failure: the drill
+    /// still runs, still writes its audit row with outcome `no_target`, and
+    /// still raises `products_restore_drill_unverifiable` — a drill that
+    /// cannot run is not a passed drill, and silence is what P-D-133's
+    /// *"report, never skip"* forbids.
+    ///
+    /// A **present but blank** value is refused at boot: it is an operator
+    /// who meant to configure a target, and treating it as `None` would turn
+    /// that into a decade of warnings nobody reads as a typo.
+    pub drill_target_dsn: Option<String>,
+
     /// How long the publish path waits on the usage-type resolver, in
     /// milliseconds. **Interim 2000 — P-D-121.** `design/03` said *"a short
     /// timeout"* and named no number. Two seconds because the resolve runs
@@ -389,6 +408,9 @@ impl Default for ProductsConfig {
             retention_days_audit: RETENTION_DAYS_DEFAULT,
             pseudonymization_age_days: PSEUDONYMIZATION_AGE_DAYS_DEFAULT,
             drill_cadence_hours: DRILL_CADENCE_HOURS_DEFAULT,
+            // No default: see the field's own doc. An unconfigured drill
+            // verifies nothing and says so, which is the honest state.
+            drill_target_dsn: None,
             usage_type_resolver_timeout_ms: USAGE_TYPE_RESOLVER_TIMEOUT_MS_DEFAULT,
             breakglass_window_hours: BREAKGLASS_WINDOW_HOURS_DEFAULT,
             breakglass_review_sla_hours: BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
@@ -510,6 +532,18 @@ impl ProductsConfig {
         if self.bulk_max_concurrent_batches_per_tenant == 0 {
             return Err(
                 "bulk_max_concurrent_batches_per_tenant = 0 admits no batch at all".to_owned(),
+            );
+        }
+        if self
+            .drill_target_dsn
+            .as_ref()
+            .is_some_and(|dsn| dsn.trim().is_empty())
+        {
+            return Err(
+                "drill_target_dsn is present but blank: an operator who meant to configure a \
+                 restore target would otherwise get a decade of `no_target` warnings that read \
+                 as a deployment choice rather than as a typo"
+                    .to_owned(),
             );
         }
         if !self.default_locale.is_empty() && self.default_locale != self.default_locale.trim() {

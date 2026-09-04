@@ -520,7 +520,7 @@ every operator free-text `reason` — with the registered `NoPiiPolicyDetector` 
 
 ### Age-based pseudonymization, as the same act
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-erasure-age`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-erasure-age`
 
 The system **MUST** run the **same tombstone act** automatically at the configured maximum age,
 emitting the **same** event. Erasure-on-request and erasure-on-age are **one mechanism with two
@@ -529,6 +529,23 @@ triggers**, and this DoD **MUST NOT** produce a second code path.
 The age operand **MUST** be `last_seen_at` — the age of the principal's **last activity in the
 tenant** — and **MUST NOT** be `first_seen_at`. Age-since-first-appearance would tombstone an active
 employee mid-employment, which is the failure the column's semantics were corrected to prevent.
+
+**Built, clause by clause, with the call site named for each** (P-D-109's discipline; ticked
+2026-09-04).
+
+| clause | where it lands | what proves it |
+|---|---|---|
+| runs **automatically** at the configured maximum age | `infra::retention::tombstone_aged_principals`, a call in `gear.rs`'s loop | `the_age_trigger_tombstones_the_aged_principal_and_only_that_one`, which drives the function with no request anywhere |
+| the **same tombstone act** | it calls `repo::tombstone_principal` — the door's own function, not a copy | `the_age_path_writes_the_same_map_state_and_announces_the_same_event` asserts the map state the door leaves |
+| the **same** event | `enqueue_retention` with `ACTOR_ERASED_PAYLOAD_TYPE` and `act: "erased"`, the door's own arguments | the same case counts exactly one `ActorErased` |
+| **MUST NOT** produce a second code path | there is one `tombstone_principal` and one `ActorErased` emitter shape; this module reaches both exactly as the door does | the two cases above, plus `dod-identity-map`'s singleton census one layer down |
+| the operand is `last_seen_at`, **never** `first_seen_at` | `repo::principals_older_than` filters on `LastSeenAt` | the same case seeds a principal minted 900 days ago and one minted 10 days ago and asserts **only** the first is tombstoned — the negative half, which a sweep that tombstoned everything would fail |
+| under the system principal, with the age rule's own reason | `gear::system_actor_ref()` and `AGE_REASON` (**P-D-117** item 14) | `the_age_path_…` asserts the row's reason names `inst-er-age`: no human supplied one, and a row without one would be a hole in the class this feature retains |
+
+**The cadence cannot double-erase.** `principals_older_than` excludes tombstoned rows and
+`tombstone_principal` re-asserts `tombstoned_at IS NULL` in its own `UPDATE`, so a second pass
+neither restamps a column the entity's doc pins as *"set once … and never cleared"* nor announces a
+second erasure — `a_second_age_pass_neither_restamps_nor_re_announces`, both halves.
 
 **Implements**: `cpt-cf-bss-products-flow-erasure`
 
@@ -700,7 +717,7 @@ because a rule's limits are what a later "improvement" silently removes.
 
 ### The retention clocks
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-retention-clock`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-retention-clock`
 
 The system **MUST** compute expiry candidates per record class at the **statutory maximum** — never
 "indefinite" (C3) — across frozen versions, catalog versions, audit rows, and the evidential stores
@@ -762,6 +779,42 @@ hole, and at `retention_days_audit` = 3650 interim no collector reaches one of t
 years. If that is right, row 38 closes as *"the shape is the application's, not the DDL's"*. If the
 owner wants those rows deletable, that is a decision to open a write path on evidence and should be
 taken as one. **No migration is edited under this DoD until it is taken.**
+
+**Built, clause by clause, with the call site named for each** (P-D-109's discipline; ticked
+2026-09-04).
+
+| clause | where it lands | what proves it |
+|---|---|---|
+| candidates **per record class**, each at the statutory maximum | `infra::retention::sweep_class`, one arm per `domain::retention::RecordClass` | `each_class_reads_its_own_window` narrows **one** window and asserts the other two classes' candidate counts are **unchanged** — the half a single-class probe cannot see |
+| never *"indefinite"* (C3) | every class reads a configured window; there is no unbounded arm | the same case, which reaches a candidate at all only because a window exists |
+| across frozen versions, catalog versions, audit rows and the four evidential stores | `repo::catalog_version_candidates`, `entity_version_candidates`, `audit_class_candidates` (five stores in one function, one clock column each) | `every_pass_writes_an_audit_row_carrying_its_class_clock_and_verdict` reaches all three classes |
+| the audit class deletes **whole rows**, never a refusal without its classifier | `repo::delete_audit_class_row` deletes by primary key, no column-level write | the guard refuses it whole, which is what `a_refusing_class_is_held_and_the_others_still_collect` reads |
+| **two populations outside every clock** — the outbox (P-D-22) and `07`'s operational tables | no candidate read reaches either | `the_excluded_populations_are_never_candidates`, a source census over the store layer **plus** a zero-window control so the absence is not proven by a sweep that sees nothing |
+| the window is the **GC's** predicate, never a trigger arm | `RetentionCaps::cutoff`, read from configuration | `m20260829_000004`'s doc, which P-D-118 made normative, and no `OLD.written_at` arm exists anywhere |
+| every GC act audited with the class, the clock and the gate verdict | `infra::retention::write_pass_audit` | `every_pass_writes_an_audit_row_carrying_its_class_clock_and_verdict` reads `class=`, `cutoff=` and `held_reason=` off the row |
+
+**Which table is in which class, and the evidence.** `PRD` §15 names three windows and no table, so
+the mapping is read from the two documents that do name one. **Financial** is the catalog-version
+chain, on `PRD` §330: *"**Snapshots are financial records**: `CatalogVersion` snapshots + version
+history …"*. **Version** is `products_entity_version`, kept separate rather than folded in, because
+`dod-retention-order` says version-row retention *"**derives** from catalog-version retention and is
+**never shorter**"* — a sentence that is vacuous if the two share one window and load-bearing if
+they do not. **Audit** is the audit log and the four evidential stores, on this DoD's own words:
+*"all audit-grade"*. The three interim numbers are equal, so nothing distinguishes them in
+behaviour today; the mapping is still a choice and is stated in `domain::retention::RecordClass`
+rather than left to whichever constant a call site reached for.
+
+**Three of the four target tables refuse every `DELETE` at this commit, measured.** The only opened
+predicate in the chain is `products_entity_version`'s (`m20260829_000007`, **P-D-40**).
+`products_catalog_version` (`m20260901_000010`) refuses outright with no note;
+`products_catalog_version_entry` and `_capture` (`m20260901_000013`) refuse with an interim message
+naming *"slice 10's manifest retention"* — this feature — as their future admitter; and the five
+evidence tables are **P-D-136**'s decided posture. So the sweep's steady state is: the version class
+collects rows no manifest references, and **every other class is held**. That is reported rather
+than assumed — the sweep offers each delete and classifies the refusal — so the day a migration
+opens an arm the sweep starts collecting with no edit here. **The catalog-version chain's two
+migrations are outside this assignment's grant and P-D-136 does not mention them**; whether they
+join the evidence class or get their arms opened is recorded in §7 as item 34.
 
 **Implements**: `cpt-cf-bss-products-flow-retention`
 
@@ -827,7 +880,7 @@ inert"*).
 
 ### Deletion order, and the one edge that is physically enforced
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-retention-order`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-retention-order`
 
 Deletion **MUST** respect reference topology: capture and entry rows before their catalog-version
 row, entity versions only after every referencing manifest. Every GC act **MUST** be audited with the
@@ -845,6 +898,23 @@ about the guard.
 An entity-version row referenced by **any** retained catalog-version manifest **MUST** be retained
 with it: version-row retention **derives** from catalog-version retention and is **never shorter**.
 
+**Built, clause by clause, with the call site named for each** (P-D-109's discipline; ticked
+2026-09-04).
+
+| clause | where it lands | what proves it |
+|---|---|---|
+| capture and entry rows **before** their catalog-version row | `repo::delete_catalog_version`, three statements in that order in **one** transaction | `a_held_catalog_version_keeps_its_entries` — the refused delete rolls back **whole**, and an entry lost on the way to a refused manifest row is exactly the surviving-manifest state P-D-118 item 25 forbids |
+| entity versions only **after** every referencing manifest | not ordered by this module at all: each candidate is offered to `m20260829_000007`'s referential predicate | `a_referenced_version_is_refused_by_the_guard_and_not_by_the_sweep`, whose second half issues the `DELETE` **directly, with the sweep bypassed** — §6's own words |
+| the derive rule: retention is **never shorter** | the same predicate; a referenced row is `HeldReason::ReferencedByRetainedManifest` | the first half of that case: two candidates, the orphan collects and the referenced one holds |
+| every GC act audited with the class, the clock and the gate verdict | `write_pass_audit` | `every_pass_writes_an_audit_row_carrying_its_class_clock_and_verdict` |
+
+**The ordering is deliberately not this module's guarantee.** `repo::entity_version_candidates`
+does **not** pre-filter by manifest reference, and that is the criterion honoured rather than an
+omission: a sweep that filtered first would move the guarantee from the engine to the sweep, and
+§6's criterion refuses it by name — *"refused **by the guard**, not merely skipped by the GC — the
+probe passes even when the GC is bypassed entirely"*. So the sweep offers every candidate and
+reports what the engine decided.
+
 **Implements**: `cpt-cf-bss-products-flow-retention`
 
 **Touches**:
@@ -853,7 +923,7 @@ with it: version-row retention **derives** from catalog-version retention and is
 
 ### The restore drill
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-dod-restore-drill`
+- [x] `p2` - **ID**: `cpt-cf-bss-products-dod-restore-drill`
 
 On the configured cadence the system **MUST** restore a sampled set of catalog versions **and their
 referenced entity versions** from backup into an **isolated target**, and re-verify **both** the
@@ -877,6 +947,39 @@ watermark lives, which no document states.
 `jsonb` precisely so a row cannot be *"perfectly intact and still fail slice 10's restore drill"*,
 and `repo.rs` names one of its guarantees *"the single property slice 10's restore drill depends
 on"*.
+
+**Built, clause by clause, with the call site named for each** (P-D-109's discipline; ticked
+2026-09-04).
+
+| clause | where it lands | what proves it |
+|---|---|---|
+| on the configured cadence | `gear::drill_due(tick_count, drill_cadence_hours)`, the third loop call | the predicate is a function of the **configured** hours, not a constant beside them |
+| a sampled set of catalog versions **and their referenced entity versions** | `repo::newest_catalog_versions` then, per version, `catalog_version_manifest_rows` and `entity_version_digest` per entry | `a_clean_restore_verifies_both_halves` asserts `verified=2` — one manifest **and** one referenced row |
+| from **backup, into an isolated target** | `drill_target_dsn`, opened as its own `DBProvider`; nothing writes to it | the drill's reads are `find`/`all` only, and the run's own audit row goes to the **live** database |
+| re-verify **both** the manifest checksums and each row's `content_digest` | `VersionManifest::checksum()` rebuilt from the restored rows, and `canonical::content_digest(&row.content)` | the same case; manifest checksums alone are blind to version-history corruption, which is why both counts are asserted |
+| **byte-for-byte** (C5) | `Vec<u8> == Vec<u8>`, no rendering in between | `a_corrupted_restore_raises_the_alarm` rots the stored digest and reads `corrupt=1` |
+| compare **like with like** on `digest_version` | the version is checked **before** the digest is compared, on both halves | `a_foreign_digest_version_is_unverifiable_and_not_corruption` seeds a foreign version **and** a bad digest, and asserts `unverifiable=1 corrupt=0` — a drill that re-rendered would manufacture the mismatch P-D-133 item 7 forbids |
+| **MUST NOT** expect the four moving columns | the recomputation's only operand is the stored `content` | `the_drill_recomputes_over_the_stored_content_and_nothing_else`, a source census: a column outside that string cannot reach the comparison however it moves |
+| a byte mismatch is a **compliance incident alarm**, not a log line | `products_restore_drill_corruption` at `error!`, and the count on the run's audit row | the corruption case reads the **row**, since §6 says *"in the result, not only in a log line"* |
+| results on an operator surface with the **last-verified watermark per tenant** | one audit row per run (**P-D-134** item 6); the watermark is the newest such row per tenant — a query, not a table | every drill case reads it back that way, which is the surface existing |
+
+**The sample is the newest twenty catalog versions, and every row inside them is scanned.** Newest
+rather than random for two reasons, both about what a drill is for: corruption is found by reading
+the restore an incident would actually restore from, and a deterministic sample makes two
+consecutive runs comparable where a random one turns a regression into a coin flip. P-D-133 item 7's
+*"every sampled row is scanned on every drill"* is then exact — the sample bounds the **versions**
+looked at and never the rows verified within them.
+
+**With no target configured the run still happens** (**P-D-135**): it writes its audit row with
+outcome `no_target` and raises `products_restore_drill_unverifiable`. A target that is configured
+and will not open is a **different** outcome, `unreachable`, because the two need different
+operators — one is a deployment that has not wired the drill, the other is a restore that is not
+there. `an_unconfigured_drill_still_records_its_run` asserts the row exists and claims nothing it
+did not check.
+
+**No metrics facility was added.** The alert channel is `tracing::warn!` / `error!` with the stable
+event names, as `gear.rs`'s loops already do. The toolkit this gear links exposes none, and adding a
+crate for one is a dependency decision rather than this `DoD`'s — reported, as the brief asked.
 
 **Implements**: `cpt-cf-bss-products-flow-restore-drill`
 
@@ -1560,3 +1663,23 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
     here is a design gap; a narrower heuristic is a one-function change in `domain/retention.rs`.
     **Blocks**: no DoD — the detector's DoD is satisfied by the fail-closed hook whatever the
     heuristic. **Owner**: the product owner, with Legal's allow-list loop (item 1).
+
+34. **Does the catalog-version chain join the evidence class, or do its `DELETE` arms open?**
+    Measured 2026-09-04 while building `dod-retention-clock`: `products_catalog_version`
+    (`m20260901_000010`) refuses every `DELETE` **outright and with no note**, and
+    `products_catalog_version_entry` / `_capture` (`m20260901_000013`) refuse with an interim
+    message naming *"slice 10's manifest retention"* — this feature — as their future admitter.
+    **P-D-136** settled the five *evidence* migrations and does not reach these two. So the
+    financial class is held at every candidate today, `dod-retention-order`'s *"capture and entry
+    rows before their catalog-version row"* has no admitted delete to order, and P-D-118 item 25's
+    *"one catalog version at a time, whole"* describes a transaction that always rolls back. Two
+    readings, and the difference is a decade of storage: either a catalog version is evidence like
+    an approval record and its guard is correct as it stands — in which case `m20260901_000013`'s
+    interim message is stale and should say so — or the two arms open in place and the sweep
+    begins collecting with **no code change here**, because it already offers the delete and
+    reports the refusal. Neither of this feature's two clock DoDs waits on the answer: both are
+    built against the guard **as it ships** and report what the engine decides, which is what
+    makes them correct either way.
+    **Blocks**: no DoD — it decides how much storage a decade costs, not whether the sweep is
+    right.
+    **Owner**: the design-set owner with `06-catalog-version`.

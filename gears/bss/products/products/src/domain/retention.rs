@@ -54,6 +54,8 @@
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-pii-detector:p1
 
+use chrono::{DateTime, Utc};
+
 use crate::infra::storage::repo::FreezeRegistration;
 
 use crate::domain::states::FreezeAckState;
@@ -443,5 +445,208 @@ impl crate::domain::taxonomy::PiiDetector for RegistryPiiDetector {
                 }
             }
         }
+    }
+}
+
+// -- The retention clock: record classes, their windows, and the sweep's
+//    verdicts (`inst-rt-gc`, `inst-rt-order`; `dod-retention-clock`,
+//    `dod-retention-order`; **P-D-118** items 25-28, **P-D-136**) --
+
+/// The three record classes `PRD` §15 names, each with its own configured
+/// window.
+///
+/// # Which table is in which class, and the evidence for it
+///
+/// `PRD` §15's interim policy is *"financial/version/audit → statutory max"*
+/// and names no table, so the mapping is read from the two documents that do:
+///
+/// - **Financial** — the catalog-version chain (`products_catalog_version`
+///   and its entry and capture rows). `PRD` §330: *"**Snapshots are financial
+///   records**: `CatalogVersion` snapshots + version history require a
+///   durability class …"*. A catalog version is what a contract or an invoice
+///   references, and it is the only thing in this registry a finance
+///   regulator would ask for by name.
+/// - **Version** — `products_entity_version`, the per-entity version history.
+///   Separate from the financial class rather than folded into it, because
+///   `dod-retention-order` says version-row retention *"**derives** from
+///   catalog-version retention and is **never shorter**"* — a sentence that
+///   is vacuous if the two share one window and load-bearing if they do not.
+/// - **Audit** — `products_audit_log` and the four evidential stores.
+///   `dod-retention-clock` lists them as *"approval records and decisions,
+///   break-glass sessions and correction overrides, **all audit-grade**"*.
+///
+/// The three interim numbers are equal (3650), so no behaviour distinguishes
+/// them today; the mapping is still a choice, and it is stated here rather
+/// than left for a reader to infer from which constant a call site happened
+/// to reach for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RecordClass {
+    /// The catalog-version chain.
+    Financial,
+    /// The per-entity version history.
+    Version,
+    /// The audit log and the four evidential stores.
+    Audit,
+}
+
+impl RecordClass {
+    /// Every class, for a sweep that must not silently skip one.
+    pub const ALL: [Self; 3] = [Self::Financial, Self::Version, Self::Audit];
+
+    /// The class's name in an audit row and a log line.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Financial => "financial",
+            Self::Version => "version",
+            Self::Audit => "audit",
+        }
+    }
+}
+
+/// The retention operands the sweeps read, resolved once at boot.
+///
+/// Bundled for the reason `api::rest::TaxonomyCaps` is: three loop calls each
+/// needing four or five configuration values would put five more fields on
+/// `ProductsRuntime` and five more lines in every harness that builds one.
+/// The bundle is built in `gear.rs`'s `init` from `ProductsConfig` and read
+/// nowhere else — a sweep reads per-boot state, never a configuration source
+/// of its own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetentionCaps {
+    /// [`RecordClass::Financial`]'s window, in days.
+    pub financial_days: u32,
+    /// [`RecordClass::Version`]'s window, in days.
+    pub version_days: u32,
+    /// [`RecordClass::Audit`]'s window, in days.
+    pub audit_days: u32,
+    /// How old a principal's **last activity** may be before the
+    /// age-triggered tombstone fires, in days (M2: last, never first).
+    pub pseudonymization_age_days: u32,
+    /// How often the restore drill runs, in hours.
+    pub drill_cadence_hours: u32,
+    /// The restored copy the platform provides, or `None` when no target is
+    /// configured — in which case the drill still runs and still writes its
+    /// row, with outcome `no_target` (**P-D-135**): a drill that cannot run
+    /// is not a passed drill.
+    pub drill_target_dsn: Option<String>,
+}
+
+impl From<&crate::config::ProductsConfig> for RetentionCaps {
+    fn from(cfg: &crate::config::ProductsConfig) -> Self {
+        Self {
+            financial_days: cfg.retention_days_financial,
+            version_days: cfg.retention_days_version,
+            audit_days: cfg.retention_days_audit,
+            pseudonymization_age_days: cfg.pseudonymization_age_days,
+            drill_cadence_hours: cfg.drill_cadence_hours,
+            drill_target_dsn: cfg.drill_target_dsn.clone(),
+        }
+    }
+}
+
+impl RetentionCaps {
+    /// The window of one class, in days.
+    #[must_use]
+    pub const fn window_days(&self, class: RecordClass) -> u32 {
+        match class {
+            RecordClass::Financial => self.financial_days,
+            RecordClass::Version => self.version_days,
+            RecordClass::Audit => self.audit_days,
+        }
+    }
+
+    /// The instant before which a row of `class` is a retention candidate.
+    ///
+    /// Saturating: a window wide enough to underflow the calendar answers the
+    /// earliest representable instant, which makes **nothing** a candidate.
+    /// The failure direction matters — a panic here would take the whole
+    /// sweep down, and an underflow that wrapped forward would make
+    /// **everything** a candidate, which is the one arithmetic slip in a
+    /// deleter that cannot be undone.
+    #[must_use]
+    pub fn cutoff(&self, class: RecordClass, now: DateTime<Utc>) -> DateTime<Utc> {
+        cutoff_before(now, self.window_days(class))
+    }
+}
+
+/// `now` minus `days`, saturating at the earliest representable instant.
+///
+/// Its own function so [`RetentionCaps::cutoff`] and the age trigger share
+/// one arithmetic: two copies of a subtraction, one of which saturates and
+/// one of which wraps, is the shape this is written to prevent.
+#[must_use]
+pub fn cutoff_before(now: DateTime<Utc>, days: u32) -> DateTime<Utc> {
+    chrono::TimeDelta::try_days(i64::from(days))
+        .and_then(|delta| now.checked_sub_signed(delta))
+        .unwrap_or(DateTime::<Utc>::MIN_UTC)
+}
+
+/// Why one candidate was not collected.
+///
+/// Every arm is a **verdict** carrying its reason, never a soft warning: C4's
+/// *"skipped, never forced"* only means something if a caller cannot read a
+/// hold as an absence of information.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HeldReason {
+    /// The retention gate held the version: a freeze registration is still
+    /// live. Carries the gate's own hold so the participant is named.
+    FreezeLive(RetentionHold),
+    /// The storage guard refused the `DELETE`. **P-D-136**: the flat-refusal
+    /// class keeps its guard and the GC holds what it cannot delete, so this
+    /// is the expected steady state for the evidential stores and not an
+    /// error. Carries the engine's own message, because the guard names
+    /// itself in it and a paraphrase would drift from the migration.
+    StorageRefused(String),
+    /// An entity-version row a retained manifest still references.
+    /// `dod-retention-order`: version-row retention **derives** from
+    /// catalog-version retention and is never shorter.
+    ReferencedByRetainedManifest,
+}
+
+impl HeldReason {
+    /// The stable token an audit row and a log line carry.
+    #[must_use]
+    pub const fn token(&self) -> &'static str {
+        match self {
+            // The gate's own alarm name (C4), reused rather than re-minted:
+            // an operator filtering on it must find both the gate's holds and
+            // the sweep's.
+            Self::FreezeLive(_) => RetentionHold::REASON,
+            Self::StorageRefused(_) => "retention_storage_refused",
+            Self::ReferencedByRetainedManifest => "retention_manifest_referenced",
+        }
+    }
+}
+
+/// What one pass over one class did.
+///
+/// Counted rather than listed: the numbers are what an audit row carries and
+/// what an operator reads, and a list of ids would put the subjects of ten
+/// thousand held rows into a single row's payload.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClassOutcome {
+    /// How many rows the clock made candidates.
+    pub candidates: u32,
+    /// How many were deleted.
+    pub collected: u32,
+    /// How many were held, for any reason.
+    pub held: u32,
+    /// The first hold's token, for the audit row's own classifier. The first
+    /// rather than a set, because the sweep stops attempting a class after
+    /// its storage guard refuses once — see `infra::retention::sweep_class`.
+    pub held_reason: Option<&'static str>,
+}
+
+impl ClassOutcome {
+    /// Record one held candidate.
+    pub fn hold(&mut self, reason: &HeldReason) {
+        self.held = self.held.saturating_add(1);
+        self.held_reason.get_or_insert(reason.token());
+    }
+
+    /// Record one collected candidate.
+    pub fn collect(&mut self) {
+        self.collected = self.collected.saturating_add(1);
     }
 }
