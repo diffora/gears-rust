@@ -203,6 +203,7 @@
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-meter-atomic:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-unit-recognition:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-usage-type-resolution:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-read-door:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-create-doors:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-code-reservation:p1
@@ -3482,7 +3483,9 @@ pub(crate) async fn run_publish(
     // The meter recognition re-runs at publish with the head as its own
     // image: a first publish of a draft whose unit was deprecated since it
     // was authored is a NEW declaration by the PRD's reading, and this is
-    // the door that catches it (`inst-mt-recognized`).
+    // the door that catches it (`inst-mt-recognized`). Usage-type resolve
+    // already ran before this transaction (P-D-121 row 19); this phase
+    // never calls out.
     recheck_meter_declaration(runner, inputs, &head, &head, head.published_version == 0).await?;
 
     // -- The edge, and what the floor says it costs. `post_publish_state`
@@ -3791,6 +3794,9 @@ async fn publish_in_one_transaction(
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
     mode: GateMode,
 ) -> Result<MutationOutcome, HeadActError> {
+    // P-D-121 row 19: resolve usageTypeRef *before* the transaction.
+    // The validators phase inside run_publish never calls out.
+    resolve_usage_type_before_publish(state, inputs).await?;
     let outbox = state.sink.clone();
     let gate = Arc::clone(gate);
     let inputs = inputs.clone();
@@ -3812,6 +3818,34 @@ async fn publish_in_one_transaction(
             },
         )
         .await
+}
+
+/// Resolve `usageTypeRef` before the publish transaction (**P-D-121**
+/// row 19, **P-D-131**). Non-usage SKUs never call the resolver.
+///
+/// # Errors
+///
+/// [`HeadActError::Refused`] when the collector answers unknown or is
+/// unavailable; [`HeadActError::Db`] on a storage failure.
+async fn resolve_usage_type_before_publish(
+    state: &ApiState,
+    inputs: &HeadActInputs,
+) -> Result<(), HeadActError> {
+    let conn = state.db.conn().map_err(HeadActError::Db)?;
+    let Some(head) = repo::find_sku(&conn, &inputs.scope, inputs.tenant_id, inputs.sku_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?
+    else {
+        return Ok(());
+    };
+    let Some(usage_type_ref) = head.usage_type_ref.as_deref() else {
+        return Ok(());
+    };
+    crate::domain::recognized::judge_usage_type(
+        crate::domain::recognized::resolve_usage_type(usage_type_ref),
+        usage_type_ref,
+    )
+    .map_err(HeadActError::Refused)
 }
 
 /// [`publish_in_one_transaction`]'s discard twin, on the same terms —
@@ -5931,8 +5965,11 @@ async fn recheck_meter_declaration(
     let Some(unit) = image.metering_unit.as_deref() else {
         return Ok(());
     };
-    let newly_declared = head.metering_unit.as_deref() != Some(unit);
-    if !(newly_declared || first_publish) {
+    if !crate::domain::recognized::declaration_is_new(
+        head.metering_unit.as_deref(),
+        Some(unit),
+        first_publish,
+    ) {
         return Ok(());
     }
 

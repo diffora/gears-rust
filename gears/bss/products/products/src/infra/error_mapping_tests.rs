@@ -46,7 +46,7 @@ fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
         D::IdempotencyConflict(_) => (409, Some("IDEMPOTENCY_CONFLICT")),
         D::IdempotencyKeyInFlight(_) => (409, Some("IDEMPOTENCY_KEY_IN_FLIGHT")),
         D::EntityTerminal(_) => (409, Some("ENTITY_TERMINAL")),
-        D::AuditUnavailable(_) => (503, None),
+        D::AuditUnavailable(_) | D::UsageTypeUnavailable(_) => (503, None),
         D::IllegalTransition { .. } => (409, Some("ILLEGAL_TRANSITION")),
         D::IllegalFieldMutation(_) => (409, Some("ILLEGAL_FIELD_MUTATION")),
         D::ScopeNotContained(_) => (400, Some("SCOPE_NOT_CONTAINED")),
@@ -70,6 +70,7 @@ fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
         D::UnitDelistBlocked(_) => (409, Some("UNIT_DELIST_BLOCKED")),
         D::PlanTierRetireBlocked(_) => (409, Some("PLAN_TIER_RETIRE_BLOCKED")),
         D::AccountingCodeDelistBlocked(_) => (409, Some("ACCOUNTING_CODE_DELIST_BLOCKED")),
+        D::UsageTypeUnresolved(_) => (400, Some("USAGE_TYPE_UNRESOLVED")),
         D::ApprovalRequired(_) => (403, Some("APPROVAL_REQUIRED")),
         D::SelfApprovalForbidden(_) => (403, Some("SELF_APPROVAL_FORBIDDEN")),
         D::ApprovalSuperseded(_) => (409, Some("APPROVAL_SUPERSEDED")),
@@ -177,6 +178,8 @@ fn one_of_every_variant() -> Vec<DomainError> {
         D::UnitDelistBlocked(d()),
         D::PlanTierRetireBlocked(d()),
         D::AccountingCodeDelistBlocked(d()),
+        D::UsageTypeUnresolved(d()),
+        D::UsageTypeUnavailable(d()),
         D::ErasureUnknownActor(d()),
         D::CloneSourceDiscarded(d()),
         D::RequestSourceUnknown(d()),
@@ -237,7 +240,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
 /// arithmetic is frozen history; this note exists so the miscount does not
 /// travel into the next brief, and so a strand that moves one number does not
 /// go looking for a third that is not there.
-const DOMAIN_ERROR_VARIANTS: usize = 61;
+const DOMAIN_ERROR_VARIANTS: usize = 63;
 
 /// Covers all 14 variants (§3.3's own count, `DomainError::code`'s own
 /// exhaustiveness note): every one lands on the status the design ladder

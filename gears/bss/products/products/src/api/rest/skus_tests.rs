@@ -4837,6 +4837,59 @@ mod meter_declaration_tests {
         );
     }
 
+    /// A published head carrying a unit later deprecated still re-publishes
+    /// — the declaration is carried-forward (**P-D-121** row 8).
+    #[tokio::test]
+    async fn a_republish_keeps_a_unit_deprecated_after_it_was_declared() {
+        let harness = harness().await;
+        seed_unit(&harness, "gib_month", "active").await;
+        let (sku_id, etag) = draft_with_etag(&harness).await;
+        let declared = patch_sku(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &json!({ "metering_unit": "gib_month", "usage_type_ref": "usage:storage" }),
+            &[("If-Match", &etag)],
+        )
+        .await;
+        assert_eq!(declared.status(), StatusCode::OK);
+        let first_etag = format!(
+            "\"{}\"",
+            body_json(declared).await["internal_revision"]
+                .as_i64()
+                .expect("a revision")
+        );
+        let published =
+            post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&first_etag)).await;
+        assert_eq!(published.status(), StatusCode::OK);
+        let fresh = format!(
+            "\"{}\"",
+            body_json(published).await["internal_revision"]
+                .as_i64()
+                .expect("a revision")
+        );
+
+        let conn = Database::connect(&harness.dsn)
+            .await
+            .expect("open an auxiliary connection");
+        conn.execute_unprepared(&format!(
+            "UPDATE products_recognized_set SET state = 'deprecated' WHERE member_code = \
+             'gib_month' AND tenant_id = X'{}'",
+            TENANT.simple()
+        ))
+        .await
+        .expect("deprecate the unit after it was declared");
+
+        let republished =
+            post_publish(app_for(&harness, TENANT), TENANT, sku_id, Some(&fresh)).await;
+        assert_eq!(
+            republished.status(),
+            StatusCode::OK,
+            "a carried-forward declaration is not re-judged: {:?}",
+            body_json(republished).await
+        );
+    }
+
     /// **A draft carrying a standing deprecated unit still edits freely.**
     ///
     /// The rule bites on a **new** declaration; a save that re-declares

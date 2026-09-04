@@ -222,6 +222,9 @@ impl From<DomainError> for CanonicalError {
             D::AccountingCodeDelistBlocked(detail) => {
                 aborted(detail, "ACCOUNTING_CODE_DELIST_BLOCKED")
             }
+            D::UsageTypeUnresolved(detail) => {
+                precondition("usage_type_ref", &detail, "USAGE_TYPE_UNRESOLVED")
+            }
             D::IdempotencyConflict(detail) => aborted(detail, "IDEMPOTENCY_CONFLICT"),
             D::IdempotencyKeyInFlight(detail) => aborted(detail, "IDEMPOTENCY_KEY_IN_FLIGHT"),
             D::EntityTerminal(detail) => aborted(detail, "ENTITY_TERMINAL"),
@@ -403,6 +406,14 @@ impl From<DomainError> for CanonicalError {
             D::AuditUnavailable(detail) => {
                 tracing::error!(
                     dependency = "audit_log",
+                    detail,
+                    "bss-products: dependency unavailable"
+                );
+                CanonicalError::service_unavailable().create()
+            }
+            D::UsageTypeUnavailable(detail) => {
+                tracing::error!(
+                    dependency = "usage_type_resolver",
                     detail,
                     "bss-products: dependency unavailable"
                 );

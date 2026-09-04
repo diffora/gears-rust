@@ -205,7 +205,23 @@ fn wire_code_roster() -> Vec<(DomainError, &'static str)> {
         ),
     ];
     roster.extend(governance_wire_codes());
+    roster.extend(usage_type_wire_codes());
     roster
+}
+
+/// Row 19's two collector answers, split out so `wire_code_roster` stays
+/// under `clippy::too_many_lines`.
+fn usage_type_wire_codes() -> Vec<(DomainError, &'static str)> {
+    vec![
+        (
+            DomainError::UsageTypeUnresolved("u".into()),
+            "USAGE_TYPE_UNRESOLVED",
+        ),
+        (
+            DomainError::UsageTypeUnavailable("u".into()),
+            "USAGE_TYPE_UNAVAILABLE",
+        ),
+    ]
 }
 
 /// `05`'s own six, split out so the roster above stays under
@@ -264,7 +280,7 @@ fn every_variant_carries_its_design_set_wire_code() {
     // until today. Read that file's own note before changing either.
     assert_eq!(
         cases.len(),
-        61,
+        63,
         "the Foundation owns fourteen raiseable codes and hosts two guests \
          (retention-erasure's ERASURE_UNKNOWN_ACTOR, P-D-64 keeping that \
          roster at one, and the clone door's CLONE_SOURCE_DISCARDED, \

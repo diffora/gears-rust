@@ -1,7 +1,10 @@
 //! `domain::recognized` — each rule probed on the case whose absence would
 //! ship the defect its instruction names.
 
-use super::{MemberState, SetKind, declaration_verdict, member_edge, meter_pair_complete};
+use super::{
+    MemberState, SetKind, UsageTypeAnswer, declaration_is_new, declaration_verdict,
+    judge_usage_type, member_edge, meter_pair_complete,
+};
 use crate::domain::error::DomainError;
 
 /// The four admitted edges, by name.
@@ -39,6 +42,35 @@ fn the_edge_list_is_closed() {
     }
     member_edge(MemberState::Removed, MemberState::Deprecated)
         .expect_err("a tombstone re-enters the set as active or not at all");
+}
+
+/// P-D-121 row 8: the check runs on a new or changed declaration only.
+#[test]
+fn the_recognized_and_active_check_judges_only_a_new_or_changed_declaration() {
+    assert!(
+        declaration_is_new(None, Some("gold"), true),
+        "first publish is a new declaration"
+    );
+    assert!(
+        !declaration_is_new(Some("gold"), Some("gold"), false),
+        "a carried-forward value is not re-judged"
+    );
+    assert!(
+        declaration_is_new(Some("gold"), Some("silver"), false),
+        "a changed declaration is judged against the current set"
+    );
+}
+
+/// The usage-type resolver's three answers, judged before the transaction.
+#[test]
+fn the_usage_type_resolver_has_three_answers() {
+    judge_usage_type(UsageTypeAnswer::Resolved, "usage:ok").expect("resolved admits");
+    let unknown = judge_usage_type(UsageTypeAnswer::Unresolved, "usage:gone")
+        .expect_err("unknown is USAGE_TYPE_UNRESOLVED");
+    assert_eq!(unknown.code(), "USAGE_TYPE_UNRESOLVED");
+    let down = judge_usage_type(UsageTypeAnswer::Unavailable, "usage:x")
+        .expect_err("unreachable is USAGE_TYPE_UNAVAILABLE");
+    assert_eq!(down.code(), "USAGE_TYPE_UNAVAILABLE");
 }
 
 /// A new declaration's three verdicts: active admits, deprecated refuses
