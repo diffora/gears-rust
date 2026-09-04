@@ -259,6 +259,7 @@ use crate::domain::governance::{
 };
 use crate::domain::idempotency;
 use crate::domain::live_op::GovernedLiveOp;
+use crate::domain::retirement::refuse_create_under_retiring_parent;
 use crate::domain::retirement::{
     effective_at, eol_lockout, publish_reannounces_retirement, replaced_by_must_be_published,
 };
@@ -1366,6 +1367,28 @@ async fn create_sku(
         },
     )
     .await?;
+
+    // `inst-rt-create-guard`: identity continuation. A child under a
+    // retiring parent is an orphan the flip would then have to refuse.
+    {
+        let conn = state.db.conn().map_err(|e| {
+            repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
+        })?;
+        let (live, deferred) = retiring_parent_facts(&conn, &scope, tenant_id, product_id)
+            .await
+            .map_err(|e| repo_error_to_canonical(&e))?;
+        if let Err(refusal) = refuse_create_under_retiring_parent(product_id, live, deferred) {
+            return Err(audit_sku_refusal(
+                &state,
+                &scope,
+                tenant_id,
+                actor_ref,
+                &trimmed_sku_code,
+                refusal.into_domain_error(),
+            )
+            .await);
+        }
+    }
 
     // -- 7. The mutation: the idempotency claim, the entity row, its
     // creation outbox row and the answer written back into the claim, one
@@ -2682,6 +2705,20 @@ pub(crate) fn confirmation_must_hold(confirmed: bool) -> Result<(), DomainError>
     Err(DomainError::Validation(report))
 }
 
+/// Prefetch for [`refuse_create_under_retiring_parent`] — live scheduled
+/// retire on the parent, or an unresolved deferred-retirement row.
+async fn retiring_parent_facts(
+    runner: &(impl toolkit_db::secure::DBRunner + Sync),
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    parent_id: Uuid,
+) -> Result<(bool, bool), RepoError> {
+    let intents = repo::find_live_retire_intents(runner, scope, tenant_id, parent_id).await?;
+    let deferral =
+        repo::find_unresolved_deferred_retirement(runner, scope, tenant_id, parent_id).await?;
+    Ok((!intents.is_empty(), deferral.is_some()))
+}
+
 pub(crate) fn no_live_retire_intent() -> DomainError {
     let mut report = ValidationReport::new();
     report.violate(
@@ -2707,7 +2744,7 @@ pub(crate) fn interim_retirement_lead() -> Duration {
 /// It has no refusal arm, and that is the point of [`HeadActError`]: a
 /// refusal decided inside the transaction has to roll it back, and
 /// `transaction_with_retry` commits on `Ok`.
-enum MutationOutcome {
+pub(crate) enum MutationOutcome {
     /// The act ran: the revision the `ETag` is minted from, and the body
     /// rendered and stored inside the transaction that wrote it.
     Applied {
@@ -2756,7 +2793,7 @@ enum MutationOutcome {
 /// the two are owed a single home, and `crate::api::rest` is where it would
 /// go — that module is a neighbour's in this phase, so the copy stays local
 /// and the sharing is owed.
-enum HeadActError {
+pub(crate) enum HeadActError {
     /// A domain refusal decided inside the transaction: the idempotency
     /// phase's, terminality, the precondition, the re-validation re-run, the
     /// edge, the gate, or the head-row write's own `Unmatched` once
@@ -2833,23 +2870,23 @@ fn head_act_contention_db_err(error: &HeadActError) -> Option<&DbErr> {
 /// claim's window with it. The envelope id the act eventually enqueues is not
 /// one of them; see [`insert_sku_with_event`] for why that is harmless.
 #[derive(Clone)]
-struct HeadActInputs {
+pub(crate) struct HeadActInputs {
     /// The compiled scope every read and write of the act runs under.
-    scope: AccessScope,
+    pub(crate) scope: AccessScope,
     /// Owning tenant.
-    tenant_id: Uuid,
+    pub(crate) tenant_id: Uuid,
     /// The head being acted on.
-    sku_id: Uuid,
+    pub(crate) sku_id: Uuid,
     /// The pseudonymous ref the frozen version row attributes the publish to.
-    actor_ref: Uuid,
+    pub(crate) actor_ref: Uuid,
     /// The revision the caller pinned, as the head-row filter compares it
     /// (**P-D-33**) — never a value this door re-read.
-    expected: i64,
+    pub(crate) expected: i64,
     /// The act's instant, stamped once before the first attempt.
-    now: DateTime<Utc>,
+    pub(crate) now: DateTime<Utc>,
     /// The claim to take as the transaction's first statement, or `None`
     /// where the request carried no key (P-D-34's skip).
-    claim: Option<IdempotencyClaimInput>,
+    pub(crate) claim: Option<IdempotencyClaimInput>,
 }
 
 /// Take the act's idempotency claim, if it carries one, on the mutation's own
@@ -3357,7 +3394,7 @@ fn head_act_internal(detail: String) -> HeadActError {
 /// and audited by [`answer_head_act`]; [`HeadActError::Vanished`] where the
 /// head left the caller's scope; [`HeadActError::Db`] on storage or on an
 /// unreachable gate host.
-async fn run_publish(
+pub(crate) async fn run_publish(
     runner: &(impl toolkit_db::secure::DBRunner + Sync),
     inputs: &HeadActInputs,
     gate: &(dyn GovernanceGate + Send + Sync),
@@ -4682,9 +4719,8 @@ async fn run_undeprecate(
 /// GateMode::Gate)` after the edge and domain refusals, before the write.
 /// `NoMaterialityPolicyGate` authorizes under `Gate`.
 ///
-/// 02's content-PII write block has no callable hook in this crate; `reason`
-/// is accepted so the hook has a home. `enqueue_retired` is not in
-/// `events.rs` (forbidden); the row is persisted without a broker event.
+/// `reason` runs `content_pii_block`. Initiation emits `SkuRetired`.
+/// `RetirementScheduled` is the door's audit row — no broker event.
 ///
 /// # Errors
 ///
@@ -4767,7 +4803,9 @@ async fn retire_sku_gated(
         claim,
     };
 
-    let outcome = retire_in_one_transaction(state, &inputs, gate, request).await;
+    let detector =
+        crate::api::rest::retention::tenant_pii_detector(state, inputs.tenant_id).await?;
+    let outcome = retire_in_one_transaction(state, &inputs, gate, &detector, request).await;
     answer_head_act(state, &act, sku_id, head.internal_revision, outcome).await
 }
 
@@ -4775,9 +4813,12 @@ async fn retire_in_one_transaction(
     state: &ApiState,
     inputs: &HeadActInputs,
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
+    detector: &Arc<dyn PiiDetector + Send + Sync>,
     request: RetireSkuRequest,
 ) -> Result<MutationOutcome, HeadActError> {
+    let outbox = state.sink.clone();
     let gate = Arc::clone(gate);
+    let detector = Arc::clone(detector);
     let inputs = inputs.clone();
     state
         .db
@@ -4786,10 +4827,22 @@ async fn retire_in_one_transaction(
             TxConfig::default(),
             head_act_contention_db_err,
             move |tx| {
+                let outbox = outbox.clone();
                 let gate = Arc::clone(&gate);
+                let detector = Arc::clone(&detector);
                 let inputs = inputs.clone();
                 let request = request.clone();
-                Box::pin(async move { run_retire(tx, &inputs, gate.as_ref(), &request).await })
+                Box::pin(async move {
+                    run_retire(
+                        tx,
+                        &inputs,
+                        gate.as_ref(),
+                        detector.as_ref(),
+                        &request,
+                        &outbox,
+                    )
+                    .await
+                })
             },
         )
         .await
@@ -4799,7 +4852,9 @@ async fn run_retire(
     runner: &(impl toolkit_db::secure::DBRunner + Sync),
     inputs: &HeadActInputs,
     gate: &(dyn GovernanceGate + Send + Sync),
+    detector: &(dyn PiiDetector + Send + Sync),
     request: &RetireSkuRequest,
+    outbox: &crate::infra::broker::EventSink,
 ) -> Result<MutationOutcome, HeadActError> {
     if let Some(replay) = claim_for_head_act(runner, inputs).await? {
         return Ok(replay);
@@ -4819,8 +4874,10 @@ async fn run_retire(
 
     confirmation_must_hold(request.confirmed).map_err(HeadActError::Refused)?;
 
-    // 02's content-PII write block is not a callable hook in this crate.
-    // Do not invent CONTENT_PII_BLOCKED. Tests use clean reason text.
+    // @cpt-dod:cpt-cf-bss-products-dod-retirement-initiation:p1 — reason PII.
+    content_pii_block(detector, "reason", &request.reason).map_err(|blocked| {
+        HeadActError::Refused(DomainError::ContentPiiBlocked(blocked.into_detail()))
+    })?;
 
     eol_lockout(false, request.must_migrate_by.is_some())
         .map_err(|refusal| HeadActError::Refused(refusal.into_domain_error()))?;
@@ -4944,8 +5001,36 @@ async fn run_retire(
         .map_err(|e| HeadActError::from_repo(&e))?
         .ok_or(HeadActError::Vanished)?;
 
-    // `enqueue_retired` is absent from the forbidden `events.rs`. Do not
-    // enqueue a core-only `SkuRetired` and pretend the payload is complete.
+    // RetirementScheduled is the door's audit row (action `retire`); it
+    // is not a broker event. SkuRetired is the initiation announcement.
+    let core = events::EventBodyCore {
+        tenant_id: image.tenant_id,
+        entity_kind: events::EntityKind::Sku.as_str(),
+        entity_id: image.sku_id,
+        internal_revision: image.internal_revision,
+        lifecycle_state: image.lifecycle_state.as_str(),
+    };
+    events::enqueue_retired(
+        outbox,
+        runner,
+        inputs.sku_id,
+        events::SKU_RETIRED_PAYLOAD_TYPE,
+        events::RetiredEventBody {
+            core: &core,
+            from_version: image.published_version,
+            reason: request.reason.clone(),
+            replaced_by: request.replaced_by,
+            effective_at: at.to_rfc3339_opts(SecondsFormat::Secs, true),
+            must_migrate_by: None,
+        },
+        inputs.actor_ref,
+    )
+    .await
+    .map_err(|e| {
+        HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+            "enqueue SkuRetired: {e}"
+        ))))
+    })?;
     answer_head_without_event(runner, inputs, &image).await
 }
 
@@ -6079,6 +6164,14 @@ async fn run_save(
     // judged over the image this save would leave. --
     let image = post_save_image(&head, &save, inputs.now);
     recheck_parent_containment(runner, inputs, &image).await?;
+    if save.product_id.is_some() {
+        let (live, deferred) =
+            retiring_parent_facts(runner, &inputs.scope, inputs.tenant_id, image.product_id)
+                .await
+                .map_err(|e| HeadActError::from_repo(&e))?;
+        refuse_create_under_retiring_parent(image.product_id, live, deferred)
+            .map_err(|refusal| HeadActError::Refused(refusal.into_domain_error()))?;
+    }
     recheck_meter_declaration(runner, inputs, &head, &image, false).await?;
 
     // -- Phase 7, the governance gate, in `Gate` mode: asked at every

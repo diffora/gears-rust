@@ -153,6 +153,12 @@ pub mod labels {
     /// existed.
     pub const METADATA: &str = gts_id!("cf.bss.products.metadata.v1~");
 
+    /// A scheduled transition — `read` and `cancel` (**P-D-134**). `× write`
+    /// is not minted: the retire doors write the rows under `sku × write` /
+    /// `product × write` today, and a pair no door spends is a grant nobody
+    /// can review.
+    pub const SCHEDULED_TRANSITION: &str = gts_id!("cf.bss.products.scheduled_transition.v1~");
+
     /// Every authz label this module declares, stable order. The single
     /// canonical list driving [`super::authz_label_type_schemas`]'s stub
     /// registration. MUST match the permission catalog's distinct
@@ -177,6 +183,7 @@ pub mod labels {
         CATEGORY,
         ATTRIBUTE_DEFINITION,
         METADATA,
+        SCHEDULED_TRANSITION,
     ];
 }
 
@@ -231,6 +238,11 @@ pub mod actions {
     /// Export action — taking audit content out of the gear, as opposed to
     /// reading it in place.
     pub const EXPORT: &str = "export";
+    /// Cancel action — the governed abort of a live scheduled transition
+    /// (`POST /bss-products/v1/scheduled-transitions/{id}/operations`,
+    /// `op: cancel`; **P-D-114**, **P-D-134**). Distinct from `write`: the
+    /// catalog-admin who aborts an intent is not thereby the one who wrote it.
+    pub const CANCEL: &str = "cancel";
 
     // `EXECUTE` is declared above, by `09`'s import door — `10`'s erasure
     // request spends the same action name on its own resource, which is what
@@ -309,6 +321,9 @@ pub mod resource_types {
     /// The entity metadata map — `write`.
     pub const METADATA: ResourceType =
         ResourceType::from_static(labels::METADATA, SUPPORTED_PROPERTIES);
+    /// A scheduled transition — `read`, `cancel`.
+    pub const SCHEDULED_TRANSITION: ResourceType =
+        ResourceType::from_static(labels::SCHEDULED_TRANSITION, SUPPORTED_PROPERTIES);
 }
 
 /// Error from the registry's PEP gate.

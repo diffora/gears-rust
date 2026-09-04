@@ -93,6 +93,7 @@ impl LifecycleRefusal {
     }
 
     /// The runner's own raising door.
+    /// @cpt-dod:cpt-cf-bss-products-dod-lifecycle-errors:p1
     #[must_use]
     pub fn schedule_stale_approval(detail: impl Into<String>) -> Self {
         Self {

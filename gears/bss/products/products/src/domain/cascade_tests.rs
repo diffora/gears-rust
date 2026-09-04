@@ -66,6 +66,7 @@ fn the_parent_flip_waits_for_every_child_to_be_terminal() {
         LifecycleState::Discarded
     ]));
     assert!(parent_flip_clears(&[]));
+    assert_eq!(super::PARENT_FLIP_HELD_REASON, "any child is non-terminal");
 }
 
 #[test]

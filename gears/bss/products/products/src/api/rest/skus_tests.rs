@@ -2359,7 +2359,7 @@ async fn enqueued_event_body(dsn: &str, payload_type: &str) -> serde_json::Value
         dsn,
         &format!(
             "SELECT CAST(payload AS TEXT) AS v FROM {body_table} \
-             WHERE payload_type = '{payload_type}'"
+             WHERE payload_type = '{payload_type}' ORDER BY id DESC LIMIT 1"
         ),
     )
     .await
@@ -5267,8 +5267,8 @@ mod retire_door_tests {
         assert_eq!(body["entityId"], json!(sku_id.to_string()));
         assert_eq!(
             enqueued_event_count(&harness.dsn, "SkuRetired").await,
-            1,
-            "initiation still emits none; this row is the re-announcement"
+            2,
+            "initiation emits one; this later row is the re-announcement"
         );
     }
 
@@ -5386,6 +5386,11 @@ mod retire_door_tests {
         assert_eq!(head.lifecycle_state.as_str(), "deprecated");
         assert_eq!(head.deprecation_provenance, Some(Provenance::Direct));
         assert_eq!(live_intent_count(&harness, sku_id).await, 1);
+        assert_eq!(
+            enqueued_event_count(&harness.dsn, "SkuRetired").await,
+            1,
+            "P-D-115: SkuRetired at initiation"
+        );
     }
 
     #[tokio::test]
@@ -5858,5 +5863,103 @@ async fn a_refused_sku_content_save_moves_no_revision() {
         .await,
         1,
         "and the revision did not move"
+    );
+}
+
+/// `inst-rt-create-guard`: a SKU created under a Product that holds a live
+/// retire intent is refused `RETIREMENT_PENDING`.
+#[tokio::test]
+async fn creating_a_sku_under_a_retiring_parent_is_retirement_pending() {
+    let harness = harness().await;
+    let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let conn = harness
+        .db
+        .conn()
+        .expect("checkout the pinned production connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    repo::insert_scheduled_transition(
+        &conn,
+        &scope,
+        &repo::NewScheduledTransition {
+            transition_id: Uuid::now_v7(),
+            tenant_id: TENANT,
+            entity_kind: "product".to_owned(),
+            entity_id: parent_id,
+            kind: "retire".to_owned(),
+            at: Utc.with_ymd_and_hms(2026, 12, 1, 0, 0, 0).unwrap(),
+            approval_ref: Uuid::now_v7(),
+            retirement_reason: Some("fixture".to_owned()),
+            now: Utc.with_ymd_and_hms(2026, 9, 4, 10, 0, 0).unwrap(),
+        },
+    )
+    .await
+    .expect("seed a live retire intent on the parent");
+
+    let refused = post_create_sku(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "product_id": parent_id, "sku_code": "SKU-RT-CREATE" }),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        audit_error_code(&harness.dsn).await.as_deref(),
+        Some("RETIREMENT_PENDING")
+    );
+    assert_eq!(
+        raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_sku").await,
+        0,
+        "a refused create writes no SKU"
+    );
+}
+
+/// `inst-rt-create-guard` on save: re-parenting a draft onto a retiring
+/// Product is the same refusal.
+#[tokio::test]
+async fn reparenting_a_sku_onto_a_retiring_parent_is_retirement_pending() {
+    let harness = harness().await;
+    let home = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let mut retiring_row = new_parent_product(Uuid::now_v7(), TENANT);
+    retiring_row.name = "Fibre Line B".to_owned();
+    retiring_row.name_normalized = "fibre line b".to_owned();
+    let retiring = seed_parent(&harness, retiring_row).await;
+    let (sku_id, etag) = seed_draft_sku(&harness, home, "SKU-RT-SAVE").await;
+
+    let conn = harness
+        .db
+        .conn()
+        .expect("checkout the pinned production connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    repo::insert_scheduled_transition(
+        &conn,
+        &scope,
+        &repo::NewScheduledTransition {
+            transition_id: Uuid::now_v7(),
+            tenant_id: TENANT,
+            entity_kind: "product".to_owned(),
+            entity_id: retiring,
+            kind: "retire".to_owned(),
+            at: Utc.with_ymd_and_hms(2026, 12, 1, 0, 0, 0).unwrap(),
+            approval_ref: Uuid::now_v7(),
+            retirement_reason: Some("fixture".to_owned()),
+            now: Utc.with_ymd_and_hms(2026, 9, 4, 10, 0, 0).unwrap(),
+        },
+    )
+    .await
+    .expect("seed a live retire intent on the target parent");
+
+    let refused = save_sku_at(&harness, sku_id, &etag, &json!({ "product_id": retiring })).await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        audit_error_code(&harness.dsn).await.as_deref(),
+        Some("RETIREMENT_PENDING")
+    );
+    let stayed = repo::find_sku(&conn, &scope, TENANT, sku_id)
+        .await
+        .expect("find")
+        .expect("row");
+    assert_eq!(
+        stayed.product_id, home,
+        "a refused re-parent leaves the SKU where it was"
     );
 }

@@ -12,7 +12,7 @@
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
-use sea_orm::{ColumnTrait, Condition, EntityTrait, ExprTrait};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, ExprTrait, QuerySelect};
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
@@ -25,7 +25,7 @@ use crate::domain::deprecation::Provenance;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{deferred_retirement, product, scheduled_transition, sku};
 
-use super::{HeadWrite, driver_failure};
+use super::{HeadWrite, TenantIdRow, driver_failure};
 
 /// Columns a new scheduled-transition row carries at insert.
 #[derive(Debug, Clone)]
@@ -218,6 +218,82 @@ pub async fn find_deferred_retirement(
         })
 }
 
+/// The open deferred-retirement row for one Product, if any.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn find_unresolved_deferred_retirement(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    product_id: Uuid,
+) -> Result<Option<deferred_retirement::Model>, RepoError> {
+    deferred_retirement::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(deferred_retirement::Column::TenantId.eq(tenant_id))
+                .add(deferred_retirement::Column::ProductId.eq(product_id))
+                .add(deferred_retirement::Column::ResolvedAt.is_null()),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| driver_failure(format!("unresolved deferred retirement of {product_id}"), e))
+}
+
+/// SKU ids whose live `replaced_by_sku_id` names `target`.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn find_skus_pointing_at(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    target: Uuid,
+) -> Result<Vec<Uuid>, RepoError> {
+    let rows = sku::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(sku::Column::TenantId.eq(tenant_id))
+                .add(sku::Column::ReplacedBySkuId.eq(target))
+                .add(sku::Column::LifecycleState.ne(LifecycleState::Discarded.as_str())),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("skus pointing at {target}"), e))?;
+    Ok(rows.into_iter().map(|row| row.sku_id).collect())
+}
+
+/// Deferred transitions whose announced `at` is older than `cutoff`.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn list_held_deferrals(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    cutoff: DateTime<Utc>,
+) -> Result<Vec<scheduled_transition::Model>, RepoError> {
+    scheduled_transition::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(scheduled_transition::Column::TenantId.eq(tenant_id))
+                .add(scheduled_transition::Column::State.eq("deferred"))
+                .add(scheduled_transition::Column::At.lte(cutoff)),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("held deferrals for {tenant_id}"), e))
+}
+
 /// Live retire intents for one entity (`pending`/`running`/`deferred`).
 ///
 /// # Errors
@@ -244,7 +320,94 @@ pub async fn find_live_retire_intents(
         .map_err(|e| driver_failure(format!("live retire intents of {entity_id}"), e))
 }
 
+/// Rows a tick may act on: due `pending`/`deferred`, or `running` past the lease.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn list_due_transitions(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    now: DateTime<Utc>,
+    lease: ClaimLease,
+) -> Result<Vec<scheduled_transition::Model>, RepoError> {
+    let cutoff = now - lease.ttl;
+    scheduled_transition::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(scheduled_transition::Column::TenantId.eq(tenant_id))
+                .add(
+                    Condition::any()
+                        .add(
+                            Condition::all()
+                                .add(
+                                    scheduled_transition::Column::State
+                                        .is_in(["pending", "deferred"]),
+                                )
+                                .add(scheduled_transition::Column::At.lte(now)),
+                        )
+                        .add(
+                            Condition::all()
+                                .add(scheduled_transition::Column::State.eq("running"))
+                                .add(scheduled_transition::Column::ClaimedAt.is_not_null())
+                                .add(scheduled_transition::Column::ClaimedAt.lte(cutoff)),
+                        ),
+                ),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("list due scheduled transitions for {tenant_id}"), e))
+}
+
+/// Tenants holding a row [`list_due_transitions`] would return.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn tenants_with_due_transitions(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    now: DateTime<Utc>,
+    lease: ClaimLease,
+) -> Result<Vec<Uuid>, RepoError> {
+    let cutoff = now - lease.ttl;
+    let rows: Vec<TenantIdRow> = scheduled_transition::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::any()
+                .add(
+                    Condition::all()
+                        .add(scheduled_transition::Column::State.is_in(["pending", "deferred"]))
+                        .add(scheduled_transition::Column::At.lte(now)),
+                )
+                .add(
+                    Condition::all()
+                        .add(scheduled_transition::Column::State.eq("running"))
+                        .add(scheduled_transition::Column::ClaimedAt.is_not_null())
+                        .add(scheduled_transition::Column::ClaimedAt.lte(cutoff)),
+                ),
+        )
+        .project_all(runner, |q| {
+            q.select_only()
+                .column(scheduled_transition::Column::TenantId)
+                .distinct()
+                .into_model::<TenantIdRow>()
+        })
+        .await
+        .map_err(|e| driver_failure("discover due scheduled transitions".to_owned(), e))?;
+    let mut tenants: Vec<Uuid> = rows.into_iter().map(|row| row.tenant_id).collect();
+    tenants.sort();
+    Ok(tenants)
+}
+
 /// Atomic claim: `pending|deferred → running` when `at` is due.
+///
+/// **P-D-113 arm 3**: `attempt` increments here, on the claim statement
+/// itself. First claim, re-poll after a deferral — each spends one.
 ///
 /// # Errors
 ///
@@ -262,6 +425,10 @@ pub async fn claim_due_transition(
         .col_expr(scheduled_transition::Column::State, Expr::value("running"))
         .col_expr(scheduled_transition::Column::ClaimedAt, Expr::value(now))
         .col_expr(scheduled_transition::Column::UpdatedAt, Expr::value(now))
+        .col_expr(
+            scheduled_transition::Column::Attempt,
+            Expr::col(scheduled_transition::Column::Attempt).add(Expr::val(1_i32)),
+        )
         .filter(
             Condition::all()
                 .add(scheduled_transition::Column::TenantId.eq(tenant_id))
@@ -276,7 +443,7 @@ pub async fn claim_due_transition(
 }
 
 /// Lease reclaim: `running → pending`, `attempt += 1`, `claimed_at` cleared.
-/// The lease is the caller's — §7 row 8 is open, this writer does not mint one.
+/// The lease is a try of its own (P-D-113); the numbers come from config.
 ///
 /// # Errors
 ///
@@ -318,8 +485,8 @@ pub async fn reclaim_expired_lease(
 }
 
 /// Finish a `running` row. The stored state comes from [`RunFinish`] so a
-/// raw `"pending"` cannot un-finish the row. A transient (or flip-guard)
-/// deferral increments `attempt` so the next classify sees the spent try.
+/// raw `"pending"` cannot un-finish the row. `attempt` is not moved here:
+/// the claim already spent one, and a later re-poll spends the next.
 ///
 /// # Errors
 ///
@@ -336,7 +503,7 @@ pub async fn finish_scheduled_transition(
         RunFinish::Applied => None,
         RunFinish::Failed { reason } | RunFinish::Deferred { reason, .. } => Some(reason.clone()),
     };
-    let mut update = scheduled_transition::Entity::update_many()
+    let update = scheduled_transition::Entity::update_many()
         .secure()
         .scope_with(scope)
         .col_expr(
@@ -348,12 +515,6 @@ pub async fn finish_scheduled_transition(
             Expr::value(outcome_reason),
         )
         .col_expr(scheduled_transition::Column::UpdatedAt, Expr::value(now));
-    if matches!(finish, RunFinish::Deferred { .. }) {
-        update = update.col_expr(
-            scheduled_transition::Column::Attempt,
-            Expr::col(scheduled_transition::Column::Attempt).add(Expr::val(1_i32)),
-        );
-    }
     let result = update
         .filter(
             Condition::all()
@@ -364,6 +525,64 @@ pub async fn finish_scheduled_transition(
         .exec(runner)
         .await
         .map_err(|e| driver_failure(format!("finish scheduled transition {transition_id}"), e))?;
+    Ok(result.rows_affected == 1)
+}
+
+/// Tenant-scoped list for the scheduled-transition read door (**P-D-134**).
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn list_scheduled_transitions(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    state: Option<&str>,
+) -> Result<Vec<scheduled_transition::Model>, RepoError> {
+    let mut filter = Condition::all().add(scheduled_transition::Column::TenantId.eq(tenant_id));
+    if let Some(state) = state {
+        filter = filter.add(scheduled_transition::Column::State.eq(state));
+    }
+    scheduled_transition::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(filter)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("list scheduled transitions for {tenant_id}"), e))
+}
+
+/// Supersede one live row by id — the governed cancel (**P-D-114**).
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn supersede_scheduled_transition(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    transition_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<bool, RepoError> {
+    let result = scheduled_transition::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            scheduled_transition::Column::State,
+            Expr::value("superseded"),
+        )
+        .col_expr(scheduled_transition::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(scheduled_transition::Column::TenantId.eq(tenant_id))
+                .add(scheduled_transition::Column::TransitionId.eq(transition_id))
+                .add(scheduled_transition::Column::State.is_in(["pending", "running", "deferred"])),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| {
+            driver_failure(format!("supersede scheduled transition {transition_id}"), e)
+        })?;
     Ok(result.rows_affected == 1)
 }
 
@@ -719,6 +938,91 @@ pub async fn deprecate_sku_head_with_replacement(
         .exec(runner)
         .await
         .map_err(|e| driver_failure(format!("deprecate sku {sku_id} with replacement"), e))?;
+    if result.rows_affected == 0 {
+        return Ok(HeadWrite::Unmatched);
+    }
+    Ok(HeadWrite::Applied)
+}
+
+/// Flip a SKU `deprecated → retired`. The runner is this edge's door
+/// (**P-D-113**): no wire surface writes it.
+///
+/// # Errors
+///
+/// [`RepoError::Driver`] on a storage failure. An inadmissible write is
+/// [`HeadWrite::Unmatched`].
+pub async fn retire_sku_head(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    sku_id: Uuid,
+    expected_internal_revision: i64,
+    now: DateTime<Utc>,
+) -> Result<HeadWrite, RepoError> {
+    let result = sku::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            sku::Column::LifecycleState,
+            Expr::value(LifecycleState::Retired.as_str()),
+        )
+        .col_expr(
+            sku::Column::InternalRevision,
+            Expr::col(sku::Column::InternalRevision).add(Expr::val(1_i64)),
+        )
+        .col_expr(sku::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(sku::Column::TenantId.eq(tenant_id))
+                .add(sku::Column::SkuId.eq(sku_id))
+                .add(sku::Column::InternalRevision.eq(expected_internal_revision))
+                .add(sku::Column::LifecycleState.eq(LifecycleState::Deprecated.as_str())),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("retire sku {sku_id}"), e))?;
+    if result.rows_affected == 0 {
+        return Ok(HeadWrite::Unmatched);
+    }
+    Ok(HeadWrite::Applied)
+}
+
+/// Flip a Product `deprecated → retired`, same terms as [`retire_sku_head`].
+///
+/// # Errors
+///
+/// [`RepoError::Driver`] on a storage failure. An inadmissible write is
+/// [`HeadWrite::Unmatched`].
+pub async fn retire_product_head(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    product_id: Uuid,
+    expected_internal_revision: i64,
+    now: DateTime<Utc>,
+) -> Result<HeadWrite, RepoError> {
+    let result = product::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            product::Column::LifecycleState,
+            Expr::value(LifecycleState::Retired.as_str()),
+        )
+        .col_expr(
+            product::Column::InternalRevision,
+            Expr::col(product::Column::InternalRevision).add(Expr::val(1_i64)),
+        )
+        .col_expr(product::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(product::Column::TenantId.eq(tenant_id))
+                .add(product::Column::ProductId.eq(product_id))
+                .add(product::Column::InternalRevision.eq(expected_internal_revision))
+                .add(product::Column::LifecycleState.eq(LifecycleState::Deprecated.as_str())),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("retire product {product_id}"), e))?;
     if result.rows_affected == 0 {
         return Ok(HeadWrite::Unmatched);
     }

@@ -255,8 +255,11 @@ pub(crate) const SKU_RETIRED_PAYLOAD_TYPE: &str = "SkuRetired";
 /// token and is not added.
 pub(crate) const PRODUCT_RETIRED_PAYLOAD_TYPE: &str = "ProductRetired";
 
-/// `SkuRetirementEffective` — the SKU flip. No Product analogue (row 5).
+/// `SkuRetirementEffective` — the SKU flip.
 pub(crate) const SKU_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE: &str = "SkuRetirementEffective";
+
+/// `ProductRetirementEffective` — the Product flip (**P-D-115** row 5).
+pub(crate) const PRODUCT_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE: &str = "ProductRetirementEffective";
 
 /// The five taxonomy-tree acts (`dod-taxonomy-events`), all ordering on
 /// [`crate::infra::taxonomy::TAXONOMY_TREE_AGGREGATE`] — one aggregate per
@@ -448,6 +451,10 @@ pub(crate) const SCHEMA_REFS: &[(&str, &str)] = &[
     (
         SKU_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE,
         "bss-products.SkuRetirementEffective.v1.0.0",
+    ),
+    (
+        PRODUCT_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE,
+        "bss-products.ProductRetirementEffective.v1.0.0",
     ),
     (
         CATEGORY_CREATED_PAYLOAD_TYPE,
@@ -649,8 +656,8 @@ pub(crate) struct DeprecatedEventBody<'core> {
 /// in v1; the schema must round-trip that absence, not a null.
 ///
 /// `replaced_by` is SKU-only. Product initiation leaves it `None`.
-/// `SkuRetirementEffective` reuses this shape; row 5 (Product flip) stays
-/// open and has no token here.
+/// Both flip tokens reuse this shape. Product initiation and
+/// `ProductRetirementEffective` leave `replaced_by` `None`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RetiredEventBody<'core> {
@@ -1053,7 +1060,10 @@ pub(crate) async fn enqueue(
     }
     if matches!(
         payload_type,
-        PRODUCT_RETIRED_PAYLOAD_TYPE | SKU_RETIRED_PAYLOAD_TYPE
+        PRODUCT_RETIRED_PAYLOAD_TYPE
+            | SKU_RETIRED_PAYLOAD_TYPE
+            | SKU_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE
+            | PRODUCT_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE
     ) {
         return Err(EventsError::RetirementNeedsBody(payload_type.to_owned()));
     }
@@ -1109,6 +1119,16 @@ pub(crate) async fn enqueue(
                 SKU_DISCARDED_PAYLOAD_TYPE => {
                     producer
                         .enqueue(runner, broker::SkuDiscarded { core: body })
+                        .await
+                }
+                PRODUCT_UNDEPRECATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::ProductUndeprecated { core: body })
+                        .await
+                }
+                SKU_UNDEPRECATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::SkuUndeprecated { core: body })
                         .await
                 }
                 // Not `UnregisteredSchema`: that variant's own doc says
@@ -1530,7 +1550,10 @@ pub(crate) async fn enqueue_retired(
 ) -> Result<(), EventsError> {
     if !matches!(
         payload_type,
-        PRODUCT_RETIRED_PAYLOAD_TYPE | SKU_RETIRED_PAYLOAD_TYPE
+        PRODUCT_RETIRED_PAYLOAD_TYPE
+            | SKU_RETIRED_PAYLOAD_TYPE
+            | SKU_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE
+            | PRODUCT_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE
     ) {
         return Err(EventsError::NotARetirementEvent(payload_type.to_owned()));
     }
@@ -1547,7 +1570,79 @@ pub(crate) async fn enqueue_retired(
             )
             .await
         }
-        EventSink::Broker(_) => Err(EventsError::NoTypedEvent(payload_type.to_owned())),
+        EventSink::Broker(producer) => {
+            let core = broker::CatalogEventCore::from_core(body.core, actor_ref);
+            let from_version = body.from_version;
+            let reason = body.reason.clone();
+            let replaced_by = body.replaced_by;
+            let effective_at = body.effective_at.clone();
+            let must_migrate_by = body.must_migrate_by.clone();
+            match payload_type {
+                PRODUCT_RETIRED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(
+                            runner,
+                            broker::ProductRetired {
+                                core,
+                                from_version,
+                                reason,
+                                replaced_by,
+                                effective_at,
+                                must_migrate_by,
+                            },
+                        )
+                        .await
+                }
+                SKU_RETIRED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(
+                            runner,
+                            broker::SkuRetired {
+                                core,
+                                from_version,
+                                reason,
+                                replaced_by,
+                                effective_at,
+                                must_migrate_by,
+                            },
+                        )
+                        .await
+                }
+                SKU_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(
+                            runner,
+                            broker::SkuRetirementEffective {
+                                core,
+                                from_version,
+                                reason,
+                                replaced_by,
+                                effective_at,
+                                must_migrate_by,
+                            },
+                        )
+                        .await
+                }
+                PRODUCT_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(
+                            runner,
+                            broker::ProductRetirementEffective {
+                                core,
+                                from_version,
+                                reason,
+                                replaced_by,
+                                effective_at,
+                                must_migrate_by,
+                            },
+                        )
+                        .await
+                }
+                other => return Err(EventsError::NoTypedEvent(other.to_owned())),
+            }
+            .map(|_| ())
+            .map_err(EventsError::Broker)
+        }
     }
 }
 

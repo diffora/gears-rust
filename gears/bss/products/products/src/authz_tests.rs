@@ -49,6 +49,7 @@ fn labels_all_carries_every_declared_label_in_order() {
             labels::CATEGORY,
             labels::ATTRIBUTE_DEFINITION,
             labels::METADATA,
+            labels::SCHEDULED_TRANSITION,
         ]
     );
 }
@@ -365,6 +366,7 @@ async fn read_path_returns_pdp_scope_without_membership_check() {
 /// this catalog, the roster being *"one closed set under a two-way
 /// set-equality assertion, and a closed set takes one writer"*.
 #[test]
+#[allow(clippy::single_element_loop)]
 fn the_catalog_carries_the_built_slices_rows_and_withholds_the_rest() {
     // The rows owned by slices whose doors ship (01, 06, 07, 09) plus 05's own.
     let declared = [
@@ -393,6 +395,11 @@ fn the_catalog_carries_the_built_slices_rows_and_withholds_the_rest() {
         labels::CATEGORY,
         labels::ATTRIBUTE_DEFINITION,
         labels::METADATA,
+        // 04's pair, arrived with the P-D-134 scheduled-transition doors —
+        // rotated off the withheld list below in the same commit as the two
+        // routes. `× write` is not minted: retire doors write the rows under
+        // `sku × write` / `product × write`.
+        labels::SCHEDULED_TRANSITION,
     ];
     for label in declared {
         assert!(
@@ -409,10 +416,10 @@ fn the_catalog_carries_the_built_slices_rows_and_withholds_the_rest() {
 
     // The deliberate absences, each with the slice that owes it. These are
     // not oversights: §3.2 assigns them, and a grant declared here with no
-    // owning door is a grant nobody can review.
+    // owning door is a grant nobody can review. The loop stays a loop so a
+    // second owed row does not change the shape.
     for owed in [
-        "cf.bss.products.scheduled_transition.v1~", // 04
-        "cf.bss.products.freeze_participant.v1~",   // 06, with its governed-set door
+        "cf.bss.products.freeze_participant.v1~", // 06, with its governed-set door
     ] {
         assert!(
             !labels::ALL.iter().any(|label| label.contains(owed)),
@@ -437,6 +444,7 @@ fn the_governance_actions_are_not_aliases() {
         actions::DECIDE,
         actions::ELEVATE,
         actions::EXPORT,
+        actions::CANCEL,
     ];
     for action in governance {
         assert_ne!(

@@ -205,27 +205,13 @@ pub const fn reversal_admits(stored: Option<Provenance>) -> bool {
 /// precisely the staleness the *"re-checked at flip"* clause exists to
 /// refuse.
 ///
-/// # Errors
-///
-/// [`DomainError::ParentTerminal`] naming the count, where any child is
-/// `published`. **The code choice is provisional and its question is
-/// registered** (`features/lifecycle.md` §7 row 37): `04`'s own error roster
-/// carries no code for this refusal, and `PARENT_TERMINAL`'s declared
-/// direction is the reverse — `design/01` §3.3 scopes it to *"the parent's
-/// own state"* refusing a child's write, while this refusal is the parent's
-/// act refused because children are live. The flip's slice settles it.
-pub fn no_orphan_at_flip(children: &[LifecycleState]) -> Result<(), DomainError> {
-    let live = children
-        .iter()
-        .filter(|s| **s == LifecycleState::Published)
-        .count();
-    if live > 0 {
-        return Err(DomainError::ParentTerminal(format!(
-            "{live} published child SKU(s) remain under the Product being retired: \
-             no published SKU may exist under a retired Product"
-        )));
-    }
-    Ok(())
+/// Returns `true` when the flip may proceed. A `published` child is a
+/// **deferral**, not a wire refusal (**P-D-113** arm 5): the runner is not
+/// a door, so no `DomainError` is minted. The `outcome_reason` is
+/// [`crate::domain::retention::RetentionHold::REASON`].
+#[must_use]
+pub fn no_orphan_at_flip(children: &[LifecycleState]) -> bool {
+    !children.contains(&LifecycleState::Published)
 }
 
 #[cfg(test)]

@@ -36,6 +36,9 @@ use super::retirement::RetirementHeld;
 /// The reserved idempotency lane the runner resolves (`internal:` prefix).
 pub const ACTIVATION_LANE: &str = "internal:scheduled-activation";
 
+/// Written when the runner activates a cascade leg (**P-D-113** arm 6).
+pub const CASCADE_LEG_LANE: &str = "internal:cascade-leg";
+
 /// A pin mismatch is terminal. See [`verify_activation_pin`].
 const PIN_MISMATCH_REASON: &str =
     "scheduled pin does not verify: the named record is not consumed or the row does not name it";
@@ -114,6 +117,12 @@ pub fn activation_idempotency_key(transition_id: Uuid) -> String {
     format!("{ACTIVATION_LANE}:{transition_id}")
 }
 
+/// The cascade-leg key: the reserved lane plus the transition id as `client_key`.
+#[must_use]
+pub fn cascade_leg_idempotency_key(transition_id: Uuid) -> String {
+    format!("{CASCADE_LEG_LANE}:{transition_id}")
+}
+
 /// The three states a `running` row may finish in. The store writer takes
 /// this rather than a raw string, so `"pending"` cannot un-finish a row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,6 +164,22 @@ pub enum RunFinish {
         /// `outcome_reason`.
         reason: String,
     },
+}
+
+/// The stored response body on either `internal:` lane (**P-D-123** item 7).
+/// Defined once: lane + transition id is the key; this is the body.
+#[must_use]
+pub fn internal_lane_body(transition_id: Uuid, finish: &RunFinish) -> serde_json::Value {
+    serde_json::json!({
+        "transitionId": transition_id,
+        "state": finish.state().as_str(),
+        "outcomeReason": match finish {
+            RunFinish::Applied => None,
+            RunFinish::Failed { reason } | RunFinish::Deferred { reason, .. } => {
+                Some(reason.as_str())
+            }
+        },
+    })
 }
 
 impl RunFinish {
@@ -292,14 +317,14 @@ pub fn scheduled_pin_holds(pin: &ScheduledActivation) -> bool {
 /// of one.
 ///
 /// A host [`GateVerdict::Refused`] finishes [`RunFinish::Deferred`] on
-/// the transient-dependency arm. Today's shipped host refuses every
-/// `PreAuthorized` call because B's scheduled-flip arm is not on the
-/// host yet — that refusal becomes a yes on a later poll, which is the
-/// argument for hold rather than terminal. After B lands, a refusal that
-/// persists spends the budget and fails, which is the right end for an
-/// approval that will not start authorizing. A pin mismatch after
-/// `Authorized` stays [`RunFinish::Failed`]: a consumed-record mismatch
-/// will not become true on the next poll.
+/// the transient-dependency arm. B's scheduled-flip arm landed in
+/// `24e7d15f2`; the refusal is still transient because every door holds
+/// [`crate::domain::governance::NoMaterialityPolicyGate`], which cannot
+/// verify a pin — the missing piece is the host *wiring*, not the
+/// predicate. After that wiring, a refusal that persists spends the
+/// budget and fails. A pin mismatch after `Authorized` stays
+/// [`RunFinish::Failed`]: a consumed-record mismatch will not become
+/// true on the next poll.
 pub fn verify_activation_pin(
     gate: &dyn GovernanceGate,
     subject: GateSubject,

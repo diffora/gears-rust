@@ -455,7 +455,8 @@ use crate::api::rest::{
 use crate::domain::bucket;
 use crate::domain::canonical;
 use crate::domain::cascade::{
-    CascadePlan, arm_for, parent_flip_clears, require_cascade_confirmation,
+    CascadePlan, DeferralResolution, PARENT_FLIP_HELD_REASON, arm_for, parent_flip_clears,
+    require_cascade_confirmation,
 };
 use crate::domain::concurrency::InternalRevision;
 use crate::domain::containment::ResolvedScope;
@@ -491,8 +492,8 @@ use crate::domain::validation::{ValidationPipeline, ValidationReport};
 use crate::infra::events;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::repo::{
-    self, HeadWrite, NewEntityVersion, NewProduct, NewScheduledTransition, NewSku, NullableText,
-    ProductRecord, RefusalSubject, SavedName, SkuRecord, VersionedEntityKind,
+    self, HeadWrite, NewDeferredRetirement, NewEntityVersion, NewProduct, NewScheduledTransition,
+    NewSku, NullableText, ProductRecord, RefusalSubject, SavedName, SkuRecord, VersionedEntityKind,
 };
 
 /// `OpenAPI` tag for the Product surface's operations.
@@ -843,6 +844,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     let router = register_undeprecate_door(router, openapi);
     let router = register_retire_door(router, openapi);
     let router = register_cancel_retire_door(router, openapi);
+    let router = register_resume_retire_door(router, openapi);
 
     router.layer(Extension(state))
 }
@@ -1046,6 +1048,41 @@ fn register_cancel_retire_door(router: Router, openapi: &dyn OpenApiRegistry) ->
         .json_request::<CancelRetirementRequest>(openapi, "The live-op envelope.")
         .handler(cancel_product_retirement)
         .no_content_response(StatusCode::ACCEPTED, "Accepted; no body.")
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi)
+}
+
+/// Operator resume of a deferred cascade (`dod-deferred-intent`, P-D-114
+/// row 11). Writes `resolution = children_cleared`.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request)]
+pub struct ResumeRetirementRequest {
+    /// Confirmation that the listed children have cleared.
+    pub confirmed: bool,
+}
+
+fn register_resume_retire_door(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+    OperationBuilder::post("/bss-products/v1/products/{id}/retire/resume")
+        .operation_id("bss_products.resume_product_retirement")
+        .summary("Resume a deferred Product retirement")
+        .description(
+            "Writes `resolution = children_cleared` on the unresolved \
+             deferred-retirement row once every child is `retired` or \
+             `discarded`. Gates on `product x write`. Requires `If-Match`.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "The Product whose deferred cascade to resume.")
+        .json_request::<ResumeRetirementRequest>(openapi, "Resume confirmation.")
+        .handler(resume_product_retirement)
+        .json_response_with_schema::<ProductView>(openapi, StatusCode::OK, "The Product head.")
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
@@ -3897,8 +3934,8 @@ fn retire_product_payload_digest(request: &RetireProductRequest) -> Vec<u8> {
 /// GateMode::Gate)` after the edge and domain refusals, before the write.
 ///
 /// 07's reference predicate is not a live operand; children are classified
-/// with `referenced = false`. `enqueue_retired` is absent; the row persists
-/// without a broker event.
+/// with `referenced = false` until that host exists. The initiation emits
+/// `ProductRetired`.
 ///
 /// # Errors
 ///
@@ -3953,7 +3990,10 @@ async fn retire_product_under_gate(
         &crate::authz::resource_types::SKU,
     )
     .await?;
-    let result = retire_in_one_transaction(state, &opened, &sku_scope, gate, request).await;
+    let detector =
+        crate::api::rest::retention::tenant_pii_detector(state, opened.tenant_id).await?;
+    let result =
+        retire_in_one_transaction(state, &opened, &sku_scope, gate, &detector, request).await;
     answer_head_act(state, &opened, RETIRE_AUDIT_ACTION, result).await
 }
 
@@ -3962,9 +4002,12 @@ async fn retire_in_one_transaction(
     opened: &OpenedHeadDoor,
     sku_scope: &AccessScope,
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
+    detector: &Arc<dyn PiiDetector + Send + Sync>,
     request: RetireProductRequest,
 ) -> Result<HeadActOutcome, HeadActError> {
+    let outbox = state.sink.clone();
     let gate = Arc::clone(gate);
+    let detector = Arc::clone(detector);
     let inputs = opened.act_inputs();
     let sku_scope = sku_scope.clone();
     state
@@ -3974,12 +4017,23 @@ async fn retire_in_one_transaction(
             TxConfig::default(),
             head_act_contention_db_err,
             move |tx| {
+                let outbox = outbox.clone();
                 let gate = Arc::clone(&gate);
+                let detector = Arc::clone(&detector);
                 let inputs = inputs.clone();
                 let sku_scope = sku_scope.clone();
                 let request = request.clone();
                 Box::pin(async move {
-                    run_retire(tx, &inputs, &sku_scope, gate.as_ref(), &request).await
+                    run_retire(
+                        tx,
+                        &inputs,
+                        &sku_scope,
+                        gate.as_ref(),
+                        detector.as_ref(),
+                        &request,
+                        &outbox,
+                    )
+                    .await
                 })
             },
         )
@@ -3991,7 +4045,9 @@ async fn run_retire(
     inputs: &HeadActInputs,
     sku_scope: &AccessScope,
     gate: &(dyn GovernanceGate + Send + Sync),
+    detector: &(dyn PiiDetector + Send + Sync),
     request: &RetireProductRequest,
+    outbox: &crate::infra::broker::EventSink,
 ) -> Result<HeadActOutcome, HeadActError> {
     if let Some(replay) = claim_for_head_act(
         runner,
@@ -4017,6 +4073,10 @@ async fn run_retire(
     }
 
     confirmation_must_hold(request.confirmed).map_err(HeadActError::Refused)?;
+
+    content_pii_block(detector, "reason", &request.reason).map_err(|blocked| {
+        HeadActError::Refused(DomainError::ContentPiiBlocked(blocked.into_detail()))
+    })?;
 
     eol_lockout(false, request.must_migrate_by.is_some())
         .map_err(|refusal| HeadActError::Refused(refusal.into_domain_error()))?;
@@ -4048,9 +4108,7 @@ async fn run_retire(
         .map(|child| (child.lifecycle_state, false))
         .collect();
     let plan = CascadePlan::compute(&operands);
-    let child_states: Vec<LifecycleState> =
-        children.iter().map(|child| child.lifecycle_state).collect();
-    let _cascade_posture = (plan.defers_parent_flip(), parent_flip_clears(&child_states));
+    let referenced: Vec<bool> = operands.iter().map(|(_, flag)| *flag).collect();
 
     let mut intents = Vec::new();
     collect_live_retire_intents(
@@ -4089,14 +4147,18 @@ async fn run_retire(
         .map_err(HeadActError::Refused)?;
 
     let approval_ref = Uuid::now_v7();
+    let parent_transition_id = Uuid::now_v7();
     apply_cascade_plan(
         runner,
         inputs,
         sku_scope,
-        &children,
-        &request.reason,
-        at,
-        approval_ref,
+        &CascadeApply {
+            children: &children,
+            referenced: &referenced,
+            reason: &request.reason,
+            at,
+            approval_ref,
+        },
     )
     .await?;
 
@@ -4121,7 +4183,7 @@ async fn run_retire(
         runner,
         &inputs.scope,
         &NewScheduledTransition {
-            transition_id: Uuid::now_v7(),
+            transition_id: parent_transition_id,
             tenant_id: inputs.tenant_id,
             entity_kind: "product".to_owned(),
             entity_id: inputs.product_id,
@@ -4135,22 +4197,71 @@ async fn run_retire(
     .await
     .map_err(|e| HeadActError::from_repo(&e))?;
 
+    if !plan.leave.is_empty() {
+        let listed: Vec<JsonValue> = plan
+            .leave
+            .iter()
+            .map(|&index| {
+                serde_json::json!({
+                    "sku": children[index].sku_id,
+                    "reason": "referenced",
+                })
+            })
+            .collect();
+        let children_snapshot = serde_json::to_string(&listed).map_err(|e| {
+            HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+                "snapshot leave-and-list children: {e}"
+            ))))
+        })?;
+        repo::insert_deferred_retirement(
+            runner,
+            &inputs.scope,
+            &NewDeferredRetirement {
+                tenant_id: inputs.tenant_id,
+                product_id: inputs.product_id,
+                cascade_ref: parent_transition_id,
+                children_snapshot,
+                created_by: inputs.actor_ref,
+                now: inputs.now,
+            },
+        )
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+    }
+
     fire_invalidation_hook(runner, inputs, transition::invalidation_for(decision)).await?;
 
-    answer_product_without_event(runner, inputs).await
+    announce_retired_and_answer(
+        runner,
+        outbox,
+        inputs,
+        &request.reason,
+        at,
+        head.published_version,
+    )
+    .await
 }
 
+/// The cascade operands that travel together: the classified children and
+/// the shared scheduled-transition fields every retire arm writes.
+struct CascadeApply<'a> {
+    children: &'a [SkuRecord],
+    referenced: &'a [bool],
+    reason: &'a str,
+    at: DateTime<Utc>,
+    approval_ref: Uuid,
+}
+
+/// @cpt-dod:cpt-cf-bss-products-dod-cascade-plan:p1 — three arms, one txn,
+/// supersede publish+retire for every classified child.
 async fn apply_cascade_plan(
     runner: &(impl DBRunner + Sync),
     inputs: &HeadActInputs,
     sku_scope: &AccessScope,
-    children: &[SkuRecord],
-    reason: &str,
-    at: DateTime<Utc>,
-    approval_ref: Uuid,
+    apply: &CascadeApply<'_>,
 ) -> Result<(), HeadActError> {
-    for child in children {
-        let Some(arm) = arm_for(child.lifecycle_state, false) else {
+    for (child, referenced) in apply.children.iter().zip(apply.referenced) {
+        let Some(arm) = arm_for(child.lifecycle_state, *referenced) else {
             continue;
         };
         repo::supersede_live_intents(
@@ -4203,14 +4314,34 @@ async fn apply_cascade_plan(
                         entity_kind: "sku".to_owned(),
                         entity_id: child.sku_id,
                         kind: "retire".to_owned(),
-                        at,
-                        approval_ref,
-                        retirement_reason: Some(reason.to_owned()),
+                        at: apply.at,
+                        approval_ref: apply.approval_ref,
+                        retirement_reason: Some(apply.reason.to_owned()),
                         now: inputs.now,
                     },
                 )
                 .await
                 .map_err(|e| HeadActError::from_repo(&e))?;
+            }
+            crate::domain::cascade::CascadeArm::LeaveAndList => {
+                if child.lifecycle_state == LifecycleState::Published {
+                    let write = repo::cascade_deprecate_child(
+                        runner,
+                        sku_scope,
+                        inputs.tenant_id,
+                        child.sku_id,
+                        child.internal_revision,
+                        inputs.now,
+                    )
+                    .await
+                    .map_err(|e| HeadActError::from_repo(&e))?;
+                    if write == HeadWrite::Unmatched {
+                        return Err(HeadActError::Refused(DomainError::StaleRevision {
+                            expected: child.internal_revision,
+                            found: child.internal_revision,
+                        }));
+                    }
+                }
             }
             crate::domain::cascade::CascadeArm::AutoDiscard => {
                 let write = repo::discard_sku_head(
@@ -4230,20 +4361,53 @@ async fn apply_cascade_plan(
                     }));
                 }
             }
-            crate::domain::cascade::CascadeArm::LeaveAndList => {}
         }
     }
     Ok(())
 }
 
-async fn answer_product_without_event(
+/// Initiation emits `ProductRetired` (`dod-cascade-parent-path`, P-D-115).
+/// `fromVersion` is the head's `published_version` at this instant;
+/// `replacedBy` is absent on a Product.
+async fn announce_retired_and_answer(
     runner: &(impl DBRunner + Sync),
+    outbox: &crate::infra::broker::EventSink,
     inputs: &HeadActInputs,
+    reason: &str,
+    at: DateTime<Utc>,
+    from_version: i64,
 ) -> Result<HeadActOutcome, HeadActError> {
     let head = repo::find_product(runner, &inputs.scope, inputs.tenant_id, inputs.product_id)
         .await
         .map_err(|e| HeadActError::from_repo(&e))?
         .ok_or(HeadActError::Vanished)?;
+    // RetirementScheduled is the door's audit row (action `retire`); it
+    // is not a broker event. ProductRetired is the initiation announcement.
+    let core = events::EventBodyCore {
+        tenant_id: head.tenant_id,
+        entity_kind: events::EntityKind::Product.as_str(),
+        entity_id: head.product_id,
+        internal_revision: head.internal_revision,
+        lifecycle_state: head.lifecycle_state.as_str(),
+    };
+    events::enqueue_retired(
+        outbox,
+        runner,
+        inputs.product_id,
+        events::PRODUCT_RETIRED_PAYLOAD_TYPE,
+        events::RetiredEventBody {
+            core: &core,
+            from_version,
+            reason: reason.to_owned(),
+            replaced_by: None,
+            effective_at: at.to_rfc3339_opts(SecondsFormat::Secs, true),
+            must_migrate_by: None,
+        },
+        inputs.actor_ref,
+    )
+    .await
+    .map_err(|e| HeadActError::from_storage(&e))?;
+
     let internal_revision = head.internal_revision;
     let body = serde_json::to_value(ProductView::from(head)).map_err(|e| {
         HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
@@ -4502,6 +4666,201 @@ async fn run_cancel_retire(
     })
 }
 
+async fn resume_product_retirement(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path(product_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(request): Json<ResumeRetirementRequest>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let act = HeadAct {
+        authz_action: crate::authz::actions::WRITE,
+        audit_action: RESUME_RETIRE_AUDIT_ACTION,
+        endpoint: format!("/bss-products/v1/products/{product_id}/retire/resume"),
+        payload_digest: idempotency::payload_digest(&serde_json::json!({
+            "confirmed": request.confirmed
+        })),
+    };
+    let opened = open_head_door(&state, &enforcer, &ctx, product_id, &headers, &act).await?;
+    let sku_scope = clone_scope_for(
+        &state,
+        &enforcer,
+        &ctx,
+        opened.tenant_id,
+        opened.actor_ref,
+        product_id,
+        &crate::authz::resource_types::SKU,
+    )
+    .await?;
+    let gate: Arc<dyn GovernanceGate + Send + Sync> = Arc::new(NoMaterialityPolicyGate);
+    let result = resume_in_one_transaction(&state, &opened, &sku_scope, &gate, request).await;
+    answer_head_act(&state, &opened, RESUME_RETIRE_AUDIT_ACTION, result).await
+}
+
+async fn resume_in_one_transaction(
+    state: &ApiState,
+    opened: &OpenedHeadDoor,
+    sku_scope: &AccessScope,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+    request: ResumeRetirementRequest,
+) -> Result<HeadActOutcome, HeadActError> {
+    let gate = Arc::clone(gate);
+    let inputs = opened.act_inputs();
+    let sku_scope = sku_scope.clone();
+    state
+        .db
+        .db()
+        .transaction_with_retry::<HeadActOutcome, HeadActError, _, _>(
+            TxConfig::default(),
+            head_act_contention_db_err,
+            move |tx| {
+                let gate = Arc::clone(&gate);
+                let inputs = inputs.clone();
+                let sku_scope = sku_scope.clone();
+                let request = request.clone();
+                Box::pin(async move {
+                    run_resume(tx, &inputs, &sku_scope, gate.as_ref(), &request).await
+                })
+            },
+        )
+        .await
+}
+
+/// @cpt-dod:cpt-cf-bss-products-dod-deferred-intent:p1 — operator resume
+/// writes `resolution = children_cleared`.
+async fn run_resume(
+    runner: &(impl DBRunner + Sync),
+    inputs: &HeadActInputs,
+    sku_scope: &AccessScope,
+    gate: &(dyn GovernanceGate + Send + Sync),
+    request: &ResumeRetirementRequest,
+) -> Result<HeadActOutcome, HeadActError> {
+    if let Some(replay) = claim_for_head_act(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        inputs.claim.as_ref(),
+    )
+    .await?
+    {
+        return Ok(replay);
+    }
+
+    confirmation_must_hold(request.confirmed).map_err(HeadActError::Refused)?;
+
+    let head = repo::find_product(runner, &inputs.scope, inputs.tenant_id, inputs.product_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?
+        .ok_or(HeadActError::Vanished)?;
+    if head.internal_revision != inputs.expected {
+        return Err(HeadActError::Refused(DomainError::StaleRevision {
+            expected: inputs.expected,
+            found: head.internal_revision,
+        }));
+    }
+
+    let Some(deferral) = repo::find_unresolved_deferred_retirement(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        inputs.product_id,
+    )
+    .await
+    .map_err(|e| HeadActError::from_repo(&e))?
+    else {
+        return Err(HeadActError::Refused(no_live_retire_intent()));
+    };
+
+    let children =
+        repo::find_skus_of_product(runner, sku_scope, inputs.tenant_id, inputs.product_id)
+            .await
+            .map_err(|e| HeadActError::from_repo(&e))?;
+    let states: Vec<LifecycleState> = children.iter().map(|c| c.lifecycle_state).collect();
+    if !parent_flip_clears(&states) {
+        let mut report = ValidationReport::new();
+        report.violate("VALIDATION", "children", PARENT_FLIP_HELD_REASON);
+        return Err(HeadActError::Refused(DomainError::Validation(report)));
+    }
+
+    let verdict = gate
+        .evaluate(
+            GateSubject::entity_publish(EntityRef {
+                tenant_id: inputs.tenant_id,
+                entity_kind: CatalogEntityKind::Product,
+                entity_id: inputs.product_id,
+            }),
+            InternalRevision::new(inputs.expected),
+            GateMode::Gate,
+        )
+        .map_err(|e| {
+            HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+                "bss-products: the governance gate host failed: {e}"
+            ))))
+        })?;
+    verdict
+        .into_authorization()
+        .map_err(HeadActError::Refused)?;
+
+    let written = repo::resolve_deferred_retirement(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        inputs.product_id,
+        deferral.cascade_ref,
+        DeferralResolution::ChildrenCleared.as_str(),
+        inputs.now,
+    )
+    .await
+    .map_err(|e| HeadActError::from_repo(&e))?;
+    if !written {
+        return Err(HeadActError::Refused(no_live_retire_intent()));
+    }
+
+    repo::write_eventless_act_audit(
+        runner,
+        &inputs.scope,
+        repo::AuditCommon {
+            audit_id: Uuid::now_v7(),
+            tenant_id: inputs.tenant_id,
+            actor_ref: inputs.actor_ref,
+            action: RESUME_RETIRE_AUDIT_ACTION.to_owned(),
+            subject_kind: crate::authz::labels::PRODUCT.to_owned(),
+            reason: Some(DeferralResolution::ChildrenCleared.as_str().to_owned()),
+            correlation_id: crate::infra::events::correlation_id(),
+            written_at: inputs.now,
+        },
+        inputs.product_id,
+        Some(head.internal_revision),
+    )
+    .await
+    .map_err(|e| HeadActError::from_repo(&e))?;
+
+    let internal_revision = head.internal_revision;
+    let body = serde_json::to_value(ProductView::from(head)).map_err(|e| {
+        HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+            "render the resumed Product: {e}"
+        ))))
+    })?;
+    if let Some(input) = inputs.claim.as_ref() {
+        record_idempotency_answer(
+            runner,
+            &inputs.scope,
+            inputs.tenant_id,
+            input,
+            HEAD_ACT_RESPONSE_STATUS,
+            &body,
+        )
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+    }
+    Ok(HeadActOutcome::Applied {
+        internal_revision,
+        body,
+    })
+}
+
 /// The `products_audit_log.action` token every publish refusal is recorded
 /// under. Named, not spelled at each call site, so the trail is greppable by
 /// one string.
@@ -4519,6 +4878,8 @@ const UNDEPRECATE_AUDIT_ACTION: &str = "undeprecate";
 const RETIRE_AUDIT_ACTION: &str = "retire";
 
 const CANCEL_RETIRE_AUDIT_ACTION: &str = "retire.cancel";
+
+const RESUME_RETIRE_AUDIT_ACTION: &str = "retire.resume";
 
 /// The version row this publish freezes: the act's own image, rendered
 /// canonically and digested (`inst-fd-publish-freeze`, §4.3, **P-D-33**).
@@ -4753,6 +5114,10 @@ async fn run_publish(
     {
         return Err(HeadActError::Refused(DomainError::Validation(report)));
     }
+
+    // @cpt-dod:cpt-cf-bss-products-dod-scope-narrowing:p1 — at publish,
+    // naming the falling-out children (P-D-115). The save-door check stays.
+    refuse_narrowing_at_publish(runner, inputs, &head).await?;
 
     // -- Phase 7, the governance gate, inside the door, in the mode this
     // act was entered under (`inst-fd-gate-mode`). `Gate` from every wire
@@ -6437,6 +6802,52 @@ async fn check_children_stay_contained(
     }
 
     Ok(())
+}
+
+/// Publish-time narrowing: collect every non-terminal child that falls
+/// outside the head's current scope and refuse naming them.
+async fn refuse_narrowing_at_publish(
+    runner: &(impl DBRunner + Sync),
+    inputs: &HeadActInputs,
+    head: &ProductRecord,
+) -> Result<(), HeadActError> {
+    let parent_scope = crate::api::rest::skus::parent_scope_pair(head).map_err(|column| {
+        HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+            "bss-products: the Product's {column} contains an empty token"
+        ))))
+    })?;
+    let children = repo::find_non_terminal_skus_of_product(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        inputs.product_id,
+    )
+    .await
+    .map_err(|e| HeadActError::from_repo(&e))?;
+
+    let mut falling = Vec::new();
+    for child in &children {
+        let child_scope = crate::api::rest::skus::sku_scope_pair(child).map_err(|column| {
+            HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+                "bss-products: SKU {}'s stored {column} contains an empty token",
+                child.sku_id
+            ))))
+        })?;
+        if parent_scope.check_containment(&child_scope).is_err() {
+            falling.push(child.sku_id);
+        }
+    }
+    if falling.is_empty() {
+        return Ok(());
+    }
+    let named = falling
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(HeadActError::Refused(DomainError::ScopeNotContained(
+        format!("non-terminal children fall outside the narrowed scope: {named}"),
+    )))
 }
 
 /// The save act itself, every phase of it on the mutation's own transaction

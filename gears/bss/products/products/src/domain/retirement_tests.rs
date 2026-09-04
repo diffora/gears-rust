@@ -5,8 +5,9 @@ use chrono::{Duration, TimeZone, Utc};
 use uuid::Uuid;
 
 use super::{
-    FlipPredicate, ReplacementWalk, effective_at, eol_lockout, flip_guard,
-    publish_reannounces_retirement, replaced_by_must_be_published, resolve_replacement_chain,
+    FlipPredicate, REPLACEMENT_CHAIN_BROKEN, ReplacementWalk, effective_at, eol_lockout,
+    flip_guard, publish_reannounces_retirement, refuse_create_under_retiring_parent,
+    replaced_by_must_be_published, replacement_chain_broken_reason, resolve_replacement_chain,
 };
 use crate::domain::lifecycle::LifecycleRefusal;
 use bss_products_sdk::models::LifecycleState;
@@ -120,4 +121,26 @@ fn effective_at_computes_the_floor_and_refuses_an_early_operator_instant() {
     );
     let err = effective_at(now, lead, Some(now + Duration::days(29))).expect_err("early");
     assert_eq!(err.code, LifecycleRefusal::RETIREMENT_LEAD_TIME);
+}
+
+#[test]
+fn create_under_a_retiring_parent_is_retirement_pending() {
+    let parent = Uuid::from_u128(0x00_dd_00_01);
+    refuse_create_under_retiring_parent(parent, false, false).expect("neither fact");
+    for (intent, deferral) in [(true, false), (false, true), (true, true)] {
+        let err = refuse_create_under_retiring_parent(parent, intent, deferral)
+            .expect_err("a retiring parent refuses");
+        assert_eq!(err.code, LifecycleRefusal::RETIREMENT_PENDING);
+        assert!(err.detail.contains(&parent.to_string()));
+    }
+}
+
+#[test]
+fn replacement_chain_broken_lists_the_pointers() {
+    let a = Uuid::from_u128(0xaa);
+    let b = Uuid::from_u128(0xbb);
+    let reason = replacement_chain_broken_reason(&[a, b]);
+    assert!(reason.starts_with(REPLACEMENT_CHAIN_BROKEN));
+    assert!(reason.contains(&a.to_string()));
+    assert!(reason.contains(&b.to_string()));
 }
