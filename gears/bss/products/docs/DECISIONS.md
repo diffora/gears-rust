@@ -1603,9 +1603,12 @@ per-decision anchors, and it was corrected by running the command it prescribed.
 - **`04` row 21 — nothing is replaced, and one clause is unbuilt.** `domain::containment` ships
   the final restriction-based rule at three sites (create, publish, the Product publish's child
   re-check); C5's *"the final form of 01's interim check"* is corrected — `01` ships that form and
-  `04` registers no operand. **`dod-scope-containment-final` does not tick**: its *"evaluated on
-  save"* clause has no call site — a scope change saved on a non-terminal head is judged only at
-  publish. The save-time evaluation is **the lead's build** (01's save door).
+  `04` registers no operand. **Corrected 2026-09-04, the same day: the DoD ticks.** The entry's first
+  text said the *"evaluated on save"* clause had no call site; that was a grep of the primitive
+  (`check_containment`) and not of the wrapper's callers — `skus::run_save` calls
+  `recheck_parent_containment` and `products::run_save` calls `check_children_stay_contained`, and
+  the DoD's own body had named all four sites. A claim about absence needs the callers of every
+  wrapper, not the primitive's.
 - **`03` row 6 — the binding snapshot is provenance, outside the digest.** The digest is the
   content contract (P-D-29); the snapshot is evidence about the publish, stored beside the version
   row and keyed by it. `DIGEST_VERSION` stays 1.
@@ -1639,8 +1642,8 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   per slice under P-D-130's container) and row 3 (a posture statement); `10` rows 1 and 2
   (recorded risks) and row 12 (Legal's half).
 - **Propagated**: the rows and items struck or annotated; `design/04` gains `inst-rt-create-guard`
-  and its C5 wording; `design/05` §6 four items. Builds owed: the save-time containment check and
-  the label type-schema registration (the lead, `01`); the scheduled-transition doors and the
+  and its C5 wording; `design/05` §6 four items. Builds owed: the label type-schema registration
+  (the lead, `01` — **landed 2026-09-04**); the scheduled-transition doors and the
   retire-intent guard (C); `approval_ref`'s tightening (B); the name copies and the digest bump
   (`06`'s builder).
 

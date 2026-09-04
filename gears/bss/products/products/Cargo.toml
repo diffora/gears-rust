@@ -96,6 +96,7 @@ arc-swap = { workspace = true }
 # is the contract `init()` resolves from `ClientHub`.
 authz-resolver = { workspace = true }
 authz-resolver-sdk = { workspace = true }
+types-registry-sdk = { workspace = true }
 # `SecurityContext`, `AccessScope` and `pep_properties` — `crate::authz::access_scope`'s
 # own signature, matching the sibling ledger and pricing gears' manifests.
 toolkit-security = { workspace = true }

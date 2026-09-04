@@ -435,6 +435,34 @@ impl Gear for BssProductsGear {
             )?;
         let enforcer = Arc::new(authz_resolver_sdk::PolicyEnforcer::new(authz_client));
 
+        // Register the authz-label stub schemas so RBAC role definitions
+        // targeting this gear's labels pass the platform's target-type
+        // validation. Mandatory, as it is in the sibling pricing gear: without
+        // them no custom catalog role can be defined, and the labels sit
+        // outside `gts.cf.resources.*` where no built-in role covers them — a
+        // silent skip would leave the authoring surface ungrantable.
+        // `authz_label_type_schemas()` had no production caller until
+        // **P-D-134** (2026-09-04) named that a defect of this slice.
+        let types_registry = ctx
+            .client_hub()
+            .get::<dyn types_registry_sdk::TypesRegistryClient>()
+            .context(
+                "bss-products: TypesRegistryClient absent from ClientHub; \
+                 types-registry module must be registered",
+            )?;
+        let results = types_registry
+            .register(crate::authz::authz_label_type_schemas())
+            .await
+            .context("bss-products: register authz label schemas")?;
+        for result in results {
+            if let types_registry_sdk::RegisterResult::Err { gts_id, error } = result {
+                anyhow::bail!(
+                    "bss-products: failed to register authz label {}: {error}",
+                    gts_id.as_deref().unwrap_or("?")
+                );
+            }
+        }
+
         // Transactional outbox (P-D-22). The registry enqueues through the
         // platform's own `toolkit_db::outbox` pipeline rather than a
         // gear-authored `products_outbox` table — see this module's doc for

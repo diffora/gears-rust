@@ -22,13 +22,13 @@
 //! what the normative catalog table currently grants the door, so that is what
 //! this module declares.
 //!
-//! **Registering [`authz_label_type_schemas`] is still owed**, separately from
-//! the gate this module now provides: the sibling pricing gear calls its
-//! equivalent from `Gear::init` so the platform's RBAC role-definition
-//! validator can resolve a rule's `target_type` against these labels. This
-//! gear's `init` (`crate::gear::BssProductsGear::init`) does not call this
-//! function yet; wiring it in is owed to the slice that adds the first
-//! authoring door.
+//! **[`authz_label_type_schemas`] is registered from `Gear::init`** (P-D-134,
+//! 2026-09-04) — `crate::gear::BssProductsGear::init` hands the stubs to the
+//! platform's `TypesRegistryClient` and fails the boot on any refusal, exactly
+//! as the sibling pricing gear does, so the RBAC role-definition validator can
+//! resolve a rule's `target_type` against these labels. Until then the
+//! function had no production caller, which `features/governance.md` §7 row
+//! 32 had measured and P-D-134 named a defect of this slice.
 //!
 //! [`access_scope`] is the shared PEP gate every future authoring door calls
 //! before touching a repository: it wraps
@@ -424,9 +424,8 @@ fn authz_type_schema_json(gts_id: &str, title: &str) -> serde_json::Value {
 /// types-registry, so registering these lets a custom catalog role target
 /// this gear's authz labels.
 ///
-/// **Not yet registered.** See this module's doc: the sibling pricing gear
-/// registers its equivalent from `Gear::init`; this gear's `init` does not
-/// call this function yet, and that wiring is owed to a later slice.
+/// **Registered from `Gear::init`** (P-D-134, 2026-09-04): a refused
+/// registration fails the boot, as in the sibling pricing gear.
 #[must_use]
 pub fn authz_label_type_schemas() -> Vec<serde_json::Value> {
     labels::ALL

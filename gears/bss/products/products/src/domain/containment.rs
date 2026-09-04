@@ -50,6 +50,8 @@
 //! character either kind of identifier is expected to contain; a later slice
 //! that needs a different separator should change it in this one place.
 
+//! @cpt-dod:cpt-cf-bss-products-dod-scope-containment-final:p1
+
 use std::collections::BTreeSet;
 
 /// The character `region_scope` and `brand_scope` use to join a

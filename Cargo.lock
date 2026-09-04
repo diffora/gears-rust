@@ -2011,6 +2011,7 @@ dependencies = [
  "cf-gears-toolkit-gts",
  "cf-gears-toolkit-macros",
  "cf-gears-toolkit-security",
+ "cf-gears-types-registry-sdk",
  "chrono",
  "futures-core",
  "gts",
