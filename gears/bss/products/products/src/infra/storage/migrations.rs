@@ -43,6 +43,7 @@ mod m20260901_000024_create_products_read_stamp;
 mod m20260901_000025_create_products_scheduled_transition;
 mod m20260901_000026_create_products_deferred_retirement;
 mod m20260901_000027_create_products_materiality_policy;
+mod m20260901_000028_create_products_pii_allowlist;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -138,6 +139,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260901_000025_create_products_scheduled_transition::Migration),
             Box::new(m20260901_000026_create_products_deferred_retirement::Migration),
             Box::new(m20260901_000027_create_products_materiality_policy::Migration),
+            Box::new(m20260901_000028_create_products_pii_allowlist::Migration),
         ]
     }
 }

@@ -100,6 +100,17 @@ const THE_TAXONOMY_EIGHT: &[&str] = &[
     "MetadataUpdated",
 ];
 
+/// Slice `10`'s two (`dod-retention-events`), transcribed from its §4
+/// roster — a sixth list for every list above's reason. Folding them into
+/// [`THE_EIGHT`] would claim §4.5 announces them, and §4.5 announces eight;
+/// folding them into [`THE_TAXONOMY_EIGHT`] would claim `design/02` does.
+///
+/// Neither carries an entity core and neither subject is an entity: an
+/// `actor_ref` and an allow-list entry have none of `EventBodyCore`'s five
+/// fields, and `EntityKind` is exactly `Product | Sku`. Both go through
+/// `enqueue_retention` with `RetentionEventBody`.
+const THE_RETENTION_PAIR: &[&str] = &["ActorErased", "PiiAllowlistChanged"];
+
 fn core() -> EventBodyCore {
     EventBodyCore {
         tenant_id: Uuid::from_u128(0x7e_42),
@@ -142,13 +153,15 @@ fn every_declared_token_belongs_to_exactly_one_entry_point() {
     let set_events = THE_SET_TRIO;
     let bulk = THE_BULK_SUMMARY;
     let taxonomy = THE_TAXONOMY_EIGHT;
+    let retention = THE_RETENTION_PAIR;
 
     for (token, _) in SCHEMA_REFS {
         let owners = usize::from(published.contains(token))
             + usize::from(deprecated.contains(token))
             + usize::from(set_events.contains(token))
             + usize::from(bulk.contains(token))
-            + usize::from(taxonomy.contains(token));
+            + usize::from(taxonomy.contains(token))
+            + usize::from(retention.contains(token));
         assert!(
             owners <= 1,
             "{token} is claimed by more than one entry point's guard"
@@ -214,6 +227,12 @@ fn the_schema_roster_names_exactly_the_declared_events() {
             "{event} is 02's taxonomy event and carries no schema reference"
         );
     }
+    for event in THE_RETENTION_PAIR {
+        assert!(
+            registered.contains(event),
+            "{event} is 10's retention event and carries no schema reference"
+        );
+    }
     for token in &registered {
         assert!(
             THE_EIGHT.contains(token)
@@ -221,7 +240,8 @@ fn the_schema_roster_names_exactly_the_declared_events() {
                 || THE_LIFECYCLE_REST.contains(token)
                 || THE_SET_TRIO.contains(token)
                 || THE_BULK_SUMMARY.contains(token)
-                || THE_TAXONOMY_EIGHT.contains(token),
+                || THE_TAXONOMY_EIGHT.contains(token)
+                || THE_RETENTION_PAIR.contains(token),
             "{token} carries a schema reference and belongs to no declared roster: an \
              event no design document announces is a promise nothing backs"
         );
@@ -233,7 +253,8 @@ fn the_schema_roster_names_exactly_the_declared_events() {
             + THE_LIFECYCLE_REST.len()
             + THE_SET_TRIO.len()
             + THE_BULK_SUMMARY.len()
-            + THE_TAXONOMY_EIGHT.len(),
+            + THE_TAXONOMY_EIGHT.len()
+            + THE_RETENTION_PAIR.len(),
         "the roster must carry each declared event exactly once"
     );
 }

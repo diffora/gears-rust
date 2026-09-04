@@ -23,6 +23,7 @@ pub mod idempotency;
 pub mod identity_ref;
 pub mod materiality_policy;
 pub mod metadata;
+pub mod pii_allowlist;
 pub mod product;
 pub mod product_category;
 pub mod read_entity;

@@ -266,8 +266,8 @@ use crate::domain::rules::{
     PublishRevalidationSubject, SkuCodeStillPresent, SkuScopeColumnsStillParse,
 };
 use crate::domain::taxonomy::{
-    AttributeDefinitionKnownRule, ContentSaveSubject, NoPiiPolicyDetector, PiiDetector,
-    ResolvedDefinition, ValueCandidate, content_pii_block, content_save_pipeline,
+    AttributeDefinitionKnownRule, ContentSaveSubject, PiiDetector, ResolvedDefinition,
+    ValueCandidate, content_pii_block, content_save_pipeline,
 };
 use crate::domain::transition::{self, ApprovalInvalidation, ApprovalInvalidationHook as _};
 use crate::domain::undeprecation::{BlockingIntent, refuse_if_live_retire_intents};
@@ -6356,10 +6356,12 @@ async fn save_sku_gated(
         claim,
     };
 
-    // The PII host is a literal for `NoMaterialityPolicyGate`'s reason: no
-    // wire input chooses one. `10-retention-erasure`'s detector replaces this
-    // line, and the Product door's twin carries the same note.
-    let detector: Arc<dyn PiiDetector + Send + Sync> = Arc::new(NoPiiPolicyDetector);
+    // `10-retention-erasure`'s detector, over this tenant's Legal-signed-off
+    // allow-list (`dod-pii-detector`). It is built here rather than named as
+    // a literal because the policy now has an operand — the list — and the
+    // read is asynchronous, which `PiiDetector::inspect` deliberately is not.
+    let detector =
+        crate::api::rest::retention::tenant_pii_detector(state, inputs.tenant_id).await?;
     let outcome = save_in_one_transaction(state, &inputs, request, gate, &detector).await;
     answer_head_act(state, &act, sku_id, head.internal_revision, outcome).await
 }

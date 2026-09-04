@@ -312,6 +312,20 @@ pub(crate) const ATTRIBUTE_DEFINITION_UPDATED_PAYLOAD_TYPE: &str = "AttributeDef
 /// `dod-metadata-door` is ticked.
 pub(crate) const METADATA_UPDATED_PAYLOAD_TYPE: &str = "MetadataUpdated";
 
+/// `10`'s erasure event (`inst-er-event`), ordering on the erased
+/// principal's `principal_ref` (**P-D-118** item 26: the aggregate is the
+/// thing the act serializes on, and an erasure serializes on the principal's
+/// row). A **defensive cache-buster** whose consumer set is legitimately
+/// empty: no projection in the design set materializes identities, and one
+/// that did would be a `12-consumer-contracts` Lint 7 failure.
+pub(crate) const ACTOR_ERASED_PAYLOAD_TYPE: &str = "ActorErased";
+
+/// `10`'s allow-list event (`inst-pp-allowlist`), ordering on the entry's own
+/// id (**P-D-118** item 26). Carries the entry's id and never its value: the
+/// value is a person-named string, which is what the write block exists to
+/// keep out of records erasure cannot rewrite.
+pub(crate) const PII_ALLOWLIST_CHANGED_PAYLOAD_TYPE: &str = "PiiAllowlistChanged";
+
 /// `RecognizedUnitUpdated`'s payload type token — `design/03` §4's roster,
 /// the metering-unit set's own event, emitted **in the same transaction** as
 /// the membership mutation (`inst-rs-shape`). Not one of §4.5's eight and
@@ -467,6 +481,11 @@ pub(crate) const SCHEMA_REFS: &[(&str, &str)] = &[
         ATTRIBUTE_DEFINITION_UPDATED_PAYLOAD_TYPE,
         "bss-products.AttributeDefinitionUpdated.v1.0.0",
     ),
+    (ACTOR_ERASED_PAYLOAD_TYPE, "bss-products.ActorErased.v1.0.0"),
+    (
+        PII_ALLOWLIST_CHANGED_PAYLOAD_TYPE,
+        "bss-products.PiiAllowlistChanged.v1.0.0",
+    ),
 ];
 
 /// `02`'s eight, as one roster: the tokens [`enqueue_taxonomy`] owns and
@@ -480,6 +499,16 @@ pub(crate) const TAXONOMY_PAYLOAD_TYPES: [&str; 8] = [
     CATEGORY_DISPLAY_UPDATED_PAYLOAD_TYPE,
     ATTRIBUTE_DEFINITION_UPDATED_PAYLOAD_TYPE,
     METADATA_UPDATED_PAYLOAD_TYPE,
+];
+
+/// `10`'s two, as one roster: the tokens [`enqueue_retention`] owns and
+/// [`enqueue`] refuses. Its own list for the reason every roster in
+/// `events_tests` is its own — folding them into
+/// [`TAXONOMY_PAYLOAD_TYPES`] would put a second slice's events behind a
+/// guard whose error says *"the taxonomy's eight"*.
+pub(crate) const RETENTION_PAYLOAD_TYPES: [&str; 2] = [
+    ACTOR_ERASED_PAYLOAD_TYPE,
+    PII_ALLOWLIST_CHANGED_PAYLOAD_TYPE,
 ];
 
 /// The versioned schema reference for a payload type, or `None` for a token
@@ -751,6 +780,14 @@ pub(crate) enum EventsError {
     /// A token outside `02`'s eight reached [`enqueue_taxonomy`].
     #[error("{0} is not one of the taxonomy's eight events")]
     NotATaxonomyEvent(String),
+    /// One of `10`'s two tokens reached [`enqueue`], which builds the entity
+    /// body core; those carry [`RetentionEventBody`] and go through
+    /// [`enqueue_retention`]. Same fail-closed rule as the other six guards.
+    #[error("{0} carries a retention body and must be enqueued through enqueue_retention")]
+    RetentionEventNeedsBody(String),
+    /// A token outside `10`'s two reached [`enqueue_retention`].
+    #[error("{0} is not one of the retention feature's two events")]
+    NotARetentionEvent(String),
     /// The broker arm has no [`crate::infra::broker`] typed event for this
     /// payload type.
     ///
@@ -1022,6 +1059,11 @@ pub(crate) async fn enqueue(
     }
     if TAXONOMY_PAYLOAD_TYPES.contains(&payload_type) {
         return Err(EventsError::TaxonomyEventNeedsBody(payload_type.to_owned()));
+    }
+    if RETENTION_PAYLOAD_TYPES.contains(&payload_type) {
+        return Err(EventsError::RetentionEventNeedsBody(
+            payload_type.to_owned(),
+        ));
     }
     match sink {
         EventSink::Interim(outbox) => {
@@ -1685,6 +1727,125 @@ async fn enqueue_body(
         .enqueue(runner, QUEUE_NAME, partition, payload, payload_type)
         .await?;
     Ok(())
+}
+
+/// The body `10`'s two events carry (`dod-retention-events`).
+///
+/// **Neither fits [`EventBodyCore`]**, and the `DoD` says why: an `actor_ref`
+/// and an allow-list entry have none of its five fields, `EntityKind` is
+/// exactly `Product | Sku`, and neither subject is either. So this is the
+/// entity-less shape those two need, declared here rather than waiting on
+/// `features/catalog-version.md` §7 rows 27 and 47 — which raise the general
+/// question of a shared entity-less core and a `SUBJECT_TYPE` convention, and
+/// which this feature **cites rather than re-raises**: `02`'s eight already
+/// took the same route under P-D-122, and a second slice-local body is the
+/// precedent applied, not a new answer to their question.
+///
+/// **No field can carry an identity.** `ActorErased` is a *"defensive
+/// cache-buster"* whose whole point is that it does not, and the allow-list
+/// arm names the entry and never its person-named value. `subject_ref` is a
+/// `principal_ref` or an `entry_id` rendered — both pseudonymous by
+/// construction.
+///
+/// Borrowed, like [`EventBodyCore`]: serialized once and never read back. The
+/// broker arm's owned twin is `broker::RetentionEventPayload`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RetentionEventBody<'a> {
+    pub tenant_id: Uuid,
+    /// The aggregate the act serializes on, rendered (**P-D-118** item 26).
+    pub subject_ref: &'a str,
+    /// `erased`, `signed_off` or `revoked`.
+    pub act: &'a str,
+    /// The **retired** pseudonym, on the erasure arm only. Never `actorRef`:
+    /// that name is the gear-wide *acting* principal, asserted across the
+    /// whole typed roster by `broker_tests`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub erased_actor_ref: Option<Uuid>,
+}
+
+/// Enqueue one of `10`'s two events — [`enqueue`]'s twin for the retention
+/// body shape ([`RetentionEventBody`]).
+///
+/// The aggregate is the caller's and is the same string the body carries as
+/// `subject_ref`: `ActorErased` orders on the erased `principal_ref` and
+/// `PiiAllowlistChanged` on its `entry_id` (**P-D-118** item 26). Because a
+/// `principal_ref` is a string and `partition_for` takes a `Uuid`, the
+/// caller passes a **derived** aggregate id — see
+/// [`retention_aggregate_id`] — rather than the string itself; the ordering
+/// the partition provides is then per principal, which is what the decision
+/// asks for.
+///
+/// # Errors
+///
+/// [`EventsError::NotARetentionEvent`] for any other token; otherwise as
+/// [`enqueue`].
+pub(crate) async fn enqueue_retention(
+    sink: &EventSink,
+    runner: &(impl DBRunner + Sync),
+    aggregate_id: Uuid,
+    payload_type: &str,
+    body: &RetentionEventBody<'_>,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    if !RETENTION_PAYLOAD_TYPES.contains(&payload_type) {
+        return Err(EventsError::NotARetentionEvent(payload_type.to_owned()));
+    }
+    match sink {
+        EventSink::Interim(outbox) => {
+            enqueue_body(
+                outbox,
+                runner,
+                body.tenant_id,
+                aggregate_id,
+                payload_type,
+                body,
+                actor_ref,
+            )
+            .await
+        }
+        EventSink::Broker(producer) => {
+            let payload = broker::RetentionEventPayload::from_body(body, actor_ref);
+            match payload_type {
+                ACTOR_ERASED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::ActorErased { payload })
+                        .await
+                }
+                PII_ALLOWLIST_CHANGED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::PiiAllowlistChanged { payload })
+                        .await
+                }
+                // Unreachable behind the guard above; kept so a third token
+                // added to the roster without its arm is a refusal, not a
+                // silent fall-through.
+                other => return Err(EventsError::NoTypedEvent(other.to_owned())),
+            }
+            .map(|_| ())
+            .map_err(EventsError::Broker)
+        }
+    }
+}
+
+/// The aggregate id for an event whose aggregate is a **string**.
+///
+/// `partition_for` takes a `Uuid` and `ActorErased`'s aggregate is a
+/// `principal_ref`, which is text. A UUID **v5** over the tenant and the
+/// string — computed, never stored — gives the same principal the same
+/// partition in every process on every host, which is the whole of what the
+/// aggregate is for. `gear::system_actor_ref`'s reasoning, one derivation
+/// over.
+///
+/// Scoped by `tenant_id` deliberately: two tenants' principals share no
+/// ordering requirement, and a global derivation would put unrelated tenants'
+/// erasures on one partition.
+#[must_use]
+pub(crate) fn retention_aggregate_id(tenant_id: Uuid, subject_ref: &str) -> Uuid {
+    Uuid::new_v5(
+        &Uuid::NAMESPACE_OID,
+        format!("bss-products:retention:{tenant_id}:{subject_ref}").as_bytes(),
+    )
 }
 
 #[cfg(test)]

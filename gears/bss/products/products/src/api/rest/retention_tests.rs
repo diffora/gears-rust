@@ -147,13 +147,77 @@ async fn erase(app: Router, principal_ref: &str, reason: &str) -> axum::http::Re
     .expect("the router answers")
 }
 
+/// The justification every export carries unless a case is about its absence.
+const WHY: &str = "DSAR ticket 4471";
+
 async fn export(app: Router, principal_ref: &str) -> axum::http::Response<Body> {
+    export_with(app, principal_ref, WHY).await
+}
+
+async fn export_with(
+    app: Router,
+    principal_ref: &str,
+    justification: &str,
+) -> axum::http::Response<Body> {
     app.oneshot(
         Request::builder()
             .method("GET")
             .uri(format!(
-                "/bss-products/v1/compliance/identity-export?principalRef={principal_ref}"
+                "/bss-products/v1/compliance/identity-export?principalRef={principal_ref}\
+                 &justification={}",
+                justification.replace(' ', "%20")
             ))
+            .extension(authed_ctx(TENANT))
+            .body(Body::empty())
+            .expect("build the request"),
+    )
+    .await
+    .expect("the router answers")
+}
+
+/// Offer an allow-list entry, defaulting every field a case does not pin.
+async fn sign_off(app: Router, value: &str, signed_off_by: &str) -> axum::http::Response<Body> {
+    let body = json!({
+        "value": value,
+        "justification": "product line named for its founder",
+        "signed_off_by": signed_off_by,
+        "signed_off_at": "2026-09-01T00:00:00Z",
+    });
+    app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/bss-products/v1/pii-allowlist-entries")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .extension(authed_ctx(TENANT))
+            .body(Body::from(body.to_string()))
+            .expect("build the request"),
+    )
+    .await
+    .expect("the router answers")
+}
+
+async fn revoke(app: Router, entry_id: Uuid) -> axum::http::Response<Body> {
+    let body = json!({ "op": "revoke", "reason": "the sign-off lapsed" });
+    app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri(format!(
+                "/bss-products/v1/pii-allowlist-entries/{entry_id}/operations"
+            ))
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .extension(authed_ctx(TENANT))
+            .body(Body::from(body.to_string()))
+            .expect("build the request"),
+    )
+    .await
+    .expect("the router answers")
+}
+
+async fn allowlist_review(app: Router) -> axum::http::Response<Body> {
+    app.oneshot(
+        Request::builder()
+            .method("GET")
+            .uri("/bss-products/v1/compliance/pii-allowlist")
             .extension(authed_ctx(TENANT))
             .body(Body::empty())
             .expect("build the request"),
@@ -458,4 +522,419 @@ async fn every_access_is_its_own_audit_row() {
     }
 
     assert_eq!(audit_rows(&harness.dsn, "compliance.export").await, 2);
+}
+
+// -- The allow-list doors (`dod-pii-allowlist`) and the export's
+//    justification (`dod-compliance-export`) --
+
+/// How many outbox rows carry `payload_type`.
+///
+/// `COUNT(*)` always answers a row, so the zero case is a real read rather
+/// than `raw_string_opt`'s missing-row panic — this module's own doc rule.
+async fn outbox_rows(dsn: &str, payload_type: &str) -> i64 {
+    let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
+    raw_i64(
+        dsn,
+        &format!("SELECT COUNT(*) AS v FROM {body_table} WHERE payload_type = '{payload_type}'"),
+    )
+    .await
+}
+
+/// One string column, where the case has already established the row exists.
+async fn raw_string(dsn: &str, sql: &str) -> String {
+    crate::test_support::raw_string_opt(dsn, sql)
+        .await
+        .expect("the case seeded the row this reads")
+}
+
+/// Read an entry id off a sign-off receipt.
+async fn signed_entry_id(response: axum::http::Response<Body>) -> Uuid {
+    let body = body_json(response).await;
+    body["entry_id"]
+        .as_str()
+        .and_then(|raw| Uuid::parse_str(raw).ok())
+        .unwrap_or_else(|| panic!("the receipt carries an entryId: {body}"))
+}
+
+/// **An entry offered without its Legal sign-off reference is refused riding
+/// `VALIDATION` and naming the field — and the same entry WITH one is
+/// admitted.**
+///
+/// §6's own words: *"asserted with its positive control — a mandatory-field
+/// rule proven only by its refusal is a rule that may never admit
+/// anything"*. The two halves are one case so the control cannot be deleted
+/// separately from the rule it guards.
+///
+/// **P-D-64** is what makes the code `VALIDATION` rather than a minted one:
+/// a missing mandatory member of the offered entry is a shape-class refusal,
+/// the caller's discriminator is the violation's **field**, and this
+/// feature's owned roster stays at one code.
+#[tokio::test]
+async fn a_missing_sign_off_reference_is_refused_by_field_and_a_complete_entry_is_admitted() {
+    let harness = harness().await;
+
+    let refused = sign_off(app_for(&harness, TENANT), "Ann Fritz", "   ").await;
+    assert_eq!(refused.status(), axum::http::StatusCode::BAD_REQUEST);
+    let body = body_json(refused).await;
+    assert_eq!(
+        body["context"]["violations"][0]["type"]
+            .as_str()
+            .unwrap_or_default(),
+        "VALIDATION",
+        "the missing sign-off rides 01's VALIDATION (P-D-64), never a minted code"
+    );
+    assert_eq!(
+        body["context"]["violations"][0]["subject"]
+            .as_str()
+            .unwrap_or_default(),
+        "signedOffBy",
+        "the caller's discriminator is the field, so the field is what the violation must name"
+    );
+
+    let admitted = sign_off(app_for(&harness, TENANT), "Ann Fritz", "legal-2026-114").await;
+    assert_eq!(
+        admitted.status(),
+        axum::http::StatusCode::OK,
+        "the positive control: the same entry with a reference is admitted"
+    );
+}
+
+/// **The stored value is the normalized one, and the receipt echoes it.**
+///
+/// The normalization is the whole of the match rule, so an operator has to be
+/// able to see what it made of their input — a rule the caller cannot observe
+/// is one they cannot satisfy on the second attempt.
+#[tokio::test]
+async fn the_receipt_echoes_the_normalized_value_the_detector_will_match() {
+    let harness = harness().await;
+    let receipt = sign_off(app_for(&harness, TENANT), "  Ann   FRITZ  ", "legal-1").await;
+    assert_eq!(receipt.status(), axum::http::StatusCode::OK);
+    let body = body_json(receipt).await;
+    assert_eq!(body["value_normalized"], "ann fritz");
+    assert_eq!(body["state"], "active");
+}
+
+/// **A second ACTIVE entry for one normalized value is refused, and the same
+/// value is admitted again once the first is revoked.**
+///
+/// Both arms, because the **partial** predicate is the whole mechanism: a
+/// total `UNIQUE` would pass the first half and fail the second, and a table
+/// with no index would pass the second and fail the first.
+#[tokio::test]
+async fn the_active_uniqueness_is_partial_and_a_revoked_value_may_be_signed_off_again() {
+    let harness = harness().await;
+
+    let first = sign_off(app_for(&harness, TENANT), "Ann Fritz", "legal-1").await;
+    assert_eq!(first.status(), axum::http::StatusCode::OK);
+    let entry_id = signed_entry_id(first).await;
+
+    let duplicate = sign_off(app_for(&harness, TENANT), "ANN  fritz", "legal-2").await;
+    assert_ne!(
+        duplicate.status(),
+        axum::http::StatusCode::OK,
+        "a second ACTIVE entry for the same normalized value is refused by \
+         uq_products_pii_allowlist_active - and note the input differs only in case and \
+         spacing, so this also proves the index sees the normalized form"
+    );
+
+    let revoked = revoke(app_for(&harness, TENANT), entry_id).await;
+    assert_eq!(revoked.status(), axum::http::StatusCode::OK);
+
+    let again = sign_off(app_for(&harness, TENANT), "Ann Fritz", "legal-3").await;
+    assert_eq!(
+        again.status(),
+        axum::http::StatusCode::OK,
+        "once the first is revoked the value is signable again - the partial predicate's \
+         other half"
+    );
+}
+
+/// **A revocation is a state flip and the row survives with its sign-off.**
+///
+/// P-D-47's reasoning is only true if the row is still there: the control the
+/// allow-list is *is* the paper sign-off plus the export, and a `DELETE`
+/// would take the sign-off out of both.
+#[tokio::test]
+async fn a_revocation_keeps_the_row_and_its_sign_off_in_the_review() {
+    let harness = harness().await;
+    let entry_id =
+        signed_entry_id(sign_off(app_for(&harness, TENANT), "Ann Fritz", "legal-1").await).await;
+    revoke(app_for(&harness, TENANT), entry_id).await;
+
+    let review = allowlist_review(app_for(&harness, TENANT)).await;
+    assert_eq!(review.status(), axum::http::StatusCode::OK);
+    let body = body_json(review).await;
+    let entries = body["entries"].as_array().expect("the review is a list");
+    assert_eq!(
+        entries.len(),
+        1,
+        "the revoked row is IN the review, not gone"
+    );
+    assert_eq!(entries[0]["state"], "revoked");
+    assert_eq!(
+        entries[0]["signed_off_by"], "legal-1",
+        "the sign-off that admitted it is what the revocation must not destroy"
+    );
+}
+
+/// **Revoking an entry that is not active answers 404, and answers it the
+/// same way for one that never existed.**
+#[tokio::test]
+async fn revoking_a_missing_or_already_revoked_entry_is_a_404() {
+    let harness = harness().await;
+    let unknown = revoke(app_for(&harness, TENANT), Uuid::now_v7()).await;
+    assert_eq!(unknown.status(), axum::http::StatusCode::NOT_FOUND);
+
+    let entry_id =
+        signed_entry_id(sign_off(app_for(&harness, TENANT), "Ann Fritz", "legal-1").await).await;
+    revoke(app_for(&harness, TENANT), entry_id).await;
+    let twice = revoke(app_for(&harness, TENANT), entry_id).await;
+    assert_eq!(
+        twice.status(),
+        axum::http::StatusCode::NOT_FOUND,
+        "already-revoked and never-existed are the same fact from the caller's side"
+    );
+}
+
+/// **Each allow-list act writes exactly one audit row and enqueues exactly
+/// one `PiiAllowlistChanged`.**
+///
+/// Counted, not sampled: a probe that reads *a* row cannot tell one write
+/// from three, and the event is what a cache-busting consumer subscribes to.
+#[tokio::test]
+async fn each_allowlist_act_writes_one_audit_row_and_one_event() {
+    let harness = harness().await;
+    let entry_id =
+        signed_entry_id(sign_off(app_for(&harness, TENANT), "Ann Fritz", "legal-1").await).await;
+    assert_eq!(audit_rows(&harness.dsn, "pii_allowlist.sign_off").await, 1);
+    assert_eq!(outbox_rows(&harness.dsn, "PiiAllowlistChanged").await, 1);
+
+    revoke(app_for(&harness, TENANT), entry_id).await;
+    assert_eq!(audit_rows(&harness.dsn, "pii_allowlist.revoke").await, 1);
+    assert_eq!(
+        outbox_rows(&harness.dsn, "PiiAllowlistChanged").await,
+        2,
+        "both acts announce; a revocation a consumer never hears leaves a stale cache admitting \
+         a name Legal has withdrawn"
+    );
+}
+
+/// **The erasure act enqueues its `ActorErased`, and a refused erasure
+/// enqueues none.**
+///
+/// The negative half is the one that matters: the event rides the act's
+/// transaction, so an unknown-principal refusal that still announced an
+/// erasure would tell every cache to drop a ref that was never retired.
+#[tokio::test]
+async fn an_erasure_announces_itself_and_a_refused_one_does_not() {
+    let harness = harness().await;
+    seed_principal(&harness, ALICE).await;
+
+    erase(app_for(&harness, TENANT), ALICE, "DSAR 1").await;
+    assert_eq!(outbox_rows(&harness.dsn, "ActorErased").await, 1);
+
+    let refused = erase(app_for(&harness, TENANT), "principal:nobody", "DSAR 2").await;
+    assert_eq!(error_code(refused).await, "ERASURE_UNKNOWN_ACTOR");
+    assert_eq!(
+        outbox_rows(&harness.dsn, "ActorErased").await,
+        1,
+        "the refusal announced nothing"
+    );
+}
+
+/// **The compliance export requires a justification, and the justification it
+/// requires lands on the access's own audit row.**
+///
+/// P-D-133: the one surface that returns real identities is not served
+/// unreasoned. Both halves, because a door that demanded the field and then
+/// dropped it would pass a refusal-only probe.
+#[tokio::test]
+async fn the_export_requires_a_justification_and_records_it_on_the_access_row() {
+    let harness = harness().await;
+    seed_principal(&harness, ALICE).await;
+
+    let unreasoned = export_with(app_for(&harness, TENANT), ALICE, "").await;
+    assert_eq!(unreasoned.status(), axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(
+        audit_rows(&harness.dsn, "compliance.export").await,
+        0,
+        "a refused export is not an access and writes no access row"
+    );
+
+    let served = export_with(app_for(&harness, TENANT), ALICE, "DSAR ticket 4471").await;
+    assert_eq!(served.status(), axum::http::StatusCode::OK);
+    assert_eq!(audit_rows(&harness.dsn, "compliance.export").await, 1);
+    assert_eq!(
+        raw_string(
+            &harness.dsn,
+            "SELECT reason AS v FROM products_audit_log WHERE action = 'compliance.export'",
+        )
+        .await,
+        "DSAR ticket 4471",
+        "the reason column is where the justification lands; a door that demanded it and \
+         dropped it would satisfy the refusal half alone"
+    );
+}
+
+/// **Every access is audited individually, counted rather than sampled.**
+#[tokio::test]
+async fn three_exports_write_three_access_rows() {
+    let harness = harness().await;
+    seed_principal(&harness, ALICE).await;
+    for _ in 0..3 {
+        let served = export(app_for(&harness, TENANT), ALICE).await;
+        assert_eq!(served.status(), axum::http::StatusCode::OK);
+    }
+    assert_eq!(
+        audit_rows(&harness.dsn, "compliance.export").await,
+        3,
+        "individually audited means one row per access, which only a count can assert"
+    );
+}
+
+/// **The detector the doors run is this feature's own, over this tenant's
+/// list — and the allow-list arm is reachable through the wire.**
+///
+/// The erasure reason is one of the enumerated free-text fields. An unlisted
+/// person-shaped reason is refused `CONTENT_PII_BLOCKED`; signing that same
+/// name onto the list makes the same reason pass. That second half is what
+/// proves the door reads the tenant's list rather than a compiled-in one.
+#[tokio::test]
+async fn a_doors_free_text_is_judged_against_this_tenants_allow_list() {
+    let harness = harness().await;
+    seed_principal(&harness, ALICE).await;
+
+    let blocked = erase(app_for(&harness, TENANT), ALICE, "requested by Ann Fritz").await;
+    assert_eq!(
+        error_code(blocked).await,
+        "CONTENT_PII_BLOCKED",
+        "an unlisted person-shaped run is undecidable, and the hook fails closed on that"
+    );
+
+    sign_off(app_for(&harness, TENANT), "Ann Fritz", "legal-1").await;
+    let admitted = erase(app_for(&harness, TENANT), ALICE, "requested by Ann Fritz").await;
+    assert_eq!(
+        admitted.status(),
+        axum::http::StatusCode::OK,
+        "the allow-by-list arm, reached through the wire: the same text passes once the name \
+         is on this tenant's list"
+    );
+}
+
+/// **A block names the field and never the detected value.**
+///
+/// The `DoD`'s own clause, and the reason it gives: a refusal that echoed the
+/// match would write the personal data into the refusal's own audit row,
+/// which is a record erasure cannot reach. Asserted on the **audit row**, not
+/// only on the response, because the row is the record that outlives the
+/// request.
+#[tokio::test]
+async fn a_pii_refusal_names_the_field_and_its_audit_row_carries_no_detected_value() {
+    let harness = harness().await;
+    seed_principal(&harness, ALICE).await;
+
+    let blocked = erase(
+        app_for(&harness, TENANT),
+        ALICE,
+        "requested by Ann Fritz of Acme",
+    )
+    .await;
+    let body = body_json(blocked).await;
+    let rendered = body.to_string();
+    assert!(
+        rendered.contains("reason"),
+        "the refusal names the field: {rendered}"
+    );
+    assert!(
+        !rendered.contains("Ann Fritz"),
+        "the refusal must not echo the detected value: {rendered}"
+    );
+    assert_eq!(
+        raw_i64(
+            &harness.dsn,
+            "SELECT COUNT(*) AS v FROM products_audit_log WHERE reason LIKE '%Ann Fritz%'",
+        )
+        .await,
+        0,
+        "and no audit row carries it either - the row is the record erasure cannot rewrite"
+    );
+}
+
+/// **Every door that runs the content-PII write block builds its detector
+/// from this feature's own host, and no production path constructs the
+/// permissive one.**
+///
+/// A source census rather than six behavioural probes, because the claim is
+/// about the *set*: a seventh door added next month with
+/// `Arc::new(NoPiiPolicyDetector)` in it would pass every behavioural probe
+/// written today, and it is exactly the shape this change had to repair —
+/// `NoPiiPolicyDetector` was constructed at **six** production sites, each
+/// its own literal, so *"the registered detector"* named a phrase and not a
+/// registry.
+///
+/// Scoped to the production half of each file: the permissive host is a
+/// legitimate **test** double and several suites drive it deliberately, so a
+/// whole-file scan would forbid the thing it is right to keep.
+#[test]
+fn no_production_door_builds_the_permissive_pii_host() {
+    let doors = [
+        ("api/rest/products.rs", include_str!("products.rs")),
+        ("api/rest/skus.rs", include_str!("skus.rs")),
+        ("api/rest/taxonomy.rs", include_str!("taxonomy.rs")),
+        (
+            "api/rest/materiality_policy.rs",
+            include_str!("materiality_policy.rs"),
+        ),
+        ("api/rest/retention.rs", include_str!("retention.rs")),
+    ];
+    for (name, source) in doors {
+        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+        assert!(
+            !production.contains("Arc::new(NoPiiPolicyDetector)")
+                && !production.contains("Arc::new(crate::domain::taxonomy::NoPiiPolicyDetector)"),
+            "{name} builds the permissive host on a production path: `dod-pii-detector` obliges \
+             the whole door set, and a door left on it admits every string while its neighbours \
+             refuse"
+        );
+        assert!(
+            !production.contains("content_pii_block") || production.contains("tenant_pii_detector"),
+            "{name} runs the write block without building this feature's detector"
+        );
+    }
+}
+
+/// **The census can fail.** The perturbation the case above needs: the same
+/// scan over a string that *does* carry the literal must trip, so a green
+/// census is evidence rather than a scan that matches nothing.
+#[test]
+fn the_permissive_host_census_can_fail() {
+    let poisoned = "fn door() { let d = Arc::new(NoPiiPolicyDetector); }\n#[cfg(test)]\nmod t {}";
+    let production = poisoned.split("#[cfg(test)]").next().unwrap_or(poisoned);
+    assert!(
+        production.contains("Arc::new(NoPiiPolicyDetector)"),
+        "the census's own predicate must see the construction it forbids"
+    );
+}
+
+/// **Both allow-list doors submit their act to `05`'s live-op gate.**
+///
+/// Call sites, not a verdict: the registered host authorizes everything, so a
+/// green verdict assertion would prove nothing about whether the ceremony was
+/// asked. `02`'s `every_op_door_submits_its_envelope_to_the_gate` is the
+/// shape, and the same reasoning — the day a store-backed host lands, a door
+/// that never submitted keeps writing.
+#[test]
+fn both_allowlist_doors_submit_their_act_to_the_gate() {
+    let source = include_str!("retention.rs");
+    let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+    assert_eq!(
+        production
+            .matches("submit_allowlist_to_gate(tenant_id)")
+            .count(),
+        2,
+        "one call in each of the two mutating doors, and no more: the read door submits nothing \
+         because it changes nothing. The definition line does not match this pattern - it reads \
+         `(tenant_id: Uuid)` - so this counts call sites and not the function's own existence, \
+         which is what the assertion is for"
+    );
 }
