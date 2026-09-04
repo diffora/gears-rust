@@ -790,6 +790,92 @@ catalog_deprecation_event! {
     "gts.cf.core.events.event_type.v1~cf.bss.products.sku_deprecated.v1",
     SKU_SUBJECT_TYPE
 }
+
+/// A retirement or flip event: the core plus `RetiredEventBody`'s fields.
+///
+/// A fourth catalog macro because those fields are not on every event —
+/// the same argument [`catalog_deprecation_event`] makes for provenance.
+/// @cpt-dod:cpt-cf-bss-products-dod-lifecycle-events:p1
+macro_rules! catalog_retirement_event {
+    ($(#[$doc:meta])* $name:ident, $type_id:literal, $subject_type:expr) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        pub(crate) struct $name {
+            /// §4.5's five fields plus P-D-01's two payload-borne obligations.
+            #[serde(flatten)]
+            pub core: CatalogEventCore,
+            /// The published version the retirement is taken from.
+            pub from_version: i64,
+            /// Operator retirement text (**P-D-46**).
+            pub reason: String,
+            /// Named replacement SKU. `None` on a Product event.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub replaced_by: Option<Uuid>,
+            /// RFC3339 UTC effective instant.
+            pub effective_at: String,
+            /// Always `None` in v1; omitted so absence round-trips.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub must_migrate_by: Option<String>,
+        }
+
+        impl TypedEvent for $name {
+            const TYPE_ID: &'static str = $type_id;
+            const TOPIC: &'static str = TOPIC;
+            const SUBJECT_TYPE: &'static str = $subject_type;
+            const SOURCE: &'static str = SOURCE;
+
+            fn subject(&self) -> Cow<'_, str> {
+                Cow::Owned(self.core.entity_id.to_string())
+            }
+
+            fn tenant_id(&self) -> Option<Uuid> {
+                Some(self.core.tenant_id)
+            }
+
+            fn trace_parent(&self) -> Option<Cow<'_, str>> {
+                crate::infra::events::traceparent().map(Cow::Owned)
+            }
+        }
+    };
+}
+
+catalog_event! {
+    /// A Product un-deprecation — the bare core.
+    ProductUndeprecated,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.product_undeprecated.v1",
+    PRODUCT_SUBJECT_TYPE
+}
+catalog_event! {
+    /// A SKU un-deprecation — the bare core.
+    SkuUndeprecated,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.sku_undeprecated.v1",
+    SKU_SUBJECT_TYPE
+}
+catalog_retirement_event! {
+    /// Product retirement initiation.
+    ProductRetired,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.product_retired.v1",
+    PRODUCT_SUBJECT_TYPE
+}
+catalog_retirement_event! {
+    /// SKU retirement initiation.
+    SkuRetired,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.sku_retired.v1",
+    SKU_SUBJECT_TYPE
+}
+catalog_retirement_event! {
+    /// The SKU flip.
+    SkuRetirementEffective,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.sku_retirement_effective.v1",
+    SKU_SUBJECT_TYPE
+}
+catalog_retirement_event! {
+    /// The Product flip (**P-D-115**).
+    ProductRetirementEffective,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.product_retirement_effective.v1",
+    PRODUCT_SUBJECT_TYPE
+}
 catalog_publish_event! {
     /// A Product was published at [`Self::published_version`].
     ProductPublished,
@@ -890,12 +976,26 @@ async fn prepare_every_event_type(
     producer.prepare::<SkuPublished>().await?;
     producer.prepare::<ProductDiscarded>().await?;
     producer.prepare::<SkuDiscarded>().await?;
-    producer.prepare::<ProductDeprecated>().await?;
-    producer.prepare::<SkuDeprecated>().await?;
+    prepare_lifecycle_event_types(producer).await?;
     producer.prepare::<RecognizedUnitUpdated>().await?;
     producer.prepare::<RecognizedCodeUpdated>().await?;
     producer.prepare::<PlanTierUpdated>().await?;
     producer.prepare::<CatalogBulkOperationCompleted>().await?;
+    Ok(())
+}
+
+/// 04's typed events — deprecation through both flips.
+async fn prepare_lifecycle_event_types(
+    producer: &event_broker_sdk::DbProducer,
+) -> Result<(), event_broker_sdk::EventBrokerError> {
+    producer.prepare::<ProductDeprecated>().await?;
+    producer.prepare::<SkuDeprecated>().await?;
+    producer.prepare::<ProductUndeprecated>().await?;
+    producer.prepare::<SkuUndeprecated>().await?;
+    producer.prepare::<ProductRetired>().await?;
+    producer.prepare::<SkuRetired>().await?;
+    producer.prepare::<SkuRetirementEffective>().await?;
+    producer.prepare::<ProductRetirementEffective>().await?;
     Ok(())
 }
 

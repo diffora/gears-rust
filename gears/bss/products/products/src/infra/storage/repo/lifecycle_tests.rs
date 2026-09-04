@@ -10,8 +10,8 @@ use uuid::Uuid;
 use super::{
     NewDeferredRetirement, NewScheduledTransition, claim_due_transition, find_deferred_retirement,
     find_live_retire_intents, find_scheduled_transition, finish_scheduled_transition,
-    insert_deferred_retirement, insert_scheduled_transition, reclaim_expired_lease,
-    resolve_deferred_retirement, supersede_live_intents,
+    insert_deferred_retirement, insert_scheduled_transition, list_due_transitions,
+    reclaim_expired_lease, resolve_deferred_retirement, supersede_live_intents,
 };
 use crate::domain::activation::{ClaimLease, DeferralPopulation, RunFinish};
 use crate::infra::storage::migrations::Migrator;
@@ -207,7 +207,10 @@ async fn a_due_row_claims_and_finishes_applied() {
     assert_eq!(done.state, "applied");
     assert_eq!(done.outcome_reason, None);
     assert_eq!(done.retirement_reason, None);
-    assert_eq!(done.attempt, 0);
+    assert_eq!(
+        done.attempt, 1,
+        "P-D-113: the claim statement itself spends one"
+    );
 }
 
 #[tokio::test]
@@ -262,7 +265,10 @@ async fn reclaim_moves_running_to_pending_and_increments_attempt() {
         .expect("find")
         .expect("row");
     assert_eq!(row.state, "pending");
-    assert_eq!(row.attempt, 1);
+    assert_eq!(
+        row.attempt, 2,
+        "claim spent one; the lease reclaim is a try of its own"
+    );
     assert!(row.claimed_at.is_none());
 }
 
@@ -316,7 +322,10 @@ async fn a_transient_deferral_finish_increments_attempt() {
         .expect("find")
         .expect("row");
     assert_eq!(row.state, "deferred");
-    assert_eq!(row.attempt, 1);
+    assert_eq!(
+        row.attempt, 1,
+        "the claim spent one; the deferral finish must not spend again"
+    );
     assert_eq!(
         row.outcome_reason.as_deref(),
         Some("transient: UNAVAILABLE")
@@ -399,4 +408,58 @@ async fn supersede_clears_the_live_slot_and_resolve_flips_the_deferral() {
         .expect("row");
     assert_eq!(resolved.resolution.as_deref(), Some("cascade_cancelled"));
     assert!(resolved.resolved_at.is_some());
+}
+
+#[tokio::test]
+async fn list_due_returns_a_due_pending_and_skips_a_future_row() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let now = Utc.with_ymd_and_hms(2026, 9, 4, 12, 0, 0).unwrap();
+    let lease = ClaimLease {
+        ttl: chrono::Duration::seconds(60),
+    };
+    let due = Uuid::from_u128(0xaa_11);
+    let future = Uuid::from_u128(0xaa_12);
+
+    insert_scheduled_transition(
+        &conn,
+        &scope,
+        &NewScheduledTransition {
+            transition_id: due,
+            tenant_id: TENANT,
+            entity_kind: "sku".to_owned(),
+            entity_id: ENTITY,
+            kind: "publish".to_owned(),
+            at: now - chrono::Duration::hours(1),
+            approval_ref: APPROVAL,
+            retirement_reason: None,
+            now,
+        },
+    )
+    .await
+    .expect("due insert");
+    insert_scheduled_transition(
+        &conn,
+        &scope,
+        &NewScheduledTransition {
+            transition_id: future,
+            tenant_id: TENANT,
+            entity_kind: "sku".to_owned(),
+            entity_id: Uuid::from_u128(0xdd_12),
+            kind: "publish".to_owned(),
+            at: now + chrono::Duration::hours(1),
+            approval_ref: APPROVAL,
+            retirement_reason: None,
+            now,
+        },
+    )
+    .await
+    .expect("future insert");
+
+    let listed = list_due_transitions(&conn, &scope, TENANT, now, lease)
+        .await
+        .expect("list");
+    let ids: Vec<Uuid> = listed.iter().map(|row| row.transition_id).collect();
+    assert_eq!(ids, vec![due], "a future at must not be claimed this tick");
 }

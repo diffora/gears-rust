@@ -52,16 +52,17 @@ const THE_EIGHT: &[&str] = &[
 /// [`THE_LIFECYCLE_REST`], not here and not in [`THE_EIGHT`].
 const THE_LIFECYCLE_PAIR: &[&str] = &["ProductDeprecated", "SkuDeprecated"];
 
-/// 04's remaining five, transcribed from its Events roster. Deliberately
+/// 04's remaining six, transcribed from its Events roster. Deliberately
 /// not folded into [`THE_EIGHT`] or [`THE_LIFECYCLE_PAIR`]. Scheduling
 /// acts stay audit-plane: no `PublishScheduled` / `RetirementScheduled`.
-/// `ProductRetired` is the initiation event; no Product flip token (row 5).
+/// `ProductRetirementEffective` is the Product flip (**P-D-115**).
 const THE_LIFECYCLE_REST: &[&str] = &[
     "ProductUndeprecated",
     "SkuUndeprecated",
     "SkuRetired",
     "ProductRetired",
     "SkuRetirementEffective",
+    "ProductRetirementEffective",
 ];
 
 /// `03-sku-classification`'s set events, transcribed from **its** §4 roster —
@@ -187,7 +188,7 @@ fn every_declared_token_belongs_to_exactly_one_entry_point() {
             (THE_EIGHT.contains(token) && !published.contains(token)) || rest,
             "{token}: the core-only set must be exactly §4.5's eight minus the publish pair — \
              a declared token outside that partition reaches an entry point whose body shape it \
-             does not have; 04's remaining five are registered ahead of their enqueue"
+             does not have; 04's remaining six are registered ahead of their enqueue"
         );
     }
 }

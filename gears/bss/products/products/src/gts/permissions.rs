@@ -21,9 +21,9 @@
 //! `materiality_policy × write`, `breakglass × elevate`,
 //! `audit × read|export`.
 //!
-//! The rows owned by `02` and `04` (`category`, `attribute_definition`,
-//! `scheduled_transition`, `metadata`) are **deliberately absent**: they
-//! belong to the slices that build those doors. `03`'s pair —
+//! `04`'s `scheduled_transition × read|cancel` arrived with the P-D-134
+//! doors. `× write` is not minted: the retire doors write those rows under
+//! `sku × write` / `product × write`. `03`'s pair —
 //! `recognized_set × write` and `plan_tier × write` — arrived with the
 //! P-D-90 membership doors, on exactly that rule. `10`'s three — `erasure × execute`,
 //! `compliance × export`, `pii_allowlist × write` — arrived with
@@ -303,6 +303,22 @@ gts_instance! {
 }
 gts_instance! {
     AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.scheduled_transition_read.v1"),
+        resource_type: labels::SCHEDULED_TRANSITION.to_owned(),
+        action: actions::READ.to_owned(),
+        display_name: "List scheduled transitions".to_owned(),
+    }
+}
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.scheduled_transition_cancel.v1"),
+        resource_type: labels::SCHEDULED_TRANSITION.to_owned(),
+        action: actions::CANCEL.to_owned(),
+        display_name: "Cancel a scheduled transition".to_owned(),
+    }
+}
+gts_instance! {
+    AuthzPermissionV1 {
         id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.audit_read.v1"),
         resource_type: labels::AUDIT.to_owned(),
         action: actions::READ.to_owned(),
@@ -358,6 +374,8 @@ mod tests {
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.category_write.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.attribute_definition_write.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.metadata_write.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.scheduled_transition_read.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.scheduled_transition_cancel.v1"),
     ];
 
     fn products_permission_instances() -> Vec<&'static InventoryInstance> {
@@ -459,10 +477,11 @@ mod tests {
             crate::authz::actions::DECIDE,
             crate::authz::actions::ELEVATE,
             crate::authz::actions::EXPORT,
+            crate::authz::actions::CANCEL,
         ];
         // `10`'s three grants reuse EXECUTE, EXPORT and WRITE on their own
-        // resources, so the action vocabulary does not grow with them — the
-        // resource is the discriminator.
+        // resources. `04`'s scheduled-transition cancel spends `CANCEL`
+        // (P-D-134), which is a new action on a new resource.
         for entry in products_permission_instances() {
             let action = (entry.payload_fn)()["action"]
                 .as_str()

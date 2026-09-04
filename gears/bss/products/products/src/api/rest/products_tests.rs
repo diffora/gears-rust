@@ -4251,10 +4251,10 @@ async fn refusal_error_code(dsn: &str) -> Option<String> {
 
 /// Narrow a Product's `region_scope` **out of band**, around every door.
 ///
-/// Used by exactly one case, and only to manufacture a state no door will
-/// produce once the containment check exists: a live child already outside
-/// its parent. See that case's own doc for why the state has to be reached
-/// this way.
+/// Used to manufacture a state no door will produce once the containment
+/// check exists: a live child already outside its parent. The save-door
+/// cases use it to reach a child-side recheck; the publish-door cases use
+/// it because the save door already refuses the same narrowing.
 async fn narrow_region_out_of_band(dsn: &str, product_id: Uuid, region: &str) {
     let conn = Database::connect(dsn)
         .await
@@ -7089,8 +7089,8 @@ mod retire_door_tests {
         assert_eq!(body["entityId"], json!(product_id.to_string()));
         assert_eq!(
             enqueued_event_count(&harness.dsn, "ProductRetired").await,
-            1,
-            "initiation still emits none; this row is the re-announcement"
+            2,
+            "initiation emits one; this later row is the re-announcement"
         );
     }
 
@@ -7135,6 +7135,105 @@ mod retire_door_tests {
         assert_eq!(
             audit_error_code(&harness.dsn).await.as_deref(),
             Some("RETIREMENT_LEAD_TIME")
+        );
+    }
+
+    #[tokio::test]
+    async fn initiation_emits_product_retired() {
+        let harness = harness().await;
+        let product_id = published_product(&harness).await;
+        let retired = post_json_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "retire",
+            &if_match(2),
+            &json!({
+                "reason": "end of family",
+                "confirmed": true
+            }),
+        )
+        .await;
+        assert_eq!(retired.status(), StatusCode::OK);
+        assert_eq!(
+            enqueued_event_count(&harness.dsn, "ProductRetired").await,
+            1,
+            "P-D-115: ProductRetired at initiation"
+        );
+        let body = enqueued_event_body(&harness.dsn, "ProductRetired").await;
+        assert_eq!(body["fromVersion"], json!(1));
+        assert_eq!(body["reason"], json!("end of family"));
+        assert_eq!(body["entityId"], json!(product_id.to_string()));
+        assert!(
+            body.get("replacedBy").is_none(),
+            "replacedBy is SKU-only; Product initiation leaves it absent"
+        );
+    }
+
+    #[tokio::test]
+    async fn cascade_supersedes_a_childs_live_retire_intent() {
+        let harness = harness().await;
+        let product_id = published_product(&harness).await;
+        let child = seed_child(&harness, product_id, "SKU-SUPERSEDE-RET").await;
+        publish_child(&harness, child).await;
+        {
+            let conn = harness
+                .db
+                .conn()
+                .expect("checkout the pinned production connection");
+            let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+            repo::insert_scheduled_transition(
+                &conn,
+                &scope,
+                &crate::infra::storage::repo::NewScheduledTransition {
+                    transition_id: Uuid::now_v7(),
+                    tenant_id: TENANT,
+                    entity_kind: "sku".to_owned(),
+                    entity_id: child,
+                    kind: "retire".to_owned(),
+                    at: Utc.with_ymd_and_hms(2026, 12, 1, 0, 0, 0).unwrap(),
+                    approval_ref: Uuid::now_v7(),
+                    retirement_reason: Some("earlier".to_owned()),
+                    now: Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap(),
+                },
+            )
+            .await
+            .expect("seed a live retire intent");
+        }
+        assert_eq!(live_intent_count(&harness, child).await, 1);
+
+        let response = post_json_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "retire",
+            &if_match(2),
+            &json!({
+                "reason": "end of family",
+                "confirmed": true,
+                "cascade_confirmed": true
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            live_intent_count(&harness, child).await,
+            1,
+            "the seeded retire intent is superseded and replaced by this cascade's leg"
+        );
+        let reason = raw_string_opt(
+            &harness.dsn,
+            &format!(
+                "SELECT retirement_reason AS v FROM products_scheduled_transition \
+                 WHERE {} AND kind = 'retire' AND state IN ('pending','running','deferred')",
+                id_matches("entity_id", child)
+            ),
+        )
+        .await;
+        assert_eq!(
+            reason.as_deref(),
+            Some("end of family"),
+            "the live row is this cascade's, not the seeded earlier intent"
         );
     }
 }
@@ -7212,6 +7311,72 @@ mod cancel_retire_door_tests {
         )
         .await;
         assert_eq!(revived.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn resume_writes_children_cleared() {
+        let harness = harness().await;
+        let product_id = published_product(&harness).await;
+        let transition_id = Uuid::now_v7();
+        {
+            let conn = harness
+                .db
+                .conn()
+                .expect("checkout the pinned production connection");
+            let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+            let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+            repo::insert_scheduled_transition(
+                &conn,
+                &scope,
+                &crate::infra::storage::repo::NewScheduledTransition {
+                    transition_id,
+                    tenant_id: TENANT,
+                    entity_kind: "product".to_owned(),
+                    entity_id: product_id,
+                    kind: "retire".to_owned(),
+                    at: Utc.with_ymd_and_hms(2026, 12, 1, 0, 0, 0).unwrap(),
+                    approval_ref: Uuid::now_v7(),
+                    retirement_reason: Some("cascade".to_owned()),
+                    now,
+                },
+            )
+            .await
+            .expect("parent intent");
+            repo::insert_deferred_retirement(
+                &conn,
+                &scope,
+                &crate::infra::storage::repo::NewDeferredRetirement {
+                    tenant_id: TENANT,
+                    product_id,
+                    cascade_ref: transition_id,
+                    children_snapshot: r"[]".to_owned(),
+                    created_by: Uuid::now_v7(),
+                    now,
+                },
+            )
+            .await
+            .expect("unresolved deferral");
+        }
+
+        let resumed = post_json_act(
+            app_for(&harness, TENANT),
+            TENANT,
+            product_id,
+            "retire/resume",
+            &if_match(2),
+            &json!({ "confirmed": true }),
+        )
+        .await;
+        assert_eq!(resumed.status(), StatusCode::OK);
+        let resolution = raw_string_opt(
+            &harness.dsn,
+            &format!(
+                "SELECT resolution AS v FROM products_deferred_retirement WHERE {}",
+                id_matches("product_id", product_id)
+            ),
+        )
+        .await;
+        assert_eq!(resolution.as_deref(), Some("children_cleared"));
     }
 }
 
@@ -8121,5 +8286,62 @@ async fn a_brand_scoped_entity_publishes_on_the_global_value_alone() {
         (code.as_str(), subject.as_str()),
         ("ATTRIBUTE_SCOPE_VIOLATION", "attributes.displayName"),
         "the exemption is for the absent coordinate, not for the brand axis"
+    );
+}
+
+#[tokio::test]
+async fn a_product_publish_names_falling_out_children() {
+    let harness = harness().await;
+    let product_id = create_product_scoped(&harness, "eu,us").await;
+    let (sku_id, etag) = create_sku_scoped(&harness, product_id, "SKU-FALL", "us").await;
+    sku_head_act(&harness, sku_id, "publish", &etag).await;
+
+    narrow_region_out_of_band(&harness.dsn, product_id, "eu").await;
+    let head = head_of(&harness, product_id).await;
+    let refused = post_head_act(
+        both_doors_app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(head.internal_revision))],
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let view = json_body(refused).await;
+    assert_eq!(
+        view["context"]["violations"][0]["type"],
+        json!("SCOPE_NOT_CONTAINED")
+    );
+    let named = view["context"]["violations"][0]["description"]
+        .as_str()
+        .or_else(|| view["detail"].as_str())
+        .unwrap_or_default();
+    assert!(
+        named.contains(&sku_id.to_string()),
+        "P-D-115: the publish refusal names the falling-out child: {named}; view={view}"
+    );
+}
+
+#[tokio::test]
+async fn a_product_publish_admits_when_the_only_outside_child_is_discarded() {
+    let harness = harness().await;
+    let product_id = create_product_scoped(&harness, "eu,us").await;
+    let (sku_id, etag) = create_sku_scoped(&harness, product_id, "SKU-DISC-OUT", "us").await;
+    sku_head_act(&harness, sku_id, "discard", &etag).await;
+
+    narrow_region_out_of_band(&harness.dsn, product_id, "eu").await;
+    let head = head_of(&harness, product_id).await;
+    let published = post_head_act(
+        both_doors_app_for(&harness, TENANT),
+        TENANT,
+        product_id,
+        "publish",
+        &[("If-Match", &if_match(head.internal_revision))],
+    )
+    .await;
+    assert_eq!(
+        published.status(),
+        StatusCode::OK,
+        "a discarded child is terminal and cannot block narrowing"
     );
 }

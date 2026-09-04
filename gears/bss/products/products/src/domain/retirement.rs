@@ -15,9 +15,9 @@
 //! an optional operator instant and compares it to `now + lead`; a missing
 //! instant computes. That is a host, not a ruling.
 //!
-//! @cpt-cf-bss-products-dod-retirement-initiation
+//! @cpt-dod:cpt-cf-bss-products-dod-retirement-initiation:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-flip-guard:p1
-//! @cpt-cf-bss-products-dod-replaced-by
+//! @cpt-dod:cpt-cf-bss-products-dod-replaced-by:p1
 //! @cpt-cf-bss-products-dod-eol-lockout
 //! @cpt-dod:cpt-cf-bss-products-dod-lead-window-reannounce:p1
 
@@ -80,6 +80,23 @@ pub fn flip_guard(predicate: FlipPredicate) -> Result<(), RetirementHeld> {
             blocking_producers: vec![],
         }),
     }
+}
+
+/// Deferral `outcome_reason` when a live `replaced_by_sku_id` names this SKU
+/// (**P-D-133**). The listing of pointing SKUs follows the token.
+pub const REPLACEMENT_CHAIN_BROKEN: &str = "replacement_chain_broken";
+
+/// Format the deferral reason listing the pointing SKUs.
+#[must_use]
+pub fn replacement_chain_broken_reason(pointers: &[Uuid]) -> String {
+    format!(
+        "{REPLACEMENT_CHAIN_BROKEN}: {}",
+        pointers
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 /// A successor named at initiation must be `published`.
@@ -192,6 +209,28 @@ pub fn effective_at(
         Some(at) if at >= floor => Ok(at),
         Some(_) => Err(LifecycleRefusal::retirement_lead_time()),
     }
+}
+
+/// `inst-rt-create-guard`: a child under a retiring parent is an orphan
+/// the flip guard would then have to refuse.
+///
+/// One function, both doors. The door prefetches the two facts the
+/// instruction names — a live scheduled `retire` on the parent, or an
+/// unresolved `DeferredRetireIntent` — and this rule raises
+/// [`LifecycleRefusal::RETIREMENT_PENDING`] when either is present.
+///
+/// # Errors
+///
+/// [`LifecycleRefusal`] with [`LifecycleRefusal::RETIREMENT_PENDING`].
+pub fn refuse_create_under_retiring_parent(
+    parent_id: Uuid,
+    live_retire_intent: bool,
+    unresolved_deferral: bool,
+) -> Result<(), LifecycleRefusal> {
+    if live_retire_intent || unresolved_deferral {
+        return Err(LifecycleRefusal::retirement_pending(&[parent_id]));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

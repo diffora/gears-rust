@@ -152,26 +152,25 @@ fn provenance_parses_its_two_values_and_no_others() {
 /// that do not.
 #[test]
 fn no_published_child_may_remain_under_a_retiring_product() {
-    let err = no_orphan_at_flip(&[
-        LifecycleState::Deprecated,
-        LifecycleState::Published,
-        LifecycleState::Published,
-    ])
-    .expect_err("two published children must refuse the flip");
     assert!(
-        matches!(err, DomainError::ParentTerminal(ref d) if d.contains('2')),
-        "the refusal names how many remain; got {err:?}"
+        !no_orphan_at_flip(&[
+            LifecycleState::Deprecated,
+            LifecycleState::Published,
+            LifecycleState::Published,
+        ]),
+        "two published children defer the flip; no DomainError is minted"
     );
-    assert_eq!(err.code(), "PARENT_TERMINAL");
 
-    no_orphan_at_flip(&[
-        LifecycleState::Deprecated,
-        LifecycleState::Draft,
-        LifecycleState::Retired,
-        LifecycleState::Discarded,
-    ])
-    .expect("no published child remains, whatever else does");
-    no_orphan_at_flip(&[]).expect("a childless Product retires");
+    assert!(
+        no_orphan_at_flip(&[
+            LifecycleState::Deprecated,
+            LifecycleState::Draft,
+            LifecycleState::Retired,
+            LifecycleState::Discarded,
+        ]),
+        "no published child remains, whatever else does"
+    );
+    assert!(no_orphan_at_flip(&[]), "a childless Product retires");
 }
 
 /// A `deprecated` child does **not** block the flip, and that is the
@@ -179,6 +178,8 @@ fn no_published_child_may_remain_under_a_retiring_product() {
 /// that refused deprecated children would refuse every ordinary retirement.
 #[test]
 fn a_deprecated_child_does_not_block_the_flip() {
-    no_orphan_at_flip(&[LifecycleState::Deprecated; 5])
-        .expect("deprecated children are the expected state at a flip");
+    assert!(
+        no_orphan_at_flip(&[LifecycleState::Deprecated; 5]),
+        "deprecated children are the expected state at a flip"
+    );
 }

@@ -11,8 +11,10 @@ use super::{
     CategoryDeleted, CategoryDisplayUpdated, CategoryRenamed, CategoryReparented, CategoryRetired,
     METADATA_SUBJECT_TYPE, MetadataUpdated, PRODUCT_SUBJECT_TYPE, PiiAllowlistChanged,
     PlanTierUpdated, ProductCreated, ProductDeprecated, ProductDiscarded, ProductHeadSaved,
-    ProductPublished, RecognizedCodeUpdated, RecognizedUnitUpdated, SKU_SUBJECT_TYPE, SOURCE,
-    SkuCreated, SkuDeprecated, SkuDiscarded, SkuHeadSaved, SkuPublished, TOPIC,
+    ProductPublished, ProductRetired, ProductRetirementEffective, ProductUndeprecated,
+    RecognizedCodeUpdated, RecognizedUnitUpdated, SKU_SUBJECT_TYPE, SOURCE, SkuCreated,
+    SkuDeprecated, SkuDiscarded, SkuHeadSaved, SkuPublished, SkuRetired, SkuRetirementEffective,
+    SkuUndeprecated, TOPIC,
 };
 
 const TENANT: Uuid = Uuid::from_u128(0x7e_42);
@@ -112,6 +114,40 @@ const THE_LIFECYCLE_PAIR: &[(&str, &str, &str)] = &[
         "SkuDeprecated",
         "gts.cf.core.events.event_type.v1~cf.bss.products.sku_deprecated.v1",
         TRANSCRIBED_SKU_SUBJECT,
+    ),
+];
+
+/// 04's remaining six — un-deprecation, retirement initiation, both flips.
+const THE_LIFECYCLE_REST: &[(&str, &str, &str)] = &[
+    (
+        "ProductUndeprecated",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.product_undeprecated.v1",
+        TRANSCRIBED_PRODUCT_SUBJECT,
+    ),
+    (
+        "SkuUndeprecated",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.sku_undeprecated.v1",
+        TRANSCRIBED_SKU_SUBJECT,
+    ),
+    (
+        "ProductRetired",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.product_retired.v1",
+        TRANSCRIBED_PRODUCT_SUBJECT,
+    ),
+    (
+        "SkuRetired",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.sku_retired.v1",
+        TRANSCRIBED_SKU_SUBJECT,
+    ),
+    (
+        "SkuRetirementEffective",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.sku_retirement_effective.v1",
+        TRANSCRIBED_SKU_SUBJECT,
+    ),
+    (
+        "ProductRetirementEffective",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.product_retirement_effective.v1",
+        TRANSCRIBED_PRODUCT_SUBJECT,
     ),
 ];
 
@@ -248,6 +284,28 @@ async fn enqueue_one(
         crate::infra::events::enqueue_published(sink, conn, entity_id, token, &core, 7, ACTOR)
             .await
             .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue_published: {e}"));
+    } else if token.ends_with("Undeprecated") {
+        crate::infra::events::enqueue(sink, conn, entity_id, token, &core, ACTOR)
+            .await
+            .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue: {e}"));
+    } else if token.ends_with("Retired") || token.ends_with("RetirementEffective") {
+        crate::infra::events::enqueue_retired(
+            sink,
+            conn,
+            entity_id,
+            token,
+            crate::infra::events::RetiredEventBody {
+                core: &core,
+                from_version: 1,
+                reason: "fixture".to_owned(),
+                replaced_by: None,
+                effective_at: "2026-12-01T00:00:00Z".to_owned(),
+                must_migrate_by: None,
+            },
+            ACTOR,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue_retired: {e}"));
     } else if token.ends_with("Deprecated") {
         crate::infra::events::enqueue_deprecated(
             sink, conn, entity_id, token, &core, "direct", ACTOR,
@@ -377,12 +435,13 @@ const THE_RETENTION_PAIR: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// Every event this gear declares: §4.5's eight, 04's pair, 03's trio, 09's
-/// summary, 02's eight, 10's pair.
+/// Every event this gear declares: §4.5's eight, 04's pair and rest, 03's
+/// trio, 09's summary, 02's eight, 10's pair.
 fn every_declared_event() -> Vec<(&'static str, &'static str, &'static str)> {
     THE_EIGHT
         .iter()
         .chain(THE_LIFECYCLE_PAIR)
+        .chain(THE_LIFECYCLE_REST)
         .chain(THE_SET_TRIO)
         .chain(THE_BULK_SUMMARY)
         .chain(THE_TAXONOMY_EIGHT)
@@ -443,6 +502,36 @@ fn declared() -> Vec<(&'static str, &'static str, &'static str)> {
             SkuDeprecated::TYPE_ID,
             SkuDeprecated::SUBJECT_TYPE,
             SkuDeprecated::TOPIC,
+        ),
+        (
+            ProductUndeprecated::TYPE_ID,
+            ProductUndeprecated::SUBJECT_TYPE,
+            ProductUndeprecated::TOPIC,
+        ),
+        (
+            SkuUndeprecated::TYPE_ID,
+            SkuUndeprecated::SUBJECT_TYPE,
+            SkuUndeprecated::TOPIC,
+        ),
+        (
+            ProductRetired::TYPE_ID,
+            ProductRetired::SUBJECT_TYPE,
+            ProductRetired::TOPIC,
+        ),
+        (
+            SkuRetired::TYPE_ID,
+            SkuRetired::SUBJECT_TYPE,
+            SkuRetired::TOPIC,
+        ),
+        (
+            SkuRetirementEffective::TYPE_ID,
+            SkuRetirementEffective::SUBJECT_TYPE,
+            SkuRetirementEffective::TOPIC,
+        ),
+        (
+            ProductRetirementEffective::TYPE_ID,
+            ProductRetirementEffective::SUBJECT_TYPE,
+            ProductRetirementEffective::TOPIC,
         ),
         (
             RecognizedUnitUpdated::TYPE_ID,
@@ -591,18 +680,16 @@ fn the_subject_type_follows_the_entity_the_event_is_about() {
         .iter()
         .filter(|(_, subject, _)| *subject == SKU_SUBJECT_TYPE)
         .count();
-    // Five and five: §4.5's four-and-four, plus 04's announced pair, one per
-    // entity kind. The split is asserted as two numbers rather than as
-    // "half of them", because a one-sided event is a real shape here:
-    // `SkuRetirementEffective` has no Product analogue, and whether that
-    // asymmetry is deliberate is 04's own **open item** — not settled design
-    // — so a half-of-them assertion would silently absorb whichever way it
-    // resolves.
+    // Eight and eight: §4.5's four-and-four, plus 04's deprecation,
+    // un-deprecation, retirement initiation and flip, one per entity kind.
     assert_eq!(
-        product_events, 5,
-        "five of the thirteen are about a Product"
+        product_events, 8,
+        "eight of the catalog entity events are about a Product"
     );
-    assert_eq!(sku_events, 5, "five of the thirteen are about a SKU");
+    assert_eq!(
+        sku_events, 8,
+        "eight of the catalog entity events are about a SKU"
+    );
     let set_events = declared()
         .iter()
         .filter(|(_, subject, _)| *subject == TRANSCRIBED_SET_SUBJECT)

@@ -165,6 +165,16 @@ pub(crate) struct ProductsRuntime {
     /// audit row that named one would be a lie.
     pub system_actor_ref: uuid::Uuid,
 
+    /// [`ProductsConfig::activation_claim_lease_secs`] — the runner reads
+    /// this, never an inline 60 (**P-D-113** arm 4).
+    pub activation_claim_lease_secs: u32,
+
+    /// [`ProductsConfig::activation_attempt_budget`].
+    pub activation_attempt_budget: u32,
+
+    /// [`ProductsConfig::retirement_held_alert_hours`].
+    pub retirement_held_alert_hours: u32,
+
     /// Whichever handle keeps the running pipeline's background tasks alive.
     ///
     /// Held for its `Drop`, never read: dropping either handle drops its
@@ -262,6 +272,7 @@ impl BssProductsGear {
                 _ = interval.tick() => {
                     coalescer_tick(&db, &cancel).await;
                     batch_tick(&worker_ctx, rt.system_actor_ref, &cancel).await;
+                    activation_tick(&rt, &cancel).await;
                     if tick_count.is_multiple_of(OVERDUE_SCAN_EVERY_TICKS) {
                         let now = crate::domain::canonical::write_instant(chrono::Utc::now());
                         report_overdue_freezes(&db, now, rt.freeze_timeout_hours).await;
@@ -297,6 +308,28 @@ impl BssProductsGear {
 #[must_use]
 pub(crate) fn system_actor_ref() -> uuid::Uuid {
     uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"bss-products:system")
+}
+
+async fn activation_tick(rt: &ProductsRuntime, cancel: &tokio_util::sync::CancellationToken) {
+    let now = crate::domain::canonical::write_instant(chrono::Utc::now());
+    let ctx = crate::infra::activation_runner::ActivationContext {
+        db: rt.sdk_state.db.clone(),
+        lease: crate::domain::activation::ClaimLease {
+            ttl: chrono::Duration::seconds(i64::from(rt.activation_claim_lease_secs)),
+        },
+        budget: crate::domain::activation::AttemptBudget {
+            max: i32::try_from(rt.activation_attempt_budget).unwrap_or(i32::MAX),
+        },
+        retirement_held_alert_hours: rt.retirement_held_alert_hours,
+        sink: rt.sdk_state.sink.clone(),
+        idempotency_retention_hours: rt.sdk_state.idempotency_retention_hours,
+        reference_freshness: crate::config::ProductsConfig::default().reference_freshness(),
+    };
+    if let Err(error) =
+        crate::infra::activation_runner::sweep(&ctx, rt.system_actor_ref, now, cancel).await
+    {
+        tracing::warn!(%error, "bss-products: activation runner sweep failed");
+    }
 }
 
 async fn batch_tick(
@@ -678,6 +711,9 @@ impl Gear for BssProductsGear {
             taxonomy_caps: crate::api::rest::TaxonomyCaps::from(&cfg),
             retention_caps: crate::domain::retention::RetentionCaps::from(&cfg),
             system_actor_ref: system_actor_ref(),
+            activation_claim_lease_secs: cfg.activation_claim_lease_secs,
+            activation_attempt_budget: cfg.activation_attempt_budget,
+            retirement_held_alert_hours: cfg.retirement_held_alert_hours,
             pipeline,
             db: db_provider,
             idempotency_retention_hours,
@@ -769,6 +805,10 @@ impl RestApiCapability for BssProductsGear {
                 openapi,
             ))
             .merge(crate::api::rest::materiality_policy::router(
+                Arc::clone(&api_state),
+                openapi,
+            ))
+            .merge(crate::api::rest::scheduled_transitions::router(
                 Arc::clone(&api_state),
                 openapi,
             ))
