@@ -50,8 +50,9 @@ pub(crate) struct ActivationContext {
     /// lane claim.
     pub(crate) idempotency_retention_hours: u32,
     /// [`ProductsConfig::reference_freshness`] — the 07 predicate's cadence.
-    /// The runtime does not yet carry the boot value; `activation_tick`
-    /// fills this from `ProductsConfig::default().reference_freshness()`.
+    /// `gear.rs` fills this from the **boot** configuration through
+    /// `ProductsRuntime::reference_freshness` (P-D-137; it read
+    /// `ProductsConfig::default()` until then).
     pub(crate) reference_freshness: std::time::Duration,
 }
 

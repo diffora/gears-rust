@@ -1569,6 +1569,73 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-137 — Three deliveries accepted in one afternoon: B's two contradictions, D's financial class, C's three findings, and two conventions the first finished feature needed
+
+- **Date**: 2026-09-04 (the lead, accepting strand B's six commits (merged `c1b86fcbb`), strand D's
+  `3a7fda0e2` and strand C's `6e8df1197` + `5febef8aa`; `05` rows 40 and 41, `10` item 34, the
+  contradictions C's report named, and `10` reaching 13 / 13)
+- **`05` row 40 — the `>= 0` reading stands.** P-D-120 row 14 names `0` as `internal_revision` for a
+  subject with no counter; a `CHECK` that forbids a decided value is the schema's defect, and B
+  widened it in place. Struck.
+- **`05` row 41 — the batch's digest rides the snapshot.** P-D-127 row 11 makes a `bulk_batch`
+  subject's scalar pin the ledger digest and `products_approval.internal_revision` is `bigint`. The
+  digest lives in **`content_snapshot`'s `ChangeReport`**, where row 23 already puts the report and
+  the per-row pins; `internal_revision` is `0` for that kind; `SubjectPin::LedgerDigest` compares
+  against the report's digest field. No column widens and the decision does not narrow to *"the
+  gate's, not the record's"*. B wires the read with the host switch. Struck.
+- **`10` item 34 — the financial class is collectable, and the mechanism is a release stamp.** D
+  measured that three of the GC's four target tables refuse every `DELETE`: the catalog-version
+  chain (`m20260901_000010`, `_000013`) as well as the evidence stores, so P-D-118 item 25's *"one
+  catalog version at a time, whole"* described a transaction that always rolled back. A catalog
+  version is a **financial record with a statutory window** (PRD §330: *"Snapshots are financial
+  records"*), not evidence; item 25 stands, and `000013`'s interim message naming slice 10 as the
+  future admitter was right. Under P-D-31 (no identity channel) and P-D-118 (no date in DDL) the one
+  row-image fact the GC can make true is a stamp: **`retention_released_at`**, nullable, on
+  `products_catalog_version`, admitted by the update whitelist **once** (`NULL` → a value) and
+  written only by the GC's release function under a **writer-count guard** (P-D-105's pattern); the
+  `DELETE` arm admits `OLD.retention_released_at IS NOT NULL`; entries and captures ride the
+  parent through P-D-40's referential predicate, deleted first. Both migrations edited **in place**,
+  strand D's build under a grant. **The evidence class is unchanged** (P-D-136): approvals,
+  decisions, sessions, overrides and the audit log stay flat. Two classes, two shapes, stated.
+- **Two things the lead's read of D's sweep found, one a decision.** *(i)* **A version row that any
+  head names as its current `published_version` is never a candidate.** The schema's only `DELETE`
+  predicate on `products_entity_version` is P-D-40's — *no catalog-version entry references the
+  row* — and `entity_version_candidates` selects every row older than the cutoff, so a live entity
+  published once more than `retention_days_version` ago would lose its only frozen content and its
+  head would name a row that does not exist. PRD §15 retains *retired* entities' versions and
+  history; a head is a reference the way a manifest is, and the cost of honouring it is one row
+  per entity. The candidate query excludes those rows (D's build); whether a **retired** head's
+  last version expires with its window is the owner's refinement, filed as `10` §7 item 35.
+  *(ii)* `collect_entity_version` maps **every** failure to `ReferencedByRetainedManifest`, so a
+  connection error is audited as a design hold — error class follows provenance; only P-D-40's
+  refusal is that reason, the rest are `StorageRefused`. D's fix.
+- **C's three findings.** *(i)* The runner's reference freshness reads `ProductsConfig::default()`
+  because `ProductsRuntime` never carried the field — `config.rs` and `gear.rs` are the lead's, so
+  the field is **the lead's build**. *(ii)* `evaluate_reference` is SKU-keyed and a Product has no
+  watermark: **the Product flip skips the 07 predicate** — its guard is its children's states
+  (P-D-115) and the children are retired by then; C's one-line change. *(iii)* An empty producer
+  registry defers every SKU flip as `no_producers` — C6's fail-closed posture (`07`), **recorded for
+  the owner**: until pricing registers as a producer, no SKU retirement completes.
+- **Two conventions, because `10` is the first feature at 13 / 13.** A feature's status box flips
+  when every DoD is ticked **and** every §6 criterion box is ticked; criterion boxes tick with their
+  DoD, by the strand that ticks it, clause by clause — a criterion is not ticked by inspection. D
+  ticks `10`'s criteria and its box.
+- **The counters, corrected on B's measurement.** Two numeric counters (`error_tests`' roster and
+  `DOMAIN_ERROR_VARIANTS`, 61) and one roster of a different set (`02`'s sixteen codes). Every brief
+  said three; every brief is corrected.
+- **The arguments against, stated.** A release stamp is a two-statement shape that any code path
+  holding the grant could set — accepted; the writer-count guard names the one path, and the
+  alternative is a decade of snapshots kept as if they were evidence, which PRD §330 says they are
+  not. Reading a catalog version as evidence would spare the migration edit — rejected on the same
+  sentence. Skipping the 07 predicate on the Product flip loses nothing a child has not already
+  answered — accepted. Flipping a feature's box on DoDs alone would have let `10` finish with its
+  criteria unticked — rejected; the criteria are what the DoDs can fail.
+- **Not changed**: P-D-136's evidence class; P-D-118 item 25; the interim numbers.
+- **Propagated**: `05` rows 40 and 41 struck; `10` item 34 struck and item 35 added; `design/05` §3.2 names B's three
+  doors; `RELAY-governance.md`, `RELAY-lifecycle.md`, `RELAY-retention.md` rewritten; the lead
+  handoff's counters paragraph.
+
+
 #### P-D-136 — The flat-refusal class keeps its guard, the GC holds what it cannot delete, and D's detector ships as measured
 
 - **Date**: 2026-09-04 (the lead, accepting strand D's `4544b243f`, merged `dd464c108`; `07` row

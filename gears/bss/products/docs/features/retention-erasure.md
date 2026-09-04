@@ -1664,7 +1664,7 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
     **Blocks**: no DoD — the detector's DoD is satisfied by the fail-closed hook whatever the
     heuristic. **Owner**: the product owner, with Legal's allow-list loop (item 1).
 
-34. **Does the catalog-version chain join the evidence class, or do its `DELETE` arms open?**
+34. ~~**Does the catalog-version chain join the evidence class, or do its `DELETE` arms open?**~~ **Answered (P-D-137, 2026-09-04): the arms open, through a release stamp** — a catalog version is a financial record with a statutory window (PRD §330), not evidence; `retention_released_at` on the version row, admitted once by the whitelist and written only by the GC's release function under a writer-count guard, is the row-image fact the `DELETE` arm reads; entries and captures ride the parent. Both migrations in place, strand D's build. *The item's text stood as:*
     Measured 2026-09-04 while building `dod-retention-clock`: `products_catalog_version`
     (`m20260901_000010`) refuses every `DELETE` **outright and with no note**, and
     `products_catalog_version_entry` / `_capture` (`m20260901_000013`) refuse with an interim
@@ -1683,3 +1683,18 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
     **Blocks**: no DoD — it decides how much storage a decade costs, not whether the sweep is
     right.
     **Owner**: the design-set owner with `06-catalog-version`.
+
+35. **Does a retired head's last version expire with its window, or does the head keep it?**
+    P-D-137 (2026-09-04) rules that a version row **any head names as its current
+    `published_version` is never a GC candidate** — the schema's only `DELETE` predicate is the
+    manifest reference (P-D-40), and without the rule a live entity published once, long ago,
+    would lose its only frozen content while its head named a row that no longer exists. That
+    keeps one row per entity for as long as the head exists, and heads are physically append-only.
+    What the decision did not settle is the **retired** head: PRD §15 says *"retention for retired
+    entities/versions"*, which reads either as *the retired entity's versions expire on the
+    window* (then the head's current pointer must be allowed to dangle, or be cleared by the GC)
+    or as *retention applies to the entity's history, the head's own version included* (then the
+    last version outlives the window by design). One row per retired entity is the cost of the
+    second reading; a head that names nothing is the cost of the first.
+    **Blocks**: no DoD — the clock and the order are built against the rule as decided.
+    **Owner**: the product owner, with Legal (the same §15 sentence).

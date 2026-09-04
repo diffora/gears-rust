@@ -175,6 +175,12 @@ pub(crate) struct ProductsRuntime {
     /// [`ProductsConfig::retirement_held_alert_hours`].
     pub retirement_held_alert_hours: u32,
 
+    /// [`ProductsConfig::reference_freshness`] — the 07 predicate's cadence the
+    /// activation runner judges a flip against. Carried here so the runner
+    /// reads the **boot** configuration and not `ProductsConfig::default()`
+    /// (strand C's finding, P-D-137).
+    pub reference_freshness: std::time::Duration,
+
     /// Whichever handle keeps the running pipeline's background tasks alive.
     ///
     /// Held for its `Drop`, never read: dropping either handle drops its
@@ -323,7 +329,7 @@ async fn activation_tick(rt: &ProductsRuntime, cancel: &tokio_util::sync::Cancel
         retirement_held_alert_hours: rt.retirement_held_alert_hours,
         sink: rt.sdk_state.sink.clone(),
         idempotency_retention_hours: rt.sdk_state.idempotency_retention_hours,
-        reference_freshness: crate::config::ProductsConfig::default().reference_freshness(),
+        reference_freshness: rt.reference_freshness,
     };
     if let Err(error) =
         crate::infra::activation_runner::sweep(&ctx, rt.system_actor_ref, now, cancel).await
@@ -714,6 +720,7 @@ impl Gear for BssProductsGear {
             activation_claim_lease_secs: cfg.activation_claim_lease_secs,
             activation_attempt_budget: cfg.activation_attempt_budget,
             retirement_held_alert_hours: cfg.retirement_held_alert_hours,
+            reference_freshness: cfg.reference_freshness(),
             pipeline,
             db: db_provider,
             idempotency_retention_hours,
