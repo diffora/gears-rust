@@ -38,19 +38,28 @@
 //! poverty §7 row 14 records about the entity-shaped columns on a non-entity
 //! subject.
 //!
-//! # What this door deliberately does not decide
+//! # The `subject_kind` a policy mutation records
 //!
-//! **Which `subject_kind` a policy mutation records** is §7 row 38 and is
-//! live. The gate subject here is `governed_live_op`, which is what
-//! `inst-mt-policy-material` names it — a `GovernedLiveOp` subject — and the
-//! row asks a different question: what an `ApprovalRecord` for such a
-//! mutation would carry. No record is written here, so nothing answers it.
+//! **P-D-120** row 38 makes `materiality_policy` a subject kind of its own.
+//! The gate subject this door builds is still `governed_live_op` — which is
+//! what `inst-mt-policy-material` names it — because the record whose column
+//! carries the sixth kind is written by the **submit door**, and a gate
+//! question is not a record. The two are different objects and the row asked
+//! about the second.
 //!
-//! **No `@cpt-dod` marker.** `dod-materiality-policy` also obliges the value
-//! to take *"its initial value from tenant provisioning"*, and this gear has
-//! no tenant registry to provision from (**P-D-104** withdrew the migration
-//! that needed one). The absent row resolving to the default is P-D-112's
-//! answer to the launch case, not to that clause.
+//! # The provisioning clause, and why the marker is here now
+//!
+//! An earlier revision of this doc carried no `@cpt-dod` marker, on the
+//! grounds that `dod-materiality-policy` obliges the value to take *"its
+//! initial value from tenant provisioning"* and this gear has no tenant
+//! registry to provision from. **P-D-135** (2026-09-04) reads that clause as
+//! P-D-112's default: P-D-104 withdrew the registry the provisioning would
+//! have run from, and a tenant's initial `N` **is** the default until the
+//! tenant configures one. The absent row resolving to the default is that
+//! provisioning rather than a substitute for it, so the clause is met and the
+//! `DoD` ticks.
+//!
+//! @cpt-dod:cpt-cf-bss-products-dod-materiality-policy:p1
 
 use std::sync::Arc;
 

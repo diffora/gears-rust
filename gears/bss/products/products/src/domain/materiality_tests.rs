@@ -5,29 +5,31 @@ use bss_products_sdk::models::{EntityKind, LifecycleState};
 
 use super::{
     APPROVER_COUNT_FLOOR, BucketBearing, DEFAULT_AFFECTED_ENTITY_TRIGGER, DEFAULT_APPROVER_COUNT,
-    EnumeratedOp, MaterialAct, MaterialLiveOp, Materiality, MaterialityEvaluator, MaterialityInput,
-    MaterialityPolicy, MaterialityRefusal, Resolution, bucket_bearing,
+    EnumeratedOp, LiveOpEdit, MaterialAct, MaterialLiveOp, Materiality, MaterialityEvaluator,
+    MaterialityInput, MaterialityPolicy, MaterialityRefusal, Resolution, bucket_bearing,
 };
 use crate::domain::bucket::FieldBucket;
 
-/// A resolved default policy plus a resolved claim set — the shape every
-/// positive control needs.
-fn resolved<'a>(policy: &'a MaterialityPolicy, claims: &'a [String]) -> MaterialityEvaluator<'a> {
-    MaterialityEvaluator::new(Resolution::Resolved(policy), Resolution::Resolved(claims))
+/// A resolved policy — the shape every positive control needs.
+///
+/// **One argument since P-D-119 row 36.** The claim set it used to take is no
+/// longer an input; the helper is kept rather than inlined so the diff that
+/// withdrew it did not have to touch every case.
+fn resolved(policy: &MaterialityPolicy) -> MaterialityEvaluator<'_> {
+    MaterialityEvaluator::new(Resolution::Resolved(policy))
 }
 
 /// **A bucket-iii touch is material.** The `DoD`'s first positive clause.
 #[test]
 fn a_bucket_iii_touch_is_material() {
     let policy = MaterialityPolicy::default();
-    let claims = vec!["catalog-admin".to_owned()];
-    let ev = resolved(&policy, &claims);
+    let ev = resolved(&policy);
     let verdict = ev
         .verdict(&MaterialAct::EntityPublish {
             kind: EntityKind::Product,
             touched: &["name"],
         })
-        .expect("a resolved policy and claim set");
+        .expect("a resolved policy");
     assert_eq!(verdict, Materiality::Material);
 }
 
@@ -36,14 +38,13 @@ fn a_bucket_iii_touch_is_material() {
 #[test]
 fn a_touch_outside_bucket_iii_is_not_material() {
     let policy = MaterialityPolicy::default();
-    let claims = vec!["catalog-admin".to_owned()];
-    let ev = resolved(&policy, &claims);
+    let ev = resolved(&policy);
     let verdict = ev
         .verdict(&MaterialAct::EntityPublish {
             kind: EntityKind::Product,
             touched: &["product_code"],
         })
-        .expect("a resolved policy and claim set");
+        .expect("a resolved policy");
     assert_eq!(verdict, Materiality::NonMaterial);
 }
 
@@ -77,11 +78,10 @@ fn the_bucket_rule_is_total_and_bucket_iv_is_immaterial() {
 /// one an attacker wants judged non-material.
 #[test]
 fn a_policy_mutation_is_material_in_either_direction() {
-    let claims = vec!["config-admin".to_owned()];
     for approver_count in [0_u32, 1, 2, 7] {
         let policy =
             MaterialityPolicy::new(Vec::new(), DEFAULT_AFFECTED_ENTITY_TRIGGER, approver_count);
-        let ev = resolved(&policy, &claims);
+        let ev = resolved(&policy);
         let verdict = ev
             .verdict(&MaterialAct::PolicyMutation)
             .expect("a resolved policy");
@@ -98,8 +98,7 @@ fn a_policy_mutation_is_material_in_either_direction() {
 /// signature".
 #[test]
 fn an_unresolvable_policy_refuses_rather_than_defaulting() {
-    let claims = vec!["catalog-admin".to_owned()];
-    let ev = MaterialityEvaluator::new(Resolution::Unresolvable, Resolution::Resolved(&claims));
+    let ev = MaterialityEvaluator::new(Resolution::Unresolvable);
     let err = ev
         .verdict(&MaterialAct::EntityPublish {
             kind: EntityKind::Product,
@@ -112,18 +111,53 @@ fn an_unresolvable_policy_refuses_rather_than_defaulting() {
     }
 }
 
-/// **An unresolvable claim set refuses too**, and on an act whose shape
-/// alone would have answered material — so the refusal cannot be the shape's.
+/// **A display-label rename is non-material on both label-bearing kinds**
+/// (**P-D-121** row 17), and **material on every kind that has no label** —
+/// asserted over the whole roster, so the exception cannot be reported as
+/// applying to one slice while silently reaching another.
 #[test]
-fn an_unresolvable_claim_set_refuses_even_a_material_shape() {
+fn the_display_label_exception_reaches_exactly_the_two_label_bearing_kinds() {
     let policy = MaterialityPolicy::default();
-    let ev = MaterialityEvaluator::new(Resolution::Resolved(&policy), Resolution::Unresolvable);
-    let err = ev
-        .verdict(&MaterialAct::PolicyMutation)
-        .expect_err("an absent claim set is a refusal");
-    match err {
-        MaterialityRefusal::Unresolved(u) => assert_eq!(u.input, MaterialityInput::ClaimSet),
-        other => panic!("expected the claim set named, got {other:?}"),
+    for kind in MaterialLiveOp::ALL {
+        let renamed = resolved(&policy)
+            .verdict(&MaterialAct::LiveOp {
+                kind,
+                edit: LiveOpEdit::DisplayLabelRename,
+            })
+            .expect("a resolved policy");
+        let expected = if matches!(
+            kind,
+            MaterialLiveOp::TaxonomyOp | MaterialLiveOp::RecognizedSetOp
+        ) {
+            Materiality::NonMaterial
+        } else {
+            Materiality::Material
+        };
+        assert_eq!(
+            renamed,
+            expected,
+            "{kind:?} (slice {}) bears_display_label = {}",
+            kind.owning_slice(),
+            kind.bears_display_label()
+        );
+    }
+}
+
+/// **The exception is the edit's, not the kind's.** The same two kinds whose
+/// label rename is non-material stay material on an ordinary registered edit
+/// — without this the probe above would pass against a defect that made
+/// `02` and `03`'s envelopes non-material outright.
+#[test]
+fn a_registered_edit_on_a_label_bearing_kind_is_still_material() {
+    let policy = MaterialityPolicy::default();
+    for kind in [MaterialLiveOp::TaxonomyOp, MaterialLiveOp::RecognizedSetOp] {
+        let verdict = resolved(&policy)
+            .verdict(&MaterialAct::LiveOp {
+                kind,
+                edit: LiveOpEdit::Registered,
+            })
+            .expect("a resolved policy");
+        assert_eq!(verdict, Materiality::Material, "{kind:?}");
     }
 }
 
@@ -132,8 +166,7 @@ fn an_unresolvable_claim_set_refuses_even_a_material_shape() {
 #[test]
 fn an_untagged_column_refuses_through_the_registry() {
     let policy = MaterialityPolicy::default();
-    let claims = vec!["catalog-admin".to_owned()];
-    let ev = resolved(&policy, &claims);
+    let ev = resolved(&policy);
     let err = ev
         .verdict(&MaterialAct::EntityPublish {
             kind: EntityKind::Product,
@@ -153,8 +186,7 @@ fn an_untagged_column_refuses_through_the_registry() {
 #[test]
 fn a_bucket_ii_touch_is_refused_not_judged() {
     let policy = MaterialityPolicy::default();
-    let claims = vec!["catalog-admin".to_owned()];
-    let ev = resolved(&policy, &claims);
+    let ev = resolved(&policy);
     let err = ev
         .verdict(&MaterialAct::EntityPublish {
             kind: EntityKind::Sku,
@@ -173,13 +205,12 @@ fn a_bucket_ii_touch_is_refused_not_judged() {
 #[test]
 fn the_enumerated_transitions_are_the_prd_three() {
     let policy = MaterialityPolicy::default();
-    let claims = vec!["catalog-admin".to_owned()];
     for to in [
         LifecycleState::Published,
         LifecycleState::Deprecated,
         LifecycleState::Retired,
     ] {
-        let ev = resolved(&policy, &claims);
+        let ev = resolved(&policy);
         let verdict = ev
             .verdict(&MaterialAct::Enumerated(EnumeratedOp::LifecycleTransition(
                 to,
@@ -193,7 +224,7 @@ fn the_enumerated_transitions_are_the_prd_three() {
     // default — so answering it for `draft -> discarded` would mint a
     // ceremony for the one transition M-1 leaves ungated.
     for to in [LifecycleState::Draft, LifecycleState::Discarded] {
-        let ev = resolved(&policy, &claims);
+        let ev = resolved(&policy);
         let err = ev
             .verdict(&MaterialAct::Enumerated(EnumeratedOp::LifecycleTransition(
                 to,
@@ -210,12 +241,11 @@ fn the_enumerated_transitions_are_the_prd_three() {
 #[test]
 fn category_and_attribute_ops_are_material() {
     let policy = MaterialityPolicy::default();
-    let claims = vec!["catalog-admin".to_owned()];
     for op in [
         EnumeratedOp::CategoryOp,
         EnumeratedOp::AttributeDefinitionChange,
     ] {
-        let ev = resolved(&policy, &claims);
+        let ev = resolved(&policy);
         let verdict = ev
             .verdict(&MaterialAct::Enumerated(op))
             .expect("a resolved policy");
@@ -229,14 +259,13 @@ fn category_and_attribute_ops_are_material() {
 #[test]
 fn the_batch_trigger_is_inclusive() {
     let policy = MaterialityPolicy::default();
-    let claims = vec!["catalog-admin".to_owned()];
     let trigger = policy.affected_entity_trigger();
     for (affected, expected) in [
         (trigger - 1, Materiality::NonMaterial),
         (trigger, Materiality::Material),
         (trigger + 1, Materiality::Material),
     ] {
-        let ev = resolved(&policy, &claims);
+        let ev = resolved(&policy);
         let verdict = ev
             .verdict(&MaterialAct::BatchAct { affected })
             .expect("a resolved policy");
@@ -252,13 +281,12 @@ fn the_batch_trigger_is_inclusive() {
 #[test]
 fn the_trigger_comes_from_the_policy_not_a_constant() {
     let policy = MaterialityPolicy::new(Vec::new(), 3, DEFAULT_APPROVER_COUNT);
-    let claims = vec!["catalog-admin".to_owned()];
-    let ev = resolved(&policy, &claims);
+    let ev = resolved(&policy);
     let verdict = ev
         .verdict(&MaterialAct::BatchAct { affected: 3 })
         .expect("a resolved policy");
     assert_eq!(verdict, Materiality::Material);
-    let ev = resolved(&policy, &claims);
+    let ev = resolved(&policy);
     let below = ev
         .verdict(&MaterialAct::BatchAct { affected: 2 })
         .expect("a resolved policy");
@@ -271,7 +299,6 @@ fn the_trigger_comes_from_the_policy_not_a_constant() {
 #[test]
 fn every_registered_live_op_kind_is_material_and_there_are_six() {
     let policy = MaterialityPolicy::default();
-    let claims = vec!["catalog-admin".to_owned()];
     // Every variant is in the roster, matched exhaustively — the assertion
     // a `len()` cannot make, since the array's type gives its length at
     // compile time. A seventh variant forces an arm here.
@@ -292,9 +319,12 @@ fn every_registered_live_op_kind_is_material_and_there_are_six() {
     slices.sort_unstable();
     assert_eq!(slices, ["02", "03", "04", "06", "07", "10"]);
     for kind in MaterialLiveOp::ALL {
-        let ev = resolved(&policy, &claims);
+        let ev = resolved(&policy);
         let verdict = ev
-            .verdict(&MaterialAct::LiveOp(kind))
+            .verdict(&MaterialAct::LiveOp {
+                kind,
+                edit: LiveOpEdit::Registered,
+            })
             .expect("a resolved policy");
         assert_eq!(
             verdict,
@@ -315,8 +345,7 @@ fn the_policy_field_set_widens_the_registry() {
         DEFAULT_AFFECTED_ENTITY_TRIGGER,
         DEFAULT_APPROVER_COUNT,
     );
-    let claims = vec!["catalog-admin".to_owned()];
-    let ev = resolved(&policy, &claims);
+    let ev = resolved(&policy);
     let verdict = ev
         .verdict(&MaterialAct::EntityPublish {
             kind: EntityKind::Product,
@@ -337,14 +366,12 @@ fn the_policy_field_set_widens_the_registry() {
 /// guarantee tenant-configurable.
 #[test]
 fn the_policy_field_set_cannot_disable_a_refusal() {
-    let claims = vec!["catalog-admin".to_owned()];
-
     let policy = MaterialityPolicy::new(
         vec!["metering_unit".to_owned()],
         DEFAULT_AFFECTED_ENTITY_TRIGGER,
         DEFAULT_APPROVER_COUNT,
     );
-    let ev = resolved(&policy, &claims);
+    let ev = resolved(&policy);
     let err = ev
         .verdict(&MaterialAct::EntityPublish {
             kind: EntityKind::Sku,
@@ -361,7 +388,7 @@ fn the_policy_field_set_cannot_disable_a_refusal() {
         DEFAULT_AFFECTED_ENTITY_TRIGGER,
         DEFAULT_APPROVER_COUNT,
     );
-    let ev = resolved(&policy, &claims);
+    let ev = resolved(&policy);
     let err = ev
         .verdict(&MaterialAct::EntityPublish {
             kind: EntityKind::Product,
@@ -399,11 +426,10 @@ fn n_defaults_to_two_and_zero_is_reachable() {
 /// half the ordering exists for.
 #[test]
 fn the_policy_field_set_promotes_a_bucket_less_column_too() {
-    let claims = vec!["catalog-admin".to_owned()];
     // `deprecation_provenance` is `Outside(Mechanical)` — it carries no
     // bucket at all, so nothing in the registry can make it material.
     let plain = MaterialityPolicy::default();
-    let ev = resolved(&plain, &claims);
+    let ev = resolved(&plain);
     assert_eq!(
         ev.verdict(&MaterialAct::EntityPublish {
             kind: EntityKind::Product,
@@ -419,7 +445,7 @@ fn the_policy_field_set_promotes_a_bucket_less_column_too() {
         DEFAULT_AFFECTED_ENTITY_TRIGGER,
         DEFAULT_APPROVER_COUNT,
     );
-    let ev = resolved(&named, &claims);
+    let ev = resolved(&named);
     assert_eq!(
         ev.verdict(&MaterialAct::EntityPublish {
             kind: EntityKind::Product,

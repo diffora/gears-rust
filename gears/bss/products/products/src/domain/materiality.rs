@@ -5,15 +5,24 @@
 //! # The inputs arrive as resolutions, so no call site can default its way in
 //!
 //! `dod-materiality-evaluator` requires every input to **fail closed**: an
-//! unresolvable policy, claim set or bucket registry refuses the act rather
-//! than falling back to a default. An `Option` argument invites
-//! `unwrap_or_default()`, and the `DoD` names the exact damage that would do —
-//! *"a policy resolving to absent-implies-default at floor 0 would publish a
-//! finance-material change on one signature"*. So the two looked-up inputs
-//! arrive as [`Resolution`], whose only escape is `?` on a refusal, and the
-//! third — the bucket registry — already refuses inside
-//! [`crate::domain::bucket::classify`], which answers `IllegalFieldMutation`
-//! for a column carrying no tag rather than routing it to a default bucket.
+//! unresolvable policy or bucket registry refuses the act rather than falling
+//! back to a default. An `Option` argument invites `unwrap_or_default()`, and
+//! the `DoD` names the exact damage that would do — *"a policy resolving to
+//! absent-implies-default at floor 0 would publish a finance-material change
+//! on one signature"*. So the one looked-up input arrives as [`Resolution`],
+//! whose only escape is `?` on a refusal, and the bucket registry already
+//! refuses inside [`crate::domain::bucket::classify`], which answers
+//! `IllegalFieldMutation` for a column carrying no tag rather than routing it
+//! to a default bucket.
+//!
+//! # The claim set is not an input, and the clause guarding it is withdrawn
+//!
+//! **P-D-119 row 36.** `verdict` required a claim set to resolve and then
+//! discarded it — `let _claims = …` — so the fail-closed clause on it guarded
+//! an input nothing read, and a guard on nothing is not safety. C8 says why it
+//! never mattered: a role predicate narrows *who may approve*, which is
+//! decided at **decide** time against the approver's claims, not at submission
+//! against the submitter's. The evaluator takes the policy alone.
 //!
 //! # The policy is an argument, never a lookup
 //!
@@ -43,18 +52,22 @@
 //! [`MaterialityUnresolved`], a domain value that reaches no wire, and the
 //! missing code is registered as an open item rather than invented.
 //!
-//! # What is deliberately absent: the policy's store
+//! # The policy's store, and where the default now comes from
 //!
 //! `inst-mt-policy-material` makes the policy object a `GovernedLiveOp`
-//! subject on its **own** pair `materiality_policy × write`, and
-//! [`crate::authz`] mints that pair — but **no table holds it**.
-//! `DESIGN.md` §3.5 gives slice 05 exactly `products_approval`,
-//! `products_approval_decision` and `products_breakglass_session`, and 05
-//! §3.2 records `materiality_policy × write` as having **no route
-//! declared**. So [`MaterialityPolicy`] is a value with a default, a floor
-//! and a material-on-any-mutation rule, and its store and door are
-//! registered as open items rather than invented here. That is why
-//! `dod-materiality-policy` carries a bare marker.
+//! subject on its **own** pair `materiality_policy × write`, and that pair now
+//! has both a table and a route: `products_materiality_policy` (P-D-112 arm 1)
+//! and `PUT /bss-products/v1/materiality-policy`. An earlier revision of this
+//! doc said no table held it and no route was declared; both were true when
+//! written and neither is now.
+//!
+//! **An absent row is not an absent policy** (P-D-112 arm 2): it resolves to
+//! [`MaterialityPolicy::default`], and only a *failed read* is
+//! [`Resolution::Unresolvable`]. P-D-135 reads
+//! `dod-materiality-policy`'s *"initial value from tenant provisioning"* as
+//! exactly that default — P-D-104 withdrew the tenant registry the
+//! provisioning would have run from, and a tenant's initial `N` **is** the
+//! default until the tenant configures one.
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-materiality-evaluator:p1
 //! @cpt-cf-bss-products-dod-materiality-policy
@@ -98,18 +111,19 @@ pub enum Materiality {
 
 /// Which of the evaluator's looked-up inputs could not be resolved.
 ///
-/// Named individually rather than collapsed into one message because the two
-/// remedies differ: an absent policy is a provisioning gap and an absent
-/// claim set is an authentication one. The registry's own failure is not a
-/// member here — an untagged column is a registration bug in the slice that
-/// owns it, and it arrives as [`MaterialityRefusal::Registry`].
+/// **One member, and it stays an enum.** P-D-119 row 36 withdrew the claim
+/// set, which was the second; a bare marker would say the same thing and would
+/// stop naming *which* input failed the moment a second lookup arrives. The
+/// registry's own failure is not a member — an untagged column is a
+/// registration bug in the slice that owns it, and it arrives as
+/// [`MaterialityRefusal::Registry`].
 #[domain_model]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum MaterialityInput {
-    /// The tenant's materiality policy — field set, trigger and `N`.
+    /// The tenant's materiality policy — field set, trigger and `N`. Absent
+    /// is **not** unresolved: an absent row is the default (P-D-112 arm 2),
+    /// and only a failed read reaches here.
     Policy,
-    /// The caller's tenant-scoped claim set (C6, deny-by-default).
-    ClaimSet,
 }
 
 impl MaterialityInput {
@@ -118,7 +132,6 @@ impl MaterialityInput {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Policy => "materiality_policy",
-            Self::ClaimSet => "claim_set",
         }
     }
 }
@@ -291,6 +304,28 @@ impl MaterialLiveOp {
         Self::PiiAllowListOp,
     ];
 
+    /// Whether this kind has a display label to rename (**P-D-121** row 17).
+    ///
+    /// Two of the six do. A `FreezeParticipantOp` names a participant, a
+    /// `ReferenceProducerOp` a producer, a `ScheduledTransitionCancel` a
+    /// scheduled row and a `PiiAllowListOp` an allow-list entry; none of them
+    /// carries an operator-facing label, so the exception has nothing to apply
+    /// to and [`live_op_verdict`] leaves the registration standing. Exhaustive
+    /// rather than a two-name `matches!`, so a seventh kind must say which
+    /// side it is on.
+    #[must_use]
+    pub const fn bears_display_label(self) -> bool {
+        match self {
+            // `02`'s attribute definitions (P-D-108 arm 2) and `03`'s
+            // `PlanTier` members (P-D-121 row 17).
+            Self::TaxonomyOp | Self::RecognizedSetOp => true,
+            Self::ScheduledTransitionCancel
+            | Self::FreezeParticipantOp
+            | Self::ReferenceProducerOp
+            | Self::PiiAllowListOp => false,
+        }
+    }
+
     /// The slice that registered the kind, for audit and for the census.
     #[must_use]
     pub const fn owning_slice(self) -> &'static str {
@@ -303,6 +338,38 @@ impl MaterialLiveOp {
             Self::PiiAllowListOp => "10",
         }
     }
+}
+
+/// Which edit a registered `GovernedLiveOp` kind carries — input (d)'s one
+/// exception (**P-D-121** row 17, on **P-D-108** arm 2's operand).
+///
+/// # Why the exception is here and not in the two slices that raise it
+///
+/// The decision's own words: *"one exception stated once, not two slices
+/// reading one sentence two ways"*. `02` renames an attribute definition's
+/// display label and `03` renames a `PlanTier` member's, and both arrive as
+/// the same kind of envelope; a carve-out written in each slice is a carve-out
+/// that can drift. `05` registers what is material, so `05` registers the
+/// exception.
+///
+/// # Why a label rename is not the thing it labels
+///
+/// P-D-108 arm 2 measured it: a definition has **no label column**. The label
+/// is an attribute *value* on the definition (`entity_kind =
+/// 'attribute_definition'`, the seeded `displayName` key), resolved through
+/// the same localized chain every other display name uses. Renaming it changes
+/// what an operator reads and changes nothing a consumer contracts on — so it
+/// takes `min(N, 1)` rather than `N`. **Non-material is not ungated**: it is
+/// still a ceremony, still an `ApprovalRecord`, still one approver from the
+/// base role set (§7 row 16).
+#[domain_model]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum LiveOpEdit {
+    /// Anything the kind's own slice governs. The registration stands.
+    Registered,
+    /// A display-label rename. Non-material **where the kind bears a label**
+    /// — see [`MaterialLiveOp::bears_display_label`].
+    DisplayLabelRename,
 }
 
 /// The act under judgement, in the shape of the input that decides it.
@@ -323,8 +390,15 @@ pub enum MaterialAct<'a> {
         /// How many entities the batch affects.
         affected: u32,
     },
-    /// A registered material `GovernedLiveOp` kind (input (d)).
-    LiveOp(MaterialLiveOp),
+    /// A registered material `GovernedLiveOp` kind (input (d)), and which
+    /// edit inside that kind the envelope carries — the one exception the
+    /// registration admits (**P-D-121** row 17).
+    LiveOp {
+        /// The registered kind.
+        kind: MaterialLiveOp,
+        /// Which edit the envelope carries.
+        edit: LiveOpEdit,
+    },
     /// The policy object's own mutation — **always** material, in either
     /// direction (C4, `inst-mt-policy-material`).
     PolicyMutation,
@@ -343,17 +417,17 @@ pub enum MaterialAct<'a> {
 #[derive(Copy, Clone, Debug)]
 pub struct MaterialityEvaluator<'a> {
     policy: Resolution<&'a MaterialityPolicy>,
-    claims: Resolution<&'a [String]>,
 }
 
 impl<'a> MaterialityEvaluator<'a> {
-    /// The evaluator over the inputs a submission resolved.
+    /// The evaluator over the input a submission resolved.
+    ///
+    /// **One argument, not two.** P-D-119 row 36 withdrew the claim set; it is
+    /// not a defaulted second parameter, because a parameter the evaluator
+    /// ignores is exactly what the decision found.
     #[must_use]
-    pub const fn new(
-        policy: Resolution<&'a MaterialityPolicy>,
-        claims: Resolution<&'a [String]>,
-    ) -> Self {
-        Self { policy, claims }
+    pub const fn new(policy: Resolution<&'a MaterialityPolicy>) -> Self {
+        Self { policy }
     }
 
     /// Decide materiality from the four declared inputs.
@@ -367,18 +441,21 @@ impl<'a> MaterialityEvaluator<'a> {
     ///
     /// # Errors
     ///
-    /// [`MaterialityRefusal::Unresolved`] when the policy or the claim set
-    /// did not resolve; [`MaterialityRefusal::Registry`] when a touched
-    /// column carries no bucket tag; [`MaterialityRefusal::CorrectableTouch`]
-    /// when a bucket-ii column arrives as an ordinary touch.
-    pub fn verdict(&self, act: &MaterialAct<'_>) -> Result<Materiality, MaterialityRefusal> {
-        // Both looked-up inputs are required before any arm is judged: an
-        // act that would answer `Material` on its shape alone must still
-        // refuse when the policy is missing, since the *count* the verdict
-        // feeds comes from the policy and a verdict without one cannot be
-        // spent.
+    /// [`MaterialityRefusal::Unresolved`] when the policy read failed;
+    /// [`MaterialityRefusal::Registry`] when a touched column carries no
+    /// bucket tag; [`MaterialityRefusal::CorrectableTouch`] when a bucket-ii
+    /// column arrives as an ordinary touch.
+    /// Takes `self` by value: with the claim set withdrawn the evaluator is
+    /// one 8-byte pointer, and `clippy::trivially_copy_pass_by_ref` is right
+    /// that a reference to it costs more than the copy.
+    pub fn verdict(self, act: &MaterialAct<'_>) -> Result<Materiality, MaterialityRefusal> {
+        // The policy is required before any arm is judged: an act that would
+        // answer `Material` on its shape alone must still refuse when the read
+        // failed, since the *count* the verdict feeds comes from the policy
+        // and a verdict without one cannot be spent. An **absent row** never
+        // reaches here as `Unresolvable` — it resolved, to the default
+        // (P-D-112 arm 2).
         let policy = self.policy.require(MaterialityInput::Policy)?;
-        let _claims = self.claims.require(MaterialityInput::ClaimSet)?;
         Self::judge(act, policy)
     }
 
@@ -388,7 +465,8 @@ impl<'a> MaterialityEvaluator<'a> {
         policy: &MaterialityPolicy,
     ) -> Result<Materiality, MaterialityRefusal> {
         match act {
-            MaterialAct::PolicyMutation | MaterialAct::LiveOp(_) => Ok(Materiality::Material),
+            MaterialAct::PolicyMutation => Ok(Materiality::Material),
+            MaterialAct::LiveOp { kind, edit } => Ok(live_op_verdict(*kind, *edit)),
             MaterialAct::Enumerated(op) => enumerated_verdict(*op),
             MaterialAct::BatchAct { affected } => {
                 if *affected >= policy.affected_entity_trigger() {
@@ -399,6 +477,21 @@ impl<'a> MaterialityEvaluator<'a> {
             }
             MaterialAct::EntityPublish { kind, touched } => touched_verdict(*kind, touched, policy),
         }
+    }
+}
+
+/// Input (d)'s verdict, with the one exception the registration admits
+/// (**P-D-121** row 17).
+///
+/// Not a `match` over the pair: two of its four arms would answer `Material`
+/// and read as duplicates of each other. The exception is a single condition
+/// — *a display-label rename on a kind that has one* — and everything else is
+/// the registration, which is what the decision says.
+const fn live_op_verdict(kind: MaterialLiveOp, edit: LiveOpEdit) -> Materiality {
+    if matches!(edit, LiveOpEdit::DisplayLabelRename) && kind.bears_display_label() {
+        Materiality::NonMaterial
+    } else {
+        Materiality::Material
     }
 }
 

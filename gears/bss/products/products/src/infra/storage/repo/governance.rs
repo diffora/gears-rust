@@ -242,7 +242,7 @@ pub async fn submit_approval(
         content_snapshot: Set(new.content_snapshot.to_owned()),
         diff_basis: Set(new.diff_basis),
         quorum_descriptor: Set(descriptor.stored()),
-        state: Set("pending".to_owned()),
+        state: Set(born_state(&descriptor).as_str().to_owned()),
         submitter: Set(new.submitter),
         author_override_ack: Set(new.author_override_ack.map(str::to_owned)),
         author_override_ack_at: Set(new.author_override_ack.map(|_| submitted_at)),
@@ -261,11 +261,38 @@ pub async fn submit_approval(
                 driver_failure(format!("submit approval {}", new.approval_id), e),
             )
         })?;
+    let state = born_state(&descriptor);
     Ok(Submitted {
         approval_id: new.approval_id,
         materiality,
+        state,
         descriptor,
     })
+}
+
+/// The state a record is **born** in (**P-D-119** row 31).
+///
+/// `required = 0` is met by construction at submission, so the record moves
+/// `pending -> satisfied` inside the submit transaction and writes **no
+/// decision rows**. P-D-11's own words: *"a tenant at `N = 0` publishes
+/// approver-less by policy and the record says exactly that"* — and the thing
+/// that says it is `required = 0` on the stored descriptor, which is why the
+/// zero arm needs no marker of its own.
+///
+/// **Why the count and not the human arm.** §4's satisfaction rule is *"met by
+/// distinct principals"*, and that arm cannot fire on zero principals: it
+/// would wait forever for a decision no door can supply, since
+/// [`record_decision`] demands an approver. So a record at zero either is born
+/// satisfied or is unsatisfiable, and P-D-11 chose the first.
+///
+/// The same shape `system_signal`'s auto-satisfaction has (P-D-14) — one
+/// helper for both, so the two cannot drift into different born states.
+const fn born_state(descriptor: &QuorumDescriptor) -> ApprovalState {
+    if descriptor.required() == 0 {
+        ApprovalState::Satisfied
+    } else {
+        ApprovalState::Pending
+    }
 }
 
 /// What a submission answers: the record's id plus the judgement it was
@@ -277,6 +304,14 @@ pub struct Submitted {
     pub approval_id: ApprovalId,
     /// The verdict evaluated at this submission.
     pub materiality: Materiality,
+    /// The state the record was **born** in — [`ApprovalState::Satisfied`]
+    /// at `required = 0`, [`ApprovalState::Pending`] above it
+    /// (**P-D-119** row 31).
+    ///
+    /// Answered rather than left for the door to re-derive: a door that
+    /// recomputed it from the descriptor would be a second writer of the same
+    /// rule, and the two could disagree about a record already in the table.
+    pub state: ApprovalState,
     /// The descriptor stored on the record.
     pub descriptor: QuorumDescriptor,
 }

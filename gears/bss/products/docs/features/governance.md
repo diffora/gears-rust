@@ -550,7 +550,7 @@ non-material; the policy object's own mutation **MUST** be material regardless o
 
 ### Materiality policy object
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-materiality-policy`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-materiality-policy`
 
 The system **MUST** carry the policy as field set, trigger count **and** the approver count `N`,
 as a `GovernedLiveOp` subject on its **own** resource pair `materiality_policy × write` — never a
@@ -575,18 +575,30 @@ tenant at launch.
 and no read action, so a read door would spend a grant nobody declared — §7 row 24's question, not
 this door's to answer.
 
-**The tick does not follow.** This DoD also obliges `N` to *"take its initial value from tenant
-provisioning"*, and this gear has **no tenant registry to provision from** — **P-D-104** withdrew
-the migration that would have needed one. An absent row resolving to the default is P-D-112's answer
-to the launch case, not to that clause. §7 row 38 — which `subject_kind` a policy mutation's record
-carries — is also live, and untouched: this door writes no `ApprovalRecord`.
+**The provisioning clause is answered, and the tick follows** (**P-D-135**, 2026-09-04). *"Take its
+initial value from tenant provisioning"* **is** P-D-112's default: P-D-104 withdrew the tenant
+registry this gear would have provisioned from, one slice over, and a tenant's initial `N` **is** the
+default until the tenant configures one. An absent row resolving to the default is that
+provisioning — not a substitute for it. §7 row 38 is struck by **P-D-120**.
+
+**Clause by clause, with the call site** (P-D-109):
+
+| Clause | Where | Probe |
+|---|---|---|
+| field set **+** trigger **+** `N` | `products_materiality_policy`'s six columns, `m20260901_000027` | `the_door_writes_a_policy_the_resolver_reads_back` |
+| a `GovernedLiveOp` subject on its **own** pair | `materiality_policy::submit_to_gate`, spending `materiality_policy × write` at `authz.rs`'s `policy_scope` | `a_policy_mutation_without_a_reason_is_refused` |
+| never a config administrator's general grant | no other pair is read on the door's path; the door mints no `config` scope | the grant census in `authz_tests` |
+| `N` defaults to **2** | `MaterialityPolicy::default`, `DEFAULT_APPROVER_COUNT` | `a_tenant_that_never_called_the_door_resolves_to_the_default` |
+| floor of **0** | `chk_products_materiality_policy_count CHECK (approver_count >= 0)`, and the door admits `0` end to end | `the_door_writes_a_policy_the_resolver_reads_back` |
+| reachable only by explicit configuration | no seed, no provisioning insert, no migration row; the only writer is the door | `a_tenant_that_never_called_the_door_resolves_to_the_default` |
+| initial value from tenant provisioning | **P-D-135**: the default, until the tenant configures one | the same probe — an unconfigured tenant reads `N = 2` |
 
 **Implements**: `cpt-cf-bss-products-algo-materiality`
 
 **Touches**:
 - DB Table: `products_materiality_policy`
 - API: `PUT /bss-products/v1/materiality-policy`
-- Entities: `MaterialityEvaluator`
+- Entities: `MaterialityEvaluator`, `MaterialityPolicy`
 
 ### Stored content snapshot
 

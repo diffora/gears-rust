@@ -81,7 +81,7 @@ use crate::domain::materiality::{
     DEFAULT_AFFECTED_ENTITY_TRIGGER, DEFAULT_APPROVER_COUNT, MaterialAct, MaterialityEvaluator,
     MaterialityPolicy, Resolution,
 };
-use crate::infra::storage::entity::{approval, breakglass_session};
+use crate::infra::storage::entity::{approval, approval_decision, breakglass_session};
 use crate::infra::storage::migrations::Migrator;
 use crate::test_support::at;
 
@@ -240,9 +240,7 @@ async fn the_superseded_records_diff_renders_the_submission_not_the_edited_head(
     let scope = AccessScope::for_tenant(TENANT);
     let subject = subject();
     let policy = MaterialityPolicy::default();
-    let claims = vec!["catalog-admin".to_owned()];
-    let evaluator =
-        MaterialityEvaluator::new(Resolution::Resolved(&policy), Resolution::Resolved(&claims));
+    let evaluator = MaterialityEvaluator::new(Resolution::Resolved(&policy));
 
     seed_head(&conn, &scope, Some(PUBLISHED)).await;
 
@@ -351,9 +349,7 @@ async fn a_first_publish_record_renders_its_submission_against_no_basis() {
     let scope = AccessScope::for_tenant(TENANT);
     let subject = subject();
     let policy = MaterialityPolicy::default();
-    let claims = vec!["catalog-admin".to_owned()];
-    let evaluator =
-        MaterialityEvaluator::new(Resolution::Resolved(&policy), Resolution::Resolved(&claims));
+    let evaluator = MaterialityEvaluator::new(Resolution::Resolved(&policy));
 
     // No frozen version at all: this entity has never been published.
     seed_head(&conn, &scope, None).await;
@@ -410,9 +406,7 @@ async fn submit_one(
     subject: &GateSubject,
 ) -> ApprovalId {
     let policy = MaterialityPolicy::default();
-    let claims = vec!["catalog-admin".to_owned()];
-    let evaluator =
-        MaterialityEvaluator::new(Resolution::Resolved(&policy), Resolution::Resolved(&claims));
+    let evaluator = MaterialityEvaluator::new(Resolution::Resolved(&policy));
     let id = ApprovalId::new(Uuid::new_v4());
     submit_approval(
         runner,
@@ -1300,9 +1294,7 @@ async fn the_authors_acknowledgment_reaches_the_operand() {
     seed_head(&conn, &scope, Some(PUBLISHED)).await;
 
     let policy = MaterialityPolicy::default();
-    let claims = vec!["catalog-admin".to_owned()];
-    let evaluator =
-        MaterialityEvaluator::new(Resolution::Resolved(&policy), Resolution::Resolved(&claims));
+    let evaluator = MaterialityEvaluator::new(Resolution::Resolved(&policy));
     let id = ApprovalId::new(Uuid::new_v4());
     let mut new = submission(id, &subject, SUBMITTED, diff_basis_for(Some(1)), evaluator);
     // Effective quorum zero is the only count that admits the author's own
@@ -1550,9 +1542,7 @@ async fn the_evaluator_runs_on_the_default_an_absent_row_resolves_to() {
     else {
         panic!("an absent row resolves");
     };
-    let claims = vec!["catalog-admin".to_owned()];
-    let evaluator =
-        MaterialityEvaluator::new(Resolution::Resolved(&policy), Resolution::Resolved(&claims));
+    let evaluator = MaterialityEvaluator::new(Resolution::Resolved(&policy));
     assert!(
         evaluator.verdict(&MaterialAct::PolicyMutation).is_ok(),
         "the evaluator refuses an unresolved policy by design, so an unconfigured tenant \
@@ -1674,4 +1664,111 @@ async fn the_field_set_round_trips_through_its_canonical_rendering() {
         r#"["gl_code","tax_category"]"#,
         "the stored bytes are the canonical rendering, and both engines hold these"
     );
+}
+
+/// **A record at `required = 0` is born `satisfied`, in the submit
+/// transaction, and writes no decision rows** (**P-D-119** row 31, P-D-11).
+///
+/// Three assertions, each of which a different defect moves: the answer the
+/// door reads, the column a later gate reads, and the decision table §4's
+/// human arm would have had to fill. A probe asserting only the first would
+/// pass against a store that answered `Satisfied` and wrote `pending`, which
+/// is precisely the split that would leave the record unusable by the gate.
+#[tokio::test]
+async fn a_record_at_zero_is_born_satisfied_and_writes_no_decision_rows() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    seed_head(&conn, &scope, None).await;
+
+    let policy = MaterialityPolicy::default();
+    let subject = subject();
+    let id = ApprovalId::new(Uuid::new_v4());
+    let answered = submit_approval(
+        &conn,
+        &scope,
+        NewApproval {
+            approver_count: 0,
+            ..submission(
+                id,
+                &subject,
+                SUBMITTED,
+                None,
+                MaterialityEvaluator::new(Resolution::Resolved(&policy)),
+            )
+        },
+        at(11),
+    )
+    .await
+    .expect("the submission lands");
+
+    assert_eq!(
+        answered.descriptor.required(),
+        0,
+        "the probe's premise is an effective quorum of zero"
+    );
+    assert_eq!(
+        answered.state,
+        ApprovalState::Satisfied,
+        "P-D-119 row 31: required = 0 is met by construction at submission"
+    );
+
+    let stored = read_approval(&conn, &scope, TENANT, id)
+        .await
+        .expect("the read runs")
+        .expect("the record exists");
+    assert_eq!(
+        stored.state, "satisfied",
+        "the column a later gate reads carries the same fact the answer did"
+    );
+
+    let decisions = approval_decision::Entity::find()
+        .secure()
+        .scope_with(&scope)
+        .filter(Condition::all().add(approval_decision::Column::TenantId.eq(TENANT)))
+        .all(&conn)
+        .await
+        .expect("the decision read runs");
+    assert!(
+        decisions.is_empty(),
+        "zero principals cast zero verdicts: SS4's 'met by distinct principals' arm cannot fire \
+         on none, which is why the count decides the born state"
+    );
+}
+
+/// **A record above zero is born `pending`** — without this the probe above
+/// would pass against a store that wrote `satisfied` unconditionally, which
+/// would authorize every governed act in the gear on submission alone.
+#[tokio::test]
+async fn a_record_above_zero_is_born_pending() {
+    let provider = harness().await;
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    seed_head(&conn, &scope, None).await;
+
+    let policy = MaterialityPolicy::default();
+    let subject = subject();
+    let id = ApprovalId::new(Uuid::new_v4());
+    let answered = submit_approval(
+        &conn,
+        &scope,
+        submission(
+            id,
+            &subject,
+            SUBMITTED,
+            None,
+            MaterialityEvaluator::new(Resolution::Resolved(&policy)),
+        ),
+        at(11),
+    )
+    .await
+    .expect("the submission lands");
+
+    assert_eq!(answered.descriptor.required(), 2, "the default N");
+    assert_eq!(answered.state, ApprovalState::Pending);
+    let stored = read_approval(&conn, &scope, TENANT, id)
+        .await
+        .expect("the read runs")
+        .expect("the record exists");
+    assert_eq!(stored.state, "pending");
 }
