@@ -168,6 +168,22 @@ pub(crate) const ATTRIBUTE_DEFINITION_SUBJECT_TYPE: &str =
 pub(crate) const METADATA_SUBJECT_TYPE: &str =
     "gts.cf.core.events.subject.v1~cf.bss.products.metadata.v1";
 
+/// The subject type for `ActorErased` — derived from
+/// `cf.bss.products.erasure.v1~`, the GTS type `05` §3.2's authz catalog
+/// declares for `erasure × execute` (**P-D-94**'s derivation rule, the same
+/// application P-D-122 recorded for the taxonomy's three). The **subject** is
+/// the retired `actor_ref`: the pseudonym is the only identifier this event
+/// may carry, which is the whole of why it exists.
+pub(crate) const ERASURE_SUBJECT_TYPE: &str =
+    "gts.cf.core.events.subject.v1~cf.bss.products.erasure.v1";
+
+/// The subject type for `PiiAllowlistChanged` — derived from
+/// `cf.bss.products.pii_allowlist.v1~`, the type declared for
+/// `pii_allowlist × write`. The subject is the **entry**, which is also the
+/// aggregate the act serializes on (**P-D-118** item 26).
+pub(crate) const PII_ALLOWLIST_SUBJECT_TYPE: &str =
+    "gts.cf.core.events.subject.v1~cf.bss.products.pii_allowlist.v1";
+
 /// §4.5's five body-core fields plus P-D-01's two payload-borne obligations, owned.
 ///
 /// Owned rather than borrowed because [`TypedEvent`] requires
@@ -554,6 +570,123 @@ taxonomy_event! {
     MetadataUpdated,
     "gts.cf.core.events.event_type.v1~cf.bss.products.metadata_updated.v1",
     METADATA_SUBJECT_TYPE
+}
+
+/// `10`'s two events share one body, for the reason `02`'s eight do: they
+/// announce the same kind of thing — *an act this feature performed on a
+/// governed identity object* — and differ in which act and which subject
+/// (`dod-retention-events`; **P-D-118** item 26 fixed the aggregates).
+///
+/// **It carries no identity, and that is the feature's own rule made
+/// structural.** `ActorErased` names the retired pseudonym; there is no
+/// payload field an identity could reach, so the *"defensive cache-buster"*
+/// cannot become a leak by a later caller filling one in. The allow-list arm
+/// carries the entry's id and never its value: the value is a person-named
+/// string, which is precisely what the write block exists to keep out of
+/// records erasure cannot rewrite.
+///
+/// Owned for [`CatalogEventCore`]'s reason — a consumer deserializes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RetentionEventPayload {
+    /// The owning tenant — the partition input, through [`TypedEvent::tenant_id`].
+    pub tenant_id: Uuid,
+    /// The aggregate this act serializes on, rendered: the erased principal's
+    /// `principal_ref` for `ActorErased`, the entry's id for
+    /// `PiiAllowlistChanged` (**P-D-118** item 26). Also the subject.
+    pub subject_ref: String,
+    /// The act, in the slice's vocabulary: `erased`, `signed_off`, `revoked`.
+    pub act: String,
+    /// The **retired** pseudonym, on the erasure arm only. `None` on the
+    /// allow-list arm, where no ref was retired.
+    ///
+    /// Not spelled `actorRef`, and that is the gear's convention rather than
+    /// a preference: every typed event's payload carries `actorRef` as
+    /// P-D-01's *acting* principal — `broker_tests` asserts it across the
+    /// whole roster — so an erased subject under that name would collide with
+    /// a field every consumer already reads as "who did this".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub erased_actor_ref: Option<Uuid>,
+    /// The acting principal, pseudonymously — payload-borne for
+    /// [`CatalogEventCore`]'s reason. On the age-triggered erasure this is
+    /// `gear::system_actor_ref()` (**P-D-113** arm 2), because the act had no
+    /// requester.
+    pub actor_ref: Uuid,
+}
+
+impl RetentionEventPayload {
+    /// Owned copy of the interim body, plus the actor the broker's `Event`
+    /// has no field for.
+    pub(crate) fn from_body(
+        body: &crate::infra::events::RetentionEventBody<'_>,
+        actor_ref: Uuid,
+    ) -> Self {
+        Self {
+            tenant_id: body.tenant_id,
+            subject_ref: body.subject_ref.to_owned(),
+            act: body.act.to_owned(),
+            erased_actor_ref: body.erased_actor_ref,
+            actor_ref,
+        }
+    }
+}
+
+/// A retention event: [`RetentionEventPayload`] flat, the subject the
+/// aggregate the act serializes on.
+///
+/// A sixth macro rather than a field on [`taxonomy_event`]'s expansion, for
+/// the reason that one gives against folding into [`catalog_event`]: neither
+/// of these bodies is entity-core-shaped, and neither subject is an entity —
+/// `EntityKind` is exactly `Product | Sku`, and a principal is neither.
+macro_rules! retention_event {
+    ($(#[$doc:meta])* $name:ident, $type_id:literal, $subject_type:expr) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        pub(crate) struct $name {
+            /// `10`'s body, flat.
+            #[serde(flatten)]
+            pub payload: RetentionEventPayload,
+        }
+
+        impl TypedEvent for $name {
+            const TYPE_ID: &'static str = $type_id;
+            const TOPIC: &'static str = TOPIC;
+            const SUBJECT_TYPE: &'static str = $subject_type;
+            const SOURCE: &'static str = SOURCE;
+
+            fn subject(&self) -> Cow<'_, str> {
+                Cow::Borrowed(&self.payload.subject_ref)
+            }
+
+            /// The subject's tenant, not the producer's — the catalog events'
+            /// own override, for the same partitioning reason.
+            fn tenant_id(&self) -> Option<Uuid> {
+                Some(self.payload.tenant_id)
+            }
+
+            fn trace_parent(&self) -> Option<Cow<'_, str>> {
+                crate::infra::events::traceparent().map(Cow::Owned)
+            }
+        }
+    };
+}
+
+retention_event! {
+    /// A principal's map entry was tombstoned, by request or by age
+    /// (`inst-er-event`). A defensive cache-buster: it carries the retired
+    /// pseudonym and no identity, and its consumer set is legitimately empty
+    /// because no projection in the design set materializes identities.
+    ActorErased,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.actor_erased.v1",
+    ERASURE_SUBJECT_TYPE
+}
+retention_event! {
+    /// An allow-list entry was signed off or revoked (`inst-pp-allowlist`).
+    /// Carries the entry's id and never its value.
+    PiiAllowlistChanged,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.pii_allowlist_changed.v1",
+    PII_ALLOWLIST_SUBJECT_TYPE
 }
 
 /// The batch-completion summary as a typed event — slice 09's only one.

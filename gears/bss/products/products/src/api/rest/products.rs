@@ -477,7 +477,7 @@ use crate::domain::rules::{
 };
 use crate::domain::taxonomy::{
     AssignmentCandidate, AssignmentRole, AttributeDefinitionKnownRule, CarriedDefinition,
-    CategoryRoleConflictRule, ContentSaveSubject, LocalizedValue, NoPiiPolicyDetector, PiiDetector,
+    CategoryRoleConflictRule, ContentSaveSubject, LocalizedValue, PiiDetector,
     PublishedContentSubject, ResolvedDefinition, ValueCandidate, content_pii_block,
     content_save_pipeline, published_content_pipeline,
 };
@@ -6798,6 +6798,15 @@ async fn save_product(
     Json(request): Json<SaveProductRequest>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    // The gate host stays a literal for the reason `NoMaterialityPolicyGate`
+    // states: no wire input chooses one, and a test reaches it by calling
+    // `save_product_under_gate` directly. The **detector** is no longer a
+    // literal: `10-retention-erasure` registered a real one
+    // (`dod-pii-detector`), its policy has an operand — the tenant's
+    // Legal-signed-off allow-list — and reading that operand is asynchronous,
+    // which `PiiDetector::inspect` deliberately is not.
+    let detector =
+        crate::api::rest::retention::tenant_pii_detector(&state, ctx.subject_tenant_id()).await?;
     save_product_under_gate(
         &state,
         &enforcer,
@@ -6805,13 +6814,9 @@ async fn save_product(
         product_id,
         &headers,
         request,
-        // Both hosts are literals here for the reason `NoMaterialityPolicyGate`
-        // states: no wire input chooses one. A test reaches them by calling
-        // `save_product_under_gate` directly, which is how the gate doubles
-        // are driven too.
         &SaveHosts {
             gate: &(Arc::new(NoMaterialityPolicyGate) as Arc<dyn GovernanceGate + Send + Sync>),
-            detector: &(Arc::new(NoPiiPolicyDetector) as Arc<dyn PiiDetector + Send + Sync>),
+            detector: &detector,
         },
     )
     .await

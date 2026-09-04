@@ -6,13 +6,13 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::{
-    ATTRIBUTE_DEFINITION_SUBJECT_TYPE, AttributeDefinitionUpdated, CATEGORY_SUBJECT_TYPE,
-    CatalogBulkOperationCompleted, CatalogEventCore, CategoryCreated, CategoryDeleted,
-    CategoryDisplayUpdated, CategoryRenamed, CategoryReparented, CategoryRetired,
-    METADATA_SUBJECT_TYPE, MetadataUpdated, PRODUCT_SUBJECT_TYPE, PlanTierUpdated, ProductCreated,
-    ProductDeprecated, ProductDiscarded, ProductHeadSaved, ProductPublished, RecognizedCodeUpdated,
-    RecognizedUnitUpdated, SKU_SUBJECT_TYPE, SOURCE, SkuCreated, SkuDeprecated, SkuDiscarded,
-    SkuHeadSaved, SkuPublished, TOPIC,
+    ATTRIBUTE_DEFINITION_SUBJECT_TYPE, ActorErased, AttributeDefinitionUpdated,
+    CATEGORY_SUBJECT_TYPE, CatalogBulkOperationCompleted, CatalogEventCore, CategoryCreated,
+    CategoryDeleted, CategoryDisplayUpdated, CategoryRenamed, CategoryReparented, CategoryRetired,
+    METADATA_SUBJECT_TYPE, MetadataUpdated, PRODUCT_SUBJECT_TYPE, PiiAllowlistChanged,
+    PlanTierUpdated, ProductCreated, ProductDeprecated, ProductDiscarded, ProductHeadSaved,
+    ProductPublished, RecognizedCodeUpdated, RecognizedUnitUpdated, SKU_SUBJECT_TYPE, SOURCE,
+    SkuCreated, SkuDeprecated, SkuDiscarded, SkuHeadSaved, SkuPublished, TOPIC,
 };
 
 const TENANT: Uuid = Uuid::from_u128(0x7e_42);
@@ -194,6 +194,32 @@ async fn enqueue_one(
         expected.push((entity_id.to_string(), type_id));
         return;
     }
+    if THE_RETENTION_PAIR.iter().any(|(name, _, _)| *name == token) {
+        // Before the `Updated` suffix check below, like the taxonomy arm, and
+        // before the fall-through: neither of these carries an entity core.
+        let subject_ref = entity_id.to_string();
+        crate::infra::events::enqueue_retention(
+            sink,
+            conn,
+            entity_id,
+            token,
+            &crate::infra::events::RetentionEventBody {
+                tenant_id: TENANT,
+                subject_ref: &subject_ref,
+                act: if token == "ActorErased" {
+                    "erased"
+                } else {
+                    "signed_off"
+                },
+                erased_actor_ref: (token == "ActorErased").then_some(entity_id),
+            },
+            ACTOR,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue_retention: {e}"));
+        expected.push((subject_ref, type_id));
+        return;
+    }
     if token.ends_with("Updated") {
         // One distinct kind per member, because the subject IS the kind.
         let set_kind = match token {
@@ -326,8 +352,33 @@ const THE_TAXONOMY_EIGHT: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// Transcribed, not imported, for [`TRANSCRIBED_CATEGORY_SUBJECT`]'s reason.
+const TRANSCRIBED_ERASURE_SUBJECT: &str =
+    "gts.cf.core.events.subject.v1~cf.bss.products.erasure.v1";
+
+/// Transcribed, not imported, for [`TRANSCRIBED_CATEGORY_SUBJECT`]'s reason.
+const TRANSCRIBED_ALLOWLIST_SUBJECT: &str =
+    "gts.cf.core.events.subject.v1~cf.bss.products.pii_allowlist.v1";
+
+/// `10`'s two (`dod-retention-events`) — names from its own §4 roster, ids
+/// and subject types derived by this module's naming rule (P-D-94) — a sixth
+/// list, for the others' reason: folding them into any sibling would make
+/// that sibling's own completeness claim uncountable.
+const THE_RETENTION_PAIR: &[(&str, &str, &str)] = &[
+    (
+        "ActorErased",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.actor_erased.v1",
+        TRANSCRIBED_ERASURE_SUBJECT,
+    ),
+    (
+        "PiiAllowlistChanged",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.pii_allowlist_changed.v1",
+        TRANSCRIBED_ALLOWLIST_SUBJECT,
+    ),
+];
+
 /// Every event this gear declares: §4.5's eight, 04's pair, 03's trio, 09's
-/// summary, 02's eight.
+/// summary, 02's eight, 10's pair.
 fn every_declared_event() -> Vec<(&'static str, &'static str, &'static str)> {
     THE_EIGHT
         .iter()
@@ -335,6 +386,7 @@ fn every_declared_event() -> Vec<(&'static str, &'static str, &'static str)> {
         .chain(THE_SET_TRIO)
         .chain(THE_BULK_SUMMARY)
         .chain(THE_TAXONOMY_EIGHT)
+        .chain(THE_RETENTION_PAIR)
         .copied()
         .collect()
 }
@@ -451,6 +503,16 @@ fn declared() -> Vec<(&'static str, &'static str, &'static str)> {
             MetadataUpdated::TYPE_ID,
             MetadataUpdated::SUBJECT_TYPE,
             MetadataUpdated::TOPIC,
+        ),
+        (
+            ActorErased::TYPE_ID,
+            ActorErased::SUBJECT_TYPE,
+            ActorErased::TOPIC,
+        ),
+        (
+            PiiAllowlistChanged::TYPE_ID,
+            PiiAllowlistChanged::SUBJECT_TYPE,
+            PiiAllowlistChanged::TOPIC,
         ),
     ]
 }

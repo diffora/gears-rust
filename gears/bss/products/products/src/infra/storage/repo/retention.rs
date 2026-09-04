@@ -41,10 +41,15 @@
 //! own stated reason (*"a read writes no outbox row at all"*), which admits
 //! the compliance export; and a **fourth class** admits acts whose evidential
 //! record must carry a field the event deliberately omits, which admits the
-//! erasure act once `ActorErased` lands. Until `dod-retention-events` lands,
-//! the erasure act emits nothing and class 3 covers it verbatim — the fourth
-//! class is what keeps it admitted afterwards, and that sequencing is the
-//! reason this module writes the row today without waiting.
+//! erasure act once `ActorErased` lands. **It has landed** (2026-09-04,
+//! `dod-retention-events`): the erasure door now emits `ActorErased` inside
+//! the tombstone's own transaction, so the erasure act is no longer covered
+//! by class 3's *"committed acts declaring no broker event"* and the fourth
+//! class is what admits it — an act whose evidential record carries a field
+//! the event deliberately omits. That is the sequencing this module was
+//! written ahead of, and it has arrived.
+//!
+//! @cpt-dod:cpt-cf-bss-products-dod-identity-map:p1
 
 use chrono::{DateTime, Utc};
 use sea_orm::sea_query::Expr;

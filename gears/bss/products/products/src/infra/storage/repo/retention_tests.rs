@@ -501,3 +501,81 @@ async fn a_ref_in_the_subject_column_is_found_too() {
         "and a ref in neither column is not"
     );
 }
+
+/// **There is exactly one path that stamps a principal's `actor_ref`, and it
+/// is the one that advances `last_seen_at`.**
+///
+/// `dod-identity-map`'s last clause is *"every stamping door honours it"* —
+/// a claim about a **set** of doors, which no behavioural probe can close:
+/// a seventh door added next month with its own `UPDATE` would leave every
+/// existing probe green while the age trigger read a column that had stopped
+/// moving. So the set is asserted to be a singleton instead, which is the
+/// property that actually makes the clause true, and it fails the day a
+/// second writer appears — at which point the clause needs a real census and
+/// this assertion is the thing that says so.
+///
+/// The pairing matters as much as the count: `repo_tests` already proves the
+/// one writer advances on a **resolve** and not on a mint (M2 — age since
+/// first appearance would tombstone an active employee mid-employment).
+#[test]
+fn one_writer_advances_last_seen_at_and_one_door_reaches_it() {
+    let repo = include_str!("../repo.rs");
+    let production = repo.split("#[cfg(test)]").next().unwrap_or(repo);
+    assert_eq!(
+        production
+            .matches("identity_ref::Column::LastSeenAt")
+            .count(),
+        1,
+        "a second writer of `last_seen_at` makes `dod-identity-map`'s \"every stamping door \
+         honours it\" a census this crate no longer has"
+    );
+
+    let rest = include_str!("../../../api/rest.rs");
+    let rest_production = rest.split("#[cfg(test)]").next().unwrap_or(rest);
+    assert_eq!(
+        rest_production.matches("repo::resolve_actor_ref(").count(),
+        1,
+        "every door reaches the map through the one shared actor context, which is what makes \
+         the single writer above reachable from all of them"
+    );
+}
+
+/// **The tombstone-inclusive read is a different function from the shipped
+/// resolve, and neither has grown the other's predicate.**
+///
+/// The two exist apart for one reason each, and both reasons are silent
+/// failures if they lapse: `resolve_actor_ref` **mints on a miss**, so the
+/// erasure door calling it would invent the principal it reports erasing;
+/// and it filters `tombstoned_at IS NULL`, so the export calling it would
+/// answer a DSAR after an erasure with *"no entries"* — the one answer that
+/// looks correct and is not.
+#[test]
+fn the_two_reads_keep_their_separate_predicates() {
+    let this = include_str!("retention.rs");
+    let production = this.split("#[cfg(test)]").next().unwrap_or(this);
+    // Comment lines are stripped first, and that is not tidiness: this
+    // module's own doc explains at length why the minting resolve must not
+    // be called here, so a scan over the raw text matches the explanation
+    // and reddens on a module that is correct. The first run did exactly
+    // that.
+    let code: String = production
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !code.contains("resolve_actor_ref"),
+        "nothing in this module may CALL the minting resolve - naming it in a doc is how the \
+         rule is explained"
+    );
+    let export = production
+        .split("pub async fn identity_entries_of_principal")
+        .nth(1)
+        .expect("the export's read is declared here");
+    let export_body = export.split("\npub ").next().unwrap_or(export);
+    assert!(
+        !export_body.contains("TombstonedAt.is_null()"),
+        "the export's read must NOT filter tombstoned rows out: a DSAR after an erasure exists \
+         to see that the erasure happened"
+    );
+}

@@ -415,7 +415,7 @@ it as new work.
 
 ### The identity-reference map's act, over a store that already ships
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-identity-map`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-identity-map`
 
 `products_identity_ref` **already exists** with the columns and guards this feature needs:
 **and this DoD's remainder is scoped** (**P-D-72**): the tombstone-inclusive read is a **widening of
@@ -445,6 +445,18 @@ DoD, is §7's.
 `last_seen_at` **MUST** be advanced by every act that **resolves** a ref, as a **same-transaction
 touch** rather than a separate act, and **MUST NOT** be advanced by minting alone. The entity's own
 doc already states this; the DoD is that every stamping door honours it.
+
+**Built, clause by clause, with the call site named for each** (P-D-109's discipline; ticked
+2026-09-04).
+
+| clause | where it lands | what proves it |
+|---|---|---|
+| a second, **tombstone-inclusive** read, for the export alone | `repo::identity_entries_of_principal` | `the_two_reads_keep_their_separate_predicates`, which asserts the *absence* of the shipped resolve's filter rather than the presence of a function |
+| the erasure door **MUST NOT** call the minting resolve | `repo::tombstone_principal` carries its own | the same case scans this module's code — comments stripped, because the module's doc explains the rule at length and the first scan reddened on the explanation |
+| this DoD creates **no table** | none added; the index rides the allow-list's migration | `m20260901_000028`'s own doc, and **P-D-118** item 18 routed it there on the *"an index rides the change that makes its read live"* rule |
+| the read-by-principal path has a covering index for the tombstoned case | `idx_products_identity_ref_principal_tombstone`, **total** and not partial | `postgres_retention_schema::the_allowlist_unique_is_partial_and_the_tombstone_index_is_not` reads both `indexdef`s as text — a partial one here would be the covering index that already exists |
+| `last_seen_at` advances on a **resolve** and not on a mint | `repo.rs`'s one `LastSeenAt` write, inside `resolve_actor_ref` | `repo_tests`' shipped pair, plus `one_writer_advances_last_seen_at_and_one_door_reaches_it` |
+| **every stamping door** honours it | there is exactly one stamping path: one writer, reached by one shared actor context | the same census. *"Every door"* is a claim about a **set** that no behavioural probe can close; a singleton is the property that makes it true, and the assertion fails the day a second writer appears — at which point the clause needs a real census and this is the thing that says so |
 
 **Implements**: `cpt-cf-bss-products-algo-identity-map`
 
@@ -526,7 +538,7 @@ employee mid-employment, which is the failure the column's semantics were correc
 
 ### The compliance export
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-compliance-export`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-compliance-export`
 
 The system **MUST** serve `GET /bss-products/v1/compliance/identity-export` on **`compliance ×
 export`** — **its own grant, never `audit × export`** — returning, per named principal, that
@@ -537,6 +549,23 @@ The separate grant is not stylistic: `design/10` §4 excludes the map from `audi
 the one surface that returns **real identities**. Folding it into the audit grant would hand every
 auditor the identities the whole pseudonymization scheme exists to withhold.
 
+**Built, clause by clause, with the call site named for each** (P-D-109's discipline; ticked
+2026-09-04).
+
+| clause | where it lands | what proves it |
+|---|---|---|
+| the route on **`compliance × export`**, never `audit × export` | `api::rest::retention`'s router, `Gate::Compliance` | `the_export_returns_the_tombstone_and_audits_the_access`; the gate's `action()` reads `EXPORT` off the `COMPLIANCE` resource and nothing else spends it |
+| per named principal, that principal's map entries | `repo::identity_entries_of_principal`, the tombstone-inclusive read | `the_two_reads_keep_their_separate_predicates` asserts the export's read carries **no** `tombstoned_at IS NULL` filter — the predicate that would answer a post-erasure DSAR *"no entries"* |
+| plus the audit-row references carrying their refs | `repo::audit_refs_of_actors`, matching **either** column | the shipped case; an erased principal never *acts* in the row recording its erasure, so an `actor_ref`-only match hid every erasure from the DSAR that asked about it |
+| **every access individually audited** | `repo::write_audited_read_audit`, in its own transaction **before** anything is served | `three_exports_write_three_access_rows` — a count, because a probe that reads *an* audit row cannot tell one write from three |
+| a **justification** is required (**P-D-133**) | `ExportQuery::justification`, refused blank, then through the write block | `the_export_requires_a_justification_and_records_it_on_the_access_row`, **both halves**: refused without it, and the value asserted **on the row** — a door that demanded the field and dropped it passes the refusal half alone |
+
+**The holder is not named here, and that is the DoD honoured rather than deferred.** §7 item 8's
+remaining half — which principals hold `compliance × export` — is Architecture's with Legal, and
+the door checks the grant and nothing else (**P-D-133**). Under **P-D-109** that question defeats
+no clause above: it asks *who may be given* the grant, and every obligation here is about what the
+door does for whoever holds it.
+
 **Implements**: `cpt-cf-bss-products-flow-erasure`
 
 **Touches**:
@@ -546,7 +575,7 @@ auditor the identities the whole pseudonymization scheme exists to withhold.
 
 ### The PII detector policy
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-pii-detector`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-pii-detector`
 
 The system **MUST** answer `02-taxonomy-attributes`' hook with **block / allow / allow-by-list**, and
 **uncertainty MUST block** (C2). A block **MUST** raise `CONTENT_PII_BLOCKED` **naming the field and
@@ -569,6 +598,45 @@ and this DoD **MUST NOT** mint a second: minting one here would make this featur
 another slice's code. §7 row 15 routed it and is **closed by measurement** — the arm landed on the
 side that owed it, which is the outcome the row asked for and not a waiver of the rule.
 
+**Built, clause by clause, with the call site named for each** (P-D-109's discipline; ticked
+2026-09-04).
+
+| clause | where it lands | what proves it |
+|---|---|---|
+| block / allow / allow-by-list | `domain::retention::RegistryPiiDetector::inspect` | `the_four_arms_each_have_a_positive_control` — **every arm paired with a control**, including the near-misses the two blocking arms exist to not catch (`ops@ the desk`, `SKU-1234567`) |
+| **uncertainty blocks** (C2) | left in `taxonomy::content_pii_block`, untouched | `an_unlisted_name_is_uncertain_and_an_address_is_blocked` asserts both verdicts **and** that both refuse at the hook |
+| `CONTENT_PII_BLOCKED` naming the field | the hook's own rendering | `a_pii_refusal_names_the_field_and_its_audit_row_carries_no_detected_value` |
+| **never the detected value** | every reason names a *shape*; the candidate is used to consult the list and dropped | `no_verdict_reason_carries_the_matched_text` sweeps **every** blocking arm and checks the hook's rendering too — a one-case probe would not see an arm added later with the match interpolated in. And the audit row is asserted clear, because the row is the record erasure cannot rewrite |
+| the hook is `02`'s and is not relocated | nothing in `domain::taxonomy` changed | the same file's own tests stand unedited |
+| **the whole door set** raises the same code | all six production sites now build this detector | `no_production_door_builds_the_permissive_pii_host`, with `the_permissive_host_census_can_fail` as its perturbation |
+| mint no second `DomainError` arm | none added | `dod-retention-error-taxonomy`'s roster stays at one owned code |
+
+**The door set was six sites, not two.** Measured 2026-09-04: `NoPiiPolicyDetector` was constructed
+at **six** production sites, each its own `Arc::new(..)` literal — `products.rs` (`save_product`),
+`skus.rs` (`save_sku_gated`), `taxonomy.rs` (`label_operand` and `merge_metadata`),
+`materiality_policy.rs` (`set_materiality_policy`) and `retention.rs` (`execute_erasure`) — so
+*"the registered detector"* named a phrase and not a registry, and swapping "the call site" would
+have left four doors admitting every string while their neighbours refused. All six now call
+`api::rest::retention::tenant_pii_detector`, and the census above is what keeps a seventh from
+arriving with its own literal.
+
+**What makes this detector uncertain, stated** (P-D-117 deliberately left the policy to this
+slice). **It cannot tell a person's name from a product named after one** — and that is not a gap
+a better heuristic closes, it is the exact question the allow-list exists to have a human answer on
+paper. So an unlisted person-shaped run is `Uncertain` and never `Blocked`: `Blocked` asserts a
+finding — *this is personal data* — that nothing here established, and that false assertion would
+reach the operator's refusal and its audit row. `Uncertain` says the true thing, the write is still
+refused because the hook holds C2, and the refusal points at the lane out. Email addresses and
+telephone numbers are `Blocked`, for the mirror reason: there the shape **is** the finding, and
+calling it uncertain would understate what the detector knows.
+
+**A defect this DoD's own probe caught.** The phone arm was written per whitespace-separated token,
+so `+44 20 7946 0958` — four tokens of two to four digits — matched nothing and the arm blocked no
+number at all. It is now a whole-text scan over runs of digits and separators, floored at nine
+digits so a catalog identifier is not a phone number, capped at E.164's fifteen, and requiring
+every digit group to be at least two long so `tiers 1 2 3 4 5 6 7 8 9` is an enumeration rather
+than a number.
+
 **Implements**: `cpt-cf-bss-products-flow-pii-policy`
 
 **Touches**:
@@ -576,7 +644,7 @@ side that owed it, which is the outcome the row asked for and not a waiver of th
 
 ### The Legal-governed allow-list
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-pii-allowlist`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-pii-allowlist`
 
 The system **MUST** create `products_pii_allowlist` holding governed entries with their
 justifications and a **mandatory Legal sign-off reference** — the artifact identifying the external
@@ -591,6 +659,38 @@ entry offered **without** a sign-off reference **MUST** be refused.
 
 **What this DoD deliberately does not claim**: the gear proves a Legal reference **was recorded**,
 never that Legal approved. The control is the paper sign-off plus the export.
+
+**Built, clause by clause, with the call site named for each** (P-D-109's discipline; ticked
+2026-09-04).
+
+| clause | where it lands | what proves it |
+|---|---|---|
+| create `products_pii_allowlist` on P-D-117's roster | `m20260901_000028_create_products_pii_allowlist.rs`, both engines | `postgres_retention_schema::the_allowlist_roster_matches_on_postgres`, transcribing the roster from the **decision** so a column dropped from code and migration together is still red |
+| **mandatory** Legal sign-off reference | `signed_off_by NOT NULL` plus the door's own check | `a_missing_sign_off_reference_is_refused_by_field_and_a_complete_entry_is_admitted`, **with its positive control in the same case** so the rule cannot be proven by a door that admits nothing |
+| refused riding `01`'s `VALIDATION`, the violation naming the field (**P-D-64**) | `sign_off_allowlist_entry`'s `report.violate("VALIDATION", "signedOffBy", …)` | the same case, which asserts the violation's `type` **and** its `subject` — the code alone would pass on a violation naming the wrong field |
+| per tenant | PK `(tenant_id, entry_id)`, every read filtered on `tenant_id` | the roster probe |
+| audited | `write_allowlist_audit`, in the act's transaction | `each_allowlist_act_writes_one_audit_row_and_one_event`, counted at **1** per act |
+| exportable for the Legal review | `GET /bss-products/v1/compliance/pii-allowlist` → `repo::allowlist_entries` | `a_revocation_keeps_the_row_and_its_sign_off_in_the_review` |
+| a `GovernedLiveOp` on `pii_allowlist × write` under the base quorum (**P-D-10**) | `submit_allowlist_to_gate`, at both mutating doors | `both_allowlist_doors_submit_their_act_to_the_gate` — **call sites, not a verdict**: the registered host authorizes everything, so a green verdict would prove nothing about whether the ceremony was asked |
+| emit `PiiAllowlistChanged` | `emit_allowlist_changed`, same transaction | `each_allowlist_act_writes_one_audit_row_and_one_event` asserts **2** after both acts: a revocation nobody hears leaves a stale cache admitting a withdrawn name |
+
+**Revocation is a state flip and never a `DELETE`** (P-D-47's reasoning one table over), and the
+uniqueness is therefore **partial**: `UNIQUE (tenant_id, value_normalized) WHERE state = 'active'`.
+Both arms are probed on both engines —
+`the_active_uniqueness_is_partial_and_a_revoked_value_may_be_signed_off_again` and
+`postgres_retention_schema::a_second_active_value_is_refused_on_postgres_and_admitted_after_a_revoke`
+— because a **total** `UNIQUE` passes the refusal half and fails the re-sign-off half, and no index
+at all does the reverse. The Postgres probe reads the index's `indexdef` as **text**: an index
+created without its `WHERE` exists under the right name and enforces the wrong rule.
+
+**The match rule is exact equality on the normalized value, and the normalization is the whole of
+the rule** (P-D-117 item 23). `domain::retention::normalize_allowlist_value` is its one
+implementation — **NFKC**, then trim and collapse internal whitespace runs, then lowercase — and
+**both sides run through it**, the stored column and the detector's own candidate, so the equality
+has one definition rather than two that can drift. It deliberately does **not** strip punctuation,
+drop diacritics or reorder words; each would widen the match past what the sign-off covered, and
+those limits are asserted as inequalities in `the_normalization_does_not_widen_past_the_sign_off`
+because a rule's limits are what a later "improvement" silently removes.
 
 **Implements**: `cpt-cf-bss-products-flow-pii-policy`
 
@@ -623,6 +723,45 @@ a trigger cannot read configuration.
 **Two populations are deliberately outside every clock**: outbox-delivered rows, whose horizon is the
 **toolkit vacuum's** (**P-D-22**), and `07-reference-signal`'s watermark and member tables, which are
 **operational current state**, continuously replaced.
+
+#### The guard shape `07` row 38 routes here — proposed, not built
+
+**P-D-129**'s recommendation is *"one shape for the whole class, the audit plane's row-image
+predicate (P-D-34)"*. **The audit plane has no such predicate**, measured at `951fd3bae`:
+`m20260829_000004` refuses **every** `DELETE` unconditionally on both engines — the same flat
+refusal as `products_approval`, `products_approval_decision`, `products_breakglass_session` and
+`products_correction_override` — and its own doc says, citing **P-D-118**, that *"there never will
+be"* one: *"No `OLD.written_at < <cutoff>` arm is written in this file … the DELETE arm this
+trigger admits is the GC's identity, not a date."* **P-D-31** then makes that identity unreadable,
+and the same file says so: *"the session variable that would carry it exists on Postgres and not on
+`SQLite`, so neither trigger reads one."* The chain's only **opened** predicate is
+`m20260829_000007`'s, and it is **referential** (`WHERE EXISTS` against
+`products_catalog_version_entry`, P-D-40) rather than row-image — it reads another table, not
+`OLD`'s own columns.
+
+So the recommended shape does not exist and the document that would host it forbids it, and the
+reason generalises: **a trigger can express properties of the row, never properties of the
+deleter.** P-D-31 removed the only identity channel and P-D-118 removed the date; nothing is left
+for a predicate to read that separates the GC from any other caller. *"A predicate the GC's own
+preceding admitted write can make true"* needs an admitted write, and `products_correction_override`
+admits **no `UPDATE` at all** — *"Evidential rows admit no `UPDATE` and no `DELETE` … there is no
+admitted edit at all"* — so the shape cannot be built there without opening a write path on the
+table whose doc exists to refuse one; and a claim column any caller may set is a two-statement
+speed bump rather than a guard.
+
+**The proposal is therefore to stop authorising the GC in DDL and fix the failure the row actually
+describes** — *"a collector reaching a statutory-max row on a flat refusal raises `P0001` … so the
+sweep aborts and takes its other candidates with it"*. Three parts: **(a)** the sweep enumerates and
+deletes **per class, per candidate, each in its own transaction**, which P-D-118 item 25 already
+forces for catalog versions; **(b)** a class whose table refuses `DELETE` yields a **held**
+candidate carrying a named reason — the `retention_orphan_blocked` shape `dod-retention-gate`
+already ships — reported and never retried into an abort; **(c)** the five migrations are **left
+untouched**, because on this reading `products_approval`, `products_breakglass_session` and
+`products_correction_override` are *evidence* whose flat refusal is the correct guard rather than a
+hole, and at `retention_days_audit` = 3650 interim no collector reaches one of their rows for ten
+years. If that is right, row 38 closes as *"the shape is the application's, not the DDL's"*. If the
+owner wants those rows deletable, that is a decision to open a write path on evidence and should be
+taken as one. **No migration is edited under this DoD until it is taken.**
 
 **Implements**: `cpt-cf-bss-products-flow-retention`
 
@@ -824,7 +963,7 @@ one now: this feature's own `DoD` declares them, which is exactly the rule the c
 
 ### The two events, and the one that is deliberately minimal
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-retention-events`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-retention-events`
 
 The system **MUST** emit `ActorErased(actor_ref)` and `PiiAllowlistChanged`, each in the same
 transaction as its act and each carrying a **versioned** schema reference. Both `THE_EIGHT` rosters —
@@ -848,6 +987,32 @@ and the `SUBJECT_TYPE` its **row 47** raises — **cited, not re-raised**. Their
 The erasure act itself, the GC's deletes and the drill's results are **audit-plane with an explicit
 no-broker-event carrying identity**: an event carrying identity is exactly what this feature exists
 to prevent, and `ActorErased` deliberately carries none.
+
+**Built, clause by clause, with the call site named for each** (P-D-109's discipline; ticked
+2026-09-04).
+
+| clause | where it lands | what proves it |
+|---|---|---|
+| emit `ActorErased` | `api::rest::retention::execute_erasure`, inside the tombstone's transaction | `an_erasure_announces_itself_and_a_refused_one_does_not` — and the **negative** half is the one that matters: a refusal that still announced would tell every cache to drop a ref that was never retired |
+| emit `PiiAllowlistChanged` | `emit_allowlist_changed`, at both allow-list doors | `each_allowlist_act_writes_one_audit_row_and_one_event`, **2** after both acts |
+| each **in the same transaction as its act** | both ride the caller's `tx`; an enqueue failure is `TxError::Events` and rolls the act back | the refused-erasure half above |
+| each carrying a **versioned** schema reference | `SCHEMA_REFS` gains `bss-products.ActorErased.v1.0.0` and `…PiiAllowlistChanged.v1.0.0` | `the_schema_roster_names_exactly_the_declared_events`, both directions, and `every_schema_reference_is_semver_and_names_its_own_event` |
+| **both** rosters extended, neither derived from the code | `events_tests::THE_RETENTION_PAIR` and `broker_tests::THE_RETENTION_PAIR` | `each_event_declares_its_derived_type_id_and_subject_type` and `every_event_reaches_the_broker_under_its_own_type_id` |
+| the aggregates (**P-D-118** item 26) | `ActorErased` on the erased `principal_ref` via `events::retention_aggregate_id`; `PiiAllowlistChanged` on `entry_id` | `enqueue_retention`'s own doc and the door call sites |
+| `ActorErased` carries the ref and **no identity** | `RetentionEventPayload` has no field an identity could reach | the payload's own shape, and the broker roster's `actorRef` assertion which the field naming had to obey |
+
+**"Both `THE_EIGHT` rosters" is satisfied as two new lists, not two extended ones**, and that is the
+rule those files enforce rather than a deviation from this sentence. `events_tests` carries six
+transcribed rosters — §4.5's eight, `04`'s pair, `04`'s rest, `03`'s trio, `09`'s summary, `02`'s
+eight — each its own for one stated reason: *folding a slice's events into a neighbour's list makes
+that neighbour's own completeness claim uncountable*. `THE_EIGHT` is a transcription of one
+sentence in `01` §4.5, and adding `ActorErased` to it would claim §4.5 announces it. The obligation
+the DoD's sentence carries is that **both files' roster sets grow in this change**, and they do.
+
+**`actorRef` is the acting principal, and the erased pseudonym is `erasedActorRef`** — a rename a
+probe forced. Every typed event's payload carries `actorRef` as P-D-01's *acting* principal, and
+`broker_tests` asserts it across the whole roster; naming the erased subject `actorRef` would have
+collided with a field every consumer already reads as *"who did this"*.
 
 **Implements**: `cpt-cf-bss-products-flow-erasure`,
 `cpt-cf-bss-products-flow-pii-policy`
@@ -924,6 +1089,57 @@ to prevent, and `ActorErased` deliberately carries none.
 
 - [ ] `ERASURE_UNKNOWN_ACTOR` — a principal with no `actor_ref` in this tenant is refused **naming
       the principal**; the same request for a principal that has one succeeds.
+
+**The retention clocks** *(added 2026-09-04 under §7 item 32 — this DoD had no criterion)*
+
+- [ ] Each record class produces candidates at **its own** configured window, asserted by moving
+      one window and watching only that class's candidate set change. A sweep that read one
+      number for every class would pass a single-class probe.
+- [ ] The two deliberately-excluded populations produce **no** candidates: outbox-delivered rows
+      (the toolkit vacuum's horizon, **P-D-22**) and `07`'s watermark and member tables
+      (operational current state). Asserted as absence, because an over-broad clock deletes
+      records nobody asked it to.
+- [ ] A class whose table refuses `DELETE` is reported **held**, and the sweep's other candidates
+      still complete. The failure this guards is the one §7 row 38 describes: one `P0001` from a
+      flat-refusal guard is not retryable contention, so an un-isolated sweep aborts and takes
+      every unrelated candidate with it.
+
+**The compliance export** *(added 2026-09-04 under §7 item 32 — this DoD had no criterion)*
+
+- [ ] The door is refused without a **justification**, and the justification it demands is the one
+      that lands on the access's audit row — **both halves**, because a door that required the
+      field and then dropped it passes a refusal-only probe (**P-D-133**).
+- [ ] Three accesses write **three** audit rows. *Individually* audited is a count, and a probe
+      that reads *an* audit row cannot tell one write from three.
+- [ ] The export spends `compliance × export` and the allow-list review spends it too; neither is
+      served under `audit × export`.
+
+**The two events** *(added 2026-09-04 under §7 item 32 — this DoD had no criterion)*
+
+- [ ] Each event is enqueued **inside its act's transaction**, asserted from the other side: a
+      **refused** act enqueues none. An `ActorErased` beside a rolled-back tombstone tells every
+      cache to drop a ref that is still live.
+- [ ] Each carries a versioned schema reference and appears in **both** rosters — the interim
+      arm's and the broker arm's — with the subject type its grant derives (**P-D-94**).
+- [ ] Neither payload has a field an identity could reach. `ActorErased` is a defensive
+      cache-buster, and a field added later is how it would stop being one.
+
+**The authz surface** *(added 2026-09-04 under §7 item 32 — the DoD whose own body argues that
+unnamed obligations are ticked by inspection)*
+
+- [ ] Each of the three grants is spent by a door that **exists**, and a caller without the grant
+      is refused with the refusal **audited**. The four roster tests the DoD names are the
+      declaration half; this is the spending half, and the DoD had only the first.
+
+**The identity map's remainder** *(added 2026-09-04 under §7 item 32 — the DSAR criterion below
+asserts the column, not the read)*
+
+- [ ] The tombstone-inclusive read returns a **tombstoned** entry, and the shipped
+      `resolve_actor_ref` does not. The two differ by exactly the predicate that makes a DSAR
+      after an erasure answer *"no entries"* — the one wrong answer that looks right.
+- [ ] Exactly one writer advances `last_seen_at` and exactly one door reaches it. *"Every stamping
+      door honours it"* is a claim about a set; a singleton is the property that makes it true,
+      and the assertion is what fails the day a second writer appears.
 
 **Controls on the shipped seam**
 

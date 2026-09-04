@@ -642,7 +642,46 @@ fn tx_failure_to_canonical(error: TxError) -> CanonicalError {
 /// (`inst-md-write`'s rule applied to the one free-text field this door
 /// writes). Both refusals now go through `refuse`, so the PII block is
 /// audited like every other refusal — the former helper returned it bare.
-fn label_operand(display_label: Option<&str>) -> Result<String, DomainError> {
+/// The label arm of the definition operations door, lifted out whole.
+///
+/// Its own function for two reasons, and the second is the one that matters:
+/// the door crossed clippy's 200-line floor when the detector stopped being a
+/// literal — and the detector read, the rule it feeds and the refusal it may
+/// raise are **one step**, so splitting them across the caller left the read
+/// sitting in a branch whose only reader was the next line.
+async fn definition_label_arm(
+    state: &ApiState,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    actor_ref: Uuid,
+    key: String,
+    display_label: Option<&str>,
+) -> Result<String, CanonicalError> {
+    let detector = crate::api::rest::retention::tenant_pii_detector(state, tenant_id).await?;
+    match label_operand(display_label, detector.as_ref()) {
+        Ok(label) => Ok(label),
+        Err(refusal) => Err(refuse(
+            state,
+            scope,
+            tenant_id,
+            actor_ref,
+            Gate::Definition,
+            key,
+            refusal,
+        )
+        .await),
+    }
+}
+
+/// `detector` is `10-retention-erasure`'s, over the calling tenant's
+/// allow-list (`dod-pii-detector`), and it is the **caller's** to build
+/// rather than this function's: the read that builds it is asynchronous and
+/// `PiiDetector::inspect` deliberately is not, so a detector constructed here
+/// would make a synchronous rule reach a store.
+fn label_operand(
+    display_label: Option<&str>,
+    detector: &(dyn crate::domain::taxonomy::PiiDetector + Send + Sync),
+) -> Result<String, DomainError> {
     let Some(label) = display_label.map(str::trim).filter(|l| !l.is_empty()) else {
         return Err(violation(
             "VALIDATION",
@@ -650,9 +689,7 @@ fn label_operand(display_label: Option<&str>) -> Result<String, DomainError> {
             "a label edit needs a label",
         ));
     };
-    let detector: Arc<dyn crate::domain::taxonomy::PiiDetector + Send + Sync> =
-        Arc::new(crate::domain::taxonomy::NoPiiPolicyDetector);
-    crate::domain::taxonomy::content_pii_block(detector.as_ref(), "displayLabel", label)
+    crate::domain::taxonomy::content_pii_block(detector, "displayLabel", label)
         .map_err(|blocked| DomainError::ContentPiiBlocked(blocked.into_detail()))?;
     Ok(label.to_owned())
 }
@@ -1433,21 +1470,17 @@ async fn execute_definition_operation(
     let label = if flip.is_some() {
         None
     } else {
-        match label_operand(body.display_label.as_deref()) {
-            Ok(label) => Some(label),
-            Err(refusal) => {
-                return Err(refuse(
-                    &state,
-                    &scope,
-                    tenant_id,
-                    actor_ref,
-                    Gate::Definition,
-                    key,
-                    refusal,
-                )
-                .await);
-            }
-        }
+        Some(
+            definition_label_arm(
+                &state,
+                &scope,
+                tenant_id,
+                actor_ref,
+                key.clone(),
+                body.display_label.as_deref(),
+            )
+            .await?,
+        )
     };
     let act: &'static str = match flip.as_ref().map(|f| f.to) {
         Some(DefinitionState::Deprecated) => "deprecated",
@@ -1816,9 +1849,9 @@ async fn merge_metadata(
     }
 
     // Values are operator free text, inside the write block with no carve-out
-    // (`inst-md-write`).
-    let detector: Arc<dyn crate::domain::taxonomy::PiiDetector + Send + Sync> =
-        Arc::new(crate::domain::taxonomy::NoPiiPolicyDetector);
+    // (`inst-md-write`) — against `10-retention-erasure`'s detector over this
+    // tenant's allow-list (`dod-pii-detector`).
+    let detector = crate::api::rest::retention::tenant_pii_detector(&state, tenant_id).await?;
     for (key, value) in &merged {
         if let Err(blocked) = crate::domain::taxonomy::content_pii_block(
             detector.as_ref(),

@@ -74,7 +74,7 @@ use crate::domain::governance::{
     GateMode, GateSubject, GateVerdict, GovernanceGate, NoMaterialityPolicyGate,
 };
 use crate::domain::materiality::MaterialityPolicy;
-use crate::domain::taxonomy::{NoPiiPolicyDetector, PiiDetector, content_pii_block};
+use crate::domain::taxonomy::content_pii_block;
 use crate::infra::storage::repo::{self, RefusalSubject};
 
 /// The `OpenAPI` tag this door registers under.
@@ -291,9 +291,10 @@ async fn set_materiality_policy(
     }
 
     // Operator free text, so it rides the same write block every other
-    // reason-bearing door does. The registered detector admits everything and
-    // says so.
-    let detector: Arc<dyn PiiDetector + Send + Sync> = Arc::new(NoPiiPolicyDetector);
+    // reason-bearing door does — against `10-retention-erasure`'s detector
+    // over this tenant's allow-list (`dod-pii-detector`), which replaced the
+    // permissive host at all six of its construction sites.
+    let detector = crate::api::rest::retention::tenant_pii_detector(&state, tenant_id).await?;
     if let Err(blocked) = content_pii_block(detector.as_ref(), "reason", &reason) {
         return Err(refuse(
             &state,
