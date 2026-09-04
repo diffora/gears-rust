@@ -1569,6 +1569,55 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-136 — The flat-refusal class keeps its guard, the GC holds what it cannot delete, and D's detector ships as measured
+
+- **Date**: 2026-09-04 (the lead, accepting strand D's `4544b243f`, merged `dd464c108`; `07` row
+  38, `02` row 4, `10` §7 item 32's fifth criterion, and the lead's own census tool)
+- **The guard shape (`07` row 38) — P-D-129's recommendation is withdrawn, because its referent
+  does not exist.** It recommended *"the audit plane's row-image predicate (P-D-34)"* as the one
+  shape for the class. Measured by D at `951fd3bae` and confirmed: `m20260829_000004` refuses
+  **every** `DELETE` unconditionally on both engines and its own doc, citing P-D-118, says there
+  will never be a date arm, while P-D-31 removed the identity channel; the chain's only opened
+  `DELETE` predicate (`m20260829_000007`) is **referential**, not row-image. The reason generalises:
+  a trigger expresses properties of the row, never of the deleter, and `products_correction_override`
+  admits no `UPDATE` that could mark a row. **D's shape stands**: the sweep judges and deletes
+  **per class, per candidate, each in its own transaction** (P-D-118 item 25's discipline,
+  generalised); a class whose table refuses `DELETE` yields a **held** candidate with a named
+  reason, audited, never an abort; the five evidence migrations stay untouched. Evidence rows are
+  not deletable in v1 — at 3650 days no collector reaches one before 2036 — and opening a write
+  path on evidence is a decision for then, taken as one. Row 38 closes as *"the shape is the
+  application's, not the DDL's"*.
+- **The detector, as shipped, and its friction, measured.** An email or a telephone number is
+  `Blocked`; a run of two or more adjacent capitalized words no active entry covers is `Uncertain`,
+  and the hook refuses both. Under the hook: localized attribute values (`attributes.<key>`), every
+  operator reason, `displayLabel`, metadata values, the allow-list's own free text, the export
+  justification — **not** names or codes. Consequence, stated for the owner as `10` §7 **item 33**:
+  with an empty allow-list an attribute value carrying *"Premium Cloud Backup"* is refused until
+  Legal signs `premium cloud backup` off, while *"McDonald"* or a lowercase name is not a run at
+  all. That is C2's fail-closed posture and item 1's recorded friction; whether the run heuristic
+  narrows (a length cap, a field class) is the product owner's call.
+- **Six doors, not two.** `NoPiiPolicyDetector` had six construction sites; the DoD obliges the
+  whole door set; D swapped all six through one helper with a census against a seventh literal —
+  one line in B's `materiality_policy.rs` and two in A's `taxonomy.rs`, **accepted as declared
+  bends**. B merges canon before touching that file.
+- **The census tool was blind to two of §7's three shapes.** `tick-shadow-census.py` parsed 14
+  table rows across twelve files and none of the prose `**Blocks**:` clauses; *"0 of 99"* was a
+  statement about tables. Rewritten the same day to read all three; at `dd464c108` it reads
+  **0 of 104** over 427 items, 83 live. D's five ticks were read by hand under P-D-109 first.
+- **The fifth §6 criterion is `dod-identity-map`'s** — D's strict reading, accepted; item 32 said
+  five and named one.
+- **The arguments against, stated.** Leaving evidence undeletable for a decade contradicts C3's
+  *"never indefinite"* in letter — accepted; the clock computes the candidate and the held record
+  names why it stands, which is a verdict and not silence. A run heuristic that refuses Title-Case
+  marketing copy will be felt on day one — accepted; a detector that guessed `Clean` is the opt-out
+  the DoD forbids, and the owner holds the dial. Two other strands' files bent — accepted once,
+  declared in the commit.
+- **Not changed**: the five evidence migrations; P-D-118's trigger doc; P-D-117's list shape.
+- **Propagated**: `07` row 38 and `02` row 4 struck; `10` §7 item 33 added; `design/05` §3.2's
+  `pii_allowlist × write` and `compliance × export` cells name D's four routes;
+  `RELAY-retention.md` rewritten; the census script.
+
+
 #### P-D-135 — Three dispatch calls: the policy's provisioning clause, the drill's target, and the doors' grants
 
 - **Date**: 2026-09-04 (the lead, under the standing *"decide what is plainly clear"* rule, taken

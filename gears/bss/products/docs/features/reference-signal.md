@@ -1587,8 +1587,7 @@ Five, all from reading the crate at `19a81a406`. Every quotation was byte-verifi
     **Blocks**: no DoD — **resolved by P-D-129** *(was: `cpt-cf-bss-products-dod-tripwire`.)*
     **Owner**: the tripwire's §17.1 owner. *(Raised by the three-lens review of `e939953ee`.)*
 
-38. **May a retention collector delete from `products_correction_override`, and which document
-    says?** `design/10` `inst-rt-gc` lists *"correction overrides (audit-grade, statutory max)"*
+38. ~~**May a retention collector delete from `products_correction_override`, and which document says?**~~ **Answered (P-D-136, 2026-09-04): the shape is the application's, not the DDL's** — the sweep judges per candidate in its own transaction and a refusing class yields a **held** candidate with a named reason, audited; the evidence migrations stay untouched, and P-D-129's recommended predicate is withdrawn because no migration ever implemented it. *The item's text stood as:* `design/10` `inst-rt-gc` lists *"correction overrides (audit-grade, statutory max)"*
     among the stores whose expiry candidates it computes; this table's guard refuses every
     `DELETE` unconditionally. The chain holds **three shapes for one class**: the audit plane took
     a row-image retention predicate (**P-D-34**), `products_catalog_version_entry` took an interim
