@@ -7,5 +7,6 @@ pub mod error_mapping;
 pub mod events;
 pub mod idempotency;
 pub mod increment;
+pub mod retention;
 pub mod storage;
 pub mod taxonomy;

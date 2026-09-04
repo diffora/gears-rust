@@ -367,3 +367,37 @@ fn the_interim_ceilings_are_the_justified_numbers() {
     assert_eq!(cfg.breakglass_review_sla_hours, 24);
     assert_eq!(cfg.retirement_held_alert_hours, 72);
 }
+
+/// **`drill_target_dsn` has no default, and an unconfigured drill is a
+/// legitimate state** (**P-D-135**).
+///
+/// Asserted as `None` rather than as a placeholder: a default pointing
+/// anywhere would make an unconfigured drill silently verify the **live**
+/// database, which proves nothing about a backup and would report a green
+/// run every cadence.
+#[test]
+fn the_drill_target_has_no_default() {
+    assert_eq!(ProductsConfig::default().drill_target_dsn, None);
+    ProductsConfig::default()
+        .validate()
+        .expect("no target is a legitimate deployment, not a boot failure");
+}
+
+/// **A present but blank `drill_target_dsn` is refused at boot.**
+///
+/// The distinction the refusal exists for: absent is a deployment that has
+/// not wired the drill and gets `no_target` rows it can act on; blank is an
+/// operator who meant to configure one, and treating it as absent would turn
+/// a typo into a decade of warnings that read as a choice.
+#[test]
+fn a_blank_drill_target_is_a_boot_refusal() {
+    let cfg = ProductsConfig {
+        drill_target_dsn: Some("   ".to_owned()),
+        ..ProductsConfig::default()
+    };
+    let refusal = cfg.validate().expect_err("a blank target is refused");
+    assert!(
+        refusal.contains("drill_target_dsn"),
+        "the refusal names the field: {refusal}"
+    );
+}
