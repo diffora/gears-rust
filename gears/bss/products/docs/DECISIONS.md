@@ -1569,6 +1569,40 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-135 — Three dispatch calls: the policy's provisioning clause, the drill's target, and the doors' grants
+
+- **Date**: 2026-09-04 (the lead, under the standing *"decide what is plainly clear"* rule, taken
+  while writing the three strand briefs; `05` `dod-materiality-policy`, `10` `dod-restore-drill`,
+  `04`'s scheduled-transition doors)
+- **`dod-materiality-policy`'s clause *"take its initial value from tenant provisioning"* is
+  P-D-112's default.** P-D-104 withdrew the tenant registry that provisioning would have run from —
+  one slice over, the reading P-D-121 gave `03`'s seeds — and a tenant's initial `N` **is** the
+  default until the tenant configures one; an absent row resolving to the default is that
+  provisioning. Strand B's first link (`8cc41aa73`: the store, the door, the two routed indexes) is
+  **accepted and merged**; B amends the clause in the FEATURE and ticks on P-D-109's terms, probes
+  named per clause.
+- **The restore drill's target is a restored copy the platform provides**, reached through
+  `drill_target_dsn` — optional, no default, on the P-D-107 idiom; strand D adds the field. The gear
+  owns the probe and the platform owns the restore (P-D-133). **A run with no target still writes
+  its audit row, outcome `no_target`, and raises `products_restore_drill_unverifiable`**: a drill
+  that cannot run is not a passed drill, and silence is exactly what P-D-133's *"report, never
+  skip"* forbids.
+- **`scheduled_transition × read` and `× cancel` are minted by strand C with the doors P-D-134
+  named** (`05` row 24: the door's owner mints the pair), under `authz_tests`' census rule — the
+  grant arrives with its door. **`× write` is measured, not minted**: the retire doors write the
+  rows under `sku × write` / `product × write`, so `design/05` §3.2's row narrows unless C finds the
+  act that spends it.
+- **The arguments against, stated.** Reading *"provisioning"* as satisfied by a default lets a
+  tenant run at `N = 2` without anyone having chosen it — accepted; that is P-D-11's design and the
+  whole point of *absent ⇒ default*. A `no_target` drill row could be mistaken for a run —
+  accepted; the outcome column and the warning name it. Minting only the pairs doors spend leaves
+  `× write` declared without a route — accepted; the alternative is a grant nobody can review.
+- **Propagated**: the three strand briefs (`RELAY-governance.md`, `RELAY-lifecycle.md`,
+  `RELAY-retention.md`); `design/05` §3.2's `materiality_policy × write` cell names B's door and its
+  `scheduled_transition` cell names P-D-134's doors as C's build. The FEATURE amendments are the
+  strands' own: B's `dod-materiality-policy` clause, D's `dod-restore-drill` criterion.
+
+
 #### P-D-134 — The design-set owner's twenty-five: one pass, measured
 
 - **Date**: 2026-09-04 (the lead's own rows, decided under the standing *"decide what is plainly

@@ -232,9 +232,9 @@ multi-action row would otherwise read as if the whole row were doored.
 | `attribute_definition × write` | **P-D-106**: `POST /bss-products/v1/attribute-definitions` and `POST /bss-products/v1/attribute-definitions/{key}/operations` | 02 |
 | `recognized_set × write`, `plan_tier × write` | `POST /bss-products/v1/recognized-sets/{setKind}/members` and `POST /bss-products/v1/recognized-sets/{setKind}/members/{memberCode}/transitions` (**P-D-90** — one route family, the grant chosen by `setKind`; both spelled in full because an elided span is invisible to a route census) | 03 |
 | `approval × submit\|read\|decide` | `GET /bss-products/v1/approvals?state=pending` (this slice's own pending-queue door) spends **`× read`** (**P-D-50**); **`× submit` and `× decide` have no route declared** | 05 |
-| `materiality_policy × write` | **no route declared** | 05 |
+| `materiality_policy × write` | `PUT /bss-products/v1/materiality-policy` (**P-D-112** — strand B's first link, `8cc41aa73`; deliberately no read route, `× read` being the authoring read per P-D-134 row 7) | 05 |
 | `breakglass × elevate` | **no route declared** | 05 |
-| `scheduled_transition × write\|cancel\|read` | **none** — no slice names these pairs on a door (§6) | 04 |
+| `scheduled_transition × write\|cancel\|read` | **P-D-134**: `GET /bss-products/v1/scheduled-transitions` (`× read`) and `POST /bss-products/v1/scheduled-transitions/{id}/operations` with `op: cancel` (`× cancel`) — 04's doors, strand C's build, **unbuilt**; `× write` is measured with them, not minted (P-D-135) | 04 |
 | `freeze_participant × write` | `POST /bss-products/v1/freeze-participants` (**P-D-67** — the governed set write) | 06 |
 | `reference_signal × post`, `reference_producer × write`, `sku × correct` | **no route declared** — 07's watermark, producer and correction doors, named in prose | 07 |
 | `pii_allowlist × write` | **no route declared** | 10 |
