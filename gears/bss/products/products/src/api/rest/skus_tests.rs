@@ -2180,13 +2180,20 @@ async fn a_replayed_publish_returns_the_stored_answer_and_does_not_publish_twice
 /// argument — the first IS the row's key and the second moves on every write
 /// — and §4.3 does not name them because it enumerates the columns whose
 /// exclusion was contested, not every column outside the content.
-const EXCLUDED_FROM_FROZEN_CONTENT: [&str; 6] = [
+///
+/// `correction_ref` (P-D-129) is excluded on a third criterion: it is the
+/// **door identity** of the correction re-publish — the ceremony that admitted
+/// a bucket-ii change — and a ceremony id is provenance of the version, like
+/// `approval_ref` on the version row, not content of the entity. Freezing it
+/// would make two heads with identical content digest differently.
+const EXCLUDED_FROM_FROZEN_CONTENT: [&str; 7] = [
     "internal_revision",
     "lifecycle_state",
     "published_version",
     "updated_at",
     "deprecation_provenance",
     "replaced_by_sku_id",
+    "correction_ref",
 ];
 
 /// **[`super::SKU_VERSION_CONTENT_ROSTER`] is `products_sku`'s own columns
@@ -2314,6 +2321,11 @@ fn the_sku_content_builder_writes_exactly_the_roster() {
         // equality — the same premise as `cloned_from` above.
         metering_unit: Some("gib_month".to_owned()),
         usage_type_ref: Some("usage:storage".to_owned()),
+        // Populated to arm its EXCLUSION, the `deprecation_provenance`
+        // premise again: the door identity of a correction (P-D-129) is not
+        // version content, and a bare `None` could not prove the builder
+        // leaves it out.
+        correction_ref: Some(Uuid::from_u128(0xd1_15)),
     };
 
     let content = super::sku_version_content(&record);

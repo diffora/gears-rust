@@ -1868,7 +1868,7 @@ per-decision anchors, and it was corrected by running the command it prescribed.
 - **Propagated**: twenty-two rows and nine §6 items struck; rows 3 and 4 stay as owned notes; row
   38 (the retention collector against a flat-refusal guard) is **routed to strand D** with the
   recommendation that the audit plane's row-image predicate (P-D-34) is the one shape for the
-  class. Builds owed: `correction_ref` and `ceremony_ref` (the lead, `01`), the `sku_correction`
+  class. Builds owed: `correction_ref` and `ceremony_ref` (the lead, `01` — **landed 2026-09-04**: one in-place edit of `m20260829_000003` and `_000004`, the bucket-ii predicate tightened to *bump and a fresh `correction_ref`*, `correction_ref` itself guarded to the bump statement), the `sku_correction`
   kind and the door (`07`'s builder).
 
 
@@ -2555,7 +2555,7 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   type for the value from the start. The column becomes `text`; the GC's and the runner's rows
   write NULL because a background act **has** no request — that is a fact about the act, not a
   hole. **The migration edit is `01`'s and the lead's**, routed to the lead's own next batch; it
-  does not block `dod-retention-clock`, as the row itself says.
+  does not block `dod-retention-clock`, as the row itself says. **Landed 2026-09-04.**
 - **Item 32 — yes, §6 owes one criterion per DoD**, as `catalog-version` §7 row 50 asks generally.
   A DoD whose *"unnamed obligations are ticked by inspection"* is a DoD nothing can fail. The five
   missing criteria are **strand D's documentation work** and are named in its brief.

@@ -4474,7 +4474,7 @@ async fn run_cancel_retire(
             action: CANCEL_RETIRE_AUDIT_ACTION.to_owned(),
             subject_kind: crate::authz::labels::PRODUCT.to_owned(),
             reason: None,
-            correlation_id: None,
+            correlation_id: crate::infra::events::correlation_id(),
             written_at: inputs.now,
         },
         inputs.product_id,

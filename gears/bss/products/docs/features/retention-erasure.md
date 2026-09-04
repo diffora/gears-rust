@@ -1328,4 +1328,4 @@ Five, from reading the crate at `80eee534a`. Every quotation was byte-verified a
   autodetection. It is false — `[systems.autodetect.artifacts.DESIGN_SLICE]` carries
   `pattern = "design/*.md"` and `traceability = "FULL"`. It is the shape donor for the four unwritten
   FEATUREs, so the cost compounds.
-- **`repo::AuditCommon::correlation_id`**'s owed migration — see row 16. Owner: `01-foundation`.
+- **`repo::AuditCommon::correlation_id`**'s owed migration — see row 16. Owner: `01-foundation`. **Landed 2026-09-04** (P-D-118: `text` on both engines; the door writers fill it, background acts write `NULL`).

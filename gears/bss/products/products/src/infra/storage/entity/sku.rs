@@ -78,6 +78,11 @@ pub struct Model {
     /// The usage-type reference of the same declaration — the pair's other
     /// half, same bucket, same predicate.
     pub usage_type_ref: Option<String>,
+    /// The correction re-publish's door identity (P-D-129): the ceremony that
+    /// admitted a bucket-ii change after first publish. Written only by 07's
+    /// `CorrectionDoor`, in the same statement as the `published_version`
+    /// bump; the head guard refuses it anywhere else.
+    pub correction_ref: Option<Uuid>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

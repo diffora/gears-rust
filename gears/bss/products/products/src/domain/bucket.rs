@@ -29,7 +29,7 @@
 //! comparison"*: the mechanical ones the trigger whitelist names by hand
 //! (`lifecycle_state`, `published_version`, `internal_revision`,
 //! `deprecation_provenance`, `replaced_by_sku_id`, `composition_pending`,
-//! `cloned_from`, the update timestamp) *"together with the row-identity
+//! `correction_ref`, `cloned_from`, the update timestamp) *"together with the row-identity
 //! columns `tenant_id`, the primary key and `created_by`"*.
 //!
 //! Those are **deliberately** outside the scheme: they have no bucket because
@@ -387,7 +387,7 @@ const PRODUCT_COLUMNS: [ColumnTag; 17] = [
 /// it is the primary key; and the table carries **no `name`**, so a `name`
 /// field arriving for a SKU is a miss and is refused rather than routed to the
 /// Product's tag.
-const SKU_COLUMNS: [ColumnTag; 19] = [
+const SKU_COLUMNS: [ColumnTag; 20] = [
     // Row identity (§4.2, P-D-34).
     ColumnTag {
         column: "sku_id",
@@ -493,6 +493,14 @@ const SKU_COLUMNS: [ColumnTag; 19] = [
     ColumnTag {
         column: "usage_type_ref",
         class: FieldClass::Bucket(FieldBucket::Correctable),
+    },
+    // P-D-129's door identity. Mechanical, like `composition_pending` and for
+    // the same reason: written only by the publish door's own head-row
+    // UPDATE (07's correction re-publish), never by an operator save, and the
+    // head guard pins it to the same statement as a `published_version` bump.
+    ColumnTag {
+        column: "correction_ref",
+        class: FieldClass::Outside(OutsideTheScheme::Mechanical),
     },
 ];
 

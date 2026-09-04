@@ -163,9 +163,10 @@ mod audit_row {
         pub error_code: Option<String>,
         pub attempted_key: Option<String>,
         pub reason: Option<String>,
-        pub correlation_id: Option<Uuid>,
+        pub correlation_id: Option<String>,
         pub written_at: ChronoDateTimeUtc,
         pub session_id: Option<Uuid>,
+        pub ceremony_ref: Option<Uuid>,
         pub seal_state: String,
         pub chain_id: Option<Uuid>,
         pub seq: Option<i64>,
@@ -239,6 +240,7 @@ mod audit_log_guard_tests {
             correlation_id: Set(None),
             written_at: Set(at(9)),
             session_id: Set(None),
+            ceremony_ref: Set(None),
             seal_state: Set("unsealed".to_owned()),
             chain_id: Set(None),
             seq: Set(None),
@@ -3922,6 +3924,13 @@ mod bucket_agreement_tests {
     /// column. The trailing boundary check is what keeps
     /// `NEW.name IS NOT OLD.name_normalized` from being read as a guard on
     /// `name`.
+    ///
+    /// The same convention keeps an **admitting** operand out of the set: a
+    /// clause that admits a write when `NEW.correction_ref` is freshly set
+    /// spells that `IS NULL` / `IS OLD.` (`IS NOT DISTINCT FROM` on Postgres),
+    /// never as the guarded pair, so a column a clause *reads* is not counted
+    /// as a column it *guards*. `m20260829_000003`'s bucket-ii clause is the
+    /// one instance.
     fn compared_columns(sql: &str, comparison: &str) -> BTreeSet<String> {
         const NEW: &str = "NEW.";
         let mut found = BTreeSet::new();
@@ -4094,9 +4103,13 @@ mod bucket_agreement_tests {
     /// fill arrived with **03's meter pair** (`metering_unit`,
     /// `usage_type_ref` on `products_sku`) rather than with 07's tighter
     /// predicate — `05` §3.1 had tagged the metering-unit field bucket ii all
-    /// along — so the comparison below runs against the **interim** P-D-41 /
-    /// P-D-34 clause the guard now installs, and is re-pointed again when 07
-    /// supplies the tighter one.
+    /// along — so the comparison first ran against the **interim** P-D-41 /
+    /// P-D-34 clause. The tighter predicate landed on 2026-09-04 (**P-D-129**:
+    /// the bump must also set `correction_ref`) and the comparison did not
+    /// move, because `correction_ref` is an **operand** of the clause, not a
+    /// member of the bucket, and the clause spells it with the negated
+    /// comparison so [`compared_columns`]' pair read does not pick it up —
+    /// the way the `published_version` operand has always been spelled.
     ///
     /// The Product table still has no member, and its arms stay the emptiness
     /// assertions, for the original reason: a registry row with no clause and
@@ -6514,10 +6527,11 @@ mod bucket_ii_guard_tests {
     }
 
     /// The admitted after-publish shape: the same statement bumps
-    /// `published_version` — 07's correction door's re-publish, exactly the
-    /// pairing `composition_pending`'s predicate already has.
+    /// `published_version` **and sets `correction_ref`** — 07's correction
+    /// door's re-publish, the door identity P-D-129 made physical on top of
+    /// the pairing `composition_pending`'s predicate already had.
     #[tokio::test]
-    async fn a_bucket_ii_write_riding_a_bump_is_admitted() {
+    async fn a_bucket_ii_write_riding_a_bump_that_sets_correction_ref_is_admitted() {
         let db = harness().await;
         seed_published_sku(&db).await;
         exec(
@@ -6537,11 +6551,117 @@ mod bucket_ii_guard_tests {
             &format!(
                 "UPDATE products_sku SET metering_unit = 'other_unit', \
                  usage_type_ref = 'usage:other', published_version = 2, \
+                 correction_ref = 'ceremony-1', \
                  internal_revision = internal_revision + 1 WHERE sku_id = X'{SKU}'"
             ),
         )
         .await
-        .expect("the same-statement-as-a-bump write is the admitted shape");
+        .expect("the bump-that-sets-correction_ref write is the admitted shape");
+    }
+
+    /// The interim P-D-34 shape is no longer enough: a bump that sets no
+    /// `correction_ref` — an ordinary re-publish carrying a meter change — is
+    /// refused. This is the assertion P-D-129 exists for.
+    #[tokio::test]
+    async fn a_bucket_ii_write_riding_a_bare_bump_is_refused() {
+        let db = harness().await;
+        seed_published_sku(&db).await;
+        exec(
+            &db,
+            &format!(
+                "INSERT INTO products_entity_version (tenant_id, entity_kind, entity_id, \
+                 published_version, content, content_digest, digest_version, actor_ref, \
+                 published_at) VALUES (X'{TENANT}', 'sku', X'{SKU}', 2, '{{}}', X'00', 1, \
+                 X'{TENANT}', '2026-08-29')"
+            ),
+        )
+        .await
+        .expect("the next frozen row exists for the bump");
+
+        let err = exec(
+            &db,
+            &format!(
+                "UPDATE products_sku SET metering_unit = 'other_unit', \
+                 usage_type_ref = 'usage:other', published_version = 2, \
+                 internal_revision = internal_revision + 1 WHERE sku_id = X'{SKU}'"
+            ),
+        )
+        .await
+        .expect_err("a bump without a correction_ref is not the correction door");
+        assert!(
+            err.to_string().contains("that sets correction_ref"),
+            "got {err}"
+        );
+    }
+
+    /// A `correction_ref` the row already carries admits no second change:
+    /// the operand is *distinct from `OLD`*, not merely non-null, so a later
+    /// plain re-publish cannot ride the last ceremony's id.
+    #[tokio::test]
+    async fn a_stale_correction_ref_admits_no_second_bucket_ii_change() {
+        let db = harness().await;
+        seed_published_sku(&db).await;
+        for version in [2, 3] {
+            exec(
+                &db,
+                &format!(
+                    "INSERT INTO products_entity_version (tenant_id, entity_kind, entity_id, \
+                     published_version, content, content_digest, digest_version, actor_ref, \
+                     published_at) VALUES (X'{TENANT}', 'sku', X'{SKU}', {version}, '{{}}', \
+                     X'00', 1, X'{TENANT}', '2026-08-29')"
+                ),
+            )
+            .await
+            .expect("the frozen rows exist for both bumps");
+        }
+        exec(
+            &db,
+            &format!(
+                "UPDATE products_sku SET metering_unit = 'other_unit', \
+                 usage_type_ref = 'usage:other', published_version = 2, \
+                 correction_ref = 'ceremony-1', \
+                 internal_revision = internal_revision + 1 WHERE sku_id = X'{SKU}'"
+            ),
+        )
+        .await
+        .expect("the first correction is admitted");
+
+        let err = exec(
+            &db,
+            &format!(
+                "UPDATE products_sku SET metering_unit = 'third_unit', published_version = 3, \
+                 internal_revision = internal_revision + 1 WHERE sku_id = X'{SKU}'"
+            ),
+        )
+        .await
+        .expect_err("the stale ceremony id is not a fresh correction");
+        assert!(
+            err.to_string().contains("that sets correction_ref"),
+            "got {err}"
+        );
+    }
+
+    /// The identity column is itself guarded, the way `composition_pending`
+    /// is: `correction_ref` moves only in the same statement as a bump, so a
+    /// save cannot pre-set it for a later plain re-publish to ride.
+    #[tokio::test]
+    async fn correction_ref_outside_a_bump_is_refused() {
+        let db = harness().await;
+        seed_published_sku(&db).await;
+        let err = exec(
+            &db,
+            &format!(
+                "UPDATE products_sku SET correction_ref = 'ceremony-1', \
+                 internal_revision = internal_revision + 1 WHERE sku_id = X'{SKU}'"
+            ),
+        )
+        .await
+        .expect_err("correction_ref is not a save's to write");
+        assert!(
+            err.to_string()
+                .contains("correction_ref is admitted only in the same statement"),
+            "got {err}"
+        );
     }
 }
 

@@ -47,12 +47,21 @@ pub struct Model {
     pub attempted_key: Option<String>,
     /// A free-text reason, where the door supplies one.
     pub reason: Option<String>,
-    /// Ties related rows together across a single request, where one exists.
-    pub correlation_id: Option<Uuid>,
+    /// Ties related rows together across a single request, where one exists:
+    /// the W3C trace id `infra::events::correlation_id` renders, 32 hex
+    /// characters, **`text`** since P-D-118 (the column shipped `uuid` and
+    /// could hold none of them). `None` on a background act, which has no
+    /// request.
+    pub correlation_id: Option<String>,
     /// The operand `10-retention-erasure`'s `RetentionClock` reads.
     pub written_at: ChronoDateTimeUtc,
     /// Present on the elevation class only.
     pub session_id: Option<Uuid>,
+    /// The audit side of `07`'s ceremony join (P-D-129): the same value `06`'s
+    /// freeze ledger stores under `not_frozen(forced_at, ceremony_ref)`.
+    /// Written by the break-glass and correction doors when they land; `None`
+    /// on every other class.
+    pub ceremony_ref: Option<Uuid>,
     /// `unsealed | sealed`. Written `unsealed` at INSERT, always; this gear
     /// never advances it.
     pub seal_state: String,

@@ -466,6 +466,7 @@ fn an_unparseable_sku_lifecycle_state_is_a_corrupt_row() {
         replaced_by_sku_id: None,
         metering_unit: None,
         usage_type_ref: None,
+        correction_ref: None,
     };
 
     let err = into_sku_record(row).expect_err("an unrecognised token must be refused");

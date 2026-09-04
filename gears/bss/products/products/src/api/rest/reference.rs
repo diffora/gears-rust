@@ -534,7 +534,7 @@ async fn audit_accepted_act(
             action: action.to_owned(),
             subject_kind: label.to_owned(),
             reason: None,
-            correlation_id: None,
+            correlation_id: crate::infra::events::correlation_id(),
             written_at: now,
         },
         subject,

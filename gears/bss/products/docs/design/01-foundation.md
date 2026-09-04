@@ -345,7 +345,7 @@ verbs, and 04's crash-replay of a scheduled activation (04 `inst-sp-idempotent`)
      and freezes that (**P-D-33**: the row's own key already carries `published_version = N+1`, so
      freezing the pre-UPDATE image would store content the act never produced and would put the
      digest and 10's byte-for-byte restore drill on different bytes). That content (excluding the
-     metadata map and the four columns §4.3 excludes — `lifecycle_state`, `deprecation_provenance`, `replaced_by_sku_id` and `internal_revision`) goes into `products_entity_version`, **then** `published_version += 1`
+     metadata map and the five columns §4.3 excludes — `lifecycle_state`, `deprecation_provenance`, `replaced_by_sku_id`, `internal_revision` and, since P-D-129, `correction_ref`) goes into `products_entity_version`, **then** `published_version += 1`
      (the door is this column's **only** writer) — the bump second because §4.2's whitelist admits
      it *only where the matching `products_entity_version` row for the new value exists*, so the
      reverse order trips the guard on every publish. On the `draft→published` edge the same
@@ -811,7 +811,7 @@ Unicode NFKC → full casefold → trim + collapse internal whitespace to single
 (nullable `direct|cascaded`, slice 04) · `sellable` (default `true`, pricing D-46) · `plan_tier` ·
 `tax_category_ref` · `gl_code_ref` (**both columns are contingent** — PRD §15 carries the
 open question of whether this registry owns them at all, §2.1 saying they are owned elsewhere
-while `fr-accounting-codes` requires the registry to persist and validate them) · `metering_unit` · `usage_type_ref` ·
+while `fr-accounting-codes` requires the registry to persist and validate them) · `metering_unit` · `usage_type_ref` · `correction_ref` (nullable uuid — **P-D-129**, landed 2026-09-04: the door identity of 07's correction re-publish, written only in the same statement as the `published_version` bump and read by the bucket-ii predicate below) ·
 `composition_pending` (bool, **NOT NULL, default `false`** — **P-D-35**: the create flow writes it nowhere and the publish door on a `bundle` is its only raiser, so the default is the unraised state; slice 06 semantics) · `replaced_by_sku_id` (slice 04) ·
 `internal_revision` · `published_version` · `region_scope`/`brand_scope` (same shape and default as §4.1's, **contained in the parent's** per §2's flow; **the create door copies the parent's when the payload omits them** — P-D-39) ·
 `created_by` · `cloned_from` (nullable; written only in the creating statement and immutable from then on —
@@ -877,8 +877,7 @@ where the write a sibling makes legal on an unpublished head had no admitted wri
 first publish only through slice 07's correction act — and, as a row-image predicate this
 slice pins now (**P-D-34**), **only in the same statement as a `published_version` bump**, since 07
 defines its `CorrectionDoor` as "fresh-zero gate + 05 quorum + **re-publish**": the correction ends
-in a publication, so it carries the same predicate `composition_pending` already does. Door
-identity remains an application guarantee, and a tighter predicate is still **owed by 07**; **`cloned_from` never, in any
+in a publication, so it carries the same predicate `composition_pending` already does — **and, since P-D-129 (landed 2026-09-04), only where that statement also sets a `correction_ref` distinct from `OLD`'s**, the tighter predicate 07 owed and 01 paid in place, which makes door identity a physical guarantee rather than an application one (`correction_ref` itself is admitted only beside a bump, `composition_pending`'s clause repeated); **`cloned_from` never, in any
 UPDATE** — stricter than bucket-i, which bites only after first publish; **bucket-i identity columns only while `published_version = 0` and `lifecycle_state`
 is non-terminal, and never after first publish** (owner's call, 2026-08-27, P-D-28: the whitelist named a prohibition where every
 other class named an admitting door, so the write §2 makes legal on an unpublished head had no
@@ -899,7 +898,7 @@ and excluding `lifecycle_state`, `deprecation_provenance`, `replaced_by_sku_id` 
 on transitions, which write no version row, so freezing them would need the digest to change on a
 write that produces no row to digest — they are read from the head row, below. `internal_revision`
 meets the same criterion, `inst-fd-transition-bump` bumping it on **every** transition, and was left
-out of the original enumeration). The map is slice 02's `products_metadata` (**P-D-06** — it lives
+out of the original enumeration). **`correction_ref` is excluded on a third criterion** (**P-D-129**, landed 2026-09-04): it is the correction re-publish's door identity — provenance of the version, like this row's own `approval_ref` — and not content of the entity; freezing it would make two heads with identical content digest differently. The map is slice 02's `products_metadata` (**P-D-06** — it lives
 beside the entity, captured only by `CatalogVersion` snapshots). Engine-canonical serialization here
 is the byte-identity discipline that `CatalogVersion` (slice 06) will reuse.
 
@@ -1004,8 +1003,8 @@ rather than free text; null on the classes that are not refusals) · nullable `a
 (the natural key a pre-mint refusal carries in place of an id, §3.3's `DUPLICATE_NAME` and
 `DUPLICATE_CODE` being the ordinary cases; owner's call, 2026-08-27, P-D-25) · reason (free text — it passes
 `inst-av-pii-block` before the row is written, a hit failing `CONTENT_PII_BLOCKED`; 02
-`inst-av-pii-reason` enumerates this door) · correlation id · `written_at` · nullable
-`session_id`. Three notes on the roster: `id` and `revision` are **absent on a refusal raised
+`inst-av-pii-reason` enumerates this door) · `correlation_id` (**`text`** — **P-D-118**: the W3C trace id `infra::events::correlation_id` renders, `NULL` on a background act, which has no request) · `written_at` · nullable
+`session_id` · nullable `ceremony_ref` (**P-D-129**: the audit side of 07's ceremony join, the value 06's freeze ledger stores under `not_frozen(forced_at, ceremony_ref)`; written by the break-glass and correction doors, `NULL` on every other class). Three notes on the roster: `id` and `revision` are **absent on a refusal raised
 before the mint**, which carries the attempted natural key (`name`, `sku_code` or `product_code`) instead — an
 audit row must never name an id that identifies nothing; and `written_at` is the operand
 `RetentionClock`'s audit class reads (10 `inst-rt-gc` names the class, not the column), while

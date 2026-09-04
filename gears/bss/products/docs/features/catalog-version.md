@@ -1603,16 +1603,7 @@ A force-completion's row **MUST** carry its `ceremony_ref`, the same value
 `products_freeze_ack.not_frozen(forced_at, ceremony_ref)` stores, so the ceremony and the
 registration are joinable from either side.
 
-**`products_audit_log` has no column that can carry it.** Its shipped columns are `audit_id`,
-`tenant_id`, `actor_ref`, `action`, `subject_kind`, `subject_id`, `subject_revision`, `error_code`,
-`attempted_key`, `reason`, `correlation_id`, `written_at`, `session_id`, `seal_state`, `chain_id`,
-`seq`, `prev_hash`, `row_hash` — no `ceremony_ref` and no generic payload column, and the token
-appears nowhere in the crate. The column **MUST** therefore land **by editing
-`m20260829_000004_create_products_audit_log.rs` in place**, on both engines, **nullable** since only
-force-completion rows carry it — the same in-place discipline
-`cpt-cf-bss-products-dod-referential-delete-predicate` follows. Overloading `attempted_key` or
-`reason` with a ceremony id is not available: neither is joinable and neither is typed. Whether the
-column is this feature's to add or `01-foundation`'s is registered in §7.
+**`products_audit_log` carries it since 2026-09-04** (**P-D-129**): a nullable `ceremony_ref` landed by editing `m20260829_000004_create_products_audit_log.rs` in place, on both engines, held unchanged by the sealing arm like every other record column, and `NULL` on every row that is not a ceremony's — the same in-place discipline `cpt-cf-bss-products-dod-referential-delete-predicate` follows. *Stood until then as:* the shipped roster (`audit_id` … `row_hash`) had no `ceremony_ref` and no generic payload column; overloading `attempted_key` or `reason` was not available, neither being joinable nor typed; and whether the column was this feature's to add or `01-foundation`'s was registered in §7.
 
 **Implements**: `cpt-cf-bss-products-flow-freeze`,
 `cpt-cf-bss-products-flow-composition-clear`

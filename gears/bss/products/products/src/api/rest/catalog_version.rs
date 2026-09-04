@@ -710,7 +710,7 @@ async fn drive_freeze_edge(
                                 action: edge.audit_action().to_owned(),
                                 subject_kind: crate::authz::labels::CATALOG_VERSION.to_owned(),
                                 reason: None,
-                                correlation_id: None,
+                                correlation_id: crate::infra::events::correlation_id(),
                                 written_at: now,
                             },
                             format!("{catalog_version_id}/{participant}"),

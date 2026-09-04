@@ -61,7 +61,7 @@ const CHAIN: &str = "00000000-0000-0000-0000-0000000000c1";
 /// (`OLD.seal_state = 'unsealed' AND NEW.seal_state = 'sealed'`), so a sealed
 /// row admits no second update in which the column could be moved again.
 ///
-/// A fourteenth content column added later and forgotten in the allow-list
+/// A fifteenth content column added later and forgotten in the allow-list
 /// shows up here as an admitted write.
 const CONTENT_COLUMNS: &[(&str, &str)] = &[
     // The primary key is pinned by the same clause as the rest, and is
@@ -80,6 +80,7 @@ const CONTENT_COLUMNS: &[(&str, &str)] = &[
     ("correlation_id", "'00000000-0000-0000-0000-0000000000fd'"),
     ("written_at", "now() + interval '1 day'"),
     ("session_id", "'00000000-0000-0000-0000-0000000000fc'"),
+    ("ceremony_ref", "'00000000-0000-0000-0000-0000000000fb'"),
 ];
 
 async fn refusal(conn: &DatabaseConnection, sql: &str) -> String {

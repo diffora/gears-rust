@@ -308,6 +308,11 @@ pub struct SkuRecord {
     pub metering_unit: Option<String>,
     /// The declaration's usage-type reference — the pair's other half.
     pub usage_type_ref: Option<String>,
+    /// The ceremony that admitted the last bucket-ii correction after first
+    /// publish (P-D-129) — `None` until 07's `CorrectionDoor` writes one.
+    /// Not version content: the head guard's door identity, like
+    /// `composition_pending`.
+    pub correction_ref: Option<Uuid>,
 }
 
 /// Insert one `products_product` row and read it back as authored
@@ -488,6 +493,8 @@ pub async fn insert_sku(
         // is the save.
         metering_unit: Set(None),
         usage_type_ref: Set(None),
+        // P-D-129's door identity: only the correction re-publish writes it.
+        correction_ref: Set(None),
     };
 
     let row = sku::Entity::insert(model.clone())
@@ -649,6 +656,7 @@ fn into_sku_record(row: sku::Model) -> Result<SkuRecord, RepoError> {
         )?,
         metering_unit: row.metering_unit,
         usage_type_ref: row.usage_type_ref,
+        correction_ref: row.correction_ref,
     })
 }
 
@@ -903,39 +911,18 @@ pub struct AuditCommon {
     /// Ties related rows together across a single request, where one
     /// exists.
     ///
-    /// **Reserved, and unwritable today: every caller in this crate passes
-    /// `None`, and that is not an oversight to fix at the call site.** The
-    /// gear has no request-scoped correlation id to carry. `SecurityContext`
-    /// (`toolkit-security`) exposes a subject, a subject type, a tenant and
-    /// token scopes, and no request identifier; no door in this crate reads
-    /// an `x-request-id` or `x-correlation-id` header (the one place the
-    /// platform reads those is `toolkit-http`'s retry layer, for its own log
-    /// line, and it does not publish them to a handler); and the only
-    /// request-scoped identifier the platform propagates is the W3C trace id.
-    ///
-    /// **A read-back now exists, and this paragraph used to deny it.**
-    /// `infra::events::correlation_id` reads that trace id off the ambient
-    /// span and the event envelope carries it; the earlier claim that the
-    /// `otel` module "offers no read-back" was falsified by this gear's own
-    /// eventing commit. What survives is the *other* half of the old
-    /// sentence, and it is the real blocker: the value is 32 hex characters
-    /// and this column is `uuid` on Postgres.
-    ///
-    /// So the column stays `NULL`, and closing it is a **migration, not a
-    /// fill**. Two shapes, and the choice is owed rather than settled here:
-    /// widen the column to `text` and store the id in the spelling that keeps
-    /// it grep-equal to the access log and the error envelope (see
-    /// `infra::events::correlation_id` on why that spelling is load-bearing),
-    /// or parse the 128 bits into a `Uuid` and accept the hyphenated
-    /// rendering. **Owed:** that decision, the migration behind it, and the
-    /// carrying of the value onto `ApiState`'s per-request inputs the way the
-    /// actor ref already is, after which every audit writer sets this field.
-    ///
-    /// Minting one per audit row would still be worse than `NULL`: it would
-    /// fill the column with values that correlate nothing while reading, to
-    /// an operator, as though they did. That judgement is unchanged, and it
-    /// is the one `infra::events::EventEnvelope::correlation_id` cites back.
-    pub correlation_id: Option<Uuid>,
+    /// The value is the W3C trace id `infra::events::correlation_id` reads
+    /// off the ambient span — 32 hex characters, rendered so it stays
+    /// grep-equal to the access log, the span and the error envelope. The
+    /// column shipped `uuid`, which could hold none of them, so every caller
+    /// passed `None` and this doc carried the two shapes the repair could
+    /// take. **P-D-118 chose `text`** (2026-09-03) and the migration landed
+    /// in place on 2026-09-04; the door writers fill it now. A background act
+    /// — the GC, the runner — still writes `None`, because it has no request:
+    /// that is a fact about the act, not a hole. Minting a value per row
+    /// would be worse than `None`, filling the column with values that
+    /// correlate nothing while reading as though they did.
+    pub correlation_id: Option<String>,
     /// The commit instant; the operand `10-retention-erasure`'s
     /// `RetentionClock` reads. Taken as a parameter rather than read from
     /// `Utc::now()`, matching [`resolve_actor_ref`].
@@ -1003,6 +990,9 @@ async fn insert_audit_row(
         correlation_id: Set(common.correlation_id),
         written_at: Set(common.written_at),
         session_id: Set(session_id),
+        // P-D-129's column; the doors that write it (05's break-glass, 07's
+        // correction) are not built, so every row today is `None`.
+        ceremony_ref: Set(None),
         seal_state: Set("unsealed".to_owned()),
         chain_id: Set(None),
         seq: Set(None),

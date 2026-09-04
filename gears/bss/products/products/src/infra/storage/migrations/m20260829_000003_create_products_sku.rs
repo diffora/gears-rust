@@ -92,6 +92,20 @@
 //!   += 1` (**P-D-32**: `inst-fd-save-txn` never touches `published_version`,
 //!   so an ordinary operator save cannot move the flag — which is what makes
 //!   it system-owned rather than a bucket-iii/iv column).
+//! - **`correction_ref`** (nullable uuid, **P-D-129**) is admitted **only in
+//!   the same statement as a `published_version` bump**, the identical
+//!   predicate `composition_pending` carries, and it is what turns the
+//!   bucket-ii clause from a bump check into a **door identity**: a bucket-ii
+//!   change after first publish is admitted only where the same statement
+//!   bumps `published_version` **and** sets a `correction_ref` distinct from
+//!   `OLD`'s. Only 07's correction re-publish writes it; an ordinary publish
+//!   leaves it as it was, so a plain re-publish can no longer carry a meter
+//!   change, and a stale `correction_ref` admits no second one. The admitting
+//!   operand is spelled with the negated comparison (`IS NULL`, `IS OLD.` /
+//!   `IS NOT DISTINCT FROM`) on purpose:
+//!   `migrations_tests::bucket_agreement_tests` reads guarded columns off the
+//!   `NEW.x IS NOT OLD.x` pair, and `correction_ref` is an operand of the
+//!   clause, not a member of the bucket.
 //! - **`tenant_id`, the primary key (`sku_id`) and `created_by`** are admitted
 //!   in **no** update at all (P-D-34); neither is `created_at`.
 //!
@@ -100,8 +114,9 @@
 //! are the class's first membership anywhere in the gear, which is why the
 //! clause below exists on this table and on no other: admitted while
 //! `published_version = 0` on a non-terminal head, and after first publish
-//! only in the same statement as a `published_version` bump (P-D-41,
-//! P-D-34's interim row-image predicate, the tighter one still owed by 07). The
+//! only in the same statement as a `published_version` bump **that also sets
+//! `correction_ref`** (P-D-41; P-D-34's row-image predicate, tightened on
+//! 2026-09-04 by **P-D-129** — the predicate 07 owed, paid here in place). The
 //! columns the sibling table's doc names are all here now, and they are **not
 //! all owed by the same slice**: `cloned_from` arrived with slice **11**
 //! (**P-D-76**), `deprecation_provenance` and `replaced_by_sku_id` with slice
@@ -183,6 +198,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
             replaced_by_sku_id  uuid,
             metering_unit       text,
             usage_type_ref      text,
+            correction_ref      uuid,
             updated_at          timestamptz NOT NULL,
             CONSTRAINT products_sku_pkey PRIMARY KEY (sku_id),
             CONSTRAINT fk_products_sku_product FOREIGN KEY (product_id) REFERENCES bss.products_product (product_id),
@@ -267,9 +283,17 @@ const PG_UP_STATEMENTS: &[&str] = &[
           IF (NEW.metering_unit IS DISTINCT FROM OLD.metering_unit
               OR NEW.usage_type_ref IS DISTINCT FROM OLD.usage_type_ref)
              AND NOT (OLD.published_version = 0 AND OLD.lifecycle_state NOT IN ('retired', 'discarded'))
+             AND (NEW.published_version IS NOT DISTINCT FROM OLD.published_version
+                  OR NEW.correction_ref IS NULL
+                  OR NEW.correction_ref IS NOT DISTINCT FROM OLD.correction_ref)
+          THEN
+            RAISE EXCEPTION 'products_sku: bucket-ii columns are admitted on a non-terminal head before first publish, or after it only in the same statement as a published_version bump that sets correction_ref';
+          END IF;
+
+          IF NEW.correction_ref IS DISTINCT FROM OLD.correction_ref
              AND NEW.published_version IS NOT DISTINCT FROM OLD.published_version
           THEN
-            RAISE EXCEPTION 'products_sku: bucket-ii columns are admitted on a non-terminal head before first publish, or after it only in the same statement as a published_version bump';
+            RAISE EXCEPTION 'products_sku: correction_ref is admitted only in the same statement as a published_version bump';
           END IF;
 
           IF NEW.composition_pending IS DISTINCT FROM OLD.composition_pending
@@ -320,6 +344,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             replaced_by_sku_id  text,
             metering_unit       text,
             usage_type_ref      text,
+            correction_ref      text,
             updated_at          text    NOT NULL,
             PRIMARY KEY (sku_id),
             CONSTRAINT fk_products_sku_product FOREIGN KEY (product_id) REFERENCES products_product (product_id),
@@ -387,8 +412,16 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             OR NEW.usage_type_ref IS NOT OLD.usage_type_ref
         ) AND NOT (
             OLD.published_version = 0 AND OLD.lifecycle_state NOT IN ('retired', 'discarded')
-        ) AND NEW.published_version IS OLD.published_version
-        BEGIN SELECT RAISE(ABORT, 'products_sku: bucket-ii columns are admitted on a non-terminal head before first publish, or after it only in the same statement as a published_version bump'); END",
+        ) AND (
+            NEW.published_version IS OLD.published_version
+            OR NEW.correction_ref IS NULL
+            OR NEW.correction_ref IS OLD.correction_ref
+        )
+        BEGIN SELECT RAISE(ABORT, 'products_sku: bucket-ii columns are admitted on a non-terminal head before first publish, or after it only in the same statement as a published_version bump that sets correction_ref'); END",
+    "CREATE TRIGGER trg_products_sku_correction_ref BEFORE UPDATE ON products_sku FOR EACH ROW WHEN
+            NEW.correction_ref IS NOT OLD.correction_ref
+            AND NEW.published_version IS OLD.published_version
+        BEGIN SELECT RAISE(ABORT, 'products_sku: correction_ref is admitted only in the same statement as a published_version bump'); END",
     "CREATE TRIGGER trg_products_sku_deprecation_provenance BEFORE UPDATE ON products_sku FOR EACH ROW WHEN
             NEW.deprecation_provenance IS NOT OLD.deprecation_provenance
             AND NEW.lifecycle_state IS OLD.lifecycle_state

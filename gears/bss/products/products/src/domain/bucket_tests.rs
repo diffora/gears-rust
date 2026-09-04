@@ -408,13 +408,13 @@ fn the_class_counts_are_pinned_per_entity() {
         (FieldClass::Bucket(FieldBucket::Correctable), 2),
         (FieldClass::Bucket(FieldBucket::MaterialMutable), 2),
         (FieldClass::CreateOnly, 2),
-        (FieldClass::Outside(OutsideTheScheme::Mechanical), 7),
+        (FieldClass::Outside(OutsideTheScheme::Mechanical), 8),
         (FieldClass::Outside(OutsideTheScheme::RowIdentity), 4),
     ];
     for (class, expected) in sku_counts {
         assert_eq!(count_of(EntityKind::Sku, class), expected);
     }
-    assert_eq!(columns(EntityKind::Sku).len(), 19);
+    assert_eq!(columns(EntityKind::Sku).len(), 20);
 }
 
 /// No column is named twice in one entity's registry.

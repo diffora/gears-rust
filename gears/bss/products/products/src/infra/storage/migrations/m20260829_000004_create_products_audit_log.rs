@@ -75,6 +75,23 @@
 //! exists — this chain edits migrations in place and takes no follow-up
 //! tightening migration.
 //!
+//! # `correlation_id` is `text`, and `ceremony_ref` rides beside `session_id`
+//!
+//! Two in-place edits of 2026-09-04, one decision each. **P-D-118** (item
+//! 16): the value `infra::events::correlation_id` supplies is the W3C trace
+//! id — 32 hex characters, rendered that way to stay grep-equal to the access
+//! log, the span and the error envelope — so the `uuid` type this column
+//! shipped with could hold none of them and every writer passed `NULL`. The
+//! column is `text` on both engines and the door writers now fill it; a
+//! background act (the GC, the runner) still writes `NULL`, because it has no
+//! request — a fact about the act, not a hole. **P-D-129** (rows 34–36): the
+//! audit side of `07`'s ceremony join is a nullable `ceremony_ref` `uuid`, the
+//! same value `06`'s freeze ledger stores under `not_frozen(forced_at,
+//! ceremony_ref)`, written only by the break-glass and correction doors when
+//! they land and `NULL` on every other class. Both are **record** columns:
+//! the sealing arm below holds them unchanged like the rest, and the Postgres
+//! allow-list probe (`tests/postgres_frozen_guards.rs`) names them.
+//!
 //! # The append-only trigger guard
 //!
 //! **DELETE is refused unconditionally on both engines**, as the donor's is.
@@ -152,9 +169,10 @@ const PG_UP_STATEMENTS: &[&str] = &[
             error_code        text,
             attempted_key     text,
             reason            text,
-            correlation_id    uuid,
+            correlation_id    text,
             written_at        timestamptz NOT NULL,
             session_id        uuid,
+            ceremony_ref      uuid,
             seal_state        text        NOT NULL,
             chain_id          uuid,
             seq               bigint,
@@ -197,6 +215,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
              AND NEW.correlation_id IS NOT DISTINCT FROM OLD.correlation_id
              AND NEW.written_at IS NOT DISTINCT FROM OLD.written_at
              AND NEW.session_id IS NOT DISTINCT FROM OLD.session_id
+             AND NEW.ceremony_ref IS NOT DISTINCT FROM OLD.ceremony_ref
           THEN
             RETURN NEW;
           END IF;
@@ -227,6 +246,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             correlation_id    text,
             written_at        text   NOT NULL,
             session_id        text,
+            ceremony_ref      text,
             seal_state        text   NOT NULL,
             chain_id          text,
             seq               bigint,
@@ -273,6 +293,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             AND NEW.correlation_id IS OLD.correlation_id
             AND NEW.written_at IS OLD.written_at
             AND NEW.session_id IS OLD.session_id
+            AND NEW.ceremony_ref IS OLD.ceremony_ref
         ) BEGIN SELECT RAISE(ABORT, 'products_audit_log is append-only: UPDATE is not permitted'); END",
 ];
 
