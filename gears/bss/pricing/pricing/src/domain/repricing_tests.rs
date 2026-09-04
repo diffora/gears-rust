@@ -2,7 +2,7 @@
 //! and D-311's own regression: a tier band's rate must not round through a
 //! coarser, minor-unit-shaped scale on its way through a reprice.
 
-use chrono::{TimeZone, Utc};
+
 use uuid::Uuid;
 
 use super::{RUN_SELECTOR_EMPTY, RunSelector, adjusts_rate, project_row};
@@ -15,6 +15,7 @@ use crate::domain::price_row::{ModelKind, PriceRow, TierBand};
 use crate::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
+use crate::domain::instant::utc_ymd_hms;
 
 #[test]
 fn a_selector_naming_nothing_is_unconstrained_and_one_naming_any_axis_is_not() {
@@ -139,7 +140,7 @@ fn a_record(row: PriceRow, currency: CurrencyCode) -> PriceRecord {
         supersedes_price_id: None,
         lifecycle_state: LifecycleState::Published,
         created_by: Uuid::from_u128(0xac_10),
-        created_at_utc: Utc.with_ymd_and_hms(2026, 8, 2, 10, 0, 0).unwrap(),
+        created_at_utc: utc_ymd_hms(2026, 8, 2, 10, 0, 0),
         row_version: RowVersion::new(0),
     }
 }

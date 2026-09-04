@@ -57,7 +57,7 @@ use bss_ledger::infra::payment::settle::SettlementService;
 use bss_ledger::infra::storage::migrations::Migrator;
 use bss_ledger::infra::storage::repo::ReferenceRepo;
 use bss_ledger_sdk::{AccountClass, Side};
-use chrono::{DateTime, Datelike, Utc};
+use chrono::{Datelike};
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, Statement};
 use sea_orm_migration::MigratorTrait;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
@@ -66,6 +66,7 @@ use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use toolkit_gts::gts_id;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
+use time::OffsetDateTime;
 
 fn pg(sql: impl Into<String>) -> Statement {
     Statement::from_string(sea_orm::DatabaseBackend::Postgres, sql.into())
@@ -116,7 +117,7 @@ async fn setup(url: &str) -> (DatabaseConnection, DBProvider<DbError>, Seller) {
     let tdb = connect_db(&repo_url, ConnectOpts::default()).await.unwrap();
     let provider = DBProvider::<DbError>::new(tdb);
 
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let s = Seller {
         tenant: Uuid::now_v7(),
         payer: Uuid::now_v7(),
@@ -1816,7 +1817,7 @@ impl SecuredAuditSink for SpyAuditSink {
         reason_code: Option<&str>,
         before_after: &serde_json::Value,
         _correlation_id: Option<Uuid>,
-        _retain_until: Option<DateTime<Utc>>,
+        _retain_until: Option<OffsetDateTime>,
     ) -> Result<Uuid, DbError> {
         self.count.fetch_add(1, Ordering::SeqCst);
         self.calls.lock().unwrap().push(AuditCall {

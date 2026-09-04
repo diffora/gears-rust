@@ -11,10 +11,10 @@
 //! `reverses_entry_id` is set ONLY on a stage-1 line-negation (PSP reject/void);
 //! `relates_to_refund_id` is the refund-of-refund forward link.
 
-use chrono::{DateTime, Utc};
 use sea_orm::entity::prelude::*;
 use toolkit_db_macros::Scopable;
 use uuid::Uuid;
+use time::OffsetDateTime;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Scopable)]
 #[sea_orm(table_name = "ledger_refund")]
@@ -39,7 +39,7 @@ pub struct Model {
     pub clearing_state: String,
     pub relates_to_refund_id: Option<String>,
     pub reverses_entry_id: Option<Uuid>,
-    pub created_at_utc: DateTime<Utc>,
+    pub created_at_utc: OffsetDateTime,
     pub version: i64,
 }
 

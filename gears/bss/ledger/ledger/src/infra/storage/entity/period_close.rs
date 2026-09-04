@@ -4,11 +4,11 @@
 //! audit linkage, keyed by `(tenant_id, legal_entity_id, period_id)` — Slice 7).
 //! Tenant-scoped via `SecureORM`; the resource col is the business `period_id`.
 
-use chrono::{DateTime, Utc};
 use sea_orm::entity::prelude::*;
 use serde_json::Value as JsonValue;
 use toolkit_db_macros::Scopable;
 use uuid::Uuid;
+use time::OffsetDateTime;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Scopable)]
 #[sea_orm(table_name = "ledger_period_close")]
@@ -31,7 +31,7 @@ pub struct Model {
     pub recon_watermark: Option<i64>,
     pub reopen_approval_id: Option<Uuid>,
     pub reopened_by: Option<String>,
-    pub closed_at: Option<DateTime<Utc>>,
+    pub closed_at: Option<OffsetDateTime>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

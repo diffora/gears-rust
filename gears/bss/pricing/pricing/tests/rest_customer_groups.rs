@@ -26,7 +26,7 @@ use axum::http::StatusCode;
 use bss_pricing::api::rest::approvals::APPROVAL_APPROVE;
 use bss_pricing::api::rest::customer_groups::{
     CUSTOMER_GROUP_MEMBER, CUSTOMER_GROUP_MEMBER_MOVE, CUSTOMER_GROUP_MEMBERS,
-    CUSTOMER_GROUP_TAXONOMY,
+    CUSTOMER_GROUP_MEMBERS_MOVE, CUSTOMER_GROUP_TAXONOMY,
 };
 use bss_pricing::authz::{actions, labels};
 use bss_pricing::config::JobsConfig;
@@ -45,6 +45,7 @@ use rest_support::{
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
 use serde_json::json;
 use std::sync::Arc;
+use time::OffsetDateTime;
 use toolkit_db::secure::{AccessScope, SecureEntityExt};
 use uuid::Uuid;
 
@@ -440,7 +441,7 @@ async fn enroll(harness: &Harness, payer_tenant_id: Uuid) -> (StatusCode, serde_
 /// provider and the **same** registry double the route's publish unit
 /// requested its handle from, so a ref this test recorded and a ref the
 /// sweep resolves are the same act's two halves.
-async fn sweep(harness: &Harness, now: chrono::DateTime<chrono::Utc>) -> u64 {
+async fn sweep(harness: &Harness, now: OffsetDateTime) -> u64 {
     let job = ReadModelWarmJob::new(
         harness.db.clone(),
         Arc::clone(&harness.registry) as Arc<dyn CatalogVersionRegistryV1>,
@@ -534,7 +535,7 @@ async fn a_route_level_enrollment_is_a_real_publish_unit() {
     // 3. The projector can run on the ref this route recorded: commit the
     // handle on the registry double and sweep.
     harness.registry.commit(&pending_ref, 9);
-    let projected = sweep(&harness, chrono::Utc::now()).await;
+    let projected = sweep(&harness, OffsetDateTime::now_utc()).await;
     assert_eq!(
         projected, 1,
         "the projector must land exactly one warm delta off this route's own pending ref"
@@ -600,7 +601,7 @@ async fn a_pending_approval_unit_is_visible_through_the_same_readback() {
             materiality: json!({ "material": true, "reason": "positive-control" }),
             held_keys: std::collections::BTreeSet::new(),
         },
-        stamp_of(MEMBERSHIP_ADMIN, chrono::Utc::now()),
+        stamp_of(MEMBERSHIP_ADMIN, OffsetDateTime::now_utc()),
     )
     .await
     .expect("seed a pending unit unrelated to any membership route");
@@ -802,7 +803,7 @@ async fn two_route_level_mutations_of_one_membership_freeze_two_different_interv
     harness.registry.commit(&ended_ref, 10);
 
     assert_eq!(
-        sweep(&harness, chrono::Utc::now()).await,
+        sweep(&harness, OffsetDateTime::now_utc()).await,
         2,
         "one warm delta per publish unit"
     );
@@ -825,7 +826,7 @@ async fn two_route_level_mutations_of_one_membership_freeze_two_different_interv
     );
     assert_eq!(
         at_10.get("effectiveTo"),
-        Some(&json!("2026-03-01T00:00:00Z")),
+        Some(&json!("2026-03-01T00:00:00.000Z")),
         "and version 10 froze the end, which is the state its own publish judged: {at_10}"
     );
 }
@@ -1700,7 +1701,9 @@ async fn the_membership_list_pages_and_the_walk_loses_no_row() {
                 &[("idempotency-key", &format!("page-enroll-{n}"))],
             ))
             .await;
-        assert_eq!(response.status(), StatusCode::CREATED, "seed {n}");
+        let status = response.status();
+        let seed_body = body_json(response).await;
+        assert_eq!(status, StatusCode::CREATED, "seed {n}: {seed_body}");
     }
 
     let members_of = async |query: String| -> serde_json::Value {
@@ -1800,7 +1803,7 @@ async fn the_membership_list_narrows_to_one_payer() {
         .send(request(
             "GET",
             &format!(
-                "{}?payer_id={wanted}",
+                "{}?$filter=payer_id%20eq%20{wanted}",
                 CUSTOMER_GROUP_MEMBERS.replace("{group}", "gold")
             ),
             None,
@@ -1821,7 +1824,7 @@ async fn the_membership_list_narrows_to_one_payer() {
         "the filter narrows to the payer asked for and excludes the other: {filtered}"
     );
 
-    // And a malformed filter is this gear's refusal rather than the extractor's.
+    // A retired named key is 400, not a silent ignore and not an OData parse.
     let refused = h
         .allowed_as(MEMBERSHIP_ADMIN)
         .send(request(
@@ -1838,8 +1841,8 @@ async fn the_membership_list_narrows_to_one_payer() {
     assert!(
         problem["detail"]
             .as_str()
-            .is_some_and(|detail| detail.contains("payer_id")),
-        "the refusal names the parameter: {problem}"
+            .is_some_and(|detail| { detail.contains("payer_id") && detail.contains("$filter") }),
+        "the refusal names the retired key and points at `$filter`: {problem}"
     );
 }
 
@@ -2135,4 +2138,204 @@ async fn a_foreign_tenant_cannot_adjust_this_tenants_membership() {
             .is_some(),
         "and it is the owner's call that moved the end the two refused ones did not"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Bulk move: `POST …/members/move` (`inst-mm-bulk`).
+// ---------------------------------------------------------------------------
+
+fn bulk_move_path(group: &str) -> String {
+    CUSTOMER_GROUP_MEMBERS_MOVE.replace("{group}", group)
+}
+
+#[tokio::test]
+async fn a_bulk_move_with_no_payers_is_400() {
+    let harness = Harness::new().await;
+    rest_support::declare_customer_group(&harness, "silver").await;
+    let response = harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "POST",
+            &bulk_move_path("silver"),
+            Some(json!({
+                "payer_ids": [],
+                "effective_from": "2026-06-01T00:00:00Z"
+            })),
+            &[("idempotency-key", "bulk-empty-1")],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn a_bulk_move_opens_one_unit_and_writes_no_membership_row_until_approved() {
+    let harness = Harness::new().await;
+    rest_support::declare_customer_group(&harness, "silver").await;
+    let first = Uuid::now_v7();
+    let second = Uuid::now_v7();
+    let before = approval_rows(&harness).await.len();
+
+    let response = harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "POST",
+            &bulk_move_path("silver"),
+            Some(json!({
+                "payer_ids": [first, second],
+                "effective_from": "2026-06-01T00:00:00Z"
+            })),
+            &[("idempotency-key", "bulk-submit-1")],
+        ))
+        .await;
+    let status = response.status();
+    let body = body_json(response).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "body: {body}");
+    assert_eq!(body["outcome"], "submitted_for_approval");
+    assert!(body["moved"].is_null(), "nothing has committed yet: {body}");
+    assert_eq!(body["materiality"]["trigger"], "bulkGroupMove", "{body}");
+    assert_eq!(approval_rows(&harness).await.len(), before + 1);
+
+    let approval_id: Uuid = body["approval"]["approval_id"]
+        .as_str()
+        .expect("approval.approval_id")
+        .parse()
+        .expect("a UUID");
+    let stored = approval_row(&harness, approval_id).await;
+    assert_eq!(stored.subject_kind, AuditSubjectKind::Membership);
+    assert_eq!(
+        stored.materiality["trigger"], "bulkGroupMove",
+        "the store must carry the act the route declared: {:?}",
+        stored.materiality
+    );
+
+    let conn = harness.db.conn().expect("conn");
+    for payer in [first, second] {
+        let intervals = group_membership_repo::intervals_for_payer(
+            &conn,
+            &harness.scope(),
+            harness.tenant,
+            payer,
+        )
+        .await
+        .expect("read");
+        assert!(
+            intervals.is_empty(),
+            "no membership row may exist before the unit is approved: {payer}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn one_payer_on_the_bulk_door_is_still_always_material() {
+    let harness = Harness::new().await;
+    rest_support::declare_customer_group(&harness, "silver").await;
+    let response = harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "POST",
+            &bulk_move_path("silver"),
+            Some(json!({
+                "payer_ids": [Uuid::now_v7()],
+                "effective_from": "2099-06-01T00:00:00Z"
+            })),
+            &[("idempotency-key", "bulk-one-future-1")],
+        ))
+        .await;
+    let status = response.status();
+    let body = body_json(response).await;
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "the bulk door does not take the renewal-aligned arm: {body}"
+    );
+    assert_eq!(
+        body["materiality"]["trigger"], "bulkGroupMove",
+        "one payer on the bulk door is still the bulk act: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_bulk_move_commits_every_payer_once_a_second_principal_approves() {
+    let harness = Harness::new().await;
+    rest_support::declare_customer_group(&harness, "silver").await;
+    let first = Uuid::now_v7();
+    let second = Uuid::now_v7();
+    let body = json!({
+        "payer_ids": [first, second],
+        "effective_from": "2026-06-01T00:00:00Z"
+    });
+
+    let submit = harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "POST",
+            &bulk_move_path("silver"),
+            Some(body.clone()),
+            &[("idempotency-key", "bulk-commit-1")],
+        ))
+        .await;
+    assert_eq!(submit.status(), StatusCode::ACCEPTED);
+    let submit_body = body_json(submit).await;
+    let approval_id: Uuid = submit_body["approval"]["approval_id"]
+        .as_str()
+        .expect("approval.approval_id")
+        .parse()
+        .expect("a UUID");
+
+    let approve = harness
+        .allowed_as(MOVE_APPROVER)
+        .send(request(
+            "POST",
+            &APPROVAL_APPROVE.replace("{approvalId}", &approval_id.to_string()),
+            None,
+        ))
+        .await;
+    assert_eq!(approve.status(), StatusCode::OK);
+
+    let commit = harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "POST",
+            &bulk_move_path("silver"),
+            Some(body),
+            &[("idempotency-key", "bulk-commit-2")],
+        ))
+        .await;
+    let status = commit.status();
+    let body = body_json(commit).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+    assert_eq!(body["outcome"], "committed");
+    let moved = body["moved"].as_array().expect("moved[]");
+    assert_eq!(moved.len(), 2, "{body}");
+    let payers: Vec<_> = moved
+        .iter()
+        .map(|row| row["enrolled"]["payer_tenant_id"].as_str().expect("payer"))
+        .collect();
+    assert!(payers.contains(&first.to_string().as_str()), "{body}");
+    assert!(payers.contains(&second.to_string().as_str()), "{body}");
+    assert!(
+        moved
+            .iter()
+            .all(|row| row["enrolled"]["group_value"] == "silver"),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn a_bulk_move_into_an_undeclared_group_is_refused_group_unknown() {
+    let harness = Harness::new().await;
+    let response = harness
+        .allowed_as(MEMBERSHIP_ADMIN)
+        .send(with_headers(
+            "POST",
+            &bulk_move_path("nonexistent"),
+            Some(json!({
+                "payer_ids": [Uuid::now_v7()],
+                "effective_from": "2026-06-01T00:00:00Z"
+            })),
+            &[("idempotency-key", "bulk-undeclared-1")],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(problem_code(response).await, "GROUP_UNKNOWN");
 }

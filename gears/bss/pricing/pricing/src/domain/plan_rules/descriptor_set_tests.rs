@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{TimeZone, Utc};
+
 use uuid::Uuid;
 
 use super::{DescriptorSetComplete, V1_REQUIRED_DESCRIPTORS};
@@ -19,12 +19,13 @@ use crate::domain::plan_rules::DESCRIPTOR_INCOMPLETE;
 use crate::domain::plan_shape::{DescriptorSet, PlanShape};
 use crate::domain::scope_key::PlanId;
 use crate::domain::validation::{ValidationReport, ValidationRule};
+use crate::domain::instant::utc_ymd_hms;
 
 fn plan_with(descriptors: Option<DescriptorSet>) -> PlanShape {
     let mut shape = PlanShape::new(
         PlanId::new(Uuid::from_u128(0x9_1a4)),
         3,
-        Utc.with_ymd_and_hms(2026, 8, 2, 12, 0, 0).unwrap(),
+        utc_ymd_hms(2026, 8, 2, 12, 0, 0),
     );
     shape.descriptor_set = descriptors;
     shape

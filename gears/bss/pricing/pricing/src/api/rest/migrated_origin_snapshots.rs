@@ -41,7 +41,7 @@ use axum::extract::{Extension, Path};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
-use chrono::{DateTime, Utc};
+
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
 use toolkit_security::SecurityContext;
@@ -52,6 +52,8 @@ use crate::api::rest::error::authz_error_to_canonical;
 use crate::api::rest::state::GovernanceState;
 use crate::domain::error::DomainError;
 use crate::infra::storage::repo::ProvenanceRecord;
+use time::OffsetDateTime;
+use time::serde::rfc3339;
 
 /// The route's registered path template.
 ///
@@ -82,7 +84,8 @@ pub struct MigratedOriginSnapshotView {
     pub source_revision: Option<u64>,
     /// D-81's instant `t` — the migration effective timestamp, or the earliest
     /// unrated usage timestamp, depending on the trigger.
-    pub snapshot_instant: DateTime<Utc>,
+    #[serde(with = "rfc3339")]
+    pub snapshot_instant: OffsetDateTime,
     /// `migration` | `first_rating`.
     pub trigger: String,
     /// Every resolved row id with the **selection tier** it came from — `source`,

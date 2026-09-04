@@ -19,6 +19,8 @@ use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::contracts::{
     EntitlementGrants, GrantSet, PlanChangeContract, UsageCounterOnPlanChange,
 };
+use bss_pricing::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::plan::{PlanRevision, PlanShapePatch};
@@ -33,7 +35,7 @@ use bss_pricing::infra::storage::entity::{
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{NewPlanDraft, PlanRepo, PlanShapeRepo};
 use bss_pricing::infra::storage::{RepoError, repo_failure};
-use chrono::{DateTime, TimeZone, Utc};
+
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
@@ -54,7 +56,7 @@ const TEST_CORRELATION: uuid::Uuid = uuid::Uuid::from_u128(0x_c0_11_a7_10);
 /// request's correlation.
 fn stamp_of(
     actor: uuid::Uuid,
-    when: chrono::DateTime<chrono::Utc>,
+    when: OffsetDateTime,
 ) -> bss_pricing::domain::audit::AuditStamp {
     bss_pricing::domain::audit::AuditStamp {
         actor_principal_id: actor,
@@ -84,8 +86,8 @@ async fn harness() -> (PlanRepo, DBProvider<DbError>) {
     (PlanRepo::new(provider.clone()), provider)
 }
 
-fn at(hour: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 2, hour, 0, 0).unwrap()
+fn at(hour: u32) -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 2, hour, 0, 0)
 }
 
 /// A draft carrying **every** authorable column, the Slice-2 ones included.
@@ -1107,7 +1109,7 @@ async fn an_availability_bound_below_the_quantum_is_refused_on_both_write_paths(
     // one the catalog compares at (D-144), and the divergence surfaces as a
     // window bound that never matches rather than as an error.
     let mut draft = new_draft(plan_id, tenant);
-    draft.available_from = Some(at(11) + chrono::TimeDelta::microseconds(500));
+    draft.available_from = Some(at(11) + time::Duration::microseconds(500));
     let err = repo
         .create_draft(&scope, draft)
         .await
@@ -1142,7 +1144,7 @@ async fn an_availability_bound_below_the_quantum_is_refused_on_both_write_paths(
             0,
             RowVersion::new(0),
             PlanShapePatch {
-                available_to: Some(at(23) + chrono::TimeDelta::nanoseconds(1)),
+                available_to: Some(at(23) + time::Duration::nanoseconds(1)),
                 ..PlanShapePatch::default()
             },
             stamp(),
@@ -3293,7 +3295,7 @@ async fn a_refused_repeat_publish_leaves_the_plan_its_current_revision() {
 fn stamp() -> bss_pricing::domain::audit::AuditStamp {
     bss_pricing::domain::audit::AuditStamp {
         actor_principal_id: uuid::Uuid::from_u128(0xac_10),
-        recorded_at: chrono::Utc::now(),
+        recorded_at: OffsetDateTime::now_utc(),
         correlation_id: TEST_CORRELATION,
     }
 }

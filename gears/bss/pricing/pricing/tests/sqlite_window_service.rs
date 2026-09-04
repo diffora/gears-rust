@@ -79,10 +79,13 @@ use bss_pricing::infra::approval::{DecideRequest, RegionGrant};
 use bss_pricing::infra::jobs::readmodel_warm::ReadModelWarmJob;
 use bss_pricing::infra::storage::repo::{approval_repo, window_repo};
 use bss_pricing::infra::window::WindowMutationOutcome;
-use chrono::{DateTime, TimeZone, Utc};
+
 use rest_support::{Harness, Publishable, seed_price, seed_publishable_plan, seed_window};
 use serde_json::json;
 use uuid::Uuid;
+use bss_pricing::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
+use bss_pricing::domain::instant::format_rfc3339;
 
 /// The materiality verdict every unit in this suite carries.
 ///
@@ -379,7 +382,7 @@ async fn a_stranger_cannot_withdraw_a_unit_they_did_not_submit() {
                 decision: DecisionBy::Void(Some(STRANGER)),
                 reason: None,
                 approver_regions: RegionGrant::Explicit(std::collections::BTreeSet::new()),
-                stamp: rest_support::stamp_of(STRANGER, Utc::now()),
+                stamp: rest_support::stamp_of(STRANGER, OffsetDateTime::now_utc()),
                 // No catalog authority: this is the `FinanceReviewer`-shaped caller
                 // the gate admits and `inst-as-void` does not name.
                 withdraw_authority: WithdrawAuthority::OwnUnitsOnly,
@@ -696,15 +699,13 @@ async fn a_window_mutation_on_a_held_key_is_refused_before_it_touches_anything()
 
 /// An instant no wall clock reaches and no fixture interval contains.
 ///
-/// A **fact**, not `Utc::now() + something`: `inst-ws-future-start` requires a
+/// A **fact**, not `OffsetDateTime::now_utc() + something`: `inst-ws-future-start` requires a
 /// strictly future start, and a fixture that computes one off the clock asserts
 /// something different every day it runs. 2099 is where this crate's window scale
 /// already lives (`common::COVERAGE_FROM_UTC`), and this sits after it so a schedule
 /// dated here cannot collide with a seeded interval.
-fn far_future() -> chrono::DateTime<chrono::Utc> {
-    chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2099, 12, 1, 0, 0, 0)
-        .single()
-        .expect("the fixed instant is unambiguous")
+fn far_future() -> OffsetDateTime {
+    utc_ymd_hms(2099, 12, 1, 0, 0, 0)
 }
 
 /// Every window of the plan, as `(window_id, state, from, to)` — the plane a
@@ -734,11 +735,9 @@ async fn window_plane(h: &Harness, plan_id: Uuid) -> Vec<(Uuid, String, String)>
 
 /// The window scale, fixed after `common::COVERAGE_TO_UTC` so a scheduled interval
 /// is adjacent to the fixture's and overlaps nothing.
-fn window_at(day: i64) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2099, 9, 1, 0, 0, 0)
-        .single()
-        .expect("the fixed instant is unambiguous")
-        + chrono::TimeDelta::days(day)
+fn window_at(day: i64) -> OffsetDateTime {
+    utc_ymd_hms(2099, 9, 1, 0, 0, 0)
+        + time::Duration::days(day)
 }
 
 /// The warm sweep, over the harness's own provider and its scripted registry.
@@ -795,18 +794,14 @@ fn frozen_key(payload: &serde_json::Value) -> KeyWindows {
                 .get("effectiveFrom")
                 .and_then(|v| v.as_str())
                 .map(|s| {
-                    DateTime::parse_from_rfc3339(s)
-                        .expect("an instant")
-                        .to_utc()
+                    bss_pricing::domain::instant::parse_rfc3339(s).expect("an instant")
                 })
                 .expect("every interval has a start");
             let to = interval
                 .get("effectiveTo")
                 .and_then(|v| v.as_str())
                 .map(|s| {
-                    DateTime::parse_from_rfc3339(s)
-                        .expect("an instant")
-                        .to_utc()
+                    bss_pricing::domain::instant::parse_rfc3339(s).expect("an instant")
                 });
             let state = interval
                 .get("state")
@@ -890,8 +885,8 @@ async fn published(h: &Harness, plan_id: Uuid) -> Publishable {
 async fn schedule(
     h: &Harness,
     price_id: Uuid,
-    from: DateTime<Utc>,
-    to: Option<DateTime<Utc>>,
+    from: OffsetDateTime,
+    to: Option<OffsetDateTime>,
 ) -> Result<bss_pricing::infra::window::WindowMutationReceipt, DomainError> {
     let outcome = h
         .governance
@@ -1013,7 +1008,7 @@ async fn a_cancel_re_projects_and_the_old_pin_still_answers_the_old_coverage() {
     warm_job(&h).run(rest_support::at(12)).await.expect("sweep");
     let before = deltas(&h).await;
     assert_eq!(before.len(), 1, "one frozen version so far");
-    let inside_the_fixture = common::coverage_from() + chrono::TimeDelta::days(1);
+    let inside_the_fixture = common::coverage_from() + time::Duration::days(1);
     assert!(
         frozen_key(&before[0].payload).covers_at(inside_the_fixture),
         "V1 froze a key covered at that instant: {:?}",
@@ -1233,7 +1228,7 @@ async fn a_cancel_can_move_a_published_plan_outside_its_own_coverage() {
     let h = Harness::new().await;
     let plan_id = Uuid::now_v7();
     let seeded = seed_publishable_plan(&h, plan_id).await;
-    let inside = common::coverage_from() + chrono::TimeDelta::days(1);
+    let inside = common::coverage_from() + time::Duration::days(1);
 
     // `available_from` inside the fixture window. Written through the store because no
     // route sets it on a published plan, and the dates are the premise rather than the
@@ -1366,10 +1361,8 @@ const POLICY_START_AFTER_THE_ACT: &str = "2026-08-04T00:00:00Z";
 ///
 /// `rest_support::at` only ranges over hours of 2026-08-03, so the one stamp that has
 /// to sit on the far side of the policy's start is spelled here.
-fn after_the_policy_starts() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 4, 12, 0, 0)
-        .single()
-        .expect("the fixed instant is unambiguous")
+fn after_the_policy_starts() -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 4, 12, 0, 0)
 }
 
 /// A published plan with one billable key and its fixture window, plus an approved
@@ -1391,14 +1384,14 @@ async fn published_with_policy_from(h: &Harness, plan_id: Uuid, from: &str) -> P
 ///
 /// [`schedule`] cannot serve the two cases below for two reasons, and both are the
 /// point: it stamps with `rest_support::seed_stamp()`, whose `recorded_at` *is*
-/// `Utc::now()` — the very reading these cases have to hold apart from the act's
+/// `OffsetDateTime::now_utc()` — the very reading these cases have to hold apart from the act's
 /// instant — and it collapses the two outcome arms with a `panic!`, where here which
 /// arm answers is the assertion.
 async fn schedule_stamped(
     h: &Harness,
     price_id: Uuid,
-    from: DateTime<Utc>,
-    to: Option<DateTime<Utc>>,
+    from: OffsetDateTime,
+    to: Option<OffsetDateTime>,
     stamp: bss_pricing::domain::audit::AuditStamp,
 ) -> Result<WindowMutationOutcome, DomainError> {
     h.governance
@@ -1424,7 +1417,7 @@ async fn schedule_stamped(
 /// the instant its act is about … should call `effective_policy_at`, so that one act
 /// does not straddle two readings of 'now'."* `infra::window::mutate_in` holds that
 /// instant — `let now = stamp.recorded_at;`, used for the plan-context read and for the
-/// trailing-void floor — and called the `Utc::now()` wrapper anyway. So a schedule's
+/// trailing-void floor — and called the `OffsetDateTime::now_utc()` wrapper anyway. So a schedule's
 /// **verdict** was decided against the policy in force at the wall clock while its
 /// **stamp** said the act happened somewhere else, and under D-188 those two instants
 /// can sit on opposite sides of a policy's `effective_from`.
@@ -1439,7 +1432,7 @@ async fn schedule_stamped(
 /// # Scope, stated so nobody widens it
 ///
 /// This is **not reachable through the routes**: `api::rest::windows` builds its stamp
-/// from `Utc::now()`, so there the stamp *is* the wall clock and the two readings agree
+/// from `OffsetDateTime::now_utc()`, so there the stamp *is* the wall clock and the two readings agree
 /// to within the call. It is reachable for an in-process caller holding a fixed stamp —
 /// which every service-level suite is, and which a scheduled or replayed act would be.
 /// That is why the case is here and not in `tests/rest_windows.rs`.
@@ -1676,10 +1669,8 @@ async fn a_window_needs_a_frozen_revision_and_the_store_says_so_too() {
 // ---------------------------------------------------------------------------
 
 /// The horizon the generation below is grandfathered until.
-fn horizon() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2099, 10, 1, 0, 0, 0)
-        .single()
-        .expect("the fixed instant is unambiguous")
+fn horizon() -> OffsetDateTime {
+    utc_ymd_hms(2099, 10, 1, 0, 0, 0)
 }
 
 /// `horizon() + the longest billing cycle sold on the key`.
@@ -1688,8 +1679,8 @@ fn horizon() -> DateTime<Utc> {
 /// calendar maximum — 31 days — because a margin rounded down leaves the tail of
 /// a bound period uncovered, which is the hole D-04 exists to close. Spelled as
 /// the arithmetic rather than as a date so the case says what the floor *is*.
-fn horizon_floor() -> DateTime<Utc> {
-    horizon() + chrono::TimeDelta::days(31)
+fn horizon_floor() -> OffsetDateTime {
+    horizon() + time::Duration::days(31)
 }
 
 /// The instant the generation below was cut over at — its `cohort` axis, and the
@@ -1702,7 +1693,7 @@ fn horizon_floor() -> DateTime<Utc> {
 /// generation that existed for thirty days carrying subscribers and holding no
 /// window at all — the exact stranding `inst-co-bounds` forbids. The bound as
 /// first built could not see it, because it only asked where coverage *ends*.
-fn cohort_at() -> DateTime<Utc> {
+fn cohort_at() -> OffsetDateTime {
     window_at(0)
 }
 
@@ -1723,7 +1714,7 @@ async fn published_with_a_generation(h: &Harness, plan_id: Uuid) -> Uuid {
 async fn published_with_a_generation_until(
     h: &Harness,
     plan_id: Uuid,
-    grandfather_until: Option<DateTime<Utc>>,
+    grandfather_until: Option<OffsetDateTime>,
 ) -> Uuid {
     let seeded = rest_support::seed_publishable_plan(h, plan_id).await;
     let generation = rest_support::seed_price_keyed_with_horizon(
@@ -1751,8 +1742,8 @@ async fn published_with_a_generation_until(
 async fn schedule_outcome(
     h: &Harness,
     price_id: Uuid,
-    from: DateTime<Utc>,
-    to: Option<DateTime<Utc>>,
+    from: OffsetDateTime,
+    to: Option<OffsetDateTime>,
 ) -> Result<WindowMutationOutcome, DomainError> {
     h.governance
         .windows
@@ -1797,7 +1788,7 @@ async fn a_generations_window_may_not_stop_inside_its_grandfathering_bound() {
         &h,
         price_id,
         window_at(0),
-        Some(horizon() + chrono::TimeDelta::days(14)),
+        Some(horizon() + time::Duration::days(14)),
     )
     .await
     .expect_err("a window ending inside the D-04 bound is refused");
@@ -1806,7 +1797,7 @@ async fn a_generations_window_may_not_stop_inside_its_grandfathering_bound() {
         panic!("expected the coverage floor's refusal, got {refusal:?}");
     };
     assert!(
-        detail.contains(&horizon().to_rfc3339()) && detail.contains(&horizon_floor().to_rfc3339()),
+        detail.contains(&format_rfc3339(horizon())) && detail.contains(&format_rfc3339(horizon_floor())),
         "the refusal names the horizon and the floor it has to reach: {detail}"
     );
 }
@@ -1868,7 +1859,7 @@ async fn an_ordinary_keys_window_is_not_judged_against_any_horizon() {
         &h,
         ordinary.price_id,
         window_at(0),
-        Some(horizon() + chrono::TimeDelta::days(14)),
+        Some(horizon() + time::Duration::days(14)),
     )
     .await
     .expect("a non-grandfathered key has no horizon to be bound by");
@@ -1900,8 +1891,8 @@ async fn a_generations_window_may_not_open_after_its_cohort() {
     let refusal = schedule_outcome(
         &h,
         price_id,
-        horizon() + chrono::TimeDelta::days(60),
-        Some(horizon_floor() + chrono::TimeDelta::days(365)),
+        horizon() + time::Duration::days(60),
+        Some(horizon_floor() + time::Duration::days(365)),
     )
     .await
     .expect_err("a window opening after the cohort strands the generation it belongs to");
@@ -1910,8 +1901,8 @@ async fn a_generations_window_may_not_open_after_its_cohort() {
         panic!("expected the coverage floor's refusal, got {refusal:?}");
     };
     assert!(
-        detail.contains(&cohort_at().to_rfc3339())
-            && detail.contains(&horizon_floor().to_rfc3339()),
+        detail.contains(&format_rfc3339(cohort_at()))
+            && detail.contains(&format_rfc3339(horizon_floor())),
         "the refusal names the first uncovered instant and the floor: {detail}"
     );
 }
@@ -1938,7 +1929,7 @@ async fn an_indefinite_generations_window_may_not_open_after_its_cohort() {
         panic!("expected the indefinite generation's refusal, got {refusal:?}");
     };
     assert!(
-        detail.contains(&cohort_at().to_rfc3339()),
+        detail.contains(&format_rfc3339(cohort_at())),
         "the refusal names the first uncovered instant: {detail}"
     );
 }
@@ -1981,7 +1972,7 @@ async fn an_indefinite_generations_window_may_not_be_bounded() {
         panic!("expected the indefinite generation's refusal, got {refusal:?}");
     };
     assert!(
-        detail.contains(&window_at(3650).to_rfc3339()),
+        detail.contains(&format_rfc3339(window_at(3650))),
         "the refusal names the instant coverage would stop at: {detail}"
     );
 }

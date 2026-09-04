@@ -12,10 +12,10 @@
 //! (`recognized_minor <= total_deferred_minor`) is guarded on
 //! `recognition_schedule` (Slice 4), both written under the lock order.
 
-use chrono::{DateTime, Utc};
 use sea_orm::entity::prelude::*;
 use toolkit_db_macros::Scopable;
 use uuid::Uuid;
+use time::OffsetDateTime;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Scopable)]
 #[sea_orm(table_name = "ledger_credit_note")]
@@ -39,7 +39,7 @@ pub struct Model {
     pub deferred_part_minor: i64,
     pub split_basis_ref: Option<String>,
     pub reason_code: String,
-    pub created_at_utc: DateTime<Utc>,
+    pub created_at_utc: OffsetDateTime,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

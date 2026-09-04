@@ -48,12 +48,13 @@
 //! is already `committing` — so the row this repository reads back is durable and
 //! the refusal can carry it.
 
-use chrono::{DateTime, Utc};
+
 use sea_orm::ActiveValue::Set;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, JsonValue};
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureDeleteExt, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
+use time::OffsetDateTime;
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
@@ -87,9 +88,9 @@ pub struct BulkOperationRecord {
     /// Who submitted it.
     pub submitted_by: Uuid,
     /// When.
-    pub submitted_at: DateTime<Utc>,
+    pub submitted_at: OffsetDateTime,
     /// Set exactly on the terminal states, which the `CHECK` keeps honest.
-    pub completed_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<OffsetDateTime>,
 }
 
 /// A run at its birth.
@@ -123,7 +124,7 @@ pub struct NewBulkOperation {
     /// Who submitted it.
     pub submitted_by: Uuid,
     /// When.
-    pub submitted_at: DateTime<Utc>,
+    pub submitted_at: OffsetDateTime,
 }
 
 /// The repository handle, for callers that own no transaction.
@@ -337,7 +338,7 @@ pub async fn advance(
     from: BulkState,
     to: BulkState,
     report: JsonValue,
-    at: DateTime<Utc>,
+    at: OffsetDateTime,
 ) -> Result<BulkOperationRecord, RepoError> {
     let completed_at = to.is_terminal().then_some(at);
     let affected = bulk_operation::Entity::update_many()
@@ -445,7 +446,7 @@ pub async fn take_locks(
     tenant_id: Uuid,
     operation_id: Uuid,
     price_ids: &[Uuid],
-    at: DateTime<Utc>,
+    at: OffsetDateTime,
 ) -> Result<(), RepoError> {
     for &price_id in price_ids {
         let row = bulk_row_lock::ActiveModel {

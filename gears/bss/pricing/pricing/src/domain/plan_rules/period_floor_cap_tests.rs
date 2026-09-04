@@ -8,7 +8,7 @@
 
 #![allow(clippy::expect_used)]
 
-use chrono::{DateTime, TimeZone, Utc};
+
 use uuid::Uuid;
 
 use super::{PeriodFloorCapAmounts, PeriodFloorCapMarketSold};
@@ -22,6 +22,8 @@ use crate::domain::price_row::{ModelKind, PriceRow};
 use crate::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
+use crate::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 use crate::domain::validation::{ValidationReport, ValidationRule};
 
 const TERMINAL: u128 = 0x7e_11;
@@ -30,10 +32,8 @@ fn plan() -> PlanId {
     PlanId::new(Uuid::from_u128(0x91a4))
 }
 
-fn now() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 15, 12, 0, 0)
-        .single()
-        .expect("the fixed instant is unambiguous")
+fn now() -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 15, 12, 0, 0)
 }
 
 fn currency(code: &str) -> CurrencyCode {

@@ -256,7 +256,7 @@
 //! [`ThresholdVersionParts`]: crate::domain::materiality::ThresholdVersionParts
 
 use aws_lc_rs::digest::{SHA256, digest as sha256};
-use chrono::{DateTime, Utc};
+
 use uuid::Uuid;
 
 use crate::domain::concurrency::RowVersion;
@@ -264,6 +264,7 @@ use crate::domain::contracts::{
     AnchorDay, BillingAnchorPolicy, EntitlementGrants, GrantSet, PlanChangeContract,
     ProrationBasis, ProrationContract,
 };
+use time::OffsetDateTime;
 use crate::domain::materiality::{
     ThresholdBasis, ThresholdEntry, ThresholdVersion, ThresholdVersionParts,
 };
@@ -285,6 +286,7 @@ use crate::domain::price_row::{
 };
 use crate::domain::scope_key::{Meter, PhaseId, PlanId, ScopeKey, ScopeKeyParts};
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
+use crate::domain::instant::timestamp_micros;
 
 /// Versioned domain-separation tag for the approval content pin.
 ///
@@ -1726,11 +1728,11 @@ fn put_bool(buf: &mut Vec<u8>, value: bool) {
 /// An instant, in **microseconds** — the same resolution `audit_row_hash` uses
 /// and the resolution `timestamptz` stores, so a value that round-tripped
 /// through the column hashes as it did before it was written.
-fn put_instant(buf: &mut Vec<u8>, value: DateTime<Utc>) {
-    put_i64(buf, value.timestamp_micros());
+fn put_instant(buf: &mut Vec<u8>, value: OffsetDateTime) {
+    put_i64(buf, timestamp_micros(value));
 }
 
-fn put_opt_instant(buf: &mut Vec<u8>, value: Option<DateTime<Utc>>) {
+fn put_opt_instant(buf: &mut Vec<u8>, value: Option<OffsetDateTime>) {
     match value {
         Some(value) => put_instant(buf, value),
         None => put_none(buf),

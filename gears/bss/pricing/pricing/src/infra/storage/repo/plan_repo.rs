@@ -76,10 +76,10 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::{Expr, SimpleExpr};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, ExprTrait, JsonValue, Order};
+use time::OffsetDateTime;
 use toolkit_db::secure::{
     AccessScope, DBRunner, DbConn, DbTx, SecureEntityExt, SecureInsertExt, SecureUpdateExt, TxError,
 };
@@ -107,6 +107,17 @@ use crate::infra::storage::repo::plan_shape_repo::{
     delete_phases,
 };
 use crate::infra::storage::repo::{NewAuditEntry, audit_repo, outbox_repo};
+use bss_pricing_sdk::odata::PlanFilterField;
+use toolkit_db::odata::sea_orm_filter::filter_node_to_condition;
+use toolkit_odata::filter::convert_expr_to_filter_node;
+use toolkit_odata::{
+    CursorV1, Error as ODataError, ODataQuery, Page, PageInfo, SortDir, validate_cursor_against,
+};
+
+use crate::infra::storage::odata_mapping::{
+    LIST_LIMIT_CFG, OdataPageError, PlanODataMapper, filter_mentions_field,
+    query_with_default_order,
+};
 use crate::infra::storage::{RepoError, contention_or_db};
 
 /// The noun every **compare-and-swap** refusal names, so a caller that failed
@@ -146,7 +157,7 @@ pub struct NewPlanDraft {
     /// Pseudonymous principal id of the authoring actor.
     pub created_by: Uuid,
     /// When the request was authored, UTC.
-    pub created_at_utc: DateTime<Utc>,
+    pub created_at_utc: OffsetDateTime,
     /// The catalog SKU this plan realizes, when one is bound.
     pub sku_id: Option<Uuid>,
     /// The plan's tier.
@@ -167,9 +178,9 @@ pub struct NewPlanDraft {
     /// The Billing invoice-layout hint (D-96).
     pub invoice_grouping_key: Option<String>,
     /// Start of the availability window, UTC.
-    pub available_from: Option<DateTime<Utc>>,
+    pub available_from: Option<OffsetDateTime>,
     /// End of the availability window, UTC.
-    pub available_to: Option<DateTime<Utc>>,
+    pub available_to: Option<OffsetDateTime>,
     /// The plan this one is being cloned from (`inst-cl-copy`), or `None` for an
     /// authored plan. Provenance, set once at create and frozen thereafter.
     pub cloned_from: Option<PlanId>,
@@ -321,6 +332,30 @@ impl PlanRepo {
         limit: u64,
     ) -> Result<Vec<PlanRevision>, RepoError> {
         list_authoring_page(&self.conn()?, scope, tenant_id, states, after, limit).await
+    }
+
+    /// One OData page of authoring revisions. Collapse stays: one row per
+    /// `plan_id` (draft if any, else current). `$filter` is ANDed. When
+    /// `$filter` omits `lifecycle_state`, today's authoring default applies.
+    /// The walk stays `plan_id` (authoring collapse); `$orderby` is bound on
+    /// the cursor so a reused token with a different order is 400.
+    ///
+    /// # Errors
+    /// [`OdataPageError::Db`] on storage failure; [`OdataPageError::Odata`] on a
+    /// malformed `$filter` / `$orderby` / cursor.
+    pub async fn list_authoring_odata(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        query: &ODataQuery,
+    ) -> Result<Page<PlanRevision>, OdataPageError> {
+        list_authoring_odata_page(
+            &self.conn().map_err(|e| OdataPageError::Db(e.to_string()))?,
+            scope,
+            tenant_id,
+            query,
+        )
+        .await
     }
 
     /// Apply `patch` to an open draft revision, under the caller's row version.
@@ -1663,6 +1698,145 @@ pub async fn list_authoring_page(
             return Ok(out);
         }
     }
+}
+
+/// Authoring collapse plus an OData `$filter`. See [`PlanRepo::list_authoring_odata`].
+async fn list_authoring_odata_page(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    query: &ODataQuery,
+) -> Result<Page<PlanRevision>, OdataPageError> {
+    let query = query_with_default_order(query, &[PlanFilterField::PlanId]);
+    for key in &query.order.0 {
+        if key.field != "plan_id" {
+            return Err(OdataPageError::Odata(ODataError::InvalidOrderByField(
+                key.field.clone(),
+            )));
+        }
+    }
+    let limit = Ord::min(
+        query.limit.unwrap_or(LIST_LIMIT_CFG.default),
+        LIST_LIMIT_CFG.max,
+    );
+    let plan_dir = query
+        .order
+        .0
+        .iter()
+        .find(|key| key.field == "plan_id")
+        .map_or(SortDir::Asc, |key| key.dir);
+
+    if let Some(cursor) = &query.cursor {
+        validate_cursor_against(cursor, &query.order, query.filter_hash.as_deref())
+            .map_err(OdataPageError::Odata)?;
+    }
+    let after = query
+        .cursor
+        .as_ref()
+        .and_then(|cursor| cursor.k.first())
+        .map(|token| {
+            token.parse::<Uuid>().map_err(|e| {
+                tracing::debug!(error = %e, token, "plan list cursor key is not a uuid");
+                OdataPageError::Odata(ODataError::CursorInvalidKeys)
+            })
+        })
+        .transpose()?;
+
+    let mut extra = Condition::all();
+    if !filter_mentions_field(query.filter.as_deref(), PlanFilterField::LifecycleState) {
+        let mut tokens = current_tokens();
+        tokens.push(LifecycleState::Draft.as_str());
+        extra = extra.add(plan::Column::LifecycleState.is_in(tokens));
+    }
+    if let Some(ast) = query.filter.as_deref() {
+        let node = convert_expr_to_filter_node::<PlanFilterField>(ast)
+            .map_err(|e| OdataPageError::Odata(ODataError::InvalidFilter(e.to_string())))?;
+        extra = extra.add(
+            filter_node_to_condition::<PlanFilterField, PlanODataMapper>(&node)
+                .map_err(ODataError::InvalidFilter)
+                .map_err(OdataPageError::Odata)?,
+        );
+    }
+
+    let probe = limit.saturating_add(1);
+    let window = Ord::max(probe.saturating_mul(2), 2);
+    let mut out: Vec<PlanRevision> = Vec::new();
+    let mut walk = after;
+    loop {
+        let mut filter = Condition::all()
+            .add(plan::Column::TenantId.eq(tenant_id))
+            .add(extra.clone());
+        if let Some(cursor) = walk {
+            filter = match plan_dir {
+                SortDir::Asc => filter.add(plan::Column::PlanId.gt(cursor)),
+                SortDir::Desc => filter.add(plan::Column::PlanId.lt(cursor)),
+            };
+        }
+
+        let rows = plan::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(filter)
+            .order_by(
+                plan::Column::PlanId,
+                match plan_dir {
+                    SortDir::Asc => Order::Asc,
+                    SortDir::Desc => Order::Desc,
+                },
+            )
+            .order_by(plan::Column::Revision, Order::Desc)
+            .limit(window)
+            .all(runner)
+            .await
+            .map_err(|e| OdataPageError::Db(format!("list pricing_plan: {e}")))?;
+        let exhausted = u64::try_from(rows.len()).unwrap_or(u64::MAX) < window;
+
+        let mut full = false;
+        for row in rows {
+            if walk == Some(row.plan_id) {
+                continue;
+            }
+            walk = Some(row.plan_id);
+            out.push(to_domain(row).map_err(|e| OdataPageError::Db(e.to_string()))?);
+            if u64::try_from(out.len()).unwrap_or(u64::MAX) >= probe {
+                full = true;
+                break;
+            }
+        }
+        if full || exhausted {
+            break;
+        }
+    }
+
+    let has_more = u64::try_from(out.len()).unwrap_or(u64::MAX) > limit;
+    if has_more {
+        out.pop();
+    }
+    let next_cursor = if has_more {
+        out.last()
+            .map(|row| {
+                CursorV1 {
+                    k: vec![row.plan_id.get().to_string()],
+                    o: plan_dir,
+                    s: query.order.to_signed_tokens(),
+                    f: query.filter_hash.clone(),
+                    d: "fwd".to_owned(),
+                }
+                .encode()
+                .map_err(|e| OdataPageError::Db(format!("encode plan list cursor: {e}")))
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    Ok(Page {
+        items: out,
+        page_info: PageInfo {
+            next_cursor,
+            prev_cursor: None,
+            limit,
+        },
+    })
 }
 
 /// Read one revision by its composite identity, scoped.

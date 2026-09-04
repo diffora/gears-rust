@@ -245,7 +245,7 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Utc};
+
 use serde_json::{Value as JsonValue, json};
 use toolkit_macros::domain_model;
 use uuid::Uuid;
@@ -253,6 +253,8 @@ use uuid::Uuid;
 use crate::domain::contracts::{
     EntitlementGrants, GrantSet, PlanChangeContract, published_billing_timing,
 };
+use time::OffsetDateTime;
+use crate::domain::instant::format_rfc3339;
 use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::MinorAmount;
@@ -408,8 +410,8 @@ impl OverlaySubjectDelta {
                 JsonValue::String(crate::domain::read_model::GLOBAL_SCOPE.to_owned())
             },
             "precedence": precedence,
-            "effectiveFrom": interval.from,
-            "effectiveTo": interval.to,
+            "effectiveFrom": interval.from.map(format_rfc3339),
+            "effectiveTo": interval.to.map(format_rfc3339),
             "taxBasis": tax_basis.as_str(),
             "disclosure": disclosure.as_str(),
             "targetPlans": target_ref.plans.iter().map(|plan| plan.get()).collect::<Vec<_>>(),
@@ -425,7 +427,7 @@ fn overlay_line_value(line: &OverlayLine) -> JsonValue {
         "lineId": line.line_id,
         "planId": line.key.plan_id().map(PlanId::get),
         "targetSku": line.key.target_sku().map(TargetSku::as_str),
-        "cohort": line.key.cohort(),
+        "cohort": line.key.cohort().map(format_rfc3339),
         "kind": line.adjustment.kind().as_str(),
         "magnitudeKind": line.adjustment.magnitude_kind().as_str(),
         "percentBp": line.adjustment.percent_bp(),
@@ -499,8 +501,8 @@ impl OverlayIndexDelta {
                 .map(|entry| {
                     json!({
                         "priceOverlayId": entry.price_overlay_id,
-                        "effectiveFrom": entry.interval.from,
-                        "effectiveTo": entry.interval.to,
+                        "effectiveFrom": entry.interval.from.map(format_rfc3339),
+                        "effectiveTo": entry.interval.to.map(format_rfc3339),
                         "precedence": entry.precedence,
                     })
                 })
@@ -555,9 +557,9 @@ pub struct MembershipSubjectDelta {
     /// The taxonomy value the payer is enrolled in over this interval.
     pub group_value: String,
     /// Inclusive start of the half-open interval, UTC.
-    pub effective_from: DateTime<Utc>,
+    pub effective_from: OffsetDateTime,
     /// Exclusive end, UTC; `None` is open-ended — a membership not (yet) ended.
-    pub effective_to: Option<DateTime<Utc>>,
+    pub effective_to: Option<OffsetDateTime>,
 }
 
 impl MembershipSubjectDelta {
@@ -578,8 +580,8 @@ impl MembershipSubjectDelta {
             "membershipId": membership_id,
             "payerTenantId": payer_tenant_id,
             "groupValue": group_value,
-            "effectiveFrom": effective_from,
-            "effectiveTo": effective_to,
+            "effectiveFrom": format_rfc3339(*effective_from),
+            "effectiveTo": effective_to.map(format_rfc3339),
         })
     }
 }
@@ -617,9 +619,9 @@ pub struct PlanSubjectDelta {
     /// The recurring frequency, custom interval riding the variant.
     pub frequency: Option<Frequency>,
     /// Start of the plan's availability window, UTC — sellability predicate (3).
-    pub available_from: Option<DateTime<Utc>>,
+    pub available_from: Option<OffsetDateTime>,
     /// End of the plan's availability window, UTC — sellability predicate (3).
-    pub available_to: Option<DateTime<Utc>>,
+    pub available_to: Option<OffsetDateTime>,
     /// Minimum purchasable quantity (one-time plans).
     pub purchase_min_qty: Option<u64>,
     /// Maximum purchasable quantity (one-time plans).
@@ -829,8 +831,8 @@ impl PlanSubjectDelta {
             "planTierOverride": plan_tier_override,
             "billingCycle": billing_cycle.map(BillingCycle::as_str),
             "frequency": frequency.map(frequency_value),
-            "availableFrom": available_from,
-            "availableTo": available_to,
+            "availableFrom": available_from.map(format_rfc3339),
+            "availableTo": available_to.map(format_rfc3339),
             "purchaseMinQty": purchase_min_qty,
             "purchaseMaxQty": purchase_max_qty,
             "invoiceGroupingKey": invoice_grouping_key,
@@ -1158,7 +1160,7 @@ fn price_value(record: &PriceRecord, tax: Option<&RowResolutionProjection>) -> J
         "prorationBasis": proration_contract.map(|c| c.proration_basis.as_str()),
         "creditOnDowngrade": proration_contract.map(|c| c.credit_on_downgrade),
         "roundingPolicyRef": rounding_policy_ref,
-        "grandfatherUntil": grandfather_until,
+        "grandfatherUntil": grandfather_until.map(format_rfc3339),
         "supersedesPriceId": supersedes_price_id,
     });
     merge(&mut value, row_value(row));
@@ -1337,8 +1339,8 @@ fn interval_value(interval: &WindowInterval) -> JsonValue {
         state,
     } = interval;
     json!({
-        "effectiveFrom": effective_from,
-        "effectiveTo": effective_to,
+        "effectiveFrom": format_rfc3339(*effective_from),
+        "effectiveTo": effective_to.map(format_rfc3339),
         "state": state.as_str(),
     })
 }
@@ -1353,7 +1355,7 @@ fn interval_value(interval: &WindowInterval) -> JsonValue {
 /// two distinguishable to a reader that has only the JSON, which is every reader
 /// this payload has. See [`CoverageEnd`](crate::domain::window::CoverageEnd).
 fn coverage_end_value(end: crate::domain::window::CoverageEnd) -> JsonValue {
-    json!({ "kind": end.as_str(), "at": end.at() })
+    json!({ "kind": end.as_str(), "at": end.at().map(format_rfc3339) })
 }
 
 /// One tier band. The open top is rendered as `null` rather than as a sentinel
@@ -1406,7 +1408,7 @@ fn scope_key_value(key: &ScopeKey) -> JsonValue {
         "phase": phase.get(),
         "priceEligibility": price_eligibility.as_str(),
         "chargeKind": charge_kind.as_str(),
-        "cohort": cohort.generation(),
+        "cohort": cohort.generation().map(format_rfc3339),
         // Axes 9 and 10 (D-196). `null` rather than the rendering's `none`
         // sentinel on a row that has no line: the rendering needs fixed arity
         // because it is embedded in strings, a JSON member does not, and the

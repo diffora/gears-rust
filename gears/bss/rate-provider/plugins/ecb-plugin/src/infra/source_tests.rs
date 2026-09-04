@@ -1,7 +1,8 @@
 //! ECB parser + mapping tests over the daily-XML fixture.
 
 use bss_ledger_sdk::{CurrencyPair, RateProviderError};
-use chrono::{Datelike, NaiveDate, TimeZone, Utc};
+use chrono::{Datelike, NaiveDate};
+use time::{Date, Month, OffsetDateTime, PrimitiveDateTime, Time};
 
 use super::{ecb_rates_to_provider_rates, parse_ecb_xml};
 
@@ -9,6 +10,12 @@ const FIXTURE: &[u8] = include_bytes!("../../tests/fixtures/eurofxref-daily.xml"
 
 /// The `provider_id` the mapper stamps onto every rate under test.
 const PROVIDER: &str = "ecb";
+
+fn midnight_utc(year: i32, month: u8, day: u8) -> OffsetDateTime {
+    let month = Month::try_from(month).unwrap();
+    let date = Date::from_calendar_date(year, month, day).unwrap();
+    PrimitiveDateTime::new(date, Time::MIDNIGHT).assume_utc()
+}
 
 #[test]
 fn parses_date_and_all_pairs() {
@@ -26,10 +33,7 @@ fn whole_table_when_no_pairs_requested() {
     let usd = rates.iter().find(|r| r.quote == "USD").unwrap();
     assert_eq!(usd.base, "EUR");
     assert_eq!(usd.rate_micro, 1_085_600);
-    assert_eq!(
-        usd.as_of,
-        Utc.with_ymd_and_hms(2026, 7, 21, 0, 0, 0).unwrap()
-    );
+    assert_eq!(usd.as_of, midnight_utc(2026, 7, 21));
 }
 
 #[test]

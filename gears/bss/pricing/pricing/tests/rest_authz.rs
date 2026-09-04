@@ -40,10 +40,10 @@ use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
 use bss_pricing::api::rest::catalog_skus::CATALOG_SKUS;
 use bss_pricing::api::rest::customer_groups::{
     CUSTOMER_GROUP_MEMBER, CUSTOMER_GROUP_MEMBER_MOVE, CUSTOMER_GROUP_MEMBERS,
-    CUSTOMER_GROUP_TAXONOMY,
+    CUSTOMER_GROUP_MEMBERS_MOVE, CUSTOMER_GROUP_TAXONOMY,
 };
 use bss_pricing::api::rest::cutovers::{PLAN_CUTOVERS, PRICE_GRANDFATHER_UNTIL};
-use bss_pricing::api::rest::frontier::FRONTIER;
+use bss_pricing::api::rest::frontier::{CATALOG_VERSION_REF, FRONTIER};
 use bss_pricing::api::rest::history::{HISTORY, HISTORY_EXPORT};
 use bss_pricing::api::rest::migrated_origin_snapshots::MIGRATED_ORIGIN_SNAPSHOT;
 use bss_pricing::api::rest::migrations::{MIGRATION_BY_ID, MIGRATIONS};
@@ -65,6 +65,9 @@ use bss_pricing::api::rest::windows::{
 };
 use bss_pricing::authz::{actions, labels};
 use bss_pricing::domain::approval::ApprovalState;
+use bss_pricing::domain::lifecycle::LifecycleState;
+use bss_pricing::domain::read_model::SubjectRef;
+use bss_pricing::infra::storage::repo::{PendingVersionRow, catalog_version_ref_repo};
 use rest_support::{
     Harness, approval_row, body_json, mutable_planes, plan_count, plan_row_version, price_rows,
     request, seed_draft_plan, seed_price, with_headers,
@@ -116,6 +119,13 @@ fn census() -> Vec<Route> {
         Route {
             method: "GET",
             path: FRONTIER,
+            resource_type: labels::PLAN,
+            action: actions::READ,
+            mutating: false,
+        },
+        Route {
+            method: "GET",
+            path: CATALOG_VERSION_REF,
             resource_type: labels::PLAN,
             action: actions::READ,
             mutating: false,
@@ -338,6 +348,13 @@ fn census() -> Vec<Route> {
         Route {
             method: "GET",
             path: PLAN_PRICES,
+            resource_type: labels::PLAN,
+            action: actions::READ,
+            mutating: false,
+        },
+        Route {
+            method: "GET",
+            path: PLAN_PRICE,
             resource_type: labels::PLAN,
             action: actions::READ,
             mutating: false,
@@ -621,6 +638,13 @@ fn config_routes() -> Vec<Route> {
             action: actions::WRITE,
             mutating: true,
         },
+        Route {
+            method: "POST",
+            path: CUSTOMER_GROUP_MEMBERS_MOVE,
+            resource_type: labels::CUSTOMER_GROUP,
+            action: actions::WRITE,
+            mutating: true,
+        },
         // C4's enforcement mode. `config`, like the taxonomies and unlike the
         // approval-threshold policy — this one softens how one publish rule
         // reports one missing external fact; that one decides whether a change
@@ -777,7 +801,7 @@ fn synthesis_routes() -> Vec<Route> {
 
 fn overlay_routes() -> Vec<Route> {
     vec![
-        // Slice 9's overlay half. All four are `price_overlay` x its own action
+        // Slice 9's overlay half. All five are `price_overlay` x its own action
         // and deliberately **not** `plan`: the AuthZ catalog gives overlays a
         // resource of their own, and D-61's reviewability invariant is why the
         // approving role needs `price_overlay x read` — a reviewer of an
@@ -801,6 +825,13 @@ fn overlay_routes() -> Vec<Route> {
         Route {
             method: "GET",
             path: PRICE_OVERLAYS,
+            resource_type: labels::PRICE_OVERLAY,
+            action: actions::READ,
+            mutating: false,
+        },
+        Route {
+            method: "GET",
+            path: PRICE_OVERLAY_BY_ID,
             resource_type: labels::PRICE_OVERLAY,
             action: actions::READ,
             mutating: false,
@@ -842,9 +873,13 @@ struct Seeded {
     /// by id reach their gate instead of failing to parse a path — the same
     /// reason [`Seeded::window`] exists.
     bundle: Uuid,
-    /// One overlay draft, so the two routes that address an overlay by id reach
-    /// their gate rather than a 404 — [`Seeded::bundle`]'s reason.
+    /// One overlay draft, so the three routes that address an overlay by id
+    /// reach their gate rather than a 404 — [`Seeded::bundle`]'s reason.
     overlay: Uuid,
+    /// One pending catalog-version handle against [`Seeded::plan`], so
+    /// `GET /catalog-version/refs/{pendingRef}` reaches a 200 for the owner
+    /// rather than a 404. The handle is a registry token, not a UUID.
+    pending_ref: String,
 }
 
 /// The world the whole census is driven against: a draft plan with a shape and
@@ -921,6 +956,21 @@ async fn seed(harness: &Harness) -> Seeded {
         )
         .await
         .expect("seed the overlay the two overlay-by-id routes address");
+    let pending_ref = "dev-local-census-v1".to_owned();
+    catalog_version_ref_repo::record_pending(
+        &harness.db.conn().expect("conn"),
+        &harness.scope(),
+        PendingVersionRow::for_subject(
+            harness.tenant,
+            pending_ref.clone(),
+            &SubjectRef::Plan(plan_id),
+            Some(0),
+            Some(LifecycleState::Published),
+            rest_support::at(10),
+        ),
+    )
+    .await
+    .expect("seed the pending handle the catalog-version-ref read addresses");
 
     Seeded {
         plan: plan_id,
@@ -929,6 +979,7 @@ async fn seed(harness: &Harness) -> Seeded {
         window,
         bundle,
         overlay,
+        pending_ref,
     }
 }
 
@@ -956,6 +1007,7 @@ fn drive(
         .replace("{windowId}", &seeded.window.to_string())
         .replace("{bundleId}", &seeded.bundle.to_string())
         .replace("{overlayId}", &seeded.overlay.to_string())
+        .replace("{pendingRef}", &seeded.pending_ref)
         // **Not a seeded id, and it does not need to be.** Both migration item
         // routes ask the PDP *before* they read the row, so a schedule that does
         // not exist still drives the gate — which is the only thing this file
@@ -1036,10 +1088,10 @@ fn body_for(
     key: &'static str,
 ) -> DrivenBody {
     match (route.method, route.path) {
-        // Slice 9's four. The `POST` takes an idempotency key and a whole
-        // overlay; the `PATCH` takes the **overlay revision's** tag, which the
-        // seeded draft stands at as `"0-0"`; the submit takes neither, since its
-        // concurrency is the approval unit's.
+        // Slice 9's five. The `POST` takes an idempotency key and a whole
+        // overlay; the by-id `GET` takes none; the `PATCH` takes the **overlay
+        // revision's** tag, which the seeded draft stands at as `"0-0"`; the
+        // submit takes neither, since its concurrency is the approval unit's.
         ("POST", PRICE_OVERLAYS) => (
             Some(serde_json::json!({
                 "scope_class": "global",
@@ -1272,6 +1324,13 @@ fn body_for(
         ),
         ("POST", CUSTOMER_GROUP_MEMBER_MOVE) => (
             Some(serde_json::json!({ "effective_from": "2099-01-01T00:00:00Z" })),
+            vec![("idempotency-key", key)],
+        ),
+        ("POST", CUSTOMER_GROUP_MEMBERS_MOVE) => (
+            Some(serde_json::json!({
+                "payer_ids": [Uuid::now_v7(), Uuid::now_v7()],
+                "effective_from": "2099-01-01T00:00:00Z"
+            })),
             vec![("idempotency-key", key)],
         ),
         ("POST", APPROVAL_REJECT) => (
@@ -3028,6 +3087,7 @@ fn absent_ids(seeded: &Seeded) -> Seeded {
     fresh.window = Uuid::now_v7();
     fresh.bundle = Uuid::now_v7();
     fresh.overlay = Uuid::now_v7();
+    fresh.pending_ref = "dev-local-absent-v1".to_owned();
     fresh
 }
 
@@ -3080,6 +3140,7 @@ const VARIED_SEGMENTS: &[&str] = &[
     "{windowId}",
     "{bundleId}",
     "{overlayId}",
+    "{pendingRef}",
 ];
 
 /// By-id reads this property cannot cover, and **why**, one row per route.
@@ -3275,6 +3336,7 @@ const BY_ID_WRITES_THIS_FIXTURE_CANNOT_STAGE: &[(&str, &str)] = &[
     ("PUT", TAXONOMY),
     ("POST", CUSTOMER_GROUP_MEMBERS),
     ("POST", CUSTOMER_GROUP_MEMBER_MOVE),
+    ("POST", CUSTOMER_GROUP_MEMBERS_MOVE),
     // Paid in `rest_customer_groups::a_foreign_tenant_cannot_adjust_this_tenants_membership`,
     // which takes the membership id off the enrollment's own response so the
     // `foreign` and `absent` arms can differ in the id whose tenant is in question.

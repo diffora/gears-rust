@@ -6,7 +6,7 @@
 //! so a case that changed nothing would come back a zero delta rather than a
 //! refusal — which is what makes each `NotComputable` assertion evidence.
 
-use chrono::{TimeZone, Utc};
+
 use uuid::Uuid;
 
 use super::{AmountMove, MoveScale, RowDelta, row_delta};
@@ -23,6 +23,7 @@ use crate::domain::price_row::{
 use crate::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
+use crate::domain::instant::utc_ymd_hms;
 
 /// A band rate, stated in whole minor units so these cases read as they always
 /// did (D-311). The stored scale is 10^-9 of one.
@@ -57,10 +58,7 @@ fn record(row: PriceRow) -> PriceRecord {
         supersedes_price_id: None,
         lifecycle_state: LifecycleState::Published,
         created_by: Uuid::from_u128(0xac_10),
-        created_at_utc: Utc
-            .with_ymd_and_hms(2026, 8, 2, 10, 0, 0)
-            .single()
-            .expect("a real instant"),
+        created_at_utc: utc_ymd_hms(2026, 8, 2, 10, 0, 0),
         row_version: RowVersion::new(1),
     }
 }

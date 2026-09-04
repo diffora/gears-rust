@@ -3,7 +3,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use chrono::{DateTime, TimeZone, Utc};
+
 use uuid::Uuid;
 
 use super::{
@@ -11,6 +11,8 @@ use super::{
     TAX_BASIS_MIXED_MARKET, TaxBasisComplete, TaxDisplayPolicy, effective_category,
     is_not_sellable_ga,
 };
+use crate::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 use crate::domain::concurrency::RowVersion;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
@@ -22,10 +24,8 @@ use crate::domain::scope_key::{
 };
 use crate::domain::validation::{ValidationReport, ValidationRule};
 
-fn now() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 6, 12, 0, 0)
-        .single()
-        .expect("the fixed instant is unambiguous")
+fn now() -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 6, 12, 0, 0)
 }
 
 fn plan() -> PlanId {

@@ -5,10 +5,10 @@
 //! revoked at the DB role (same encapsulation as posted financial facts);
 //! tenant-scoped via `SecureORM`, resource col is the parent `approval_id`.
 
-use chrono::{DateTime, Utc};
 use sea_orm::entity::prelude::*;
 use toolkit_db_macros::Scopable;
 use uuid::Uuid;
+use time::OffsetDateTime;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Scopable)]
 #[sea_orm(table_name = "ledger_approval_comment")]
@@ -27,7 +27,7 @@ pub struct Model {
     pub revision: i32,
     pub author_actor: Uuid,
     pub body: String,
-    pub created_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

@@ -28,7 +28,7 @@ use bss_ledger::infra::storage::entity::unallocated_balance;
 use bss_ledger::infra::storage::migrations::Migrator;
 use bss_ledger::infra::storage::repo::{JournalRepo, ReferenceRepo};
 use bss_ledger_sdk::{AccountClass, MappingStatus, Side, SourceDocType};
-use chrono::{NaiveDate, Utc};
+use chrono::{NaiveDate};
 use sea_orm::sea_query::Expr;
 use sea_orm::{
     ActiveValue::Set, ConnectionTrait, Database, DatabaseConnection, EntityTrait, Statement,
@@ -39,6 +39,7 @@ use toolkit_db::secure::{AccessScope, SecureInsertExt, SecureOnConflict};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
+use time::OffsetDateTime;
 
 fn pg(sql: impl Into<String>) -> Statement {
     Statement::from_string(sea_orm::DatabaseBackend::Postgres, sql.into())
@@ -174,7 +175,7 @@ fn balanced_entry(
         source_business_id: business_id.to_owned(),
         reverses_entry_id: None,
         reverses_period_id: None,
-        posted_at_utc: Utc::now(),
+        posted_at_utc: OffsetDateTime::now_utc(),
         effective_at: NaiveDate::from_ymd_opt(2026, 6, 1).unwrap(),
         origin: "SYSTEM".to_owned(),
         posted_by_actor_id: f.tenant,
@@ -1201,7 +1202,7 @@ async fn clock_skew_beyond_24h_is_quarantined() {
     let ctx = SecurityContext::anonymous();
 
     let (mut entry, lines) = balanced_entry(&f, "biz-skewed", 1000, false);
-    entry.posted_at_utc = Utc::now() - chrono::Duration::hours(48);
+    entry.posted_at_utc = OffsetDateTime::now_utc() - time::Duration::hours(48);
     let err = service
         .post(&ctx, &scope, entry, lines, None)
         .await

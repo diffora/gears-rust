@@ -25,7 +25,7 @@ use axum::extract::{Extension, Path};
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router, http::StatusCode};
-use chrono::{DateTime, Utc};
+
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
 use toolkit_security::SecurityContext;
@@ -40,6 +40,8 @@ use crate::infra::reconciliation::{
 };
 use crate::infra::storage::entity::reconciliation_run;
 use crate::infra::storage::repo::ReconciliationRunRepo;
+use time::OffsetDateTime;
+use time::serde::rfc3339;
 
 /// `OpenAPI` tag applied to the reconciliation operations.
 const TAG: &str = "BSS Ledger Reconciliation";
@@ -86,7 +88,8 @@ pub struct ReconciliationRunView {
     pub variance_minor: i64,
     pub within_tolerance: bool,
     pub status: String,
-    pub at_utc: DateTime<Utc>,
+    #[serde(with = "rfc3339")]
+    pub at_utc: OffsetDateTime,
 }
 
 impl From<reconciliation_run::Model> for ReconciliationRunView {

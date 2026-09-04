@@ -29,10 +29,11 @@ use bss_ledger::infra::storage::migrations::Migrator;
 use bss_ledger::infra::storage::repo::JournalRepo;
 use bss_ledger::infra::storage::repo::ReferenceRepo;
 use bss_ledger_sdk::{AccountClass, MappingStatus, ODataQuery, Side, SourceDocType};
-use chrono::{NaiveDate, Utc};
+use chrono::{NaiveDate};
 use toolkit_db::secure::AccessScope;
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use toolkit_security::SecurityContext;
+use time::OffsetDateTime;
 
 /// Build an `ODataQuery` carrying just a `$filter` expression (parsed from the
 /// OData text), the way the REST `OData` extractor would. An empty query
@@ -545,7 +546,7 @@ async fn setup_posted_invoice(url: &str) -> (DatabaseConnection, DBProvider<DbEr
         source_business_id: f.invoice_id.clone(),
         reverses_entry_id: None,
         reverses_period_id: None,
-        posted_at_utc: Utc::now(),
+        posted_at_utc: OffsetDateTime::now_utc(),
         effective_at: NaiveDate::from_ymd_opt(2026, 6, 1).unwrap(),
         origin: "SYSTEM".to_owned(),
         posted_by_actor_id: tenant,

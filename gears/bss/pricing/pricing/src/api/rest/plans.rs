@@ -28,8 +28,8 @@
 //! 422 response.
 
 use std::collections::BTreeMap;
-
 use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::body::Bytes;
@@ -37,9 +37,11 @@ use axum::extract::{Extension, Path, Query};
 use axum::http::header::{ETAG, LOCATION};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router, http::HeaderMap, http::StatusCode};
-use chrono::{DateTime, Utc};
+use bss_pricing_sdk::odata::{PlanFilterField, PlanOrderField};
+
 use toolkit::api::canonical_prelude::CanonicalError;
-use toolkit::api::operation_builder::{ParamLocation, ParamSpec};
+use toolkit::api::odata::OData;
+use toolkit::api::operation_builder::{OperationBuilderODataExt, ParamLocation, ParamSpec};
 use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
 use toolkit_db::secure::{AccessScope, DbTx};
 use toolkit_odata::Page;
@@ -48,8 +50,10 @@ use uuid::Uuid;
 
 use crate::api::rest::auth_context::{audit_stamp, require_authenticated};
 use crate::api::rest::correlation::{CorrelationId, require_correlation};
-use crate::api::rest::cursor::{self, PageRequest};
 use crate::api::rest::error::authz_error_to_canonical;
+use crate::api::rest::odata_list::{
+    map_odata_page_err, refuse_zero_limit, reject_non_odata_list_params,
+};
 use crate::api::rest::preconditions::{self, RevisionTag};
 use crate::api::rest::state::AuthoringState;
 use crate::domain::audit::AuditStamp;
@@ -58,6 +62,7 @@ use crate::domain::contracts::{
     EntitlementGrants, GrantSet, PlanChangeContract, UsageCounterOnPlanChange,
 };
 use crate::domain::error::DomainError;
+use crate::domain::instant::format_rfc3339;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::plan::{PlanRevision, PlanShapePatch};
@@ -74,6 +79,8 @@ use crate::infra::clone::{CloneNotice, CloneReceipt, SeededPhaseOrigin, clone_pl
 use crate::infra::idempotent::{self, Guarded, GuardedRequest, TxFuture};
 use crate::infra::storage::repo::{NewPlanDraft, PlanRepo, plan_repo, plan_shape_repo};
 use crate::infra::storage::{RepoError, repo_failure};
+use time::OffsetDateTime;
+use time::serde::rfc3339;
 
 /// `OpenAPI` tag applied to every plan operation (DE0205).
 const TAG: &str = "BSS Pricing Plans";
@@ -498,13 +505,16 @@ pub struct PlanView {
     /// The Billing invoice-layout hint (D-96).
     pub invoice_grouping_key: Option<String>,
     /// Start of the availability window, UTC.
-    pub available_from: Option<DateTime<Utc>>,
+    #[serde(default, with = "rfc3339::option")]
+    pub available_from: Option<OffsetDateTime>,
     /// End of the availability window, UTC.
-    pub available_to: Option<DateTime<Utc>>,
+    #[serde(default, with = "rfc3339::option")]
+    pub available_to: Option<OffsetDateTime>,
     /// Pseudonymous principal id of the authoring actor.
     pub created_by: Uuid,
     /// When the revision was created, UTC.
-    pub created_at_utc: DateTime<Utc>,
+    #[serde(with = "rfc3339")]
+    pub created_at_utc: OffsetDateTime,
     /// The revision's optimistic-concurrency version - the same number the
     /// `ETag` header quotes, carried in the body too so a client that cannot see
     /// response headers can still submit a precondition.
@@ -643,11 +653,14 @@ pub struct PlanSummaryView {
     /// `one_time` | `recurring` | `usage` | `hybrid`.
     pub billing_cycle: Option<String>,
     /// Start of the availability window, UTC.
-    pub available_from: Option<DateTime<Utc>>,
+    #[serde(default, with = "rfc3339::option")]
+    pub available_from: Option<OffsetDateTime>,
     /// End of the availability window, UTC.
-    pub available_to: Option<DateTime<Utc>>,
+    #[serde(default, with = "rfc3339::option")]
+    pub available_to: Option<OffsetDateTime>,
     /// When the revision was created, UTC.
-    pub created_at_utc: DateTime<Utc>,
+    #[serde(with = "rfc3339")]
+    pub created_at_utc: OffsetDateTime,
     /// The precondition a caller needs to `PATCH` this row without reading it
     /// again. Carried on the page for the same reason [`PlanView`] carries it: a
     /// client that cannot see response headers can still submit an `If-Match`.
@@ -672,18 +685,6 @@ impl From<&PlanRevision> for PlanSummaryView {
             row_version: revision.row_version.get(),
         }
     }
-}
-
-/// The two pagination query parameters plus the lifecycle filter (D-125).
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct PlanPageQuery {
-    /// Plans per page; server default 100, hard cap 1,000.
-    pub limit: Option<String>,
-    /// The opaque token a previous page returned.
-    pub cursor: Option<String>,
-    /// Comma-separated lifecycle states. Absent is the authoring set: each
-    /// plan's open draft when it has one, else its current revision.
-    pub lifecycle_state: Option<String>,
 }
 
 /// The plan shape a create authors, and the one facet a `PATCH` may move.
@@ -717,9 +718,11 @@ pub struct PlanShapeRequest {
     /// The Billing invoice-layout hint (D-96).
     pub invoice_grouping_key: Option<String>,
     /// Start of the availability window, UTC.
-    pub available_from: Option<DateTime<Utc>>,
+    #[serde(default, with = "rfc3339::option")]
+    pub available_from: Option<OffsetDateTime>,
     /// End of the availability window, UTC.
-    pub available_to: Option<DateTime<Utc>>,
+    #[serde(default, with = "rfc3339::option")]
+    pub available_to: Option<OffsetDateTime>,
     /// The entitlement grant set (Slice 6, §6, D-41): the plan-level feature
     /// flags and quotas, the `PlanTier` they resolved from when they did, and
     /// any per-phase sets keyed by `phaseId`.
@@ -918,7 +921,8 @@ pub struct PatchPlanRequest {
 fn without_placeholder_plan(
     mut report: crate::domain::validation::ValidationReport,
 ) -> crate::domain::validation::ValidationReport {
-    let placeholder = PlanShape::new(PlanId::new(Uuid::nil()), 0, Utc::now()).subject();
+    let placeholder =
+        PlanShape::new(PlanId::new(Uuid::nil()), 0, OffsetDateTime::now_utc()).subject();
     for violation in &mut report.violations {
         violation.subject = match violation.subject.strip_prefix(&placeholder) {
             Some(rest) => {
@@ -958,7 +962,7 @@ fn without_placeholder_plan(
 /// [`require_authorable_period_bounds`] and
 /// [`require_authorable_purchase_window`] — have no suffix at all.
 fn require_authorable_addon_bounds(rules: &[AddonRule]) -> Result<(), DomainError> {
-    let mut subject = PlanShape::new(PlanId::new(Uuid::nil()), 0, Utc::now());
+    let mut subject = PlanShape::new(PlanId::new(Uuid::nil()), 0, OffsetDateTime::now_utc());
     subject.addon_rules = rules.to_vec();
     let report = ValidationPipeline::new()
         .with_rule(Box::new(AddonQtyRange))
@@ -1092,7 +1096,7 @@ fn require_distinct_period_markets(
 /// the create does not, or the market in the violation's subject the way
 /// `AddonQtyRange` names its SKU.
 fn require_authorable_period_bounds(bounds: &[PeriodFloorCap]) -> Result<(), DomainError> {
-    let mut subject = PlanShape::new(PlanId::new(Uuid::nil()), 0, Utc::now());
+    let mut subject = PlanShape::new(PlanId::new(Uuid::nil()), 0, OffsetDateTime::now_utc());
     subject.period_floor_caps = bounds.to_vec();
     let report = ValidationPipeline::new()
         .with_rule(Box::new(PeriodFloorCapAmounts))
@@ -1139,7 +1143,7 @@ fn require_authorable_purchase_window(
     min: Option<u64>,
     max: Option<u64>,
 ) -> Result<(), DomainError> {
-    let mut subject = PlanShape::new(PlanId::new(Uuid::nil()), 0, Utc::now());
+    let mut subject = PlanShape::new(PlanId::new(Uuid::nil()), 0, OffsetDateTime::now_utc());
     subject.purchase_min_qty = min;
     subject.purchase_max_qty = max;
     let report = ValidationPipeline::new()
@@ -1176,8 +1180,8 @@ fn require_authorable_purchase_window(
 /// [`require_authorable_windows_against_the_stored_row`], which merges before it
 /// calls this.
 fn require_ordered_availability_window(
-    available_from: Option<DateTime<Utc>>,
-    available_to: Option<DateTime<Utc>>,
+    available_from: Option<OffsetDateTime>,
+    available_to: Option<OffsetDateTime>,
 ) -> Result<(), DomainError> {
     let (Some(from), Some(to)) = (available_from, available_to) else {
         return Ok(());
@@ -1188,8 +1192,8 @@ fn require_ordered_availability_window(
     Err(DomainError::InvalidRequest(format!(
         "availableTo {} is not after availableFrom {}: the window is open for no instant at \
          all, so the plan is authorable and unsellable",
-        to.to_rfc3339(),
-        from.to_rfc3339()
+        format_rfc3339(to),
+        format_rfc3339(from)
     )))
 }
 
@@ -1307,10 +1311,11 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              one, else its current revision - `draft` is not a current revision \
              (`is_current_revision()` is `published | retired`), so a listing that asked for \
              current revisions would hide every plan being authored right now. \
-             `lifecycle_state` narrows the page to a comma-separated set of states. The five \
-             child sets are **not** on this page - a hundred plans would be six hundred \
-             queries - so a caller opens `GET /bss-pricing/v1/plans/{planId}` for a plan's \
-             shape.",
+             `$filter=lifecycle_state in ('draft','published')` narrows the page; omitting \
+             that field keeps the authoring default. The walk stays `plan_id` so the \
+             authoring collapse stays one revision per plan. The five child sets are \
+             **not** on this page - a hundred plans would be six hundred queries - so a \
+             caller opens `GET /bss-pricing/v1/plans/{planId}` for a plan's shape.",
         )
         .tag(TAG)
         .authenticated()
@@ -1322,12 +1327,9 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             "integer",
         )
         .query_param("cursor", false, "Opaque base64url pagination cursor")
-        .query_param(
-            "lifecycle_state",
-            false,
-            "Comma-separated lifecycle states; absent is each plan's authoring revision",
-        )
         .handler(list_plans)
+        .with_odata_filter::<PlanFilterField>()
+        .with_odata_orderby::<PlanOrderField>()
         .json_response_with_schema::<Page<PlanSummaryView>>(
             openapi,
             StatusCode::OK,
@@ -1639,13 +1641,17 @@ async fn get_plan(
 /// [`authoring_revision`]'s rule applied to a page rather than to one id;
 /// `plan_repo::list_authoring_page` holds the argument for why a listing over
 /// current revisions would be the wrong one.
+#[allow(clippy::implicit_hasher)]
 async fn list_plans(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
-    Query(query): Query<PlanPageQuery>,
+    Query(extras): Query<HashMap<String, String>>,
+    OData(odata): OData,
 ) -> Result<Json<Page<PlanSummaryView>>, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    reject_non_odata_list_params(&extras)?;
+    refuse_zero_limit(&odata)?;
     let scope = crate::authz::access_scope(
         &enforcer,
         &ctx,
@@ -1657,65 +1663,15 @@ async fn list_plans(
     .await
     .map_err(authz_error_to_canonical)?;
 
-    let page = PageRequest::parse(
-        cursor::parse_limit(query.limit.as_deref())?,
-        query.cursor.as_deref(),
-    )?;
-    let states = lifecycle_filter(query.lifecycle_state.as_deref())?;
-    // One row more than the page, so "is there another page" needs no second
-    // query and no page whose `next_cursor` points at nothing.
-    let probe = page.limit.saturating_add(1);
-    let mut rows = state
+    let page = state
         .plans
-        .list_authoring(&scope, ctx.subject_tenant_id(), &states, page.after, probe)
+        .list_authoring_odata(&scope, ctx.subject_tenant_id(), &odata)
         .await
-        .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
-
-    let has_more = u64::try_from(rows.len()).unwrap_or(u64::MAX) > page.limit;
-    if has_more {
-        rows.pop();
-    }
-    let next = has_more
-        .then(|| rows.last().map(|row| row.plan_id.get()))
-        .flatten();
+        .map_err(map_odata_page_err)?;
     Ok(Json(Page {
-        items: rows.iter().map(PlanSummaryView::from).collect(),
-        page_info: cursor::page_info(next, page.limit),
+        items: page.items.iter().map(PlanSummaryView::from).collect(),
+        page_info: page.page_info,
     }))
-}
-
-/// Read the `lifecycle_state` filter, refusing a token the machine has no state
-/// for rather than silently returning everything.
-///
-/// The tokens are matched against [`LifecycleState::ALL`] rather than written
-/// out here, `approvals::state_filter`'s discipline exactly: a state added to
-/// the machine becomes filterable the day it is added, and one removed stops
-/// being accepted the day it is removed.
-fn lifecycle_filter(raw: Option<&str>) -> Result<Vec<LifecycleState>, CanonicalError> {
-    let Some(raw) = raw else {
-        return Ok(Vec::new());
-    };
-    raw.split(',')
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-        .map(|token| {
-            LifecycleState::ALL
-                .iter()
-                .copied()
-                .find(|state| state.as_str() == token)
-                .ok_or_else(|| {
-                    let known: Vec<&str> = LifecycleState::ALL
-                        .iter()
-                        .copied()
-                        .map(LifecycleState::as_str)
-                        .collect();
-                    CanonicalError::from(DomainError::InvalidRequest(format!(
-                        "lifecycle_state `{token}` is not one of {}",
-                        known.join(", ")
-                    )))
-                })
-        })
-        .collect()
 }
 
 /// The revision an authoring caller is working with: the open draft, else the
@@ -1841,7 +1797,7 @@ async fn create_plan(
     let client_key = preconditions::idempotency_key(&headers)?;
     let request_hash = preconditions::request_digest(&body)?;
     let draft_shape = shape_of(&body)?;
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
 
     let guard = GuardedRequest {
         operation: CREATE_PLAN_OPERATION,
@@ -1954,7 +1910,7 @@ async fn patch_plan(
     let body: PatchPlanRequest = preconditions::parse_body(&body)?;
     let asserted = preconditions::if_match_revision(&headers)?;
     let facet = Facet::of(body)?;
-    let stamp = audit_stamp(&ctx, Utc::now(), correlation);
+    let stamp = audit_stamp(&ctx, OffsetDateTime::now_utc(), correlation);
 
     // D-342's write-stage door, on **this facet and no other**. Before the match
     // rather than inside its arm because every arm answers `RepoError` and this
@@ -2148,7 +2104,7 @@ async fn abandon_plan_draft(
             plan_id,
             revision,
             expected,
-            audit_stamp(&ctx, Utc::now(), correlation),
+            audit_stamp(&ctx, OffsetDateTime::now_utc(), correlation),
         )
         .await
         .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
@@ -2693,7 +2649,7 @@ async fn clone_plan(
     let client_key = preconditions::idempotency_key(&headers)?;
     let request_hash =
         preconditions::request_digest(&serde_json::json!({ "source_plan_id": source.get() }))?;
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let stamp = audit_stamp(&ctx, now, correlation);
 
     let guard = GuardedRequest {
@@ -2815,9 +2771,9 @@ struct DraftShape {
     /// The Billing invoice-layout hint.
     invoice_grouping_key: Option<String>,
     /// Start of the availability window.
-    available_from: Option<DateTime<Utc>>,
+    available_from: Option<OffsetDateTime>,
     /// End of the availability window.
-    available_to: Option<DateTime<Utc>>,
+    available_to: Option<OffsetDateTime>,
     /// The two governed facets the create accepts and now stores: the entitlement
     /// grant set and the plan-change contract.
     ///
@@ -2846,7 +2802,7 @@ impl DraftShape {
         plan_id: PlanId,
         tenant_id: Uuid,
         created_by: Uuid,
-        created_at_utc: DateTime<Utc>,
+        created_at_utc: OffsetDateTime,
         correlation_id: Uuid,
     ) -> (NewPlanDraft, plan_repo::AuthoredGrants) {
         let granted = self.granted;
@@ -2997,7 +2953,8 @@ async fn require_no_stranded_rows(
     .await
     .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
 
-    let mut subject = crate::domain::plan_shape::PlanShape::new(plan_id, revision, Utc::now());
+    let mut subject =
+        crate::domain::plan_shape::PlanShape::new(plan_id, revision, OffsetDateTime::now_utc());
     subject.phases = crate::domain::plan_shape::PhaseGraph::new(phases.to_vec());
     subject.rows = rows;
 

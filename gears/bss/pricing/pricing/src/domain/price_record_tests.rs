@@ -9,7 +9,7 @@
 //! **judges or compares** a row without a store in front of it relies on
 //! (`domain::import`'s Phase 1 has no store at all).
 
-use chrono::{TimeZone, Utc};
+
 use uuid::Uuid;
 
 use super::{PriceContent, PriceRecord, authored_content, canonical_usage_line};
@@ -21,6 +21,7 @@ use crate::domain::price_row::{ModelKind, PriceRow};
 use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
+use crate::domain::instant::utc_ymd_hms;
 
 #[test]
 fn the_content_carries_every_editable_column_and_no_identity() {
@@ -58,11 +59,11 @@ fn the_content_carries_every_editable_column_and_no_identity() {
             credit_on_downgrade: true,
         }),
         rounding_policy_ref: Some("half_up".to_owned()),
-        grandfather_until: Some(Utc.with_ymd_and_hms(2027, 1, 1, 0, 0, 0).unwrap()),
+        grandfather_until: Some(utc_ymd_hms(2027, 1, 1, 0, 0, 0)),
         supersedes_price_id: Some(Uuid::from_u128(0xb_0f)),
         lifecycle_state: LifecycleState::Draft,
         created_by: Uuid::from_u128(0xac_10),
-        created_at_utc: Utc.with_ymd_and_hms(2026, 8, 2, 10, 0, 0).unwrap(),
+        created_at_utc: utc_ymd_hms(2026, 8, 2, 10, 0, 0),
         row_version: RowVersion::new(3),
     };
 

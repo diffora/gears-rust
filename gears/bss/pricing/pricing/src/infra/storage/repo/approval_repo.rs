@@ -133,15 +133,20 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
 use serde_json::{Value as JsonValue, json};
+use time::OffsetDateTime;
+use time::serde::rfc3339;
+use toolkit_db::odata::sea_orm_filter::paginate_odata;
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
+use toolkit_odata::{ODataQuery, Page, SortDir};
 use uuid::Uuid;
+
+use bss_pricing_sdk::odata::ApprovalFilterField;
 
 use crate::domain::approval::content_pin::membership_content_hash;
 use crate::domain::approval::{ApprovalDecision, ApprovalState};
@@ -149,6 +154,10 @@ use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind};
 use crate::domain::membership_change::{MembershipMoveProposal, MembershipMoveSet};
 use crate::domain::scope_key::PlanId;
 use crate::infra::storage::entity::{approval, approval_key};
+use crate::infra::storage::odata_mapping::{
+    ApprovalODataMapper, LIST_LIMIT_CFG, OdataPageError, domain_page, map_odata_err,
+    query_with_default_order,
+};
 use crate::infra::storage::repo::{NewAuditEntry, audit_repo};
 use crate::infra::storage::{RepoError, contention_or_db, policy_guard_or_contention};
 
@@ -305,9 +314,9 @@ pub struct ApprovalRecord {
     /// The materiality evaluator's output.
     pub materiality: JsonValue,
     /// When it was opened, UTC.
-    pub submitted_at: DateTime<Utc>,
+    pub submitted_at: OffsetDateTime,
     /// When it was decided, UTC; `None` exactly while pending.
-    pub decided_at: Option<DateTime<Utc>>,
+    pub decided_at: Option<OffsetDateTime>,
 }
 
 /// Open a pending approval record, **and its `submit` record**.
@@ -524,6 +533,43 @@ pub async fn list_page(
         .into_iter()
         .map(to_domain)
         .collect()
+}
+
+/// One OData page of the tenant's approval records. Default order is
+/// `approval_id asc`.
+///
+/// # Errors
+/// [`OdataPageError::Db`] on storage failure; [`OdataPageError::Odata`] on a
+/// malformed `$filter` / `$orderby` / cursor.
+pub async fn list_odata(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    query: &ODataQuery,
+) -> Result<Page<ApprovalRecord>, OdataPageError> {
+    let base_select = approval::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(approval::Column::TenantId.eq(tenant_id)));
+    let query = query_with_default_order(query, &[ApprovalFilterField::ApprovalId]);
+    let page = paginate_odata::<
+        ApprovalFilterField,
+        ApprovalODataMapper,
+        approval::Entity,
+        approval::Model,
+        _,
+        _,
+    >(
+        base_select,
+        runner,
+        &query,
+        ("approval_id", SortDir::Asc),
+        LIST_LIMIT_CFG,
+        |m| m,
+    )
+    .await
+    .map_err(map_odata_err)?;
+    domain_page(page, to_domain)
 }
 
 /// The **pending** unit pinned to a revision of `plan_id`, if the plan holds one.
@@ -933,7 +979,7 @@ pub async fn void_pending_for_subject(
     tenant_id: Uuid,
     subject_ref: &str,
     reason: &str,
-    voided_at: DateTime<Utc>,
+    voided_at: OffsetDateTime,
 ) -> Result<u64, RepoError> {
     let result = approval::Entity::update_many()
         .secure()
@@ -1410,7 +1456,7 @@ pub fn subject_aggregate(record: &ApprovalRecord) -> Result<SubjectAggregate, Re
 /// # Errors
 /// [`RepoError::Db`] when the set will not serialize — unreachable for
 /// [`MembershipMoveProposalWire`]'s three fields (a `Uuid`, a `String` and a
-/// `DateTime<Utc>`, none of which can fail to serialize), and *reported*
+/// `OffsetDateTime`, none of which can fail to serialize), and *reported*
 /// rather than unwrapped so a caller on a route answers 500 instead of
 /// panicking a request thread.
 pub fn membership_move_subject_ref(set: &MembershipMoveSet) -> Result<String, RepoError> {
@@ -1466,7 +1512,8 @@ pub fn subject_membership_move(record: &ApprovalRecord) -> Result<MembershipMove
 struct MembershipMoveProposalWire {
     payer_tenant_id: Uuid,
     group_value: String,
-    effective_from: DateTime<Utc>,
+    #[serde(with = "rfc3339")]
+    effective_from: OffsetDateTime,
 }
 
 impl MembershipMoveProposalWire {
@@ -1567,7 +1614,7 @@ pub async fn void_pending_for_plan(
     scope: &AccessScope,
     tenant_id: Uuid,
     plan_id: PlanId,
-    voided_at: DateTime<Utc>,
+    voided_at: OffsetDateTime,
 ) -> Result<u64, RepoError> {
     let result = approval::Entity::update_many()
         .secure()
@@ -1645,7 +1692,7 @@ async fn swap(
     state: ApprovalState,
     approver_principal: Option<Uuid>,
     reason: Option<String>,
-    decided_at: DateTime<Utc>,
+    decided_at: OffsetDateTime,
 ) -> Result<(), RepoError> {
     let result = approval::Entity::update_many()
         .secure()

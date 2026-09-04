@@ -40,13 +40,15 @@ use bss_ledger::infra::storage::repo::{
     AdjustmentRepo, ApprovalRepo, DisputeRepo, JournalRepo, RecognitionRepo,
 };
 use bss_ledger_sdk::ODataQuery;
-use chrono::{DateTime, Utc};
+
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, Statement, TransactionTrait};
 use sea_orm_migration::MigratorTrait;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use toolkit_db::secure::AccessScope;
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
+use time::OffsetDateTime;
+use bss_ledger::domain::instant::parse_rfc3339;
 
 fn pg(sql: impl Into<String>) -> Statement {
     Statement::from_string(sea_orm::DatabaseBackend::Postgres, sql.into())
@@ -758,7 +760,7 @@ async fn dual_control_policy_effective_read_resolves_and_is_scoped() {
     seed_policy(&raw, b, 1, "2026-06-01T00:00:00Z", 80_000, 5, 604_800).await;
 
     let repo = ApprovalRepo::new(provider.clone());
-    let now: DateTime<Utc> = "2026-06-25T00:00:00Z".parse().expect("ts");
+    let now = parse_rfc3339("2026-06-25T00:00:00Z").expect("ts");
 
     let versions = repo
         .read_policy_versions(&AccessScope::for_tenant(a), a)
@@ -795,7 +797,7 @@ async fn dual_control_policy_absent_row_yields_no_effective_version() {
     let a = Uuid::now_v7();
 
     let repo = ApprovalRepo::new(provider.clone());
-    let now: DateTime<Utc> = "2026-06-25T00:00:00Z".parse().expect("ts");
+    let now = parse_rfc3339("2026-06-25T00:00:00Z").expect("ts");
     let versions = repo
         .read_policy_versions(&AccessScope::for_tenant(a), a)
         .await

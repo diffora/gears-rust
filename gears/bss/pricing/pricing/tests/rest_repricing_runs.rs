@@ -42,13 +42,16 @@ use bss_pricing::domain::bulk::BulkState;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::RateMinor;
 use bss_pricing::domain::scope_key::{Cohort, PriceEligibility};
-use chrono::{TimeZone, Utc};
+
 use rest_support::{
     Harness, approval_rows, approve_threshold_policy, body_json, bulk_operation_row, price_rows,
     problem_code, seed_current_plan, seed_current_plan_with_phase, seed_per_unit_rate_row,
     seed_price, seed_price_keyed, seed_priced_row, with_headers,
 };
+use bss_pricing::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 use uuid::Uuid;
+use bss_pricing::domain::instant::format_rfc3339;
 
 /// The minted `operation_id` off an accepted run's `202`, with what that response
 /// says about the run's state pinned on the way past.
@@ -75,7 +78,7 @@ async fn accepted_committing_run(response: Response<Body>) -> Uuid {
 }
 
 /// Far enough out that no wall clock reaches it, the fixtures' standing rule. It
-/// matters more here than elsewhere: the changeover is judged against `Utc::now()`
+/// matters more here than elsewhere: the changeover is judged against `OffsetDateTime::now_utc()`
 /// at every submit, so a relatively-dated instant would make this suite go red on
 /// its own one day.
 const CHANGEOVER: &str = "2099-08-20T00:00:00Z";
@@ -249,9 +252,7 @@ async fn a_changeover_that_is_not_in_the_future_is_refused_at_the_submit_floor()
     let run_id = Uuid::now_v7();
     let mut body = a_run(run_id, &serde_json::json!({ "currency": "USD" }));
     body["changeover"] = serde_json::json!(
-        Utc.with_ymd_and_hms(2020, 1, 1, 0, 0, 0)
-            .unwrap()
-            .to_rfc3339()
+        format_rfc3339(utc_ymd_hms(2020, 1, 1, 0, 0, 0))
     );
 
     let response = harness
@@ -352,7 +353,7 @@ async fn the_grandfathered_class_is_excluded_unless_the_selector_names_it() {
     seed_current_plan(&harness, plan).await;
     let ordinary = a_published_row(&harness, plan, "eu").await;
 
-    let generation = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+    let generation = utc_ymd_hms(2026, 1, 1, 0, 0, 0);
     let retained = seed_price_keyed(
         &harness,
         plan,
@@ -437,7 +438,7 @@ async fn a_cohort_without_its_class_is_refused_with_the_reason_the_axes_do_not_s
     let harness = Harness::new().await;
     let plan = Uuid::now_v7();
     seed_current_plan(&harness, plan).await;
-    let generation = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+    let generation = utc_ymd_hms(2026, 1, 1, 0, 0, 0);
     let retained = seed_price_keyed(
         &harness,
         plan,
@@ -455,7 +456,7 @@ async fn a_cohort_without_its_class_is_refused_with_the_reason_the_axes_do_not_s
             REPRICING_RUNS,
             Some(a_run(
                 Uuid::now_v7(),
-                &serde_json::json!({ "cohort": generation.to_rfc3339() }),
+                &serde_json::json!({ "cohort": format_rfc3339(generation) }),
             )),
             &[],
         ))
@@ -478,7 +479,7 @@ async fn a_cohort_without_its_class_is_refused_with_the_reason_the_axes_do_not_s
             Some(a_run(
                 Uuid::now_v7(),
                 &serde_json::json!({
-                    "cohort": generation.to_rfc3339(),
+                    "cohort": format_rfc3339(generation),
                     "price_eligibility": "existing_grandfathered",
                 }),
             )),
@@ -2244,7 +2245,7 @@ async fn a_run_stalled_committing(harness: &Harness, run_id: Uuid, price_id: Uui
             request_hash: b"digest".to_vec(),
             report: serde_json::json!({ "selected": 1 }),
             submitted_by: Uuid::from_u128(0x_ac_13),
-            submitted_at: Utc::now(),
+            submitted_at: OffsetDateTime::now_utc(),
         },
     )
     .await
@@ -2268,7 +2269,7 @@ async fn a_run_stalled_committing(harness: &Harness, run_id: Uuid, price_id: Uui
         BulkState::Validating,
         BulkState::Committing,
         serde_json::json!({ "selected": 1 }),
-        Utc::now(),
+        OffsetDateTime::now_utc(),
     )
     .await
     .expect("hold the run in committing");
@@ -2278,7 +2279,7 @@ async fn a_run_stalled_committing(harness: &Harness, run_id: Uuid, price_id: Uui
         harness.tenant,
         operation_id,
         &[price_id],
-        Utc::now(),
+        OffsetDateTime::now_utc(),
     )
     .await
     .expect("the apply's own lock");
@@ -2558,7 +2559,7 @@ async fn a_replayed_abort_is_answered_and_a_run_that_ended_on_its_own_is_refused
             BulkState::Committing,
             BulkState::Completed,
             serde_json::json!({ "selected": 1 }),
-            Utc::now(),
+            OffsetDateTime::now_utc(),
         )
         .await
         .expect("the run finishes on its own");

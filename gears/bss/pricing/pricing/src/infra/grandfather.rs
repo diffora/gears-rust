@@ -100,7 +100,7 @@
 
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
+
 use toolkit_db::secure::{AccessScope, DBRunner};
 use toolkit_db::{DBProvider, DbError};
 use toolkit_security::SecurityContext;
@@ -124,12 +124,14 @@ use crate::infra::storage::repo::catalog_version_ref_repo::PendingVersionRow;
 use crate::infra::storage::repo::{
     audit_repo, catalog_version_ref_repo, plan_repo, price_repo, window_repo,
 };
+use time::OffsetDateTime;
 use crate::infra::storage::repo_failure;
 
 /// The renderer the surface hands in — `infra::window`'s type, imported rather
 /// than re-declared, so a unit opened on this path and one opened on the window
 /// path cannot store two different documents.
 pub use crate::infra::window::VerdictJson;
+use crate::domain::instant::format_rfc3339;
 
 /// What the door answers.
 ///
@@ -157,9 +159,9 @@ pub struct HorizonReceipt {
     /// That generation's canonical scope key, rendered.
     pub scope_key: ScopeKey,
     /// The horizon the store held before this act. `None` is D-147's indefinite.
-    pub prior_grandfather_until: Option<DateTime<Utc>>,
+    pub prior_grandfather_until: Option<OffsetDateTime>,
     /// The horizon it holds now.
-    pub grandfather_until: DateTime<Utc>,
+    pub grandfather_until: OffsetDateTime,
     /// The registry's pending handle.
     pub pending_version_ref: String,
     /// The row's entity tag — **unmoved**, and deliberately echoed so a caller can
@@ -180,9 +182,9 @@ pub struct HorizonPending {
     /// Its canonical scope key.
     pub scope_key: ScopeKey,
     /// The **stored** horizon, because nothing moved.
-    pub prior_grandfather_until: Option<DateTime<Utc>>,
+    pub prior_grandfather_until: Option<OffsetDateTime>,
     /// What was asked for.
-    pub proposed_grandfather_until: DateTime<Utc>,
+    pub proposed_grandfather_until: OffsetDateTime,
     /// The row's entity tag, unmoved.
     pub row_version: RowVersion,
     /// The opened unit.
@@ -204,13 +206,13 @@ pub struct HorizonPending {
 pub fn horizon_unit_ref(
     plan_id: PlanId,
     price_id: Uuid,
-    prior: Option<DateTime<Utc>>,
-    proposed: DateTime<Utc>,
+    prior: Option<OffsetDateTime>,
+    proposed: OffsetDateTime,
 ) -> String {
     format!(
         "{plan_id}/{price_id}/grandfather-until/{}/{}",
-        prior.map_or_else(|| "none".to_owned(), |at| at.to_rfc3339()),
-        proposed.to_rfc3339()
+        prior.map_or_else(|| "none".to_owned(), |at| format_rfc3339(at)),
+        format_rfc3339(proposed)
     )
 }
 
@@ -234,13 +236,13 @@ fn unit_request_id(
     plan_id: PlanId,
     revision: u64,
     price_id: Uuid,
-    prior: Option<DateTime<Utc>>,
-    proposed: DateTime<Utc>,
+    prior: Option<OffsetDateTime>,
+    proposed: OffsetDateTime,
 ) -> String {
     format!(
         "grandfather-until/{tenant_id}/{plan_id}/{revision}/{price_id}/{}/{}",
-        prior.map_or_else(|| "none".to_owned(), |at| at.to_rfc3339()),
-        proposed.to_rfc3339()
+        prior.map_or_else(|| "none".to_owned(), |at| format_rfc3339(at)),
+        format_rfc3339(proposed)
     )
 }
 
@@ -252,7 +254,7 @@ struct HorizonContext {
     generation: PriceRecord,
     key: ScopeKey,
     windows: KeyWindows,
-    margin: Option<chrono::TimeDelta>,
+    margin: Option<time::Duration>,
     published: Vec<PriceRecord>,
     shape: crate::domain::plan_shape::PlanShape,
 }
@@ -292,7 +294,7 @@ impl GrandfatherService {
         scope: &AccessScope,
         tenant_id: Uuid,
         price_id: Uuid,
-        proposed: DateTime<Utc>,
+        proposed: OffsetDateTime,
         expected: RowVersion,
         verdict_json: VerdictJson,
         stamp: AuditStamp,
@@ -347,7 +349,7 @@ async fn tighten_in(
     scope: &AccessScope,
     tenant_id: Uuid,
     price_id: Uuid,
-    proposed: DateTime<Utc>,
+    proposed: OffsetDateTime,
     expected: RowVersion,
     verdict_json: VerdictJson,
     stamp: AuditStamp,
@@ -577,7 +579,7 @@ fn horizon_state_value(record: &PriceRecord) -> serde_json::Value {
         "priceId": record.price_id,
         "scopeKey": record.scope_key.to_string(),
         "lifecycleState": record.lifecycle_state.as_str(),
-        "grandfatherUntil": record.grandfather_until,
+        "grandfatherUntil": record.grandfather_until.map(format_rfc3339),
         "rowVersion": record.row_version.get(),
     })
 }
@@ -592,7 +594,7 @@ async fn read_horizon_context(
     scope: &AccessScope,
     tenant_id: Uuid,
     price_id: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<HorizonContext, DomainError> {
     let generation = price_repo::find_on(runner, scope, tenant_id, price_id)
         .await

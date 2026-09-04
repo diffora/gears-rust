@@ -6,11 +6,11 @@
 //! disposition. Tenant-scoped via `SecureORM`; the resource col is the
 //! synthetic `exception_id`.
 
-use chrono::{DateTime, Utc};
 use sea_orm::entity::prelude::*;
 use serde_json::Value as JsonValue;
 use toolkit_db_macros::Scopable;
 use uuid::Uuid;
+use time::OffsetDateTime;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Scopable)]
 #[sea_orm(table_name = "ledger_exception_queue")]
@@ -30,8 +30,8 @@ pub struct Model {
     pub status: String,
     pub period_id: Option<String>,
     pub detail: Option<JsonValue>,
-    pub opened_at: DateTime<Utc>,
-    pub resolved_at: Option<DateTime<Utc>>,
+    pub opened_at: OffsetDateTime,
+    pub resolved_at: Option<OffsetDateTime>,
     pub resolved_by: Option<String>,
 }
 

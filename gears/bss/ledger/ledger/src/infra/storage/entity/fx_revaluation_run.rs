@@ -5,10 +5,10 @@
 //! failed/lagged run BLOCKS close instead of leaving a forever-unpostable missing
 //! `FX_REVALUATION`. Tenant-scoped via `SecureORM`.
 
-use chrono::{DateTime, Utc};
 use sea_orm::entity::prelude::*;
 use toolkit_db_macros::Scopable;
 use uuid::Uuid;
+use time::OffsetDateTime;
 
 /// The only persisted status — the period-end run finished every scope cleanly.
 pub const STATUS_COMPLETE: &str = "COMPLETE";
@@ -33,7 +33,7 @@ pub struct Model {
     pub scope: String,
     /// Lifecycle status — only [`STATUS_COMPLETE`] is persisted.
     pub status: String,
-    pub completed_at_utc: DateTime<Utc>,
+    pub completed_at_utc: OffsetDateTime,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

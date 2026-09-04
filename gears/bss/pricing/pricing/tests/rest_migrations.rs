@@ -20,11 +20,12 @@ mod rest_support;
 
 use axum::http::StatusCode;
 use bss_pricing::api::rest::migrations::{MIGRATION_BY_ID, MIGRATIONS};
-use chrono::{DateTime, Duration, SubsecRound, Utc};
 use rest_support::{Harness, body_json, code_in, request, seed_publishable_plan};
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use toolkit_db::secure::SecureEntityExt;
 use uuid::Uuid;
+use time::OffsetDateTime;
+use time::Duration;
 
 const OPERATOR: Uuid = Uuid::from_u128(0x_09_e2);
 
@@ -43,14 +44,19 @@ async fn published(h: &Harness) -> Uuid {
 
 /// **An authored instant at the millisecond quantum** (D-144), relative to now.
 ///
-/// `Utc::now()` carries microseconds and `effective_at` is authored, carried in a
+/// `OffsetDateTime::now_utc()` carries microseconds and `effective_at` is authored, carried in a
 /// contract field and compared, so the store refuses a finer one —
 /// `an_effective_instant_finer_than_the_quantum_is_refused_and_the_announcement_is_not`
 /// is that gate's own case. It is offset from *now* rather than fixed in 2099
 /// because D-49's notice floor is measured from the scheduling commit, so a fixture
 /// instant that did not move with the clock would be testing the wrong distance.
-fn authored(days: i64) -> DateTime<Utc> {
-    Utc::now().trunc_subsecs(3) + Duration::days(days)
+fn authored(days: i64) -> OffsetDateTime {
+    bss_pricing::domain::instant::truncate_millis(OffsetDateTime::now_utc()) + Duration::days(days)
+}
+
+fn wire(at: OffsetDateTime) -> String {
+    at.format(&time::format_description::well_known::Rfc3339)
+        .expect("rfc3339")
 }
 
 /// A schedule body clearing D-49's 60-day floor by a wide margin.
@@ -59,7 +65,7 @@ fn schedule_body(migration_id: Uuid, source: Uuid, target: Uuid) -> serde_json::
         "migration_id": migration_id,
         "source_plan_id": source,
         "target_plan_id": target,
-        "effective_at": authored(120),
+        "effective_at": wire(authored(120)),
     })
 }
 
@@ -118,7 +124,7 @@ async fn a_replay_of_one_migration_id_answers_200_with_the_original_schedule() {
     // The retry carries a **different** effective date. The stored schedule is
     // what answers: the key is the identity, and the second body never lands.
     let mut retry = schedule_body(migration_id, source, target);
-    retry["effective_at"] = serde_json::json!(authored(300));
+    retry["effective_at"] = serde_json::json!(wire(authored(300)));
     let second = h
         .allowed_as(OPERATOR)
         .send(request("POST", MIGRATIONS, Some(retry)))
@@ -416,7 +422,7 @@ async fn an_effective_instant_below_the_quantum_is_refused_on_the_wire() {
     let target = published(&h).await;
 
     let mut body = schedule_body(Uuid::now_v7(), source, target);
-    body["effective_at"] = serde_json::json!(authored(120) + Duration::microseconds(137));
+    body["effective_at"] = serde_json::json!(wire(authored(120) + Duration::microseconds(137)));
 
     let response = h
         .allowed_as(OPERATOR)
@@ -446,7 +452,7 @@ async fn a_migration_inside_the_notice_period_is_refused_naming_the_earliest_ins
     let target = published(&h).await;
 
     let mut body = schedule_body(Uuid::now_v7(), source, target);
-    body["effective_at"] = serde_json::json!(authored(30));
+    body["effective_at"] = serde_json::json!(wire(authored(30)));
 
     let response = h
         .allowed_as(OPERATOR)

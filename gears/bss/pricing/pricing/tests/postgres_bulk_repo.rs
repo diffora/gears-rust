@@ -53,11 +53,13 @@ use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
+use bss_pricing::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 use bss_pricing::infra::storage::RepoError;
 use bss_pricing::infra::storage::repo::{
     IdempotencyGate, NewBulkOperation, NewPriceDraft, PriceRepo, bulk_repo,
 };
-use chrono::{DateTime, TimeZone, Utc};
+
 use pg_support::Pg;
 use toolkit_db::secure::{AccessScope, DbConn};
 use toolkit_db::{DBProvider, DbError};
@@ -66,8 +68,8 @@ use uuid::Uuid;
 const TENANT: Uuid = Uuid::from_u128(0x7e_41);
 const ACTOR: Uuid = Uuid::from_u128(0xac_40);
 
-fn at(hour: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 9, hour, 0, 0).unwrap()
+fn at(hour: u32) -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 9, hour, 0, 0)
 }
 
 fn scope() -> AccessScope {

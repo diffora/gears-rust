@@ -1,9 +1,9 @@
 //! `SeaORM` entity for `bss.ledger_tenant_posting_lock` (per-tenant posting kill switch).
 
-use chrono::{DateTime, Utc};
 use sea_orm::entity::prelude::*;
 use toolkit_db_macros::Scopable;
 use uuid::Uuid;
+use time::OffsetDateTime;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Scopable)]
 #[sea_orm(table_name = "ledger_tenant_posting_lock")]
@@ -19,9 +19,9 @@ pub struct Model {
     pub locked: bool,
     pub reason_code: Option<String>,
     pub set_by: Option<Uuid>,
-    pub set_at: Option<DateTime<Utc>>,
+    pub set_at: Option<OffsetDateTime>,
     pub cleared_by: Option<Uuid>,
-    pub cleared_at: Option<DateTime<Utc>>,
+    pub cleared_at: Option<OffsetDateTime>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

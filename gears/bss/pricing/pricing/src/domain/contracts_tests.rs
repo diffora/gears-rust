@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, TimeZone, Utc};
+
 use uuid::Uuid;
 
 use super::consumer_contract_rules;
@@ -14,6 +14,8 @@ use super::{
     ProrationBasis, ProrationContract, ProrationContractMarketUniform, ProrationCreditHasBasis,
     ProrationInputsPresent,
 };
+use crate::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 use super::{
     CHANGE_TARGET_UNPUBLISHED, COMPARABILITY_RANK_REQUIRED, COMPARABILITY_RANK_REVOKED,
     ChangeGraphAuthorable, ChangeTargetIndex, PlanChangeContract, UsageCounterOnPlanChange,
@@ -30,10 +32,8 @@ use crate::domain::scope_key::{
 };
 use crate::domain::validation::{ValidationReport, ValidationRule};
 
-fn now() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 7, 12, 0, 0)
-        .single()
-        .expect("the fixed instant is unambiguous")
+fn now() -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 7, 12, 0, 0)
 }
 
 fn plan() -> PlanId {

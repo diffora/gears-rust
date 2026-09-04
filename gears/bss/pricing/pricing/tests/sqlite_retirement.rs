@@ -34,12 +34,14 @@ use bss_pricing::domain::retirement::BlockingReferenceKind;
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
+use bss_pricing::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{
     NewPlanDraft, PlanRepo, PlanShapeRepo, PriceRepo, plan_repo,
 };
 use bss_pricing::infra::storage::{RepoError, repo_failure};
-use chrono::{DateTime, TimeZone, Utc};
+
 use sea_orm_migration::MigratorTrait;
 use toolkit_db::secure::AccessScope;
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
@@ -48,8 +50,8 @@ use uuid::Uuid;
 const TENANT: Uuid = Uuid::from_u128(0x_7e_11_51);
 const CORRELATION: Uuid = Uuid::from_u128(0x_c0_11_a7_11);
 
-fn at(hour: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 7, hour, 0, 0).unwrap()
+fn at(hour: u32) -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 7, hour, 0, 0)
 }
 
 fn scope() -> AccessScope {

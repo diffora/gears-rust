@@ -52,12 +52,14 @@
 
 use std::fmt;
 
-use chrono::{DateTime, Duration, Utc};
+
 use toolkit_macros::domain_model;
 
 use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::plan_shape::PhaseKind;
+use time::OffsetDateTime;
+use crate::domain::instant::try_days;
 
 /// Wire code for a migration whose target is not a published plan
 /// (`11-lifecycle.md` §5, `inst-mg-target`, 422).
@@ -286,10 +288,10 @@ impl NoticePeriod {
     /// window.
     pub fn earliest_effective(
         self,
-        announced_at: DateTime<Utc>,
-    ) -> Result<DateTime<Utc>, DomainError> {
-        Duration::try_days(self.days)
-            .and_then(|notice| announced_at.checked_add_signed(notice))
+        announced_at: OffsetDateTime,
+    ) -> Result<OffsetDateTime, DomainError> {
+        try_days(self.days)
+            .and_then(|notice| announced_at.checked_add(notice))
             .ok_or_else(|| {
                 DomainError::MigrationNoticeTooShort(format!(
                     "this tenant's {} day migration notice period cannot be honoured: it does \
@@ -315,8 +317,8 @@ impl NoticePeriod {
     /// is reachable from a refusal that only says "too short".
     pub fn ensure_honoured(
         self,
-        announced_at: DateTime<Utc>,
-        effective_at: DateTime<Utc>,
+        announced_at: OffsetDateTime,
+        effective_at: OffsetDateTime,
     ) -> Result<(), DomainError> {
         let earliest = self.earliest_effective(announced_at)?;
         if effective_at >= earliest {

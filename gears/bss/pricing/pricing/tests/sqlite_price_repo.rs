@@ -45,6 +45,8 @@ use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::contracts::{
     AnchorDay, BillingAnchorPolicy, ProrationBasis, ProrationContract,
 };
+use bss_pricing::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount, RateMinor};
@@ -62,7 +64,7 @@ use bss_pricing::infra::storage::entity::{audit_log, price, price_tier_band, pri
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{NewPriceDraft, PriceRepo};
 use bss_pricing::infra::storage::{RepoError, repo_failure};
-use chrono::{DateTime, TimeZone, Utc};
+
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
@@ -137,8 +139,8 @@ fn plan() -> PlanId {
     PlanId::new(Uuid::from_u128(0x9_1a4))
 }
 
-fn at(hour: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 2, hour, 0, 0).unwrap()
+fn at(hour: u32) -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 2, hour, 0, 0)
 }
 
 fn money(units: i64) -> MinorAmount {
@@ -204,7 +206,7 @@ fn new_subscriptions_key(charge_kind: ChargeKind) -> ScopeKey {
 /// `price_eligibility = existing_grandfathered`, enforced by the domain
 /// constructor and again by `chk_pricing_price_cohort_eligibility`. So the two
 /// axes move together here, which is what a real cutover does.
-fn grandfathered_key(charge_kind: ChargeKind, cutover: DateTime<Utc>) -> ScopeKey {
+fn grandfathered_key(charge_kind: ChargeKind, cutover: OffsetDateTime) -> ScopeKey {
     ScopeKey::new(
         plan(),
         CurrencyCode::new("USD").expect("three letters"),
@@ -972,7 +974,7 @@ async fn an_authored_instant_finer_than_the_quantum_is_refused_on_both_write_pat
     // silence, which is exactly how a truncating producer and a non-truncating
     // consumer end up agreeing until the day they do not (D-144).
     let mut content = flat_content();
-    content.grandfather_until = Some(at(23) + chrono::TimeDelta::microseconds(1));
+    content.grandfather_until = Some(at(23) + time::Duration::microseconds(1));
     let err = repo
         .create_draft(
             &scope,
@@ -1026,7 +1028,7 @@ async fn an_authored_instant_finer_than_the_quantum_is_refused_on_both_write_pat
     // leave the store one `PATCH` away from a column holding an instant finer
     // than the one the catalog compares at — and `timestamptz` takes it in
     // silence, so nothing downstream would ever report it.
-    content.grandfather_until = Some(at(20) + chrono::TimeDelta::microseconds(1));
+    content.grandfather_until = Some(at(20) + time::Duration::microseconds(1));
     let err = repo
         .update_draft(
             &scope,
@@ -1072,7 +1074,7 @@ async fn an_authored_instant_finer_than_the_quantum_is_refused_on_both_write_pat
         PhaseId::new(Uuid::from_u128(0xfa_5e)),
         PriceEligibility::ExistingGrandfathered,
         ChargeKind::Recurring,
-        Cohort::Generation(at(9) + chrono::TimeDelta::nanoseconds(1)),
+        Cohort::Generation(at(9) + time::Duration::nanoseconds(1)),
     )
     .expect_err("a sub-millisecond cutover cannot become an axis value");
     assert!(matches!(err, DomainError::TimestampPrecisionExceeded(_)));
@@ -3862,7 +3864,7 @@ async fn the_keyset_page_walks_the_same_total_order_the_list_declares() {
 fn stamp() -> bss_pricing::domain::audit::AuditStamp {
     bss_pricing::domain::audit::AuditStamp {
         actor_principal_id: uuid::Uuid::from_u128(0xac_10),
-        recorded_at: chrono::Utc::now(),
+        recorded_at: OffsetDateTime::now_utc(),
         correlation_id: TEST_CORRELATION,
     }
 }
@@ -4565,7 +4567,7 @@ async fn cutover_rows(
     predecessor: Uuid,
     successor: (Uuid, RowVersion),
     copy: (Uuid, RowVersion),
-    cutover_at: DateTime<Utc>,
+    cutover_at: OffsetDateTime,
 ) -> Result<(), RepoError> {
     let scope = scope.clone();
     let (_, outcome) = provider
@@ -4608,7 +4610,7 @@ async fn seeded_cutover(
     provider: &DBProvider<DbError>,
     scope: &AccessScope,
     meter: Option<&str>,
-    cutover_at: DateTime<Utc>,
+    cutover_at: OffsetDateTime,
 ) -> (Uuid, (Uuid, RowVersion), (Uuid, RowVersion)) {
     let key = usage_key(meter, "");
     let predecessor = Uuid::from_u128(0xc0_01);
@@ -4930,7 +4932,7 @@ async fn the_cross_plane_commit_moves_three_windows_and_three_rows_together() {
     // instant's generation: the row-plane cases can use any instant, but here the
     // window the shorten moves and the cohort the copy carries are two halves of
     // one act and cannot be built from two different clocks.
-    let cutover_at = common::coverage_from() + chrono::Duration::days(3);
+    let cutover_at = common::coverage_from() + time::Duration::days(3);
     let (predecessor, successor, copy) = Box::pin(seeded_cutover(
         &repo,
         &provider,
@@ -5044,7 +5046,7 @@ fn market_key_in(currency: &str, region: &str) -> ScopeKey {
 /// exclusion unobservable — removing it from the query changed no count, so the
 /// clause was asserted by a fixture that could not reach the state it claimed to
 /// cover. Found by a probe that reddened **nothing**.
-fn grandfathered_market_key(region: &str, cutover: DateTime<Utc>) -> ScopeKey {
+fn grandfathered_market_key(region: &str, cutover: OffsetDateTime) -> ScopeKey {
     ScopeKey::new(
         plan(),
         CurrencyCode::new("USD").expect("three letters"),

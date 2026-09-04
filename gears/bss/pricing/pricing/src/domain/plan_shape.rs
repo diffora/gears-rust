@@ -121,7 +121,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use chrono::{DateTime, Utc};
+
 use serde_json::Value as JsonValue;
 use toolkit_macros::domain_model;
 use uuid::Uuid;
@@ -131,6 +131,7 @@ use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::scope_key::{ChargeKind, PhaseId, PlanId, Region};
 use crate::domain::window::KeyWindows;
+use time::OffsetDateTime;
 
 /// The §17.1 billing-cycle matrix: what commercial shape the plan is.
 ///
@@ -712,7 +713,7 @@ pub struct PublishedBaseline {
     pub phase_ids_in_use: BTreeSet<PhaseId>,
     /// The published `available_from`, so a re-publish of an unchanged value
     /// is distinguishable from newly backdating one.
-    pub available_from: Option<DateTime<Utc>>,
+    pub available_from: Option<OffsetDateTime>,
     /// The published `available_to`.
     ///
     /// **Nothing reads it.** `infra::publish::published_baseline` populates it and
@@ -727,7 +728,7 @@ pub struct PublishedBaseline {
     /// It is carried rather than dropped because the availability rule's
     /// `available_to` half is the obvious next registration and the operand would
     /// otherwise have to be re-plumbed to write it.
-    pub available_to: Option<DateTime<Utc>>,
+    pub available_to: Option<OffsetDateTime>,
 }
 
 /// The subject the Slice-2 pipeline runs over: one plan revision's whole shape,
@@ -780,9 +781,9 @@ pub struct PlanShape {
     /// registry; see [`crate::domain::plan_rules`].
     pub plan_tier_override: bool,
     /// Start of the plan's availability window, UTC.
-    pub available_from: Option<DateTime<Utc>>,
+    pub available_from: Option<OffsetDateTime>,
     /// End of the plan's availability window, UTC.
-    pub available_to: Option<DateTime<Utc>>,
+    pub available_to: Option<OffsetDateTime>,
     /// Minimum purchasable quantity (one-time plans).
     pub purchase_min_qty: Option<u64>,
     /// Maximum purchasable quantity (one-time plans).
@@ -849,7 +850,7 @@ pub struct PlanShape {
     /// first publish; see [`PublishedBaseline`].
     pub baseline: Option<PublishedBaseline>,
     /// The instant the pipeline is being run at; see the module doc.
-    pub evaluated_at: DateTime<Utc>,
+    pub evaluated_at: OffsetDateTime,
 }
 
 impl PlanShape {
@@ -861,7 +862,7 @@ impl PlanShape {
     /// no `Default`: `evaluated_at` would derive to the Unix epoch, and an
     /// availability rule measured against 1970 answers confidently and wrongly.
     #[must_use]
-    pub fn new(plan_id: PlanId, revision: u64, evaluated_at: DateTime<Utc>) -> Self {
+    pub fn new(plan_id: PlanId, revision: u64, evaluated_at: OffsetDateTime) -> Self {
         Self {
             plan_id,
             revision,

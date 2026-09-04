@@ -76,7 +76,7 @@ use bss_ledger::infra::metrics::test_harness::MetricsHarness;
 use bss_ledger::infra::storage::migrations::Migrator;
 use bss_ledger::infra::storage::repo::{AdjustmentRepo, ReferenceRepo};
 use bss_ledger_sdk::{AccountClass, Side};
-use chrono::{Datelike, NaiveDate, Utc};
+use chrono::{Datelike, NaiveDate};
 use sea_orm::{ConnectionTrait, Database, Statement};
 use sea_orm_migration::MigratorTrait;
 use testcontainers_modules::postgres::Postgres;
@@ -88,6 +88,7 @@ use toolkit_gts::gts_id;
 use toolkit_security::{PlatformSecurityContext, SecurityContext};
 use tower::ServiceExt;
 use uuid::Uuid;
+use time::OffsetDateTime;
 
 fn pg(sql: impl Into<String>) -> Statement {
     Statement::from_string(sea_orm::DatabaseBackend::Postgres, sql.into())
@@ -224,7 +225,7 @@ async fn boot() -> (
     let tdb = connect_db(&repo_url, ConnectOpts::default()).await.unwrap();
     let provider = DBProvider::<DbError>::new(tdb);
 
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let s = Seller {
         tenant: SUBJECT_TENANT,
         payer: Uuid::now_v7(),

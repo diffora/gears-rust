@@ -1,30 +1,34 @@
 //! The quantum every authored instant is held to, and the refusal that keeps a
 //! finer one from being silently moved.
 
-use chrono::{DateTime, TimeZone, Timelike, Utc};
+use time::OffsetDateTime;
 
-use super::{check_quantum, is_quantized};
+use super::{check_quantum, format_rfc3339, is_quantized, utc_ymd_hms};
 use crate::domain::error::DomainError;
 
 /// The cutover instant, on the quantum.
-fn cutover() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 2, 12, 0, 0)
-        .single()
-        .expect("a real instant")
+fn cutover() -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 2, 12, 0, 0)
 }
 
 #[test]
 fn whole_milliseconds_are_expressible_and_finer_ones_are_not() {
     assert!(is_quantized(cutover()));
     assert!(is_quantized(
-        cutover().with_nanosecond(123_000_000).expect("valid nanos")
+        cutover()
+            .replace_nanosecond(123_000_000)
+            .expect("valid nanos")
     ));
     assert!(
-        !is_quantized(cutover().with_nanosecond(123_400_000).expect("valid nanos")),
+        !is_quantized(
+            cutover()
+                .replace_nanosecond(123_400_000)
+                .expect("valid nanos")
+        ),
         "a microsecond below the quantum is precision the catalog cannot compare"
     );
     assert!(!is_quantized(
-        cutover().with_nanosecond(1).expect("valid nanos")
+        cutover().replace_nanosecond(1).expect("valid nanos")
     ));
 }
 
@@ -35,7 +39,9 @@ fn a_finer_instant_is_refused_rather_than_truncated() {
     // agree until the day they do not, and `cohort` is matched for equality
     // across a gear boundary, so the divergence surfaces as a generation nobody
     // can find rather than as an error.
-    let authored = cutover().with_nanosecond(500_001_000).expect("valid nanos");
+    let authored = cutover()
+        .replace_nanosecond(500_001_000)
+        .expect("valid nanos");
 
     let Err(DomainError::TimestampPrecisionExceeded(detail)) = check_quantum("cohort", authored)
     else {
@@ -48,6 +54,14 @@ fn a_finer_instant_is_refused_rather_than_truncated() {
     assert!(
         detail.contains("2026-08-02"),
         "and the instant it refused, got: {detail}"
+    );
+}
+
+#[test]
+fn format_rfc3339_keeps_the_millisecond_z_form_stored_keys_use() {
+    assert_eq!(
+        format_rfc3339(utc_ymd_hms(2099, 4, 1, 0, 0, 0)),
+        "2099-04-01T00:00:00.000Z"
     );
 }
 

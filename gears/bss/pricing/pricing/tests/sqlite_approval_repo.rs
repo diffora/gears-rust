@@ -26,10 +26,12 @@ use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::approval_repo::{
     self, ApprovalRecord, NewApproval, SubjectAggregate,
 };
+use bss_pricing::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 use bss_pricing::infra::storage::repo::group_membership_repo;
 use bss_pricing_sdk::catalog_version::CatalogVersion;
 use bss_pricing_sdk::catalog_version_registry::{CatalogVersionRegistryV1, PendingVersionRef};
-use chrono::{DateTime, TimeZone, Utc};
+
 use sea_orm_migration::MigratorTrait;
 use serde_json::json;
 use toolkit_canonical_errors::CanonicalError;
@@ -49,7 +51,7 @@ const APPROVER: Uuid = Uuid::from_u128(0xab_01);
 const TEST_CORRELATION: Uuid = Uuid::from_u128(0x_c0_11_a7_10);
 
 /// The stamp an act is written under: who, when, and the request's correlation.
-fn stamp_of(actor: Uuid, when: DateTime<Utc>) -> AuditStamp {
+fn stamp_of(actor: Uuid, when: OffsetDateTime) -> AuditStamp {
     AuditStamp {
         actor_principal_id: actor,
         recorded_at: when,
@@ -67,8 +69,8 @@ async fn harness() -> DBProvider<DbError> {
     DBProvider::<DbError>::new(db)
 }
 
-fn at(hour: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 3, hour, 0, 0).unwrap()
+fn at(hour: u32) -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 3, hour, 0, 0)
 }
 
 fn pending(approval_id: Uuid, tenant_id: Uuid) -> NewApproval {
@@ -112,7 +114,7 @@ fn decided_from(
     state: ApprovalState,
     approver_principal: Option<Uuid>,
     reason: Option<&str>,
-    decided_at: DateTime<Utc>,
+    decided_at: OffsetDateTime,
 ) -> ApprovalRecord {
     ApprovalRecord {
         approval_id: new.approval_id,

@@ -1,7 +1,7 @@
 //! Unit cases for [`super`] — D-51's kept-vs-cancelled split, D-131's per-price-id
 //! map, D-182's absent lane, and `inst-re-references`' two weights.
 
-use chrono::{DateTime, TimeDelta, TimeZone, Utc};
+use time::Duration;
 use uuid::Uuid;
 
 use super::{
@@ -9,6 +9,8 @@ use super::{
     ReferenceReport, ScheduledWindow, WarningReferenceKind, WindowDisposition, WindowVerdict,
     dispose_windows, strand_free_disposition,
 };
+use crate::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 use crate::domain::error::DomainError;
 use crate::domain::money::CurrencyCode;
 use crate::domain::scope_key::{
@@ -211,7 +213,7 @@ fn every_blocking_referrer_is_named_not_just_the_first() {
 // to pin them.
 // ---------------------------------------------------------------------------
 
-fn generation_key(cohort: DateTime<Utc>) -> ScopeKey {
+fn generation_key(cohort: OffsetDateTime) -> ScopeKey {
     ScopeKey::new(
         PlanId::new(Uuid::now_v7()),
         CurrencyCode::new("USD").expect("currency"),
@@ -224,10 +226,8 @@ fn generation_key(cohort: DateTime<Utc>) -> ScopeKey {
     .expect("scope key")
 }
 
-fn at(day: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2099, 8, day, 0, 0, 0)
-        .single()
-        .expect("the fixed instant is unambiguous")
+fn at(day: u32) -> OffsetDateTime {
+    utc_ymd_hms(2099, 8, day, 0, 0, 0)
 }
 
 /// One condemned window on a generation, and the verdict list naming it.
@@ -254,7 +254,7 @@ fn an_indefinite_generations_window_is_kept_because_no_finite_end_answers_it() {
             WindowInterval::new(at(4), None, WindowState::Scheduled),
         )],
         grandfather_until: None,
-        margin: Some(TimeDelta::days(31)),
+        margin: Some(time::Duration::days(31)),
     };
 
     let mut verdicts = condemned_on(window_id);
@@ -299,7 +299,7 @@ fn a_generation_whose_margin_has_no_value_is_kept_rather_than_read_as_zero() {
 ///
 /// `grandfather_until` is operator-authored and stored, and
 /// `infra::storage::repo::check_authored_instant` bounds it only for millisecond
-/// precision — never for range. chrono's `impl Add<TimeDelta> for DateTime<Tz>` is
+/// precision — never for range. chrono's `impl Add<time::Duration> for DateTime<Tz>` is
 /// `checked_add_signed(..).expect(..)`, so `horizon + margin` aborted a **release**
 /// build as readily as a debug one, reachable from `PLAN_RETIRE` through both
 /// `preview` and the commit arm (review 2026-08-19). The fallible add folds into
@@ -318,8 +318,8 @@ fn a_generation_whose_horizon_plus_margin_is_unrepresentable_is_kept_not_a_panic
             window_id,
             WindowInterval::new(at(4), None, WindowState::Scheduled),
         )],
-        grandfather_until: Some(DateTime::<Utc>::MAX_UTC),
-        margin: Some(TimeDelta::days(31)),
+        grandfather_until: Some(crate::domain::instant::max_utc()),
+        margin: Some(time::Duration::days(31)),
     };
 
     let mut verdicts = condemned_on(window_id);
@@ -352,7 +352,7 @@ fn a_generation_still_covered_without_the_condemned_window_cancels_it() {
             ),
         ],
         grandfather_until: Some(at(20)),
-        margin: Some(TimeDelta::days(31)),
+        margin: Some(time::Duration::days(31)),
     };
 
     let mut verdicts = condemned_on(condemned_id);
@@ -375,7 +375,7 @@ fn a_window_the_lane_already_kept_is_never_reconsidered() {
             WindowInterval::new(at(4), Some(at(10)), WindowState::Scheduled),
         )],
         grandfather_until: Some(at(20)),
-        margin: Some(TimeDelta::days(31)),
+        margin: Some(time::Duration::days(31)),
     };
 
     let mut verdicts = vec![WindowVerdict {

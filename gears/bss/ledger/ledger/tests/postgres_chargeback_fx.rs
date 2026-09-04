@@ -52,7 +52,7 @@ use bss_ledger::infra::payment::settle::SettlementService;
 use bss_ledger::infra::storage::migrations::Migrator;
 use bss_ledger::infra::storage::repo::{FxRepo, NewFxRate, ReferenceRepo};
 use bss_ledger_sdk::AccountClass;
-use chrono::{Datelike, NaiveDate, Utc};
+use chrono::{Datelike, NaiveDate};
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, Statement};
 use sea_orm_migration::MigratorTrait;
 use testcontainers_modules::postgres::Postgres;
@@ -61,6 +61,8 @@ use toolkit_db::secure::AccessScope;
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
+use time::OffsetDateTime;
+use bss_ledger::domain::instant::to_naive_date;
 
 fn pg(sql: impl Into<String>) -> Statement {
     Statement::from_string(sea_orm::DatabaseBackend::Postgres, sql.into())
@@ -152,7 +154,7 @@ async fn setup(
         revenue: Uuid::now_v7(),
         fx_gl: Uuid::now_v7(),
     };
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let period_id = format!("{:04}{:02}", now.year(), now.month());
 
     let reference = ReferenceRepo::new(provider.clone());
@@ -428,7 +430,7 @@ async fn ar_reclass_lost_writes_off_at_carried_basis_no_fx() {
             payer_tenant_id: chart.payer,
             resource_tenant_id: None,
             seller_tenant_id: chart.tenant,
-            effective_at: Utc::now().date_naive(),
+            effective_at: to_naive_date(OffsetDateTime::now_utc()),
             due_date: Some(naive(2026, 12, 1)),
             period_id,
             items: vec![InvoiceItem {

@@ -20,7 +20,8 @@
 
 use std::sync::Arc;
 
-use chrono::{DateTime, Datelike, Duration as ChronoDuration, NaiveDate, Utc};
+use chrono::{Datelike, NaiveDate};
+use time::Duration as ChronoDuration;
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, Statement, TransactionTrait};
 use sea_orm_migration::MigratorTrait;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
@@ -37,6 +38,7 @@ use crate::infra::storage::entity::{
     account_balance, journal_entry, journal_line, refund, unallocated_balance,
 };
 use crate::infra::storage::migrations::Migrator;
+use time::OffsetDateTime;
 
 // ---------------------------------------------------------------------------
 // Pure-function fixtures (no DB) — the age-proxy logic.
@@ -46,7 +48,7 @@ const TENANT: u128 = 0xA1;
 const PAYER: u128 = 0xB1;
 const ACCOUNT: u128 = 0xC1;
 
-fn entry(entry_id: Uuid, posted_at: DateTime<Utc>) -> journal_entry::Model {
+fn entry(entry_id: Uuid, posted_at: OffsetDateTime) -> journal_entry::Model {
     journal_entry::Model {
         entry_id,
         tenant_id: Uuid::from_u128(TENANT),
@@ -124,7 +126,7 @@ fn unalloc_cache(account: u128, balance_minor: i64) -> unallocated_balance::Mode
 
 #[test]
 fn aged_grains_flags_old_grain_with_positive_balance() {
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let cutoff = now - ChronoDuration::seconds(86_400);
     // One UNALLOCATED line posted 2 days ago — older than the 1-day cutoff.
     let e = Uuid::now_v7();
@@ -156,7 +158,7 @@ fn aged_grains_uses_oldest_contributing_line_not_latest() {
     // Two lines for the SAME grain: one fresh (today), one old (3 days). The age
     // proxy is the OLDEST (3 days), NOT the latest — the resolved G-P5a decision
     // (NOT `last_entry_seq`, which would point at the fresh line).
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let cutoff = now - ChronoDuration::seconds(86_400);
     let old = Uuid::now_v7();
     let fresh = Uuid::now_v7();
@@ -176,7 +178,7 @@ fn aged_grains_uses_oldest_contributing_line_not_latest() {
 #[test]
 fn aged_grains_skips_fresh_grain() {
     // Oldest line is fresh (1h) — below the 1-day cutoff ⇒ not aged.
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let cutoff = now - ChronoDuration::seconds(86_400);
     let e = Uuid::now_v7();
     let entries = vec![entry(e, now - ChronoDuration::hours(1))];
@@ -194,7 +196,7 @@ fn aged_grains_skips_zero_balance_grain() {
     // Old line, but the cache balance is 0 (fully allocated) ⇒ not aged (the
     // `balance_minor > 0` gate). A drained pool needs no alarm even if its lines
     // are old.
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let cutoff = now - ChronoDuration::seconds(86_400);
     let e = Uuid::now_v7();
     let entries = vec![entry(e, now - ChronoDuration::days(5))];
@@ -211,7 +213,7 @@ fn aged_grains_skips_zero_balance_grain() {
 fn aged_grains_keys_per_grain() {
     // Two distinct accounts: one old+parked (aged), one fresh+parked (not). Only
     // the old grain is flagged — confirms the (payer, account, currency) keying.
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let cutoff = now - ChronoDuration::seconds(86_400);
     let e_old = Uuid::now_v7();
     let e_fresh = Uuid::now_v7();
@@ -236,7 +238,7 @@ fn aged_grains_keys_per_grain() {
 
 #[test]
 fn aged_grains_empty_inputs() {
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let cutoff = now - ChronoDuration::seconds(86_400);
     assert!(aged_grains(&[], &[], &[], now, cutoff).is_empty());
 }
@@ -270,7 +272,7 @@ fn clearing_cache(account: u128, balance_minor: i64) -> account_balance::Model {
     }
 }
 
-fn refund_row(psp: &str, phase: &str, created_at: DateTime<Utc>) -> refund::Model {
+fn refund_row(psp: &str, phase: &str, created_at: OffsetDateTime) -> refund::Model {
     refund::Model {
         tenant_id: Uuid::from_u128(TENANT),
         refund_id: format!("rf-{psp}-{phase}"),
@@ -291,7 +293,7 @@ fn refund_row(psp: &str, phase: &str, created_at: DateTime<Utc>) -> refund::Mode
 
 #[test]
 fn refund_clearing_aged_flags_open_grain_past_7d_warn() {
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let warn = now - ChronoDuration::seconds(WARN_SECS);
     let page = now - ChronoDuration::seconds(PAGE_SECS);
     // Clearing line posted 8 days ago — past the 7d Warn, under the 14d Page.
@@ -318,7 +320,7 @@ fn refund_clearing_aged_flags_open_grain_past_7d_warn() {
 
 #[test]
 fn refund_clearing_aged_marks_paged_past_14d() {
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let warn = now - ChronoDuration::seconds(WARN_SECS);
     let page = now - ChronoDuration::seconds(PAGE_SECS);
     // 15 days open — past BOTH thresholds ⇒ paged (STUCK_REFUND_CLEARING).
@@ -346,7 +348,7 @@ fn refund_clearing_aged_marks_paged_past_14d() {
 
 #[test]
 fn refund_clearing_skips_fresh_and_drained_grains() {
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let warn = now - ChronoDuration::seconds(WARN_SECS);
     let page = now - ChronoDuration::seconds(PAGE_SECS);
     // Fresh (2 days) open grain + an old (10 days) but DRAINED (0) grain — neither
@@ -379,7 +381,7 @@ fn refund_clearing_skips_fresh_and_drained_grains() {
 
 #[test]
 fn stage1_orphan_flags_unmatched_aged_stage1() {
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let cutoff = now - ChronoDuration::seconds(WARN_SECS);
     // A stage-1 `initiated` 8 days old with NO terminal phase ⇒ orphan.
     let rows = vec![refund_row(
@@ -396,7 +398,7 @@ fn stage1_orphan_flags_unmatched_aged_stage1() {
 
 #[test]
 fn stage1_orphan_skips_advanced_and_fresh_stage1() {
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let cutoff = now - ChronoDuration::seconds(WARN_SECS);
     let rows = vec![
         // Advanced: stage-1 + a matching `confirmed` (same psp) ⇒ NOT an orphan,
@@ -528,7 +530,7 @@ async fn aged_queue_row_is_detected_and_run_completes() {
     let aged = job
         .aged_queue_rows(
             "PAYMENT_ALLOCATE",
-            Utc::now(),
+            OffsetDateTime::now_utc(),
             ChronoDuration::seconds(86_400),
         )
         .await
@@ -567,7 +569,7 @@ async fn aged_chargeback_queue_row_is_detected() {
 
     let job = AgedAlarmJob::new(provider, Arc::new(LedgerEventPublisher::noop()));
     let aged = job
-        .aged_queue_rows("CHARGEBACK", Utc::now(), ChronoDuration::seconds(86_400))
+        .aged_queue_rows("CHARGEBACK", OffsetDateTime::now_utc(), ChronoDuration::seconds(86_400))
         .await
         .expect("aged_queue_rows(CHARGEBACK) must succeed");
     assert_eq!(aged.len(), 1, "the 2-day-old chargeback row is aged");
@@ -648,7 +650,7 @@ async fn aged_refund_clearing_is_detected_and_run_completes() {
 
     let job = AgedAlarmJob::new(provider, Arc::new(LedgerEventPublisher::noop()));
     let aged = job
-        .aged_refund_clearing_grains(Utc::now())
+        .aged_refund_clearing_grains(OffsetDateTime::now_utc())
         .await
         .expect("aged_refund_clearing_grains must succeed");
     assert_eq!(aged.len(), 1, "the 8-day-open clearing grain is aged");
@@ -704,7 +706,7 @@ async fn stage1_orphan_refund_is_detected() {
 
     let job = AgedAlarmJob::new(provider, Arc::new(LedgerEventPublisher::noop()));
     let orphans = job
-        .stage1_orphan_refunds(Utc::now())
+        .stage1_orphan_refunds(OffsetDateTime::now_utc())
         .await
         .expect("stage1_orphan_refunds must succeed");
     assert_eq!(orphans.len(), 1, "only the unmatched stage-1 is an orphan");
@@ -806,7 +808,7 @@ async fn aged_unallocated_grain_is_detected_and_run_completes() {
     // from the contributing entry's posted_at (≥ the 1-day threshold) and the
     // parked balance carried through.
     let aged = job
-        .aged_unallocated_grains(Utc::now(), ChronoDuration::seconds(86_400))
+        .aged_unallocated_grains(OffsetDateTime::now_utc(), ChronoDuration::seconds(86_400))
         .await
         .expect("aged_unallocated_grains must succeed");
     assert_eq!(aged.len(), 1, "the 3-day-old parked pool is aged");
@@ -852,7 +854,7 @@ async fn fresh_or_drained_unallocated_grain_is_not_aged() {
 
     let job = AgedAlarmJob::new(provider, Arc::new(LedgerEventPublisher::noop()));
     let aged = job
-        .aged_unallocated_grains(Utc::now(), ChronoDuration::seconds(86_400))
+        .aged_unallocated_grains(OffsetDateTime::now_utc(), ChronoDuration::seconds(86_400))
         .await
         .expect("aged_unallocated_grains must succeed");
     assert!(
@@ -904,7 +906,7 @@ async fn negative_tax_subbalance_beyond_window_is_detected_and_run_completes() {
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
     let (raw, provider) = setup(&url).await;
 
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let current_period = format!("{:04}{:02}", now.year(), now.month());
     let tenant = Uuid::now_v7();
     let account = Uuid::now_v7();

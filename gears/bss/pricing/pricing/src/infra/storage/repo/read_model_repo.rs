@@ -59,7 +59,7 @@
 //! surface asks for.
 
 use bss_pricing_sdk::CatalogVersion;
-use chrono::{DateTime, Utc};
+
 use sea_orm::ActiveValue::Set;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
 use serde_json::Value as JsonValue;
@@ -75,6 +75,7 @@ use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, PriceOverlay,
     Region, ScopeKey,
 };
+use time::OffsetDateTime;
 use crate::domain::sellability::{PinnedFacts, SellabilityFacts};
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 use crate::infra::storage::RepoError;
@@ -101,7 +102,7 @@ pub struct NewDelta {
     pub payload: JsonValue,
     /// When the subject was projected — and, because the two are one act here,
     /// when it became warm.
-    pub projected_at: DateTime<Utc>,
+    pub projected_at: OffsetDateTime,
 }
 
 /// Write one subject's delta inside `runner`'s transaction, warm.
@@ -154,7 +155,7 @@ pub struct StoredDelta {
     /// asked for.
     pub catalog_version: CatalogVersion,
     /// When that projection happened.
-    pub projected_at: DateTime<Utc>,
+    pub projected_at: OffsetDateTime,
     /// The frozen payload, exactly as [`crate::domain::projection`] rendered it.
     pub payload: JsonValue,
 }
@@ -427,11 +428,10 @@ fn uuid(value: &JsonValue, key: &str) -> Result<Uuid, RepoError> {
 
 /// One required instant.
 ///
-/// `serde_json` renders a `DateTime<Utc>` as RFC 3339, so this is the inverse of
+/// `serde_json` renders a `OffsetDateTime` as RFC 3339, so this is the inverse of
 /// what [`crate::domain::projection`] wrote and not a second format.
-fn instant(value: &JsonValue, key: &str) -> Result<DateTime<Utc>, RepoError> {
-    DateTime::parse_from_rfc3339(string(value, key)?)
-        .map(|parsed| parsed.with_timezone(&Utc))
+fn instant(value: &JsonValue, key: &str) -> Result<OffsetDateTime, RepoError> {
+    crate::domain::instant::parse_rfc3339(string(value, key)?)
         .map_err(|e| malformed(key, &format!("is not an RFC 3339 instant: {e}")))
 }
 
@@ -440,7 +440,7 @@ fn instant(value: &JsonValue, key: &str) -> Result<DateTime<Utc>, RepoError> {
 /// An absent member and a `null` one read alike: `serde_json` renders `None` as
 /// `null`, so a reader that distinguished them would be reading the serializer
 /// rather than the fact.
-fn optional_instant(value: &JsonValue, key: &str) -> Result<Option<DateTime<Utc>>, RepoError> {
+fn optional_instant(value: &JsonValue, key: &str) -> Result<Option<OffsetDateTime>, RepoError> {
     match value.get(key) {
         None | Some(JsonValue::Null) => Ok(None),
         Some(_) => instant(value, key).map(Some),

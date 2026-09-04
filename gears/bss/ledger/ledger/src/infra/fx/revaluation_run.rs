@@ -32,7 +32,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use bss_ledger_sdk::{AccountClass, MappingStatus, Side, SourceDocType};
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{NaiveDate};
 use toolkit_db::secure::{AccessScope, DbTx};
 use toolkit_db::{DBProvider, DbError};
 use toolkit_security::SecurityContext;
@@ -56,6 +56,8 @@ use crate::infra::posting::service::{PostSidecar, PostedFacts, PostingService};
 use crate::infra::storage::repo::{
     FxRepo, JournalRepo, PaymentRepo, RecognitionRepo, ReferenceRepo, RevaluationGrain,
 };
+use time::OffsetDateTime;
+use crate::domain::instant::to_naive_date;
 
 /// Origin literal stamped on revaluation posts.
 const ORIGIN_SYSTEM: &str = "SYSTEM";
@@ -280,7 +282,7 @@ impl UnrealizedRevaluationRun {
         rev_scope: RevaluationScope,
         payer: Uuid,
         grains: &[RevaluationGrain],
-        as_of: DateTime<Utc>,
+        as_of: OffsetDateTime,
         chart: &ChartIndex,
         rate_cache: &mut BTreeMap<String, i64>,
     ) -> Result<Option<usize>, DomainError> {
@@ -489,8 +491,8 @@ impl UnrealizedRevaluationRun {
             return Ok(ScopeStatus::ReversalDeferred);
         }
         let effective_at = period_start_utc(&open_period).map_or_else(
-            || DateTime::<Utc>::default().date_naive(),
-            |d| d.date_naive(),
+            || to_naive_date(OffsetDateTime::UNIX_EPOCH),
+            |d| to_naive_date(d),
         );
 
         // 3. Post the negation of each original as a fresh FX_REVAL_REVERSAL JE in
@@ -688,7 +690,7 @@ impl UnrealizedRevaluationRun {
             source_business_id: source_business_id.to_owned(),
             reverses_entry_id,
             reverses_period_id,
-            posted_at_utc: Utc::now(),
+            posted_at_utc: OffsetDateTime::now_utc(),
             effective_at,
             origin: ORIGIN_SYSTEM.to_owned(),
             posted_by_actor_id: ctx.subject_id(),
@@ -729,8 +731,8 @@ fn business_id_prefix(period_id: &str, scope: RevaluationScope) -> String {
 /// post path).
 fn period_end_naive(period_id: &str) -> NaiveDate {
     period_end_utc(period_id)
-        .and_then(|end| end.date_naive().pred_opt())
-        .unwrap_or_else(|| DateTime::<Utc>::default().date_naive())
+        .and_then(|end| to_naive_date(end).pred_opt())
+        .unwrap_or_else(|| to_naive_date(OffsetDateTime::UNIX_EPOCH))
 }
 
 /// Negate one posted revaluation line into a fresh reversal line: flip the side
@@ -837,7 +839,7 @@ struct RevaluationCompletedSidecar {
     functional_currency: String,
     fx_unrealized_minor: i64,
     grains_moved: i32,
-    posted_at_utc: DateTime<Utc>,
+    posted_at_utc: OffsetDateTime,
 }
 
 #[async_trait::async_trait]
@@ -883,7 +885,7 @@ struct RevaluationReversedSidecar {
     payer_id: Uuid,
     functional_currency: String,
     fx_unrealized_minor: i64,
-    posted_at_utc: DateTime<Utc>,
+    posted_at_utc: OffsetDateTime,
 }
 
 #[async_trait::async_trait]

@@ -8,7 +8,7 @@
 //! store*, against the resolution rule and the two-version freeze that need rows.
 
 use bss_pricing_sdk::CatalogVersion;
-use chrono::{DateTime, TimeZone, Utc};
+
 use serde_json::json;
 use std::collections::BTreeMap;
 use uuid::Uuid;
@@ -22,6 +22,8 @@ use crate::domain::plan_shape::{
     BillingCycle, CompositeMeter, CustomIntervalUnit, DescriptorSet, Frequency, PeriodFloorCap,
     PhaseKind, PlanPhase,
 };
+use crate::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow};
 use crate::domain::projection::PlanSubjectDelta;
@@ -33,11 +35,9 @@ use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 use crate::infra::storage::RepoError;
 
 /// `2099-01-01T00:00:00Z` plus `day` whole days.
-fn at(day: i64) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2099, 1, 1, 0, 0, 0)
-        .single()
-        .expect("the fixed instant is unambiguous")
-        + chrono::TimeDelta::days(day)
+fn at(day: i64) -> OffsetDateTime {
+    utc_ymd_hms(2099, 1, 1, 0, 0, 0)
+        + time::Duration::days(day)
 }
 
 fn plan_id() -> PlanId {

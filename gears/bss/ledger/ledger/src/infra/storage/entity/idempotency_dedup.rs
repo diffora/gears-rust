@@ -1,9 +1,9 @@
 //! `SeaORM` entity for `bss.ledger_idempotency_dedup` (per-flow request dedup).
 
-use chrono::{DateTime, Utc};
 use sea_orm::entity::prelude::*;
 use toolkit_db_macros::Scopable;
 use uuid::Uuid;
+use time::OffsetDateTime;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Scopable)]
 #[sea_orm(table_name = "ledger_idempotency_dedup")]
@@ -22,9 +22,9 @@ pub struct Model {
     pub business_id: String,
     pub payload_hash: String,
     pub result_entry_id: Option<Uuid>,
-    pub posted_at_utc: Option<DateTime<Utc>>,
+    pub posted_at_utc: Option<OffsetDateTime>,
     pub status: String,
-    pub retain_until: Option<DateTime<Utc>>,
+    pub retain_until: Option<OffsetDateTime>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

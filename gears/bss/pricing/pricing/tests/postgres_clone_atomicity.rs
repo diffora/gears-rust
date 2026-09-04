@@ -48,6 +48,8 @@ use bss_pricing::domain::audit::AuditSubjectKind;
 use bss_pricing::domain::bundle::{
     Absorber, InvoiceItemization, Party, PartyShare, PriceBasis, RevShareGroup,
 };
+use bss_pricing::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
@@ -65,7 +67,7 @@ use bss_pricing::infra::storage::repo::{
     PlanRepo, PlanShapeRepo, PriceRepo, audit_repo, bundle_repo, plan_repo, plan_shape_repo,
     price_repo,
 };
-use chrono::{DateTime, TimeZone, Utc};
+
 use pg_support::Pg;
 use std::collections::BTreeMap;
 use toolkit_db::secure::{AccessScope, TxError};
@@ -95,8 +97,8 @@ fn trial_phase() -> PhaseId {
 fn terminal_phase() -> PhaseId {
     PhaseId::new(Uuid::from_u128(0xfa_6e))
 }
-fn at(hour: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 8, hour, 0, 0).unwrap()
+fn at(hour: u32) -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 8, hour, 0, 0)
 }
 fn scope() -> AccessScope {
     AccessScope::for_tenant(TENANT)

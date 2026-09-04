@@ -5,7 +5,7 @@
 //! `SecureORM` (`#[secure(tenant_col = "tenant_id",...)]`) so cross-tenant
 //! reads are denied in SQL rather than by a forgotten `WHERE` clause. Column
 //! types are chosen to round-trip on **both** backends: `Uuid` reads from
-//! Postgres `uuid` and `SQLite` `text`, `DateTime<Utc>` from `timestamptz` and
+//! Postgres `uuid` and `SQLite` `text`, `OffsetDateTime` from `timestamptz` and
 //! `text`, `JsonValue` from `jsonb` and `text`, `Vec<u8>` from `bytea` and
 //! `blob`.
 

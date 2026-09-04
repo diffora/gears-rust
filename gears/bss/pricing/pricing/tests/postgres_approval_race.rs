@@ -95,6 +95,8 @@ use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::plan_shape::{
     BillingCycle, DescriptorSet, Frequency, PhaseKind, PlanPhase,
 };
+use bss_pricing::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
@@ -107,7 +109,7 @@ use bss_pricing::infra::storage::repo::{
     PlanRepo, PlanShapeRepo, PriceRepo, ThresholdEntryRow, threshold_repo,
 };
 use bss_pricing::infra::threshold::{AssertedPolicy, ThresholdService};
-use chrono::{DateTime, TimeZone, Utc};
+
 use pg_support::Pg;
 use serde_json::json;
 use tokio::sync::Notify;
@@ -137,8 +139,8 @@ fn terminal_phase() -> PhaseId {
     PhaseId::new(Uuid::from_u128(0xfa_5e))
 }
 
-fn at(hour: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 3, hour, 0, 0).unwrap()
+fn at(hour: u32) -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 3, hour, 0, 0)
 }
 
 fn stamp() -> AuditStamp {
@@ -151,7 +153,7 @@ fn stamp() -> AuditStamp {
 
 /// The stamp a decision is taken under: who acted, when, and the request's
 /// correlation.
-fn stamp_of(actor: uuid::Uuid, when: DateTime<Utc>) -> AuditStamp {
+fn stamp_of(actor: uuid::Uuid, when: OffsetDateTime) -> AuditStamp {
     AuditStamp {
         actor_principal_id: actor,
         recorded_at: when,
@@ -919,7 +921,7 @@ const POLICY_LOSER: Uuid = Uuid::from_u128(0x_b4);
 /// One value for both, because a version's `effective_from` is content and two racers
 /// disagreeing about it would be a second difference between them — this case is about
 /// the one difference it names, their currency sets.
-fn policy_effective_from() -> DateTime<Utc> {
+fn policy_effective_from() -> OffsetDateTime {
     at(16)
 }
 

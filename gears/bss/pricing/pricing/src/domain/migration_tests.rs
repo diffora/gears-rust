@@ -1,7 +1,6 @@
 //! Unit cases for [`super`] — §4's four edges, D-34's rescoped cancel, D-49's
 //! notice floor, `inst-mg-target`'s target predicate and D-39's entry phase.
 
-use chrono::{Duration, TimeZone as _, Utc};
 use uuid::Uuid;
 
 use crate::domain::plan_shape::PhaseKind;
@@ -10,11 +9,14 @@ use super::{
     MigrationState, NOTICE_FLOOR_DAYS, NoticePeriod, ensure_distinct_plans,
     ensure_target_publishable, entry_phase_index,
 };
+use crate::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
+use time::Duration;
 use crate::domain::error::DomainError;
 use crate::domain::lifecycle::LifecycleState;
 
-fn at(year: i32, month: u32, day: u32) -> chrono::DateTime<Utc> {
-    Utc.with_ymd_and_hms(year, month, day, 0, 0, 0).unwrap()
+fn at(year: i32, month: u32, day: u32) -> OffsetDateTime {
+    utc_ymd_hms(year, month, day, 0, 0, 0)
 }
 
 // ---------------------------------------------------------------------------

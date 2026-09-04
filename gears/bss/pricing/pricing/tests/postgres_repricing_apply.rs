@@ -100,6 +100,8 @@ use bss_pricing::domain::overlay::{Adjustment, Magnitude};
 use bss_pricing::domain::plan_shape::{
     BillingCycle, DescriptorSet, Frequency, PhaseKind, PlanPhase,
 };
+use bss_pricing::domain::instant::utc_ymd_hms;
+use time::OffsetDateTime;
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
@@ -112,12 +114,13 @@ use bss_pricing::infra::storage::repo::{
     PolicyObjectRepo, PriceRepo, bulk_repo, repricing_journal_repo,
 };
 use bss_pricing_sdk::catalog_version_registry::{CatalogVersionRegistryV1, PendingVersionRef};
-use chrono::{DateTime, TimeZone, Utc};
+
 use pg_support::Pg;
 use toolkit_db::secure::AccessScope;
 use toolkit_db::{DBProvider, DbError};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
+use bss_pricing::domain::instant::format_rfc3339;
 
 // ---------------------------------------------------------------------------
 // The registry double — this suite's own, per `sqlite_publish_commit.rs`'s
@@ -173,16 +176,16 @@ fn ctx() -> SecurityContext {
         .expect("a subject and a tenant are all a context needs")
 }
 
-fn at(hour: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 11, hour, 0, 0).unwrap()
+fn at(hour: u32) -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 11, hour, 0, 0)
 }
 
 /// Far enough out that no wall clock reaches it, and clear of the batching
 /// delay floor `ChangeoverMoment::Commit` holds the apply to —
 /// `tests/sqlite_repricing_apply.rs`'s own constant, for the identical
 /// reason.
-fn changeover() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2099, 8, 20, 0, 0, 0).unwrap()
+fn changeover() -> OffsetDateTime {
+    utc_ymd_hms(2099, 8, 20, 0, 0, 0)
 }
 
 /// One test's own database, migrated, plus the repositories and the registry
@@ -490,7 +493,7 @@ fn report() -> serde_json::Value {
             "adjustment_value": adjustment.percent_bp(),
             "amounts": {},
         },
-        "changeover": changeover().to_rfc3339(),
+        "changeover": format_rfc3339(changeover()),
         "selected": 0,
     })
 }

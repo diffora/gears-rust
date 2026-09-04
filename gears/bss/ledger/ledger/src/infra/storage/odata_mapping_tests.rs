@@ -13,7 +13,7 @@
     clippy::inconsistent_struct_constructor
 )]
 
-use chrono::{DateTime, NaiveDate};
+use chrono::{NaiveDate};
 use sea_orm::IdenStatic;
 use serde_json::Value as JsonValue;
 use uuid::Uuid;
@@ -36,6 +36,7 @@ use super::{
     RecognitionRunODataMapper, RefundColumn, RefundODataMapper, TenantAccountColumn,
 };
 use toolkit_db::odata::sea_orm_filter::{FieldToColumn, ODataFieldMapping};
+use crate::domain::instant::{from_unix, from_unix_millis};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -375,7 +376,7 @@ fn sample_journal_entry() -> journal_entry::Model {
         source_business_id: "INV-2025-0007".to_owned(),
         reverses_entry_id: None,
         reverses_period_id: None,
-        posted_at_utc: DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+        posted_at_utc: from_unix(1_700_000_000, 0).unwrap(),
         effective_at: NaiveDate::from_ymd_opt(2025, 3, 31).unwrap(),
         origin: "posting".to_owned(),
         posted_by_actor_id: Uuid::from_u128(0x3C),
@@ -403,7 +404,7 @@ fn sample_refund() -> refund::Model {
         clearing_state: "cleared".to_owned(),
         relates_to_refund_id: None,
         reverses_entry_id: None,
-        created_at_utc: DateTime::from_timestamp(1_700_000_001, 0).unwrap(),
+        created_at_utc: from_unix(1_700_000_001, 0).unwrap(),
         version: 1,
     }
 }
@@ -421,7 +422,7 @@ fn sample_credit_note() -> credit_note::Model {
         deferred_part_minor: 400,
         split_basis_ref: None,
         reason_code: "SERVICE_CREDIT".to_owned(),
-        created_at_utc: DateTime::from_timestamp(1_700_000_002, 0).unwrap(),
+        created_at_utc: from_unix(1_700_000_002, 0).unwrap(),
     }
 }
 
@@ -434,7 +435,7 @@ fn sample_debit_note() -> debit_note::Model {
         amount_minor: 750,
         recognized_part_minor: 750,
         deferred_part_minor: 0,
-        created_at_utc: DateTime::from_timestamp(1_700_000_003, 0).unwrap(),
+        created_at_utc: from_unix(1_700_000_003, 0).unwrap(),
     }
 }
 
@@ -458,7 +459,7 @@ fn sample_recognition_run() -> recognition_run::Model {
         tenant_id: Uuid::from_u128(0x2E),
         period_id: "2025-04".to_owned(),
         run_id: Uuid::from_u128(0x0E),
-        started_at_utc: DateTime::from_timestamp(1_700_000_004, 0).unwrap(),
+        started_at_utc: from_unix(1_700_000_004, 0).unwrap(),
         status: "completed".to_owned(),
     }
 }
@@ -472,7 +473,7 @@ fn sample_exception() -> exception_queue::Model {
         status: "open".to_owned(),
         period_id: Some("2025-05".to_owned()),
         detail: None,
-        opened_at: DateTime::from_timestamp(1_700_000_005, 0).unwrap(),
+        opened_at: from_unix(1_700_000_005, 0).unwrap(),
         resolved_at: None,
         resolved_by: None,
     }
