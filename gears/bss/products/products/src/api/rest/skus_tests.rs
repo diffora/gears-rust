@@ -1344,6 +1344,7 @@ fn api_state(harness: &TestHarness) -> ApiState {
         watermark_skew_tolerance: ProductsConfig::default().watermark_skew_tolerance(),
         breakglass_window_hours: crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT,
         breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
+        usage_type_resolver: crate::test_support::resolved_usage_types(),
     }
 }
 
@@ -4980,6 +4981,145 @@ mod meter_declaration_tests {
             body.to_string().contains("correction door"),
             "the refusal names slice 07's correction door rather than forwarding: {body}"
         );
+    }
+
+    /// Drive the publish door with a scripted collector: the probe the `DoD`
+    /// names (*"a stub collector for three distinct outcomes"*), through the
+    /// door and not the judge alone (P-D-141).
+    async fn publish_under_collector(
+        harness: &TestHarness,
+        sku_id: Uuid,
+        etag: &str,
+        idempotency_key: &str,
+        stub: &Arc<crate::test_support::StubUsageTypes>,
+    ) -> Result<axum::response::Response, toolkit::api::canonical_prelude::CanonicalError> {
+        let mut state = api_state(harness);
+        state.usage_type_resolver =
+            Arc::clone(stub) as Arc<dyn crate::infra::usage_types::UsageTypeResolver>;
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::IF_MATCH,
+            etag.parse().expect("etag header"),
+        );
+        headers.insert(
+            "Idempotency-Key",
+            idempotency_key.parse().expect("key header"),
+        );
+        super::super::publish_sku_gated(
+            &state,
+            &flat_in_enforcer(TENANT),
+            &authed_ctx(TENANT),
+            &headers,
+            sku_id,
+            &(Arc::new(crate::domain::governance::NoMaterialityPolicyGate)
+                as Arc<dyn crate::domain::governance::GovernanceGate + Send + Sync>),
+            crate::domain::governance::GateMode::Gate,
+        )
+        .await
+    }
+
+    /// A usage SKU whose meter pair is declared — the operand both collector
+    /// probes below publish.
+    async fn declared_usage_sku(harness: &TestHarness, code: &str) -> (Uuid, String) {
+        seed_unit(harness, "gib_month", "active").await;
+        let parent_id = seed_parent(harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+        let (sku_id, etag) = seed_draft_sku(harness, parent_id, code).await;
+        let saved = patch_sku(
+            app_for(harness, TENANT),
+            TENANT,
+            sku_id,
+            &json!({ "metering_unit": "gib_month", "usage_type_ref": "usage:storage" }),
+            &[("If-Match", &etag)],
+        )
+        .await;
+        assert_eq!(saved.status(), StatusCode::OK, "the meter pair is declared");
+        let etag = saved.headers()[axum::http::header::ETAG]
+            .to_str()
+            .expect("ASCII etag")
+            .to_owned();
+        (sku_id, etag)
+    }
+
+    /// **`Unresolved` refuses `USAGE_TYPE_UNRESOLVED` at the door, and the
+    /// collector was asked exactly once** — once per publish per distinct
+    /// ref, and a SKU has one.
+    #[tokio::test]
+    async fn an_unresolvable_usage_type_refuses_the_publish_through_the_door() {
+        let harness = harness().await;
+        let (sku_id, etag) = declared_usage_sku(&harness, "SKU-UT-1").await;
+        let stub = Arc::new(crate::test_support::StubUsageTypes::always(
+            crate::domain::recognized::UsageTypeAnswer::Unresolved,
+        ));
+        let Err(refusal) =
+            publish_under_collector(&harness, sku_id, &etag, "ut-key-1", &stub).await
+        else {
+            panic!("an unresolvable usage type must refuse the publish");
+        };
+        let response = refusal.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let view = body_json(response).await;
+        assert_eq!(
+            view["context"]["violations"][0]["type"],
+            json!("USAGE_TYPE_UNRESOLVED")
+        );
+        assert_eq!(
+            stub.asked.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "asked once"
+        );
+        assert_eq!(
+            frozen_versions_for(&harness.dsn, sku_id).await,
+            0,
+            "nothing was frozen"
+        );
+    }
+
+    /// **`Unavailable` is a `503` that leaves the act retryable and
+    /// idempotent**: the refusal runs before the transaction, so the
+    /// `Idempotency-Key` is **not claimed**, and the retry with the same key —
+    /// the collector back — publishes exactly once.
+    #[tokio::test]
+    async fn an_unavailable_collector_refuses_503_claims_no_key_and_the_retry_publishes_once() {
+        let harness = harness().await;
+        let (sku_id, etag) = declared_usage_sku(&harness, "SKU-UT-2").await;
+        let stub = Arc::new(crate::test_support::StubUsageTypes::scripted([
+            crate::domain::recognized::UsageTypeAnswer::Unavailable,
+            crate::domain::recognized::UsageTypeAnswer::Resolved,
+        ]));
+
+        let Err(refusal) =
+            publish_under_collector(&harness, sku_id, &etag, "ut-key-2", &stub).await
+        else {
+            panic!("an unavailable collector must refuse, fail-closed");
+        };
+        let response = refusal.into_response();
+        assert_eq!(
+            response.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "P-D-131's 503 channel"
+        );
+        assert_eq!(
+            idempotency_rows_for(&harness.dsn, "ut-key-2").await,
+            0,
+            "the refusal ran ahead of the claim, so the key is free for the retry"
+        );
+        assert_eq!(frozen_versions_for(&harness.dsn, sku_id).await, 0);
+
+        let retried = publish_under_collector(&harness, sku_id, &etag, "ut-key-2", &stub)
+            .await
+            .expect("the collector is back and the same key publishes");
+        assert_eq!(retried.status(), StatusCode::OK);
+        assert_eq!(
+            frozen_versions_for(&harness.dsn, sku_id).await,
+            1,
+            "published once"
+        );
+        assert_eq!(
+            idempotency_rows_for(&harness.dsn, "ut-key-2").await,
+            1,
+            "the retry claimed the key"
+        );
+        assert_eq!(stub.asked.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 }
 

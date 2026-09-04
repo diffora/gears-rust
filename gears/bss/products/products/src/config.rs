@@ -461,6 +461,13 @@ impl ProductsConfig {
     /// `features/lifecycle.md` §7 row 8 needs, since `04`'s activation
     /// runner polls a deferred flip on exactly this interval (no event
     /// exists for a watermark, which is state rather than history).
+    /// `usage_type_resolver_timeout_ms` as a `Duration` — the bound on one
+    /// collector call at publish (P-D-121 row 12, interim 2000).
+    #[must_use]
+    pub fn usage_type_resolver_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(u64::from(self.usage_type_resolver_timeout_ms))
+    }
+
     #[must_use]
     pub fn reference_freshness(&self) -> std::time::Duration {
         std::time::Duration::from_secs(u64::from(self.reference_freshness_minutes) * 60)

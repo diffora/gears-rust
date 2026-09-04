@@ -181,6 +181,10 @@ pub(crate) struct ProductsRuntime {
     /// (strand C's finding, P-D-137).
     pub reference_freshness: std::time::Duration,
 
+    /// `03`'s usage-type resolver (P-D-141), built once at `init` and shared
+    /// by every `ApiState` this runtime hands out.
+    pub usage_type_resolver: Arc<dyn crate::infra::usage_types::UsageTypeResolver>,
+
     /// Whichever handle keeps the running pipeline's background tasks alive.
     ///
     /// Held for its `Drop`, never read: dropping either handle drops its
@@ -667,6 +671,28 @@ impl Gear for BssProductsGear {
         // implementation package. The out-of-process binding is the REST
         // door `register_rest` merges; both run the identical
         // `catalog_version x request` gate.
+        // `03`'s usage-type resolver (P-D-141): the collector's client where
+        // `ClientHub` carries one, `NoCollector` — fail-closed, P-D-131 —
+        // where it does not, said once here so a deployment can read why
+        // its usage SKUs answer 503.
+        let usage_type_resolver: Arc<dyn crate::infra::usage_types::UsageTypeResolver> = match ctx
+            .client_hub()
+            .get::<dyn usage_collector_sdk::UsageCollectorClientV1>()
+        {
+            Ok(client) => Arc::new(crate::infra::usage_types::CollectorResolver::new(
+                client,
+                cfg.usage_type_resolver_timeout(),
+            )),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "bss-products: UsageCollectorClientV1 absent from ClientHub; usage-type \
+                     resolution answers Unavailable and every usage-SKU publish fails closed \
+                     (P-D-131)"
+                );
+                Arc::new(crate::infra::usage_types::NoCollector)
+            }
+        };
         let sdk_state = Arc::new(crate::api::rest::ApiState {
             db: db_provider.clone(),
             sink: sink.clone(),
@@ -677,6 +703,7 @@ impl Gear for BssProductsGear {
             watermark_skew_tolerance: cfg.watermark_skew_tolerance(),
             breakglass_window_hours: cfg.breakglass_window_hours,
             breakglass_review_sla_hours: cfg.breakglass_review_sla_hours,
+            usage_type_resolver: Arc::clone(&usage_type_resolver),
         });
         ctx.client_hub()
             .register::<dyn bss_products_sdk::watermarks::WatermarkPosts>(Arc::new(
@@ -699,6 +726,7 @@ impl Gear for BssProductsGear {
                         watermark_skew_tolerance: cfg.watermark_skew_tolerance(),
                         breakglass_window_hours: cfg.breakglass_window_hours,
                         breakglass_review_sla_hours: cfg.breakglass_review_sla_hours,
+                        usage_type_resolver: Arc::clone(&usage_type_resolver),
                     }),
                     enforcer: (*enforcer).clone(),
                 },
@@ -721,6 +749,7 @@ impl Gear for BssProductsGear {
             activation_attempt_budget: cfg.activation_attempt_budget,
             retirement_held_alert_hours: cfg.retirement_held_alert_hours,
             reference_freshness: cfg.reference_freshness(),
+            usage_type_resolver: Arc::clone(&usage_type_resolver),
             pipeline,
             db: db_provider,
             idempotency_retention_hours,
@@ -773,6 +802,7 @@ impl RestApiCapability for BssProductsGear {
             watermark_skew_tolerance: rt.watermark_skew_tolerance,
             breakglass_window_hours: rt.breakglass_window_hours,
             breakglass_review_sla_hours: rt.breakglass_review_sla_hours,
+            usage_type_resolver: Arc::clone(&rt.usage_type_resolver),
         });
         Ok(router
             .merge(crate::api::rest::products::router(

@@ -11,3 +11,4 @@ pub mod increment;
 pub mod retention;
 pub mod storage;
 pub mod taxonomy;
+pub mod usage_types;

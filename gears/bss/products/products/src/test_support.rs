@@ -280,3 +280,57 @@ pub async fn audit_error_code(dsn: &str) -> Option<String> {
 // mechanical, because the reader now asserts the table holds exactly one row and
 // some of those sites may legitimately have written more. Each has to be looked
 // at, which is why they are recorded here rather than converted blind.
+
+/// A usage-type resolver that answers `Resolved` for every ref — what a test
+/// `ApiState` carries unless a probe injects [`StubUsageTypes`] to script the
+/// other two answers. Production never sees it: `gear.rs` installs the
+/// collector's client or `NoCollector` (P-D-141).
+pub fn resolved_usage_types() -> Arc<dyn crate::infra::usage_types::UsageTypeResolver> {
+    Arc::new(StubUsageTypes::always(
+        crate::domain::recognized::UsageTypeAnswer::Resolved,
+    ))
+}
+
+/// A scripted collector: answers in order, then repeats the last one.
+pub struct StubUsageTypes {
+    answers:
+        std::sync::Mutex<std::collections::VecDeque<crate::domain::recognized::UsageTypeAnswer>>,
+    last: crate::domain::recognized::UsageTypeAnswer,
+    /// How many times the door asked — the *once per publish* clause's operand.
+    pub asked: std::sync::atomic::AtomicUsize,
+}
+
+impl StubUsageTypes {
+    /// One answer, forever.
+    #[must_use]
+    pub fn always(answer: crate::domain::recognized::UsageTypeAnswer) -> Self {
+        Self::scripted([answer])
+    }
+
+    /// `answers` in the order the door will receive them; the last repeats.
+    #[must_use]
+    pub fn scripted(
+        answers: impl IntoIterator<Item = crate::domain::recognized::UsageTypeAnswer>,
+    ) -> Self {
+        let mut queue: std::collections::VecDeque<_> = answers.into_iter().collect();
+        let last = queue.pop_back().expect("a stub needs at least one answer");
+        Self {
+            answers: std::sync::Mutex::new(queue),
+            last,
+            asked: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+
+#[async_trait]
+impl crate::infra::usage_types::UsageTypeResolver for StubUsageTypes {
+    async fn resolve(
+        &self,
+        _ctx: &SecurityContext,
+        _usage_type_ref: &str,
+    ) -> crate::domain::recognized::UsageTypeAnswer {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let next = self.answers.lock().expect("stub lock").pop_front();
+        next.unwrap_or(self.last)
+    }
+}

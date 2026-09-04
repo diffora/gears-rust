@@ -284,6 +284,13 @@ pub(crate) struct ApiState {
     /// elevation's alert carries it, so an operator reading the alert knows
     /// when the obligation lapses without looking the number up.
     pub(crate) breakglass_review_sla_hours: u32,
+    /// `03`'s usage-type resolver (`dod-usage-type-resolution`, P-D-141):
+    /// the collector's client behind a trait, `NoCollector` where none is
+    /// wired. Carried here for the same reason the detector is built per
+    /// door: the policy has an operand outside the process, and a literal in
+    /// the door would be a second program under test.
+    pub(crate) usage_type_resolver:
+        std::sync::Arc<dyn crate::infra::usage_types::UsageTypeResolver>,
 }
 
 /// Extract the authenticated [`SecurityContext`] from the request

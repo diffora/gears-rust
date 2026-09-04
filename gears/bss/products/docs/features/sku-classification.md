@@ -636,11 +636,14 @@ run once per publish per distinct ref. It **MUST** be probed against a stub coll
 distinct outcomes — resolved, unknown, timeout — the timeout case asserting the publish stays
 retryable and idempotent.
 
-**Built, with the collector unwired (P-D-121 row 19, P-D-131):** the HTTP publish door resolves
-before the transaction and the validators phase never calls out. The three answers are judged in
-domain (`judge_usage_type`); unavailable maps to the gear's fail-closed 503. Production
-`resolve_usage_type` is Unavailable until `gear.rs` wires a ClientHub collector; the test binary
-admits so existing usage-SKU publishes stay green. A SKU carries one `usage_type_ref`, so
+**Built, and the collector wired (P-D-121 row 19, P-D-131, P-D-141):** the HTTP publish door
+resolves before the transaction and the validators phase never calls out. The three answers are
+judged in domain (`judge_usage_type`); the resolver is `ApiState`'s `UsageTypeResolver` —
+`infra::usage_types::CollectorResolver` over `usage-collector-sdk`'s `UsageCollectorClientV1`
+(`NotFound` → unresolved, every other error and the configured timeout → unavailable, an invalid
+GTS id → unresolved), `NoCollector` where `ClientHub` carries none (fail-closed 503, said at boot).
+The door is probed through a scripted stub for all three outcomes, the timeout case asserting the
+`Idempotency-Key` is left unclaimed and the retry publishes once. A SKU carries one `usage_type_ref`, so
 once-per-distinct-ref is one call. The scheduled lane still enters `run_publish` inside the
 runner's transaction — consume-at-schedule is the lead's, and this tick does not invent a
 `deferred` disposition there. The timeout field is 2000 in config and unused until a real client

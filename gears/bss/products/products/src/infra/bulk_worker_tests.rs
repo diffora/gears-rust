@@ -83,6 +83,7 @@ async fn harness() -> Harness {
         watermark_skew_tolerance: defaults.watermark_skew_tolerance(),
         breakglass_window_hours: crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT,
         breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
+        usage_type_resolver: crate::test_support::resolved_usage_types(),
     });
     Harness {
         dsn,

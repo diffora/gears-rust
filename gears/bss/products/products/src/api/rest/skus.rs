@@ -3790,13 +3790,15 @@ async fn run_discard(
 /// attempt takes its own copy the way every other input does.
 async fn publish_in_one_transaction(
     state: &ApiState,
+    ctx: &SecurityContext,
     inputs: &HeadActInputs,
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
     mode: GateMode,
 ) -> Result<MutationOutcome, HeadActError> {
-    // P-D-121 row 19: resolve usageTypeRef *before* the transaction.
+    // P-D-121 row 19: resolve usageTypeRef *before* the transaction — and
+    // before the idempotency claim, so a 503 leaves the key free (P-D-141).
     // The validators phase inside run_publish never calls out.
-    resolve_usage_type_before_publish(state, inputs).await?;
+    resolve_usage_type_before_publish(state, ctx, inputs).await?;
     let outbox = state.sink.clone();
     let gate = Arc::clone(gate);
     let inputs = inputs.clone();
@@ -3829,6 +3831,7 @@ async fn publish_in_one_transaction(
 /// unavailable; [`HeadActError::Db`] on a storage failure.
 async fn resolve_usage_type_before_publish(
     state: &ApiState,
+    ctx: &SecurityContext,
     inputs: &HeadActInputs,
 ) -> Result<(), HeadActError> {
     let conn = state.db.conn().map_err(HeadActError::Db)?;
@@ -3841,11 +3844,12 @@ async fn resolve_usage_type_before_publish(
     let Some(usage_type_ref) = head.usage_type_ref.as_deref() else {
         return Ok(());
     };
-    crate::domain::recognized::judge_usage_type(
-        crate::domain::recognized::resolve_usage_type(usage_type_ref),
-        usage_type_ref,
-    )
-    .map_err(HeadActError::Refused)
+    // The resolver is `ApiState`'s (P-D-141): the collector's client in
+    // production, a scripted stub in the probes — one program, no
+    // `cfg(test)` in the path.
+    let answer = state.usage_type_resolver.resolve(ctx, usage_type_ref).await;
+    crate::domain::recognized::judge_usage_type(answer, usage_type_ref)
+        .map_err(HeadActError::Refused)
 }
 
 /// [`publish_in_one_transaction`]'s discard twin, on the same terms —
@@ -4157,7 +4161,7 @@ async fn publish_sku_gated(
         claim,
     };
 
-    let outcome = publish_in_one_transaction(state, &inputs, gate, mode).await;
+    let outcome = publish_in_one_transaction(state, ctx, &inputs, gate, mode).await;
     answer_head_act(state, &act, sku_id, head.internal_revision, outcome).await
 }
 

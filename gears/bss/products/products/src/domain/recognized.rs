@@ -219,24 +219,6 @@ pub fn judge_usage_type(answer: UsageTypeAnswer, usage_type_ref: &str) -> Result
     }
 }
 
-/// Resolve `usageTypeRef` before the publish transaction.
-///
-/// Tests use an admitting stub so the existing suite stays green; the
-/// production binary is fail-closed Unavailable until `gear.rs` wires a
-/// `ClientHub` collector (**P-D-131**). The three-outcome `DoD` probe is
-/// [`judge_usage_type`].
-#[must_use]
-pub fn resolve_usage_type(_usage_type_ref: &str) -> UsageTypeAnswer {
-    #[cfg(test)]
-    {
-        UsageTypeAnswer::Resolved
-    }
-    #[cfg(not(test))]
-    {
-        UsageTypeAnswer::Unavailable
-    }
-}
-
 /// The atomic-pair rule (`inst-mt-atomic-pair`, `dod-meter-atomic`): the
 /// resulting row carries `metering_unit` and `usage_type_ref` together or
 /// not at all. The paired `CHECK` refuses the same shape at the physical

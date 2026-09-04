@@ -1569,6 +1569,38 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-141 — The usage-type resolver is a trait on `ApiState`, the collector's client behind it, and no `cfg(test)` in the path
+
+- **Date**: 2026-09-04 (the lead, closing the one clause strand C's `052c40d64` was held on, and
+  wiring the collector; group 1 of the solo plan)
+- **The seam is a trait, not a fork.** `resolve_usage_type` answered `Resolved` under `cfg(test)`
+  and `Unavailable` otherwise — two programs, the production one exercised by nothing. It is now
+  `infra::usage_types::UsageTypeResolver`, carried on `ApiState` the way the PII detector is built
+  per door (P-D-136): `gear.rs` installs `CollectorResolver` over `usage-collector-sdk`'s
+  `UsageCollectorClientV1` when `ClientHub` carries one, and `NoCollector` — `Unavailable`, always,
+  with a boot-time warning — when it does not. The door reads `state.usage_type_resolver`; the
+  probes inject a scripted stub and drive the **door**, not the judge.
+- **The three answers, from the collector's errors.** `NotFound` → `Unresolved`; an invalid GTS id →
+  `Unresolved` without a call (an id that names nothing cannot resolve anywhere); every other error
+  and a call outliving `usage_type_resolver_timeout_ms` (2000, now read through
+  `ProductsConfig::usage_type_resolver_timeout`) → `Unavailable`, the fail-closed 503 P-D-131 decided
+  for usage SKUs. The call carries the caller's `SecurityContext`, threaded into
+  `publish_in_one_transaction`; the runner's scheduled lane still enters `run_publish` inside its
+  own transaction and does not resolve — consume-at-schedule's residue, unchanged.
+- **Retryable and idempotent, asserted.** The resolve runs before the publish transaction and
+  before the idempotency claim, so a `503` leaves the `Idempotency-Key` unclaimed and the retry with
+  the same key publishes exactly once — the probe the DoD names, written through the door.
+- **The arguments against, stated.** A trait object per request where a function would do —
+  accepted; the function was the fork. Threading `SecurityContext` one level down — accepted; the
+  collector's client requires it and the alternative was a synthetic context. `Unavailable` for a
+  deployment that simply has no collector — accepted; that is P-D-131, and the boot warning names
+  it.
+- **Not changed**: `judge_usage_type` and its three-answer probe; the timeout's interim value.
+- **Propagated**: `dod-usage-type-resolution`'s FEATURE note; the collector SDK joins
+  `products/Cargo.toml`; every test `ApiState` carries the resolved stub through
+  `test_support::resolved_usage_types`.
+
+
 #### P-D-140 — The detector swap is a standing rule the census enforces, and D's third delivery is accepted with its box honestly open
 
 - **Date**: 2026-09-04 (the lead, accepting strand D's `1e067c95f`, merged `34743cf3d`; the
