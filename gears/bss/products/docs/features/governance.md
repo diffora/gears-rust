@@ -613,7 +613,7 @@ provisioning — not a substitute for it. §7 row 38 is struck by **P-D-120**.
 
 ### Stored content snapshot
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-stored-snapshot`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-stored-snapshot`
 
 The system **MUST** require the `approval × submit` grant, **MUST** store the submitted content on
 the record at submission, and **MUST** render the approver's diff from that stored copy against the
@@ -652,11 +652,28 @@ Neither could see the defect the rule is about: a **caller** handing the live he
 stored snapshot belongs. The probe above renders the live head a second time and asserts the two
 answers differ, so the positive assertion is not satisfiable by both.
 
-**The tick still does not follow, and the blocker is the first clause, not the probe.** This DoD
-opens *"MUST require the `approval × submit` grant"*; `authz.rs` mints
-`approval × submit` and **no door spends it** — §7 row 12, and §3.2 of the slice records the pair as
-having no route declared. The grant clause is unbuildable until that door lands, and wire doors are
-not this slice's to declare.
+**The blocker was the first clause and the door that discharges it landed 2026-09-04, so the `DoD`
+ticks.** `POST /bss-products/v1/approvals` (**P-D-120** row 12) authorizes `approval × submit` as
+its **first** step, ahead of the body parse and every write, so *"MUST require the grant"* is a
+property of the order.
+
+**And the snapshot is read from the head, never taken from the request.** For an entity subject the
+door renders the content through `products::product_content` / `skus::sku_version_content` — the
+**same** functions the publish door freezes with — so the bytes an approver signs are the bytes a
+later publish produces. A caller that supplies its own `contentSnapshot` on an entity submission is
+refused outright, which is the probe: without it a door could accept a snapshot describing content
+the publish will never write, which is this `DoD`'s own defect arriving through the request instead
+of through the diff.
+
+**Clause by clause, with the call site** (P-D-109):
+
+| Clause | Where | Probe |
+|---|---|---|
+| require `approval × submit` | `approvals::submit_approval`'s first `authorize(..)` | the enforcer harness refuses an out-of-scope tenant |
+| store the submitted content at submission | `repo::submit_approval`'s `content_snapshot: Set(..)` | `a_submission_reads_its_snapshot_from_the_head_and_refuses_a_supplied_one` |
+| render the diff from the **stored** copy | `domain::approval::render_diff`, which takes the snapshot and can reach no head | the flagship store probe: submit, edit the head, render from the superseded record |
+| never re-derive from the live head | the door's refusal of a supplied snapshot, plus `render_diff`'s signature | the same two |
+| a first publish has `diff_basis` NULL | `diff_basis_for(None)`, and the door passes `latest_entity_version`'s answer | `ApproverDiff::WholeContentAddition`'s own case |
 
 **Implements**: `cpt-cf-bss-products-flow-submit`
 
@@ -684,12 +701,22 @@ which row holds it, are row 9's other halves and are untouched, because a descri
 renders the same whichever row stores it. The probe is armed at **`N = 0`** on purpose — at `N = 2`
 a fixed floor and a configured count are indistinguishable.
 
-**What still blocks the tick**: the sixth name, plus §7 rows 15 and 39 on what `quorumReduced`
-means. **And one field this build had to read and no artifact defines**: what `configuredQuorum`
-carries for a ceremony no tenant configures. It carries the floor here, because `inst-gv-queue` puts
-the field on the wire and a card rendering the target tenant's `N` beside a platform ceremony would
-assert exactly the standing P-D-13 denies — but that is a reading, and it is registered rather than
-presented as the design's.
+**§7 rows 15 and 39 are struck** (**P-D-120**): `quorumReduced` marks an effective count below the
+retained default of two **whatever the cause**, which is P-D-13's own wording, and reduced-by-
+configuration versus reduced-by-non-materiality is read from `configuredQuorum` and `required`
+rather than from the flag alone. Reading the flag by itself was the mistake, and the descriptor's
+other fields are what a card renders beside it.
+
+**What still blocks the tick is the sixth name**: the **override conditions**, which wait on
+`dod-override-ceremony`'s missing operand — *where a subject's lint findings live* — and that is
+**P-D-125**'s dry-run door, the lead's build. Five of six ship and the sixth is a named absence, not
+an omission.
+
+**And one field this build had to read and no artifact defines**: what `configuredQuorum` carries
+for a ceremony no tenant configures. It carries the floor here, because `inst-gv-queue` puts the
+field on the wire and a card rendering the target tenant's `N` beside a platform ceremony would
+assert exactly the standing P-D-13 denies — but that is a reading, and it is registered (O-B-03)
+rather than presented as the design's.
 
 **Implements**: `cpt-cf-bss-products-flow-submit`
 
@@ -1369,7 +1396,7 @@ answers there is nothing left to distinguish.
 
 ### PII block on every operator reason
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-pii-on-reasons`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-pii-on-reasons`
 
 The system **MUST** run `02-taxonomy-attributes`' write-block hook on every operator free-text
 reason this feature stores — **the decision reason and the break-glass session reason**
@@ -1380,11 +1407,29 @@ failing closed at the door is the only reach erasure has over them. The detector
 does not exist, so a **clean-text positive control is part of this obligation** — a stub that
 refuses every string would otherwise satisfy it.
 
-**Nothing was built, and both halves of the blocker are re-measured at `HEAD` (2026-09-02).** No PII
-detector, hook or stub exists anywhere in the crate — `CONTENT_PII_BLOCKED` appears only in
-`infra/error_mapping.rs`'s prose and is **not a declared code** — and the detector is
-`02-taxonomy-attributes`'/`10-retention-erasure`'s to ship. Writing a local stub would satisfy the
-obligation's letter while proving nothing, which is the trap this DoD already names.
+**Both halves of the blocker are gone, re-measured 2026-09-04, and the `DoD` ticks.** The paragraph
+here said *"no PII detector, hook or stub exists anywhere in the crate"* and that
+`CONTENT_PII_BLOCKED` was *"not a declared code"*. Both were true on 2026-09-02 and neither is now:
+`02` shipped `domain::taxonomy`'s `PiiDetector` trait, the `content_pii_block` hook and the
+registered `NoPiiPolicyDetector` host, and `DomainError::ContentPiiBlocked` carries the code.
+
+**Both stored reasons run the hook before their row is written**, through one helper
+(`approvals::pii_block`) so the two doors cannot drift:
+
+| Reason | Door | Where |
+|---|---|---|
+| the decision reason | `POST /approvals/{approvalId}/decisions` | before the append-only insert — a verdict on that table cannot be taken back |
+| the break-glass session reason | `POST /breakglass-sessions` | before the session opens |
+
+**The clean-text positive control is what makes this a tick and not a shape.** The registered
+detector **admits everything and says so** — the same posture `NoMaterialityPolicyGate` takes — so
+a probe asserting only the refusal would pass against a stub that refused every string, which is
+the trap this `DoD` names in its own text. `a_clean_reason_is_admitted_by_the_write_block` is the
+other half: an ordinary review note reaches the record.
+
+**The submission reason is not one of the two**, and that is P-D-120 row 35's narrowing rather than
+a gap: `products_approval` has no `reason` column, a submission's content **is** its snapshot, and
+a column for text nobody writes is the wrong fix.
 
 **And §7 row 35's premise is confirmed rather than merely carried.** The DoD obliges the hook on
 *"the submission reason, the rejection reason and the break-glass session reason"*, and
