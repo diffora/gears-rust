@@ -53,8 +53,9 @@ use uuid::Uuid;
 
 use super::{driver_failure, supersede_open_approval};
 use crate::domain::approval::{
-    AckPlacement, ApprovalState, CandidateApproval, QuorumDescriptor, ack_placement,
-    decision_admitted, describe_quorum, descriptor_from_stored,
+    AckPlacement, ApprovalState, ApproverRole, BaseRoleSet, CandidateApproval, CastDecision,
+    QuorumDescriptor, QuorumOutcome, ack_placement, decision_admitted, describe_quorum,
+    descriptor_from_stored, evaluate_quorum,
 };
 use crate::domain::canonical;
 use crate::domain::error::DomainError;
@@ -408,22 +409,26 @@ impl DecisionVerdict {
 /// row without the flip would leave a recorded rejection against a record the
 /// gate would still authorize, so the fail-closed arm is to refuse the
 /// verdict. An **approval** on a `satisfied` record is admitted, because it
-/// adds a signature and moves no state. No writer produces `satisfied` at
-/// this commit (§7 row 11), so this arm is reachable only from a hand-written
-/// setup today — which is why the probe writes one rather than waiting for a
-/// door.
+/// adds a signature and moves no state. §7 row 11 is struck: **two** writers
+/// produce `satisfied` — this function's own quorum flip on the decision that
+/// meets the descriptor, and [`submit_approval`] at `required = 0`
+/// (**P-D-120**, **P-D-119** row 31).
 ///
 /// # Errors
 ///
 /// [`ApprovalStoreError::Refused`] with `SELF_APPROVAL_FORBIDDEN` (403) when
-/// the deciding principal submitted the record, and with
-/// `APPROVAL_SUPERSEDED` (409) when the record is no longer open.
-/// [`ApprovalStoreError::Repo`] on a storage or scope failure, on a
-/// `quorum_descriptor` this gear wrote wrong ([`RepoError::CorruptRow`]),
-/// and on the four refusals `design/05` §3.3 declares no code for — a
-/// principal mismatch, a decision on a record admitting none, a second
-/// verdict from one principal, and a rejection of an already-`satisfied`
-/// record.
+/// the deciding principal submitted the record, `APPROVAL_SUPERSEDED` (409)
+/// when the record is no longer open, and **`DECISION_ALREADY_RECORDED`
+/// (409)** on the two P-D-119 row 37 minted the seventh code for — a second
+/// verdict from one principal, and a decision on a record that closed on no
+/// approver. [`ApprovalStoreError::Repo`] on a storage or scope failure, on a
+/// `quorum_descriptor` this gear wrote wrong ([`RepoError::CorruptRow`]), and
+/// on the two refusals `design/05` §3.3 still declares no code for — a
+/// principal mismatch and a rejection of an already-`satisfied` record. Those
+/// two stayed codeless deliberately: a principal mismatch is a **caller
+/// error** the door's own pipeline makes unreachable from the wire, and the
+/// `satisfied` rejection is unreachable while `required >= 1`, since a record
+/// cannot be satisfied and still admit the verdict that would satisfy it.
 pub async fn record_decision(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -503,11 +508,18 @@ pub async fn record_decision(
     // verdict at all — P-D-68 arm 1's whole reason for putting the author's
     // acknowledgment in a column. `decision_admitted`'s `>= 1` guard is
     // silent there by construction, which is why this refusal is separate.
+    // **`DECISION_ALREADY_RECORDED` (409), P-D-119 row 37.** A record at
+    // `required = 0` is born `satisfied` (row 31) and closes on no approver,
+    // so it never had an open ceremony a verdict could join. That is the
+    // record's state refusing the act — a stale queue card, an ordinary user
+    // action — and it shipped as a 500 until this arm.
     if descriptor.required() == 0 {
-        return Err(ApprovalStoreError::Repo(RepoError::Db(format!(
-            "approval {} closes on no approver: it admits no decision row (P-D-68 arm 1)",
-            new.approval_id
-        ))));
+        return Err(ApprovalStoreError::Refused(
+            DomainError::DecisionAlreadyRecorded(format!(
+                "approval {} closes on no approver: it admits no decision row (P-D-68 arm 1)",
+                new.approval_id
+            )),
+        ));
     }
     decision_admitted(record.submitter, new.approver_principal, &descriptor)
         .map_err(ApprovalStoreError::Refused)?;
@@ -533,10 +545,10 @@ pub async fn record_decision(
         .exec(runner)
         .await
         .map_err(|e| {
-            ApprovalStoreError::Repo(classify_decision_insert(
+            classify_decision_insert(
                 new.approver_principal,
                 driver_failure(format!("record decision of {}", new.approval_id), e),
-            ))
+            )
         })?;
 
     if new.verdict == DecisionVerdict::Rejected {
@@ -544,6 +556,216 @@ pub async fn record_decision(
         return Ok(DecisionOutcome::Finalized);
     }
     Ok(DecisionOutcome::Appended)
+}
+
+/// Where the ceremony stands after a decision, and the state it left the
+/// record in.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Settled {
+    /// The record's state **after** this transaction.
+    pub state: ApprovalState,
+    /// How many distinct eligible principals have approved.
+    pub counted: u32,
+    /// How many the stored descriptor requires.
+    pub required: u32,
+}
+
+/// Re-evaluate the stored descriptor and flip the record `satisfied` where
+/// the decision just recorded met it (**P-D-120** row 11).
+///
+/// # This function opens no transaction — `runner` MUST be the decide door's
+///
+/// P-D-120 row 11: *"the decide door's transaction writes `state =
+/// satisfied`, on the decision that meets the descriptor"*. The read of the
+/// decisions and the flip must see the row this transaction just appended,
+/// and the flip must roll back with it; on a plain connection a satisfied
+/// record could stand against a rolled-back verdict, which is the gate
+/// authorizing an act nobody approved.
+///
+/// # What the roster of past roles can and cannot say
+///
+/// `CastDecision.roles` are the roles that were true **when each decision was
+/// made**, and `products_approval_decision` stores none — §7 row 25, struck by
+/// **P-D-134** and routed to the platform-identity owner. So this function
+/// reconstructs them from what the door guarantees rather than inventing
+/// them:
+///
+/// - **Every stored row's author held a base role**, because
+///   [`crate::api::rest::approvals`]' decide door refuses
+///   `APPROVER_ROLE_REQUIRED` before the insert and the table is append-only.
+///   That invariant is what lets a past row count toward `required` at all.
+/// - **The finance lens is not reconstructible**, and is therefore treated as
+///   **not held** for every row but the one just written, whose claim the
+///   caller passes in. Fail-closed in the only direction that matters: an
+///   unknown role can never discharge `financeRequired`, so the worst this
+///   costs is that a finance-material record is satisfied by the transaction
+///   in which a `FinanceReviewer` decides rather than by an earlier one.
+///   `dod-finance-predicate` does not tick on that, and says so.
+///
+/// # Errors
+///
+/// [`ApprovalStoreError::Refused`] with `APPROVER_ROLE_REQUIRED` (403) when
+/// the descriptor is met **numerically** and the role predicate is not.
+/// [`ApprovalStoreError::Repo`] on a storage or scope failure, and on a
+/// `quorum_descriptor` or `state` this gear wrote wrong.
+pub async fn settle_quorum(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    approval_id: ApprovalId,
+    acting_roles: &[ApproverRole],
+    acting_principal: Uuid,
+    at: DateTime<Utc>,
+) -> Result<Settled, ApprovalStoreError> {
+    let record = read_approval(runner, scope, tenant_id, approval_id)
+        .await?
+        .ok_or_else(|| {
+            ApprovalStoreError::Repo(RepoError::Db(format!(
+                "no approval {approval_id} in tenant {tenant_id}"
+            )))
+        })?;
+    let state = ApprovalState::parse(&record.state).map_err(|token| {
+        ApprovalStoreError::Repo(RepoError::CorruptRow(format!(
+            "approval {approval_id} carries state {token}, which is outside \
+             chk_products_approval_state's roster"
+        )))
+    })?;
+    let descriptor = descriptor_from_stored(&record.quorum_descriptor).map_err(|e| {
+        ApprovalStoreError::Repo(RepoError::CorruptRow(format!(
+            "quorum_descriptor of approval {approval_id}: {e}"
+        )))
+    })?;
+
+    let rows = approval_decision::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(approval_decision::Column::TenantId.eq(tenant_id))
+                .add(approval_decision::Column::ApprovalId.eq(approval_id.get())),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| {
+            ApprovalStoreError::Repo(driver_failure(
+                format!("read decisions of {approval_id}"),
+                e,
+            ))
+        })?;
+
+    let decisions: Vec<CastDecision> = rows
+        .iter()
+        .map(|row| CastDecision {
+            principal: row.approver_principal,
+            approved: row.verdict == DecisionVerdict::Approved.as_str(),
+            roles: if row.approver_principal == acting_principal {
+                acting_roles.to_vec()
+            } else {
+                // The door's own invariant, and nothing more: a base role was
+                // held, the lens is unknown and unknown fails closed.
+                vec![ApproverRole::CatalogAdmin]
+            },
+        })
+        .collect();
+
+    // **P-D-120 row 16**: the base role set binds any approver, one or `N`.
+    // C1 states it without a count and C8 says predicates narrow within it and
+    // never replace it, so there is no permissive reading to choose here.
+    let outcome = evaluate_quorum(
+        &descriptor,
+        record.submitter,
+        &decisions,
+        BaseRoleSet::CatalogAdminOrFinanceReviewer,
+    );
+
+    match outcome {
+        QuorumOutcome::Satisfied => {
+            // A rejection finalized the record in this same transaction, and
+            // §4 admits no `rejected -> satisfied` edge; only an open record
+            // is flipped. The predicate is on the **write** for
+            // `finalize_rejected`'s own reason: a racer that closed the record
+            // between the read above and this statement must match zero rows
+            // rather than meet the append-only trigger.
+            if state == ApprovalState::Pending {
+                flip_to_satisfied(runner, scope, tenant_id, approval_id).await?;
+                return Ok(Settled {
+                    state: ApprovalState::Satisfied,
+                    counted: descriptor.required(),
+                    required: descriptor.required(),
+                });
+            }
+            Ok(Settled {
+                state,
+                counted: descriptor.required(),
+                required: descriptor.required(),
+            })
+        }
+        QuorumOutcome::CountUnmet { counted, required } => {
+            let _ = at;
+            Ok(Settled {
+                state,
+                counted,
+                required,
+            })
+        }
+        // **The one refusal the count cannot express.** L-2: a caller who
+        // gathered enough signatures and the wrong ones must be told which,
+        // and `APPROVAL_REQUIRED` would say the opposite of what happened.
+        QuorumOutcome::RolePredicateUnmet { counted } => Err(ApprovalStoreError::Refused(
+            DomainError::ApproverRoleRequired(format!(
+                "approval {approval_id} is met numerically ({counted} of {}) and the role \
+                 predicate is not: the descriptor requires the finance lens and no approving \
+                 principal is recorded holding it",
+                descriptor.required()
+            )),
+        )),
+    }
+}
+
+/// Flip an open record `satisfied`, with the open-state predicate on the
+/// `UPDATE` itself.
+///
+/// `finalized_at` stays `NULL`: `chk_products_approval_finalized` pins
+/// `(state IN ('pending','satisfied')) = (finalized_at IS NULL)`, and
+/// `satisfied` is an **open** state — the record is finalized when it is
+/// consumed, rejected or superseded, not when the quorum closes.
+async fn flip_to_satisfied(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    approval_id: ApprovalId,
+) -> Result<(), ApprovalStoreError> {
+    let updated = approval::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            approval::Column::State,
+            Expr::value(ApprovalState::Satisfied.as_str()),
+        )
+        .filter(
+            Condition::all()
+                .add(approval::Column::TenantId.eq(tenant_id))
+                .add(approval::Column::ApprovalId.eq(approval_id.get()))
+                .add(approval::Column::State.eq(ApprovalState::Pending.as_str())),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| {
+            ApprovalStoreError::Repo(driver_failure(format!("satisfy approval {approval_id}"), e))
+        })?;
+    if updated.rows_affected == 0 {
+        // The record left `pending` under the decision this flip accompanies
+        // — a peer supersession or a rejection. That is the same fact the
+        // read-time guard reports as the declared 409, so it answers the
+        // declared 409 rather than a bare storage failure.
+        return Err(ApprovalStoreError::Refused(
+            DomainError::ApprovalSuperseded(format!(
+                "approval {approval_id} left pending under the decision that would have \
+                 satisfied it: the quorum flip matched no row"
+            )),
+        ));
+    }
+    Ok(())
 }
 
 /// What a recorded decision did to the record.
@@ -668,19 +890,25 @@ fn classify_submit_insert(approval_id: ApprovalId, error: RepoError) -> Approval
 /// UNIQUE is the physical floor under "one principal, one decision, whatever
 /// roles they hold", so a hit means a human holding two roles tried to
 /// decide twice under them.
-fn classify_decision_insert(principal: Uuid, error: RepoError) -> RepoError {
+///
+/// **`DECISION_ALREADY_RECORDED` (409), since P-D-119 row 37.** This shipped
+/// as a bare [`RepoError::Db`] — a 500 with no code — and a double-clicked
+/// approve is an ordinary user action, not a server fault. Error class
+/// follows provenance: the condition is request-borne, the record's state is
+/// what refuses the act, and 409 is that convention's own line.
+fn classify_decision_insert(principal: Uuid, error: RepoError) -> ApprovalStoreError {
     let message = error.to_string().to_ascii_lowercase();
     if message.contains("unique constraint")
         || message.contains("duplicate key")
         || message.contains("primary key")
     {
-        return RepoError::Db(format!(
+        return ApprovalStoreError::Refused(DomainError::DecisionAlreadyRecorded(format!(
             "principal {principal} has already decided this record: one principal, one \
              decision, and C2 makes distinctness by principal rather than by role, so holding \
              two roles does not buy a second verdict (design/05 §4)"
-        ));
+        )));
     }
-    error
+    ApprovalStoreError::Repo(error)
 }
 
 /// Read one approval record.
@@ -953,15 +1181,15 @@ fn candidate_from_row(
 /// rather than hidden: a sixth kind added to the `CHECK` and to `SubjectKind`
 /// compiles clean and is refused at this call as a corrupt row.
 fn subject_kind_from_stored(stored: &str) -> Option<SubjectKind> {
-    [
-        SubjectKind::EntityPublish,
-        SubjectKind::GovernedLiveOp,
-        SubjectKind::SystemSignal,
-        SubjectKind::SkuCorrection,
-        SubjectKind::BulkBatch,
-    ]
-    .into_iter()
-    .find(|kind| kind.as_str() == stored)
+    // **`SubjectKind::ALL`, not a copy of it.** This was a hand-written array
+    // of five, and P-D-120 row 38's sixth kind would have been unreadable
+    // here while every compile gate stayed green: `as_str` is an exhaustive
+    // `match` and forces an arm, but nothing forces a line in a literal
+    // array. A record written with a kind this function cannot parse is a
+    // record `gate_candidates` silently drops.
+    SubjectKind::ALL
+        .into_iter()
+        .find(|kind| kind.as_str() == stored)
 }
 
 /// Whether a stored acknowledgment column holds an acknowledgment.
@@ -1032,13 +1260,25 @@ async fn approval_ids_with_decision_ack(
 /// by a new door.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ApprovalPath {
-    /// The second platform principal approved **before** the session opened.
+    /// Two platform principals approved **before** the session opened.
     ///
-    /// The reference carries **no FK**: whether its referent is an
-    /// `ApprovalRecord` is `features/governance.md` §7 row 9, which P-D-68
-    /// arm 3 deliberately did not presuppose, and the precedent is this
-    /// gear's own `products_bulk_batch.approval_ref`.
-    TwoPerson(Uuid),
+    /// The reference carries **no FK**, and §7 row 9 is now struck: P-D-133
+    /// answered it — the elevation's approval is **not** an `ApprovalRecord`,
+    /// because the store's `required` is `N` or `min(N, 1)` on a
+    /// tenant-scoped row while an elevation needs exactly two principals from
+    /// outside the tenant. So the reference stays an opaque platform handle
+    /// and the two principals ride the session's own columns.
+    TwoPerson {
+        /// The platform-side handle for the ceremony, P-D-111's authority.
+        reference: Uuid,
+        /// The first approving platform principal.
+        approver_a: Uuid,
+        /// The second, **distinct** —
+        /// `chk_products_breakglass_approvers_distinct` is the floor and
+        /// [`open_breakglass_session`] refuses before reaching it, so the
+        /// caller gets a rule rather than a driver error.
+        approver_b: Uuid,
+    },
     /// The obligation is recorded `pending` and the second principal reviews
     /// after the fact.
     PostHoc,
@@ -1105,9 +1345,25 @@ pub async fn open_breakglass_session(
     new: NewElevation,
     reason: &str,
 ) -> Result<(), RepoError> {
-    let (two_person_approval_ref, posthoc_state) = match new.path {
-        ApprovalPath::TwoPerson(reference) => (Some(reference), None),
-        ApprovalPath::PostHoc => (None, Some("pending".to_owned())),
+    let (two_person_approval_ref, approver_a, approver_b, posthoc_state) = match new.path {
+        ApprovalPath::TwoPerson {
+            reference,
+            approver_a,
+            approver_b,
+        } => {
+            // The `CHECK` is the floor; this is the rule, so a caller that
+            // named one human twice is told what it did wrong instead of
+            // reading a constraint name out of a driver error.
+            if approver_a == approver_b {
+                return Err(RepoError::Db(format!(
+                    "elevation {} names {approver_a} as both platform approvers: the two-person \
+                     floor is two distinct principals outside the tenant (P-D-133 row 9)",
+                    new.session_id
+                )));
+            }
+            (Some(reference), Some(approver_a), Some(approver_b), None)
+        }
+        ApprovalPath::PostHoc => (None, None, None, Some("pending".to_owned())),
     };
     let model = breakglass_session::ActiveModel {
         session_id: Set(new.session_id),
@@ -1117,6 +1373,8 @@ pub async fn open_breakglass_session(
         valid_from: Set(new.valid_from),
         valid_until: Set(new.valid_until),
         two_person_approval_ref: Set(two_person_approval_ref),
+        approver_a: Set(approver_a),
+        approver_b: Set(approver_b),
         posthoc_state: Set(posthoc_state),
         reviewed_by: Set(None),
         reviewed_at: Set(None),

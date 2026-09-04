@@ -312,6 +312,31 @@ pub(crate) const ATTRIBUTE_DEFINITION_UPDATED_PAYLOAD_TYPE: &str = "AttributeDef
 /// `dod-metadata-door` is ticked.
 pub(crate) const METADATA_UPDATED_PAYLOAD_TYPE: &str = "MetadataUpdated";
 
+/// `ApprovalDecided` — `design/05` §2 rule 4 and `dod-governance-events`:
+/// emitted **on either verdict**, inside the decide door's own mutating
+/// transaction. One token for approve and reject alike, because the fact
+/// announced is *a principal decided this record* and `verdict` says which;
+/// two tokens would make a consumer subscribe twice to learn one thing.
+///
+/// Ordering is on the **record**, which is the aggregate a decision belongs
+/// to: two verdicts on one record must reach a consumer in the order they
+/// were cast, and verdicts on different records have no order to keep.
+pub(crate) const APPROVAL_DECIDED_PAYLOAD_TYPE: &str = "ApprovalDecided";
+
+/// `BreakGlassElevated` — emitted when a session opens, alongside the
+/// distinct alert channel `dod-breakglass-open` requires. The aggregate is
+/// the **session**: an elevation is a thing with a lifetime, and its open and
+/// its expiry are two facts about one row.
+pub(crate) const BREAK_GLASS_ELEVATED_PAYLOAD_TYPE: &str = "BreakGlassElevated";
+
+/// `BreakGlassExpired` — emitted **exactly once** by the first post-expiry
+/// act, through a CAS flip of the session's `expired_emitted` stamp in the
+/// same transaction as that act's refusal (**P-D-68** arm 2). An untouched
+/// session emits nothing: its expiry is a stored fact, observable as a gauge
+/// with an alerting rule on top (P-D-59's shape), and emitting for a session
+/// nobody called would announce an event with no act behind it.
+pub(crate) const BREAK_GLASS_EXPIRED_PAYLOAD_TYPE: &str = "BreakGlassExpired";
+
 /// `RecognizedUnitUpdated`'s payload type token — `design/03` §4's roster,
 /// the metering-unit set's own event, emitted **in the same transaction** as
 /// the membership mutation (`inst-rs-shape`). Not one of §4.5's eight and
@@ -467,6 +492,18 @@ pub(crate) const SCHEMA_REFS: &[(&str, &str)] = &[
         ATTRIBUTE_DEFINITION_UPDATED_PAYLOAD_TYPE,
         "bss-products.AttributeDefinitionUpdated.v1.0.0",
     ),
+    (
+        APPROVAL_DECIDED_PAYLOAD_TYPE,
+        "bss-products.ApprovalDecided.v1.0.0",
+    ),
+    (
+        BREAK_GLASS_ELEVATED_PAYLOAD_TYPE,
+        "bss-products.BreakGlassElevated.v1.0.0",
+    ),
+    (
+        BREAK_GLASS_EXPIRED_PAYLOAD_TYPE,
+        "bss-products.BreakGlassExpired.v1.0.0",
+    ),
 ];
 
 /// `02`'s eight, as one roster: the tokens [`enqueue_taxonomy`] owns and
@@ -480,6 +517,21 @@ pub(crate) const TAXONOMY_PAYLOAD_TYPES: [&str; 8] = [
     CATEGORY_DISPLAY_UPDATED_PAYLOAD_TYPE,
     ATTRIBUTE_DEFINITION_UPDATED_PAYLOAD_TYPE,
     METADATA_UPDATED_PAYLOAD_TYPE,
+];
+
+/// `05`'s three, as one roster: the tokens [`enqueue_governance`] owns and
+/// [`enqueue`] refuses.
+///
+/// **Its own array rather than a `match` arm list.** An exhaustive `match`
+/// constrains which arms exist, never which tokens are registered — so a
+/// fourth governance event added with an arm and without a line here would
+/// pass every compile gate and be refused at runtime by
+/// [`enqueue_governance`]'s own guard. `02`, `03`, `04`, `06` and `09` each
+/// keep a roster for the same reason.
+pub(crate) const GOVERNANCE_PAYLOAD_TYPES: [&str; 3] = [
+    APPROVAL_DECIDED_PAYLOAD_TYPE,
+    BREAK_GLASS_ELEVATED_PAYLOAD_TYPE,
+    BREAK_GLASS_EXPIRED_PAYLOAD_TYPE,
 ];
 
 /// The versioned schema reference for a payload type, or `None` for a token
@@ -751,6 +803,11 @@ pub(crate) enum EventsError {
     /// A token outside `02`'s eight reached [`enqueue_taxonomy`].
     #[error("{0} is not one of the taxonomy's eight events")]
     NotATaxonomyEvent(String),
+
+    /// A token outside [`GOVERNANCE_PAYLOAD_TYPES`] reached
+    /// [`enqueue_governance`].
+    #[error("{0} is not one of 05's three governance events")]
+    NotAGovernanceEvent(String),
     /// The broker arm has no [`crate::infra::broker`] typed event for this
     /// payload type.
     ///
@@ -1636,6 +1693,98 @@ pub(crate) async fn enqueue_taxonomy(
             .map(|_| ())
             .map_err(EventsError::Broker)
         }
+    }
+}
+
+/// The body `05`'s three events carry.
+///
+/// One shape for three tokens, on P-D-122's precedent and for its reason: the
+/// three announce acts on **one ceremony** and differ in which act. Every
+/// optional is omitted rather than null when absent, so a consumer reading
+/// `verdict` on a `BreakGlassElevated` finds no key rather than a null it has
+/// to interpret.
+///
+/// `sessionId` and `approvalId` are separate rather than one polymorphic
+/// `subjectId`: a consumer joining break-glass rows to sessions and approval
+/// rows to records should not have to read `act` first to know which table an
+/// id points at.
+///
+/// Borrowed, like [`EventBodyCore`]: serialized once and never read back.
+/// **No broker twin**, and none is owed here — see [`enqueue_governance`].
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GovernanceEventBody<'a> {
+    pub tenant_id: Uuid,
+    /// `decided`, `elevated`, `expired`.
+    pub act: &'a str,
+    /// The record a decision was cast on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<Uuid>,
+    /// The elevation session an open or an expiry is about.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<Uuid>,
+    /// `approved` or `rejected`, on a decision only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<&'a str>,
+    /// The record's state **after** the act, on a decision only —
+    /// `pending`, `satisfied` or `rejected`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<&'a str>,
+    /// The tenant an elevation targets, which is **not** `tenantId`: a
+    /// cross-tenant elevation is opened by a platform principal outside the
+    /// target, and P-D-13's whole point is that the two differ.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_tenant_id: Option<Uuid>,
+}
+
+/// Enqueue one of `05`'s three governance events — [`enqueue`]'s twin for
+/// [`GovernanceEventBody`].
+///
+/// # The broker arm answers `NoTypedEvent`, and that is the shipped policy
+///
+/// `infra::broker` holds no typed struct for these three, and it is not this
+/// slice's file. **P-D-122** settled what that means: the broker arm answers
+/// [`EventsError::NoTypedEvent`], *"a refusal that rolls the act back"*, and
+/// `04`'s retirement events ship on exactly that footing today
+/// ([`enqueue_retired`]). So a deployment on the broker sink refuses the
+/// decide door rather than announcing silently — which is the loud state, not
+/// a gap: the alternative, emitting on the interim sink alone, is the door
+/// that announces in one deployment shape and is silent in the other, and
+/// P-D-122 named that as the defect.
+///
+/// The typed structs are owed to `infra::broker`'s owner, with `02`'s macro
+/// as the template and `04`'s pair as the other outstanding case.
+///
+/// # Errors
+///
+/// [`EventsError::NotAGovernanceEvent`] for any other token;
+/// [`EventsError::NoTypedEvent`] on the broker sink; otherwise as
+/// [`enqueue`].
+pub(crate) async fn enqueue_governance(
+    sink: &EventSink,
+    runner: &(impl DBRunner + Sync),
+    aggregate_id: Uuid,
+    payload_type: &str,
+    body: &GovernanceEventBody<'_>,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    if !GOVERNANCE_PAYLOAD_TYPES.contains(&payload_type) {
+        return Err(EventsError::NotAGovernanceEvent(payload_type.to_owned()));
+    }
+    match sink {
+        EventSink::Interim(outbox) => {
+            enqueue_body(
+                outbox,
+                runner,
+                body.tenant_id,
+                aggregate_id,
+                payload_type,
+                body,
+                actor_ref,
+            )
+            .await
+        }
+        EventSink::Broker(_) => Err(EventsError::NoTypedEvent(payload_type.to_owned())),
     }
 }
 

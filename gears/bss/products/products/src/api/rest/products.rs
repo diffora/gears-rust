@@ -1890,7 +1890,12 @@ fn bodiless_payload_digest() -> Vec<u8> {
 /// the field, so the rendering writes `null` for it — and a door that
 /// pre-filled the nulls itself would make the roster a no-op precisely in
 /// the case it exists for.
-fn product_content(record: &ProductRecord) -> JsonValue {
+///
+/// `pub(crate)` since 2026-09-04: `05`'s submit door stores the head's
+/// content as the record's `content_snapshot`, and that snapshot must be the
+/// **same rendering** the publish door will freeze — a second renderer would
+/// let an approver sign bytes the publish never produces.
+pub(crate) fn product_content(record: &ProductRecord) -> JsonValue {
     let mut content = JsonMap::new();
     content.insert(
         "brand_id".to_owned(),

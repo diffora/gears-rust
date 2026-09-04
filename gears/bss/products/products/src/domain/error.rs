@@ -235,6 +235,77 @@ pub enum DomainError {
     #[error("approval superseded: {0}")]
     ApprovalSuperseded(String),
 
+    /// A principal without the base role set attempted a decision
+    /// (`design/05` C1, C8; **P-D-119** rows 13 and 30).
+    ///
+    /// **Raised at the decide door, never by the gate.** P-D-119 row 30 is
+    /// explicit: the gate's one refusal is *"no satisfied record"* →
+    /// `APPROVAL_REQUIRED`, and it never sees a principal's roles. The decide
+    /// door is where a role is readable and the only place this code has a
+    /// raise path.
+    ///
+    /// **403**, per row 13: the principal lacks standing to take the act at
+    /// all, which is the convention's line against 409's *"the record's
+    /// current state refuses it"*.
+    ///
+    /// Roles arrive as `token_scopes` claims (**P-D-134** row 25). Until the
+    /// platform's PDP encodes them, a caller holds **no** role claim and this
+    /// is what they are told — never that the role was held.
+    #[error("approver role required: {0}")]
+    ApproverRoleRequired(String),
+
+    /// An approver whose brand and region claims do not cover the subject's
+    /// scope (`inst-gv-scope`, on `01`'s **P-D-39** boundaries). 403 — the
+    /// caller may not decide this subject, whatever the record's state — and
+    /// audited like any scope violation.
+    #[error("approver scope exceeded: {0}")]
+    ApproverScopeExceeded(String),
+
+    /// A write attempted under a break-glass elevation. **403 with no
+    /// exception in v1** (`design/05` §2's break-glass flow, **P-D-133**
+    /// row 18): the elevation substitutes a **read-only**
+    /// `AccessScope::for_tenant(target)` for the caller's own scope, and v1
+    /// is read and audit-export only.
+    #[error("break-glass sessions are read-only: {0}")]
+    BreakGlassWriteForbidden(String),
+
+    /// A call past the elevation's window (`inst-bg-expiry`, **P-D-68**
+    /// arm 2). 403.
+    ///
+    /// **Expiry gates admission, not completion**: a call admitted inside the
+    /// window finishes even if the window closes under it, so this is raised
+    /// at the pre-pipeline gate and nowhere else. The first post-expiry act
+    /// also emits `BreakGlassExpired`, exactly once, through a CAS on the
+    /// session's `expired_emitted` stamp in the same transaction as this
+    /// refusal.
+    #[error("break-glass session expired: {0}")]
+    BreakGlassExpired(String),
+
+    /// This record cannot take that decision — **P-D-119** row 37, the
+    /// seventh code `design/05` §3.3's roster opens for.
+    ///
+    /// Two refusals the ceremony raises, one user-facing fact. A **second
+    /// verdict from one principal** collides with
+    /// `uq_products_approval_decision_principal`, C2's physical floor under
+    /// one-principal-one-decision; a **decision on a record that closed on no
+    /// approver** is P-D-68 arm 1's zero-quorum record, which reaches
+    /// `satisfied` at submission and has no open ceremony for a verdict to
+    /// join. Both shipped as **500s** through `RepoError::Db` until this
+    /// variant existed, and this gear's own rule is that error class follows
+    /// provenance: a request-borne condition rendered as a server error is a
+    /// defect, not a conservative choice.
+    ///
+    /// **409, not 403**: `design/05` §3.3's convention puts 409 where the
+    /// record's current state refuses the act — which is exactly what both
+    /// causes are — and 403 where the caller may not act at all. The detail
+    /// says which cause; the code says the fact they share.
+    ///
+    /// One code rather than two: the alternative was rejected by P-D-119 as
+    /// splitting a single user-facing fact, and a client that needs the cause
+    /// reads the detail.
+    #[error("decision already recorded: {0}")]
+    DecisionAlreadyRecorded(String),
+
     /// The erasure door's own refusal: the named principal resolves to no
     /// `actor_ref` in this tenant. The one code `10-retention-erasure` owns
     /// (P-D-64 kept the roster at one) — 422 architectural, reaching the wire
@@ -472,6 +543,11 @@ impl DomainError {
             Self::ApprovalRequired(_) => "APPROVAL_REQUIRED",
             Self::SelfApprovalForbidden(_) => "SELF_APPROVAL_FORBIDDEN",
             Self::ApprovalSuperseded(_) => "APPROVAL_SUPERSEDED",
+            Self::ApproverRoleRequired(_) => "APPROVER_ROLE_REQUIRED",
+            Self::ApproverScopeExceeded(_) => "APPROVER_SCOPE_EXCEEDED",
+            Self::BreakGlassWriteForbidden(_) => "BREAKGLASS_WRITE_FORBIDDEN",
+            Self::BreakGlassExpired(_) => "BREAKGLASS_EXPIRED",
+            Self::DecisionAlreadyRecorded(_) => "DECISION_ALREADY_RECORDED",
             Self::DuplicateCategoryName(_) => "DUPLICATE_CATEGORY_NAME",
             Self::TaxonomyCycle(_) => "TAXONOMY_CYCLE",
             Self::ErasureUnknownActor(_) => "ERASURE_UNKNOWN_ACTOR",

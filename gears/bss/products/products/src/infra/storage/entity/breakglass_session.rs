@@ -35,6 +35,24 @@ pub struct Model {
     /// `ApprovalRecord` is an open item P-D-68 arm 3 deliberately did not
     /// presuppose.
     pub two_person_approval_ref: Option<Uuid>,
+    /// The first of the two **platform** principals who approved the
+    /// elevation (**P-D-133** row 9), set on the two-person path and `NULL`
+    /// on the post-hoc one — `chk_products_breakglass_approvers` binds each
+    /// to `two_person_approval_ref`'s own nullity.
+    ///
+    /// **Why the pair lives here and not on an `ApprovalRecord`.** The
+    /// store's `required` is `N` or `min(N, 1)` and its row is tenant-scoped,
+    /// while an elevation needs exactly **two** principals from outside the
+    /// tenant; no writer of `products_approval` can produce that fixed floor,
+    /// and the approver-scope rule would refuse a platform approver on
+    /// another tenant's subject. P-D-111 already made
+    /// `two_person_approval_ref` the authority; these two make it legible.
+    pub approver_a: Option<Uuid>,
+    /// The second platform principal. Distinct from
+    /// [`Model::approver_a`] by `chk_products_breakglass_approvers_distinct`
+    /// — two-person means two humans, and a `CHECK` is the only place that
+    /// cannot be forgotten by a caller.
+    pub approver_b: Option<Uuid>,
     /// `pending` or `reviewed` (P-D-68 arm 3).
     pub posthoc_state: Option<String>,
     pub reviewed_by: Option<Uuid>,

@@ -2486,7 +2486,11 @@ fn post_discard_image(head: &SkuRecord, now: DateTime<Utc>) -> SkuRecord {
 /// a_publish_carrying_the_uncomposed_bundle_override_freezes_the_raised_flag`
 /// is what holds this closed, by reading the flag back out of
 /// `products_entity_version` rather than off any in-memory value.
-fn sku_version_content(image: &SkuRecord) -> JsonValue {
+///
+/// `pub(crate)` since 2026-09-04, for the reason `products::product_content`
+/// states: `05`'s submit door renders the submitted snapshot through the same
+/// function the freeze uses.
+pub(crate) fn sku_version_content(image: &SkuRecord) -> JsonValue {
     let mut fields = JsonMap::new();
     fields.insert(
         "sku_id".to_owned(),

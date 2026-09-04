@@ -167,14 +167,20 @@ pub struct EntityRef {
     pub entity_id: Uuid,
 }
 
-/// The five subject kinds `products_approval` records, as the **seam** now
-/// expresses them (**P-D-67** arm 4).
+/// The **six** subject kinds `products_approval` records, as the seam
+/// expresses them (**P-D-67** arm 4; the sixth by **P-D-120** row 38).
 ///
 /// The store fixed this vocabulary first — `kind ∈ {entity_publish,
 /// governed_live_op, system_signal, sku_correction, bulk_batch}` — and arm 4's
 /// finding was that *"the seam expressing less than the store records was the
 /// defect: the store is the authority, the seam conforms"*. Before it, four of
 /// the five kinds had no representation to hand `evaluate`.
+///
+/// **`materiality_policy` is the sixth**, added to
+/// `chk_products_approval_subject_kind` in place by P-D-120 row 38 on
+/// P-D-14's precedent: `subject_kind` names *what is approved*, and a policy
+/// mutation is a thing approved. The seam conforms to the store here for the
+/// same reason arm 4 gave.
 ///
 /// An enum rather than a bare string, so a host that grows a policy for one
 /// kind is forced by the compiler to say what it does with the rest. That is
@@ -194,9 +200,29 @@ pub enum SubjectKind {
     SkuCorrection,
     /// `09`'s batch.
     BulkBatch,
+    /// `05`'s own materiality policy (**P-D-120** row 38). The one subject
+    /// whose approval governs the count every other approval is judged by,
+    /// which is C4's reason for making its mutation always material.
+    MaterialityPolicy,
 }
 
 impl SubjectKind {
+    /// The whole roster, in the `CHECK`'s own order.
+    ///
+    /// **An array, not a `match` arm list.** An exhaustive `match` constrains
+    /// which arms exist, never which kinds a caller can enumerate — so a door
+    /// parsing a wire token needs the roster itself, and a seventh kind that
+    /// grew an `as_str` arm without a line here would be unparseable while
+    /// compiling clean.
+    pub const ALL: [Self; 6] = [
+        Self::EntityPublish,
+        Self::GovernedLiveOp,
+        Self::SystemSignal,
+        Self::SkuCorrection,
+        Self::BulkBatch,
+        Self::MaterialityPolicy,
+    ];
+
     /// The token `products_approval.subject_kind` stores.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -206,6 +232,7 @@ impl SubjectKind {
             Self::SystemSignal => "system_signal",
             Self::SkuCorrection => "sku_correction",
             Self::BulkBatch => "bulk_batch",
+            Self::MaterialityPolicy => "materiality_policy",
         }
     }
 }

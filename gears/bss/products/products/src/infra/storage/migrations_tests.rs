@@ -5623,6 +5623,10 @@ mod governance_store_guard_tests {
         assert_eq!(
             session,
             vec![
+                // The two platform approvers **P-D-133** row 9 put on the
+                // session rather than in an `ApprovalRecord`.
+                "approver_a",
+                "approver_b",
                 "expired_emitted",
                 "opened_at",
                 "posthoc_state",

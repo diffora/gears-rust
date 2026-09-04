@@ -155,6 +155,7 @@ use crate::domain::validation::ValidationReport;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::repo::{self, AuditCommon, RefusalSubject};
 
+pub mod approvals;
 pub mod bulk;
 pub mod catalog_version;
 pub mod dto;
@@ -272,6 +273,16 @@ pub(crate) struct ApiState {
     /// The watermark door's own bound (P-D-87 arm 1), resolved once at
     /// `init` from `ProductsConfig::watermark_skew_tolerance`.
     pub(crate) watermark_skew_tolerance: std::time::Duration,
+    /// The elevation window, in hours (**P-D-132**, interim 4, zero refused
+    /// at boot). Carried here for the reason every other configured number
+    /// is: the break-glass door computes `valid_until` from it and **must not
+    /// inline** a literal, or the operator's own setting stops reaching the
+    /// one door it governs.
+    pub(crate) breakglass_window_hours: u32,
+    /// The post-hoc review SLA, in hours (**P-D-133**, interim 24). The
+    /// elevation's alert carries it, so an operator reading the alert knows
+    /// when the obligation lapses without looking the number up.
+    pub(crate) breakglass_review_sla_hours: u32,
 }
 
 /// Extract the authenticated [`SecurityContext`] from the request

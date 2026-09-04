@@ -323,10 +323,23 @@ impl From<DomainError> for CanonicalError {
             // puts `SELF_APPROVAL_FORBIDDEN` in its 403 list beside
             // `APPROVAL_REQUIRED`.
             D::SelfApprovalForbidden(_detail) => denied("SELF_APPROVAL_FORBIDDEN"),
+            // `design/05` §3.3's boundary: `APPROVAL_SUPERSEDED` sits at 409
+            // and this feature's **other five** at 403. All four below are
+            // the caller lacking standing — a role, a scope, or a session's
+            // terms — never the subject's state refusing the act.
+            D::ApproverRoleRequired(_detail) => denied("APPROVER_ROLE_REQUIRED"),
+            D::ApproverScopeExceeded(_detail) => denied("APPROVER_SCOPE_EXCEEDED"),
+            D::BreakGlassWriteForbidden(_detail) => denied("BREAKGLASS_WRITE_FORBIDDEN"),
+            D::BreakGlassExpired(_detail) => denied("BREAKGLASS_EXPIRED"),
             // 409, not 403: `design/05` §3.3's convention puts **409** where
             // the current state refuses the act and **403** where the caller
             // may not take it. A superseded record is the first.
             D::ApprovalSuperseded(detail) => aborted(detail, "APPROVAL_SUPERSEDED"),
+            // 409, the same reading and the same channel: a record that
+            // already holds this principal's verdict, or that closed on no
+            // approver, is the record's state refusing the act (P-D-119
+            // row 37). Both reached the wire as 500s before this arm.
+            D::DecisionAlreadyRecorded(detail) => aborted(detail, "DECISION_ALREADY_RECORDED"),
             // 409: the tree's current state refuses the name, and the index
             // is what decided it (`02` §3.3).
             D::DuplicateCategoryName(detail) => aborted(detail, "DUPLICATE_CATEGORY_NAME"),

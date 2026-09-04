@@ -91,6 +91,11 @@ const PRODUCT: Uuid = Uuid::from_u128(0x9e_f0);
 const ACTOR: Uuid = Uuid::from_u128(0x9e_ac);
 const AUTHOR: Uuid = Uuid::from_u128(0x9e_a0);
 const APPROVER: Uuid = Uuid::from_u128(0x9e_a1);
+/// The two **platform** principals an elevation's two-person path names
+/// (**P-D-133** row 9). Outside the tenant on purpose: that is the whole
+/// reason they are not an `ApprovalRecord`'s approvers.
+const PLATFORM_A: Uuid = Uuid::from_u128(0x9e_c1);
+const PLATFORM_B: Uuid = Uuid::from_u128(0x9e_c2);
 
 /// The content frozen at published version 1 — the diff's **basis**.
 const PUBLISHED: &str = r#"{"name":"Fibre 500","regionScope":"eu,apac"}"#;
@@ -886,7 +891,11 @@ async fn a_session_opens_on_either_path_and_never_on_both() {
 
     // The other arm, on its own session id.
     let reference = Uuid::from_u128(0xa9_77);
-    let mut two_person = elevation(ApprovalPath::TwoPerson(reference));
+    let mut two_person = elevation(ApprovalPath::TwoPerson {
+        reference,
+        approver_a: PLATFORM_A,
+        approver_b: PLATFORM_B,
+    });
     two_person.session_id = Uuid::from_u128(0x9e_5f);
     open_breakglass_session(&conn, &scope, two_person, "planned drill")
         .await
@@ -1107,7 +1116,11 @@ async fn the_posthoc_obligation_discharges_once_and_only_where_it_exists() {
     assert_eq!(row.reviewed_at, Some(at(16)));
 
     // A two-person session has no obligation, so there is nothing to close.
-    let mut two_person = elevation(ApprovalPath::TwoPerson(Uuid::from_u128(0xa9_78)));
+    let mut two_person = elevation(ApprovalPath::TwoPerson {
+        reference: Uuid::from_u128(0xa9_78),
+        approver_a: PLATFORM_A,
+        approver_b: PLATFORM_B,
+    });
     two_person.session_id = Uuid::from_u128(0x9e_60);
     open_breakglass_session(&conn, &scope, two_person, "drill")
         .await

@@ -214,8 +214,10 @@ Each flow below names its actor, what success and failure look like, and where i
   re-submission is an explicit human act with the new diff re-presented
 
 **Error Scenarios**:
-- Free text in a submission reason carrying prohibited personal data — `CONTENT_PII_BLOCKED`,
-  `02-taxonomy-attributes`' code raised at this door
+- *(Withdrawn by **P-D-120** row 35, 2026-09-03: a submission carries **no operator free text** in
+  this design — its content is the snapshot — and `products_approval` has no `reason` column,
+  because a column for text nobody writes is the wrong fix. The write block runs on the two reasons
+  this feature does store, at the decide and elevation doors.)*
 
 **Boundary**: the evaluator runs **once**, at submission, against the policy in force at that
 instant. A policy change between submit and publish neither re-judges nor voids a pending
@@ -397,18 +399,27 @@ declaring the routes or admitting the grants are unspent is not this document's 
 
 **Output**: one canonical code carrying its declared RFC 9457 status
 
-This feature declares six codes: `SELF_APPROVAL_FORBIDDEN`, `APPROVER_SCOPE_EXCEEDED`,
-`APPROVER_ROLE_REQUIRED`, `APPROVAL_SUPERSEDED`, `BREAKGLASS_WRITE_FORBIDDEN` and
-`BREAKGLASS_EXPIRED`. Two more appear in its response map and are **declared elsewhere**:
-`APPROVAL_REQUIRED` (`01-foundation`, raised through this gate) and `CONTENT_PII_BLOCKED`
-(`02-taxonomy-attributes`).
+This feature declares **seven** codes: `SELF_APPROVAL_FORBIDDEN`, `APPROVER_SCOPE_EXCEEDED`,
+`APPROVER_ROLE_REQUIRED`, `APPROVAL_SUPERSEDED`, `BREAKGLASS_WRITE_FORBIDDEN`,
+`BREAKGLASS_EXPIRED` and — since **P-D-119** row 37 — `DECISION_ALREADY_RECORDED`. Two more appear
+in its response map and are **declared elsewhere**: `APPROVAL_REQUIRED` (`01-foundation`, raised
+through this gate) and `CONTENT_PII_BLOCKED` (`02-taxonomy-attributes`).
+
+**The seventh, and why a closed roster opened for it.** Two refusals this ceremony raises shipped
+as **500s** through `RepoError::Db`: a second verdict from one principal (C2's `UNIQUE`, read back)
+and a decision on a record that closed on no approver (**P-D-68** arm 1). Both are the record's
+state refusing the act — 409's own definition — and both are ordinary user actions, a double click
+and a stale queue card. This gear's rule is that error class follows provenance, so a request-borne
+condition rendered as a server error is a defect. One code covers both, with the detail saying
+which; two codes were rejected as splitting one user-facing fact.
 
 **Boundary**: the roster and every status are specified by
-`cpt-cf-bss-products-contract-governance-errors`. `APPROVAL_SUPERSEDED` sits at 409 and this
-feature's other five at 403; the two borrowed codes carry their own statuses —
-`APPROVAL_REQUIRED` at 403 and `CONTENT_PII_BLOCKED` at 422. **`APPROVER_ROLE_REQUIRED`'s status is open item 13**: the convention puts 409 where the
-current state refuses the act and 403 where the caller may not act at all, and by its stated raise
-site the caller may publish while it is the record's state that refuses.
+`cpt-cf-bss-products-contract-governance-errors`. `APPROVAL_SUPERSEDED` and
+`DECISION_ALREADY_RECORDED` sit at 409 and this feature's other five at 403; the two borrowed codes
+carry their own statuses — `APPROVAL_REQUIRED` at 403 and `CONTENT_PII_BLOCKED` at 422.
+**`APPROVER_ROLE_REQUIRED` is 403** (**P-D-119** row 13, closing §7 row 13): the principal lacks
+standing to take the act at all, which is the convention's line against 409's *"the record's
+current state refuses it"*.
 
 ## 4. States (CDSL)
 
@@ -848,7 +859,7 @@ the lane itself. The approver's own claims are §7 row 25 again.
 
 ### Decision recording and rejection
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-decide`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-decide`
 
 The system **MUST** require the `approval × decide` grant and refuse a caller without it
 **before any row is appended**, **MUST** append one decision row per approver, refuse a decision on
@@ -880,10 +891,29 @@ the same state is admitted, which makes the refusal about the edge and not the s
 produces `satisfied` at this commit (§7 row 11), so the probe writes it by hand — the shortcut
 `repo_tests` already takes for a state whose door is not this slice's.
 
-**Two clauses remain unbuildable, and neither is arithmetic.** The `approval x decide` grant must be
-refused *before any row is appended*, and there is no decide door to refuse at (§7 row 12); and
-`ApprovalDecided` **does not exist** in `infra/events.rs`, so "emit on either verdict" is a
-`dod-governance-events` patch. §7 row 17 (AC #26's third bullet) is also live against this DoD.
+**Both remaining clauses are built, 2026-09-04, and the `DoD` ticks.**
+`POST /bss-products/v1/approvals/{approvalId}/decisions` is the door (**P-D-120** row 12), and it
+authorizes `approval × decide` through `crate::authz::access_scope` as its **first** step — before
+the body is even parsed into a verdict, so *"refuse a caller without it before any row is
+appended"* is a property of the order rather than of a guard. `ApprovalDecided` is
+`infra/events.rs`' own token now, emitted on **either** verdict inside the mutating transaction; a
+refusal there travels as an error and rolls the decision row back with it, which is P-D-21's rule
+that an act the gear cannot announce did not happen. §7 row 17 is struck by **P-D-132**.
+
+**Clause by clause, with the call site** (P-D-109):
+
+| Clause | Where | Probe |
+|---|---|---|
+| require `approval × decide`, refuse **before any row** | `approvals::decide_approval`'s first `authorize(..)` call, ahead of every parse and write | the enforcer harness refuses an out-of-scope tenant |
+| append **one** row per approver | `repo::record_decision`, over `uq_products_approval_decision_principal` | `a_second_verdict_from_one_principal_is_409_not_500` |
+| `APPROVAL_SUPERSEDED` on a closed record | `record_decision`'s state guard, and `flip_to_satisfied`'s zero-row arm | `repo_tests`' supersession cases |
+| finalize a rejection with its mandatory reason | `finalize_rejected`, in the decision's own transaction | `a_rejection_needs_a_reason_and_finalizes_the_record` |
+| leave the subject unchanged | no head write exists on this path — there is no `published → draft` edge in the gear | the same probe asserts the head is untouched |
+| emit `ApprovalDecided` on **either** verdict | `events::enqueue_governance` inside the decide transaction | `a_catalog_admin_decides_and_the_count_moves`, `a_rejection_needs_a_reason_and_finalizes_the_record` |
+
+**One `DECISION_ALREADY_RECORDED` note.** The second verdict from one principal now answers 409
+rather than the 500 it shipped as (**P-D-119** row 37), and so does a decision on a record that
+closed on no approver.
 
 **Implements**: `cpt-cf-bss-products-flow-decide`
 
@@ -1273,10 +1303,11 @@ inverted.
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-pii-on-reasons`
 
 The system **MUST** run `02-taxonomy-attributes`' write-block hook on every operator free-text
-reason this feature stores — the submission reason, the rejection reason and the break-glass
-session reason — refusing `CONTENT_PII_BLOCKED` before the row is written. These records are never
-edited and erasure is a map-only tombstone, so personal data typed into one is unreachable by
-erasure forever; failing closed at the door is the only reach erasure has over them. The detector
+reason this feature stores — **the decision reason and the break-glass session reason**
+(**P-D-120** row 35, narrowing this clause off a submission reason the design does not store) —
+refusing `CONTENT_PII_BLOCKED` before the row is written. These records are never edited and
+erasure is a map-only tombstone, so personal data typed into one is unreachable by erasure forever;
+failing closed at the door is the only reach erasure has over them. The detector
 does not exist, so a **clean-text positive control is part of this obligation** — a stub that
 refuses every string would otherwise satisfy it.
 
@@ -1303,28 +1334,39 @@ text, or the approval row owes a column — is row 35's owner call and is **not*
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-governance-errors`
 
-The system **MUST** declare its six codes as constants on their raising rules and register them
-into the Foundation's taxonomy, each carrying its declared RFC 9457 status.
-`APPROVER_ROLE_REQUIRED` **MUST** be raised by the **gate** when the descriptor is numerically met
-and the role predicate is not; `APPROVAL_SUPERSEDED` **MUST** be raised at **decide**.
-`APPROVAL_REQUIRED` stays `01-foundation`'s.
+The system **MUST** declare its **seven** codes as constants on their raising rules and register
+them into the Foundation's taxonomy, each carrying its declared RFC 9457 status.
+`APPROVER_ROLE_REQUIRED` **MUST** be raised **at the decide door** — *(amended 2026-09-04: this
+clause read "by the **gate**", and **P-D-119** row 30 rules the opposite and gives the reason —
+the gate's one refusal is "no satisfied record" → `APPROVAL_REQUIRED` and it never sees a
+principal's roles, so the decide door is the only place the code has a raise path)* — when the
+descriptor is numerically met and the role predicate is not; `APPROVAL_SUPERSEDED` **MUST** be
+raised at **decide**. `APPROVAL_REQUIRED` stays `01-foundation`'s.
 
-**Two of the six ship and three more are patched but unapplied; the sixth has no raising rule.**
-`SELF_APPROVAL_FORBIDDEN` (403) and `APPROVAL_SUPERSEDED` (409) are declared and mapped at `HEAD`.
-Strand B's patch adds `APPROVER_SCOPE_EXCEEDED`, `APPROVER_ROLE_REQUIRED` and `BREAKGLASS_EXPIRED`
-to `domain/error.rs` and `infra/error_mapping.rs` — both files are append-only shared planes this
-strand may not edit, so the patch is handed over rather than applied.
+**All seven are declared and mapped as of 2026-09-04, and the counters moved with them.** The
+crate carried **two** of the six §3.3 names — `SELF_APPROVAL_FORBIDDEN` (403) and
+`APPROVAL_SUPERSEDED` (409) — measured at `951fd3bae`. The other four and P-D-119's seventh landed
+together: `APPROVER_ROLE_REQUIRED`, `APPROVER_SCOPE_EXCEEDED`, `BREAKGLASS_WRITE_FORBIDDEN` and
+`BREAKGLASS_EXPIRED` at **403**, `DECISION_ALREADY_RECORDED` at **409**. `DomainError` moved 56 →
+**61**, re-derived against `DomainError::code`'s arms, and both hand-written counters —
+`error_tests`' roster literal and `error_mapping_tests`' `DOMAIN_ERROR_VARIANTS` — read 61.
 
-**`BREAKGLASS_WRITE_FORBIDDEN` is deliberately left out.** This DoD says the codes are declared *"as
-constants **on their raising rules**"*, which is P-D-36's own principle, and **no rule raises this
-one**: §7 row 18 blocks the enforcement point, so nothing in the gear can produce it. Declaring it
-would ship a 403 with no producer — the exact finding the three-lens review of this group already
-made once, one wave earlier. The code lands with the rule, and the rule waits on row 18.
+**`BREAKGLASS_WRITE_FORBIDDEN` still has no raising rule, and it is declared anyway.** An earlier
+revision withheld it on this DoD's own *"constants on their raising rules"* wording, to avoid
+shipping a 403 with no producer. §7 row 18 is now struck (**P-D-133**) and the rule is the
+pre-pipeline elevation gate; the code lands ahead of it by exactly one commit because
+`domain/error.rs` and `infra/error_mapping.rs` are one shared plane and splitting five variants
+across two commits would leave the roster and its two counters disagreeing in between. **This DoD
+does not tick until the enforcement point ships**, which is what the withheld-code argument was
+really protecting.
 
-**`APPROVER_ROLE_REQUIRED` is declared at §3.3's stated 403 and its status stays §7 row 13.** One
-mapping line changes if the owner rules 409. Its **raise path** is untouched and remains §7 row 30:
-`GateVerdict::into_authorization` maps every gate refusal to `APPROVAL_REQUIRED` by design, so a
-second gate code needs the verdict widened — a change to `01`'s type, not this slice's.
+**`APPROVER_ROLE_REQUIRED`'s raise path is the decide door's, and the gate's is untouched.**
+`GateVerdict::into_authorization` still maps every gate refusal to `APPROVAL_REQUIRED` by design —
+P-D-119 row 30 confirms that is correct rather than a limitation, because the gate never sees a
+principal's roles. The decide door raises the code twice: once up front for a caller carrying **no
+role claim** (P-D-134 row 25 — the check says *"no role claim"*, never *"role held"*), and once in
+`repo::settle_quorum` when the descriptor is met numerically and the role predicate is not, which
+is L-2's own distinction.
 
 **Implements**: `cpt-cf-bss-products-algo-governance-errors`
 

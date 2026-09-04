@@ -95,6 +95,8 @@ fn app(harness: &TestHarness) -> Router {
         bulk_max_rows_per_batch: defaults.bulk_max_rows_per_batch,
         bulk_max_concurrent_batches_per_tenant: defaults.bulk_max_concurrent_batches_per_tenant,
         watermark_skew_tolerance: defaults.watermark_skew_tolerance(),
+        breakglass_window_hours: crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT,
+        breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
     });
     let openapi = OpenApiRegistryImpl::new();
     router(state, &openapi).layer(axum::Extension(flat_in_enforcer(TENANT)))
@@ -477,6 +479,8 @@ async fn the_in_process_binding_shares_the_gate_and_the_store() {
             bulk_max_rows_per_batch: 2,
             bulk_max_concurrent_batches_per_tenant: defaults.bulk_max_concurrent_batches_per_tenant,
             watermark_skew_tolerance: defaults.watermark_skew_tolerance(),
+            breakglass_window_hours: crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT,
+            breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
         }),
         enforcer: flat_in_enforcer(TENANT),
     };
