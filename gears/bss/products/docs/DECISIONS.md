@@ -1569,6 +1569,73 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-143 — `DESIGN.md` re-cut against the consolidated review: three sections restored, the census derived, the review log struck
+
+- **Date**: 2026-09-04 (the lead, acting on the consolidated design review of `DESIGN.md` — two
+  independent runs plus an adjudication pass, 33 findings, 20 candidates retracted; every finding
+  re-measured against HEAD `9674fc72f` before it was acted on)
+- **What changed and why, by finding class.** *(i) Structure* — the template's §3.4 Internal
+  Dependencies, §3.5 External Dependencies and §3.8 Deployment Topology were absent and §3 was
+  renumbered over their slots; all three now exist (§3.5 says "not applicable" for third-party
+  systems, in words) and Interactions/Database return to §3.6/§3.7. Every citation of
+  "`DESIGN.md` §3.5" in this register and in `DECOMPOSITION.md` was retargeted to §3.7 — six sites.
+  *(ii) Content moved to the right altitude* — the Domain Model gains its entity table,
+  relationships and invariants; the Component Model gains the four mandated subsections per
+  component, names the one registration contract the handlers share (`RegisteredValidator` +
+  `BucketRegistry`, P-D-28) and draws the three edges `RES`/`IDEM`/`AUD` lacked; API Contracts gains
+  the route census from the router (47 registered operations), the error envelope, the versioning
+  rule and the PRD's interface/contract ids; the NFR allocation is the template's five-column
+  table with a **Verification approach** per row that says "workshop" where no meter exists; the
+  three slice-05 security facts (the platform break-glass floor, the pre-pipeline read-only
+  scope, sealing absent by decision) and the N = 0 residual risk are stated at system level; four
+  platform-delegated concerns (data protection, observability, DR, threat model) each get the
+  one-line delegation authentication already had. *(iii) Facts corrected* — `fr-clone` is `p2`
+  (the PRD declares no `p3`; 42 + 15 = 57); the coverage table carries slice 02's claim on
+  `nfr-scale-extensibility` (P-D-130) and says "thirteen pairs and one triple"; the governance
+  principle is qualified by the two governed freeze ceremonies (P-D-67) it contradicted; the
+  dependency prose reads `01 → 02 → (03, 04, 05)` and the 04 ↔ 07 edge is marked
+  integration-only; `products_product_category` sits under the slice that defines it; the pricing
+  SDK sentence no longer claims a `sellable` member pricing "lacks" (`product_catalog.rs:92`
+  declares it) and names the trait `ProductCatalogClientV1`; the key-decisions block points at
+  the register instead of mirroring P-D-01…20; the next-phase sentence is gone (the gear ships
+  201 source files and 28 migrations). *(iv) The table census is derived* — from the slices' §4
+  declarations (36) and the migrations' `CREATE TABLE` statements (34), with the four-row
+  difference stated: three slice-08 tables unbuilt, and `products_read_stamp` built but
+  undeclared by slice 08's §4. `products_materiality_policy`, which no slice declared, is now in
+  `design/05-governance.md` §4 with its columns. *(v) The review log is struck* — the
+  parentheticals narrating earlier drafts (the 34/35 recount, the "wrong slice twice" note, the
+  P-D-14…20 flag history, the six-question table, the "two further decisions" paragraph) are
+  removed from normative text; every fact they carried lives in the register (P-D-06…P-D-20,
+  P-D-47, P-D-48, P-D-130) and in git. §6 keeps its status table and loses its narrative; the
+  "flags: none" verdict is replaced by the list of the nine PRD §15 rows this design depends on.
+  *(vi) The coverage table is folded to twelve rows* — one per owning slice, every id verbatim,
+  the split note only where true. This departs from the template's per-requirement row shape
+  deliberately: seventy-one rows carried twelve distinct responses, and a false split note on
+  fourteen of them.
+- **Two findings of the lead's own, made while deriving.** `products_materiality_policy.updated_by`
+  holds the pseudonymous `actor_ref` the door resolves, under a name P-D-45's lint cannot see —
+  disclosed in §3.7 and in the new §4 bullet; the rename is a slice-05 §7 item, not this wave's.
+  And the route census showed five specified doors unregistered (06's diff and force-completion,
+  09's export, 07's correction, 08's reads) — stated under the endpoints table rather than listed
+  as if built.
+- **Not acted on, and why.** The review's #28 (promote three decisions to ADRs) stays the
+  Architecture owner's question, restated with ledger's one ADR added to the census. Its #29
+  (drop §6 Status entirely) is refused in part: the per-slice status table is the tracker the
+  handoffs cite, so it stays and only its narrative went. Its #27 (split the < 3 s budget per hop)
+  is done structurally — the four hops and their timestamps are named — and the per-hop numbers
+  are left to the NFR workshop rather than invented here.
+- **The arguments against, stated.** Folding the coverage table breaks the template's row shape —
+  accepted; the alternative was seventy-one bespoke sentences authored in one sitting, and the
+  CFS coverage rule counts ids, which all remain. Striking the review log loses the in-document
+  account of how the design got here — accepted; git and the register hold it, and a reader of a
+  design needs the design. Writing §3.8 for a gear that has no deployable of its own could read as
+  padding — rejected; that the gear *is* a library compiled into the host is the deployment fact,
+  and the sibling designs all state theirs.
+- **Not changed**: any slice's normative text beyond the 05 §4 declaration; the PRD; the feature
+  documents; the register's earlier entries (their §3.5 citations retargeted, nothing else).
+- **Propagated**: `DESIGN.md` (rewritten in place); `design/05-governance.md` §4;
+  `DECOMPOSITION.md` and this register (six citation retargets); the lead handoff's DESIGN row.
+
 #### P-D-141 — The usage-type resolver is a trait on `ApiState`, the collector's client behind it, and no `cfg(test)` in the path
 
 - **Date**: 2026-09-04 (the lead, closing the one clause strand C's `052c40d64` was held on, and
@@ -3100,7 +3167,7 @@ per-decision anchors, and it was corrected by running the command it prescribed.
     that would answer `Material` on its shape alone must still refuse when the policy is missing,
     since the count the verdict feeds comes from the policy and a verdict without one cannot be
     spent."*
-  - And **the policy has no store**: no entity, no repo read, and `DESIGN.md` §3.5 gives this
+  - And **the policy has no store**: no entity, no repo read, and `DESIGN.md` §3.7 gives this
     slice exactly `products_approval`, `products_approval_decision` and
     `products_breakglass_session`. Row 33 states the consequence — *"the shipped
     `MaterialityPolicy` is a value with a default and a floor that nothing can persist or mutate,
@@ -3140,11 +3207,11 @@ per-decision anchors, and it was corrected by running the command it prescribed.
      because the alternative is a gear that refuses everything until every tenant is provisioned,
      and because the descriptor **does** record the count in force — which is exactly what
      P-D-110 arm 2 ruled it carries.
-  3. **`DESIGN.md` §3.5's table list changes**, and that document is the lead's. Paid here.
+  3. **`DESIGN.md` §3.7's table list changes**, and that document is the lead's. Paid here.
 - **Not changed**: P-D-11's default and floor, C1's quorum shape, `inst-mt-once`'s submission-instant
   reading, P-D-110 arm 2's `configuredQuorum`, and the gate host itself — B built it and this
   decision gives its operand a source rather than altering the host.
-- **Propagated**: `features/governance.md` §7 row 33 **struck**; `DESIGN.md` §3.5 gains the fourth
+- **Propagated**: `features/governance.md` §7 row 33 **struck**; `DESIGN.md` §3.7 gains the fourth
   table; `design/05` §3.2's `materiality_policy × write` cell keeps *"no route declared"* **until
   the door lands**, because the census forbids doing otherwise and this entry does not build it.
 - **Owed, and routed to the same change**: the two indexes P-D-110 arm 3 and P-D-111 named — for
@@ -6509,7 +6576,7 @@ with §6's *"nothing creates the ledger rows"* item beside it, and both stay ope
      machine-readable form. Doors named only in prose are outside it.
   2. **Lint 4 reads an authored `EventRegister`**, never a harvest.
   3. **Lint 7 reads column names**: an operator identity lives in a `*_actor_ref` column, the
-     convention 10's `products_identity_ref` already follows, recorded in `DESIGN.md` §3.5.
+     convention 10's `products_identity_ref` already follows, recorded in `DESIGN.md` §3.7.
   4. **Lint 8 needed a definition, not an artifact**: "registry schema surface" is the table and
      column declarations of the slices' §4 sections. The six §17.2 words are already a literal
      list, so the lint is executable as it stands.
@@ -6535,7 +6602,7 @@ with §6's *"nothing creates the ledger rows"* item beside it, and both stay ope
   the table the round built — 23 grant rows, 9 of them routed — and found the figure wrong in the
   same commit that created the table, `5977aec64`.)*
 - **Propagated**: `design/05-governance.md` (§3.2 as a table with `Doors`; §6's grant gap);
-  `design/12-consumer-contracts.md` (lints 3, 4, 7, 8; §6's register item); `DESIGN.md` (§3.5's
+  `design/12-consumer-contracts.md` (lints 3, 4, 7, 8; §6's register item); `DESIGN.md` (§3.7's
   column convention).
 - **Owed**: the `EventRegister`'s rows, per slice — the only thing now standing between the nine
   lints and a CI job that runs them.

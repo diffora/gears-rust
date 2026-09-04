@@ -318,6 +318,11 @@ row and open to correction; the requirement is that every code carries one.
   state ∈ {pending, reviewed} with `reviewed_by (actor_ref)` / `reviewed_at` — **P-D-68**) ·
   **`expired_emitted`** (the CAS stamp `BreakGlassExpired`'s one emitter flips — P-D-68) ·
   timestamps. Elevated audit rows carry the session id.
+- **`products_materiality_policy`** (**P-D-112** — the fourth table, one row per tenant) — `tenant_id` (PK) · `field_set` (the
+  bucket-iii columns the tenant marks material) · `affected_entity_trigger` (≥ 0) · `approver_count` (≥ 0, the `N` of P-D-11) ·
+  `updated_by` (the pseudonymous `actor_ref` the policy door resolves — named outside P-D-45's `*_actor_ref` convention,
+  so lint 7 does not see it; rename owed, §7 — P-D-143) · `updated_at`. Written only by `PUT /bss-products/v1/materiality-policy`,
+  whose own mutation is material (C4); read once per gated act to build the `MaterialityEvaluator`.
 - **Events**: `ApprovalDecided` (both verdicts), `BreakGlassElevated`, `BreakGlassExpired` —
   broker-native; submissions/supersessions are audit-plane (explicit "no broker event": the
   queue is a pull surface, and every submission already rides the entity's own audit row).
