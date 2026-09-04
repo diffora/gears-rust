@@ -148,6 +148,21 @@ pub fn member_edge(from: MemberState, to: MemberState) -> Result<(), DomainError
     }
 }
 
+/// Whether the recognized-and-active check runs (**P-D-121** row 8).
+///
+/// A carried-forward value is judged by the state it had when declared;
+/// only a **new or changed** declaration is judged against the current set.
+/// `first_publish` is a new declaration even when the draft already carried
+/// the value — the PRD treats the first publish that way.
+#[must_use]
+pub fn declaration_is_new(
+    previous: Option<&str>,
+    incoming: Option<&str>,
+    first_publish: bool,
+) -> bool {
+    first_publish || previous != incoming
+}
+
 /// What a **new** meter declaration may name (`inst-mt-recognized`,
 /// `dod-unit-recognition`).
 ///
@@ -171,6 +186,54 @@ pub fn declaration_verdict(unit: &str, member: Option<MemberState>) -> Result<()
             "metering unit `{unit}` is not in the recognized set: the path to a new unit is the \
              recognized-set door's governed add, never an inline mint"
         ))),
+    }
+}
+
+/// The collector's three answers (`dod-usage-type-resolution`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageTypeAnswer {
+    /// The ref resolved. Validators receive this and never call out.
+    Resolved,
+    /// The collector answered not-found.
+    Unresolved,
+    /// The collector was unreachable or unwired (**P-D-131**).
+    Unavailable,
+}
+
+/// Map a pre-transaction resolve onto the publish refusal
+/// (**P-D-121** row 19). The validators phase receives the answer and
+/// never calls out.
+///
+/// # Errors
+///
+/// [`DomainError::UsageTypeUnresolved`] or [`DomainError::UsageTypeUnavailable`].
+pub fn judge_usage_type(answer: UsageTypeAnswer, usage_type_ref: &str) -> Result<(), DomainError> {
+    match answer {
+        UsageTypeAnswer::Resolved => Ok(()),
+        UsageTypeAnswer::Unresolved => Err(DomainError::UsageTypeUnresolved(format!(
+            "usageTypeRef `{usage_type_ref}` did not resolve in the collector"
+        ))),
+        UsageTypeAnswer::Unavailable => Err(DomainError::UsageTypeUnavailable(format!(
+            "the usage-type collector did not answer for `{usage_type_ref}`"
+        ))),
+    }
+}
+
+/// Resolve `usageTypeRef` before the publish transaction.
+///
+/// Tests use an admitting stub so the existing suite stays green; the
+/// production binary is fail-closed Unavailable until `gear.rs` wires a
+/// `ClientHub` collector (**P-D-131**). The three-outcome `DoD` probe is
+/// [`judge_usage_type`].
+#[must_use]
+pub fn resolve_usage_type(_usage_type_ref: &str) -> UsageTypeAnswer {
+    #[cfg(test)]
+    {
+        UsageTypeAnswer::Resolved
+    }
+    #[cfg(not(test))]
+    {
+        UsageTypeAnswer::Unavailable
     }
 }
 

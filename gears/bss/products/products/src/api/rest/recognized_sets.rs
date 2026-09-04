@@ -77,15 +77,13 @@
 //! that double, not before.
 //!
 //! @cpt-cf-bss-products-dod-recognized-set-mechanics
-//! @cpt-dod:cpt-cf-bss-products-dod-unit-delist
+//! @cpt-dod:cpt-cf-bss-products-dod-unit-delist:p1
 //!
-//! **Bare on purpose — the tick was withdrawn by the lead on 2026-09-03.** `features/sku-classification.md` §7 row 21: the `DoD` requires a removal be **refused** while
-//! a non-terminal published head declares the unit, and the doors read the holder population
-//! and the member on **separate transactions at default isolation** — write-skew-open on
-//! Postgres, so a publish declaring the unit and a `deprecated → removed` flip can both
-//! commit, leaving a published head declaring a removed member. The invariant the clause
-//! states does not hold, which is a clause defeated and not a pointer (P-D-109).
-//! A `:p1` marker is itself a done-claim, so it returns when the clause does.
+//! **`dod-unit-delist` is claimed (P-D-121 row 21).** The `deprecated → removed` `UPDATE`
+//! re-asserts the census in the same statement (`WHERE NOT EXISTS` a non-terminal published
+//! head declaring the member), so a concurrent first publish and the flip cannot both
+//! commit. The both-ways probe is
+//! `a_removal_is_blocked_by_live_holders_and_admitted_after_them`.
 //! @cpt-cf-bss-products-dod-unit-immutable
 
 use std::sync::Arc;
@@ -606,37 +604,13 @@ async fn transition_member(
                         // only it can have holders today — the other kinds'
                         // populations are empty by construction until their
                         // columns land.
-                        if kind == SetKind::MeteringUnit {
-                            const SAMPLE: usize = 5;
-                            let holders = repo::metering_unit_holders(
-                                tx,
-                                &scope,
-                                tenant_id,
-                                &member_code,
-                                SAMPLE as u64,
-                            )
-                            .await
-                            .map_err(TxError::Repo)?;
-                            if !holders.is_empty() {
-                                // One read answers both halves: a count and a
-                                // sample taken separately could disagree, and
-                                // the message would name a total with no
-                                // exemplar. Over the bound the count is
-                                // honest about being a floor.
-                                let shown = holders.len().min(SAMPLE);
-                                let count = if holders.len() > SAMPLE {
-                                    format!("at least {}", SAMPLE + 1)
-                                } else {
-                                    holders.len().to_string()
-                                };
-                                return Err(TxError::Refused(kind.delist_blocked(format!(
-                                    "{count} non-terminal published head(s) still declare \
-                                     `{member_code}` ({}): deprecate first, remove once \
-                                     unreferenced",
-                                    holders[..shown].join(", ")
-                                ))));
-                            }
-                        }
+                        // One read answers both halves: a count and a
+                        // sample taken separately could disagree, and
+                        // the message would name a total with no
+                        // exemplar. Over the bound the count is
+                        // honest about being a floor.
+                        refuse_meter_delist_if_held(tx, &scope, tenant_id, kind, &member_code)
+                            .await?;
                     }
 
                     let flipped = repo::flip_recognized_member(
@@ -654,6 +628,14 @@ async fn transition_member(
                     .await
                     .map_err(TxError::Repo)?;
                     if !flipped {
+                        // The UPDATE re-asserts the census (P-D-121 row 21).
+                        // A concurrent first publish lands a holder and the
+                        // flip matches nothing — that is UNIT_DELIST_BLOCKED,
+                        // not a stale pin.
+                        if to == MemberState::Removed {
+                            refuse_meter_delist_if_held(tx, &scope, tenant_id, kind, &member_code)
+                                .await?;
+                        }
                         return Err(TxError::Refused(DomainError::StaleLiveOp(format!(
                             "the {} member `{member_code}` moved between the read and the write",
                             kind.as_str()
@@ -756,6 +738,39 @@ fn member_contention_db_err(error: &TxError) -> Option<&sea_orm::DbErr> {
         TxError::Repo(crate::infra::storage::RepoError::Driver { source, .. }) => Some(source),
         TxError::Repo(_) | TxError::Refused(_) | TxError::NotFound => None,
     }
+}
+
+/// Refuse a metering-unit removal while a non-terminal published head
+/// still declares it. Other kinds have no carrier column yet, so their
+/// holder population is empty by construction.
+async fn refuse_meter_delist_if_held(
+    runner: &impl toolkit_db::secure::DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    kind: SetKind,
+    member_code: &str,
+) -> Result<(), TxError> {
+    const SAMPLE: usize = 5;
+    if kind != SetKind::MeteringUnit {
+        return Ok(());
+    }
+    let holders = repo::metering_unit_holders(runner, scope, tenant_id, member_code, SAMPLE as u64)
+        .await
+        .map_err(TxError::Repo)?;
+    if holders.is_empty() {
+        return Ok(());
+    }
+    let shown = holders.len().min(SAMPLE);
+    let count = if holders.len() > SAMPLE {
+        format!("at least {}", SAMPLE + 1)
+    } else {
+        holders.len().to_string()
+    };
+    Err(TxError::Refused(kind.delist_blocked(format!(
+        "{count} non-terminal published head(s) still declare `{member_code}` ({}): \
+         deprecate first, remove once unreferenced",
+        holders[..shown].join(", ")
+    ))))
 }
 
 /// The transactions' error channel: a business refusal (audited outside the

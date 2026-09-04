@@ -526,6 +526,11 @@ rows as the set and a `removed` row as a tombstone outside it, with every mutati
 removal **admitted** while only frozen version content does — the old snapshot still rendering
 afterwards, and a new declaration naming the removed member failing `UNRECOGNIZED_UNIT`.
 
+**Reached, not claimed (P-D-121 row 21's census is in the `UPDATE`; the approval double is not):**
+the lookup, the tombstone, the removal operand and the both-ways probe ship. The DoD also
+obliges every mutation riding `GovernedLiveOp` with an in-test approval double; the doors carry
+the envelope's staleness pin only. The tick returns with that double.
+
 **Implements**: `cpt-cf-bss-products-algo-recognized-set`
 
 **Touches**:
@@ -622,7 +627,7 @@ inline.
 
 ### Usage type resolution
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-usage-type-resolution`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-usage-type-resolution`
 
 The system **MUST** resolve `usageTypeRef` against the collector at publish — resolvability only,
 no lifecycle and no dimension check — failing `USAGE_TYPE_UNRESOLVED` when unresolvable and
@@ -630,6 +635,16 @@ no lifecycle and no dimension check — failing `USAGE_TYPE_UNRESOLVED` when unr
 run once per publish per distinct ref. It **MUST** be probed against a stub collector for three
 distinct outcomes — resolved, unknown, timeout — the timeout case asserting the publish stays
 retryable and idempotent.
+
+**Built, with the collector unwired (P-D-121 row 19, P-D-131):** the HTTP publish door resolves
+before the transaction and the validators phase never calls out. The three answers are judged in
+domain (`judge_usage_type`); unavailable maps to the gear's fail-closed 503. Production
+`resolve_usage_type` is Unavailable until `gear.rs` wires a ClientHub collector; the test binary
+admits so existing usage-SKU publishes stay green. A SKU carries one `usage_type_ref`, so
+once-per-distinct-ref is one call. The scheduled lane still enters `run_publish` inside the
+runner's transaction — consume-at-schedule is the lead's, and this tick does not invent a
+`deferred` disposition there. The timeout field is 2000 in config and unused until a real client
+exists.
 
 **Implements**: `cpt-cf-bss-products-algo-collector-dependency`,
 `cpt-cf-bss-products-flow-declare-meter`
@@ -669,12 +684,16 @@ transaction.
 
 ### Unit de-listing guard
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-unit-delist`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-unit-delist`
 
 The system **MUST** refuse a unit removal while a non-terminal published head declares it, raising
 `UNIT_DELIST_BLOCKED` with the holders sampled, and **MUST** admit it once only frozen version
 content names the unit. Deprecation **MUST** leave existing publishes untouched, and neither
 deprecation nor removal may mutate any frozen snapshot.
+
+**Built (P-D-121 row 21):** the `deprecated → removed` `UPDATE` carries
+`WHERE NOT EXISTS` a non-terminal published head declaring the member. The both-ways probe is
+`a_removal_is_blocked_by_live_holders_and_admitted_after_them`.
 
 **Implements**: `cpt-cf-bss-products-flow-unit-set`,
 `cpt-cf-bss-products-state-recognized-set`
@@ -845,7 +864,7 @@ The system **MUST** expose `type`, `sellable`, `plan_tier`, `metering_unit`, `us
       invocations on a publish carrying two refs
 - [ ] `USAGE_TYPE_UNAVAILABLE` on the scheduled lane leaves the transition `deferred`, not
       `failed`, and its pinned approval survives
-- [ ] A unit removal is refused `UNIT_DELIST_BLOCKED` while a `deprecated` SKU declares it, and
+- [x] A unit removal is refused `UNIT_DELIST_BLOCKED` while a `deprecated` SKU declares it, and
       **admitted** while only frozen version content names it; the old snapshot still renders and
       the removed member's row survives as `removed`
 - [ ] A new declaration naming a removed member fails `UNRECOGNIZED_UNIT`

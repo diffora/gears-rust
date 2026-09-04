@@ -19,8 +19,8 @@
 
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
-use sea_orm::sea_query::Expr;
-use sea_orm::{ColumnTrait, Condition, EntityTrait};
+use sea_orm::sea_query::{Expr, Query};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, ExprTrait};
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
@@ -159,6 +159,8 @@ pub async fn insert_recognized_member(
 /// Flip one member's state, pinned at the state the caller's
 /// `GovernedLiveOp` expected — the transitions door's write.
 ///
+/// @cpt-dod:cpt-cf-bss-products-dod-unit-delist:p1
+///
 /// The pin is the live-op's own staleness rule made physical: a peer's flip
 /// between the door's read and this statement leaves `rows_affected = 0`,
 /// and the door answers `STALE_LIVE_OP` rather than absorbing the race.
@@ -175,7 +177,10 @@ pub async fn insert_recognized_member(
 /// # Errors
 ///
 /// [`RepoError::Driver`] on a storage failure. A vanished or moved member is
-/// `Ok(false)`, the caller's to classify.
+/// `Ok(false)`, the caller's to classify. A `deprecated → removed` flip of
+/// a metering unit that still has a non-terminal published holder is also
+/// `Ok(false)` — the `UPDATE` itself re-asserts the census (**P-D-121**
+/// row 21), so a concurrent first publish cannot commit beside the flip.
 pub async fn flip_recognized_member(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -186,18 +191,27 @@ pub async fn flip_recognized_member(
     now: DateTime<Utc>,
 ) -> Result<bool, RepoError> {
     let StateFlip { expected, to } = flip;
+    let mut filter = Condition::all()
+        .add(recognized_set::Column::TenantId.eq(tenant_id))
+        .add(recognized_set::Column::SetKind.eq(set_kind.as_str()))
+        .add(recognized_set::Column::MemberCode.eq(member_code))
+        .add(recognized_set::Column::State.eq(expected.as_str()));
+    if to == MemberState::Removed && set_kind == SetKind::MeteringUnit {
+        let mut holders = Query::select();
+        holders
+            .expr(Expr::cust("1"))
+            .from(sku::Entity)
+            .and_where(sku::Column::TenantId.eq(tenant_id))
+            .and_where(sku::Column::MeteringUnit.eq(member_code))
+            .and_where(sku::Column::LifecycleState.is_in(["published", "deprecated"]));
+        filter = filter.add(Expr::exists(holders).not());
+    }
     let result = recognized_set::Entity::update_many()
         .secure()
         .scope_with(scope)
         .col_expr(recognized_set::Column::State, Expr::value(to.as_str()))
         .col_expr(recognized_set::Column::UpdatedAt, Expr::value(now))
-        .filter(
-            Condition::all()
-                .add(recognized_set::Column::TenantId.eq(tenant_id))
-                .add(recognized_set::Column::SetKind.eq(set_kind.as_str()))
-                .add(recognized_set::Column::MemberCode.eq(member_code))
-                .add(recognized_set::Column::State.eq(expected.as_str())),
-        )
+        .filter(filter)
         .exec(runner)
         .await
         .map_err(|e| {

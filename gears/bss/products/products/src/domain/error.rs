@@ -168,6 +168,14 @@ pub enum DomainError {
     /// `tax_category` and `gl_code` sets (`03` §3.2's taxonomy).
     #[error("accounting code delist blocked: {0}")]
     AccountingCodeDelistBlocked(String),
+    /// A usage SKU's `usageTypeRef` did not resolve in the collector
+    /// (`03 inst-mt-resolve`).
+    #[error("usage type unresolved: {0}")]
+    UsageTypeUnresolved(String),
+    /// The usage-type collector was unreachable — fail-closed 503 for
+    /// usage SKUs only (**P-D-131**).
+    #[error("usage type unavailable: {0}")]
+    UsageTypeUnavailable(String),
 
     /// A Product reaching `published` carries no primary category
     /// (`inst-tx-primary-at-publish`).
@@ -541,6 +549,8 @@ impl DomainError {
             Self::UnitDelistBlocked(_) => "UNIT_DELIST_BLOCKED",
             Self::PlanTierRetireBlocked(_) => "PLAN_TIER_RETIRE_BLOCKED",
             Self::AccountingCodeDelistBlocked(_) => "ACCOUNTING_CODE_DELIST_BLOCKED",
+            Self::UsageTypeUnresolved(_) => "USAGE_TYPE_UNRESOLVED",
+            Self::UsageTypeUnavailable(_) => "USAGE_TYPE_UNAVAILABLE",
             Self::PrimaryCategoryRequired(_) => "PRIMARY_CATEGORY_REQUIRED",
             Self::ApprovalRequired(_) => "APPROVAL_REQUIRED",
             Self::SelfApprovalForbidden(_) => "SELF_APPROVAL_FORBIDDEN",

@@ -465,15 +465,7 @@ async fn drive_door(
             .await
         }
         ("retire", EntityKind::Product) => {
-            flip_product_retired(
-                runner,
-                scope,
-                tenant_id,
-                drive.row,
-                drive.now,
-                ctx.reference_freshness,
-            )
-            .await
+            flip_product_retired(runner, scope, tenant_id, drive.row).await
         }
         (kind, _) => Ok(RunFinish::Failed {
             reason: format!("no Foundation door wired for scheduled {kind}"),
@@ -513,13 +505,15 @@ async fn flip_sku_retired(
     Ok(RunFinish::Applied)
 }
 
+/// The Product flip. It does **not** consult the 07 predicate
+/// (**P-D-137**): [`crate::api::rest::reference::evaluate_reference`] is
+/// SKU-keyed and a Product has no watermark. The guard is the children's
+/// states (P-D-115); the children are retired by then.
 async fn flip_product_retired(
     runner: &(impl toolkit_db::secure::DBRunner + Sync),
     scope: &AccessScope,
     tenant_id: Uuid,
     row: &scheduled_transition::Model,
-    now: DateTime<Utc>,
-    freshness: std::time::Duration,
 ) -> Result<RunFinish, RepoError> {
     let children = repo::find_skus_of_product(runner, scope, tenant_id, row.entity_id).await?;
     let states: Vec<_> = children.iter().map(|c| c.lifecycle_state).collect();
@@ -536,11 +530,6 @@ async fn flip_product_retired(
             population: DeferralPopulation::FlipGuard,
             reason: PARENT_FLIP_HELD_REASON.to_owned(),
         });
-    }
-    if let Some(held) =
-        consult_flip_guard(runner, scope, tenant_id, row.entity_id, now, freshness).await?
-    {
-        return Ok(held);
     }
     if let Err(error) = transition::guard(
         bss_products_sdk::models::LifecycleState::Deprecated,

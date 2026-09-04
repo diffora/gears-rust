@@ -1223,3 +1223,172 @@ async fn a_sku_retire_defers_when_no_producer_is_registered() {
         "a deferral is recorded, not inferred from state"
     );
 }
+
+const SKIP_CHILD: Uuid = Uuid::from_u128(0xdd_71);
+const SKIP_TRANSITION: Uuid = Uuid::from_u128(0xaa_61);
+const SKIP_APPROVAL: Uuid = Uuid::from_u128(0x00bb_0062);
+
+/// P-D-137: a Product flip does not consult `evaluate_reference`. An empty
+/// registry is `NoProducers` for a SKU; the same registry must not hold
+/// the parent whose children are already terminal.
+#[tokio::test]
+async fn a_product_retire_skips_the_07_predicate_when_no_producer_is_registered() {
+    let harness = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    let now = Utc.with_ymd_and_hms(2026, 9, 4, 12, 0, 0).unwrap();
+    {
+        let conn = harness.db.conn().expect("scoped connection");
+        insert_product(
+            &conn,
+            &scope,
+            NewProduct {
+                product_id: PRODUCT,
+                tenant_id: TENANT,
+                brand_id: BRAND,
+                name: "Fibre 500".to_owned(),
+                name_normalized: "fibre 500".to_owned(),
+                product_code: Some("FIBRE-500".to_owned()),
+                region_scope: String::new(),
+                brand_scope: String::new(),
+                created_by: "principal:author-1".to_owned(),
+                created_at: now,
+                cloned_from: None,
+                cloned_from_version: None,
+            },
+        )
+        .await
+        .expect("insert the parent");
+        for (step, state) in ["published", "deprecated"].iter().enumerate() {
+            let next = 1 + i64::try_from(step).expect("step") + 1;
+            product::Entity::update_many()
+                .secure()
+                .scope_with(&scope)
+                .col_expr(product::Column::LifecycleState, Expr::value(*state))
+                .col_expr(product::Column::InternalRevision, Expr::value(next))
+                .col_expr(product::Column::UpdatedAt, Expr::value(now))
+                .filter(
+                    Condition::all()
+                        .add(product::Column::TenantId.eq(TENANT))
+                        .add(product::Column::ProductId.eq(PRODUCT)),
+                )
+                .exec(&conn)
+                .await
+                .unwrap_or_else(|e| panic!("walk parent to `{state}`: {e}"));
+        }
+        insert_sku(
+            &conn,
+            &scope,
+            NewSku {
+                sku_id: SKIP_CHILD,
+                tenant_id: TENANT,
+                product_id: PRODUCT,
+                sku_code: "FIBRE-500-DONE".to_owned(),
+                region_scope: String::new(),
+                brand_scope: String::new(),
+                created_by: "principal:author-1".to_owned(),
+                created_at: now,
+                cloned_from: None,
+                cloned_from_version: None,
+            },
+        )
+        .await
+        .expect("insert child");
+        walk_sku(
+            &conn,
+            &scope,
+            SKIP_CHILD,
+            now,
+            &["published", "deprecated", "retired"],
+        )
+        .await;
+
+        let subject = GateSubject::entity_publish(
+            EntityRef {
+                tenant_id: TENANT,
+                entity_kind: bss_products_sdk::models::EntityKind::Product,
+                entity_id: PRODUCT,
+            },
+            InternalRevision::new(1),
+        );
+        let policy = MaterialityPolicy::default();
+        let evaluator = MaterialityEvaluator::new(Resolution::Resolved(&policy));
+        let act = MaterialAct::PolicyMutation;
+        submit_approval(
+            &conn,
+            &scope,
+            NewApproval {
+                approval_id: ApprovalId::new(SKIP_APPROVAL),
+                subject: &subject,
+                internal_revision: 3,
+                content_snapshot: "{}",
+                diff_basis: None,
+                act: &act,
+                evaluator,
+                finance_material: false,
+                approver_count: 2,
+                submitter: ACTOR,
+                author_override_ack: None,
+            },
+            now,
+        )
+        .await
+        .expect("submit");
+        approval::Entity::update_many()
+            .secure()
+            .scope_with(&scope)
+            .col_expr(approval::Column::State, Expr::value("satisfied".to_owned()))
+            .filter(
+                Condition::all()
+                    .add(approval::Column::TenantId.eq(TENANT))
+                    .add(approval::Column::ApprovalId.eq(SKIP_APPROVAL)),
+            )
+            .exec(&conn)
+            .await
+            .expect("satisfy");
+        consume_approval(&conn, &scope, TENANT, ApprovalId::new(SKIP_APPROVAL), now)
+            .await
+            .expect("consume");
+        insert_scheduled_transition(
+            &conn,
+            &scope,
+            &NewScheduledTransition {
+                transition_id: SKIP_TRANSITION,
+                tenant_id: TENANT,
+                entity_kind: "product".to_owned(),
+                entity_id: PRODUCT,
+                kind: "retire".to_owned(),
+                at: now - chrono::Duration::hours(1),
+                approval_ref: SKIP_APPROVAL,
+                retirement_reason: Some("cascade".to_owned()),
+                now,
+            },
+        )
+        .await
+        .expect("insert the pin");
+    }
+
+    let ctx = context(&harness);
+    sweep(&ctx, ACTOR, now, &CancellationToken::new())
+        .await
+        .expect("sweep");
+
+    let conn = ctx.db.conn().expect("reopen");
+    let row = find_scheduled_transition(&conn, &scope, TENANT, SKIP_TRANSITION)
+        .await
+        .expect("find")
+        .expect("row");
+    assert_eq!(
+        row.state, "applied",
+        "the Product flip skips 07; an empty registry must not hold it: {:?}",
+        row.outcome_reason
+    );
+    let parent = find_product(&conn, &scope, TENANT, PRODUCT)
+        .await
+        .expect("find product")
+        .expect("product");
+    assert_eq!(
+        parent.lifecycle_state,
+        bss_products_sdk::models::LifecycleState::Retired,
+        "children terminal is the Product guard (P-D-115), not evaluate_reference"
+    );
+}
