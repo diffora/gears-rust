@@ -75,6 +75,11 @@ const DECISION: &[(&str, bool)] = &[
 ];
 
 const SESSION: &[(&str, bool)] = &[
+    // P-D-133 row 9: the elevation's two platform approvers, `NULL` on the
+    // post-hoc path (strand B, `c1b86fcbb`; the oracle caught up on canon
+    // because the strand cannot run the Docker tier).
+    ("approver_a", true),
+    ("approver_b", true),
     ("expired_emitted", false),
     ("opened_at", false),
     ("posthoc_state", true),
