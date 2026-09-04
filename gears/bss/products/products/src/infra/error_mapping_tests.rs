@@ -224,6 +224,19 @@ fn one_of_every_variant() -> Vec<DomainError> {
 /// file's guard is the strong one — `declared_status_and_code`'s match is
 /// exhaustive, so a new variant does not compile until it is handled — and the
 /// sibling's is a roster nothing ties to the enum. Move both.
+///
+/// # There are **two** numeric counters, not three
+///
+/// `features/governance.md` §7 row 37 says *"all three counters move"* and the
+/// 2026-09-04 strand brief repeats it, naming
+/// `domain::taxonomy_tests`' expected lists as the third. Measured 2026-09-04:
+/// that file pins **`TAXONOMY_ERROR_CODES`**, a sixteen-entry roster of
+/// *taxonomy* codes — a different set, which a governance variant does not
+/// move, and which stayed at sixteen while this number went 56 → 61. Its own
+/// line 1352 says *"the **two** enum rosters"*. Row 37 is struck and its
+/// arithmetic is frozen history; this note exists so the miscount does not
+/// travel into the next brief, and so a strand that moves one number does not
+/// go looking for a third that is not there.
 const DOMAIN_ERROR_VARIANTS: usize = 61;
 
 /// Covers all 14 variants (§3.3's own count, `DomainError::code`'s own
