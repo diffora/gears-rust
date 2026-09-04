@@ -45,6 +45,7 @@ use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
+use serde_json::Value as JsonValue;
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
@@ -55,13 +56,17 @@ use crate::domain::approval::{
     AckPlacement, ApprovalState, CandidateApproval, QuorumDescriptor, ack_placement,
     decision_admitted, describe_quorum, descriptor_from_stored,
 };
+use crate::domain::canonical;
 use crate::domain::error::DomainError;
 use crate::domain::governance::{ApprovalId, GateSubject, SubjectKind};
 use crate::domain::materiality::{
-    MaterialAct, Materiality, MaterialityEvaluator, MaterialityRefusal,
+    MaterialAct, Materiality, MaterialityEvaluator, MaterialityPolicy, MaterialityRefusal,
+    Resolution,
 };
 use crate::infra::storage::RepoError;
-use crate::infra::storage::entity::{approval, approval_decision, breakglass_session};
+use crate::infra::storage::entity::{
+    approval, approval_decision, breakglass_session, materiality_policy,
+};
 
 /// What a governance store write can answer.
 ///
@@ -1280,6 +1285,200 @@ pub async fn discharge_posthoc_review(
         .await
         .map_err(|e| driver_failure(format!("discharge review of {session_id}"), e))?;
     Ok(outcome.rows_affected == 1)
+}
+
+// ---------------------------------------------------------------------------
+// The materiality policy's store (**P-D-112**).
+// ---------------------------------------------------------------------------
+
+/// Resolve the tenant's materiality policy.
+///
+/// # An absent row is the **default**, and only a failed read is unresolved
+///
+/// This is P-D-112 arm 2, and the decision says outright it is *"the one a
+/// builder will get wrong"*. **P-D-11** fixes `N` as *"reachable only by
+/// explicit configuration, absent ⇒ default"* with §17.1's interim 2 and a
+/// floor of 0, so *"no row for this tenant"* is a **resolved** policy carrying
+/// [`MaterialityPolicy::default`] — not [`Resolution::Unresolvable`].
+///
+/// Get it backwards and the gate refuses every act in every tenant that has
+/// never configured anything, which is **every tenant at launch**, against
+/// C4's *"enforceable at launch"*. The shape invites it: an `Option<Model>`
+/// from the read has a `None` that reads like a missing lookup, and it is not
+/// the same fact as a driver error. So the two are separated **here**, at the
+/// only place that can tell them apart, and the caller receives a
+/// [`Resolution`] whose `Unresolvable` arm now means exactly one thing —
+/// storage did not answer.
+///
+/// A stored row whose `field_set` this gear cannot decode, or whose counts do
+/// not fit their domain types, is [`RepoError::CorruptRow`] rather than a
+/// silent default: falling back there would let a corrupt row lower a tenant's
+/// quorum, which is the one direction this value must never move by accident.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure, and [`RepoError::CorruptRow`]
+/// for a row this gear wrote wrong.
+pub async fn resolve_materiality_policy(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+) -> Result<Resolution<MaterialityPolicy>, RepoError> {
+    let row = materiality_policy::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(materiality_policy::Column::TenantId.eq(tenant_id)))
+        .one(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read materiality policy of {tenant_id}"), e))?;
+
+    // **The whole of arm 2, in one match.** `None` is a tenant that has never
+    // configured a policy, which P-D-11 resolves to the default; the `Err`
+    // above is the only unresolved case and it has already returned.
+    let Some(row) = row else {
+        return Ok(Resolution::Resolved(MaterialityPolicy::default()));
+    };
+    Ok(Resolution::Resolved(policy_from_row(&row)?))
+}
+
+/// One stored row as the evaluator's policy.
+fn policy_from_row(row: &materiality_policy::Model) -> Result<MaterialityPolicy, RepoError> {
+    let field_set = decode_field_set(&row.field_set).map_err(|e| {
+        RepoError::CorruptRow(format!(
+            "materiality policy of {}: field_set {e}",
+            row.tenant_id
+        ))
+    })?;
+    let trigger = u32::try_from(row.affected_entity_trigger).map_err(|_| {
+        RepoError::CorruptRow(format!(
+            "materiality policy of {}: affected_entity_trigger {} is negative, which \
+             chk_products_materiality_policy_trigger forbids",
+            row.tenant_id, row.affected_entity_trigger
+        ))
+    })?;
+    let approver_count = u32::try_from(row.approver_count).map_err(|_| {
+        RepoError::CorruptRow(format!(
+            "materiality policy of {}: approver_count {} is negative, which \
+             chk_products_materiality_policy_count forbids",
+            row.tenant_id, row.approver_count
+        ))
+    })?;
+    Ok(MaterialityPolicy::new(field_set, trigger, approver_count))
+}
+
+/// The stored `field_set`, as the canonical rendering of a string array.
+///
+/// Rendered through [`crate::domain::canonical`] rather than
+/// `serde_json::to_string` for the reason that module exists: both engines
+/// must hold identical bytes, and a second serialization rule at a consumer is
+/// what it was written to prevent.
+#[must_use]
+pub fn encode_field_set(fields: &[String]) -> String {
+    canonical::canonical_rendering(
+        &JsonValue::Array(
+            fields
+                .iter()
+                .map(|f| JsonValue::String(f.clone()))
+                .collect(),
+        ),
+        canonical::Absence::Omit,
+    )
+}
+
+/// Read a stored `field_set` back.
+fn decode_field_set(stored: &str) -> Result<Vec<String>, String> {
+    let value: JsonValue =
+        serde_json::from_str(stored).map_err(|e| format!("is not a rendering: {e}"))?;
+    let JsonValue::Array(members) = value else {
+        return Err("is not an array".to_owned());
+    };
+    members
+        .into_iter()
+        .map(|member| match member {
+            JsonValue::String(name) => Ok(name),
+            other => Err(format!("carries {other}, which is not a column name")),
+        })
+        .collect()
+}
+
+/// Write the tenant's materiality policy, creating the row or replacing it.
+///
+/// # This is a governed mutation and this function does not govern it
+///
+/// C4 makes the policy's **own** mutation material — *"the two-person rule's
+/// foundation must not be single-person-editable"* — and
+/// `inst-mt-policy-material` puts it on its own `materiality_policy x write`
+/// pair rather than a config administrator's general grant. Both are the
+/// door's to enforce: this function writes the row the ceremony authorized,
+/// and a caller reaching it without that ceremony is the defect C4 names.
+///
+/// **`field_set` is encoded by [`encode_field_set`], never by the caller**, so
+/// the stored bytes have one producer.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn write_materiality_policy(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    policy: &MaterialityPolicy,
+    updated_by: Uuid,
+    updated_at: DateTime<Utc>,
+) -> Result<(), RepoError> {
+    let field_set = encode_field_set(policy.field_set());
+    let trigger = i32::try_from(policy.affected_entity_trigger()).unwrap_or(i32::MAX);
+    let approver_count = i32::try_from(policy.approver_count()).unwrap_or(i32::MAX);
+    // Update-then-insert, which is `write_read_stamp`'s shape for the same
+    // per-tenant row: the first governed mutation creates it and every later
+    // one replaces it.
+    let updated = materiality_policy::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            materiality_policy::Column::FieldSet,
+            Expr::value(field_set.clone()),
+        )
+        .col_expr(
+            materiality_policy::Column::AffectedEntityTrigger,
+            Expr::value(trigger),
+        )
+        .col_expr(
+            materiality_policy::Column::ApproverCount,
+            Expr::value(approver_count),
+        )
+        .col_expr(
+            materiality_policy::Column::UpdatedBy,
+            Expr::value(updated_by),
+        )
+        .col_expr(
+            materiality_policy::Column::UpdatedAt,
+            Expr::value(updated_at),
+        )
+        .filter(Condition::all().add(materiality_policy::Column::TenantId.eq(tenant_id)))
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("update materiality policy of {tenant_id}"), e))?;
+    if updated.rows_affected > 0 {
+        return Ok(());
+    }
+
+    let model = materiality_policy::ActiveModel {
+        tenant_id: Set(tenant_id),
+        field_set: Set(field_set),
+        affected_entity_trigger: Set(trigger),
+        approver_count: Set(approver_count),
+        updated_by: Set(updated_by),
+        updated_at: Set(updated_at),
+    };
+    materiality_policy::Entity::insert(model.clone())
+        .secure()
+        .scope_with_model(scope, &model)
+        .map_err(|e| driver_failure(format!("materiality policy scope of {tenant_id}"), e))?
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("insert materiality policy of {tenant_id}"), e))?;
+    Ok(())
 }
 
 /// The pending queue, oldest first — the operand behind

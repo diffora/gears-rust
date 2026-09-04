@@ -89,6 +89,21 @@ const SESSION: &[(&str, bool)] = &[
     ("valid_until", false),
 ];
 
+/// `products_materiality_policy`'s roster (**P-D-112** arm 1).
+///
+/// Every column is `NOT NULL`, and that is the shape arm 2 needs: *"an absent
+/// row resolves to the default"*, so a tenant with no policy has **no row**
+/// rather than a row of nulls. A nullable column here would mint a third
+/// state between "no row" and "a policy", and the resolver has only two.
+const MATERIALITY_POLICY: &[(&str, bool)] = &[
+    ("affected_entity_trigger", false),
+    ("approver_count", false),
+    ("field_set", false),
+    ("tenant_id", false),
+    ("updated_at", false),
+    ("updated_by", false),
+];
+
 async fn roster(conn: &impl ConnectionTrait, table: &str) -> Vec<(String, bool)> {
     let rows = ColumnRow::find_by_statement(Statement::from_string(
         sea_orm::DatabaseBackend::Postgres,
@@ -125,6 +140,12 @@ async fn the_governance_rosters_match_on_postgres() {
     assert_eq!(
         roster(&conn, "products_approval_decision").await,
         golden(DECISION)
+    );
+    assert_eq!(
+        roster(&conn, "products_materiality_policy").await,
+        golden(MATERIALITY_POLICY),
+        "every column is NOT NULL: P-D-112 arm 2 gives a tenant with no policy no row at all, \
+         so a nullable column would be a third state the resolver does not have"
     );
     assert_eq!(
         roster(&conn, "products_breakglass_session").await,
@@ -184,4 +205,66 @@ async fn the_stored_snapshots_are_not_nullable_on_postgres() {
             "{column} must be the refusal's subject: {err}"
         );
     }
+}
+
+/// **The two indexes P-D-110 arm 3 and P-D-111 routed to this migration
+/// exist on Postgres**, and the `SQLite` mirror cannot see either.
+///
+/// Both were created for reads this gear makes and neither is enforced by any
+/// constraint, so nothing else in the suite would notice their absence: an
+/// index that is missing makes a query slower and never wrong, which is
+/// exactly the class of defect a schema oracle exists to catch before
+/// production does.
+///
+/// `idx_products_approval_gate` carries **no state predicate** on purpose —
+/// `gate_candidates` is deliberately stateless so `PreAuthorized` can see
+/// `consumed` rows, which is why `uq_products_approval_open`'s
+/// `WHERE state IN (...)` cannot serve it. The assertion therefore checks the
+/// predicate's *absence*, since an index with one would look present and
+/// serve nothing.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn the_routed_indexes_exist_on_postgres() {
+    let pg = Pg::applied().await;
+    let conn = pg.raw().await;
+
+    let gate = index_definition(&conn, "idx_products_approval_gate").await;
+    assert!(
+        gate.contains("tenant_id")
+            && gate.contains("subject_kind")
+            && gate.contains("subject_ref")
+            && gate.contains("submitted_at"),
+        "P-D-110 arm 3's index must carry all four columns: {gate}"
+    );
+    assert!(
+        !gate.to_ascii_uppercase().contains(" WHERE "),
+        "a state predicate would make this index unusable by the stateless read it exists for: \
+         {gate}"
+    );
+
+    let elevation = index_definition(&conn, "idx_products_breakglass_two_person").await;
+    assert!(
+        elevation.contains("two_person_approval_ref"),
+        "P-D-111's reverse lookup must be indexed: {elevation}"
+    );
+}
+
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct IndexRow {
+    indexdef: String,
+}
+
+/// One index's definition, or a panic naming the index that is missing.
+async fn index_definition(conn: &impl ConnectionTrait, name: &str) -> String {
+    IndexRow::find_by_statement(Statement::from_string(
+        sea_orm::DatabaseBackend::Postgres,
+        format!(
+            "SELECT indexdef FROM pg_indexes WHERE schemaname = 'bss' AND indexname = '{name}'"
+        ),
+    ))
+    .one(conn)
+    .await
+    .expect("pg_indexes answers")
+    .unwrap_or_else(|| panic!("{name} does not exist on Postgres"))
+    .indexdef
 }

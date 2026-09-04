@@ -158,6 +158,7 @@ use crate::infra::storage::repo::{self, AuditCommon, RefusalSubject};
 pub mod bulk;
 pub mod catalog_version;
 pub mod dto;
+pub mod materiality_policy;
 pub mod preconditions;
 pub mod products;
 pub mod recognized_sets;

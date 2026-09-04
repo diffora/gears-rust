@@ -196,6 +196,17 @@ impl MaterialityPolicy {
         self.affected_entity_trigger
     }
 
+    /// The tenant's own extra field set, for the store that persists it
+    /// (**P-D-112**).
+    ///
+    /// A read-only view: [`Self::names_field`] is how the evaluator asks about
+    /// a column, and this exists so the row can be written and read back
+    /// without a second copy of the set living beside the policy.
+    #[must_use]
+    pub fn field_set(&self) -> &[String] {
+        &self.field_set
+    }
+
     /// Whether the policy's own extra field set names this column.
     ///
     /// The bucket registry is the primary operand; this set is the policy's
