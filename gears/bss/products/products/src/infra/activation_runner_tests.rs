@@ -85,6 +85,7 @@ fn context(harness: &Harness) -> ActivationContext {
         retirement_held_alert_hours: 72,
         sink: crate::infra::broker::EventSink::Interim(Arc::clone(harness.outbox_handle.outbox())),
         idempotency_retention_hours: IDEMPOTENCY_RETENTION_FLOOR_HOURS,
+        reference_freshness: crate::config::ProductsConfig::default().reference_freshness(),
     }
 }
 
@@ -331,6 +332,33 @@ async fn walk_sku(
     }
 }
 
+/// A registered producer whose fresh watermark omits every SKU — `FreshZero`.
+async fn seed_fresh_zero(
+    conn: &impl toolkit_db::secure::DBRunner,
+    scope: &AccessScope,
+    now: chrono::DateTime<Utc>,
+) {
+    crate::infra::storage::repo::register_reference_producer(
+        conn, scope, TENANT, "pricing", None, now,
+    )
+    .await
+    .expect("register a producer");
+    crate::infra::storage::repo::post_reference_watermark(
+        conn,
+        scope,
+        TENANT,
+        crate::infra::storage::repo::PostedWatermark {
+            producer: "pricing",
+            watermark_at: now,
+            posted_at: now,
+            set_hash: "0000000000000000000000000000000000000000000000000000000000000000",
+            members: &[],
+        },
+    )
+    .await
+    .expect("post a fresh empty set");
+}
+
 #[tokio::test]
 async fn a_seeded_consumed_approval_flips_deprecated_sku_to_retired() {
     let harness = harness().await;
@@ -391,6 +419,7 @@ async fn a_seeded_consumed_approval_flips_deprecated_sku_to_retired() {
         .await
         .expect("insert sku");
         walk_sku(&conn, &scope, RETIRE_SKU, now, &["published", "deprecated"]).await;
+        seed_fresh_zero(&conn, &scope, now).await;
 
         let subject = GateSubject::entity_publish(EntityRef {
             tenant_id: TENANT,
@@ -479,6 +508,17 @@ async fn a_seeded_consumed_approval_flips_deprecated_sku_to_retired() {
         sku.lifecycle_state,
         bss_products_sdk::models::LifecycleState::Retired,
         "the runner drives deprecated -> retired"
+    );
+    let applied = audit_log::Entity::find()
+        .secure()
+        .scope_with(&scope)
+        .filter(Condition::all().add(audit_log::Column::Action.eq("activation.applied")))
+        .one(&conn)
+        .await
+        .expect("query");
+    assert!(
+        applied.is_some(),
+        "the applied finish leaves an audit row, not only a state change"
     );
 }
 
@@ -1021,5 +1061,158 @@ async fn a_stale_deferral_writes_the_retirement_held_audit() {
     assert!(
         alert.is_some(),
         "a deferral older than retirement_held_alert_hours is recorded"
+    );
+}
+
+#[tokio::test]
+async fn a_sku_retire_defers_when_no_producer_is_registered() {
+    let harness = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    let now = Utc.with_ymd_and_hms(2026, 9, 4, 12, 0, 0).unwrap();
+    {
+        let conn = harness.db.conn().expect("scoped connection");
+        insert_product(
+            &conn,
+            &scope,
+            NewProduct {
+                product_id: PRODUCT,
+                tenant_id: TENANT,
+                brand_id: BRAND,
+                name: "Fibre 500".to_owned(),
+                name_normalized: "fibre 500".to_owned(),
+                product_code: Some("FIBRE-500".to_owned()),
+                region_scope: String::new(),
+                brand_scope: String::new(),
+                created_by: "principal:author-1".to_owned(),
+                created_at: now,
+                cloned_from: None,
+                cloned_from_version: None,
+            },
+        )
+        .await
+        .expect("insert the parent");
+        product::Entity::update_many()
+            .secure()
+            .scope_with(&scope)
+            .col_expr(product::Column::LifecycleState, Expr::value("published"))
+            .col_expr(product::Column::InternalRevision, Expr::value(2_i64))
+            .col_expr(product::Column::UpdatedAt, Expr::value(now))
+            .filter(
+                Condition::all()
+                    .add(product::Column::TenantId.eq(TENANT))
+                    .add(product::Column::ProductId.eq(PRODUCT)),
+            )
+            .exec(&conn)
+            .await
+            .expect("parent published");
+        insert_sku(
+            &conn,
+            &scope,
+            NewSku {
+                sku_id: RETIRE_SKU,
+                tenant_id: TENANT,
+                product_id: PRODUCT,
+                sku_code: "FIBRE-500-R".to_owned(),
+                region_scope: String::new(),
+                brand_scope: String::new(),
+                created_by: "principal:author-1".to_owned(),
+                created_at: now,
+                cloned_from: None,
+                cloned_from_version: None,
+            },
+        )
+        .await
+        .expect("insert sku");
+        walk_sku(&conn, &scope, RETIRE_SKU, now, &["published", "deprecated"]).await;
+        let subject = GateSubject::entity_publish(EntityRef {
+            tenant_id: TENANT,
+            entity_kind: bss_products_sdk::models::EntityKind::Sku,
+            entity_id: RETIRE_SKU,
+        });
+        let policy = MaterialityPolicy::default();
+        let claims = vec!["catalog-admin".to_owned()];
+        let evaluator =
+            MaterialityEvaluator::new(Resolution::Resolved(&policy), Resolution::Resolved(&claims));
+        let act = MaterialAct::PolicyMutation;
+        submit_approval(
+            &conn,
+            &scope,
+            NewApproval {
+                approval_id: ApprovalId::new(RETIRE_APPROVAL),
+                subject: &subject,
+                internal_revision: 3,
+                content_snapshot: "{}",
+                diff_basis: None,
+                act: &act,
+                evaluator,
+                finance_material: false,
+                approver_count: 2,
+                submitter: ACTOR,
+                author_override_ack: None,
+            },
+            now,
+        )
+        .await
+        .expect("submit");
+        approval::Entity::update_many()
+            .secure()
+            .scope_with(&scope)
+            .col_expr(approval::Column::State, Expr::value("satisfied".to_owned()))
+            .filter(
+                Condition::all()
+                    .add(approval::Column::TenantId.eq(TENANT))
+                    .add(approval::Column::ApprovalId.eq(RETIRE_APPROVAL)),
+            )
+            .exec(&conn)
+            .await
+            .expect("satisfy");
+        consume_approval(&conn, &scope, TENANT, ApprovalId::new(RETIRE_APPROVAL), now)
+            .await
+            .expect("consume");
+        insert_scheduled_transition(
+            &conn,
+            &scope,
+            &NewScheduledTransition {
+                transition_id: RETIRE_TRANSITION,
+                tenant_id: TENANT,
+                entity_kind: "sku".to_owned(),
+                entity_id: RETIRE_SKU,
+                kind: "retire".to_owned(),
+                at: now - chrono::Duration::hours(1),
+                approval_ref: RETIRE_APPROVAL,
+                retirement_reason: Some("end of life".to_owned()),
+                now,
+            },
+        )
+        .await
+        .expect("insert the pin");
+    }
+
+    let ctx = context(&harness);
+    sweep(&ctx, ACTOR, now, &CancellationToken::new())
+        .await
+        .expect("sweep");
+
+    let conn = ctx.db.conn().expect("reopen");
+    let row = find_scheduled_transition(&conn, &scope, TENANT, RETIRE_TRANSITION)
+        .await
+        .expect("find")
+        .expect("row");
+    assert_eq!(row.state, "deferred");
+    assert_eq!(
+        row.outcome_reason.as_deref(),
+        Some("flip guard: no producers"),
+        "an empty registry is NoProducers, not FreshZero"
+    );
+    let deferred = audit_log::Entity::find()
+        .secure()
+        .scope_with(&scope)
+        .filter(Condition::all().add(audit_log::Column::Action.eq("activation.deferred")))
+        .one(&conn)
+        .await
+        .expect("query");
+    assert!(
+        deferred.is_some(),
+        "a deferral is recorded, not inferred from state"
     );
 }

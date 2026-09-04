@@ -5,8 +5,8 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-runner-failure-posture:p1
 
 use axum::http::StatusCode;
-use chrono::{DateTime, Utc};
-use toolkit_db::secure::AccessScope;
+use chrono::{DateTime, SecondsFormat, Utc};
+use toolkit_db::secure::{AccessScope, TxConfig};
 use uuid::Uuid;
 
 use bss_products_sdk::models::EntityKind;
@@ -49,6 +49,10 @@ pub(crate) struct ActivationContext {
     /// [`ProductsConfig::idempotency_retention_hours`], for the `internal:`
     /// lane claim.
     pub(crate) idempotency_retention_hours: u32,
+    /// [`ProductsConfig::reference_freshness`] — the 07 predicate's cadence.
+    /// The runtime does not yet carry the boot value; `activation_tick`
+    /// fills this from `ProductsConfig::default().reference_freshness()`.
+    pub(crate) reference_freshness: std::time::Duration,
 }
 
 /// One tick: discover due rows, claim or reclaim, verify the pin, finish.
@@ -205,16 +209,113 @@ async fn run_one(
     }
 
     let finish = pin_finish(runner, scope, tenant_id, row, now, ctx, actor_ref).await?;
-    let _ = repo::finish_scheduled_transition(
-        runner,
-        scope,
-        tenant_id,
-        row.transition_id,
-        &finish,
-        now,
-    )
-    .await?;
+    persist_finish(ctx, scope, tenant_id, row, &finish, now, actor_ref).await?;
     Ok(())
+}
+
+/// The finish, its audit row, and — on an applied retire — the head write
+/// plus the flip event, in one transaction (`dod-lifecycle-events`,
+/// `dod-lifecycle-audit`).
+async fn persist_finish(
+    ctx: &ActivationContext,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    row: &scheduled_transition::Model,
+    finish: &RunFinish,
+    now: DateTime<Utc>,
+    actor_ref: Uuid,
+) -> Result<(), RepoError> {
+    let sink = ctx.sink.clone();
+    let scope = scope.clone();
+    let finish = finish.clone();
+    let row = row.clone();
+    ctx.db
+        .db()
+        .transaction_with_retry::<(), FinishTxError, _, _>(
+            TxConfig::default(),
+            finish_contention,
+            move |tx| {
+                let sink = sink.clone();
+                let scope = scope.clone();
+                let finish = finish.clone();
+                let row = row.clone();
+                Box::pin(async move {
+                    if matches!(finish, RunFinish::Applied) && row.kind == "retire" {
+                        apply_retire_flip(tx, &scope, tenant_id, &row, now, &sink, actor_ref)
+                            .await?;
+                    }
+                    let _ = repo::finish_scheduled_transition(
+                        tx,
+                        &scope,
+                        tenant_id,
+                        row.transition_id,
+                        &finish,
+                        now,
+                    )
+                    .await?;
+                    let reason = match &finish {
+                        RunFinish::Applied => None,
+                        RunFinish::Failed { reason } | RunFinish::Deferred { reason, .. } => {
+                            Some(reason.clone())
+                        }
+                    };
+                    repo::write_eventless_act_audit(
+                        tx,
+                        &scope,
+                        repo::AuditCommon {
+                            audit_id: Uuid::now_v7(),
+                            tenant_id,
+                            actor_ref,
+                            action: format!("activation.{}", finish.state().as_str()),
+                            subject_kind: row.entity_kind.clone(),
+                            reason,
+                            correlation_id: None,
+                            written_at: now,
+                        },
+                        row.entity_id,
+                        None,
+                    )
+                    .await?;
+                    Ok(())
+                })
+            },
+        )
+        .await
+        .map_err(RepoError::from)
+}
+
+/// `transaction_with_retry` requires `From<DbError>`; [`RepoError`] has none.
+enum FinishTxError {
+    Repo(RepoError),
+    Db(toolkit_db::DbError),
+}
+
+impl From<toolkit_db::DbError> for FinishTxError {
+    fn from(error: toolkit_db::DbError) -> Self {
+        Self::Db(error)
+    }
+}
+
+impl From<RepoError> for FinishTxError {
+    fn from(error: RepoError) -> Self {
+        Self::Repo(error)
+    }
+}
+
+impl From<FinishTxError> for RepoError {
+    fn from(error: FinishTxError) -> Self {
+        match error {
+            FinishTxError::Repo(inner) => inner,
+            FinishTxError::Db(inner) => Self::Db(format!("activation finish transaction: {inner}")),
+        }
+    }
+}
+
+fn finish_contention(error: &FinishTxError) -> Option<&sea_orm::DbErr> {
+    match error {
+        FinishTxError::Repo(RepoError::Driver { source, .. }) => Some(source),
+        FinishTxError::Repo(_) | FinishTxError::Db(_) => None,
+    }
 }
 
 async fn pin_finish(
@@ -352,8 +453,8 @@ async fn drive_door(
                 scope,
                 tenant_id,
                 drive.row,
-                drive.expected,
                 drive.now,
+                ctx.reference_freshness,
             )
             .await
         }
@@ -363,8 +464,8 @@ async fn drive_door(
                 scope,
                 tenant_id,
                 drive.row,
-                drive.expected,
                 drive.now,
+                ctx.reference_freshness,
             )
             .await
         }
@@ -379,12 +480,9 @@ async fn flip_sku_retired(
     scope: &AccessScope,
     tenant_id: Uuid,
     row: &scheduled_transition::Model,
-    expected: InternalRevision,
     now: DateTime<Utc>,
+    freshness: std::time::Duration,
 ) -> Result<RunFinish, RepoError> {
-    if let Err(held) = flip_guard(FlipPredicate::FreshZero) {
-        return Ok(crate::domain::activation::defer_flip_guard(&held));
-    }
     // @cpt-dod:cpt-cf-bss-products-dod-replaced-by:p1 — live pointers defer.
     let pointers = repo::find_skus_pointing_at(runner, scope, tenant_id, row.entity_id).await?;
     if !pointers.is_empty() {
@@ -392,6 +490,11 @@ async fn flip_sku_retired(
             population: DeferralPopulation::FlipGuard,
             reason: replacement_chain_broken_reason(&pointers),
         });
+    }
+    if let Some(held) =
+        consult_flip_guard(runner, scope, tenant_id, row.entity_id, now, freshness).await?
+    {
+        return Ok(held);
     }
     if let Err(error) = transition::guard(
         bss_products_sdk::models::LifecycleState::Deprecated,
@@ -401,14 +504,7 @@ async fn flip_sku_retired(
             reason: error.code().to_owned(),
         });
     }
-    match repo::retire_sku_head(runner, scope, tenant_id, row.entity_id, expected.get(), now)
-        .await?
-    {
-        repo::HeadWrite::Applied => Ok(RunFinish::Applied),
-        repo::HeadWrite::Unmatched => Ok(RunFinish::Failed {
-            reason: "retire flip unmatched".to_owned(),
-        }),
-    }
+    Ok(RunFinish::Applied)
 }
 
 async fn flip_product_retired(
@@ -416,8 +512,8 @@ async fn flip_product_retired(
     scope: &AccessScope,
     tenant_id: Uuid,
     row: &scheduled_transition::Model,
-    expected: InternalRevision,
     now: DateTime<Utc>,
+    freshness: std::time::Duration,
 ) -> Result<RunFinish, RepoError> {
     let children = repo::find_skus_of_product(runner, scope, tenant_id, row.entity_id).await?;
     let states: Vec<_> = children.iter().map(|c| c.lifecycle_state).collect();
@@ -435,8 +531,10 @@ async fn flip_product_retired(
             reason: PARENT_FLIP_HELD_REASON.to_owned(),
         });
     }
-    if let Err(held) = flip_guard(FlipPredicate::FreshZero) {
-        return Ok(crate::domain::activation::defer_flip_guard(&held));
+    if let Some(held) =
+        consult_flip_guard(runner, scope, tenant_id, row.entity_id, now, freshness).await?
+    {
+        return Ok(held);
     }
     if let Err(error) = transition::guard(
         bss_products_sdk::models::LifecycleState::Deprecated,
@@ -446,14 +544,185 @@ async fn flip_product_retired(
             reason: error.code().to_owned(),
         });
     }
-    match repo::retire_product_head(runner, scope, tenant_id, row.entity_id, expected.get(), now)
-        .await?
-    {
-        repo::HeadWrite::Applied => Ok(RunFinish::Applied),
-        repo::HeadWrite::Unmatched => Ok(RunFinish::Failed {
-            reason: "retire flip unmatched".to_owned(),
-        }),
+    Ok(RunFinish::Applied)
+}
+
+/// @cpt-dod:cpt-cf-bss-products-dod-flip-guard:p1 — the 07 reader, not a literal.
+async fn consult_flip_guard(
+    runner: &(impl toolkit_db::secure::DBRunner + Sync),
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    entity_id: Uuid,
+    now: DateTime<Utc>,
+    freshness: std::time::Duration,
+) -> Result<Option<RunFinish>, RepoError> {
+    let eval = crate::api::rest::reference::evaluate_reference(
+        runner, scope, tenant_id, entity_id, now, freshness,
+    )
+    .await?;
+    let predicate = predicate_from_evaluation(&eval);
+    let blocking = blocking_producers(&eval);
+    if let Err(mut held) = flip_guard(predicate) {
+        held.blocking_producers = blocking;
+        return Ok(Some(crate::domain::activation::defer_flip_guard(&held)));
     }
+    Ok(None)
+}
+
+fn predicate_from_evaluation(
+    eval: &crate::api::rest::reference::ReferenceEvaluation,
+) -> FlipPredicate {
+    use crate::api::rest::reference::ProducerVerdict;
+    if eval.no_producers {
+        return FlipPredicate::NoProducers;
+    }
+    if !eval.referenced {
+        return FlipPredicate::FreshZero;
+    }
+    if eval
+        .per_producer
+        .iter()
+        .any(|(_, v)| *v == ProducerVerdict::ConservativelyReferencedNeverReceived)
+    {
+        return FlipPredicate::NeverReceived;
+    }
+    if eval
+        .per_producer
+        .iter()
+        .any(|(_, v)| *v == ProducerVerdict::ConservativelyReferencedStale)
+    {
+        return FlipPredicate::Stale;
+    }
+    FlipPredicate::FreshPositive
+}
+
+fn blocking_producers(eval: &crate::api::rest::reference::ReferenceEvaluation) -> Vec<String> {
+    use crate::api::rest::reference::ProducerVerdict;
+    eval.per_producer
+        .iter()
+        .filter(|(_, v)| *v != ProducerVerdict::FreshZero)
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+/// Head write + `*RetirementEffective` on the finish transaction.
+/// @cpt-dod:cpt-cf-bss-products-dod-lifecycle-events:p1
+async fn apply_retire_flip(
+    runner: &(impl toolkit_db::secure::DBRunner + Sync),
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    row: &scheduled_transition::Model,
+    now: DateTime<Utc>,
+    sink: &EventSink,
+    actor_ref: Uuid,
+) -> Result<(), RepoError> {
+    let expected = {
+        // The pin already decided Applied; the head write re-pins the
+        // revision it read then. Re-read so the UPDATE filter is the
+        // current revision, not the approval's.
+        match row.entity_kind.as_str() {
+            "sku" => repo::find_sku(runner, scope, tenant_id, row.entity_id)
+                .await?
+                .map(|h| h.internal_revision),
+            "product" => repo::find_product(runner, scope, tenant_id, row.entity_id)
+                .await?
+                .map(|h| h.internal_revision),
+            _ => None,
+        }
+    };
+    let Some(expected) = expected else {
+        return Err(RepoError::Db("retire flip head vanished".to_owned()));
+    };
+    let write = match row.entity_kind.as_str() {
+        "sku" => {
+            repo::retire_sku_head(runner, scope, tenant_id, row.entity_id, expected, now).await?
+        }
+        "product" => {
+            repo::retire_product_head(runner, scope, tenant_id, row.entity_id, expected, now)
+                .await?
+        }
+        other => {
+            return Err(RepoError::Db(format!(
+                "retire flip has no head writer for {other}"
+            )));
+        }
+    };
+    if write == repo::HeadWrite::Unmatched {
+        return Err(RepoError::Db(
+            "retire flip unmatched under the finish".to_owned(),
+        ));
+    }
+    announce_retirement_effective(runner, scope, tenant_id, row, sink, actor_ref).await
+}
+
+async fn announce_retirement_effective(
+    runner: &(impl toolkit_db::secure::DBRunner + Sync),
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    row: &scheduled_transition::Model,
+    sink: &EventSink,
+    actor_ref: Uuid,
+) -> Result<(), RepoError> {
+    let (entity_kind, payload, internal_revision, lifecycle_state, from_version, replaced_by) =
+        match row.entity_kind.as_str() {
+            "sku" => {
+                let head = repo::find_sku(runner, scope, tenant_id, row.entity_id)
+                    .await?
+                    .ok_or_else(|| RepoError::Db("retired SKU vanished after flip".to_owned()))?;
+                (
+                    crate::infra::events::EntityKind::Sku.as_str(),
+                    crate::infra::events::SKU_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE,
+                    head.internal_revision,
+                    head.lifecycle_state.as_str(),
+                    head.published_version,
+                    head.replaced_by_sku_id,
+                )
+            }
+            "product" => {
+                let head = repo::find_product(runner, scope, tenant_id, row.entity_id)
+                    .await?
+                    .ok_or_else(|| {
+                        RepoError::Db("retired Product vanished after flip".to_owned())
+                    })?;
+                (
+                    crate::infra::events::EntityKind::Product.as_str(),
+                    crate::infra::events::PRODUCT_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE,
+                    head.internal_revision,
+                    head.lifecycle_state.as_str(),
+                    head.published_version,
+                    None,
+                )
+            }
+            other => {
+                return Err(RepoError::Db(format!(
+                    "retire flip has no event for {other}"
+                )));
+            }
+        };
+    let core = crate::infra::events::EventBodyCore {
+        tenant_id: row.tenant_id,
+        entity_kind,
+        entity_id: row.entity_id,
+        internal_revision,
+        lifecycle_state,
+    };
+    crate::infra::events::enqueue_retired(
+        sink,
+        runner,
+        row.entity_id,
+        payload,
+        crate::infra::events::RetiredEventBody {
+            core: &core,
+            from_version,
+            reason: row.retirement_reason.clone().unwrap_or_default(),
+            replaced_by,
+            effective_at: row.at.to_rfc3339_opts(SecondsFormat::Secs, true),
+            must_migrate_by: None,
+        },
+        actor_ref,
+    )
+    .await
+    .map_err(|e| RepoError::Db(format!("enqueue retirement-effective: {e}")))
 }
 
 fn map_sku_door(

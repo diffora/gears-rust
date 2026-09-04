@@ -305,6 +305,7 @@ async fn activation_tick(rt: &ProductsRuntime, cancel: &tokio_util::sync::Cancel
         retirement_held_alert_hours: rt.retirement_held_alert_hours,
         sink: rt.sdk_state.sink.clone(),
         idempotency_retention_hours: rt.sdk_state.idempotency_retention_hours,
+        reference_freshness: crate::config::ProductsConfig::default().reference_freshness(),
     };
     if let Err(error) =
         crate::infra::activation_runner::sweep(&ctx, rt.system_actor_ref, now, cancel).await
