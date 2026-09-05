@@ -184,6 +184,23 @@ gts_instance! {
 }
 gts_instance! {
     AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.catalog_version_force_complete.v1"),
+        resource_type: labels::CATALOG_VERSION.to_owned(),
+        action: actions::FORCE_COMPLETE.to_owned(),
+        display_name: "Force-complete a timed-out catalog version's freeze (a two-person ceremony)"
+            .to_owned(),
+    }
+}
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.freeze_participant_write.v1"),
+        resource_type: labels::FREEZE_PARTICIPANT.to_owned(),
+        action: actions::WRITE.to_owned(),
+        display_name: "Register or retire a freeze participant".to_owned(),
+    }
+}
+gts_instance! {
+    AuthzPermissionV1 {
         id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.sku_read.v1"),
         resource_type: labels::SKU.to_owned(),
         action: actions::READ.to_owned(),
@@ -359,6 +376,8 @@ mod tests {
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.sku_write.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.sku_publish.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.sku_correct.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.catalog_version_force_complete.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.freeze_participant_write.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.sku_read.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.catalog_version_request.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.catalog_version_ack.v1"),
@@ -489,6 +508,7 @@ mod tests {
             crate::authz::actions::EXPORT,
             crate::authz::actions::CANCEL,
             crate::authz::actions::CORRECT,
+            crate::authz::actions::FORCE_COMPLETE,
         ];
         // `10`'s three grants reuse EXECUTE, EXPORT and WRITE on their own
         // resources. `04`'s scheduled-transition cancel spends `CANCEL`

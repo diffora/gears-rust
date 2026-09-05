@@ -571,7 +571,7 @@ fn register_head_act_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Ro
         .error_500(openapi)
         .error_503(openapi)
         .register(router, openapi);
-    OperationBuilder::post("/bss-products/v1/skus/{id}/corrections")
+    let router = OperationBuilder::post("/bss-products/v1/skus/{id}/corrections")
         .operation_id("bss_products.correct_sku")
         .summary("Correct a published SKU's bucket-ii field (slice 07's correction door)")
         .description(
@@ -605,6 +605,66 @@ fn register_head_act_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Ro
             openapi,
             StatusCode::OK,
             "The corrected SKU head, at its new revision and version.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+    register_lint_and_clear_routes(router, openapi)
+}
+
+/// The two doors P-D-125 and P-D-148 added beside the head acts: the dry-run
+/// lint and the composition clear.
+fn register_lint_and_clear_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+    let router = OperationBuilder::post("/bss-products/v1/skus/{id}/validate")
+        .operation_id("bss_products.validate_sku")
+        .summary("Dry-run the SKU's publish (the pre-publish lint)")
+        .description(
+            "Runs the publish pipeline to the governance gate EXCLUSIVE and writes nothing: \
+             the answer is the per-entity report - every code the publish would refuse with, \
+             plus the uncomposed-bundle condition the ceremony acknowledges by name. Gates on \
+             `sku x publish`. A clean report means the publish would reach the gate.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "The SKU to lint.")
+        .handler(validate_sku)
+        .json_response_with_schema::<LintReportView>(openapi, StatusCode::OK, "The lint report.")
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+    OperationBuilder::post("/bss-products/v1/skus/{id}/composition-clears")
+        .operation_id("bss_products.clear_sku_composition")
+        .summary("Clear a bundle's composition_pending on the inbound composition signal")
+        .description(
+            "The registry-side door for pricing's composition signal: records the signal as a \
+             system_signal approval (born satisfied, the signal being the approving principal, \
+             independent of the tenant's N), then re-publishes the bundle's head as version N+1 \
+             with composition_pending false, emitting SkuCompositionCleared beside SkuPublished. \
+             On a dirty head or an open publish approval the clear is HELD (202), never refused: \
+             the flag stays true, composition_clear_held names the blocker, and the activation \
+             runner re-evaluates the held signal once the head goes clean. Idempotent per \
+             signal_ref. Gates on `sku x publish`.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "The bundle SKU the signal names.")
+        .json_request::<CompositionClearRequest>(openapi, "The signal's reference.")
+        .handler(clear_composition)
+        .json_response_with_schema::<CompositionClearView>(
+            openapi,
+            StatusCode::OK,
+            "cleared, held or replayed.",
         )
         .error_400(openapi)
         .error_401(openapi)
@@ -2406,6 +2466,10 @@ const PUBLISH_AUDIT_ACTION: &str = "publish";
 /// the audit vocabulary are two different sets, and [`open_act`] takes them
 /// as two arguments for that reason.
 const DISCARD_AUDIT_ACTION: &str = "discard";
+/// The dry-run lint's audit action token (`validate` door).
+const VALIDATE_AUDIT_ACTION: &str = "validate";
+/// The composition clear's audit action token.
+const COMPOSITION_CLEAR_AUDIT_ACTION: &str = "composition_clear";
 /// `07`'s correction door's audit action token.
 const CORRECTION_AUDIT_ACTION: &str = "correct";
 
@@ -3567,9 +3631,13 @@ pub(crate) async fn run_publish(
     gate: &(dyn GovernanceGate + Send + Sync),
     mode: GateMode,
     outbox: &crate::infra::broker::EventSink,
-    binding: Option<&crate::domain::recognized::UsageTypeBinding>,
-    correction: Option<&CorrectionOperand>,
+    operands: PublishOperands<'_>,
 ) -> Result<MutationOutcome, HeadActError> {
+    let PublishOperands {
+        binding,
+        correction,
+        system_clear,
+    } = operands;
     // -- Phase 1, idempotency: the claim, and the replay that ends the act
     // before any other phase is judged. --
     if let Some(replay) = claim_for_head_act(runner, inputs).await? {
@@ -3677,6 +3745,14 @@ pub(crate) async fn run_publish(
     // for no second approval. --
     let authorization = if let Some(operand) = correction {
         operand.authorization.clone()
+    } else if let Some(signal) = system_clear {
+        // The composition clear (`06 inst-cc-clear`; P-D-148): the inbound
+        // signal's own `system_signal` record, matched and spent by the
+        // clear's door, authorizes this re-publish — the signal is the
+        // approving principal (P-D-14), independent of the tenant's `N`
+        // (P-D-11), and it carries no uncomposed-bundle acknowledgment, so
+        // `composition_pending` comes out `false` (P-D-30).
+        signal.clone()
     } else {
         let verdict = gate
             .evaluate(
@@ -4009,8 +4085,10 @@ async fn publish_in_one_transaction(
                         gate.as_ref(),
                         mode,
                         &outbox,
-                        binding.as_ref(),
-                        None,
+                        PublishOperands {
+                            binding: binding.as_ref(),
+                            ..PublishOperands::default()
+                        },
                     )
                     .await
                 })
@@ -4515,6 +4593,17 @@ impl CorrectedColumns {
             columns,
         }
     }
+}
+
+/// Everything a publish may carry besides its head: the resolved meter
+/// binding (`dod-binding-snapshot`), a correction (P-D-41's third argument)
+/// or a composition clear's signal record. One struct, so `run_publish`'s
+/// arity stays readable as lanes are added.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct PublishOperands<'a> {
+    pub(crate) binding: Option<&'a crate::domain::recognized::UsageTypeBinding>,
+    pub(crate) correction: Option<&'a CorrectionOperand>,
+    pub(crate) system_clear: Option<&'a GateAuthorization>,
 }
 
 /// What the correction door hands [`run_publish`] — P-D-41's optional third
@@ -5220,8 +5309,11 @@ async fn apply_correction(
         gate,
         GateMode::Gate,
         outbox,
-        run.binding.as_ref(),
-        Some(&operand),
+        PublishOperands {
+            binding: run.binding.as_ref(),
+            correction: Some(&operand),
+            system_clear: None,
+        },
     )
     .await?;
     let MutationOutcome::Applied {
@@ -8256,3 +8348,546 @@ async fn save_sku_gated(
 #[cfg(test)]
 #[path = "skus_tests.rs"]
 mod skus_tests;
+
+// ---------------------------------------------------------------------------
+// The dry-run lint — `POST /skus/{id}/validate` (P-D-125 row 14, P-D-148):
+// `01`'s publish pipeline run to the gate **exclusive**, writing nothing,
+// answering the per-entity report `fr-prepublish-lint` requires and the
+// override conditions `dod-override-ceremony` acknowledges by name.
+// ---------------------------------------------------------------------------
+
+/// The `validate` doors' answer.
+#[toolkit_macros::api_dto(response)]
+pub struct LintReportView {
+    /// No finding: the publish would pass every phase before the gate.
+    pub clean: bool,
+    pub findings: Vec<LintFindingView>,
+}
+
+#[toolkit_macros::api_dto(response)]
+pub struct LintFindingView {
+    pub code: String,
+    pub subject: String,
+    pub detail: String,
+}
+
+impl From<crate::api::rest::LintFinding> for LintFindingView {
+    fn from(finding: crate::api::rest::LintFinding) -> Self {
+        Self {
+            code: finding.code,
+            subject: finding.subject,
+            detail: finding.detail,
+        }
+    }
+}
+
+/// The SKU publish pipeline to the gate exclusive, as findings instead of a
+/// refusal — every phase `run_publish` runs before it asks the host, plus the
+/// uncomposed-bundle condition it would refuse after (`design/05`'s named
+/// override condition). Reads only; the head is judged **as it stands**. A
+/// SKU this tenant does not have answers no finding — the door that calls
+/// this has already answered 404.
+///
+/// # Errors
+///
+/// The store's own error.
+pub(crate) async fn lint_sku_publish(
+    runner: &(impl toolkit_db::secure::DBRunner + Sync),
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    sku_id: Uuid,
+) -> Result<Vec<crate::api::rest::LintFinding>, crate::infra::storage::RepoError> {
+    use crate::api::rest::LintFinding;
+    let Some(head) = repo::find_sku(runner, scope, tenant_id, sku_id).await? else {
+        return Ok(Vec::new());
+    };
+    let mut findings = Vec::new();
+    if let Err(refusal) = transition::check_head_write(head.lifecycle_state) {
+        findings.push(LintFinding::of(&refusal));
+        return Ok(findings);
+    }
+    if let Some((_phase, report)) =
+        publish_revalidation_pipeline().run(&publish_revalidation_subject(&head))
+    {
+        findings.extend(LintFinding::from_report(&report));
+    }
+    let inputs = HeadActInputs {
+        scope: scope.clone(),
+        tenant_id,
+        sku_id,
+        actor_ref: Uuid::nil(),
+        expected: head.internal_revision,
+        now: canonical::write_instant(Utc::now()),
+        claim: None,
+    };
+    match recheck_parent_containment(runner, &inputs, &head).await {
+        Ok(parent) => {
+            if let Err(refusal) =
+                crate::domain::lifecycle::parent_must_be_published(parent.lifecycle_state)
+            {
+                findings.push(LintFinding {
+                    code: "PARENT_NOT_PUBLISHED".to_owned(),
+                    subject: "product_id".to_owned(),
+                    detail: refusal.detail,
+                });
+            }
+        }
+        Err(outcome) => note_lint_outcome(&mut findings, Err(outcome))?,
+    }
+    note_lint_outcome(
+        &mut findings,
+        recheck_meter_declaration(runner, &inputs, &head, &head, head.published_version == 0).await,
+    )?;
+    note_lint_outcome(
+        &mut findings,
+        recheck_classification(runner, &inputs, &head, &head, true).await,
+    )?;
+    let target = post_publish_state(head.lifecycle_state);
+    if let Err(refusal) = transition::guard(head.lifecycle_state, target) {
+        findings.push(LintFinding::of(&refusal));
+    }
+    // The gate-side condition the ceremony names (`design/05` §2 item 5):
+    // an uncomposed bundle publishes only with the acknowledgment.
+    let is_bundle =
+        head.sku_type.as_deref() == Some(crate::domain::recognized::SkuType::Bundle.as_str());
+    if is_bundle && (head.published_version == 0 || head.composition_pending) {
+        findings.push(LintFinding {
+            code: "BUNDLE_OVERRIDE_REQUIRED".to_owned(),
+            subject: "composition_pending".to_owned(),
+            detail: format!(
+                "`{}` is a bundle plan-price has not composed: its publish needs the two-person \
+                 uncomposed-bundle acknowledgment (P-D-02)",
+                head.sku_code
+            ),
+        });
+    }
+    Ok(findings)
+}
+
+/// Fold one re-check's outcome into the lint report: a refusal is a finding,
+/// a vanished head or a clean pass adds nothing, a driver failure is the
+/// store's error.
+fn note_lint_outcome(
+    findings: &mut Vec<crate::api::rest::LintFinding>,
+    outcome: Result<(), HeadActError>,
+) -> Result<(), crate::infra::storage::RepoError> {
+    match outcome {
+        Ok(()) | Err(HeadActError::Vanished) => Ok(()),
+        Err(HeadActError::Refused(refusal)) => {
+            findings.push(crate::api::rest::LintFinding::of(&refusal));
+            Ok(())
+        }
+        Err(HeadActError::Db(error)) => {
+            Err(crate::infra::storage::RepoError::Db(error.to_string()))
+        }
+    }
+}
+
+/// Hand a pinned connection back before a transaction opens on the same
+/// pool: moving it into a function is the drop the type has no `Drop` for.
+fn return_pinned<T>(conn: T) {
+    let _returned = conn;
+}
+
+/// `POST /skus/{id}/validate`.
+async fn validate_sku(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path(sku_id): Path<Uuid>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let now = canonical::write_instant(Utc::now());
+    let act = open_act(
+        &state,
+        &enforcer,
+        &ctx,
+        sku_id,
+        crate::authz::actions::PUBLISH,
+        VALIDATE_AUDIT_ACTION,
+        now,
+    )
+    .await?;
+    load_head(&state, &act, sku_id).await?;
+    let conn = state
+        .db
+        .conn()
+        .map_err(|e| CanonicalError::internal(format!("bss-products: db conn: {e}")).create())?;
+    let findings = lint_sku_publish(&conn, &act.scope, act.tenant_id, sku_id)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?;
+    Ok((
+        StatusCode::OK,
+        Json(LintReportView {
+            clean: findings.is_empty(),
+            findings: findings.into_iter().map(LintFindingView::from).collect(),
+        }),
+    )
+        .into_response())
+}
+
+// ---------------------------------------------------------------------------
+// The composition clear — `POST /skus/{id}/composition-clears`
+// (`06 inst-cc-clear`, `dod-composition-clear`; P-D-14, P-D-48, P-D-60,
+// P-D-148): the registry-side door pricing's `BundleCompositionCompleted`
+// handler calls when it exists.
+// ---------------------------------------------------------------------------
+
+/// The inbound signal.
+#[toolkit_macros::api_dto(request)]
+pub struct CompositionClearRequest {
+    /// The signal's own reference — the idempotency key of the clear.
+    pub signal_ref: Uuid,
+}
+
+#[toolkit_macros::api_dto(response)]
+pub struct CompositionClearView {
+    pub sku_id: Uuid,
+    pub signal_ref: Uuid,
+    /// `cleared`, `held` or `replayed`.
+    pub outcome: String,
+    /// Why the clear is held, when it is: the blocking edit or approval.
+    pub held_on: Option<String>,
+    /// The version the clear's re-publish froze, when it ran.
+    pub published_version: Option<i64>,
+}
+
+/// What one clear attempt did.
+pub(crate) enum ClearOutcome {
+    /// The head was clean: the flag is cleared at version `published_version`.
+    Cleared { published_version: i64 },
+    /// The head was dirty or carried an open approval: the signal is kept,
+    /// the flag stays raised, `composition_clear_held` names the blocker.
+    Held { on: String },
+    /// This signal already ran.
+    Replayed,
+    /// Nothing to clear: not a bundle, or the flag is already clear.
+    Nothing,
+}
+
+/// The clear's one predicate: the signal's record, satisfied and unconsumed.
+fn signal_snapshot(sku_id: Uuid, signal_ref: Uuid) -> String {
+    serde_json::json!({ "sku_id": sku_id, "signal_ref": signal_ref, "act": "composition_clear" })
+        .to_string()
+}
+
+/// Apply — or hold — one composition clear. Shared by the door and by the
+/// activation runner's re-evaluation of held clears; every write is inside
+/// one transaction, the signal record spent with the re-publish.
+///
+/// # Errors
+///
+/// The store's error, or a refusal the caller reports.
+pub(crate) async fn try_apply_composition_clear(
+    db: &toolkit_db::DBProvider<toolkit_db::DbError>,
+    sink: &crate::infra::broker::EventSink,
+    tenant_id: Uuid,
+    sku_id: Uuid,
+    signal_ref: Uuid,
+    actor_ref: Uuid,
+    now: DateTime<Utc>,
+) -> Result<ClearOutcome, HeadActError> {
+    let scope = AccessScope::for_tenant(tenant_id);
+    let conn = db.conn().map_err(|e| {
+        HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+            "composition clear: {e}"
+        ))))
+    })?;
+    let head = repo::find_sku(&conn, &scope, tenant_id, sku_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?
+        .ok_or(HeadActError::Vanished)?;
+    let subject = GateSubject::system_signal(tenant_id, &signal_ref.to_string());
+    let candidates = repo::gate_candidates(&conn, &scope, &subject)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+    if candidates
+        .iter()
+        .any(|c| c.state == crate::domain::approval::ApprovalState::Consumed)
+    {
+        return Ok(ClearOutcome::Replayed);
+    }
+    let is_bundle =
+        head.sku_type.as_deref() == Some(crate::domain::recognized::SkuType::Bundle.as_str());
+    if !is_bundle || !head.composition_pending {
+        return Ok(ClearOutcome::Nothing);
+    }
+    // The clean-head predicate, P-D-129 row 24's digest equality plus no open
+    // publish approval — on a dirty head the clear is **deferred, never
+    // refused** (P-D-14, P-D-48).
+    let act = ActContext {
+        tenant_id,
+        actor_ref,
+        audit_action: COMPOSITION_CLEAR_AUDIT_ACTION,
+        scope: scope.clone(),
+    };
+    let precondition = correction_preconditions(
+        &conn,
+        &act,
+        &head,
+        InternalRevision::new(head.internal_revision),
+    )
+    .await
+    .map_err(|_| HeadActError::Vanished)?;
+    if let Err(blocker) = precondition {
+        tracing::warn!(
+            event = "composition_clear_held",
+            %tenant_id,
+            %sku_id,
+            %signal_ref,
+            blocker = blocker.code(),
+            "bss-products: the composition clear waits for a clean head"
+        );
+        return Ok(ClearOutcome::Held {
+            on: format!("{}: {blocker}", blocker.code()),
+        });
+    }
+    let gate = crate::api::rest::resolve_host(
+        &conn,
+        &scope,
+        tenant_id,
+        crate::api::rest::GateHost::Real,
+        crate::api::rest::HostFor::Governed(subject.clone()),
+    )
+    .await
+    .map_err(|e| match e {
+        crate::api::rest::HostError::Refused(refusal) => HeadActError::Refused(refusal),
+        crate::api::rest::HostError::Repo(error) => HeadActError::from_repo(&error),
+    })?;
+    return_pinned(conn);
+    let inputs = HeadActInputs {
+        scope: scope.clone(),
+        tenant_id,
+        sku_id,
+        actor_ref,
+        expected: head.internal_revision,
+        now,
+        claim: None,
+    };
+    let outbox = sink.clone();
+    let gate_tx = Arc::clone(&gate);
+    let inputs_tx = inputs.clone();
+    let outcome = db
+        .db()
+        .transaction_with_retry::<MutationOutcome, HeadActError, _, _>(
+            TxConfig::default(),
+            head_act_contention_db_err,
+            move |tx| {
+                let outbox = outbox.clone();
+                let gate = Arc::clone(&gate_tx);
+                let inputs = inputs_tx.clone();
+                let subject = subject.clone();
+                Box::pin(async move {
+                    let verdict = gate.evaluate(subject, GateMode::Gate).map_err(|e| {
+                        HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+                            "bss-products: the governance gate host failed: {e}"
+                        ))))
+                    })?;
+                    let authorization = verdict
+                        .into_authorization()
+                        .map_err(HeadActError::Refused)?;
+                    settle_sku_authorization(tx, &inputs, &authorization).await?;
+                    let outcome = run_publish(
+                        tx,
+                        &inputs,
+                        gate.as_ref(),
+                        GateMode::Gate,
+                        &outbox,
+                        PublishOperands {
+                            binding: None,
+                            correction: None,
+                            system_clear: Some(&authorization),
+                        },
+                    )
+                    .await?;
+                    if let MutationOutcome::Applied {
+                        internal_revision, ..
+                    } = &outcome
+                    {
+                        let after = repo::find_sku(tx, &inputs.scope, inputs.tenant_id, sku_id)
+                            .await
+                            .map_err(|e| HeadActError::from_repo(&e))?
+                            .ok_or(HeadActError::Vanished)?;
+                        let core = events::EventBodyCore {
+                            tenant_id,
+                            entity_kind: events::EntityKind::Sku.as_str(),
+                            entity_id: sku_id,
+                            internal_revision: *internal_revision,
+                            lifecycle_state: after.lifecycle_state.as_str(),
+                        };
+                        // `SkuCompositionCleared` beside the re-publish's own
+                        // `SkuPublished` — two facts, two events (P-D-60).
+                        events::enqueue(
+                            &outbox,
+                            tx,
+                            sku_id,
+                            events::SKU_COMPOSITION_CLEARED_PAYLOAD_TYPE,
+                            &core,
+                            actor_ref,
+                        )
+                        .await
+                        .map_err(|e| events_failure(&e))?;
+                        repo::write_eventless_act_audit(
+                            tx,
+                            &inputs.scope,
+                            repo::AuditCommon {
+                                audit_id: Uuid::now_v7(),
+                                tenant_id,
+                                actor_ref,
+                                action: format!("sku.{COMPOSITION_CLEAR_AUDIT_ACTION}"),
+                                subject_kind: crate::authz::labels::SKU.to_owned(),
+                                reason: Some(format!("signal {signal_ref}")),
+                                correlation_id: events::correlation_id(),
+                                written_at: now,
+                            },
+                            sku_id,
+                            Some(*internal_revision),
+                        )
+                        .await
+                        .map_err(|e| HeadActError::from_repo(&e))?;
+                    }
+                    Ok(outcome)
+                })
+            },
+        )
+        .await?;
+    match outcome {
+        MutationOutcome::Applied { .. } => {
+            let conn = db.conn().map_err(|e| {
+                HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+                    "composition clear: {e}"
+                ))))
+            })?;
+            let after = repo::find_sku(&conn, &scope, tenant_id, sku_id)
+                .await
+                .map_err(|e| HeadActError::from_repo(&e))?
+                .ok_or(HeadActError::Vanished)?;
+            Ok(ClearOutcome::Cleared {
+                published_version: after.published_version,
+            })
+        }
+        MutationOutcome::Replay { .. } => Ok(ClearOutcome::Replayed),
+    }
+}
+
+/// `POST /skus/{id}/composition-clears`: record the signal as a
+/// `system_signal` approval — born satisfied, the signal being the approving
+/// principal (P-D-14), independent of `N` (P-D-11) — then apply or hold.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-composition-clear:p2
+async fn clear_composition(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path(sku_id): Path<Uuid>,
+    Json(body): Json<CompositionClearRequest>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let now = canonical::write_instant(Utc::now());
+    let act = open_act(
+        &state,
+        &enforcer,
+        &ctx,
+        sku_id,
+        crate::authz::actions::PUBLISH,
+        COMPOSITION_CLEAR_AUDIT_ACTION,
+        now,
+    )
+    .await?;
+    let head = load_head(&state, &act, sku_id).await?;
+    let conn = state
+        .db
+        .conn()
+        .map_err(|e| CanonicalError::internal(format!("bss-products: db conn: {e}")).create())?;
+    // The signal's record, unless this signal already has one (replay).
+    let subject = GateSubject::system_signal(act.tenant_id, &body.signal_ref.to_string());
+    let candidates = repo::gate_candidates(&conn, &act.scope, &subject)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?;
+    if candidates.is_empty() {
+        let policy = repo::resolve_materiality_policy(&conn, &act.scope, act.tenant_id)
+            .await
+            .map_err(|e| repo_error_to_canonical(&e))?;
+        let configured = match policy {
+            crate::domain::materiality::Resolution::Resolved(p) => p.approver_count(),
+            crate::domain::materiality::Resolution::Unresolvable => 0,
+        };
+        repo::submit_system_signal(
+            &conn,
+            &act.scope,
+            repo::NewSystemSignal {
+                tenant_id: act.tenant_id,
+                approval_id: ApprovalId::new(Uuid::now_v7()),
+                signal_ref: body.signal_ref,
+                configured_quorum: configured,
+                content_snapshot: &signal_snapshot(sku_id, body.signal_ref),
+                actor_ref: act.actor_ref,
+                now,
+            },
+        )
+        .await
+        .map_err(|e| match e {
+            crate::infra::storage::repo::ApprovalStoreError::Refused(refusal) => {
+                CanonicalError::from(refusal)
+            }
+            crate::infra::storage::repo::ApprovalStoreError::Repo(error) => {
+                repo_error_to_canonical(&error)
+            }
+        })?;
+    }
+    return_pinned(conn);
+    let outcome = try_apply_composition_clear(
+        &state.db,
+        &state.sink,
+        act.tenant_id,
+        sku_id,
+        body.signal_ref,
+        act.actor_ref,
+        now,
+    )
+    .await;
+    let view = match outcome {
+        Ok(ClearOutcome::Cleared { published_version }) => CompositionClearView {
+            sku_id,
+            signal_ref: body.signal_ref,
+            outcome: "cleared".to_owned(),
+            held_on: None,
+            published_version: Some(published_version),
+        },
+        Ok(ClearOutcome::Held { on }) => CompositionClearView {
+            sku_id,
+            signal_ref: body.signal_ref,
+            outcome: "held".to_owned(),
+            held_on: Some(on),
+            published_version: None,
+        },
+        Ok(ClearOutcome::Replayed | ClearOutcome::Nothing) => CompositionClearView {
+            sku_id,
+            signal_ref: body.signal_ref,
+            outcome: "replayed".to_owned(),
+            held_on: None,
+            published_version: Some(head.published_version),
+        },
+        Err(HeadActError::Refused(refusal)) => {
+            return Err(audit_act_refusal(
+                &state,
+                &act,
+                minted(sku_id, Some(head.internal_revision)),
+                refusal,
+            )
+            .await);
+        }
+        Err(HeadActError::Vanished) => {
+            return Err(sku_not_found(sku_id));
+        }
+        Err(HeadActError::Db(error)) => {
+            return Err(CanonicalError::internal(format!("bss-products: {error}")).create());
+        }
+    };
+    let status = if view.outcome == "held" {
+        StatusCode::ACCEPTED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(view)).into_response())
+}

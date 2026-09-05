@@ -146,6 +146,14 @@ pub(crate) const RECOGNIZED_SET_SUBJECT_TYPE: &str =
 pub(crate) const REFERENCE_PRODUCER_SUBJECT_TYPE: &str =
     "gts.cf.core.events.subject.v1~cf.bss.products.reference_producer.v1";
 
+/// `06`'s catalog version — the subject of `CatalogVersionPublished` and
+/// `FreezeForceCompleted` (**P-D-125** row 47, P-D-94's naming rule).
+pub(crate) const CATALOG_VERSION_SUBJECT_TYPE: &str =
+    "gts.cf.core.events.subject.v1~cf.bss.products.catalog_version.v1";
+/// `06`'s freeze-participant set — the subject of `FreezeParticipantSetChanged`.
+pub(crate) const FREEZE_PARTICIPANT_SUBJECT_TYPE: &str =
+    "gts.cf.core.events.subject.v1~cf.bss.products.freeze_participant.v1";
+
 /// The subject type for the batch-completion summary — the subject is the
 /// batch id. Derived from `cf.bss.products.bulk.v1~`, the GTS type `05`
 /// §3.2's authz catalog declares for the bulk grants (P-D-94's derivation
@@ -500,6 +508,110 @@ impl TypedEvent for SkuCorrectionOverride {
     fn trace_parent(&self) -> Option<Cow<'_, str>> {
         crate::infra::events::traceparent().map(Cow::Owned)
     }
+}
+
+/// One frozen entity as `CatalogVersionPublished` lists it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChangedEntityPayload {
+    pub entity_kind: String,
+    pub entity_id: Uuid,
+    pub published_version: i64,
+}
+
+/// `06`'s catalog-version body (**P-D-125** row 27): no entity dimension.
+/// `actor_ref` rides the payload for [`CatalogEventCore`]'s reason.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CatalogVersionPayload {
+    pub tenant_id: Uuid,
+    pub catalog_version_id: Option<i64>,
+    pub act: String,
+    pub participants: Vec<String>,
+    pub changed_entities: Vec<ChangedEntityPayload>,
+    pub satisfied_requests: u32,
+    pub checksum: Option<String>,
+    pub quorum_reduced: Option<bool>,
+    pub actor_ref: Uuid,
+}
+
+/// The three version-subjected events share the payload and differ in type
+/// id and subject type; the subject value is the version id (or the
+/// participant, for the set change).
+macro_rules! catalog_version_event {
+    ($(#[$doc:meta])* $name:ident, $type_id:literal, $subject_type:expr, $subject:expr) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        pub(crate) struct $name {
+            #[serde(flatten)]
+            pub payload: CatalogVersionPayload,
+        }
+
+        impl TypedEvent for $name {
+            const TYPE_ID: &'static str = $type_id;
+            const TOPIC: &'static str = TOPIC;
+            const SUBJECT_TYPE: &'static str = $subject_type;
+            const SOURCE: &'static str = SOURCE;
+
+            fn subject(&self) -> Cow<'_, str> {
+                let f: fn(&CatalogVersionPayload) -> String = $subject;
+                Cow::Owned(f(&self.payload))
+            }
+
+            fn tenant_id(&self) -> Option<Uuid> {
+                Some(self.payload.tenant_id)
+            }
+
+            fn trace_parent(&self) -> Option<Cow<'_, str>> {
+                crate::infra::events::traceparent().map(Cow::Owned)
+            }
+        }
+    };
+}
+
+fn version_subject(payload: &CatalogVersionPayload) -> String {
+    payload
+        .catalog_version_id
+        .map_or_else(|| payload.tenant_id.to_string(), |id| id.to_string())
+}
+
+fn participant_subject(payload: &CatalogVersionPayload) -> String {
+    payload
+        .participants
+        .first()
+        .cloned()
+        .unwrap_or_else(|| payload.tenant_id.to_string())
+}
+
+catalog_version_event! {
+    /// A catalog version was published: the freeze protocol's opening fact.
+    CatalogVersionPublished,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.catalog_version_published.v1",
+    CATALOG_VERSION_SUBJECT_TYPE,
+    version_subject
+}
+catalog_version_event! {
+    /// A force-completion ceremony closed a timed-out freeze.
+    FreezeForceCompleted,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.freeze_force_completed.v1",
+    CATALOG_VERSION_SUBJECT_TYPE,
+    version_subject
+}
+catalog_version_event! {
+    /// The tenant's freeze-participant set moved.
+    FreezeParticipantSetChanged,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.freeze_participant_set_changed.v1",
+    FREEZE_PARTICIPANT_SUBJECT_TYPE,
+    participant_subject
+}
+
+catalog_event! {
+    /// The inbound composition signal cleared a bundle's `composition_pending`
+    /// (`06`; rides beside the re-publish's own `SkuPublished`, P-D-60).
+    SkuCompositionCleared,
+    "gts.cf.core.events.event_type.v1~cf.bss.products.sku_composition_cleared.v1",
+    SKU_SUBJECT_TYPE
 }
 
 /// The tenant's registered producer set moved — entity-less, the tenant's
@@ -1085,7 +1197,20 @@ async fn prepare_every_event_type(
     producer.prepare::<SkuImmutableFieldCorrected>().await?;
     producer.prepare::<SkuCorrectionOverride>().await?;
     producer.prepare::<ReferenceProducerSetChanged>().await?;
+    prepare_catalog_version_event_types(producer).await?;
     producer.prepare::<CatalogBulkOperationCompleted>().await?;
+    Ok(())
+}
+
+/// `06`'s four (`dod-cv-events`): the three on the catalog-version body and
+/// the clear on the entity core.
+async fn prepare_catalog_version_event_types(
+    producer: &event_broker_sdk::DbProducer,
+) -> Result<(), event_broker_sdk::EventBrokerError> {
+    producer.prepare::<CatalogVersionPublished>().await?;
+    producer.prepare::<FreezeForceCompleted>().await?;
+    producer.prepare::<FreezeParticipantSetChanged>().await?;
+    producer.prepare::<SkuCompositionCleared>().await?;
     Ok(())
 }
 

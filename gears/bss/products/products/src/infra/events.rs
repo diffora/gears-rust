@@ -382,6 +382,20 @@ pub(crate) const SKU_CORRECTION_OVERRIDE_PAYLOAD_TYPE: &str = "SkuCorrectionOver
 /// retirement.
 pub(crate) const REFERENCE_PRODUCER_SET_CHANGED_PAYLOAD_TYPE: &str = "ReferenceProducerSetChanged";
 
+/// `06`'s four (`dod-cv-events`; **P-D-125** row 27, P-D-148). Three ride the
+/// **catalog-version body** — no entity dimension: the version or the
+/// participant set is the subject — and `SkuCompositionCleared` rides the
+/// entity core beside the `SkuPublished` its own re-publish emits (P-D-60:
+/// two facts, two events). Acks and re-triggers are audit-plane and emit
+/// nothing.
+pub(crate) const CATALOG_VERSION_PUBLISHED_PAYLOAD_TYPE: &str = "CatalogVersionPublished";
+/// A force-completion ceremony closed a timed-out freeze.
+pub(crate) const FREEZE_FORCE_COMPLETED_PAYLOAD_TYPE: &str = "FreezeForceCompleted";
+/// The tenant's registered freeze-participant set moved.
+pub(crate) const FREEZE_PARTICIPANT_SET_CHANGED_PAYLOAD_TYPE: &str = "FreezeParticipantSetChanged";
+/// The inbound composition signal cleared `composition_pending` on a bundle.
+pub(crate) const SKU_COMPOSITION_CLEARED_PAYLOAD_TYPE: &str = "SkuCompositionCleared";
+
 /// **The explicit no-event declaration** `dod-recognized-set-events`
 /// requires: a per-field classification edit on a SKU — its type,
 /// `sellable`, tier, meter pair or accounting codes — emits **no event of its
@@ -504,6 +518,22 @@ pub(crate) const SCHEMA_REFS: &[(&str, &str)] = &[
     (
         REFERENCE_PRODUCER_SET_CHANGED_PAYLOAD_TYPE,
         "bss-products.ReferenceProducerSetChanged.v1.0.0",
+    ),
+    (
+        CATALOG_VERSION_PUBLISHED_PAYLOAD_TYPE,
+        "bss-products.CatalogVersionPublished.v1.0.0",
+    ),
+    (
+        FREEZE_FORCE_COMPLETED_PAYLOAD_TYPE,
+        "bss-products.FreezeForceCompleted.v1.0.0",
+    ),
+    (
+        FREEZE_PARTICIPANT_SET_CHANGED_PAYLOAD_TYPE,
+        "bss-products.FreezeParticipantSetChanged.v1.0.0",
+    ),
+    (
+        SKU_COMPOSITION_CLEARED_PAYLOAD_TYPE,
+        "bss-products.SkuCompositionCleared.v1.0.0",
     ),
     (
         CATALOG_BULK_OPERATION_COMPLETED_PAYLOAD_TYPE,
@@ -863,6 +893,11 @@ pub(crate) enum EventsError {
     /// (`enqueue_correction_event` is theirs).
     #[error("{0} carries a correction body: use enqueue_correction_event")]
     CorrectionEventNeedsBody(String),
+    /// `06`'s three version-subjected events carry the catalog-version body,
+    /// not an entity core (P-D-125 row 27); the plain-core entry point
+    /// refuses them (`enqueue_catalog_version_event` is theirs).
+    #[error("{0} carries a catalog-version body: use enqueue_catalog_version_event")]
+    CatalogVersionEventNeedsBody(String),
     /// A token that is not the batch summary reached
     /// [`enqueue_bulk_completed`], whose batch-shaped body no other event
     /// carries — the fifth arm of the entry points' fail-closed rule.
@@ -1173,6 +1208,16 @@ pub(crate) async fn enqueue(
             payload_type.to_owned(),
         ));
     }
+    if matches!(
+        payload_type,
+        CATALOG_VERSION_PUBLISHED_PAYLOAD_TYPE
+            | FREEZE_FORCE_COMPLETED_PAYLOAD_TYPE
+            | FREEZE_PARTICIPANT_SET_CHANGED_PAYLOAD_TYPE
+    ) {
+        return Err(EventsError::CatalogVersionEventNeedsBody(
+            payload_type.to_owned(),
+        ));
+    }
     if payload_type == CATALOG_BULK_OPERATION_COMPLETED_PAYLOAD_TYPE {
         return Err(EventsError::BulkEventNeedsBatchBody(
             payload_type.to_owned(),
@@ -1249,6 +1294,11 @@ pub(crate) async fn enqueue(
                 SKU_UNDEPRECATED_PAYLOAD_TYPE => {
                     producer
                         .enqueue(runner, broker::SkuUndeprecated { core: body })
+                        .await
+                }
+                SKU_COMPOSITION_CLEARED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::SkuCompositionCleared { core: body })
                         .await
                 }
                 // Not `UnregisteredSchema`: that variant's own doc says
@@ -2336,5 +2386,126 @@ pub(crate) async fn enqueue_producer_set_event(
             .await
             .map(|_| ())
             .map_err(EventsError::Broker),
+    }
+}
+
+/// One entity a catalog version froze, as `CatalogVersionPublished` lists it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChangedEntity {
+    pub entity_kind: String,
+    pub entity_id: Uuid,
+    pub published_version: i64,
+}
+
+/// `06`'s catalog-version body (**P-D-125** row 27 — a second body core, per
+/// family, on P-D-122's precedent): no entity dimension. `act` names the
+/// fact — `published`, `force_completed`, `participant_registered`,
+/// `participant_retired`; the version-shaped fields are `null`/empty where
+/// the act has none (a participant-set change names no version).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CatalogVersionEventBody<'a> {
+    pub tenant_id: Uuid,
+    pub catalog_version_id: Option<i64>,
+    pub act: &'a str,
+    /// The participants the act concerns: the snapshotted set on a publish,
+    /// the forced ones on a force-completion, the one that moved on a set
+    /// change.
+    pub participants: &'a [String],
+    /// `CatalogVersionPublished`'s changed-entity list; empty otherwise.
+    pub changed_entities: &'a [ChangedEntity],
+    /// `CatalogVersionPublished`'s `satisfiedRequests`.
+    pub satisfied_requests: u32,
+    /// `CatalogVersionPublished`'s checksum, hex.
+    pub checksum: Option<&'a str>,
+    /// `FreezeForceCompleted`'s `quorumReduced` (**P-D-13**).
+    pub quorum_reduced: Option<bool>,
+}
+
+/// The aggregate the interim queue orders `06`'s version-subjected events on:
+/// the tenant's version line is one serial machine, so one aggregate per
+/// tenant (P-D-71's reasoning for the producer set, applied here).
+fn catalog_version_aggregate(tenant_id: Uuid) -> Uuid {
+    Uuid::new_v5(&tenant_id, b"catalog_version")
+}
+
+/// `06`'s three version-subjected events, in the act's own transaction
+/// (`dod-cv-events`; P-D-148). Interim: the envelope carries the body as
+/// rendered here; broker: the typed twins in [`broker`].
+///
+/// # Errors
+///
+/// [`EventsError::NoTypedEvent`] for any other token; the sink's own error.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-cv-events:p1
+pub(crate) async fn enqueue_catalog_version_event(
+    sink: &EventSink,
+    runner: &(impl DBRunner + Sync),
+    payload_type: &str,
+    body: CatalogVersionEventBody<'_>,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    if !matches!(
+        payload_type,
+        CATALOG_VERSION_PUBLISHED_PAYLOAD_TYPE
+            | FREEZE_FORCE_COMPLETED_PAYLOAD_TYPE
+            | FREEZE_PARTICIPANT_SET_CHANGED_PAYLOAD_TYPE
+    ) {
+        return Err(EventsError::NoTypedEvent(payload_type.to_owned()));
+    }
+    match sink {
+        EventSink::Interim(outbox) => {
+            enqueue_body(
+                outbox,
+                runner,
+                body.tenant_id,
+                catalog_version_aggregate(body.tenant_id),
+                payload_type,
+                &body,
+                actor_ref,
+            )
+            .await
+        }
+        EventSink::Broker(producer) => {
+            let payload = broker::CatalogVersionPayload {
+                tenant_id: body.tenant_id,
+                catalog_version_id: body.catalog_version_id,
+                act: body.act.to_owned(),
+                participants: body.participants.to_vec(),
+                changed_entities: body
+                    .changed_entities
+                    .iter()
+                    .map(|entity| broker::ChangedEntityPayload {
+                        entity_kind: entity.entity_kind.clone(),
+                        entity_id: entity.entity_id,
+                        published_version: entity.published_version,
+                    })
+                    .collect(),
+                satisfied_requests: body.satisfied_requests,
+                checksum: body.checksum.map(str::to_owned),
+                quorum_reduced: body.quorum_reduced,
+                actor_ref,
+            };
+            match payload_type {
+                CATALOG_VERSION_PUBLISHED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::CatalogVersionPublished { payload })
+                        .await
+                }
+                FREEZE_FORCE_COMPLETED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::FreezeForceCompleted { payload })
+                        .await
+                }
+                _ => {
+                    producer
+                        .enqueue(runner, broker::FreezeParticipantSetChanged { payload })
+                        .await
+                }
+            }
+            .map(|_| ())
+            .map_err(EventsError::Broker)
+        }
     }
 }

@@ -1569,6 +1569,78 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-148 — 06's doors: force-completion and the participant set under the stored host, the composition clear on a system signal, the diff, the dry-run lint as 05's override operand, the four events and the meters
+
+- **Date**: 2026-09-05 (the lead, group 6 of the solo plan; `06` §7 rows 2, 13, 17, 26, 27, 35,
+  39, 47, 48, 52 as already answered by P-D-67, P-D-124 and P-D-125; `05` §7 rows 10, 15, 39)
+- **Force-completion is a real grant and a live op.** `POST /catalog-versions/{id}/force-completions`
+  spends `catalog_version × force_complete` — the sixth action on the label, a permission instance
+  of its own — and rides `GovernedLiveOp` on `catalog_version/{id}/force-completion`, unpinned
+  (P-D-125's per-kind pin is the answer to row 52). This reconciles P-D-125 row 13's wording: the
+  struck grant is `publish`, not `force_complete`. One transaction spends the record, forces every
+  `pending` row (`forced_at`, `ceremony_ref`, `released_at` in one statement), flips the version to
+  `complete(forced)`, writes the ceremony's audit row and emits `FreezeForceCompleted` with
+  `quorumReduced` off the record's descriptor. A freeze that is not open is `ILLEGAL_TRANSITION`.
+- **The ledger's shape CHECK contradicted its own recovery edge.** `not_frozen(forced) → acked` is
+  one of the six admitted edges, and the CHECK's first arm demands `forced_at IS NULL AND
+  ceremony_ref IS NULL` off the forced state, so a recovered participant's ack failed the CHECK
+  (a 500 at the ack door, found by the force probe). The shipped migration test already models the
+  recovery as clearing the pair while `released_at` stays — the schema was the design and the
+  writers were short. Resolved in the writers: `ack_freeze_row` and `release_freeze_row` clear
+  `forced_at` / `ceremony_ref` on the edge; `released_at` remains the write-once stamp the retention
+  gate reads with the state; the ceremony stays joinable through its audit row, which is the record
+  that outlives the ledger's state. After every forced participant recovers the version reads
+  `complete`, `posted` resolves, and the ceremony's history is the audit row plus the stamps.
+- **The participant door.** `POST /freeze-participants`, body `{participant, op: register|retire}`,
+  a `GovernedLiveOp` on `freeze_participant/{participant}/participant-set` under
+  `freeze_participant × write`. A change audits and emits `FreezeParticipantSetChanged`; a no-op
+  spends the ceremony and writes nothing — a set that did not change is not announced as changed.
+- **Override conditions are lint codes.** The descriptor's sixth name, `overrideConditions`, is the
+  **overridable** subset of the codes the dry-run lint (`skus::lint_sku_publish`,
+  `products::lint_product_publish`) returns for the subject at submission —
+  `domain::approval::OVERRIDE_CONDITION_CODES`, today `BUNDLE_OVERRIDE_REQUIRED` alone, `09`'s own
+  reading (*today only an uncomposed bundle*); a finding the publish refuses regardless is a report
+  line an acknowledgment could not change, and recording it would have forced every `N = 0` author to
+  acknowledge a hard error (six shipped probes said so); an
+  approving decision must acknowledge every code by name in `override_acknowledgments`
+  (comma-separated, exact), else `VALIDATION` on that field (`05` §3 declares no code of its own for
+  it); the submit door runs the same check over `author_override_ack` at `N = 0`. The publish door's
+  `uncomposed_bundle_override` keeps reading the acknowledgment's presence — the by-name half is
+  enforced where the acknowledgment is written.
+- **The dry-run doors.** `POST /skus/{id}/validate` and `POST /products/{id}/validate` on the
+  entity's `publish` action run the publish pipeline to the governance gate exclusive and answer
+  `{clean, findings[{code, subject, detail}]}` — no audit row, no event, no revision. They are the
+  per-entity half of `fr-prepublish-lint` (`01`'s, P-D-125) and `09`'s lint producer reads the same
+  functions in group 7.
+- **The composition clear rides a `system_signal` record.** `POST /skus/{id}/composition-clears`
+  records the signal as a `system_signal` approval born satisfied — the signal is the principal,
+  independent of `N` — and `try_apply_composition_clear` (the door's and the runner's one entry) on
+  a clean head re-publishes through `run_publish` with the new `PublishOperands::system_clear`
+  operand: the record is the gate, the bundle condition is skipped so the flag is not re-raised,
+  `SkuPublished` and `SkuCompositionCleared` both name the new version. A dirty head — an
+  unpublished edit by digest equality or an open publish approval — is **202 `held`**, the flag and
+  the record kept, `composition_clear_held` warned, and the activation runner re-evaluates every
+  open signal each pass (`repo::open_system_signals`). A spent signal replays.
+- **The diff** reads both stored manifests through the resolver's rows and computes entity deltas
+  plus `changedCaptures`; sorted, byte-stable, no write; an unknown side is the resolver's
+  `CATALOG_VERSION_UNKNOWN`, audited under that code with a bare 404 body.
+- **Events and meters.** Four tokens in `SCHEMA_REFS` with `THE_VERSION_FOUR` in both roster
+  families; a second body core `CatalogVersionEventBody` for the three entity-less events with
+  `aggregate_id = uuid_v5(tenant, "catalog_version")` and two subject types; `CatalogVersionPublished`
+  is emitted in the coalescer's commit transaction. The meters are tracing events —
+  `catalog_version_lane_latency`, `catalog_version_overdue` (from `increment::overdue_requests`,
+  raised by the runtime per pass), `freeze_ack_latency` — and P-D-124's `commit →
+  durable-acceptance` stays `01`'s, asserted in group 8.
+- **Ticks.** `06`: `dod-force-completion`, `dod-participant-set`, `dod-composition-clear`,
+  `dod-diff-door`, `dod-cv-authz`, `dod-cv-events`, `dod-cv-audit`,
+  `dod-posting-safe-observability` — eight; `dod-require-broker` stays open because its deployment
+  artifact is outside this repository, as its own body says. `05`: `dod-quorum-descriptor`,
+  `dod-override-ceremony`. `06` §6: seven criteria on probes (force-completion, its lift, replay,
+  the deferred clear, byte-stability, `CATALOG_VERSION_UNKNOWN` on both paths, the negative
+  control); `05` §6: the by-name acknowledgment. `DESIGN.md`'s route table reaches 57.
+- **Trace**: the eight `06` markers and the two `05` markers on their implementing items;
+  `DESIGN.md` §Endpoints Overview (57 routes); `DECOMPOSITION.md` 2.6 (the lint FR's halves).
+
 #### P-D-147 — 07's doors: the correction door on the publish's third argument, the producer doors under the stored host with the retirement rule, the seven codes, the three events, the tripwire
 
 - **Date**: 2026-09-05 (the lead, group 5 of the solo plan; `07` §7 rows 2, 5, 6, 8, 9, 10, 11,

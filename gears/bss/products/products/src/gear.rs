@@ -282,13 +282,14 @@ impl BssProductsGear {
                 biased;
                 () = cancel.cancelled() => break,
                 _ = interval.tick() => {
-                    coalescer_tick(&db, &cancel).await;
+                    coalescer_tick(&db, &rt.sink, &cancel).await;
                     batch_tick(&worker_ctx, rt.system_actor_ref, &cancel).await;
                     activation_tick(&rt, &cancel).await;
                     breakglass_sla_tick(&rt).await;
                     if tick_count.is_multiple_of(OVERDUE_SCAN_EVERY_TICKS) {
                         let now = crate::domain::canonical::write_instant(chrono::Utc::now());
                         report_overdue_freezes(&db, now, rt.freeze_timeout_hours).await;
+                        report_overdue_requests(&db, now).await;
                     }
                     retention_tick(&db, &rt, tick_count, &cancel).await;
                     tick_count += 1;
@@ -422,10 +423,11 @@ async fn batch_tick(
 /// signal.
 async fn coalescer_tick(
     db: &toolkit_db::DBProvider<toolkit_db::DbError>,
+    sink: &crate::infra::broker::EventSink,
     cancel: &tokio_util::sync::CancellationToken,
 ) {
     let now = crate::domain::canonical::write_instant(chrono::Utc::now());
-    if let Err(error) = crate::infra::increment::sweep(db, now, cancel).await {
+    if let Err(error) = crate::infra::increment::sweep(db, sink, now, cancel).await {
         tracing::warn!(%error, "bss-products: coalescer sweep failed");
     }
 }
@@ -433,6 +435,31 @@ async fn coalescer_tick(
 /// The freeze-timeout telemetry (`dod-freeze-timeout`): fail-closed is the
 /// resolver's own posture, so the scan only names the silence, one warning
 /// per overdue version.
+/// `catalog_version_overdue` (`dod-posting-safe-observability`; P-D-148):
+/// one warn event per pending request past its lane's deadline, carrying the
+/// lane and the age — the pending-request-age gauge's rows, too.
+async fn report_overdue_requests(
+    db: &toolkit_db::DBProvider<toolkit_db::DbError>,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    match crate::infra::increment::overdue_requests(db, now).await {
+        Ok(overdue) => {
+            for entry in overdue {
+                tracing::warn!(
+                    event = "catalog_version_overdue",
+                    tenant_id = %entry.tenant_id,
+                    lane = ?entry.lane,
+                    source = %entry.source,
+                    request_key = %entry.request_key,
+                    age_secs = entry.age_secs,
+                    "bss-products: a pending increment request is past its lane deadline"
+                );
+            }
+        }
+        Err(error) => tracing::warn!(%error, "bss-products: overdue request scan failed"),
+    }
+}
+
 async fn report_overdue_freezes(
     db: &toolkit_db::DBProvider<toolkit_db::DbError>,
     now: chrono::DateTime<chrono::Utc>,

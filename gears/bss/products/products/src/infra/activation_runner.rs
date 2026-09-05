@@ -128,7 +128,74 @@ async fn sweep_tenant(
         run_one(&conn, &scope, tenant_id, &row, now, ctx, actor_ref).await?;
     }
     emit_retirement_held_alerts(&conn, &scope, tenant_id, now, ctx, actor_ref).await?;
+    apply_held_composition_clears(&conn, &scope, tenant_id, now, ctx, actor_ref).await?;
     Ok(())
+}
+
+/// The held composition clears, re-evaluated once their head goes clean
+/// (`dod-composition-clear`: *"the clear re-evaluates when the head next
+/// goes clean … without the signal being re-sent"*; P-D-148). A held signal is
+/// its still-open `system_signal` record; the clear that applies it consumes
+/// it. A binding is not re-resolved on this lane — `03` §7 row 22's gap.
+async fn apply_held_composition_clears(
+    conn: &impl toolkit_db::secure::DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    now: DateTime<Utc>,
+    ctx: &ActivationContext,
+    actor_ref: Uuid,
+) -> Result<(), RepoError> {
+    let open = repo::open_system_signals(conn, scope, tenant_id).await?;
+    for record in open {
+        let Ok(snapshot) = serde_json::from_str::<serde_json::Value>(&record.content_snapshot)
+        else {
+            continue;
+        };
+        if snapshot["act"].as_str() != Some("composition_clear") {
+            continue;
+        }
+        let (Some(sku_id), Some(signal_ref)) = (
+            snapshot["sku_id"]
+                .as_str()
+                .and_then(|s| s.parse::<Uuid>().ok()),
+            snapshot["signal_ref"]
+                .as_str()
+                .and_then(|s| s.parse::<Uuid>().ok()),
+        ) else {
+            continue;
+        };
+        match skus::try_apply_composition_clear(
+            &ctx.db, &ctx.sink, tenant_id, sku_id, signal_ref, actor_ref, now,
+        )
+        .await
+        {
+            Ok(skus::ClearOutcome::Cleared { published_version }) => tracing::info!(
+                event = "composition_clear_applied",
+                %tenant_id,
+                %sku_id,
+                %signal_ref,
+                published_version,
+                "bss-products: a held composition clear ran on the next clean head"
+            ),
+            Ok(_) => {}
+            Err(error) => tracing::warn!(
+                %tenant_id,
+                %sku_id,
+                %signal_ref,
+                error = %composition_clear_error(&error),
+                "bss-products: a held composition clear could not run this pass"
+            ),
+        }
+    }
+    Ok(())
+}
+
+fn composition_clear_error(error: &skus::HeadActError) -> String {
+    match error {
+        skus::HeadActError::Refused(refusal) => refusal.code().to_owned(),
+        skus::HeadActError::Vanished => "head vanished".to_owned(),
+        skus::HeadActError::Db(db) => format!("door storage failed: {db}"),
+    }
 }
 
 /// `retirement_held` — a deferral older than
@@ -451,8 +518,7 @@ async fn drive_door(
                 drive.gate,
                 GateMode::PreAuthorized(ApprovalId::new(drive.row.approval_ref)),
                 &ctx.sink,
-                None,
-                None,
+                skus::PublishOperands::default(),
             )
             .await;
             Ok(map_sku_door(outcome, drive.attempt, ctx.budget))

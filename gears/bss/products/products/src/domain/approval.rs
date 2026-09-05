@@ -135,12 +135,13 @@ impl UnsatisfiablePredicate {
 /// `quorumReduced`. The sixth waits on `dod-override-ceremony`'s missing
 /// operand — no artifact says where a subject's lint findings are read from
 /// — so `dod-quorum-descriptor` stays unticked and this roster is five.
-const DESCRIPTOR_ROSTER: [&str; 5] = [
+const DESCRIPTOR_ROSTER: [&str; 6] = [
     "configuredQuorum",
     "required",
     "financeRequired",
     "predicateUnsatisfiable",
     "quorumReduced",
+    "overrideConditions",
 ];
 
 /// The stored quorum descriptor — five of §4's six names; see
@@ -152,6 +153,13 @@ pub struct QuorumDescriptor {
     finance_required: bool,
     predicate_unsatisfiable: Option<UnsatisfiablePredicate>,
     quorum_reduced: bool,
+    /// §4's sixth name (`dod-quorum-descriptor`, `dod-override-ceremony`;
+    /// **P-D-148**): the lint findings the subject carried at submission,
+    /// by code — what each approver must acknowledge **by name**. The
+    /// operand is the dry-run `validate` door's report (P-D-125 row 14) plus
+    /// the uncomposed-bundle condition `design/05` names; empty for a
+    /// subject that carried none, and for every non-entity subject.
+    override_conditions: Vec<String>,
 }
 
 impl QuorumDescriptor {
@@ -168,6 +176,7 @@ impl QuorumDescriptor {
             finance_required: false,
             predicate_unsatisfiable: None,
             quorum_reduced: true,
+            override_conditions: Vec::new(),
         }
     }
 
@@ -203,6 +212,35 @@ impl QuorumDescriptor {
         self.quorum_reduced
     }
 
+    /// The named override conditions, sorted, deduplicated.
+    ///
+    /// @cpt-dod:cpt-cf-bss-products-dod-quorum-descriptor:p1
+    #[must_use]
+    pub fn override_conditions(&self) -> &[String] {
+        &self.override_conditions
+    }
+
+    /// The conditions an acknowledgment text does **not** name — the
+    /// operand of the ceremony's refusal. `acknowledgments` is the approver's
+    /// comma-separated list of condition codes (or the author's, at `N = 0`);
+    /// matching is exact on the code.
+    ///
+    /// @cpt-dod:cpt-cf-bss-products-dod-override-ceremony:p1
+    #[must_use]
+    pub fn unacknowledged(&self, acknowledgments: Option<&str>) -> Vec<String> {
+        let named: std::collections::BTreeSet<&str> = acknowledgments
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+            .collect();
+        self.override_conditions
+            .iter()
+            .filter(|condition| !named.contains(condition.as_str()))
+            .cloned()
+            .collect()
+    }
+
     /// The canonical rendering stored in `products_approval.quorum_descriptor`.
     ///
     /// Rendered through [`canonical::canonical_rendering`] rather than
@@ -223,6 +261,15 @@ impl QuorumDescriptor {
             },
         );
         map.insert("quorumReduced".to_owned(), self.quorum_reduced.into());
+        map.insert(
+            "overrideConditions".to_owned(),
+            JsonValue::Array(
+                self.override_conditions
+                    .iter()
+                    .map(|condition| JsonValue::String(condition.clone()))
+                    .collect(),
+            ),
+        );
         // `Absence::Null` with the roster, not `Omit`, because this is
         // stored content with a **required** field set: the reader errors on
         // any missing member, and `null` says "this gear wrote no value"
@@ -286,12 +333,27 @@ pub fn descriptor_from_stored(stored: &str) -> Result<QuorumDescriptor, String> 
         }
         None => return Err("predicateUnsatisfiable is missing".to_owned()),
     };
+    // Rows written before P-D-148 carry no `overrideConditions`; they read
+    // back as an empty set rather than as a decode failure.
+    let override_conditions: Vec<String> = match map.get("overrideConditions") {
+        None | Some(JsonValue::Null) => Vec::new(),
+        Some(JsonValue::Array(items)) => items
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| "overrideConditions carries a non-string".to_owned())
+            })
+            .collect::<Result<Vec<String>, String>>()?,
+        Some(_) => return Err("overrideConditions is not an array".to_owned()),
+    };
     let descriptor = QuorumDescriptor {
         configured_quorum: count("configuredQuorum")?,
         required: count("required")?,
         finance_required: flag("financeRequired")?,
         predicate_unsatisfiable,
         quorum_reduced: flag("quorumReduced")?,
+        override_conditions,
     };
     // **Two invariants derivable from the stored fields alone, checked here
     // because every later reader assumes them.** Presence and type are not
@@ -331,7 +393,11 @@ pub fn describe_quorum(
     materiality: Materiality,
     configured_quorum: u32,
     finance_material: bool,
+    override_conditions: Vec<String>,
 ) -> QuorumDescriptor {
+    let mut override_conditions = override_conditions;
+    override_conditions.sort();
+    override_conditions.dedup();
     let required = match materiality {
         // `required = N` (`inst-gv-materiality`).
         Materiality::Material => configured_quorum,
@@ -365,6 +431,7 @@ pub fn describe_quorum(
         finance_required,
         predicate_unsatisfiable,
         quorum_reduced: required < DEFAULT_APPROVER_COUNT,
+        override_conditions,
     }
 }
 
@@ -569,6 +636,7 @@ pub fn describe_platform_quorum() -> QuorumDescriptor {
         finance_required: false,
         predicate_unsatisfiable: None,
         quorum_reduced: PLATFORM_QUORUM_FLOOR < DEFAULT_APPROVER_COUNT,
+        override_conditions: Vec::new(),
     }
 }
 
@@ -1434,3 +1502,11 @@ impl GovernanceGate for StoredApprovalGate {
 #[cfg(test)]
 #[path = "approval_tests.rs"]
 mod approval_tests;
+
+/// The lint codes an approver may **override by name** — the descriptor's
+/// `overrideConditions` are the dry-run lint's findings narrowed to this
+/// roster (P-D-148). Every other finding is a refusal the publish makes
+/// regardless of any acknowledgment, so recording it as a condition would
+/// demand a ceremony that changes nothing; `09`'s own reading of the class is
+/// *"today only an uncomposed bundle"*.
+pub const OVERRIDE_CONDITION_CODES: &[&str] = &["BUNDLE_OVERRIDE_REQUIRED"];

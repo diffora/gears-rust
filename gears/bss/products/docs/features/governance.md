@@ -683,7 +683,7 @@ of through the diff.
 
 ### Stored quorum descriptor
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-quorum-descriptor`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-quorum-descriptor`
 
 The system **MUST** store the descriptor at submission and **MUST NOT** re-derive any of it:
 `required` as the **effective** count, `configuredQuorum` as the `N` in force at submission, the
@@ -718,6 +718,15 @@ for a ceremony no tenant configures. It carries the floor here, because `inst-gv
 field on the wire and a card rendering the target tenant's `N` beside a platform ceremony would
 assert exactly the standing P-D-13 denies — but that is a reading, and it is registered (O-B-03)
 rather than presented as the design's.
+
+**Ticked (P-D-148).** The sixth name ships: `QuorumDescriptor::override_conditions`, rendered as
+`overrideConditions` (a sorted, deduplicated array; `DESCRIPTOR_ROSTER` is six, a stored descriptor
+without the name reads as empty), written at submission from the operand `dod-override-ceremony`
+waited on — the dry-run lint of P-D-125 (`skus::lint_sku_publish` / `products::lint_product_publish`
+over the subject's own head, narrowed to the **overridable** codes — `OVERRIDE_CONDITION_CODES`, today
+`BUNDLE_OVERRIDE_REQUIRED` alone; a finding the publish refuses regardless is a report line, not a
+condition) — and never re-derived. Probe:
+`the_override_ceremony_names_the_bundle_condition_and_the_approver_acknowledges_it`.
 
 **Implements**: `cpt-cf-bss-products-flow-submit`
 
@@ -947,7 +956,7 @@ closed on no approver.
 
 ### Override ceremony
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-override-ceremony`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-override-ceremony`
 
 The system **MUST** require each approver to acknowledge the named lint findings **by name** where
 the subject carries override conditions, and **MUST** store the acknowledgments on the record and
@@ -971,6 +980,17 @@ what does not exist. An acknowledgment "by name" over a set nothing produces can
 this DoD's remaining half is a blocked build rather than an unwritten one. Its third clause — *"the
 record MUST be the ceremony's only home: a lane that publishes an override subject without one is a
 defect"* — is an assertion about the publish lanes, which are `01`'s and `09`'s doors.
+
+**Ticked (P-D-148).** The operand exists — the descriptor's `overrideConditions`, filled from the
+dry-run lint at submission — and the decide door reads it: an **approving** decision on a record
+whose descriptor names conditions must carry `override_acknowledgments` naming **every** condition
+code (comma-separated, exact on the code; `QuorumDescriptor::unacknowledged` is the check), else
+the decision is refused `VALIDATION` on `override_acknowledgments` listing the codes not named; a
+rejection needs none. At `N = 0` the same check runs at the submit door over `author_override_ack`.
+The acknowledgments ride the decision row and the record as before; the publish door's flag
+(`uncomposed_bundle_override`) reads the stored acknowledgment's presence, so the by-name half is
+enforced where the acknowledgment is written. The third clause — every publishing lane — holds on
+`01`'s doors; `09`'s lane is group 7's.
 
 **Implements**: `cpt-cf-bss-products-flow-decide`
 
@@ -1651,7 +1671,7 @@ says — immutability is the trigger whitelist on both engines and nothing crypt
       inspection
 - [ ] A `system_signal` publish on a clean head is auto-satisfied and audited; on a dirty head it
       is **deferred**, not refused
-- [ ] An override subject requires each approver to acknowledge the named findings; at `N = 0` the
+- [x] An override subject requires each approver to acknowledge the named findings; at `N = 0` the
       author acknowledges and the record carries `quorumReduced`
 - [ ] Publishing an override subject with no acknowledgment on the record fails on every lane,
       bulk included

@@ -505,6 +505,7 @@ async fn seed_satisfied_record(
             approver_count: 2,
             submitter: Uuid::from_u128(0xd1_77),
             author_override_ack: None,
+            override_conditions: Vec::new(),
         },
         chrono::Utc::now(),
     )

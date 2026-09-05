@@ -50,6 +50,7 @@ fn labels_all_carries_every_declared_label_in_order() {
             labels::ATTRIBUTE_DEFINITION,
             labels::METADATA,
             labels::SCHEDULED_TRANSITION,
+            labels::FREEZE_PARTICIPANT,
         ]
     );
 }
@@ -402,6 +403,9 @@ fn the_catalog_carries_the_built_slices_rows_and_withholds_the_rest() {
         // routes. `× write` is not minted: retire doors write the rows under
         // `sku × write` / `product × write`.
         labels::SCHEDULED_TRANSITION,
+        // 06's, arrived with the P-D-148 participant door -- the last row the
+        // withheld list below held, so that list is now empty and retired.
+        labels::FREEZE_PARTICIPANT,
     ];
     for label in declared {
         assert!(
@@ -420,14 +424,9 @@ fn the_catalog_carries_the_built_slices_rows_and_withholds_the_rest() {
     // not oversights: §3.2 assigns them, and a grant declared here with no
     // owning door is a grant nobody can review. The loop stays a loop so a
     // second owed row does not change the shape.
-    for owed in [
-        "cf.bss.products.freeze_participant.v1~", // 06, with its governed-set door
-    ] {
-        assert!(
-            !labels::ALL.iter().any(|label| label.contains(owed)),
-            "{owed} is another slice's row and must arrive with that slice's door"
-        );
-    }
+    // No withheld row remains: 06's `freeze_participant` -- the last -- arrived
+    // with P-D-148's participant door. The census above is the whole roster;
+    // a slice that mints a label its door does not spend re-opens this list.
 }
 
 /// Governance's actions are distinct grants, not aliases of `write`.

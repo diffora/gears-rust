@@ -395,6 +395,12 @@ mod freeze_and_resolve_tests {
     /// Register participants, enqueue aged demand and drain: one committed
     /// `open` version with one `pending` ledger row per participant.
     async fn seed_open_version(harness: &TestHarness, participants: &[&str]) -> i64 {
+        drain_version(harness, "fz-seed", participants).await
+    }
+
+    /// One committed drain under `key`, after registering `participants` an
+    /// hour ago; answers the new version's id.
+    async fn drain_version(harness: &TestHarness, key: &str, participants: &[&str]) -> i64 {
         let conn = harness.db.conn().expect("conn");
         for participant in participants {
             let model = freeze_participant::ActiveModel {
@@ -416,7 +422,7 @@ mod freeze_and_resolve_tests {
             TENANT,
             NewIncrementRequest {
                 source: "pricing",
-                request_key: "fz-seed",
+                request_key: key,
                 lane: bss_products_sdk::increments::IncrementLane::Interactive,
                 operation_key: None,
                 requested_at: chrono::Utc::now() - ChronoDuration::seconds(10),
@@ -425,9 +431,14 @@ mod freeze_and_resolve_tests {
         .await
         .expect("enqueue");
         drop_pinned(conn);
-        let outcome = drain_tenant(&harness.db, TENANT, chrono::Utc::now())
-            .await
-            .expect("drain");
+        let outcome = drain_tenant(
+            &harness.db,
+            &crate::infra::broker::EventSink::Interim(Arc::clone(&harness.outbox)),
+            TENANT,
+            chrono::Utc::now(),
+        )
+        .await
+        .expect("drain");
         match outcome {
             DrainOutcome::Committed {
                 catalog_version_id, ..
@@ -723,5 +734,288 @@ mod freeze_and_resolve_tests {
         assert_eq!(view["bound_version"], json!(7));
         assert_eq!(view["resolved_version"], json!(version));
         assert_eq!(view["diff_ref"], json!(format!("7..{version}")));
+    }
+
+    async fn post_json(
+        app: Router,
+        uri: &str,
+        body: &serde_json::Value,
+    ) -> axum::http::Response<Body> {
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .extension(authed_ctx(TENANT))
+                .body(Body::from(body.to_string()))
+                .expect("build the request"),
+        )
+        .await
+        .expect("the router answers")
+    }
+
+    async fn get_json(app: Router, uri: &str) -> axum::http::Response<Body> {
+        app.oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(uri)
+                .extension(authed_ctx(TENANT))
+                .body(Body::empty())
+                .expect("build the request"),
+        )
+        .await
+        .expect("the router answers")
+    }
+
+    async fn outbox_rows(harness: &TestHarness, payload_type: &str) -> i64 {
+        crate::test_support::raw_i64(
+            &harness.dsn,
+            &format!(
+                "SELECT COUNT(*) AS v FROM {}_body WHERE payload_type = '{payload_type}'",
+                events::OUTBOX_TABLE_PREFIX
+            ),
+        )
+        .await
+    }
+
+    /// `dod-force-completion`: the ceremony closes the open freeze without its
+    /// silent participant, `posted` stays refused until that participant acks
+    /// through its own door, and a closed freeze cannot be forced again.
+    #[tokio::test]
+    async fn a_force_completion_closes_the_open_freeze_and_posted_waits_for_the_forced_ack() {
+        let harness = harness().await;
+        let version = seed_open_version(&harness, &["pricing"]).await;
+        let uri = format!("/bss-products/v1/catalog-versions/{version}/force-completions");
+
+        let refused = post_json(app_for(&harness, TENANT), &uri, &json!({})).await;
+        assert_eq!(
+            refused.status(),
+            StatusCode::FORBIDDEN,
+            "no satisfied record"
+        );
+        assert_eq!(
+            body_json(refused).await["context"]["reason"],
+            json!("APPROVAL_REQUIRED")
+        );
+
+        crate::test_support::seed_satisfied_approval(
+            &harness.db,
+            TENANT,
+            crate::api::rest::catalog_version::force_completion_subject(TENANT, version),
+            0,
+        )
+        .await;
+        let forced = post_json(app_for(&harness, TENANT), &uri, &json!({})).await;
+        assert_eq!(forced.status(), StatusCode::OK);
+        let ledger = body_json(forced).await;
+        assert_eq!(ledger["freeze_state"], json!("complete(forced)"));
+        assert_eq!(ledger["forced"], json!(["pricing"]));
+        assert_eq!(ledger["quorum_reduced"], json!(false));
+        assert_eq!(
+            outbox_rows(&harness, events::FREEZE_FORCE_COMPLETED_PAYLOAD_TYPE).await,
+            1,
+            "one FreezeForceCompleted in the ceremony's transaction"
+        );
+        assert_eq!(
+            crate::test_support::raw_i64(
+                &harness.dsn,
+                "SELECT COUNT(*) AS v FROM products_audit_log WHERE action = \
+                 'catalog_version.freeze.force_complete'",
+            )
+            .await,
+            1,
+            "the ceremony's audit row"
+        );
+
+        let refused = get_resolve(app_for(&harness, TENANT), version, "?intent=posted").await;
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            body_json(refused).await["context"]["reason"],
+            json!("VERSION_FORCED_INCOMPLETE")
+        );
+
+        let acked = post_edge(app_for(&harness, TENANT), version, "acks", "pricing").await;
+        let ack_status = acked.status();
+        assert!(
+            ack_status.is_success(),
+            "the forced participant acks: {ack_status} {}",
+            body_json(acked).await
+        );
+        let posted = get_resolve(app_for(&harness, TENANT), version, "?intent=posted").await;
+        assert_eq!(
+            posted.status(),
+            StatusCode::OK,
+            "every forced participant has acked"
+        );
+
+        crate::test_support::seed_satisfied_approval(
+            &harness.db,
+            TENANT,
+            crate::api::rest::catalog_version::force_completion_subject(TENANT, version),
+            0,
+        )
+        .await;
+        let again = post_json(app_for(&harness, TENANT), &uri, &json!({})).await;
+        assert_eq!(
+            again.status(),
+            StatusCode::CONFLICT,
+            "a closed freeze cannot be forced"
+        );
+        assert_eq!(
+            body_json(again).await["context"]["reason"],
+            json!("ILLEGAL_TRANSITION")
+        );
+    }
+
+    /// `dod-participant-set`: the register/retire door is a `GovernedLiveOp`
+    /// under the stored host; a change announces `FreezeParticipantSetChanged`
+    /// and a no-op announces nothing.
+    #[tokio::test]
+    async fn a_participant_change_is_a_governed_live_op_that_announces_only_a_change() {
+        let harness = harness().await;
+        let uri = "/bss-products/v1/freeze-participants";
+        let seed = || {
+            crate::test_support::seed_satisfied_approval(
+                &harness.db,
+                TENANT,
+                crate::api::rest::catalog_version::participant_change_subject(TENANT, "billing"),
+                0,
+            )
+        };
+        let register = json!({ "participant": "billing", "op": "register" });
+
+        let refused = post_json(app_for(&harness, TENANT), uri, &register).await;
+        assert_eq!(
+            refused.status(),
+            StatusCode::FORBIDDEN,
+            "no satisfied record"
+        );
+        assert_eq!(
+            body_json(refused).await["context"]["reason"],
+            json!("APPROVAL_REQUIRED")
+        );
+
+        seed().await;
+        let bad_op = post_json(
+            app_for(&harness, TENANT),
+            uri,
+            &json!({ "participant": "billing", "op": "frobnicate" }),
+        )
+        .await;
+        assert_eq!(
+            bad_op.status(),
+            StatusCode::BAD_REQUEST,
+            "op is register|retire"
+        );
+
+        let registered = post_json(app_for(&harness, TENANT), uri, &register).await;
+        assert_eq!(registered.status(), StatusCode::OK);
+        let view = body_json(registered).await;
+        assert_eq!(view["participant"], json!("billing"));
+        assert_eq!(view["state"], json!("registered"));
+        assert_eq!(view["changed"], json!(true));
+        let announced = events::FREEZE_PARTICIPANT_SET_CHANGED_PAYLOAD_TYPE;
+        assert_eq!(outbox_rows(&harness, announced).await, 1);
+
+        seed().await;
+        let repeated = post_json(app_for(&harness, TENANT), uri, &register).await;
+        assert_eq!(repeated.status(), StatusCode::OK);
+        assert_eq!(body_json(repeated).await["changed"], json!(false));
+        assert_eq!(
+            outbox_rows(&harness, announced).await,
+            1,
+            "a no-op announces nothing"
+        );
+
+        seed().await;
+        let retired = post_json(
+            app_for(&harness, TENANT),
+            uri,
+            &json!({ "participant": "billing", "op": "retire" }),
+        )
+        .await;
+        assert_eq!(retired.status(), StatusCode::OK);
+        let view = body_json(retired).await;
+        assert_eq!(view["state"], json!("retired"));
+        assert_eq!(view["changed"], json!(true));
+        assert_eq!(outbox_rows(&harness, announced).await, 2);
+        assert_eq!(
+            crate::test_support::raw_i64(
+                &harness.dsn,
+                "SELECT COUNT(*) AS v FROM products_freeze_participant WHERE participant = 'billing'",
+            )
+            .await,
+            0,
+            "the retired participant leaves the set"
+        );
+    }
+
+    /// `dod-diff-door`: computed from the two stored manifests, byte-stable
+    /// for a pair, an unknown side is the 404.
+    #[tokio::test]
+    async fn the_diff_door_renders_the_two_stored_manifests_byte_stably() {
+        let harness = harness().await;
+        let a = drain_version(&harness, "diff-a", &[]).await;
+        let b = drain_version(&harness, "diff-b", &["billing"]).await;
+        assert_ne!(a, b);
+        let uri = format!("/bss-products/v1/catalog-versions/{a}/diff/{b}");
+        let registrations_before = crate::test_support::raw_i64(
+            &harness.dsn,
+            "SELECT COUNT(*) AS v FROM products_freeze_ack",
+        )
+        .await;
+
+        let first = get_json(app_for(&harness, TENANT), &uri).await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_bytes = axum::body::to_bytes(first.into_body(), 1 << 20)
+            .await
+            .expect("read the diff");
+        let second = get_json(app_for(&harness, TENANT), &uri).await;
+        let second_bytes = axum::body::to_bytes(second.into_body(), 1 << 20)
+            .await
+            .expect("read the diff again");
+        assert_eq!(first_bytes, second_bytes, "byte-stable for a given pair");
+        assert_eq!(
+            crate::test_support::raw_i64(
+                &harness.dsn,
+                "SELECT COUNT(*) AS v FROM products_freeze_ack",
+            )
+            .await,
+            registrations_before,
+            "a diff creates no freeze-registration row"
+        );
+
+        let view: serde_json::Value = serde_json::from_slice(&first_bytes).expect("json");
+        assert_eq!(view["a"], json!(a));
+        assert_eq!(view["b"], json!(b));
+        assert_eq!(
+            view["added"],
+            json!([]),
+            "no published head moved between the two"
+        );
+        assert_eq!(view["removed"], json!([]));
+        assert_eq!(view["changed"], json!([]));
+        assert_eq!(
+            view["changed_captures"],
+            json!(["freeze_participant_set"]),
+            "the participant registered between the drains is the one capture that differs"
+        );
+
+        let unknown = get_json(
+            app_for(&harness, TENANT),
+            &format!("/bss-products/v1/catalog-versions/{a}/diff/999"),
+        )
+        .await;
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            crate::test_support::raw_i64(
+                &harness.dsn,
+                "SELECT COUNT(*) AS v FROM products_audit_log WHERE error_code = \
+                 'CATALOG_VERSION_UNKNOWN'",
+            )
+            .await,
+            1,
+            "an unknown side is refused CATALOG_VERSION_UNKNOWN and audited as such"
+        );
     }
 }

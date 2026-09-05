@@ -156,6 +156,10 @@ pub struct NewApproval<'a> {
     /// is refused, because above zero the acknowledgment belongs on the
     /// approver's decision row.
     pub author_override_ack: Option<&'a str>,
+    /// The lint findings the subject carried at submission, by code — the
+    /// descriptor's sixth name and the ceremony's operand (P-D-148). Empty
+    /// for a non-entity subject.
+    pub override_conditions: Vec<String>,
 }
 
 /// Store one submission, superseding whatever open record the subject held.
@@ -217,7 +221,30 @@ pub async fn submit_approval(
             format!("materiality of {}: {unresolved}", new.approval_id),
         )),
     })?;
-    let descriptor = describe_quorum(materiality, new.approver_count, new.finance_material);
+    let descriptor = describe_quorum(
+        materiality,
+        new.approver_count,
+        new.finance_material,
+        new.override_conditions.clone(),
+    );
+    // The ceremony's `N = 0` arm (P-D-68 arm 1, `dod-override-ceremony`): the
+    // author's acknowledgment must name every condition the subject carries.
+    if ack_placement(&descriptor) == AckPlacement::OnRecord {
+        let missing = descriptor.unacknowledged(new.author_override_ack);
+        if !missing.is_empty() {
+            let mut report = crate::domain::validation::ValidationReport::new();
+            report.violate(
+                "VALIDATION",
+                "author_override_ack",
+                format!(
+                    "at effective quorum zero the author acknowledges the subject's override \
+                     conditions by name; not named: {}",
+                    missing.join(", ")
+                ),
+            );
+            return Err(ApprovalStoreError::Refused(DomainError::Validation(report)));
+        }
+    }
     // The author's acknowledgment has exactly one admitted home, and it is
     // this count. Refusing here rather than silently dropping the value is
     // what keeps `author_override_ack` from becoming a second, unpoliced
@@ -1992,6 +2019,33 @@ pub struct NewSystemSignal<'a> {
 ///
 /// A storage failure, or the partial-`UNIQUE` refusal a lost race produces
 /// (`classify_submit_insert`).
+/// The satisfied, unconsumed `system_signal` records of a tenant — the
+/// composition clears the runner re-evaluates once a head goes clean
+/// (`dod-composition-clear`; P-D-148). A signal record is born satisfied and
+/// consumed by the clear that applies it, so an open one is a held clear.
+///
+/// # Errors
+///
+/// [`RepoError`] on a driver failure.
+pub async fn open_system_signals(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+) -> Result<Vec<approval::Model>, RepoError> {
+    approval::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(approval::Column::TenantId.eq(tenant_id))
+                .add(approval::Column::SubjectKind.eq(SubjectKind::SystemSignal.as_str()))
+                .add(approval::Column::State.eq("satisfied")),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("open system signals of {tenant_id}"), e))
+}
+
 pub async fn submit_system_signal(
     runner: &impl DBRunner,
     scope: &AccessScope,

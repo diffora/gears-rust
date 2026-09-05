@@ -161,6 +161,7 @@ fn submission<'a>(
         approver_count: 2,
         submitter: AUTHOR,
         author_override_ack: None,
+        override_conditions: Vec::new(),
     }
 }
 
@@ -1949,6 +1950,7 @@ async fn a_live_op_record_with_no_pin_matches_an_unpinned_subject() {
             approver_count: 2,
             submitter: AUTHOR,
             author_override_ack: None,
+            override_conditions: Vec::new(),
         },
         at(11),
     )

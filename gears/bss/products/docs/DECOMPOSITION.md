@@ -589,7 +589,8 @@ authored downstream of this document, in the order §3 establishes.
   - [ ] `p1` - `cpt-cf-bss-products-fr-grandfathered-retention-coupling` — the liveness source;
     the retention gate is `10-retention-erasure`'
   - [ ] `p1` - `cpt-cf-bss-products-fr-bundle-adoption-guard`
-  - [ ] `p1` - `cpt-cf-bss-products-fr-prepublish-lint`
+  - [ ] `p1` - `cpt-cf-bss-products-fr-prepublish-lint` — the per-version aggregate; the
+    per-entity `validate` doors landed under 2.1 (P-D-148, 2026-09-05)
   - [ ] `p1` - `cpt-cf-bss-products-fr-revision-vs-version` — version binding at freeze; the two
     counters and the history are `01-foundation`'
   - [ ] `p1` - `cpt-cf-bss-products-nfr-posting-safe-budget`

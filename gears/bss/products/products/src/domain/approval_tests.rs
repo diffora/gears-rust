@@ -112,12 +112,12 @@ fn approves(principal: u128, roles: &[ApproverRole]) -> CastDecision {
 fn required_is_the_effective_count_on_both_arms() {
     for (n, material, non_material) in [(0_u32, 0_u32, 0_u32), (1, 1, 1), (2, 2, 1), (5, 5, 1)] {
         assert_eq!(
-            describe_quorum(Materiality::Material, n, false).required(),
+            describe_quorum(Materiality::Material, n, false, Vec::new()).required(),
             material,
             "material at N = {n}"
         );
         assert_eq!(
-            describe_quorum(Materiality::NonMaterial, n, false).required(),
+            describe_quorum(Materiality::NonMaterial, n, false, Vec::new()).required(),
             non_material,
             "non-material at N = {n}"
         );
@@ -129,7 +129,7 @@ fn required_is_the_effective_count_on_both_arms() {
 /// surface can honour that is by having both.
 #[test]
 fn the_descriptor_carries_both_counts_apart() {
-    let d = describe_quorum(Materiality::NonMaterial, 5, false);
+    let d = describe_quorum(Materiality::NonMaterial, 5, false, Vec::new());
     assert_eq!(d.required(), 1);
     assert_eq!(
         d.configured_quorum(),
@@ -143,14 +143,14 @@ fn the_descriptor_carries_both_counts_apart() {
 /// "reduced means non-material" shortcut would miss.
 #[test]
 fn quorum_reduced_tracks_the_effective_count_not_the_verdict() {
-    assert!(describe_quorum(Materiality::Material, 1, false).quorum_reduced());
-    assert!(describe_quorum(Materiality::Material, 0, false).quorum_reduced());
+    assert!(describe_quorum(Materiality::Material, 1, false, Vec::new()).quorum_reduced());
+    assert!(describe_quorum(Materiality::Material, 0, false, Vec::new()).quorum_reduced());
     assert!(
-        describe_quorum(Materiality::NonMaterial, 5, false).quorum_reduced(),
+        describe_quorum(Materiality::NonMaterial, 5, false, Vec::new()).quorum_reduced(),
         "a non-material change at N = 5 closes on one, and one is below two"
     );
     assert!(
-        !describe_quorum(Materiality::Material, 2, false).quorum_reduced(),
+        !describe_quorum(Materiality::Material, 2, false, Vec::new()).quorum_reduced(),
         "the default itself is not reduced"
     );
 }
@@ -161,7 +161,7 @@ fn quorum_reduced_tracks_the_effective_count_not_the_verdict() {
 /// P-D-11 unblocked.
 #[test]
 fn the_finance_predicate_is_unsatisfiable_at_zero_and_set_above_it() {
-    let zero = describe_quorum(Materiality::Material, 0, true);
+    let zero = describe_quorum(Materiality::Material, 0, true, Vec::new());
     assert!(!zero.finance_required(), "no approver can hold the role");
     assert_eq!(
         zero.predicate_unsatisfiable(),
@@ -169,7 +169,7 @@ fn the_finance_predicate_is_unsatisfiable_at_zero_and_set_above_it() {
         "the control's absence is a stored fact, not an inference"
     );
 
-    let one = describe_quorum(Materiality::Material, 1, true);
+    let one = describe_quorum(Materiality::Material, 1, true, Vec::new());
     assert!(
         one.finance_required(),
         "a lone approver must be a FinanceReviewer"
@@ -182,7 +182,7 @@ fn the_finance_predicate_is_unsatisfiable_at_zero_and_set_above_it() {
 /// predicate keys off the effective count, not the raw `N`.
 #[test]
 fn the_predicate_keys_off_the_effective_count() {
-    let d = describe_quorum(Materiality::NonMaterial, 3, true);
+    let d = describe_quorum(Materiality::NonMaterial, 3, true, Vec::new());
     assert_eq!(d.required(), 1);
     assert!(d.finance_required());
     assert_eq!(d.predicate_unsatisfiable(), None);
@@ -191,7 +191,7 @@ fn the_predicate_keys_off_the_effective_count() {
 /// Nothing finance-material sets nothing.
 #[test]
 fn an_ordinary_change_carries_no_predicate() {
-    let d = describe_quorum(Materiality::Material, 2, false);
+    let d = describe_quorum(Materiality::Material, 2, false, Vec::new());
     assert!(!d.finance_required());
     assert_eq!(d.predicate_unsatisfiable(), None);
 }
@@ -200,7 +200,7 @@ fn an_ordinary_change_carries_no_predicate() {
 /// is compared byte-for-byte, so key order cannot be incidental.
 #[test]
 fn the_stored_descriptor_is_canonical_and_names_all_five_fields() {
-    let d = describe_quorum(Materiality::NonMaterial, 3, true);
+    let d = describe_quorum(Materiality::NonMaterial, 3, true, Vec::new());
     let stored = d.stored();
     // **The full literal, not `contains`.** `contains` passes for any
     // ordering, and comparing a pure function's output to itself asserts
@@ -209,7 +209,7 @@ fn the_stored_descriptor_is_canonical_and_names_all_five_fields() {
     // column is compared byte-for-byte, so the bytes are the assertion.
     assert_eq!(
         stored,
-        r#"{"configuredQuorum":3,"financeRequired":true,"predicateUnsatisfiable":null,"quorumReduced":true,"required":1}"#,
+        r#"{"configuredQuorum":3,"financeRequired":true,"overrideConditions":[],"predicateUnsatisfiable":null,"quorumReduced":true,"required":1}"#,
         "sorted keys, an explicit null, and the five names section 4 gives"
     );
 }
@@ -221,7 +221,7 @@ fn the_stored_descriptor_is_canonical_and_names_all_five_fields() {
 fn the_author_is_refused_at_every_n_of_one_or_more() {
     let author = Uuid::from_u128(1);
     for n in [1_u32, 2, 5] {
-        let d = describe_quorum(Materiality::Material, n, false);
+        let d = describe_quorum(Materiality::Material, n, false, Vec::new());
         let err = decision_admitted(author, author, &d)
             .expect_err("an author may never decide their own record");
         assert_eq!(err.code(), "SELF_APPROVAL_FORBIDDEN", "at N = {n}");
@@ -236,7 +236,7 @@ fn a_different_principal_is_admitted() {
     let author = Uuid::from_u128(1);
     let approver = Uuid::from_u128(2);
     for n in [1_u32, 2, 5] {
-        let d = describe_quorum(Materiality::Material, n, false);
+        let d = describe_quorum(Materiality::Material, n, false, Vec::new());
         decision_admitted(author, approver, &d)
             .unwrap_or_else(|e| panic!("a distinct principal is admitted at N = {n}: {e}"));
     }
@@ -248,7 +248,7 @@ fn a_different_principal_is_admitted() {
 #[test]
 fn at_zero_there_is_no_decision_to_refuse() {
     let author = Uuid::from_u128(1);
-    let d = describe_quorum(Materiality::NonMaterial, 0, false);
+    let d = describe_quorum(Materiality::NonMaterial, 0, false, Vec::new());
     assert_eq!(d.required(), 0);
     decision_admitted(author, author, &d)
         .expect("at N = 0 no decision row exists, so nothing is being self-approved");
@@ -261,7 +261,7 @@ fn at_zero_there_is_no_decision_to_refuse() {
 #[test]
 fn above_zero_the_acknowledgment_rides_the_decision() {
     for n in [1_u32, 2] {
-        let d = describe_quorum(Materiality::Material, n, false);
+        let d = describe_quorum(Materiality::Material, n, false, Vec::new());
         assert_eq!(ack_placement(&d), AckPlacement::OnDecision, "at N = {n}");
     }
 }
@@ -373,7 +373,7 @@ fn the_platform_floor_is_fixed_where_the_tenant_count_is_not() {
     );
 
     // The same tenant, at the floor P-D-11 made reachable.
-    let tenant_at_zero = describe_quorum(Materiality::Material, 0, false);
+    let tenant_at_zero = describe_quorum(Materiality::Material, 0, false, Vec::new());
     assert_eq!(
         tenant_at_zero.required(),
         0,
@@ -404,7 +404,7 @@ fn the_floor_is_not_a_reduced_quorum_and_a_one_person_tenant_is() {
         "same value, two facts"
     );
     assert!(
-        describe_quorum(Materiality::Material, 1, false).quorum_reduced(),
+        describe_quorum(Materiality::Material, 1, false, Vec::new()).quorum_reduced(),
         "a tenant ceremony at N = 1 is below the default and must say so"
     );
 }
@@ -422,7 +422,7 @@ fn the_floor_carries_no_finance_predicate_at_all() {
          be absent from, which is distinct from the N = 0 case that records the absence"
     );
     assert_eq!(
-        describe_quorum(Materiality::Material, 0, true).predicate_unsatisfiable(),
+        describe_quorum(Materiality::Material, 0, true, Vec::new()).predicate_unsatisfiable(),
         Some(UnsatisfiablePredicate::FinanceReviewer),
         "the paired case that makes the assertion above mean something"
     );
@@ -437,7 +437,7 @@ fn the_floor_carries_no_finance_predicate_at_all() {
 /// would not.
 #[test]
 fn one_human_holding_both_roles_counts_once() {
-    let descriptor = describe_quorum(Materiality::Material, 2, false);
+    let descriptor = describe_quorum(Materiality::Material, 2, false, Vec::new());
     let both = [
         approves(0xa1, &[ApproverRole::CatalogAdmin]),
         approves(0xa1, &[ApproverRole::FinanceReviewer]),
@@ -470,7 +470,7 @@ fn one_human_holding_both_roles_counts_once() {
 /// for the body would pass the first assertion alone.
 #[test]
 fn the_dual_role_human_supplies_the_lens_but_not_the_second_body() {
-    let descriptor = describe_quorum(Materiality::Material, 2, true);
+    let descriptor = describe_quorum(Materiality::Material, 2, true, Vec::new());
     assert!(descriptor.finance_required());
 
     let lens_only = [approves(
@@ -504,7 +504,7 @@ fn the_dual_role_human_supplies_the_lens_but_not_the_second_body() {
 /// `APPROVER_ROLE_REQUIRED` case, distinguished from a short count.
 #[test]
 fn a_met_count_with_no_finance_lens_is_the_role_refusal_not_a_short_count() {
-    let descriptor = describe_quorum(Materiality::Material, 2, true);
+    let descriptor = describe_quorum(Materiality::Material, 2, true, Vec::new());
     let no_lens = [
         approves(0xc1, &[ApproverRole::CatalogAdmin]),
         approves(0xc2, &[ApproverRole::CatalogAdmin]),
@@ -527,7 +527,7 @@ fn a_met_count_with_no_finance_lens_is_the_role_refusal_not_a_short_count() {
 /// merely unused — which is what the second half asserts.
 #[test]
 fn an_unsatisfiable_predicate_is_met_at_zero_and_unreachable_above_it() {
-    let at_zero = describe_quorum(Materiality::Material, 0, true);
+    let at_zero = describe_quorum(Materiality::Material, 0, true, Vec::new());
     assert_eq!(
         at_zero.predicate_unsatisfiable(),
         Some(UnsatisfiablePredicate::FinanceReviewer)
@@ -545,7 +545,7 @@ fn an_unsatisfiable_predicate_is_met_at_zero_and_unreachable_above_it() {
     // Above zero the marker cannot be recorded at all, so no evaluation can
     // reach the discharge.
     for n in 1_u32..=4 {
-        let above = describe_quorum(Materiality::Material, n, true);
+        let above = describe_quorum(Materiality::Material, n, true, Vec::new());
         assert_eq!(
             above.predicate_unsatisfiable(),
             None,
@@ -565,7 +565,7 @@ fn an_unsatisfiable_predicate_is_met_at_zero_and_unreachable_above_it() {
 /// principals holding neither C1 role.
 #[test]
 fn an_ineligible_approver_is_not_counted_and_any_decider_must_be_named() {
-    let descriptor = describe_quorum(Materiality::Material, 1, false);
+    let descriptor = describe_quorum(Materiality::Material, 1, false, Vec::new());
     let ineligible = [approves(0xd1, &[])];
     assert_eq!(
         evaluate_quorum(&descriptor, SUBMITTER, &ineligible, C1),
@@ -586,7 +586,7 @@ fn an_ineligible_approver_is_not_counted_and_any_decider_must_be_named() {
 /// A rejection never counts toward satisfaction.
 #[test]
 fn a_rejection_moves_no_count() {
-    let descriptor = describe_quorum(Materiality::Material, 1, false);
+    let descriptor = describe_quorum(Materiality::Material, 1, false, Vec::new());
     let rejected = [CastDecision {
         principal: Uuid::from_u128(0xe1),
         approved: false,
@@ -1119,7 +1119,7 @@ fn the_override_acknowledgment_travels_under_preauthorized() {
 /// closes it.
 #[test]
 fn the_author_is_not_counted_among_their_own_approvers() {
-    let descriptor = describe_quorum(Materiality::Material, 1, false);
+    let descriptor = describe_quorum(Materiality::Material, 1, false, Vec::new());
     let authors_own = [CastDecision {
         principal: SUBMITTER,
         approved: true,
@@ -1155,7 +1155,7 @@ fn the_author_is_not_counted_among_their_own_approvers() {
 /// `inst-gv-finance-predicate` needs.
 #[test]
 fn a_finance_reviewer_is_a_full_approver_and_also_the_lens() {
-    let descriptor = describe_quorum(Materiality::Material, 2, true);
+    let descriptor = describe_quorum(Materiality::Material, 2, true, Vec::new());
     let pair = [
         approves(0xba, &[ApproverRole::CatalogAdmin]),
         approves(0xbb, &[ApproverRole::FinanceReviewer]),
@@ -1174,7 +1174,7 @@ fn a_finance_reviewer_is_a_full_approver_and_also_the_lens() {
 /// with no finance predicate, so the lens read was never reached at all.
 #[test]
 fn a_rejecting_finance_reviewer_supplies_no_lens() {
-    let descriptor = describe_quorum(Materiality::Material, 1, true);
+    let descriptor = describe_quorum(Materiality::Material, 1, true, Vec::new());
     let decisions = [
         CastDecision {
             principal: Uuid::from_u128(0xca),
@@ -1200,7 +1200,7 @@ fn a_rejecting_finance_reviewer_supplies_no_lens() {
 /// storage boundary and two engines.
 #[test]
 fn the_unsatisfiable_marker_round_trips_through_its_stored_spelling() {
-    let at_zero = describe_quorum(Materiality::Material, 0, true);
+    let at_zero = describe_quorum(Materiality::Material, 0, true, Vec::new());
     let stored = at_zero.stored();
     assert!(
         stored.contains(r#""predicateUnsatisfiable":"finance_reviewer""#),
@@ -1222,18 +1222,18 @@ fn the_unsatisfiable_marker_round_trips_through_its_stored_spelling() {
 /// exactly the discharge `inst-gv-quorum` forbids.
 #[test]
 fn the_decode_refuses_a_contradictory_descriptor() {
-    let marker_above_zero = r#"{"configuredQuorum":2,"financeRequired":false,"predicateUnsatisfiable":"finance_reviewer","quorumReduced":false,"required":2}"#;
+    let marker_above_zero = r#"{"configuredQuorum":2,"financeRequired":false,"overrideConditions":[],"predicateUnsatisfiable":"finance_reviewer","quorumReduced":false,"required":2}"#;
     let err = descriptor_from_stored(marker_above_zero)
         .expect_err("the marker is admitted only where the predicate has no subject");
     assert!(err.contains("predicateUnsatisfiable"), "{err}");
 
-    let reduced_disagrees = r#"{"configuredQuorum":2,"financeRequired":false,"predicateUnsatisfiable":null,"quorumReduced":true,"required":2}"#;
+    let reduced_disagrees = r#"{"configuredQuorum":2,"financeRequired":false,"overrideConditions":[],"predicateUnsatisfiable":null,"quorumReduced":true,"required":2}"#;
     let err = descriptor_from_stored(reduced_disagrees)
         .expect_err("quorumReduced is set exactly below the retained-name default");
     assert!(err.contains("quorumReduced"), "{err}");
 
     // The control: a descriptor this gear actually writes decodes.
-    let honest = describe_quorum(Materiality::Material, 2, true);
+    let honest = describe_quorum(Materiality::Material, 2, true, Vec::new());
     assert_eq!(
         descriptor_from_stored(&honest.stored()).expect("decodes"),
         honest

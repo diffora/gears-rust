@@ -7666,3 +7666,382 @@ mod correction_door_tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Slice 06 (group 6): the dry-run validate door, the composition clear and
+// slice 05's override ceremony by name.
+// ---------------------------------------------------------------------------
+
+fn approvals_app(harness: &TestHarness) -> Router {
+    let state = Arc::new(api_state(harness));
+    let openapi = OpenApiRegistryImpl::new();
+    router(Arc::clone(&state), &openapi)
+        .merge(crate::api::rest::approvals::router(state, &openapi))
+        .layer(axum::Extension(flat_in_enforcer(TENANT)))
+}
+
+fn admin_ctx(subject: Uuid) -> toolkit_security::SecurityContext {
+    toolkit_security::SecurityContext::builder()
+        .subject_id(subject)
+        .subject_tenant_id(TENANT)
+        .subject_type(toolkit_gts::gts_id!("cf.core.security.subject_user.v1~"))
+        .token_scopes(vec![
+            "*".to_owned(),
+            crate::domain::approval::ApproverRole::CatalogAdmin
+                .as_str()
+                .to_owned(),
+        ])
+        .build()
+        .expect("authed SecurityContext must build")
+}
+
+async fn post_json_as(
+    app: Router,
+    uri: &str,
+    ctx: toolkit_security::SecurityContext,
+    body: &serde_json::Value,
+) -> axum::http::Response<Body> {
+    app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .extension(ctx)
+            .body(Body::from(body.to_string()))
+            .expect("build the request"),
+    )
+    .await
+    .expect("the router answers")
+}
+
+async fn post_validate(harness: &TestHarness, sku_id: Uuid) -> axum::http::Response<Body> {
+    post_json_as(
+        app_for(harness, TENANT),
+        &format!("/bss-products/v1/skus/{sku_id}/validate"),
+        authed_ctx(TENANT),
+        &json!({}),
+    )
+    .await
+}
+
+async fn post_clear(
+    harness: &TestHarness,
+    sku_id: Uuid,
+    signal_ref: Uuid,
+) -> axum::http::Response<Body> {
+    post_json_as(
+        app_for(harness, TENANT),
+        &format!("/bss-products/v1/skus/{sku_id}/composition-clears"),
+        authed_ctx(TENANT),
+        &json!({ "signal_ref": signal_ref }),
+    )
+    .await
+}
+
+async fn head_of_sku(harness: &TestHarness, sku_id: Uuid) -> repo::SkuRecord {
+    let conn = harness.db.conn().expect("connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    repo::find_sku(&conn, &scope, TENANT, sku_id)
+        .await
+        .expect("read the head")
+        .expect("the head exists")
+}
+
+fn finding_codes(report: &serde_json::Value) -> Vec<String> {
+    report["findings"]
+        .as_array()
+        .expect("findings is an array")
+        .iter()
+        .map(|f| f["code"].as_str().expect("a code").to_owned())
+        .collect()
+}
+
+async fn cleared_events(harness: &TestHarness) -> i64 {
+    raw_i64(
+        &harness.dsn,
+        &format!(
+            "SELECT COUNT(*) AS v FROM {}_body WHERE payload_type = '{}'",
+            events::OUTBOX_TABLE_PREFIX,
+            events::SKU_COMPOSITION_CLEARED_PAYLOAD_TYPE
+        ),
+    )
+    .await
+}
+
+async fn bundle_under_live_parent(harness: &TestHarness, code: &str) -> (Uuid, String) {
+    let parent = seed_parent(harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    created_sku(
+        harness,
+        &json!({ "product_id": parent, "sku_code": code, "sku_type": "bundle" }),
+    )
+    .await
+}
+
+/// P-D-125's dry run: the report names every code the publish would refuse
+/// with (here the uncomposed-bundle condition), a publishable head reads
+/// clean, and the door writes nothing: no audit row, no event, no revision.
+#[tokio::test]
+async fn the_validate_door_reports_what_the_publish_would_refuse_and_writes_nothing() {
+    let harness = harness().await;
+    let parent = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let (bundle_id, _etag) = created_sku(
+        &harness,
+        &json!({ "product_id": parent, "sku_code": "SKU-LINT-B", "sku_type": "bundle" }),
+    )
+    .await;
+    let (plain_id, _etag) = seed_draft_sku(&harness, parent, "SKU-LINT-P").await;
+    let audit_before = raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_audit_log").await;
+    let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
+    let outbox_before = raw_i64(
+        &harness.dsn,
+        &format!("SELECT COUNT(*) AS v FROM {body_table}"),
+    )
+    .await;
+    let revision_before = head_of_sku(&harness, bundle_id).await.internal_revision;
+
+    let bundle = post_validate(&harness, bundle_id).await;
+    assert_eq!(bundle.status(), StatusCode::OK);
+    let report = body_json(bundle).await;
+    assert_eq!(report["clean"], json!(false));
+    assert!(
+        finding_codes(&report).contains(&"BUNDLE_OVERRIDE_REQUIRED".to_owned()),
+        "the uncomposed-bundle condition is a named finding: {report}"
+    );
+
+    let plain = post_validate(&harness, plain_id).await;
+    assert_eq!(plain.status(), StatusCode::OK);
+    let report = body_json(plain).await;
+    assert_eq!(report["clean"], json!(true), "{report}");
+    assert_eq!(report["findings"], json!([]));
+
+    assert_eq!(
+        head_of_sku(&harness, bundle_id).await.internal_revision,
+        revision_before,
+        "a dry run moves no head"
+    );
+    assert_eq!(
+        raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_audit_log").await,
+        audit_before,
+        "a dry run audits nothing"
+    );
+    assert_eq!(
+        raw_i64(
+            &harness.dsn,
+            &format!("SELECT COUNT(*) AS v FROM {body_table}")
+        )
+        .await,
+        outbox_before,
+        "a dry run announces nothing"
+    );
+
+    let missing = post_validate(&harness, Uuid::now_v7()).await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+}
+
+/// `dod-composition-clear`: the inbound signal lowers `composition_pending`
+/// on a clean published bundle through a re-publish that announces
+/// `SkuCompositionCleared`; the same signal replays and writes nothing.
+#[tokio::test]
+async fn a_composition_clear_lowers_the_flag_on_a_clean_head_and_replays_its_signal() {
+    let harness = harness().await;
+    let (bundle_id, etag) = bundle_under_live_parent(&harness, "SKU-CLR-1").await;
+    seed_acknowledged_publish(&harness, bundle_id, &etag).await;
+    let published = post_publish(&harness, TENANT, bundle_id, Some(&etag)).await;
+    assert_eq!(published.status(), StatusCode::OK);
+    assert!(head_of_sku(&harness, bundle_id).await.composition_pending);
+
+    let signal = Uuid::now_v7();
+    let cleared = post_clear(&harness, bundle_id, signal).await;
+    assert_eq!(cleared.status(), StatusCode::OK);
+    let view = body_json(cleared).await;
+    assert_eq!(view["outcome"], json!("cleared"));
+    assert_eq!(view["signal_ref"], json!(signal));
+    let head = head_of_sku(&harness, bundle_id).await;
+    assert!(!head.composition_pending, "the flag is lowered");
+    assert_eq!(
+        view["published_version"],
+        json!(head.published_version),
+        "the clear is a re-publish and names the version it landed at"
+    );
+    assert_eq!(cleared_events(&harness).await, 1);
+    assert_eq!(
+        raw_i64(
+            &harness.dsn,
+            "SELECT COUNT(*) AS v FROM products_audit_log WHERE action = 'sku.composition_clear'",
+        )
+        .await,
+        1,
+        "the clear's audit row"
+    );
+
+    let replayed = post_clear(&harness, bundle_id, signal).await;
+    assert_eq!(replayed.status(), StatusCode::OK);
+    assert_eq!(body_json(replayed).await["outcome"], json!("replayed"));
+    assert_eq!(
+        head_of_sku(&harness, bundle_id).await.published_version,
+        head.published_version,
+        "a replay writes nothing"
+    );
+    assert_eq!(cleared_events(&harness).await, 1);
+}
+
+/// `dod-composition-clear`, the held half: a bundle with an open publish
+/// approval keeps its flag and the signal (202); once the approval closes the
+/// runner's re-evaluation applies the clear from the kept record.
+#[tokio::test]
+async fn a_composition_clear_is_held_behind_an_open_approval_and_applies_once_it_closes() {
+    let harness = harness().await;
+    let (bundle_id, etag) = bundle_under_live_parent(&harness, "SKU-CLR-2").await;
+    seed_acknowledged_publish(&harness, bundle_id, &etag).await;
+    let published = post_publish(&harness, TENANT, bundle_id, Some(&etag)).await;
+    assert_eq!(published.status(), StatusCode::OK);
+    let submitted = post_approval(&harness, bundle_id).await;
+    assert!(submitted.status().is_success(), "{}", submitted.status());
+    let approval_id: Uuid = body_json(submitted).await["approval_id"]
+        .as_str()
+        .expect("the receipt names the approval")
+        .parse()
+        .expect("a uuid");
+
+    let signal = Uuid::now_v7();
+    let held = post_clear(&harness, bundle_id, signal).await;
+    assert_eq!(held.status(), StatusCode::ACCEPTED);
+    let view = body_json(held).await;
+    assert_eq!(view["outcome"], json!("held"));
+    assert!(
+        view["held_on"]
+            .as_str()
+            .is_some_and(|on| on.contains("APPROVAL")),
+        "the held answer names the open approval: {view}"
+    );
+    assert!(
+        head_of_sku(&harness, bundle_id).await.composition_pending,
+        "the flag stays raised"
+    );
+    assert_eq!(cleared_events(&harness).await, 0);
+
+    let rejected = post_json_as(
+        approvals_app(&harness),
+        &format!("/bss-products/v1/approvals/{approval_id}/decisions"),
+        admin_ctx(Uuid::from_u128(0x6a_01)),
+        &json!({ "verdict": "rejected", "reason": "not this quarter" }),
+    )
+    .await;
+    assert_eq!(
+        rejected.status(),
+        StatusCode::OK,
+        "the open approval closes"
+    );
+
+    let sink = crate::infra::broker::EventSink::Interim(Arc::clone(&harness.outbox));
+    let outcome = crate::api::rest::skus::try_apply_composition_clear(
+        &harness.db,
+        &sink,
+        TENANT,
+        bundle_id,
+        signal,
+        Uuid::nil(),
+        crate::domain::canonical::write_instant(Utc::now()),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("the runner's re-evaluation runs"));
+    assert!(
+        matches!(
+            outcome,
+            crate::api::rest::skus::ClearOutcome::Cleared { .. }
+        ),
+        "the kept signal applies once the approval is closed"
+    );
+    assert!(!head_of_sku(&harness, bundle_id).await.composition_pending);
+    assert_eq!(cleared_events(&harness).await, 1);
+}
+
+/// `dod-quorum-descriptor` and `dod-override-ceremony`: the submission
+/// records the lint's condition under the descriptor's sixth name, an
+/// approving decision must acknowledge it by name, and the acknowledged
+/// record is what lets the bundle publish with its flag raised.
+#[tokio::test]
+async fn the_override_ceremony_names_the_bundle_condition_and_the_approver_acknowledges_it() {
+    use sea_orm::EntityTrait as _;
+    use toolkit_db::secure::SecureEntityExt as _;
+    let harness = harness().await;
+    let (bundle_id, etag) = bundle_under_live_parent(&harness, "SKU-CER-1").await;
+    let submitted = post_approval(&harness, bundle_id).await;
+    assert!(submitted.status().is_success(), "{}", submitted.status());
+    let approval_id: Uuid = body_json(submitted).await["approval_id"]
+        .as_str()
+        .expect("the receipt names the approval")
+        .parse()
+        .expect("a uuid");
+
+    let conn = harness.db.conn().expect("connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    let rows = crate::infra::storage::entity::approval::Entity::find()
+        .secure()
+        .scope_with(&scope)
+        .all(&conn)
+        .await
+        .expect("read the approvals");
+    let row = rows
+        .iter()
+        .find(|row| row.approval_id == approval_id)
+        .expect("the submitted record");
+    assert!(
+        row.quorum_descriptor
+            .contains(r#""overrideConditions":["BUNDLE_OVERRIDE_REQUIRED"]"#),
+        "the descriptor's sixth name carries the lint's condition: {}",
+        row.quorum_descriptor
+    );
+    let descriptor = crate::domain::approval::descriptor_from_stored(&row.quorum_descriptor)
+        .expect("the stored descriptor parses");
+    assert_eq!(
+        descriptor.override_conditions().to_vec(),
+        vec!["BUNDLE_OVERRIDE_REQUIRED".to_owned()]
+    );
+    drop(rows);
+
+    let decisions = format!("/bss-products/v1/approvals/{approval_id}/decisions");
+    let refused = post_json_as(
+        approvals_app(&harness),
+        &decisions,
+        admin_ctx(Uuid::from_u128(0x6b_01)),
+        &json!({ "verdict": "approved" }),
+    )
+    .await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::BAD_REQUEST,
+        "an unnamed condition refuses the approval"
+    );
+    let body = body_json(refused).await.to_string();
+    assert!(
+        body.contains("override_acknowledgments") && body.contains("BUNDLE_OVERRIDE_REQUIRED"),
+        "{body}"
+    );
+
+    for approver in [0x6b_02_u128, 0x6b_03] {
+        let approved = post_json_as(
+            approvals_app(&harness),
+            &decisions,
+            admin_ctx(Uuid::from_u128(approver)),
+            &json!({ "verdict": "approved", "override_acknowledgments": "BUNDLE_OVERRIDE_REQUIRED" }),
+        )
+        .await;
+        assert_eq!(
+            approved.status(),
+            StatusCode::OK,
+            "an acknowledging approval lands"
+        );
+    }
+
+    let published = post_publish(&harness, TENANT, bundle_id, Some(&etag)).await;
+    assert_eq!(
+        published.status(),
+        StatusCode::OK,
+        "the by-name acknowledgment authorizes the bundle publish"
+    );
+    assert!(
+        head_of_sku(&harness, bundle_id).await.composition_pending,
+        "published with the flag raised"
+    );
+}

@@ -190,7 +190,7 @@ fn register_freeze_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Rout
         .error_500(openapi)
         .error_503(openapi)
         .register(router, openapi);
-    OperationBuilder::post("/bss-products/v1/catalog-versions/{id}/releases")
+    let router = OperationBuilder::post("/bss-products/v1/catalog-versions/{id}/releases")
         .operation_id("bss_products.release_catalog_version")
         .summary("Release a catalog version's freeze liveness")
         .description(
@@ -217,12 +217,71 @@ fn register_freeze_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Rout
         .error_409(openapi)
         .error_500(openapi)
         .error_503(openapi)
+        .register(router, openapi);
+    let router = OperationBuilder::post("/bss-products/v1/catalog-versions/{id}/force-completions")
+        .operation_id("bss_products.force_complete_catalog_version")
+        .summary("Force-complete a timed-out freeze (a two-person ceremony)")
+        .description(
+            "Closes a version's open freeze without its silent participants: every `pending` \
+         registration becomes `not_frozen(forced)` and is stamped `released_at` in the same \
+         statement, the version flips to `complete(forced)`, and `posted` resolution stays \
+         refused VERSION_FORCED_INCOMPLETE until each forced participant acks or releases \
+         through its own door. Gates on `catalog_version x force_complete`; the act is a \
+         `GovernedLiveOp` under the stored approval host at the tenant's N (APPROVAL_REQUIRED \
+         without a satisfied record), `quorumReduced` riding the record and the event. Writes \
+         an audit row carrying the ceremony reference and emits FreezeForceCompleted in the \
+         same transaction.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "The catalog version whose freeze to force-complete.")
+        .handler(force_complete_catalog_version)
+        .json_response_with_schema::<FreezeLedgerView>(
+            openapi,
+            StatusCode::OK,
+            "The version's ledger after the ceremony: per-participant frozen state.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+    OperationBuilder::post("/bss-products/v1/freeze-participants")
+        .operation_id("bss_products.change_freeze_participant")
+        .summary("Register or retire a freeze participant")
+        .description(
+            "Moves the tenant's LIVE freeze-participant set - `op` is `register` or `retire`. A \
+             `GovernedLiveOp` on `freeze_participant x write` under the stored approval host \
+             (APPROVAL_REQUIRED without a satisfied record), material at the tenant's N. Emits \
+             FreezeParticipantSetChanged and writes an audit row in the same transaction. Every \
+             published version keeps its own participant_set_snapshot, so a change here never \
+             re-resolves a historical freezeComplete.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .json_request::<FreezeParticipantChangeRequest>(openapi, "The participant and the op.")
+        .handler(change_freeze_participant)
+        .json_response_with_schema::<FreezeParticipantView>(
+            openapi,
+            StatusCode::OK,
+            "The participant and whether the set moved.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
         .register(router, openapi)
 }
 
 /// Register the resolver — `GET …/catalog-versions/{id}`.
 fn register_resolver_route(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
-    OperationBuilder::get("/bss-products/v1/catalog-versions/{id}")
+    let router = OperationBuilder::get("/bss-products/v1/catalog-versions/{id}")
         .operation_id("bss_products.resolve_catalog_version")
         .summary("Resolve a catalog version")
         .description(
@@ -256,6 +315,35 @@ fn register_resolver_route(router: Router, openapi: &dyn OpenApiRegistry) -> Rou
         .error_403(openapi)
         .error_404(openapi)
         .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+    OperationBuilder::get("/bss-products/v1/catalog-versions/{a}/diff/{b}")
+        .operation_id("bss_products.diff_catalog_versions")
+        .summary("Diff two catalog versions")
+        .description(
+            "Computed read-only from the two STORED manifests through the same version lookup as \
+             resolve: entities added and removed, per-entity published-version deltas, and the \
+             capture half - every capture kind whose stored content differs. Byte-stable for a \
+             given pair, sorted throughout; no retention effect and no freeze-registration row. \
+             An unknown id on either side is CATALOG_VERSION_UNKNOWN (404). Gates on \
+             catalog_version x read.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("a", "The earlier catalog version.")
+        .path_param("b", "The later catalog version.")
+        .handler(diff_catalog_versions)
+        .json_response_with_schema::<VersionDiffView>(
+            openapi,
+            StatusCode::OK,
+            "The diff: entity deltas and changed capture kinds.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
         .error_500(openapi)
         .error_503(openapi)
         .register(router, openapi)
@@ -700,6 +788,30 @@ async fn drive_freeze_edge(
                             repo::refresh_freeze_state(tx, &scope, tenant_id, catalog_version_id)
                                 .await
                                 .map_err(|e| toolkit_db::DbError::Sea(e.to_db_err()))?;
+                        // The `event → ack` meter per participant
+                        // (`dod-posting-safe-observability`), from the
+                        // version's publish instant to this ack.
+                        if matches!(edge, FreezeEdge::Ack)
+                            && let Some(version) = repo::find_catalog_version(
+                                tx,
+                                &scope,
+                                tenant_id,
+                                catalog_version_id,
+                            )
+                            .await
+                            .map_err(|e| toolkit_db::DbError::Sea(e.to_db_err()))?
+                        {
+                            tracing::info!(
+                                event = "freeze_ack_latency",
+                                %tenant_id,
+                                catalog_version_id,
+                                participant = %participant,
+                                latency_ms = now
+                                    .signed_duration_since(version.published_at)
+                                    .num_milliseconds(),
+                                "bss-products: event -> ack"
+                            );
+                        }
                         repo::write_keyed_act_audit(
                             tx,
                             &scope,
@@ -1106,3 +1218,676 @@ impl IncrementRequests for InProcessIncrementRequests {
 #[cfg(test)]
 #[path = "catalog_version_tests.rs"]
 mod catalog_version_tests;
+
+// ---------------------------------------------------------------------------
+// `06`'s three remaining doors — force-completion, the participant set, the
+// diff (`dod-force-completion`, `dod-participant-set`, `dod-diff-door`;
+// P-D-67 arm 6, P-D-148)
+// ---------------------------------------------------------------------------
+
+/// One participant's frozen state on a version.
+#[toolkit_macros::api_dto(response)]
+pub struct FreezeParticipantStateView {
+    pub participant: String,
+    /// `pending`, `acked`, `released` or `not_frozen(forced)`.
+    pub state: String,
+}
+
+/// A version's ledger after force-completion.
+#[toolkit_macros::api_dto(response)]
+pub struct FreezeLedgerView {
+    pub catalog_version_id: i64,
+    /// `open`, `complete` or `complete(forced)`.
+    pub freeze_state: String,
+    /// The participants this ceremony forced.
+    pub forced: Vec<String>,
+    pub participants: Vec<FreezeParticipantStateView>,
+    /// The ceremony reference the audit row and the forced registrations share.
+    pub ceremony_ref: Uuid,
+    /// Whether the ceremony's effective quorum was below the default of two.
+    pub quorum_reduced: bool,
+}
+
+/// The participant-set door's body.
+#[toolkit_macros::api_dto(request)]
+pub struct FreezeParticipantChangeRequest {
+    /// The participant's name, as it acks.
+    pub participant: String,
+    /// `register` or `retire`.
+    pub op: String,
+}
+
+#[toolkit_macros::api_dto(response)]
+pub struct FreezeParticipantView {
+    pub participant: String,
+    /// `registered` or `retired`.
+    pub state: String,
+    /// `false` when the set already read that way (an idempotent replay).
+    pub changed: bool,
+}
+
+/// One entity's delta between two versions.
+#[toolkit_macros::api_dto(response)]
+pub struct EntityDeltaView {
+    pub entity_kind: String,
+    pub entity_id: Uuid,
+    /// The version in `a`; `null` when added in `b`.
+    pub from_published_version: Option<i64>,
+    /// The version in `b`; `null` when removed in `b`.
+    pub to_published_version: Option<i64>,
+}
+
+/// The diff of two stored manifests (`dod-diff-door`).
+#[toolkit_macros::api_dto(response)]
+pub struct VersionDiffView {
+    pub a: i64,
+    pub b: i64,
+    pub added: Vec<EntityDeltaView>,
+    pub removed: Vec<EntityDeltaView>,
+    pub changed: Vec<EntityDeltaView>,
+    /// The capture kinds whose stored content differs between the two.
+    pub changed_captures: Vec<String>,
+    /// The capture kinds present in one manifest only.
+    pub added_captures: Vec<String>,
+    pub removed_captures: Vec<String>,
+}
+
+/// The `GovernedLiveOp` subject a force-completion rides
+/// (`dod-force-completion`; P-D-125 row 52's pin belongs to the subject — a
+/// catalog version carries no `InternalRevision`, so the pin is `Unpinned`
+/// like every live-op door's). `pub(crate)` for the tests' seeding double.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-force-completion:p1
+pub(crate) fn force_completion_subject(
+    tenant_id: Uuid,
+    catalog_version_id: i64,
+) -> crate::domain::governance::GateSubject {
+    crate::domain::governance::GateSubject::governed_live_op(
+        tenant_id,
+        &format!("catalog_version/{catalog_version_id}/force_complete"),
+        crate::domain::governance::SubjectPin::Unpinned,
+    )
+}
+
+/// The `GovernedLiveOp` subject a participant-set change rides
+/// (`dod-participant-set`).
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-participant-set:p1
+pub(crate) fn participant_change_subject(
+    tenant_id: Uuid,
+    participant: &str,
+) -> crate::domain::governance::GateSubject {
+    crate::domain::governance::GateSubject::governed_live_op(
+        tenant_id,
+        &format!("freeze_participant/{participant}"),
+        crate::domain::governance::SubjectPin::Unpinned,
+    )
+}
+
+enum CvTxError {
+    Refused(DomainError),
+    Repo(crate::infra::storage::RepoError),
+    NotFound,
+}
+
+impl From<toolkit_db::DbError> for CvTxError {
+    fn from(error: toolkit_db::DbError) -> Self {
+        Self::Repo(crate::infra::storage::RepoError::Db(error.to_string()))
+    }
+}
+
+fn cv_contention_db_err(error: &CvTxError) -> Option<&sea_orm::DbErr> {
+    match error {
+        CvTxError::Repo(crate::infra::storage::RepoError::Driver { source, .. }) => Some(source),
+        CvTxError::Repo(_) | CvTxError::Refused(_) | CvTxError::NotFound => None,
+    }
+}
+
+/// Resolve the stored host for one governed catalog-version act before its
+/// transaction; a refusal is audited under the version label.
+async fn authorize_cv_op(
+    state: &ApiState,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    actor_ref: Uuid,
+    subject: crate::domain::governance::GateSubject,
+    attempted: String,
+) -> Result<crate::domain::governance::GateAuthorization, CanonicalError> {
+    match crate::api::rest::authorize_live_op(state, scope, tenant_id, subject).await {
+        Ok(authorization) => Ok(authorization),
+        Err(crate::api::rest::HostError::Refused(refusal)) => {
+            Err(refuse_cv(state, scope, tenant_id, actor_ref, attempted, refusal).await)
+        }
+        Err(crate::api::rest::HostError::Repo(error)) => Err(repo_error_to_canonical(&error)),
+    }
+}
+
+async fn settle_cv_op(
+    tx: &impl toolkit_db::secure::DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    authorization: &crate::domain::governance::GateAuthorization,
+    now: DateTime<Utc>,
+) -> Result<(), CvTxError> {
+    repo::settle_authorization(tx, scope, tenant_id, authorization, now)
+        .await
+        .map(|_spent| ())
+        .map_err(|error| match error {
+            repo::SettleError::Refused(refusal) => CvTxError::Refused(refusal),
+            repo::SettleError::Repo(error) => CvTxError::Repo(error),
+        })
+}
+
+/// `quorumReduced` off the authorizing record's descriptor (P-D-13).
+async fn quorum_reduced_of(
+    runner: &impl toolkit_db::secure::DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    authorization: &crate::domain::governance::GateAuthorization,
+) -> Result<bool, CvTxError> {
+    let Some(approval_id) = authorization.approval_ref() else {
+        return Ok(false);
+    };
+    let record = repo::read_approval(runner, scope, tenant_id, approval_id)
+        .await
+        .map_err(CvTxError::Repo)?;
+    Ok(record.is_some_and(|row| row.quorum_descriptor.contains("\"quorumReduced\":true")))
+}
+
+/// `POST /catalog-versions/{id}/force-completions`.
+async fn force_complete_catalog_version(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    axum::extract::Path(catalog_version_id): axum::extract::Path<i64>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let tenant_id = ctx.subject_tenant_id();
+    let now = canonical::write_instant(Utc::now());
+    let actor_ref =
+        crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
+            .await?;
+    let attempted = catalog_version_id.to_string();
+    let scope = catalog_version_scope(
+        &state,
+        &enforcer,
+        &ctx,
+        tenant_id,
+        actor_ref,
+        crate::authz::actions::FORCE_COMPLETE,
+        attempted.clone(),
+    )
+    .await?;
+    let authorization = authorize_cv_op(
+        &state,
+        &scope,
+        tenant_id,
+        actor_ref,
+        force_completion_subject(tenant_id, catalog_version_id),
+        attempted.clone(),
+    )
+    .await?;
+
+    let outbox = state.sink.clone();
+    let scope_tx = scope.clone();
+    let authorization_tx = authorization.clone();
+    let result = state
+        .db
+        .db()
+        .transaction_with_retry::<FreezeLedgerView, CvTxError, _, _>(
+            toolkit_db::secure::TxConfig::default(),
+            cv_contention_db_err,
+            move |tx| {
+                let outbox = outbox.clone();
+                let scope = scope_tx.clone();
+                let authorization = authorization_tx.clone();
+                Box::pin(async move {
+                    let Some(version) =
+                        repo::find_catalog_version(tx, &scope, tenant_id, catalog_version_id)
+                            .await
+                            .map_err(CvTxError::Repo)?
+                    else {
+                        return Err(CvTxError::NotFound);
+                    };
+                    if version.freeze_state != crate::domain::states::FreezeState::Open {
+                        return Err(CvTxError::Refused(DomainError::IllegalTransition {
+                            from: version.freeze_state.as_str().to_owned(),
+                            to: "complete(forced)".to_owned(),
+                        }));
+                    }
+                    let quorum_reduced =
+                        quorum_reduced_of(tx, &scope, tenant_id, &authorization).await?;
+                    settle_cv_op(tx, &scope, tenant_id, &authorization, now).await?;
+                    let ceremony_ref = Uuid::now_v7();
+                    let forced = repo::force_pending_freeze_rows(
+                        tx,
+                        &scope,
+                        tenant_id,
+                        catalog_version_id,
+                        ceremony_ref,
+                        now,
+                    )
+                    .await
+                    .map_err(CvTxError::Repo)?;
+                    let freeze_state =
+                        repo::refresh_freeze_state(tx, &scope, tenant_id, catalog_version_id)
+                            .await
+                            .map_err(CvTxError::Repo)?;
+                    // The ceremony's audit row carries the reference the forced
+                    // registrations store (`dod-cv-audit`); the version is a
+                    // counter, so its audit subject is the tenant-scoped v5 of it.
+                    repo::write_ceremony_act_audit(
+                        tx,
+                        &scope,
+                        repo::AuditCommon {
+                            audit_id: Uuid::now_v7(),
+                            tenant_id,
+                            actor_ref,
+                            action: "catalog_version.freeze.force_complete".to_owned(),
+                            subject_kind: crate::authz::labels::CATALOG_VERSION.to_owned(),
+                            reason: None,
+                            correlation_id: crate::infra::events::correlation_id(),
+                            written_at: now,
+                        },
+                        Uuid::new_v5(&tenant_id, catalog_version_id.to_string().as_bytes()),
+                        None,
+                        ceremony_ref,
+                    )
+                    .await
+                    .map_err(CvTxError::Repo)?;
+                    crate::infra::events::enqueue_catalog_version_event(
+                        &outbox,
+                        tx,
+                        crate::infra::events::FREEZE_FORCE_COMPLETED_PAYLOAD_TYPE,
+                        crate::infra::events::CatalogVersionEventBody {
+                            tenant_id,
+                            catalog_version_id: Some(catalog_version_id),
+                            act: "force_completed",
+                            participants: &forced,
+                            changed_entities: &[],
+                            satisfied_requests: 0,
+                            checksum: None,
+                            quorum_reduced: Some(quorum_reduced),
+                        },
+                        actor_ref,
+                    )
+                    .await
+                    .map_err(|e| {
+                        CvTxError::Repo(crate::infra::storage::RepoError::Db(e.to_string()))
+                    })?;
+                    let participants =
+                        repo::freeze_ack_rows(tx, &scope, tenant_id, catalog_version_id)
+                            .await
+                            .map_err(CvTxError::Repo)?
+                            .into_iter()
+                            .map(|(participant, state)| FreezeParticipantStateView {
+                                participant,
+                                state: state.as_str().to_owned(),
+                            })
+                            .collect();
+                    Ok(FreezeLedgerView {
+                        catalog_version_id,
+                        freeze_state: freeze_state.as_str().to_owned(),
+                        forced,
+                        participants,
+                        ceremony_ref,
+                        quorum_reduced,
+                    })
+                })
+            },
+        )
+        .await;
+    match result {
+        Ok(view) => Ok((StatusCode::OK, Json(view)).into_response()),
+        Err(CvTxError::NotFound) => Err(CatalogVersionResource::not_found(
+            "no such catalog version in the caller's tenant",
+        )
+        .with_resource(attempted)
+        .create()),
+        Err(CvTxError::Refused(refusal)) => {
+            Err(refuse_cv(&state, &scope, tenant_id, actor_ref, attempted, refusal).await)
+        }
+        Err(CvTxError::Repo(e)) => Err(repo_error_to_canonical(&e)),
+    }
+}
+
+/// `POST /freeze-participants`.
+async fn change_freeze_participant(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Json(body): Json<FreezeParticipantChangeRequest>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let tenant_id = ctx.subject_tenant_id();
+    let now = canonical::write_instant(Utc::now());
+    let actor_ref =
+        crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
+            .await?;
+    let participant = body.participant.trim().to_owned();
+    let scope = match crate::authz::access_scope(
+        &enforcer,
+        &ctx,
+        &crate::authz::resource_types::FREEZE_PARTICIPANT,
+        crate::authz::actions::WRITE,
+        Some(tenant_id),
+        None,
+        true,
+    )
+    .await
+    {
+        Ok(scope) => scope,
+        Err(crate::authz::AuthzError::Denied(reason)) => {
+            let self_scope = AccessScope::for_tenant(tenant_id);
+            return Err(crate::api::rest::audit_refusal_and_report(
+                &state,
+                &self_scope,
+                crate::api::rest::RefusalAuditContext {
+                    tenant_id,
+                    actor_ref,
+                    subject_kind: crate::authz::labels::FREEZE_PARTICIPANT,
+                    error_code: "PERMISSION_DENIED",
+                },
+                RefusalSubject::Attempted(participant),
+                CatalogVersionResource::permission_denied()
+                    .with_reason(reason)
+                    .create(),
+            )
+            .await);
+        }
+        Err(err @ crate::authz::AuthzError::Unavailable(_)) => {
+            return Err(crate::api::rest::authz_error_to_canonical(err, |reason| {
+                CatalogVersionResource::permission_denied()
+                    .with_reason(reason)
+                    .create()
+            }));
+        }
+    };
+    let register = match body.op.trim() {
+        "register" => true,
+        "retire" => false,
+        _ => {
+            let mut report = ValidationReport::new();
+            report.violate("VALIDATION", "op", "op must be register or retire");
+            return Err(refuse_cv(
+                &state,
+                &scope,
+                tenant_id,
+                actor_ref,
+                participant,
+                DomainError::Validation(report),
+            )
+            .await);
+        }
+    };
+    if participant.is_empty() {
+        let mut report = ValidationReport::new();
+        report.violate("VALIDATION", "participant", "participant must not be blank");
+        return Err(refuse_cv(
+            &state,
+            &scope,
+            tenant_id,
+            actor_ref,
+            participant,
+            DomainError::Validation(report),
+        )
+        .await);
+    }
+    let authorization = authorize_cv_op(
+        &state,
+        &scope,
+        tenant_id,
+        actor_ref,
+        participant_change_subject(tenant_id, &participant),
+        participant.clone(),
+    )
+    .await?;
+
+    let outbox = state.sink.clone();
+    let scope_tx = scope.clone();
+    let participant_tx = participant.clone();
+    let authorization_tx = authorization.clone();
+    let result = state
+        .db
+        .db()
+        .transaction_with_retry::<bool, CvTxError, _, _>(
+            toolkit_db::secure::TxConfig::default(),
+            cv_contention_db_err,
+            move |tx| {
+                let outbox = outbox.clone();
+                let scope = scope_tx.clone();
+                let participant = participant_tx.clone();
+                let authorization = authorization_tx.clone();
+                Box::pin(async move {
+                    settle_cv_op(tx, &scope, tenant_id, &authorization, now).await?;
+                    let changed = if register {
+                        repo::register_freeze_participant(tx, &scope, tenant_id, &participant, now)
+                            .await
+                    } else {
+                        repo::retire_freeze_participant(tx, &scope, tenant_id, &participant).await
+                    }
+                    .map_err(CvTxError::Repo)?;
+                    // A no-op (registering a registered participant, retiring an
+                    // unknown one) spends the ceremony but writes no audit row and
+                    // announces nothing: the set did not change.
+                    if changed {
+                        repo::write_keyed_act_audit(
+                            tx,
+                            &scope,
+                            repo::AuditCommon {
+                                audit_id: Uuid::now_v7(),
+                                tenant_id,
+                                actor_ref,
+                                action: if register {
+                                    "freeze_participant.register".to_owned()
+                                } else {
+                                    "freeze_participant.retire".to_owned()
+                                },
+                                subject_kind: crate::authz::labels::FREEZE_PARTICIPANT.to_owned(),
+                                reason: None,
+                                correlation_id: crate::infra::events::correlation_id(),
+                                written_at: now,
+                            },
+                            participant.clone(),
+                        )
+                        .await
+                        .map_err(CvTxError::Repo)?;
+                        let moved = vec![participant.clone()];
+                        crate::infra::events::enqueue_catalog_version_event(
+                            &outbox,
+                            tx,
+                            crate::infra::events::FREEZE_PARTICIPANT_SET_CHANGED_PAYLOAD_TYPE,
+                            crate::infra::events::CatalogVersionEventBody {
+                                tenant_id,
+                                catalog_version_id: None,
+                                act: if register {
+                                    "participant_registered"
+                                } else {
+                                    "participant_retired"
+                                },
+                                participants: &moved,
+                                changed_entities: &[],
+                                satisfied_requests: 0,
+                                checksum: None,
+                                quorum_reduced: None,
+                            },
+                            actor_ref,
+                        )
+                        .await
+                        .map_err(|e| {
+                            CvTxError::Repo(crate::infra::storage::RepoError::Db(e.to_string()))
+                        })?;
+                    }
+                    Ok(changed)
+                })
+            },
+        )
+        .await;
+    match result {
+        Ok(changed) => Ok((
+            StatusCode::OK,
+            Json(FreezeParticipantView {
+                participant,
+                state: if register { "registered" } else { "retired" }.to_owned(),
+                changed,
+            }),
+        )
+            .into_response()),
+        Err(CvTxError::NotFound) => Err(CatalogVersionResource::not_found("no such participant")
+            .with_resource(participant)
+            .create()),
+        Err(CvTxError::Refused(refusal)) => {
+            Err(refuse_cv(&state, &scope, tenant_id, actor_ref, participant, refusal).await)
+        }
+        Err(CvTxError::Repo(e)) => Err(repo_error_to_canonical(&e)),
+    }
+}
+
+/// `GET /catalog-versions/{a}/diff/{b}` (`dod-diff-door`): computed from the
+/// two stored manifests, sorted throughout, no writes.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-diff-door:p2
+async fn diff_catalog_versions(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    axum::extract::Path((a, b)): axum::extract::Path<(i64, i64)>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let tenant_id = ctx.subject_tenant_id();
+    let now = canonical::write_instant(Utc::now());
+    let actor_ref =
+        crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
+            .await?;
+    let attempted = format!("{a}..{b}");
+    let scope = catalog_version_scope(
+        &state,
+        &enforcer,
+        &ctx,
+        tenant_id,
+        actor_ref,
+        crate::authz::actions::READ,
+        attempted.clone(),
+    )
+    .await?;
+    let conn = state.db.conn().map_err(|e| {
+        repo_error_to_canonical(&crate::infra::storage::RepoError::Db(format!(
+            "diff connection: {e}"
+        )))
+    })?;
+    let mut manifests = Vec::with_capacity(2);
+    for id in [a, b] {
+        if repo::find_catalog_version(&conn, &scope, tenant_id, id)
+            .await
+            .map_err(|e| repo_error_to_canonical(&e))?
+            .is_none()
+        {
+            let refusal = DomainError::CatalogVersionUnknown(format!(
+                "catalog version {id} is not one of this tenant's"
+            ));
+            return Err(refuse_cv(&state, &scope, tenant_id, actor_ref, attempted, refusal).await);
+        }
+        manifests.push(
+            repo::catalog_version_manifest_rows(&conn, &scope, tenant_id, id)
+                .await
+                .map_err(|e| repo_error_to_canonical(&e))?,
+        );
+    }
+    let (entries_b, captures_b) = manifests.pop().unwrap_or_default();
+    let (entries_a, captures_a) = manifests.pop().unwrap_or_default();
+    Ok((
+        StatusCode::OK,
+        Json(diff_manifests(
+            a,
+            b,
+            &entries_a,
+            &captures_a,
+            &entries_b,
+            &captures_b,
+        )),
+    )
+        .into_response())
+}
+
+/// The pure diff: entities by `(kind, id)`, captures by kind; every list
+/// sorted so the same pair renders the same bytes.
+fn diff_manifests(
+    a: i64,
+    b: i64,
+    entries_a: &[repo::SnapshotEntityRef],
+    captures_a: &[(String, String)],
+    entries_b: &[repo::SnapshotEntityRef],
+    captures_b: &[(String, String)],
+) -> VersionDiffView {
+    use std::collections::BTreeMap;
+    let index = |entries: &[repo::SnapshotEntityRef]| -> BTreeMap<(String, Uuid), i64> {
+        entries
+            .iter()
+            .map(|e| ((e.entity_kind.clone(), e.entity_id), e.published_version))
+            .collect()
+    };
+    let (ia, ib) = (index(entries_a), index(entries_b));
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+    let mut changed = Vec::new();
+    for ((kind, id), version_b) in &ib {
+        match ia.get(&(kind.clone(), *id)) {
+            None => added.push(EntityDeltaView {
+                entity_kind: kind.clone(),
+                entity_id: *id,
+                from_published_version: None,
+                to_published_version: Some(*version_b),
+            }),
+            Some(version_a) if version_a != version_b => changed.push(EntityDeltaView {
+                entity_kind: kind.clone(),
+                entity_id: *id,
+                from_published_version: Some(*version_a),
+                to_published_version: Some(*version_b),
+            }),
+            Some(_) => {}
+        }
+    }
+    for ((kind, id), version_a) in &ia {
+        if !ib.contains_key(&(kind.clone(), *id)) {
+            removed.push(EntityDeltaView {
+                entity_kind: kind.clone(),
+                entity_id: *id,
+                from_published_version: Some(*version_a),
+                to_published_version: None,
+            });
+        }
+    }
+    let ca: BTreeMap<&str, &str> = captures_a
+        .iter()
+        .map(|(k, c)| (k.as_str(), c.as_str()))
+        .collect();
+    let cb: BTreeMap<&str, &str> = captures_b
+        .iter()
+        .map(|(k, c)| (k.as_str(), c.as_str()))
+        .collect();
+    let changed_captures = cb
+        .iter()
+        .filter(|(kind, content)| ca.get(*kind).is_some_and(|before| before != *content))
+        .map(|(kind, _)| (*kind).to_owned())
+        .collect();
+    let added_captures = cb
+        .keys()
+        .filter(|kind| !ca.contains_key(*kind))
+        .map(|kind| (*kind).to_owned())
+        .collect();
+    let removed_captures = ca
+        .keys()
+        .filter(|kind| !cb.contains_key(*kind))
+        .map(|kind| (*kind).to_owned())
+        .collect();
+    VersionDiffView {
+        a,
+        b,
+        added,
+        removed,
+        changed,
+        changed_captures,
+        added_captures,
+        removed_captures,
+    }
+}

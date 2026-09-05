@@ -1174,7 +1174,7 @@ the code agree and only the wire is missing.
 
 ### Force-completion, and the gate subject it cannot form
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-force-completion`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-force-completion`
 
 Force-completion **MUST** be a `05-governance` two-person ceremony on
 `catalog_version × force_complete` — its door
@@ -1216,6 +1216,26 @@ passing an invented value — and that is the trap rather than the remedy, since
 specified to read it. **§7 row 52** carries the question; an earlier revision of this paragraph
 claimed §7 named both arguments, and it named only the subject.
 
+**Ticked (P-D-148).** `POST /bss-products/v1/catalog-versions/{id}/force-completions`
+(`catalog_version::force_complete_catalog_version`) on `catalog_version × force_complete` — a real
+grant, the sixth action on the label (`actions::FORCE_COMPLETE`, permission
+`catalog_version_force_complete`) — and a `GovernedLiveOp` under the stored host
+(`force_completion_subject`: `catalog_version/{id}/force-completion`, `SubjectPin::Unpinned`, which
+is how P-D-125's per-kind pin answers the revision half above). One transaction: the record is
+spent, `repo::force_pending_freeze_rows` moves every `pending` row to `not_frozen(forced)` with
+`forced_at`, `ceremony_ref` and `released_at` in the same statement, `refresh_freeze_state` flips the
+version to `complete(forced)`, the audit row carries the `ceremony_ref` and `FreezeForceCompleted`
+rides the transaction with `quorumReduced` read off the authorizing record's descriptor. The door
+answers the per-participant ledger; `posted` stays `VERSION_FORCED_INCOMPLETE` until each forced
+participant acks or releases through its own door. Refusals are 05's gate codes
+(`APPROVAL_REQUIRED` at 403 without a satisfied record) and `ILLEGAL_TRANSITION` on a freeze that is
+not open; `FORCE_COMPLETE_QUORUM` appears nowhere in the crate. **What the build found**: the
+ledger's shape CHECK binds `forced_at` / `ceremony_ref` to the forced state, so the recovered
+participant's ack (`not_frozen(forced) → acked`, an admitted edge) failed the CHECK as shipped; the
+ack and release writers now clear the pair on the recovery edge, `released_at` alone surviving as
+the write-once stamp, and the ceremony stays joinable through its audit row. Probe:
+`a_force_completion_closes_the_open_freeze_and_posted_waits_for_the_forced_ack`.
+
 **Implements**: `cpt-cf-bss-products-flow-freeze`
 
 **Touches**:
@@ -1224,7 +1244,7 @@ claimed §7 named both arguments, and it named only the subject.
 
 ### Participant-set governance
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-participant-set`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-participant-set`
 
 Membership of `products_freeze_participant` **MUST** be a `GovernedLiveOp` on
 `freeze_participant × write` — through **`POST /bss-products/v1/freeze-participants`** (**P-D-67**) —
@@ -1243,6 +1263,18 @@ which of the two copies is authoritative, and therefore whether the
 `products_catalog_version` row's copy is inside it. §7.
 
 The gate-subject problem from the DoD above applies here identically.
+
+**Ticked (P-D-148).** `POST /bss-products/v1/freeze-participants`
+(`catalog_version::change_freeze_participant`), body `{participant, op ∈ {register, retire}}`, on
+`freeze_participant × write` and a `GovernedLiveOp` under the stored host
+(`participant_change_subject`: `freeze_participant/{participant}/participant-set`, unpinned). The
+record is spent in the transaction that writes `products_freeze_participant`
+(`repo::register_freeze_participant` / `retire_freeze_participant`); a **change** writes the audit
+row and emits `FreezeParticipantSetChanged` (aggregate = the tenant, P-D-71), a **no-op** —
+registering a registered participant, retiring an unknown one — spends the ceremony and writes
+nothing, since the set did not change. The historical resolution question is the snapshot's
+(`dod-participant-snapshot`) and is untouched. Probe:
+`a_participant_change_is_a_governed_live_op_that_announces_only_a_change`.
 
 **Implements**: `cpt-cf-bss-products-flow-freeze`
 
@@ -1303,7 +1335,7 @@ plan-price's and subscriptions-lifecycle's, the immutability is this gear's.**
 
 ### The `compositionPending` clearing lane
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-dod-composition-clear`
+- [x] `p2` - **ID**: `cpt-cf-bss-products-dod-composition-clear`
 
 On the inbound composition signal — pricing's, **unregistered on their side** (PRD §15) — the
 system **MUST** clear `composition_pending` as a **system save plus a re-publish** of the head at
@@ -1341,6 +1373,23 @@ It **MUST** emit `SkuCompositionCleared` — **this gear's outbound event, disti
 `BundleCompositionCompleted` that drove it**; a registry emitting the very event it consumes is a
 loop, not a contract. Prior frozen versions **MUST** keep the flag as it was (C4).
 
+**Ticked (P-D-148).** `POST /bss-products/v1/skus/{id}/composition-clears`, body `{signal_ref}`,
+on `sku × publish` (`skus::clear_composition`). The door records the signal as a `system_signal`
+approval **born satisfied** (`repo::seed_satisfied_system_signal` — the signal is the approving
+principal, independent of `N`) and calls `skus::try_apply_composition_clear`, the runner's entry
+point too. A clean head — no unpublished edit by digest equality with the last version row, no
+pending publish approval — re-publishes through `run_publish` with `PublishOperands::system_clear`:
+the gate is the signal's own record, the bundle condition is skipped so the flag is **not** re-raised,
+`publish_sku_head` lowers `composition_pending` in the bump statement, `SkuPublished` and
+`SkuCompositionCleared` both ride the transaction naming the new `publishedVersion`, and the audit
+row is `sku.composition_clear`. A dirty head answers **202 `held`** naming the blocker
+(`composition_clear_held` warns), the flag stays raised, the record stays satisfied and
+`activation_runner::apply_held_composition_clears` re-evaluates every open signal
+(`repo::open_system_signals`) each pass — including right after the operator's own publish. A spent
+signal replays (200 `replayed`), writing nothing. Probes:
+`a_composition_clear_lowers_the_flag_on_a_clean_head_and_replays_its_signal`,
+`a_composition_clear_is_held_behind_an_open_approval_and_applies_once_it_closes`.
+
 **Implements**: `cpt-cf-bss-products-flow-composition-clear`
 
 **Touches**:
@@ -1349,7 +1398,7 @@ loop, not a contract. Prior frozen versions **MUST** keep the flag as it was (C4
 
 ### The diff door
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-dod-diff-door`
+- [x] `p2` - **ID**: `cpt-cf-bss-products-dod-diff-door`
 
 The system **MUST** serve `GET /bss-products/v1/catalog-versions/{a}/diff/{b}`, spending
 **`catalog_version × read`** through the same shared version-lookup component as resolve, covering
@@ -1361,6 +1410,16 @@ participant and producer sets. A metadata-only or live-entity-only change betwee
 
 It **MUST** be computed read-only from the two **stored** manifests, **MUST** be byte-stable for a
 given pair, and **MUST** have **no retention effect**.
+
+**Ticked (P-D-148).** `GET /bss-products/v1/catalog-versions/{a}/diff/{b}`
+(`catalog_version::diff_catalog_versions`) on `catalog_version × read`, reading both manifests
+through `repo::catalog_version_manifest_rows` — the resolver's stored rows — and computing
+`diff_manifests`: entities added, removed and changed with their per-entity `publishedVersion`
+deltas, and `changedCaptures`, every capture kind whose stored content differs (all seven, since
+the capture store is the universe). Sorted throughout, byte-stable for a pair, no write of any kind;
+an unknown side is the same `CATALOG_VERSION_UNKNOWN` the resolver refuses with, audited under that
+code, its 404 body bare like every miss. Probe:
+`the_diff_door_renders_the_two_stored_manifests_byte_stably`.
 
 **Implements**: `cpt-cf-bss-products-flow-diff`
 
@@ -1426,7 +1485,7 @@ marker per new authz label, six catalog-version and freeze refusals would reach 
 
 ### The authz surface, and the four rosters it reddens
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-cv-authz`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-cv-authz`
 
 The system **MUST** declare two new authz labels — `catalog_version` and `freeze_participant` —
 and the action constants `request`, `ack`, `release` and `force_complete`, and **MUST** register a
@@ -1468,6 +1527,13 @@ Separately, `crate::authz::authz_label_type_schemas` is **still unregistered** f
 which `authz.rs` records as owed to *"the slice that adds the first authoring door"*. That is
 `01-foundation`'s debt, not this feature's, and is named so it is not paid twice.
 
+**Ticked (P-D-148).** `labels::FREEZE_PARTICIPANT` joins `labels::ALL` (the positional roster
+test widened), `actions::FORCE_COMPLETE` joins `actions` and the `known` array,
+`resource_types::FREEZE_PARTICIPANT` is declared, and `gts/permissions.rs` registers
+`catalog_version_force_complete` and `freeze_participant_write` — with `catalog_version × publish`
+absent by P-D-125 (row 13), the catalog carries five `catalog_version` grants and one on
+`freeze_participant`. The four rosters this DoD names went red and were extended in the same change.
+
 **Implements**: `cpt-cf-bss-products-flow-increment`, `cpt-cf-bss-products-flow-freeze`
 
 **Touches**:
@@ -1476,7 +1542,7 @@ which `authz.rs` records as owed to *"the slice that adds the first authoring do
 
 ### The four events, and the body shape none of the shipped types has
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-cv-events`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-cv-events`
 
 The system **MUST** emit exactly four broker events: `CatalogVersionPublished` (carrying the
 changed-entity list, `satisfiedRequests`, the checksum and the participant set),
@@ -1524,6 +1590,20 @@ interim queue `infra::events::enqueue` additionally requires an **`aggregate_id`
 `subject()` **and** an aggregate id; two implementers left to invent the last would spread one
 tenant's versions across partitions differently. All three are §7's.
 
+**Ticked (P-D-148).** Four tokens in `SCHEMA_REFS` — `CatalogVersionPublished`,
+`FreezeForceCompleted`, `FreezeParticipantSetChanged`, `SkuCompositionCleared` — pinned by
+`THE_VERSION_FOUR` in both roster families beside the earlier rosters. The first three ride
+`events::CatalogVersionEventBody` (no entity dimension: tenant, optional version id, act,
+participants, changed entities, satisfied requests, checksum, `quorumReduced`), enqueued through
+`enqueue_catalog_version_event` with **`aggregate_id = uuid_v5(tenant, "catalog_version")`** and the
+broker twins `CatalogVersionPublished` / `FreezeForceCompleted` / `FreezeParticipantSetChanged` on
+`CATALOG_VERSION_SUBJECT_TYPE` / `FREEZE_PARTICIPANT_SUBJECT_TYPE`; `SkuCompositionCleared` rides
+the entity core on the SKU. Each is enqueued in the transaction of the act it announces:
+`CatalogVersionPublished` in `increment::commit_increment` (the coalescer's commit), the ceremony's
+in the force door, the set's in the participant door, the clear's beside the re-publish's own
+`SkuPublished`. Acks and releases carry no event. Probe:
+`a_committed_drain_announces_catalog_version_published_once` and the door probes above.
+
 **Implements**: `cpt-cf-bss-products-flow-increment`, `cpt-cf-bss-products-flow-freeze`,
 `cpt-cf-bss-products-flow-composition-clear`
 
@@ -1560,6 +1640,11 @@ config default that actually carries `require_broker = true` for a deployment ru
 **That artifact is not in this repository**, which is stated so the checkbox is not read as an
 implementation obligation already met.
 
+**Not ticked (P-D-148), by the paragraph above.** The boot half ships and is probed; the
+deployment posture — a manifest carrying `require_broker = true` — is not in this repository, so
+no commit here can tick this box. It stays open for the deployment that first registers a
+`dyn EventBrokerApi` provider.
+
 **Implements**: `cpt-cf-bss-products-flow-freeze`
 
 **Touches**:
@@ -1567,7 +1652,7 @@ implementation obligation already met.
 
 ### The posting-safe meters
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-dod-posting-safe-observability`
+- [x] `p2` - **ID**: `cpt-cf-bss-products-dod-posting-safe-observability`
 
 The system **MUST** instrument `requested_at → published_at` at p95 ≤ 60 s and max 5 min **for the
 interactive lane, and the same pair from window close for the bulk lane** (**P-D-67** — a batch whose
@@ -1586,6 +1671,17 @@ from this ledger, and the gauges: pending-request age per lane and unacked parti
 by no slice**, so the composite this DoD calls derivable from three meters currently rests on two.
 Named, not assigned — §7.
 
+**Ticked (P-D-148), as tracing events.** `catalog_version_lane_latency` (per committed batch:
+lane, `requested_at → published_at` for interactive, window close → `published_at` for bulk, both
+in `commit_increment`'s caller), `catalog_version_overdue` raised by the runtime each pass from
+`increment::overdue_requests` — every pending request past its lane deadline (`INTERACTIVE_MAX`,
+`BULK_WINDOW_MAX + INTERACTIVE_MAX`) with its age, the pending-request-age gauge's rows — and
+`freeze_ack_latency` per participant on the ack door (`published_at → ack`), beside the existing
+`freeze_overdue` scan (unacked participants per version). P-D-124's `commit → durable-acceptance`
+meter is `01`'s and is asserted by `08`'s convergence probe — the lead's group 8 — so the composite
+this DoD derives rests on the two meters here plus that one there. Probe:
+`the_overdue_scan_names_the_requests_past_their_lane_deadline`.
+
 **Implements**: `cpt-cf-bss-products-algo-posting-safe`
 
 **Touches**:
@@ -1593,7 +1689,7 @@ Named, not assigned — §7.
 
 ### The audit trail for this feature's acts
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-cv-audit`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-cv-audit`
 
 Every ack, release, re-trigger, force-completion, participant-set change and composition clear
 **MUST** write an audit row through `01-foundation`'s audit plane, and a **refused** ack
@@ -1604,6 +1700,14 @@ A force-completion's row **MUST** carry its `ceremony_ref`, the same value
 registration are joinable from either side.
 
 **`products_audit_log` carries it since 2026-09-04** (**P-D-129**): a nullable `ceremony_ref` landed by editing `m20260829_000004_create_products_audit_log.rs` in place, on both engines, held unchanged by the sealing arm like every other record column, and `NULL` on every row that is not a ceremony's — the same in-place discipline `cpt-cf-bss-products-dod-referential-delete-predicate` follows. *Stood until then as:* the shipped roster (`audit_id` … `row_hash`) had no `ceremony_ref` and no generic payload column; overloading `attempted_key` or `reason` was not available, neither being joinable nor typed; and whether the column was this feature's to add or `01-foundation`'s was registered in §7.
+
+**Ticked (P-D-148).** The force door writes `AuditEntry::CeremonyAct` with the `ceremony_ref` the
+forced rows carry (`catalog_version.freeze.force_complete`); a participant change writes
+`freeze_participant.register` / `.retire` under `labels::FREEZE_PARTICIPANT`; the composition clear
+writes `sku.composition_clear` naming the signal; acks, releases and re-triggers were audited by
+the earlier waves, a refused ack (`PARTICIPANT_UNKNOWN`) with them. On recovery the registration's
+`ceremony_ref` is cleared with `forced_at` (the shape CHECK's first arm), so the join from the
+ceremony's side is the audit row's — the one that outlives the ledger's state.
 
 **Implements**: `cpt-cf-bss-products-flow-freeze`,
 `cpt-cf-bss-products-flow-composition-clear`
@@ -1642,10 +1746,10 @@ registration are joinable from either side.
 
 - [ ] Timeout reached: `posted`-intent resolution is refused, `browse` is unaffected, and
       `freeze_overdue` names pricing.
-- [ ] Force-completion records `not_frozen(forced)`, stamps `released_at` on the same registration,
+- [x] Force-completion records `not_frozen(forced)`, stamps `released_at` on the same registration,
       flips `freeze_state` to `complete(forced)`, and `posted` resolution of that version is refused
       `VERSION_FORCED_INCOMPLETE` **naming each** `not_frozen(forced)` participant.
-- [ ] That refusal is lifted **only** by that participant acking or releasing through its own
+- [x] That refusal is lifted **only** by that participant acking or releasing through its own
       `catalog_version × release` door — **nothing else lifts it**, and in particular the
       `released_at` the ceremony stamped does not.
 - [ ] A historical version re-resolves `freezeComplete` against its **snapshotted** set after a
@@ -1661,8 +1765,8 @@ registration are joinable from either side.
 **Composition clear**
 
 - [ ] A prior frozen version keeps `compositionPending = true` while the new version reads false.
-- [ ] The clear survives replay — idempotent per signal reference.
-- [ ] On a dirty head the clear is **deferred**: the flag stays `true`, `composition_clear_held`
+- [x] The clear survives replay — idempotent per signal reference.
+- [x] On a dirty head the clear is **deferred**: the flag stays `true`, `composition_clear_held`
       names the blocking edit or approval, and the clear completes on the next clean head without
       the signal being re-sent.
 
@@ -1671,7 +1775,7 @@ registration are joinable from either side.
 - [ ] A metadata-only change between two versions appears in the diff.
 - [ ] A live-entity-only change — a category display value, a recognized-set member — appears in the
       diff.
-- [ ] The diff is byte-stable for a given pair and creates no freeze-registration row.
+- [x] The diff is byte-stable for a given pair and creates no freeze-registration row.
 
 **The referential predicate**
 
@@ -1704,14 +1808,14 @@ here is ticked by inspection.
       participant**; after that participant acks, the same request succeeds.
 - [ ] `STAGED_ENTITY_CHANGED` — an operator publish racing a head move is refused; the same publish
       with no concurrent move succeeds.
-- [ ] `CATALOG_VERSION_UNKNOWN` — an unknown id is refused on **both** the resolve and diff paths;
+- [x] `CATALOG_VERSION_UNKNOWN` — an unknown id is refused on **both** the resolve and diff paths;
       a known id succeeds on both. The single-door requirement is what the two-path form tests.
 - [ ] `PARTICIPANT_UNKNOWN` — an ack from a principal outside the version's snapshotted set is
       refused **and audited**; an ack from a member succeeds.
 
 **Negative control on a code that does not exist**
 
-- [ ] No refusal path in this feature raises `FORCE_COMPLETE_QUORUM`. A ceremony refusal carries a
+- [x] No refusal path in this feature raises `FORCE_COMPLETE_QUORUM`. A ceremony refusal carries a
       `05-governance` gate code. The design set names this token only to deny it, and a
       grep for it in the crate must stay at zero.
 

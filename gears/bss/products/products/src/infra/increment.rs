@@ -76,10 +76,9 @@
 //! `freeze_state` is seeded `complete` for an empty participant snapshot —
 //! the ledger vacuously reads complete, and nothing would ever ack — and
 //! `open` otherwise, with one `pending` ledger row seeded per participant
-//! (P-D-67). No `CatalogVersionPublished` is emitted yet: the event's body
-//! shape for a non-entity subject is `dod-cv-events`' own open question
-//! (§7 rows 27, 35, 39, 47), and consumers poll through the port until it
-//! resolves.
+//! (P-D-67). `CatalogVersionPublished` is enqueued in the commit's own
+//! transaction on the catalog-version body P-D-125 row 27 settled
+//! (`dod-cv-events`, P-D-148); consumers may still poll through the port.
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-producer-snapshot:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-coalescer:p1
@@ -402,6 +401,7 @@ impl SnapshotBuilder {
 /// [`DrainOutcome::LeaseHeld`], not an error.
 pub async fn drain_tenant(
     db: &DBProvider<DbError>,
+    sink: &crate::infra::broker::EventSink,
     tenant_id: Uuid,
     now: DateTime<Utc>,
 ) -> Result<DrainOutcome, RepoError> {
@@ -409,7 +409,7 @@ pub async fn drain_tenant(
     // Demand first, on a plain connection: a tenant with nothing pending must
     // not take the lease at all, or one idle tenant per tick would serialize
     // against every other worker for nothing.
-    let batch = {
+    let (batch, requested) = {
         let conn = db
             .conn()
             .map_err(|e| RepoError::Db(format!("coalescer connection: {e}")))?;
@@ -420,7 +420,20 @@ pub async fn drain_tenant(
         let Some(batch) = ready_batch(&pending, now) else {
             return Ok(DrainOutcome::WindowOpen);
         };
-        batch
+        // The `requested → published` meter's operands (`dod-posting-safe-
+        // observability`, P-D-56's batching SLO): each satisfied request's
+        // lane and instant, read before the lease so the commit logs them.
+        let requested: Vec<(IncrementLane, DateTime<Utc>)> = pending
+            .iter()
+            .filter(|r| {
+                batch
+                    .keys
+                    .iter()
+                    .any(|(source, key)| *source == r.source && *key == r.request_key)
+            })
+            .map(|r| (r.lane, r.requested_at))
+            .collect();
+        (batch, requested)
     };
 
     // The lease, THEN the collect. An earlier revision collected before
@@ -477,9 +490,32 @@ pub async fn drain_tenant(
         }
     };
 
-    let outcome = commit_increment(guard, tenant_id, staged, batch.keys, now).await;
+    let outcome = commit_increment(guard, sink, tenant_id, staged, batch.keys, now).await;
+    if let Ok(DrainOutcome::Committed { .. }) = &outcome {
+        report_lane_latency(tenant_id, &requested, now);
+    }
     renewal.shutdown().await;
     outcome
+}
+
+/// The `requested_at -> published_at` meter per satisfied request
+/// (`dod-posting-safe-observability`, P-D-56's batching SLO): interactive
+/// from the request instant, bulk from the window close (P-D-67), one
+/// structured line each.
+fn report_lane_latency(
+    tenant_id: Uuid,
+    requested: &[(IncrementLane, DateTime<Utc>)],
+    now: DateTime<Utc>,
+) {
+    for (lane, requested_at) in requested {
+        tracing::info!(
+            event = "catalog_version_lane_latency",
+            %tenant_id,
+            lane = ?lane,
+            latency_ms = now.signed_duration_since(*requested_at).num_milliseconds(),
+            "bss-products: requested -> published"
+        );
+    }
 }
 
 /// Take the tenant's increment lease, or report that a peer holds it.
@@ -527,6 +563,7 @@ async fn acquire_increment_lease(
 /// As [`drain_tenant`].
 pub async fn commit_increment(
     guard: coord::LeaseGuard,
+    sink: &crate::infra::broker::EventSink,
     tenant_id: Uuid,
     staged: VersionManifest,
     keys: Vec<(String, String)>,
@@ -537,6 +574,7 @@ pub async fn commit_increment(
     let staged_entries = staged.entries.clone();
     let staged_manifest = std::sync::Arc::new(staged);
     let batch_keys = std::sync::Arc::new(keys);
+    let sink = sink.clone();
     let outcome = guard
         .with_ack_in_tx(
             |e: &RepoError| match e {
@@ -545,6 +583,7 @@ pub async fn commit_increment(
             },
             |tx| {
                 let staged_entries = staged_entries.clone();
+                let sink = sink.clone();
                 let manifest = std::sync::Arc::clone(&staged_manifest);
                 let keys = std::sync::Arc::clone(&batch_keys);
                 let scope = scope.clone();
@@ -581,7 +620,7 @@ pub async fn commit_increment(
                         tenant_id,
                         NewCatalogVersion {
                             catalog_version_id,
-                            checksum,
+                            checksum: checksum.clone(),
                             digest_version: canonical::DIGEST_VERSION,
                             published_at: now,
                             participant_set_snapshot: participants_rendering,
@@ -616,6 +655,37 @@ pub async fn commit_increment(
                         &manifest.participant_set,
                     )
                     .await?;
+                    // `CatalogVersionPublished`, in the commit's own transaction
+                    // (`dod-cv-events`; P-D-148): the freeze protocol's opening
+                    // fact, carrying the changed-entity list, the satisfied
+                    // requests, the checksum and the participant set.
+                    let changed: Vec<crate::infra::events::ChangedEntity> = manifest
+                        .entries
+                        .iter()
+                        .map(|entry| crate::infra::events::ChangedEntity {
+                            entity_kind: entry.entity_kind.as_str().to_owned(),
+                            entity_id: entry.entity_id,
+                            published_version: entry.published_version,
+                        })
+                        .collect();
+                    crate::infra::events::enqueue_catalog_version_event(
+                        &sink,
+                        tx,
+                        crate::infra::events::CATALOG_VERSION_PUBLISHED_PAYLOAD_TYPE,
+                        crate::infra::events::CatalogVersionEventBody {
+                            tenant_id,
+                            catalog_version_id: Some(catalog_version_id),
+                            act: "published",
+                            participants: &manifest.participant_set,
+                            changed_entities: &changed,
+                            satisfied_requests: u32::try_from(keys.len()).unwrap_or(u32::MAX),
+                            checksum: Some(&checksum),
+                            quorum_reduced: None,
+                        },
+                        crate::gear::system_actor_ref(),
+                    )
+                    .await
+                    .map_err(|e| RepoError::Db(format!("CatalogVersionPublished enqueue: {e}")))?;
                     repo::mark_requests_coalesced(tx, &scope, tenant_id, &keys, catalog_version_id)
                         .await?;
                     Ok(DrainOutcome::Committed {
@@ -720,6 +790,7 @@ const LEASE_TTL: Duration = Duration::from_secs(30);
 /// tenant's.
 pub async fn sweep(
     db: &DBProvider<DbError>,
+    sink: &crate::infra::broker::EventSink,
     now: DateTime<Utc>,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<(), RepoError> {
@@ -739,7 +810,7 @@ pub async fn sweep(
         if cancel.is_cancelled() {
             return Ok(());
         }
-        match drain_tenant(db, tenant, now).await {
+        match drain_tenant(db, sink, tenant, now).await {
             Ok(outcome) => log_drain_outcome(tenant, &outcome),
             Err(e) => {
                 failed += 1;
@@ -799,3 +870,65 @@ fn log_drain_outcome(tenant: Uuid, outcome: &DrainOutcome) {
 #[cfg(test)]
 #[path = "increment_tests.rs"]
 mod increment_tests;
+
+/// One pending request past its lane's deadline (`dod-posting-safe-
+/// observability`: `catalog_version_overdue`, the registry-side mirror of
+/// pricing's `commit_overdue`; P-D-56, P-D-67 arm 7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverdueRequest {
+    pub tenant_id: Uuid,
+    pub lane: IncrementLane,
+    pub source: String,
+    pub request_key: String,
+    pub age_secs: i64,
+}
+
+/// The interactive lane's hard maximum: five minutes from `requested_at`
+/// (P-D-56). The bulk lane's is the same five minutes **from window close**,
+/// which is `requested_at + BULK_WINDOW_MAX` (P-D-67 arm 7).
+pub const INTERACTIVE_MAX: Duration = Duration::from_mins(5);
+
+/// Pending requests past their lane deadline, across tenants — the operand of
+/// the `catalog_version_overdue` alarm the runtime raises per pass; also the
+/// pending-request-age gauge's rows.
+///
+/// # Errors
+///
+/// The store's own error.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-posting-safe-observability:p2
+pub async fn overdue_requests(
+    db: &DBProvider<DbError>,
+    now: DateTime<Utc>,
+) -> Result<Vec<OverdueRequest>, RepoError> {
+    let conn = db
+        .conn()
+        .map_err(|e| RepoError::Db(format!("overdue request scan connection: {e}")))?;
+    let tenants = repo::tenants_with_pending_requests(&conn, &AccessScope::allow_all()).await?;
+    let interactive =
+        chrono::Duration::from_std(INTERACTIVE_MAX).unwrap_or(chrono::Duration::zero());
+    let bulk = chrono::Duration::from_std(BULK_WINDOW_MAX).unwrap_or(chrono::Duration::zero())
+        + interactive;
+    let mut overdue = Vec::new();
+    for tenant_id in tenants {
+        let scope = AccessScope::for_tenant(tenant_id);
+        for request in repo::pending_increment_requests(&conn, &scope, tenant_id).await? {
+            let deadline = match request.lane {
+                IncrementLane::Interactive => request.requested_at + interactive,
+                IncrementLane::Bulk => request.requested_at + bulk,
+            };
+            if now > deadline {
+                overdue.push(OverdueRequest {
+                    tenant_id,
+                    lane: request.lane,
+                    source: request.source.clone(),
+                    request_key: request.request_key.clone(),
+                    age_secs: now
+                        .signed_duration_since(request.requested_at)
+                        .num_seconds(),
+                });
+            }
+        }
+    }
+    Ok(overdue)
+}

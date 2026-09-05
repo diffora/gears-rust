@@ -839,6 +839,31 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .error_503(openapi)
         .register(router, openapi);
 
+    let router = OperationBuilder::post("/bss-products/v1/products/{id}/validate")
+        .operation_id("bss_products.validate_product")
+        .summary("Dry-run the Product's publish (the pre-publish lint)")
+        .description(
+            "Runs the publish pipeline to the governance gate EXCLUSIVE and writes nothing: \
+             the answer is the per-entity report - every code the publish would refuse with. \
+             Gates on `product x publish`.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "The Product to lint.")
+        .handler(validate_product)
+        .json_response_with_schema::<crate::api::rest::skus::LintReportView>(
+            openapi,
+            StatusCode::OK,
+            "The lint report.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
     let router = register_deprecate_door(router, openapi);
     let router = register_undeprecate_door(router, openapi);
     let router = register_retire_door(router, openapi);
@@ -8597,4 +8622,132 @@ async fn clone_product(
         disposition::suggested_product_code(&source, code_n).as_deref(),
     )
     .await)
+}
+
+// ---------------------------------------------------------------------------
+// The dry-run lint — `POST /products/{id}/validate` (P-D-125 row 14, P-D-148).
+// ---------------------------------------------------------------------------
+
+/// The Product publish pipeline to the gate exclusive, as findings instead
+/// of a refusal — the SKU twin's shape (`skus::lint_sku_publish`).
+///
+/// # Errors
+///
+/// The store's own error.
+pub(crate) async fn lint_product_publish(
+    runner: &(impl toolkit_db::secure::DBRunner + Sync),
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    product_id: Uuid,
+) -> Result<Vec<crate::api::rest::LintFinding>, crate::infra::storage::RepoError> {
+    use crate::api::rest::LintFinding;
+    let Some(head) = repo::find_product(runner, scope, tenant_id, product_id).await? else {
+        return Ok(Vec::new());
+    };
+    let mut findings = Vec::new();
+    if let Err(refusal) = transition::check_head_write(head.lifecycle_state) {
+        findings.push(LintFinding::of(&refusal));
+        return Ok(findings);
+    }
+    if let Some((_phase, report)) = publish_revalidation_pipeline().run(&publish_candidate(&head)) {
+        findings.extend(LintFinding::from_report(&report));
+    }
+    let target = published_state_after(head.lifecycle_state);
+    if let Err(refusal) = transition::guard(head.lifecycle_state, target) {
+        findings.push(LintFinding::of(&refusal));
+    }
+    let has_primary = repo::has_primary_category(runner, scope, tenant_id, product_id).await?;
+    if let Some((_phase, report)) =
+        published_transition_pipeline().run(&PublishedTransitionSubject {
+            has_primary_category: has_primary,
+        })
+    {
+        findings.extend(LintFinding::from_report(&report));
+    }
+    Ok(findings)
+}
+
+/// `POST /products/{id}/validate`.
+async fn validate_product(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path(product_id): Path<Uuid>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let tenant_id = ctx.subject_tenant_id();
+    let now = canonical::write_instant(Utc::now());
+    let actor_ref =
+        crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
+            .await?;
+    let scope = match crate::authz::access_scope(
+        &enforcer,
+        &ctx,
+        &crate::authz::resource_types::PRODUCT,
+        crate::authz::actions::PUBLISH,
+        Some(tenant_id),
+        None,
+        true,
+    )
+    .await
+    {
+        Ok(scope) => scope,
+        Err(crate::authz::AuthzError::Denied(reason)) => {
+            let self_scope = AccessScope::for_tenant(tenant_id);
+            return Err(crate::api::rest::audit_refusal_and_report(
+                &state,
+                &self_scope,
+                crate::api::rest::RefusalAuditContext {
+                    tenant_id,
+                    actor_ref,
+                    subject_kind: crate::authz::labels::PRODUCT,
+                    error_code: "PERMISSION_DENIED",
+                },
+                RefusalSubject::Minted {
+                    subject_id: product_id,
+                    subject_revision: None,
+                },
+                ProductResource::permission_denied()
+                    .with_reason(reason)
+                    .create(),
+            )
+            .await);
+        }
+        Err(err @ crate::authz::AuthzError::Unavailable(_)) => {
+            return Err(crate::api::rest::authz_error_to_canonical(err, |reason| {
+                ProductResource::permission_denied()
+                    .with_reason(reason)
+                    .create()
+            }));
+        }
+    };
+    let conn = state
+        .db
+        .conn()
+        .map_err(|e| CanonicalError::internal(format!("bss-products: db conn: {e}")).create())?;
+    if repo::find_product(&conn, &scope, tenant_id, product_id)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?
+        .is_none()
+    {
+        return Err(
+            ProductResource::not_found("no such product in the caller's tenant")
+                .with_resource(product_id.to_string())
+                .create(),
+        );
+    }
+    let findings = lint_product_publish(&conn, &scope, tenant_id, product_id)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?;
+    Ok((
+        StatusCode::OK,
+        Json(crate::api::rest::skus::LintReportView {
+            clean: findings.is_empty(),
+            findings: findings
+                .into_iter()
+                .map(crate::api::rest::skus::LintFindingView::from)
+                .collect(),
+        }),
+    )
+        .into_response())
 }

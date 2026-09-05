@@ -567,6 +567,41 @@ pub(crate) enum HostError {
 ///   only the correction door may move.
 ///
 /// @cpt-dod:cpt-cf-bss-products-dod-gate-host:p1
+/// One finding of the dry-run publish lint (`validate` doors; **P-D-125**
+/// row 14, P-D-148): the code a publish would refuse with, the field or
+/// rule it names, and the detail. The per-entity report `fr-prepublish-lint`
+/// requires, and `dod-override-ceremony`'s operand — approvers acknowledge
+/// these codes by name.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LintFinding {
+    pub code: String,
+    pub subject: String,
+    pub detail: String,
+}
+
+impl LintFinding {
+    pub(crate) fn of(refusal: &crate::domain::error::DomainError) -> Self {
+        Self {
+            code: refusal.code().to_owned(),
+            subject: String::new(),
+            detail: refusal.to_string(),
+        }
+    }
+
+    pub(crate) fn from_report(report: &crate::domain::validation::ValidationReport) -> Vec<Self> {
+        report
+            .violations()
+            .iter()
+            .map(|violation| Self {
+                code: violation.code.to_owned(),
+                subject: violation.subject.clone(),
+                detail: violation.detail.clone(),
+            })
+            .collect()
+    }
+}
+
 pub(crate) async fn resolve_host(
     runner: &(impl toolkit_db::secure::DBRunner + Sync),
     scope: &AccessScope,

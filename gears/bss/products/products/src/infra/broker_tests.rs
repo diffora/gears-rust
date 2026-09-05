@@ -7,15 +7,18 @@ use uuid::Uuid;
 
 use super::{
     ATTRIBUTE_DEFINITION_SUBJECT_TYPE, ActorErased, AttributeDefinitionUpdated,
-    CATEGORY_SUBJECT_TYPE, CatalogBulkOperationCompleted, CatalogEventCore, CategoryCreated,
-    CategoryDeleted, CategoryDisplayUpdated, CategoryRenamed, CategoryReparented, CategoryRetired,
+    CATALOG_VERSION_SUBJECT_TYPE, CATEGORY_SUBJECT_TYPE, CatalogBulkOperationCompleted,
+    CatalogEventCore, CatalogVersionPublished, CategoryCreated, CategoryDeleted,
+    CategoryDisplayUpdated, CategoryRenamed, CategoryReparented, CategoryRetired,
+    FREEZE_PARTICIPANT_SUBJECT_TYPE, FreezeForceCompleted, FreezeParticipantSetChanged,
     METADATA_SUBJECT_TYPE, MetadataUpdated, PRODUCT_SUBJECT_TYPE, PiiAllowlistChanged,
     PlanTierUpdated, ProductCreated, ProductDeprecated, ProductDiscarded, ProductHeadSaved,
     ProductPublished, ProductRetired, ProductRetirementEffective, ProductUndeprecated,
     REFERENCE_PRODUCER_SUBJECT_TYPE, RecognizedCodeUpdated, RecognizedUnitUpdated,
-    ReferenceProducerSetChanged, SKU_SUBJECT_TYPE, SOURCE, SkuCorrectionOverride, SkuCreated,
-    SkuDeprecated, SkuDiscarded, SkuHeadSaved, SkuImmutableFieldCorrected, SkuPublished,
-    SkuRetired, SkuRetirementEffective, SkuUndeprecated, TOPIC,
+    ReferenceProducerSetChanged, SKU_SUBJECT_TYPE, SOURCE, SkuCompositionCleared,
+    SkuCorrectionOverride, SkuCreated, SkuDeprecated, SkuDiscarded, SkuHeadSaved,
+    SkuImmutableFieldCorrected, SkuPublished, SkuRetired, SkuRetirementEffective, SkuUndeprecated,
+    TOPIC,
 };
 
 const TENANT: Uuid = Uuid::from_u128(0x7e_42);
@@ -155,6 +158,7 @@ const THE_LIFECYCLE_REST: &[(&str, &str, &str)] = &[
 // One branch per entry point the roster declares: the branching is the
 // roster's width, not logic.
 #[allow(clippy::cognitive_complexity)]
+#[allow(clippy::too_many_lines)] // one arm per entry point; the catalog-version arm crossed the floor
 /// Enqueue one declared event through **the entry point that owns its body
 /// shape**, and record the subject the read-back will find it by.
 ///
@@ -282,6 +286,49 @@ async fn enqueue_one(
         .await
         .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue_set_event: {e}"));
         expected.push((set_kind.to_owned(), type_id));
+        return;
+    }
+    if token == crate::infra::events::CATALOG_VERSION_PUBLISHED_PAYLOAD_TYPE
+        || token == crate::infra::events::FREEZE_FORCE_COMPLETED_PAYLOAD_TYPE
+        || token == crate::infra::events::FREEZE_PARTICIPANT_SET_CHANGED_PAYLOAD_TYPE
+    {
+        let participants = vec!["pricing".to_owned()];
+        // Two of the three are subjected by the version id, so each token
+        // names its own version or the read-back by subject cannot tell them
+        // apart.
+        let version_id: i64 = if token == crate::infra::events::FREEZE_FORCE_COMPLETED_PAYLOAD_TYPE
+        {
+            8
+        } else {
+            7
+        };
+        crate::infra::events::enqueue_catalog_version_event(
+            sink,
+            conn,
+            token,
+            crate::infra::events::CatalogVersionEventBody {
+                tenant_id: TENANT,
+                catalog_version_id: Some(version_id),
+                act: "published",
+                participants: &participants,
+                changed_entities: &[],
+                satisfied_requests: 1,
+                checksum: Some("00"),
+                quorum_reduced: None,
+            },
+            ACTOR,
+        )
+        .await
+        .unwrap_or_else(|e| {
+            panic!("{token} must enqueue through enqueue_catalog_version_event: {e}")
+        });
+        let subject = if token == crate::infra::events::FREEZE_PARTICIPANT_SET_CHANGED_PAYLOAD_TYPE
+        {
+            "pricing".to_owned()
+        } else {
+            version_id.to_string()
+        };
+        expected.push((subject, type_id));
         return;
     }
     if token == crate::infra::events::REFERENCE_PRODUCER_SET_CHANGED_PAYLOAD_TYPE {
@@ -413,6 +460,31 @@ const THE_REFERENCE_TRIO: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// `06`'s four — three on the catalog version / participant set, one on a SKU
+/// — names from its roster, ids and subjects by this module's naming rule.
+const THE_VERSION_FOUR: &[(&str, &str, &str)] = &[
+    (
+        "CatalogVersionPublished",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.catalog_version_published.v1",
+        "gts.cf.core.events.subject.v1~cf.bss.products.catalog_version.v1",
+    ),
+    (
+        "FreezeForceCompleted",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.freeze_force_completed.v1",
+        "gts.cf.core.events.subject.v1~cf.bss.products.catalog_version.v1",
+    ),
+    (
+        "FreezeParticipantSetChanged",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.freeze_participant_set_changed.v1",
+        "gts.cf.core.events.subject.v1~cf.bss.products.freeze_participant.v1",
+    ),
+    (
+        "SkuCompositionCleared",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.sku_composition_cleared.v1",
+        TRANSCRIBED_SKU_SUBJECT,
+    ),
+];
+
 /// The subject type the batch summary carries, transcribed.
 const TRANSCRIBED_BULK_SUBJECT: &str = "gts.cf.core.events.subject.v1~cf.bss.products.bulk.v1";
 
@@ -516,6 +588,7 @@ fn every_declared_event() -> Vec<(&'static str, &'static str, &'static str)> {
         .chain(THE_TAXONOMY_EIGHT)
         .chain(THE_RETENTION_PAIR)
         .chain(THE_REFERENCE_TRIO)
+        .chain(THE_VERSION_FOUR)
         .copied()
         .collect()
 }
@@ -688,7 +761,64 @@ fn declared() -> Vec<(&'static str, &'static str, &'static str)> {
             ReferenceProducerSetChanged::SUBJECT_TYPE,
             ReferenceProducerSetChanged::TOPIC,
         ),
+        (
+            CatalogVersionPublished::TYPE_ID,
+            CatalogVersionPublished::SUBJECT_TYPE,
+            CatalogVersionPublished::TOPIC,
+        ),
+        (
+            FreezeForceCompleted::TYPE_ID,
+            FreezeForceCompleted::SUBJECT_TYPE,
+            FreezeForceCompleted::TOPIC,
+        ),
+        (
+            FreezeParticipantSetChanged::TYPE_ID,
+            FreezeParticipantSetChanged::SUBJECT_TYPE,
+            FreezeParticipantSetChanged::TOPIC,
+        ),
+        (
+            SkuCompositionCleared::TYPE_ID,
+            SkuCompositionCleared::SUBJECT_TYPE,
+            SkuCompositionCleared::TOPIC,
+        ),
     ]
+}
+
+/// `06`'s version-subjected events name the catalog version as their subject
+/// and the participant-set event its participant (P-D-125 row 47).
+#[test]
+fn the_catalog_version_events_are_subjected_by_version_and_by_participant() {
+    let payload = super::CatalogVersionPayload {
+        tenant_id: TENANT,
+        catalog_version_id: Some(7),
+        act: "published".to_owned(),
+        participants: vec!["pricing".to_owned()],
+        changed_entities: Vec::new(),
+        satisfied_requests: 1,
+        checksum: Some("00".to_owned()),
+        quorum_reduced: None,
+        actor_ref: ACTOR,
+    };
+    let published = CatalogVersionPublished {
+        payload: payload.clone(),
+    };
+    assert_eq!(published.subject(), "7");
+    assert_eq!(
+        CatalogVersionPublished::SUBJECT_TYPE,
+        CATALOG_VERSION_SUBJECT_TYPE
+    );
+    let moved = FreezeParticipantSetChanged {
+        payload: super::CatalogVersionPayload {
+            catalog_version_id: None,
+            act: "participant_registered".to_owned(),
+            ..payload
+        },
+    };
+    assert_eq!(moved.subject(), "pricing");
+    assert_eq!(
+        FreezeParticipantSetChanged::SUBJECT_TYPE,
+        FREEZE_PARTICIPANT_SUBJECT_TYPE
+    );
 }
 
 /// `07`'s producer-set event names the tenant as its subject (P-D-71): the
@@ -790,8 +920,9 @@ fn the_subject_type_follows_the_entity_the_event_is_about() {
         "eight of the catalog entity events are about a Product"
     );
     assert_eq!(
-        sku_events, 10,
-        "eight of the catalog entity events plus 07's two correction events are about a SKU"
+        sku_events, 11,
+        "eight of the catalog entity events, 07's two correction events and 06's composition \
+         clear are about a SKU"
     );
     let set_events = declared()
         .iter()
@@ -1198,11 +1329,13 @@ async fn every_event_reaches_the_broker_under_its_own_type_id() {
             "the id is the SDK's and the schema reference is the type id; neither is in the \\
              payload"
         );
-        let is_publish = want_type_id.contains("_published.");
+        let is_entity_publish = want_type_id.contains("_published.")
+            && !want_type_id.contains("catalog_version_published");
         assert_eq!(
             data.get("publishedVersion").is_some(),
-            is_publish,
-            "only the two publish events carry a publishedVersion ({want_type_id})"
+            is_entity_publish,
+            "only the two entity publish events carry a publishedVersion; the catalog version's \
+             announces its checksum ({want_type_id})"
         );
     }
 }

@@ -89,6 +89,17 @@ const THE_REFERENCE_TRIO: &[&str] = &[
     "ReferenceProducerSetChanged",
 ];
 
+/// `06-catalog-version`'s four (`dod-cv-events`), transcribed from **its**
+/// roster — its own array by P-D-125 row 39. Three are version-subjected and
+/// carry the catalog-version body; `SkuCompositionCleared` rides the entity
+/// core beside the `SkuPublished` its re-publish emits (P-D-60).
+const THE_VERSION_FOUR: &[&str] = &[
+    "CatalogVersionPublished",
+    "FreezeForceCompleted",
+    "FreezeParticipantSetChanged",
+    "SkuCompositionCleared",
+];
+
 /// Slice `02`'s eight (`dod-taxonomy-events`), transcribed from its §4.3
 /// roster — its own list for the reason every list above is its own: folding
 /// them into [`THE_EIGHT`] would claim §4.5 announces them, and §4.5
@@ -176,6 +187,13 @@ fn every_declared_token_belongs_to_exactly_one_entry_point() {
     let retention = THE_RETENTION_PAIR;
     let governance = THE_GOVERNANCE_THREE;
     let reference = THE_REFERENCE_TRIO;
+    // `SkuCompositionCleared` is the one of `06`'s four on the plain entity
+    // core, so it is core-only like §4.5's non-publish six.
+    let version_bodied = [
+        "CatalogVersionPublished",
+        "FreezeForceCompleted",
+        "FreezeParticipantSetChanged",
+    ];
 
     for (token, _) in SCHEMA_REFS {
         let owners = usize::from(published.contains(token))
@@ -185,7 +203,8 @@ fn every_declared_token_belongs_to_exactly_one_entry_point() {
             + usize::from(taxonomy.contains(token))
             + usize::from(retention.contains(token))
             + usize::from(governance.contains(token))
-            + usize::from(reference.contains(token));
+            + usize::from(reference.contains(token))
+            + usize::from(version_bodied.contains(token));
         assert!(
             owners <= 1,
             "{token} is claimed by more than one entry point's guard"
@@ -193,7 +212,7 @@ fn every_declared_token_belongs_to_exactly_one_entry_point() {
         // Zero owners is the core-only default: `enqueue` builds that shape,
         // so a token no specialised guard claims is legitimately its own.
         let core_only = owners == 0;
-        let rest = THE_LIFECYCLE_REST.contains(token);
+        let rest = THE_LIFECYCLE_REST.contains(token) || *token == "SkuCompositionCleared";
         assert_eq!(
             core_only,
             (THE_EIGHT.contains(token) && !published.contains(token)) || rest,
@@ -272,6 +291,12 @@ fn the_schema_roster_names_exactly_the_declared_events() {
             "{event} is 07's reference event and carries no schema reference"
         );
     }
+    for event in THE_VERSION_FOUR {
+        assert!(
+            registered.contains(event),
+            "{event} is 06's catalog-version event and carries no schema reference"
+        );
+    }
     for token in &registered {
         assert!(
             THE_EIGHT.contains(token)
@@ -282,7 +307,8 @@ fn the_schema_roster_names_exactly_the_declared_events() {
                 || THE_TAXONOMY_EIGHT.contains(token)
                 || THE_RETENTION_PAIR.contains(token)
                 || THE_GOVERNANCE_THREE.contains(token)
-                || THE_REFERENCE_TRIO.contains(token),
+                || THE_REFERENCE_TRIO.contains(token)
+                || THE_VERSION_FOUR.contains(token),
             "{token} carries a schema reference and belongs to no declared roster: an \
              event no design document announces is a promise nothing backs"
         );
@@ -297,7 +323,8 @@ fn the_schema_roster_names_exactly_the_declared_events() {
             + THE_TAXONOMY_EIGHT.len()
             + THE_RETENTION_PAIR.len()
             + THE_GOVERNANCE_THREE.len()
-            + THE_REFERENCE_TRIO.len(),
+            + THE_REFERENCE_TRIO.len()
+            + THE_VERSION_FOUR.len(),
         "the roster must carry each declared event exactly once"
     );
 }

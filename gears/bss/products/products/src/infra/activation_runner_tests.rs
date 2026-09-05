@@ -241,6 +241,7 @@ async fn a_seeded_consumed_approval_drives_the_foundation_publish_door() {
                 approver_count: 2,
                 submitter: ACTOR,
                 author_override_ack: None,
+                override_conditions: Vec::new(),
             },
             now,
         )
@@ -461,6 +462,7 @@ async fn a_seeded_consumed_approval_flips_deprecated_sku_to_retired() {
                 approver_count: 2,
                 submitter: ACTOR,
                 author_override_ack: None,
+                override_conditions: Vec::new(),
             },
             now,
         )
@@ -632,6 +634,7 @@ async fn a_product_retire_defers_when_a_published_child_would_orphan() {
                 approver_count: 2,
                 submitter: ACTOR,
                 author_override_ack: None,
+                override_conditions: Vec::new(),
             },
             now,
         )
@@ -799,6 +802,7 @@ async fn a_product_retire_defers_while_a_deprecated_child_is_non_terminal() {
                 approver_count: 2,
                 submitter: ACTOR,
                 author_override_ack: None,
+                override_conditions: Vec::new(),
             },
             now,
         )
@@ -998,6 +1002,7 @@ async fn a_sku_retire_defers_when_a_live_pointer_names_it() {
                 approver_count: 2,
                 submitter: ACTOR,
                 author_override_ack: None,
+                override_conditions: Vec::new(),
             },
             now,
         )
@@ -1193,6 +1198,7 @@ async fn a_sku_retire_defers_when_no_producer_is_registered() {
                 approver_count: 2,
                 submitter: ACTOR,
                 author_override_ack: None,
+                override_conditions: Vec::new(),
             },
             now,
         )
@@ -1268,6 +1274,7 @@ const SKIP_APPROVAL: Uuid = Uuid::from_u128(0x00bb_0062);
 /// P-D-137: a Product flip does not consult `evaluate_reference`. An empty
 /// registry is `NoProducers` for a SKU; the same registry must not hold
 /// the parent whose children are already terminal.
+#[allow(clippy::too_many_lines)] // one scenario, three seeded records, read end to end
 #[tokio::test]
 async fn a_product_retire_skips_the_07_predicate_when_no_producer_is_registered() {
     let harness = harness().await;
@@ -1370,6 +1377,7 @@ async fn a_product_retire_skips_the_07_predicate_when_no_producer_is_registered(
                 approver_count: 2,
                 submitter: ACTOR,
                 author_override_ack: None,
+                override_conditions: Vec::new(),
             },
             now,
         )

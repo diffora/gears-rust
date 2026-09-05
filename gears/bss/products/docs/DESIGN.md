@@ -547,7 +547,7 @@ decision (P-D-132).
   code is a breaking change. **Versioning**: the path segment `/v1/` is the wire version; within
   it, payloads evolve under slice 12's compatibility rule (`nfr-backward-compatible-evolution`).
 
-**Endpoints Overview** — the routes registered in code today (51), by owning slice; stability
+**Endpoints Overview** — the routes registered in code today (57), by owning slice; stability
 `v1` throughout (the SDK's compatibility rule is the stability contract). Per-route semantics,
 authz resources and refusal codes live in each slice's §3; the authz mapping in slice 05 §3.2.
 
@@ -557,6 +557,7 @@ authz resources and refusal codes live in each slice's §3; the authz mapping in
 | `GET` | `/bss-products/v1/products/{id}` | read a Product head with its `ETag` | 01 | v1 |
 | `PATCH` | `/bss-products/v1/products/{id}` | save a draft under `If-Match`, routed by bucket tag | 01 | v1 |
 | `POST` | `/bss-products/v1/products/{id}/publish` | publish under the governance gate; freezes a version | 01 | v1 |
+| `POST` | `/bss-products/v1/products/{id}/validate` | dry-run the publish: the per-entity lint report, no write (P-D-125) | 01 | v1 |
 | `POST` | `/bss-products/v1/products/{id}/discard` | discard a draft (ungoverned) | 01 | v1 |
 | `POST` | `/bss-products/v1/products/{id}/deprecate` | deprecate with provenance | 04 | v1 |
 | `POST` | `/bss-products/v1/products/{id}/undeprecate` | reverse a deprecation | 04 | v1 |
@@ -569,6 +570,8 @@ authz resources and refusal codes live in each slice's §3; the authz mapping in
 | `PATCH` | `/bss-products/v1/skus/{id}` | save a draft under `If-Match`, routed by bucket tag | 01 | v1 |
 | `POST` | `/bss-products/v1/skus/{id}/publish` | publish under the gate; resolves `usageTypeRef` once (P-D-141) | 01 / 03 | v1 |
 | `POST` | `/bss-products/v1/skus/{id}/discard` | discard a draft; releases the reserved code | 01 | v1 |
+| `POST` | `/bss-products/v1/skus/{id}/validate` | dry-run the publish: the per-entity lint report, no write (P-D-125) | 01 | v1 |
+| `POST` | `/bss-products/v1/skus/{id}/composition-clears` | clear a bundle's `compositionPending` on the inbound composition signal (system save + re-publish; held on a dirty head) | 06 | v1 |
 | `POST` | `/bss-products/v1/skus/{id}/deprecate` | deprecate with provenance | 04 | v1 |
 | `POST` | `/bss-products/v1/skus/{id}/undeprecate` | reverse a deprecation | 04 | v1 |
 | `POST` | `/bss-products/v1/skus/{id}/retire` | schedule retirement; the approval is consumed at schedule (P-D-139) | 04 | v1 |
@@ -593,6 +596,9 @@ authz resources and refusal codes live in each slice's §3; the authz mapping in
 | `GET` | `/bss-products/v1/catalog-versions/{id}` | read a catalog version | 06 | v1 |
 | `POST` | `/bss-products/v1/catalog-versions/{id}/acks` | a participant's `freezeComplete` ack | 06 | v1 |
 | `POST` | `/bss-products/v1/catalog-versions/{id}/releases` | release a version's liveness (P-D-18) | 06 | v1 |
+| `POST` | `/bss-products/v1/catalog-versions/{id}/force-completions` | force-complete a timed-out freeze (two-person ceremony, P-D-67) | 06 | v1 |
+| `POST` | `/bss-products/v1/freeze-participants` | register or retire a freeze participant (`GovernedLiveOp`, P-D-67) | 06 | v1 |
+| `GET` | `/bss-products/v1/catalog-versions/{a}/diff/{b}` | diff two stored manifests: entity deltas and changed captures (AC #20a) | 06 | v1 |
 | `POST` | `/bss-products/v1/reference-producers` | register a reference producer (P-D-03) | 07 | v1 |
 | `POST` | `/bss-products/v1/reference-producers/{producer}/retirements` | a producer's retirement signal (optional break-glass justification for a dead producer) | 07 | v1 |
 | `POST` | `/bss-products/v1/skus/{id}/corrections` | correct a published SKU's bucket-ii field through the governed correction door | 07 | v1 |

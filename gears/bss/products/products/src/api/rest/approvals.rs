@@ -660,6 +660,48 @@ fn pii_block(detector: &(dyn PiiDetector + Send + Sync), reason: &str) -> Result
         .map_err(|blocked| DomainError::ContentPiiBlocked(blocked.into_detail()))
 }
 
+/// The subject's override conditions at submission (`dod-override-ceremony`'s
+/// operand, P-D-148): the dry-run lint's finding codes for the head, which is
+/// exactly what the `validate` door answers (P-D-125 row 14) — `01`'s
+/// pipeline for a Product, `03`'s and `07`'s rechecks folded in for a SKU,
+/// plus the uncomposed-bundle condition `design/05` names.
+async fn lint_conditions(
+    runner: &impl toolkit_db::secure::DBRunner,
+    scope: &AccessScope,
+    entity: EntityRef,
+) -> Result<Vec<String>, crate::infra::storage::RepoError> {
+    let findings = match entity.entity_kind {
+        bss_products_sdk::models::EntityKind::Sku => {
+            crate::api::rest::skus::lint_sku_publish(
+                runner,
+                scope,
+                entity.tenant_id,
+                entity.entity_id,
+            )
+            .await?
+        }
+        bss_products_sdk::models::EntityKind::Product => {
+            crate::api::rest::products::lint_product_publish(
+                runner,
+                scope,
+                entity.tenant_id,
+                entity.entity_id,
+            )
+            .await?
+        }
+    };
+    let mut codes: Vec<String> = findings
+        .into_iter()
+        .map(|finding| finding.code)
+        // Only the overridable class is a condition; a hard refusal stays a
+        // report line the ceremony cannot change (P-D-148).
+        .filter(|code| crate::domain::approval::OVERRIDE_CONDITION_CODES.contains(&code.as_str()))
+        .collect();
+    codes.sort();
+    codes.dedup();
+    Ok(codes)
+}
+
 /// The six subject kinds, parsed from the wire token the store stores.
 fn parse_subject_kind(token: &str) -> Option<SubjectKind> {
     SubjectKind::ALL.into_iter().find(|k| k.as_str() == token)
@@ -717,6 +759,11 @@ struct Submission {
     content_snapshot: String,
     diff_basis: Option<i64>,
     act: ActSpec,
+    /// The lint findings the subject carries at submission, by code — the
+    /// descriptor's sixth name (`dod-quorum-descriptor`) and what approvers
+    /// acknowledge by name (`dod-override-ceremony`; P-D-148). Computed by
+    /// the dry-run lint for an entity subject, empty otherwise.
+    override_conditions: Vec<String>,
 }
 
 /// The act, in an **owned** shape.
@@ -919,6 +966,7 @@ const fn non_entity_act(kind: SubjectKind) -> MaterialAct<'static> {
 }
 
 /// `POST /bss-products/v1/approvals`.
+#[allow(clippy::too_many_lines)] // the door's one sequence: authz, parse, resolve, gate, write
 async fn submit_approval(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
@@ -1030,7 +1078,9 @@ async fn submit_approval(
     let scope_tx = scope.clone();
     let subject_tx = submission.subject.clone();
     let snapshot_tx = submission.content_snapshot.clone();
+    let override_conditions = submission.override_conditions.clone();
     let ack_tx = body.author_override_ack.clone();
+    let conditions_tx = override_conditions.clone();
     // The finance-material operand (`dod-finance-materiality`,
     // `dod-finance-predicate`; P-D-146): a publish that touches either
     // accounting code is Finance's whatever the caller said — the caller's
@@ -1054,6 +1104,7 @@ async fn submit_approval(
                 let subject = subject_tx.clone();
                 let snapshot = snapshot_tx.clone();
                 let ack = ack_tx.clone();
+                let override_conditions = conditions_tx.clone();
                 let act = act_tx.clone();
                 let resolved = resolved.clone();
                 Box::pin(async move {
@@ -1078,6 +1129,7 @@ async fn submit_approval(
                             approver_count: configured,
                             submitter: actor_ref,
                             author_override_ack: ack.as_deref(),
+                            override_conditions: override_conditions.clone(),
                         },
                         now,
                     )
@@ -1188,6 +1240,7 @@ async fn resolve_submission(
                 format!("no head for {} in this tenant", body.subject_ref),
             )));
         };
+        let override_conditions = lint_conditions(runner, scope, entity).await?;
         return Ok(Ok(Submission {
             subject: GateSubject::entity_publish(entity, InternalRevision::new(revision)),
             internal_revision: revision,
@@ -1197,6 +1250,7 @@ async fn resolve_submission(
                 kind: entity.entity_kind,
                 touched,
             },
+            override_conditions,
         }));
     }
 
@@ -1228,6 +1282,7 @@ async fn resolve_submission(
         // NULL: there is no published version to diff against.
         diff_basis: None,
         act: ActSpec::Owned(non_entity_act(kind)),
+        override_conditions: Vec::new(),
     }))
 }
 
@@ -1244,6 +1299,7 @@ async fn resolve_submission(
 /// cannot be taken back once written. `APPROVER_ROLE_REQUIRED` is therefore
 /// raised before the insert; checking afterwards would leave a permanent row
 /// that every later evaluator has to remember to discount.
+#[allow(clippy::too_many_lines)] // the door's one sequence: authz, parse, resolve, gate, write
 async fn decide_approval(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
@@ -1344,6 +1400,22 @@ async fn decide_approval(
     let audit_id = Uuid::now_v7();
     let scope_tx = scope.clone();
     let reason_tx = reason.clone();
+    // The ceremony (`dod-override-ceremony`; P-D-148): where the record
+    // carries override conditions, an approving decision acknowledges each by
+    // name — an informed override, never a blind one. Read before the
+    // transaction: the conditions were fixed at submission and do not move.
+    if verdict == DecisionVerdict::Approved {
+        refuse_unacknowledged_conditions(
+            &state,
+            &scope,
+            tenant_id,
+            actor_ref,
+            attempted.clone(),
+            record,
+            body.override_acknowledgments.as_deref(),
+        )
+        .await?;
+    }
     let acks_tx = body.override_acknowledgments.clone();
     let roles_tx = roles.clone();
     let sink = state.sink.clone();
@@ -1476,6 +1548,59 @@ async fn decide_approval(
         }),
     )
         .into_response())
+}
+
+/// The by-name half of `dod-override-ceremony`: an approving decision on a
+/// record whose stored descriptor names override conditions must acknowledge
+/// every one of them in `override_acknowledgments`, else the decision is
+/// refused `VALIDATION` on that field, naming the codes not acknowledged. The
+/// conditions were fixed at submission and are read outside the decision's
+/// transaction because they do not move.
+async fn refuse_unacknowledged_conditions(
+    state: &ApiState,
+    scope: &toolkit_db::secure::AccessScope,
+    tenant_id: Uuid,
+    actor_ref: Uuid,
+    attempted: String,
+    record: ApprovalId,
+    acknowledgments: Option<&str>,
+) -> Result<(), CanonicalError> {
+    let conn = state.db.conn().map_err(|e| {
+        repo_error_to_canonical(&crate::infra::storage::RepoError::Db(format!(
+            "decision connection: {e}"
+        )))
+    })?;
+    let stored = repo::read_approval(&conn, scope, tenant_id, record)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?;
+    let Some(stored) = stored else {
+        return Ok(());
+    };
+    let Ok(descriptor) = crate::domain::approval::descriptor_from_stored(&stored.quorum_descriptor)
+    else {
+        return Ok(());
+    };
+    let missing = descriptor.unacknowledged(acknowledgments);
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(refuse(
+        state,
+        scope,
+        tenant_id,
+        actor_ref,
+        AUDIT_SUBJECT_APPROVAL,
+        attempted,
+        violation(
+            "override_acknowledgments",
+            format!(
+                "this subject carries override conditions an approver acknowledges by name; \
+                 not named: {}",
+                missing.join(", ")
+            ),
+        ),
+    )
+    .await)
 }
 
 /// What the decide transaction answered.

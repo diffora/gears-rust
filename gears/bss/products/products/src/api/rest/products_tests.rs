@@ -8575,3 +8575,47 @@ async fn a_product_publish_admits_when_the_only_outside_child_is_discarded() {
         "a discarded child is terminal and cannot block narrowing"
     );
 }
+
+/// P-D-125's dry run, the Product half: the report names the missing primary
+/// category the publish would refuse with, and moves no head.
+#[tokio::test]
+async fn the_product_validate_door_reports_the_missing_primary_category_without_writing() {
+    let harness = harness().await;
+    let product_id = Uuid::now_v7();
+    seed_draft(&harness, product_id).await;
+    let before = head_of(&harness, product_id).await;
+
+    let response = app_for(&harness, TENANT)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/bss-products/v1/products/{product_id}/validate"))
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .extension(authed_ctx(TENANT))
+                .body(Body::from("{}"))
+                .expect("build the request"),
+        )
+        .await
+        .expect("the router answers");
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("read the report");
+    let report: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    assert_eq!(report["clean"], json!(false));
+    assert!(
+        report["findings"]
+            .as_array()
+            .is_some_and(|findings| findings
+                .iter()
+                .any(|finding| finding["code"] == json!("PRIMARY_CATEGORY_REQUIRED"))),
+        "the missing primary category is a named finding: {report}"
+    );
+
+    let after = head_of(&harness, product_id).await;
+    assert_eq!(
+        (before.internal_revision, before.published_version),
+        (after.internal_revision, after.published_version),
+        "a dry run moves no head"
+    );
+}

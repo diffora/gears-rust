@@ -30,6 +30,9 @@ const BRAND: Uuid = Uuid::from_u128(0x1c_02);
 struct Harness {
     dsn: String,
     db: DBProvider<DbError>,
+    /// The interim sink `CatalogVersionPublished` rides in these probes.
+    sink: crate::infra::broker::EventSink,
+    _outbox_handle: toolkit_db::outbox::OutboxHandle,
 }
 
 impl Drop for Harness {
@@ -58,9 +61,33 @@ async fn harness() -> Harness {
     toolkit_db::migration_runner::run_migrations_for_testing(&db, Migrator::migrations())
         .await
         .expect("run this gear's own migrator, coord's lease table included");
+    toolkit_db::migration_runner::run_migrations_for_testing(
+        &db,
+        toolkit_db::outbox::outbox_migrations_with_prefix(
+            crate::infra::events::OUTBOX_TABLE_PREFIX,
+        )
+        .expect("prefix"),
+    )
+    .await
+    .expect("run the outbox facility's own migrator");
+    let outbox_handle = toolkit_db::outbox::Outbox::builder(db.clone())
+        .table_prefix(crate::infra::events::OUTBOX_TABLE_PREFIX)
+        .expect("prefix")
+        .queue(
+            crate::infra::events::QUEUE_NAME,
+            toolkit_db::outbox::Partitions::of(crate::infra::events::PARTITIONS),
+        )
+        .leased(crate::infra::events::PendingBrokerProducer)
+        .start()
+        .await
+        .expect("start the outbox");
+    let sink =
+        crate::infra::broker::EventSink::Interim(std::sync::Arc::clone(outbox_handle.outbox()));
     Harness {
         dsn,
         db: DBProvider::<DbError>::new(db),
+        sink,
+        _outbox_handle: outbox_handle,
     }
 }
 
@@ -167,7 +194,7 @@ async fn a_closed_interactive_window_commits_one_version() {
     enqueue(&harness, "r-1", IncrementLane::Interactive, None, 6).await;
     enqueue(&harness, "r-2", IncrementLane::Interactive, None, 3).await;
 
-    let outcome = drain_tenant(&harness.db, TENANT, t0())
+    let outcome = drain_tenant(&harness.db, &harness.sink, TENANT, t0())
         .await
         .expect("drain");
     assert_eq!(
@@ -240,7 +267,7 @@ async fn a_closed_interactive_window_commits_one_version() {
 async fn an_open_window_waits() {
     let harness = harness().await;
     enqueue(&harness, "young", IncrementLane::Interactive, None, 1).await;
-    let outcome = drain_tenant(&harness.db, TENANT, t0())
+    let outcome = drain_tenant(&harness.db, &harness.sink, TENANT, t0())
         .await
         .expect("drain");
     assert_eq!(outcome, DrainOutcome::WindowOpen);
@@ -253,7 +280,7 @@ async fn an_open_window_waits() {
 async fn the_allocator_is_gapless_across_drains() {
     let harness = harness().await;
     enqueue(&harness, "g-1", IncrementLane::Interactive, None, 6).await;
-    let first = drain_tenant(&harness.db, TENANT, t0())
+    let first = drain_tenant(&harness.db, &harness.sink, TENANT, t0())
         .await
         .expect("drain");
     assert_eq!(
@@ -264,7 +291,7 @@ async fn the_allocator_is_gapless_across_drains() {
         }
     );
     enqueue(&harness, "g-2", IncrementLane::Interactive, None, 6).await;
-    let second = drain_tenant(&harness.db, TENANT, t0())
+    let second = drain_tenant(&harness.db, &harness.sink, TENANT, t0())
         .await
         .expect("drain");
     assert_eq!(
@@ -288,7 +315,7 @@ async fn a_steady_interactive_trickle_does_not_defer_a_closed_bulk_window() {
     enqueue(&harness, "b-2", IncrementLane::Bulk, Some("op-1"), max - 60).await;
     enqueue(&harness, "i-1", IncrementLane::Interactive, None, 6).await;
 
-    let first = drain_tenant(&harness.db, TENANT, t0())
+    let first = drain_tenant(&harness.db, &harness.sink, TENANT, t0())
         .await
         .expect("drain");
     assert_eq!(
@@ -313,7 +340,7 @@ async fn a_steady_interactive_trickle_does_not_defer_a_closed_bulk_window() {
         );
     }
 
-    let second = drain_tenant(&harness.db, TENANT, t0())
+    let second = drain_tenant(&harness.db, &harness.sink, TENANT, t0())
         .await
         .expect("drain");
     assert_eq!(
@@ -331,7 +358,7 @@ async fn a_steady_interactive_trickle_does_not_defer_a_closed_bulk_window() {
 async fn an_open_bulk_window_waits_for_its_hard_max() {
     let harness = harness().await;
     enqueue(&harness, "b-only", IncrementLane::Bulk, Some("op-2"), 100).await;
-    let outcome = drain_tenant(&harness.db, TENANT, t0())
+    let outcome = drain_tenant(&harness.db, &harness.sink, TENANT, t0())
         .await
         .expect("drain");
     assert_eq!(outcome, DrainOutcome::WindowOpen);
@@ -360,7 +387,7 @@ async fn the_participant_snapshot_seeds_the_ledger() {
     }
     enqueue(&harness, "p-1", IncrementLane::Interactive, None, 6).await;
 
-    let outcome = drain_tenant(&harness.db, TENANT, t0())
+    let outcome = drain_tenant(&harness.db, &harness.sink, TENANT, t0())
         .await
         .expect("drain");
     assert_eq!(
@@ -402,7 +429,7 @@ async fn re_rendering_the_stored_manifest_reproduces_the_checksum() {
     let harness = harness().await;
     seed_published_product(&harness, "Gamma Line").await;
     enqueue(&harness, "c-1", IncrementLane::Interactive, None, 6).await;
-    drain_tenant(&harness.db, TENANT, t0())
+    drain_tenant(&harness.db, &harness.sink, TENANT, t0())
         .await
         .expect("drain");
 
@@ -530,6 +557,7 @@ async fn a_moved_head_between_stage_and_commit_restages_the_pass() {
         .expect("no peer holds the tenant's lease");
     let outcome = commit_increment(
         guard,
+        &harness.sink,
         TENANT,
         staged,
         vec![("pricing".to_owned(), "s-1".to_owned())],
@@ -581,13 +609,13 @@ async fn a_held_lease_skips_the_pass() {
         .await
         .expect("the test holds the tenant's lease");
 
-    let outcome = drain_tenant(&harness.db, TENANT, t0())
+    let outcome = drain_tenant(&harness.db, &harness.sink, TENANT, t0())
         .await
         .expect("drain");
     assert_eq!(outcome, DrainOutcome::LeaseHeld);
 
     guard.release().await.expect("release");
-    let retry = drain_tenant(&harness.db, TENANT, t0())
+    let retry = drain_tenant(&harness.db, &harness.sink, TENANT, t0())
         .await
         .expect("drain");
     assert!(
@@ -619,7 +647,7 @@ async fn the_overdue_scan_names_the_silent_participants() {
             .expect("register");
     }
     enqueue(&harness, "od-1", IncrementLane::Interactive, None, 6).await;
-    drain_tenant(&harness.db, TENANT, t0())
+    drain_tenant(&harness.db, &harness.sink, TENANT, t0())
         .await
         .expect("drain");
 
@@ -660,7 +688,7 @@ async fn the_registered_producer_set_rides_the_capture_store() {
         .expect("register");
     }
     enqueue(&harness, "ps-1", IncrementLane::Interactive, None, 6).await;
-    drain_tenant(&harness.db, TENANT, t0())
+    drain_tenant(&harness.db, &harness.sink, TENANT, t0())
         .await
         .expect("drain");
 
@@ -721,7 +749,7 @@ async fn a_metadata_mutation_after_a_snapshot_does_not_move_its_checksum() {
     write_metadata(&harness, "internalOwner", "team-a").await;
 
     enqueue(&harness, "md-1", IncrementLane::Interactive, None, 6).await;
-    drain_tenant(&harness.db, TENANT, t0())
+    drain_tenant(&harness.db, &harness.sink, TENANT, t0())
         .await
         .expect("drain");
 
@@ -813,4 +841,53 @@ async fn write_metadata(harness: &Harness, key: &str, value: &str) {
     conn.execute_unprepared(&sql)
         .await
         .expect("seed the metadata row");
+}
+
+/// `dod-cv-events`: a committed drain announces `CatalogVersionPublished`
+/// exactly once, in the commit's transaction.
+#[tokio::test]
+async fn a_committed_drain_announces_catalog_version_published_once() {
+    let harness = harness().await;
+    let _product = seed_published_product(&harness, "Gamma Line").await;
+    enqueue(&harness, "r-ev", IncrementLane::Interactive, None, 6).await;
+
+    let outcome = drain_tenant(&harness.db, &harness.sink, TENANT, t0())
+        .await
+        .expect("drain");
+    assert!(
+        matches!(outcome, DrainOutcome::Committed { .. }),
+        "{outcome:?}"
+    );
+    let announced = crate::test_support::raw_i64(
+        &harness.dsn,
+        &format!(
+            "SELECT COUNT(*) AS v FROM {}_body WHERE payload_type = '{}'",
+            crate::infra::events::OUTBOX_TABLE_PREFIX,
+            crate::infra::events::CATALOG_VERSION_PUBLISHED_PAYLOAD_TYPE
+        ),
+    )
+    .await;
+    assert_eq!(announced, 1);
+}
+
+/// `dod-posting-safe-observability`: the overdue scan names the pending
+/// requests past their lane deadline and nothing younger.
+#[tokio::test]
+async fn the_overdue_scan_names_the_requests_past_their_lane_deadline() {
+    let harness = harness().await;
+    enqueue(&harness, "old", IncrementLane::Interactive, None, 400).await;
+    enqueue(&harness, "fresh", IncrementLane::Bulk, Some("op-1"), 30).await;
+
+    let overdue = super::overdue_requests(&harness.db, t0())
+        .await
+        .expect("scan");
+    assert_eq!(
+        overdue.len(),
+        1,
+        "only the interactive request past INTERACTIVE_MAX"
+    );
+    assert_eq!(overdue[0].request_key, "old");
+    assert_eq!(overdue[0].lane, IncrementLane::Interactive);
+    assert_eq!(overdue[0].age_secs, 400);
+    assert_eq!(overdue[0].tenant_id, TENANT);
 }

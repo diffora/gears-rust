@@ -160,6 +160,10 @@ pub mod labels {
     /// `product × write` today, and a pair no door spends is a grant nobody
     /// can review.
     pub const SCHEDULED_TRANSITION: &str = gts_id!("cf.bss.products.scheduled_transition.v1~");
+    /// `06`'s freeze-participant set — membership is a `GovernedLiveOp` on
+    /// `freeze_participant × write` (`dod-cv-authz`, `dod-participant-set`;
+    /// P-D-67, P-D-148).
+    pub const FREEZE_PARTICIPANT: &str = gts_id!("cf.bss.products.freeze_participant.v1~");
 
     /// Every authz label this module declares, stable order. The single
     /// canonical list driving [`super::authz_label_type_schemas`]'s stub
@@ -186,6 +190,7 @@ pub mod labels {
         ATTRIBUTE_DEFINITION,
         METADATA,
         SCHEDULED_TRANSITION,
+        FREEZE_PARTICIPANT,
     ];
 }
 
@@ -243,6 +248,12 @@ pub mod actions {
     ///
     /// @cpt-dod:cpt-cf-bss-products-dod-reference-authz:p1
     pub const CORRECT: &str = "correct";
+    /// `06`'s force-completion ceremony on a timed-out version
+    /// (`dod-force-completion`; P-D-67 arm 6, P-D-148) — `catalog_version ×
+    /// force_complete`, the sixth action `05`'s roster grants on the label.
+    ///
+    /// @cpt-dod:cpt-cf-bss-products-dod-cv-authz:p1
+    pub const FORCE_COMPLETE: &str = "force_complete";
     /// Export action — taking audit content out of the gear, as opposed to
     /// reading it in place.
     pub const EXPORT: &str = "export";
@@ -282,6 +293,9 @@ pub mod resource_types {
     /// The catalog version — `request`, `ack`, `release`, `read`.
     pub const CATALOG_VERSION: ResourceType =
         ResourceType::from_static(labels::CATALOG_VERSION, SUPPORTED_PROPERTIES);
+    /// The freeze-participant set — `write`.
+    pub const FREEZE_PARTICIPANT: ResourceType =
+        ResourceType::from_static(labels::FREEZE_PARTICIPANT, SUPPORTED_PROPERTIES);
     /// Bulk — `execute`, `read`.
     pub const BULK: ResourceType = ResourceType::from_static(labels::BULK, SUPPORTED_PROPERTIES);
     /// The reference signal — `post`.

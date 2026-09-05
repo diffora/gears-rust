@@ -3662,6 +3662,7 @@ mod approval_store_tests {
             approver_count,
             submitter: AUTHOR,
             author_override_ack: None,
+            override_conditions: Vec::new(),
         }
     }
 
@@ -3709,7 +3710,7 @@ mod approval_store_tests {
         );
         assert_eq!(
             answered.descriptor,
-            describe_quorum(Materiality::Material, 2, false),
+            describe_quorum(Materiality::Material, 2, false, Vec::new()),
             "and it is the descriptor the N in force produces"
         );
     }

@@ -5,15 +5,19 @@
 //! Split out of the foundation repository move-only; every item re-exports
 //! through `super` (`crate::infra::storage::repo`) unchanged.
 use chrono::{DateTime, Utc};
+use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
-use toolkit_db::secure::{AccessScope, DBRunner, SecureEntityExt, SecureUpdateExt};
+use toolkit_db::secure::{
+    AccessScope, DBRunner, SecureDeleteExt, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
+};
 use uuid::Uuid;
 
 use crate::domain::states::{FreezeAckState, FreezeState};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
-    catalog_version, catalog_version_capture, catalog_version_entry, freeze_ack, metadata,
+    catalog_version, catalog_version_capture, catalog_version_entry, freeze_ack,
+    freeze_participant, metadata,
 };
 
 use super::{SnapshotEntityRef, driver_failure};
@@ -246,7 +250,12 @@ pub enum FreezeEdgeOutcome {
 /// `pending -> acked`, stamping `acked_at` — the ack door's write, an
 /// UPDATE and never an upsert (the row's existence IS the membership
 /// check, P-D-67). A recovered forced participant's ack rides the same
-/// edge list (`not_frozen(forced) -> acked`, P-D-60).
+/// edge list (`not_frozen(forced) -> acked`, P-D-60) and **clears the
+/// ceremony's `forced_at` / `ceremony_ref` pair** — the shape CHECK binds
+/// those two columns to the forced state, and `released_at` alone is the
+/// stamp that survives recovery (write-once; the retention gate reads the
+/// `(state, released_at)` pair). The ceremony stays joinable through its
+/// audit row, which carries the same `ceremony_ref`.
 ///
 /// # Errors
 ///
@@ -267,6 +276,14 @@ pub async fn ack_freeze_row(
             Expr::value(FreezeAckState::Acked.as_str().to_owned()),
         )
         .col_expr(freeze_ack::Column::AckedAt, Expr::value(Some(now)))
+        .col_expr(
+            freeze_ack::Column::ForcedAt,
+            Expr::value(Option::<DateTime<Utc>>::None),
+        )
+        .col_expr(
+            freeze_ack::Column::CeremonyRef,
+            Expr::value(Option::<Uuid>::None),
+        )
         .filter(
             Condition::all()
                 .add(freeze_ack::Column::TenantId.eq(tenant_id))
@@ -294,9 +311,11 @@ pub async fn ack_freeze_row(
     .await
 }
 
-/// `pending|acked -> released` — the release door's write. The door does
-/// **not** stamp `released_at`: that column is the ceremony's alone
-/// (P-D-67), and the write-once trigger holds it.
+/// `pending|acked|not_frozen(forced) -> released` — the release door's
+/// write. The door does **not** stamp `released_at`: that column is the
+/// ceremony's alone (P-D-67), and the write-once trigger holds it. A forced
+/// row's release clears `forced_at` / `ceremony_ref` as the recovered ack
+/// does (the shape CHECK's first arm).
 ///
 /// # Errors
 ///
@@ -314,6 +333,14 @@ pub async fn release_freeze_row(
         .col_expr(
             freeze_ack::Column::State,
             Expr::value(FreezeAckState::Released.as_str().to_owned()),
+        )
+        .col_expr(
+            freeze_ack::Column::ForcedAt,
+            Expr::value(Option::<DateTime<Utc>>::None),
+        )
+        .col_expr(
+            freeze_ack::Column::CeremonyRef,
+            Expr::value(Option::<Uuid>::None),
         )
         .filter(
             Condition::all()
@@ -383,6 +410,129 @@ async fn classify_missed_edge(
 /// # Errors
 ///
 /// [`RepoError`] on a storage or scope failure.
+/// Force-completion's ledger write (`dod-force-completion`): every `pending`
+/// registration of the version becomes `not_frozen(forced)` **and** carries
+/// `released_at` in the same statement — the stamp `10`'s gate reads as the
+/// `(state, released_at)` pair, meaningful only while the state holds — plus
+/// `forced_at` and the ceremony reference. Returns the participants forced.
+///
+/// # Errors
+///
+/// [`RepoError`] on a driver failure.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-cv-audit:p1
+pub async fn force_pending_freeze_rows(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    catalog_version_id: i64,
+    ceremony_ref: Uuid,
+    now: DateTime<Utc>,
+) -> Result<Vec<String>, RepoError> {
+    let pending: Vec<String> = freeze_ack_rows(runner, scope, tenant_id, catalog_version_id)
+        .await?
+        .into_iter()
+        .filter(|(_, state)| *state == FreezeAckState::Pending)
+        .map(|(participant, _)| participant)
+        .collect();
+    if pending.is_empty() {
+        return Ok(pending);
+    }
+    freeze_ack::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            freeze_ack::Column::State,
+            Expr::value(FreezeAckState::NotFrozenForced.as_str().to_owned()),
+        )
+        .col_expr(freeze_ack::Column::ForcedAt, Expr::value(Some(now)))
+        .col_expr(freeze_ack::Column::ReleasedAt, Expr::value(Some(now)))
+        .col_expr(
+            freeze_ack::Column::CeremonyRef,
+            Expr::value(Some(ceremony_ref)),
+        )
+        .filter(
+            Condition::all()
+                .add(freeze_ack::Column::TenantId.eq(tenant_id))
+                .add(freeze_ack::Column::CatalogVersionId.eq(catalog_version_id))
+                .add(freeze_ack::Column::State.eq(FreezeAckState::Pending.as_str())),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("force-complete {catalog_version_id}"), e))?;
+    Ok(pending)
+}
+
+/// Register a freeze participant (`dod-participant-set`); `Ok(false)` when
+/// the tenant already carries it.
+///
+/// # Errors
+///
+/// [`RepoError`] on a driver failure.
+pub async fn register_freeze_participant(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    participant: &str,
+    now: DateTime<Utc>,
+) -> Result<bool, RepoError> {
+    let present = freeze_participant::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(freeze_participant::Column::TenantId.eq(tenant_id))
+                .add(freeze_participant::Column::Participant.eq(participant)),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read participant {participant}"), e))?;
+    if present.is_some() {
+        return Ok(false);
+    }
+    let model = freeze_participant::ActiveModel {
+        tenant_id: Set(tenant_id),
+        participant: Set(participant.to_owned()),
+        registered_at: Set(now),
+    };
+    freeze_participant::Entity::insert(model.clone())
+        .secure()
+        .scope_with_model(scope, &model)
+        .map_err(|e| driver_failure(format!("participant scope of {tenant_id}"), e))?
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("register participant {participant}"), e))?;
+    Ok(true)
+}
+
+/// Retire a freeze participant from the **live** set (`dod-participant-set`);
+/// every version's own `participant_set_snapshot` is untouched, so a
+/// historical `freezeComplete` never re-resolves (AC #23). `Ok(false)` when
+/// the tenant did not carry it.
+///
+/// # Errors
+///
+/// [`RepoError`] on a driver failure.
+pub async fn retire_freeze_participant(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    participant: &str,
+) -> Result<bool, RepoError> {
+    let result = freeze_participant::Entity::delete_many()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(freeze_participant::Column::TenantId.eq(tenant_id))
+                .add(freeze_participant::Column::Participant.eq(participant)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| driver_failure(format!("retire participant {participant}"), e))?;
+    Ok(result.rows_affected == 1)
+}
+
 pub async fn refresh_freeze_state(
     runner: &impl DBRunner,
     scope: &AccessScope,
