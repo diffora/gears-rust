@@ -313,6 +313,8 @@ pub(crate) struct ApiState {
     /// elevation's alert carries it, so an operator reading the alert knows
     /// when the obligation lapses without looking the number up.
     pub(crate) breakglass_review_sla_hours: u32,
+    /// `04`'s EOL flag (`ProductsConfig::eol_enabled`), read by the retire doors.
+    pub(crate) eol_enabled: bool,
     /// `03`'s usage-type resolver (`dod-usage-type-resolution`, P-D-141):
     /// the collector's client behind a trait, `NoCollector` where none is
     /// wired. Carried here for the same reason the detector is built per

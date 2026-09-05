@@ -96,6 +96,8 @@ use crate::domain::error::DomainError;
 /// member's, a definition's — compared by equality at apply. Generic rather
 /// than a shared enum for the reason the module doc gives: an enum would put
 /// every slice's operations in 02's type.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-governed-live-op:p1
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GovernedLiveOp<S> {
     /// The operation, in the owning slice's own vocabulary

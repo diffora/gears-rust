@@ -155,6 +155,8 @@ pub(crate) struct BulkWorkerContext {
     pub(crate) idempotency_retention_hours: u32,
     /// The reaper's operand (P-D-127 row 6).
     pub(crate) batch_ttl_hours: u32,
+    /// `04`'s EOL flag, handed to the lifecycle lane's retire acts.
+    pub(crate) eol_enabled: bool,
 }
 
 /// Why one row's staging failed — the branch operand the row loop needs: a
@@ -2782,6 +2784,7 @@ async fn apply_lifecycle_row(
                 &inputs,
                 gate,
                 mode,
+                ctx.eol_enabled,
                 &detector,
                 // The batch's one approval is the per-row confirmation the
                 // interactive door asks for, aggregated into the report.
@@ -2828,6 +2831,7 @@ async fn apply_lifecycle_row(
                 scope,
                 gate,
                 mode,
+                ctx.eol_enabled,
                 &detector,
                 &products::RetireProductRequest {
                     reason: LIFECYCLE_REASON.to_owned(),

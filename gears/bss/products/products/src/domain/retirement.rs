@@ -174,6 +174,8 @@ pub enum ReplacementWalk {
 ///
 /// [`LifecycleRefusal::EOL_DISABLED`] when the field is present and the
 /// flag is off.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-eol-lockout:p3
 pub fn eol_lockout(flag_on: bool, must_migrate_by_present: bool) -> Result<(), LifecycleRefusal> {
     if must_migrate_by_present && !flag_on {
         return Err(LifecycleRefusal::eol_disabled());

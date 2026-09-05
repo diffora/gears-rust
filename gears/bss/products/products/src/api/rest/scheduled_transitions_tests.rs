@@ -107,6 +107,7 @@ fn app_for(harness: &TestHarness, tenant: Uuid) -> Router {
         reference: crate::api::rest::ReferenceKnobs::from(&ProductsConfig::default()),
         breakglass_window_hours: crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT,
         breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
+        eol_enabled: false,
         usage_type_resolver: crate::test_support::resolved_usage_types(),
     });
     let openapi = OpenApiRegistryImpl::new();

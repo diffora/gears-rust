@@ -84,6 +84,7 @@ async fn harness() -> Harness {
         reference: crate::api::rest::ReferenceKnobs::from(&defaults),
         breakglass_window_hours: crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT,
         breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
+        eol_enabled: false,
         usage_type_resolver: crate::test_support::resolved_usage_types(),
     });
     Harness {
@@ -109,6 +110,7 @@ fn worker_ctx(harness: &Harness) -> BulkWorkerContext {
             .bulk_max_concurrent_batches_per_tenant,
         idempotency_retention_hours: harness.state.idempotency_retention_hours,
         batch_ttl_hours: crate::config::BULK_BATCH_TTL_HOURS_DEFAULT,
+        eol_enabled: false,
     }
 }
 

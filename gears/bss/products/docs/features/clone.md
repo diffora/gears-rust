@@ -439,7 +439,7 @@ denied caller neither consumes an idempotency key nor writes a claim row"* (**P-
 
 ### The source read surface, and the leak it closes
 
-- [ ] `p3` - **ID**: `cpt-cf-bss-products-dod-clone-read-surface`
+- [x] `p3` - **ID**: `cpt-cf-bss-products-dod-clone-read-surface`
 
 A `retired`, `published` or `deprecated` source is read from its **last frozen version** in
 `products_entity_version` — which ships — and **never** from the head row. A `draft` source is read
@@ -476,6 +476,17 @@ the decoder being the half nothing in the crate supplies. It **MUST** be the inv
 `canonical_rendering` and live beside it, not a second serialization rule invented at the clone door;
 `domain/canonical.rs` exists to keep that in one place. The decoder is `01-foundation`'s, beside
 the renderer (**P-D-77** — §7 row 23), and this read surface is its first consumer.
+
+**Ticked (P-D-152).** `resolve_clone_source` reads a `published`/`deprecated`/`retired` source from
+its **last frozen version** (`repo::latest_entity_version`) and decodes it through
+`canonical::decode_rendering` — the renderer's own inverse, beside it in `domain::canonical`, the
+half this paragraph said nothing supplied (P-D-77's decoder, built); a `draft` reads its head; a
+`discarded` source is `CLONE_SOURCE_DISCARDED`. `clonedFrom` records exactly the version read
+(`read_at_version`). Probes: `products_tests::a_published_source_clones_from_its_frozen_version`,
+`skus_tests::a_published_source_clones_at_its_frozen_version`. **What the frozen read cannot yet
+carry**: `02`'s two collections, which no frozen version contains (`features/taxonomy-attributes.md`
+`dod-version-content-rendering`) — the metadata map is read from the beside-entity store as P-D-06
+says, the collections wait on the freeze.
 
 **Implements**: `cpt-cf-bss-products-algo-disposition`
 
@@ -604,6 +615,17 @@ question, which is `01-foundation`'s and `02`'s jointly.
 runs **at publish**, not at clone — so a clone carrying an unresolvable `usageTypeRef` is admitted
 and fails later, deliberately.
 
+**Measured, not ticked (P-D-152).** The clone copies **none of `02`'s rows** today — no category
+assignment, attribute value or metadata entry is read from a source or written to a clone
+(`insert_clone_parent`, `clone_family_child`) — and re-validates nothing: `content_save_pipeline`
+has two call sites, the save doors, and the clone is not one. `03`'s columns **are** copied from the
+frozen read (`sku_type`, `sellable`, `plan_tier`, the codes) and not re-validated. The copy of the
+collections for a published source waits on the collections being frozen at all
+(`features/taxonomy-attributes.md` `dod-version-content-rendering`): reading them from the live
+rows would copy pending edits, the leak `dod-clone-read-surface` exists to prevent. Buildable now
+and owed together with the freeze: the copy, then `content_save_pipeline` over the assembled
+clone, then `03`'s recognition checks over the copied columns.
+
 **Implements**: `cpt-cf-bss-products-algo-disposition`
 
 **Constraints**: `cpt-cf-bss-products-constraint-no-commercial-concern`
@@ -648,6 +670,14 @@ the clone raises them, not that it mints them**, and it is blocked on their owne
 No clone-specific code is minted at all: `design/11` §4 says *"Errors reuse the owning slices'
 codes"*, and this document adds nothing to that.
 
+**Measured, not ticked (P-D-152).** The roster's twelve non-Foundation codes now all exist — the
+`03` five and `RETIREMENT_PENDING` as `DomainError` variants, `CONTENT_PII_BLOCKED` likewise, and
+`02`'s four (`CATEGORY_RETIRED`, `ATTRIBUTE_DEFINITION_UNKNOWN`, `ATTRIBUTE_DEFINITION_DEPRECATED`,
+`ATTRIBUTE_SCOPE_VIOLATION`) as **validation-report types** (`domain::taxonomy`'s `CODE` consts),
+which is the form a collected refusal carries them in. What the DoD asks — that the clone
+**raises** them — waits on `dod-disposition-rules`' pipeline run; the five Foundation codes the
+create path raises are unchanged.
+
 **Implements**: `cpt-cf-bss-products-algo-disposition`
 
 **Touches**:
@@ -655,7 +685,7 @@ codes"*, and this document adds nothing to that.
 
 ### Lineage, and the event that is deliberately absent
 
-- [ ] `p3` - **ID**: `cpt-cf-bss-products-dod-clone-lineage`
+- [x] `p3` - **ID**: `cpt-cf-bss-products-dod-clone-lineage`
 
 `cloned_from` is written in the creating statement to the **immediate** source — never copied from
 the source's own `cloned_from`, so a clone of a clone points one step back and the chain stays
@@ -675,6 +705,13 @@ record.
 in no read model and no SDK shape, while a clone is a `draft`, which `08-read-models`' browse
 projection cannot see at all. So the reverse lookup — *what was cloned from this entity* — has no
 surface. §7 routes it to `08`'s and `12`'s owners: expose it, or withdraw the justification.
+
+**Ticked (P-D-152).** The debt this paragraph named is discharged: the reverse lookup has a
+surface. `GET /bss-products/v1/{products|skus}/{id}/versions` carries `lineage` — the immediate
+source and the version read, `null` for an entity that was not cloned — and `clones`, the entities
+whose `cloned_from` names this one (`repo::clones_of`, same kind, drafts included since a clone is
+born a draft). Probe: `read_tests::the_timeline_carries_lineage_forward_and_the_reverse_lookup`.
+The clone still emits no event of its own (P-D-21) and rides `ProductCreated` / `SkuCreated`.
 
 **Implements**: `cpt-cf-bss-products-flow-clone`
 
@@ -722,7 +759,7 @@ failing parent staying the ordinary refusal of the whole act.
 
 ### The authz surface, and the roster it would redden
 
-- [ ] `p3` - **ID**: `cpt-cf-bss-products-dod-clone-authz`
+- [x] `p3` - **ID**: `cpt-cf-bss-products-dod-clone-authz`
 
 The clone door spends `product × write` for a Product and `sku × write` for a SKU. A
 product-with-SKUs clone requires **both** — and every product clone is the family act
@@ -747,6 +784,13 @@ answered, the cost is measurable:
 
 **The DoD is met by the two write grants the design assigns**, with the metadata question registered
 and not pre-empted.
+
+**Ticked (P-D-152).** `clone_write_scopes` resolves **both** `product × write` and `sku × write`
+for every product clone (the family act, P-D-79), before the child count is read (P-D-30), through
+`authz::resource_types::{PRODUCT, SKU}`; the SKU clone spends `sku × write`. The metadata question
+this paragraph registered is answered elsewhere since: `metadata_write` is in the permission
+roster (`gts/permissions.rs`, thirty-five ids) and `design/05` §3.2's row has its door. Probe:
+`products_tests::a_family_clone_lands_with_a_per_child_receipt`.
 
 **Implements**: `cpt-cf-bss-products-flow-clone`
 
@@ -835,6 +879,12 @@ deprecated unit, a retired tier and a retired category yields **three named fail
 response**, asserted as a set of three codes rather than as "at least one" or as the first — an
 assertion on the first code passes on a build that short-circuits, which is the exact behaviour
 **P-D-49** arm 3 struck.
+
+**Measured, not ticked (P-D-152).** Eleven clone probes ship (`products_tests` six,
+`skus_tests` five): the frozen read, the code walk, the keyed replay, the family receipt. The
+sixteen paired positive controls this DoD asks for are `dod-disposition-rules`' to make reachable
+first — a control for a code the door cannot raise proves nothing — and the collected-refusal
+fixture likewise.
 
 **Implements**: `cpt-cf-bss-products-flow-clone`, `cpt-cf-bss-products-algo-disposition`
 
@@ -1309,3 +1359,11 @@ duplicating it.
   catalog against
   `02`'s map door; `authz::labels::ALL` is `[PRODUCT, SKU]` and the permission roster is closed at
   six. Owner: `05-governance`'s owner. Recorded here because row 3 above turns on it.
+
+- **The clone's remaining three DoDs wait on the frozen collections** (P-D-152). `02`'s category
+  assignments and attribute values are not in any frozen version
+  (`features/taxonomy-attributes.md` §7), so a published source's collections cannot be copied
+  without reading live rows — the leak `dod-clone-read-surface` forbids. Until they are frozen the
+  disposition matrix's copy rows, the re-validation run and the paired controls stay unbuilt.
+  **Owner**: this feature, after `01`/`02` land the freeze. **Blocks**: `dod-disposition-rules`,
+  `dod-revalidation-codes`, `dod-clone-tests`.

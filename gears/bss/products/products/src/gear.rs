@@ -129,6 +129,8 @@ pub(crate) struct ProductsRuntime {
     pub bulk_max_concurrent_batches_per_tenant: u32,
     /// The reaper's TTL for a `reported` batch nobody approves (P-D-127 row 6).
     pub bulk_batch_ttl_hours: u32,
+    /// `04`'s EOL flag (`ProductsConfig::eol_enabled`).
+    pub eol_enabled: bool,
     /// `08`'s knobs (P-D-150): the read ceiling, the poison ceiling, the
     /// convergence budget, the dashboard cadence, the inbox retention, the
     /// active locales.
@@ -278,6 +280,7 @@ impl BssProductsGear {
                 .bulk_max_concurrent_batches_per_tenant,
             idempotency_retention_hours: rt.sdk_state.idempotency_retention_hours,
             batch_ttl_hours: rt.bulk_batch_ttl_hours,
+            eol_enabled: rt.eol_enabled,
         };
         let mut interval = tokio::time::interval(COALESCER_TICK);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -851,6 +854,7 @@ impl Gear for BssProductsGear {
             reference: crate::api::rest::ReferenceKnobs::from(&cfg),
             breakglass_window_hours: cfg.breakglass_window_hours,
             breakglass_review_sla_hours: cfg.breakglass_review_sla_hours,
+            eol_enabled: cfg.eol_enabled,
             usage_type_resolver: Arc::clone(&usage_type_resolver),
         });
         ctx.client_hub()
@@ -875,6 +879,7 @@ impl Gear for BssProductsGear {
                         reference: crate::api::rest::ReferenceKnobs::from(&cfg),
                         breakglass_window_hours: cfg.breakglass_window_hours,
                         breakglass_review_sla_hours: cfg.breakglass_review_sla_hours,
+                        eol_enabled: cfg.eol_enabled,
                         usage_type_resolver: Arc::clone(&usage_type_resolver),
                     }),
                     enforcer: (*enforcer).clone(),
@@ -913,6 +918,7 @@ impl Gear for BssProductsGear {
             bulk_max_rows_per_batch: cfg.bulk_max_rows_per_batch,
             bulk_max_concurrent_batches_per_tenant: cfg.bulk_max_concurrent_batches_per_tenant,
             bulk_batch_ttl_hours: cfg.bulk_batch_ttl_hours,
+            eol_enabled: cfg.eol_enabled,
             read: crate::infra::projector::ReadKnobs::from(&cfg),
             watermark_skew_tolerance: cfg.watermark_skew_tolerance(),
             reference: crate::api::rest::ReferenceKnobs::from(&cfg),
@@ -980,6 +986,7 @@ impl RestApiCapability for BssProductsGear {
             reference: rt.reference,
             breakglass_window_hours: rt.breakglass_window_hours,
             breakglass_review_sla_hours: rt.breakglass_review_sla_hours,
+            eol_enabled: rt.eol_enabled,
             usage_type_resolver: Arc::clone(&rt.usage_type_resolver),
         });
         Ok(router

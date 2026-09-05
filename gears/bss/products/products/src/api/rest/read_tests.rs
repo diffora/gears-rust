@@ -85,6 +85,7 @@ pub(super) async fn harness() -> Harness {
         reference: crate::api::rest::ReferenceKnobs::from(&defaults),
         breakglass_window_hours: crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT,
         breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
+        eol_enabled: false,
         usage_type_resolver: crate::test_support::resolved_usage_types(),
     });
     Harness {
@@ -469,5 +470,102 @@ async fn the_three_dashboards_answer_from_their_polled_tables() {
     assert!(
         view["stamp"]["projected_at"].is_string(),
         "the stamp on a dashboard too"
+    );
+}
+
+/// **Lineage rides the timeline, both ways** (`dod-clone-lineage`, P-D-152).
+///
+/// A clone's `cloned_from` is a head column no read model exposed, which left
+/// `design/11`'s "queryable" justification for having no clone event unmet.
+/// The source's timeline now lists the entities cloned from it — a draft clone
+/// included, because a clone is born a draft — and the clone's own timeline,
+/// once it publishes, names its source and the version it read.
+#[tokio::test]
+async fn the_timeline_carries_lineage_forward_and_the_reverse_lookup() {
+    let harness = harness().await;
+    let source = draft_product(&harness, "Lineage Source", "eu").await;
+    let source_version = publish_product(&harness, source).await;
+    project(&harness).await;
+
+    // A clone: the create path with the lineage columns set, as the clone
+    // door writes them (`cloned_from` = the immediate source, the version read).
+    let clone_id = Uuid::new_v4();
+    let now = crate::domain::canonical::write_instant(Utc::now());
+    crate::infra::create::insert_product_with_event(
+        &harness.state.db,
+        &harness.state.sink,
+        scope(),
+        NewProduct {
+            product_id: clone_id,
+            tenant_id: TENANT,
+            brand_id: BRAND,
+            name: "Lineage Source (copy)".to_owned(),
+            name_normalized: crate::domain::name::normalize("Lineage Source (copy)"),
+            product_code: Some("LINEAGE-SOURCE-COPY".to_owned()),
+            region_scope: "eu".to_owned(),
+            brand_scope: String::new(),
+            created_by: ACTOR.to_string(),
+            created_at: now,
+            cloned_from: Some(source),
+            cloned_from_version: Some(source_version),
+        },
+        crate::infra::create::JoinedRecords {
+            claim: None,
+            stamp: None,
+        },
+        ACTOR,
+        render_nothing,
+    )
+    .await
+    .expect("insert the clone");
+
+    let response = get(
+        &harness,
+        &format!("/bss-products/v1/products/{source}/versions"),
+        TENANT,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let view = body_json(response).await;
+    assert!(
+        view["lineage"].is_null(),
+        "the source was not itself cloned"
+    );
+    let clones = view["clones"].as_array().expect("clones");
+    assert_eq!(clones.len(), 1, "the reverse lookup lists the draft clone");
+    assert_eq!(clones[0]["entity_id"], json!(clone_id));
+    assert_eq!(clones[0]["cloned_from_version"], json!(source_version));
+
+    // The clone's own timeline exists once it publishes, and names its source.
+    {
+        let conn = harness.state.db.conn().expect("conn");
+        repo::replace_category_assignments(
+            &conn,
+            &scope(),
+            TENANT,
+            clone_id,
+            &[(CATEGORY, crate::domain::taxonomy::AssignmentRole::Primary)],
+            now,
+        )
+        .await
+        .expect("assign the primary category");
+    }
+    publish_product(&harness, clone_id).await;
+    let response = get(
+        &harness,
+        &format!("/bss-products/v1/products/{clone_id}/versions"),
+        TENANT,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let view = body_json(response).await;
+    assert_eq!(view["lineage"]["cloned_from"], json!(source));
+    assert_eq!(
+        view["lineage"]["cloned_from_version"],
+        json!(source_version)
+    );
+    assert!(
+        view["clones"].as_array().expect("clones").is_empty(),
+        "nothing was cloned from the clone"
     );
 }

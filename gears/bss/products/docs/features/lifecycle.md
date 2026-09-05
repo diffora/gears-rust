@@ -833,12 +833,22 @@ v1. A stub predicate **MUST** be exercised in all four deferring states as well 
 
 ### EOL lockout
 
-- [ ] `p3` - **ID**: `cpt-cf-bss-products-dod-eol-lockout`
+- [x] `p3` - **ID**: `cpt-cf-bss-products-dod-eol-lockout`
 
 `mustMigrateBy` and the consumer-acknowledgment machinery **MUST** be refused in v1 with
 `EOL_DISABLED`, behind a feature flag **OFF by default**. The payload field **MUST** exist in the
 event schema for vN-compatible widening and **MUST** never be populated in v1, and the schema
 **MUST** round-trip the absent field.
+
+**Ticked (P-D-152).** The flag is `ProductsConfig::eol_enabled`, **`false` by default**
+(`config_tests::eol_is_off_by_default`), carried on `ApiState` and the bulk lane's context and
+handed to both retire acts (`products::run_retire`, `skus::run_retire`); off, a retirement carrying
+`mustMigrateBy` is refused `EOL_DISABLED` (`skus_tests::must_migrate_by_is_eol_disabled`), on, the
+field is admitted (`retirement_tests::the_flag_on_admits_must_migrate_by`). The payload field exists
+on the retirement bodies (`catalog_retirement_event!`'s `must_migrate_by`, `#[serde(default)]`), is
+never populated while the flag is off — the door refuses it before any write — and a body lacking
+it round-trips as absent (`broker_tests::an_old_consumer_reads_a_new_payload_and_new_code_reads_an_old_one`).
+The consumer-acknowledgment machinery behind the flag stays post-v1 (P-D-132).
 
 **Implements**: `cpt-cf-bss-products-flow-retire-sku`
 

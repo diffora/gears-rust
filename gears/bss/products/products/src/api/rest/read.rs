@@ -525,6 +525,33 @@ pub struct HistoryView {
     pub entity_id: Uuid,
     pub lifecycle_state: String,
     pub versions: Vec<VersionEntryView>,
+    /// Where this entity was cloned from, when it was (`dod-clone-lineage`,
+    /// P-D-152): the immediate source and the frozen version read — `None`
+    /// for a version when the source was a draft read from its head.
+    pub lineage: Option<LineageView>,
+    /// The entities cloned **from** this one — the reverse lookup `design/11`
+    /// §2 promised; drafts included, since a clone is born a draft.
+    pub clones: Vec<CloneRefView>,
+}
+
+/// The forward lineage pointer.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct LineageView {
+    /// The immediate source, one step back (P-D-72).
+    pub cloned_from: Uuid,
+    /// The source version the clone read; `None` for a draft's head.
+    pub cloned_from_version: Option<i64>,
+}
+
+/// One clone of the entity.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct CloneRefView {
+    /// The clone's id.
+    pub entity_id: Uuid,
+    /// The version of this entity it read; `None` for a head read.
+    pub cloned_from_version: Option<i64>,
 }
 
 fn changed_keys(previous: Option<&serde_json::Value>, current: &serde_json::Value) -> Vec<String> {
@@ -569,20 +596,32 @@ async fn history(
         repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
     })?;
     let stamp = stamp_of(&conn, &scope, tenant_id, now).await?;
-    let lifecycle_state = if entity_kind == "sku" {
+    let head = if entity_kind == "sku" {
         repo::find_sku(&conn, &scope, tenant_id, entity_id)
             .await
             .map_err(|e| repo_error_to_canonical(&e))?
-            .map(|head| head.lifecycle_state)
+            .map(|head| {
+                (
+                    head.lifecycle_state,
+                    head.cloned_from,
+                    head.cloned_from_version,
+                )
+            })
     } else {
         repo::find_product(&conn, &scope, tenant_id, entity_id)
             .await
             .map_err(|e| repo_error_to_canonical(&e))?
-            .map(|head| head.lifecycle_state)
+            .map(|head| {
+                (
+                    head.lifecycle_state,
+                    head.cloned_from,
+                    head.cloned_from_version,
+                )
+            })
     };
     // The history surface serves `retired` (the C2 carve-out) and refuses
     // `draft` and `discarded` like every read; a missing head is the miss.
-    let Some(lifecycle_state) = lifecycle_state else {
+    let Some((lifecycle_state, cloned_from, cloned_from_version)) = head else {
         return Err(
             ReadResource::not_found("no entity matches this id in the caller's scope")
                 .with_resource(entity_id.to_string())
@@ -612,6 +651,15 @@ async fn history(
         });
         previous = Some(current);
     }
+    let clones = repo::clones_of(&conn, &scope, tenant_id, versioned, entity_id)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?
+        .into_iter()
+        .map(|c| CloneRefView {
+            entity_id: c.entity_id,
+            cloned_from_version: c.cloned_from_version,
+        })
+        .collect();
     observe_edge("history", tenant_id, started);
     Ok((
         StatusCode::OK,
@@ -621,6 +669,11 @@ async fn history(
             entity_id,
             lifecycle_state: lifecycle_state.as_str().to_owned(),
             versions,
+            lineage: cloned_from.map(|source| LineageView {
+                cloned_from: source,
+                cloned_from_version,
+            }),
+            clones,
         }),
     )
         .into_response())

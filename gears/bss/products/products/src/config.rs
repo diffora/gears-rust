@@ -138,6 +138,7 @@ pub const READ_INBOX_RETENTION_HOURS_DEFAULT: u32 = 72;
 /// A typo in a *value* has no such spelling, which is why
 /// [`Self::resolved_idempotency_retention_hours`] exists: `deny_unknown_fields`
 /// catches `idempotency_retention_hous`, and nothing in serde catches a `0`.
+#[allow(clippy::struct_excessive_bools)] // the operator switches are booleans by nature
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, default)]
 pub struct ProductsConfig {
@@ -270,6 +271,15 @@ pub struct ProductsConfig {
     /// make this gear un-bootable everywhere today. The default is expected to
     /// invert the moment a provider exists.
     pub require_broker: bool,
+
+    /// Whether `04`'s post-v1 EOL machinery is switched on — `mustMigrateBy`
+    /// on a retirement and the consumer-acknowledgment lockout
+    /// (`inst-rt-eol-lockout`, `dod-eol-lockout`, **P-D-132**: EOL stays
+    /// post-v1). **Default `false`**: with the flag off a retirement carrying
+    /// `mustMigrateBy` is refused `EOL_DISABLED` and the payload field is never
+    /// populated, so a `vN` consumer's schema keeps the field and reads it
+    /// absent. Flipping it on is the post-v1 launch's act, not a deployment's.
+    pub eol_enabled: bool,
 
     /// The tenant's default locale — step 3 of `02`'s attribute-value fallback
     /// chain (`design/02` `inst-av-resolve`, **P-D-101**).
@@ -458,6 +468,7 @@ impl Default for ProductsConfig {
             tripwire_max_overrides_per_30_days: TRIPWIRE_MAX_OVERRIDES_DEFAULT,
             breakglass_correction_enabled: false,
             require_broker: false,
+            eol_enabled: false,
             // Absent, not a guess. See the field's own doc: an unset
             // default locale skips step 3 and the chain stays total.
             default_locale: String::new(),

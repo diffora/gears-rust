@@ -1138,14 +1138,14 @@ artifacts, not types.
 - [ ] **One OWED row flipped to asserted end-to-end** — the watermark fixture first, it being the
       P-D-03 joint build's acceptance.
 
-**Replay and dedup**
+**Replay and dedup** *(ticked with P-D-152 on `broker_tests::the_dedup_and_ordering_keys_hold_across_a_real_redelivery` — the event `id` and the `(tenant, aggregate, sequence)` keys over a real redelivery — and on the create doors' "a refused mutation stores nothing, claim included (P-D-38, P-D-42): the key is free" assertions in `products_tests` and `skus_tests`; the neighbouring-gap criterion holds by the projector's construction — it never re-bootstraps on an id gap — and stays unticked for want of a probe.)*
 
-- [ ] A duplicate delivery inside the idempotency window is deduplicated on the event **`id`**.
-- [ ] An out-of-order delivery beyond the window is detected on `(tenant, aggregate, sequence)`.
+- [x] A duplicate delivery inside the idempotency window is deduplicated on the event **`id`**.
+- [x] An out-of-order delivery beyond the window is detected on `(tenant, aggregate, sequence)`.
 - [ ] **A `sequence` gap left by a neighbouring aggregate in the same partition does NOT trigger
       re-bootstrap.** The positive control for the criterion above: without it, a build that treats
       any gap as loss passes the detection test and re-bootstraps on healthy traffic.
-- [ ] A refused request retried on the same key **runs** and gets a fresh verdict; a successful one
+- [x] A refused request retried on the same key **runs** and gets a fresh verdict; a successful one
       replays.
 - [ ] `internalRevision` in an event equals the ETag the same act returned, **with no adjustment**.
 

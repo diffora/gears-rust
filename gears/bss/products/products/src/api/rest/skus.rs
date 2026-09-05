@@ -6246,6 +6246,7 @@ async fn retire_in_one_transaction(
     let gate = Arc::clone(gate);
     let detector = Arc::clone(detector);
     let inputs = inputs.clone();
+    let eol_enabled = state.eol_enabled;
     state
         .db
         .db()
@@ -6264,6 +6265,7 @@ async fn retire_in_one_transaction(
                         &inputs,
                         gate.as_ref(),
                         GateMode::Gate,
+                        eol_enabled,
                         detector.as_ref(),
                         &request,
                         &outbox,
@@ -6275,11 +6277,13 @@ async fn retire_in_one_transaction(
         .await
 }
 
+#[allow(clippy::too_many_arguments)] // the act's operands, the EOL flag among them
 pub(crate) async fn run_retire(
     runner: &(impl toolkit_db::secure::DBRunner + Sync),
     inputs: &HeadActInputs,
     gate: &(dyn GovernanceGate + Send + Sync),
     mode: GateMode,
+    eol_enabled: bool,
     detector: &(dyn PiiDetector + Send + Sync),
     request: &RetireSkuRequest,
     outbox: &crate::infra::broker::EventSink,
@@ -6307,7 +6311,7 @@ pub(crate) async fn run_retire(
         HeadActError::Refused(DomainError::ContentPiiBlocked(blocked.into_detail()))
     })?;
 
-    eol_lockout(false, request.must_migrate_by.is_some())
+    eol_lockout(eol_enabled, request.must_migrate_by.is_some())
         .map_err(|refusal| HeadActError::Refused(refusal.into_domain_error()))?;
 
     let at = effective_at(inputs.now, interim_retirement_lead(), request.effective_at)

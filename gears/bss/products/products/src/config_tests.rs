@@ -415,3 +415,11 @@ fn a_blank_drill_target_is_a_boot_refusal() {
         "the refusal names the field: {refusal}"
     );
 }
+
+/// `04`'s EOL flag is **off by default** (`dod-eol-lockout`: *"behind a
+/// feature flag OFF by default"*): a deployment that ships no config file
+/// refuses `mustMigrateBy` and never populates the payload field.
+#[test]
+fn eol_is_off_by_default() {
+    assert!(!ProductsConfig::default().eol_enabled);
+}

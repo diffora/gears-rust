@@ -144,3 +144,13 @@ fn replacement_chain_broken_lists_the_pointers() {
     assert!(reason.contains(&a.to_string()));
     assert!(reason.contains(&b.to_string()));
 }
+
+/// **The flag on admits the field** (`dod-eol-lockout`, P-D-152):
+/// `EOL_DISABLED` is the flag's refusal, not the field's — with
+/// `ProductsConfig::eol_enabled` on, a retirement carrying `mustMigrateBy`
+/// passes this gate and the payload field is populated for the first time.
+#[test]
+fn the_flag_on_admits_must_migrate_by() {
+    eol_lockout(true, true).expect("flag on, field present: admitted");
+    eol_lockout(true, false).expect("flag on, no field: admitted");
+}

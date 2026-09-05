@@ -410,6 +410,73 @@ pub async fn find_product(
     row.map(into_product_record).transpose()
 }
 
+/// One clone of an entity, as the lineage column records it: the clone's id
+/// and the source version it read (`None` for a head read of a draft).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloneRef {
+    /// The clone.
+    pub entity_id: Uuid,
+    /// `cloned_from_version`: the frozen version read, or `None` for a draft.
+    pub cloned_from_version: Option<i64>,
+}
+
+/// The clones whose `cloned_from` names `source` — the reverse lineage lookup
+/// `design/11` §2 promised when it justified having no clone event by the
+/// field being *"queryable"* (`dod-clone-lineage`, P-D-152). Same kind only:
+/// a clone is always of its own kind (P-D-72).
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage failure below the domain.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-clone-lineage:p3
+pub async fn clones_of(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    kind: VersionedEntityKind,
+    source: Uuid,
+) -> Result<Vec<CloneRef>, RepoError> {
+    let mut out = match kind {
+        VersionedEntityKind::Product => product::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(
+                Condition::all()
+                    .add(product::Column::TenantId.eq(tenant_id))
+                    .add(product::Column::ClonedFrom.eq(source)),
+            )
+            .all(runner)
+            .await
+            .map_err(|e| driver_failure(format!("read clones of product {source}"), e))?
+            .into_iter()
+            .map(|row| CloneRef {
+                entity_id: row.product_id,
+                cloned_from_version: row.cloned_from_version,
+            })
+            .collect::<Vec<_>>(),
+        VersionedEntityKind::Sku => sku::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(
+                Condition::all()
+                    .add(sku::Column::TenantId.eq(tenant_id))
+                    .add(sku::Column::ClonedFrom.eq(source)),
+            )
+            .all(runner)
+            .await
+            .map_err(|e| driver_failure(format!("read clones of sku {source}"), e))?
+            .into_iter()
+            .map(|row| CloneRef {
+                entity_id: row.sku_id,
+                cloned_from_version: row.cloned_from_version,
+            })
+            .collect::<Vec<_>>(),
+    };
+    out.sort_by_key(|c| c.entity_id);
+    Ok(out)
+}
+
 /// Read a stored `products_product` row into this repository's vocabulary.
 fn into_product_record(row: product::Model) -> Result<ProductRecord, RepoError> {
     let lifecycle_state = LifecycleState::parse(&row.lifecycle_state).ok_or_else(|| {

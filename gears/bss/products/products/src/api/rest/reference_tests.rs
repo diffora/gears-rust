@@ -98,6 +98,7 @@ fn app(harness: &TestHarness) -> Router {
         reference: crate::api::rest::ReferenceKnobs::from(&defaults),
         breakglass_window_hours: crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT,
         breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
+        eol_enabled: false,
         usage_type_resolver: crate::test_support::resolved_usage_types(),
     });
     let openapi = OpenApiRegistryImpl::new();
@@ -566,6 +567,7 @@ async fn the_in_process_binding_shares_the_gate_and_the_store() {
             reference: crate::api::rest::ReferenceKnobs::from(&defaults),
             breakglass_window_hours: crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT,
             breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
+            eol_enabled: false,
             usage_type_resolver: crate::test_support::resolved_usage_types(),
         }),
         enforcer: flat_in_enforcer(TENANT),

@@ -1321,6 +1321,7 @@ async fn create_definition(
         .into_response())
 }
 
+/// @cpt-dod:cpt-cf-bss-products-dod-definition-lifecycle:p1
 async fn execute_definition_operation(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,

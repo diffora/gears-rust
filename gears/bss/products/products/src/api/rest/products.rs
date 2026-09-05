@@ -4143,6 +4143,7 @@ async fn retire_in_one_transaction(
     let detector = Arc::clone(detector);
     let inputs = opened.act_inputs();
     let sku_scope = sku_scope.clone();
+    let eol_enabled = state.eol_enabled;
     state
         .db
         .db()
@@ -4163,6 +4164,7 @@ async fn retire_in_one_transaction(
                         &sku_scope,
                         gate.as_ref(),
                         GateMode::Gate,
+                        eol_enabled,
                         detector.as_ref(),
                         &request,
                         &outbox,
@@ -4181,6 +4183,7 @@ pub(crate) async fn run_retire(
     sku_scope: &AccessScope,
     gate: &(dyn GovernanceGate + Send + Sync),
     mode: GateMode,
+    eol_enabled: bool,
     detector: &(dyn PiiDetector + Send + Sync),
     request: &RetireProductRequest,
     outbox: &crate::infra::broker::EventSink,
@@ -4214,7 +4217,7 @@ pub(crate) async fn run_retire(
         HeadActError::Refused(DomainError::ContentPiiBlocked(blocked.into_detail()))
     })?;
 
-    eol_lockout(false, request.must_migrate_by.is_some())
+    eol_lockout(eol_enabled, request.must_migrate_by.is_some())
         .map_err(|refusal| HeadActError::Refused(refusal.into_domain_error()))?;
 
     let at = effective_at(inputs.now, interim_retirement_lead(), request.effective_at)
@@ -7605,6 +7608,8 @@ fn frozen_str(content: &JsonMap<String, JsonValue>, key: &str) -> Option<String>
 /// state owes. The frozen half decodes through
 /// [`canonical::decode_rendering`] — the renderer's own inverse, never a
 /// parse of this door's own (**P-D-77**).
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-clone-read-surface:p3
 async fn resolve_clone_source(
     state: &ApiState,
     scope: &AccessScope,
@@ -7758,6 +7763,8 @@ async fn clone_scope_for(
 ///
 /// Returns `(product_scope, sku_scope)`: the first governs the parent's
 /// reads and writes, the second the children's.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-clone-authz:p3
 async fn clone_write_scopes(
     state: &ApiState,
     enforcer: &authz_resolver_sdk::PolicyEnforcer,

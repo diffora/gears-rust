@@ -1569,6 +1569,66 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-152 — The remainders: the EOL flag, four `02`/`11` ticks by census, lineage on the timeline, and the freeze the collections never had
+
+- **Date**: 2026-09-05 (the lead, group 10 of the solo plan — the last; a census of every open
+  DoD in `02`, `04` and `11`, and of the owed design sentences the plan named)
+- **`04`'s EOL flag is configuration.** `ProductsConfig::eol_enabled`, **`false`** by default, on
+  `ApiState`, the runtime and the bulk lane's context, handed to both retire acts; off, a
+  retirement carrying `mustMigrateBy` is `EOL_DISABLED`, on, admitted. The consumer-acknowledgment
+  machinery behind it stays post-v1 (P-D-132). `dod-eol-lockout` ticks.
+- **Three `02` DoDs tick by census, not by new code.** `dod-governed-live-op`: both op doors
+  submit to the stored gate, the envelope's state is re-validated at apply, and the mutation and
+  its event are one transaction **by construction** — `events::enqueue` writes through the door's
+  runner on both sink arms. `dod-definition-lifecycle`: the routing under
+  `attribute_definition × write` ships (the grant is minted and declared), the machine is probed
+  both ways, and the type-change operand reads as P-D-131's live-reference condition.
+  `dod-pii-write-block`: the single raiser runs at **fourteen** production sites covering the whole
+  enumeration; door-level probes exist at three, so `10` §6's "same code at every door" criterion
+  stays unticked (P-D-137: a placement is verified by its call site, a criterion by its probe) and
+  `10`'s status box with it — no feature reaches a flipped box in this group.
+- **`dod-version-content-rendering` does not tick, and the reason is a finding.** The two
+  renderers ship and **nothing calls them**: a frozen version carries the Foundation rosters alone
+  — no categories, no attributes. What the DoD asks for literally is unbuilt, and a golden vector
+  carrying the collections would pin bytes nothing produces. The wiring is one change with a
+  measured blast radius (the two `freeze_for`s, the correction door's comparison, the bulk
+  worker's two renderings and `head_is_dirty`, both rosters, `DIGEST_VERSION` 2 → 3 with both
+  golden vectors) and is filed in `02` §7 as `01`'s and `02`'s jointly. *Counter-argument:* build
+  it here; rejected — a digest-version bump across every content site is not a remainder, and
+  doing it under the last group's clock is how a golden vector goes stale.
+- **`11`: three tick, three wait on that freeze.** `dod-clone-read-surface` (the frozen read and
+  the decoder P-D-77 owed both ship), `dod-clone-authz` (both write grants, `metadata_write`
+  minted since), `dod-clone-lineage` (the timeline gains `lineage` and `clones` — the reverse
+  lookup `design/11` §2 promised, `repo::clones_of`). `dod-disposition-rules`,
+  `dod-revalidation-codes` and `dod-clone-tests` are measured: the clone copies none of `02`'s rows
+  and re-validates nothing; copying a published source's collections needs them frozen first.
+- **The owed sentences.** `design/05`'s `ApprovalRecord` row states the per-kind pin (P-D-125 row
+  52, P-D-127 row 11, P-D-144's `Unpinned`); `design/09`'s `inst-bk-report` and `inst-bk-commit`
+  state the ledger digest as the pin and its covered set (P-D-127 rows 11, 23, 31);
+  `design/03`'s `inst-us-delist` states the one-transaction flip (P-D-121 row 21). The plan's
+  "collector-inside-transaction" sentence was **re-measured as accurate**: `design/03`'s resolver
+  row says the resolver runs before the publish transaction opens, and
+  `resolve_usage_type_before_publish` does exactly that; `design/04`'s flip-guard row makes no
+  transaction claim. Nothing to correct.
+- **§6 and the status boxes.** `12`: three replay criteria tick on `broker_tests`' redelivery probe
+  and the create doors' "the key is free" assertions; the neighbouring-gap criterion holds by the
+  projector's construction and stays unticked for want of a probe. Every other feature's unticked
+  criteria stay unticked: **90** across the six features at full DoD count (`bulk-promotion` 13,
+  `foundation` 27, `read-models` 11, `reference-signal` 20, `retention-erasure` 1,
+  `sku-classification` 19) — each wants a probe named beside it, and none is ticked by inspection.
+  No status box flips in this group.
+- **The plan is complete.** Ten groups, twelve commits, P-D-141 … P-D-152. The register of what
+  stays open is the features' own: six DoDs by owner decision or by the freeze (`12` three,
+  `11` three, `02` one), the criteria above, and `06`'s `dod-require-broker` (a deployment
+  artifact). The handoff carries the counts.
+- **Propagated**: `features/lifecycle.md`, `features/taxonomy-attributes.md` (§7 gains the freeze
+  row), `features/clone.md` (§7 gains its row), `features/consumer-contracts.md`,
+  `features/retention-erasure.md`, `design/05-governance.md`, `design/09-bulk-promotion.md`,
+  `design/03-sku-classification.md`.
+- **Trace**: `ProductsConfig::eol_enabled`, `ApiState::eol_enabled`, `products::run_retire` /
+  `skus::run_retire`; `repo::clones_of`, `read::HistoryView::{lineage, clones}`; the probes named
+  in the ticks.
+
 #### P-D-151 — 12's surface: the SDK's four remaining rows, the eight executable lints, the seam suite's home and the register's own hygiene
 
 - **Date**: 2026-09-05 (the lead, group 9 of the solo plan; `12` §7 rows on the lints' grammars

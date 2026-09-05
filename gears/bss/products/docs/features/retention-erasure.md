@@ -1152,7 +1152,13 @@ criterion's own note.
       rejections, break-glass sessions, correction overrides, and the `SkuRetired` payload — and
       **not** bulk or promotion rows, which P-D-50 struck.
       **No probe, and this is the one criterion that keeps the feature's status box
-      unticked.** Measured 2026-09-04: the hook runs at **seven** production doors, and
+      unticked.** Re-measured 2026-09-05 (P-D-152): the hook runs at **fourteen** production
+      sites and every door this criterion enumerates now exists and calls it — approval
+      rejections and break-glass sessions (`approvals.rs`), correction overrides (`skus.rs`),
+      the retirement reason (`products.rs`, `skus.rs`) — but door-level probes of the code exist
+      at three doors only (`products_tests`, `retention_tests`, `reference_tests`), so the
+      criterion stays unticked by P-D-137's rule: a placement is verified by its call site, a
+      criterion by its probe. Measured 2026-09-04: the hook runs at **seven** production doors, and
       four of the five this criterion enumerates have no door to run it at yet —
       `products_correction_override`'s reason belongs to `07`'s unbuilt correction door,
       and the `SkuRetired` payload's to `04`. Two of the five now exist and are covered:

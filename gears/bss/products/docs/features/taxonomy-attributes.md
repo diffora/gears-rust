@@ -699,7 +699,7 @@ see.
 
 ### Governed live op envelope
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-governed-live-op`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-governed-live-op`
 
 The system **MUST** implement `GovernedLiveOp` as a pinned envelope of operation kind, target,
 payload and the target's expected current state, submit it to the `05-governance` gate, and on
@@ -768,6 +768,20 @@ private items in two `#[cfg(test)]` door modules with no `pub`, and `test_suppor
 double at all — so the apply path is proven against the closure it is handed, never against a gate,
 fake or real. That is recorded rather than used to re-hold the row: the row's other two
 measurements stand.
+
+**Ticked (P-D-152).** The four clauses, each at its call site: the envelope pins kind, target,
+payload and expected state (`domain::live_op`); both `operations` doors submit it through the
+stored gate on `GateSubject::governed_live_op` (`taxonomy_tests::every_op_door_submits_its_envelope_to_the_gate`;
+the subject's pin is `Unpinned` by P-D-144/P-D-120 row 14 — a category or a definition has no
+counter, and the **state** is what the envelope pins); at apply the expected state is re-validated
+against the live row and a mismatch is `STALE_LIVE_OP`
+(`taxonomy_tests::an_envelope_pinned_to_the_wrong_state_is_stale`,
+`live_op_tests::a_stale_op_never_runs_its_mutation`); **the mutation and its event land in one
+transaction by construction** — `events::enqueue` takes the door's runner and both sink arms write
+through it (`enqueue_body` on the interim outbox, `producer.enqueue(runner, …)` on the broker
+producer), so there is no path on which the event is written outside the mutation's transaction;
+and the type is exported and reused by `03` (`inst-us-governed`, `inst-pt-governed`). The
+`expected_revision` question this paragraph carried is P-D-125 row 52's per-kind pin, built.
 
 **Implements**: `cpt-cf-bss-products-algo-governed-live`
 
@@ -974,7 +988,7 @@ reproduced against the crate; the number is the `assign_primary_category` call c
 
 ### Definition lifecycle
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-definition-lifecycle`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-definition-lifecycle`
 
 The system **MUST** route creation and material changes through `GovernedLiveOp` under the
 `attribute_definition × write` grant, refuse a type change on a definition with live values
@@ -1008,6 +1022,20 @@ clause requires needs `05`'s submit door, which has no route (05 §7 row 12) —
 *"live values"* for the type change and the defined non-terminal head for removal — so
 `definition_in_use_verdict` takes whatever census it is handed and judges it, and which census a
 type change should read stays that row's.
+
+**Ticked (P-D-152).** The routing ships: `execute_definition_operation` submits its envelope to the
+gate then applies (`taxonomy.rs`, "submitted **then** applied"), under the `attribute_definition ×
+write` grant — minted (`gts/permissions.rs`: `attribute_definition_write`) and declared
+(`design/05` §3.2). The machine: `definition_edge` admits §4's four edges, `seeded_edge` holds the
+seed clause both ways (`taxonomy_tests::a_seeded_definition_deprecates_and_never_removes`,
+`the_definition_walks_its_three_flips`); a value against a deprecated definition is refused
+(`a_value_against_a_deprecated_definition_is_refused`); removal is refused while a non-terminal head
+carries a value and admitted while only a frozen version does
+(`a_removal_is_refused_while_a_draft_carries_the_value`, the both-ways probe over
+`repo::definition_value_holders`); removal is a flip, never a `DELETE`. The type-change operand —
+*"live values"* — reads as the PRD's live-reference condition (**P-D-131**): a value on a
+non-terminal head, the same census the removal reads (`taxonomy_tests`' `DEFINITION_IN_USE`
+probes, `domain::taxonomy_tests` seven).
 
 **Implements**: `cpt-cf-bss-products-flow-attribute-definitions`,
 `cpt-cf-bss-products-state-attribute-definition`
@@ -1228,7 +1256,7 @@ own rejected request had moved. Every judgement now runs ahead of the CAS.
 
 ### Content PII write block
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-pii-write-block`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-pii-write-block`
 
 The system **MUST** place a single write-block hook that invokes `10-retention-erasure`'s detector
 and allow-list and raises `CONTENT_PII_BLOCKED`, failing closed on uncertainty. The hook **MUST**
@@ -1263,6 +1291,20 @@ reaches six doors owned by `01`, `04`, `05` and `07`; the hook and this feature'
 its testable core and they ship. The metadata call site waits with the metadata door below. §7 row 4
 also stands: the detector itself is `10`'s and does not exist, so nothing here has been measured
 against a real policy.
+
+**Ticked (P-D-152), by the call-site census.** The single raiser `domain::taxonomy::content_pii_block`
+runs at **fourteen** production sites, and the enumeration is covered: attribute values
+(`products.rs`, `skus.rs`), the metadata map with no carve-out (`taxonomy.rs` `merge_metadata`),
+the category display label (`taxonomy.rs`), the retirement `reason` carried into the `SkuRetired`
+payload (`products::run_retire`, `skus::run_retire`), approval rejections and break-glass session
+reasons (`approvals.rs` `pii_block`, two callers), the correction and break-glass-correction
+reasons (`skus.rs` `correct_sku_gated`), the producer-retirement reason (`reference.rs`), the
+materiality-policy reason, and `10`'s own four (`retention.rs`). Fail-closed lives in the hook
+(`PiiVerdict::Uncertain` blocks). Door-level probes exist at three doors
+(`products_tests` two, `retention_tests::a_doors_free_text_is_judged_against_this_tenants_allow_list`,
+`reference_tests` one) beside the hook's five domain probes; `10` §6's "every door raises the same
+code" criterion stays unticked until the other doors carry theirs — a placement is verified by its
+call site, a criterion by its probe (P-D-137).
 
 **Implements**: `cpt-cf-bss-products-flow-attribute-values`,
 `cpt-cf-bss-products-flow-metadata`
@@ -1520,6 +1562,19 @@ The probe is the permutation, not the fixture: four rows of **one** definition, 
 rotation and from the reverse, all byte-identical. A fixture using four *different* definitions
 would pass under the very sort row 9 says is wrong.
 
+**Measured, not ticked (P-D-152).** Both renderers ship and **neither is wired into a frozen
+version**: `assignment_collection` and `value_collection` have no call site outside their tests,
+and the frozen content is `product_content(head)` / `sku_version_content(image)` under
+`PRODUCT_CONTENT_ROSTER` (12 fields) / `SKU_VERSION_CONTENT_ROSTER` (18) — no `categories`, no
+`attributes`. So what the DoD asks for literally — the two collections **inside** a frozen version,
+byte-identical across engines — is not built, and a golden vector carrying them would pin a
+rendering nothing produces. The wiring is one change with a measured blast radius: the two
+`freeze_for`s, the correction door's dirty-head comparison (`skus.rs`), the bulk worker's two
+renderings and `head_is_dirty`, both rosters, `DIGEST_VERSION` 2 → 3 with the guard and **both**
+golden vectors regenerated (`canonical_tests`, `tests/postgres_golden_vector.rs`), and the clone's
+frozen read gaining the collections it needs (`features/clone.md`). It is `01`'s and this feature's
+jointly and is filed in §7; three of `11`'s DoDs wait on it.
+
 **Implements**: `cpt-cf-bss-products-flow-assign-categories`,
 `cpt-cf-bss-products-flow-attribute-values`
 
@@ -1709,3 +1764,13 @@ it does not decide it.
   without it** — `retired` has a defined exit through physical deletion and nothing gets stuck —
   so this is recorded as an asymmetry worth an owner's glance, **not** as an item that binds
   implementation.
+
+- **The two collections are not frozen into version content** (measured by P-D-152, 2026-09-05).
+  `assignment_collection` and `value_collection` exist and nothing calls them; `product_content` and
+  `sku_version_content` render the Foundation rosters alone, so a frozen version carries no
+  categories and no attributes, `08`'s projector reads them live, and `11`'s clone cannot copy them
+  from a frozen source. Wiring them is one change across the two `freeze_for`s, the correction
+  door's comparison, the bulk worker's renderings, both rosters, `DIGEST_VERSION` and both golden
+  vectors. **Owner**: `01`'s and this feature's, jointly (the roster is the Foundation's, the
+  collections this feature's). **Blocks**: `dod-version-content-rendering`; `11`'s
+  `dod-disposition-rules`, `dod-revalidation-codes`, `dod-clone-tests`.

@@ -1952,6 +1952,8 @@ impl ContentPiiBlocked {
 ///
 /// [`ContentPiiBlocked`] naming the field, on a blocked or an undecided
 /// verdict.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-pii-write-block:p1
 pub fn content_pii_block(
     detector: &dyn PiiDetector,
     subject: &str,
