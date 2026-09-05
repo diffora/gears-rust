@@ -1125,3 +1125,96 @@ fn lint_8_fails_on_a_column_named_for_the_six_words_and_passes_usage() {
         "prose is not a declaration"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Lint 3, code half — the route census: every code route is declared, every
+// declared route has code (P-D-159). Not a roster number of its own: design/12's
+// lint 9 is the schema pin, and this is the executable half of lint 3.
+// ---------------------------------------------------------------------------
+
+fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
+    for entry in std::fs::read_dir(dir).expect("source dir lists") {
+        let path = entry.expect("entry").path();
+        if path.is_dir() {
+            rust_sources(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs")
+            && !path
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().ends_with("_tests.rs"))
+        {
+            out.push(path);
+        }
+    }
+}
+
+/// The routes the crate registers, read from `OperationBuilder::<verb>("…")`
+/// and the metadata door's path argument — the Rust as text, one regex each,
+/// normalised the way the design spans are.
+fn code_route_spans() -> BTreeSet<String> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../products/src");
+    let mut files = Vec::new();
+    rust_sources(&root, &mut files);
+    let builder = Regex::new(
+        r#"OperationBuilder::(get|post|patch|put|delete)\(\s*"(/bss-products/v1/[^"]+)""#,
+    )
+    .unwrap();
+    let metadata = Regex::new(
+        r#"register_metadata_door\(\s*[a-z_]+,\s*[a-z_]+,\s*"(/bss-products/v1/[^"]+)""#,
+    )
+    .unwrap();
+    let mut out = BTreeSet::new();
+    for file in files {
+        let text = read(&file);
+        for c in builder.captures_iter(&text) {
+            out.extend(normalise_route(&c[1].to_ascii_uppercase(), &c[2]));
+        }
+        for c in metadata.captures_iter(&text) {
+            out.extend(normalise_route("PATCH", &c[1]));
+        }
+    }
+    out
+}
+
+fn route_census_findings(code: &BTreeSet<String>, declared: &BTreeSet<String>) -> Vec<String> {
+    let mut findings: Vec<String> = code
+        .difference(declared)
+        .map(|r| format!("{r} is registered in code and declared by no design slice"))
+        .collect();
+    findings.extend(
+        declared
+            .difference(code)
+            .map(|r| format!("{r} is declared and registered by no code")),
+    );
+    findings
+}
+
+#[test]
+fn lint_3_code_half_every_code_route_is_declared_and_every_declared_route_has_code() {
+    let mut declared = BTreeSet::new();
+    for (_, _, text) in slices() {
+        declared.extend(route_spans(&text));
+    }
+    let code = code_route_spans();
+    assert!(
+        code.len() >= 60,
+        "the code population is {} — the census regex lost its operand",
+        code.len()
+    );
+    let findings = route_census_findings(&code, &declared);
+    assert!(findings.is_empty(), "lint 3 (code half): {findings:#?}");
+}
+
+#[test]
+fn lint_3_code_half_fails_on_an_undeclared_code_route_and_on_a_codeless_declaration() {
+    let code: BTreeSet<String> = ["GET /bss-products/v1/products/{}".to_owned()]
+        .into_iter()
+        .collect();
+    let declared: BTreeSet<String> = ["GET /bss-products/v1/skus/{}".to_owned()]
+        .into_iter()
+        .collect();
+    let findings = route_census_findings(&code, &declared);
+    assert_eq!(findings.len(), 2, "{findings:#?}");
+    assert!(findings[0].contains("declared by no design slice"));
+    assert!(findings[1].contains("registered by no code"));
+    assert!(route_census_findings(&code, &code).is_empty());
+}

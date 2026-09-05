@@ -188,7 +188,7 @@ internal revision as its **`ETag`** — the authoring read `inst-fd-etag`'s prec
 precondition at all); `POST /bss-products/v1/{products|skus}/{id}/publish`
 (**`… × publish`**, **`If-Match` required** — P-D-33 makes the door's pinned revision arrive the
 same way every other head verb's does, rather than as an unnamed argument) → **200**;
-`POST /bss-products/v1/{products|skus}/{id}/discard` (**`… × discard`**, **`If-Match` required**) → **200**. Every
+`POST /bss-products/v1/{products|skus}/{id}/discard` (**`… × discard`**, **`If-Match` required**) → **200**; `POST /bss-products/v1/{products|skus}/{id}/validate` (**`… × publish`**, no `If-Match`) → **200** with `{clean, findings[]}` and no write — the dry-run doors (**P-D-148**; declared here at P-D-159). Every
 mutating door accepts **`Idempotency-Key`** (§3.2) — *accepts*, not requires: the PRD scopes the
 guarantee to "a retried create/update/publish **with an idempotency key**", so a keyless request
 runs with no claim row and no replay, and the resolution phase is skipped rather than failing

@@ -35,11 +35,14 @@ pub enum CompositionOutcome {
         /// The blocker's name.
         on: String,
     },
-    /// Nothing was written: this `signal_ref` already ran, **or** there was
-    /// nothing to clear (not a bundle, or the flag already clear) — the door
-    /// answers both with one word, and the binding carries the fold rather
-    /// than inventing a distinction the wire does not make.
+    /// Nothing was written because this `signal_ref` already ran: the
+    /// stored answer, replayed.
     Replayed,
+    /// Nothing was written because there was nothing to clear — not a
+    /// bundle, or the flag already down (P-D-159; the door said `replayed`
+    /// for this until then, and a consumer looking for the run it named
+    /// found none).
+    Nothing,
 }
 
 /// The composition-completed signal, resolved from `ClientHub`.

@@ -1569,6 +1569,60 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-159 — Route reconciliation: ten doors declared and paired, lint 3's code half, the composition door's own word for nothing, and the casing question with its recommendation
+
+- **Date**: 2026-09-05 (the lead, group 17 of the follow-on plan)
+- **The census, measured.** The plan estimated fourteen undeclared code routes and five declared
+  spans with no code; a census that reads the Rust as text — `OperationBuilder::<verb>("…")`,
+  multi-line builders included, and the metadata door's path argument — against every design
+  slice's `` `VERB /bss-products/v1/…` `` spans finds **nine** code routes declared by no slice and
+  **none** declared without code: the two metadata `PATCH` doors are registered through
+  `register_metadata_door` and the set transitions through a multi-line builder, both invisible to
+  a one-line grep. The nine (and the label door, declared nowhere but registered): the diff
+  `GET`, the release `POST`, the three dashboards, the deferred-cascade resume, the two dry-run
+  `validate` doors, the composition clear, the member label.
+- **Each is declared in its slice and paired with its grant in `design/05` §3.2** — the diff and
+  the freeze-status dashboard under `catalog_version × read`, the release spelled in full under
+  `× release`, the deferred-intents dashboard under `scheduled_transition × read`, the
+  delivery-state dashboard under `audit × read` (the row that read "no route declared"), the
+  resume under 04's `product × write` doors with `inst-cp-deferred`, the two dry-run doors and the
+  composition clear under `× publish` (the action each spends in code), the label under
+  `recognized_set × write`. *Counter-argument:* remove the undeclared doors instead; rejected —
+  every one has a DoD, a probe and a caller, and the design set was behind the crate, not ahead of
+  it.
+- **Lint 3 gains its code half, executable both ways** (`coverage_lints.rs`): every code route is
+  declared by a design slice, every declared route is registered by code, under lint 3's own
+  normalisation; a red case proves each direction. It is not a tenth roster lint — `design/12`'s
+  lint 9 is the schema pin — but the half of lint 3 the plan named. The door × grant pairing runs
+  over the same declared set, so a route declared without a grant and a route registered without
+  a declaration are both one `cargo test` away. The `DESIGN.md` route table stays typed for now —
+  deriving it is the close-out group's, once the table's own reader is decided.
+- **The composition door says `nothing` in its own word.** The door rendered "nothing to clear"
+  (not a bundle, or the flag already down) as `replayed`, and the SDK carried the fold
+  (P-D-151); a consumer told `replayed` looks for a run that never happened. The outcome is now
+  `nothing`, `CompositionOutcome::Nothing` in the SDK, the binding reads it. *Counter-argument:*
+  keep one word for "nothing was written"; rejected — the two facts differ in what the caller does
+  next (retry the signal, or stop).
+- **Two SDK rows close as this feature's own calls.** `name` on the SKU read shape stays pricing's
+  rendering (the registry has no SKU name column and mints none); `ProductsClient` gains no browse
+  method (browse is a paged, scope-filtered REST surface, not a typed read of one entity).
+- **The casing, measured and not decided here.** The entity views (`ProductView`, `SkuView` and
+  their kin) serialize `snake_case` — no `rename_all` on any of them — while the act bodies and
+  every event body are `camelCase` (thirty-six `rename_all` sites, all camel). Two casings on one
+  wire is the defect; which one is the owner's call, and the register carries the recommendation:
+  **`camelCase` everywhere on the wire** — the events already are, the SDK consumers read both, v1
+  has no external consumer yet, `design/01` §3 says so, and the views change in one place. The
+  counter-argument is the toolkit's `snake_case` default and the sibling gears' views; if the
+  toolkit's convention wins, the act bodies and events move instead. Either answer is one P-D and
+  one group; nothing moves until it is given.
+- **Propagated**: `design/01-foundation.md` §3 (the dry-run doors), `design/03-sku-classification.md`
+  §3 (the label door), `design/04-lifecycle.md` §3's act table (the resume), `design/05-governance.md`
+  §3.2 (seven rows), `design/06-catalog-version.md` §3 (the diff span in full, the composition-clear
+  door), `design/08-read-models.md` §3 (the three dashboard routes).
+- **Trace**: `coverage_lints::lint_3_code_half_every_code_route_is_declared_and_every_declared_route_has_code`,
+  `coverage_lints::code_route_spans`, `skus::CompositionClearView` (`nothing`),
+  `bss_products_sdk::composition::CompositionOutcome::Nothing`, `sdk_bindings` (the read).
+
 #### P-D-158 — Criteria wave C: the PII hook probed at every reason door, `10` at 34 / 34, the status box gated by code markers, and 17 more criteria tick
 
 - **Date**: 2026-09-05 (the lead, group 16 of the follow-on plan)

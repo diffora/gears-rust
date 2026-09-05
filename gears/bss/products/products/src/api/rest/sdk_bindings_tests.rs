@@ -291,11 +291,11 @@ async fn the_authoring_binding_runs_the_doors_with_both_preconditions() {
     let (status, _) = refusal(miss).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    // The composition signal on a non-bundle: the door folds "nothing to
-    // clear" into `replayed`, and the binding carries the fold.
+    // The composition signal on a non-bundle: nothing to clear is its own
+    // word on the wire and in the SDK (P-D-159).
     let signals = InProcessCompositionSignals(h.binding.clone());
     match signals.composed(&ctx, sku.entity_id, Uuid::now_v7()).await {
-        Ok(outcome) => assert_eq!(outcome, CompositionOutcome::Replayed),
+        Ok(outcome) => assert_eq!(outcome, CompositionOutcome::Nothing),
         Err(error) => {
             let (_, code) = refusal(error).await;
             assert!(

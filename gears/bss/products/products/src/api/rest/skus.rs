@@ -9045,10 +9045,20 @@ pub(crate) async fn clear_composition(
             held_on: Some(on),
             published_version: None,
         },
-        Ok(ClearOutcome::Replayed | ClearOutcome::Nothing) => CompositionClearView {
+        Ok(ClearOutcome::Replayed) => CompositionClearView {
             sku_id,
             signal_ref: body.signal_ref,
             outcome: "replayed".to_owned(),
+            held_on: None,
+            published_version: Some(head.published_version),
+        },
+        // Nothing to clear — not a bundle, or the flag already down — is its
+        // own word (P-D-159): a consumer told "replayed" would look for a run
+        // that never happened.
+        Ok(ClearOutcome::Nothing) => CompositionClearView {
+            sku_id,
+            signal_ref: body.signal_ref,
+            outcome: "nothing".to_owned(),
             held_on: None,
             published_version: Some(head.published_version),
         },

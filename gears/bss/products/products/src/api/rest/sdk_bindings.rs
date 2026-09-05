@@ -365,7 +365,7 @@ impl FreezeAcks for InProcessFreezeAcks {
 // ---------------------------------------------------------------------------
 
 /// The in-process [`CompositionSignals`] binding over the composition-clear
-/// door. The door renders a signal that had nothing to clear as `replayed`
+/// door. A signal that had nothing to clear is `nothing` (P-D-159), a re-sent one `replayed`;
 /// (one answer for "this ran" and "this had nothing to do"), and the binding
 /// carries that fold rather than inventing a distinction the door does not
 /// make.
@@ -399,6 +399,7 @@ impl CompositionSignals for InProcessCompositionSignals {
                     .to_owned(),
             }),
             "replayed" => Ok(CompositionOutcome::Replayed),
+            "nothing" => Ok(CompositionOutcome::Nothing),
             other => Err(internal("the door's answer", format!("outcome `{other}`"))),
         }
     }

@@ -250,6 +250,7 @@ each from the set's nearest precedent, the way **P-D-87** arm 3 fixed slice 07's
 | Deprecate a SKU directly | `POST /bss-products/v1/skus/{id}/deprecate` | **200** | the head | `inst-lc-deprecate` |
 | Initiate retirement | `POST /bss-products/v1/{products\|skus}/{id}/retire` | **200** | the head | `inst-rt-initiate` |
 | Cancel a retirement | `POST /bss-products/v1/{products\|skus}/{id}/retire/cancel` | **202** | none | `inst-lc-undeprecate` |
+| Resume a deferred cascade (P-D-114 row 11; declared at P-D-159) | `POST /bss-products/v1/products/{id}/retire/resume` | **200** | the head | `inst-cp-deferred` |
 
 **The verb form, not a sub-resource.** This gear's own act doors are verb-suffixed —
 `/publish`, `/discard`, `/deprecate` — and an operator meets one shape across every lifecycle act.
