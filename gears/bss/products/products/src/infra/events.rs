@@ -368,6 +368,30 @@ pub(crate) const RECOGNIZED_CODE_UPDATED_PAYLOAD_TYPE: &str = "RecognizedCodeUpd
 /// event by design.
 pub(crate) const PLAN_TIER_UPDATED_PAYLOAD_TYPE: &str = "PlanTierUpdated";
 
+/// **The explicit no-event declaration** `dod-recognized-set-events`
+/// requires: a per-field classification edit on a SKU — its type,
+/// `sellable`, tier, meter pair or accounting codes — emits **no event of its
+/// own**. It rides the Foundation's entity events (`SkuHeadSaved` on the
+/// save, `SkuPublished` on the publish that freezes it), and the three
+/// recognized-set events above announce the *sets*, never one SKU's use of a
+/// member. `events_tests` holds this list against [`SCHEMA_REFS`]: none of
+/// these names is a payload type, and each is a registered SKU column.
+///
+/// A declaration has no runtime reader by design — the test is its reader —
+/// hence the `dead_code` allowance outside `cfg(test)`.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-recognized-set-events:p1
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const SKU_CLASSIFICATION_EDITS_EMIT_NO_EVENT: [&str; 7] = [
+    "sku_type",
+    "sellable",
+    "plan_tier",
+    "metering_unit",
+    "usage_type_ref",
+    "tax_category_ref",
+    "gl_code_ref",
+];
+
 /// `CatalogBulkOperationCompleted`'s payload type token — **slice 09's only
 /// event**, and the fourth declared roster.
 ///

@@ -1158,6 +1158,7 @@ mod frozen_version {
             approval_ref: Set(None),
             actor_ref: Set(ACTOR),
             published_at: Set(Utc.with_ymd_and_hms(2026, 8, 29, 10, 0, 0).unwrap()),
+            binding_snapshot: Set(None),
         };
         let conn = provider.conn().expect("scoped connection");
         Entity::insert(model.clone())
@@ -3201,6 +3202,7 @@ mod entity_version_guard_tests {
             approval_ref: Set(Some(APPROVAL)),
             actor_ref: Set(ACTOR),
             published_at: Set(Utc.with_ymd_and_hms(2026, 8, 29, 11, 0, 0).unwrap()),
+            binding_snapshot: Set(None),
         }
     }
 

@@ -88,6 +88,43 @@ impl SetKind {
     }
 }
 
+impl SetKind {
+    /// The `products_sku` column whose value names a member of this set —
+    /// the holder population a removal counts, **uniform across all four
+    /// kinds** (`dod-recognized-set-mechanics`; P-D-146). Until 03's columns
+    /// landed (P-D-145) only `metering_unit` had a carrier and the other
+    /// three guards were necessarily off.
+    #[must_use]
+    pub const fn carrier_column(self) -> &'static str {
+        match self {
+            Self::MeteringUnit => "metering_unit",
+            Self::PlanTier => "plan_tier",
+            Self::TaxCategory => "tax_category_ref",
+            Self::GlCode => "gl_code_ref",
+        }
+    }
+}
+
+/// The two columns whose change is **finance-material**
+/// (`dod-finance-materiality`; `design/03` §4 puts both accounting codes in
+/// bucket iii as Finance's). `plan_tier` is Product's, not Finance's, and is
+/// deliberately absent.
+pub const FINANCE_MATERIAL_COLUMNS: [&str; 2] = ["tax_category_ref", "gl_code_ref"];
+
+/// Whether a publish that touched `touched` is finance-material — the operand
+/// `dod-finance-predicate` was blocked on while the columns did not exist
+/// (**P-D-146**). The submit door ORs this with the caller's own flag, so a
+/// caller can still declare a change finance-material for a reason the
+/// registry cannot see, but can no longer declare a code change *not* to be.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-finance-materiality:p1
+#[must_use]
+pub fn is_finance_material(touched: &[String]) -> bool {
+    touched
+        .iter()
+        .any(|column| FINANCE_MATERIAL_COLUMNS.contains(&column.as_str()))
+}
+
 /// One member's stored state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemberState {
@@ -191,11 +228,49 @@ pub fn declaration_verdict(unit: &str, member: Option<MemberState>) -> Result<()
     }
 }
 
+/// What the collector said a `usageTypeRef` is bound to, frozen beside the
+/// version row at publish (`dod-binding-snapshot`, **P-D-134** row 6,
+/// **P-D-146**).
+///
+/// Provenance, not content: the snapshot lives in its own nullable column on
+/// `products_entity_version`, outside the digested rendering, so
+/// `DIGEST_VERSION` does not move with it and a re-verification of the digest
+/// never reads it. The three fields are the three the definition of done names; the
+/// collector's own types are flattened to strings here so the domain owes the
+/// collector SDK nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsageTypeBinding {
+    /// The resolved usage type's GTS id, as the collector spells it.
+    pub gts_id: String,
+    /// `counter` or `gauge`.
+    pub kind: String,
+    /// The metadata keys the usage type declares.
+    pub metadata_fields: Vec<String>,
+}
+
+impl UsageTypeBinding {
+    /// The stored form: one JSON object, keys in alphabetical order, the
+    /// metadata keys sorted — so two publishes of the same binding store the
+    /// same bytes.
+    #[must_use]
+    pub fn snapshot_json(&self) -> String {
+        let mut fields = self.metadata_fields.clone();
+        fields.sort();
+        serde_json::json!({
+            "gts_id": self.gts_id,
+            "kind": self.kind,
+            "metadata_fields": fields,
+        })
+        .to_string()
+    }
+}
+
 /// The collector's three answers (`dod-usage-type-resolution`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UsageTypeAnswer {
-    /// The ref resolved. Validators receive this and never call out.
-    Resolved,
+    /// The ref resolved, to this binding. Validators receive it and never
+    /// call out.
+    Resolved(UsageTypeBinding),
     /// The collector answered not-found.
     Unresolved,
     /// The collector was unreachable or unwired (**P-D-131**).
@@ -204,14 +279,18 @@ pub enum UsageTypeAnswer {
 
 /// Map a pre-transaction resolve onto the publish refusal
 /// (**P-D-121** row 19). The validators phase receives the answer and
-/// never calls out.
+/// never calls out. A resolved answer hands back the binding the publish
+/// freezes beside the version row (`dod-binding-snapshot`).
 ///
 /// # Errors
 ///
 /// [`DomainError::UsageTypeUnresolved`] or [`DomainError::UsageTypeUnavailable`].
-pub fn judge_usage_type(answer: UsageTypeAnswer, usage_type_ref: &str) -> Result<(), DomainError> {
+pub fn judge_usage_type(
+    answer: UsageTypeAnswer,
+    usage_type_ref: &str,
+) -> Result<UsageTypeBinding, DomainError> {
     match answer {
-        UsageTypeAnswer::Resolved => Ok(()),
+        UsageTypeAnswer::Resolved(binding) => Ok(binding),
         UsageTypeAnswer::Unresolved => Err(DomainError::UsageTypeUnresolved(format!(
             "usageTypeRef `{usage_type_ref}` did not resolve in the collector"
         ))),

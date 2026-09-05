@@ -547,7 +547,7 @@ decision (P-D-132).
   code is a breaking change. **Versioning**: the path segment `/v1/` is the wire version; within
   it, payloads evolve under slice 12's compatibility rule (`nfr-backward-compatible-evolution`).
 
-**Endpoints Overview** — the routes registered in code today (47), by owning slice; stability
+**Endpoints Overview** — the routes registered in code today (50), by owning slice; stability
 `v1` throughout (the SDK's compatibility rule is the stability contract). Per-route semantics,
 authz resources and refusal codes live in each slice's §3; the authz mapping in slice 05 §3.2.
 
@@ -580,8 +580,11 @@ authz resources and refusal codes live in each slice's §3; the authz mapping in
 | `POST` | `/bss-products/v1/attribute-definitions` | define an attribute | 02 | v1 |
 | `POST` | `/bss-products/v1/attribute-definitions/{key}/operations` | operate on an attribute definition | 02 | v1 |
 | `POST` | `/bss-products/v1/recognized-sets/{setKind}/members` | add a member to a closed vocabulary | 03 | v1 |
+| `POST` | `/bss-products/v1/recognized-sets/{setKind}/members/{memberCode}/transitions` | walk a member's state machine (`active` / `deprecated` / `removed`, pinned at `expected_state`) | 03 | v1 |
+| `POST` | `/bss-products/v1/recognized-sets/{setKind}/members/{memberCode}/label` | change a member's display label and nothing else | 03 | v1 |
 | `GET` | `/bss-products/v1/scheduled-transitions` | list scheduled transitions | 04 | v1 |
 | `POST` | `/bss-products/v1/scheduled-transitions/{id}/operations` | operate on a scheduled transition | 04 | v1 |
+| `GET` | `/bss-products/v1/approvals` | list the tenant's pending approvals with their quorum progress (the inbox envelope) | 05 | v1 |
 | `POST` | `/bss-products/v1/approvals` | submit an approval for a subject at a pinned revision (stored snapshot) | 05 | v1 |
 | `POST` | `/bss-products/v1/approvals/{approvalId}/decisions` | record an approver's decision | 05 | v1 |
 | `POST` | `/bss-products/v1/breakglass-sessions` | open a break-glass elevation (P-D-120) | 05 | v1 |

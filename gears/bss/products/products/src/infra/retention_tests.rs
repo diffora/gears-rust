@@ -143,6 +143,7 @@ async fn seed_entity_version(
             approval_ref: None,
             actor_ref: SYSTEM,
             published_at: at,
+            binding_snapshot: None,
         },
     )
     .await
@@ -173,6 +174,7 @@ async fn seed_corrupt_entity_version(
             approval_ref: None,
             actor_ref: SYSTEM,
             published_at: at,
+            binding_snapshot: None,
         },
     )
     .await

@@ -99,6 +99,18 @@
 //! reviewed prose rather than measured behaviour: read the two statement
 //! lists below as two claims, of which the suite checks one.
 //!
+//! # `binding_snapshot` is provenance, not content (P-D-146)
+//!
+//! `design/03`'s `dod-binding-snapshot` freezes what a SKU's `usageTypeRef`
+//! resolved to — `(gts_id, kind, metadata_fields)` — at publish. **P-D-134**
+//! row 6 placed it *beside* the version row and *outside* the digest: the
+//! digest is the content contract (P-D-29) and this is evidence about the
+//! publish. So the column is nullable `text` holding one JSON object, it is
+//! not part of `content`, `content_digest` is not computed over it, and
+//! `DIGEST_VERSION` did not move when it landed. `NULL` on every Product row
+//! and on a SKU row whose head declared no meter. The frozen-row trigger
+//! below refuses an `UPDATE` to it like any other column.
+//!
 //! # `digest_version` is stored per row so a later bump is checkable
 //!
 //! `digest_version` starts at `1` and is pinned as a code constant by §5's
@@ -224,6 +236,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
             approval_ref      uuid,
             actor_ref         uuid        NOT NULL,
             published_at      timestamptz NOT NULL,
+            binding_snapshot  text,
             CONSTRAINT products_entity_version_pkey PRIMARY KEY (tenant_id, entity_kind, entity_id, published_version),
             CONSTRAINT chk_products_entity_version_entity_kind CHECK (entity_kind IN ('product', 'sku')),
             CONSTRAINT chk_products_entity_version_published_version CHECK (published_version >= 1),
@@ -266,6 +279,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             approval_ref      text,
             actor_ref         text   NOT NULL,
             published_at      text   NOT NULL,
+            binding_snapshot  text,
             PRIMARY KEY (tenant_id, entity_kind, entity_id, published_version),
             CONSTRAINT chk_products_entity_version_entity_kind CHECK (entity_kind IN ('product', 'sku')),
             CONSTRAINT chk_products_entity_version_published_version CHECK (published_version >= 1),

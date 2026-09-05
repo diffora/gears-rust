@@ -287,8 +287,20 @@ pub async fn audit_error_code(dsn: &str) -> Option<String> {
 /// collector's client or `NoCollector` (P-D-141).
 pub fn resolved_usage_types() -> Arc<dyn crate::infra::usage_types::UsageTypeResolver> {
     Arc::new(StubUsageTypes::always(
-        crate::domain::recognized::UsageTypeAnswer::Resolved,
+        crate::domain::recognized::UsageTypeAnswer::Resolved(probe_binding()),
     ))
+}
+
+/// The binding every `Resolved` stub answers with — what a probe expects to
+/// find frozen in `binding_snapshot` after a publish (`dod-binding-snapshot`).
+/// The metadata keys are deliberately unsorted here: the stored form sorts.
+#[must_use]
+pub fn probe_binding() -> crate::domain::recognized::UsageTypeBinding {
+    crate::domain::recognized::UsageTypeBinding {
+        gts_id: "usage:storage".to_owned(),
+        kind: "counter".to_owned(),
+        metadata_fields: vec!["zone".to_owned(), "region".to_owned()],
+    }
 }
 
 /// A scripted collector: answers in order, then repeats the last one.
@@ -331,7 +343,7 @@ impl crate::infra::usage_types::UsageTypeResolver for StubUsageTypes {
     ) -> crate::domain::recognized::UsageTypeAnswer {
         self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let next = self.answers.lock().expect("stub lock").pop_front();
-        next.unwrap_or(self.last)
+        next.unwrap_or_else(|| self.last.clone())
     }
 }
 
@@ -370,6 +382,24 @@ pub async fn seed_satisfied_approval(
     subject: crate::domain::governance::GateSubject,
     revision: i64,
 ) -> crate::domain::governance::ApprovalId {
+    seed_satisfied_approval_with_ack(db, tenant_id, subject, revision, None).await
+}
+
+/// [`seed_satisfied_approval`] whose record also **carries the
+/// uncomposed-bundle acknowledgment** (`dod-bundle-override`): the double for
+/// P-D-02's two-person ceremony. `submit_approval` admits an author
+/// acknowledgment only at effective quorum zero (P-D-68 arm 1), so above it
+/// the double stamps the column after the fact — which is what an approver's
+/// acknowledging decision row amounts to for the gate's one reader,
+/// `CandidateApproval::override_acknowledged`. Stamps an already-open record
+/// for the subject too, so a probe can refuse first and acknowledge second.
+pub async fn seed_satisfied_approval_with_ack(
+    db: &toolkit_db::DBProvider<toolkit_db::DbError>,
+    tenant_id: Uuid,
+    subject: crate::domain::governance::GateSubject,
+    revision: i64,
+    override_ack: Option<&str>,
+) -> crate::domain::governance::ApprovalId {
     use crate::domain::governance::ApprovalId;
     use crate::domain::materiality::{
         MaterialAct, MaterialityEvaluator, MaterialityPolicy, Resolution,
@@ -396,6 +426,27 @@ pub async fn seed_satisfied_approval(
                 | crate::domain::approval::ApprovalState::Satisfied
         )
     }) {
+        if let Some(ack) = override_ack {
+            approval::Entity::update_many()
+                .secure()
+                .scope_with(&scope)
+                .col_expr(
+                    approval::Column::AuthorOverrideAck,
+                    Expr::value(Some(ack.to_owned())),
+                )
+                .col_expr(
+                    approval::Column::AuthorOverrideAckAt,
+                    Expr::value(Some(chrono::Utc::now())),
+                )
+                .filter(
+                    Condition::all()
+                        .add(approval::Column::TenantId.eq(tenant_id))
+                        .add(approval::Column::ApprovalId.eq(open.approval_id.get())),
+                )
+                .exec(&conn)
+                .await
+                .expect("stamp the acknowledgment on the open record");
+        }
         return open.approval_id;
     }
     let policy = MaterialityPolicy::default();
@@ -433,6 +484,27 @@ pub async fn seed_satisfied_approval(
         .exec(&conn)
         .await
         .expect("satisfy the record");
+    if let Some(ack) = override_ack {
+        approval::Entity::update_many()
+            .secure()
+            .scope_with(&scope)
+            .col_expr(
+                approval::Column::AuthorOverrideAck,
+                Expr::value(Some(ack.to_owned())),
+            )
+            .col_expr(
+                approval::Column::AuthorOverrideAckAt,
+                Expr::value(Some(chrono::Utc::now())),
+            )
+            .filter(
+                Condition::all()
+                    .add(approval::Column::TenantId.eq(tenant_id))
+                    .add(approval::Column::ApprovalId.eq(approval_id.get())),
+            )
+            .exec(&conn)
+            .await
+            .expect("stamp the acknowledgment");
+    }
     approval_id
 }
 

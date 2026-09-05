@@ -134,11 +134,54 @@ pub struct Product {
     pub published_version: i64,
 }
 
+/// A SKU's commercial type — `design/03`'s closed set (`inst-cl-type`).
+///
+/// Three members, closed: a fourth type is a design change, not a value. A
+/// consumer that treats the wire field as an open string is choosing display
+/// tolerance over the pin's guard, as with [`LifecycleState`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SkuType {
+    /// A sellable good with both accounting codes required at publish.
+    Product,
+    /// A sellable service, the same code profile as a product.
+    Service,
+    /// Commercially incomplete by design: no codes required, and its publish
+    /// carries plan-price's composition state (`composition_pending`).
+    Bundle,
+}
+
+impl SkuType {
+    /// The stored and wire spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Product => "product",
+            Self::Service => "service",
+            Self::Bundle => "bundle",
+        }
+    }
+
+    /// Parse the stored spelling; anything else is not a type.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "product" => Some(Self::Product),
+            "service" => Some(Self::Service),
+            "bundle" => Some(Self::Bundle),
+            _ => None,
+        }
+    }
+}
+
 /// A SKU as a consumer reads it.
 ///
-/// The capability columns a SKU carries — typing, `sellable`, `PlanTier`, the
-/// accounting codes, the metering unit — are not here. They belong to the
-/// features that own their rules, and a consumer reads them from those.
+/// The classification columns ride here **from day one**
+/// (`design/03` `dod-sdk-read-shape`, **P-D-146**): the type, `sellable`,
+/// the tier, the meter pair and the two accounting codes. `03` owns their
+/// rules; this shape carries their values so a consumer never has to reach
+/// past the SDK for them. Pricing's `CatalogSku` still lacks three of these
+/// (`03` §7 row 4, `12-consumer-contracts`'), and carrying them here keeps
+/// that fix additive on the consumer side.
 /// The field names repeat the type name — `product_id`, `sku_code` — and that
 /// is deliberate. Each one is the name the database column carries **and** the
 /// name the wire contract uses, so shortening them here would make this crate
@@ -161,4 +204,23 @@ pub struct Sku {
     pub internal_revision: i64,
     /// Moves only on publish; the only counter a consumer may pin to.
     pub published_version: i64,
+    /// `design/03`'s closed commercial type.
+    ///
+    /// @cpt-dod:cpt-cf-bss-products-dod-sdk-read-shape:p1
+    pub sku_type: SkuType,
+    /// Whether the SKU is offered for sale; defaults `true` at create
+    /// (`dod-sellable`). A flip is a bucket-iii save the next publish freezes.
+    ///
+    /// @cpt-dod:cpt-cf-bss-products-dod-sellable:p1
+    pub sellable: bool,
+    /// The `PlanTier` member the SKU is assigned to, by stable code.
+    pub plan_tier: Option<String>,
+    /// The metering unit — half of the meter pair, both or neither present.
+    pub metering_unit: Option<String>,
+    /// The usage-collector type the meter binds to — the other half.
+    pub usage_type_ref: Option<String>,
+    /// The tax category code; required at publish for `product`/`service`.
+    pub tax_category_ref: Option<String>,
+    /// The GL code; required at publish for `product`/`service`.
+    pub gl_code_ref: Option<String>,
 }

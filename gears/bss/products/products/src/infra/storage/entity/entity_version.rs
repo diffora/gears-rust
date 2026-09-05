@@ -91,6 +91,12 @@ pub struct Model {
     /// through `products_identity_ref` (`inst-fd-actor-ref`).
     pub actor_ref: Uuid,
     pub published_at: ChronoDateTimeUtc,
+    /// What the metering `usageTypeRef` resolved to at publish — provenance
+    /// beside the content, **outside the digest** (**P-D-134** row 6,
+    /// `dod-binding-snapshot`, P-D-146). `NULL` for a Product row and for a
+    /// SKU that declares no meter. Frozen with the row: the no-`UPDATE`
+    /// trigger covers it like every other column here.
+    pub binding_snapshot: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

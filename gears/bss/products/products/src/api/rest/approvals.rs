@@ -1031,6 +1031,16 @@ async fn submit_approval(
     let subject_tx = submission.subject.clone();
     let snapshot_tx = submission.content_snapshot.clone();
     let ack_tx = body.author_override_ack.clone();
+    // The finance-material operand (`dod-finance-materiality`,
+    // `dod-finance-predicate`; P-D-146): a publish that touches either
+    // accounting code is Finance's whatever the caller said — the caller's
+    // flag can add a reason the registry cannot see, never subtract one.
+    let finance_material = body.finance_material
+        || matches!(
+            &submission.act,
+            ActSpec::EntityPublish { touched, .. }
+                if crate::domain::recognized::is_finance_material(touched)
+        );
     let act_tx = Arc::new(submission.act);
     let attempted = body.subject_ref.clone();
     let answered = state
@@ -1064,7 +1074,7 @@ async fn submit_approval(
                             diff_basis: submission.diff_basis,
                             act: &act,
                             evaluator,
-                            finance_material: body.finance_material,
+                            finance_material,
                             approver_count: configured,
                             submitter: actor_ref,
                             author_override_ack: ack.as_deref(),

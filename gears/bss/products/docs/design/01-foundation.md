@@ -910,7 +910,9 @@ P-D-29: `sha2` is already a workspace dependency, and the "digest-version bump, 
 rule below is only checkable if the version a row was computed under is stored on the row; the
 slice-10 restore drill re-verifies sampled entity versions against it, and without it
 version-history corruption is invisible to every checksum (H2 fix) · `approval_ref` · `actor_ref` ·
-`published_at`.
+`published_at` · **`binding_snapshot`** (nullable, **outside the digest** — `03`'s resolved-binding
+provenance, what a SKU's `usageTypeRef` resolved to at publish; P-D-134 row 6, P-D-146; `NULL` on
+every Product row).
 
 **Engine-canonical serialization is pinned here** (owner's call, 2026-08-27 — 06 §2's
 `inst-sn-checksum` had pointed back at "the 01 engine-canonical discipline" while this section

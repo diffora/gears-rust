@@ -134,7 +134,36 @@ async fn post_json(app: Router, uri: &str, body: &JsonValue) -> axum::http::Resp
     .expect("the router answers")
 }
 
-async fn add_member(app: Router, kind: &str, code: &str) -> axum::http::Response<Body> {
+/// The in-test approval double every member op needs under the stored host
+/// (`dod-recognized-set-mechanics`, P-D-146): one satisfied record for the
+/// exact subject the door presents. A case that seeded its own keeps it.
+async fn seed_member_op(harness: &TestHarness, tenant: Uuid, kind: &str, code: &str) {
+    // An unknown kind is refused by the door before the host is asked; there
+    // is nothing to seed for it.
+    let Some(kind) = crate::domain::recognized::SetKind::parse(kind) else {
+        return;
+    };
+    crate::test_support::seed_satisfied_approval(
+        &harness.db,
+        tenant,
+        crate::api::rest::recognized_sets::member_op_subject(tenant, kind, code),
+        0,
+    )
+    .await;
+}
+
+async fn add_member(
+    harness: &TestHarness,
+    tenant: Uuid,
+    kind: &str,
+    code: &str,
+) -> axum::http::Response<Body> {
+    seed_member_op(harness, tenant, kind, code).await;
+    add_member_via(app_for(harness, tenant), kind, code).await
+}
+
+/// [`add_member`] over a caller-built router, **without** the seeding double.
+async fn add_member_via(app: Router, kind: &str, code: &str) -> axum::http::Response<Body> {
     post_json(
         app,
         &format!("/bss-products/v1/recognized-sets/{kind}/members"),
@@ -144,16 +173,34 @@ async fn add_member(app: Router, kind: &str, code: &str) -> axum::http::Response
 }
 
 async fn transition(
-    app: Router,
+    harness: &TestHarness,
+    tenant: Uuid,
     kind: &str,
     code: &str,
     expected: &str,
     to: &str,
 ) -> axum::http::Response<Body> {
+    seed_member_op(harness, tenant, kind, code).await;
     post_json(
-        app,
+        app_for(harness, tenant),
         &format!("/bss-products/v1/recognized-sets/{kind}/members/{code}/transitions"),
         &json!({ "to": to, "expected_state": expected }),
+    )
+    .await
+}
+
+async fn relabel(
+    harness: &TestHarness,
+    tenant: Uuid,
+    kind: &str,
+    code: &str,
+    label: Option<&str>,
+) -> axum::http::Response<Body> {
+    seed_member_op(harness, tenant, kind, code).await;
+    post_json(
+        app_for(harness, tenant),
+        &format!("/bss-products/v1/recognized-sets/{kind}/members/{code}/label"),
+        &json!({ "display_label": label }),
     )
     .await
 }
@@ -350,7 +397,7 @@ async fn retire_holder(harness: &TestHarness, sku_id: Uuid) {
 #[tokio::test]
 async fn an_add_lands_active_and_announces() {
     let harness = harness().await;
-    let response = add_member(app_for(&harness, TENANT), "metering_unit", "gib_month").await;
+    let response = add_member(&harness, TENANT, "metering_unit", "gib_month").await;
     assert_eq!(response.status(), axum::http::StatusCode::CREATED);
     let body = body_json(response).await;
     assert_eq!(body["state"], "active");
@@ -363,7 +410,7 @@ async fn an_add_lands_active_and_announces() {
         "the metering-unit set announces through its own token"
     );
 
-    let tier = add_member(app_for(&harness, TENANT), "plan_tier", "gold").await;
+    let tier = add_member(&harness, TENANT, "plan_tier", "gold").await;
     assert_eq!(tier.status(), axum::http::StatusCode::CREATED);
     assert_eq!(
         enqueued_event_count(&harness.dsn, "PlanTierUpdated").await,
@@ -378,10 +425,10 @@ async fn an_add_lands_active_and_announces() {
 #[tokio::test]
 async fn a_duplicate_add_is_refused_naming_the_relisting_path() {
     let harness = harness().await;
-    let first = add_member(app_for(&harness, TENANT), "metering_unit", "gib_month").await;
+    let first = add_member(&harness, TENANT, "metering_unit", "gib_month").await;
     assert_eq!(first.status(), axum::http::StatusCode::CREATED);
 
-    let again = add_member(app_for(&harness, TENANT), "metering_unit", "gib_month").await;
+    let again = add_member(&harness, TENANT, "metering_unit", "gib_month").await;
     assert_eq!(again.status(), axum::http::StatusCode::CONFLICT);
     assert_eq!(error_code(again).await, "DUPLICATE_CODE");
 }
@@ -391,10 +438,11 @@ async fn a_duplicate_add_is_refused_naming_the_relisting_path() {
 #[tokio::test]
 async fn the_machine_walks_its_edges_and_refuses_the_shortcut() {
     let harness = harness().await;
-    add_member(app_for(&harness, TENANT), "metering_unit", "gib_month").await;
+    add_member(&harness, TENANT, "metering_unit", "gib_month").await;
 
     let shortcut = transition(
-        app_for(&harness, TENANT),
+        &harness,
+        TENANT,
         "metering_unit",
         "gib_month",
         "active",
@@ -409,7 +457,8 @@ async fn the_machine_walks_its_edges_and_refuses_the_shortcut() {
     assert_eq!(error_code(shortcut).await, "ILLEGAL_TRANSITION");
 
     let deprecated = transition(
-        app_for(&harness, TENANT),
+        &harness,
+        TENANT,
         "metering_unit",
         "gib_month",
         "active",
@@ -420,7 +469,8 @@ async fn the_machine_walks_its_edges_and_refuses_the_shortcut() {
     assert_eq!(body_json(deprecated).await["state"], "deprecated");
 
     let removed = transition(
-        app_for(&harness, TENANT),
+        &harness,
+        TENANT,
         "metering_unit",
         "gib_month",
         "deprecated",
@@ -430,7 +480,8 @@ async fn the_machine_walks_its_edges_and_refuses_the_shortcut() {
     assert_eq!(removed.status(), axum::http::StatusCode::OK);
 
     let relisted = transition(
-        app_for(&harness, TENANT),
+        &harness,
+        TENANT,
         "metering_unit",
         "gib_month",
         "removed",
@@ -455,9 +506,10 @@ async fn the_machine_walks_its_edges_and_refuses_the_shortcut() {
 #[tokio::test]
 async fn a_stale_expected_state_is_refused_stale_live_op() {
     let harness = harness().await;
-    add_member(app_for(&harness, TENANT), "metering_unit", "gib_month").await;
+    add_member(&harness, TENANT, "metering_unit", "gib_month").await;
     transition(
-        app_for(&harness, TENANT),
+        &harness,
+        TENANT,
         "metering_unit",
         "gib_month",
         "active",
@@ -466,7 +518,8 @@ async fn a_stale_expected_state_is_refused_stale_live_op() {
     .await;
 
     let stale = transition(
-        app_for(&harness, TENANT),
+        &harness,
+        TENANT,
         "metering_unit",
         "gib_month",
         "active",
@@ -497,11 +550,12 @@ async fn a_stale_expected_state_is_refused_stale_live_op() {
 #[tokio::test]
 async fn a_removal_is_blocked_by_live_holders_and_admitted_after_them() {
     let harness = harness().await;
-    add_member(app_for(&harness, TENANT), "metering_unit", "gib_month").await;
+    add_member(&harness, TENANT, "metering_unit", "gib_month").await;
     let holder = seed_holder(&harness, "SKU-HOLDER", "gib_month").await;
 
     transition(
-        app_for(&harness, TENANT),
+        &harness,
+        TENANT,
         "metering_unit",
         "gib_month",
         "active",
@@ -510,7 +564,8 @@ async fn a_removal_is_blocked_by_live_holders_and_admitted_after_them() {
     .await;
 
     let blocked = transition(
-        app_for(&harness, TENANT),
+        &harness,
+        TENANT,
         "metering_unit",
         "gib_month",
         "deprecated",
@@ -530,7 +585,8 @@ async fn a_removal_is_blocked_by_live_holders_and_admitted_after_them() {
     // every assertion above would still pass.
     deprecate_holder(&harness, holder).await;
     let still_blocked = transition(
-        app_for(&harness, TENANT),
+        &harness,
+        TENANT,
         "metering_unit",
         "gib_month",
         "deprecated",
@@ -549,7 +605,8 @@ async fn a_removal_is_blocked_by_live_holders_and_admitted_after_them() {
 
     retire_holder(&harness, holder).await;
     let admitted = transition(
-        app_for(&harness, TENANT),
+        &harness,
+        TENANT,
         "metering_unit",
         "gib_month",
         "deprecated",
@@ -612,7 +669,8 @@ async fn a_seeded_member_deprecates_and_never_removes() {
     .expect("seed the member");
 
     let deprecated = transition(
-        app_for(&harness, TENANT),
+        &harness,
+        TENANT,
         "metering_unit",
         "seeded_gib",
         "active",
@@ -622,7 +680,8 @@ async fn a_seeded_member_deprecates_and_never_removes() {
     assert_eq!(deprecated.status(), axum::http::StatusCode::OK);
 
     let removal = transition(
-        app_for(&harness, TENANT),
+        &harness,
+        TENANT,
         "metering_unit",
         "seeded_gib",
         "deprecated",
@@ -654,7 +713,7 @@ async fn a_seeded_member_deprecates_and_never_removes() {
 #[tokio::test]
 async fn an_unknown_set_kind_is_refused_closed() {
     let harness = harness().await;
-    let response = add_member(app_for(&harness, TENANT), "units", "gib_month").await;
+    let response = add_member(&harness, TENANT, "units", "gib_month").await;
     assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
 }
 
@@ -663,7 +722,8 @@ async fn an_unknown_set_kind_is_refused_closed() {
 async fn a_transition_on_an_unknown_member_is_not_found() {
     let harness = harness().await;
     let response = transition(
-        app_for(&harness, TENANT),
+        &harness,
+        TENANT,
         "metering_unit",
         "ghost",
         "active",
@@ -671,4 +731,161 @@ async fn a_transition_on_an_unknown_member_is_not_found() {
     )
     .await;
     assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+}
+
+/// **The door has a gate** (`dod-recognized-set-mechanics`, P-D-146): with no
+/// satisfied record for the member's `GovernedLiveOp` subject, every member
+/// op — add, transition, relabel — answers `APPROVAL_REQUIRED`, and nothing
+/// is written or announced.
+#[tokio::test]
+async fn a_member_op_without_a_satisfied_record_is_refused_approval_required() {
+    let harness = harness().await;
+    let refused = add_member_via(app_for(&harness, TENANT), "metering_unit", "gib_month").await;
+    assert_eq!(refused.status(), axum::http::StatusCode::FORBIDDEN);
+    assert_eq!(error_code(refused).await, "APPROVAL_REQUIRED");
+    assert_eq!(
+        enqueued_event_count(&harness.dsn, "RecognizedUnitUpdated").await,
+        0,
+        "a refused add announces nothing"
+    );
+
+    add_member(&harness, TENANT, "metering_unit", "gib_month").await;
+    let stranger = post_json(
+        app_for(&harness, TENANT),
+        "/bss-products/v1/recognized-sets/metering_unit/members/gib_month/transitions",
+        &json!({ "to": "deprecated", "expected_state": "active" }),
+    )
+    .await;
+    // The add's record was spent by the add: a second op on the same member
+    // needs a record of its own.
+    assert_eq!(stranger.status(), axum::http::StatusCode::FORBIDDEN);
+    assert_eq!(error_code(stranger).await, "APPROVAL_REQUIRED");
+    let relabel_refused = post_json(
+        app_for(&harness, TENANT),
+        "/bss-products/v1/recognized-sets/metering_unit/members/gib_month/label",
+        &json!({ "display_label": "GiB-month" }),
+    )
+    .await;
+    assert_eq!(relabel_refused.status(), axum::http::StatusCode::FORBIDDEN);
+    assert_eq!(error_code(relabel_refused).await, "APPROVAL_REQUIRED");
+}
+
+/// **A rename touches the display label and nothing else**
+/// (`dod-plantier-governance`, `dod-unit-immutable`): the code and the state
+/// survive, the set announces, and a member that does not exist is `404`.
+#[tokio::test]
+async fn a_relabel_changes_the_display_label_only_and_announces() {
+    let harness = harness().await;
+    add_member(&harness, TENANT, "plan_tier", "gold").await;
+    let renamed = relabel(&harness, TENANT, "plan_tier", "gold", Some("Gold")).await;
+    assert_eq!(renamed.status(), axum::http::StatusCode::OK);
+    let body = body_json(renamed).await;
+    assert_eq!(body["display_label"], "Gold");
+    assert_eq!(body["member_code"], "gold", "the code is the identity");
+    assert_eq!(body["state"], "active", "a relabel is not a transition");
+    assert_eq!(
+        enqueued_event_count(&harness.dsn, "PlanTierUpdated").await,
+        2,
+        "the add and the relabel each announce through the tier token"
+    );
+
+    let cleared = relabel(&harness, TENANT, "plan_tier", "gold", None).await;
+    assert_eq!(cleared.status(), axum::http::StatusCode::OK);
+    assert!(body_json(cleared).await["display_label"].is_null());
+
+    let missing = relabel(&harness, TENANT, "plan_tier", "platinum", Some("Platinum")).await;
+    assert_eq!(missing.status(), axum::http::StatusCode::NOT_FOUND);
+}
+
+/// A published head carrying a **tier** or an **accounting code** blocks that
+/// member's removal exactly as a metering unit's does — the guard is uniform
+/// across the four kinds (`dod-recognized-set-mechanics`,
+/// `dod-plantier-governance`; P-D-146) — and the positive control removes a
+/// member nobody carries.
+#[tokio::test]
+async fn a_tier_retire_and_a_code_removal_are_blocked_by_a_published_carrier() {
+    let harness = harness().await;
+    add_member(&harness, TENANT, "plan_tier", "gold").await;
+    add_member(&harness, TENANT, "plan_tier", "silver").await;
+    add_member(&harness, TENANT, "tax_category", "TC-VAT").await;
+    seed_carrier(&harness, "SKU-GOLD", "plan_tier", "gold").await;
+    seed_carrier(&harness, "SKU-VAT", "tax_category_ref", "TC-VAT").await;
+
+    for (kind, code, expected_code) in [
+        ("plan_tier", "gold", "PLAN_TIER_RETIRE_BLOCKED"),
+        ("tax_category", "TC-VAT", "ACCOUNTING_CODE_DELIST_BLOCKED"),
+    ] {
+        let deprecated = transition(&harness, TENANT, kind, code, "active", "deprecated").await;
+        assert_eq!(deprecated.status(), axum::http::StatusCode::OK, "{kind}");
+        let blocked = transition(&harness, TENANT, kind, code, "deprecated", "removed").await;
+        assert_eq!(blocked.status(), axum::http::StatusCode::CONFLICT, "{kind}");
+        assert_eq!(error_code(blocked).await, expected_code);
+    }
+
+    for (kind, code) in [("plan_tier", "silver"), ("gl_code", "GL-9999")] {
+        if kind == "gl_code" {
+            add_member(&harness, TENANT, kind, code).await;
+        }
+        let deprecated = transition(&harness, TENANT, kind, code, "active", "deprecated").await;
+        assert_eq!(deprecated.status(), axum::http::StatusCode::OK, "{kind}");
+        let removed = transition(&harness, TENANT, kind, code, "deprecated", "removed").await;
+        assert_eq!(
+            removed.status(),
+            axum::http::StatusCode::OK,
+            "a {kind} member no published head carries removes - the positive control"
+        );
+    }
+}
+
+/// A published SKU carrying `value` in `column` — the fixture the tier and
+/// code guards count. Written the way [`seed_holder`] writes a metered one:
+/// through the head guard, with a frozen version row naming the column.
+async fn seed_carrier(harness: &TestHarness, sku_code: &str, column: &str, value: &str) -> Uuid {
+    let conn = Database::connect(&harness.dsn)
+        .await
+        .expect("open an auxiliary connection");
+    let product_id = Uuid::now_v7();
+    let sku_id = Uuid::now_v7();
+    let now = "2026-08-29 09:00:00.000000 +00:00";
+    for sql in [
+        format!(
+            "INSERT INTO products_product (product_id, tenant_id, brand_id, name, \
+             name_normalized, product_code, lifecycle_state, internal_revision, \
+             published_version, region_scope, brand_scope, created_by, created_at, updated_at) \
+             VALUES (X'{prod}', X'{tenant}', X'{brand}', 'Carrier {sku_code}', \
+             'carrier {sku_code}', NULL, 'draft', 1, 0, '', '', 'principal:author-1', \
+             '{now}', '{now}')",
+            prod = product_id.simple(),
+            tenant = TENANT.simple(),
+            brand = Uuid::from_u128(0xb1).simple(),
+        ),
+        format!(
+            "INSERT INTO products_sku (sku_id, tenant_id, product_id, sku_code, \
+             lifecycle_state, internal_revision, published_version, composition_pending, \
+             region_scope, brand_scope, created_by, created_at, updated_at, {column}) \
+             VALUES (X'{sku}', X'{tenant}', X'{prod}', '{sku_code}', 'draft', 1, 0, 0, '', '', \
+             'principal:author-1', '{now}', '{now}', '{value}')",
+            sku = sku_id.simple(),
+            tenant = TENANT.simple(),
+            prod = product_id.simple(),
+        ),
+        format!(
+            "INSERT INTO products_entity_version (tenant_id, entity_kind, entity_id, \
+             published_version, content, content_digest, digest_version, actor_ref, \
+             published_at) VALUES (X'{tenant}', 'sku', X'{sku}', 1, \
+             '{{\"{column}\":\"{value}\"}}', X'00', 1, X'{tenant}', '{now}')",
+            tenant = TENANT.simple(),
+            sku = sku_id.simple(),
+        ),
+        format!(
+            "UPDATE products_sku SET lifecycle_state = 'published', published_version = 1, \
+             internal_revision = internal_revision + 1 WHERE sku_id = X'{sku}'",
+            sku = sku_id.simple(),
+        ),
+    ] {
+        conn.execute_unprepared(&sql)
+            .await
+            .expect("the head guard admits this fixture write");
+    }
+    sku_id
 }

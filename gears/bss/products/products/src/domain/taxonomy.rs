@@ -423,7 +423,7 @@ pub fn limit_verdict(
 /// The caller reads them under the writer lock and bounds each at
 /// `sample + 1`, so [`retire_verdict`] can say *"at least N"* honestly
 /// without a second statement whose total could disagree with its own
-/// exemplars — the failure `repo::metering_unit_holders` documents on the
+/// exemplars — the failure `repo::member_holders` documents on the
 /// sibling guard.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RetireCensus {

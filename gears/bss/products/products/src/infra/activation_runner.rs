@@ -443,12 +443,15 @@ async fn drive_door(
                 now: drive.now,
                 claim: None,
             };
+            // No binding snapshot from this lane: the pre-transaction
+            // resolve is the REST door's (see `publish_refusal_is_transient`).
             let outcome = skus::run_publish(
                 runner,
                 &inputs,
                 drive.gate,
                 GateMode::PreAuthorized(ApprovalId::new(drive.row.approval_ref)),
                 &ctx.sink,
+                None,
             )
             .await;
             Ok(map_sku_door(outcome, drive.attempt, ctx.budget))
@@ -730,7 +733,7 @@ fn map_sku_door(
         Err(HeadActError::Refused(error)) => match classify_door_refusal(
             DoorRefusal {
                 code: error.code(),
-                transient: false,
+                transient: publish_refusal_is_transient(error.code()),
             },
             attempt,
             budget,
@@ -747,6 +750,26 @@ fn map_sku_door(
             reason: format!("door storage failed: {error}"),
         },
     }
+}
+
+/// The one publish refusal the scheduled lane **defers** rather than fails
+/// (`dod-classification-errors`, `design/03` §4: *"on the scheduled lane
+/// joins the runner's `deferred` set"*). `USAGE_TYPE_UNAVAILABLE` is the
+/// collector not answering (**P-D-131**) — a transient dependency under the
+/// attempt budget, `DeferralPopulation::TransientDependency`. Every other
+/// door code is a decision about the SKU and fails the run.
+///
+/// **Measured, not hidden (P-D-146):** this lane does not resolve
+/// `usageTypeRef` today — `run_publish` is entered directly, and the
+/// pre-transaction resolve lives in the REST door, which has the caller's
+/// `SecurityContext` and this loop does not. Until the runner carries a
+/// service context and the resolver, the code cannot reach this arm from
+/// this lane; the arm is here so that when it does, it lands in the right
+/// set. Routed as `03` §7's open item, owner `04`/`07`.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-classification-errors:p1
+pub(crate) fn publish_refusal_is_transient(code: &str) -> bool {
+    code == "USAGE_TYPE_UNAVAILABLE"
 }
 
 /// A cascade leg's record names the parent; the row names the child

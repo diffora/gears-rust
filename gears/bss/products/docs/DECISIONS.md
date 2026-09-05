@@ -1569,6 +1569,89 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-146 — 03's second half: the sets door under the stored host with a label op, the bundle gate condition on the publish, a computed finance operand, and the binding snapshot beside the version row
+
+- **Date**: 2026-09-05 (the lead, group 4 of the solo plan; `03` §7 rows 6, 14, 16, 20 as already
+  answered by P-D-121, P-D-125 and P-D-134)
+- **The sets door has a gate.** Add, transition and the new relabel each resolve the stored
+  approval host before their transaction (`api::rest::authorize_live_op`) and spend the record
+  inside it (`repo::settle_authorization`) — P-D-144's shape at the fifth live-op door. The subject
+  is `GovernedLiveOp` on `recognized_set/{set_kind}/{member_code}`, **unpinned**: the door's
+  staleness pin is `expected_state` in the body, not the approval's revision, so the stored `0`
+  sentinel and the door's `Unpinned` meet the way P-D-144 made them. Without a satisfied record the
+  door answers `APPROVAL_REQUIRED` and writes nothing; every probe seeds the record through the same
+  double the other doors use, and one probe drives the door without it.
+- **A third route, `POST …/members/{memberCode}/label`**, changes `display_label` and nothing
+  else — the rename `dod-plantier-governance` asks for, which `dod-unit-immutable` forbids being a
+  rename of the code. The trigger's whitelist already admitted exactly `state` and `display_label`;
+  the door now has the write that uses the second half. The design's route table gains the row —
+  and two rows it had been missing: the transitions route (registered since P-D-90) and the
+  inbox `GET /approvals` (P-D-144). Fifty routes, counted from the code.
+- **The removal guard is uniform across the four kinds.** `SetKind::carrier_column` names the
+  `products_sku` column each set's members are declared in, `repo::member_holders` samples holders
+  through it, and the flip's `NOT EXISTS` re-asserts it for every kind, not only `metering_unit`.
+  The door's module doc had said in so many words that a follower who wired the columns without
+  the lookup would ship the tier and code guards permanently off; P-D-145 wired the columns, this
+  wires the lookup. `PLAN_TIER_RETIRE_BLOCKED` and `ACCOUNTING_CODE_DELIST_BLOCKED` are now
+  raised, with a positive control that removes a member nobody carries.
+- **The bundle gate condition sits on the publish.** `skus::refuse_unacknowledged_bundle` runs in
+  `run_publish` after the verdict and **before** the one-shot: a `bundle` that is uncomposed by
+  P-D-134 row 20's reading — `published_version = 0`, or published with `composition_pending`
+  raised — publishes only under a record whose `override_acknowledged` is set, refusing
+  `BUNDLE_OVERRIDE_REQUIRED` (the fifteenth classification code, 400 precondition shape, both
+  counters at 70). Every lane carries it because every lane is `run_publish`. The refusal precedes
+  the settle so the record stays open for the acknowledged retry, and the acknowledgment is the same
+  operand `post_publish_image` writes into `composition_pending` (P-D-32). The runner's fixtures,
+  which P-D-145 had made bundles to dodge the codes, become `product` SKUs with Finance codes seeded
+  in that harness — a bundle would now need the ceremony. The test double for the ceremony,
+  `seed_satisfied_approval_with_ack`, stamps `author_override_ack` on the record after the fact:
+  above `N = 0` `submit_approval` refuses an author acknowledgment (P-D-68 arm 1), and the gate's
+  one reader treats the author's column and an approver's acknowledging decision alike.
+- **The finance-material operand is computed.** `dod-finance-predicate` sat unticked on *"whether
+  a change is finance-material cannot be computed: the columns are 03's and 03 has not registered
+  them."* They are registered (P-D-145), so the submit door now ORs the caller's `finance_material`
+  with `domain::recognized::is_finance_material(touched)` — `tax_category_ref` or `gl_code_ref` in
+  the diff (`plan_tier` is Product's, deliberately absent). A caller can still add a reason the
+  registry cannot see; it can no longer declare a code change *not* finance-material. The
+  one-person tenant's probe publishes a first `product` SKU at `N = 0` with the predicate recorded
+  `predicateUnsatisfiable = finance_reviewer` on the descriptor and no double seeded — the real host.
+  `dod-finance-predicate` (05) and `dod-finance-materiality` (03) tick together; 05 §7 row 25
+  (whether a recorded approver *held* FinanceReviewer) stays open as the decision door's question.
+- **The binding snapshot is a column beside the row, outside the digest** — P-D-134 row 6 built.
+  `products_entity_version.binding_snapshot` (nullable `text`, `m20260829_000007` in place on both
+  engines) holds `UsageTypeBinding::snapshot_json`: `{gts_id, kind, metadata_fields}`, keys and
+  fields sorted so equal bindings store equal bytes. `UsageTypeAnswer::Resolved` now carries the
+  binding; `resolve_usage_type_before_publish` returns it and `run_publish` hands it to `freeze_for`,
+  which computes `content` and `content_digest` before looking at it. **`DIGEST_VERSION` stays 2.**
+  P-D-134 wrote *"`DIGEST_VERSION` stays 1"* at row 6 and *"bumps to 2 with `06`'s build"* at `02`
+  row 22; P-D-145 moved it to 2 with 03's roster, so the bump `06`'s build owes is to **3**. A
+  Product row and a SKU with no meter freeze `NULL`.
+- **The no-event declaration is a constant.** `events::SKU_CLASSIFICATION_EDITS_EMIT_NO_EVENT`
+  names the seven per-field SKU columns whose edits ride `SkuHeadSaved`/`SkuPublished` and emit
+  nothing of their own; a test holds each against `SCHEMA_REFS` and the bucket roster.
+- **The SDK read shape carries 03's fields from day one.** `bss_products_sdk::models::Sku` gains
+  `sku_type` (a closed `SkuType`), `sellable`, `plan_tier`, `metering_unit`, `usage_type_ref`,
+  `tax_category_ref`, `gl_code_ref`. No read door constructs the shape yet and pricing's `CatalogSku`
+  lacks three of the seven — `12`'s, additive on the consumer side, as the DoD intends.
+- **Measured and routed, not built: the scheduled lane never resolves `usageTypeRef`.**
+  `activation_runner` enters `run_publish` under `PreAuthorized` without the pre-transaction
+  resolve, which lives in the REST door and needs the caller's `SecurityContext`. So a scheduled
+  publish of a metered SKU skips P-D-131's fail-closed check, freezes `NULL` into
+  `binding_snapshot`, and cannot reach the `deferred` arm `publish_refusal_is_transient` now holds
+  for `USAGE_TYPE_UNAVAILABLE`. The arm is built so the code lands in the right set when the lane
+  resolves; the lane is `03` §7 row 22 / design §6 item 22, owner `04`/`07`, fix shape stated there.
+- **Ticks.** `03`: `dod-recognized-set-mechanics`, `dod-sellable`, `dod-bundle-override`,
+  `dod-binding-snapshot`, `dod-meter-bucket`, `dod-unit-immutable`, `dod-plantier-governance`,
+  `dod-finance-materiality`, `dod-classification-errors`, `dod-recognized-set-events`,
+  `dod-sdk-read-shape` — 03 reaches **22 of 22**, every DoD in the feature (its status box
+  stays under P-D-137's convention until group 10's pass). `05`: `dod-finance-predicate`. §6 criteria ticked where a probe
+  reads them back; the *sellable end to end*, *deferred lane* and *correction door* criteria stay
+  open on `12`, row 22 and `07` respectively.
+- **Trace**: `dod-recognized-set-mechanics`, `dod-bundle-override`, `dod-binding-snapshot`,
+  `dod-plantier-governance`, `dod-finance-materiality`, `dod-recognized-set-events`,
+  `dod-sdk-read-shape` markers on their implementing items; `design/01` §version-row column list;
+  `DESIGN.md` §Endpoints Overview.
+
 #### P-D-145 — 03's five columns land, the type profile and the tier and code validators run at three doors, and the platform seeds on the first write
 
 - **Date**: 2026-09-05 (the lead, group 3 of the solo plan; `03` §7 rows 5, 7, 10, 11, 13, 16, 18

@@ -235,6 +235,10 @@ fn classification_wire_codes() -> Vec<(DomainError, &'static str)> {
             DomainError::PlanTierDeprecated("p".into()),
             "PLAN_TIER_DEPRECATED",
         ),
+        (
+            DomainError::BundleOverrideRequired("b".into()),
+            "BUNDLE_OVERRIDE_REQUIRED",
+        ),
     ]
 }
 
@@ -309,7 +313,7 @@ fn every_variant_carries_its_design_set_wire_code() {
     // until today. Read that file's own note before changing either.
     assert_eq!(
         cases.len(),
-        69,
+        70,
         "the Foundation owns fourteen raiseable codes and hosts two guests \
          (retention-erasure's ERASURE_UNKNOWN_ACTOR, P-D-64 keeping that \
          roster at one, and the clone door's CLONE_SOURCE_DISCARDED, \

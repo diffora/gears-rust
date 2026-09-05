@@ -1133,6 +1133,7 @@ async fn publish(conn: &impl toolkit_db::secure::DBRunner, scope: &AccessScope, 
             approval_ref: None,
             actor_ref: ACTOR,
             published_at: at(10),
+            binding_snapshot: None,
         },
     )
     .await

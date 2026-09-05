@@ -256,6 +256,7 @@ fn frozen(version: i64) -> NewEntityVersion {
         approval_ref: None,
         actor_ref: ACTOR,
         published_at: at(10),
+        binding_snapshot: None,
     }
 }
 
@@ -315,6 +316,7 @@ fn frozen_sku(version: i64) -> NewEntityVersion {
         approval_ref: None,
         actor_ref: ACTOR,
         published_at: at(10),
+        binding_snapshot: None,
     }
 }
 

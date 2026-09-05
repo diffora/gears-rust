@@ -233,6 +233,9 @@ impl From<DomainError> for CanonicalError {
             D::PlanTierDeprecated(detail) => {
                 precondition("plan_tier", &detail, "PLAN_TIER_DEPRECATED")
             }
+            D::BundleOverrideRequired(detail) => {
+                precondition("composition_pending", &detail, "BUNDLE_OVERRIDE_REQUIRED")
+            }
             D::UnitDelistBlocked(detail) => aborted(detail, "UNIT_DELIST_BLOCKED"),
             D::PlanTierRetireBlocked(detail) => aborted(detail, "PLAN_TIER_RETIRE_BLOCKED"),
             D::AccountingCodeDelistBlocked(detail) => {

@@ -1,6 +1,7 @@
 //! The field-mutability bucket registry: which bucket a Foundation-owned
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-bucket-registration:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-meter-bucket:p1
 //! column sits in, and what the answer is when it sits in none
 //! (`design/01-foundation.md` §4.1's *"Bucket assignment for the
 //! Foundation-owned columns"*, §5's agreement test, `inst-fd-bucket-tags`,
@@ -389,7 +390,7 @@ const PRODUCT_COLUMNS: [ColumnTag; 17] = [
 /// it is the primary key; and the table carries **no `name`**, so a `name`
 /// field arriving for a SKU is a miss and is refused rather than routed to the
 /// Product's tag.
-const SKU_COLUMNS: [ColumnTag; 25] = [
+pub(crate) const SKU_COLUMNS: [ColumnTag; 25] = [
     // Row identity (§4.2, P-D-34).
     ColumnTag {
         column: "sku_id",

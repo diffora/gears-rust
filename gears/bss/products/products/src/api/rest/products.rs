@@ -5086,6 +5086,7 @@ fn freeze_for(
         approval_ref: authorization.approval_ref().map(ApprovalId::get),
         actor_ref: inputs.actor_ref,
         published_at: inputs.now,
+        binding_snapshot: None,
     }
 }
 

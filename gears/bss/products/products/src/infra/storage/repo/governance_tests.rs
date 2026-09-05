@@ -202,6 +202,7 @@ async fn seed_head(runner: &impl DBRunner, scope: &AccessScope, published: Optio
                 approval_ref: None,
                 actor_ref: ACTOR,
                 published_at: at(10),
+                binding_snapshot: None,
             },
         )
         .await

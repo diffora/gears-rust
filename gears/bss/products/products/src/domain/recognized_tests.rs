@@ -2,8 +2,8 @@
 //! ship the defect its instruction names.
 
 use super::{
-    MemberState, SetKind, UsageTypeAnswer, declaration_is_new, declaration_verdict,
-    judge_usage_type, member_edge, meter_pair_complete,
+    FINANCE_MATERIAL_COLUMNS, MemberState, SetKind, UsageTypeAnswer, declaration_is_new,
+    declaration_verdict, is_finance_material, judge_usage_type, member_edge, meter_pair_complete,
 };
 use crate::domain::error::DomainError;
 
@@ -64,7 +64,13 @@ fn the_recognized_and_active_check_judges_only_a_new_or_changed_declaration() {
 /// The usage-type resolver's three answers, judged before the transaction.
 #[test]
 fn the_usage_type_resolver_has_three_answers() {
-    judge_usage_type(UsageTypeAnswer::Resolved, "usage:ok").expect("resolved admits");
+    let binding = crate::test_support::probe_binding();
+    assert_eq!(
+        judge_usage_type(UsageTypeAnswer::Resolved(binding.clone()), "usage:ok")
+            .expect("resolved admits"),
+        binding,
+        "the binding rides through to the freeze (dod-binding-snapshot)"
+    );
     let unknown = judge_usage_type(UsageTypeAnswer::Unresolved, "usage:gone")
         .expect_err("unknown is USAGE_TYPE_UNRESOLVED");
     assert_eq!(unknown.code(), "USAGE_TYPE_UNRESOLVED");
@@ -140,4 +146,59 @@ fn the_kind_roster_and_its_refusal_codes() {
         SetKind::GlCode.delist_blocked(String::new()).code(),
         "ACCOUNTING_CODE_DELIST_BLOCKED"
     );
+}
+
+/// The stored form of a binding is one JSON object with sorted keys and
+/// sorted metadata fields, so equal bindings store equal bytes
+/// (`dod-binding-snapshot`).
+#[test]
+fn a_binding_snapshot_renders_sorted_and_flat() {
+    let binding = crate::test_support::probe_binding();
+    assert_eq!(
+        binding.snapshot_json(),
+        r#"{"gts_id":"usage:storage","kind":"counter","metadata_fields":["region","zone"]}"#
+    );
+}
+
+/// `dod-finance-materiality`'s operand: the two accounting codes and only
+/// them — `plan_tier` is Product's — computed from the touched set the submit
+/// door already builds.
+#[test]
+fn finance_materiality_is_the_two_accounting_codes_and_nothing_else() {
+    let touched = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+    assert!(is_finance_material(&touched(&["tax_category_ref"])));
+    assert!(is_finance_material(&touched(&["name", "gl_code_ref"])));
+    assert!(!is_finance_material(&touched(&[
+        "plan_tier",
+        "sellable",
+        "sku_type"
+    ])));
+    assert!(!is_finance_material(&touched(&[])));
+    assert_eq!(
+        FINANCE_MATERIAL_COLUMNS,
+        ["tax_category_ref", "gl_code_ref"]
+    );
+}
+
+/// Every set kind names the `products_sku` column its members are declared
+/// in — the removal guard's population, uniform across the four
+/// (`dod-recognized-set-mechanics`), and each of those columns is registered
+/// in the bucket roster.
+#[test]
+fn every_set_kind_has_a_registered_carrier_column() {
+    for kind in [
+        SetKind::MeteringUnit,
+        SetKind::PlanTier,
+        SetKind::TaxCategory,
+        SetKind::GlCode,
+    ] {
+        let column = kind.carrier_column();
+        assert!(
+            crate::domain::bucket::SKU_COLUMNS
+                .iter()
+                .any(|tag| tag.column == column),
+            "{}'s carrier `{column}` is not a registered SKU column",
+            kind.as_str()
+        );
+    }
 }

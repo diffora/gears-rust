@@ -17,9 +17,9 @@ use super::{
     CATEGORY_DISPLAY_UPDATED_PAYLOAD_TYPE, EntityKind, EventBodyCore, EventEnvelope, PARTITIONS,
     PRODUCT_CREATED_PAYLOAD_TYPE, PRODUCT_DISCARDED_PAYLOAD_TYPE, PRODUCT_HEAD_SAVED_PAYLOAD_TYPE,
     PRODUCT_PUBLISHED_PAYLOAD_TYPE, PublishedEventBody, RetiredEventBody, SCHEMA_REFS,
-    SKU_CREATED_PAYLOAD_TYPE, SKU_DISCARDED_PAYLOAD_TYPE, SKU_HEAD_SAVED_PAYLOAD_TYPE,
-    SKU_PUBLISHED_PAYLOAD_TYPE, SKU_RETIRED_PAYLOAD_TYPE, TaxonomyEventBody, partition_for,
-    schema_ref_for,
+    SKU_CLASSIFICATION_EDITS_EMIT_NO_EVENT, SKU_CREATED_PAYLOAD_TYPE, SKU_DISCARDED_PAYLOAD_TYPE,
+    SKU_HEAD_SAVED_PAYLOAD_TYPE, SKU_PUBLISHED_PAYLOAD_TYPE, SKU_RETIRED_PAYLOAD_TYPE,
+    TaxonomyEventBody, partition_for, schema_ref_for,
 };
 
 /// §4.5's roster, written out here rather than read from the code under test.
@@ -647,4 +647,29 @@ fn partition_for_is_deterministic_for_the_same_pair() {
         partition_for(tenant_id, aggregate_id),
         "the same (tenant_id, aggregate_id) pair must hash to the same partition every time"
     );
+}
+
+/// `dod-recognized-set-events`' no-event declaration, held two ways: every
+/// name it lists is a registered SKU column (so the declaration is about real
+/// fields, not a wish list), and none is a payload type token (so no per-field
+/// event was quietly added beside it). The set events' tokens name the
+/// *sets*, so `PlanTierUpdated` beside `plan_tier` is the declared shape,
+/// not a violation.
+#[test]
+fn a_per_field_classification_edit_is_declared_to_emit_no_event() {
+    assert_eq!(SKU_CLASSIFICATION_EDITS_EMIT_NO_EVENT.len(), 7);
+    for column in SKU_CLASSIFICATION_EDITS_EMIT_NO_EVENT {
+        assert!(
+            crate::domain::bucket::SKU_COLUMNS
+                .iter()
+                .any(|tag| tag.column == column),
+            "`{column}` is not a registered SKU column"
+        );
+        assert!(
+            SCHEMA_REFS
+                .iter()
+                .all(|(token, _)| !token.eq_ignore_ascii_case(column)),
+            "`{column}` has an event of its own in SCHEMA_REFS"
+        );
+    }
 }

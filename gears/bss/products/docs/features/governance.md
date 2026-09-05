@@ -726,7 +726,7 @@ rather than presented as the design's.
 
 ### Finance predicate and its unsatisfiable arm
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-finance-predicate`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-finance-predicate`
 
 The system **MUST** set the FinanceReviewer predicate on a finance-material change **when
 `N ≥ 1`**, and at **`N = 0` MUST NOT** set it — recording `predicateUnsatisfiable` instead and
@@ -735,18 +735,19 @@ could hold and the gate refuses forever, which would re-block precisely the one-
 quorum floor exists to unblock. At every `N ≥ 1` the predicate **MUST** bind, and a tenant that has
 designated no FinanceReviewer simply has an unapprovable change.
 
-**Both arms ship and are probed across `N = 0..4`; the operand does not.** `describe_quorum` sets
-the predicate at every `N >= 1` and records `predicateUnsatisfiable = finance_reviewer` at `N = 0`
-instead, leaving the descriptor satisfiable. **The tick is blocked on the two inputs neither the
-gear nor the donor has.** *Whether a change is finance-material* cannot be computed: the
-instruction names `taxCategory`, `glCode` and `PlanTier`, and none is a registered column in
-`domain::bucket`'s roster — they are 03's and 03 has not registered them — so a registry lookup
-would answer "not finance-material" for all three and `finance_material` is an argument.
-*Whether a principal holds FinanceReviewer* is §7 row 25. Measured 2026-09-02 against the donor as
-well: `gears/bss/pricing` resolves its own `FinanceReviewer` through the **grant**, which answers
-for the caller in front of it and cannot answer C1's question, which is about the roles a set of
-**already recorded** approvers held when they decided. So this is not the donor's shape declined;
-it is an operand neither gear has.
+**Ticked (P-D-146); both arms and the operand ship.** `describe_quorum` sets the predicate at
+every `N >= 1` and records `predicateUnsatisfiable = finance_reviewer` at `N = 0` instead, leaving
+the descriptor satisfiable (probed across `N = 0..4`). *Whether a change is finance-material* is
+now **computed**: 03's columns exist (P-D-145) and the submit door ORs the caller's flag with
+`domain::recognized::is_finance_material(touched)` — `tax_category_ref` or `gl_code_ref` in the
+touched set; `plan_tier` is Product's and deliberately not Finance's — so a caller can add a reason
+the registry cannot see and can no longer subtract one (`03`'s
+`a_one_person_tenant_publishes_its_first_product_sku_and_the_predicate_is_recorded`). *Whether a
+principal holds FinanceReviewer* is §7 row 25 and is the **decision** door's question, not this
+DoD's — this DoD obliges the predicate on the descriptor. Measured 2026-09-02 against the donor:
+`gears/bss/pricing` resolves its own `FinanceReviewer` through the **grant**, which answers for the
+caller in front of it and cannot answer C1's question about the roles a set of already recorded
+approvers held; row 25 stays open on that.
 
 **Implements**: `cpt-cf-bss-products-flow-submit`
 
@@ -1030,7 +1031,8 @@ inside it (P-D-144). **No production door builds `NoMaterialityPolicyGate`** —
 constructions outside `domain/governance.rs` and the tests. The `LedgerDigest` arm compares the
 digest `pin_for_row` reads off `content_snapshot` (row 41). The census found one door with **no
 gate at all**: `recognized_sets.rs`' member door submits no envelope, though `03` prices its ops
-as governed — routed to `03`'s group, not built here.
+as governed — routed to `03`'s group, and built there by P-D-146: the door resolves the stored host
+before its transaction and spends the record inside it, subject `recognized_set/{kind}/{code}`.
 
 **Implements**: `cpt-cf-bss-products-flow-gate`
 

@@ -450,7 +450,9 @@ against a named double**: `dod-bundle-override`, `dod-finance-materiality`,
 `dod-recognized-set-mechanics` and `dod-plantier-governance` all spend a `05-governance` approval
 that has no runnable gate, and `dod-meter-bucket` spends `07-reference-signal`'s correction door —
 so each owes an **in-test approval double**, without which its probe goes green against a gate
-that approves nothing, `dod-finance-materiality`'s `predicateUnsatisfiable` arm included.
+that approves nothing, `dod-finance-materiality`'s `predicateUnsatisfiable` arm included. *The
+doubles ship (P-D-142, P-D-144, P-D-146): `seed_satisfied_approval`, its acknowledging variant
+for the bundle ceremony, and the real host at `N = 0` for the one-person tenant.*
 **Consumer half elsewhere**: `dod-sdk-read-shape`, whose other side is `12-consumer-contracts`'.
 The first draft claimed a single exception; the partition above is what the three-lens review
 measured.
@@ -518,7 +520,7 @@ column whose FK claim was struck; the argument holds for all four and §4 govern
 
 ### Recognized-set mechanics
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-recognized-set-mechanics`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-recognized-set-mechanics`
 
 The system **MUST** implement one generic membership lookup treating `active` and `deprecated`
 rows as the set and a `removed` row as a tombstone outside it, with every mutation riding
@@ -528,10 +530,15 @@ rows as the set and a `removed` row as a tombstone outside it, with every mutati
 removal **admitted** while only frozen version content does — the old snapshot still rendering
 afterwards, and a new declaration naming the removed member failing `UNRECOGNIZED_UNIT`.
 
-**Reached, not claimed (P-D-121 row 21's census is in the `UPDATE`; the approval double is not):**
-the lookup, the tombstone, the removal operand and the both-ways probe ship. The DoD also
-obliges every mutation riding `GovernedLiveOp` with an in-test approval double; the doors carry
-the envelope's staleness pin only. The tick returns with that double.
+**Ticked (P-D-146).** The lookup, the tombstone, the removal operand and the both-ways probe
+shipped with P-D-121; the doors now resolve the stored approval host before their transaction and
+spend the record inside it, subject `recognized_set/{set_kind}/{member_code}` unpinned
+(`recognized_sets::member_op_subject`), and the probes seed that record through the same double
+the other live-op doors use (`seed_member_op`;
+`a_member_op_without_a_satisfied_record_is_refused_approval_required` is the refutation). The
+holder population is uniform across the four kinds since 03's columns exist
+(`SetKind::carrier_column`, `repo::member_holders`, the flip's `NOT EXISTS`):
+`a_tier_retire_and_a_code_removal_are_blocked_by_a_published_carrier`.
 
 **Implements**: `cpt-cf-bss-products-algo-recognized-set`
 
@@ -576,13 +583,13 @@ easy thing to lose.
 
 ### Sellable
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-sellable`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-sellable`
 
 The system **MUST** default `sellable` to `true`, treat a flip as a bucket-iii head-row save
 re-published as version N+1, and expose it in the SDK read shape per `CatalogVersion`.
 **Whether the flip is material is open item 16.**
 
-**Two of three clauses built (P-D-145), no tick.** `sellable` defaults `true` and a flip is a bucket-iii save the next publish freezes as version N+1 (`a_type_change_after_first_publish_is_refused_and_a_sellable_flip_is_frozen`); item 16 is answered — the flip is material (P-D-131). The third clause, *"expose it in the SDK read shape per `CatalogVersion`"*, is `dod-sdk-read-shape`'s build and waits for it.
+**Ticked (P-D-146).** `sellable` defaults `true` and a flip is a bucket-iii save the next publish freezes as version N+1 (`a_type_change_after_first_publish_is_refused_and_a_sellable_flip_is_frozen`); item 16 is answered — the flip is material (P-D-131); and the SDK read shape carries it (`bss_products_sdk::models::Sku::sellable`, `dod-sdk-read-shape`). §6's *end to end* criterion stays open until a read door constructs that shape — `12-consumer-contracts`'.
 
 **Implements**: `cpt-cf-bss-products-flow-classify-sku`
 
@@ -591,7 +598,7 @@ re-published as version N+1, and expose it in the SDK read shape per `CatalogVer
 
 ### Bundle override registration
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-bundle-override`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-bundle-override`
 
 The system **MUST** register the gate condition that refuses an unacknowledged publish of an
 uncomposed `bundle` with `BUNDLE_OVERRIDE_REQUIRED`, on the **publish** rather than on any one
@@ -599,6 +606,8 @@ lane, so every lane including bulk carries it. The acknowledgment **MUST** be th
 `01-foundation`'s publish door reads to set `composition_pending`. The ceremony itself is
 `05-governance`'s, and **the findings report its approvers acknowledge by name is built by no
 slice (open item 14)**.
+
+**Ticked (P-D-146).** `skus::refuse_unacknowledged_bundle` runs inside `run_publish` — so every lane, bulk and scheduled included — after the verdict and **before** the one-shot spends the record: a `bundle` that is uncomposed by P-D-134 row 20's reading (`published_version = 0`, or published with `composition_pending` raised) publishes only under a record whose `override_acknowledged` is set, and that same operand is what `post_publish_image` writes into `composition_pending` (P-D-32). Probe: `an_unacknowledged_bundle_publish_is_refused_and_the_acknowledged_one_raises_the_flag`; the double is `seed_satisfied_approval_with_ack`, which stamps the acknowledgment the way an approver's acknowledging decision would for the gate's one reader. Open item 14 is answered by P-D-125 and does not bind this DoD.
 
 **Implements**: `cpt-cf-bss-products-flow-classify-sku`
 
@@ -665,7 +674,7 @@ exists.
 
 ### Resolved binding snapshot
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-dod-binding-snapshot`
+- [x] `p2` - **ID**: `cpt-cf-bss-products-dod-binding-snapshot`
 
 The system **MUST** freeze the resolved `(gts_id, kind, metadata_fields)` snapshot into the
 entity's `products_entity_version` row, as the record of what the binding resolved to at publish
@@ -674,6 +683,8 @@ validators-to-transaction boundary are all open item 6**: `01-foundation`'s vers
 closed and names no such column, and if the snapshot joins the digested content then the
 `digest_version` constant bumps off 1 and the Foundation's golden vector is re-pinned.
 
+**Ticked (P-D-146), on P-D-134 row 6's answer.** The column is `products_entity_version.binding_snapshot` (nullable `text`, one JSON object `{gts_id, kind, metadata_fields}` with sorted keys and fields — `UsageTypeBinding::snapshot_json`), added in `m20260829_000007` in place on both engines and frozen with the row by the no-`UPDATE` trigger. It is **outside the digest**: `content` and `content_digest` are computed before it is looked at and `DIGEST_VERSION` did not move. The carrier across the validators-to-transaction boundary is the door: `resolve_usage_type_before_publish` returns the binding the collector answered with and `run_publish` hands it to `freeze_for`. Probe: `a_publish_freezes_the_resolved_binding_beside_the_version_row` (a SKU with no meter freezes `NULL`). The scheduled lane freezes `NULL` today because it does not resolve (§7 row 22).
+
 **Implements**: `cpt-cf-bss-products-algo-collector-dependency`
 
 **Touches**:
@@ -681,12 +692,14 @@ closed and names no such column, and if the snapshot joins the digested content 
 
 ### Meter bucket registration
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-dod-meter-bucket`
+- [x] `p2` - **ID**: `cpt-cf-bss-products-dod-meter-bucket`
 
 The system **MUST** register the metering-unit declaration, `usageTypeRef` included, as
 **bucket ii** — immutable after publish and correctable only through `07-reference-signal`'s
 correction door — while the draft plane edits it freely through the Foundation's save
 transaction.
+
+**Ticked (P-D-146).** `metering_unit` and `usage_type_ref` are bucket ii in `domain::bucket::SKU_COLUMNS` (P-D-121), the trigger arms carry them on both engines (`bucket_agreement_tests`), and a save that moves the pair after first publish is refused naming the correction door (`meter_declaration_tests`, *"After first publish the pair is the correction door's"*). The door that admits the correction is `07-reference-signal`'s and is measured under its own DoD, not this one.
 
 **Implements**: `cpt-cf-bss-products-flow-declare-meter`
 
@@ -714,12 +727,14 @@ deprecation nor removal may mutate any frozen snapshot.
 
 ### Unit semantic immutability
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-unit-immutable`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-unit-immutable`
 
 The system **MUST NOT** provide any rename or redefine operation on the recognized-unit set — the
 absence of the door is the enforcement, and the append-only trigger is its floor. A correction
 **MUST** be a new unit plus a deprecation of the old, tied through the `GovernedLiveOp` payload so
 the audit trail carries the pair. A test **MUST** prove no write path mutates a `member_code`.
+
+**Ticked (P-D-146).** There is no rename operation on `member_code`: the door's three ops are add, transition and relabel, and the relabel writes `display_label` only (`repo::relabel_recognized_member`). The trigger holds the floor — `migrations_tests` probes that an `UPDATE` to `member_code` (and to every column outside the `state`/`display_label` whitelist) and a `DELETE` are refused on both engines while `state` and `display_label` are admitted.
 
 **Implements**: `cpt-cf-bss-products-flow-unit-set`
 
@@ -728,12 +743,14 @@ the audit trail carries the pair. A test **MUST** prove no write path mutates a 
 
 ### PlanTier taxonomy governance
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-plantier-governance`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-plantier-governance`
 
 The system **MUST** treat tier identity as the stable code with no update path, carry the display
 label separately, route add, rename, deprecate and retire through `GovernedLiveOp` under elevated
 approval, emit `PlanTierUpdated`, and refuse a retire while a non-terminal published head carries
 the value with `PLAN_TIER_RETIRE_BLOCKED`. A seeded value is deprecatable and never retired.
+
+**Ticked (P-D-146).** Tier identity is the stable code (`dod-unit-immutable`); the display label is carried separately and renamed through `POST …/members/{memberCode}/label` (`a_relabel_changes_the_display_label_only_and_announces`). Add, relabel, deprecate and retire all ride `GovernedLiveOp` under the stored host — *elevated approval* is the tenant's materiality policy on that subject — and emit `PlanTierUpdated` in the mutating transaction. A retire while a non-terminal published head carries the value is `PLAN_TIER_RETIRE_BLOCKED`, the same guard as the units' now that `plan_tier` is a carrier column; a seeded value deprecates and never removes (P-D-145).
 
 **Implements**: `cpt-cf-bss-products-flow-plantier`
 
@@ -778,12 +795,14 @@ ledger posting.
 
 ### Finance materiality at publish
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-finance-materiality`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-finance-materiality`
 
 The system **MUST** require both accounting codes at publish for `product` and `service` types and
 **MUST** place at least one FinanceReviewer in the governed approval — **and at a quorum of zero
 MUST record the predicate `predicateUnsatisfiable` rather than blocking**. A test **MUST** prove a
 one-person tenant can publish their first `product` SKU.
+
+**Ticked (P-D-146).** Both codes at publish for `product`/`service`: P-D-145. The FinanceReviewer predicate: the submit door now **computes** the finance-material operand — a publish whose touched set includes `tax_category_ref` or `gl_code_ref` is finance-material whatever the caller declared (`domain::recognized::is_finance_material`, OR-ed with the caller's flag) — and `describe_quorum` sets the predicate at `N >= 1` or records `predicateUnsatisfiable = finance_reviewer` at `N = 0` (`05`'s `dod-finance-predicate`, ticked with this). The one-person tenant's probe: `a_one_person_tenant_publishes_its_first_product_sku_and_the_predicate_is_recorded` — born satisfied at `N = 0`, the descriptor carries the unsatisfiable predicate, and the publish goes through under the real host with no double.
 
 **Implements**: `cpt-cf-bss-products-flow-accounting-codes`
 
@@ -810,14 +829,14 @@ published-state column at the head door rather than defaulting it.
 
 ### Classification error taxonomy
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-classification-errors`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-classification-errors`
 
 The system **MUST** declare all fifteen codes as constants on their raising rules and register
 them into the Foundation's taxonomy, each carrying its declared RFC 9457 status. No code carrying
 a registry code may reach the wire as a 422. `USAGE_TYPE_UNAVAILABLE` **MUST** be retryable, and
 on the scheduled lane **MUST** join the runner's `deferred` set rather than its `failed` set.
 
-**Fourteen of fifteen declared and registered (P-D-145); no tick.** The six this group adds — `SKU_TYPE_UNKNOWN`, `ACCOUNTING_CODE_REQUIRED`, `ACCOUNTING_CODE_UNKNOWN`, `ACCOUNTING_CODE_DEPRECATED`, `PLAN_TIER_UNKNOWN`, `PLAN_TIER_DEPRECATED` — join the taxonomy with their 400-on-the-wire precondition shape (`error_tests`, `error_mapping_tests`, both counters at 69). Missing: `BUNDLE_OVERRIDE_REQUIRED` (`dod-bundle-override`, group 4), and the clause *"on the scheduled lane `USAGE_TYPE_UNAVAILABLE` joins the runner's `deferred` set"* has no arm in the runner yet.
+**Ticked (P-D-146).** All fifteen are declared on their raising rules and registered with their statuses: P-D-145's six plus `BUNDLE_OVERRIDE_REQUIRED` (raised by `skus::refuse_unacknowledged_bundle`, 400 precondition shape; `error_tests`, `error_mapping_tests`, both counters at 70). The scheduled-lane clause has its arm — `activation_runner::publish_refusal_is_transient` puts `USAGE_TYPE_UNAVAILABLE` in `DeferralPopulation::TransientDependency` under the attempt budget (`only_an_unavailable_collector_is_a_transient_publish_refusal`) — **and that lane does not resolve `usageTypeRef` today** (§7 row 22): the arm is where the code lands when it does; §6's deferred-lane criterion stays open on that row.
 
 **Implements**: `cpt-cf-bss-products-algo-classification-errors`
 
@@ -826,13 +845,15 @@ on the scheduled lane **MUST** join the runner's `deferred` set rather than its 
 
 ### Recognized-set events
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-recognized-set-events`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-recognized-set-events`
 
 The system **MUST** emit `PlanTierUpdated`, `RecognizedUnitUpdated` and `RecognizedCodeUpdated`
 through the Foundation's outbox in the mutating transaction, ordered on `(tenant, set_kind)`.
 Per-field classification edits on a SKU **MUST** emit no event of their own — they ride the
 Foundation's entity events — and that absence **MUST** be recorded as an explicit no-event
 declaration.
+
+**Ticked (P-D-146).** The three events ride the Foundation's outbox in the mutating transaction (`events::enqueue_set_event`, partitioned on `(tenant, set_kind)`; `an_add_lands_active_and_announces`), and the explicit no-event declaration is `events::SKU_CLASSIFICATION_EDITS_EMIT_NO_EVENT` — the seven per-field SKU columns, held against `SCHEMA_REFS` and the bucket roster by `a_per_field_classification_edit_is_declared_to_emit_no_event`.
 
 **Implements**: `cpt-cf-bss-products-algo-recognized-set`
 
@@ -845,13 +866,15 @@ declaration.
 
 ### SDK read shape
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-sdk-read-shape`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-sdk-read-shape`
 
 The system **MUST** expose `type`, `sellable`, `plan_tier`, `metering_unit`, `usage_type_ref`,
 `tax_category_ref` and `gl_code_ref` in the SDK read shape from day one. **Three of these —
 `sellable`, `usage_type_ref` and `type` — are absent from pricing's `CatalogSku` today** (open item
 4); carrying them here keeps that fix additive on the consumer side, which is
 `12-consumer-contracts`'. This is the one entry whose completion is not wholly this feature's.
+
+**Ticked (P-D-146) — this feature's half.** `bss_products_sdk::models::Sku` carries `sku_type` (the closed `SkuType`), `sellable`, `plan_tier`, `metering_unit`, `usage_type_ref`, `tax_category_ref` and `gl_code_ref`. No read door constructs that shape yet and pricing's `CatalogSku` still lacks three of the seven (item 4) — both `12-consumer-contracts`', additive on the consumer side as the DoD intends.
 
 **Implements**: `cpt-cf-bss-products-flow-classify-sku`
 
@@ -865,7 +888,7 @@ The system **MUST** expose `type`, `sellable`, `plan_tier`, `metering_unit`, `us
 - [x] A `product` published without `taxCategory` is refused `ACCOUNTING_CODE_REQUIRED` naming the
       missing field, and succeeds once it is set
 - [x] A `bundle` publishes with neither accounting code — the exemption has its own named probe
-- [ ] An uncomposed `bundle` published without acknowledgment is refused
+- [x] An uncomposed `bundle` published without acknowledgment is refused
       `BUNDLE_OVERRIDE_REQUIRED`; with it, the SKU publishes and carries
       `compositionPending = true`
 - [ ] A zero-price "free" SKU takes the ordinary path with no special validator
@@ -887,21 +910,21 @@ The system **MUST** expose `type`, `sellable`, `plan_tier`, `metering_unit`, `us
       **admitted** while only frozen version content names it; the old snapshot still renders and
       the removed member's row survives as `removed`
 - [ ] A new declaration naming a removed member fails `UNRECOGNIZED_UNIT`
-- [ ] No write path renames a `member_code`: the trigger refuses the `UPDATE` and the `DELETE`,
+- [x] No write path renames a `member_code`: the trigger refuses the `UPDATE` and the `DELETE`,
       and admits `state` and `display_label`
 - [x] A seeded member can be deprecated and cannot be removed
-- [ ] A tier retire is refused `PLAN_TIER_RETIRE_BLOCKED` while a published SKU carries it
+- [x] A tier retire is refused `PLAN_TIER_RETIRE_BLOCKED` while a published SKU carries it
 - [x] A new tier assignment of a `deprecated` value is refused `PLAN_TIER_DEPRECATED` while an
       existing published carrier stays valid
-- [ ] A tier rename changes the display label and leaves every SKU's stored code untouched
+- [x] A tier rename changes the display label and leaves every SKU's stored code untouched
 - [x] An unknown accounting code is refused `ACCOUNTING_CODE_UNKNOWN` for `taxCategory` and for
       `glCode` alike, one code serving both
-- [ ] A one-person tenant publishes their first `product` SKU: the FinanceReviewer predicate is
+- [x] A one-person tenant publishes their first `product` SKU: the FinanceReviewer predicate is
       recorded `predicateUnsatisfiable` and does not block
 - [ ] Every field this feature owns appears in the bucket registry, and a bucket-ii write after
       first publish is refused while the correction door admits it
-- [ ] Each of the fifteen codes is raised by exactly one rule and carries its declared status
-- [ ] The three set events are emitted in the mutating transaction on `(tenant, set_kind)`, and a
+- [x] Each of the fifteen codes is raised by exactly one rule and carries its declared status
+- [x] The three set events are emitted in the mutating transaction on `(tenant, set_kind)`, and a
       per-field classification edit emits none of its own
 - [ ] **Every refusal enumerated in §2 has a paired positive control proving the door admits the
       corresponding legal act.** The controls are owed **per code**, not in bulk: a blanket
@@ -913,10 +936,10 @@ The system **MUST** expose `type`, `sellable`, `plan_tier`, `metering_unit`, `us
       perturbation case proving it can fail
 - [ ] A `product` published against a `deprecated` `taxCategory` is refused
       `ACCOUNTING_CODE_DEPRECATED`, and an `active` one publishes
-- [ ] A code removal is refused `ACCOUNTING_CODE_DELIST_BLOCKED` while a published SKU carries it,
+- [x] A code removal is refused `ACCOUNTING_CODE_DELIST_BLOCKED` while a published SKU carries it,
       and is admitted once none does
 - [x] An unknown tier is refused `PLAN_TIER_UNKNOWN`, and a known one is admitted
-- [ ] A tier retire is admitted once no non-terminal published head carries the value — the
+- [x] A tier retire is admitted once no non-terminal published head carries the value — the
       positive control on `PLAN_TIER_RETIRE_BLOCKED`
 - [x] A `type` inside the closed set is admitted — the positive control on `SKU_TYPE_UNKNOWN`
 - [x] A known accounting code is admitted — the positive control on `ACCOUNTING_CODE_UNKNOWN`
@@ -935,11 +958,14 @@ The system **MUST** expose `type`, `sellable`, `plan_tier`, `metering_unit`, `us
 
 ## 7. Known unknowns
 
-[`../design/03-sku-classification.md`](../design/03-sku-classification.md) §6 carries **21 open
-items**, and all twenty-one bind implementation — every one of them lands on a Definition of Done
+[`../design/03-sku-classification.md`](../design/03-sku-classification.md) §6 carries **22 open
+items**, and all twenty-two bind implementation — every one of them lands on a Definition of Done
 in §5. The twenty-first arrived with the doors themselves: the three-lens review of the shipped
 membership doors found the de-list window write-skew-open on Postgres, and the mechanism that
-closes it is 01's isolation posture rather than this slice's to pick. They are carried in full, with the DoD each blocks and its owner, because the sibling feature
+closes it is 01's isolation posture rather than this slice's to pick. The twenty-second arrived
+with group 4's build (P-D-146): the scheduled publish lane enters `run_publish` without the
+pre-transaction usage-type resolve, so the deferred arm the errors DoD asks for cannot be reached
+from that lane until the runner carries a service context and the resolver. They are carried in full, with the DoD each blocks and its owner, because the sibling feature
 authored on 2026-08-30 carried four of twenty-three and the three-lens review measured that as its
 single most costly defect.
 
@@ -977,6 +1003,7 @@ does not decide it — the struck rows above point at the register entry that di
 | ~~19~~ | **Does the registered-validators phase run before the publish transaction, or inside it?** This feature and `01-foundation` say before; `07-reference-signal` says inside and its own fix depends on that. **The costs are not symmetric**: on 07's reading a cross-gear call with a short timeout and no retry sits inside a transaction that has already written the frozen version row, holding the head-row lock and a pooled connection for the timeout on Postgres and serializing every other publish in the database on SQLite — a collector stall becomes a gear-wide publish stall. **And §5 as written builds that reading**, because `dod-usage-type-resolution` names no phase while `dod-binding-snapshot` pulls the resolve toward the transaction that consumes its value **Answered (P-D-121, 2026-09-03): inside the transaction, as shipped (P-D-97) — and a validator with a cross-gear input resolves it *before* and hands the phase a `Resolution`**, `MaterialityEvaluator`'s own shape. `07` is right about where the phase runs and wrong about what it may do there; its fix follows the same pattern. | ~~`dod-usage-type-resolution`, `dod-binding-snapshot`~~ | **struck** |
 | ~~20~~ | **What operand tells a composed bundle from an uncomposed one?** The only registry-side record is `composition_pending`, whose default is `false` on an uncomposed draft, so it cannot distinguish never-composed from composed. Read literally, an ordinary bucket-iii re-publish of a composed bundle demands the override again and re-raises the flag **Answered (P-D-134, 2026-09-04): `composition_pending` is raised only by a composition-affecting publish**; composed = published with the flag clear, never composed = `published_version = 0`. | ~~`dod-bundle-override`~~ | **struck** |
 | ~~21~~ | **What closes the de-list window between the holder census and the flip?** `inst-us-delist` states the invariant and names no mechanism for enforcing it across two transactions. The shipped doors read the holder population and the member on separate transactions at the engine's default isolation, so on Postgres they are **write-skew-open**: a first publish declaring the unit and a `deprecated → removed` flip can both commit, leaving a `published` head declaring a `removed` member. SQLite's single writer hides it, so the interim tier cannot probe it. Four remedies exist — a shared row lock on the member in the recognition read, both doors at `SERIALIZABLE` with a contention classifier, accepting the window and reconciling, or a dedicated Postgres race suite on the `postgres_head_race.rs` precedent — and the isolation posture is the Foundation's **Answered (P-D-121, 2026-09-03): one transaction, and the flip re-asserts the census** — the `deprecated → removed` `UPDATE` carries `WHERE NOT EXISTS (a non-terminal published head declaring the member)`, and the publish's own check (row 8) refuses a removed member inside its transaction. Neither side judges on a read from another transaction. **The fix for the withdrawn `dod-unit-delist` tick.** | ~~`dod-unit-delist`, `dod-recognized-set-mechanics`~~ | **struck** |
+| 22 | **The scheduled publish lane never resolves `usageTypeRef`.** `activation_runner` enters `skus::run_publish` directly under `PreAuthorized`; the pre-transaction resolve (`resolve_usage_type_before_publish`) is the REST door's, and it needs the caller's `SecurityContext`, which the runner loop has none of. So a scheduled publish of a metered SKU skips the collector check P-D-131 makes fail-closed on the interactive lane, freezes `NULL` into `binding_snapshot`, and can never reach the `deferred` arm `publish_refusal_is_transient` holds for `USAGE_TYPE_UNAVAILABLE`. **Measured 2026-09-05 (P-D-146).** The fix shape: the runner's `ActivationContext` carries the resolver and a service `SecurityContext` (the broker's builder shows one), resolves before `run_publish`, hands the binding through, and maps `Unavailable` to `RunFinish::Deferred`. | the scheduled publish lane — `04`'s runner, with `07`'s correction lane the same shape; no `03` DoD is blocked (the errors DoD's arm is built, its §6 lane criterion stays open here) | **open — owner `04`/`07`** |
 
 ### Raised here rather than carried
 

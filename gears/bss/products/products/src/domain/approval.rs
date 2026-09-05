@@ -54,14 +54,16 @@
 //!
 //! # What is deliberately absent
 //!
-//! **The finance predicate's operand.** `inst-gv-finance-predicate` names
-//! `taxCategory`, `glCode` and `PlanTier`, and **none of the three is a
-//! registered column** in `domain::bucket`'s roster — they are 03's, and 03
-//! has not registered them. So `finance_material` arrives as an explicit
-//! argument rather than being read off the registry, and
-//! `dod-finance-predicate` stays unticked and blocked by its own §7 row. A
-//! registry lookup here would answer "not finance-material" for every one of
-//! the three columns the instruction names.
+//! **The finance predicate's operand — computed since P-D-146.**
+//! `inst-gv-finance-predicate` names `taxCategory`, `glCode` and `PlanTier`;
+//! 03 registered its columns (P-D-145) and the submit door now ORs the
+//! caller's `finance_material` with
+//! `domain::recognized::is_finance_material(touched)` — `tax_category_ref` or
+//! `gl_code_ref` in the diff (`plan_tier` is Product's, deliberately not
+//! Finance's). `finance_material` still arrives here as an argument: this
+//! module is the arithmetic, the door is where the registry is read.
+//! `dod-finance-predicate` is ticked on that; its §7 row 25 (whether a
+//! recorded approver *held* `FinanceReviewer`) is the decision door's question.
 //!
 //! **A principal's roles and scope claims.** [`ApproverRole`] and
 //! [`CastDecision::roles`] are operands for the same reason and a sharper
@@ -83,7 +85,7 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-self-approval:p1
 //! @cpt-cf-bss-products-dod-override-ceremony
 //! @cpt-cf-bss-products-dod-quorum-descriptor
-//! @cpt-cf-bss-products-dod-finance-predicate
+//! @cpt-dod:cpt-cf-bss-products-dod-finance-predicate:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-quorum-evaluator:p1
 //! @cpt-cf-bss-products-dod-approver-scope
 

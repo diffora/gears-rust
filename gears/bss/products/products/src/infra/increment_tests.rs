@@ -113,6 +113,7 @@ async fn seed_published_product(harness: &Harness, name: &str) -> Uuid {
             approval_ref: None,
             actor_ref: Uuid::now_v7(),
             published_at: t0() - ChronoDuration::minutes(30),
+            binding_snapshot: None,
         },
     )
     .await

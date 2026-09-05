@@ -1241,7 +1241,7 @@ pub async fn delete_metadata_key(
 /// Each half is bounded at `sample + 1` so
 /// [`crate::domain::taxonomy::retire_verdict`] can say *"at least N"* without
 /// a second counting statement whose total could disagree with its own
-/// exemplars, which is the failure [`super::metering_unit_holders`] records
+/// exemplars, which is the failure [`super::member_holders`] records
 /// on the sibling guard.
 ///
 /// # The scope this reads under must be the tenant's whole scope

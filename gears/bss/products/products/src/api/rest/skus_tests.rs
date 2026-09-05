@@ -202,6 +202,7 @@ async fn freeze_parent_version(
         approval_ref: Set(None),
         actor_ref: Set(Uuid::from_u128(0xd1_09)),
         published_at: Set(Utc::now()),
+        binding_snapshot: Set(None),
     };
     entity_version::Entity::insert(model.clone())
         .secure()
@@ -5071,6 +5072,80 @@ mod meter_declaration_tests {
         (sku_id, etag)
     }
 
+    /// **The resolved binding is frozen beside the version row, outside the
+    /// digest** (`dod-binding-snapshot`; P-D-134 row 6, P-D-146): the row's
+    /// `binding_snapshot` is the stub's binding rendered sorted, and neither
+    /// the digested `content` nor the digest version knows it exists.
+    #[tokio::test]
+    async fn a_publish_freezes_the_resolved_binding_beside_the_version_row() {
+        let harness = harness().await;
+        let (sku_id, etag) = declared_usage_sku(&harness, "SKU-UT-SNAP").await;
+        let published = post_publish(&harness, TENANT, sku_id, Some(&etag)).await;
+        assert_eq!(published.status(), StatusCode::OK);
+
+        let row = format!(
+            "FROM products_entity_version WHERE entity_kind = 'sku' AND entity_id = X'{}' \
+             AND published_version = 1",
+            sku_id.simple()
+        );
+        let snapshot = crate::test_support::raw_string_opt(
+            &harness.dsn,
+            &format!("SELECT binding_snapshot AS v {row}"),
+        )
+        .await
+        .expect("a metered SKU's publish stores its binding");
+        assert_eq!(
+            snapshot,
+            crate::test_support::probe_binding().snapshot_json(),
+            "the snapshot is the resolved (gts_id, kind, metadata_fields), sorted"
+        );
+        let content = crate::test_support::raw_string_opt(
+            &harness.dsn,
+            &format!("SELECT content AS v {row}"),
+        )
+        .await
+        .expect("content");
+        assert!(
+            !content.contains("metadata_fields") && !content.contains("binding"),
+            "the snapshot is provenance, not digested content: {content}"
+        );
+        assert_eq!(
+            crate::test_support::raw_i64(
+                &harness.dsn,
+                &format!("SELECT digest_version AS v {row}")
+            )
+            .await,
+            i64::from(crate::domain::canonical::DIGEST_VERSION),
+            "the digest version did not move for a provenance column"
+        );
+
+        // A SKU with no meter freezes NULL — a sibling under the metered SKU's
+        // parent (the harness's one product name is already taken).
+        let conn = harness.db.conn().expect("connection");
+        let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+        let parent = repo::find_sku(&conn, &scope, TENANT, sku_id)
+            .await
+            .expect("read")
+            .expect("the metered head exists")
+            .product_id;
+        let (plain_id, plain_etag) =
+            created_sku(&harness, &typed_body(parent, "SKU-NO-METER")).await;
+        let published = post_publish(&harness, TENANT, plain_id, Some(&plain_etag)).await;
+        assert_eq!(published.status(), StatusCode::OK);
+        assert!(
+            crate::test_support::raw_string_opt(
+                &harness.dsn,
+                &format!(
+                    "SELECT binding_snapshot AS v FROM products_entity_version WHERE entity_id = X'{}'",
+                    plain_id.simple()
+                ),
+            )
+            .await
+            .is_none(),
+            "no meter, no binding"
+        );
+    }
+
     /// **`Unresolved` refuses `USAGE_TYPE_UNRESOLVED` at the door, and the
     /// collector was asked exactly once** — once per publish per distinct
     /// ref, and a SKU has one.
@@ -5115,7 +5190,9 @@ mod meter_declaration_tests {
         let (sku_id, etag) = declared_usage_sku(&harness, "SKU-UT-2").await;
         let stub = Arc::new(crate::test_support::StubUsageTypes::scripted([
             crate::domain::recognized::UsageTypeAnswer::Unavailable,
-            crate::domain::recognized::UsageTypeAnswer::Resolved,
+            crate::domain::recognized::UsageTypeAnswer::Resolved(
+                crate::test_support::probe_binding(),
+            ),
         ]));
 
         let Err(refusal) =
@@ -6398,7 +6475,21 @@ async fn post_set_json(
         .expect("the router answers")
 }
 
+/// The sets door rides `GovernedLiveOp` under the stored host (P-D-146):
+/// every member op here seeds its own satisfied record first.
+async fn seed_set_member_op(harness: &TestHarness, kind: &str, code: &str) {
+    let kind = crate::domain::recognized::SetKind::parse(kind).expect("a known set kind");
+    crate::test_support::seed_satisfied_approval(
+        &harness.db,
+        TENANT,
+        crate::api::rest::recognized_sets::member_op_subject(TENANT, kind, code),
+        0,
+    )
+    .await;
+}
+
 async fn add_set_member(harness: &TestHarness, kind: &str, code: &str) {
+    seed_set_member_op(harness, kind, code).await;
     let response = post_set_json(
         harness,
         &format!("/bss-products/v1/recognized-sets/{kind}/members"),
@@ -6419,6 +6510,7 @@ async fn transition_set_member(
     expected: &str,
     to: &str,
 ) -> axum::http::Response<Body> {
+    seed_set_member_op(harness, kind, code).await;
     post_set_json(
         harness,
         &format!("/bss-products/v1/recognized-sets/{kind}/members/{code}/transitions"),
@@ -6530,12 +6622,205 @@ async fn a_product_missing_an_accounting_code_is_refused_at_publish_and_a_bundle
         &json!({ "product_id": parent, "sku_code": "SKU-BUNDLE", "sku_type": "bundle" }),
     )
     .await;
+    seed_acknowledged_publish(&harness, bundle_id, &bundle_etag).await;
     let published = post_publish(&harness, TENANT, bundle_id, Some(&bundle_etag)).await;
     assert_eq!(
         published.status(),
         StatusCode::OK,
         "a bundle is commercially incomplete by design and requires neither code"
     );
+}
+
+/// The double for P-D-02's ceremony: a satisfied record for this SKU's publish
+/// at the etag's revision, **carrying the uncomposed-bundle acknowledgment**.
+/// Seeded before `post_publish`, whose own seeding then finds and keeps it.
+async fn seed_acknowledged_publish(harness: &TestHarness, sku_id: Uuid, etag: &str) {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::IF_MATCH,
+        axum::http::HeaderValue::from_str(etag).expect("an ASCII etag"),
+    );
+    let revision = preconditions::if_match(&headers).expect("the etag names a revision");
+    crate::test_support::seed_satisfied_approval_with_ack(
+        &harness.db,
+        TENANT,
+        GateSubject::entity_publish(
+            EntityRef {
+                tenant_id: TENANT,
+                entity_kind: bss_products_sdk::models::EntityKind::Sku,
+                entity_id: sku_id,
+            },
+            InternalRevision::new(revision.get()),
+        ),
+        revision.get(),
+        Some("uncomposed-bundle"),
+    )
+    .await;
+}
+
+/// **`BUNDLE_OVERRIDE_REQUIRED` on the publish, and the acknowledgment is the
+/// operand `composition_pending` is written from** (`dod-bundle-override`,
+/// P-D-02, P-D-32; P-D-134 row 20). An unacknowledged first publish of a
+/// bundle is refused `400` before the record is spent; the same record,
+/// acknowledged, publishes and raises the flag on the head. A `product` never
+/// meets the condition.
+#[tokio::test]
+async fn an_unacknowledged_bundle_publish_is_refused_and_the_acknowledged_one_raises_the_flag() {
+    let harness = harness().await;
+    let parent = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let (bundle_id, etag) = created_sku(
+        &harness,
+        &json!({ "product_id": parent, "sku_code": "SKU-BNDL-2", "sku_type": "bundle" }),
+    )
+    .await;
+
+    let refused = post_publish(&harness, TENANT, bundle_id, Some(&etag)).await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(refused).await;
+    assert_eq!(violation_code(&body), json!("BUNDLE_OVERRIDE_REQUIRED"));
+    let conn = harness.db.conn().expect("connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    let head = repo::find_sku(&conn, &scope, TENANT, bundle_id)
+        .await
+        .expect("read")
+        .expect("the head exists");
+    assert_eq!(
+        head.published_version, 0,
+        "a refused publish freezes nothing"
+    );
+    assert!(!head.composition_pending);
+
+    // The refusal ran before the one-shot: the record is still open, and the
+    // acknowledgment lands on it.
+    seed_acknowledged_publish(&harness, bundle_id, &etag).await;
+    let published = post_publish(&harness, TENANT, bundle_id, Some(&etag)).await;
+    assert_eq!(
+        published.status(),
+        StatusCode::OK,
+        "{}",
+        body_json(published).await
+    );
+    let head = repo::find_sku(&conn, &scope, TENANT, bundle_id)
+        .await
+        .expect("read")
+        .expect("the head exists");
+    assert_eq!(head.published_version, 1);
+    assert!(
+        head.composition_pending,
+        "the acknowledged publish writes the operand into the head row (P-D-32)"
+    );
+
+    let (product_id, product_etag) =
+        created_sku(&harness, &typed_body(parent, "SKU-NOT-BNDL")).await;
+    let plain = post_publish(&harness, TENANT, product_id, Some(&product_etag)).await;
+    assert_eq!(
+        plain.status(),
+        StatusCode::OK,
+        "a product never meets the bundle condition"
+    );
+}
+
+/// **A one-person tenant publishes their first `product` SKU**
+/// (`dod-finance-materiality`, `dod-finance-predicate`): at `N = 0` the
+/// finance predicate is recorded `predicateUnsatisfiable = finance_reviewer`
+/// on a record born satisfied, and the publish goes through under the real
+/// host with no double at all. At the default quorum the same submission —
+/// declared *not* finance-material by its caller — carries the predicate
+/// anyway, because the registry computes the operand from the touched codes.
+#[tokio::test]
+async fn a_one_person_tenant_publishes_its_first_product_sku_and_the_predicate_is_recorded() {
+    let harness = harness().await;
+    let parent = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+
+    // The default quorum first: the operand is computed, not declared.
+    let (declared_id, _) = created_sku(&harness, &typed_body(parent, "SKU-FIN-N2")).await;
+    let receipt = body_json(post_approval(&harness, declared_id).await).await;
+    assert_eq!(
+        receipt["finance_required"], true,
+        "a first publish touches both codes, so the predicate binds whatever the caller said: {receipt}"
+    );
+
+    // Now the one-person tenant.
+    let conn = harness.db.conn().expect("scoped connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    repo::write_materiality_policy(
+        &conn,
+        &scope,
+        TENANT,
+        &crate::domain::materiality::MaterialityPolicy::new(Vec::new(), 10, 0),
+        Uuid::from_u128(0x5a_ad),
+        crate::test_support::at(9),
+    )
+    .await
+    .expect("write the policy");
+    let (sku_id, etag) = created_sku(&harness, &typed_body(parent, "SKU-FIN-N0")).await;
+    let response = post_approval(&harness, sku_id).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "the submission is admitted"
+    );
+    let receipt = body_json(response).await;
+    assert_eq!(receipt["required"], 0);
+    assert_eq!(
+        receipt["state"], "satisfied",
+        "born satisfied at N = 0: {receipt}"
+    );
+    assert_eq!(
+        receipt["finance_required"], false,
+        "the predicate is not set at N = 0 - it is recorded unsatisfiable instead"
+    );
+    let approval_id = receipt["approval_id"]
+        .as_str()
+        .expect("the receipt names the record");
+    let descriptor = crate::test_support::raw_string_opt(
+        &harness.dsn,
+        &format!(
+            "SELECT quorum_descriptor AS v FROM products_approval WHERE approval_id = X'{}'",
+            approval_id.parse::<Uuid>().expect("a uuid").simple()
+        ),
+    )
+    .await
+    .expect("the descriptor is stored");
+    assert!(
+        descriptor.contains(r#""predicateUnsatisfiable":"finance_reviewer""#),
+        "the unsatisfiable predicate is recorded on the descriptor: {descriptor}"
+    );
+
+    let published = post_publish_via(app_for(&harness, TENANT), TENANT, sku_id, Some(&etag)).await;
+    assert_eq!(
+        published.status(),
+        StatusCode::OK,
+        "the one-person tenant publishes under the real host, no double seeded"
+    );
+}
+
+/// `POST /approvals` for one SKU's publish, through the SKU and approvals
+/// routers merged, with the caller declaring the change *not* finance-material.
+async fn post_approval(harness: &TestHarness, sku_id: Uuid) -> axum::http::Response<Body> {
+    let state = Arc::new(api_state(harness));
+    let openapi = OpenApiRegistryImpl::new();
+    let app = router(Arc::clone(&state), &openapi)
+        .merge(crate::api::rest::approvals::router(state, &openapi))
+        .layer(axum::Extension(flat_in_enforcer(TENANT)));
+    app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/bss-products/v1/approvals")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .extension(authed_ctx(TENANT))
+            .body(Body::from(
+                json!({
+                    "subject_kind": "entity_publish",
+                    "subject_ref": format!("sku/{sku_id}"),
+                    "finance_material": false,
+                })
+                .to_string(),
+            ))
+            .expect("build the request"),
+    )
+    .await
+    .expect("the router answers")
 }
 
 /// `dod-accounting-validators`: unknown codes are refused for both fields

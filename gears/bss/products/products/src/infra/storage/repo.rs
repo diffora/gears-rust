@@ -1874,6 +1874,11 @@ pub struct NewEntityVersion {
     pub actor_ref: Uuid,
     /// The publish instant.
     pub published_at: DateTime<Utc>,
+    /// What the metering `usageTypeRef` resolved to at publish, as
+    /// `UsageTypeBinding::snapshot_json` renders it — **provenance beside the
+    /// content, outside the digest** (`dod-binding-snapshot`, P-D-134 row 6,
+    /// P-D-146). `None` for a Product row and for a SKU with no meter.
+    pub binding_snapshot: Option<String>,
 }
 
 /// What a guarded head-row `UPDATE` found: the outcome the caller acts on,
@@ -1983,6 +1988,7 @@ pub async fn insert_entity_version(
         approval_ref: Set(new.approval_ref),
         actor_ref: Set(new.actor_ref),
         published_at: Set(new.published_at),
+        binding_snapshot: Set(new.binding_snapshot),
     };
 
     entity_version::Entity::insert(model.clone())

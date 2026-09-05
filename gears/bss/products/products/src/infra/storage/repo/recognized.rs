@@ -6,7 +6,7 @@
 //! # One implementation, four sets
 //!
 //! The three **membership** functions key on `(tenant_id, set_kind,
-//! member_code)` and none branches on the kind — [`metering_unit_holders`]
+//! member_code)` and none branches on the kind — [`member_holders`]
 //! is the module's one kind-specific surface, and deliberately so: a holder
 //! sample reads the carrier column, and only the metering-unit set has one
 //! on `products_sku` today. The other three kinds' samples arrive with their
@@ -198,13 +198,13 @@ pub async fn flip_recognized_member(
         .add(recognized_set::Column::SetKind.eq(set_kind.as_str()))
         .add(recognized_set::Column::MemberCode.eq(member_code))
         .add(recognized_set::Column::State.eq(expected.as_str()));
-    if to == MemberState::Removed && set_kind == SetKind::MeteringUnit {
+    if to == MemberState::Removed {
         let mut holders = Query::select();
         holders
             .expr(Expr::cust("1"))
             .from(sku::Entity)
             .and_where(sku::Column::TenantId.eq(tenant_id))
-            .and_where(sku::Column::MeteringUnit.eq(member_code))
+            .and_where(carrier_sku_column(set_kind).eq(member_code))
             .and_where(sku::Column::LifecycleState.is_in(["published", "deprecated"]));
         filter = filter.add(Expr::exists(holders).not());
     }
@@ -239,16 +239,17 @@ pub async fn flip_recognized_member(
 /// # Errors
 ///
 /// [`RepoError::Driver`] on a storage failure.
-pub async fn metering_unit_holders(
+pub async fn member_holders(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
+    set_kind: SetKind,
     member_code: &str,
     sample: u64,
 ) -> Result<Vec<String>, RepoError> {
     let filter = Condition::all()
         .add(sku::Column::TenantId.eq(tenant_id))
-        .add(sku::Column::MeteringUnit.eq(member_code))
+        .add(carrier_sku_column(set_kind).eq(member_code))
         .add(sku::Column::LifecycleState.is_in(["published", "deprecated"]));
 
     // ONE statement, not a count plus a sample: two reads under READ
@@ -265,7 +266,12 @@ pub async fn metering_unit_holders(
         .limit(sample + 1)
         .all(runner)
         .await
-        .map_err(|e| driver_failure(format!("sample holders of unit {member_code}"), e))?
+        .map_err(|e| {
+            driver_failure(
+                format!("sample holders of {} {member_code}", set_kind.as_str()),
+                e,
+            )
+        })?
         .into_iter()
         .map(|row| row.sku_code)
         .collect();
@@ -281,6 +287,67 @@ pub async fn metering_unit_holders(
 /// # Errors
 ///
 /// A storage failure.
+/// The `products_sku` column a set's members are declared in — the SQL side
+/// of `SetKind::carrier_column`, one arm per kind so the removal guard is
+/// **uniform across all four** (`dod-recognized-set-mechanics`, P-D-146).
+fn carrier_sku_column(set_kind: SetKind) -> sku::Column {
+    match set_kind {
+        SetKind::MeteringUnit => sku::Column::MeteringUnit,
+        SetKind::PlanTier => sku::Column::PlanTier,
+        SetKind::TaxCategory => sku::Column::TaxCategoryRef,
+        SetKind::GlCode => sku::Column::GlCodeRef,
+    }
+}
+
+/// Change a member's display label and nothing else
+/// (`dod-plantier-governance`: *"tier identity is the stable code with no
+/// update path; the display label is carried separately"*). The trigger's
+/// whitelist admits exactly `state` and `display_label`, so this statement
+/// could not touch `member_code` even if asked. `Ok(false)` when no such
+/// member exists in any state.
+///
+/// # Errors
+///
+/// [`RepoError`] on a driver failure.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-unit-immutable:p1
+pub async fn relabel_recognized_member(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    set_kind: SetKind,
+    member_code: &str,
+    display_label: Option<String>,
+    now: DateTime<Utc>,
+) -> Result<bool, RepoError> {
+    let result = recognized_set::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            recognized_set::Column::DisplayLabel,
+            Expr::value(display_label),
+        )
+        .col_expr(recognized_set::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(recognized_set::Column::TenantId.eq(tenant_id))
+                .add(recognized_set::Column::SetKind.eq(set_kind.as_str()))
+                .add(recognized_set::Column::MemberCode.eq(member_code)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| {
+            driver_failure(
+                format!(
+                    "relabel recognized member {}/{member_code}",
+                    set_kind.as_str()
+                ),
+                e,
+            )
+        })?;
+    Ok(result.rows_affected == 1)
+}
+
 pub async fn ensure_recognized_seeds(
     runner: &impl DBRunner,
     scope: &AccessScope,

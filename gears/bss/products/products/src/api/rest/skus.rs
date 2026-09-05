@@ -261,7 +261,9 @@ use crate::domain::containment::{
 use crate::domain::deprecation::{Provenance, stamp_for};
 use crate::domain::disposition::{self, CLONE_SUGGESTION_ATTEMPTS, SkuCloneSource};
 use crate::domain::error::DomainError;
-use crate::domain::governance::{ApprovalId, EntityRef, GateMode, GateSubject, GovernanceGate};
+use crate::domain::governance::{
+    ApprovalId, EntityRef, GateAuthorization, GateMode, GateSubject, GovernanceGate,
+};
 use crate::domain::idempotency;
 use crate::domain::live_op::GovernedLiveOp;
 use crate::domain::retirement::refuse_create_under_retiring_parent;
@@ -2665,11 +2667,20 @@ pub(crate) fn sku_version_content(image: &SkuRecord) -> JsonValue {
 /// The rendering and the `SHA-256` over it are computed **here**, in the
 /// door, and handed to `repo::insert_entity_version` as inputs — that
 /// function's own doc states why it re-renders nothing on the way to storage.
+///
+/// `binding` is what the pre-transaction resolve said the head's
+/// `usageTypeRef` is bound to, frozen into `binding_snapshot` **beside** the
+/// content and **outside** the digest (`dod-binding-snapshot`, P-D-134 row
+/// 6, P-D-146): `content` and `content_digest` above are computed before it
+/// is even looked at, so the snapshot can never move the digest.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-binding-snapshot:p1
 fn freeze_for(
     image: &SkuRecord,
     actor_ref: Uuid,
     approval_ref: Option<Uuid>,
     now: DateTime<Utc>,
+    binding: Option<&crate::domain::recognized::UsageTypeBinding>,
 ) -> NewEntityVersion {
     let content = canonical::canonical_rendering(
         &sku_version_content(image),
@@ -2689,6 +2700,7 @@ fn freeze_for(
         approval_ref,
         actor_ref,
         published_at: now,
+        binding_snapshot: binding.map(crate::domain::recognized::UsageTypeBinding::snapshot_json),
     }
 }
 
@@ -3480,6 +3492,7 @@ pub(crate) async fn run_publish(
     gate: &(dyn GovernanceGate + Send + Sync),
     mode: GateMode,
     outbox: &crate::infra::broker::EventSink,
+    binding: Option<&crate::domain::recognized::UsageTypeBinding>,
 ) -> Result<MutationOutcome, HeadActError> {
     // -- Phase 1, idempotency: the claim, and the replay that ends the act
     // before any other phase is judged. --
@@ -3592,6 +3605,7 @@ pub(crate) async fn run_publish(
     let authorization = verdict
         .into_authorization()
         .map_err(HeadActError::Refused)?;
+    refuse_unacknowledged_bundle(&head, &authorization)?;
     settle_sku_authorization(runner, inputs, &authorization).await?;
 
     // The one operand of the verdict this act carries into the head row
@@ -3622,6 +3636,7 @@ pub(crate) async fn run_publish(
             inputs.actor_ref,
             authorization.approval_ref().map(ApprovalId::get),
             inputs.now,
+            binding,
         ),
     )
     .await
@@ -3874,7 +3889,7 @@ async fn publish_in_one_transaction(
     // P-D-121 row 19: resolve usageTypeRef *before* the transaction — and
     // before the idempotency claim, so a 503 leaves the key free (P-D-141).
     // The validators phase inside run_publish never calls out.
-    resolve_usage_type_before_publish(state, ctx, inputs).await?;
+    let binding = resolve_usage_type_before_publish(state, ctx, inputs).await?;
     let outbox = state.sink.clone();
     let gate = Arc::clone(gate);
     let inputs = inputs.clone();
@@ -3890,9 +3905,10 @@ async fn publish_in_one_transaction(
                 let outbox = outbox.clone();
                 let gate = Arc::clone(&gate);
                 let inputs = inputs.clone();
-                Box::pin(
-                    async move { run_publish(tx, &inputs, gate.as_ref(), mode, &outbox).await },
-                )
+                let binding = binding.clone();
+                Box::pin(async move {
+                    run_publish(tx, &inputs, gate.as_ref(), mode, &outbox, binding.as_ref()).await
+                })
             },
         )
         .await
@@ -3909,22 +3925,23 @@ async fn resolve_usage_type_before_publish(
     state: &ApiState,
     ctx: &SecurityContext,
     inputs: &HeadActInputs,
-) -> Result<(), HeadActError> {
+) -> Result<Option<crate::domain::recognized::UsageTypeBinding>, HeadActError> {
     let conn = state.db.conn().map_err(HeadActError::Db)?;
     let Some(head) = repo::find_sku(&conn, &inputs.scope, inputs.tenant_id, inputs.sku_id)
         .await
         .map_err(|e| HeadActError::from_repo(&e))?
     else {
-        return Ok(());
+        return Ok(None);
     };
     let Some(usage_type_ref) = head.usage_type_ref.as_deref() else {
-        return Ok(());
+        return Ok(None);
     };
     // The resolver is `ApiState`'s (P-D-141): the collector's client in
     // production, a scripted stub in the probes — one program, no
     // `cfg(test)` in the path.
     let answer = state.usage_type_resolver.resolve(ctx, usage_type_ref).await;
     crate::domain::recognized::judge_usage_type(answer, usage_type_ref)
+        .map(Some)
         .map_err(HeadActError::Refused)
 }
 
@@ -4201,6 +4218,40 @@ async fn resolve_sku_host(
             crate::api::rest::HostError::Refused(refusal) => HeadActError::Refused(refusal),
             crate::api::rest::HostError::Repo(error) => HeadActError::from_repo(&error),
         })
+}
+
+/// The P-D-02 gate condition, registered on the **publish** itself
+/// (`dod-bundle-override`; `03 inst-cl-bundle-override`) so every lane —
+/// interactive, bulk, scheduled — carries it: a `bundle` that plan-price has
+/// not composed publishes only under a record carrying the uncomposed-bundle
+/// acknowledgment, and that same operand is what the head `UPDATE` writes
+/// into `composition_pending` (P-D-32, `post_publish_image`).
+///
+/// *Uncomposed* is **P-D-134** row 20's reading: never published
+/// (`published_version = 0`), or published with the flag still raised. A
+/// composed bundle — published, flag clear — re-publishes without a fresh
+/// acknowledgment, because an ordinary bucket-iii re-publish is not a
+/// composition-affecting act. Checked **before** the record is spent, so the
+/// refusal leaves the approval open for the acknowledged retry.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-bundle-override:p1
+fn refuse_unacknowledged_bundle(
+    head: &SkuRecord,
+    authorization: &GateAuthorization,
+) -> Result<(), HeadActError> {
+    let is_bundle =
+        head.sku_type.as_deref() == Some(crate::domain::recognized::SkuType::Bundle.as_str());
+    let uncomposed = head.published_version == 0 || head.composition_pending;
+    if is_bundle && uncomposed && !authorization.uncomposed_bundle_override {
+        return Err(HeadActError::Refused(DomainError::BundleOverrideRequired(
+            format!(
+                "`{}` is a bundle plan-price has not composed: its publish needs the two-person \
+                 uncomposed-bundle acknowledgment on the authorizing approval (P-D-02)",
+                head.sku_code
+            ),
+        )));
+    }
+    Ok(())
 }
 
 /// The one-shot at every governed SKU door (`dod-one-shot-consumption`,

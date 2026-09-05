@@ -2095,6 +2095,7 @@ fn frozen_version(kind: VersionedEntityKind, entity_id: Uuid, version: i64) -> N
         approval_ref: Some(APPROVAL),
         actor_ref: ACTOR,
         published_at: at(10),
+        binding_snapshot: None,
     }
 }
 

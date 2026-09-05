@@ -40,7 +40,7 @@ use async_trait::async_trait;
 use toolkit_security::SecurityContext;
 use usage_collector_sdk::{UsageCollectorClientV1, UsageCollectorError, UsageTypeGtsId};
 
-use crate::domain::recognized::UsageTypeAnswer;
+use crate::domain::recognized::{UsageTypeAnswer, UsageTypeBinding};
 
 /// The publish door's view of the collector.
 #[async_trait]
@@ -84,7 +84,19 @@ impl UsageTypeResolver for CollectorResolver {
             return UsageTypeAnswer::Unresolved;
         };
         match tokio::time::timeout(self.timeout, self.client.get_usage_type(ctx, gts_id)).await {
-            Ok(Ok(_)) => UsageTypeAnswer::Resolved,
+            Ok(Ok(usage_type)) => UsageTypeAnswer::Resolved(UsageTypeBinding {
+                gts_id: usage_type_ref.to_owned(),
+                kind: match usage_type.kind {
+                    usage_collector_sdk::models::UsageKind::Counter => "counter",
+                    usage_collector_sdk::models::UsageKind::Gauge => "gauge",
+                }
+                .to_owned(),
+                metadata_fields: usage_type
+                    .metadata_fields
+                    .iter()
+                    .map(|key| key.as_str().to_owned())
+                    .collect(),
+            }),
             Ok(Err(UsageCollectorError::NotFound { .. })) => UsageTypeAnswer::Unresolved,
             Ok(Err(error)) => {
                 tracing::warn!(%error, usage_type_ref, "bss-products: usage-type collector failed");

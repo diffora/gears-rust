@@ -200,6 +200,13 @@ pub enum DomainError {
     /// tier was deprecated before its first publish (`03 inst-pt-assign`).
     #[error("deprecated plan tier: {0}")]
     PlanTierDeprecated(String),
+    /// A `bundle` plan-price has not composed was published without the
+    /// two-person uncomposed-bundle acknowledgment on its authorizing
+    /// approval (`03 inst-cl-bundle-override`, **P-D-02**). The publish, not
+    /// any one lane, carries the condition, so bulk and the scheduled lane
+    /// meet it too (`dod-bundle-override`).
+    #[error("uncomposed bundle publish needs the override acknowledgment: {0}")]
+    BundleOverrideRequired(String),
 
     /// A Product reaching `published` carries no primary category
     /// (`inst-tx-primary-at-publish`).
@@ -581,6 +588,7 @@ impl DomainError {
             Self::AccountingCodeDeprecated(_) => "ACCOUNTING_CODE_DEPRECATED",
             Self::PlanTierUnknown(_) => "PLAN_TIER_UNKNOWN",
             Self::PlanTierDeprecated(_) => "PLAN_TIER_DEPRECATED",
+            Self::BundleOverrideRequired(_) => "BUNDLE_OVERRIDE_REQUIRED",
             Self::PrimaryCategoryRequired(_) => "PRIMARY_CATEGORY_REQUIRED",
             Self::ApprovalRequired(_) => "APPROVAL_REQUIRED",
             Self::SelfApprovalForbidden(_) => "SELF_APPROVAL_FORBIDDEN",

@@ -10,15 +10,24 @@
 //! `active → deprecated → removed` and the two re-listing edges. The tier
 //! set spends `plan_tier × write` and the other three `recognized_set ×
 //! write` (P-D-90 arm 2: the only reading under which both declared grants
-//! have a spender). Behind both routes sits **one generic membership
+//! have a spender). Behind the routes sits **one generic membership
 //! implementation** (arm 3), and the kind decides exactly four things: the
 //! grant, the event token, the blocked-removal code, and **which holder
-//! population the removal counts** — the fourth being a branch today only
-//! because `metering_unit` is the one kind with a shipped carrier column.
-//! When `plan_tier`, `tax_category_ref` or `gl_code_ref` lands on
-//! `products_sku`, its holder lookup joins that branch; a follower who wires
-//! the column and not the lookup ships that set's delist guard permanently
-//! off.
+//! population the removal counts** — `SetKind::carrier_column`, one
+//! `products_sku` column per kind, uniform across all four since 03's
+//! columns landed (P-D-145, P-D-146). A third route, `POST
+//! …/members/{memberCode}/label`, changes a member's display label and
+//! nothing else — the rename `dod-plantier-governance` asks for, which by
+//! `dod-unit-immutable` can never be a rename of the code.
+//!
+//! # Every mutation rides `GovernedLiveOp` under the stored host
+//!
+//! Add, transition and relabel each resolve the stored approval host before
+//! their transaction (`api::rest::authorize_live_op`, subject
+//! [`member_op_subject`]) and spend the record inside it (P-D-144's shape,
+//! P-D-146): without a satisfied record for *this* set member the door
+//! answers `APPROVAL_REQUIRED`, and the probes seed the record through the
+//! same double the other live-op doors use.
 //!
 //! # Every mutation rides `GovernedLiveOp` and emits in the same transaction
 //!
@@ -93,7 +102,7 @@ use axum::Router;
 use axum::extract::{Extension, Path};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use toolkit::api::OpenApiRegistry;
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit::api::operation_builder::OperationBuilder;
@@ -106,6 +115,7 @@ use toolkit::api::canonical_prelude::resource_error;
 use crate::api::rest::{ApiState, repo_error_to_canonical, require_authenticated};
 use crate::domain::canonical;
 use crate::domain::error::DomainError;
+use crate::domain::governance::{GateAuthorization, GateSubject, SubjectPin};
 use crate::domain::recognized::{MemberState, SetKind, member_edge};
 use crate::domain::validation::ValidationReport;
 use crate::infra::events;
@@ -167,8 +177,82 @@ pub struct MemberTransitionRequest {
     pub expected_state: String,
 }
 
+/// The body of `POST …/members/{memberCode}/label` — the one rename a member
+/// admits (`dod-plantier-governance`): the label, never the code.
+#[toolkit_macros::api_dto(request)]
+pub struct MemberRelabelRequest {
+    /// The new display label; `null` clears it.
+    pub display_label: Option<String>,
+}
+
 /// The grant a call on `set_kind` spends (P-D-90 arm 2), as the label and
 /// resource type the authz layer needs.
+/// The `GovernedLiveOp` subject one member op rides
+/// (`dod-recognized-set-mechanics`; **P-D-146**): the set and the member,
+/// unpinned — the door pins staleness through `expected_state`, not through
+/// the approval (P-D-120's "no pin" sentinel; see `pin_for_kind`).
+/// `pub(crate)` so the tests' seeding double builds the identical subject.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-recognized-set-mechanics:p1
+pub(crate) fn member_op_subject(tenant_id: Uuid, kind: SetKind, member_code: &str) -> GateSubject {
+    GateSubject::governed_live_op(
+        tenant_id,
+        &format!("recognized_set/{}/{member_code}", kind.as_str()),
+        SubjectPin::Unpinned,
+    )
+}
+
+/// Resolve the stored host for one member op before its transaction — the
+/// taxonomy door's shape. A refusal is audited under the set's gate label
+/// and answered `APPROVAL_REQUIRED`.
+async fn authorize_member_op(
+    state: &ApiState,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    actor_ref: Uuid,
+    kind: SetKind,
+    member_code: &str,
+) -> Result<GateAuthorization, CanonicalError> {
+    match crate::api::rest::authorize_live_op(
+        state,
+        scope,
+        tenant_id,
+        member_op_subject(tenant_id, kind, member_code),
+    )
+    .await
+    {
+        Ok(authorization) => Ok(authorization),
+        Err(crate::api::rest::HostError::Refused(refusal)) => Err(refuse_set(
+            state,
+            scope,
+            tenant_id,
+            actor_ref,
+            kind,
+            member_code.to_owned(),
+            refusal,
+        )
+        .await),
+        Err(crate::api::rest::HostError::Repo(error)) => Err(repo_error_to_canonical(&error)),
+    }
+}
+
+/// Spend the authorization where the write commits (`inst-gv-one-shot`).
+async fn settle_member_op(
+    tx: &impl toolkit_db::secure::DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    authorization: &GateAuthorization,
+    now: DateTime<Utc>,
+) -> Result<(), TxError> {
+    repo::settle_authorization(tx, scope, tenant_id, authorization, now)
+        .await
+        .map(|_spent| ())
+        .map_err(|error| match error {
+            repo::SettleError::Refused(refusal) => TxError::Refused(refusal),
+            repo::SettleError::Repo(error) => TxError::Repo(error),
+        })
+}
+
 fn gate_for(kind: SetKind) -> (&'static str, authz_resolver_sdk::ResourceType) {
     match kind {
         SetKind::PlanTier => (
@@ -358,8 +442,153 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     .error_500(openapi)
     .error_503(openapi)
     .register(router, openapi);
+    let router = OperationBuilder::post(
+        "/bss-products/v1/recognized-sets/{setKind}/members/{memberCode}/label",
+    )
+    .operation_id("bss_products.relabel_recognized_member")
+    .summary("Change a recognized-set member's display label")
+    .description(
+        "Sets the member's `display_label` and nothing else - the rename a tier or unit \
+         admits. The member's code is its identity and has no update path (the table's \
+         trigger refuses one), so every SKU declaring the code is untouched. Rides \
+         `GovernedLiveOp` under the stored approval host like the other two member ops, and \
+         enqueues the set's event in the same transaction.",
+    )
+    .tag(TAG)
+    .authenticated()
+    .no_license_required()
+    .path_param("setKind", "Which recognized set the member belongs to.")
+    .path_param("memberCode", "The member to relabel.")
+    .json_request::<MemberRelabelRequest>(openapi, "The new display label, or null to clear it.")
+    .handler(relabel_member)
+    .json_response_with_schema::<RecognizedMemberView>(
+        openapi,
+        StatusCode::OK,
+        "The member, relabelled.",
+    )
+    .error_400(openapi)
+    .error_401(openapi)
+    .error_403(openapi)
+    .error_404(openapi)
+    .error_500(openapi)
+    .error_503(openapi)
+    .register(router, openapi);
 
     router.layer(Extension(state))
+}
+
+/// `POST /recognized-sets/{setKind}/members/{memberCode}/label`.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-plantier-governance:p1
+async fn relabel_member(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path((set_kind, member_code)): Path<(String, String)>,
+    Json(body): Json<MemberRelabelRequest>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let kind = parse_kind(&set_kind)?;
+    let tenant_id = ctx.subject_tenant_id();
+    let now = canonical::write_instant(Utc::now());
+    let actor_ref =
+        crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
+            .await?;
+    let scope = set_scope(
+        &state,
+        &enforcer,
+        &ctx,
+        tenant_id,
+        actor_ref,
+        kind,
+        member_code.clone(),
+    )
+    .await?;
+    let authorization =
+        authorize_member_op(&state, &scope, tenant_id, actor_ref, kind, &member_code).await?;
+
+    let outbox = state.sink.clone();
+    let scope_tx = scope.clone();
+    let code_tx = member_code.clone();
+    let label = body.display_label.clone();
+    let authorization_tx = authorization.clone();
+    let result = state
+        .db
+        .db()
+        .transaction_with_retry::<repo::RecognizedMember, TxError, _, _>(
+            toolkit_db::secure::TxConfig::default(),
+            member_contention_db_err,
+            move |tx| {
+                let outbox = outbox.clone();
+                let scope = scope_tx.clone();
+                let member_code = code_tx.clone();
+                let display_label = label.clone();
+                let authorization = authorization_tx.clone();
+                Box::pin(async move {
+                    settle_member_op(tx, &scope, tenant_id, &authorization, now).await?;
+                    let relabelled = repo::relabel_recognized_member(
+                        tx,
+                        &scope,
+                        tenant_id,
+                        kind,
+                        &member_code,
+                        display_label,
+                        now,
+                    )
+                    .await
+                    .map_err(TxError::Repo)?;
+                    if !relabelled {
+                        return Err(TxError::NotFound);
+                    }
+                    let after = repo::recognized_member(tx, &scope, tenant_id, kind, &member_code)
+                        .await
+                        .map_err(TxError::Repo)?
+                        .ok_or_else(|| {
+                            TxError::Repo(crate::infra::storage::RepoError::Db(format!(
+                                "recognized member {member_code} vanished under its own relabel"
+                            )))
+                        })?;
+                    events::enqueue_set_event(
+                        &outbox,
+                        tx,
+                        event_token_for(kind),
+                        events::SetEventBody {
+                            tenant_id,
+                            set_kind: kind.as_str(),
+                            member_code: &member_code,
+                            state: after.state.as_str(),
+                        },
+                        actor_ref,
+                    )
+                    .await
+                    .map_err(|e| {
+                        TxError::Repo(crate::infra::storage::RepoError::Db(e.to_string()))
+                    })?;
+                    Ok(after)
+                })
+            },
+        )
+        .await;
+
+    match result {
+        Ok(member) => Ok((
+            StatusCode::OK,
+            Json(RecognizedMemberView::from_member(kind, member)),
+        )
+            .into_response()),
+        Err(TxError::NotFound) => Err(member_not_found(kind, &member_code)),
+        Err(TxError::Refused(refusal)) => Err(refuse_set(
+            &state,
+            &scope,
+            tenant_id,
+            actor_ref,
+            kind,
+            member_code,
+            refusal,
+        )
+        .await),
+        Err(TxError::Repo(e)) => Err(repo_error_to_canonical(&e)),
+    }
 }
 
 /// `POST /recognized-sets/{setKind}/members`.
@@ -404,10 +633,13 @@ async fn add_member(
         .await);
     }
 
+    let authorization =
+        authorize_member_op(&state, &scope, tenant_id, actor_ref, kind, &member_code).await?;
     let outbox = state.sink.clone();
     let scope_tx = scope.clone();
     let code_tx = member_code.clone();
     let label = body.display_label.clone();
+    let authorization_tx = authorization.clone();
     let result = state
         .db
         .db()
@@ -419,7 +651,9 @@ async fn add_member(
                 let scope = scope_tx.clone();
                 let member_code = code_tx.clone();
                 let display_label = label.clone();
+                let authorization = authorization_tx.clone();
                 Box::pin(async move {
+                    settle_member_op(tx, &scope, tenant_id, &authorization, now).await?;
                     if let Some(standing) =
                         repo::recognized_member(tx, &scope, tenant_id, kind, &member_code)
                             .await
@@ -541,9 +775,12 @@ async fn transition_member(
         .await);
     };
 
+    let authorization =
+        authorize_member_op(&state, &scope, tenant_id, actor_ref, kind, &member_code).await?;
     let outbox = state.sink.clone();
     let scope_tx = scope.clone();
     let code_tx = member_code.clone();
+    let authorization_tx = authorization.clone();
     let result = state
         .db
         .db()
@@ -554,7 +791,9 @@ async fn transition_member(
                 let outbox = outbox.clone();
                 let scope = scope_tx.clone();
                 let member_code = code_tx.clone();
+                let authorization = authorization_tx.clone();
                 Box::pin(async move {
+                    settle_member_op(tx, &scope, tenant_id, &authorization, now).await?;
                     let Some(stored) =
                         repo::recognized_member(tx, &scope, tenant_id, kind, &member_code)
                             .await
@@ -606,8 +845,7 @@ async fn transition_member(
                         // the message would name a total with no
                         // exemplar. Over the bound the count is
                         // honest about being a floor.
-                        refuse_meter_delist_if_held(tx, &scope, tenant_id, kind, &member_code)
-                            .await?;
+                        refuse_delist_if_held(tx, &scope, tenant_id, kind, &member_code).await?;
                     }
 
                     let flipped = repo::flip_recognized_member(
@@ -630,7 +868,7 @@ async fn transition_member(
                         // flip matches nothing — that is UNIT_DELIST_BLOCKED,
                         // not a stale pin.
                         if to == MemberState::Removed {
-                            refuse_meter_delist_if_held(tx, &scope, tenant_id, kind, &member_code)
+                            refuse_delist_if_held(tx, &scope, tenant_id, kind, &member_code)
                                 .await?;
                         }
                         return Err(TxError::Refused(DomainError::StaleLiveOp(format!(
@@ -740,7 +978,7 @@ fn member_contention_db_err(error: &TxError) -> Option<&sea_orm::DbErr> {
 /// Refuse a metering-unit removal while a non-terminal published head
 /// still declares it. Other kinds have no carrier column yet, so their
 /// holder population is empty by construction.
-async fn refuse_meter_delist_if_held(
+async fn refuse_delist_if_held(
     runner: &impl toolkit_db::secure::DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
@@ -748,10 +986,7 @@ async fn refuse_meter_delist_if_held(
     member_code: &str,
 ) -> Result<(), TxError> {
     const SAMPLE: usize = 5;
-    if kind != SetKind::MeteringUnit {
-        return Ok(());
-    }
-    let holders = repo::metering_unit_holders(runner, scope, tenant_id, member_code, SAMPLE as u64)
+    let holders = repo::member_holders(runner, scope, tenant_id, kind, member_code, SAMPLE as u64)
         .await
         .map_err(TxError::Repo)?;
     if holders.is_empty() {

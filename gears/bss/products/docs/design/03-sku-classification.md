@@ -412,3 +412,5 @@ actor, the scenarios and the boundary.
   (`tests/postgres_head_race.rs`), which is a fourth option and costs a tier. Owner: this slice
   with 01 (the isolation posture is the Foundation's to set). *(Raised by the three-lens review of
   the recognized-set doors, 2026-09-02.)*
+
+- **The scheduled publish lane never resolves `usageTypeRef`** (measured 2026-09-05, P-D-146): `04`'s runner enters the publish transaction under `PreAuthorized` without the pre-transaction resolve, which lives in the REST door and needs the caller's `SecurityContext`. A scheduled publish of a metered SKU therefore skips P-D-131's fail-closed check, freezes no binding snapshot, and cannot reach the `deferred` arm §3.2's error taxonomy asks for. Owner `04`/`07`; the fix shape is the runner carrying the resolver and a service context, resolving before the transaction, and mapping `Unavailable` to a deferral. Carried in the feature's §7 as row 22.

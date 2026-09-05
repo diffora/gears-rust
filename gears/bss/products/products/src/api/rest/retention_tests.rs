@@ -496,6 +496,7 @@ async fn an_erasure_leaves_a_frozen_record_byte_identical() {
             // The frozen row is stamped with the ref about to be erased.
             actor_ref: seeded,
             published_at: crate::domain::canonical::write_instant(chrono::Utc::now()),
+            binding_snapshot: None,
         },
     )
     .await
