@@ -1846,9 +1846,13 @@ const HEAD_ACT_RESPONSE_STATUS: StatusCode = StatusCode::OK;
 /// columns the original enumeration missed; until it does, this doc is where
 /// the reading is recorded, and `skus::SKU_VERSION_CONTENT_ROSTER`'s twin
 /// says the same.
-pub(crate) const PRODUCT_CONTENT_ROSTER: [&str; 12] = [
+pub(crate) const PRODUCT_CONTENT_ROSTER: [&str; 14] = [
+    // The two row collections (`design/01` §4.3, `design/02` §4, P-D-29,
+    // P-D-153): rendered as sorted arrays, `[]` when empty, never `null`.
+    "attributes",
     "brand_id",
     "brand_scope",
+    "categories",
     "cloned_from",
     "cloned_from_version",
     "created_at",
@@ -1956,8 +1960,22 @@ fn bodiless_payload_digest() -> Vec<u8> {
 /// content as the record's `content_snapshot`, and that snapshot must be the
 /// **same rendering** the publish door will freeze — a second renderer would
 /// let an approver sign bytes the publish never produces.
-pub(crate) fn product_content(record: &ProductRecord) -> JsonValue {
+pub(crate) fn product_content(
+    record: &ProductRecord,
+    collections: &repo::FrozenCollections,
+) -> JsonValue {
     let mut content = JsonMap::new();
+    // The two collections are content (P-D-29, P-D-153): the assignment set
+    // and the attribute-value set, each a sorted array — an empty set renders
+    // `[]`, so absence-of-rows and absence-of-the-key never collide.
+    content.insert(
+        "categories".to_owned(),
+        crate::domain::taxonomy::assignment_collection(&collections.assignments),
+    );
+    content.insert(
+        "attributes".to_owned(),
+        crate::domain::taxonomy::value_collection(&collections.values),
+    );
     content.insert(
         "brand_id".to_owned(),
         JsonValue::String(record.brand_id.to_string()),
@@ -5102,6 +5120,7 @@ fn freeze_for(
     inputs: &HeadActInputs,
     head: &ProductRecord,
     authorization: &GateAuthorization,
+    collections: &repo::FrozenCollections,
 ) -> NewEntityVersion {
     // `N + 1`, the version this act produces. It is read by the row's **key**
     // and by nothing else: `published_version` is not on
@@ -5109,7 +5128,7 @@ fn freeze_for(
     // is no second copy of this number for the key to disagree with.
     let published_version = head.published_version + 1;
     let rendering = canonical::canonical_rendering(
-        &product_content(head),
+        &product_content(head, collections),
         canonical::Absence::Null {
             roster: &PRODUCT_CONTENT_ROSTER,
         },
@@ -5368,11 +5387,22 @@ pub(crate) async fn run_publish(
         .map_err(HeadActError::Refused)?;
     settle_product_authorization(runner, inputs, &authorization).await?;
 
-    // -- a. Freeze the post-act image, at `published_version + 1`. --
+    // -- a. Freeze the post-act image, at `published_version + 1`. The two
+    // collections are read inside this transaction, so the frozen content is
+    // the assignment and value sets as they stand at commit (P-D-153). --
+    let collections = repo::frozen_collections(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        "product",
+        inputs.product_id,
+    )
+    .await
+    .map_err(|e| HeadActError::from_repo(&e))?;
     repo::insert_entity_version(
         runner,
         &inputs.scope,
-        freeze_for(inputs, &head, &authorization),
+        freeze_for(inputs, &head, &authorization, &collections),
     )
     .await
     .map_err(|e| HeadActError::from_repo(&e))?;

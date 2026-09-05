@@ -42,7 +42,9 @@
 use bss_products_sdk::models::EntityKind;
 use sea_orm::{IdenStatic as _, Iterable as _};
 
-use super::{ColumnTag, FieldBucket, FieldClass, OutsideTheScheme, classify, columns};
+use super::{
+    ColumnTag, FieldBucket, FieldClass, OutsideTheScheme, classify, columns, is_content_collection,
+};
 use crate::domain::error::DomainError;
 use crate::infra::storage::entity::{product, sku};
 
@@ -408,7 +410,9 @@ fn bucket_ii_is_the_meter_pair_and_bucket_iv_is_empty() {
 fn the_class_counts_are_pinned_per_entity() {
     let product_counts = [
         (FieldClass::Bucket(FieldBucket::Structural), 2),
-        (FieldClass::Bucket(FieldBucket::MaterialMutable), 4),
+        // `name`, `name_normalized`, `region_scope`, `brand_scope`, and the two
+        // content collections `categories` and `attributes` (P-D-153).
+        (FieldClass::Bucket(FieldBucket::MaterialMutable), 6),
         (FieldClass::CreateOnly, 2),
         (FieldClass::Outside(OutsideTheScheme::Mechanical), 5),
         (FieldClass::Outside(OutsideTheScheme::RowIdentity), 4),
@@ -416,12 +420,13 @@ fn the_class_counts_are_pinned_per_entity() {
     for (class, expected) in product_counts {
         assert_eq!(count_of(EntityKind::Product, class), expected);
     }
-    assert_eq!(columns(EntityKind::Product).len(), 17);
+    assert_eq!(columns(EntityKind::Product).len(), 19);
 
     let sku_counts = [
         (FieldClass::Bucket(FieldBucket::Structural), 2),
         (FieldClass::Bucket(FieldBucket::Correctable), 3),
-        (FieldClass::Bucket(FieldBucket::MaterialMutable), 6),
+        // The six head columns and the `attributes` collection (P-D-153).
+        (FieldClass::Bucket(FieldBucket::MaterialMutable), 7),
         (FieldClass::CreateOnly, 2),
         (FieldClass::Outside(OutsideTheScheme::Mechanical), 8),
         (FieldClass::Outside(OutsideTheScheme::RowIdentity), 4),
@@ -429,7 +434,7 @@ fn the_class_counts_are_pinned_per_entity() {
     for (class, expected) in sku_counts {
         assert_eq!(count_of(EntityKind::Sku, class), expected);
     }
-    assert_eq!(columns(EntityKind::Sku).len(), 25);
+    assert_eq!(columns(EntityKind::Sku).len(), 26);
 }
 
 /// No column is named twice in one entity's registry.
@@ -485,7 +490,13 @@ fn the_registry_and_the_physical_tables_name_the_same_columns() {
                 )
             });
         }
-        for tag in columns(kind) {
+        // The content collections are registry members without a physical
+        // column (P-D-153): the assignment and value tables are their own.
+        let head_columns: Vec<&ColumnTag> = columns(kind)
+            .iter()
+            .filter(|tag| !is_content_collection(tag.column))
+            .collect();
+        for tag in &head_columns {
             assert!(
                 physical.contains(&tag.column),
                 "{} registry names {}, which the table does not have",
@@ -494,9 +505,9 @@ fn the_registry_and_the_physical_tables_name_the_same_columns() {
             );
         }
         assert_eq!(
-            columns(kind).len(),
+            head_columns.len(),
             physical.len(),
-            "{} registry and table are the same width",
+            "{} registry (its head columns) and table are the same width",
             kind.as_str(),
         );
     }

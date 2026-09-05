@@ -3986,9 +3986,12 @@ mod bucket_agreement_tests {
     ///
     /// Takes a **set** of tags rather than one because §5's combined iii/iv
     /// class is the operand, not a convenience.
+    // The content collections are registry members with no head-row column
+    // (P-D-153); the triggers guard columns, so the comparison skips them.
     fn registry_bucket(kind: EntityKind, wanted: &[FieldBucket]) -> BTreeSet<String> {
         bucket::columns(kind)
             .iter()
+            .filter(|tag| !bucket::is_content_collection(tag.column))
             .filter(|tag| {
                 tag.class
                     .bucket()
@@ -4003,6 +4006,7 @@ mod bucket_agreement_tests {
     fn registry_columns(kind: EntityKind) -> BTreeSet<String> {
         bucket::columns(kind)
             .iter()
+            .filter(|tag| !bucket::is_content_collection(tag.column))
             .map(|tag| tag.column.to_owned())
             .collect()
     }

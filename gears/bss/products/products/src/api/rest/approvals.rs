@@ -830,8 +830,16 @@ pub(crate) async fn resolve_entity_subject(
             else {
                 return Ok(None);
             };
+            let collections = repo::frozen_collections(
+                runner,
+                scope,
+                entity.tenant_id,
+                "product",
+                entity.entity_id,
+            )
+            .await?;
             (
-                crate::api::rest::products::product_content(&head),
+                crate::api::rest::products::product_content(&head, &collections),
                 head.internal_revision,
                 VersionedEntityKind::Product,
             )
@@ -842,8 +850,11 @@ pub(crate) async fn resolve_entity_subject(
             else {
                 return Ok(None);
             };
+            let collections =
+                repo::frozen_collections(runner, scope, entity.tenant_id, "sku", entity.entity_id)
+                    .await?;
             (
-                crate::api::rest::skus::sku_version_content(&head),
+                crate::api::rest::skus::sku_version_content(&head, &collections.values),
                 head.internal_revision,
                 VersionedEntityKind::Sku,
             )

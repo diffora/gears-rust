@@ -1513,7 +1513,7 @@ that contract's base and is declared nowhere; open item 16's door work owes it.
 
 ### Version content rendering
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-version-content-rendering`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-version-content-rendering`
 
 Inside a frozen entity version this feature's two row collections — the category-assignment set
 and the attribute-value set — **MUST** be rendered as JSON arrays sorted by the collection's own
@@ -1574,6 +1574,18 @@ renderings and `head_is_dirty`, both rosters, `DIGEST_VERSION` 2 → 3 with the 
 golden vectors regenerated (`canonical_tests`, `tests/postgres_golden_vector.rs`), and the clone's
 frozen read gaining the collections it needs (`features/clone.md`). It is `01`'s and this feature's
 jointly and is filed in §7; three of `11`'s DoDs wait on it.
+
+**Ticked (P-D-153).** The two renderers are wired: `repo::frozen_collections` reads the assignment
+set and the value set **inside the publish transaction** and `product_content` /
+`sku_version_content` render them as `categories` and `attributes` — sorted arrays, `[]` when empty,
+never `null` — on the content rosters (14 and 19 names). Every site that renders head content for a
+comparison follows (the correction door's dirty-head check, the bulk worker's promotion renderings
+and `head_is_dirty`, the approval snapshot), and `08`'s projector takes a Product's category ids
+from the frozen collection. `digest_version` is **3**; scheme 2's vectors stay as its record. The
+golden vector with both collections is pinned on both engines:
+`canonical_tests::the_scheme_3_golden_vector_pins_the_collections_inside_the_content` and
+`tests/postgres_golden_vector.rs::the_scheme_3_golden_vector_survives_a_postgres_round_trip`,
+the literal bytes and digest computed independently of the crate.
 
 **Implements**: `cpt-cf-bss-products-flow-assign-categories`,
 `cpt-cf-bss-products-flow-attribute-values`
@@ -1667,8 +1679,8 @@ fail on the second assertion while passing the first.
       is refused `ENTITY_TERMINAL`
 - [ ] Mutating the metadata map after a `CatalogVersion` snapshot leaves the old snapshot's
       checksum unmoved
-- [ ] The frozen rendering of the category-assignment and attribute-value collections is
-      byte-identical across SQLite and Postgres under a pinned golden vector
+- [x] The frozen rendering of the category-assignment and attribute-value collections is
+      byte-identical across SQLite and Postgres under a pinned golden vector *(P-D-153: the scheme-3 vector on both engines)*
 - [ ] Each of the eight named events is emitted by its door in the mutating transaction, and a
       Product or SKU attribute-value write emits none of its own
 - [ ] Each of the sixteen codes is raised by exactly one rule and carries its declared problem
@@ -1765,7 +1777,7 @@ it does not decide it.
   so this is recorded as an asymmetry worth an owner's glance, **not** as an item that binds
   implementation.
 
-- **The two collections are not frozen into version content** (measured by P-D-152, 2026-09-05).
+- ~~**The two collections are not frozen into version content**~~ **Answered (P-D-153, 2026-09-05): wired — the collections are content, scheme 3, both golden vectors pinned.** *(Measured by P-D-152, 2026-09-05.)*
   `assignment_collection` and `value_collection` exist and nothing calls them; `product_content` and
   `sku_version_content` render the Foundation rosters alone, so a frozen version carries no
   categories and no attributes, `08`'s projector reads them live, and `11`'s clone cannot copy them

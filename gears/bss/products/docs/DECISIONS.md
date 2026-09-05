@@ -1569,6 +1569,52 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-153 — The two collections are content: frozen at publish, digest scheme 3, and the projector reads the published assignment set
+
+- **Date**: 2026-09-05 (the lead, group 11 of the follow-on plan; answers `02` §7's freeze row and
+  the plan's first item)
+- **Decision.** `design/01` §4.3 and `design/02` §4 said the category-assignment and
+  attribute-value sets are rendered inside a frozen version; the renderers existed and nothing
+  called them. Now: `repo::frozen_collections` reads both sets **inside the publish transaction**
+  and the content builders render them under the keys **`categories`** (Products) and
+  **`attributes`** (both kinds), sorted by the collection's own full row key (P-D-29, P-D-103);
+  an empty set renders **`[]`, never `null`** — the absence rule is for a field the value lacks,
+  and a collection is never absent. Both rosters carry the keys (14 and 19 names).
+- **The `BucketRegistry` learns the two keys.** A publish's re-validation and a submission's
+  materiality walk the content keys and refuse an unregistered one; `categories` and `attributes`
+  are registered **bucket iii** (written by the save door, frozen by the next publish, like
+  `name`), as members with no head-row column — the registry-vs-schema agreement probes skip them
+  by `bucket::is_content_collection`. *Counter-argument:* exempt the keys from classification
+  instead; rejected — an exemption is a default bucket by another name, the refusal the registry
+  exists to make.
+- **Every head rendering follows.** A comparison of a head against its frozen row must render the
+  same shape or read every head dirty: the correction door's `CORRECTION_DIRTY_HEAD` check, the
+  bulk worker's promotion renderings and `head_is_dirty`, and the approval submission's content
+  snapshot (the reviewer's diff basis) all read the collections through the same function.
+- **`digest_version` 2 → 3.** §4.3's rule is *"a content-shape change is a digest-version bump,
+  not a silent change"*, and this is the first change that added row collections — arrays whose
+  element order is exactly what two engines could serialize differently and what `10`'s drill
+  compares. Scheme 2's golden vectors stay in the tree as its record; scheme 3 has its own on both
+  engines, the literal bytes and digest computed outside the crate. *Counter-argument:* the
+  constant's own doc argued that pre-production shape changes need not bump (no stored row exists
+  under 2 either); accepted as true and overruled — a stored row should say which shape it holds,
+  and the bump costs no re-rendering code precisely because no row exists.
+- **The projector reads the published assignment set.** `project_entity` takes a Product's
+  category ids from the frozen `categories` collection (the live tree still supplies the path
+  text), falling back to the live assignment table only for a scheme-2 version; a re-parent's
+  re-file reads each row's own frozen version the same way. So a category assigned after a publish
+  reaches browse with the next publish, which is what "published content" means.
+  *Counter-argument:* browse showed live assignments before and consumers may have liked the
+  immediacy; rejected — a projection of published versions that read unpublished rows was the
+  leak `dod-clone-read-surface` names for the clone.
+- **Ticks.** `02`: `dod-version-content-rendering`; §6 the byte-identical criterion. `11`'s three
+  DoDs now wait on this feature's own copy and re-validation (group 12).
+- **Propagated**: `design/01-foundation.md` §4.3, `design/02-taxonomy-attributes.md` §4,
+  `features/taxonomy-attributes.md` (the tick, the criterion, §7's row struck),
+  `features/clone.md` (§7's row re-aimed).
+- **Trace**: `repo::frozen_collections`, `PRODUCT_CONTENT_ROSTER`, `SKU_VERSION_CONTENT_ROSTER`,
+  `canonical::DIGEST_VERSION`, `projector::frozen_assignment_ids`, the two scheme-3 golden tests.
+
 #### P-D-152 — The remainders: the EOL flag, four `02`/`11` ticks by census, lineage on the timeline, and the freeze the collections never had
 
 - **Date**: 2026-09-05 (the lead, group 10 of the solo plan — the last; a census of every open

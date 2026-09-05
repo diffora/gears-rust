@@ -117,7 +117,21 @@ use serde_json::{Number, Value as JsonValue};
 /// old rendering for those rows — is what keeps the drill's answer meaningful.
 /// The condition that makes today's non-bump correct is exactly *"no stored
 /// row"*, and it expires the first time this gear writes one.
-pub const DIGEST_VERSION: i32 = 2;
+///
+/// # Why the two collections bumped it to `3` (P-D-153, 2026-09-05)
+///
+/// The first change that added not a column but **two row collections** to
+/// the frozen content — `categories` and `attributes`, rendered as sorted
+/// arrays — is exactly the change the rule exists for: an array's element
+/// order is what two engines could have serialized differently, and what
+/// slice 10's drill compares byte for byte. Version `2`'s golden vectors stay
+/// in the tree as the record of scheme `2`; scheme `3` has its own beside them
+/// (`canonical_tests`, `tests/postgres_golden_vector.rs`). No row has been
+/// written under `2` in any deployment either, so the bump costs no
+/// re-rendering code; it is taken because §4.3 says a content-shape change is
+/// a bump, and a reader of a stored row should be able to tell which shape it
+/// holds.
+pub const DIGEST_VERSION: i32 = 3;
 
 /// Which of §4.3's two readings of *absence* a rendering is taken under.
 ///

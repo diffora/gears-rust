@@ -281,7 +281,7 @@ pub struct ColumnTag {
 /// P-D-50's fail-closed rule is made of. `bucket_tests` asserts this against
 /// the entity model, so a column added to the table without a row here is a
 /// red test rather than a runtime refusal.
-const PRODUCT_COLUMNS: [ColumnTag; 17] = [
+const PRODUCT_COLUMNS: [ColumnTag; 19] = [
     // Row identity (§4.2, P-D-34): admitted in no UPDATE at all.
     ColumnTag {
         column: "product_id",
@@ -381,6 +381,20 @@ const PRODUCT_COLUMNS: [ColumnTag; 17] = [
         column: "deprecation_provenance",
         class: FieldClass::Outside(OutsideTheScheme::Mechanical),
     },
+    // The two row collections frozen inside the content (P-D-29, P-D-153):
+    // not head-row columns — the assignment and value tables are their own —
+    // but content keys the save door writes and the next publish freezes, so
+    // they classify as bucket iii, exactly like `name`. A publish's
+    // re-validation and a submission's materiality walk the content keys and
+    // ask this registry; an unregistered key is refused, not defaulted.
+    ColumnTag {
+        column: "categories",
+        class: FieldClass::Bucket(FieldBucket::MaterialMutable),
+    },
+    ColumnTag {
+        column: "attributes",
+        class: FieldClass::Bucket(FieldBucket::MaterialMutable),
+    },
 ];
 
 /// `products_sku`'s columns (§4.2).
@@ -390,7 +404,7 @@ const PRODUCT_COLUMNS: [ColumnTag; 17] = [
 /// it is the primary key; and the table carries **no `name`**, so a `name`
 /// field arriving for a SKU is a miss and is refused rather than routed to the
 /// Product's tag.
-pub(crate) const SKU_COLUMNS: [ColumnTag; 25] = [
+pub(crate) const SKU_COLUMNS: [ColumnTag; 26] = [
     // Row identity (§4.2, P-D-34).
     ColumnTag {
         column: "sku_id",
@@ -530,6 +544,13 @@ pub(crate) const SKU_COLUMNS: [ColumnTag; 25] = [
         column: "correction_ref",
         class: FieldClass::Outside(OutsideTheScheme::Mechanical),
     },
+    // The attribute-value collection frozen inside the content (P-D-29,
+    // P-D-153): a content key, not a head-row column; bucket iii like `name`
+    // on a Product. See `PRODUCT_COLUMNS`' note.
+    ColumnTag {
+        column: "attributes",
+        class: FieldClass::Bucket(FieldBucket::MaterialMutable),
+    },
 ];
 
 /// Every registry row for an entity kind, in table order.
@@ -564,6 +585,20 @@ pub const fn columns(kind: EntityKind) -> &'static [ColumnTag] {
 /// entity and the column, so the operator answer says which field was refused
 /// and an operator reading it can see it is an unregistered one rather than a
 /// governed refusal.
+/// The registry members that are **content collections, not head columns**
+/// (P-D-29, P-D-153): `categories` on a Product, `attributes` on both kinds.
+/// They carry a bucket tag like any content key the save door writes and the
+/// publish freezes, and no physical column of the head table — the assignment
+/// and value tables are their own. The agreement probes between this registry
+/// and the executed schema skip them by this predicate.
+pub const CONTENT_COLLECTIONS: [&str; 2] = ["attributes", "categories"];
+
+/// Whether `column` is one of the [`CONTENT_COLLECTIONS`].
+#[must_use]
+pub fn is_content_collection(column: &str) -> bool {
+    CONTENT_COLLECTIONS.contains(&column)
+}
+
 pub fn classify(kind: EntityKind, column: &str) -> Result<FieldClass, DomainError> {
     columns(kind)
         .iter()

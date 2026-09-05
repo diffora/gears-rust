@@ -2035,10 +2035,21 @@ async fn the_frozen_rows_digest_is_the_digest_of_the_rendering_the_row_stores() 
     // argument. The row still says which version it is — the key column
     // does, and the query above selects on it.
     let seeded = new_product(product_id, TENANT);
+    // The fixture assigned one primary category; the frozen content carries
+    // it as the sorted assignment collection (P-D-29, P-D-153), and the
+    // attribute-value collection is empty — `[]`, never `null`.
+    let category = raw_string_opt(
+        &harness.dsn,
+        "SELECT lower(hex(category_id)) AS v FROM products_product_category",
+    )
+    .await
+    .expect("the fixture assigned one primary category");
+    let category = Uuid::parse_str(&category).expect("a uuid column");
     assert_eq!(
         stored_content,
         format!(
-            "{{\"brand_id\":\"{}\",\"brand_scope\":\"\",\
+            "{{\"attributes\":[],\"brand_id\":\"{}\",\"brand_scope\":\"\",\
+             \"categories\":[{{\"categoryId\":\"{category}\",\"role\":\"primary\"}}],\
              \"cloned_from\":null,\"cloned_from_version\":null,\
              \"created_at\":\"2026-08-29T09:00:00.000000Z\",\"created_by\":\"{}\",\
              \"name\":\"{}\",\"name_normalized\":\"{}\",\"product_code\":\"{}\",\
@@ -2916,6 +2927,10 @@ async fn the_product_content_roster_is_the_head_table_minus_the_excluded_columns
         .into_iter()
         .filter(|column| !EXCLUDED_FROM_FROZEN_CONTENT.contains(&column.as_str()))
         .collect();
+    // Plus the two row collections §4.3 renders inside the content (P-D-29,
+    // P-D-153) — not columns of the head table, content all the same.
+    expected.push("categories".to_owned());
+    expected.push("attributes".to_owned());
     expected.sort();
     let mut roster: Vec<String> = super::PRODUCT_CONTENT_ROSTER
         .iter()
@@ -2976,7 +2991,7 @@ async fn the_product_content_builder_writes_exactly_the_roster() {
     // — the builder would pass by omitting an absent optional.
     head.deprecation_provenance = Some(crate::domain::deprecation::Provenance::Direct);
 
-    let content = super::product_content(&head);
+    let content = super::product_content(&head, &repo::FrozenCollections::default());
     let mut written: Vec<&str> = content
         .as_object()
         .expect("the builder renders a JSON object")

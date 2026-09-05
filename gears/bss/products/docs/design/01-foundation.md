@@ -162,7 +162,7 @@ acknowledged, and rejections that always carry an audited reason. Per P-D-02, ev
 | `RegistryEntity` | The trait both `Product` and `SKU` implement toward the pipeline: kind, id, tenant, lifecycle state, internal revision, published version |
 | `ValidationPipeline` | The ordered, fail-closed run of idempotency resolution → precondition → shape → state → identity → registered validators → governance gate (any gated act, §3.1), executed inside every mutating door |
 | `RegisteredValidator` | A slice-contributed rule keyed by `(entity kind, transition, target state, or field set)` (the target-state variant added by **P-D-32**, which the publish re-run needs); registration is code, not config |
-| `BucketRegistry` | The Foundation-owned map from a published-state column to its bucket tag (i–iv), which the head **door** reads — in the application layer — to route a write (§3.1). A slice registers its own columns' tags exactly as it registers validators — code, not config. **The registry is advisory for the physical layer** (**P-D-32**): a compile-time Rust map has no read path from a migration-time trigger, so §4.2's column classes stay static DDL — generating them would break C1's "guards defined once" and the schema-oracle goldens — and §5 carries the test that asserts the two agree. 05 reads the same registry to judge materiality (owner's call, 2026-08-27, P-D-28: 05 already attributes the frame here, and a physical guard of the Foundation's cannot depend on a capability slice's artifact). **A lookup miss is fail-closed** (**P-D-50**): the registry is compile-time, so a published-state column carrying no tag means it was added without registering one, and the head door refuses the write under the pipeline's own posture rather than routing to a default bucket |
+| `BucketRegistry` | The Foundation-owned map from a published-state column — **and from the two content collections `categories` and `attributes`, bucket iii since P-D-153** — to its bucket tag (i–iv), which the head **door** reads — in the application layer — to route a write (§3.1). A slice registers its own columns' tags exactly as it registers validators — code, not config. **The registry is advisory for the physical layer** (**P-D-32**): a compile-time Rust map has no read path from a migration-time trigger, so §4.2's column classes stay static DDL — generating them would break C1's "guards defined once" and the schema-oracle goldens — and §5 carries the test that asserts the two agree. 05 reads the same registry to judge materiality (owner's call, 2026-08-27, P-D-28: 05 already attributes the frame here, and a physical guard of the Foundation's cannot depend on a capability slice's artifact). **A lookup miss is fail-closed** (**P-D-50**): the registry is compile-time, so a published-state column carrying no tag means it was added without registering one, and the head door refuses the write under the pipeline's own posture rather than routing to a default bucket |
 | `PublishDoor` | The single Foundation API that turns an approved draft into a published version (bump, snapshot, events) — the only writer of `published_version` |
 | `ReservationIndex` | The partial unique index realizing `skuCode` reservation (see §4.2) |
 | `identity-reference map` | The pseudonym → operator identity table audit/events point at; its erasure semantics are slice 10's |
@@ -800,6 +800,8 @@ evidence rather than a claim. A SKU's parent link `product_id` is **bucket-i** (
 which puts it with identity rather than with governed content — so a mis-parented published SKU is
 corrected by retire-and-clone, and nothing in the gear re-parents one today.
 
+**The two content collections are bucket iii too** (P-D-153): `categories` and `attributes` are registry members with no head-row column — the assignment and value tables are their own — written by the save door and frozen by the next publish exactly as `name` is; a publish's re-validation and a submission's materiality walk the content keys and ask the registry, and an unregistered key is refused rather than defaulted, which is why the keys are registered rather than exempted.
+
 **`normalized(name)`** (the uniqueness and promotion-identity operand, P-D-04/AC #33a) is pinned:
 Unicode NFKC → full casefold → trim + collapse internal whitespace to single spaces, computed
 **application-side** so both engines store identical bytes.
@@ -931,7 +933,12 @@ rendered as a **JSON array sorted by the collection's own full row key** (the ca
 attribute value's whole coordinate — definition, locale, region, brand), each element rendered by
 the same field rule (owner's call, 2026-08-27, P-D-29: the field rule orders fields and said nothing
 about rows, so two engines could have serialized the same content in two orders and 10's restore
-drill compares these digests byte-for-byte).
+drill compares these digests byte-for-byte). **Built by P-D-153 (2026-09-05)**: the keys are
+`categories` (Products) and `attributes` (both kinds), on the content rosters beside the head
+columns; an empty set renders **`[]`, never `null`** — the absence rule above is for a *field* the
+value lacks, and a collection is never absent; the sets are read **inside the publish transaction**
+(`repo::frozen_collections`), so the frozen bytes are the sets as they stand at commit; the change
+took `digest_version` **2 → 3**, scheme 2's golden vectors staying in the tree as its record.
 
 **P-D-103 applies P-D-80 arm 1 back to these two collections**, rather than widening anything: that
 decision already generalized *"by the collection's own identifier"* to **a keyed collection sorts by

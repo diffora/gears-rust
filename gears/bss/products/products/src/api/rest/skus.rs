@@ -2256,7 +2256,10 @@ const ACT_RESPONSE_STATUS: StatusCode = StatusCode::OK;
 /// name `updated_at` and `published_version` beside `internal_revision` as
 /// columns the original enumeration missed. Until it does, this doc and its
 /// Product twin are where the reading is recorded.
-pub(crate) const SKU_VERSION_CONTENT_ROSTER: [&str; 18] = [
+pub(crate) const SKU_VERSION_CONTENT_ROSTER: [&str; 19] = [
+    // The attribute-value collection (`design/01` §4.3, `design/02` §4,
+    // P-D-29, P-D-153): a sorted array, `[]` when empty, never `null`.
+    "attributes",
     "brand_scope",
     "cloned_from",
     "cloned_from_version",
@@ -2705,8 +2708,17 @@ fn post_discard_image(head: &SkuRecord, now: DateTime<Utc>) -> SkuRecord {
 /// `pub(crate)` since 2026-09-04, for the reason `products::product_content`
 /// states: `05`'s submit door renders the submitted snapshot through the same
 /// function the freeze uses.
-pub(crate) fn sku_version_content(image: &SkuRecord) -> JsonValue {
+pub(crate) fn sku_version_content(
+    image: &SkuRecord,
+    values: &[crate::domain::taxonomy::FrozenAttributeValue],
+) -> JsonValue {
     let mut fields = JsonMap::new();
+    // The attribute-value set is content (P-D-29, P-D-153); a SKU has no
+    // category assignments of its own, so this is its one collection.
+    fields.insert(
+        "attributes".to_owned(),
+        crate::domain::taxonomy::value_collection(values),
+    );
     fields.insert(
         "sku_id".to_owned(),
         JsonValue::String(image.sku_id.to_string()),
@@ -2820,9 +2832,10 @@ fn freeze_for(
     approval_ref: Option<Uuid>,
     now: DateTime<Utc>,
     binding: Option<&crate::domain::recognized::UsageTypeBinding>,
+    values: &[crate::domain::taxonomy::FrozenAttributeValue],
 ) -> NewEntityVersion {
     let content = canonical::canonical_rendering(
-        &sku_version_content(image),
+        &sku_version_content(image, values),
         canonical::Absence::Null {
             roster: &SKU_VERSION_CONTENT_ROSTER,
         },
@@ -3799,6 +3812,17 @@ pub(crate) async fn run_publish(
     }
 
     // -- a. Freeze the post-act image, at `published_version + 1`. --
+    // The attribute values are read inside the publish transaction, so the
+    // frozen content is the value set as it stands at commit (P-D-153).
+    let collections = repo::frozen_collections(
+        runner,
+        &inputs.scope,
+        inputs.tenant_id,
+        "sku",
+        inputs.sku_id,
+    )
+    .await
+    .map_err(|e| HeadActError::from_repo(&e))?;
     repo::insert_entity_version(
         runner,
         &inputs.scope,
@@ -3808,6 +3832,7 @@ pub(crate) async fn run_publish(
             authorization.approval_ref().map(ApprovalId::get),
             inputs.now,
             binding,
+            &collections.values,
         ),
     )
     .await
@@ -4934,8 +4959,14 @@ async fn correction_preconditions(
     )
     .await
     .map_err(|e| repo_error_to_canonical(&e))?;
+    // The head's rendering carries its attribute values, as the frozen row
+    // does (P-D-153): a comparison without them would read every head dirty.
+    let collections =
+        repo::frozen_collections(runner, &act.scope, act.tenant_id, "sku", head.sku_id)
+            .await
+            .map_err(|e| repo_error_to_canonical(&e))?;
     let rendering = canonical::canonical_rendering(
-        &sku_version_content(head),
+        &sku_version_content(head, &collections.values),
         canonical::Absence::Null {
             roster: &SKU_VERSION_CONTENT_ROSTER,
         },

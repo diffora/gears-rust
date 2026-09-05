@@ -649,15 +649,34 @@ async fn project_entity(
                 .into_iter()
                 .map(|(id, parent, name)| (id, (parent, name)))
                 .collect();
-        let assigned: Vec<Uuid> = repo::category_assignments(conn, scope, tenant_id, entity_id)
-            .await?
-            .into_iter()
-            .map(|a| a.category_id)
-            .collect();
+        // The assignment ids come from the frozen content (P-D-153): the
+        // paths a consumer sees are the published assignment set's, with the
+        // live tree supplying the path text. A version frozen before the
+        // collections were content (scheme 2) has no array; it reads the live
+        // assignments as before.
+        let assigned = match frozen_assignment_ids(&content) {
+            Some(ids) => ids,
+            None => repo::category_assignments(conn, scope, tenant_id, entity_id)
+                .await?
+                .into_iter()
+                .map(|a| a.category_id)
+                .collect(),
+        };
         row.category_paths = category_paths_for(&assigned, &nodes);
     }
     repo::upsert_read_entity(conn, scope, row).await?;
     Ok(())
+}
+
+/// The category ids a frozen version's `categories` collection names, or
+/// `None` when the content predates the collections (digest scheme 2).
+fn frozen_assignment_ids(content: &serde_json::Value) -> Option<Vec<Uuid>> {
+    let rows = content.get("categories")?.as_array()?;
+    Some(
+        rows.iter()
+            .filter_map(|row| row.get("categoryId")?.as_str()?.parse().ok())
+            .collect(),
+    )
 }
 
 /// The `04` flips' projection: the three head-read columns and the flags,
@@ -725,12 +744,27 @@ async fn refresh_category_paths(
         if existing.entity_kind != "product" {
             continue;
         }
-        let assigned: Vec<Uuid> =
-            repo::category_assignments(conn, scope, tenant_id, existing.entity_id)
+        // The published assignment set, from the row's own frozen version
+        // (P-D-153); the live table only for a scheme-2 version.
+        let frozen = repo::entity_version_at(
+            conn,
+            scope,
+            tenant_id,
+            repo::VersionedEntityKind::Product,
+            existing.entity_id,
+            existing.published_version,
+        )
+        .await?
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+        .and_then(|content| frozen_assignment_ids(&content));
+        let assigned = match frozen {
+            Some(ids) => ids,
+            None => repo::category_assignments(conn, scope, tenant_id, existing.entity_id)
                 .await?
                 .into_iter()
                 .map(|a| a.category_id)
-                .collect();
+                .collect(),
+        };
         let paths = category_paths_for(&assigned, &nodes);
         if paths == existing.category_paths {
             continue;

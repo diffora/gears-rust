@@ -52,6 +52,26 @@ const GOLDEN_DIGEST_HEX: &str = "e252632893610a1207b4844a24a1aec1682c8a4b7b5242b
 /// The digest scheme the vector was computed under (`canonical::DIGEST_VERSION`).
 const GOLDEN_DIGEST_VERSION: i32 = 2;
 
+/// The scheme-3 vector (P-D-153): a Product's frozen content with the two
+/// collections inside it, as `domain::canonical_tests::the_scheme_3_golden_vector_pins_the_collections_inside_the_content`
+/// pins it on the `SQLite` side. Same bytes, same digest, on this engine.
+const GOLDEN_3_ENTITY: &str = "3f8f6a1e-0000-4000-8000-000000000002";
+const GOLDEN_3_CONTENT: &str = "{\"attributes\":[{\"brand\":\"\",\"definitionId\":\"6f0a0000-0000-4000-8000-000000000001\",\
+     \"locale\":\"en-US\",\"region\":\"\",\"value\":\"Fibre\"},{\"brand\":\"acme\",\
+     \"definitionId\":\"6f0a0000-0000-4000-8000-000000000002\",\"locale\":\"de-DE\",\
+     \"region\":\"eu\",\"value\":\"Faser\"}],\"brand_id\":\"3f8f6a1e-0000-4000-8000-000000000001\",\
+     \"brand_scope\":\"\",\"categories\":[{\"categoryId\":\"1e0c0000-0000-4000-8000-000000000001\",\
+     \"role\":\"primary\"},{\"categoryId\":\"1e0c0000-0000-4000-8000-000000000002\",\
+     \"role\":\"secondary\"}],\"cloned_from\":null,\"cloned_from_version\":null,\
+     \"created_at\":\"2026-09-05T10:00:00.000000Z\",\
+     \"created_by\":\"00000000-0000-0000-0000-00000000ac70\",\"name\":\"Fibre 500\",\
+     \"name_normalized\":\"fibre 500\",\"product_code\":\"FIBRE-500\",\
+     \"product_id\":\"3f8f6a1e-0000-4000-8000-000000000002\",\"region_scope\":\"eu\",\
+     \"tenant_id\":\"00000000-0000-0000-0000-0000000067a1\"}";
+const GOLDEN_3_DIGEST_HEX: &str =
+    "dcd73f757475b4a9f7cc709d0a9acdd13d053c53975eb720638d13470192ab33";
+const GOLDEN_3_DIGEST_VERSION: i32 = 3;
+
 /// The three columns the round trip reads back.
 #[derive(Debug, sea_orm::FromQueryResult)]
 struct Row {
@@ -113,4 +133,49 @@ async fn the_golden_vector_survives_a_postgres_round_trip() {
         row.digest_version, GOLDEN_DIGEST_VERSION,
         "under the scheme the vector was computed with, which is the clause's own qualifier"
     );
+}
+
+/// The scheme-3 vector survives a Postgres round trip byte for byte — the
+/// two collections inside the content, arrays included (P-D-153).
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn the_scheme_3_golden_vector_survives_a_postgres_round_trip() {
+    let pg = Pg::applied().await;
+    let conn = pg.raw().await;
+
+    conn.execute_raw(Statement::from_string(
+        sea_orm::DatabaseBackend::Postgres,
+        format!(
+            "INSERT INTO bss.products_entity_version (tenant_id, entity_kind, entity_id, \
+             published_version, content, content_digest, digest_version, approval_ref, \
+             actor_ref, published_at) VALUES ('{TENANT}', 'product', '{GOLDEN_3_ENTITY}', 1, \
+             $${GOLDEN_3_CONTENT}$$, decode('{GOLDEN_3_DIGEST_HEX}', 'hex'), \
+             {GOLDEN_3_DIGEST_VERSION}, NULL, '{ACTOR}', '2026-09-05T10:00:00.000000Z')"
+        ),
+    ))
+    .await
+    .expect("freeze the scheme-3 golden vector");
+
+    let row = Row::find_by_statement(Statement::from_string(
+        sea_orm::DatabaseBackend::Postgres,
+        format!(
+            "SELECT content, encode(content_digest, 'hex') AS digest_hex, digest_version \
+             FROM bss.products_entity_version WHERE tenant_id = '{TENANT}' AND entity_id = \
+             '{GOLDEN_3_ENTITY}'"
+        ),
+    ))
+    .one(&conn)
+    .await
+    .expect("read the frozen row")
+    .expect("the row this test just wrote must exist");
+
+    assert_eq!(
+        row.content, GOLDEN_3_CONTENT,
+        "Postgres must store the scheme-3 rendering byte for byte, the two arrays included"
+    );
+    assert_eq!(
+        row.digest_hex, GOLDEN_3_DIGEST_HEX,
+        "and the digest bytes with it"
+    );
+    assert_eq!(row.digest_version, GOLDEN_3_DIGEST_VERSION);
 }

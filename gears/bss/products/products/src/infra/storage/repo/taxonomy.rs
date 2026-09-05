@@ -408,6 +408,63 @@ pub async fn replace_category_assignments(
 ///
 /// [`RepoError`] on a storage or scope failure; [`RepoError::CorruptRow`] on
 /// a `role` outside the roster the `CHECK` admits.
+/// The two row collections a frozen version carries (`design/01` §4.3,
+/// `design/02` §4, **P-D-29**, **P-D-153**): the category-assignment set of a
+/// Product and the attribute-value set of either kind, read as the freeze
+/// renders them — [`crate::domain::taxonomy::assignment_collection`] and
+/// [`crate::domain::taxonomy::value_collection`] sort them, so this reader
+/// makes no ordering promise. A SKU's `assignments` is always empty: the
+/// assignment table is the Product's.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FrozenCollections {
+    /// `(category_id, role)` per assignment.
+    pub assignments: Vec<(Uuid, crate::domain::taxonomy::AssignmentRole)>,
+    /// One entry per attribute value at its coordinate.
+    pub values: Vec<crate::domain::taxonomy::FrozenAttributeValue>,
+}
+
+/// Read the collections the freeze renders into an entity's version content.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage failure below the domain.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-version-content-rendering:p1
+pub async fn frozen_collections(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    entity_kind: &str,
+    entity_id: Uuid,
+) -> Result<FrozenCollections, RepoError> {
+    let assignments = if entity_kind == "product" {
+        category_assignments(runner, scope, tenant_id, entity_id)
+            .await?
+            .into_iter()
+            .map(|a| (a.category_id, a.role))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let values = attribute_values_of(runner, scope, tenant_id, entity_kind, entity_id)
+        .await?
+        .into_iter()
+        .map(|v| crate::domain::taxonomy::FrozenAttributeValue {
+            definition_id: v.definition_id,
+            coordinate: crate::domain::taxonomy::LocalizedValue {
+                locale: v.locale,
+                region: v.region,
+                brand: v.brand,
+                value: v.value,
+            },
+        })
+        .collect();
+    Ok(FrozenCollections {
+        assignments,
+        values,
+    })
+}
+
 pub async fn category_assignments(
     runner: &impl DBRunner,
     scope: &AccessScope,

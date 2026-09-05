@@ -43,7 +43,7 @@ fn hex(bytes: &[u8]) -> String {
     })
 }
 
-/// The digest version is `2`, and it is a constant in this crate — `1` at
+/// The digest version is `3` (P-D-153), and it is a constant in this crate — `1` at
 /// birth, `2` since 03's five content columns joined the SKU roster (P-D-145;
 /// the gear is undeployed, P-D-35's note), the scheme's field set being part
 /// of what the version names.
@@ -57,8 +57,8 @@ fn hex(bytes: &[u8]) -> String {
 #[test]
 fn the_digest_version_is_pinned_in_code_and_moves_only_with_the_roster() {
     assert_eq!(
-        DIGEST_VERSION, 2,
-        "the digest version is 2 since P-D-145 and a bump is a roster change, never a lone edit"
+        DIGEST_VERSION, 3,
+        "the digest version is 3 since P-D-153 (the two collections joined the content) and a bump is a roster change, never a lone edit"
     );
 }
 
@@ -315,4 +315,106 @@ fn decode_rendering_round_trips_the_renderer() {
         decode_rendering("[1,2]").is_err(),
         "a non-object rendering is a store this gear wrote wrong"
     );
+}
+
+/// **The scheme-3 golden vector: the two collections inside the content**
+/// (P-D-29, P-D-153; `design/01` §4.3, `design/02` §4). The input is a
+/// Product's frozen content as `product_content` shapes it — the fourteen
+/// roster fields, the assignment set as `categories` and the value set as
+/// `attributes`, both sorted by their own full row key and each element by the
+/// field rule — and the rendering and digest are pinned as literals computed
+/// independently of this crate (`json.dumps(sort_keys=True,
+/// separators=(",", ":"))` and `sha256`), so a change in either renderer's
+/// order or escaping fails here before it reaches a stored row. The Postgres
+/// half is `tests/postgres_golden_vector.rs`'s scheme-3 case; the two must
+/// agree byte for byte, which is what 10's restore drill compares.
+#[test]
+fn the_scheme_3_golden_vector_pins_the_collections_inside_the_content() {
+    const ROSTER: &[&str] = &[
+        "attributes",
+        "brand_id",
+        "brand_scope",
+        "categories",
+        "cloned_from",
+        "cloned_from_version",
+        "created_at",
+        "created_by",
+        "name",
+        "name_normalized",
+        "product_code",
+        "product_id",
+        "region_scope",
+        "tenant_id",
+    ];
+    // The collections through the renderers themselves, fed **unsorted** so
+    // the sort is what the vector pins.
+    let categories = crate::domain::taxonomy::assignment_collection(&[
+        (
+            "1e0c0000-0000-4000-8000-000000000002".parse().unwrap(),
+            crate::domain::taxonomy::AssignmentRole::Secondary,
+        ),
+        (
+            "1e0c0000-0000-4000-8000-000000000001".parse().unwrap(),
+            crate::domain::taxonomy::AssignmentRole::Primary,
+        ),
+    ]);
+    let attributes = crate::domain::taxonomy::value_collection(&[
+        crate::domain::taxonomy::FrozenAttributeValue {
+            definition_id: "6f0a0000-0000-4000-8000-000000000002".parse().unwrap(),
+            coordinate: crate::domain::taxonomy::LocalizedValue {
+                locale: "de-DE".to_owned(),
+                region: "eu".to_owned(),
+                brand: "acme".to_owned(),
+                value: "Faser".to_owned(),
+            },
+        },
+        crate::domain::taxonomy::FrozenAttributeValue {
+            definition_id: "6f0a0000-0000-4000-8000-000000000001".parse().unwrap(),
+            coordinate: crate::domain::taxonomy::LocalizedValue {
+                locale: "en-US".to_owned(),
+                region: String::new(),
+                brand: String::new(),
+                value: "Fibre".to_owned(),
+            },
+        },
+    ]);
+    let content = json!({
+        "tenant_id": "00000000-0000-0000-0000-0000000067a1",
+        "product_id": "3f8f6a1e-0000-4000-8000-000000000002",
+        "brand_id": "3f8f6a1e-0000-4000-8000-000000000001",
+        "brand_scope": "",
+        "region_scope": "eu",
+        "name": "Fibre 500",
+        "name_normalized": "fibre 500",
+        "product_code": "FIBRE-500",
+        "created_by": "00000000-0000-0000-0000-00000000ac70",
+        "created_at": "2026-09-05T10:00:00.000000Z",
+        "categories": categories,
+        "attributes": attributes,
+    });
+
+    let rendered = canonical_rendering(&content, Absence::Null { roster: ROSTER });
+    assert_eq!(
+        rendered,
+        "{\"attributes\":[{\"brand\":\"\",\"definitionId\":\"6f0a0000-0000-4000-8000-000000000001\",\
+         \"locale\":\"en-US\",\"region\":\"\",\"value\":\"Fibre\"},{\"brand\":\"acme\",\
+         \"definitionId\":\"6f0a0000-0000-4000-8000-000000000002\",\"locale\":\"de-DE\",\
+         \"region\":\"eu\",\"value\":\"Faser\"}],\"brand_id\":\"3f8f6a1e-0000-4000-8000-000000000001\",\
+         \"brand_scope\":\"\",\"categories\":[{\"categoryId\":\"1e0c0000-0000-4000-8000-000000000001\",\
+         \"role\":\"primary\"},{\"categoryId\":\"1e0c0000-0000-4000-8000-000000000002\",\
+         \"role\":\"secondary\"}],\"cloned_from\":null,\"cloned_from_version\":null,\
+         \"created_at\":\"2026-09-05T10:00:00.000000Z\",\
+         \"created_by\":\"00000000-0000-0000-0000-00000000ac70\",\"name\":\"Fibre 500\",\
+         \"name_normalized\":\"fibre 500\",\"product_code\":\"FIBRE-500\",\
+         \"product_id\":\"3f8f6a1e-0000-4000-8000-000000000002\",\"region_scope\":\"eu\",\
+         \"tenant_id\":\"00000000-0000-0000-0000-0000000067a1\"}",
+        "the scheme-3 rendering: collections sorted by their own key, keys sorted, absent \
+         values null, present empty strings kept"
+    );
+    assert_eq!(
+        hex(&content_digest(&rendered)),
+        "dcd73f757475b4a9f7cc709d0a9acdd13d053c53975eb720638d13470192ab33",
+        "the digest must equal the independently computed scheme-3 vector"
+    );
+    assert_eq!(DIGEST_VERSION, 3, "the scheme this vector is pinned under");
 }

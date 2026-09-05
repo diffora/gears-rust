@@ -282,7 +282,11 @@ actor, the scenarios and the boundary.
 the attribute-value set — are rendered as **JSON arrays sorted by the collection's own identifier**
 (the category id, the attribute id), each element by 01 §4.3's field rule (**P-D-29**). 01's rule
 orders fields, not rows; without this both engines could serialize one content in two orders and
-10's restore drill compares those digests byte-for-byte.*
+10's restore drill compares those digests byte-for-byte. **Wired by P-D-153 (2026-09-05)** — until
+then both renderers existed and nothing called them, so no frozen version carried either set: the
+keys are `categories` and `attributes`, an empty set is `[]`, the sets are read in the publish
+transaction, and `08`'s projector takes a Product's category ids from the frozen `categories`
+collection rather than the live assignment table (the live tree still supplies the path text).*
 
 ### 4.2 Well-known seeds (`WellKnownSeed`)
 

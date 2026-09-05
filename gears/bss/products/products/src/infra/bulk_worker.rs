@@ -2393,17 +2393,22 @@ async fn resolve_promotion(
         {
             head = repo::find_sku_by_code(&conn, scope, tenant_id, &code).await?;
         }
-        head.map(|h| {
-            let content = crate::api::rest::skus::sku_version_content(&h);
-            (
-                h.sku_id,
-                h.lifecycle_state,
-                h.internal_revision,
-                h.published_version,
-                content,
-                bss_products_sdk::models::EntityKind::Sku,
-            )
-        })
+        match head {
+            Some(h) => {
+                let collections =
+                    repo::frozen_collections(&conn, scope, tenant_id, "sku", h.sku_id).await?;
+                let content = crate::api::rest::skus::sku_version_content(&h, &collections.values);
+                Some((
+                    h.sku_id,
+                    h.lifecycle_state,
+                    h.internal_revision,
+                    h.published_version,
+                    content,
+                    bss_products_sdk::models::EntityKind::Sku,
+                ))
+            }
+            None => None,
+        }
     } else {
         let mut head = if let Some(id) = row.entity_id {
             repo::find_product(&conn, scope, tenant_id, id).await?
@@ -2430,17 +2435,23 @@ async fn resolve_promotion(
             )
             .await?;
         }
-        head.map(|h| {
-            let content = crate::api::rest::products::product_content(&h);
-            (
-                h.product_id,
-                h.lifecycle_state,
-                h.internal_revision,
-                h.published_version,
-                content,
-                bss_products_sdk::models::EntityKind::Product,
-            )
-        })
+        match head {
+            Some(h) => {
+                let collections =
+                    repo::frozen_collections(&conn, scope, tenant_id, "product", h.product_id)
+                        .await?;
+                let content = crate::api::rest::products::product_content(&h, &collections);
+                Some((
+                    h.product_id,
+                    h.lifecycle_state,
+                    h.internal_revision,
+                    h.published_version,
+                    content,
+                    bss_products_sdk::models::EntityKind::Product,
+                ))
+            }
+            None => None,
+        }
     };
     let Some((entity_id, state, revision, published_version, content, kind)) = bound else {
         return Ok(Promotion::Create);

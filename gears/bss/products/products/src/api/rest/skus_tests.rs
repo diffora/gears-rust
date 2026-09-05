@@ -2298,6 +2298,9 @@ async fn the_sku_content_roster_is_the_head_table_minus_the_excluded_columns() {
         .into_iter()
         .filter(|column| !EXCLUDED_FROM_FROZEN_CONTENT.contains(&column.as_str()))
         .collect();
+    // Plus the attribute-value collection §4.3 renders inside the content
+    // (P-D-29, P-D-153) — not a column of the head table, content all the same.
+    expected.push("attributes".to_owned());
     expected.sort();
     let mut roster: Vec<String> = super::SKU_VERSION_CONTENT_ROSTER
         .iter()
@@ -2397,7 +2400,7 @@ fn the_sku_content_builder_writes_exactly_the_roster() {
         gl_code_ref: Some("GL-4000".to_owned()),
     };
 
-    let content = super::sku_version_content(&record);
+    let content = super::sku_version_content(&record, &[]);
     let mut written: Vec<&str> = content
         .as_object()
         .expect("the builder renders a JSON object")

@@ -1360,7 +1360,7 @@ duplicating it.
   `02`'s map door; `authz::labels::ALL` is `[PRODUCT, SKU]` and the permission roster is closed at
   six. Owner: `05-governance`'s owner. Recorded here because row 3 above turns on it.
 
-- **The clone's remaining three DoDs wait on the frozen collections** (P-D-152). `02`'s category
+- **The clone's remaining three DoDs wait on the copy and re-validation over the now-frozen collections** (P-D-152; the freeze landed with P-D-153, so the blocker is this feature's own build — the next group's). `02`'s category
   assignments and attribute values are not in any frozen version
   (`features/taxonomy-attributes.md` §7), so a published source's collections cannot be copied
   without reading live rows — the leak `dod-clone-read-surface` forbids. Until they are frozen the
