@@ -835,6 +835,13 @@ fn row_from(
 /// checkpoint's generation and dropping the old rows. A tenant with no
 /// version starts from the empty catalog — the anchorless arm — and the tail
 /// above `tail` is consumed by the ordinary passes that follow.
+///
+/// This is the bootstrap contract's first consumer (`design/12` §2.3 row 4,
+/// `inst-rc-bootstrap`): the anchored arm from the latest version, the
+/// anchorless arm from the empty catalog, and a checkpoint behind the retained
+/// tail failing loudly (`read_model_rebuilt`) with the rebuild as the remedy.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-bootstrap:p1
 #[allow(clippy::too_many_arguments)] // the rebuild's operands
 #[allow(clippy::cognitive_complexity)] // the anchored arm's loop and the swap, one fn
 async fn rebuild_tenant(

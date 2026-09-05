@@ -1373,7 +1373,7 @@ async fn resolve_parent_scope(
 ///    [`refuse_sku_insert_conflict`]; on an idempotency verdict, a replay
 ///    served from the stored answer or a refusal audited through the same
 ///    [`audit_sku_refusal`] wrapper every other refusal here uses.
-async fn create_sku(
+pub(crate) async fn create_sku(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
@@ -5509,7 +5509,7 @@ async fn publish_sku_gated(
 /// # Errors
 ///
 /// See [`publish_sku_gated`].
-async fn publish_sku(
+pub(crate) async fn publish_sku(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
@@ -8200,7 +8200,7 @@ async fn save_in_one_transaction(
 /// # Errors
 ///
 /// See [`save_sku_gated`].
-async fn save_sku(
+pub(crate) async fn save_sku(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
@@ -8780,7 +8780,7 @@ pub(crate) async fn try_apply_composition_clear(
 /// principal (P-D-14), independent of `N` (P-D-11) — then apply or hold.
 ///
 /// @cpt-dod:cpt-cf-bss-products-dod-composition-clear:p2
-async fn clear_composition(
+pub(crate) async fn clear_composition(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,

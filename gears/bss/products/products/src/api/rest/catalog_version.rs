@@ -908,7 +908,7 @@ async fn drive_freeze_edge(
 }
 
 /// `POST /bss-products/v1/catalog-versions/{id}/acks`.
-async fn ack_catalog_version(
+pub(crate) async fn ack_catalog_version(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
@@ -928,7 +928,7 @@ async fn ack_catalog_version(
 }
 
 /// `POST /bss-products/v1/catalog-versions/{id}/releases`.
-async fn release_catalog_version(
+pub(crate) async fn release_catalog_version(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,

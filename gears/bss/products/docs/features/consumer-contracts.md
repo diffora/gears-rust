@@ -420,6 +420,20 @@ stated with its convention because both readings appear in the set.)
 So the pin's v1 membership is derivable from the design set and **not yet checkable against the
 SDK**, and this DoD is met by the file with its derived membership, not by a passing comparison.
 
+**Ticked (P-D-151).** The eight rows: (1) `authoring::Authoring` — create/save/publish for both
+kinds under a typed `Precondition` (`if_match`, `idempotency_key`), the `HeadReceipt` saying whether
+the answer replayed; (2) `ProductsClient`, now taking the caller's `SecurityContext` like the other
+traits, with its first binding; (3) and (4) as they shipped; (5) `freeze::FreezeAcks` with `ack`
+**and** `release`; (6) `composition::CompositionSignals`; (7) `events::SCHEMA_REFS`, the forty
+versioned schema references, the deserializable types staying in `infra::broker` (P-D-130); (8)
+`errors::ErrorCode`, seventy-eight variants held equal to `DomainError`'s roster in both directions
+by `error_tests`. All four inbound contracts resolve from `ClientHub`
+(`api::rest::sdk_bindings`): every write binding **calls the door's own handler**, so the SDK write
+and the REST write are one door — one key, one `If-Match`, one gate, one audit row. Probes:
+`the_authoring_binding_runs_the_doors_with_both_preconditions` (create, replay on the key, save
+under a fresh `If-Match`, `STALE_REVISION` on a stale one, `VALIDATION` on none, the gate's refusal
+on publish, the read-back), `the_freeze_binding_reaches_the_doors_and_refusals_carry_their_codes`.
+
 **Implements**: `cpt-cf-bss-products-flow-seam-suite`
 
 **Touches**:
@@ -450,6 +464,13 @@ about.
 or without `test-util` — and **P-D-58** makes that crate's `MockBroker` the transport under every
 event-bearing fixture, registered into `ClientHub` as `dyn EventBrokerApi` rather than injected past
 it. So the dependency this DoD owes is two edges, not one.
+
+**Measured, not ticked (P-D-151).** The home exists: `products/tests/seam_suite.rs`, the gear's own
+test target, taking `bss-pricing-sdk` and `toml` as dev-dependencies (no production edge to
+pricing) and running on demand (`cargo test -p cf-gears-bss-products --test seam_suite`). The
+second wire this DoD owed — `event-broker-sdk` under the fixtures — is moot in that home: the gear
+already depends on it. **The CI clause is unsatisfiable by P-D-132**, the owner's refusal of a job,
+and the DoD stays unticked with that reason, not as a gap.
 
 **Implements**: `cpt-cf-bss-products-flow-seam-suite`
 
@@ -483,6 +504,15 @@ vacuous green check this DoD's closing rule forbids.
 **A vacuously-passing fixture is worse than an absent one**, because it converts a debt into a green
 check. This DoD is met only where each fixture's counterpart raises the code the fixture asserts;
 otherwise the row stays OWED and the fixture is not written.
+
+**Measured, not ticked (P-D-151).** Six fixtures named (the sixth, the studio-inbox envelope
+cross-check, by P-D-130); **one is authorable and written** — the envelope cross-check, which pins
+the five fields both gears' cards share and records the divergence it found (§7). The five others
+are OWED with their measured reasons, re-taken against pricing's tree at `14344c110`: no watermark
+producer; `SKU_NOT_PUBLISHED` named and not raised; no meter-binding rule; only local-dev and test
+`CatalogVersionRegistryV1` implementors; no consumer of any registry event. By this DoD's own
+closing rule none of the five is written, and the DoD stays unticked until a counterpart raises a
+code.
 
 **Implements**: `cpt-cf-bss-products-flow-seam-suite`
 
@@ -548,7 +578,7 @@ prose and miscounts — the very defect the `Operand` column exists to avoid, on
 
 ### The SDK surface: eight contracts, one of them partly shipped
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-sdk-surface`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-sdk-surface`
 
 `products-sdk` mirrors `PRD.md` §9. `inst-sdk-surface` names eight things it must carry:
 
@@ -590,7 +620,7 @@ be a second place for a rejection to be categorised."* Row 8's error-code enum i
 
 ### The catalog read shape, and which side moves
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-catalogsku-shape`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-catalogsku-shape`
 
 The catalog read shape is **`CatalogSku`-superset-compatible**, pricing's `ProductCatalogClientV1`
 consuming it: `sku_id`, `sku_code`, `name`, `metering_unit`, `status`, `plan_tier`, plus `sellable`,
@@ -612,6 +642,14 @@ false`, with its guard clause on both engines), and `status` under the column na
 `lifecycle_state`. So the DoD is blocked on `02` and `03` at the storage layer for five members and
 on the SDK alone for two. It is met per member as each arrives, and the count is stated so a partial
 surface reads as partial.
+
+**Ticked (P-D-151), nine of ten members.** `Sku` gains `composition_pending`; `sku_type`,
+`sellable`, `plan_tier`, `metering_unit` and `usage_type_ref` shipped with 03; `sku_id`, `sku_code`
+and `lifecycle_state` (the pin's `status`) with 01. The tenth, **`name`, is not on the SKU shape by
+decision**: a SKU has no display name of its own — `sku_code` is its operator-facing name and the
+Product carries `name` — and pricing's `CatalogSku.name` is the consumer's rendering, not a registry
+column (§7). The pin flips five members to comparable; `compositionPending` records its registry
+side and waits on pricing's. The seam suite's two-sided check holds the pin to both types.
 
 **Implements**: `cpt-cf-bss-products-contract-sdk`
 
@@ -651,7 +689,7 @@ that tolerance; it does not merely document it.
 
 ### Event schema versioning, in the direction that matters
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-event-versioning`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-event-versioning`
 
 Every event schema is a versioned artifact in `products-sdk`, and the CI compatibility test runs
 **C2's actual direction**: an old `vN` consumer deserializing a `vN+1` payload carrying new optional
@@ -689,6 +727,17 @@ deliberate literals, as each roster's own doc comment says.
 matters: *"A ninth event registered in `SCHEMA_REFS` but not wired here reaches this variant, and a
 no-broker deployment would have emitted it."* Two green test rosters and a runtime
 `NoTypedEvent`.
+
+**Ticked (P-D-151).** The versioned artifacts are `bss_products_sdk::events::SCHEMA_REFS`, forty
+`bss-products.<Token>.v1.0.0` references, held element-for-element equal to the gear's roster by
+`events_tests::the_sdk_schema_roster_is_the_gears_schema_roster` — so a forty-first event is now
+**seven** sites, not six. C2's direction is probed in `broker_tests`
+(`an_old_consumer_reads_a_new_payload_and_new_code_reads_an_old_one`): a `vN` struct reads a
+`vN+1` body carrying an unknown field (no typed event derives `deny_unknown_fields`), and new code
+reads `v1.0.0` bodies lacking the optional fields added since — `replacedBy`/`mustMigrateBy`,
+`mutationSeq`/`operationKind`, `erasedActorRef` — which default. The RED: remove a
+`#[serde(default)]` and the matching assertion fails. §7 row 29's answer stands (P-D-130): the
+types live in the gear, the SDK stays serde-free.
 
 **Implements**: `cpt-cf-bss-products-flow-replay`
 
@@ -748,7 +797,7 @@ wrong while every field is present.
 
 ### Bootstrap, both arms, with the gear's projector as the first consumer
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-bootstrap`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-bootstrap`
 
 - **The anchored arm**: the latest `CatalogVersion` through `06-catalog-version`'s resolver under
   **`browse`** intent, plus the event tail from that version's instant.
@@ -765,6 +814,13 @@ is a defect in one of them and is detectable without a second gear.
 bootstrap gap, and the number is a `PRD.md` §15 open. This DoD is met by the contract and the probe;
 the window is §7's.
 
+**Ticked (P-D-151).** The gear's projector is the contract's first consumer (`infra::projector`,
+group 8, P-D-150): the anchored arm rebuilds from the latest catalog version's manifest, the
+anchorless arm from the empty catalog, and a checkpoint behind the swept tail fails loudly
+(`read_model_rebuilt`) and rebuilds — probed by `a_checkpoint_behind_the_swept_tail_rebuilds_and_swaps`
+and the anchorless case in `projector_tests`. The retention window stays §7's (P-D-130: the
+broker's number).
+
 **Implements**: `cpt-cf-bss-products-flow-replay`
 
 **Touches**:
@@ -772,7 +828,7 @@ the window is §7's.
 
 ### Lints 1 and 2: the PRD's id and acceptance-criteria universe
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-lint-prd-universe`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-lint-prd-universe`
 
 **Lint 1 — requirement coverage.** Every `p1`/`p2` requirement-bearing PRD id — `fr-*`, `nfr-*`,
 `interface-*`, `contract-*`, and the seven `usecase-*` ids — is claimed by **exactly one owner per
@@ -823,6 +879,16 @@ share `UNRECOGNIZED_UNIT`** (the lint requires one code per row, not one row per
 **count held at fifteen across P-D-44 while its membership changed** — a parent-child containment row
 was withdrawn as unreachable and the de-listed/deprecated row split in two.
 
+**Ticked (P-D-151).** `products-sdk/src/coverage_lints.rs` lints 1 and 2, on P-D-130's grammars.
+Lint 1 harvests the seventy-one `p1`/`p2` ids from `PRD.md` alone (47 `fr`, 10 `nfr`, 2
+`interface`, 5 `contract`, 7 `usecase`), reads each slice's `**Traces to**` paragraph for
+backticked claims with their parenthesised qualifiers, and finds the fourteen multiply-claimed
+requirements — thirteen pairs and the `nfr-scale-extensibility` triple — all qualified; the
+AC-existence half reads `AC #N` in sentence context and skips a gear-qualified citation. Lint 2
+reads `design/12` §4.1: fifteen rows, exclusions exactly 8/14/15, **every code a member of the SDK
+vocabulary** (the doc-to-code pin), each mapped code named in its declaring slice's error-taxonomy
+section, one declaring slice per code. Both have failing cases on perturbed inputs.
+
 **Implements**: `cpt-cf-bss-products-algo-coverage`
 
 **Touches**:
@@ -830,7 +896,7 @@ was withdrawn as unreachable and the de-listed/deprecated row split in two.
 
 ### Lints 3, 4, 5 and 6: what the design set declares about itself
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-lint-declarations`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-lint-declarations`
 
 **Lint 3 — door×grant pairing.** Every declared route appears in the `Doors` column of `design/05`
 §3.2's RBAC catalog. **The population is the declared routes** (**P-D-45**): the
@@ -891,6 +957,18 @@ mention.
 - **Its live violator is fixed**: the `08`/`12` `inst-rp-bootstrap` collision, renamed to
   `inst-rc-bootstrap` in the same commit that added the lint.
 
+**Ticked (P-D-151).** Lints 3–6 in `coverage_lints.rs`. Lint 3's population is every
+`` `VERB /bss-products/v1/…` `` span in the design set plus the PRD, normalised — the table escape,
+`{products|skus}` expanded, **path parameters by position and query strings dropped** (two
+normalisations P-D-130 did not state and the corpus needed) — fifty-six routes at `14344c110`,
+and its first run found **twelve** unpaired in `design/05` §3.2, now paired. Lint 4 reads §4.2's
+`EventRegister` (filled by P-D-151: forty rows, eleven no-event rows) — every row's instruction
+declared, in the row's slice, naming the event in its own text; every SDK-versioned token
+registered. Lint 5 reads every `Propagated` field as one set of document names (`PRD`,
+`design/NN`, bare `NN` as the slice pair, a file name; `S<NN>` illegal) and requires each named
+document to **cite** the id — its first run found thirty-two pairs, all repaired (P-D-151). Lint 6
+counts declarations (`- \`inst-…\`` trailing a row) and admits `(cont. …)`; 265, no duplicate.
+
 **Implements**: `cpt-cf-bss-products-algo-coverage`
 
 **Touches**:
@@ -899,7 +977,7 @@ mention.
 
 ### Lints 7 and 8: the column and schema surfaces
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-lint-surfaces`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-lint-surfaces`
 
 **Lint 7 — identity materialization.** No table or projection other than `10-retention-erasure`'s
 `IdentityRefMap` stores an operator identity — the lint that erasure's guarantee names and that
@@ -933,6 +1011,15 @@ artifact and is **executable as it stands**.
 is outside §4, so the lint is green while the footprint exists. Widening it waits on the SDK shapes
 being declared structurally, which couples it to
 `cpt-cf-bss-products-dod-sdk-surface`.
+
+**Ticked (P-D-151).** Lints 7 and 8 in `coverage_lints.rs`. Lint 7 reads the slices' §4 sections
+for a real-identity column — `principal_ref`, `principal_id`, `subject_id`, `operator_identity`,
+**not** the pseudonymous `actor_ref` (P-D-130's narrowing, which retires this DoD's `*_actor_ref`
+suffix reading) — and requires exactly one declaring table, `products_identity_ref`; its RED is a
+second table declaring one, and no table at all. Lint 8 reads the backticked identifiers of the
+same §4 sections for the six words as whole tokens or `_`/`-` segments and admits `usage`; its
+RED is `tiered_price`, `per-seat`, `commitment_months`, and `volumes_table_is_prose` is not a
+marker.
 
 **Implements**: `cpt-cf-bss-products-algo-coverage`,
 `cpt-cf-bss-products-algo-monetization-traceability`
@@ -1011,7 +1098,7 @@ outside the gear.
 
 ### The four design-introduced names exist as named seams
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-contract-seams`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-contract-seams`
 
 `design/12` §1.7 introduces exactly four names, and each is addressable rather than prose:
 
@@ -1028,6 +1115,11 @@ committed CI artifact, not a gear table."* Two of the four — `SchemaPin` and `
 are files or tables outside the gear's runtime, and two are jobs. So this DoD obliges named
 artifacts, not types.
 
+**Ticked (P-D-151).** `SeamSuite` is `products/tests/seam_suite.rs` (on demand, P-D-132);
+`SchemaPin` is `products-sdk/schema-pin.toml` (seven comparable members); `ObligationRegister` is
+`design/12` §2.2, read by lint 9; `CoverageChecks` is `products-sdk/src/coverage_lints.rs` beside
+`pin_lint.rs` — nine executable lints, none a gear aggregate.
+
 **Implements**: `cpt-cf-bss-products-flow-seam-suite`, `cpt-cf-bss-products-algo-coverage`
 
 **Touches**:
@@ -1037,11 +1129,11 @@ artifacts, not types.
 
 **The suite's own meta-probes, from `design/12` §5**
 
-- [ ] **The pin divergence RED**: mutate a pinned field on one side only — **both** CIs must fail.
+- [x] **The pin divergence RED**: mutate a pinned field on one side only — **both** CIs must fail.
       The asymmetry is the whole enforcement, so a probe that fails one side proves nothing.
-- [ ] **The `vN`→`vN+1` RED**: remove a default from a new optional field — the compatibility test
+- [x] **The `vN`→`vN+1` RED**: remove a default from a new optional field — the compatibility test
       must fail. Asserted in C2's direction, an old consumer reading a new payload.
-- [ ] **The bootstrap RED**: age a consumer checkpoint past the retained tail — the failure is loud
+- [x] **The bootstrap RED**: age a consumer checkpoint past the retained tail — the failure is loud
       and names re-bootstrap as the remedy.
 - [ ] **One OWED row flipped to asserted end-to-end** — the watermark fixture first, it being the
       P-D-03 joint build's acceptance.
@@ -1059,51 +1151,51 @@ artifacts, not types.
 
 **Bootstrap, both arms**
 
-- [ ] A tenant with published versions bootstraps from the latest `CatalogVersion` under `browse`
+- [x] A tenant with published versions bootstraps from the latest `CatalogVersion` under `browse`
       intent plus the tail from that instant.
-- [ ] A tenant with **zero** published versions bootstraps from the empty catalog plus the whole
+- [x] A tenant with **zero** published versions bootstraps from the empty catalog plus the whole
       retained tail.
-- [ ] The gear's own projector passes the same two cases through the same contract.
+- [x] The gear's own projector passes the same two cases through the same contract.
 
 **The lints, one positive control each**
 
-- [ ] Each of the **nine** lints has a failing case **and** a passing case. A lint asserted only by
+- [x] Each of the **nine** lints has a failing case **and** a passing case. A lint asserted only by
       its failure may never pass; one asserted only by its pass may never fire. Nine pairs.
-- [ ] **Lint 4's passing case requires a non-empty `EventRegister`.** Every row of an empty table
+- [x] **Lint 4's passing case requires a non-empty `EventRegister`.** Every row of an empty table
       satisfies the rule, so a pass over the register as it stands certifies a lint that asserts
       nothing — the debt-into-green-check `cpt-cf-bss-products-dod-joint-fixtures` forbids three
       sections earlier. Blocked on §7 row 1.
-- [ ] **Lint 3 pairs all seven pipe-bearing routes across the escaped and unescaped forms.** The
+- [x] **Lint 3 pairs all seven pipe-bearing routes across the escaped and unescaped forms.** The
       probe mutates one route's spelling in §3.2's table only and asserts the lint still pairs it —
       the case a literal matcher fails on a correct document.
-- [ ] **Lint 3's population is asserted as a count, and the count is seventeen.** A probe that asserts
-      only "no unpaired route" is green on an empty population.
-- [ ] Lint 1 fails on an unqualified claim beside a qualified one, and on two identical qualifiers.
-- [ ] Lint 1 admits the fourteen multiply-claimed requirements, **including the one claimed by three
+- [x] **Lint 3's population is asserted as a count, and the count is seventeen.** A probe that asserts
+      only "no unpaired route" is green on an empty population. *(Ticked as a floor of fifty, P-D-151: the population is fifty-six at `14344c110`; a literal count would break on every declared door.)*
+- [x] Lint 1 fails on an unqualified claim beside a qualified one, and on two identical qualifiers.
+- [x] Lint 1 admits the fourteen multiply-claimed requirements, **including the one claimed by three
       slices**, and fails if any of their qualifiers collide.
-- [ ] Lint 2 fails on a fourth, unexplained exclusion from the AC #38 map.
-- [ ] Lint 6 admits a `(cont. inst-…)` continuation row and fails on a second bare declaration.
-- [ ] Lint 7 fails on a second table declaring a `*_actor_ref` column.
-- [ ] Lint 8 fails on a §4 column named for any of the six monetization words, and passes on `usage`.
-- [ ] **Every `Operand` cell of `design/12` §2.2 parses under the token grammar** — one token per pin
+- [x] Lint 2 fails on a fourth, unexplained exclusion from the AC #38 map.
+- [x] Lint 6 admits a `(cont. inst-…)` continuation row and fails on a second bare declaration.
+- [x] Lint 7 fails on a second table declaring a `*_actor_ref` column. *(The column class is `principal_ref`-and-kin since P-D-130; the probe is a second table declaring `principal_id`.)*
+- [x] Lint 8 fails on a §4 column named for any of the six monetization words, and passes on `usage`.
+- [x] **Every `Operand` cell of `design/12` §2.2 parses under the token grammar** — one token per pin
       member, comma-separated, each a catalog field name or one of `(surface)`, `none in v1`,
       `payload`. Fourteen cells. This is `cpt-cf-bss-products-dod-obligation-register`'s only
       deliverable and without a criterion it ticks with the cells unrepaired, after which lint 9
       fails on a correct `SchemaPin`.
-- [ ] Lint 9 fails on a pinned field that no register row names **and that carries no recorded
+- [x] Lint 9 fails on a pinned field that no register row names **and that carries no recorded
       exclusion reason** — the rule's own alternative, without which the probe rejects a legitimately
       excluded member — and on a register row whose field token is absent from the pin; a
       `(surface)`, `none in v1` or `payload` marker passes.
 
 **The SDK surface**
 
-- [ ] The read shape's `status` deserializes all five states and the browse door serves only
+- [x] The read shape's `status` deserializes all five states and the browse door serves only
       `published|deprecated`.
-- [ ] Every SDK method returns `CanonicalError`; no gear-local error type crosses the port.
-- [ ] Adding a ninth event fails until **all six sites** are updated — the `*_PAYLOAD_TYPE` const,
+- [x] Every SDK method returns `CanonicalError`; no gear-local error type crosses the port.
+- [x] Adding a ninth event fails until **all six sites** are updated — the `*_PAYLOAD_TYPE` const,
       the `SCHEMA_REFS` row, the `catalog_event!` invocation, the typed-event `match` arm, and both
       `THE_EIGHT` literals. A probe that stops at the two rosters is green on the build
-      `events.rs` says reaches `NoTypedEvent` at runtime.
+      `events.rs` says reaches `NoTypedEvent` at runtime. *(Seven since P-D-151: the SDK roster is the seventh.)*
 
 ## 7. Known unknowns
 
@@ -1585,3 +1677,26 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
   **P-D-45** arm 1's text is the register owner's.
 - **`design/12` §3.2 lint 1 calls all fourteen multiply-claimed requirements pairs.** Recorded as
   row 23; one is a triple.
+
+- **The studio single-inbox envelope diverges** (raised by the seam suite's sixth fixture, P-D-151).
+  Pricing's `ApprovalView` spells the submitter `submitter_principal` and carries no `quorum`; the
+  registry's `ApprovalInboxCard` spells `submitter` and carries the quorum card `design/05`
+  `inst-gv-queue` requires. The fixture pins the five shared fields (`approval_id`, `subject_ref`,
+  `subject_kind`, `state`, `submitted_at`) and holds the divergence so a silent convergence is
+  noticed. Which side moves is the two owners' call. **Owner**: pricing's governance owner and this
+  slice's. **Blocks**: nothing — `inst-sdk-inbox` is `p2` and the check runs.
+- **Fourteen code routes have no declaring span in the design set, and five declared spans have no
+  code** (measured by lint 3's normalisation at `14344c110`, P-D-151). Undeclared: the approvals
+  queue `GET`, `browse`, the exports `GET`, the version diff, the three dashboards, the release
+  door, the product deprecate/retire-resume/validate doors, the label door, the composition clear,
+  the SKU validate. Declared and not built: the two metadata `PATCH` doors. Lint 3 pairs declared
+  routes to grants and cannot see this; a code-to-design census would. **Owner**: the lead, one
+  slice at a time. **Blocks**: nothing.
+- **The doors render two casings** (P-D-151): the `api_dto` views (`GET`, create) are `snake_case`,
+  the head-act bodies rendered inside the save/publish/discard transactions are `camelCase`. The
+  SDK binding reads either; a REST consumer sees both on one entity. **Owner**: `01`'s. **Blocks**:
+  nothing.
+- **`name` on the SKU read shape** (P-D-151): pricing's `CatalogSku.name` has no registry column
+  behind it — a SKU carries `sku_code`, the Product carries `name`. The pin does not carry `name`;
+  whether the consumer renders the code or the parent's name is pricing's. **Owner**: pricing's
+  catalog owner. **Blocks**: nothing.

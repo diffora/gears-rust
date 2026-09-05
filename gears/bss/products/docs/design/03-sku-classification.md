@@ -149,7 +149,7 @@ Declared by [`../features/sku-classification.md`](../features/sku-classification
 The steps below are this slice's and are the normative ones; the FEATURE carries the
 actor, the scenarios and the boundary.
 
-1. [ ] - `p1` - The set is a `RecognizedSet` (governed live entity via `GovernedLiveOp`): seeded per PRD §17.1 (`vCPU-hours`, `GB-storage`, `GB-egress`, `request-count`); adding a unit = **elevated approval** (slice-05 gate, FinanceReviewer not required — owner is Product + Rating per PRD §15) - `inst-us-governed`
+1. [ ] - `p1` - The set is a `RecognizedSet` (governed live entity via `GovernedLiveOp`): seeded per PRD §17.1 (`vCPU-hours`, `GB-storage`, `GB-egress`, `request-count`); adding a unit = **elevated approval** (slice-05 gate, FinanceReviewer not required — owner is Product + Rating per PRD §15); each applied op emits `RecognizedUnitUpdated` on the unit set and `RecognizedCodeUpdated` on the tax/GL code sets (the `EventRegister`'s rows, P-D-151) - `inst-us-governed`
 2. [ ] - `p1` - De-listing: removal refused while a non-terminal published head (a `published`/`deprecated` SKU) declares the unit (`UNIT_DELIST_BLOCKED`, holders sampled); the admitted path is `deprecated` (no new declarations, existing publishes unaffected) then removal once unreferenced — the `removed` state, never a DELETE, and never at all for a seeded member (§3.1 `inst-rs-seeded`; **P-D-47**) — where "referenced" means **non-terminal published heads** (published/deprecated SKUs); frozen version content is self-contained and never blocks removal (operand narrowed with slice 02's — M2 fix) - `inst-us-delist`
 3. [ ] - `p1` - Unit semantics are immutable (C3): there is no rename/redefine op at all on this set — the absence of the door is the enforcement; a correction is a new unit + deprecation, and the audit trail ties them via the `GovernedLiveOp` payload - `inst-us-immutable`
 4. [ ] - `p1` - De-listing/deprecation never mutates any frozen snapshot (append-only posture, 01 C5) - `inst-us-snapshots`
@@ -237,7 +237,7 @@ actor, the scenarios and the boundary.
   `metering_unit`, `usage_type_ref` — with a CHECK that `metering_unit` and `usage_type_ref`
   are both null or both non-null (`inst-mt-atomic-pair`'s physical floor).
 - **`products_recognized_set`** — the generic table of §3.1: PK `(tenant_id, set_kind,
-  member_code)` with `set_kind ∈ {metering_unit, tax_category, gl_code, plan_tier}`;
+  member_code)` with `set_kind ∈ {metering_unit, tax_category, gl_code, plan_tier}` (the roster is the design's: the column pins none, **P-D-92**);
   `display_label` used by `plan_tier` (and ignored elsewhere); `state ∈ {active, deprecated, removed}`
   (§3.1 — `removed` is the tombstone a removal leaves; no DELETE is admitted, **P-D-47**); `seeded_by`.
   Append-only discipline: no UPDATE of `member_code` ever and no DELETE (trigger whitelist admits `state`

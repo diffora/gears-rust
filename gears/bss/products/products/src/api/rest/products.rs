@@ -1377,7 +1377,7 @@ fn render_created_product(
 ///    [`refuse_insert_conflict`]; on an idempotency verdict, a replay served
 ///    from the stored answer or a refusal audited through
 ///    `crate::api::rest::audit_refusal_and_report` — never a fourth path.
-async fn create_product(
+pub(crate) async fn create_product(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
@@ -5542,7 +5542,7 @@ async fn run_discard(
 /// See this module's doc, "The publish door", for the pipeline in order,
 /// what this writes, and the three clauses of `dod-publish-door` this slice
 /// cannot close.
-async fn publish_product(
+pub(crate) async fn publish_product(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
@@ -7415,7 +7415,7 @@ async fn save_in_one_transaction(
 /// `owner_tenant_id = Some(tenant_id)` — the row is written **to** the
 /// caller's own tenant, which is what makes `crate::authz::access_scope`'s
 /// cross-tenant membership assertion apply. [`open_head_door`] carries both.
-async fn save_product(
+pub(crate) async fn save_product(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,

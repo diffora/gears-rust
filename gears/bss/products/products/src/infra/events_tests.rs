@@ -722,3 +722,17 @@ fn a_per_field_classification_edit_is_declared_to_emit_no_event() {
         );
     }
 }
+
+/// **The SDK's versioned roster is the gear's** (P-D-151,
+/// `dod-event-versioning`): `bss_products_sdk::events::SCHEMA_REFS` and this
+/// module's [`SCHEMA_REFS`] are held equal element for element, so a
+/// forty-first event registered here fails until the SDK versions it, and a
+/// version bumped on either side fails until the other follows.
+#[test]
+fn the_sdk_schema_roster_is_the_gears_schema_roster() {
+    assert_eq!(
+        SCHEMA_REFS,
+        bss_products_sdk::events::SCHEMA_REFS,
+        "the two rosters are one artifact in two crates"
+    );
+}

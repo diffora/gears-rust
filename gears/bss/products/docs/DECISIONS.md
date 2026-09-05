@@ -120,7 +120,7 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   equality) is the load-bearing invariant — pricing fewer dimensions than the source emits is
   harmless, pricing one it never emits is the hazard.
 - **Propagated**: PRD `fr-metering-unit-declaration`, AC #8, §15 (answered row); rating SEAMS
-  UC3 row + ownership matrix; pricing design/02 (stale "registry holds equality" premise
+  UC3 row + ownership matrix; pricing's design slice 02 (stale "registry holds equality" premise
   retired); `design/03-sku-classification.md`; `DESIGN.md` §1.2 Key decisions.
 - **Residue (2026-08-25, PR #14 review)**: quarantine-on-deleted-UsageType is a fail-safe, not
   an operating mode — the deletion-guard/deletion-signal negotiation with usage-collector is a
@@ -1569,6 +1569,76 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-151 — 12's surface: the SDK's four remaining rows, the eight executable lints, the seam suite's home and the register's own hygiene
+
+- **Date**: 2026-09-05 (the lead, group 9 of the solo plan; `12` §7 rows on the lints' grammars
+  as P-D-130 stated them; two DoDs left unticked by P-D-132's refusal)
+- **The SDK carries §9 whole.** Row 1, the authoring/publish client, is `Authoring` — create, save
+  and publish for Products and SKUs with a typed `Precondition` (`if_match`, `idempotency_key`)
+  and a `HeadReceipt` that says whether the answer was replayed; row 2's read client gains the
+  caller's `SecurityContext` like the SDK's other traits (the trait had no implementor to break)
+  and its first binding; row 5 is `FreezeAcks` (ack **and release**), row 6 `CompositionSignals`;
+  row 7 is the **versioned schema roster** in the SDK (`events::SCHEMA_REFS`, forty semver
+  references) with the deserializable types staying in `infra::broker` as P-D-130 read it; row 8
+  is `ErrorCode`, seventy-eight variants, a documented vocabulary and not a second error type.
+  **Every in-process write binding calls the door's own handler** — the same phases, gate, key and
+  audit row as the REST binding, so nothing can drift; the read binding goes to the repository
+  under the same `× read` grant because the SDK shape carries `composition_pending` and the REST
+  view does not. Four bindings are registered in `ClientHub` at boot beside the two that were.
+  *Counter-argument:* a binding over a handler carries HTTP types into an in-process call;
+  accepted — the alternative re-implements six doors' phases and is the drift this closes.
+- **The read shape.** `Sku` gains `composition_pending` (the ninth `CatalogSku`-superset member);
+  the tenth, `name`, is the parent Product's — a SKU has no display name of its own, `sku_code`
+  being its operator-facing one — and is not added. The pin flips `type`, `unit`, `usageTypeRef`,
+  `PlanTier` and `sellable` to comparable (pricing's `CatalogSku` carries them since `2770cef58`);
+  `compositionPending` records its registry side and stays not-yet-comparable.
+- **The seam suite's home is the gear's own `tests/seam_suite.rs`**, not a new package: a new
+  package's `src` is no traceability root, and the suite needs both SDKs and the pin, which a test
+  target of the gear reaches as dev-dependencies (`bss-pricing-sdk`, `toml`; no production edge to
+  pricing). It runs on demand — P-D-132 refused the job — so `dod-seam-suite-home` **stays
+  unticked** by that reason. It carries the two-sided pin check with its RED, the status
+  vocabulary, and the **sixth fixture**: the studio single-inbox envelope cross-check, which
+  pins the five fields both gears' cards share and records the divergence it found — pricing spells
+  `submitter_principal` and carries no `quorum`, the registry spells `submitter` and carries the
+  quorum card `design/05` `inst-gv-queue` requires. **The other five fixtures are OWED**, each
+  with its measured reason: pricing produces no watermark, consumes no registry event, raises no
+  adoption-guard code (`SKU_NOT_PUBLISHED` is named and not raised), has no meter-binding rule and
+  no posted-use path against a frozen snapshot. `dod-joint-fixtures` therefore **stays unticked**:
+  one of six is authorable, and C4 forbids the five.
+- **The eight lints run** (`products-sdk/src/coverage_lints.rs`, beside lint 9, on P-D-130's
+  grammars), each with a failing case. Two grammar extensions, measured necessary: lint 3
+  compares path parameters by position (`{id}` = `{skuId}`) and drops query strings and
+  ellipses; lint 5 reads a bare `NN` as the slice pair (design or feature document) and admits
+  the register's live document spellings (`PRD`, `design/NN`, `NN`, a file name) — repo-relative
+  paths (P-D-43) are admitted, not required. **Their first run found the violators**: lint 3,
+  twelve declared doors unpaired in `design/05` §3.2 (the resolver GET, 04's four lifecycle doors
+  ×2, 07's four) — paired; lint 4, an empty register — filled (§4.2, forty rows and eleven
+  no-event rows, four instruction rows amended to name their events); lint 5, thirty-two
+  propagations whose document did not cite the decision — fifteen were owed/unchanged clauses
+  sitting inside `Propagated` fields (moved to their own `Owed`/`Unchanged` bullets), six were
+  bare tokens naming a slice's roster or another gear's document (reworded), five were genuine
+  filings without the id (`design/02`, `design/03`, `design/05` ×2, `PRD` §15 — cited), and five
+  were this lead's own entries without the field (added). Lint 1 and lint 6 were green at first
+  run; lint 7 reads `principal_ref`-class columns and finds one table; lint 8 finds no marker.
+  `dod-lint-gate` **stays unticked** by P-D-132.
+- **The map.** `ENTITY_TERMINAL` gets its owed §4.1 note — no row, by construction — and lint 2
+  pins every mapped code to the SDK vocabulary.
+- **Findings filed to `12` §7**, not fixed here: the inbox envelope divergence (pricing's and this
+  slice's owners); fourteen code routes with no declaring span in the design set and five declared
+  spans with no code (the metadata `PATCH` doors among them); the two casings the doors render
+  (`api_dto` views `snake_case`, the head-act bodies `camelCase`).
+- **Ticks.** `12`: `dod-bootstrap` (group 8's projector is the contract's first consumer),
+  `dod-sdk-surface`, `dod-catalogsku-shape`, `dod-event-versioning`, `dod-lint-prd-universe`,
+  `dod-lint-declarations`, `dod-lint-surfaces`, `dod-contract-seams` — `12` reaches **14 of 17**,
+  the three left open by P-D-132 and C4 named above. The plan's "eleven" was a claim, not a
+  census (P-D-132 had already settled two of them).
+- **Propagated**: `design/12-consumer-contracts.md` (§4.1 note, §4.2, §6), `design/05-governance.md`
+  §3.2, `design/01-foundation.md`, `design/03-sku-classification.md`, `design/04-lifecycle.md`,
+  `features/consumer-contracts.md`.
+- **Trace**: the eight `12` markers on their implementing items (`products-sdk/src/{authoring,
+  composition, errors, events, freeze, coverage_lints}.rs`, `api/rest/sdk_bindings.rs`,
+  `infra/projector.rs`, `tests/seam_suite.rs`); `schema-pin.toml`; `Cargo.toml` dev-dependencies.
+
 #### P-D-150 — 08's projector on a gear-owned inbox, the three-source read path, the browse door behind one limiter, the timelines and the polled dashboards
 
 - **Date**: 2026-09-05 (the lead, group 8 of the solo plan; `08` §7 rows 8, 9, 10, 12, 19, 23, 24
@@ -1625,6 +1695,7 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   convergence budget measured end to end, the write-path-outage read, the metadata-absence
   criterion, the secondary-category facet and the subtree re-file — probes owed, not doors. `08`'s
   `featstatus` box stays the owner's. `DESIGN.md`'s route table reaches 65.
+- **Propagated**: `features/read-models.md`.
 - **Trace**: the nine `08` markers on their implementing items (`infra::projector`,
   `api::rest::read`, `m20260901_000029`); `DESIGN.md` §Endpoints Overview (65 routes); six
   `ProductsConfig` fields.
@@ -1701,6 +1772,7 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   clause. Not ticked: `09`'s `featstatus` box (the owner's, like `07`'s), the sizing flagship, the
   `retired` holder and `STALE_LIVE_OP` criteria (no fixture), the lifecycle door's grant refusal
   and the reserved-lane-by-name assertion (no probe). `DESIGN.md`'s route table reaches 59.
+- **Propagated**: `features/bulk-promotion.md`.
 - **Trace**: the ten `09` markers on their implementing items; `DESIGN.md` §Endpoints Overview (59
   routes); `ProductsConfig::bulk_batch_ttl_hours`.
 
@@ -1773,6 +1845,7 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   `dod-override-ceremony`. `06` §6: seven criteria on probes (force-completion, its lift, replay,
   the deferred clear, byte-stability, `CATALOG_VERSION_UNKNOWN` on both paths, the negative
   control); `05` §6: the by-name acknowledgment. `DESIGN.md`'s route table reaches 57.
+- **Propagated**: `features/catalog-version.md`, `features/governance.md`, `DECOMPOSITION.md` §2.6.
 - **Trace**: the eight `06` markers and the two `05` markers on their implementing items;
   `DESIGN.md` §Endpoints Overview (57 routes); `DECOMPOSITION.md` 2.6 (the lint FR's halves).
 
@@ -1843,6 +1916,7 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (every reason-bearing door raises `CONTENT_PII_BLOCKED`) gains the correction door's and the
   retirement's probes; it still waits on a probe at `04`'s SKU retire door, so `10`'s status box
   stays.
+- **Propagated**: `features/reference-signal.md`.
 - **Trace**: `dod-producer-registration`, `dod-correction-door`, `dod-correction-republish`,
   `dod-breakglass-unavailable`, `dod-breakglass-unresolvable`, `dod-tripwire` markers on their
   implementing items; `DESIGN.md` §Endpoints Overview (51 routes).
@@ -1925,6 +1999,7 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   stays under P-D-137's convention until group 10's pass). `05`: `dod-finance-predicate`. §6 criteria ticked where a probe
   reads them back; the *sellable end to end*, *deferred lane* and *correction door* criteria stay
   open on `12`, row 22 and `07` respectively.
+- **Propagated**: `design/01-foundation.md`, `design/03-sku-classification.md`, `features/sku-classification.md`, `features/governance.md`.
 - **Trace**: `dod-recognized-set-mechanics`, `dod-bundle-override`, `dod-binding-snapshot`,
   `dod-plantier-governance`, `dod-finance-materiality`, `dod-recognized-set-events`,
   `dod-sdk-read-shape` markers on their implementing items; `design/01` §version-row column list;
@@ -2866,7 +2941,7 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   what it reads. Moving the suite out of the shared fixtures crate splits the seam across two
   crates — accepted; the alternative re-keys another gear's generated registry.
 - **Propagated**: twenty-seven rows and sixteen §6 items struck; rows 1 and 3 stay as owned work
-  and posture; row 2 gains the `PRD` §15 owner; row 7 is annotated with the skill that runs the
+  and posture; row 2 gains its owner in the requirements document's §15; row 7 is annotated with the skill that runs the
   subset. `design/12` §3.2 lint 1 and `DECOMPOSITION` §2.12 and §2.7 edited; §4.1's
   `ENTITY_TERMINAL` row and the `EventRegister` table's declaration are **owed** to `design/12`.
 
@@ -2933,7 +3008,7 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   that is the point.
 - **Propagated**: fifteen rows and ten §6 items struck; rows 1, 2, 3 gain owners (notes, not
   questions); row 22's grant half is answered (`bulk × read` for export, `bulk × execute` for
-  import) and its role half stays the PRD owner's.
+  import) and its role half stays the requirements owner's.
 
 
 #### P-D-128 — `11`'s open set: the clone writes on the save door's terms, and the register's own conventions
@@ -2973,7 +3048,7 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   is the intended answer for a revival. `Domain Model Entities` is a **listing convention** (the
   slice's §1.7 names); `dod-clone-seams`' rule rests on the slice's own *"neither is an
   aggregate"* sentence, which stands.
-- **Propagated**: twelve rows and four §6 items struck; rows 8 and 21 stay the PRD owner's, with
+- **Propagated**: twelve rows and four §6 items struck; rows 8 and 21 stay the requirements owner's, with
   the grant half of row 8 answered (the door spends the authoring pair).
 
 
@@ -3053,7 +3128,7 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   parameter folds into it. **Strand B's seam build**, with `design/05`'s wording owed; P-D-105's
   scheduled-flip predicate is unchanged.
 - **Propagated**: eleven rows struck; `design/05` §3.2's `× publish` row struck; `DECOMPOSITION`'s
-  `01` roster gains the lint's per-entity half. Left live on purpose: rows 3 (launch sequencing,
+  slice-01 roster gains the lint's per-entity half. Left live on purpose: rows 3 (launch sequencing,
   the product owner's), 4 and 5 (recorded risks with no question).
 
 
@@ -3278,8 +3353,8 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   had been hiding a Postgres defect. Row 16 registers a deliberate divergence from the PRD, which
   this register otherwise avoids — accepted because P-D-28 made the code the registry.
 - **Propagated**: rows 8, 10, 13, 16, 17, 19, 21 struck; 12 narrowed; the timeout field lands with
-  this entry. `05`'s taxonomy-ops registration gains its display-label exception. **All code here
-  is unassigned — `03` has no strand** — and is named in the lead's queue.
+  this entry. `03`'s taxonomy-ops registration gains its display-label exception. **All code here
+  is unassigned — slice 03 has no strand** — and is named in the lead's queue.
 
 
 #### P-D-119 — The gate's verdicts and codes: ten of `05`'s rows, most of them answered by what landed this week
@@ -3565,7 +3640,7 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   self-contained copy (**P-D-47**), and the recommendation routed with it is the same — the
   frozen assignment set carries name copies, not bare ids — but that changes `06`'s digest and is
   not this slice's to decide alone.
-- **Propagated**: rows 1, 5, 11, 15 and 21 struck; row 22 re-owned to `06`/`08`; row 17 stays
+- **Propagated**: rows 1, 5, 11, 15 and 21 struck; row 22 re-owned to slices 06/08; row 17 stays
   live as a measurement for A. `design/02`'s type-change sentence and the retire-delete guard's
   operand follow. **The code changes — `AttributeScope`'s global exemption, the guard's operand,
   the two events' aggregate — are strand A's build.**
@@ -3734,7 +3809,7 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   doors, which is the shape `content_save_pipeline` was created to avoid — accepted because the
   save-door check is a courtesy and the publish check is the obligation, and one registration
   list serves both.
-- **Propagated**: rows 5, 26, 27, 30 and 34 struck; row 12 narrowed to its `08` half. The event,
+- **Propagated**: rows 5, 26, 27, 30 and 34 struck; row 12 narrowed to its read-models half. The event,
   the naming and the publish placement are **strand C's build**.
 
 
@@ -4577,7 +4652,7 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   barrier the design set assigns to it, and because minting one action forces the same question of
   `undeprecate` and of the cancel, so the decision multiplies where the reuse does not.
 - **Propagated**: `design/04-lifecycle.md` **new §3.3** with the table and both arguments.
-  **Owed**: each act's request shape — the retirement's `{reason, replacedBy?, effectiveAt,
+- **Owed**: each act's request shape — the retirement's `{reason, replacedBy?, effectiveAt,
   confirmation}` against §2's own enumeration, and the cancel's, jointly with `02` whose
   `GovernedLiveOp` envelope it rides; and the `API:` lines on the affected DoDs, which belong to
   `features/lifecycle.md` and are that document's to write, not this register's.
@@ -4633,7 +4708,8 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   `OperationBuilder` registers the route, `authz.rs` holds the action constants with doc lines
   naming the routes that spend them, and `authz_tests.rs` asserts completeness over `labels::ALL`
   rather than over routes, so doors added under the existing `product|sku` labels need no test
-  change. **Owed**: `design/04`'s interfaces section; the `features/lifecycle.md` `Touches` lines;
+  change.
+- **Owed**: `design/04`'s interfaces section; the `features/lifecycle.md` `Touches` lines;
   and whichever `authz.rs` actions the four acts spend — `PUBLISH` and `WRITE` exist, and whether a
   retirement spends one of them or mints its own is part of the owed interface work.
 
@@ -4727,7 +4803,8 @@ per-decision anchors, and it was corrected by running the command it prescribed.
 - **Propagated**: `features/lifecycle.md` (§7 row 19 closes; `dod-scope-narrowing` and
   `dod-lifecycle-errors` re-worded), `design/04-lifecycle.md` (the withdrawn code),
   `domain/error.rs` and `infra/error_mapping.rs` (the new arm, applied by the lead from `04`'s D7
-  patch). **Owed**: `features/reference-signal.md`'s copy of the withdrawn code, to `07`'s owner;
+  patch).
+- **Owed**: `features/reference-signal.md`'s copy of the withdrawn code, to `07`'s owner;
   `CONTENT_PII_BLOCKED`, to `02`'s.
 
 #### P-D-95 — The by-key frozen-version reader is `01-foundation`'s, and waits for its first unblocked consumer
@@ -4762,10 +4839,11 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   leaving both DoDs unticked was also declined — it would put a public repository function in the
   crate's API with no caller, which is the shape this register has refused elsewhere.
 - **Propagated**: nothing normative. This decision constrains a code artifact and its timing; it
-  changes no design section and adds no instruction. The two registers that gate arm 2 —
+  changes no design section and adds no instruction.
+- **Not amended**: the two registers that gate arm 2 —
   `features/read-models.md` §7 rows 9 and 19, and `features/clone.md`'s own rows — are cited as
-  they stand and are **not** amended here, since neither row's question is what this decision
-  answers. **Owed**: when arm 2's condition is met, the promoting change updates
+  they stand, since neither row's question is what this decision answers.
+- **Owed**: when arm 2's condition is met, the promoting change updates
   `design/01-foundation.md` §3.2's repository surface, and this entry is the site to check first.
 
 #### P-D-94 — The recognized-set events' broker identity: derived ids, the set kind as the subject
@@ -4839,8 +4917,8 @@ per-decision anchors, and it was corrected by running the command it prescribed.
 - **Not changed**: row 3's sibling (open item 4, the PII detector's stub) — a different slice, a
   different absence, untouched; §7 row 12 of `governance`, which still holds the submit door; the
   envelope's own obligations, which `dod-governed-live-op` states and this decision does not edit.
-- **Propagated**: `features/taxonomy-attributes.md` §7 row 3 and its seam prose,
-  `features/sku-classification.md` (03 reuses the type per its own DoD, no redefinition).
+- **Propagated**: `features/taxonomy-attributes.md` §7 row 3 and its seam prose.
+- **Unchanged**: `features/sku-classification.md` — 03 reuses the type per its own DoD, no redefinition.
 
 #### P-D-92 — `set_kind` pins no roster, so row 5 stops holding the recognized-set table
 
@@ -5903,8 +5981,8 @@ change.
 - **Not changed**: `LifecycleState`'s five variants and its `parse`, pricing's `CatalogSku` type, and
   browse's visibility rules (08 C2).
 - **Propagated**: `features/consumer-contracts.md` (`dod-schema-pin`, `dod-status-vocabulary`, §7's
-  arithmetic and rows 24 and 34 answered). `design/12` §2's `inst-sdk-catalogsku` already carries both
-  halves and is unchanged.
+  arithmetic and rows 24 and 34 answered).
+- **Unchanged**: `design/12` §2's `inst-sdk-catalogsku` already carries both halves.
 
 #### P-D-65 — `CatalogVersion` is a pin entry of kind `surface`, delegated to the port trait and compared by nothing
 
@@ -6654,8 +6732,8 @@ with §6's *"nothing creates the ledger rows"* item beside it, and both stay ope
 - **Not changed**: `products/src` sets no isolation level anywhere and continues to take the engine
   default everywhere; no transaction config is introduced by this decision.
 - **Propagated**: `features/catalog-version.md` (`dod-snapshot-builder`,
-  `dod-stage-commit-revalidation`, §7 row 37 answered). **Owed and not edited here**:
-  `design/06-catalog-version.md` §2's `inst-sn-collect` and `inst-sn-revalidate`, which should carry
+  `dod-stage-commit-revalidation`, §7 row 37 answered).
+- **Owed**: `design/06-catalog-version.md` §2's `inst-sn-collect` and `inst-sn-revalidate`, which should carry
   the level and the guard's normative comparison — that is `design/06`'s edit.
 
 #### P-D-52 — The increment-request door gains a refusal code, and the counterparty's discriminator fixes its shape
@@ -6703,7 +6781,7 @@ with §6's *"nothing creates the ledger rows"* item beside it, and both stay ope
   `catalog_version × request`; the composition clear still raises no code by design.
 - **Propagated**: `design/06-catalog-version.md` (§3.2), `features/catalog-version.md` (§5's
   `dod-request-door` and `dod-cv-error-taxonomy`, §6's positive-control block, §7 row 22 struck).
-  **Owed and not edited here**: `design/12-consumer-contracts.md`'s `inst-sdk-surface`, whose SDK
+- **Owed**: `design/12-consumer-contracts.md`'s `inst-sdk-surface`, whose SDK
   error enum is built *"from every slice's registered codes"* and now has a seventh from this slice —
   that is 12's edit, not this one's.
 

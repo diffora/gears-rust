@@ -880,6 +880,29 @@ impl Gear for BssProductsGear {
                     enforcer: (*enforcer).clone(),
                 },
             ));
+        // The four bindings of P-D-151 (`inst-sdk-surface`): the read-model
+        // client, the authoring client, the freeze acks and the composition
+        // signal — every one over the door itself.
+        let binding = crate::api::rest::sdk_bindings::Binding {
+            state: Arc::clone(&sdk_state),
+            enforcer: (*enforcer).clone(),
+        };
+        ctx.client_hub()
+            .register::<dyn bss_products_sdk::ProductsClient>(Arc::new(
+                crate::api::rest::sdk_bindings::InProcessProductsClient(binding.clone()),
+            ));
+        ctx.client_hub()
+            .register::<dyn bss_products_sdk::Authoring>(Arc::new(
+                crate::api::rest::sdk_bindings::InProcessAuthoring(binding.clone()),
+            ));
+        ctx.client_hub()
+            .register::<dyn bss_products_sdk::FreezeAcks>(Arc::new(
+                crate::api::rest::sdk_bindings::InProcessFreezeAcks(binding.clone()),
+            ));
+        ctx.client_hub()
+            .register::<dyn bss_products_sdk::CompositionSignals>(Arc::new(
+                crate::api::rest::sdk_bindings::InProcessCompositionSignals(binding),
+            ));
 
         // The read limiter is one component per process (`dod-degradation`).
         crate::api::rest::read::ReadPathLimiter::install(cfg.read_path_qps_ceiling);

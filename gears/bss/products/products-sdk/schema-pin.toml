@@ -29,25 +29,33 @@ consumer-field = "sku_id"
 [[member]]
 name = "type"
 kind = "field"
-comparable = false # arrives with 03-sku-classification
+comparable = true # both sides ship it: 03 landed the column and the SDK member, pricing's CatalogSku carries it since 2770cef58 (P-D-151)
+registry-field = "sku_type"
+consumer-field = "sku_type"
 
 [[member]]
 # One half of the metering-unit declaration; the pair is atomic (P-D-12
 # counts it as its two tokens, 03 inst-mt-atomic-pair makes it one act).
 name = "unit"
 kind = "field"
-comparable = false # arrives with 03-sku-classification
+comparable = true # both sides ship it: 03 landed the column and the SDK member, pricing's CatalogSku carries it since 2770cef58 (P-D-151)
+registry-field = "metering_unit"
+consumer-field = "metering_unit"
 
 [[member]]
 # The other half of the metering-unit declaration.
 name = "usageTypeRef"
 kind = "field"
-comparable = false # arrives with 03-sku-classification
+comparable = true # both sides ship it: 03 landed the column and the SDK member, pricing's CatalogSku carries it since 2770cef58 (P-D-151)
+registry-field = "usage_type_ref"
+consumer-field = "usage_type_ref"
 
 [[member]]
 name = "PlanTier"
 kind = "field"
-comparable = false # arrives with 03-sku-classification
+comparable = true # both sides ship it: 03 landed the column and the SDK member, pricing's CatalogSku carries it since 2770cef58 (P-D-151)
+registry-field = "plan_tier"
+consumer-field = "plan_tier"
 
 [[member]]
 # The token is the seam's name (CatalogSku-superset-compatibility); the
@@ -64,12 +72,15 @@ vocabulary = ["published", "deprecated"]
 [[member]]
 name = "sellable"
 kind = "field"
-comparable = false # arrives with 03-sku-classification
+comparable = true # both sides ship it: 03 landed the column and the SDK member, pricing's CatalogSku carries it since 2770cef58 (P-D-151)
+registry-field = "sellable"
+consumer-field = "sellable"
 
 [[member]]
 name = "compositionPending"
 kind = "field"
-comparable = false # the column ships (products_sku.composition_pending, P-D-35); the SDK member does not yet
+comparable = false # the registry side ships (products_sku.composition_pending, P-D-35; the SDK member since P-D-151); pricing's CatalogSku does not carry it yet
+registry-field = "composition_pending"
 
 [[member]]
 # Pinned as a surface, not a field (P-D-12); the entry exists and the job

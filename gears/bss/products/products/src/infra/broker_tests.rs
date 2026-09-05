@@ -1083,6 +1083,72 @@ fn the_payload_round_trips_through_a_consumers_deserializer() {
     assert_eq!(received, sent);
 }
 
+/// **C2's actual direction, and the trivial half** (`design/12` §2.3 row 1,
+/// `dod-event-versioning`, P-D-151).
+///
+/// (a) An **old consumer reads a new payload**: a `vN` struct deserialises a
+/// `vN+1` body carrying a field it does not know. No typed event derives
+/// `deny_unknown_fields`, so the field is ignored — the additive-minor
+/// guarantee the semver roster promises.
+///
+/// (b) **New code reads an old payload**: the optional fields added since
+/// `v1.0.0`'s first shape — `replacedBy`/`mustMigrateBy` on the retirement
+/// bodies (P-D-20), `mutationSeq`/`operationKind` on the taxonomy payload
+/// (P-D-116), `erasedActorRef` on the retention payload — are absent on the
+/// old body and **default**. The RED case is named by `design/12` §5: remove
+/// `#[serde(default)]` from any of those fields and the matching assertion
+/// below fails on a body a `v1.0.0` producer wrote.
+#[test]
+fn an_old_consumer_reads_a_new_payload_and_new_code_reads_an_old_one() {
+    // (a)
+    let sent = SkuPublished {
+        core: core("sku"),
+        published_version: 2,
+    };
+    let mut wire = serde_json::to_value(&sent).expect("renders");
+    wire["aFieldFromTheFuture"] = serde_json::json!({ "nested": true });
+    let received: SkuPublished =
+        serde_json::from_value(wire).expect("an unknown field is ignored, not refused");
+    assert_eq!(received, sent);
+
+    // (b)
+    let tenant = Uuid::from_u128(0xc2_01);
+    let entity = Uuid::from_u128(0xc2_02);
+    let actor = Uuid::from_u128(0xc2_03);
+    let old_retired = serde_json::json!({
+        "tenantId": tenant, "entityKind": "sku", "entityId": entity,
+        "internalRevision": 4, "lifecycleState": "deprecated", "actorRef": actor,
+        "fromVersion": 1, "reason": "fixture", "effectiveAt": "2026-12-01T00:00:00Z"
+    });
+    let received: super::SkuRetired =
+        serde_json::from_value(old_retired).expect("a v1.0.0 retirement body");
+    assert_eq!(
+        received.replaced_by, None,
+        "P-D-20's optional field defaults"
+    );
+    assert_eq!(
+        received.must_migrate_by, None,
+        "the never-populated field defaults"
+    );
+    assert_eq!(received.core.entity_id, entity);
+
+    let old_taxonomy = serde_json::json!({
+        "tenantId": tenant, "entityKind": "category", "entityId": entity,
+        "act": "created", "state": "active", "actorRef": actor
+    });
+    let received: super::TaxonomyEventPayload =
+        serde_json::from_value(old_taxonomy).expect("a v1.0.0 taxonomy body");
+    assert_eq!(received.mutation_seq, None);
+    assert_eq!(received.operation_kind, None);
+
+    let old_retention = serde_json::json!({
+        "tenantId": tenant, "subjectRef": "actor/x", "act": "erased", "actorRef": actor
+    });
+    let received: super::RetentionEventPayload =
+        serde_json::from_value(old_retention).expect("a v1.0.0 retention body");
+    assert_eq!(received.erased_actor_ref, None);
+}
+
 /// **`trace_parent` is the W3C header form, not a bare trace id.**
 ///
 /// The broker's field is named `trace_parent`, so what goes in it must be a

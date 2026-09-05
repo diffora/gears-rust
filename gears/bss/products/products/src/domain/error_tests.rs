@@ -377,3 +377,40 @@ fn every_variant_carries_its_design_set_wire_code() {
          READ_MODEL_OVERLOADED (dod-degradation)"
     );
 }
+
+/// **The SDK's vocabulary is this roster, in both directions** (P-D-151,
+/// `dod-sdk-surface` row 8): every code a variant carries has an
+/// `ErrorCode` variant, and every `ErrorCode` variant is carried by some
+/// `DomainError`. A code added to the gear fails here until the SDK spells it;
+/// a variant added to the SDK fails here until the gear raises it.
+#[test]
+fn the_sdk_vocabulary_is_the_domain_roster_in_both_directions() {
+    let mut gear: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for roster in [
+        wire_code_roster(),
+        classification_wire_codes(),
+        reference_wire_codes(),
+        usage_type_wire_codes(),
+        governance_wire_codes(),
+    ] {
+        for (variant, code) in roster {
+            assert_eq!(variant.code(), code);
+            gear.insert(code);
+        }
+    }
+    let sdk: std::collections::BTreeSet<&str> = bss_products_sdk::ErrorCode::ALL
+        .iter()
+        .map(|c| c.as_str())
+        .collect();
+    let gear_only: Vec<_> = gear.difference(&sdk).collect();
+    let sdk_only: Vec<_> = sdk.difference(&gear).collect();
+    assert!(
+        gear_only.is_empty(),
+        "codes the SDK does not spell: {gear_only:?}"
+    );
+    assert!(
+        sdk_only.is_empty(),
+        "SDK variants no DomainError carries: {sdk_only:?}"
+    );
+    assert_eq!(sdk.len(), 78);
+}

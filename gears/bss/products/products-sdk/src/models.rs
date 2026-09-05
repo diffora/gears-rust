@@ -213,6 +213,15 @@ pub struct Sku {
     ///
     /// @cpt-dod:cpt-cf-bss-products-dod-sellable:p1
     pub sellable: bool,
+    /// Whether a `bundle` still awaits its composition signal
+    /// (`PRD` AC #36's adoption block operand, P-D-35's column). Always
+    /// `false` on a non-bundle. The read shape's ninth `CatalogSku`-superset
+    /// member; the tenth, `name`, is the parent Product's — a SKU carries no
+    /// display name of its own, `sku_code` being its operator-facing one
+    /// (P-D-151).
+    ///
+    /// @cpt-dod:cpt-cf-bss-products-dod-catalogsku-shape:p1
+    pub composition_pending: bool,
     /// The `PlanTier` member the SKU is assigned to, by stable code.
     pub plan_tier: Option<String>,
     /// The metering unit — half of the meter pair, both or neither present.

@@ -157,3 +157,9 @@ opentelemetry_sdk = { workspace = true, features = ["trace"] }
 # copying the stored log. Dev-only: production code never polls a stream —
 # the leased processor is the SDK's own.
 futures-core = { workspace = true }
+# The seam suite (`tests/seam_suite.rs`, `design/12` §2.1, P-D-130/P-D-151):
+# the SchemaPin's two-sided check reads the consumer side's `CatalogSku` from
+# pricing's SDK and the pin itself from `schema-pin.toml`. Dev-only — the
+# products gear takes no production dependency on pricing.
+bss-pricing-sdk = { workspace = true }
+toml = { workspace = true }

@@ -167,6 +167,7 @@ pub mod recognized_sets;
 pub mod reference;
 pub mod retention;
 pub mod scheduled_transitions;
+pub mod sdk_bindings;
 pub mod skus;
 pub mod taxonomy;
 

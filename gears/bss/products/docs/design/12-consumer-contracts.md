@@ -22,6 +22,7 @@
   - [3.2 The completeness checks (`CoverageChecks`)](#32-the-completeness-checks-coveragechecks)
 - [4. Data / Storage](#4-data--storage)
   - [4.1 The AC #38 row → code map](#41-the-ac-38-row--code-map)
+  - [4.2 The `EventRegister`](#42-the-eventregister)
 - [5. Testing posture (slice-local)](#5-testing-posture-slice-local)
 - [6. Traces to / Risks & Open items](#6-traces-to--risks--open-items)
 
@@ -249,6 +250,73 @@ Three notes the map carries rather than hides:
   "indeterminate parent-child region-containment" row was withdrawn as unreachable and the
   "de-listed/deprecated" row split in two. Any future citation of "fifteen rows" should be checked
   against this table rather than against the number.
+- **`ENTITY_TERMINAL` has no row of its own, by construction** (the row P-D-130 owed this table).
+  AC #38's enumeration lists no write on a terminal head; the code answers *any head write on a
+  terminal head* (P-D-32, P-D-130) and is 01's, declared in 01 §3.3. Lint 2 therefore does not
+  expect it in the map, and a row for it would be an AC #38 change first (P-D-151).
+
+### 4.2 The `EventRegister`
+
+Lint 4's input (**P-D-45**: authored, never harvested; **P-D-130**: a table in this section, one
+row per emitting instruction and an explicit no-event row; filled by **P-D-151** from the rules'
+own text). Forty events, one row each, and eleven no-event rows for the state changes that
+deliberately emit nothing. The SDK's versioned roster (`bss_products_sdk::events::SCHEMA_REFS`)
+and the gear's `infra::events::SCHEMA_REFS` are the same forty; lint 4 holds every versioned token
+to a row here and every row's instruction to its slice.
+
+| Event | Emitting instruction | Slice | Note |
+|---|---|---|---|
+| `ProductCreated` | `inst-fd-create-txn` | 01 | the create transaction, one instruction for both kinds |
+| `SkuCreated` | `inst-fd-create-txn` | 01 |  |
+| `ProductHeadSaved` | `inst-fd-save-txn` | 01 |  |
+| `SkuHeadSaved` | `inst-fd-save-txn` | 01 |  |
+| `ProductPublished` | `inst-fd-publish-emit` | 01 | carries `publishedVersion` |
+| `SkuPublished` | `inst-fd-publish-emit` | 01 | carries `publishedVersion` |
+| `ProductDiscarded` | `inst-fd-discard` | 01 |  |
+| `SkuDiscarded` | `inst-fd-discard` | 01 |  |
+| `ProductDeprecated` | `inst-lc-deprecate` | 04 | body carries `provenance` |
+| `SkuDeprecated` | `inst-lc-deprecate` | 04 | body carries `provenance` |
+| `ProductUndeprecated` | `inst-lc-undeprecate` | 04 |  |
+| `SkuUndeprecated` | `inst-lc-undeprecate` | 04 |  |
+| `SkuRetired` | `inst-rt-initiate` | 04 | re-announced per publish, keyed `(skuId, effectiveAt)` (P-D-20) |
+| `ProductRetired` | `inst-cp-parent` | 04 | the parent's own path |
+| `SkuRetirementEffective` | `inst-rt-flip-guard` | 04 | the flip, after the D-47 guard |
+| `ProductRetirementEffective` | `inst-cp-parent` | 04 | the parent's flip, all children terminal |
+| `RecognizedUnitUpdated` | `inst-us-governed` | 03 | per applied `GovernedLiveOp` on the unit set |
+| `RecognizedCodeUpdated` | `inst-us-governed` | 03 | per applied op on the tax/GL code sets |
+| `PlanTierUpdated` | `inst-pt-governed` | 03 |  |
+| `SkuImmutableFieldCorrected` | `inst-cr-republish` | 07 |  |
+| `SkuCorrectionOverride` | `inst-bc-ceremony` | 07 | beside the corrected event on a break-glass lane |
+| `ReferenceProducerSetChanged` | `inst-pr-governed` | 07 | aggregate = tenant |
+| `CatalogVersionPublished` | `inst-cv-commit` | 06 |  |
+| `FreezeForceCompleted` | `inst-fz-force` | 06 |  |
+| `FreezeParticipantSetChanged` | `inst-fz-membership` | 06 |  |
+| `SkuCompositionCleared` | `inst-cc-clear` | 06 | the clearing publish's own event |
+| `CatalogBulkOperationCompleted` | `inst-bk-complete` | 09 | additive: the row-level events all emit |
+| `CategoryCreated` | `inst-tx-event` | 02 |  |
+| `CategoryRenamed` | `inst-tx-event` | 02 |  |
+| `CategoryReparented` | `inst-tx-event` | 02 |  |
+| `CategoryRetired` | `inst-tx-event` | 02 |  |
+| `CategoryDeleted` | `inst-tx-event` | 02 |  |
+| `MetadataUpdated` | `inst-md-placement` | 02 |  |
+| `CategoryDisplayUpdated` | `inst-av-category-branch` | 02 | aggregate = the category (P-D-116 row 15) |
+| `AttributeDefinitionUpdated` | `inst-ad-event` | 02 |  |
+| `ActorErased` | `inst-er-event` | 10 | the age-triggered path (`inst-er-age`) emits the same event |
+| `PiiAllowlistChanged` | `inst-pp-allowlist` | 10 |  |
+| `ApprovalDecided` | `inst-gv-reject` | 05 | both verdicts; the approving one closes on quorum (`inst-gv-quorum`) |
+| `BreakGlassElevated` | `inst-bg-open` | 05 |  |
+| `BreakGlassExpired` | `inst-bg-expiry` | 05 | exactly once, by the first post-expiry act (P-D-68) |
+| — | `inst-ws-no-event` | 07 | watermark ingestion is audit-plane: explicit no broker event |
+| — | `inst-cv-request` | 06 | an increment request is accepted, not announced; `CatalogVersionPublished` follows from `inst-cv-commit` |
+| — | `inst-fz-ack` | 06 | a freeze ack or release is a ledger edge and a keyed audit row, no event |
+| — | `inst-gv-stored-snapshot` | 05 | an approval submission stores the snapshot; the verdict is the event |
+| — | `inst-sp-pin` | 04 | scheduling pins the approval; the activation drives the Foundation's own events |
+| — | `inst-bk-stage` | 09 | staging emits nothing; the row-level events fire at commit, then the summary |
+| — | `inst-cl-type-profile` | 03 | a classification edit rides `SkuHeadSaved` (`SKU_CLASSIFICATION_EDITS_EMIT_NO_EVENT`) |
+| — | `inst-cl-sellable` | 03 | as above |
+| — | `inst-pt-assign` | 03 | as above |
+| — | `inst-mt-atomic-pair` | 03 | as above |
+| — | `inst-ac-recognized` | 03 | as above |
 
 ## 5. Testing posture (slice-local)
 
@@ -266,7 +334,7 @@ P-D-03 joint build's acceptance).
 slice is that suite's specification.
 
 **Risks & open items**:
-- **The `EventRegister` is declared and empty.** P-D-45 made lint 4 read a table that does not yet have rows, and the measurement that forced it (five harvests, five populations) is also the reason nobody can fill it in one pass: an event's emitting instruction is only known to whoever wrote the rule. Each slice owes its own rows — event, emitting `inst-*`, and an explicit no-event where a state change emits nothing. Until it is written lint 4 is declared and inert, which is a better state than prose but is not a working gate. Owner: every slice owner, coordinated by this one. *(Raised by the P-D-45 round.)*
+- ~~**The `EventRegister` is declared and empty.**~~ **Answered (P-D-151, 2026-09-05): §4.2 carries the table — forty event rows attributed to their emitting instructions and eleven no-event rows — and lint 4 runs on it (`products-sdk/src/coverage_lints.rs`).** *(Original:)* P-D-45 made lint 4 read a table that does not yet have rows, and the measurement that forced it (five harvests, five populations) is also the reason nobody can fill it in one pass: an event's emitting instruction is only known to whoever wrote the rule. Each slice owes its own rows — event, emitting `inst-*`, and an explicit no-event where a state change emits nothing. Until it is written lint 4 is declared and inert, which is a better state than prose but is not a working gate. Owner: every slice owner, coordinated by this one. *(Raised by the P-D-45 round.)*
 - ~~**The suite's final owner/home is a §15 open**~~ **Answered (P-D-132, 2026-09-03): no CI job, by the owner's decision** — the products-side crate, run on demand. *The item's text stood as:* (proposed `api-contracts` CI) — the design is
   home-agnostic, but an unowned CI job is an unrun one; this is the set's last
   organizational dependency.

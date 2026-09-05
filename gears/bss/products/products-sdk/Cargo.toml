@@ -36,3 +36,5 @@ chrono = { workspace = true }
 # SchemaPin this crate owns — to couple it against the ObligationRegister's
 # Operand column. Dev-only: the pin is a CI artifact, never a runtime read.
 toml = { workspace = true }
+# Lints 1–8 (`coverage_lints.rs`) parse the design set's grammars. Dev-only.
+regex = { workspace = true }

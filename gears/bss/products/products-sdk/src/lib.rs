@@ -25,8 +25,18 @@
 #![forbid(unsafe_code)]
 
 pub mod api;
+pub mod authoring;
+pub mod composition;
+pub mod errors;
+pub mod events;
+pub mod freeze;
 pub mod increments;
 pub mod models;
+
+// Lints 1–8 (`dod-lint-prd-universe`, `dod-lint-declarations`,
+// `dod-lint-surfaces`); test-only, under `src/` for lint 9's reason.
+#[cfg(test)]
+mod coverage_lints;
 
 // Lint 9's executable half (`dod-lint-pin-coupling`); test-only, and under
 // `src/` because the gate scans no `-sdk/tests` root.
@@ -35,4 +45,8 @@ mod pin_lint;
 pub mod watermarks;
 
 pub use api::ProductsClient;
+pub use authoring::Authoring;
+pub use composition::CompositionSignals;
+pub use errors::ErrorCode;
+pub use freeze::FreezeAcks;
 pub use models::{EntityKind, LifecycleState, Product, Sku};
