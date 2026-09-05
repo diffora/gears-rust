@@ -1181,8 +1181,9 @@ entry. A box left open names a clause no probe asserts yet.*
       `RETIREMENT_PENDING`: un-deprecation with no live intent is admitted;
       `EOL_DISABLED`: a retirement carrying no `mustMigrateBy` is admitted
 - [x] The EOL flag OFF refuses `mustMigrateBy`; the event schema round-trips the absent field
-- [ ] A schema-oracle golden exists for both new tables on both engines, each with a perturbation
-      case proving it can fail
+- [x] A schema-oracle golden exists for both new tables on both engines, each with a perturbation
+      case proving it can fail *(ticked at P-D-157: "each" is per table, and the SQLite oracle
+      carries both perturbations)*
 - [x] The partial unique index admits one live intent per entity per kind and admits a second row
       once the first is `applied`, `failed` or `superseded`
 - [x] `retirement_reason` survives a deferral that writes `outcome_reason` — the two-column split

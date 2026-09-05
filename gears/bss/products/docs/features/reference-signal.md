@@ -1026,6 +1026,9 @@ side.
 
 ## 6. Acceptance Criteria
 
+*Ticks measured clause by clause at **P-D-157** (2026-09-05); the criterion-to-probe map is in that
+entry. A box left open names a clause no probe asserts yet.*
+
 **The predicate matrix as one fixture**
 
 - [ ] Six fixture cases in a single fixture — fresh-zero, fresh > 0, stale, never-received,
@@ -1036,7 +1039,7 @@ side.
 - [ ] `never-received` puts no series in the staleness gauge while `stale` does, which is what
       `reference_watermark_stale` fires on (**P-D-59** — the predicate raises nothing itself); asserted
       apart, because the distinction is the design's and a merged assertion would hide it.
-- [ ] `no_producers` is distinguishable from fresh-zero in the returned verdict, not only in a log
+- [x] `no_producers` is distinguishable from fresh-zero in the returned verdict, not only in a log
       line.
 
 **Watermark ingestion**
@@ -1044,8 +1047,8 @@ side.
 - [ ] The member set is replaced **atomically** — a concurrent reader never observes a half-set,
       driven by real concurrency rather than read-then-assert.
 - [ ] A regression is refused and the stored watermark is **unmoved**.
-- [ ] An idempotent replay — same `watermark_at`, same set — is admitted and changes nothing.
-- [ ] An equal `watermark_at` with a **different** set is refused `WATERMARK_CONFLICT`.
+- [x] An idempotent replay — same `watermark_at`, same set — is admitted and changes nothing.
+- [x] An equal `watermark_at` with a **different** set is refused `WATERMARK_CONFLICT`.
 
 **The future bound, over the chain rather than the refusal**
 
@@ -1098,12 +1101,12 @@ side.
 **Positive controls, one line per declared code** — eleven codes, eleven lines. A blanket criterion
 here is ticked by inspection.
 
-- [ ] `PRODUCER_UNREGISTERED` — a post from an unregistered producer is refused; the same post after
+- [x] `PRODUCER_UNREGISTERED` — a post from an unregistered producer is refused; the same post after
       registration succeeds.
-- [ ] `WATERMARK_REGRESSION` — an older `watermark_at` is refused; a newer one succeeds.
-- [ ] `WATERMARK_CONFLICT` — an equal `watermark_at` with a different set is refused; with the same
+- [x] `WATERMARK_REGRESSION` — an older `watermark_at` is refused; a newer one succeeds.
+- [x] `WATERMARK_CONFLICT` — an equal `watermark_at` with a different set is refused; with the same
       set it is an idempotent success.
-- [ ] `WATERMARK_FUTURE` — above `now + skew` refused; at `now` accepted.
+- [x] `WATERMARK_FUTURE` — above `now + skew` refused; at `now` accepted.
 - [x] `PRODUCER_SET_EMPTY_FORBIDDEN` — retiring the only producer refused; retiring one of two
       succeeds.
 - [x] `PRODUCER_RETIREMENT_WOULD_FREE` — retiring a stale producer refused; retiring a fresh one
@@ -1120,10 +1123,10 @@ here is ticked by inspection.
 
 **Controls on the shipped seam**
 
-- [ ] `bucket_tests::buckets_ii_and_iv_have_no_members_today` **still passes** after this feature
+- [x] `bucket_tests::buckets_ii_and_iv_have_no_members_today` **still passes** after this feature
       lands. It reddens on `03-sku-classification`'s columns, not on this door, and a change here
       that reddens it means the door has grown a column it does not own.
-- [ ] A bucket-ii write attempted through a **head** door is still refused by
+- [x] A bucket-ii write attempted through a **head** door is still refused by
       `correctable_after_publish`, unchanged — this feature adds a door and does not re-route that
       refusal.
 

@@ -663,7 +663,11 @@ The door is probed through a scripted stub for all three outcomes, the timeout c
 `Idempotency-Key` is left unclaimed and the retry publishes once. A SKU carries one `usage_type_ref`, so
 once-per-distinct-ref is one call. The scheduled lane still enters `run_publish` inside the
 runner's transaction — consume-at-schedule is the lead's, and this tick does not invent a
-`deferred` disposition there. The timeout field is 2000 in config and unused until a real client
+`deferred` disposition there. **P-D-157 (2026-09-05): the lane now resolves.** The runner carries the
+resolver (`ActivationContext::usage_type_resolver`) and judges a usage SKU's ref under the gear's
+system principal before its publish; `Unavailable` lands the row `deferred` with its lane claim
+released, `Unresolved` fails it — probe
+`a_usage_skus_scheduled_publish_defers_while_the_collector_is_unavailable_and_applies_once_it_answers`. The timeout field is 2000 in config and unused until a real client
 exists.
 
 **Implements**: `cpt-cf-bss-products-algo-collector-dependency`,
@@ -883,6 +887,9 @@ The system **MUST** expose `type`, `sellable`, `plan_tier`, `metering_unit`, `us
 
 ## 6. Acceptance Criteria
 
+*Ticks measured clause by clause at **P-D-157** (2026-09-05); the criterion-to-probe map is in that
+entry. A box left open names a clause no probe asserts yet.*
+
 - [x] A SKU with no `type`, or a `type` outside the closed set, is refused; and the code it meets
       is the one open item 13 settles, asserted rather than assumed
 - [x] A `product` published without `taxCategory` is refused `ACCOUNTING_CODE_REQUIRED` naming the
@@ -892,24 +899,24 @@ The system **MUST** expose `type`, `sellable`, `plan_tier`, `metering_unit`, `us
       `BUNDLE_OVERRIDE_REQUIRED`; with it, the SKU publishes and carries
       `compositionPending = true`
 - [ ] A zero-price "free" SKU takes the ordinary path with no special validator
-- [ ] `sellable` defaults `true`, and a flip reaches the SDK read shape end to end
+- [x] `sellable` defaults `true`, and a flip reaches the SDK read shape end to end
 - [ ] A declaration carrying a unit and no `usageTypeRef` is refused
       `METER_DECLARATION_INCOMPLETE` at the door, and the same row is refused by the `CHECK` with
       the application check bypassed
-- [ ] A declaration against an unknown or `removed` unit is refused `UNRECOGNIZED_UNIT`; against a
+- [x] A declaration against an unknown or `removed` unit is refused `UNRECOGNIZED_UNIT`; against a
       `deprecated` unit, `UNIT_DEPRECATED` — including a draft whose unit was deprecated before
       its first publish
-- [ ] A publish whose `usageTypeRef` does not resolve is refused `USAGE_TYPE_UNRESOLVED`; a
+- [x] A publish whose `usageTypeRef` does not resolve is refused `USAGE_TYPE_UNRESOLVED`; a
       publish against an unreachable collector is refused `USAGE_TYPE_UNAVAILABLE` and the same
       publish succeeds unchanged once the collector returns
 - [ ] The resolver is called **once per publish per distinct ref**, asserted by counting stub
       invocations on a publish carrying two refs
-- [ ] `USAGE_TYPE_UNAVAILABLE` on the scheduled lane leaves the transition `deferred`, not
+- [x] `USAGE_TYPE_UNAVAILABLE` on the scheduled lane leaves the transition `deferred`, not
       `failed`, and its pinned approval survives
 - [x] A unit removal is refused `UNIT_DELIST_BLOCKED` while a `deprecated` SKU declares it, and
       **admitted** while only frozen version content names it; the old snapshot still renders and
       the removed member's row survives as `removed`
-- [ ] A new declaration naming a removed member fails `UNRECOGNIZED_UNIT`
+- [x] A new declaration naming a removed member fails `UNRECOGNIZED_UNIT`
 - [x] No write path renames a `member_code`: the trigger refuses the `UPDATE` and the `DELETE`,
       and admits `state` and `display_label`
 - [x] A seeded member can be deprecated and cannot be removed
@@ -921,7 +928,7 @@ The system **MUST** expose `type`, `sellable`, `plan_tier`, `metering_unit`, `us
       `glCode` alike, one code serving both
 - [x] A one-person tenant publishes their first `product` SKU: the FinanceReviewer predicate is
       recorded `predicateUnsatisfiable` and does not block
-- [ ] Every field this feature owns appears in the bucket registry, and a bucket-ii write after
+- [x] Every field this feature owns appears in the bucket registry, and a bucket-ii write after
       first publish is refused while the correction door admits it
 - [x] Each of the fifteen codes is raised by exactly one rule and carries its declared status
 - [x] The three set events are emitted in the mutating transaction on `(tenant, set_kind)`, and a
@@ -932,9 +939,9 @@ The system **MUST** expose `type`, `sellable`, `plan_tier`, `metering_unit`, `us
       obligation; this line is the rule, not the test
 - [ ] A `CorruptRow` probe exists for the meter pair `CHECK` and for each guarded column class of
       `products_recognized_set`, on both engines
-- [ ] A schema-oracle golden exists for `products_recognized_set` on both engines with a
+- [x] A schema-oracle golden exists for `products_recognized_set` on both engines with a
       perturbation case proving it can fail
-- [ ] A `product` published against a `deprecated` `taxCategory` is refused
+- [x] A `product` published against a `deprecated` `taxCategory` is refused
       `ACCOUNTING_CODE_DEPRECATED`, and an `active` one publishes
 - [x] A code removal is refused `ACCOUNTING_CODE_DELIST_BLOCKED` while a published SKU carries it,
       and is admitted once none does
@@ -943,15 +950,15 @@ The system **MUST** expose `type`, `sellable`, `plan_tier`, `metering_unit`, `us
       positive control on `PLAN_TIER_RETIRE_BLOCKED`
 - [x] A `type` inside the closed set is admitted — the positive control on `SKU_TYPE_UNKNOWN`
 - [x] A known accounting code is admitted — the positive control on `ACCOUNTING_CODE_UNKNOWN`
-- [ ] A complete `(unit, usageTypeRef)` pair is admitted — the positive control on
+- [x] A complete `(unit, usageTypeRef)` pair is admitted — the positive control on
       `METER_DECLARATION_INCOMPLETE`
-- [ ] An `active` recognized unit is admitted — the positive control on `UNRECOGNIZED_UNIT` and on
+- [x] An `active` recognized unit is admitted — the positive control on `UNRECOGNIZED_UNIT` and on
       `UNIT_DEPRECATED`
-- [ ] A resolvable `usageTypeRef` publishes — the positive control on `USAGE_TYPE_UNRESOLVED`,
+- [x] A resolvable `usageTypeRef` publishes — the positive control on `USAGE_TYPE_UNRESOLVED`,
       distinct from the collector-returns control on `USAGE_TYPE_UNAVAILABLE`
 - [ ] A zero-price "free" SKU takes the ordinary path — the criterion `dod-type-profile` owes, the
       slice carrying it as `inst-cl-no-promo-entity`
-- [ ] Building the bucket-ii class turns `buckets_ii_and_iv_have_no_members_today`,
+- [x] Building the bucket-ii class turns `buckets_ii_and_iv_have_no_members_today`,
       `an_unregistered_column_fails_closed_rather_than_defaulting` and
       `the_class_counts_are_pinned_per_entity` red, and each is updated with its reason recorded
 - [ ] No `#[ignore]`d test exists without a CI tier that runs it
@@ -964,7 +971,7 @@ in §5. The twenty-first arrived with the doors themselves: the three-lens revie
 membership doors found the de-list window write-skew-open on Postgres, and the mechanism that
 closes it is 01's isolation posture rather than this slice's to pick. The twenty-second arrived
 with group 4's build (P-D-146): the scheduled publish lane enters `run_publish` without the
-pre-transaction usage-type resolve, so the deferred arm the errors DoD asks for cannot be reached
+pre-transaction usage-type resolve, so the deferred arm the errors DoD asks for could not be reached until P-D-157 wired the resolver into the runner
 from that lane until the runner carries a service context and the resolver. They are carried in full, with the DoD each blocks and its owner, because the sibling feature
 authored on 2026-08-30 carried four of twenty-three and the three-lens review measured that as its
 single most costly defect.
@@ -1003,7 +1010,7 @@ does not decide it — the struck rows above point at the register entry that di
 | ~~19~~ | **Does the registered-validators phase run before the publish transaction, or inside it?** This feature and `01-foundation` say before; `07-reference-signal` says inside and its own fix depends on that. **The costs are not symmetric**: on 07's reading a cross-gear call with a short timeout and no retry sits inside a transaction that has already written the frozen version row, holding the head-row lock and a pooled connection for the timeout on Postgres and serializing every other publish in the database on SQLite — a collector stall becomes a gear-wide publish stall. **And §5 as written builds that reading**, because `dod-usage-type-resolution` names no phase while `dod-binding-snapshot` pulls the resolve toward the transaction that consumes its value **Answered (P-D-121, 2026-09-03): inside the transaction, as shipped (P-D-97) — and a validator with a cross-gear input resolves it *before* and hands the phase a `Resolution`**, `MaterialityEvaluator`'s own shape. `07` is right about where the phase runs and wrong about what it may do there; its fix follows the same pattern. | ~~`dod-usage-type-resolution`, `dod-binding-snapshot`~~ | **struck** |
 | ~~20~~ | **What operand tells a composed bundle from an uncomposed one?** The only registry-side record is `composition_pending`, whose default is `false` on an uncomposed draft, so it cannot distinguish never-composed from composed. Read literally, an ordinary bucket-iii re-publish of a composed bundle demands the override again and re-raises the flag **Answered (P-D-134, 2026-09-04): `composition_pending` is raised only by a composition-affecting publish**; composed = published with the flag clear, never composed = `published_version = 0`. | ~~`dod-bundle-override`~~ | **struck** |
 | ~~21~~ | **What closes the de-list window between the holder census and the flip?** `inst-us-delist` states the invariant and names no mechanism for enforcing it across two transactions. The shipped doors read the holder population and the member on separate transactions at the engine's default isolation, so on Postgres they are **write-skew-open**: a first publish declaring the unit and a `deprecated → removed` flip can both commit, leaving a `published` head declaring a `removed` member. SQLite's single writer hides it, so the interim tier cannot probe it. Four remedies exist — a shared row lock on the member in the recognition read, both doors at `SERIALIZABLE` with a contention classifier, accepting the window and reconciling, or a dedicated Postgres race suite on the `postgres_head_race.rs` precedent — and the isolation posture is the Foundation's **Answered (P-D-121, 2026-09-03): one transaction, and the flip re-asserts the census** — the `deprecated → removed` `UPDATE` carries `WHERE NOT EXISTS (a non-terminal published head declaring the member)`, and the publish's own check (row 8) refuses a removed member inside its transaction. Neither side judges on a read from another transaction. **The fix for the withdrawn `dod-unit-delist` tick.** | ~~`dod-unit-delist`, `dod-recognized-set-mechanics`~~ | **struck** |
-| 22 | **The scheduled publish lane never resolves `usageTypeRef`.** `activation_runner` enters `skus::run_publish` directly under `PreAuthorized`; the pre-transaction resolve (`resolve_usage_type_before_publish`) is the REST door's, and it needs the caller's `SecurityContext`, which the runner loop has none of. So a scheduled publish of a metered SKU skips the collector check P-D-131 makes fail-closed on the interactive lane, freezes `NULL` into `binding_snapshot`, and can never reach the `deferred` arm `publish_refusal_is_transient` holds for `USAGE_TYPE_UNAVAILABLE`. **Measured 2026-09-05 (P-D-146).** The fix shape: the runner's `ActivationContext` carries the resolver and a service `SecurityContext` (the broker's builder shows one), resolves before `run_publish`, hands the binding through, and maps `Unavailable` to `RunFinish::Deferred`. | the scheduled publish lane — `04`'s runner, with `07`'s correction lane the same shape; no `03` DoD is blocked (the errors DoD's arm is built, its §6 lane criterion stays open here) | **open — owner `04`/`07`** |
+| ~~22~~ | ~~**The scheduled publish lane never resolves `usageTypeRef`.**~~ **Answered (P-D-157, 2026-09-05): it does now** — the runner carries the resolver (`ActivationContext::usage_type_resolver`) and judges the ref under the gear's system principal before the publish; `Unavailable` lands the row `deferred` with its lane claim released, `Unresolved` fails it. *The row's text stood as:* `activation_runner` enters `skus::run_publish` directly under `PreAuthorized`; the pre-transaction resolve (`resolve_usage_type_before_publish`) is the REST door's, and it needs the caller's `SecurityContext`, which the runner loop has none of. So a scheduled publish of a metered SKU skips the collector check P-D-131 makes fail-closed on the interactive lane, freezes `NULL` into `binding_snapshot`, and can never reach the `deferred` arm `publish_refusal_is_transient` holds for `USAGE_TYPE_UNAVAILABLE`. **Measured 2026-09-05 (P-D-146).** The fix shape: the runner's `ActivationContext` carries the resolver and a service `SecurityContext` (the broker's builder shows one), resolves before `run_publish`, hands the binding through, and maps `Unavailable` to `RunFinish::Deferred`. | the scheduled publish lane — `04`'s runner, with `07`'s correction lane the same shape; no `03` DoD is blocked (the errors DoD's arm is built, its §6 lane criterion ticked at P-D-157) | **answered — P-D-157** |
 
 ### Raised here rather than carried
 

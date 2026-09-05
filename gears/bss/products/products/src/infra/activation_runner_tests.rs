@@ -89,6 +89,7 @@ fn context(harness: &Harness) -> ActivationContext {
         sink: crate::infra::broker::EventSink::Interim(Arc::clone(harness.outbox_handle.outbox())),
         idempotency_retention_hours: IDEMPOTENCY_RETENTION_FLOOR_HOURS,
         reference_freshness: crate::config::ProductsConfig::default().reference_freshness(),
+        usage_type_resolver: crate::test_support::resolved_usage_types(),
     }
 }
 
@@ -145,6 +146,158 @@ const SKU: Uuid = Uuid::from_u128(0xdd_21);
 const SEEDED_TRANSITION: Uuid = Uuid::from_u128(0xaa_11);
 const SEEDED_APPROVAL: Uuid = Uuid::from_u128(0xbb_12);
 
+/// A published parent, a draft SKU (a usage SKU when `metering` names the
+/// pair), a consumed approval pinned at revision 1 and a due publish row.
+async fn seed_scheduled_publish(
+    harness: &Harness,
+    scope: &AccessScope,
+    now: chrono::DateTime<Utc>,
+    metering: Option<(&str, &str)>,
+) {
+    let conn = harness.db.conn().expect("scoped connection");
+    insert_product(
+        &conn,
+        scope,
+        NewProduct {
+            product_id: PRODUCT,
+            tenant_id: TENANT,
+            brand_id: BRAND,
+            name: "Fibre 500".to_owned(),
+            name_normalized: "fibre 500".to_owned(),
+            product_code: Some("FIBRE-500".to_owned()),
+            region_scope: String::new(),
+            brand_scope: String::new(),
+            created_by: "principal:author-1".to_owned(),
+            created_at: now,
+            cloned_from: None,
+            cloned_from_version: None,
+        },
+    )
+    .await
+    .expect("insert the parent");
+    // Walk the admitted `draft → published` edge without a version freeze:
+    // the SKU door only asks that the parent *state* is published.
+    product::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(product::Column::LifecycleState, Expr::value("published"))
+        .col_expr(product::Column::InternalRevision, Expr::value(2_i64))
+        .col_expr(product::Column::UpdatedAt, Expr::value(now))
+        .filter(
+            Condition::all()
+                .add(product::Column::TenantId.eq(TENANT))
+                .add(product::Column::ProductId.eq(PRODUCT)),
+        )
+        .exec(&conn)
+        .await
+        .expect("the floor admits draft -> published");
+    if let Some((unit, _)) = metering {
+        crate::infra::storage::repo::insert_recognized_member(
+            &conn,
+            scope,
+            TENANT,
+            crate::domain::recognized::SetKind::MeteringUnit,
+            unit,
+            None,
+            None,
+            now,
+        )
+        .await
+        .expect("seed the unit");
+    }
+    insert_sku(
+        &conn,
+        scope,
+        NewSku {
+            sku_id: SKU,
+            tenant_id: TENANT,
+            product_id: PRODUCT,
+            sku_code: "FIBRE-500-1".to_owned(),
+            region_scope: String::new(),
+            brand_scope: String::new(),
+            created_by: "principal:author-1".to_owned(),
+            created_at: now,
+            cloned_from: None,
+            cloned_from_version: None,
+            sku_type: "product".to_owned(),
+            sellable: true,
+            plan_tier: "standard".to_owned(),
+            tax_category_ref: Some("TC-STD".to_owned()),
+            gl_code_ref: Some("GL-4000".to_owned()),
+            metering_unit: metering.map(|(unit, _)| unit.to_owned()),
+            usage_type_ref: metering.map(|(_, usage_type_ref)| usage_type_ref.to_owned()),
+        },
+    )
+    .await
+    .expect("insert the draft SKU");
+
+    let subject = GateSubject::entity_publish(
+        EntityRef {
+            tenant_id: TENANT,
+            entity_kind: bss_products_sdk::models::EntityKind::Sku,
+            entity_id: SKU,
+        },
+        InternalRevision::new(1),
+    );
+    let policy = MaterialityPolicy::default();
+    let evaluator = MaterialityEvaluator::new(Resolution::Resolved(&policy));
+    let act = MaterialAct::PolicyMutation;
+    submit_approval(
+        &conn,
+        scope,
+        NewApproval {
+            approval_id: ApprovalId::new(SEEDED_APPROVAL),
+            subject: &subject,
+            internal_revision: 1,
+            content_snapshot: "{}",
+            diff_basis: None,
+            act: &act,
+            evaluator,
+            finance_material: false,
+            approver_count: 2,
+            submitter: ACTOR,
+            author_override_ack: None,
+            override_conditions: Vec::new(),
+        },
+        now,
+    )
+    .await
+    .expect("submit");
+    approval::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(approval::Column::State, Expr::value("satisfied".to_owned()))
+        .filter(
+            Condition::all()
+                .add(approval::Column::TenantId.eq(TENANT))
+                .add(approval::Column::ApprovalId.eq(SEEDED_APPROVAL)),
+        )
+        .exec(&conn)
+        .await
+        .expect("satisfy");
+    consume_approval(&conn, scope, TENANT, ApprovalId::new(SEEDED_APPROVAL), now)
+        .await
+        .expect("consume");
+
+    insert_scheduled_transition(
+        &conn,
+        scope,
+        &NewScheduledTransition {
+            transition_id: SEEDED_TRANSITION,
+            tenant_id: TENANT,
+            entity_kind: "sku".to_owned(),
+            entity_id: SKU,
+            kind: "publish".to_owned(),
+            at: now - chrono::Duration::hours(1),
+            approval_ref: SEEDED_APPROVAL,
+            retirement_reason: None,
+            now,
+        },
+    )
+    .await
+    .expect("insert the pin");
+}
+
 /// A real consumed approval exists in B's store. The runner must drive the
 /// ordinary Foundation publish door — not mark `applied` without a publish,
 /// and not invent consume-at-schedule.
@@ -153,136 +306,7 @@ async fn a_seeded_consumed_approval_drives_the_foundation_publish_door() {
     let harness = harness().await;
     let scope = AccessScope::for_tenant(TENANT);
     let now = Utc.with_ymd_and_hms(2026, 9, 4, 12, 0, 0).unwrap();
-    {
-        let conn = harness.db.conn().expect("scoped connection");
-        insert_product(
-            &conn,
-            &scope,
-            NewProduct {
-                product_id: PRODUCT,
-                tenant_id: TENANT,
-                brand_id: BRAND,
-                name: "Fibre 500".to_owned(),
-                name_normalized: "fibre 500".to_owned(),
-                product_code: Some("FIBRE-500".to_owned()),
-                region_scope: String::new(),
-                brand_scope: String::new(),
-                created_by: "principal:author-1".to_owned(),
-                created_at: now,
-                cloned_from: None,
-                cloned_from_version: None,
-            },
-        )
-        .await
-        .expect("insert the parent");
-        // Walk the admitted `draft → published` edge without a version freeze:
-        // the SKU door only asks that the parent *state* is published.
-        product::Entity::update_many()
-            .secure()
-            .scope_with(&scope)
-            .col_expr(product::Column::LifecycleState, Expr::value("published"))
-            .col_expr(product::Column::InternalRevision, Expr::value(2_i64))
-            .col_expr(product::Column::UpdatedAt, Expr::value(now))
-            .filter(
-                Condition::all()
-                    .add(product::Column::TenantId.eq(TENANT))
-                    .add(product::Column::ProductId.eq(PRODUCT)),
-            )
-            .exec(&conn)
-            .await
-            .expect("the floor admits draft -> published");
-        insert_sku(
-            &conn,
-            &scope,
-            NewSku {
-                sku_id: SKU,
-                tenant_id: TENANT,
-                product_id: PRODUCT,
-                sku_code: "FIBRE-500-1".to_owned(),
-                region_scope: String::new(),
-                brand_scope: String::new(),
-                created_by: "principal:author-1".to_owned(),
-                created_at: now,
-                cloned_from: None,
-                cloned_from_version: None,
-                sku_type: "product".to_owned(),
-                sellable: true,
-                plan_tier: "standard".to_owned(),
-                tax_category_ref: Some("TC-STD".to_owned()),
-                gl_code_ref: Some("GL-4000".to_owned()),
-                metering_unit: None,
-                usage_type_ref: None,
-            },
-        )
-        .await
-        .expect("insert the draft SKU");
-
-        let subject = GateSubject::entity_publish(
-            EntityRef {
-                tenant_id: TENANT,
-                entity_kind: bss_products_sdk::models::EntityKind::Sku,
-                entity_id: SKU,
-            },
-            InternalRevision::new(1),
-        );
-        let policy = MaterialityPolicy::default();
-        let evaluator = MaterialityEvaluator::new(Resolution::Resolved(&policy));
-        let act = MaterialAct::PolicyMutation;
-        submit_approval(
-            &conn,
-            &scope,
-            NewApproval {
-                approval_id: ApprovalId::new(SEEDED_APPROVAL),
-                subject: &subject,
-                internal_revision: 1,
-                content_snapshot: "{}",
-                diff_basis: None,
-                act: &act,
-                evaluator,
-                finance_material: false,
-                approver_count: 2,
-                submitter: ACTOR,
-                author_override_ack: None,
-                override_conditions: Vec::new(),
-            },
-            now,
-        )
-        .await
-        .expect("submit");
-        approval::Entity::update_many()
-            .secure()
-            .scope_with(&scope)
-            .col_expr(approval::Column::State, Expr::value("satisfied".to_owned()))
-            .filter(
-                Condition::all()
-                    .add(approval::Column::TenantId.eq(TENANT))
-                    .add(approval::Column::ApprovalId.eq(SEEDED_APPROVAL)),
-            )
-            .exec(&conn)
-            .await
-            .expect("satisfy");
-        consume_approval(&conn, &scope, TENANT, ApprovalId::new(SEEDED_APPROVAL), now)
-            .await
-            .expect("consume");
-
-        insert_scheduled_transition(
-            &conn,
-            &scope,
-            &NewScheduledTransition {
-                transition_id: SEEDED_TRANSITION,
-                tenant_id: TENANT,
-                entity_kind: "sku".to_owned(),
-                entity_id: SKU,
-                kind: "publish".to_owned(),
-                at: now - chrono::Duration::hours(1),
-                approval_ref: SEEDED_APPROVAL,
-                retirement_reason: None,
-                now,
-            },
-        )
-        .await
-        .expect("insert the pin");
-    }
+    seed_scheduled_publish(&harness, &scope, now, None).await;
 
     let ctx = context(&harness);
     sweep(&ctx, ACTOR, now, &CancellationToken::new())
@@ -307,6 +331,95 @@ async fn a_seeded_consumed_approval_drives_the_foundation_publish_door() {
         sku.lifecycle_state,
         bss_products_sdk::models::LifecycleState::Published,
         "the runner drives the Foundation publish door; Applied without a publish is a privileged path"
+    );
+}
+
+/// **`USAGE_TYPE_UNAVAILABLE` on the scheduled lane leaves the transition
+/// `deferred`, not `failed`, and its pinned approval survives** (`03` §6;
+/// P-D-157). The runner resolves a usage SKU's ref before its publish, as
+/// the REST door does: a collector that does not answer defers the row and
+/// publishes nothing; once it answers, the next sweep applies the same pin.
+#[tokio::test]
+async fn a_usage_skus_scheduled_publish_defers_while_the_collector_is_unavailable_and_applies_once_it_answers()
+ {
+    let harness = harness().await;
+    let scope = AccessScope::for_tenant(TENANT);
+    let now = Utc.with_ymd_and_hms(2026, 9, 4, 12, 0, 0).unwrap();
+    seed_scheduled_publish(&harness, &scope, now, Some(("gib_month", "usage:storage"))).await;
+
+    let unavailable = Arc::new(crate::test_support::StubUsageTypes::always(
+        crate::domain::recognized::UsageTypeAnswer::Unavailable,
+    ));
+    let mut ctx = context(&harness);
+    ctx.usage_type_resolver =
+        Arc::clone(&unavailable) as Arc<dyn crate::infra::usage_types::UsageTypeResolver>;
+    sweep(&ctx, ACTOR, now, &CancellationToken::new())
+        .await
+        .expect("sweep");
+    assert_eq!(
+        unavailable.asked.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the lane asked the collector once"
+    );
+    {
+        let conn = ctx.db.conn().expect("reopen");
+        let row = find_scheduled_transition(&conn, &scope, TENANT, SEEDED_TRANSITION)
+            .await
+            .expect("find")
+            .expect("row");
+        assert_eq!(
+            row.state, "deferred",
+            "a transient dependency defers, never fails: {:?}",
+            row.outcome_reason
+        );
+        assert!(
+            row.outcome_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("USAGE_TYPE_UNAVAILABLE")),
+            "the deferral names the collector's silence: {:?}",
+            row.outcome_reason
+        );
+        let sku = find_sku(&conn, &scope, TENANT, SKU)
+            .await
+            .expect("find sku")
+            .expect("sku");
+        assert_eq!(
+            sku.lifecycle_state,
+            bss_products_sdk::models::LifecycleState::Draft,
+            "nothing published under an unresolved ref"
+        );
+        let pinned = crate::infra::storage::repo::read_approval(
+            &conn,
+            &scope,
+            TENANT,
+            ApprovalId::new(SEEDED_APPROVAL),
+        )
+        .await
+        .expect("read")
+        .expect("the pinned approval");
+        assert_eq!(pinned.state, "consumed", "the pin survives the deferral");
+    }
+
+    // The collector answers on the next sweep: the same pin applies.
+    let later = now + chrono::Duration::hours(2);
+    let ctx = context(&harness);
+    sweep(&ctx, ACTOR, later, &CancellationToken::new())
+        .await
+        .expect("second sweep");
+    let conn = ctx.db.conn().expect("reopen");
+    let row = find_scheduled_transition(&conn, &scope, TENANT, SEEDED_TRANSITION)
+        .await
+        .expect("find")
+        .expect("row");
+    assert_eq!(row.state, "applied", "{:?}", row.outcome_reason);
+    let sku = find_sku(&conn, &scope, TENANT, SKU)
+        .await
+        .expect("find sku")
+        .expect("sku");
+    assert_eq!(
+        sku.lifecycle_state,
+        bss_products_sdk::models::LifecycleState::Published,
+        "the deferred row publishes once the collector answers"
     );
 }
 

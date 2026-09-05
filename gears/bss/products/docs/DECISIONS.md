@@ -1569,6 +1569,110 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-157 — Criteria wave B: the scheduled lane resolves the usage type, a deferral releases its claim, and 45 criteria tick
+
+- **Date**: 2026-09-05 (the lead, group 15 of the follow-on plan)
+- **The scheduled lane resolves `usageTypeRef`.** P-D-146 measured that the activation runner
+  entered `run_publish` without the pre-transaction resolve the REST door performs, so a usage
+  SKU's scheduled publish froze a ref nobody had resolved and `USAGE_TYPE_UNAVAILABLE` could not
+  reach the `deferred` set `design/03` §4 routes it to. The runner now carries the same resolver
+  the door asks (`ActivationContext::usage_type_resolver`, from the boot state) and judges the ref
+  under the **gear's system principal** — the broker producer lane's shape — before the publish;
+  `Unavailable` defers the row, `Unresolved` fails it, a SKU with no ref never calls the collector.
+  *Counter-argument:* keep the lane unresolved until the runner has a service credential, since a
+  token-forwarding collector client answers `Unavailable` to a caller-less context and every
+  scheduled usage publish would then defer; rejected — that is P-D-131's fail-closed reading
+  applied, and publishing under a ref nobody resolved is the defect, not the deferral. **Owner
+  question, recommendation attached:** the collector client's identity on the scheduled lane. *Recommend* the
+  gear's service credential on the `ClientHub` client (the hub's own identity, not a forwarded
+  bearer), which makes the system context sufficient; the counter-argument is a per-tenant
+  service token, which the platform's PDP does not mint today.
+- **A deferral releases its lane claim.** The probe that drove a usage SKU through the lane found
+  the second defect: the runner recorded an idempotency answer for **every** finish, so the sweep
+  after a deferral replayed the "deferred" answer as `Applied` and marked the row applied with the
+  SKU still `draft`. A held run consumed nothing: `repo::release_idempotency_claim` deletes the
+  `claimed` row and the next sweep claims `(lane, transition)` afresh; terminal finishes record as
+  before, so the crash-safety replay (door committed, finish not persisted) is unchanged.
+- **Taxonomy-attributes, 24 of 36 ticked.** Cycle → `a_reparent_that_closes_a_cycle_is_refused`;
+  the re-parent race and its lock → `postgres_taxonomy_race`; the name on create/rename/re-parent →
+  `every_mutation_rechecks_the_name_including_the_reparent`; the first write's global coordinate →
+  `the_first_write_of_a_definition_needs_its_global_coordinate`; `GovernedLiveOp` consumed by `03` →
+  `a_stale_expected_state_is_refused_stale_live_op` on the one envelope type; `CATEGORY_REFERENCED`
+  and the discarded link → `an_active_child_blocks_the_retire_and_a_retired_child_does_not`,
+  `a_discarded_draft_holding_a_link_does_not_block_the_retire`; the delete →
+  `only_a_retired_category_can_be_deleted`, `a_delete_is_refused_by_any_link_row_and_a_retire_is_not`;
+  the primary at publish → `a_publish_needs_a_primary_category_and_a_draft_does_not`;
+  `CATEGORY_RETIRED` → `a_retired_category_refuses_a_new_assignment`,
+  `the_assignment_rules_refuse_through_the_door`; the removal against a live value →
+  `a_non_terminal_sku_carrying_a_value_blocks_the_removal`,
+  `a_terminal_heads_frozen_value_does_not_block_the_definitions_removal`; the tombstone →
+  `a_definition_is_removed_by_a_flip_and_never_deleted`,
+  `removed_is_reached_by_a_flip_and_the_tombstone_still_reads`; the seed →
+  `a_seeded_definition_deprecates_and_never_removes`; `removed → active` →
+  `the_definition_walks_its_three_flips` (the relist edge); type mismatch →
+  `each_known_value_shape_refuses_and_admits`, `the_value_rules_refuse_through_the_door`; scope →
+  `a_coordinate_outside_either_scope_is_refused`; `DEFAULT_LOCALE_MISSING` →
+  `a_publish_needs_the_global_value_for_every_localized_definition`; the brand-B reader →
+  `a_brand_b_reader_never_reaches_brand_as_default_and_falls_to_global`; the token →
+  `a_stale_category_token_is_refused_with_this_slices_own_code`,
+  `a_non_door_row_write_does_not_advance_the_act_counter`; metadata `PATCH`, the cap, the ceilings
+  and the terminal entity → `the_metadata_merge_sets_leaves_and_removes_per_key`,
+  `a_map_at_the_key_cap_can_still_be_reduced`, `the_byte_ceilings_refuse_and_say_which`,
+  `a_terminal_entity_refuses_a_metadata_write`; the snapshot checksum →
+  `a_metadata_mutation_after_a_snapshot_does_not_move_its_checksum`; the eight events →
+  `every_tree_act_announces_itself_once`, `a_definition_announces_every_applied_change`,
+  `a_display_write_announces_on_its_own_id_with_the_token_it_spent`,
+  `a_metadata_merge_announces_on_the_owning_entity`, `a_refused_act_announces_nothing`,
+  `the_no_event_declaration_names_the_types_that_do_announce`; `STALE_LIVE_OP` →
+  `a_moved_world_is_stale_live_op_and_names_both_states`, `a_stale_op_never_runs_its_mutation`,
+  `an_envelope_pinned_to_the_wrong_state_is_stale`.
+- **Taxonomy-attributes, 12 open and why.** The gate-queueing sweep of all five ops (a source
+  census probe exists, not a per-op store assertion); the limit lowered after the fact; the NFKC
+  cross-engine name (G19); the clean-text control at every PII door and the enumerated reason
+  fields (P-D-152's standing answer); the writer-lock tier rule; the primary-index race (G19);
+  `DEFINITION_IN_USE` at the door; the tenant default-locale change against a published entity;
+  the sixteen-codes-one-rule census; the per-code control sweep; the `#[ignore]` rule.
+- **Sku-classification, 12 of 19 ticked.** `sellable` → the create view's default and the SDK
+  binding's flip (`the_authoring_binding_runs_the_doors_with_both_preconditions`); the unit codes →
+  `a_new_declaration_is_judged_against_the_set`, `a_first_publish_rejudges_the_drafts_unit`; the
+  three resolver answers → `an_unresolvable_usage_type_refuses_the_publish_through_the_door`,
+  `an_unavailable_collector_refuses_503_claims_no_key_and_the_retry_publishes_once`; the scheduled
+  lane → the **new** runner probe; the removed member → the same set probe; the registry and the
+  correction door → `bucket_ii_is_the_meter_pair_and_bucket_iv_is_empty`,
+  `the_pair_is_refused_at_the_save_door_after_first_publish`,
+  `the_correction_rides_its_own_record_and_only_the_two_bucket_ii_fields_can_be_spelled`; the
+  oracle → `the_recognized_set_oracle_pins_its_roster_and_can_fail`,
+  `the_recognized_set_roster_matches_on_postgres`; the deprecated tax code →
+  `an_unknown_or_deprecated_accounting_code_is_refused_and_a_known_one_is_admitted`; the three
+  controls → `half_a_declaration_is_refused_and_the_whole_pair_lands`,
+  `a_new_declaration_is_judged_against_the_set`,
+  `a_publish_freezes_the_resolved_binding_beside_the_version_row`; the bucket-ii build's three
+  reddened tests → their successors in `bucket_tests`. **Open**: the "free" SKU path (twice — the
+  gear has no price, so the criterion has no operand), the meter-pair `CHECK` with the app check
+  bypassed, the once-per-distinct-ref count (a SKU carries one ref), the blanket controls line, the
+  `CorruptRow` sweep, the `#[ignore]` rule.
+- **Reference-signal, 9 of 20 ticked.** `no_producers` in the verdict →
+  `the_predicate_answers_four_verdicts`; the idempotent replay →
+  `a_post_lands_and_an_identical_repost_replays`; `WATERMARK_CONFLICT`, `WATERMARK_REGRESSION` →
+  `the_timestamp_verdicts_are_told_apart`; `WATERMARK_FUTURE` → `a_future_dated_post_is_refused`;
+  `PRODUCER_UNREGISTERED` → `an_unregistered_poster_is_refused` with every registered post as the
+  control; the two shipped-seam controls → `bucket_ii_is_the_meter_pair_and_bucket_iv_is_empty`
+  (the named test's successor, reddened by `03`'s columns exactly as the criterion predicted) and
+  `the_pair_is_refused_at_the_save_door_after_first_publish`. **Open**: the six-case fixture (four
+  verdicts are probed), the fresh-zero control sweep, the gauge series, the atomic set replacement
+  (G19), the regression's "unmoved" and the future post's alert and "unmoved", the chain probe, the
+  commit-time re-check, the lane's-own-predicate pair, the onboarding probe's historical half,
+  `CORRECTION_APPROVAL_OPEN`'s after-close control.
+- **Lifecycle's oracle criterion ticks late**: "each with a perturbation case" is per table, and
+  `the_lifecycle_store_oracle_pins_both_rosters_and_can_fail` carries it for both; P-D-156 read it
+  per engine and left it open. Corrected here.
+- **Propagated**: `features/taxonomy-attributes.md` §6, `features/sku-classification.md` §5 (the
+  scheduled-lane sentence) and §6, `features/reference-signal.md` §6, `features/lifecycle.md` §6.
+- **Trace**: `activation_runner::ActivationContext::usage_type_resolver`,
+  `activation_runner::resolve_usage_type_for_scheduled_publish`,
+  `activation_runner::system_security_context`, `repo::release_idempotency_claim`,
+  `activation_runner_tests::a_usage_skus_scheduled_publish_defers_while_the_collector_is_unavailable_and_applies_once_it_answers`.
+
 #### P-D-156 — Criteria wave A: foundation and lifecycle ticked clause by clause, four probes written, the rest named
 
 - **Date**: 2026-09-05 (the lead, group 14 of the follow-on plan)

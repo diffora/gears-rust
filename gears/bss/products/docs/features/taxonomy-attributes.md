@@ -1624,12 +1624,15 @@ fail on the second assertion while passing the first.
 
 ## 6. Acceptance Criteria
 
+*Ticks measured clause by clause at **P-D-157** (2026-09-05); the criterion-to-probe map is in that
+entry. A box left open names a clause no probe asserts yet.*
+
 - [ ] All five taxonomy ops queue through the governance gate, and none of them mutates the store
       before approval
-- [ ] A re-parent whose new ancestor chain contains the node is refused `TAXONOMY_CYCLE`
-- [ ] Two concurrent re-parents that would jointly close a cycle produce exactly one success, and
+- [x] A re-parent whose new ancestor chain contains the node is refused `TAXONOMY_CYCLE`
+- [x] Two concurrent re-parents that would jointly close a cycle produce exactly one success, and
       the probe goes red when the writer lock is removed
-- [ ] A category name colliding within its parent is refused `DUPLICATE_CATEGORY_NAME` on create,
+- [x] A category name colliding within its parent is refused `DUPLICATE_CATEGORY_NAME` on create,
       on rename **and** on re-parent
 - [ ] A create or re-parent past the configured depth or children limit is refused
       `TAXONOMY_LIMIT` naming the limit; lowering the limit afterwards leaves existing structure
@@ -1639,49 +1642,49 @@ fail on the second assertion while passing the first.
 - [ ] `name_normalized` is byte-identical across SQLite and Postgres for a case-varied,
       whitespace-varied, NFKC-decomposable category name, and the schema-oracle golden has a
       perturbation case proving it can fail
-- [ ] A category display-value write demands the global default-locale value at the first write
+- [x] A category display-value write demands the global default-locale value at the first write
       for that definition, and succeeds once it is present
 - [ ] Clean operator free text is **admitted** at every door the PII hook guards, and a curated
       allow-list entry for a legitimately person-named product is admitted
-- [ ] `GovernedLiveOp` is consumed by `03-sku-classification` without redefinition
+- [x] `GovernedLiveOp` is consumed by `03-sku-classification` without redefinition
 - [ ] The writer-lock probe runs on the Postgres tier, which is named, and is not `#[ignore]`d
       without one
-- [ ] A retire is refused `CATEGORY_REFERENCED` while a non-terminal Product references the node,
+- [x] A retire is refused `CATEGORY_REFERENCED` while a non-terminal Product references the node,
       and **succeeds** while only a discarded draft holds a link
-- [ ] A delete is admitted only on a retired, childless, unreferenced node
-- [ ] A Product draft with no primary category saves; publishing it is refused
+- [x] A delete is admitted only on a retired, childless, unreferenced node
+- [x] A Product draft with no primary category saves; publishing it is refused
       `PRIMARY_CATEGORY_REQUIRED`, and succeeds once a primary is assigned
-- [ ] Assigning a retired category is refused `CATEGORY_RETIRED`
+- [x] Assigning a retired category is refused `CATEGORY_RETIRED`
 - [ ] Two concurrent inserts racing the at-most-one-primary index produce exactly one row
 - [ ] A type change on a definition with live values is refused `DEFINITION_IN_USE`
-- [ ] A definition removal is refused while a non-terminal head carries a value, and **admitted**
+- [x] A definition removal is refused while a non-terminal head carries a value, and **admitted**
       while only a frozen version carries one
-- [ ] A removed definition is a tombstone row, not a deletion, and its values still resolve on a
+- [x] A removed definition is a tombstone row, not a deletion, and its values still resolve on a
       terminal head
-- [ ] A registry-seeded definition can be deprecated and cannot be removed
-- [ ] `removed → active` re-lists the same `definition_id`
-- [ ] A value whose type does not match its definition is refused `ATTRIBUTE_TYPE_MISMATCH`
-- [ ] Coordinates outside the definition's or the entity's scope are refused
+- [x] A registry-seeded definition can be deprecated and cannot be removed
+- [x] `removed → active` re-lists the same `definition_id`
+- [x] A value whose type does not match its definition is refused `ATTRIBUTE_TYPE_MISMATCH`
+- [x] Coordinates outside the definition's or the entity's scope are refused
       `ATTRIBUTE_SCOPE_VIOLATION`
-- [ ] Publishing without a global default-locale value for a localized definition is refused
+- [x] Publishing without a global default-locale value for a localized definition is refused
       `DEFAULT_LOCALE_MISSING`; the same content saves as a draft
-- [ ] A brand-B reader resolves a value present only at `(default-locale, brand A)` through the
+- [x] A brand-B reader resolves a value present only at `(default-locale, brand A)` through the
       global coordinate
 - [ ] Changing the tenant default locale does not change the resolution of an already-published
       entity
-- [ ] A category display write with a stale `mutation_seq` is refused `STALE_CATEGORY_TOKEN`, and
+- [x] A category display write with a stale `mutation_seq` is refused `STALE_CATEGORY_TOKEN`, and
       `mutation_seq` does not advance on a non-operator write
 - [ ] Every enumerated operator free-text reason field is covered by the PII hook, and prohibited
       content is refused `CONTENT_PII_BLOCKED` at the door
-- [ ] A metadata `PATCH` leaves absent keys untouched, and a `null` value removes its key
-- [ ] A metadata map at the configured cap can be reduced by a subsequent `PATCH`
-- [ ] Exceeding a metadata cap is refused `METADATA_LIMIT`; a metadata write to a terminal entity
+- [x] A metadata `PATCH` leaves absent keys untouched, and a `null` value removes its key
+- [x] A metadata map at the configured cap can be reduced by a subsequent `PATCH`
+- [x] Exceeding a metadata cap is refused `METADATA_LIMIT`; a metadata write to a terminal entity
       is refused `ENTITY_TERMINAL`
-- [ ] Mutating the metadata map after a `CatalogVersion` snapshot leaves the old snapshot's
+- [x] Mutating the metadata map after a `CatalogVersion` snapshot leaves the old snapshot's
       checksum unmoved
 - [x] The frozen rendering of the category-assignment and attribute-value collections is
       byte-identical across SQLite and Postgres under a pinned golden vector *(P-D-153: the scheme-3 vector on both engines)*
-- [ ] Each of the eight named events is emitted by its door in the mutating transaction, and a
+- [x] Each of the eight named events is emitted by its door in the mutating transaction, and a
       Product or SKU attribute-value write emits none of its own
 - [ ] Each of the sixteen codes is raised by exactly one rule and carries its declared problem
       status
@@ -1691,7 +1694,7 @@ fail on the second assertion while passing the first.
       `STALE_LIVE_OP`, `CATEGORY_RETIRED`, `DEFINITION_IN_USE`, `STALE_CATEGORY_TOKEN`,
       `METADATA_LIMIT` and `DEFAULT_LOCALE_MISSING` had none, and a blanket criterion is ticked by
       inspection rather than by a test
-- [ ] An applied `GovernedLiveOp` against a moved world is refused `STALE_LIVE_OP`, and no partial
+- [x] An applied `GovernedLiveOp` against a moved world is refused `STALE_LIVE_OP`, and no partial
       taxonomy mutation is observable
 - [ ] No `#[ignore]`d test exists without a CI tier that runs it
 

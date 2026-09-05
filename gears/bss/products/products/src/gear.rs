@@ -357,6 +357,7 @@ async fn activation_tick(rt: &ProductsRuntime, cancel: &tokio_util::sync::Cancel
         sink: rt.sdk_state.sink.clone(),
         idempotency_retention_hours: rt.sdk_state.idempotency_retention_hours,
         reference_freshness: rt.reference_freshness,
+        usage_type_resolver: std::sync::Arc::clone(&rt.sdk_state.usage_type_resolver),
     };
     if let Err(error) =
         crate::infra::activation_runner::sweep(&ctx, rt.system_actor_ref, now, cancel).await

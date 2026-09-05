@@ -54,6 +54,27 @@ pub(crate) struct ActivationContext {
     /// `ProductsRuntime::reference_freshness` (P-D-137; it read
     /// `ProductsConfig::default()` until then).
     pub(crate) reference_freshness: std::time::Duration,
+    /// The same resolver the REST publish door asks (P-D-141), so a usage
+    /// SKU's scheduled publish resolves its `usageTypeRef` too (P-D-157):
+    /// `Unavailable` joins the `deferred` set, `Unresolved` fails the run.
+    pub(crate) usage_type_resolver:
+        std::sync::Arc<dyn crate::infra::usage_types::UsageTypeResolver>,
+}
+
+/// The context the scheduled lane resolves a `usageTypeRef` under: the
+/// gear's own system principal in the row's tenant, the shape the broker
+/// producer lane already uses. It carries no caller token, so a collector
+/// client that only forwards a bearer answers `Unavailable` here — which
+/// **defers** the row (P-D-131's fail-closed reading) rather than publishing
+/// a ref nobody resolved.
+fn system_security_context(tenant_id: Uuid) -> toolkit_security::SecurityContext {
+    #[allow(clippy::expect_used)]
+    toolkit_security::SecurityContext::builder()
+        .subject_id(crate::gear::system_actor_ref())
+        .subject_type("bss-products.system")
+        .subject_tenant_id(tenant_id)
+        .build()
+        .expect("both required builder fields are set unconditionally above")
 }
 
 /// One tick: discover due rows, claim or reclaim, verify the pin, finish.
@@ -470,6 +491,21 @@ async fn pin_finish(
         },
     )
     .await?;
+    if matches!(finish, RunFinish::Deferred { .. }) {
+        // A held run consumed nothing: the claim goes with it, so the next
+        // sweep claims the same `(lane, transition)` afresh instead of
+        // replaying a "deferred" answer as applied (P-D-157 — the probe that
+        // drove a usage SKU through the lane found exactly that replay).
+        repo::release_idempotency_claim(
+            runner,
+            scope,
+            tenant_id,
+            &claim.endpoint,
+            &claim.client_key,
+        )
+        .await?;
+        return Ok(finish);
+    }
     record_idempotency_answer(
         runner,
         scope,
@@ -510,15 +546,38 @@ async fn drive_door(
                 now: drive.now,
                 claim: None,
             };
-            // No binding snapshot from this lane: the pre-transaction
-            // resolve is the REST door's (see `publish_refusal_is_transient`).
+            // The pre-transaction resolve, as the REST door does it (P-D-157):
+            // a usage SKU's ref is judged before the publish runs, under the
+            // gear's system principal; `Unavailable` defers the row through
+            // `publish_refusal_is_transient`, `Unresolved` fails it.
+            let binding = match resolve_usage_type_for_scheduled_publish(
+                runner,
+                scope,
+                tenant_id,
+                ctx,
+                drive.row.entity_id,
+            )
+            .await
+            {
+                Ok(binding) => binding,
+                Err(refused) => {
+                    return Ok(map_sku_door(
+                        Err(skus::HeadActError::Refused(refused)),
+                        drive.attempt,
+                        ctx.budget,
+                    ));
+                }
+            };
             let outcome = skus::run_publish(
                 runner,
                 &inputs,
                 drive.gate,
                 GateMode::PreAuthorized(ApprovalId::new(drive.row.approval_ref)),
                 &ctx.sink,
-                skus::PublishOperands::default(),
+                skus::PublishOperands {
+                    binding: binding.as_ref(),
+                    ..skus::PublishOperands::default()
+                },
             )
             .await;
             Ok(map_sku_door(outcome, drive.attempt, ctx.budget))
@@ -790,6 +849,35 @@ async fn announce_retirement_effective(
     .map_err(|e| RepoError::Db(format!("enqueue retirement-effective: {e}")))
 }
 
+/// Resolve a scheduled publish's `usageTypeRef` the way the REST door does
+/// before its transaction (`resolve_usage_type_before_publish`): a SKU with no
+/// ref, or no head, resolves to nothing and never calls the collector.
+///
+/// # Errors
+///
+/// The door's own refusal — `USAGE_TYPE_UNRESOLVED` or `USAGE_TYPE_UNAVAILABLE`
+/// — for [`map_sku_door`] to classify.
+async fn resolve_usage_type_for_scheduled_publish(
+    runner: &(impl toolkit_db::secure::DBRunner + Sync),
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    ctx: &ActivationContext,
+    sku_id: Uuid,
+) -> Result<Option<crate::domain::recognized::UsageTypeBinding>, crate::domain::error::DomainError>
+{
+    let Ok(Some(head)) = repo::find_sku(runner, scope, tenant_id, sku_id).await else {
+        return Ok(None);
+    };
+    let Some(usage_type_ref) = head.usage_type_ref.as_deref() else {
+        return Ok(None);
+    };
+    let answer = ctx
+        .usage_type_resolver
+        .resolve(&system_security_context(tenant_id), usage_type_ref)
+        .await;
+    crate::domain::recognized::judge_usage_type(answer, usage_type_ref).map(Some)
+}
+
 fn map_sku_door(
     outcome: Result<MutationOutcome, HeadActError>,
     attempt: i32,
@@ -826,13 +914,12 @@ fn map_sku_door(
 /// attempt budget, `DeferralPopulation::TransientDependency`. Every other
 /// door code is a decision about the SKU and fails the run.
 ///
-/// **Measured, not hidden (P-D-146):** this lane does not resolve
-/// `usageTypeRef` today — `run_publish` is entered directly, and the
-/// pre-transaction resolve lives in the REST door, which has the caller's
-/// `SecurityContext` and this loop does not. Until the runner carries a
-/// service context and the resolver, the code cannot reach this arm from
-/// this lane; the arm is here so that when it does, it lands in the right
-/// set. Routed as `03` §7's open item, owner `04`/`07`.
+/// **Reachable since P-D-157.** P-D-146 measured that this lane entered
+/// `run_publish` without resolving `usageTypeRef`, the resolve living in the
+/// REST door with the caller's `SecurityContext`. The runner now carries the
+/// resolver (`ActivationContext::usage_type_resolver`) and resolves under the
+/// gear's system principal (`resolve_usage_type_for_scheduled_publish`), so a
+/// collector that does not answer lands the row here, in the `deferred` set.
 ///
 /// @cpt-dod:cpt-cf-bss-products-dod-classification-errors:p1
 pub(crate) fn publish_refusal_is_transient(code: &str) -> bool {

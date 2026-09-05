@@ -78,7 +78,8 @@ use sea_orm::sea_query::{Expr, ExprTrait, OnConflict, SimpleExpr};
 use sea_orm::{ColumnTrait, Condition, DbErr, EntityTrait, FromQueryResult};
 use serde_json::Value as JsonValue;
 use toolkit_db::secure::{
-    AccessScope, DBRunner, ScopeError, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
+    AccessScope, DBRunner, ScopeError, SecureDeleteExt, SecureEntityExt, SecureInsertExt,
+    SecureUpdateExt,
 };
 use uuid::Uuid;
 
@@ -1736,6 +1737,39 @@ pub async fn answer_idempotency_key(
         return Ok(IdempotencyAnswer::NotHeld);
     }
     Ok(IdempotencyAnswer::Recorded)
+}
+
+/// Release a `claimed` key that will not be answered — the scheduled lane's
+/// deferral (P-D-157): a held run consumed nothing, so its claim row goes,
+/// and the next sweep claims the same `(lane, transition)` afresh. Only a
+/// `claimed` row matches; an `answered` one is a terminal record and stays.
+///
+/// # Errors
+///
+/// [`RepoError`] on a driver failure.
+pub async fn release_idempotency_claim(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    endpoint: &str,
+    client_key: &str,
+) -> Result<u64, RepoError> {
+    let result = idempotency::Entity::delete_many()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            idempotency_key_of(tenant_id, endpoint, client_key)
+                .add(idempotency::Column::State.eq("claimed")),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| {
+            driver_failure(
+                format!("release idempotency claim {tenant_id}/{endpoint}/{client_key}"),
+                e,
+            )
+        })?;
+    Ok(result.rows_affected)
 }
 
 /// One `tenant_id` from a DISTINCT discovery projection — the sweeps'
