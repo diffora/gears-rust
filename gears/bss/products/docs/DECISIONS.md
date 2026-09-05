@@ -1569,6 +1569,51 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-155 — Scope claims take the roles' lane, the decide door judges them, and the signal consumer is the clear
+
+- **Date**: 2026-09-05 (the lead, group 13 of the follow-on plan; `05`'s two open DoDs and its
+  criteria)
+- **Scope claims arrive as `token_scopes` entries, as the roles do (P-D-134 row 25).** An entry
+  `region:<code>` or `brand:<code>` restricts that dimension to the codes named; **no entry on a
+  dimension is the unrestricted claim set** — `01` P-D-39's boundary, where the empty set means
+  unrestricted. *Counter-argument:* read a missing claim as "no claim" and refuse, the way a
+  missing role claim refuses `APPROVER_ROLE_REQUIRED`; rejected — a role is a requirement the
+  approver must hold, a scope claim is a restriction on where they may act, and `inst-gv-scope`'s
+  own first clause says an unrestricted claim set covers every subject. Until the platform's PDP
+  encodes a claim, every approver is tenant-wide and the rule admits; that is the rule applied, not
+  deleted. Routed to the platform-identity owner with the roles' shape.
+- **The decide door runs `approver_covers_subject`** before the ceremony and the transaction,
+  after the role check. The subject's scope is the entity head's two columns for an
+  `entity_publish` record and **tenant-wide** for every other kind — a policy, a live op, a batch or
+  a signal has no narrower scope than the tenant, so only an unrestricted claim set covers it
+  (clause 2). A record the store does not hold, or whose head is gone, is left to the transaction's
+  own refusal; a scope column that will not parse is a corrupt row (500), never an admission. The
+  refusal rides `refuse`: 403 `APPROVER_SCOPE_EXCEEDED`, one audit row, no decision row; the
+  ladder's denial carries no detail, so the dimension is the domain verdict's to name.
+- **`dod-system-signal` ticks by census of `06`'s build (P-D-148).** The signal consumer is the
+  composition-clear door — the record born `satisfied` under the signal's principal, audited, `N`
+  given no standing, consumed through the gate like any record; a dirty head (digest inequality or
+  an open publish approval) **holds** the clear at 202 and the activation runner re-applies it once
+  the head is clean. The dirty-head half had no probe; it has one.
+- **Two `§7` bullets close by measurement.** `NoMaterialityPolicyGate` has no production
+  constructor since P-D-144 (its sites are its definition and six suites' `GateHost::Given`
+  doubles), so the handover moment was that decision; `RecordingGate` is two test doubles and no
+  production shape. The criterion asking for a probe that the gear no longer runs the no-policy
+  host stays unticked: a census is not a probe.
+- **Ticks.** `05`: `dod-approver-scope`, `dod-system-signal` — **27 / 27**; §6: twenty-four
+  criteria, five of them on probes new here (the three scope probes, the dirty-head hold, the
+  descriptor-stability-and-silent-supersession probe that also covers "N edited", "evaluated once"
+  and "no broker event"). Nineteen stay unticked and say why: the role predicate at the gate, the
+  `PreAuthorized` request-shape assertion, the queue's non-material rendering, the three grant
+  refusals, the three-door PII control, the six-codes-one-rule census, the schema oracle, the
+  no-policy-host probe, the elevation's three mandatory fields, the alert channel and the platform
+  approval path (external), no raw principal, `N` from provisioning (external), the index probe
+  with the app check bypassed, the audit-reason sweep, the `#[ignore]` tier rule.
+- **Propagated**: `features/governance.md` (the two ticks, §6, §7 rows 25 and the two bullets).
+- **Trace**: `approvals::claims_from_token_scopes`, `approvals::refuse_out_of_scope_approver`,
+  `approvals::subject_scope_of`, `approvals_tests` (four probes), `skus_tests`
+  (`a_composition_clear_is_held_on_a_dirty_head_and_applies_once_it_is_published`).
+
 #### P-D-154 — The clone copies the collections and re-validates them at the door: one report, every code, the sixteen pairs
 
 - **Date**: 2026-09-05 (the lead, group 12 of the follow-on plan; pays the debt P-D-152 recorded

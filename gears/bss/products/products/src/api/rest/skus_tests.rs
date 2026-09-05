@@ -7889,6 +7889,105 @@ async fn a_composition_clear_lowers_the_flag_on_a_clean_head_and_replays_its_sig
     assert_eq!(cleared_events(&harness).await, 1);
 }
 
+/// `dod-system-signal`'s two head clauses, on the dirty-head half: an edit
+/// since the publish (no approval open) **defers** the clear — 202 `held`
+/// naming the dirty head, never a refusal — while the signal's record is
+/// already born `satisfied` under the signal's own principal, audited as a
+/// decision, with `N` given no standing; once the head publishes again the
+/// runner's re-evaluation applies the kept signal.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-system-signal:p1
+#[tokio::test]
+async fn a_composition_clear_is_held_on_a_dirty_head_and_applies_once_it_is_published() {
+    let harness = harness().await;
+    let (bundle_id, etag) = bundle_under_live_parent(&harness, "SKU-CLR-3").await;
+    seed_acknowledged_publish(&harness, bundle_id, &etag).await;
+    let published = post_publish(&harness, TENANT, bundle_id, Some(&etag)).await;
+    assert_eq!(published.status(), StatusCode::OK);
+    // The dirty edit: a value on the published head, which bumps the head
+    // past its frozen version.
+    seed_sku_definition(&harness, "displayName", "localized_string", "active").await;
+    let head = head_of_sku(&harness, bundle_id).await;
+    let etag = preconditions::etag(InternalRevision::new(head.internal_revision));
+    let saved = save_sku_at(
+        &harness,
+        bundle_id,
+        &etag,
+        &json!({ "attributes": [{ "key": "displayName", "value": "bundle one" }] }),
+    )
+    .await;
+    assert_eq!(saved.status(), StatusCode::OK, "the head goes dirty");
+
+    let signal = Uuid::now_v7();
+    let deferred = post_clear(&harness, bundle_id, signal).await;
+    assert_eq!(
+        deferred.status(),
+        StatusCode::ACCEPTED,
+        "deferred, never refused"
+    );
+    let view = body_json(deferred).await;
+    assert_eq!(view["outcome"], json!("held"));
+    assert!(
+        view["held_on"]
+            .as_str()
+            .is_some_and(|on| on.contains("DIRTY_HEAD")),
+        "the held answer names the dirty head: {view}"
+    );
+    assert!(head_of_sku(&harness, bundle_id).await.composition_pending);
+    assert_eq!(cleared_events(&harness).await, 0);
+    assert_eq!(
+        raw_i64(
+            &harness.dsn,
+            "SELECT COUNT(*) AS v FROM products_approval WHERE subject_kind = 'system_signal' \
+             AND state = 'satisfied'"
+        )
+        .await,
+        1,
+        "the signal's record is born satisfied and kept open while the head is dirty"
+    );
+    assert_eq!(
+        raw_i64(
+            &harness.dsn,
+            "SELECT COUNT(*) AS v FROM products_audit_log WHERE action = 'approval.system_signal'"
+        )
+        .await,
+        1,
+        "audited like any decision"
+    );
+
+    // The head publishes again and is clean; the kept signal applies.
+    let head = head_of_sku(&harness, bundle_id).await;
+    let etag = preconditions::etag(InternalRevision::new(head.internal_revision));
+    seed_acknowledged_publish(&harness, bundle_id, &etag).await;
+    let republished = post_publish(&harness, TENANT, bundle_id, Some(&etag)).await;
+    assert_eq!(
+        republished.status(),
+        StatusCode::OK,
+        "the head is clean again"
+    );
+    let sink = crate::infra::broker::EventSink::Interim(Arc::clone(&harness.outbox));
+    let outcome = crate::api::rest::skus::try_apply_composition_clear(
+        &harness.db,
+        &sink,
+        TENANT,
+        bundle_id,
+        signal,
+        Uuid::nil(),
+        crate::domain::canonical::write_instant(Utc::now()),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("the runner's re-evaluation runs"));
+    assert!(
+        matches!(
+            outcome,
+            crate::api::rest::skus::ClearOutcome::Cleared { .. }
+        ),
+        "the kept signal applies once the head is clean"
+    );
+    assert!(!head_of_sku(&harness, bundle_id).await.composition_pending);
+    assert_eq!(cleared_events(&harness).await, 1);
+}
+
 /// `dod-composition-clear`, the held half: a bundle with an open publish
 /// approval keeps its flag and the signal (202); once the approval closes the
 /// runner's re-evaluation applies the clear from the kept record.

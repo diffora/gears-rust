@@ -132,8 +132,16 @@ fn app_for(harness: &TestHarness, tenant: Uuid) -> Router {
 /// approvers needs two subjects, and `authed_ctx`'s fresh-`Uuid` shape cannot
 /// express a caller acting twice.
 fn ctx_with_roles(subject: Uuid, roles: &[ApproverRole]) -> SecurityContext {
+    ctx_with_claims(subject, roles, &[])
+}
+
+/// A context carrying the wildcard, the named roles **and** scope claims
+/// (`region:<code>` / `brand:<code>`, P-D-155) — no claim on a dimension is
+/// the unrestricted claim set.
+fn ctx_with_claims(subject: Uuid, roles: &[ApproverRole], claims: &[&str]) -> SecurityContext {
     let mut scopes = vec!["*".to_owned()];
     scopes.extend(roles.iter().map(|r| (*r).as_str().to_owned()));
+    scopes.extend(claims.iter().map(|c| (*c).to_owned()));
     SecurityContext::builder()
         .subject_id(subject)
         .subject_tenant_id(TENANT)
@@ -178,20 +186,31 @@ async fn body_of(response: axum::http::Response<Body>) -> JsonValue {
 /// Seed one `draft` Product head, so an `entity_publish` submission has a
 /// head to read its snapshot from.
 async fn seed_head(harness: &TestHarness) {
+    seed_scoped_head(harness, PRODUCT, "Fibre 500", "eu", "").await;
+}
+
+/// Seed a `draft` Product head with the two scope columns a case names.
+async fn seed_scoped_head(
+    harness: &TestHarness,
+    product_id: Uuid,
+    name: &str,
+    region_scope: &str,
+    brand_scope: &str,
+) {
     let conn = harness.db.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
     repo::insert_product(
         &conn,
         &scope,
         repo::NewProduct {
-            product_id: PRODUCT,
+            product_id,
             tenant_id: TENANT,
             brand_id: BRAND,
-            name: "Fibre 500".to_owned(),
-            name_normalized: "fibre 500".to_owned(),
-            product_code: Some("FIBRE-500".to_owned()),
-            region_scope: "eu".to_owned(),
-            brand_scope: String::new(),
+            name: name.to_owned(),
+            name_normalized: name.to_lowercase(),
+            product_code: Some(name.to_uppercase().replace(' ', "-")),
+            region_scope: region_scope.to_owned(),
+            brand_scope: brand_scope.to_owned(),
             created_by: "principal:author-1".to_owned(),
             created_at: crate::test_support::at(9),
             cloned_from: None,
@@ -219,9 +238,13 @@ async fn set_quorum(harness: &TestHarness, n: u32) {
 }
 
 fn submission_body() -> JsonValue {
+    submission_body_for(PRODUCT)
+}
+
+fn submission_body_for(product_id: Uuid) -> JsonValue {
     json!({
         "subject_kind": "entity_publish",
-        "subject_ref": format!("product/{PRODUCT}"),
+        "subject_ref": format!("product/{product_id}"),
         "finance_material": false,
     })
 }
@@ -502,12 +525,16 @@ async fn a_system_signal_cannot_be_submitted_over_rest() {
 }
 
 async fn submit(harness: &TestHarness, author: Uuid) -> Uuid {
+    submit_for(harness, author, PRODUCT).await
+}
+
+async fn submit_for(harness: &TestHarness, author: Uuid, product_id: Uuid) -> Uuid {
     let body = body_of(
         post(
             app_for(harness, TENANT),
             "/bss-products/v1/approvals",
             ctx_without_roles(author),
-            submission_body(),
+            submission_body_for(product_id),
         )
         .await,
     )
@@ -569,6 +596,261 @@ async fn a_catalog_admin_decides_and_the_count_moves() {
     );
     assert_eq!(body["counted"], 1);
     assert_eq!(body["required"], 1);
+}
+
+async fn decide_as(
+    harness: &TestHarness,
+    approval: Uuid,
+    ctx: SecurityContext,
+) -> axum::http::Response<Body> {
+    post(
+        app_for(harness, TENANT),
+        &format!("/bss-products/v1/approvals/{approval}/decisions"),
+        ctx,
+        json!({ "verdict": "approved" }),
+    )
+    .await
+}
+
+async fn count(harness: &TestHarness, sql: &str) -> i64 {
+    crate::test_support::raw_i64(&harness.dsn, sql).await
+}
+
+/// **An out-of-scope approver is refused `APPROVER_SCOPE_EXCEEDED` and
+/// audited; an in-scope one decides** (`dod-approver-scope`; P-D-155). The
+/// head is `eu`-scoped: a `region:us` approver meets 403, one audit row and
+/// no decision row; a `region:eu` approver is counted. The 403 carries the
+/// code and no detail — the ladder's denial shape — so the audit row and the
+/// absent decision row are what prove the refusal was the scope rule's.
+#[tokio::test]
+async fn an_out_of_scope_approver_is_refused_and_audited_and_an_in_scope_one_decides() {
+    let harness = harness().await;
+    seed_head(&harness).await;
+    set_quorum(&harness, 1).await;
+    let approval = submit(&harness, Uuid::from_u128(0x5a_a0)).await;
+    let refused = decide_as(
+        &harness,
+        approval,
+        ctx_with_claims(
+            Uuid::from_u128(0x5a_b1),
+            &[ApproverRole::CatalogAdmin],
+            &["region:us"],
+        ),
+    )
+    .await;
+    assert_eq!(refused.status(), 403);
+    let body = body_of(refused).await;
+    assert_eq!(
+        body["context"]["reason"], "APPROVER_SCOPE_EXCEEDED",
+        "the code rides the denial; the ladder's 403 carries no detail by design, and the \
+         dimension is the domain verdict's to name (`both_dimensions_failing_reports_the_region`)"
+    );
+    assert_eq!(
+        count(
+            &harness,
+            "SELECT COUNT(*) AS v FROM products_audit_log WHERE error_code = 'APPROVER_SCOPE_EXCEEDED'"
+        )
+        .await,
+        1,
+        "audited like any scope violation"
+    );
+    assert_eq!(
+        count(
+            &harness,
+            "SELECT COUNT(*) AS v FROM products_approval_decision"
+        )
+        .await,
+        0,
+        "no verdict was recorded"
+    );
+
+    let admitted = decide_as(
+        &harness,
+        approval,
+        ctx_with_claims(
+            Uuid::from_u128(0x5a_b2),
+            &[ApproverRole::CatalogAdmin],
+            &["region:eu"],
+        ),
+    )
+    .await;
+    assert_eq!(admitted.status(), 200, "the in-scope control");
+    assert_eq!(body_of(admitted).await["counted"], 1);
+}
+
+/// **The brand dimension is judged on its own at the door**: the head is
+/// `eu` / `acme,globex`; a `region:eu` approver claiming `brand:acme` alone
+/// is refused naming `brand_scope`, and one claiming both brands is counted.
+/// Without this case a check that read region twice passes every other.
+#[tokio::test]
+async fn the_brand_dimension_is_judged_on_its_own_at_the_door() {
+    let harness = harness().await;
+    let product = Uuid::from_u128(0x5a_c0);
+    seed_scoped_head(&harness, product, "Fibre Duo", "eu", "acme,globex").await;
+    set_quorum(&harness, 1).await;
+    let approval = submit_for(&harness, Uuid::from_u128(0x5a_a0), product).await;
+    let refused = decide_as(
+        &harness,
+        approval,
+        ctx_with_claims(
+            Uuid::from_u128(0x5a_b3),
+            &[ApproverRole::CatalogAdmin],
+            &["region:eu", "brand:acme"],
+        ),
+    )
+    .await;
+    assert_eq!(refused.status(), 403);
+    assert_eq!(
+        body_of(refused).await["context"]["reason"],
+        "APPROVER_SCOPE_EXCEEDED",
+        "region covers, brand does not: the pair with the control below isolates the dimension"
+    );
+    let admitted = decide_as(
+        &harness,
+        approval,
+        ctx_with_claims(
+            Uuid::from_u128(0x5a_b4),
+            &[ApproverRole::CatalogAdmin],
+            &["region:eu", "brand:acme", "brand:globex"],
+        ),
+    )
+    .await;
+    assert_eq!(
+        admitted.status(),
+        200,
+        "subset on both dimensions is covered"
+    );
+}
+
+/// **Clause 2 at the door**: a tenant-wide subject (both scope columns empty)
+/// is covered only by an unrestricted claim set — a `region:eu` approver is
+/// refused, an approver with no scope claim at all is counted. The
+/// transposed mapping would admit the first and is the scope rule deleted.
+#[tokio::test]
+async fn a_restricted_approver_does_not_cover_a_tenant_wide_subject_and_an_unrestricted_one_does() {
+    let harness = harness().await;
+    let product = Uuid::from_u128(0x5a_c1);
+    seed_scoped_head(&harness, product, "Fibre Wide", "", "").await;
+    set_quorum(&harness, 1).await;
+    let approval = submit_for(&harness, Uuid::from_u128(0x5a_a0), product).await;
+    let refused = decide_as(
+        &harness,
+        approval,
+        ctx_with_claims(
+            Uuid::from_u128(0x5a_b5),
+            &[ApproverRole::CatalogAdmin],
+            &["region:eu"],
+        ),
+    )
+    .await;
+    assert_eq!(refused.status(), 403);
+    assert_eq!(
+        body_of(refused).await["context"]["reason"],
+        "APPROVER_SCOPE_EXCEEDED"
+    );
+    let admitted = decide_as(
+        &harness,
+        approval,
+        ctx_with_roles(Uuid::from_u128(0x5a_b6), &[ApproverRole::CatalogAdmin]),
+    )
+    .await;
+    assert_eq!(
+        admitted.status(),
+        200,
+        "the unrestricted claim set covers every subject"
+    );
+}
+
+/// **Materiality and `N` are read once** (§6): a record submitted at `N = 2`
+/// keeps `required = 2`, `configuredQuorum = 2` and its `pending` state after
+/// the tenant's `N` moves to 0 — the change neither re-judges nor voids it.
+/// **A second submission on the same subject supersedes rather than doubling**
+/// — the first record reads `superseded`, one record is open, and the new one
+/// is born under the new `N`. **And none of it emits a broker event**: the
+/// outbox is empty after both submissions, asserted as the whole set.
+#[tokio::test]
+async fn a_pending_record_keeps_its_descriptor_and_a_resubmission_supersedes_it_silently() {
+    let harness = harness().await;
+    seed_head(&harness).await;
+    set_quorum(&harness, 2).await;
+    let first = submit(&harness, Uuid::from_u128(0x5a_a0)).await;
+    set_quorum(&harness, 0).await;
+
+    let scope = AccessScope::for_tenant(TENANT);
+    {
+        // Handed back before the next door call: the harness pins one connection.
+        let conn = harness.db.conn().expect("scoped connection");
+        let stored = repo::read_approval(
+            &conn,
+            &scope,
+            TENANT,
+            crate::domain::governance::ApprovalId::new(first),
+        )
+        .await
+        .expect("read")
+        .expect("the record");
+        let descriptor = crate::domain::approval::descriptor_from_stored(&stored.quorum_descriptor)
+            .expect("a stored descriptor decodes");
+        assert_eq!(stored.state, "pending", "the policy change voids nothing");
+        assert_eq!(descriptor.required(), 2, "not re-judged under the new N");
+        assert_eq!(
+            descriptor.configured_quorum(),
+            2,
+            "the raw N is the one read at submission"
+        );
+    }
+
+    let second = submit(&harness, Uuid::from_u128(0x5a_a0)).await;
+    assert_ne!(second, first);
+    {
+        let conn = harness.db.conn().expect("scoped connection");
+        let first_now = repo::read_approval(
+            &conn,
+            &scope,
+            TENANT,
+            crate::domain::governance::ApprovalId::new(first),
+        )
+        .await
+        .expect("read")
+        .expect("the record");
+        assert_eq!(first_now.state, "superseded", "the resubmission supersedes");
+        let second_row = repo::read_approval(
+            &conn,
+            &scope,
+            TENANT,
+            crate::domain::governance::ApprovalId::new(second),
+        )
+        .await
+        .expect("read")
+        .expect("the record");
+        let second_descriptor =
+            crate::domain::approval::descriptor_from_stored(&second_row.quorum_descriptor)
+                .expect("decodes");
+        assert_eq!(
+            second_descriptor.configured_quorum(),
+            0,
+            "born under the new N"
+        );
+        assert_eq!(second_row.state, "satisfied", "N = 0 is born satisfied");
+    }
+    assert_eq!(
+        count(
+            &harness,
+            &format!(
+                "SELECT COUNT(*) AS v FROM products_approval WHERE subject_ref = 'product/{PRODUCT}' \
+                 AND state IN ('pending', 'satisfied')"
+            )
+        )
+        .await,
+        1,
+        "one open record per subject - `uq_products_approval_open`'s shape"
+    );
+    let body_table = format!("{}_body", events::OUTBOX_TABLE_PREFIX);
+    assert_eq!(
+        count(&harness, &format!("SELECT COUNT(*) AS v FROM {body_table}")).await,
+        0,
+        "submissions and supersessions emit nothing: the emitted set is empty"
+    );
 }
 
 /// **The record's own author cannot decide it** — by principal, never by

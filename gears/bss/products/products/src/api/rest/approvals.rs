@@ -68,6 +68,7 @@
 //! @cpt-cf-bss-products-flow-decide
 //! @cpt-cf-bss-products-flow-breakglass
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use axum::Json;
@@ -84,9 +85,12 @@ use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
 use crate::api::rest::{ApiState, repo_error_to_canonical, require_authenticated};
-use crate::domain::approval::{ApprovalState, ApproverRole, diff_basis_for};
+use crate::domain::approval::{
+    ApprovalState, ApproverRole, ApproverScopeVerdict, approver_covers_subject, diff_basis_for,
+};
 use crate::domain::canonical;
 use crate::domain::concurrency::InternalRevision;
+use crate::domain::containment::{ResolvedScope, ScopePair};
 use crate::domain::error::DomainError;
 use crate::domain::governance::{ApprovalId, EntityRef, GateSubject, SubjectKind, SubjectPin};
 use crate::domain::materiality::{
@@ -535,6 +539,157 @@ fn roles_from_claims(scopes: &[String]) -> Vec<ApproverRole> {
     roles.sort_unstable();
     roles.dedup();
     roles
+}
+
+/// The approver's scope claims, read from `token_scopes` the way the roles
+/// are (P-D-134 row 25; **P-D-155**): an entry `region:<code>` or
+/// `brand:<code>` restricts that dimension to the codes named, and **no
+/// entry on a dimension is the unrestricted claim set** — `01` P-D-39's
+/// boundary, where the empty set means unrestricted. A scope claim is a
+/// restriction where a role claim is a requirement, which is why its absence
+/// reads the opposite way from `roles_from_claims`' empty answer.
+fn claims_from_token_scopes(scopes: &[String]) -> ScopePair {
+    let mut region = BTreeSet::new();
+    let mut brand = BTreeSet::new();
+    for scope in scopes {
+        if let Some(code) = scope.strip_prefix("region:") {
+            if !code.is_empty() {
+                region.insert(code.to_owned());
+            }
+        } else if let Some(code) = scope.strip_prefix("brand:")
+            && !code.is_empty()
+        {
+            brand.insert(code.to_owned());
+        }
+    }
+    let resolved = |codes: BTreeSet<String>| {
+        if codes.is_empty() {
+            ResolvedScope::Unrestricted
+        } else {
+            ResolvedScope::Restricted(codes)
+        }
+    };
+    ScopePair {
+        region: resolved(region),
+        brand: resolved(brand),
+    }
+}
+
+/// `inst-gv-scope` at the decide door (`dod-approver-scope`; P-D-155): the
+/// approver's claims must cover the subject's scope, read with the
+/// Foundation's two boundaries. The subject's scope is the entity head's two
+/// columns for an `entity_publish` record and **tenant-wide** for every other
+/// kind — a policy, a live op, a batch or a signal has no narrower scope than
+/// the tenant, so only an unrestricted claim set covers it (clause 2). A
+/// record the store does not hold, or whose head is gone, is left to the
+/// decision transaction, which refuses it by its own code.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-approver-scope:p1
+async fn refuse_out_of_scope_approver(
+    state: &ApiState,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    actor_ref: Uuid,
+    attempted: String,
+    record: ApprovalId,
+    claims: &ScopePair,
+) -> Result<(), CanonicalError> {
+    let conn = state.db.conn().map_err(|e| {
+        repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
+    })?;
+    let Some(stored) = repo::read_approval(&conn, scope, tenant_id, record)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?
+    else {
+        return Ok(());
+    };
+    let Some(subject) = subject_scope_of(&conn, scope, tenant_id, &stored).await? else {
+        return Ok(());
+    };
+    match approver_covers_subject(claims, &subject) {
+        ApproverScopeVerdict::Covered => Ok(()),
+        ApproverScopeVerdict::Exceeded {
+            dimension,
+            claimed,
+            subject,
+        } => Err(refuse(
+            state,
+            scope,
+            tenant_id,
+            actor_ref,
+            AUDIT_SUBJECT_APPROVAL,
+            attempted,
+            DomainError::ApproverScopeExceeded(format!(
+                "the approver's {} claims `{}` do not cover the subject's `{}`: an unrestricted \
+                 claim set covers every subject, an unrestricted subject is covered only by an \
+                 unrestricted claim set, and between two non-empty sets it is subset \
+                 (inst-gv-scope)",
+                dimension.column_name(),
+                claimed.render(),
+                subject.render()
+            )),
+        )
+        .await),
+    }
+}
+
+/// The subject's scope pair for the approver-scope check: the entity head's
+/// two columns for an `entity_publish` record, tenant-wide for every other
+/// kind, `None` where the head the record names is gone. A column that will
+/// not parse is a corrupt row, not an admission (fail-closed, `01`'s rule).
+async fn subject_scope_of(
+    conn: &impl toolkit_db::secure::DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    stored: &crate::infra::storage::entity::approval::Model,
+) -> Result<Option<ScopePair>, CanonicalError> {
+    let tenant_wide = ScopePair {
+        region: ResolvedScope::Unrestricted,
+        brand: ResolvedScope::Unrestricted,
+    };
+    if stored.subject_kind != SubjectKind::EntityPublish.as_str() {
+        return Ok(Some(tenant_wide));
+    }
+    let corrupt = |what: &str| {
+        repo_error_to_canonical(&crate::infra::storage::RepoError::CorruptRow(format!(
+            "products_approval {}: {what}",
+            stored.approval_id
+        )))
+    };
+    let Some((kind, id)) = stored.subject_ref.split_once('/') else {
+        return Err(corrupt("subject_ref carries no kind/id pair"));
+    };
+    let entity_id = Uuid::parse_str(id).map_err(|_| corrupt("subject_ref id is not a uuid"))?;
+    let (region, brand) = match kind {
+        "product" => {
+            let Some(head) = repo::find_product(conn, scope, tenant_id, entity_id)
+                .await
+                .map_err(|e| repo_error_to_canonical(&e))?
+            else {
+                return Ok(None);
+            };
+            (head.region_scope, head.brand_scope)
+        }
+        "sku" => {
+            let Some(head) = repo::find_sku(conn, scope, tenant_id, entity_id)
+                .await
+                .map_err(|e| repo_error_to_canonical(&e))?
+            else {
+                return Ok(None);
+            };
+            (head.region_scope, head.brand_scope)
+        }
+        other => {
+            return Err(corrupt(&format!(
+                "subject_ref kind `{other}` is not an entity"
+            )));
+        }
+    };
+    Ok(Some(ScopePair {
+        region: ResolvedScope::parse(&region)
+            .map_err(|_| corrupt("region_scope will not parse"))?,
+        brand: ResolvedScope::parse(&brand).map_err(|_| corrupt("brand_scope will not parse"))?,
+    }))
 }
 
 /// What a door is asking the policy point, in one value.
@@ -1408,6 +1563,20 @@ async fn decide_approval(
         .await);
     }
 
+    // `inst-gv-scope` (`dod-approver-scope`; P-D-155): the approver's brand
+    // and region claims must cover the subject's scope. Before the ceremony
+    // and the transaction, like the role check: an approver the rule does
+    // not admit has no verdict to record.
+    refuse_out_of_scope_approver(
+        &state,
+        &scope,
+        tenant_id,
+        actor_ref,
+        attempted.clone(),
+        record,
+        &claims_from_token_scopes(ctx.token_scopes()),
+    )
+    .await?;
     let audit_id = Uuid::now_v7();
     let scope_tx = scope.clone();
     let reason_tx = reason.clone();
