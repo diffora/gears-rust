@@ -1111,21 +1111,24 @@ governed cancels, deferrals and the `retirement_held` and `replacement_chain_bro
 
 ## 6. Acceptance Criteria
 
-- [ ] `ADMITTED_EDGES` still has exactly five members after this feature lands — the one shipped
+*Ticks measured clause by clause at **P-D-156** (2026-09-05); the criterion-to-probe map is in that
+entry. A box left open names a clause no probe asserts yet.*
+
+- [x] `ADMITTED_EDGES` still has exactly five members after this feature lands — the one shipped
       assertion that would catch an invented edge. `ALL_STATES` carries no length assertion, so a
       sixth state needs one written here
-- [ ] A `published` child is deprecated `cascaded`, an already-`deprecated` child keeps its
+- [x] A `published` child is deprecated `cascaded`, an already-`deprecated` child keeps its
       `direct` stamp, and a `draft` child is listed rather than transitioned — all three arms in
       one fixture
-- [ ] Deprecating a Product with one `draft` SKU **succeeds** and lists the draft; the
+- [x] Deprecating a Product with one `draft` SKU **succeeds** and lists the draft; the
       non-terminal keying that made it fail `ILLEGAL_TRANSITION` is red before the fix
-- [ ] Un-deprecating a parent revives the `cascaded` child and leaves the `direct` sibling
+- [x] Un-deprecating a parent revives the `cascaded` child and leaves the `direct` sibling
       deprecated — positive and negative in one fixture
 - [ ] Un-deprecation with a live retire intent on a **child** is refused and the refusal names the
       child; with no live intent it is admitted
 - [ ] A governed cancel clears `replaced_by_sku_id` on the parent and every child leg, and the row
       is writable a second time only through that cancel
-- [ ] Scheduling marks the approval `consumed` in the scheduling transaction and leaves the
+- [x] Scheduling marks the approval `consumed` in the scheduling transaction and leaves the
       lifecycle state unchanged; activation consumes nothing further
 - [ ] Editing an entity after scheduling makes activation fail `SCHEDULE_STALE_APPROVAL`, publishes
       nothing, and lands the transition `failed` — the positive control being an unedited entity
@@ -1136,21 +1139,21 @@ governed cancels, deferrals and the `retirement_held` and `replacement_chain_bro
       by the attempt budget while a transient-dependency deferral lands `failed` when it is spent
 - [ ] Retirement initiation shows the reference count including its conservative states — whether a
       confirmation against a stale count is *refused* is §7 row 34, and no declared code covers it
-- [ ] Initiation on an already-`deprecated` SKU takes no transition, re-stamps no provenance, and
+- [x] Initiation on an already-`deprecated` SKU takes no transition, re-stamps no provenance, and
       emits no deprecation event — asserted as set equality over emitted events, not by inspection
-- [ ] A publish during the lead window re-emits the retirement event with the new `fromVersion`,
+- [x] A publish during the lead window re-emits the retirement event with the new `fromVersion`,
       the same `effectiveAt` and the same identity; a publish outside any window emits none
-- [ ] Saves during the lead window are **admitted** — the positive control on the struck freeze
-- [ ] The flip defers on all four conservative predicate states and flips on fresh all-zero; the
+- [x] Saves during the lead window are **admitted** — the positive control on the struck freeze
+- [x] The flip defers on all four conservative predicate states and flips on fresh all-zero; the
       alert names the blocking producers
-- [ ] The four-state deferral is asserted against a stub that can answer each state, not against
+- [x] The four-state deferral is asserted against a stub that can answer each state, not against
       one that always answers fresh-zero
-- [ ] A `replacedBy` naming a non-`published` SKU is refused; naming a `published` one is admitted
+- [x] A `replacedBy` naming a non-`published` SKU is refused; naming a `published` one is admitted
 - [ ] Retiring a SKU that a live pointer names raises `replacement_chain_broken` listing the
       pointing SKUs, and the read surface resolves transitively to the first non-`retired` successor
-- [ ] A Product retirement over non-`retired` SKUs without confirmation is refused
+- [x] A Product retirement over non-`retired` SKUs without confirmation is refused
       `CASCADE_CONFIRMATION_REQUIRED`; with confirmation it is admitted
-- [ ] One Product with three children — referenced, clean, never-published — yields leave-and-list,
+- [x] One Product with three children — referenced, clean, never-published — yields leave-and-list,
       retire and auto-discard in one plan; the parent stays non-`retired` and the intent is queryable
 - [ ] A failure anywhere in plan application leaves **no** child transitioned — asserted over the
       whole child set, not over the failing child
@@ -1158,12 +1161,12 @@ governed cancels, deferrals and the `retirement_held` and `replacement_chain_bro
       proven against the one-live-intent-per-kind unique index
 - [ ] A cancelled cascade resolves its deferred-retirement row `cascade_cancelled`, and a second
       cascade on the same Product is admitted afterwards
-- [ ] The parent's flip is refused while any child is non-terminal and admitted once all are
+- [x] The parent's flip is refused while any child is non-terminal and admitted once all are
       `retired`/`discarded`; the no-orphan invariant is re-checked at flip and not only at
       confirmation
 - [ ] A SKU publish under a non-`published` parent is refused `PARENT_NOT_PUBLISHED`; under a
       `published` parent it is admitted; a re-publish re-runs the check fail-closed
-- [ ] An unrestricted parent contains every child; an unrestricted child is refused by a restricted
+- [x] An unrestricted parent contains every child; an unrestricted child is refused by a restricted
       parent; between two non-empty sets it is ordinary subset
 - [ ] A Product narrowing with one non-terminal child outside is refused with
       `SCOPE_NOT_CONTAINED` (P-D-96); one whose only outside child is `discarded` is admitted; a
@@ -1177,16 +1180,16 @@ governed cancels, deferrals and the `retirement_held` and `replacement_chain_bro
       `CASCADE_CONFIRMATION_REQUIRED`: a confirmed cascade proceeds;
       `RETIREMENT_PENDING`: un-deprecation with no live intent is admitted;
       `EOL_DISABLED`: a retirement carrying no `mustMigrateBy` is admitted
-- [ ] The EOL flag OFF refuses `mustMigrateBy`; the event schema round-trips the absent field
+- [x] The EOL flag OFF refuses `mustMigrateBy`; the event schema round-trips the absent field
 - [ ] A schema-oracle golden exists for both new tables on both engines, each with a perturbation
       case proving it can fail
-- [ ] The partial unique index admits one live intent per entity per kind and admits a second row
+- [x] The partial unique index admits one live intent per entity per kind and admits a second row
       once the first is `applied`, `failed` or `superseded`
-- [ ] `retirement_reason` survives a deferral that writes `outcome_reason` — the two-column split
+- [x] `retirement_reason` survives a deferral that writes `outcome_reason` — the two-column split
       asserted, with the single-column version red
 - [ ] Scheduling acts emit **no** broker event, asserted as set equality over emitted events
 - [ ] Every refusal this feature raises leaves an audit row carrying its reason
-- [ ] A stub reference predicate is exercised in every state before `07-reference-signal` exists,
+- [x] A stub reference predicate is exercised in every state before `07-reference-signal` exists,
       and the suite fails if the stub is replaced by a constant
 - [ ] No `#[ignore]`d test exists without a CI tier that runs it
 

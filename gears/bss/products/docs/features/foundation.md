@@ -887,16 +887,19 @@ age-based erasure reads.
 
 ## 6. Acceptance Criteria
 
-- [ ] Creating a Product persists it as `draft` with `published_version = 0` and
+*Ticks measured clause by clause at **P-D-156** (2026-09-05); the criterion-to-probe map is in that
+entry. A box left open names a clause no probe asserts yet.*
+
+- [x] Creating a Product persists it as `draft` with `published_version = 0` and
       `internal_revision = 1`, writes exactly one `ProductCreated` outbox row in the same
       transaction, and writes no content row
 - [ ] A second Product whose normalized name equals an existing non-discarded row's within the
       same `(tenant_id, brand_id)` is refused `DUPLICATE_NAME` and the response names the holder
-- [ ] Discarding a draft releases its name, and a subsequent create under that name succeeds
-- [ ] Changing a draft's `skuCode` frees the old code for a concurrent create
-- [ ] Two concurrent creates racing the same `skuCode` produce exactly one row; the loser is
+- [x] Discarding a draft releases its name, and a subsequent create under that name succeeds
+- [x] Changing a draft's `skuCode` frees the old code for a concurrent create
+- [x] Two concurrent creates racing the same `skuCode` produce exactly one row; the loser is
       refused `DUPLICATE_CODE` and an audit row records the refusal
-- [ ] The same race is proven with a real concurrency probe, not a read-then-assert
+- [x] The same race is proven with a real concurrency probe, not a read-then-assert
 - [ ] `name_normalized` is byte-identical across SQLite and Postgres for a case-varied,
       whitespace-varied, NFKC-decomposable input
 - [x] A `GET` on a head returns an `ETag` that a subsequent `PATCH` accepts as `If-Match`
@@ -906,7 +909,7 @@ age-based erasure reads.
       as the head-row update, and a rollback leaves neither
 - [x] A bucket-i write on a head with `published_version > 0` is refused
       `ILLEGAL_FIELD_MUTATION`, and the same write on a head with `published_version = 0` succeeds
-- [ ] A bucket-ii write after first publish is refused `ILLEGAL_FIELD_MUTATION` and the reason
+- [x] A bucket-ii write after first publish is refused `ILLEGAL_FIELD_MUTATION` and the reason
       names the correction door; the same column moves when the statement also bumps
       `published_version`
 - [x] An untagged published-state column is refused at the head door rather than routed to a
@@ -914,35 +917,35 @@ age-based erasure reads.
 - [x] A code column is refused after first publish
 - [ ] Every refusal enumerated in §2 has a paired positive control proving the door admits the
       corresponding legal act
-- [ ] Publishing writes one frozen version row **before** the head-row update, increments
+- [x] Publishing writes one frozen version row **before** the head-row update, increments
       `published_version` by exactly one in a single `UPDATE`, and the frozen row is thereafter
       refused by any update on both engines
-- [ ] A `PreAuthorized` publish against an already-`consumed` approval record succeeds
-- [ ] Deleting a frozen version row that a catalog-version entry still references is refused **by
+- [x] A `PreAuthorized` publish against an already-`consumed` approval record succeeds
+- [x] Deleting a frozen version row that a catalog-version entry still references is refused **by
       the guard**, proven with the garbage collector bypassed
 - [ ] A `CorruptRow`-style probe exists per guarded column class, proving the whitelist refuses a
       write outside that column's admitted state
-- [ ] The `BucketRegistry` tag map and the trigger's column classes name the same columns in the
+- [x] The `BucketRegistry` tag map and the trigger's column classes name the same columns in the
       same classes, with iii and iv asserted as one combined class, and no published-state column
       is named by neither artifact
-- [ ] A canonical-serialization golden vector for frozen version content and its digest is
+- [x] A canonical-serialization golden vector for frozen version content and its digest is
       byte-identical on both engines and pins the `digest_version` constant it was computed under
 - [ ] A schema-oracle golden exists for both engines from the first migration, together with a
       perturbation case proving the oracle can fail
-- [ ] An audit-log `INSERT` always lands `unsealed`, and a second `unsealed → sealed` update on an
+- [x] An audit-log `INSERT` always lands `unsealed`, and a second `unsealed → sealed` update on an
       already-sealed row is refused
-- [ ] `internal_revision` bumps on every admitted write, transitions and publishes included
-- [ ] A non-admitted edge is refused `ILLEGAL_TRANSITION`, and a transition out of `retired` or
+- [x] `internal_revision` bumps on every admitted write, transitions and publishes included
+- [x] A non-admitted edge is refused `ILLEGAL_TRANSITION`, and a transition out of `retired` or
       `discarded` is refused at the physical layer with the application check bypassed
 - [ ] Each of the eight named events is emitted by its door and carries the shared body core; the
       two publish events additionally carry `publishedVersion`
 - [ ] No event body and no audit row carries a direct operator identity; both carry `actor_ref`
 - [ ] An audit row is written for every refusal and is readable by `(tenant, subject, error_code)`
-- [ ] Replaying a request under the same idempotency key with an identical payload returns the
+- [x] Replaying a request under the same idempotency key with an identical payload returns the
       stored outcome and writes nothing; a differing payload is refused `IDEMPOTENCY_CONFLICT`
-- [ ] Two concurrent claims on one expired key execute the guarded mutation exactly once
-- [ ] A keyless mutating request skips the idempotency phase rather than failing it
-- [ ] An authorization denial consumes no idempotency key and writes no claim row, and its audit
+- [x] Two concurrent claims on one expired key execute the guarded mutation exactly once
+- [x] A keyless mutating request skips the idempotency phase rather than failing it
+- [x] An authorization denial consumes no idempotency key and writes no claim row, and its audit
       row carries a resolved `actor_ref`
 - [ ] No `#[ignore]`d test exists without a CI tier that runs it
 

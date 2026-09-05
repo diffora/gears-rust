@@ -1569,6 +1569,96 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-156 — Criteria wave A: foundation and lifecycle ticked clause by clause, four probes written, the rest named
+
+- **Date**: 2026-09-05 (the lead, group 14 of the follow-on plan)
+- **Method.** Each criterion was split at its clause boundaries and ticked only where an assertion
+  exists per clause (the rule P-D-155's census taught); the map below is the tick's evidence and
+  the reason a box stayed open.
+- **Foundation, 18 of 27 ticked.** Create shape + one outbox row + no content row →
+  `a_well_formed_create_persists_a_draft_row_and_answers_with_the_created_view`,
+  `exactly_one_outbox_row_is_enqueued_and_no_content_row_is_written`. Discard frees the name →
+  `a_discarded_products_name_and_code_are_free_for_a_second_product`. A draft's `skuCode` change
+  frees the old code → **new** `changing_a_drafts_sku_code_frees_the_old_code_for_a_new_create`.
+  The code race, exactly one row, a real concurrency probe →
+  `two_creates_of_one_sku_code_contend_on_the_reservation_index_and_one_is_refused` (Postgres tier)
+  with the door's audit in `a_duplicate_sku_code_is_refused_and_audited`. Bucket ii after publish →
+  `a_bare_bucket_ii_write_after_publish_is_refused_by_the_trigger`,
+  `a_bucket_ii_write_riding_a_bump_that_sets_correction_ref_is_admitted`, the reason naming the
+  correction door in `the_pair_is_refused_at_the_save_door_after_first_publish`. Frozen row before
+  the head, +1, immutable on both engines → the `published_version` trigger probes,
+  `an_update_of_a_frozen_row_is_refused`, `every_frozen_column_is_refused_by_the_update_arm`,
+  `postgres_frozen_guards`. `PreAuthorized` against a consumed record →
+  `a_preauthorized_publish_reaches_the_host_in_that_mode_and_consumes_nothing` (both doors). The
+  referenced version's guard with the sweep bypassed →
+  `a_referenced_version_is_refused_by_the_guard_and_not_by_the_sweep`. Registry vs trigger →
+  `the_registry_and_the_whitelist_name_the_same_columns_in_the_same_classes`,
+  `bucket_ii_membership_matches_in_every_artifact`. The golden vector →
+  `the_golden_vector_pins_the_rendering_and_the_digest_independently`,
+  `the_digest_version_is_pinned_in_code_and_moves_only_with_the_roster`, `postgres_golden_vector`.
+  Audit seal → `an_insert_claiming_sealed_is_refused_by_the_seal_group_check`,
+  `a_second_sealing_update_on_an_already_sealed_row_is_refused`. `internal_revision` on every
+  admitted write → `every_admitted_edge_bumps_the_row_exactly_once`, the by-one trigger probes.
+  `ILLEGAL_TRANSITION` and the physical edge → the door probes,
+  `a_lifecycle_transition_off_the_edge_list_is_refused`,
+  `a_published_version_bump_on_a_retired_head_is_refused`. Idempotency replay and conflict →
+  `a_claim_after_the_answer_write_replays_the_recorded_response`,
+  `a_second_create_on_a_live_key_under_a_different_payload_is_refused_conflict` (both doors). The
+  expired-key race → `the_expired_key_takeover_race_admits_exactly_one_winner`,
+  `postgres_idempotency_race`. Keyless → `a_keyless_sku_create_succeeds_and_claims_nothing`. The
+  denial → **new** `a_denied_keyed_publish_claims_no_key_and_its_audit_row_names_a_resolved_actor`.
+- **Foundation, 9 open and why.** The holder in the `DUPLICATE_NAME` response (the detail names
+  it; no probe reads it); `name_normalized` across engines (no cross-engine probe — G19's tier
+  work); the paired-control sweep over §2; the `CorruptRow` probe per guarded column class (two
+  lifecycle-state probes exist, the class sweep does not); the schema oracle on Postgres for the
+  Foundation's tables (the tier has governance, lifecycle, retention and taxonomy oracles, not this
+  one — G19); the eight events' per-door emission sweep; the no-operator-identity clause on event
+  bodies; the audit read by `(tenant, subject, error_code)`; the `#[ignore]` tier rule (G19).
+- **Lifecycle, 19 of 36 ticked.** The roster → `the_five_admitted_edges_are_admitted` and **new**
+  `the_state_roster_has_exactly_five_members`. The cascade's three arms and the draft listing →
+  `the_cascade_states_a_disposition_per_child_state`. Un-deprecation's two halves →
+  `only_cascaded_children_reverse`. Scheduling consumes in its own transaction →
+  `a_retirement_pins_the_satisfied_record_and_spends_it_in_the_scheduling_transaction`,
+  `a_scheduled_flip_never_demands_a_satisfied_record_of_its_own`. Already-deprecated initiation,
+  the emitted set whole → `already_deprecated_takes_no_re_stamp` (**extended** with the set
+  equality). The lead-window re-emit and the outside publish →
+  `a_publish_during_the_lead_window_reannounces_retirement`,
+  `a_publish_outside_any_window_emits_no_retirement`,
+  `a_publish_inside_the_window_reannounces_and_one_outside_does_not`. Saves during the window →
+  **new** `a_save_during_the_lead_window_is_admitted`. The four-state flip guard and its stub →
+  `flip_guard_defers_all_four_other_states_and_names_producers`, `flip_guard_passes_only_fresh_zero`.
+  `replacedBy` → `unpublished_replaced_by_is_refused`,
+  `replaced_by_admits_omitted_or_published_and_refuses_the_rest`. The confirmation →
+  `missing_cascade_confirmation_is_refused`, `a_published_product_retires_and_cascades`. Three
+  children, one plan → `a_three_child_fixture_splits_across_all_three_arms`,
+  `a_draft_child_is_auto_discarded`, the parent's live intent in
+  `a_published_product_retires_and_cascades`. The parent's flip →
+  `the_parent_flip_waits_for_every_child_to_be_terminal`. Containment's three clauses → the
+  `clause_1`/`clause_2`/`clause_3` probes. EOL off → `must_migrate_by_is_eol_disabled`,
+  `eol_flag_off_refuses_must_migrate_by_and_admits_its_absence`,
+  `a_retirement_body_omits_must_migrate_by_when_absent`. The partial unique index →
+  `the_live_intent_partial_unique_admits_one_and_refuses_a_second`,
+  `a_terminal_row_frees_the_live_slot_for_a_new_intent`. The two reason columns →
+  `finishing_preserves_the_operator_retirement_reason`,
+  `the_two_reason_columns_are_nullable_independently_on_postgres`. The stub predicate → the flip
+  guard probes above.
+- **Lifecycle, 17 open and why.** Un-deprecation naming the child (refused, the name not
+  asserted); the governed cancel clearing `replaced_by` on every leg; the edited-after-scheduling
+  activation (`SCHEDULE_STALE_APPROVAL` is classified in the unit, not driven through the runner);
+  the crashed runner's identical re-execution; the deferral budget's two arms; the initiation's
+  reference count; the read surface's transitive successor (domain-level only); the failure that
+  leaves no child transitioned (one child probed, not the set); the publish-intent half of the
+  plan's supersession; `cascade_cancelled`; the re-publish re-running `PARENT_NOT_PUBLISHED`; the
+  narrowing refusal not naming the child; the six-codes-one-rule census; the schema oracle's
+  perturbation on Postgres; scheduling's empty emitted set; the audit-reason sweep; the `#[ignore]`
+  tier rule. Each is a probe, not a build — none found a defect.
+- **Propagated**: `features/foundation.md` §6, `features/lifecycle.md` §6 (the ticks and one
+  pointer sentence each).
+- **Trace**: `skus_tests::changing_a_drafts_sku_code_frees_the_old_code_for_a_new_create`,
+  `skus_tests::a_denied_keyed_publish_claims_no_key_and_its_audit_row_names_a_resolved_actor`,
+  `skus_tests::retire_door_tests::a_save_during_the_lead_window_is_admitted`,
+  `transition_tests::the_state_roster_has_exactly_five_members`.
+
 #### P-D-155 — Scope claims take the roles' lane, the decide door judges them, and the signal consumer is the clear
 
 - **Date**: 2026-09-05 (the lead, group 13 of the follow-on plan; `05`'s two open DoDs and its

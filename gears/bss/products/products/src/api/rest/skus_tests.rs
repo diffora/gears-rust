@@ -5429,6 +5429,98 @@ mod undeprecate_door_tests {
     }
 }
 
+/// **Changing a draft's `skuCode` frees the old code** (`01` §6): the SKU that
+/// held `SKU-MOVE-A` is saved to `SKU-MOVE-B`, and a second create under
+/// `SKU-MOVE-A` lands — the reservation follows the head, not its history.
+#[tokio::test]
+async fn changing_a_drafts_sku_code_frees_the_old_code_for_a_new_create() {
+    let harness = harness().await;
+    let parent = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let body = |code: &str| {
+        json!({
+            "product_id": parent,
+            "sku_code": code,
+            "sku_type": "product",
+            "tax_category_ref": "TC-STD",
+            "gl_code_ref": "GL-4000",
+        })
+    };
+    let (first, etag) = created_sku(&harness, &body("SKU-MOVE-A")).await;
+    let moved = save_sku_at(&harness, first, &etag, &json!({ "sku_code": "SKU-MOVE-B" })).await;
+    assert_eq!(
+        moved.status(),
+        StatusCode::OK,
+        "a draft's code is bucket i and writable before first publish"
+    );
+    let again = post_create_sku(app_for(&harness, TENANT), TENANT, &body("SKU-MOVE-A")).await;
+    assert_eq!(
+        again.status(),
+        StatusCode::CREATED,
+        "the freed code is taken by a new holder"
+    );
+    assert_eq!(
+        sku_head_of_code(&harness, "SKU-MOVE-B").await,
+        Some(first),
+        "the first holder now answers to its new code"
+    );
+}
+
+async fn sku_head_of_code(harness: &TestHarness, code: &str) -> Option<Uuid> {
+    let conn = harness.db.conn().expect("connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    repo::find_sku_by_code(&conn, &scope, TENANT, code)
+        .await
+        .expect("read by code")
+        .map(|row| row.sku_id)
+}
+
+/// **A denial consumes no idempotency key and writes no claim row, and its
+/// audit row carries a resolved `actor_ref`** (`01` §6): the cross-tenant
+/// publish above, now under an `Idempotency-Key`, leaves the claim table empty
+/// and the one audit row's actor is not the nil uuid.
+#[tokio::test]
+async fn a_denied_keyed_publish_claims_no_key_and_its_audit_row_names_a_resolved_actor() {
+    let harness = harness().await;
+    let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "SKU-501").await;
+    let response = post_head_act_via(
+        app_for(&harness, OTHER_TENANT),
+        TENANT,
+        sku_id,
+        "publish",
+        Some(&etag),
+        Some("denied-key-1"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        raw_i64(
+            &harness.dsn,
+            "SELECT COUNT(*) AS v FROM products_idempotency"
+        )
+        .await,
+        0,
+        "the denial consumed no key and wrote no claim row"
+    );
+    assert_eq!(
+        raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_audit_log").await,
+        1,
+        "one audit row for the denial"
+    );
+    assert_eq!(
+        raw_i64(
+            &harness.dsn,
+            &format!(
+                "SELECT COUNT(*) AS v FROM products_audit_log WHERE NOT ({})",
+                id_matches("actor_ref", Uuid::nil())
+            )
+        )
+        .await,
+        1,
+        "the audit row's actor_ref is resolved, not nil"
+    );
+}
+
 mod retire_door_tests {
     use super::*;
     use crate::domain::deprecation::Provenance;
@@ -5664,6 +5756,37 @@ mod retire_door_tests {
         );
     }
 
+    /// **Saves during the lead window are admitted** — the positive control on
+    /// the struck freeze (`04` §6): a retirement is scheduled, and a content
+    /// save on the same head lands.
+    #[tokio::test]
+    async fn a_save_during_the_lead_window_is_admitted() {
+        let harness = harness().await;
+        let (sku_id, rev) = published_sku(&harness, "SKU-LEAD-SAVE").await;
+        let retired =
+            post_retire(&harness, TENANT, sku_id, &if_match_for(rev), &retire_body()).await;
+        assert_eq!(retired.status(), StatusCode::OK);
+        assert_eq!(
+            live_intent_count(&harness, sku_id).await,
+            1,
+            "premise: the lead window is open"
+        );
+        seed_sku_definition(&harness, "displayName", "localized_string", "active").await;
+        let head = sku_of(&harness, sku_id).await;
+        let saved = save_sku_at(
+            &harness,
+            sku_id,
+            &if_match_for(head.internal_revision),
+            &json!({ "attributes": [{ "key": "displayName", "value": "still on sale" }] }),
+        )
+        .await;
+        assert_eq!(
+            saved.status(),
+            StatusCode::OK,
+            "no freeze during the lead window"
+        );
+    }
+
     #[tokio::test]
     async fn already_deprecated_takes_no_re_stamp() {
         let harness = harness().await;
@@ -5684,6 +5807,24 @@ mod retire_door_tests {
         assert_eq!(head.lifecycle_state.as_str(), "deprecated");
         assert_eq!(head.deprecation_provenance, Some(Provenance::Direct));
         assert_eq!(live_intent_count(&harness, sku_id).await, 1);
+        // The emitted set, whole: the fixture's create and publish, the
+        // initiation's announcement, and nothing else — no deprecation event for a head already deprecated.
+        let body_table = format!("{}_body", crate::infra::events::OUTBOX_TABLE_PREFIX);
+        let total = raw_i64(
+            &harness.dsn,
+            &format!("SELECT COUNT(*) AS v FROM {body_table}"),
+        )
+        .await;
+        let created = enqueued_event_count(&harness.dsn, "SkuCreated").await;
+        let published = enqueued_event_count(&harness.dsn, "SkuPublished").await;
+        let retired = enqueued_event_count(&harness.dsn, "SkuRetired").await;
+        assert_eq!(enqueued_event_count(&harness.dsn, "SkuDeprecated").await, 0);
+        assert_eq!(
+            total,
+            created + published + retired,
+            "set equality: nothing was emitted beyond the fixture's create and publish and the \
+             initiation"
+        );
     }
 
     #[tokio::test]

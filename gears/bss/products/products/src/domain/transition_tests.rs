@@ -31,6 +31,29 @@ const ALL_STATES: [LifecycleState; 5] = [
     LifecycleState::Discarded,
 ];
 
+/// **The state roster has exactly five members** (`04` §6): the length is
+/// pinned here, and the `match` names every variant, so a sixth state fails
+/// to compile before it can fail to be listed.
+#[test]
+fn the_state_roster_has_exactly_five_members() {
+    assert_eq!(ALL_STATES.len(), 5);
+    let mut seen = [false; 5];
+    for state in ALL_STATES {
+        let slot = match state {
+            LifecycleState::Draft => 0,
+            LifecycleState::Published => 1,
+            LifecycleState::Deprecated => 2,
+            LifecycleState::Retired => 3,
+            LifecycleState::Discarded => 4,
+        };
+        seen[slot] = true;
+    }
+    assert!(
+        seen.iter().all(|s| *s),
+        "every variant is on the roster once"
+    );
+}
+
 /// A subject for the hook port; its identity is not what any case measures.
 fn subject() -> EntityRef {
     EntityRef {
