@@ -80,6 +80,8 @@ const SWEEP_SUBJECT_KIND: &str = "retention_sweep";
 /// Errors are logged per tenant and the sweep continues — one tenant's
 /// storage failure is not a reason to stop collecting for the others, the
 /// same posture `increment::sweep` takes.
+///
+/// @cpt-flow:cpt-cf-bss-products-flow-retention:p1
 pub async fn sweep(
     db: &DBProvider<DbError>,
     caps: &RetentionCaps,
@@ -335,6 +337,8 @@ async fn collect_entity_version(
 /// Its own function so the classification can be probed without a live
 /// engine: the failures that must NOT be the derive rule are exactly the ones
 /// hard to provoke through a working database.
+///
+/// @cpt-algo:cpt-cf-bss-products-algo-retention-errors:p1
 pub(crate) fn classify_entity_version_failure(rendered: &str) -> HeldReason {
     if rendered.contains("P-D-40") {
         HeldReason::ReferencedByRetainedManifest
@@ -705,6 +709,8 @@ pub struct DrillOutcome {
 /// outcome `no_target` and raises the `unverifiable` warning (**P-D-135**): a
 /// drill that cannot run is not a passed drill, and silence is exactly what
 /// P-D-133's *"report, never skip"* forbids.
+///
+/// @cpt-flow:cpt-cf-bss-products-flow-restore-drill:p2
 pub async fn run_restore_drill(
     db: &DBProvider<DbError>,
     caps: &RetentionCaps,

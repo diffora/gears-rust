@@ -1629,7 +1629,7 @@ Each is a one-line pointer into its owner's register. None was edited here.
   autodetection. It is false — `[systems.autodetect.artifacts.DESIGN_SLICE]` carries
   `pattern = "design/*.md"` and `traceability = "FULL"`. It is the shape donor for the five unwritten
   FEATUREs, so the cost compounds.
-- **`bucket_tests::buckets_ii_and_iv_have_no_members_today`**'s assertion message names slice 07
+- ~~**`bucket_tests::buckets_ii_and_iv_have_no_members_today`**~~ **Closed (P-D-158; struck at P-D-162, 2026-09-05)**: the test was reddened by `03`'s columns exactly as predicted and its successor names the meter pair; the shipped-seam criterion ticked on it (`3f96970ed`). *The item's text stood as:*'s assertion message names slice 07
   where `domain/bucket.rs` names slice 03 — see row 17. Owner: `01-foundation`'s code.
 - **`features/catalog-version.md`'s foreign-seam table** marks `inst-pr-snapshot` as **no** and
   counts two of its five seams unwritten. This document is that FEATURE, so one of the two is now

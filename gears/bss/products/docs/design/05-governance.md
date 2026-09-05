@@ -385,7 +385,7 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
   refusal to be audited with its reason. So the first step of every registry door terminates in a
   refusal with no code for a consumer to match on. Owner: the governance owner with the taxonomy
   owner. *(Raised by the slice-01 fifth-pass review.)*
-- **The studio inbox envelope** is design-introduced (deliberately merge-compatible with
+- ~~**The studio inbox envelope**~~ **Filed (P-D-160; struck at P-D-162, 2026-09-05)**: the divergence is an ask in pricing's register (section I, row I-1 — rename `submitter_principal`, gain `quorum`), the registry's card is the design's, and the seam suite pins the five shared fields (`b3f08d351`). *The item's text stood as:* is design-introduced (deliberately merge-compatible with
   pricing's queue); pricing's queue shape should be cross-checked when slice 12 pins the SDK —
   a field-name drift here costs a UI adapter later.
 - ~~**Post-hoc break-glass review**~~ **Answered (P-D-133, 2026-09-04): P-D-68's second platform principal, within `breakglass_review_sla_hours` (24 interim).** *The item's text stood as:* needs an owner and an SLA for the review obligation alert —

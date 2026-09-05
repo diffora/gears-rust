@@ -1031,8 +1031,8 @@ does not decide it — the struck rows above point at the register entry that di
   digest question for the binding snapshot alone; it applies to all seven columns, and a first
   content change after deployment bumps `digest_version` off 1. *Owner: this feature with 01.*
 
-- **The bucket-ii class does not exist in the shipped code, and building this feature turns three
-  green tests red.** `products_sku`'s migration states "Bucket-ii and bucket-iv have no members
+- ~~**The bucket-ii class does not exist in the shipped code, and building this feature turns three
+  green tests red.**~~ **Closed (P-D-145/P-D-146; struck at P-D-162, 2026-09-05)**: the class exists — `bucket_ii_is_the_meter_pair_and_bucket_iv_is_empty` is the reddened test's successor, and the meter pair is its membership. *The item's text stood as:* `products_sku`'s migration states "Bucket-ii and bucket-iv have no members
   among today's columns" and creates only the bucket-i and bucket-iii triggers; `bucket_tests.rs`
   asserts the bucket-ii count is zero with the message "bucket-ii columns arrive with slice 07",
   samples `sellable`, `plan_tier`, `metering_unit` and `type` as columns that must **fail closed**

@@ -1569,6 +1569,59 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-162 — Close-out of the follow-on plan: the first item-level code markers, the status-box chain measured to its end, nine open items struck by their commits, and the remainder named
+
+- **Date**: 2026-09-05 (the lead, group 20 of the follow-on plan — the last)
+- **The studio's item-level markers work, single-line.** P-D-158 found the status box gated on
+  `code-no-marker` for a FEATURE's flows and algorithms. Measured here: a single-line
+  `@cpt-flow:<id>:pN` / `@cpt-algo:<id>:pN` doc marker on the implementing function satisfies the
+  validator (the begin/end pairs are the per-instruction form, not the gate), so `10`'s four
+  flows and two algorithms carry them — `execute_erasure`, `sign_off_allowlist_entry`,
+  `retention::sweep`, `run_restore_drill`, `export_identity_map`, `classify_entity_version_failure`
+  — and their six boxes tick. The validator then walked one level up: the feature id's box needs
+  `DECOMPOSITION.md`'s entry, whose own nested boxes are the PRD requirement definitions
+  (`fr-retention-erasure`, `fr-grandfathered-retention-coupling`, `fr-expected-failure-behavior`,
+  `nfr-snapshot-archival-dr`), the principle, the constraint and the component — and a requirement
+  shared with `06` at 26 / 27 cannot be marked done by one feature. **So the status box is the
+  owner's release call at the PRD level, not a feature's**; the two boxes stay open, the markers
+  and the six ticks stay, and the chain is now known end to end.
+- **Nine open items struck by the commits that closed them**: `03` §6's scheduled-lane row
+  (P-D-157), `05` §6's inbox envelope and `12` §7's envelope divergence (filed, P-D-160), `08` §6's
+  serving-store question (answered by the build, P-D-150), `12` §7's route census and `name` rows
+  (P-D-159), `03` §7's bucket-ii row (P-D-145/146), `07` §7's bucket-test row (P-D-158), `04` §7's
+  flip-guard stub row (P-D-156). The casing row is annotated with P-D-159's recommendation and
+  stays the owner's.
+- **The end state, measured at this commit.** DoDs **232 / 236** (open: `12`'s three by their own
+  rules — the CI clause, the counterpart rule, the job outside the gear — and `06`'s
+  `dod-require-broker`, the deployment's artifact); §6 criteria **277 / 393**, ticked clause by
+  clause; `cfs validate` 0 errors / 20 warnings, 295 artifacts, code coverage 385 / 385; spec-check
+  37 findings, unchanged since the plan's baseline; the tick census 0 shadowed; the suite 1238
+  lib + 3 harness + 7 seam (5 ignored halves), SDK 23, Postgres tier 49 / 49. Twenty-two solo
+  commits on `bss/products`, one per group, every one pushed.
+- **The remainder, counted, for the next plan.** The register's 28 `Owed` bullets (P-D-21 …
+  P-D-112) uncollected — the plan's item 1; the FEATURE §7 rows still live (37 after the nine
+  struck; a dozen of them are `12`'s stale-arithmetic rows against `design/12` §6); the design §6
+  items still live (23 after the three struck; `01`'s six are coverage records the census
+  miscounts as questions, `10`'s five are the posture questions for the owner); PRD §15's census
+  (item 4); `DECOMPOSITION`'s alignment and the status boxes (item 5, now known to end at the PRD
+  definitions); lints 10 and 11; the convergence harness (P-D-161); the Foundation head tables'
+  Postgres oracle.
+- **The owner questions, in one list.** (1) The wire casing — `camelCase` recommended (P-D-159).
+  (2) The collector client's identity on the scheduled lane — the hub's service credential
+  recommended (P-D-157). (3) The Postgres tier in CI and the five `#[ignore]` boxes — P-D-132
+  stands; the tier is named (P-D-161). (4) The status boxes — a release call at the PRD level
+  (this entry). (5) The sixteen taxonomy codes' precedence — the pipeline's phase order
+  recommended (P-D-157). (6) `10`'s five posture questions in `design/10` §6 — detector quality,
+  the watermark and ledger tables' retention class, encryption at rest for the map, who may
+  resolve an identity through the map, whether the allow-list is itself a PII store.
+  (7) The pricing asks — eight rows in pricing's register section I (P-D-160).
+- **Propagated**: `design/03-sku-classification.md` §6, `design/05-governance.md` §6,
+  `design/08-read-models.md` §6, `features/consumer-contracts.md` §7, `features/sku-classification.md`
+  §7, `features/reference-signal.md` §7, `features/lifecycle.md` §7 (the strikes and the
+  annotation), `features/retention-erasure.md` §2–§3 (the six ticks).
+- **Trace**: the six `@cpt-flow` / `@cpt-algo` markers in `api/rest/retention.rs` and
+  `infra/retention.rs`.
+
 #### P-D-161 — Operability: the alert contract per slice, the Postgres tier's oracles and races, the inbox seam as a type, the deployment posture and DR
 
 - **Date**: 2026-09-05 (the lead, group 19 of the follow-on plan)

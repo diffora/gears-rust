@@ -546,6 +546,7 @@ async fn refuse(
     .await
 }
 
+/// @cpt-flow:cpt-cf-bss-products-flow-erasure:p1
 async fn execute_erasure(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
@@ -708,6 +709,7 @@ async fn execute_erasure(
     }
 }
 
+/// @cpt-algo:cpt-cf-bss-products-algo-identity-map:p1
 async fn export_identity_map(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
@@ -895,6 +897,8 @@ async fn refuse_allowlist(
 }
 
 /// `POST /bss-products/v1/pii-allowlist-entries`.
+///
+/// @cpt-flow:cpt-cf-bss-products-flow-pii-policy:p1
 async fn sign_off_allowlist_entry(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,

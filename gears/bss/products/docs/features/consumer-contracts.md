@@ -1678,15 +1678,15 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
 - **`design/12` §3.2 lint 1 calls all fourteen multiply-claimed requirements pairs.** Recorded as
   row 23; one is a triple.
 
-- **The studio single-inbox envelope diverges** (raised by the seam suite's sixth fixture, P-D-151).
+- ~~**The studio single-inbox envelope diverges**~~ **Filed (P-D-160; struck at P-D-162, 2026-09-05)**: pricing's register section I, row I-1; the seam suite pins the five shared fields (`b3f08d351`). *The item's text stood as:* (raised by the seam suite's sixth fixture, P-D-151).
   Pricing's `ApprovalView` spells the submitter `submitter_principal` and carries no `quorum`; the
   registry's `ApprovalInboxCard` spells `submitter` and carries the quorum card `design/05`
   `inst-gv-queue` requires. The fixture pins the five shared fields (`approval_id`, `subject_ref`,
   `subject_kind`, `state`, `submitted_at`) and holds the divergence so a silent convergence is
   noticed. Which side moves is the two owners' call. **Owner**: pricing's governance owner and this
   slice's. **Blocks**: nothing — `inst-sdk-inbox` is `p2` and the check runs.
-- **Fourteen code routes have no declaring span in the design set, and five declared spans have no
-  code** (measured by lint 3's normalisation at `14344c110`, P-D-151). Undeclared: the approvals
+- ~~**Fourteen code routes have no declaring span in the design set, and five declared spans have no
+  code**~~ **Closed (P-D-159; struck at P-D-162, 2026-09-05)**: re-measured as nine and none by a census that reads multi-line builders and helper arguments; all nine plus the label door declared and paired, and lint 3's code half keeps both directions (`6a248a80b`). *The item's text stood as:* (measured by lint 3's normalisation at `14344c110`, P-D-151). Undeclared: the approvals
   queue `GET`, `browse`, the exports `GET`, the version diff, the three dashboards, the release
   door, the product deprecate/retire-resume/validate doors, the label door, the composition clear,
   the SKU validate. Declared and not built: the two metadata `PATCH` doors. Lint 3 pairs declared
@@ -1696,7 +1696,7 @@ diffed against `design/12` §6 sentence by sentence, mechanically, and every row
   the head-act bodies rendered inside the save/publish/discard transactions are `camelCase`. The
   SDK binding reads either; a REST consumer sees both on one entity. **Owner**: `01`'s. **Blocks**:
   nothing.
-- **`name` on the SKU read shape** (P-D-151): pricing's `CatalogSku.name` has no registry column
+- ~~**`name` on the SKU read shape**~~ **Closed (P-D-159; struck at P-D-162, 2026-09-05)**: stays pricing's rendering — the registry has no SKU name column and mints none. *The item's text stood as:* (P-D-151): pricing's `CatalogSku.name` has no registry column
   behind it — a SKU carries `sku_code`, the Product carries `name`. The pin does not carry `name`;
   whether the consumer renders the code or the parent's name is pricing's. **Owner**: pricing's
   catalog owner. **Blocks**: nothing.

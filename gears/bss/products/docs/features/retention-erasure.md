@@ -200,7 +200,7 @@ normative ones. What this section carries is the triggering actor, the scenarios
 
 ### Erase an actor
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-erasure`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-flow-erasure`
 
 **Actor**: `cpt-cf-bss-products-actor-catalog-admin` for the requested path; **the age clock
 (system)** for the automatic trigger
@@ -233,7 +233,7 @@ rule**.
 
 ### Enforce the content-PII prohibition
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-pii-policy`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-flow-pii-policy`
 
 **Actor**: every operator writing free text, through `02-taxonomy-attributes`' hook
 
@@ -258,7 +258,7 @@ the allow-list are this feature's.
 
 ### Run retention
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-flow-retention`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-flow-retention`
 
 **Actor**: the GC (system), monitored by `cpt-cf-bss-products-actor-catalog-admin`
 
@@ -302,7 +302,7 @@ satisfy the gate vacuously.
 
 ### Verify durability
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-flow-restore-drill`
+- [x] `p2` - **ID**: `cpt-cf-bss-products-flow-restore-drill`
 
 **Actor**: the drill (system), on the configured cadence
 
@@ -330,7 +330,7 @@ Each process below is **declared here and stepped in
 
 ### The identity-reference map
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-identity-map`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-algo-identity-map`
 
 **Input**: a principal appearing at any door that stamps an `actor_ref`, and the erasure or age
 trigger.
@@ -363,7 +363,7 @@ over a record it may not rewrite.**
 
 ### Error taxonomy
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-algo-retention-errors`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-algo-retention-errors`
 
 **Input**: a refusal raised by a door of this feature.
 
@@ -1125,7 +1125,7 @@ collided with a field every consumer already reads as *"who did this"*.
 
 ## 6. Acceptance Criteria
 
-**34 of 34 ticked, each against a named probe** (the last at P-D-158; the status box waits on the studio's begin/end code markers for the six §2–§3 items and the DECOMPOSITION entry — P-D-158 routes that to the close-out group) (**P-D-137**'s convention: a criterion ticks with
+**34 of 34 ticked, each against a named probe** (the last at P-D-158; the six §2–§3 items carry their `@cpt-flow`/`@cpt-algo` markers and tick at P-D-162; the status box waits on the PRD-level requirement definitions, the owner's release call — P-D-162) (**P-D-137**'s convention: a criterion ticks with
 its `DoD`, by the strand, clause by clause, and never by inspection — so every ticked line below
 carries the case that proves it). The one that is not ticked is the detector's enumerated door set:
 four of the five doors it names are `07`'s and `04`'s and do not exist yet. **That is why this

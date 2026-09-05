@@ -1260,7 +1260,7 @@ and was invisible to a reading of the design set alone.*
 
 *Both bullets name the obligation they block, as the table's rows do.*
 
-- **The flip guard's stub is the whole test surface until `07-reference-signal` exists.** *Blocks
+- ~~**The flip guard's stub is the whole test surface until `07-reference-signal` exists.**~~ **Closed (P-D-156; struck at P-D-162, 2026-09-05)**: `07` exists and the four-state stub is probed against it (`flip_guard_defers_all_four_other_states_and_names_producers`); the stub criterion ticked (`aee5a531f`). *The item's text stood as:* *Blocks
   `dod-flip-guard` and `dod-no-orphan`.* The predicate has five answers and only one of them lets a
   flip proceed, so a stub that always answers fresh-zero passes every criterion while proving
   nothing about the four deferring states. Whether the stub is this feature's to own, or belongs in
