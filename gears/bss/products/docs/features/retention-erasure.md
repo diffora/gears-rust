@@ -1125,7 +1125,7 @@ collided with a field every consumer already reads as *"who did this"*.
 
 ## 6. Acceptance Criteria
 
-**33 of 34 ticked, each against a named probe** (**P-D-137**'s convention: a criterion ticks with
+**34 of 34 ticked, each against a named probe** (the last at P-D-158; the status box waits on the studio's begin/end code markers for the six §2–§3 items and the DECOMPOSITION entry — P-D-158 routes that to the close-out group) (**P-D-137**'s convention: a criterion ticks with
 its `DoD`, by the strand, clause by clause, and never by inspection — so every ticked line below
 carries the case that proves it). The one that is not ticked is the detector's enumerated door set:
 four of the five doors it names are `07`'s and `04`'s and do not exist yet. **That is why this
@@ -1148,7 +1148,7 @@ criterion's own note.
       detected value.
       *Probe:* no_verdict_reason_carries_the_matched_text,
       a_pii_refusal_names_the_field_and_its_audit_row_carries_no_detected_value.
-- [ ] Every `reason`-bearing door in the enumerated set raises the same code: audit rows, approval
+- [x] Every `reason`-bearing door in the enumerated set raises the same code: audit rows, approval
       rejections, break-glass sessions, correction overrides, and the `SkuRetired` payload — and
       **not** bulk or promotion rows, which P-D-50 struck.
       **No probe, and this is the one criterion that keeps the feature's status box
@@ -1166,6 +1166,18 @@ criterion's own note.
       break-glass reasons (`api::rest::approvals`, whose site this commit swapped off the
       permissive host). A criterion cannot be ticked against doors that do not exist, and
       ticking it by inspection is what P-D-137's convention forbids.
+      **Ticked (P-D-158, 2026-09-05), one probe per enumerated door**, each a person-shaped reason
+      meeting `CONTENT_PII_BLOCKED` at the wire with nothing written: approval rejections
+      (`a_rejection_with_a_person_shaped_reason_is_refused_content_pii_blocked`), break-glass
+      sessions (`an_elevation_with_a_person_shaped_reason_is_refused_content_pii_blocked`),
+      correction overrides (`break_glass_arm_a_needs_the_flag_every_producer_stale_and_a_clean_reason`,
+      now naming the code), the `SkuRetired` reason on both retire doors
+      (`a_retirement_reason_naming_a_person_is_refused_content_pii_blocked`,
+      `a_product_retirement_reason_naming_a_person_is_refused_content_pii_blocked`), the
+      materiality-policy reason (`a_policy_reason_naming_a_person_is_refused_content_pii_blocked`),
+      the audit-row reasons (`a_pii_refusal_names_the_field_and_its_audit_row_carries_no_detected_value`).
+      Bulk and promotion rows carry no reason field (`the_row_shape_is_judged_in_one_report`), so
+      the hook has no operand there — P-D-50's strike holds by shape.
 
 **The allow-list**
 

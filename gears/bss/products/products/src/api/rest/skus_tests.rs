@@ -5787,6 +5787,39 @@ mod retire_door_tests {
         );
     }
 
+    /// **The SKU retirement reason runs `10`'s hook at the door** (P-D-158):
+    /// a person-shaped reason is `CONTENT_PII_BLOCKED`, no intent is
+    /// scheduled and no `SkuRetired` is announced; `retire_body()` is the
+    /// clean control every probe above uses.
+    #[tokio::test]
+    async fn a_retirement_reason_naming_a_person_is_refused_content_pii_blocked() {
+        let harness = harness().await;
+        let (sku_id, rev) = published_sku(&harness, "SKU-PII-RET").await;
+        let refused = post_retire(
+            &harness,
+            TENANT,
+            sku_id,
+            &if_match_for(rev),
+            &json!({ "reason": "requested by Ann Fritz", "confirmed": true }),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(refused).await;
+        assert_eq!(
+            body["context"]["reason"]
+                .as_str()
+                .or_else(|| body["context"]["violations"][0]["type"].as_str()),
+            Some("CONTENT_PII_BLOCKED"),
+            "{body}"
+        );
+        assert_eq!(
+            live_intent_count(&harness, sku_id).await,
+            0,
+            "nothing scheduled"
+        );
+        assert_eq!(enqueued_event_count(&harness.dsn, "SkuRetired").await, 0);
+    }
+
     #[tokio::test]
     async fn already_deprecated_takes_no_re_stamp() {
         let harness = harness().await;
@@ -7657,6 +7690,14 @@ mod correction_door_tests {
             pii.status(),
             StatusCode::BAD_REQUEST,
             "a person-shaped reason fails 02's gate"
+        );
+        let pii_body = body_json(pii).await;
+        assert_eq!(
+            pii_body["context"]["reason"]
+                .as_str()
+                .or_else(|| pii_body["context"]["violations"][0]["type"].as_str()),
+            Some("CONTENT_PII_BLOCKED"),
+            "the correction override's reason meets 10's code at the door (P-D-158): {pii_body}"
         );
 
         let admitted = post_correction(on(), sku_id, &etag, &payload).await;

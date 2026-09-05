@@ -7204,6 +7204,43 @@ mod retire_door_tests {
         );
     }
 
+    /// **The Product retirement reason runs `10`'s hook at the door**
+    /// (P-D-158): a person-shaped reason is `CONTENT_PII_BLOCKED`, the head
+    /// stays `published` and no intent is scheduled.
+    #[tokio::test]
+    async fn a_product_retirement_reason_naming_a_person_is_refused_content_pii_blocked() {
+        let harness = harness().await;
+        let product_id = published_product(&harness).await;
+        let refused = post_json_act(
+            &harness,
+            TENANT,
+            product_id,
+            "retire",
+            &if_match(2),
+            &json!({ "reason": "requested by Ann Fritz", "confirmed": true, "cascade_confirmed": true }),
+        )
+        .await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        let body = json_body(refused).await;
+        assert_eq!(
+            body["context"]["reason"]
+                .as_str()
+                .or_else(|| body["context"]["violations"][0]["type"].as_str()),
+            Some("CONTENT_PII_BLOCKED"),
+            "{body}"
+        );
+        assert_eq!(
+            head_of(&harness, product_id).await.lifecycle_state.as_str(),
+            "published",
+            "nothing moved"
+        );
+        assert_eq!(
+            live_intent_count(&harness, product_id).await,
+            0,
+            "nothing scheduled"
+        );
+    }
+
     #[tokio::test]
     async fn missing_cascade_confirmation_is_refused() {
         let harness = harness().await;

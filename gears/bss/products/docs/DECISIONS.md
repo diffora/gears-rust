@@ -1569,6 +1569,76 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-158 — Criteria wave C: the PII hook probed at every reason door, `10` at 34 / 34, the status box gated by code markers, and 17 more criteria tick
+
+- **Date**: 2026-09-05 (the lead, group 16 of the follow-on plan)
+- **`10`'s last criterion ticks on six door probes** — the first feature at 13 / 13 DoDs **and**
+  34 / 34 criteria under P-D-137's convention. Each enumerated
+  reason-bearing door now has a probe posting a person-shaped reason and meeting
+  `CONTENT_PII_BLOCKED` at the wire with nothing written: the approval rejection and the break-glass
+  session (`approvals_tests`), the correction override (the arm-(a) probe, which refused the reason
+  before and now names the code), the `SkuRetired` reason on both retire doors, the
+  materiality-policy reason, and the audit-row reasons `10` already probed. Bulk and promotion rows
+  carry no reason field, so P-D-50's strike holds by shape. *Counter-argument:* one probe over a
+  roster of doors would be shorter; rejected — P-D-137 ticks a criterion by its probe, and a
+  roster probe passes when a door is missing from the roster.
+- **Catalog-version, 10 of 25 ticked.** The mechanical lane's retry →
+  `a_moved_head_between_stage_and_commit_restages_the_pass`; the timeout →
+  `the_overdue_scan_names_the_silent_participants` (names pricing),
+  `posted_is_fail_closed_until_the_ledger_settles` (posted refused),
+  `the_resolver_requires_intent_and_serves_stable_bytes` (browse served); the foreign ack →
+  `a_non_member_is_refused_participant_unknown`; both lane SLOs →
+  `a_closed_interactive_window_commits_one_version`,
+  `a_steady_interactive_trickle_does_not_defer_a_closed_bulk_window`,
+  `an_open_bulk_window_waits_for_its_hard_max`; the UPDATE message →
+  `an_update_of_a_frozen_row_is_refused`, `a_frozen_version_row_admits_neither_update_nor_delete`
+  (Postgres); the four controls → `the_resolver_requires_intent_and_serves_stable_bytes`,
+  `an_unregistered_source_is_refused_with_the_discriminator`,
+  `posted_is_fail_closed_until_the_ledger_settles`,
+  `a_forced_version_refuses_posted_naming_the_silent` with
+  `a_force_completion_closes_the_open_freeze_and_posted_waits_for_the_forced_ack`. **Open**: the
+  byte-identity flagship over everything mutable, the query-count re-resolution, the concurrent
+  increments and the refused run's id (G19), the operator lane's two `STAGED_ENTITY_CHANGED` arms,
+  the historical `freezeComplete`, the prior version's `compositionPending`, the two diff cases, the
+  referential predicate's delete arms and the `products_catalog_version` whitelist on both engines,
+  `STAGED_ENTITY_CHANGED`'s control, `PARTICIPANT_UNKNOWN`'s audit half.
+- **Bulk-promotion, 4 of 13 ticked.** The row retry → `a_resumed_batch_skips_the_rows_it_already_staged`;
+  the new-batch collision → `a_collision_carries_the_foundations_own_code`; the reserved lane →
+  `the_reserved_lane_carries_its_declared_name`; `BULK_LIMIT` both ways →
+  `both_bounds_refuse_bulk_limit`. **Open**: the ten-thousand-row fixture (§7 row 9), the
+  dependency-failed siblings (`a_failing_row_fails_alone_with_the_owning_code` asserts the owning
+  code, not `BULK_DEPENDENCY_FAILED`), `STALE_LIVE_OP` alone, the record-backed host refusal, the
+  retired holder's clone hint, mass retire under the guard, the import-pair caller, the five pairs,
+  code-not-status.
+- **Read-models, 3 of 11 ticked.** The fifteen-case matrix →
+  `the_visibility_matrix_is_the_dod_table_cell_for_cell`,
+  `browse_serves_the_projection_under_the_visibility_contract_with_the_stamp`; the empty scope set
+  → `the_scope_predicate_is_token_membership_and_admits_the_empty_set`; the retirement flip →
+  `a_retirement_removal_advances_projected_at_without_moving_the_version`,
+  `a_retirement_removal_is_admitted_by_the_floor_and_rejected_by_completeness`. **Open**: the
+  gateway-layer denial, convergence from commit and the lag alarm (G19), the four-endpoint limiter
+  (§7 rows 10 and 22), the outage read, the metadata-absent sweep (§7 row 11), the subtree re-file,
+  the secondary facet.
+- **Status boxes: `10`'s does not flip yet, and the reason is a finding.** The validator's
+  `parent-checked-nested-unchecked` rule makes the status box the parent of every `- [ ]` item in
+  the FEATURE — the flows, algorithms and the feature id beside the DoDs — and ticking those six
+  raises `code-no-marker` for each: the studio's code grammar for a flow or algorithm is a
+  `@cpt-begin:<id>:pN:<inst>` / `@cpt-end:…` pair over the instruction it implements, a grammar this
+  crate has never used (its 301 markers are all `@cpt-dod`); the feature id's own box raises
+  `ref-done-def-not-done` until `DECOMPOSITION.md`'s entry is ticked. P-D-137's convention (DoDs and
+  criteria) was one rule short. **Recommend** (G20): mark the six items over their `inst-er-*` /
+  `inst-im-*` instructions with the begin/end grammar, tick the DECOMPOSITION entry, then flip —
+  the counter-argument, ticking the boxes without markers, is exactly what the validator refuses.
+  The ticks reverted here; the criterion tick stands.
+- **Propagated**: `features/retention-erasure.md` (§6's last criterion, the header, the status
+  box), `features/catalog-version.md` §6, `features/bulk-promotion.md` §6,
+  `features/read-models.md` §6.
+- **Trace**: `approvals_tests::a_rejection_with_a_person_shaped_reason_is_refused_content_pii_blocked`,
+  `approvals_tests::an_elevation_with_a_person_shaped_reason_is_refused_content_pii_blocked`,
+  `skus_tests::retire_door_tests::a_retirement_reason_naming_a_person_is_refused_content_pii_blocked`,
+  `products_tests::retire_door_tests::a_product_retirement_reason_naming_a_person_is_refused_content_pii_blocked`,
+  `materiality_policy_tests::a_policy_reason_naming_a_person_is_refused_content_pii_blocked`.
+
 #### P-D-157 — Criteria wave B: the scheduled lane resolves the usage type, a deferral releases its claim, and 45 criteria tick
 
 - **Date**: 2026-09-05 (the lead, group 15 of the follow-on plan)

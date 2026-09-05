@@ -261,3 +261,39 @@ async fn a_second_put_replaces_the_policy() {
     };
     assert_eq!(policy.approver_count(), 1, "one row per tenant, replaced");
 }
+
+/// **The materiality-policy reason runs `10`'s hook at the door** (P-D-158):
+/// a person-shaped reason is `CONTENT_PII_BLOCKED` and the policy is not
+/// written — the tenant still resolves to the default.
+#[tokio::test]
+async fn a_policy_reason_naming_a_person_is_refused_content_pii_blocked() {
+    let harness = harness().await;
+    let refused = put_policy(
+        &harness,
+        json!({
+            "field_set": ["tax_category"],
+            "affected_entity_trigger": 25,
+            "approver_count": 0,
+            "reason": "requested by Ann Fritz"
+        }),
+    )
+    .await;
+    assert_eq!(refused.status(), axum::http::StatusCode::BAD_REQUEST);
+    let body = body_of(refused).await;
+    assert_eq!(
+        body["context"]["reason"]
+            .as_str()
+            .or_else(|| body["context"]["violations"][0]["type"].as_str()),
+        Some("CONTENT_PII_BLOCKED"),
+        "{body}"
+    );
+    assert_eq!(
+        crate::test_support::raw_i64(
+            &harness.dsn,
+            "SELECT COUNT(*) AS v FROM products_materiality_policy"
+        )
+        .await,
+        0,
+        "the refused policy is not written"
+    );
+}

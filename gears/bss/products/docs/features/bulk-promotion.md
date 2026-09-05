@@ -1065,6 +1065,9 @@ raises no second one.
 
 ## 6. Acceptance Criteria
 
+*Ticks measured clause by clause at **P-D-158** (2026-09-05); the criterion-to-probe map is in that
+entry. A box left open names a clause no probe asserts yet.*
+
 **The sizing flagship**
 
 - [ ] The ten-thousand-row fixture stages, reports and commits within the sizing envelope, emits
@@ -1103,10 +1106,10 @@ raises no second one.
 **Idempotency, across all three key scopes**
 
 - [x] A replayed **batch** key returns the existing batch and starts no second one.
-- [ ] A **row** retried within the batch commits nothing twice, keyed on the ledger.
-- [ ] A row re-listed in a **new** batch is a new act, and a code collision is the ordinary
+- [x] A **row** retried within the batch commits nothing twice, keyed on the ledger.
+- [x] A row re-listed in a **new** batch is a new act, and a code collision is the ordinary
       `DUPLICATE_CODE`.
-- [ ] Per-row publishes resolve the publish door's key on the reserved **`internal:bulk-row`** lane —
+- [x] Per-row publishes resolve the publish door's key on the reserved **`internal:bulk-row`** lane —
       the lane that ships unused, asserted by name so a build cannot mint a fourth.
 - [x] A crash mid-commit resumes and completes **without duplicates**.
 
@@ -1142,7 +1145,7 @@ raises no second one.
 
 **Bounds**
 
-- [ ] A batch over the configured row maximum is refused `BULK_LIMIT`, and so is a tenant over the
+- [x] A batch over the configured row maximum is refused `BULK_LIMIT`, and so is a tenant over the
       concurrent-batch maximum — two operands, one code.
 
 ## 7. Known unknowns

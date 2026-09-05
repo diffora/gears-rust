@@ -1718,6 +1718,9 @@ ceremony's side is the audit row's — the one that outlives the ledger's state.
 
 ## 6. Acceptance Criteria
 
+*Ticks measured clause by clause at **P-D-158** (2026-09-05); the criterion-to-probe map is in that
+entry. A box left open names a clause no probe asserts yet.*
+
 **The byte-identity flagship**
 
 - [ ] Publish a version, then mutate everything mutable — heads, metadata, categories, recognized
@@ -1739,12 +1742,12 @@ ceremony's side is the audit row's — the one that outlives the ledger's state.
       `STAGED_ENTITY_CHANGED` naming the entity.
 - [ ] An entity **retired or deprecated** between collect and commit — its `published_version`
       unchanged — fails the same way. This is the arm a version-only check misses.
-- [ ] The mechanical lane on the same race retries fresh and the request survives with its
+- [x] The mechanical lane on the same race retries fresh and the request survives with its
       `(source, request_key)` intact.
 
 **The freeze protocol**
 
-- [ ] Timeout reached: `posted`-intent resolution is refused, `browse` is unaffected, and
+- [x] Timeout reached: `posted`-intent resolution is refused, `browse` is unaffected, and
       `freeze_overdue` names pricing.
 - [x] Force-completion records `not_frozen(forced)`, stamps `released_at` on the same registration,
       flips `freeze_state` to `complete(forced)`, and `posted` resolution of that version is refused
@@ -1754,13 +1757,13 @@ ceremony's side is the audit row's — the one that outlives the ledger's state.
       `released_at` the ceremony stamped does not.
 - [ ] A historical version re-resolves `freezeComplete` against its **snapshotted** set after a
       membership change (AC #23).
-- [ ] An ack under a service identity other than the participant's own is refused.
+- [x] An ack under a service identity other than the participant's own is refused.
 
 **Lane SLOs**
 
-- [ ] Under a bulk burst: one version, ≤ 5-minute delay, and the interactive deadline honoured in a
+- [x] Under a bulk burst: one version, ≤ 5-minute delay, and the interactive deadline honoured in a
       mixed window.
-- [ ] A steady interactive trickle does not defer a bulk window past its five-minute hard max.
+- [x] A steady interactive trickle does not defer a bulk window past its five-minute hard max.
 
 **Composition clear**
 
@@ -1785,7 +1788,7 @@ ceremony's side is the audit row's — the one that outlives the ledger's state.
 - [ ] Deleting a `products_entity_version` row that **no** entry references is admitted, on both
       engines. This arm is what proves the predicate is a predicate and not a renamed unconditional
       refusal.
-- [ ] `UPDATE` on a frozen row is still refused with the **UPDATE** message, asserted apart from the
+- [x] `UPDATE` on a frozen row is still refused with the **UPDATE** message, asserted apart from the
       delete message.
 - [ ] On `products_catalog_version`, a `DELETE` and an `UPDATE` of any column other than
       `freeze_state` are each refused **with their own message, asserted apart**, on both engines;
@@ -1795,16 +1798,16 @@ ceremony's side is the audit row's — the one that outlives the ledger's state.
 **Positive controls, one line per declared code** — seven codes, seven lines. A blanket criterion
 here is ticked by inspection.
 
-- [ ] `INTENT_REQUIRED` — a resolution request with no `intent` is refused; the same request with
+- [x] `INTENT_REQUIRED` — a resolution request with no `intent` is refused; the same request with
       `intent = browse` succeeds.
-- [ ] `REQUEST_SOURCE_UNKNOWN` — a request from a source outside the trigger set is refused **after**
+- [x] `REQUEST_SOURCE_UNKNOWN` — a request from a source outside the trigger set is refused **after**
       the grant passes, and the refusal carries a `CATALOG_VERSION_REJECTED` precondition violation;
       the same request from a registered source succeeds. **Both halves in one probe**: a refusal that
       omits the violation type is invisible to the consumer's `Rejected` arm, which is the whole
       reason the code exists.
-- [ ] `FREEZE_INCOMPLETE` — `posted` against an open ledger is refused; the same request after every
+- [x] `FREEZE_INCOMPLETE` — `posted` against an open ledger is refused; the same request after every
       snapshot member acks succeeds.
-- [ ] `VERSION_FORCED_INCOMPLETE` — `posted` against `complete(forced)` is refused **naming the
+- [x] `VERSION_FORCED_INCOMPLETE` — `posted` against `complete(forced)` is refused **naming the
       participant**; after that participant acks, the same request succeeds.
 - [ ] `STAGED_ENTITY_CHANGED` — an operator publish racing a head move is refused; the same publish
       with no concurrent move succeeds.

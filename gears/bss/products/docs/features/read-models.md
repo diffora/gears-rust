@@ -905,9 +905,12 @@ answer is *ontological*, this sweep and this DoD's rationale both reverse.
 
 ## 6. Acceptance Criteria
 
+*Ticks measured clause by clause at **P-D-158** (2026-09-05); the criterion-to-probe map is in that
+entry. A box left open names a clause no probe asserts yet.*
+
 **The visibility matrix — fifteen cases, each with its positive control**
 
-- [ ] All five states across default browse, filtered browse and history: `draft` and `discarded`
+- [x] All five states across default browse, filtered browse and history: `draft` and `discarded`
       absent everywhere; `retired` present in history and absent from both browse surfaces;
       `deprecated` flagged in default browse, excluded under `excludeDeprecated` **and served in
       history**; `published` present on all three. **Fifteen cases** — the enumeration above names
@@ -923,7 +926,7 @@ answer is *ontological*, this sweep and this DoD's rationale both reverse.
 - [ ] An out-of-claim request is **denied and audited at the gateway**, and the storage layer beneath
       it returns empty. **Both layers are asserted**, so a door that silently absorbs an auditable
       cross-scope attempt fails.
-- [ ] A row whose scope set is **empty** is served to every claim — P-D-39's rule, and the case a
+- [x] A row whose scope set is **empty** is served to every claim — P-D-39's rule, and the case a
       containment-only predicate fails.
 
 **The stamp**
@@ -932,7 +935,7 @@ answer is *ontological*, this sweep and this DoD's rationale both reverse.
       `asOfCatalogVersion` and `projectedAt`.
 - [x] A zero-version tenant's response carries `asOfCatalogVersion = null` **and** a `projectedAt`.
       A response omitting the field fails: absence is indistinguishable from a dropped stamp.
-- [ ] **A retirement flip removes a row's content without advancing any catalog version, and the
+- [x] **A retirement flip removes a row's content without advancing any catalog version, and the
       stamp does not regress.** The floor's negative case — a projector built on the
       strictly-additive premise passes every additive test and fails this one.
 - [x] `CatalogVersionPublished` arriving **before** that version's entity events does not advance the

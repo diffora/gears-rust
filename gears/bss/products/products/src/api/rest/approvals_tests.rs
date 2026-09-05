@@ -979,6 +979,73 @@ async fn a_clean_reason_is_admitted_by_the_write_block() {
     );
 }
 
+/// The code a `CONTENT_PII_BLOCKED` refusal carries, on either channel the
+/// ladder renders it through.
+async fn pii_code_of(response: axum::http::Response<Body>) -> String {
+    let body = body_of(response).await;
+    body["context"]["reason"]
+        .as_str()
+        .or_else(|| body["context"]["violations"][0]["type"].as_str())
+        .unwrap_or_else(|| panic!("a coded refusal: {body}"))
+        .to_owned()
+}
+
+/// **The approval-rejection reason runs `10`'s hook at the door** (`10` §6's
+/// every-door criterion; P-D-158): a person-shaped reason is refused
+/// `CONTENT_PII_BLOCKED` before any decision row is written, and the clean
+/// reason above is the control.
+#[tokio::test]
+async fn a_rejection_with_a_person_shaped_reason_is_refused_content_pii_blocked() {
+    let harness = harness().await;
+    seed_head(&harness).await;
+    set_quorum(&harness, 1).await;
+    let approval = submit(&harness, Uuid::from_u128(0x5a_a0)).await;
+    let refused = post(
+        app_for(&harness, TENANT),
+        &format!("/bss-products/v1/approvals/{approval}/decisions"),
+        ctx_with_roles(Uuid::from_u128(0x5a_a1), &[ApproverRole::CatalogAdmin]),
+        json!({ "verdict": "rejected", "reason": "requested by Ann Fritz" }),
+    )
+    .await;
+    assert_eq!(refused.status(), 400);
+    assert_eq!(pii_code_of(refused).await, "CONTENT_PII_BLOCKED");
+    assert_eq!(
+        crate::test_support::raw_i64(
+            &harness.dsn,
+            "SELECT COUNT(*) AS v FROM products_approval_decision"
+        )
+        .await,
+        0,
+        "refused before the row is written"
+    );
+}
+
+/// **The break-glass session reason runs the same hook** (P-D-158): a
+/// person-shaped reason on the elevation door is `CONTENT_PII_BLOCKED`, and
+/// no session row is written.
+#[tokio::test]
+async fn an_elevation_with_a_person_shaped_reason_is_refused_content_pii_blocked() {
+    let harness = harness().await;
+    let refused = post(
+        app_for(&harness, TENANT),
+        "/bss-products/v1/breakglass-sessions",
+        ctx_without_roles(Uuid::from_u128(0x5a_b0)),
+        json!({ "target_tenant_id": TARGET_TENANT, "reason": "requested by Ann Fritz" }),
+    )
+    .await;
+    assert_eq!(refused.status(), 400);
+    assert_eq!(pii_code_of(refused).await, "CONTENT_PII_BLOCKED");
+    assert_eq!(
+        crate::test_support::raw_i64(
+            &harness.dsn,
+            "SELECT COUNT(*) AS v FROM products_breakglass_session"
+        )
+        .await,
+        0,
+        "no session opens on a refused reason"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Break-glass
 // ---------------------------------------------------------------------------
