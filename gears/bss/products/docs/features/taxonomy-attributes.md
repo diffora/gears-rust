@@ -1696,7 +1696,7 @@ entry. A box left open names a clause no probe asserts yet.*
       inspection rather than by a test
 - [x] An applied `GovernedLiveOp` against a moved world is refused `STALE_LIVE_OP`, and no partial
       taxonomy mutation is observable
-- [ ] No `#[ignore]`d test exists without a CI tier that runs it
+- [ ] No `#[ignore]`d test exists without a CI tier that runs it *(The tier: `make test-products-pg` — `DESIGN.md` §3.8's runbook; on demand by P-D-132, so this box stays open by the owner's decision — P-D-161.)*
 
 ## 7. Known unknowns
 

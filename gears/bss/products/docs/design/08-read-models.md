@@ -251,6 +251,16 @@ the point.
 - Re-parent probe: a subtree re-files completely; no orphan paths.
 - Stamp probe: every response shape (success, empty, error, degraded) carries the full `StalenessStamp` (`asOfCatalogVersion`, `projectedAt`), including the zero-version tenant of M6 (`asOfCatalogVersion = null` + `projectedAt`).
 
+**Alerts and meters (P-D-161).** The events this slice emits as `tracing` events, with the labels the emitting site carries — asserted per site by `lib_tests::every_alert_event_carries_the_labels_its_table_names`. The delivery channel is the platform's; the contract below is this gear's. Thresholds are interim until the NFR workshop.
+
+| Event | Labels | Interim threshold | Owner |
+|---|---|---|---|
+| `read_model_lag` | `tenant_id`, `lag_secs`, `budget_secs` | a projected event past `read_convergence_budget_secs` (5); serving continues, stale-but-stamped | the read-model operator |
+| `read_model_poison` | `tenant_id`, `inbox_id`, `payload_type`, `attempts`, `reason` | a row parked past `read_poison_retry_ceiling` (5) and skipped | the read-model operator |
+| `read_model_rebuilt` | `tenant_id`, `rows`, `generation` | every rebuild — the checkpoint fell behind the swept tail | the read-model operator |
+| `read_model_convergence` | `tenant_id`, `payload_type`, `latency_ms` | meter — commit → projected; the budget's operand | the NFR table |
+| `read_edge_latency` | `tenant_id`, `door`, `latency_ms` | meter — per read door, the p95 the NFR names | the NFR table |
+
 ## 6. Traces to / Risks & Open items
 
 **Traces to**: `cpt-cf-bss-products-usecase-catalog-browser-history` (§10 use case, claimed by id here — all seven were in lint 1's universe and none was claimed); **§9.1 by id** — `cpt-cf-bss-products-interface-read-model` (the browse/search surface this slice serves; claimed by id here for the first time). `cpt-cf-bss-products-fr-cache-first-browse`; AC #32; **NFRs by id** (#1 `cpt-cf-bss-products-nfr-read-latency`,

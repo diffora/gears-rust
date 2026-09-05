@@ -961,7 +961,7 @@ entry. A box left open names a clause no probe asserts yet.*
 - [x] Building the bucket-ii class turns `buckets_ii_and_iv_have_no_members_today`,
       `an_unregistered_column_fails_closed_rather_than_defaulting` and
       `the_class_counts_are_pinned_per_entity` red, and each is updated with its reason recorded
-- [ ] No `#[ignore]`d test exists without a CI tier that runs it
+- [ ] No `#[ignore]`d test exists without a CI tier that runs it *(The tier: `make test-products-pg` — `DESIGN.md` §3.8's runbook; on demand by P-D-132, so this box stays open by the owner's decision — P-D-161.)*
 
 ## 7. Known unknowns
 

@@ -376,3 +376,146 @@ fn every_writer_of_a_release_stamp_is_counted() {
         "and it is the sweep's, not a door's: {sites:?}"
     );
 }
+
+/// The alert and meter roster each design slice's §5 table names (P-D-161):
+/// `(file, event, labels)`. The probe below reads each site and asserts the
+/// emitted `tracing` event carries every label the table promises — the
+/// delivery channel is the platform's, the contract is ours.
+const ALERT_SITES: &[(&str, &str, &[&str])] = &[
+    (
+        "src/gear.rs",
+        "products_breakglass_review_overdue",
+        &[
+            "session_id",
+            "target_tenant",
+            "opened_at",
+            "review_sla_hours",
+        ],
+    ),
+    (
+        "src/gear.rs",
+        "catalog_version_overdue",
+        &["tenant_id", "lane", "source", "request_key", "age_secs"],
+    ),
+    (
+        "src/infra/increment.rs",
+        "catalog_version_lane_latency",
+        &["tenant_id", "lane", "latency_ms"],
+    ),
+    (
+        "src/infra/activation_runner.rs",
+        "composition_clear_applied",
+        &["tenant_id", "sku_id", "signal_ref", "published_version"],
+    ),
+    (
+        "src/infra/activation_runner.rs",
+        "retirement_held",
+        &[
+            "tenant_id",
+            "transition_id",
+            "entity_id",
+            "outcome_reason",
+            "hours",
+        ],
+    ),
+    (
+        "src/infra/projector.rs",
+        "read_model_convergence",
+        &["tenant_id", "payload_type", "latency_ms"],
+    ),
+    (
+        "src/infra/projector.rs",
+        "read_model_lag",
+        &["tenant_id", "lag_secs", "budget_secs"],
+    ),
+    (
+        "src/infra/projector.rs",
+        "read_model_poison",
+        &[
+            "tenant_id",
+            "inbox_id",
+            "payload_type",
+            "attempts",
+            "reason",
+        ],
+    ),
+    (
+        "src/infra/projector.rs",
+        "read_model_rebuilt",
+        &["tenant_id", "rows", "generation"],
+    ),
+    (
+        "src/api/rest.rs",
+        "products_breakglass_access_unaudited",
+        &["session_id", "error"],
+    ),
+    (
+        "src/api/rest/approvals.rs",
+        "products_breakglass_elevated",
+        &["session_id", "target_tenant", "path", "review_sla_hours"],
+    ),
+    (
+        "src/api/rest/catalog_version.rs",
+        "freeze_ack_latency",
+        &[
+            "tenant_id",
+            "catalog_version_id",
+            "participant",
+            "latency_ms",
+        ],
+    ),
+    (
+        "src/api/rest/read.rs",
+        "read_edge_latency",
+        &["tenant_id", "door", "latency_ms"],
+    ),
+    (
+        "src/api/rest/reference.rs",
+        "reference_breakglass_tripwire",
+        &[
+            "tenant_id",
+            "arm",
+            "count",
+            "signal_delivery_release_blocker",
+        ],
+    ),
+    (
+        "src/api/rest/skus.rs",
+        "composition_clear_held",
+        &["tenant_id", "sku_id", "signal_ref", "blocker"],
+    ),
+];
+
+/// **Every alert and meter event carries the labels its slice's table
+/// names** — read at the emitting site, one site per event, so a label
+/// dropped from a `tracing::warn!` fails here before a dashboard notices.
+#[test]
+fn every_alert_event_carries_the_labels_its_table_names() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut seen = std::collections::BTreeSet::new();
+    for (file, event, labels) in ALERT_SITES {
+        let text = std::fs::read_to_string(root.join(file)).expect("a crate source");
+        let needle = format!("event = \"{event}\"");
+        let sites: Vec<usize> = text.match_indices(&needle).map(|(i, _)| i).collect();
+        assert_eq!(
+            sites.len(),
+            1,
+            "{event} is emitted at exactly one site in {file}"
+        );
+        let site = &text[sites[0]..];
+        let end = site.find(");").expect("the macro closes");
+        let call = &site[..end];
+        for label in *labels {
+            let present = call.contains(&format!("{label} ="))
+                || call.contains(&format!("%{label}"))
+                || call.contains(&format!("{label},"))
+                || call.contains(&format!("?{label}"));
+            assert!(
+                present,
+                "{event} in {file} lost the label `{label}`: {call}"
+            );
+        }
+        assert!(seen.insert(*event), "{event} listed twice");
+    }
+    assert_eq!(seen.len(), 15, "the roster is the fifteen emitted events");
+}

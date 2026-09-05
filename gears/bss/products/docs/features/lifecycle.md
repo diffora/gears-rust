@@ -1192,7 +1192,7 @@ entry. A box left open names a clause no probe asserts yet.*
 - [ ] Every refusal this feature raises leaves an audit row carrying its reason
 - [x] A stub reference predicate is exercised in every state before `07-reference-signal` exists,
       and the suite fails if the stub is replaced by a constant
-- [ ] No `#[ignore]`d test exists without a CI tier that runs it
+- [ ] No `#[ignore]`d test exists without a CI tier that runs it *(The tier: `make test-products-pg` — `DESIGN.md` §3.8's runbook; on demand by P-D-132, so this box stays open by the owner's decision — P-D-161.)*
 
 ## 7. Known unknowns
 

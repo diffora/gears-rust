@@ -81,6 +81,74 @@ pub(crate) struct ProjectorContext {
     pub(crate) knobs: ReadKnobs,
 }
 
+impl ProjectorContext {
+    /// Where this pass reads its events from. Today the gear-owned inbox
+    /// (P-D-150); the day the platform ships a broker consumer, the swap
+    /// is a second [`InboxSource`] implementor returned here — the
+    /// projection above it does not move (P-D-161).
+    pub(crate) fn source(&self) -> RepoInbox {
+        RepoInbox {
+            db: self.db.clone(),
+        }
+    }
+}
+
+/// The seam between the projector and whatever delivers its events: the
+/// bounds of a tenant's undelivered tail and a batch above a checkpoint. The
+/// inbox is the first implementor; a broker consumer is the second, and
+/// "replace the hook, not the projection" (P-D-150) is this trait rather than
+/// a sentence.
+#[async_trait::async_trait]
+pub(crate) trait InboxSource: Send + Sync {
+    /// The first and last event ids a tenant holds, `None` when it holds
+    /// nothing.
+    async fn bounds(&self, tenant_id: Uuid) -> Result<Option<(i64, i64)>, RepoError>;
+    /// Up to `batch` events above `checkpoint`, in delivery order.
+    async fn after(
+        &self,
+        tenant_id: Uuid,
+        checkpoint: i64,
+        batch: u64,
+    ) -> Result<Vec<repo::InboxRow>, RepoError>;
+}
+
+/// The gear-owned inbox as the source: `products_read_inbox`, written in the
+/// producing transaction (`infra::events::record_inbox`).
+pub(crate) struct RepoInbox {
+    db: toolkit_db::DBProvider<toolkit_db::DbError>,
+}
+
+#[async_trait::async_trait]
+impl InboxSource for RepoInbox {
+    async fn bounds(&self, tenant_id: Uuid) -> Result<Option<(i64, i64)>, RepoError> {
+        let conn = self
+            .db
+            .conn()
+            .map_err(|e| RepoError::Db(format!("inbox source connection: {e}")))?;
+        repo::inbox_bounds(&conn, &AccessScope::for_tenant(tenant_id), tenant_id).await
+    }
+
+    async fn after(
+        &self,
+        tenant_id: Uuid,
+        checkpoint: i64,
+        batch: u64,
+    ) -> Result<Vec<repo::InboxRow>, RepoError> {
+        let conn = self
+            .db
+            .conn()
+            .map_err(|e| RepoError::Db(format!("inbox source connection: {e}")))?;
+        repo::inbox_after(
+            &conn,
+            &AccessScope::for_tenant(tenant_id),
+            tenant_id,
+            checkpoint,
+            batch,
+        )
+        .await
+    }
+}
+
 /// Rows read per tenant per pass.
 const INBOX_BATCH: u64 = 200;
 
@@ -166,7 +234,8 @@ pub(crate) async fn project_tenant(
         .unwrap_or((0, 0));
     // A checkpoint the swept tail has run past cannot resume: rebuild
     // (`inst-rp-bootstrap`), the old generation serving until the swap.
-    if let Some((first, last)) = repo::inbox_bounds(&conn, &scope, tenant_id).await?
+    let source = ctx.source();
+    if let Some((first, last)) = source.bounds(tenant_id).await?
         && checkpoint > 0
         && first > checkpoint + 1
     {
@@ -176,7 +245,7 @@ pub(crate) async fn project_tenant(
             generation: generation + 1,
         });
     }
-    let rows = repo::inbox_after(&conn, &scope, tenant_id, checkpoint, INBOX_BATCH).await?;
+    let rows = source.after(tenant_id, checkpoint, INBOX_BATCH).await?;
     if rows.is_empty() {
         return Ok(PassOutcome::Idle);
     }

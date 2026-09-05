@@ -475,3 +475,143 @@ fn ungoverned() -> GateAuthorization {
     .into_authorization()
     .expect("an authorized verdict converts")
 }
+
+// ---------------------------------------------------------------------------
+// The at-most-one-primary index under real concurrency (`02` §6; P-D-161)
+// ---------------------------------------------------------------------------
+
+const PRODUCT: Uuid = Uuid::from_u128(0x0f_ee);
+
+async fn seed_product(pg: &Pg) {
+    let db = pg.db().await;
+    let (_db, out) = db
+        .in_transaction::<(), RepoError, _>(move |txn| {
+            Box::pin(async move {
+                repo::insert_product(
+                    txn,
+                    &scope(),
+                    repo::NewProduct {
+                        product_id: PRODUCT,
+                        tenant_id: TENANT,
+                        brand_id: Uuid::from_u128(0x0f_b1),
+                        name: "Fibre 500".to_owned(),
+                        name_normalized: "fibre 500".to_owned(),
+                        product_code: None,
+                        region_scope: String::new(),
+                        brand_scope: String::new(),
+                        created_by: "principal:author-1".to_owned(),
+                        created_at: at(9),
+                        cloned_from: None,
+                        cloned_from_version: None,
+                    },
+                )
+                .await
+                .map(|_| ())
+            })
+        })
+        .await;
+    out.expect("the product commits before the assignments race");
+}
+
+async fn primary_rows(pg: &Pg) -> i64 {
+    #[derive(Debug, sea_orm::FromQueryResult)]
+    struct Row {
+        n: i64,
+    }
+    let conn = pg.raw().await;
+    <Row as sea_orm::FromQueryResult>::find_by_statement(sea_orm::Statement::from_string(
+        sea_orm::DatabaseBackend::Postgres,
+        format!(
+            "SELECT COUNT(*)::bigint AS n FROM bss.products_product_category \
+             WHERE product_id = '{PRODUCT}'"
+        ),
+    ))
+    .one(&conn)
+    .await
+    .expect("count")
+    .expect("a row")
+    .n
+}
+
+/// **Two concurrent primary assignments produce exactly one row**: the
+/// second insert blocks on `uq_products_product_category_primary` until the
+/// first commits, then lands as the classified `PrimaryConflict` — the index is the guard,
+/// driven by real concurrency rather than a read-then-assert.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn two_concurrent_primary_assignments_leave_exactly_one() {
+    let pg = Pg::applied().await;
+    seed_two_roots(&pg).await;
+    seed_product(&pg).await;
+    let observer = pg.raw().await;
+    let written = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let winner = {
+        let db = pg.db().await;
+        let (written, release) = (Arc::clone(&written), Arc::clone(&release));
+        tokio::spawn(async move {
+            let (_db, out) = db
+                .in_transaction::<repo::AssignmentWrite, RepoError, _>(move |txn| {
+                    Box::pin(async move {
+                        let write = repo::replace_category_assignments(
+                            txn,
+                            &scope(),
+                            TENANT,
+                            PRODUCT,
+                            &[(A, bss_products::domain::taxonomy::AssignmentRole::Primary)],
+                            at(10),
+                        )
+                        .await?;
+                        written.notify_one();
+                        release.notified().await;
+                        Ok(write)
+                    })
+                })
+                .await;
+            out
+        })
+    };
+    written.notified().await;
+    let loser = {
+        let db = pg.db().await;
+        tokio::spawn(async move {
+            let (_db, out) = db
+                .in_transaction::<repo::AssignmentWrite, RepoError, _>(move |txn| {
+                    Box::pin(async move {
+                        repo::replace_category_assignments(
+                            txn,
+                            &scope(),
+                            TENANT,
+                            PRODUCT,
+                            &[(B, bss_products::domain::taxonomy::AssignmentRole::Primary)],
+                            at(10),
+                        )
+                        .await
+                    })
+                })
+                .await;
+            out
+        })
+    };
+    pg_support::wait_until_a_backend_blocks(&observer).await;
+    release.notify_one();
+    let first = winner
+        .await
+        .expect("joins")
+        .expect("the first primary commits uncontended");
+    assert_eq!(first, repo::AssignmentWrite::Applied);
+    let second = loser
+        .await
+        .expect("joins")
+        .expect("a uniqueness refusal is a classified write, not a storage failure");
+    assert_eq!(
+        second,
+        repo::AssignmentWrite::PrimaryConflict,
+        "the second primary is refused by the partial unique index and read as the conflict"
+    );
+    assert_eq!(
+        primary_rows(&pg).await,
+        1,
+        "exactly one primary assignment survives"
+    );
+}

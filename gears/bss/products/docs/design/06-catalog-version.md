@@ -346,6 +346,15 @@ without a fourth clock.
 - Composition clear: prior frozen version keeps `compositionPending = true`; the new version
   reads false; the clear survives replay (idempotent per signal reference).
 
+**Alerts and meters (P-D-161).** The events this slice emits as `tracing` events, with the labels the emitting site carries — asserted per site by `lib_tests::every_alert_event_carries_the_labels_its_table_names`. The delivery channel is the platform's; the contract below is this gear's. Thresholds are interim until the NFR workshop.
+
+| Event | Labels | Interim threshold | Owner |
+|---|---|---|---|
+| `catalog_version_overdue` | `tenant_id`, `lane`, `source`, `request_key`, `age_secs` | a pending increment request past its lane deadline (interactive ≤ 60 s, bulk ≤ 5 min) | the catalog-version operator |
+| `catalog_version_lane_latency` | `tenant_id`, `lane`, `latency_ms` | meter — requested → published; p95 against the lane deadline | the NFR table |
+| `freeze_ack_latency` | `tenant_id`, `catalog_version_id`, `participant`, `latency_ms` | meter — event → ack per participant; the `freeze_overdue` scan alerts past the timeout | the NFR table |
+| `composition_clear_held` | `tenant_id`, `sku_id`, `signal_ref`, `blocker` | informational — a clear waiting on a clean head; `composition_clear_applied` closes it | 06's operator |
+
 ## 6. Traces to / Risks & Open items
 
 **Traces to**: `cpt-cf-bss-products-usecase-freeze-monitoring` (§10 use case, claimed by id here — all seven were in lint 1's universe and none was claimed); **§9.2 by id** — `cpt-cf-bss-products-contract-increment-request`, `cpt-cf-bss-products-contract-freeze-ack` (both halves: the acknowledgment and the `catalog_version × release`, P-D-18) and `cpt-cf-bss-products-contract-bundle-composition-signal` (the three inbound machine contracts this slice's doors terminate — claimed by id here for the first time). `cpt-cf-bss-products-fr-catalog-version-publish`, `cpt-cf-bss-products-fr-snapshot-reproducibility`,

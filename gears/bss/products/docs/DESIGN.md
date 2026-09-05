@@ -839,6 +839,45 @@ SDK's producer in the same process (P-D-47). Deployment specifics — replicas, 
 topology, backups — are the platform's (§2.2 "Platform-delegated concerns"); the gear states no
 residency constraint because its PRD carries none.
 
+**Deployment posture, as a manifest snippet (P-D-161).** The one setting a production deployment
+**must** flip and the read knobs it may tune, with their typed defaults; `dod-require-broker`'s
+artifact is the deployment's, and this is what it will carry:
+
+```toml
+[gears.bss-products]
+require_broker = true                 # default false: a deployment running 06 refuses to boot on the interim outbox (P-D-47)
+read_path_qps_ceiling = 200           # per tenant partition, every read door; 0 is refused at boot
+read_poison_retry_ceiling = 5         # attempts before an inbox row is parked and skipped
+read_convergence_budget_secs = 5      # commit -> projected; `read_model_lag` fires past it
+read_dashboard_poll_secs = 30         # the three polled dashboards
+read_inbox_retention_hours = 72       # consumed inbox rows kept for replay
+drill_cadence_hours = 24              # the restore drill (10); interim, P-D-118
+```
+
+**The Postgres tier's runbook (P-D-161).** The engine-specific probes — schema oracles for the
+governance, lifecycle, retention, taxonomy, recognized-set and read-projection tables, the head and
+frozen-row guards, the golden vector, and the real-concurrency races (the code and name
+reservations, the idempotency key takeover, the re-parent lock, the primary-assignment index) — are
+`#[ignore]`d in `products/tests/postgres_*.rs` and run by one target:
+
+```text
+make test-products-pg     # cargo nextest run -p cf-gears-bss-products --run-ignored ignored-only -E 'binary(/^postgres_/)'
+```
+
+It needs Docker (testcontainers brings up one Postgres per binary through the harness in
+`products/tests/pg_support/`, on its own channel — never share it with a manual `docker` call).
+The tier is on demand by the owner's decision (P-D-132: no CI job); the five features whose §6
+carries *"no `#[ignore]`d test without a CI tier that runs it"* name this target as the tier and
+leave the box to that decision.
+
+**Disaster recovery (P-D-161).** Frozen versions and the audit trail are financial records (PRD
+§15: durability ≥ 11 nines, replicated storage, periodic restore verification; RPO/RTO are the NFR
+workshop's, unset here). The gear's own contribution is the restore drill (10 `inst-im-render`):
+every `drill_cadence_hours` the retention lane re-renders a sample of frozen versions from the
+**restored copy** the platform provides and compares digests — `a_corrupted_restore_raises_the_alarm`
+is the probe, `products_restore_drill` the meter. A drill that finds a digest mismatch is the alarm;
+a drill that cannot read the restored copy is `unverifiable`, never silent.
+
 ## 4. Additional context
 
 **On ADRs — an open convention question, raised.** This gear has no `ADR/` directory. Pricing

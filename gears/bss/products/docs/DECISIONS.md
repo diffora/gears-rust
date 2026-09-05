@@ -1569,6 +1569,46 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-161 — Operability: the alert contract per slice, the Postgres tier's oracles and races, the inbox seam as a type, the deployment posture and DR
+
+- **Date**: 2026-09-05 (the lead, group 19 of the follow-on plan)
+- **The alert contract is a table per slice, asserted at the site.** Fifteen `tracing` events
+  are emitted in production (`04` two, `05` three, `06` four, `07` one, `08` five); each slice's
+  §5 now carries them — event, labels, interim threshold, owner — and
+  `lib_tests::every_alert_event_carries_the_labels_its_table_names` reads each emitting site and
+  fails when a label the table promises is missing. The delivery channel stays the platform's.
+  *Counter-argument:* capture the events through a `tracing` subscriber in an integration
+  harness; rejected for now — fifteen harnesses for a contract a source census pins as well, and
+  the subscriber harness is the convergence work below.
+- **The Postgres tier gains the read projection's oracle and the primary-assignment race.**
+  `postgres_read_models_schema.rs` pins the eight read tables (the two by name as the SQLite
+  oracle does, the six of `m29` by name and nullability) with its own perturbation case;
+  `postgres_taxonomy_race.rs` gains `two_concurrent_primary_assignments_leave_exactly_one`,
+  which found that a uniqueness refusal on this path is a **classified write**
+  (`AssignmentWrite::PrimaryConflict`), not a storage failure — the probe asserts that shape. The
+  tier is 49 tests. The runbook is `DESIGN.md` §3.8; the five features whose §6 carries the
+  `#[ignore]` criterion now name the tier and leave the box to P-D-132.
+- **The inbox seam is a type.** `projector::InboxSource` (`bounds`, `after`) with `RepoInbox` as
+  its first implementor, reached through `ProjectorContext::source()`; the projection above it is
+  untouched, so P-D-150's "replace the hook, not the projection" is a trait a broker consumer
+  implements, not a sentence.
+- **Deployment posture and DR** join `DESIGN.md` §3.8: the manifest snippet a deployment carries
+  (`require_broker = true` and the read knobs with their defaults), and the DR section — the
+  records' durability class, the restore drill's cadence and its two outcomes.
+- **Not done here, and why.** The convergence budget measured end to end (a timing harness the
+  SQLite tier cannot bound honestly — the number belongs to the Postgres tier under load, which
+  is the NFR workshop's rig); the Foundation head tables' Postgres oracle (the head guards are
+  probed on the tier, the roster is not — G20); the writer-lock probe is already named and on the
+  tier (`the_lock_is_what_refuses_the_second_reparent`).
+- **Propagated**: `design/04-lifecycle.md` §5, `design/05-governance.md` §5,
+  `design/06-catalog-version.md` §5, `design/07-reference-signal.md` §5, `design/08-read-models.md`
+  §5 (the alert tables), `DESIGN.md` §3.8 (posture, runbook, DR), the five features' `#[ignore]`
+  criterion notes (`features/foundation.md`, `features/governance.md`, `features/lifecycle.md`,
+  `features/taxonomy-attributes.md`, `features/sku-classification.md`).
+- **Trace**: `lib_tests::ALERT_SITES`, `postgres_read_models_schema`,
+  `postgres_taxonomy_race::two_concurrent_primary_assignments_leave_exactly_one`,
+  `projector::InboxSource`, `projector::RepoInbox`.
+
 #### P-D-160 — The pricing seams from this side: five registry halves written and ignored, the asks filed in both registers, a consumer guide
 
 - **Date**: 2026-09-05 (the lead, group 18 of the follow-on plan; nothing here builds pricing)

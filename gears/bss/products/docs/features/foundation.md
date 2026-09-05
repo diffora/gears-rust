@@ -947,7 +947,7 @@ entry. A box left open names a clause no probe asserts yet.*
 - [x] A keyless mutating request skips the idempotency phase rather than failing it
 - [x] An authorization denial consumes no idempotency key and writes no claim row, and its audit
       row carries a resolved `actor_ref`
-- [ ] No `#[ignore]`d test exists without a CI tier that runs it
+- [ ] No `#[ignore]`d test exists without a CI tier that runs it *(The tier: `make test-products-pg` — `DESIGN.md` §3.8's runbook; on demand by P-D-132, so this box stays open by the owner's decision — P-D-161.)*
 
 ## 7. Known unknowns
 

@@ -342,6 +342,14 @@ row and open to correction; the requirement is that every code carries one.
 - Materiality: bucket-iii touch ⇒ material; bucket-iv-only re-publish ⇒ `min(N, 1)` approvers;
   policy-object mutation ⇒ material regardless of direction.
 
+**Alerts and meters (P-D-161).** The events this slice emits as `tracing` events, with the labels the emitting site carries — asserted per site by `lib_tests::every_alert_event_carries_the_labels_its_table_names`. The delivery channel is the platform's; the contract below is this gear's. Thresholds are interim until the NFR workshop.
+
+| Event | Labels | Interim threshold | Owner |
+|---|---|---|---|
+| `products_breakglass_elevated` | `session_id`, `target_tenant`, `path`, `review_sla_hours` | every open — an alert, not a threshold | the platform security channel |
+| `products_breakglass_review_overdue` | `session_id`, `target_tenant`, `opened_at`, `review_sla_hours` | a post-hoc review pending past `breakglass_review_sla_hours`, raised once | the platform security channel |
+| `products_breakglass_access_unaudited` | `session_id`, `error` | every occurrence — an elevated access whose audit row could not be written | the platform security channel |
+
 ## 6. Traces to / Risks & Open items
 
 **Traces to**: `cpt-cf-bss-products-usecase-approval-publish` (§10 use case, claimed by id here — all seven were in lint 1's universe and none was claimed); `cpt-cf-bss-products-fr-materiality-gated-publish`, `cpt-cf-bss-products-fr-tenant-isolation-breakglass`,

@@ -373,6 +373,13 @@ who performs the cancel stays in §6.
 - EOL lockout: any `mustMigrateBy` in v1 refused; the event schema still round-trips the absent
   field (vN compatibility).
 
+**Alerts and meters (P-D-161).** The events this slice emits as `tracing` events, with the labels the emitting site carries — asserted per site by `lib_tests::every_alert_event_carries_the_labels_its_table_names`. The delivery channel is the platform's; the contract below is this gear's. Thresholds are interim until the NFR workshop.
+
+| Event | Labels | Interim threshold | Owner |
+|---|---|---|---|
+| `retirement_held` | `tenant_id`, `transition_id`, `entity_id`, `outcome_reason`, `hours` | a deferral older than `retirement_held_alert_hours` (72) | the catalog admin of the tenant |
+| `composition_clear_applied` | `tenant_id`, `sku_id`, `signal_ref`, `published_version` | informational — a held clear applied on the next clean head | 06's operator |
+
 ## 6. Traces to / Risks & Open items
 
 **Traces to**: `cpt-cf-bss-products-usecase-lifecycle-deprecation` (§10 use case, claimed by id here — all seven were in lint 1's universe and none was claimed); `cpt-cf-bss-products-fr-lifecycle-transitions` (scheduling clauses), `cpt-cf-bss-products-fr-parent-child-integrity` (the final containment rule plus publish ordering; the interim check is slice 01's),

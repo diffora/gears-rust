@@ -250,6 +250,12 @@ events per §1.8. All tenant-scoped, append-only where evidential.
 - Onboarding probe: registering a producer flips a previously fresh-zero SKU to conservative
   (never-received) — tighten-only, and no historical decision re-opens.
 
+**Alerts and meters (P-D-161).** The events this slice emits as `tracing` events, with the labels the emitting site carries — asserted per site by `lib_tests::every_alert_event_carries_the_labels_its_table_names`. The delivery channel is the platform's; the contract below is this gear's. Thresholds are interim until the NFR workshop.
+
+| Event | Labels | Interim threshold | Owner |
+|---|---|---|---|
+| `reference_breakglass_tripwire` | `tenant_id`, `arm`, `count`, `signal_delivery_release_blocker` | the sixth break-glass correction within the window; `signal_delivery_release_blocker` flips the release surface | the pricing seam's owner |
+
 ## 6. Traces to / Risks & Open items
 
 **Traces to**: **§9.2 by id** — `cpt-cf-bss-products-contract-sku-reference-count` (the inbound signal this slice's `WatermarkDoor` terminates; claimed by id here for the first time). `cpt-cf-bss-products-fr-reference-signal`, `cpt-cf-bss-products-fr-immutable-field-correction`,

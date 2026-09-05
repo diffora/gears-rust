@@ -1749,7 +1749,7 @@ says — immutability is the trigger whitelist on both engines and nothing crypt
       emitted events rather than by inspection
 - [ ] Every refusal this feature raises leaves an audit row carrying its reason
 - [x] An unresolvable materiality policy refuses the act rather than publishing under a default
-- [ ] No `#[ignore]`d test exists without a CI tier that runs it
+- [ ] No `#[ignore]`d test exists without a CI tier that runs it *(The tier: `make test-products-pg` — `DESIGN.md` §3.8's runbook; on demand by P-D-132, so this box stays open by the owner's decision — P-D-161.)*
 
 ## 7. Known unknowns
 
