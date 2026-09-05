@@ -99,6 +99,11 @@ pub const TRIPWIRE_MAX_OVERRIDES_DEFAULT: u32 = 5;
 /// many at once is the accident the ceiling exists to catch.
 pub const BULK_MAX_CONCURRENT_DEFAULT: u32 = 5;
 
+/// [`ProductsConfig::bulk_batch_ttl_hours`]'s interim default (**P-D-127**
+/// row 6): a `reported` batch nobody approves is abandoned by the reaper
+/// after a week, releasing the tenant's concurrency slot.
+pub const BULK_BATCH_TTL_HOURS_DEFAULT: u32 = 168;
+
 /// The gear's boot configuration.
 ///
 /// @cpt-cf-bss-products-fr-idempotent-authoring
@@ -157,6 +162,13 @@ pub struct ProductsConfig {
     /// name, so the marker rides `dod-import-door`, which is where the
     /// refusal they produce is obliged.
     pub bulk_max_concurrent_batches_per_tenant: u32,
+
+    /// How long a `reported` batch waits for its approval before the reaper
+    /// abandons it (`reported -> abandoned`, P-D-69's state; **P-D-127**
+    /// row 6 names the reaper and this interim of a week). The batch approval
+    /// is superseded by the abandonment; the tenant's slot is released.
+    /// `dod-batch-state-machine`.
+    pub bulk_batch_ttl_hours: u32,
 
     /// How long a posted reference watermark stays **fresh**, in minutes
     /// (interim 15 — **P-D-87** arm 1). Past it a producer's verdict is
@@ -388,6 +400,7 @@ impl Default for ProductsConfig {
             freeze_timeout_hours: IDEMPOTENCY_RETENTION_FLOOR_HOURS,
             bulk_max_rows_per_batch: BULK_MAX_ROWS_DEFAULT,
             bulk_max_concurrent_batches_per_tenant: BULK_MAX_CONCURRENT_DEFAULT,
+            bulk_batch_ttl_hours: BULK_BATCH_TTL_HOURS_DEFAULT,
             reference_freshness_minutes: REFERENCE_FRESHNESS_MINUTES_DEFAULT,
             watermark_skew_tolerance_minutes: WATERMARK_SKEW_MINUTES_DEFAULT,
             tripwire_max_overrides_per_30_days: TRIPWIRE_MAX_OVERRIDES_DEFAULT,
@@ -539,6 +552,12 @@ impl ProductsConfig {
         if self.bulk_max_concurrent_batches_per_tenant == 0 {
             return Err(
                 "bulk_max_concurrent_batches_per_tenant = 0 admits no batch at all".to_owned(),
+            );
+        }
+        if self.bulk_batch_ttl_hours == 0 {
+            return Err(
+                "bulk_batch_ttl_hours = 0 would abandon every reported batch on the next tick"
+                    .to_owned(),
             );
         }
         if self

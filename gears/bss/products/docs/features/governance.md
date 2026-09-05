@@ -1673,7 +1673,7 @@ says — immutability is the trigger whitelist on both engines and nothing crypt
       is **deferred**, not refused
 - [x] An override subject requires each approver to acknowledge the named findings; at `N = 0` the
       author acknowledges and the record carries `quorumReduced`
-- [ ] Publishing an override subject with no acknowledgment on the record fails on every lane,
+- [x] Publishing an override subject with no acknowledgment on the record fails on every lane,
       bulk included
 - [ ] The pending queue returns the envelope with `required` as the effective count, and a
       non-material record at `N = 2` renders "1 required", not "2"

@@ -1846,7 +1846,7 @@ const HEAD_ACT_RESPONSE_STATUS: StatusCode = StatusCode::OK;
 /// columns the original enumeration missed; until it does, this doc is where
 /// the reading is recorded, and `skus::SKU_VERSION_CONTENT_ROSTER`'s twin
 /// says the same.
-const PRODUCT_CONTENT_ROSTER: [&str; 12] = [
+pub(crate) const PRODUCT_CONTENT_ROSTER: [&str; 12] = [
     "brand_id",
     "brand_scope",
     "cloned_from",
@@ -2370,23 +2370,23 @@ async fn open_head_door(
 /// eventually enqueues is not one of them; see
 /// [`insert_product_with_event`] for why that is harmless.
 #[derive(Clone)]
-struct HeadActInputs {
+pub(crate) struct HeadActInputs {
     /// The compiled scope every read and write of the act runs under.
-    scope: AccessScope,
+    pub(crate) scope: AccessScope,
     /// Owning tenant.
-    tenant_id: Uuid,
+    pub(crate) tenant_id: Uuid,
     /// The head being acted on.
-    product_id: Uuid,
+    pub(crate) product_id: Uuid,
     /// The pseudonymous ref the frozen version row attributes the publish
     /// to.
-    actor_ref: Uuid,
+    pub(crate) actor_ref: Uuid,
     /// The revision the caller pinned, as the head-row filter compares it.
-    expected: i64,
+    pub(crate) expected: i64,
     /// The act's instant, stamped once before the first attempt.
-    now: DateTime<Utc>,
+    pub(crate) now: DateTime<Utc>,
     /// The claim to take as the transaction's first statement, or `None`
     /// where the request carried no key (P-D-34's skip).
-    claim: Option<IdempotencyClaimInput>,
+    pub(crate) claim: Option<IdempotencyClaimInput>,
 }
 
 /// What one head act's transaction produced.
@@ -2396,7 +2396,7 @@ struct HeadActInputs {
 /// variant, because a publish has already **written** its frozen version row
 /// by the time the head-row `UPDATE` can report `Unmatched`, and only an
 /// `Err` rolls that write back. See [`HeadActError`].
-enum HeadActOutcome {
+pub(crate) enum HeadActOutcome {
     /// The act ran: the revision the `ETag` is minted from, and the response
     /// body rendered inside the transaction and stored there as the
     /// idempotency answer when the request carried a key.
@@ -2435,7 +2435,7 @@ enum HeadActOutcome {
 /// The retry classifier ([`head_act_contention_db_err`]) answers `None` for
 /// every variant but [`Self::Db`], so a refusal is never mistaken for
 /// contention and re-attempted.
-enum HeadActError {
+pub(crate) enum HeadActError {
     /// A domain refusal decided inside the transaction: the idempotency
     /// phase's, or the head-row write's own `Unmatched` once
     /// [`classify_unmatched_publish`]/[`classify_unmatched_discard`] has read
@@ -3343,7 +3343,15 @@ async fn deprecate_in_one_transaction(
                 let inputs = inputs.clone();
                 let sku_scope = sku_scope.clone();
                 Box::pin(async move {
-                    run_deprecate(tx, &inputs, &sku_scope, gate.as_ref(), &outbox).await
+                    run_deprecate(
+                        tx,
+                        &inputs,
+                        &sku_scope,
+                        gate.as_ref(),
+                        GateMode::Gate,
+                        &outbox,
+                    )
+                    .await
                 })
             },
         )
@@ -3384,11 +3392,12 @@ async fn deprecate_in_one_transaction(
 /// # Errors
 ///
 /// As [`run_discard`], plus the cascade's own fail-closed refusal.
-async fn run_deprecate(
+pub(crate) async fn run_deprecate(
     runner: &(impl DBRunner + Sync),
     inputs: &HeadActInputs,
     sku_scope: &AccessScope,
     gate: &(dyn GovernanceGate + Send + Sync),
+    mode: GateMode,
     outbox: &crate::infra::broker::EventSink,
 ) -> Result<HeadActOutcome, HeadActError> {
     if let Some(replay) = claim_for_head_act(
@@ -3441,7 +3450,7 @@ async fn run_deprecate(
                 },
                 InternalRevision::new(inputs.expected),
             ),
-            GateMode::Gate,
+            mode,
         )
         .map_err(|e| {
             HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
@@ -4153,6 +4162,7 @@ async fn retire_in_one_transaction(
                         &inputs,
                         &sku_scope,
                         gate.as_ref(),
+                        GateMode::Gate,
                         detector.as_ref(),
                         &request,
                         &outbox,
@@ -4164,11 +4174,13 @@ async fn retire_in_one_transaction(
         .await
 }
 
-async fn run_retire(
+#[allow(clippy::too_many_arguments)] // the door's operands, the mode now among them
+pub(crate) async fn run_retire(
     runner: &(impl DBRunner + Sync),
     inputs: &HeadActInputs,
     sku_scope: &AccessScope,
     gate: &(dyn GovernanceGate + Send + Sync),
+    mode: GateMode,
     detector: &(dyn PiiDetector + Send + Sync),
     request: &RetireProductRequest,
     outbox: &crate::infra::broker::EventSink,
@@ -4261,7 +4273,7 @@ async fn run_retire(
                 },
                 InternalRevision::new(inputs.expected),
             ),
-            GateMode::Gate,
+            mode,
         )
         .map_err(|e| {
             HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
@@ -5172,7 +5184,7 @@ fn freeze_for(
 /// [`publish_product`], passes the [`GateMode::Gate`] literal. The single
 /// in-process entry point that can pass anything else is
 /// [`publish_product_under_gate`], which is not routed.
-async fn run_publish(
+pub(crate) async fn run_publish(
     runner: &(impl DBRunner + Sync),
     inputs: &HeadActInputs,
     gate: &(dyn GovernanceGate + Send + Sync),
@@ -5810,7 +5822,7 @@ fn save_payload_digest(request: &SaveProductRequest) -> Vec<u8> {
 /// division ("mapping a request field to a column is the door's job, done
 /// before it asks").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProductSaveField {
+pub(crate) enum ProductSaveField {
     /// Bucket i (§4.1): re-branding moves the row into a different
     /// `(tenant_id, brand_id, name_normalized)` scope.
     BrandId,
@@ -5830,7 +5842,7 @@ impl ProductSaveField {
     /// The wire field this is, or `None` where the caller named something
     /// this door does not author — which is a refusal
     /// ([`unroutable_product_field`]), never a silent drop.
-    fn from_wire(field: &str) -> Option<Self> {
+    pub(crate) fn from_wire(field: &str) -> Option<Self> {
         match field {
             "brand_id" => Some(Self::BrandId),
             "product_code" => Some(Self::ProductCode),
@@ -5843,7 +5855,7 @@ impl ProductSaveField {
 
     /// The physical column, as `products_product` spells it and as
     /// `crate::domain::bucket`'s registry keys on it.
-    const fn column(self) -> &'static str {
+    pub(crate) const fn column(self) -> &'static str {
         match self {
             Self::BrandId => "brand_id",
             Self::ProductCode => "product_code",
@@ -7178,7 +7190,7 @@ async fn refuse_narrowing_at_publish(
 /// left the caller's scope; [`HeadActError::Db`] on storage, on an
 /// unreachable gate host, and on the structurally-unreachable
 /// [`bucket::FieldClass::Outside`] arm.
-async fn run_save(
+pub(crate) async fn run_save(
     runner: &(impl DBRunner + Sync),
     inputs: &HeadActInputs,
     request: &SaveProductRequest,

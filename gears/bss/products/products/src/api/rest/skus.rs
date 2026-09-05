@@ -2256,7 +2256,7 @@ const ACT_RESPONSE_STATUS: StatusCode = StatusCode::OK;
 /// name `updated_at` and `published_version` beside `internal_revision` as
 /// columns the original enumeration missed. Until it does, this doc and its
 /// Product twin are where the reading is recorded.
-const SKU_VERSION_CONTENT_ROSTER: [&str; 18] = [
+pub(crate) const SKU_VERSION_CONTENT_ROSTER: [&str; 18] = [
     "brand_scope",
     "cloned_from",
     "cloned_from_version",
@@ -5871,16 +5871,19 @@ async fn deprecate_in_one_transaction(
                 let outbox = outbox.clone();
                 let gate = Arc::clone(&gate);
                 let inputs = inputs.clone();
-                Box::pin(async move { run_deprecate(tx, &inputs, gate.as_ref(), &outbox).await })
+                Box::pin(async move {
+                    run_deprecate(tx, &inputs, gate.as_ref(), GateMode::Gate, &outbox).await
+                })
             },
         )
         .await
 }
 
-async fn run_deprecate(
+pub(crate) async fn run_deprecate(
     runner: &(impl toolkit_db::secure::DBRunner + Sync),
     inputs: &HeadActInputs,
     gate: &(dyn GovernanceGate + Send + Sync),
+    mode: GateMode,
     outbox: &crate::infra::broker::EventSink,
 ) -> Result<MutationOutcome, HeadActError> {
     if let Some(replay) = claim_for_head_act(runner, inputs).await? {
@@ -5921,7 +5924,7 @@ async fn run_deprecate(
                 },
                 InternalRevision::new(inputs.expected),
             ),
-            GateMode::Gate,
+            mode,
         )
         .map_err(|e| {
             HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
@@ -6260,6 +6263,7 @@ async fn retire_in_one_transaction(
                         tx,
                         &inputs,
                         gate.as_ref(),
+                        GateMode::Gate,
                         detector.as_ref(),
                         &request,
                         &outbox,
@@ -6271,10 +6275,11 @@ async fn retire_in_one_transaction(
         .await
 }
 
-async fn run_retire(
+pub(crate) async fn run_retire(
     runner: &(impl toolkit_db::secure::DBRunner + Sync),
     inputs: &HeadActInputs,
     gate: &(dyn GovernanceGate + Send + Sync),
+    mode: GateMode,
     detector: &(dyn PiiDetector + Send + Sync),
     request: &RetireSkuRequest,
     outbox: &crate::infra::broker::EventSink,
@@ -6350,7 +6355,7 @@ async fn run_retire(
                 },
                 InternalRevision::new(inputs.expected),
             ),
-            GateMode::Gate,
+            mode,
         )
         .map_err(|e| {
             HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
@@ -6828,7 +6833,7 @@ fn save_payload_digest(request: &SaveSkuRequest) -> Vec<u8> {
 /// column on `products_product` is the primary key and is admitted in no
 /// `UPDATE` at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SkuSaveField {
+pub(crate) enum SkuSaveField {
     /// Bucket i: the code `uq_products_sku_code` reserves.
     SkuCode,
     /// Bucket i: the parent link.
@@ -6857,7 +6862,7 @@ impl SkuSaveField {
     /// The wire field this is, or `None` where the caller named something
     /// this door does not author — a refusal ([`unroutable_sku_field`]),
     /// never a silent drop.
-    fn from_wire(field: &str) -> Option<Self> {
+    pub(crate) fn from_wire(field: &str) -> Option<Self> {
         match field {
             "sku_code" => Some(Self::SkuCode),
             "product_id" => Some(Self::ProductId),
@@ -6876,7 +6881,7 @@ impl SkuSaveField {
 
     /// The physical column, as `products_sku` spells it and as
     /// `crate::domain::bucket`'s registry keys on it.
-    const fn column(self) -> &'static str {
+    pub(crate) const fn column(self) -> &'static str {
         match self {
             Self::SkuCode => "sku_code",
             Self::ProductId => "product_id",
@@ -7074,7 +7079,7 @@ fn parse_sku_value(
 /// the coordinate defaults, the `None`-versus-empty reading and the refusal
 /// wording. Two doors that spelled one payload two ways would be a second
 /// contract for the same rows.
-const SKU_CONTENT_SAVE_KEYS: [&str; 1] = ["attributes"];
+pub(crate) const SKU_CONTENT_SAVE_KEYS: [&str; 1] = ["attributes"];
 
 /// Parse the SKU content half.
 ///
@@ -7986,7 +7991,7 @@ fn sku_save_conflict(error: &RepoError) -> HeadActError {
 /// As [`run_publish`], with `ILLEGAL_FIELD_MUTATION` and `DUPLICATE_CODE`
 /// added and `APPROVAL_REQUIRED` reachable only through a host
 /// [`save_sku_gated`] is handed.
-async fn run_save(
+pub(crate) async fn run_save(
     runner: &(impl toolkit_db::secure::DBRunner + Sync),
     inputs: &HeadActInputs,
     request: &SaveSkuRequest,

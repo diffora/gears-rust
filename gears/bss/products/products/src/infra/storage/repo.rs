@@ -3097,6 +3097,122 @@ pub async fn save_sku_head(
     Ok(HeadWrite::Applied)
 }
 
+/// A SKU by its `skuCode` — C5's SKU identity, the promotion resolver's
+/// second lookup after the exported id (`dod-promotion-resolver`, P-D-127
+/// row 4).
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn find_sku_by_code(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    sku_code: &str,
+) -> Result<Option<SkuRecord>, RepoError> {
+    let row = sku::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(sku::Column::TenantId.eq(tenant_id))
+                .add(sku::Column::SkuCode.eq(sku_code)),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read sku by code {sku_code}"), e))?;
+    row.map(into_sku_record).transpose()
+}
+
+/// A Product by its `productCode` — C5's first Product identity after the
+/// exported id.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn find_product_by_code(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    product_code: &str,
+) -> Result<Option<ProductRecord>, RepoError> {
+    let row = product::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(product::Column::TenantId.eq(tenant_id))
+                .add(product::Column::ProductCode.eq(product_code)),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read product by code {product_code}"), e))?;
+    row.map(into_product_record).transpose()
+}
+
+/// A Product by `(brandId, normalized name)` — C5's fallback identity for a
+/// Product carrying no code.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn find_product_by_brand_and_name(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    brand_id: Uuid,
+    name_normalized: &str,
+) -> Result<Option<ProductRecord>, RepoError> {
+    let row = product::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(product::Column::TenantId.eq(tenant_id))
+                .add(product::Column::BrandId.eq(brand_id))
+                .add(product::Column::NameNormalized.eq(name_normalized)),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read product by name under {brand_id}"), e))?;
+    row.map(into_product_record).transpose()
+}
+
+/// One frozen version's content by number — the export's entity half
+/// (`inst-bk-export`): the bytes the manifest entry names, never the head.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn entity_version_at(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    entity_kind: VersionedEntityKind,
+    entity_id: Uuid,
+    published_version: i64,
+) -> Result<Option<String>, RepoError> {
+    let row = entity_version::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(entity_version::Column::TenantId.eq(tenant_id))
+                .add(entity_version::Column::EntityKind.eq(entity_kind.as_str()))
+                .add(entity_version::Column::EntityId.eq(entity_id))
+                .add(entity_version::Column::PublishedVersion.eq(published_version)),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| {
+            driver_failure(
+                format!("read frozen version {published_version} of {entity_id}"),
+                e,
+            )
+        })?;
+    Ok(row.map(|row| row.content))
+}
+
 #[cfg(test)]
 #[path = "repo_tests.rs"]
 mod repo_tests;

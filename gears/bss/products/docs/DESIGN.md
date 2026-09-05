@@ -547,7 +547,7 @@ decision (P-D-132).
   code is a breaking change. **Versioning**: the path segment `/v1/` is the wire version; within
   it, payloads evolve under slice 12's compatibility rule (`nfr-backward-compatible-evolution`).
 
-**Endpoints Overview** — the routes registered in code today (57), by owning slice; stability
+**Endpoints Overview** — the routes registered in code today (59), by owning slice; stability
 `v1` throughout (the SDK's compatibility rule is the stability contract). Per-route semantics,
 authz resources and refusal codes live in each slice's §3; the authz mapping in slice 05 §3.2.
 
@@ -605,6 +605,8 @@ authz resources and refusal codes live in each slice's §3; the authz mapping in
 | `POST` | `/bss-products/v1/reference-watermarks` | ingest a producer watermark | 07 | v1 |
 | `POST` | `/bss-products/v1/bulk/imports` | start a bulk import batch | 09 | v1 |
 | `GET` | `/bss-products/v1/bulk/batches/{id}` | read a batch and its change report | 09 | v1 |
+| `GET` | `/bss-products/v1/bulk/exports` | export a catalog version as a deterministic artifact (`?catalogVersionId=`, `bulk × read`, P-D-127) | 09 | v1 |
+| `POST` | `/bss-products/v1/bulk/lifecycle` | start a bulk lifecycle batch (mass deprecate or retire-initiate, `bulk_lifecycle × execute`) | 09 | v1 |
 | `POST` | `/bss-products/v1/erasure-requests` | request erasure of a pseudonymous identity | 10 | v1 |
 | `GET` | `/bss-products/v1/compliance/identity-export` | export the identity-ref map | 10 | v1 |
 | `GET` | `/bss-products/v1/compliance/pii-allowlist` | read the PII allow-list | 10 | v1 |

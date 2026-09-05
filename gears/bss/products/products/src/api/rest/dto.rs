@@ -100,6 +100,8 @@ pub struct BatchLedgerView {
     pub lane: String,
     /// The state machine's current value.
     pub state: String,
+    /// `05`'s record, once the report edge submitted it.
+    pub approval_ref: Option<Uuid>,
     /// One entry per row — the no-hidden-partial-failure surface.
     pub rows: Vec<RowLedgerEntryView>,
 }

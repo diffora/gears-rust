@@ -1569,6 +1569,81 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-149 — 09's machine end to end: the report as the batch's record, the commit under the consumed record, the reaper, the itemised ceremony, the resolver, the lifecycle lane, the export
+
+- **Date**: 2026-09-05 (the lead, group 7 of the solo plan; `09` §7 rows 2, 3 answered here, rows
+  4, 5, 6, 7, 10, 14, 19, 21, 23, 31 as already answered by P-D-69 and P-D-127)
+- **The report is the record.** Edge 1 (`staging → reported`) renders the `ChangeReport` from the
+  ledger and submits it as the batch's one `bulk_batch` approval in-process through the record
+  store — `content_snapshot` the report, pin its `ledgerDigest` (row 23's shape), materiality
+  `05`'s (`MaterialAct::BatchAct`, `affected` saturating on any first publish), the record's id on
+  `products_bulk_batch.approval_ref` before the state moves. Every staged row is pinned to the head
+  revision the report saw; the commit re-checks it as `STALE_REVISION`.
+- **Edges 2 and 3 are one transaction, the record consumed once.** `advance_batches` reads each
+  `reported` batch's record: `satisfied` → `begin_commit` evaluates it through the stored host,
+  `settle_authorization` spends it, `reported → approved → committing`; `rejected` or `superseded`
+  → `abandon_batch`; `pending` past `bulk_batch_ttl_hours` (new config, `168` interim, P-D-127 row
+  6) → the reaper abandons. A batch a crash left in `approved` moves on without a second
+  consumption. The staging claim's lease is handed back at the flip so the commit takes its own —
+  the claim now names the state it expects, a claim filtered on `staging` having made a
+  `committing` batch unclaimable.
+- **The commit walks the ledger under the consumed record.** Products before SKUs; each row through
+  the Foundation's own publish in `GateMode::PreAuthorized(approvalId)` over
+  `StoredApprovalGate::bulk_row`, claimed on the reserved `internal:bulk-row` lane with the ledger
+  outcome as its stored answer (P-D-69 on P-D-42); `STALE_REVISION`, `BULK_DEPENDENCY_FAILED:<code>`
+  (a SKU whose parent row failed this pass), `BULK_OVERRIDE_UNACKNOWLEDGED`, or the owning door's
+  code, all row-local; then **one** bulk-lane increment request keyed by the batch with its
+  `operation_key` (the import and lifecycle doors write the batch id at intake; the store is the
+  SDK binding's own, idempotent on the key); then edge 4. The attempt budget (`ATTEMPT_BUDGET`,
+  five) is `staging|committing → failed`, never a row's.
+- **The itemised ceremony.** The report marks every uncomposed-bundle row `override_acknowledged`
+  and records `BUNDLE_OVERRIDE_REQUIRED/{skuCode}` per row on the record's `overrideConditions`;
+  `05`'s decide door demands each by name (P-D-148's rule), so a satisfied record is the
+  acknowledgment over the itemised set, the row publishes with its flag raised, and a bundle that
+  appeared after the report fails alone before its publish. **At effective quorum zero** the worker
+  is no author and nobody can acknowledge by name (P-D-68): the itemised rows fail
+  `BULK_OVERRIDE_UNACKNOWLEDGED` at the report edge with the closed-set reason
+  `no-acknowledger-at-quorum-zero` and the rest of the batch proceeds. *Counter-argument:* the
+  operator who posted the import could be treated as the author and asked to acknowledge at the
+  door; but the conditions are known only after staging, so that acknowledgment would be blind —
+  the informed-override rule forbids it. Owner call if the lane should instead hold the batch.
+- **The promotion resolver** runs in the stage pass under `mode = promote`: identity by exported id,
+  then code, then `(brandId, normalized name)` (row 4); unknown → create; `retired`/`discarded`
+  holder → `PROMOTION_IDENTITY_CONFLICT`; a draft, a head whose rendering differs from its last
+  version row, or an open publish approval → `PROMOTION_DIRTY_HEAD`; the recognised save fields
+  compared canonically (row 21): all equal → `no_op`, else **update-as-draft** through the ordinary
+  save door with **only the differing fields**, the row stamped with the head, the new revision and
+  the touched fields in `governed_live_op`. A bucket-ii difference reaches the door and fails
+  `ILLEGAL_FIELD_MUTATION` (row 2, answered). Abandon reverts such a row through the save door to the
+  frozen values of the touched fields.
+- **The lifecycle lane.** `POST /bulk/lifecycle` on `bulk_lifecycle × execute` (the other label,
+  P-D-69) lands one row per id with `governed_live_op = {op}` — and the same JSON as its payload,
+  the ledger's shape CHECK wanting a payload on every product/sku row; stage validates the head
+  against `04`'s guard and pins; the commit drives `run_deprecate` / `run_retire` in `PreAuthorized`
+  (the four door entries gained a `GateMode` parameter), provenance `direct`, reason the literal
+  `bulk-lifecycle`, confirmation the batch's record; rows read `applied`; abandon drops the op.
+- **The export** `GET /bulk/exports?catalogVersionId=` on `bulk × read` (P-D-127; the DoD's
+  `catalog_version × read` is superseded) renders the stored manifest — frozen version rows by
+  number (`repo::entity_version_at`), C5 identities, captures — sorted, byte-identical, header
+  `format_version = 1` (row 3, answered).
+- **One defect the probes found, one reading left standing.** The batch claim filtered on
+  `staging` (above). An unreasoned rejection reaches the wire as a 500 today; the shipped probe pins
+  that as deliberate — `05` §3.3 declares no code for it, so it travels on the codeless channel
+  rather than borrowing one (P-D-119 row 37's family) — and this decision does not overturn it. It is
+  the caller's omission, so a `VALIDATION` on `reason` would fit better; the owner's call, filed
+  here rather than taken.
+- **Ticks.** `09`: `dod-batch-state-machine`, `dod-change-report`, `dod-commit-phase`,
+  `dod-bulk-override-ceremony`, `dod-operation-key`, `dod-coalesced-event`, `dod-export`,
+  `dod-promotion-resolver`, `dod-bulk-lifecycle`, `dod-resume-abandon` — `09` reaches **16 of 16**;
+  §6: twelve criteria on probes (the stale row, parts-succeeded, the one consumption, the
+  spend-nothing re-entry, the late override, the itemisation, the replayed batch key, the resume,
+  the four classifications, the dirty head, byte-identity, the header); `05` §6: the every-lane
+  clause. Not ticked: `09`'s `featstatus` box (the owner's, like `07`'s), the sizing flagship, the
+  `retired` holder and `STALE_LIVE_OP` criteria (no fixture), the lifecycle door's grant refusal
+  and the reserved-lane-by-name assertion (no probe). `DESIGN.md`'s route table reaches 59.
+- **Trace**: the ten `09` markers on their implementing items; `DESIGN.md` §Endpoints Overview (59
+  routes); `ProductsConfig::bulk_batch_ttl_hours`.
+
 #### P-D-148 — 06's doors: force-completion and the participant set under the stored host, the composition clear on a system signal, the diff, the dry-run lint as 05's override operand, the four events and the meters
 
 - **Date**: 2026-09-05 (the lead, group 6 of the solo plan; `06` §7 rows 2, 13, 17, 26, 27, 35,

@@ -257,8 +257,9 @@ fn every_writer_of_a_scheduled_transition_is_counted_for_p_d_105() {
 ///
 /// A call site was added or removed. Do not just move the number. Establish
 /// that the new writer runs `GovernanceGate` before it writes — the import
-/// door's does, inside its own transaction — and if it cannot, say so to the
-/// decision's owner rather than widening the count.
+/// door's and the lifecycle door's both do, each inside its own transaction
+/// (P-D-149 added the second) — and if it cannot, say so to the decision's
+/// owner rather than widening the count.
 #[test]
 fn every_writer_of_a_bulk_batch_is_counted_for_p_d_127() {
     let mut sites = Vec::new();
@@ -283,10 +284,11 @@ fn every_writer_of_a_bulk_batch_is_counted_for_p_d_127() {
     }
     assert_eq!(
         sites.len(),
-        1,
+        2,
         "P-D-127 row 10 extends P-D-105 to `products_bulk_batch` on the condition that its \
-         writers are counted. There is exactly one — the import door's, inside its own \
-         transaction. Found:\n  {}\nRead this test's doc before changing the number.",
+         writers are counted. There are exactly two — the import door's and the lifecycle \
+         door's (P-D-149), each inside its own transaction. Found:\n  {}\nRead this test's doc \
+         before changing the number.",
         sites.join("\n  ")
     );
 }

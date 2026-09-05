@@ -508,7 +508,7 @@ report edge. No counter duplicating the ledger was added.
 
 ### The batch state machine, and its one consuming edge
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-batch-state-machine`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-batch-state-machine`
 
 The seven states and six edges of §4 are implemented, with `completed`, `failed` and `abandoned` terminal (**P-D-69** completed the machine).
 
@@ -531,6 +531,17 @@ it. Row 6 still owns the tenant slot a never-approved batch holds.
 approval record, and **no migration for it ships** — seven exist and none is it, while
 `domain::governance` states *"There is no materiality evaluator here, no `ApprovalRecord`, no record
 store and no grant check"*. So this DoD's write path is `05`'s to supply.
+
+**Ticked (P-D-149).** The seven states and six edges run in `infra::bulk_worker`: edge 1 in
+`stage_next_batch` (now carrying the report and its record), edges 2 and 3 in `begin_commit` — one
+transaction that evaluates the batch's record through the stored host, **consumes it once** and
+moves `reported → approved → committing` — edge 4 in `complete_batch`, `reported → abandoned` on a
+rejected or superseded record and on the reaper's `bulk_batch_ttl_hours` (P-D-127 row 6, `168`
+interim), and `staging|committing → failed` on the worker's attempt budget (`ATTEMPT_BUDGET`, five
+claims). The write path `05` owed is the shipped record store: `repo::submit_approval` at the report
+edge, `repo::settle_authorization` at the flip. Probes:
+`a_batch_reports_commits_under_one_consumed_record_and_completes`,
+`a_rejected_record_abandons_and_the_reaper_takes_a_stale_report`.
 
 **Implements**: `cpt-cf-bss-products-state-bulk-batch`, `cpt-cf-bss-products-algo-batch`
 
@@ -638,7 +649,7 @@ not only at admission — a ceiling checked only by the door drifts as batches h
 
 ### The `ChangeReport`, which is what the quorum signs
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-change-report`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-change-report`
 
 The report is generated **from the ledger** and carries: counts, a per-type summary, a
 **deterministic** sample, the pre-publish lint findings, a **scope-values lint** naming region and
@@ -657,6 +668,16 @@ what makes a post-report edit fail **one row** instead of superseding the batch.
 acknowledgment by name, and the ceremony this feature stores on the batch's approval record is
 acknowledgment-by-name over that set.
 
+**Ticked (P-D-149).** `report_and_submit` renders the report from the ledger at edge 1 — counts,
+the per-kind summary, the deterministic sample (the first five row keys), the dry-run lint per
+staged row through the same functions the `validate` doors run (P-D-125), the scope-values lint
+(`repo::known_scope_values`: region and brand values no head outside the batch carries), the
+**itemised** override rows by `skuCode`, and every row's pinned revision — and submits it as one
+`bulk_batch` approval whose `content_snapshot` is the report and whose pin is the report's
+`ledgerDigest` (`SubjectPin::LedgerDigest`, P-D-127 row 23). Materiality is `05`'s: the act is
+`MaterialAct::BatchAct`, `affected` saturating on any first publish. The record's id is pinned on
+`products_bulk_batch.approval_ref` before the state moves.
+
 **Implements**: `cpt-cf-bss-products-flow-import`
 
 **Touches**:
@@ -665,7 +686,7 @@ acknowledgment-by-name over that set.
 
 ### The commit phase, and the gate mode this feature gives a caller
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-commit-phase`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-commit-phase`
 
 On quorum, rows publish per row through the Foundation's publish door **in `PreAuthorized` mode naming
 the batch's consumed record**, each pinned to its ledger revision. Live-entity operations apply as
@@ -691,6 +712,16 @@ moved live-target `STALE_LIVE_OP`, a dependent of a failed row `BULK_DEPENDENCY_
 underlying code, a late override `BULK_OVERRIDE_UNACKNOWLEDGED`. **Siblings never block**, and the
 published state is never partially inconsistent because each row's publish is atomic and independent.
 
+**Ticked (P-D-149).** `commit_rows` walks the ledger under the batch's consumed record: each
+Product or SKU row through `products::run_publish` / `skus::run_publish` in
+`GateMode::PreAuthorized(approvalId)` over `StoredApprovalGate::bulk_row` — the host verifies the
+consumed record and **spends nothing** — pinned to its ledger revision, claimed on the reserved
+`internal:bulk-row` lane whose stored answer is the ledger outcome. Every failure is row-local and
+coded in the ledger: `STALE_REVISION` for an edited head, `BULK_DEPENDENCY_FAILED:<code>` for a SKU
+whose parent row failed this pass (Products walk first), `BULK_OVERRIDE_UNACKNOWLEDGED` for a late
+bundle, the owning door's code verbatim otherwise; siblings never block and a batch with failed rows
+reaches `completed`. Probe: `a_row_edited_after_the_report_fails_stale_revision_alone`.
+
 **Implements**: `cpt-cf-bss-products-flow-import`, `cpt-cf-bss-products-state-bulk-batch`
 
 **Touches**:
@@ -699,7 +730,7 @@ published state is never partially inconsistent because each row's publish is at
 
 ### The override ceremony that survives the lane
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-bulk-override-ceremony`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-bulk-override-ceremony`
 
 **The problem this DoD solves, stated first because the rule is unreadable without it.** A batch is
 one composite act: its approval is consumed at the flip and its per-row publishes do **not** re-enter
@@ -722,6 +753,17 @@ publishes an override subject without one is a defect, not an exemption"* — an
 exactly such a lane. What this DoD adds is the itemised set, the batch-scoped acknowledgment and the
 late-condition refusal; it does not restate the general rule.
 
+**Ticked (P-D-149).** The report edge itemises every uncomposed-bundle row by `skuCode`, marks it
+`override_acknowledged` in the ledger and records one `BUNDLE_OVERRIDE_REQUIRED/{skuCode}` entry per
+row in the record's `overrideConditions`; `05`'s decide door then demands every entry named in
+`override_acknowledgments` (an unnamed condition is `VALIDATION`), so a satisfied record **is** the
+acknowledgment-by-name over the itemised set. At commit the itemised row publishes with its flag
+raised under the one batch ceremony; a bundle whose condition appeared after the report — not in the
+set — fails `BULK_OVERRIDE_UNACKNOWLEDGED` alone before its publish is attempted. At effective quorum
+zero nobody can acknowledge by name and the worker is not an author (P-D-68), so the itemised rows
+fail there with the closed-set reason `no-acknowledger-at-quorum-zero`. Probe:
+`the_ceremony_itemises_bundles_and_a_late_bundle_fails_alone`.
+
 **Implements**: `cpt-cf-bss-products-flow-import`
 
 **Touches**:
@@ -730,7 +772,7 @@ late-condition refusal; it does not restate the general rule.
 
 ### One batch, one catalog version — and a window this feature does not close
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-operation-key`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-operation-key`
 
 The batch's catalog-version requests carry the **whole increment request** —
 `(source, lane = bulk, request_key, operation_key)` — and it is the **lane**, not the key alone, that
@@ -754,6 +796,14 @@ this feature as *"a registered **internal** requester whose requests carry an `o
 REST door being that contract's **out-of-process** binding. So a bulk commit tags through the trait;
 wiring it at the door would make an in-process commit self-call its own HTTP surface.
 
+**Ticked (P-D-149).** The import and lifecycle doors write the batch's `operation_key` (the batch
+id) at intake; when a commit pass publishes anything it enqueues **one** increment request through
+the store the SDK binding itself calls — `repo::enqueue_increment_request` with
+`(source = "bulk", lane = bulk, request_key = batchId, operation_key)` — idempotent on the key, so a
+resumed commit re-enqueues nothing. The **lane** holds the window (`design/06`'s five-minute hard
+max), the key tags it; no close call exists (P-D-46). Probe: the machine probe reads the request
+back with its lane and key.
+
 **Implements**: `cpt-cf-bss-products-flow-import`
 
 **Touches**:
@@ -762,7 +812,7 @@ wiring it at the door would make an in-process commit self-call its own HTTP sur
 
 ### The coalesced completion event
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-coalesced-event`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-coalesced-event`
 
 Completion emits **exactly one** `CatalogBulkOperationCompleted` with the ledger digest. It ships
 nowhere.
@@ -797,6 +847,11 @@ prepared there fails **inside the batch's own commit transaction** — the failu
 to move. A ninth event not wired to the broker at all reaches a runtime `NoTypedEvent`, which
 `infra::events` documents separately.
 
+**Ticked (P-D-149).** The mechanism shipped with `complete_batch` (the CAS that emits); the digest
+operand §7 row 31 named is pinned by P-D-127 — `(row_key, disposition, code, entity_id)` per row,
+sorted, through `domain::canonical` — and is the same rendering the report edge pins on the record.
+The seven roster sites carry the event; `lint 12`'s `EventRegister` row stays `design/12`'s debt.
+
 **Implements**: `cpt-cf-bss-products-flow-import`
 
 **Touches**:
@@ -804,7 +859,7 @@ to move. A ninth event not wired to the broker at all reaches a runtime `NoTyped
 
 ### Export, and what makes it deterministic
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-export`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-export`
 
 `GET /bss-products/v1/bulk/exports?catalogVersionId=` exists, spending **`catalog_version × read`** —
 its own grant, decoupled from the import pair because an export is auditor-shaped. **The route does
@@ -820,6 +875,15 @@ format version, and the format carries the promotion identities plus full conten
 carries it: a byte-identical rendering needs a fixed ordering over the manifest's members and a
 canonical serialization, and the slice names neither.
 
+**Ticked (P-D-149).** `GET /bss-products/v1/bulk/exports?catalogVersionId=`
+(`bulk::export_catalog_version`) on **`bulk × read`** — P-D-127's grant, which supersedes the
+`catalog_version × read` this DoD's first sentence names — renders the stored manifest: every entry's
+frozen version row (`repo::entity_version_at`, never the head) with its C5 identity, every capture
+from the capture store, entries sorted by `(entity_kind, entity_id)` and captures by kind, the
+header carrying `format_version = 1` (`EXPORT_FORMAT_VERSION`, §7 row 3's number). Byte-identical
+for a version, streamed as one response, nothing stored; an unknown version is
+`CATALOG_VERSION_UNKNOWN`. Probe: `the_export_is_byte_identical_for_a_version`.
+
 **Implements**: `cpt-cf-bss-products-flow-export`
 
 **Touches**:
@@ -828,7 +892,7 @@ canonical serialization, and the slice names neither.
 
 ### The promotion resolver, total over identity
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-promotion-resolver`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-promotion-resolver`
 
 `PromotionResolver` runs **only when the batch's `mode` is `promote`** (**P-D-69** — the operand
 that separates it from a plain import, which refuses the same collision as `DUPLICATE_CODE`), and
@@ -852,6 +916,18 @@ without it `no-op` and `update-as-draft` have no predicate separating them.
 clone-only; a dirty head conflicts because an import never silently merges into in-flight work or
 supersedes a local approval.
 
+**Ticked (P-D-149).** `resolve_promotion` runs in the stage pass when `mode = promote`: identity is
+the exported id, then `skuCode` / `productCode`, then `(brandId, normalized name)` (P-D-127 row 4);
+an unknown identity **creates**; a `retired` or `discarded` holder is `PROMOTION_IDENTITY_CONFLICT`
+(revival is clone-only); a head with unpublished edits (a draft, or a rendering that differs from its
+last version row — the correction door's own predicate) or an open publish approval is
+`PROMOTION_DIRTY_HEAD`; else the staged fields the save door recognises are compared canonically to
+the head's content (row 21) — all equal is `no_op`, a difference is **update-as-draft** through the
+ordinary save door, the row stamped with the head, the revision the save left and the touched
+fields. A bucket-ii difference reaches that door and fails `ILLEGAL_FIELD_MUTATION` naming `07`'s
+correction door (§7 row 2). Probe:
+`a_promote_batch_classifies_no_op_update_as_draft_and_conflict_then_reverts`.
+
 **Implements**: `cpt-cf-bss-products-flow-promote`
 
 **Touches**:
@@ -859,7 +935,7 @@ supersedes a local approval.
 
 ### The bulk lifecycle arm, and its separate grant
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-dod-bulk-lifecycle`
+- [x] `p2` - **ID**: `cpt-cf-bss-products-dod-bulk-lifecycle`
 
 `POST /bss-products/v1/bulk/lifecycle` exists, spending **`bulk_lifecycle × execute`** — **its own
 grant**, so the gear's most destructive batch act cannot be reached with the import pair. **The route
@@ -874,6 +950,16 @@ consumed once by the same flip, each row's transition door in `PreAuthorized` mo
 **The per-SKU flip guards stay.** No bulk override of the reference guard exists, so a referenced row
 defers under the ordinary guard and **the batch never force-retires**. This is the one place where
 "bulk runs the ordinary pipeline" prevents a whole class of operator accident.
+
+**Ticked (P-D-149).** `POST /bss-products/v1/bulk/lifecycle` (`bulk::start_lifecycle_batch`) on
+**`bulk_lifecycle × execute`**, its own label and grant — the import pair does not reach it — lands a
+`lifecycle`-lane batch with one row per id whose `governed_live_op` is the op; the stage pass
+validates each head against the ordinary `04` guard and pins its revision; the report is material at
+any size; the commit drives `run_deprecate` / `run_retire` in `PreAuthorized` mode with provenance
+`direct`, the reason the closed-set literal `bulk-lifecycle` (P-D-50), the per-head guards intact —
+a referenced SKU defers under its own guard and nothing force-retires. Rows read `applied`. Probes:
+`a_lifecycle_batch_deprecates_through_the_ordinary_door`,
+`the_lifecycle_door_lands_a_lane_batch_and_replays_its_key`.
 
 **Implements**: `cpt-cf-bss-products-flow-bulk-lifecycle`
 
@@ -913,7 +999,7 @@ codes are fixed; §6's criteria say which of the two they assert.
 
 ### Resume and abandon, both through ordinary doors
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-resume-abandon`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-resume-abandon`
 
 **Resume**: a crash mid-commit resumes from the ledger, per-row publishes being idempotent by row
 key — and a **published** row's re-execution is stopped one layer earlier still: its
@@ -936,6 +1022,14 @@ inside a hook it was measured out of.
 
 **Abandon has no state to land in.** §4's machine has no abandon state, so what a batch's state
 becomes after abandonment is §7 row 5's, not this DoD's.
+
+**Ticked (P-D-149).** Resume: a re-claimed commit skips every disposed row and replays a claimed
+one from the `internal:bulk-row` lane's stored answer — the ledger is the record — and a second
+sweep over a completed batch publishes nothing twice. Abandon: created drafts discard, lifecycle rows
+drop their pending op untouched, and an **update-as-draft row reverts through the ordinary save
+door** to the fields its marker names at their last frozen values, the head returning to its
+published content with a revision bump. Probe: the promotion probe's revert, the machine probe's
+second sweep.
 
 **Implements**: `cpt-cf-bss-products-algo-batch`
 
@@ -982,55 +1076,55 @@ raises no second one.
 
 - [ ] A Product row fails, its SKU rows fail `BULK_DEPENDENCY_FAILED`, **and its siblings proceed** —
       positive and negative in one batch, with **no orphan at any point**.
-- [ ] A row edited after the report fails `STALE_REVISION` **alone** at commit: the batch approval
+- [x] A row edited after the report fails `STALE_REVISION` **alone** at commit: the batch approval
       stands, siblings publish, and the ledger names the row.
 - [ ] A live-entity operation whose target moved fails `STALE_LIVE_OP` **alone**, the same
       row-local posture.
-- [ ] A batch with failed rows reaches **`completed`**, not `failed` — parts-succeeded is an end
+- [x] A batch with failed rows reaches **`completed`**, not `failed` — parts-succeeded is an end
       state and not an error.
 
 **The governance contract**
 
-- [ ] The batch approval is consumed **exactly once**, at the `approved → committing` flip. A probe
+- [x] The batch approval is consumed **exactly once**, at the `approved → committing` flip. A probe
       counts consumptions across a batch of many rows and asserts **one**.
-- [ ] Every per-row publish runs in `PreAuthorized` mode and **spends nothing**: the record's state
+- [x] Every per-row publish runs in `PreAuthorized` mode and **spends nothing**: the record's state
       after commit is the one the flip left.
 - [ ] A per-row publish attempted **without** a consumed record naming that subject is refused —
       asserted against `05-governance`'s record-backed host, **not** against the shipped
       `NoMaterialityPolicyGate`, whose refusal under this mode is **unconditional**: it ignores the
       subject and the revision and names the missing record store. A probe run against today's host
       passes for the wrong reason and stops testing anything the moment a real host is registered.
-- [ ] A row whose override condition appeared **after** the report fails
+- [x] A row whose override condition appeared **after** the report fails
       `BULK_OVERRIDE_UNACKNOWLEDGED` alone, while the acknowledged itemised set publishes under the
       one batch ceremony.
-- [ ] The report's override section names rows **by `skuCode`**, never as a count — the case an
+- [x] The report's override section names rows **by `skuCode`**, never as a count — the case an
       acknowledgment-by-name cannot be built from.
 
 **Idempotency, across all three key scopes**
 
-- [ ] A replayed **batch** key returns the existing batch and starts no second one.
+- [x] A replayed **batch** key returns the existing batch and starts no second one.
 - [ ] A **row** retried within the batch commits nothing twice, keyed on the ledger.
 - [ ] A row re-listed in a **new** batch is a new act, and a code collision is the ordinary
       `DUPLICATE_CODE`.
 - [ ] Per-row publishes resolve the publish door's key on the reserved **`internal:bulk-row`** lane —
       the lane that ships unused, asserted by name so a build cannot mint a fourth.
-- [ ] A crash mid-commit resumes and completes **without duplicates**.
+- [x] A crash mid-commit resumes and completes **without duplicates**.
 
 **Promotion**
 
-- [ ] One fixture over the resolver's **four** classifications — create, no-op, update-as-draft,
+- [x] One fixture over the resolver's **four** classifications — create, no-op, update-as-draft,
       conflict — including the codeless Product resolved by `(brandId, canonical internal name)`,
       which is `design/09` C5's fallback where `productCode` is absent.
 - [ ] A `retired` holder conflicts, and the refusal names clone as the revival path.
-- [ ] A target head carrying unpublished local edits or an open approval fails
+- [x] A target head carrying unpublished local edits or an open approval fails
       `PROMOTION_DIRTY_HEAD` — **both** cases, since either alone passes a build that checks only the
       other.
 
 **Export**
 
-- [ ] Two exports of the same `catalogVersionId` are **byte-identical**. **Blocked on §7 row 14**:
+- [x] Two exports of the same `catalogVersionId` are **byte-identical**. **Blocked on §7 row 14**:
       no document states the ordering and serialization that makes this so.
-- [ ] The artifact header carries a schema format version.
+- [x] The artifact header carries a schema format version.
 
 **Bulk lifecycle**
 
@@ -1093,17 +1187,22 @@ whether DECOMPOSITION's entity field is a listing convention or an ontological c
     not as suppression.
     **Owner**: `12-consumer-contracts` — a note for its lint, not a question (assigned by P-D-127, 2026-09-03).
 
-2. **Update-as-draft promotion onto a live entity** stages bucket-iii/iv changes on the target's
-    head — bucket-i/ii differences (type, meter) cannot be promoted onto an existing identity and
-    land as per-row conflicts directing to the 07 correction door; these rows classify as
-    update-as-draft and fail at the save door with 01's `ILLEGAL_FIELD_MUTATION`, whose reason
-    names 07's correction door; worth its own probe when built.
-    **Blocks**: `cpt-cf-bss-products-dod-promotion-resolver`.
+2. ~~**Update-as-draft promotion onto a live entity** stages bucket-iii/iv changes on the target's
+    head.~~ **Answered (P-D-149, 2026-09-05): built as stated** — the resolver passes every
+    differing recognised field to the ordinary save door, so a bucket-ii difference onto a published
+    identity fails there with `ILLEGAL_FIELD_MUTATION` naming `07`'s correction door; the probe is
+    the resolver's. *The item's text stood as:* bucket-i/ii differences (type, meter) cannot be
+    promoted onto an existing identity and land as per-row conflicts directing to the 07 correction
+    door; these rows classify as update-as-draft and fail at the save door with 01's
+    `ILLEGAL_FIELD_MUTATION`, whose reason names 07's correction door; worth its own probe when built.
+    **Blocks**: no DoD — **resolved by P-D-149** *(was: `cpt-cf-bss-products-dod-promotion-resolver`.)*
     **Owner**: this feature — a probe owed when the resolver is built (assigned by P-D-127, 2026-09-03).
 
-3. **Export format versioning** (schema evolution of the artifact) rides slice 12's vN→vN+1
-    discipline; named here so the exporter carries a format version from day one.
-    **Blocks**: `cpt-cf-bss-products-dod-export`.
+3. ~~**Export format versioning** (schema evolution of the artifact) rides slice 12's vN→vN+1
+    discipline.~~ **Answered (P-D-149, 2026-09-05): the artifact carries `format_version = 1`**
+    (`bulk::EXPORT_FORMAT_VERSION`) in its header from day one; the vN→vN+1 discipline stays `12`'s.
+    *The item's text stood as:* named here so the exporter carries a format version from day one.
+    **Blocks**: no DoD — **resolved by P-D-149** *(was: `cpt-cf-bss-products-dod-export`.)*
     **Owner**: this feature with `12-consumer-contracts` (assigned by P-D-127, 2026-09-03).
 
 4. ~~**A renamed Product carrying no `productCode` is promoted as a create, not an update.**~~ **Answered (P-D-127, 2026-09-03): identity is `productId`, then `productCode`, then `normalized(name)`** — an export carries ids, so a round-trip row resolves by id whatever was renamed; a hand-authored row without either is a create when unmatched. *The item's text stood as:*

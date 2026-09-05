@@ -127,6 +127,8 @@ pub(crate) struct ProductsRuntime {
     pub bulk_max_rows_per_batch: u32,
     /// The tenant's concurrent-batch ceiling.
     pub bulk_max_concurrent_batches_per_tenant: u32,
+    /// The reaper's TTL for a `reported` batch nobody approves (P-D-127 row 6).
+    pub bulk_batch_ttl_hours: u32,
 
     /// The watermark door's skew bound and the predicate's freshness
     /// threshold, resolved once from `ProductsConfig` (P-D-87 arm 1).
@@ -269,6 +271,8 @@ impl BssProductsGear {
             bulk_max_concurrent_batches_per_tenant: rt
                 .sdk_state
                 .bulk_max_concurrent_batches_per_tenant,
+            idempotency_retention_hours: rt.sdk_state.idempotency_retention_hours,
+            batch_ttl_hours: rt.bulk_batch_ttl_hours,
         };
         let mut interval = tokio::time::interval(COALESCER_TICK);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -829,6 +833,7 @@ impl Gear for BssProductsGear {
             freeze_timeout_hours: cfg.freeze_timeout_hours,
             bulk_max_rows_per_batch: cfg.bulk_max_rows_per_batch,
             bulk_max_concurrent_batches_per_tenant: cfg.bulk_max_concurrent_batches_per_tenant,
+            bulk_batch_ttl_hours: cfg.bulk_batch_ttl_hours,
             watermark_skew_tolerance: cfg.watermark_skew_tolerance(),
             reference: crate::api::rest::ReferenceKnobs::from(&cfg),
             breakglass_window_hours: cfg.breakglass_window_hours,

@@ -338,3 +338,67 @@ async fn an_unknown_batch_is_a_404() {
 fn the_reserved_lane_carries_its_declared_name() {
     assert_eq!(INTERNAL_BULK_ROW_LANE, "internal:bulk-row");
 }
+
+async fn post_lifecycle(app: Router, body: &serde_json::Value) -> axum::http::Response<Body> {
+    app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/bss-products/v1/bulk/lifecycle")
+            .header("content-type", "application/json")
+            .extension(authed_ctx(TENANT))
+            .body(Body::from(body.to_string()))
+            .expect("build the request"),
+    )
+    .await
+    .expect("the router answers")
+}
+
+/// `dod-bulk-lifecycle`'s door: the shape is judged, a batch lands on the
+/// lifecycle lane with one row per id, and a replayed key answers the existing
+/// batch.
+#[tokio::test]
+async fn the_lifecycle_door_lands_a_lane_batch_and_replays_its_key() {
+    let harness = harness().await;
+    let refused = post_lifecycle(
+        app_for(&harness, TENANT, 1000, 5),
+        &json!({ "batch_key": "lc-1", "op": "frobnicate", "entity_kind": "sku", "entity_ids": [Uuid::now_v7()] }),
+    )
+    .await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::BAD_REQUEST,
+        "op is deprecate or retire"
+    );
+    let empty = post_lifecycle(
+        app_for(&harness, TENANT, 1000, 5),
+        &json!({ "batch_key": "lc-1", "op": "retire", "entity_kind": "sku", "entity_ids": [] }),
+    )
+    .await;
+    assert_eq!(empty.status(), StatusCode::BAD_REQUEST, "at least one head");
+
+    let ids = [Uuid::now_v7(), Uuid::now_v7()];
+    let accepted = post_lifecycle(
+        app_for(&harness, TENANT, 1000, 5),
+        &json!({ "batch_key": "lc-1", "op": "deprecate", "entity_kind": "product", "entity_ids": ids }),
+    )
+    .await;
+    let status = accepted.status();
+    let view = body_json(accepted).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{view}");
+    assert_eq!(view["state"], json!("staging"));
+    assert_eq!(view["row_count"], json!(2));
+    assert_eq!(view["replayed"], json!(false));
+    let batch_id = view["batch_id"].as_str().expect("id").to_owned();
+    let ledger = body_json(get_batch(app_for(&harness, TENANT, 1000, 5), &batch_id).await).await;
+    assert_eq!(ledger["lane"], json!("lifecycle"));
+    assert_eq!(ledger["rows"].as_array().expect("rows").len(), 2);
+    assert_eq!(ledger["rows"][0]["entity_kind"], json!("product"));
+
+    let replayed = post_lifecycle(
+        app_for(&harness, TENANT, 1000, 5),
+        &json!({ "batch_key": "lc-1", "op": "deprecate", "entity_kind": "product", "entity_ids": ids }),
+    )
+    .await;
+    assert_eq!(replayed.status(), StatusCode::ACCEPTED);
+    assert_eq!(body_json(replayed).await["replayed"], json!(true));
+}
