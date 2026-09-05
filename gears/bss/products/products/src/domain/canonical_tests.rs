@@ -43,7 +43,10 @@ fn hex(bytes: &[u8]) -> String {
     })
 }
 
-/// The digest version is `1`, and it is a constant in this crate.
+/// The digest version is `2`, and it is a constant in this crate — `1` at
+/// birth, `2` since 03's five content columns joined the SKU roster (P-D-145;
+/// the gear is undeployed, P-D-35's note), the scheme's field set being part
+/// of what the version names.
 ///
 /// §4.3 pins the starting value and **P-D-33** pins where it lives. The
 /// assertion is worth its line because the number is what a stored row
@@ -52,10 +55,10 @@ fn hex(bytes: &[u8]) -> String {
 /// alarm, and this case is the first thing that goes red when someone edits
 /// the constant on its own.
 #[test]
-fn the_digest_version_starts_at_one_and_is_pinned_in_code() {
+fn the_digest_version_is_pinned_in_code_and_moves_only_with_the_roster() {
     assert_eq!(
-        DIGEST_VERSION, 1,
-        "the digest version starts at 1 and a bump is a migration, not an edit"
+        DIGEST_VERSION, 2,
+        "the digest version is 2 since P-D-145 and a bump is a roster change, never a lone edit"
     );
 }
 

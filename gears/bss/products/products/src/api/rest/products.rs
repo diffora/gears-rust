@@ -8000,6 +8000,11 @@ async fn resolve_child_source(
 ) -> Result<SkuCloneSource, CanonicalError> {
     if child.lifecycle_state == LifecycleState::Draft {
         return Ok(SkuCloneSource {
+            sku_type: child.sku_type.clone(),
+            sellable: child.sellable,
+            plan_tier: child.plan_tier.clone(),
+            tax_category_ref: child.tax_category_ref.clone(),
+            gl_code_ref: child.gl_code_ref.clone(),
             product_id: parent_id,
             sku_code: child.sku_code.clone(),
             region_scope: child.region_scope.clone(),
@@ -8042,6 +8047,14 @@ async fn resolve_child_source(
         )))
     })?;
     Ok(SkuCloneSource {
+        sku_type: frozen_str(&content, "sku_type"),
+        sellable: content
+            .get("sellable")
+            .and_then(JsonValue::as_bool)
+            .unwrap_or(true),
+        plan_tier: frozen_str(&content, "plan_tier"),
+        tax_category_ref: frozen_str(&content, "tax_category_ref"),
+        gl_code_ref: frozen_str(&content, "gl_code_ref"),
         product_id: parent_id,
         sku_code,
         // The same corruption class as the sku_code check above: the scope
@@ -8114,6 +8127,7 @@ async fn clone_family_child(
     let mut code_n: u32 = 1;
     for _attempt in 0..CLONE_SUGGESTION_ATTEMPTS {
         let code = disposition::suggested_sku_code(&source, code_n);
+        let class = source.classification();
         let new = NewSku {
             sku_id: Uuid::new_v4(),
             tenant_id,
@@ -8125,6 +8139,11 @@ async fn clone_family_child(
             created_at: now,
             cloned_from: Some(child.sku_id),
             cloned_from_version: source.read_at_version,
+            sku_type: class.sku_type,
+            sellable: class.sellable,
+            plan_tier: class.plan_tier,
+            tax_category_ref: class.tax_category_ref,
+            gl_code_ref: class.gl_code_ref,
         };
         match insert_sku_with_event(state, sku_scope.clone(), new, None, actor_ref).await {
             Ok(CreateOutcome::Created { body, .. }) => {

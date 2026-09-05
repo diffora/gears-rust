@@ -236,6 +236,14 @@ pub struct NewSku {
     /// the head guard refuses any later write of the pair.
     pub cloned_from: Option<Uuid>,
     pub cloned_from_version: Option<i64>,
+    /// 03's type profile — required at create (P-D-145).
+    pub sku_type: String,
+    /// `inst-cl-sellable`'s default is `true`.
+    pub sellable: bool,
+    /// The tier the create assigns — `standard` when the caller names none.
+    pub plan_tier: String,
+    pub tax_category_ref: Option<String>,
+    pub gl_code_ref: Option<String>,
 }
 
 /// A SKU as this repository hands it back.
@@ -313,6 +321,13 @@ pub struct SkuRecord {
     /// Not version content: the head guard's door identity, like
     /// `composition_pending`.
     pub correction_ref: Option<Uuid>,
+    /// 03's classification columns (P-D-145): the type profile, the sellable
+    /// flag, the tier and the two Finance codes.
+    pub sku_type: Option<String>,
+    pub sellable: bool,
+    pub plan_tier: Option<String>,
+    pub tax_category_ref: Option<String>,
+    pub gl_code_ref: Option<String>,
 }
 
 /// Insert one `products_product` row and read it back as authored
@@ -495,6 +510,13 @@ pub async fn insert_sku(
         usage_type_ref: Set(None),
         // P-D-129's door identity: only the correction re-publish writes it.
         correction_ref: Set(None),
+        // 03's classification (P-D-145): the type and tier the create judged,
+        // the flag's default, the two Finance codes as given.
+        sku_type: Set(Some(new.sku_type)),
+        sellable: Set(new.sellable),
+        plan_tier: Set(Some(new.plan_tier)),
+        tax_category_ref: Set(new.tax_category_ref),
+        gl_code_ref: Set(new.gl_code_ref),
     };
 
     let row = sku::Entity::insert(model.clone())
@@ -657,6 +679,11 @@ fn into_sku_record(row: sku::Model) -> Result<SkuRecord, RepoError> {
         metering_unit: row.metering_unit,
         usage_type_ref: row.usage_type_ref,
         correction_ref: row.correction_ref,
+        sku_type: row.sku_type,
+        sellable: row.sellable,
+        plan_tier: row.plan_tier,
+        tax_category_ref: row.tax_category_ref,
+        gl_code_ref: row.gl_code_ref,
     })
 }
 
@@ -2674,6 +2701,13 @@ pub struct SkuHeadSave {
     pub metering_unit: Option<String>,
     /// Bucket ii: the declaration's other half, on identical terms.
     pub usage_type_ref: Option<String>,
+    /// 03's classification fields (P-D-145): `sku_type` is bucket ii, the
+    /// other four bucket iii.
+    pub sku_type: Option<String>,
+    pub sellable: Option<bool>,
+    pub plan_tier: Option<String>,
+    pub tax_category_ref: Option<String>,
+    pub gl_code_ref: Option<String>,
     /// Whether the same act writes **`02`'s content rows** — a category
     /// assignment set or an attribute value — beside this head.
     ///
@@ -2710,7 +2744,7 @@ impl SkuHeadSave {
     /// (`design/01` §4.2, P-D-41), so the filter arm below is one predicate
     /// with two member sets.
     const fn touches_correctable(&self) -> bool {
-        self.metering_unit.is_some() || self.usage_type_ref.is_some()
+        self.metering_unit.is_some() || self.usage_type_ref.is_some() || self.sku_type.is_some()
     }
 
     /// See [`ProductHeadSave::is_empty`].
@@ -2721,6 +2755,11 @@ impl SkuHeadSave {
             && self.brand_scope.is_none()
             && self.metering_unit.is_none()
             && self.usage_type_ref.is_none()
+            && self.sku_type.is_none()
+            && self.sellable.is_none()
+            && self.plan_tier.is_none()
+            && self.tax_category_ref.is_none()
+            && self.gl_code_ref.is_none()
             && !self.content_moved
     }
 }
@@ -2932,6 +2971,24 @@ pub async fn save_sku_head(
             sku::Column::UsageTypeRef,
             Expr::value(usage_type_ref.clone()),
         );
+    }
+    if let Some(sku_type) = save.sku_type.as_ref() {
+        statement = statement.col_expr(sku::Column::SkuType, Expr::value(sku_type.clone()));
+    }
+    if let Some(sellable) = save.sellable {
+        statement = statement.col_expr(sku::Column::Sellable, Expr::value(sellable));
+    }
+    if let Some(plan_tier) = save.plan_tier.as_ref() {
+        statement = statement.col_expr(sku::Column::PlanTier, Expr::value(plan_tier.clone()));
+    }
+    if let Some(tax_category_ref) = save.tax_category_ref.as_ref() {
+        statement = statement.col_expr(
+            sku::Column::TaxCategoryRef,
+            Expr::value(tax_category_ref.clone()),
+        );
+    }
+    if let Some(gl_code_ref) = save.gl_code_ref.as_ref() {
+        statement = statement.col_expr(sku::Column::GlCodeRef, Expr::value(gl_code_ref.clone()));
     }
 
     let mut filter = Condition::all()

@@ -50,7 +50,7 @@ const GOLDEN_CONTENT: &str = "{\"brand_id\":\"3f8f6a1e-0000-4000-8000-0000000000
 const GOLDEN_DIGEST_HEX: &str = "e252632893610a1207b4844a24a1aec1682c8a4b7b5242bd7a26b082b1e77c35";
 
 /// The digest scheme the vector was computed under (`canonical::DIGEST_VERSION`).
-const GOLDEN_DIGEST_VERSION: i32 = 1;
+const GOLDEN_DIGEST_VERSION: i32 = 2;
 
 /// The three columns the round trip reads back.
 #[derive(Debug, sea_orm::FromQueryResult)]

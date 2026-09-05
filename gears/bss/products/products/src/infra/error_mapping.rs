@@ -217,6 +217,22 @@ impl From<DomainError> for CanonicalError {
             }
             D::UnrecognizedUnit(detail) => precondition("meter", &detail, "UNRECOGNIZED_UNIT"),
             D::UnitDeprecated(detail) => precondition("meter", &detail, "UNIT_DEPRECATED"),
+            // 03's classification refusals (P-D-145): 422 architectural, 400 on
+            // the wire, the same precondition shape as the meter's.
+            D::SkuTypeUnknown(detail) => precondition("sku_type", &detail, "SKU_TYPE_UNKNOWN"),
+            D::AccountingCodeRequired(detail) => {
+                precondition("accounting_code", &detail, "ACCOUNTING_CODE_REQUIRED")
+            }
+            D::AccountingCodeUnknown(detail) => {
+                precondition("accounting_code", &detail, "ACCOUNTING_CODE_UNKNOWN")
+            }
+            D::AccountingCodeDeprecated(detail) => {
+                precondition("accounting_code", &detail, "ACCOUNTING_CODE_DEPRECATED")
+            }
+            D::PlanTierUnknown(detail) => precondition("plan_tier", &detail, "PLAN_TIER_UNKNOWN"),
+            D::PlanTierDeprecated(detail) => {
+                precondition("plan_tier", &detail, "PLAN_TIER_DEPRECATED")
+            }
             D::UnitDelistBlocked(detail) => aborted(detail, "UNIT_DELIST_BLOCKED"),
             D::PlanTierRetireBlocked(detail) => aborted(detail, "PLAN_TIER_RETIRE_BLOCKED"),
             D::AccountingCodeDelistBlocked(detail) => {

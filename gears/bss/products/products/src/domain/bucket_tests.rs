@@ -140,6 +140,18 @@ fn the_skus_tagged_columns_answer_the_buckets_section_4_1_assigns() {
         class_of(kind, "brand_scope"),
         FieldClass::Bucket(FieldBucket::MaterialMutable),
     );
+    // 03's five (P-D-145): the type profile is bucket ii, the rest bucket iii.
+    assert_eq!(
+        class_of(kind, "sku_type"),
+        FieldClass::Bucket(FieldBucket::Correctable),
+    );
+    for column in ["sellable", "plan_tier", "tax_category_ref", "gl_code_ref"] {
+        assert_eq!(
+            class_of(kind, column),
+            FieldClass::Bucket(FieldBucket::MaterialMutable),
+            "{column} is bucket iii",
+        );
+    }
 }
 
 /// One column name, two classes, decided by the entity it sits on.
@@ -254,9 +266,12 @@ fn a_row_identity_column_is_outside_the_scheme_and_is_not_a_bucket() {
 #[test]
 fn an_unregistered_column_fails_closed_rather_than_defaulting() {
     let unregistered = [
-        (EntityKind::Sku, "sellable"),
-        (EntityKind::Sku, "plan_tier"),
+        // `type` is the design's word for the column named `sku_type` (P-D-145):
+        // the wire name stays a miss, which is what keeps a caller from
+        // guessing it.
         (EntityKind::Sku, "type"),
+        (EntityKind::Sku, "price"),
+        (EntityKind::Sku, "currency"),
         (EntityKind::Sku, "name"),
         (EntityKind::Product, "sku_code"),
         (EntityKind::Product, "composition_pending"),
@@ -369,8 +384,8 @@ fn bucket_ii_is_the_meter_pair_and_bucket_iv_is_empty() {
             EntityKind::Sku,
             FieldClass::Bucket(FieldBucket::Correctable)
         ),
-        2,
-        "sku: bucket-ii is exactly 03's meter pair",
+        3,
+        "sku: bucket-ii is 03's meter pair and its type profile (P-D-145)",
     );
     for kind in BOTH_KINDS {
         assert_eq!(
@@ -405,8 +420,8 @@ fn the_class_counts_are_pinned_per_entity() {
 
     let sku_counts = [
         (FieldClass::Bucket(FieldBucket::Structural), 2),
-        (FieldClass::Bucket(FieldBucket::Correctable), 2),
-        (FieldClass::Bucket(FieldBucket::MaterialMutable), 2),
+        (FieldClass::Bucket(FieldBucket::Correctable), 3),
+        (FieldClass::Bucket(FieldBucket::MaterialMutable), 6),
         (FieldClass::CreateOnly, 2),
         (FieldClass::Outside(OutsideTheScheme::Mechanical), 8),
         (FieldClass::Outside(OutsideTheScheme::RowIdentity), 4),
@@ -414,7 +429,7 @@ fn the_class_counts_are_pinned_per_entity() {
     for (class, expected) in sku_counts {
         assert_eq!(count_of(EntityKind::Sku, class), expected);
     }
-    assert_eq!(columns(EntityKind::Sku).len(), 20);
+    assert_eq!(columns(EntityKind::Sku).len(), 25);
 }
 
 /// No column is named twice in one entity's registry.

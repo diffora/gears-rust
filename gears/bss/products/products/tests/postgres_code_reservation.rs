@@ -297,6 +297,11 @@ async fn surviving_holders(conn: &sea_orm::DatabaseConnection) -> Vec<String> {
 /// confuse the failure with.
 fn sku_contender(sku_id: Uuid) -> NewSku {
     NewSku {
+        sku_type: "bundle".to_owned(),
+        sellable: true,
+        plan_tier: "standard".to_owned(),
+        tax_category_ref: None,
+        gl_code_ref: None,
         sku_id,
         tenant_id: TENANT,
         product_id: PARENT,

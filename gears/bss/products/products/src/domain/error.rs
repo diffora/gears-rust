@@ -176,6 +176,30 @@ pub enum DomainError {
     /// usage SKUs only (**P-D-131**).
     #[error("usage type unavailable: {0}")]
     UsageTypeUnavailable(String),
+    /// `sku_type` is outside `product | service | bundle`, or absent at publish
+    /// (`03 inst-cl-type-profile`, P-D-145).
+    #[error("unknown sku type: {0}")]
+    SkuTypeUnknown(String),
+    /// A `product` or `service` SKU published without both accounting codes;
+    /// the detail names the missing field (`03 inst-cl-type-profile`).
+    #[error("accounting code required: {0}")]
+    AccountingCodeRequired(String),
+    /// An accounting code Finance's recognized set does not carry — unknown or
+    /// `removed` (`03 inst-ac-codes`). One code for both fields (P-D-47).
+    #[error("unknown accounting code: {0}")]
+    AccountingCodeUnknown(String),
+    /// A **new** assignment of a `deprecated` accounting code; existing
+    /// published carriers keep resolving (`03 inst-ac-codes`).
+    #[error("deprecated accounting code: {0}")]
+    AccountingCodeDeprecated(String),
+    /// A tier the tenant's `PlanTier` set does not carry — unknown or
+    /// `removed` (`03 inst-pt-assign`).
+    #[error("unknown plan tier: {0}")]
+    PlanTierUnknown(String),
+    /// A **new** assignment of a `deprecated` tier, including a draft whose
+    /// tier was deprecated before its first publish (`03 inst-pt-assign`).
+    #[error("deprecated plan tier: {0}")]
+    PlanTierDeprecated(String),
 
     /// A Product reaching `published` carries no primary category
     /// (`inst-tx-primary-at-publish`).
@@ -551,6 +575,12 @@ impl DomainError {
             Self::AccountingCodeDelistBlocked(_) => "ACCOUNTING_CODE_DELIST_BLOCKED",
             Self::UsageTypeUnresolved(_) => "USAGE_TYPE_UNRESOLVED",
             Self::UsageTypeUnavailable(_) => "USAGE_TYPE_UNAVAILABLE",
+            Self::SkuTypeUnknown(_) => "SKU_TYPE_UNKNOWN",
+            Self::AccountingCodeRequired(_) => "ACCOUNTING_CODE_REQUIRED",
+            Self::AccountingCodeUnknown(_) => "ACCOUNTING_CODE_UNKNOWN",
+            Self::AccountingCodeDeprecated(_) => "ACCOUNTING_CODE_DEPRECATED",
+            Self::PlanTierUnknown(_) => "PLAN_TIER_UNKNOWN",
+            Self::PlanTierDeprecated(_) => "PLAN_TIER_DEPRECATED",
             Self::PrimaryCategoryRequired(_) => "PRIMARY_CATEGORY_REQUIRED",
             Self::ApprovalRequired(_) => "APPROVAL_REQUIRED",
             Self::SelfApprovalForbidden(_) => "SELF_APPROVAL_FORBIDDEN",

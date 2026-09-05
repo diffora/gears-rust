@@ -629,20 +629,23 @@ async fn a_seeded_member_deprecates_and_never_removes() {
         "removed",
     )
     .await;
-    assert_eq!(removal.status(), axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(removal.status(), axum::http::StatusCode::CONFLICT);
     let body = body_json(removal).await;
-    // NOT one of the three delist codes, deliberately: §7 row 18 asks which
-    // code refuses this and answers that none of the three fits, since they
-    // are all predicated on holders and a seeded member is refused for being
-    // seeded. Answering it from the crate would decide the row.
+    // P-D-131 row 18: not one of the three delist codes — they are predicated
+    // on holders and a seeded member is refused for being seeded — but the
+    // Foundation's own variant, uniformly with 02's seeded definition, and no
+    // sixteenth code (P-D-145 replaced the interim VALIDATION channel).
     assert_eq!(
-        body["context"]["violations"][0]["type"],
-        json!("VALIDATION"),
-        "the refusal carries the generic channel until row 18 resolves: {body}"
+        body["context"]["reason"],
+        json!("ILLEGAL_FIELD_MUTATION"),
+        "a seeded member is deprecatable and never removed"
     );
     assert!(
-        body.to_string().contains("row 18"),
-        "and names the open item, so the next reader sees the code is provisional: {body}"
+        body["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("seeded by"),
+        "and the detail names the seeder: {body}"
     );
 }
 

@@ -493,7 +493,7 @@ to either suite alone, which is why both halves exist.
 
 ### Classification columns and the meter pair CHECK
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-classification-columns`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-classification-columns`
 
 The system **MUST** carry, on `01-foundation`'s `products_sku`, the seven columns whose rules this
 feature owns: `type`, `sellable`, `plan_tier`, `tax_category_ref`, `gl_code_ref`, `metering_unit`
@@ -506,6 +506,8 @@ and this DoD obliges no constraint until it is answered: `plan_tier`, `tax_categ
 key, none can reference it without `set_kind` supplied as a literal, and each has a de-list code a
 raw violation would pre-empt. `design/03` §4 asks the question of `plan_tier` because that is the
 column whose FK claim was struck; the argument holds for all four and §4 governs.
+
+**Ticked with P-D-145.** The five columns land on `products_sku` beside the meter pair — `sku_type` (the donor's name for `type`), `sellable` (`NOT NULL DEFAULT true`), `plan_tier`, `tax_category_ref`, `gl_code_ref` — in `m20260829_000003` in place, both engines; the meter-pair `CHECK` and its `CorruptRow` probes were already shipped. Items 5 and 7 are answered (P-D-131 row 5: the codes stay; P-D-91: no foreign key, each is a code into the three-column key with its own de-list code).
 
 **Implements**: `cpt-cf-bss-products-flow-classify-sku`,
 `cpt-cf-bss-products-flow-declare-meter`
@@ -538,13 +540,15 @@ the envelope's staleness pin only. The tick returns with that double.
 
 ### Seeded members
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-seeded-members`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-seeded-members`
 
 The system **MUST** seed the four recognized units named by PRD §17.1 — `vCPU-hours`,
 `GB-storage`, `GB-egress`, `request-count` — and a `PlanTier` value, marked `seeded_by`. A seeded
 member **MUST** be deprecatable and **MUST NOT** be removable. **Which tier value is seeded is
 open item 11** and **who writes seeds for a tenant created after the migration is open item 10**;
 the rows are load-bearing, because a tenant with no unit seeds could declare no meter at all.
+
+**Ticked with P-D-145.** `repo::ensure_recognized_seeds` writes the platform baseline on the tenant's **first write that could need it** (P-D-104, P-D-121 row 10): the four PRD §17.1 units when a declaration is judged, `standard` (P-D-131 row 11) when a tier is; nothing for Finance's sets. Every seed carries `seeded_by = platform`; the sets door deprecates a seeded member and refuses its removal `ILLEGAL_FIELD_MUTATION` (P-D-131 row 18). Probe: `the_platform_seeds_the_units_on_the_first_declaration_and_a_seeded_member_is_never_removed`.
 
 **Implements**: `cpt-cf-bss-products-algo-recognized-set`
 
@@ -554,13 +558,15 @@ the rows are load-bearing, because a tenant with no unit seeds could declare no 
 
 ### Type profile validators
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-type-profile`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-type-profile`
 
 The system **MUST** register save-door and publish-door validators requiring `type` present and
 within the closed set (`SKU_TYPE_UNKNOWN`), and enforcing the per-type required fields at publish:
 `product` and `service` require both accounting codes (`ACCOUNTING_CODE_REQUIRED` naming the
 missing one), `bundle` requires neither. **The bundle exemption gets a named probe** — it is the
 easy thing to lose.
+
+**Ticked with P-D-145.** `sku_type` is required at create (absence is the shape's `VALIDATION`, P-D-121 row 13), judged `SKU_TYPE_UNKNOWN` outside `product | service | bundle` at create, save and publish (`domain::recognized::type_profile`); at publish a `product` or `service` needs both accounting codes and the refusal names the missing one (`required_codes_present`), a `bundle` neither. Probes: `a_sku_type_outside_the_closed_set_is_refused_and_one_inside_is_admitted`, `a_product_missing_an_accounting_code_is_refused_at_publish_and_a_bundle_needs_none` — the bundle exemption's own named probe.
 
 **Implements**: `cpt-cf-bss-products-flow-classify-sku`
 
@@ -575,6 +581,8 @@ easy thing to lose.
 The system **MUST** default `sellable` to `true`, treat a flip as a bucket-iii head-row save
 re-published as version N+1, and expose it in the SDK read shape per `CatalogVersion`.
 **Whether the flip is material is open item 16.**
+
+**Two of three clauses built (P-D-145), no tick.** `sellable` defaults `true` and a flip is a bucket-iii save the next publish freezes as version N+1 (`a_type_change_after_first_publish_is_refused_and_a_sellable_flip_is_frozen`); item 16 is answered — the flip is material (P-D-131). The third clause, *"expose it in the SDK read shape per `CatalogVersion`"*, is `dod-sdk-read-shape`'s build and waits for it.
 
 **Implements**: `cpt-cf-bss-products-flow-classify-sku`
 
@@ -734,13 +742,15 @@ the value with `PLAN_TIER_RETIRE_BLOCKED`. A seeded value is deprecatable and ne
 
 ### PlanTier assignment
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-plantier-assign`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-plantier-assign`
 
 The system **MUST** validate a SKU's tier at save **and** at publish, refusing an unknown value
 with `PLAN_TIER_UNKNOWN` and a **new** assignment of a `deprecated` value with
 `PLAN_TIER_DEPRECATED`, including a draft whose tier was deprecated before its first publish,
 while existing published carriers stay valid. Tier presence at plan publish **MUST NOT** be
 re-checked here.
+
+**Ticked with P-D-145.** Judged at create, save and publish (`domain::recognized::tier_verdict`): unknown or `removed` → `PLAN_TIER_UNKNOWN`; a **new** assignment of a `deprecated` tier → `PLAN_TIER_DEPRECATED`, a first publish counting every carried value as new; an existing published carrier re-publishes. Tier presence at plan publish is not re-checked here. Probe: `an_unknown_tier_is_refused_the_seeded_standard_admitted_and_a_deprecated_tier_refuses_new_assignments_only`.
 
 **Implements**: `cpt-cf-bss-products-flow-plantier`
 
@@ -749,13 +759,15 @@ re-checked here.
 
 ### Accounting code validators
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-accounting-validators`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-accounting-validators`
 
 The system **MUST** validate `taxCategory` and `glCode` against their recognized sets on save and
 publish, refusing `ACCOUNTING_CODE_UNKNOWN`, `ACCOUNTING_CODE_DEPRECATED` on a new assignment, and
 `ACCOUNTING_CODE_DELIST_BLOCKED` on a removal a non-terminal published head blocks — one code per
 refusal serving both fields. The columns **MUST** be treated as opaque: no tax computation and no
 ledger posting.
+
+**Ticked with P-D-145.** Both codes are judged against Finance's sets at create, save and publish (`domain::recognized::accounting_code_verdict`) — `ACCOUNTING_CODE_UNKNOWN` for an unknown or `removed` code, `ACCOUNTING_CODE_DEPRECATED` on a new assignment, one code per refusal serving both fields; `ACCOUNTING_CODE_DELIST_BLOCKED` was already the sets door's. The columns are opaque strings — no tax computation, no ledger posting. Probe: `an_unknown_or_deprecated_accounting_code_is_refused_and_a_known_one_is_admitted`.
 
 **Implements**: `cpt-cf-bss-products-flow-accounting-codes`
 
@@ -780,13 +792,15 @@ one-person tenant can publish their first `product` SKU.
 
 ### Mutability bucket registration
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-bucket-registration`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-bucket-registration`
 
 The system **MUST** register every field this feature owns into `01-foundation`'s bucket registry:
 `type` and the metering-unit declaration including `usageTypeRef` as **bucket ii**; `plan_tier`,
 `tax_category_ref`, `gl_code_ref` and `sellable` as **bucket iii**. A test **MUST** prove no field
 this feature owns is absent from the registry, since the Foundation refuses an untagged
 published-state column at the head door rather than defaulting it.
+
+**Ticked with P-D-145.** `domain::bucket::SKU_COLUMNS` carries all seven: `sku_type`, `metering_unit`, `usage_type_ref` as bucket ii; `sellable`, `plan_tier`, `tax_category_ref`, `gl_code_ref` as bucket iii. `bucket_tests::the_skus_tagged_columns_answer_the_buckets_section_4_1_assigns` names each; `the_registry_and_the_physical_tables_name_the_same_columns` proves none is absent; `migrations_tests::bucket_agreement_tests` holds the trigger's arms to the same classes on both engines. At the door: `a_type_change_after_first_publish_is_refused_and_a_sellable_flip_is_frozen`.
 
 **Implements**: `cpt-cf-bss-products-flow-classify-sku`,
 `cpt-cf-bss-products-flow-declare-meter`
@@ -802,6 +816,8 @@ The system **MUST** declare all fifteen codes as constants on their raising rule
 them into the Foundation's taxonomy, each carrying its declared RFC 9457 status. No code carrying
 a registry code may reach the wire as a 422. `USAGE_TYPE_UNAVAILABLE` **MUST** be retryable, and
 on the scheduled lane **MUST** join the runner's `deferred` set rather than its `failed` set.
+
+**Fourteen of fifteen declared and registered (P-D-145); no tick.** The six this group adds — `SKU_TYPE_UNKNOWN`, `ACCOUNTING_CODE_REQUIRED`, `ACCOUNTING_CODE_UNKNOWN`, `ACCOUNTING_CODE_DEPRECATED`, `PLAN_TIER_UNKNOWN`, `PLAN_TIER_DEPRECATED` — join the taxonomy with their 400-on-the-wire precondition shape (`error_tests`, `error_mapping_tests`, both counters at 69). Missing: `BUNDLE_OVERRIDE_REQUIRED` (`dod-bundle-override`, group 4), and the clause *"on the scheduled lane `USAGE_TYPE_UNAVAILABLE` joins the runner's `deferred` set"* has no arm in the runner yet.
 
 **Implements**: `cpt-cf-bss-products-algo-classification-errors`
 
@@ -844,11 +860,11 @@ The system **MUST** expose `type`, `sellable`, `plan_tier`, `metering_unit`, `us
 
 ## 6. Acceptance Criteria
 
-- [ ] A SKU with no `type`, or a `type` outside the closed set, is refused; and the code it meets
+- [x] A SKU with no `type`, or a `type` outside the closed set, is refused; and the code it meets
       is the one open item 13 settles, asserted rather than assumed
-- [ ] A `product` published without `taxCategory` is refused `ACCOUNTING_CODE_REQUIRED` naming the
+- [x] A `product` published without `taxCategory` is refused `ACCOUNTING_CODE_REQUIRED` naming the
       missing field, and succeeds once it is set
-- [ ] A `bundle` publishes with neither accounting code — the exemption has its own named probe
+- [x] A `bundle` publishes with neither accounting code — the exemption has its own named probe
 - [ ] An uncomposed `bundle` published without acknowledgment is refused
       `BUNDLE_OVERRIDE_REQUIRED`; with it, the SKU publishes and carries
       `compositionPending = true`
@@ -873,12 +889,12 @@ The system **MUST** expose `type`, `sellable`, `plan_tier`, `metering_unit`, `us
 - [ ] A new declaration naming a removed member fails `UNRECOGNIZED_UNIT`
 - [ ] No write path renames a `member_code`: the trigger refuses the `UPDATE` and the `DELETE`,
       and admits `state` and `display_label`
-- [ ] A seeded member can be deprecated and cannot be removed
+- [x] A seeded member can be deprecated and cannot be removed
 - [ ] A tier retire is refused `PLAN_TIER_RETIRE_BLOCKED` while a published SKU carries it
-- [ ] A new tier assignment of a `deprecated` value is refused `PLAN_TIER_DEPRECATED` while an
+- [x] A new tier assignment of a `deprecated` value is refused `PLAN_TIER_DEPRECATED` while an
       existing published carrier stays valid
 - [ ] A tier rename changes the display label and leaves every SKU's stored code untouched
-- [ ] An unknown accounting code is refused `ACCOUNTING_CODE_UNKNOWN` for `taxCategory` and for
+- [x] An unknown accounting code is refused `ACCOUNTING_CODE_UNKNOWN` for `taxCategory` and for
       `glCode` alike, one code serving both
 - [ ] A one-person tenant publishes their first `product` SKU: the FinanceReviewer predicate is
       recorded `predicateUnsatisfiable` and does not block
@@ -899,11 +915,11 @@ The system **MUST** expose `type`, `sellable`, `plan_tier`, `metering_unit`, `us
       `ACCOUNTING_CODE_DEPRECATED`, and an `active` one publishes
 - [ ] A code removal is refused `ACCOUNTING_CODE_DELIST_BLOCKED` while a published SKU carries it,
       and is admitted once none does
-- [ ] An unknown tier is refused `PLAN_TIER_UNKNOWN`, and a known one is admitted
+- [x] An unknown tier is refused `PLAN_TIER_UNKNOWN`, and a known one is admitted
 - [ ] A tier retire is admitted once no non-terminal published head carries the value — the
       positive control on `PLAN_TIER_RETIRE_BLOCKED`
-- [ ] A `type` inside the closed set is admitted — the positive control on `SKU_TYPE_UNKNOWN`
-- [ ] A known accounting code is admitted — the positive control on `ACCOUNTING_CODE_UNKNOWN`
+- [x] A `type` inside the closed set is admitted — the positive control on `SKU_TYPE_UNKNOWN`
+- [x] A known accounting code is admitted — the positive control on `ACCOUNTING_CODE_UNKNOWN`
 - [ ] A complete `(unit, usageTypeRef)` pair is admitted — the positive control on
       `METER_DECLARATION_INCOMPLETE`
 - [ ] An `active` recognized unit is admitted — the positive control on `UNRECOGNIZED_UNIT` and on

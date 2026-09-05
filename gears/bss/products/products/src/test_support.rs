@@ -435,3 +435,28 @@ pub async fn seed_satisfied_approval(
         .expect("satisfy the record");
     approval_id
 }
+
+/// Seed one Finance code into each of the two Finance sets for `tenant_id`
+/// (`TC-STD`, `GL-4000`) — the platform seeds nothing there by design
+/// (P-D-131 row 5, P-D-145), so a suite whose `product` SKUs must publish
+/// stands in for Finance's governed add. Idempotent: a present row is left.
+pub async fn seed_finance_codes(db: &toolkit_db::DBProvider<toolkit_db::DbError>, tenant_id: Uuid) {
+    use crate::domain::recognized::SetKind;
+    use crate::infra::storage::repo;
+    let conn = db.conn().expect("connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(tenant_id);
+    let now = chrono::Utc::now();
+    for (kind, code) in [
+        (SetKind::TaxCategory, "TC-STD"),
+        (SetKind::GlCode, "GL-4000"),
+    ] {
+        let present = repo::recognized_member(&conn, &scope, tenant_id, kind, code)
+            .await
+            .expect("read the Finance set");
+        if present.is_none() {
+            repo::insert_recognized_member(&conn, &scope, tenant_id, kind, code, None, None, now)
+                .await
+                .expect("seed the Finance code");
+        }
+    }
+}

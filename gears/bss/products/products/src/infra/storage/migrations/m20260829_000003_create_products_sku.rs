@@ -109,6 +109,19 @@
 //! - **`tenant_id`, the primary key (`sku_id`) and `created_by`** are admitted
 //!   in **no** update at all (P-D-34); neither is `created_at`.
 //!
+//! # 03's five classification columns (P-D-145)
+//!
+//! `sku_type`, `sellable`, `plan_tier`, `tax_category_ref` and `gl_code_ref` are
+//! slice 03's columns carried here (01 §4.2 / 03 §4), edited in place with the
+//! slice's first build. Nullable in the DDL — presence is the doors' rule
+//! (`sku_type` at create, `plan_tier` and the accounting codes at publish per
+//! the type profile) — except `sellable`, whose default is `true` by
+//! `inst-cl-sellable`. `sku_type` joins bucket ii (the type is the profile a
+//! correction may move after first publish); the other four join bucket iii.
+//! None is a database foreign key (P-D-91): each is a code into a
+//! three-column primary key and each has a de-list code a raw violation would
+//! pre-empt.
+//!
 //! **Bucket-ii's members are this table's, and bucket-iv has none.**
 //! `metering_unit` and `usage_type_ref` — 03's atomic `MeterDeclaration` —
 //! are the class's first membership anywhere in the gear, which is why the
@@ -169,6 +182,7 @@
 //! @cpt-cf-bss-products-fr-skucode-reservation-concurrency
 //! @cpt-dod:cpt-cf-bss-products-dod-entity-tables:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-code-reservation:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-classification-columns:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-append-only-guard:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-lifecycle-columns:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-meter-atomic:p1
@@ -198,6 +212,11 @@ const PG_UP_STATEMENTS: &[&str] = &[
             replaced_by_sku_id  uuid,
             metering_unit       text,
             usage_type_ref      text,
+            sku_type            text,
+            sellable            boolean     NOT NULL DEFAULT true,
+            plan_tier           text,
+            tax_category_ref    text,
+            gl_code_ref         text,
             correction_ref      uuid,
             updated_at          timestamptz NOT NULL,
             CONSTRAINT products_sku_pkey PRIMARY KEY (sku_id),
@@ -274,14 +293,19 @@ const PG_UP_STATEMENTS: &[&str] = &[
           END IF;
 
           IF (NEW.region_scope IS DISTINCT FROM OLD.region_scope
-              OR NEW.brand_scope IS DISTINCT FROM OLD.brand_scope)
+              OR NEW.brand_scope IS DISTINCT FROM OLD.brand_scope
+              OR NEW.sellable IS DISTINCT FROM OLD.sellable
+              OR NEW.plan_tier IS DISTINCT FROM OLD.plan_tier
+              OR NEW.tax_category_ref IS DISTINCT FROM OLD.tax_category_ref
+              OR NEW.gl_code_ref IS DISTINCT FROM OLD.gl_code_ref)
              AND OLD.lifecycle_state IN ('retired', 'discarded')
           THEN
             RAISE EXCEPTION 'products_sku: bucket-iii columns are admitted only while the head is non-terminal';
           END IF;
 
           IF (NEW.metering_unit IS DISTINCT FROM OLD.metering_unit
-              OR NEW.usage_type_ref IS DISTINCT FROM OLD.usage_type_ref)
+              OR NEW.usage_type_ref IS DISTINCT FROM OLD.usage_type_ref
+              OR NEW.sku_type IS DISTINCT FROM OLD.sku_type)
              AND NOT (OLD.published_version = 0 AND OLD.lifecycle_state NOT IN ('retired', 'discarded'))
              AND (NEW.published_version IS NOT DISTINCT FROM OLD.published_version
                   OR NEW.correction_ref IS NULL
@@ -344,6 +368,11 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             replaced_by_sku_id  text,
             metering_unit       text,
             usage_type_ref      text,
+            sku_type            text,
+            sellable            integer NOT NULL DEFAULT 1,
+            plan_tier           text,
+            tax_category_ref    text,
+            gl_code_ref         text,
             correction_ref      text,
             updated_at          text    NOT NULL,
             PRIMARY KEY (sku_id),
@@ -405,11 +434,16 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
     "CREATE TRIGGER trg_products_sku_bucket_iii BEFORE UPDATE ON products_sku FOR EACH ROW WHEN (
             NEW.region_scope IS NOT OLD.region_scope
             OR NEW.brand_scope IS NOT OLD.brand_scope
+            OR NEW.sellable IS NOT OLD.sellable
+            OR NEW.plan_tier IS NOT OLD.plan_tier
+            OR NEW.tax_category_ref IS NOT OLD.tax_category_ref
+            OR NEW.gl_code_ref IS NOT OLD.gl_code_ref
         ) AND OLD.lifecycle_state IN ('retired', 'discarded')
         BEGIN SELECT RAISE(ABORT, 'products_sku: bucket-iii columns are admitted only while the head is non-terminal'); END",
     "CREATE TRIGGER trg_products_sku_bucket_ii BEFORE UPDATE ON products_sku FOR EACH ROW WHEN (
             NEW.metering_unit IS NOT OLD.metering_unit
             OR NEW.usage_type_ref IS NOT OLD.usage_type_ref
+            OR NEW.sku_type IS NOT OLD.sku_type
         ) AND NOT (
             OLD.published_version = 0 AND OLD.lifecycle_state NOT IN ('retired', 'discarded')
         ) AND (

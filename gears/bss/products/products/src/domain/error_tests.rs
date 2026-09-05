@@ -206,7 +206,36 @@ fn wire_code_roster() -> Vec<(DomainError, &'static str)> {
     ];
     roster.extend(governance_wire_codes());
     roster.extend(usage_type_wire_codes());
+    roster.extend(classification_wire_codes());
     roster
+}
+
+/// 03's six classification codes (P-D-145), in their own roster for the same
+/// `too_many_lines` reason the governance and usage-type rosters are.
+fn classification_wire_codes() -> Vec<(DomainError, &'static str)> {
+    vec![
+        (DomainError::SkuTypeUnknown("t".into()), "SKU_TYPE_UNKNOWN"),
+        (
+            DomainError::AccountingCodeRequired("a".into()),
+            "ACCOUNTING_CODE_REQUIRED",
+        ),
+        (
+            DomainError::AccountingCodeUnknown("a".into()),
+            "ACCOUNTING_CODE_UNKNOWN",
+        ),
+        (
+            DomainError::AccountingCodeDeprecated("a".into()),
+            "ACCOUNTING_CODE_DEPRECATED",
+        ),
+        (
+            DomainError::PlanTierUnknown("p".into()),
+            "PLAN_TIER_UNKNOWN",
+        ),
+        (
+            DomainError::PlanTierDeprecated("p".into()),
+            "PLAN_TIER_DEPRECATED",
+        ),
+    ]
 }
 
 /// Row 19's two collector answers, split out so `wire_code_roster` stays
@@ -280,7 +309,7 @@ fn every_variant_carries_its_design_set_wire_code() {
     // until today. Read that file's own note before changing either.
     assert_eq!(
         cases.len(),
-        63,
+        69,
         "the Foundation owns fourteen raiseable codes and hosts two guests \
          (retention-erasure's ERASURE_UNKNOWN_ACTOR, P-D-64 keeping that \
          roster at one, and the clone door's CLONE_SOURCE_DISCARDED, \

@@ -203,6 +203,11 @@ async fn a_seeded_consumed_approval_drives_the_foundation_publish_door() {
                 created_at: now,
                 cloned_from: None,
                 cloned_from_version: None,
+                sku_type: "bundle".to_owned(),
+                sellable: true,
+                plan_tier: "standard".to_owned(),
+                tax_category_ref: None,
+                gl_code_ref: None,
             },
         )
         .await
@@ -416,6 +421,11 @@ async fn a_seeded_consumed_approval_flips_deprecated_sku_to_retired() {
                 created_at: now,
                 cloned_from: None,
                 cloned_from_version: None,
+                sku_type: "bundle".to_owned(),
+                sellable: true,
+                plan_tier: "standard".to_owned(),
+                tax_category_ref: None,
+                gl_code_ref: None,
             },
         )
         .await
@@ -583,6 +593,11 @@ async fn a_product_retire_defers_when_a_published_child_would_orphan() {
                 created_at: now,
                 cloned_from: None,
                 cloned_from_version: None,
+                sku_type: "bundle".to_owned(),
+                sellable: true,
+                plan_tier: "standard".to_owned(),
+                tax_category_ref: None,
+                gl_code_ref: None,
             },
         )
         .await
@@ -745,6 +760,11 @@ async fn a_product_retire_defers_while_a_deprecated_child_is_non_terminal() {
                 created_at: now,
                 cloned_from: None,
                 cloned_from_version: None,
+                sku_type: "bundle".to_owned(),
+                sellable: true,
+                plan_tier: "standard".to_owned(),
+                tax_category_ref: None,
+                gl_code_ref: None,
             },
         )
         .await
@@ -905,6 +925,11 @@ async fn a_sku_retire_defers_when_a_live_pointer_names_it() {
                 created_at: now,
                 cloned_from: None,
                 cloned_from_version: None,
+                sku_type: "bundle".to_owned(),
+                sellable: true,
+                plan_tier: "standard".to_owned(),
+                tax_category_ref: None,
+                gl_code_ref: None,
             },
         )
         .await
@@ -924,6 +949,11 @@ async fn a_sku_retire_defers_when_a_live_pointer_names_it() {
                 created_at: now,
                 cloned_from: None,
                 cloned_from_version: None,
+                sku_type: "bundle".to_owned(),
+                sellable: true,
+                plan_tier: "standard".to_owned(),
+                tax_category_ref: None,
+                gl_code_ref: None,
             },
         )
         .await
@@ -1125,6 +1155,11 @@ async fn a_sku_retire_defers_when_no_producer_is_registered() {
                 created_at: now,
                 cloned_from: None,
                 cloned_from_version: None,
+                sku_type: "bundle".to_owned(),
+                sellable: true,
+                plan_tier: "standard".to_owned(),
+                tax_category_ref: None,
+                gl_code_ref: None,
             },
         )
         .await
@@ -1289,6 +1324,11 @@ async fn a_product_retire_skips_the_07_predicate_when_no_producer_is_registered(
                 created_at: now,
                 cloned_from: None,
                 cloned_from_version: None,
+                sku_type: "bundle".to_owned(),
+                sellable: true,
+                plan_tier: "standard".to_owned(),
+                tax_category_ref: None,
+                gl_code_ref: None,
             },
         )
         .await

@@ -69,6 +69,13 @@ pub struct ProductCloneSource {
 /// No name (the rename rule is Product-only) and no brand column —
 /// `products_sku` carries scope strings instead.
 pub struct SkuCloneSource {
+    /// 03's classification (P-D-145): content, so the clone carries it —
+    /// the type profile, the flag, the tier and the two Finance codes.
+    pub sku_type: Option<String>,
+    pub sellable: bool,
+    pub plan_tier: Option<String>,
+    pub tax_category_ref: Option<String>,
+    pub gl_code_ref: Option<String>,
     /// The source's own parent. A lone-SKU clone **copies** this link
     /// unless the caller overrides it (§3.1's carve-out: the create door
     /// then refuses a terminal parent, so a lone clone of a retired
@@ -83,6 +90,39 @@ pub struct SkuCloneSource {
     pub brand_scope: String,
     /// `None` = read at the head; `Some(v)` = read at frozen version `v`.
     pub read_at_version: Option<i64>,
+}
+
+/// The classification a clone writes on the copy (P-D-145): the source's,
+/// with the two values the doors require defaulted where an older source
+/// carries none — a `product` on the `standard` tier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceClassification {
+    pub sku_type: String,
+    pub sellable: bool,
+    pub plan_tier: String,
+    pub tax_category_ref: Option<String>,
+    pub gl_code_ref: Option<String>,
+}
+
+impl SkuCloneSource {
+    /// The five classification fields the copy is created with.
+    #[must_use]
+    pub fn classification(&self) -> SourceClassification {
+        SourceClassification {
+            sku_type: self.sku_type.clone().unwrap_or_else(|| {
+                crate::domain::recognized::SkuType::Product
+                    .as_str()
+                    .to_owned()
+            }),
+            sellable: self.sellable,
+            plan_tier: self
+                .plan_tier
+                .clone()
+                .unwrap_or_else(|| crate::domain::recognized::DEFAULT_PLAN_TIER.to_owned()),
+            tax_category_ref: self.tax_category_ref.clone(),
+            gl_code_ref: self.gl_code_ref.clone(),
+        }
+    }
 }
 
 /// The suggested name for attempt `n` (1-based), per `inst-cn-rename` and

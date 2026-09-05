@@ -133,6 +133,11 @@ fn new_sku(sku_id: Uuid, tenant_id: Uuid, product_id: Uuid) -> NewSku {
         created_at: at(9),
         cloned_from: None,
         cloned_from_version: None,
+        sku_type: "bundle".to_owned(),
+        sellable: true,
+        plan_tier: "standard".to_owned(),
+        tax_category_ref: None,
+        gl_code_ref: None,
     }
 }
 
@@ -468,6 +473,11 @@ fn an_unparseable_sku_lifecycle_state_is_a_corrupt_row() {
         metering_unit: None,
         usage_type_ref: None,
         correction_ref: None,
+        sku_type: Some("bundle".to_owned()),
+        sellable: true,
+        plan_tier: Some("standard".to_owned()),
+        tax_category_ref: None,
+        gl_code_ref: None,
     };
 
     let err = into_sku_record(row).expect_err("an unrecognised token must be refused");

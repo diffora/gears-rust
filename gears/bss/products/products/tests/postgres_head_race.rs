@@ -190,6 +190,11 @@ fn rename(to: &str, normalized: &str) -> ProductHeadSave {
 /// wrong reason and this file would stay green while measuring nothing.
 fn rescope(to: &str) -> SkuHeadSave {
     SkuHeadSave {
+        sku_type: None,
+        sellable: None,
+        plan_tier: None,
+        tax_category_ref: None,
+        gl_code_ref: None,
         sku_code: None,
         product_id: None,
         region_scope: Some(to.to_owned()),
@@ -270,6 +275,11 @@ async fn seed_sku_draft(pg: &Pg) {
                     txn,
                     &scope(),
                     NewSku {
+                        sku_type: "bundle".to_owned(),
+                        sellable: true,
+                        plan_tier: "standard".to_owned(),
+                        tax_category_ref: None,
+                        gl_code_ref: None,
                         sku_id: SKU,
                         tenant_id: TENANT,
                         product_id: SUBJECT,

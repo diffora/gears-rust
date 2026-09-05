@@ -66,6 +66,14 @@ fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
         D::MeterDeclarationIncomplete(_) => (400, Some("METER_DECLARATION_INCOMPLETE")),
         D::UnrecognizedUnit(_) => (400, Some("UNRECOGNIZED_UNIT")),
         D::UnitDeprecated(_) => (400, Some("UNIT_DEPRECATED")),
+        // 03's classification refusals (P-D-145): the same 422-architectural,
+        // 400-on-the-wire shape.
+        D::SkuTypeUnknown(_) => (400, Some("SKU_TYPE_UNKNOWN")),
+        D::AccountingCodeRequired(_) => (400, Some("ACCOUNTING_CODE_REQUIRED")),
+        D::AccountingCodeUnknown(_) => (400, Some("ACCOUNTING_CODE_UNKNOWN")),
+        D::AccountingCodeDeprecated(_) => (400, Some("ACCOUNTING_CODE_DEPRECATED")),
+        D::PlanTierUnknown(_) => (400, Some("PLAN_TIER_UNKNOWN")),
+        D::PlanTierDeprecated(_) => (400, Some("PLAN_TIER_DEPRECATED")),
         // The three delist blocks are 409s in the same note.
         D::UnitDelistBlocked(_) => (409, Some("UNIT_DELIST_BLOCKED")),
         D::PlanTierRetireBlocked(_) => (409, Some("PLAN_TIER_RETIRE_BLOCKED")),
@@ -175,6 +183,12 @@ fn one_of_every_variant() -> Vec<DomainError> {
         D::MeterDeclarationIncomplete(d()),
         D::UnrecognizedUnit(d()),
         D::UnitDeprecated(d()),
+        D::SkuTypeUnknown(d()),
+        D::AccountingCodeRequired(d()),
+        D::AccountingCodeUnknown(d()),
+        D::AccountingCodeDeprecated(d()),
+        D::PlanTierUnknown(d()),
+        D::PlanTierDeprecated(d()),
         D::UnitDelistBlocked(d()),
         D::PlanTierRetireBlocked(d()),
         D::AccountingCodeDelistBlocked(d()),
@@ -240,7 +254,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
 /// arithmetic is frozen history; this note exists so the miscount does not
 /// travel into the next brief, and so a strand that moves one number does not
 /// go looking for a third that is not there.
-const DOMAIN_ERROR_VARIANTS: usize = 63;
+const DOMAIN_ERROR_VARIANTS: usize = 69;
 
 /// Covers all 14 variants (§3.3's own count, `DomainError::code`'s own
 /// exhaustiveness note): every one lands on the status the design ladder

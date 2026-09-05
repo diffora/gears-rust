@@ -114,6 +114,7 @@ pub async fn recognized_member(
 /// # Errors
 ///
 /// [`RepoError::Driver`] on a storage failure or the PK conflict.
+#[allow(clippy::too_many_arguments)]
 pub async fn insert_recognized_member(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -121,6 +122,7 @@ pub async fn insert_recognized_member(
     set_kind: SetKind,
     member_code: &str,
     display_label: Option<String>,
+    seeded_by: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<RecognizedMember, RepoError> {
     let row = recognized_set::ActiveModel {
@@ -129,7 +131,7 @@ pub async fn insert_recognized_member(
         member_code: Set(member_code.to_owned()),
         display_label: Set(display_label),
         state: Set(MemberState::Active.as_str().to_owned()),
-        seeded_by: Set(None),
+        seeded_by: Set(seeded_by.map(str::to_owned)),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -268,4 +270,63 @@ pub async fn metering_unit_holders(
         .map(|row| row.sku_code)
         .collect();
     Ok(rows)
+}
+
+/// Seed `kind`'s platform baseline for a tenant whose set is still empty —
+/// P-D-104's *first write that could need one*, in that write's transaction
+/// (P-D-121 row 10): the four PRD §17.1 units, the `standard` tier, nothing
+/// for Finance's sets. A set with any row is left alone, so a tenant's edits
+/// survive; a lost race on the primary key is read back rather than reported.
+///
+/// # Errors
+///
+/// A storage failure.
+pub async fn ensure_recognized_seeds(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    kind: SetKind,
+    now: DateTime<Utc>,
+) -> Result<(), RepoError> {
+    let roster = crate::domain::recognized::seed_roster(kind);
+    if roster.is_empty() {
+        return Ok(());
+    }
+    let existing = recognized_set::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(recognized_set::Column::TenantId.eq(tenant_id))
+                .add(recognized_set::Column::SetKind.eq(kind.as_str())),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read {} set of {tenant_id}", kind.as_str()), e))?;
+    if !existing.is_empty() {
+        return Ok(());
+    }
+    for (code, label) in roster {
+        let inserted = insert_recognized_member(
+            runner,
+            scope,
+            tenant_id,
+            kind,
+            code,
+            label.map(str::to_owned),
+            Some(crate::domain::recognized::SEEDED_BY_PLATFORM),
+            now,
+        )
+        .await;
+        // A concurrent first write may have seeded the same row: read it back
+        // before reporting the insert's failure.
+        if inserted.is_err()
+            && recognized_member(runner, scope, tenant_id, kind, code)
+                .await?
+                .is_none()
+        {
+            return inserted.map(|_| ());
+        }
+    }
+    Ok(())
 }

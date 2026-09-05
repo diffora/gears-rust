@@ -1569,6 +1569,73 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-145 — 03's five columns land, the type profile and the tier and code validators run at three doors, and the platform seeds on the first write
+
+- **Date**: 2026-09-05 (the lead, group 3 of the solo plan; `03` §7 rows 5, 7, 10, 11, 13, 16, 18
+  as already answered by P-D-91, P-D-121 and P-D-131)
+- **The columns.** `products_sku` gains `sku_type`, `sellable`, `plan_tier`, `tax_category_ref`
+  and `gl_code_ref` in `m20260829_000003` in place, both engines. **The type column is named
+  `sku_type`**, the donor's name (`pricing`'s `CatalogSku.sku_type`), where the design writes
+  `type` — a column called `type` fights every engine's and every ORM's reserved word for nothing.
+  Nullable in the DDL except `sellable` (`NOT NULL DEFAULT true`): presence is the doors' rule,
+  not the schema's, because the shipped fixtures and the bulk lane insert rows the doors never
+  saw and a `NOT NULL` would have made them lie with a default. `sku_type` is **bucket ii** (the
+  type is the profile; after first publish only the correction door moves it), the other four
+  **bucket iii**; the trigger arms on both engines carry them and `bucket_agreement_tests` holds
+  the registry to the arms. No foreign key (P-D-91).
+- **Presence rules.** `sku_type` is required at create — absence is the shape's `VALIDATION`
+  (P-D-121 row 13), a value outside `product | service | bundle` is `SKU_TYPE_UNKNOWN`; at publish
+  an absent type is `SKU_TYPE_UNKNOWN` too, the arm the design calls unreachable being reachable
+  by a row the create door never saw. `plan_tier` defaults to the seeded `standard` at create
+  (P-D-131 row 11: mandatory on every SKU, so an empty tier would make the first publish
+  impossible) and is judged at create, save and publish. A `product` or `service` publishes only
+  with both accounting codes (`ACCOUNTING_CODE_REQUIRED` names the missing field); a `bundle`
+  needs neither. Codes and tiers are judged against their recognized sets at create, at a save
+  that moves them, and at publish: unknown or `removed` refuses, `deprecated` refuses a **new**
+  assignment only — a first publish counts every carried value as new, an existing published
+  carrier keeps its value.
+- **The platform seeds on the first write that could need it** (P-D-104, P-D-121 row 10):
+  `repo::ensure_recognized_seeds` writes the four PRD §17.1 units when a declaration is judged and
+  `standard` when a tier is, every row `seeded_by = platform`, a lost race read back; **Finance's
+  two sets seed nothing** — their roster is Finance's to fill through the governed door (P-D-131
+  row 5), so a fresh tenant publishes no `product` until Finance has added a code, which is the
+  fail-closed reading and is stated here. A seeded member's removal is `ILLEGAL_FIELD_MUTATION`
+  (P-D-131 row 18) — the sets door's placeholder `VALIDATION` is replaced.
+- **Six codes join the taxonomy** — `SKU_TYPE_UNKNOWN`, `ACCOUNTING_CODE_REQUIRED`,
+  `ACCOUNTING_CODE_UNKNOWN`, `ACCOUNTING_CODE_DEPRECATED`, `PLAN_TIER_UNKNOWN`,
+  `PLAN_TIER_DEPRECATED` — 422 architectural, 400 on the wire in the precondition shape the meter
+  codes use; both numeric counters move 63 → 69. `BUNDLE_OVERRIDE_REQUIRED` waits on
+  `dod-bundle-override` (group 4).
+- **The frozen content grows five names and the digest scheme moves to 2.** `sellable` freezes as
+  a JSON boolean, the other four as strings when carried; `SKU_VERSION_CONTENT_ROSTER` is 18;
+  `canonical::DIGEST_VERSION` is `2` (P-D-35's note: the gear is undeployed) and the golden vector
+  pins it. A clone copies the five (`SkuCloneSource`), from the head for a draft and from the
+  frozen rendering for a published source. The bulk lane inserts a row's classification as the
+  row carries it and defaults a bare row to a `product` on `standard` — 09's row shape carrying
+  these by contract is group 6's.
+- **Ticked**: `dod-classification-columns`, `dod-seeded-members`, `dod-type-profile`,
+  `dod-bucket-registration`, `dod-plantier-assign`, `dod-accounting-validators`; `03` §6 criteria
+  3, 5, 7, 32, 34, 37, 58, 61, 62. **Not ticked**: `dod-sellable` (its SDK read-shape clause is
+  `dod-sdk-read-shape`'s), `dod-classification-errors` (fourteen of fifteen; the scheduled-lane
+  `deferred` arm for `USAGE_TYPE_UNAVAILABLE` has no code yet).
+- **The suite's fixtures name a type and Finance's codes.** Every create body in the door suites
+  carries `sku_type: product` and the two codes, and each harness seeds `TC-STD` / `GL-4000` into
+  the tenant's Finance sets (`test_support::seed_finance_codes`) — a stand-in for Finance's
+  governed add, so the `product` fixtures can publish; the runner's fixtures are `bundle`s and need
+  none. Noted, because a suite that seeds Finance codes for itself is a suite in which
+  `ACCOUNTING_CODE_REQUIRED` must be probed on purpose — and it is.
+- **The arguments against, stated.** Naming the column `type` as the design does — rejected for
+  the reserved word; the design gains a parenthetical. `NOT NULL` on `sku_type` and `plan_tier` —
+  rejected; the doors carry presence and the fixtures and the bulk lane would have been forced
+  into defaults that lie. Seeding Finance's sets with a placeholder code — rejected; the codes
+  mean something to Finance and nothing to this gear, and a placeholder would publish products
+  under a code nobody chose. Judging `deprecated` as a refusal on every publish — rejected; the
+  design's "existing published carriers stay valid" is exactly the new-assignment scoping.
+- **Not changed**: the meter pair and its `CHECK`; the recognized-set door's transitions beyond
+  the seeded-removal code; the SDK read shape.
+- **Propagated**: `features/sku-classification.md` (six ticks, two status notes, nine criteria);
+  `design/03-sku-classification.md` §4 (the column name); the solo plan's group 3 entry.
+
 #### P-D-144 — Every door runs the stored host: the four live-op doors switch, the inbox envelope ships, the ledger-digest pin reads off the snapshot, a signal is born satisfied, and an SLA lapse is alerted once
 
 - **Date**: 2026-09-04 (the lead, group 2b of the solo plan; P-D-142's remainder, P-D-133's lapse

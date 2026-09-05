@@ -268,6 +268,22 @@ async fn stage_sku(
         created_at: now,
         cloned_from: None,
         cloned_from_version: None,
+        // 03's classification (P-D-145) as the row carries it; a row naming
+        // none is a `product` on the `standard` tier — the row shape that
+        // carries these by contract is 09's (group 6).
+        sku_type: field(payload, "sku_type").unwrap_or_else(|| {
+            crate::domain::recognized::SkuType::Product
+                .as_str()
+                .to_owned()
+        }),
+        sellable: payload
+            .get("sellable")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true),
+        plan_tier: field(payload, "plan_tier")
+            .unwrap_or_else(|| crate::domain::recognized::DEFAULT_PLAN_TIER.to_owned()),
+        tax_category_ref: field(payload, "tax_category_ref"),
+        gl_code_ref: field(payload, "gl_code_ref"),
     };
     match crate::infra::create::insert_sku_with_event(
         &ctx.db,

@@ -117,7 +117,7 @@ use serde_json::{Number, Value as JsonValue};
 /// old rendering for those rows — is what keeps the drill's answer meaningful.
 /// The condition that makes today's non-bump correct is exactly *"no stored
 /// row"*, and it expires the first time this gear writes one.
-pub const DIGEST_VERSION: i32 = 1;
+pub const DIGEST_VERSION: i32 = 2;
 
 /// Which of §4.3's two readings of *absence* a rendering is taken under.
 ///

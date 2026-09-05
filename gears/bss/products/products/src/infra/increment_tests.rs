@@ -197,7 +197,10 @@ async fn a_closed_interactive_window_commits_one_version() {
         version.freeze_state, "complete",
         "an empty participant set is vacuously complete"
     );
-    assert_eq!(version.digest_version, 1);
+    assert_eq!(
+        version.digest_version,
+        crate::domain::canonical::DIGEST_VERSION
+    );
 
     let entries = catalog_version_entry::Entity::find()
         .secure()

@@ -83,6 +83,20 @@ pub struct Model {
     /// `CorrectionDoor`, in the same statement as the `published_version`
     /// bump; the head guard refuses it anywhere else.
     pub correction_ref: Option<Uuid>,
+    /// 03's `TypeProfile` (`product` | `service` | `bundle`), bucket ii —
+    /// required at create, correctable after first publish only through the
+    /// correction door (P-D-145).
+    pub sku_type: Option<String>,
+    /// `inst-cl-sellable`: defaults `true`; a flip is a bucket-iii save,
+    /// material by P-D-131 row 16.
+    pub sellable: bool,
+    /// The `PlanTier` code (`inst-pt-assign`), bucket iii; validated against
+    /// the recognized set at save and publish.
+    pub plan_tier: Option<String>,
+    /// Finance's tax-category code (P-D-131 row 5), bucket iii, opaque here.
+    pub tax_category_ref: Option<String>,
+    /// Finance's GL code, bucket iii, opaque here.
+    pub gl_code_ref: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

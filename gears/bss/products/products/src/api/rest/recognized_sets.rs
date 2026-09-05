@@ -440,6 +440,7 @@ async fn add_member(
                         kind,
                         &member_code,
                         display_label,
+                        None,
                         now,
                     )
                     .await
@@ -586,18 +587,14 @@ async fn transition_member(
                             // consumers a wire contract its owner has not
                             // agreed. The generic validation channel carries
                             // the refusal until they do.
-                            let mut report = ValidationReport::new();
-                            report.violate(
-                                "VALIDATION",
-                                "member_code",
+                            // P-D-131 row 18: the Foundation's variant, uniformly with
+                            // 02's seeded definition — no sixteenth code.
+                            return Err(TxError::Refused(DomainError::IllegalFieldMutation(
                                 format!(
                                     "`{member_code}` is a seeded member (seeded by {seeder}): \
-                                     seeded members are deprecatable and never removed. This \
-                                     refusal's own code is open - features/sku-classification.md \
-                                     section 7 row 18"
+                                     seeded members are deprecatable and never removed"
                                 ),
-                            );
-                            return Err(TxError::Refused(DomainError::Validation(report)));
+                            )));
                         }
                         // The removal operand, `inst-us-delist`'s exactly: only
                         // the metering-unit set has a shipped carrier column, so

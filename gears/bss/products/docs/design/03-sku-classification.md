@@ -232,7 +232,7 @@ actor, the scenarios and the boundary.
 
 ## 4. Data / Storage (normative shape; DDL in migrations)
 
-- **Columns on `products_sku`** (carried by 01 §4.2, rules owned here): `type`, `sellable`,
+- **Columns on `products_sku`** (carried by 01 §4.2, rules owned here): `type` (the column is `sku_type`, the donor's name — P-D-145), `sellable`,
   `plan_tier` (a code validated by `inst-pt-assign`, like its three siblings; whether it is a real constraint is §6), `tax_category_ref`, `gl_code_ref` (**both contingent** — `PRD` §15 carries the open question of whether this registry owns them at all, 01 §4.2; §6),
   `metering_unit`, `usage_type_ref` — with a CHECK that `metering_unit` and `usage_type_ref`
   are both null or both non-null (`inst-mt-atomic-pair`'s physical floor).

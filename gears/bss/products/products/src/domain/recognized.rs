@@ -1,4 +1,6 @@
 //! The recognized sets' rules — the kind roster, the member state machine,
+//!
+//! @cpt-dod:cpt-cf-bss-products-dod-seeded-members:p1
 //! set membership, and what a meter declaration may name
 //! (`design/03` §3.1, `features/sku-classification.md`
 //! `state-recognized-set`, `dod-recognized-set-mechanics`,
@@ -248,3 +250,175 @@ pub fn meter_pair_complete(
 #[cfg(test)]
 #[path = "recognized_tests.rs"]
 mod recognized_tests;
+
+// ------------------------------------------------------------------ 03 P-D-145
+
+/// The closed set `inst-cl-type-profile` names, and the required-field set
+/// each type carries at publish.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkuType {
+    Product,
+    Service,
+    /// Composition is pricing's; a bundle is commercially incomplete by design
+    /// and requires neither accounting code.
+    Bundle,
+}
+
+impl SkuType {
+    /// The wire tokens, in the order the design lists them.
+    pub const ALL: [Self; 3] = [Self::Product, Self::Service, Self::Bundle];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Product => "product",
+            Self::Service => "service",
+            Self::Bundle => "bundle",
+        }
+    }
+
+    /// Parse a wire token; `None` for anything outside the closed set.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.as_str() == value)
+    }
+
+    /// Whether the type profile demands both accounting codes at publish.
+    #[must_use]
+    pub const fn requires_accounting_codes(self) -> bool {
+        matches!(self, Self::Product | Self::Service)
+    }
+}
+
+/// `SKU_TYPE_UNKNOWN`: a present value outside the closed set, or — at
+/// publish — no value at all (the create door refuses absence at the shape
+/// phase, P-D-121 row 13, so this arm is reached only by a head written past
+/// that door).
+///
+/// # Errors
+///
+/// [`DomainError::SkuTypeUnknown`].
+pub fn type_profile(raw: Option<&str>) -> Result<SkuType, DomainError> {
+    match raw {
+        Some(value) => SkuType::parse(value).ok_or_else(|| {
+            DomainError::SkuTypeUnknown(format!(
+                "sku_type `{value}` is outside the closed set (product, service, bundle)"
+            ))
+        }),
+        None => Err(DomainError::SkuTypeUnknown(
+            "sku_type is absent: a SKU publishes under one of product, service or bundle"
+                .to_owned(),
+        )),
+    }
+}
+
+/// `ACCOUNTING_CODE_REQUIRED` at publish, naming the missing field: `product`
+/// and `service` require both codes, `bundle` neither (`inst-cl-type-profile`).
+///
+/// # Errors
+///
+/// [`DomainError::AccountingCodeRequired`].
+pub fn required_codes_present(
+    kind: SkuType,
+    tax_category_ref: Option<&str>,
+    gl_code_ref: Option<&str>,
+) -> Result<(), DomainError> {
+    if !kind.requires_accounting_codes() {
+        return Ok(());
+    }
+    let missing: Vec<&str> = [
+        ("tax_category_ref", tax_category_ref),
+        ("gl_code_ref", gl_code_ref),
+    ]
+    .into_iter()
+    .filter(|(_, value)| value.is_none_or(|code| code.trim().is_empty()))
+    .map(|(field, _)| field)
+    .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(DomainError::AccountingCodeRequired(format!(
+        "a `{}` SKU publishes with both accounting codes; missing: {}",
+        kind.as_str(),
+        missing.join(", ")
+    )))
+}
+
+/// `inst-pt-assign`'s verdict on a tier the head carries: unknown or
+/// `removed` fails `PLAN_TIER_UNKNOWN`; a **new** assignment of a `deprecated`
+/// tier fails `PLAN_TIER_DEPRECATED` while existing published carriers stay
+/// valid — the caller says whether the assignment is new.
+///
+/// # Errors
+///
+/// [`DomainError::PlanTierUnknown`], [`DomainError::PlanTierDeprecated`].
+pub fn tier_verdict(
+    tier: &str,
+    member: Option<MemberState>,
+    new_assignment: bool,
+) -> Result<(), DomainError> {
+    match member {
+        Some(MemberState::Active) => Ok(()),
+        Some(MemberState::Deprecated) if !new_assignment => Ok(()),
+        Some(MemberState::Deprecated) => Err(DomainError::PlanTierDeprecated(format!(
+            "plan tier `{tier}` is deprecated: existing published carriers keep it, and a new \
+             assignment must name an active tier"
+        ))),
+        Some(MemberState::Removed) | None => Err(DomainError::PlanTierUnknown(format!(
+            "plan tier `{tier}` is not in the tenant's PlanTier set: the path to a new tier is \
+             the recognized-set door's governed add"
+        ))),
+    }
+}
+
+/// `inst-ac-codes`' verdict on one accounting code (`tax_category_ref` or
+/// `gl_code_ref`, named in `field`): one code per refusal serving both fields.
+///
+/// # Errors
+///
+/// [`DomainError::AccountingCodeUnknown`], [`DomainError::AccountingCodeDeprecated`].
+pub fn accounting_code_verdict(
+    field: &str,
+    code: &str,
+    member: Option<MemberState>,
+    new_assignment: bool,
+) -> Result<(), DomainError> {
+    match member {
+        Some(MemberState::Active) => Ok(()),
+        Some(MemberState::Deprecated) if !new_assignment => Ok(()),
+        Some(MemberState::Deprecated) => Err(DomainError::AccountingCodeDeprecated(format!(
+            "{field} `{code}` is deprecated: existing published carriers keep it, and a new \
+             assignment must name an active code"
+        ))),
+        Some(MemberState::Removed) | None => Err(DomainError::AccountingCodeUnknown(format!(
+            "{field} `{code}` is not in Finance's recognized set: the path to a new code is the \
+             recognized-set door's governed add"
+        ))),
+    }
+}
+
+/// The tier a create assigns when the caller names none: the seeded
+/// `standard` (P-D-131 row 11 — mandatory on every SKU, so an empty tier would
+/// make the first publish impossible).
+pub const DEFAULT_PLAN_TIER: &str = "standard";
+
+/// The platform baseline each set is seeded with on a tenant's **first write
+/// that could need one** (P-D-104, P-D-121 row 10): the four units PRD §17.1
+/// names, the `standard` tier (P-D-131 row 11), and **nothing** for Finance's
+/// two sets — their roster is Finance's to fill through the governed door.
+#[must_use]
+pub const fn seed_roster(kind: SetKind) -> &'static [(&'static str, Option<&'static str>)] {
+    match kind {
+        SetKind::MeteringUnit => &[
+            ("vCPU-hours", None),
+            ("GB-storage", None),
+            ("GB-egress", None),
+            ("request-count", None),
+        ],
+        SetKind::PlanTier => &[(DEFAULT_PLAN_TIER, Some("Standard"))],
+        SetKind::TaxCategory | SetKind::GlCode => &[],
+    }
+}
+
+/// The `seeded_by` token the baseline rows carry.
+pub const SEEDED_BY_PLATFORM: &str = "platform";

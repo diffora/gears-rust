@@ -1,4 +1,6 @@
 //! The field-mutability bucket registry: which bucket a Foundation-owned
+//!
+//! @cpt-dod:cpt-cf-bss-products-dod-bucket-registration:p1
 //! column sits in, and what the answer is when it sits in none
 //! (`design/01-foundation.md` §4.1's *"Bucket assignment for the
 //! Foundation-owned columns"*, §5's agreement test, `inst-fd-bucket-tags`,
@@ -387,7 +389,7 @@ const PRODUCT_COLUMNS: [ColumnTag; 17] = [
 /// it is the primary key; and the table carries **no `name`**, so a `name`
 /// field arriving for a SKU is a miss and is refused rather than routed to the
 /// Product's tag.
-const SKU_COLUMNS: [ColumnTag; 20] = [
+const SKU_COLUMNS: [ColumnTag; 25] = [
     // Row identity (§4.2, P-D-34).
     ColumnTag {
         column: "sku_id",
@@ -435,6 +437,31 @@ const SKU_COLUMNS: [ColumnTag; 20] = [
     },
     ColumnTag {
         column: "brand_scope",
+        class: FieldClass::Bucket(FieldBucket::MaterialMutable),
+    },
+    // 03's classification columns (P-D-145). The type profile is bucket ii —
+    // `dod-bucket-registration` puts `type` beside the metering declaration —
+    // so after first publish only the correction door moves it; the other
+    // four are ordinary governed content (a `sellable` flip is material by
+    // P-D-131 row 16 — the materiality evaluator's business, not the tag's).
+    ColumnTag {
+        column: "sku_type",
+        class: FieldClass::Bucket(FieldBucket::Correctable),
+    },
+    ColumnTag {
+        column: "sellable",
+        class: FieldClass::Bucket(FieldBucket::MaterialMutable),
+    },
+    ColumnTag {
+        column: "plan_tier",
+        class: FieldClass::Bucket(FieldBucket::MaterialMutable),
+    },
+    ColumnTag {
+        column: "tax_category_ref",
+        class: FieldClass::Bucket(FieldBucket::MaterialMutable),
+    },
+    ColumnTag {
+        column: "gl_code_ref",
         class: FieldClass::Bucket(FieldBucket::MaterialMutable),
     },
     // Mechanical (§5). `composition_pending` is named there explicitly and is
