@@ -826,6 +826,10 @@ pub(crate) enum EventsError {
     Serialize(#[from] serde_json::Error),
     #[error("enqueue event: {0}")]
     Outbox(#[from] OutboxError),
+    /// The projector's inbox row could not be written beside the event
+    /// (P-D-150); the transaction rolls back with it.
+    #[error("record read inbox: {0}")]
+    Inbox(String),
     /// [`schema_ref_for`] did not recognise the payload type, so the event
     /// has no versioned schema reference to announce.
     ///
@@ -1240,6 +1244,15 @@ pub(crate) async fn enqueue(
             payload_type.to_owned(),
         ));
     }
+    record_inbox(
+        runner,
+        core.tenant_id,
+        aggregate_id,
+        payload_type,
+        core,
+        actor_ref,
+    )
+    .await?;
     match sink {
         EventSink::Interim(outbox) => {
             enqueue_body(
@@ -1347,6 +1360,15 @@ pub(crate) async fn enqueue_deprecated(
     ) {
         return Err(EventsError::NotADeprecationEvent(payload_type.to_owned()));
     }
+    record_inbox(
+        runner,
+        core.tenant_id,
+        aggregate_id,
+        payload_type,
+        &DeprecatedEventBody { core, provenance },
+        actor_ref,
+    )
+    .await?;
     match sink {
         EventSink::Interim(outbox) => {
             let body = DeprecatedEventBody { core, provenance };
@@ -1448,6 +1470,15 @@ pub(crate) async fn enqueue_set_event(
     ) {
         return Err(EventsError::NotASetEvent(payload_type.to_owned()));
     }
+    record_inbox(
+        runner,
+        body.tenant_id,
+        body.tenant_id,
+        payload_type,
+        &body,
+        actor_ref,
+    )
+    .await?;
     match sink {
         EventSink::Interim(outbox) => {
             let aggregate_id = Uuid::new_v5(&body.tenant_id, body.set_kind.as_bytes());
@@ -1648,6 +1679,18 @@ pub(crate) async fn enqueue_published(
     ) {
         return Err(EventsError::NotAPublishEvent(payload_type.to_owned()));
     }
+    record_inbox(
+        runner,
+        core.tenant_id,
+        aggregate_id,
+        payload_type,
+        &PublishedEventBody {
+            core,
+            published_version,
+        },
+        actor_ref,
+    )
+    .await?;
     match sink {
         EventSink::Interim(outbox) => {
             let body = PublishedEventBody {
@@ -1727,6 +1770,15 @@ pub(crate) async fn enqueue_retired(
     ) {
         return Err(EventsError::NotARetirementEvent(payload_type.to_owned()));
     }
+    record_inbox(
+        runner,
+        body.core.tenant_id,
+        aggregate_id,
+        payload_type,
+        &body,
+        actor_ref,
+    )
+    .await?;
     match sink {
         EventSink::Interim(outbox) => {
             enqueue_body(
@@ -1879,6 +1931,15 @@ pub(crate) async fn enqueue_taxonomy(
     if !TAXONOMY_PAYLOAD_TYPES.contains(&payload_type) {
         return Err(EventsError::NotATaxonomyEvent(payload_type.to_owned()));
     }
+    record_inbox(
+        runner,
+        body.tenant_id,
+        aggregate_id,
+        payload_type,
+        body,
+        actor_ref,
+    )
+    .await?;
     match sink {
         EventSink::Interim(outbox) => {
             enqueue_body(
@@ -2037,6 +2098,33 @@ pub(crate) async fn enqueue_governance(
         }
         EventSink::Broker(_) => Err(EventsError::NoTypedEvent(payload_type.to_owned())),
     }
+}
+
+/// Write the event to the `ReadProjector`'s inbox in the caller's
+/// transaction (P-D-150): the consumer side of the outbox pattern, since the
+/// gear cannot read the toolkit's outbox rows. Only the families the
+/// projector consumes call this.
+async fn record_inbox(
+    runner: &(impl DBRunner + Sync),
+    tenant_id: Uuid,
+    aggregate_id: Uuid,
+    payload_type: &str,
+    body: &impl Serialize,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    let payload = serde_json::to_string(body)?;
+    crate::infra::storage::repo::record_read_inbox(
+        runner,
+        tenant_id,
+        partition_for(tenant_id, aggregate_id),
+        aggregate_id,
+        payload_type,
+        &payload,
+        actor_ref,
+        crate::domain::canonical::write_instant(chrono::Utc::now()),
+    )
+    .await
+    .map_err(|e| EventsError::Inbox(e.to_string()))
 }
 
 /// The one place a body is wrapped, rendered, partitioned and handed to the
@@ -2265,6 +2353,15 @@ pub(crate) async fn enqueue_correction_event(
     override_body: Option<OverrideEventBody<'_>>,
     actor_ref: Uuid,
 ) -> Result<(), EventsError> {
+    record_inbox(
+        runner,
+        body.core.tenant_id,
+        body.core.entity_id,
+        payload_type,
+        &body,
+        actor_ref,
+    )
+    .await?;
     match sink {
         EventSink::Interim(outbox) => match payload_type {
             SKU_IMMUTABLE_FIELD_CORRECTED_PAYLOAD_TYPE => {
@@ -2454,6 +2551,15 @@ pub(crate) async fn enqueue_catalog_version_event(
     ) {
         return Err(EventsError::NoTypedEvent(payload_type.to_owned()));
     }
+    record_inbox(
+        runner,
+        body.tenant_id,
+        Uuid::new_v5(&body.tenant_id, b"catalog_version"),
+        payload_type,
+        &body,
+        actor_ref,
+    )
+    .await?;
     match sink {
         EventSink::Interim(outbox) => {
             enqueue_body(

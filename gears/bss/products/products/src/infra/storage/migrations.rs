@@ -44,6 +44,18 @@ mod m20260901_000025_create_products_scheduled_transition;
 mod m20260901_000026_create_products_deferred_retirement;
 mod m20260901_000027_create_products_materiality_policy;
 mod m20260901_000028_create_products_pii_allowlist;
+mod m20260901_000029_create_products_read_projection;
+
+/// The read-projection migration alone (`products_read_inbox` and its
+/// siblings), for harnesses that build the outbox facility without the gear's
+/// chain and still enqueue events: since P-D-150 every enqueue writes the
+/// inbox in its own transaction, so a schema without it refuses the enqueue.
+#[cfg(test)]
+pub(crate) fn read_projection_migrations() -> Vec<Box<dyn sea_orm_migration::MigrationTrait>> {
+    vec![Box::new(
+        m20260901_000029_create_products_read_projection::Migration,
+    )]
+}
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -140,6 +152,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260901_000026_create_products_deferred_retirement::Migration),
             Box::new(m20260901_000027_create_products_materiality_policy::Migration),
             Box::new(m20260901_000028_create_products_pii_allowlist::Migration),
+            Box::new(m20260901_000029_create_products_read_projection::Migration),
         ]
     }
 }

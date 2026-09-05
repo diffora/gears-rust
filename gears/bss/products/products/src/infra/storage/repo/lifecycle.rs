@@ -1032,3 +1032,53 @@ pub async fn retire_product_head(
 #[cfg(test)]
 #[path = "lifecycle_tests.rs"]
 mod lifecycle_tests;
+
+/// Every unresolved deferred retirement of a tenant — the deferred-intent
+/// dashboard's source (`inst-ps-dashboards`, P-D-150), read by the poller.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn unresolved_deferred_retirements(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+) -> Result<Vec<deferred_retirement::Model>, RepoError> {
+    deferred_retirement::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(deferred_retirement::Column::TenantId.eq(tenant_id))
+                .add(deferred_retirement::Column::ResolvedAt.is_null()),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("unresolved deferred retirements of {tenant_id}"), e))
+}
+
+/// The tenants holding an unresolved deferred retirement.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn tenants_with_unresolved_deferred_retirements(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+) -> Result<Vec<Uuid>, RepoError> {
+    let rows: Vec<TenantIdRow> = deferred_retirement::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(deferred_retirement::Column::ResolvedAt.is_null()))
+        .project_all(runner, |q| {
+            q.select_only()
+                .column(deferred_retirement::Column::TenantId)
+                .distinct()
+                .into_model::<TenantIdRow>()
+        })
+        .await
+        .map_err(|e| driver_failure("discover deferred tenants".to_owned(), e))?;
+    let mut tenants: Vec<Uuid> = rows.into_iter().map(|row| row.tenant_id).collect();
+    tenants.sort();
+    Ok(tenants)
+}

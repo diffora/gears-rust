@@ -1752,3 +1752,27 @@ pub async fn category_mutation_seq(
 #[cfg(test)]
 #[path = "taxonomy_tests.rs"]
 mod taxonomy_tests;
+
+/// Every category of a tenant as `(id, parent, name)` — the projector's
+/// operand for rendering browse paths (`inst-rp-consume`, `inst-rp-reparent`).
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn category_nodes(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+) -> Result<Vec<(Uuid, Option<Uuid>, String)>, RepoError> {
+    let rows = category::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(category::Column::TenantId.eq(tenant_id)))
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("category nodes of {tenant_id}"), e))?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.category_id, row.parent_id, row.name))
+        .collect())
+}

@@ -162,6 +162,7 @@ pub mod dto;
 pub mod materiality_policy;
 pub mod preconditions;
 pub mod products;
+pub mod read;
 pub mod recognized_sets;
 pub mod reference;
 pub mod retention;

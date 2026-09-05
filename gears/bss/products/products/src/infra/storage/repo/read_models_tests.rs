@@ -20,7 +20,7 @@ use crate::infra::storage::migrations::Migrator;
 
 const TENANT: Uuid = Uuid::from_u128(0x7e_42);
 const ENTITY: Uuid = Uuid::from_u128(0xdd_11);
-const VERSION: Uuid = Uuid::from_u128(0xee_11);
+const VERSION: i64 = 0xee_11;
 
 async fn harness() -> DBProvider<DbError> {
     let opts = ConnectOpts {

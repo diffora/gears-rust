@@ -60,6 +60,9 @@ pub struct Model {
     /// This row's own last apply. The response-level floor lives on the
     /// per-tenant `products_read_stamp` row (`StalenessStamp`), not here.
     pub projected_at: ChronoDateTimeUtc,
+    /// The shadow-then-swap generation the row belongs to (`inst-rp-bootstrap`);
+    /// the serving generation is the checkpoint's.
+    pub generation: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

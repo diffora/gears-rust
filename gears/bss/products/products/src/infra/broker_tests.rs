@@ -1241,6 +1241,12 @@ async fn every_event_reaches_the_broker_under_its_own_type_id() {
     )
     .await
     .expect("run the producer registration migrator");
+    toolkit_db::migration_runner::run_migrations_for_testing(
+        &db,
+        crate::infra::storage::migrations::read_projection_migrations(),
+    )
+    .await
+    .expect("run the read-projection migration: every enqueue writes the inbox (P-D-150)");
 
     let (sink, _handle) = bind_producer(
         &hub,
@@ -1433,6 +1439,12 @@ async fn the_outbox_half_of_the_propagation_budget_is_measured() {
     )
     .await
     .expect("run the producer registration migrator");
+    toolkit_db::migration_runner::run_migrations_for_testing(
+        &db,
+        crate::infra::storage::migrations::read_projection_migrations(),
+    )
+    .await
+    .expect("run the read-projection migration: every enqueue writes the inbox (P-D-150)");
 
     let (sink, _handle) = bind_producer(
         &hub,
@@ -1572,6 +1584,12 @@ async fn redelivery_harness(
     )
     .await
     .expect("run the producer registration migrator");
+    toolkit_db::migration_runner::run_migrations_for_testing(
+        &db,
+        crate::infra::storage::migrations::read_projection_migrations(),
+    )
+    .await
+    .expect("run the read-projection migration: every enqueue writes the inbox (P-D-150)");
 
     let (sink, handle) = bind_producer(
         &hub,

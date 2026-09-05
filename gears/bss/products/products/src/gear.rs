@@ -129,6 +129,10 @@ pub(crate) struct ProductsRuntime {
     pub bulk_max_concurrent_batches_per_tenant: u32,
     /// The reaper's TTL for a `reported` batch nobody approves (P-D-127 row 6).
     pub bulk_batch_ttl_hours: u32,
+    /// `08`'s knobs (P-D-150): the read ceiling, the poison ceiling, the
+    /// convergence budget, the dashboard cadence, the inbox retention, the
+    /// active locales.
+    pub read: crate::infra::projector::ReadKnobs,
 
     /// The watermark door's skew bound and the predicate's freshness
     /// threshold, resolved once from `ProductsConfig` (P-D-87 arm 1).
@@ -249,6 +253,7 @@ impl BssProductsGear {
     /// tenant; the per-tenant lease inside the pass is what makes
     /// concurrent deployments safe, so the tick itself needs no lease. The
     /// sibling pricing gear's `serve` is the shape this follows.
+    #[allow(clippy::cognitive_complexity)] // the tick loop's four cadences, one match each
     pub(crate) async fn serve(
         self: std::sync::Arc<Self>,
         cancel: tokio_util::sync::CancellationToken,
@@ -296,6 +301,13 @@ impl BssProductsGear {
                         report_overdue_requests(&db, now).await;
                     }
                     retention_tick(&db, &rt, tick_count, &cancel).await;
+                    projector_tick(&rt, &cancel).await;
+                    if tick_count.is_multiple_of(u64::from(rt.read.dashboard_poll_secs.max(1))) {
+                        dashboard_tick(&rt).await;
+                    }
+                    if tick_count.is_multiple_of(INBOX_SWEEP_EVERY_TICKS) {
+                        inbox_sweep_tick(&rt).await;
+                    }
                     tick_count += 1;
                 }
             }
@@ -565,6 +577,48 @@ fn drill_due(tick_count: u64, cadence_hours: u32) -> bool {
 /// that changes on the scale of hours.
 const OVERDUE_SCAN_EVERY_TICKS: u64 = 60;
 
+/// The inbox sweep's cadence in ticks: hourly, the retention window being
+/// days.
+const INBOX_SWEEP_EVERY_TICKS: u64 = 3_600;
+
+fn projector_context(rt: &ProductsRuntime) -> crate::infra::projector::ProjectorContext {
+    crate::infra::projector::ProjectorContext {
+        db: rt.sdk_state.db.clone(),
+        knobs: rt.read.clone(),
+    }
+}
+
+/// One `ReadProjector` pass (`inst-rp-consume`): every tenant's inbox above
+/// its checkpoint. A failed pass is logged and retried next tick — the inbox
+/// is the record.
+async fn projector_tick(rt: &ProductsRuntime, cancel: &tokio_util::sync::CancellationToken) {
+    let now = crate::domain::canonical::write_instant(chrono::Utc::now());
+    if let Err(error) = crate::infra::projector::sweep(&projector_context(rt), now, cancel).await {
+        tracing::warn!(%error, "bss-products: read projector pass failed");
+    }
+}
+
+/// One poll of the three dashboards (`inst-ps-dashboards`, P-D-126 row 10).
+async fn dashboard_tick(rt: &ProductsRuntime) {
+    let now = crate::domain::canonical::write_instant(chrono::Utc::now());
+    if let Err(error) = crate::infra::projector::poll_dashboards(&projector_context(rt), now).await
+    {
+        tracing::warn!(%error, "bss-products: dashboard poll failed");
+    }
+}
+
+/// The inbox sweep past the retention window.
+async fn inbox_sweep_tick(rt: &ProductsRuntime) {
+    let now = crate::domain::canonical::write_instant(chrono::Utc::now());
+    match crate::infra::projector::sweep_inbox(&projector_context(rt), now).await {
+        Ok(swept) if swept > 0 => {
+            tracing::info!(swept, "bss-products: read inbox swept past retention");
+        }
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, "bss-products: read inbox sweep failed"),
+    }
+}
+
 /// Whichever running pipeline the gear started, held only so its background
 /// tasks are not cancelled.
 #[allow(
@@ -827,6 +881,8 @@ impl Gear for BssProductsGear {
                 },
             ));
 
+        // The read limiter is one component per process (`dod-degradation`).
+        crate::api::rest::read::ReadPathLimiter::install(cfg.read_path_qps_ceiling);
         self.runtime.store(Some(Arc::new(ProductsRuntime {
             enforcer,
             sink,
@@ -834,6 +890,7 @@ impl Gear for BssProductsGear {
             bulk_max_rows_per_batch: cfg.bulk_max_rows_per_batch,
             bulk_max_concurrent_batches_per_tenant: cfg.bulk_max_concurrent_batches_per_tenant,
             bulk_batch_ttl_hours: cfg.bulk_batch_ttl_hours,
+            read: crate::infra::projector::ReadKnobs::from(&cfg),
             watermark_skew_tolerance: cfg.watermark_skew_tolerance(),
             reference: crate::api::rest::ReferenceKnobs::from(&cfg),
             breakglass_window_hours: cfg.breakglass_window_hours,
@@ -944,6 +1001,10 @@ impl RestApiCapability for BssProductsGear {
                 openapi,
             ))
             .merge(crate::api::rest::scheduled_transitions::router(
+                Arc::clone(&api_state),
+                openapi,
+            ))
+            .merge(crate::api::rest::read::router(
                 Arc::clone(&api_state),
                 openapi,
             ))

@@ -8,6 +8,7 @@ use crate::domain::validation::ValidationReport;
 /// `infra::error_mapping_tests::declared_status_and_code` is one: the roster
 /// is long enough that holding it inline puts the test over
 /// `clippy::too_many_lines`, which this crate denies.
+#[allow(clippy::too_many_lines)] // one line per code; the roster passed 200 at 78 codes
 fn wire_code_roster() -> Vec<(DomainError, &'static str)> {
     let mut roster = vec![
         (
@@ -140,6 +141,10 @@ fn wire_code_roster() -> Vec<(DomainError, &'static str)> {
             "BULK_OVERRIDE_UNACKNOWLEDGED",
         ),
         (DomainError::BulkLimit("s".into()), "BULK_LIMIT"),
+        (
+            DomainError::ReadModelOverloaded("s".into()),
+            "READ_MODEL_OVERLOADED",
+        ),
         (
             DomainError::ProducerUnregistered("s".into()),
             "PRODUCER_UNREGISTERED",
@@ -350,7 +355,7 @@ fn every_variant_carries_its_design_set_wire_code() {
     // until today. Read that file's own note before changing either.
     assert_eq!(
         cases.len(),
-        77,
+        78,
         "the Foundation owns fourteen raiseable codes and hosts two guests \
          (retention-erasure's ERASURE_UNKNOWN_ACTOR, P-D-64 keeping that \
          roster at one, and the clone door's CLONE_SOURCE_DISCARDED, \
@@ -368,6 +373,7 @@ fn every_variant_carries_its_design_set_wire_code() {
          CASCADE_CONFIRMATION_REQUIRED and EOL_DISABLED are 04's seven \
          (dod-lifecycle-errors, P-D-96); taxonomy-attributes declares \
          PRIMARY_CATEGORY_REQUIRED and STALE_LIVE_OP, the first registered publish validator \
-         that belongs to neither 04 nor 05"
+         that belongs to neither 04 nor 05; read-models declares its one, \
+         READ_MODEL_OVERLOADED (dod-degradation)"
     );
 }

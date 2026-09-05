@@ -23,7 +23,7 @@ pub struct Model {
     /// The last catalog version projected. **`NULL` for a tenant that has
     /// published none** — the anchorless arm, which a sentinel would make
     /// indistinguishable from a dropped stamp.
-    pub catalog_version_id: Option<Uuid>,
+    pub catalog_version_id: Option<i64>,
     /// The last apply's instant. Advances on **every** apply, version or
     /// none (P-D-70 arm 3), so the sole freshness signal always has a
     /// writer.

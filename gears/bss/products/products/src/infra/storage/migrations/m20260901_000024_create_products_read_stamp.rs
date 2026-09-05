@@ -55,7 +55,7 @@ pub struct Migration;
 
 const PG_UP_STATEMENTS: &[&str] = &["CREATE TABLE bss.products_read_stamp (
             tenant_id          uuid        NOT NULL,
-            catalog_version_id uuid,
+            catalog_version_id bigint,
             projected_at       timestamptz NOT NULL,
             CONSTRAINT products_read_stamp_pkey PRIMARY KEY (tenant_id)
         )"];
@@ -64,7 +64,7 @@ const PG_DOWN_STATEMENTS: &[&str] = &["DROP TABLE IF EXISTS bss.products_read_st
 
 const SQLITE_UP_STATEMENTS: &[&str] = &["CREATE TABLE products_read_stamp (
             tenant_id          text NOT NULL,
-            catalog_version_id text,
+            catalog_version_id integer,
             projected_at       text NOT NULL,
             PRIMARY KEY (tenant_id)
         )"];

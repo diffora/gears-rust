@@ -1569,6 +1569,66 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-150 — 08's projector on a gear-owned inbox, the three-source read path, the browse door behind one limiter, the timelines and the polled dashboards
+
+- **Date**: 2026-09-05 (the lead, group 8 of the solo plan; `08` §7 rows 8, 9, 10, 12, 19, 23, 24
+  as already answered by P-D-124 and P-D-126; the history surface's open half answered here)
+- **The projector reads a gear-owned inbox, written in the event's transaction.** The design says
+  the `ReadProjector` consumes the broker per `(tenant, aggregate)`; in this gear the durable
+  acceptance is the toolkit outbox, whose rows the gear can neither read through the runner (no raw
+  SQL below the secure layer) nor through an outbox read API, and no broker consumer exists. So every
+  consumed family writes its event to `products_read_inbox` **in the same transaction** as its outbox
+  row (`infra::events::record_inbox`, eight families: the entity core, publishes, deprecations,
+  retirements, taxonomy, set events, corrections, catalog-version events). `created_at` is therefore
+  the commit instant P-D-124 names; ordering per tenant is the row id; the checkpoint is per tenant
+  with its serving generation (`products_read_checkpoint`), "per partition" read as per tenant.
+  Consumed rows are swept after `read_inbox_retention_hours`. *Counter-argument:* one more row per
+  event on the write path; accepted — a copy the projector owns is rebuildable state, and the broker
+  consumer, when the platform ships one, replaces the hook without touching the projection.
+- **The stamp names the resolver's own id.** `products_read_stamp.catalog_version_id` was `uuid`
+  while every catalog version is an `i64`; edited in place (`m20260901_000024`), the domain and the
+  probes following — a stamp a consumer cannot join to a version is not a stamp.
+- **Shadow-then-swap** rides a `generation` column on `products_read_entity` (edited in place,
+  `m20260901_000023`) and on the checkpoint: a checkpoint the swept tail ran past rebuilds from the
+  latest catalog version's manifest into generation N+1, moves the checkpoint's generation and drops
+  the old rows; the browse door reads the checkpoint's generation, so the old projection serves until
+  the swap. A tenant with no version rebuilds anchorless.
+- **Poison** (`products_read_poison`): a row that cannot apply is parked and retried up to
+  `read_poison_retry_ceiling` (interim 5), then skipped with `read_model_poison`; below the ceiling
+  the pass stops at the row so the tenant's order holds. The delivery-state dashboard surfaces the
+  park.
+- **The read path.** `GET /browse` on `product|sku × read` with `VisibilityFilter` and the claim
+  `scope_condition`s in the statement, facets from the served rows on request, at most 500 rows;
+  `GET /{products|skus}/{id}/versions` as a **request-time read** over the frozen rows (the history
+  DoD's open half: no materialised history, the convergence budget does not apply); three dashboard
+  doors under their sources' own `× read` grants (`scheduled_transition`, `catalog_version`, `audit`
+  for the projector's own health). Every answer carries the stamp; an anchorless tenant reads
+  `null` and the request instant.
+- **The limiter** is `ReadPathLimiter`, one per process, a token bucket per tenant at
+  `read_path_qps_ceiling` (interim 200/s), consulted first by every read door; a shed is
+  `503 READ_MODEL_OVERLOADED` (the one code `08` declares, counters at **78**) with `Retry-After`
+  and no body content. Lag sheds nothing: `read_model_lag` is raised past
+  `read_convergence_budget_secs` while serving continues.
+- **Meters as tracing events.** `read_edge_latency` per served read; `read_model_convergence` per
+  projected event from the inbox row's `created_at` (P-D-124's origin, `01`'s half decomposed);
+  `read_model_lag`; `read_model_poison`; `read_model_rebuilt`.
+- **Reparent** re-files every Product row's paths from the live tree, bounded by 02's caps rather
+  than diffing the subtree; **facets** count every assigned category's path. Display attributes are
+  materialised for `read_active_locales` (P-D-126 row 2, interim `["en"]`, an empty set refused at
+  boot).
+- **Ticks.** `08`: `dod-projector`, `dod-frozen-read-path`, `dod-browse-door`, `dod-degradation`,
+  `dod-dashboards`, `dod-nfr-meters`, `dod-history-timeline`, `dod-facets`, `dod-reparent` — `08`
+  reaches **13 of 13**; §6: eleven criteria on probes (the stamp on every shape, the anchorless
+  tenant, the version floor, the shed with `Retry-After`, per-partition shedding, the loud rebuild,
+  the anchorless rebuild, the polled dashboards, the parked row withheld, the re-delivered event, the
+  frozen content). Not ticked: the fifteen-case visibility matrix, both scope-layer criteria, the
+  convergence budget measured end to end, the write-path-outage read, the metadata-absence
+  criterion, the secondary-category facet and the subtree re-file — probes owed, not doors. `08`'s
+  `featstatus` box stays the owner's. `DESIGN.md`'s route table reaches 65.
+- **Trace**: the nine `08` markers on their implementing items (`infra::projector`,
+  `api::rest::read`, `m20260901_000029`); `DESIGN.md` §Endpoints Overview (65 routes); six
+  `ProductsConfig` fields.
+
 #### P-D-149 — 09's machine end to end: the report as the batch's record, the commit under the consumed record, the reaper, the itemised ceremony, the resolver, the lifecycle lane, the export
 
 - **Date**: 2026-09-05 (the lead, group 7 of the solo plan; `09` §7 rows 2, 3 answered here, rows

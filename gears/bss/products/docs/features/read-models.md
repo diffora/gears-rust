@@ -487,7 +487,7 @@ and the reason is that an index not leading with `tenant_id` cannot serve a per-
 
 ### The projector, whose key already ships
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-projector`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-projector`
 
 `ReadProjector` exists as the single event-driven consumer, ordered per `(tenant, aggregate)`,
 projecting each event idempotently against a **consumer checkpoint per aggregate**.
@@ -510,6 +510,22 @@ built against it.
 either skipped or double-applied depending on which aggregate moved last; a per-aggregate checkpoint
 makes idempotence a property of the consumer rather than of the row.
 
+**Ticked (P-D-150).** `infra::projector` is the consumer. Its source is `products_read_inbox`:
+every consumed family writes its event there **in the transaction that wrote the outbox row**
+(`infra::events::record_inbox`), because the gear can read neither the toolkit's outbox rows nor a
+broker stream — so `created_at` is the commit instant (P-D-124's origin) and per-tenant order is the
+row id. The checkpoint is `products_read_checkpoint(tenant_id) → inbox_id` — "per partition" read as
+per tenant, every inbox row being one tenant's — and it carries the serving **generation**: a
+checkpoint the swept tail has run past rebuilds from the latest catalog version's manifest into
+generation N+1 and swaps, the old rows dropped after (`inst-rp-bootstrap`, P-D-126 row 8); a tenant
+with no version rebuilds anchorless. A row that cannot apply — a publish whose frozen row is gone, a
+payload that does not decode — is **parked** in `products_read_poison`, retried each pass up to
+`read_poison_retry_ceiling`, then skipped with `read_model_poison` raised (rows 9 and 12). The
+stamp-advance step reads the version event's changed-entity list against the projected rows, never
+the head. Probes: `a_publish_reaches_the_inbox_and_projects_from_the_frozen_row`,
+`a_poison_row_is_parked_retried_then_skipped_and_surfaced`,
+`a_checkpoint_behind_the_swept_tail_rebuilds_and_swaps`, `the_stamp_is_a_floor_over_projected_entities`.
+
 **Implements**: `cpt-cf-bss-products-flow-project`, `cpt-cf-bss-products-algo-projection`
 
 **Touches**:
@@ -518,7 +534,7 @@ makes idempotence a property of the consumer rather than of the row.
 
 ### The three-source read path, and the reader it is blocked on
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-frozen-read-path`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-frozen-read-path`
 
 Product and SKU entity content is projected **only** from frozen `products_entity_version` rows.
 Live-entity content is read from its live tables. `lifecycle_state`, `deprecation_provenance` and
@@ -546,6 +562,15 @@ only a test helper (`find_frozen_version` in `repo_tests`), not a public reposit
 this slice with 10 and 12) and §7 **row 19** (published entity rescope without a version row —
 owner: P-D-24/P-D-35 with `01-foundation`). Building a local stub around either would hide the gap.
 
+**Ticked (P-D-150).** Both rows are answered (P-D-126: row 9 a parked poison message, row 19 not a
+defect) and the by-version reader exists: `repo::entity_version_at`. `projector::project_entity`
+renders a row from the frozen version the event names — name, code, scopes, type, unit, tier label,
+`composition_pending` and `sellable` from the frozen content — reads `lifecycle_state`,
+`deprecation_provenance` and `replaced_by_sku_id` from the head row and nothing else from it, and
+the governed live entities live: category paths from the tree, display attributes from the
+definitions and values for the active locales, the tier label from the recognized set. A head edited
+after its publish is not read (probed: the row keeps the frozen name).
+
 **Implements**: `cpt-cf-bss-products-algo-projection`
 
 **Touches**:
@@ -554,7 +579,7 @@ owner: P-D-24/P-D-35 with `01-foundation`). Building a local stub around either 
 
 ### The browse door
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-browse-door`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-browse-door`
 
 `GET /bss-products/v1/browse…` exists, spending `product|sku × read` plus `category × read` for the
 category and facet half. **No browse route ships today.**
@@ -564,6 +589,16 @@ not merely discouraged: a shed row must never have been fetched, so a design tha
 filters has already spent the budget and already read what the caller may not see.
 
 **The response never omits the stamp** — success, empty, error and degraded alike.
+
+**Ticked (P-D-150).** `GET /bss-products/v1/browse` (`read::browse`) on `product × read` and
+`sku × read` (both when `kind` is absent). The tenant predicate is the PEP's scope, the per-state
+contract `VisibilityFilter::for_surface(...).condition()` (default browse, or the filtered surface
+under `excludeDeprecated`), brand and region claims `scope_condition`s — all inside the one statement
+`repo::browse_read_entities` runs; nothing is fetched and dropped. Filters: name prefix, category
+path (any assigned category), SKU type, tier label, sellable, unit; `includeFacets` adds the facets;
+`limit` at most 500. Every answer — rows or none — carries the `StampView`, the anchorless tenant
+reading `asOfCatalogVersion = null` with a `projectedAt`. Probe:
+`browse_serves_the_projection_under_the_visibility_contract_with_the_stamp`.
 
 **Implements**: `cpt-cf-bss-products-flow-browse`
 
@@ -644,7 +679,7 @@ per-tenant-row semantics require `products_read_stamp`, and that is the table th
 
 ### The history timeline
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-dod-history-timeline`
+- [x] `p2` - **ID**: `cpt-cf-bss-products-dod-history-timeline`
 
 `GET /bss-products/v1/{products|skus}/{id}/versions` returns the version list, the per-version diff
 **computed between frozen rows**, the approval references and the actor pseudonyms.
@@ -660,6 +695,16 @@ not settle it: `design/08` §1.5 puts it in scope and `design/08` §4 calls the 
 rebuildable state, while `design/08` §3.1 declares no history table. §7 carries it, because the
 answer decides whether the convergence budget applies to this surface at all.
 
+**Ticked (P-D-150), as a request-time read.** `GET /bss-products/v1/{products|skus}/{id}/versions`
+(`read::product_history` / `read::sku_history`) reads `products_entity_version` through
+`repo::entity_versions_of` at request time — no materialised history table, so the convergence
+budget does not apply to this surface (the open question above, answered by the build: the frozen
+rows are append-only history a read contends with nothing on). Each version carries its
+`publishedVersion`, `publishedAt`, `approvalRef`, the actor's pseudonym and the keys whose values
+differ from the previous frozen row; a `retired` head is served (the C2 carve-out), a draft or
+discarded one is the miss. Behind the limiter, with the stamp. Probe:
+`the_timeline_renders_frozen_versions_and_their_diffs`.
+
 **Implements**: `cpt-cf-bss-products-flow-history`
 
 **Touches**:
@@ -668,7 +713,7 @@ answer decides whether the convergence budget applies to this surface at all.
 
 ### Degradation, and the limiter that does not exist
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-degradation`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-degradation`
 
 A **single per-tenant-partition limiter** sits in front of every read endpoint and answers
 `503 READ_MODEL_OVERLOADED` with `Retry-After` above the ceiling.
@@ -686,6 +731,14 @@ read would trade a labelled staleness — which C3 makes safe — for an outage.
 
 **A shed response leaks neither content nor counts.**
 
+**Ticked (P-D-150).** `read::ReadPathLimiter` — the fifth name `design/08` §1.7 minted (P-D-126) —
+is one process-wide component, a token bucket **per tenant** at `read_path_qps_ceiling` (interim
+200/s), installed at boot and consulted first by all six read doors; above the ceiling a door answers
+`503 READ_MODEL_OVERLOADED` (`DomainError::ReadModelOverloaded`, the code on the audit channel) with
+`Retry-After` and no body content. One tenant's burst sheds that tenant alone. Under **lag** nothing
+sheds: the projector raises `read_model_lag` past `read_convergence_budget_secs` and the doors keep
+serving, stale-but-stamped. Probe: `the_limiter_sheds_one_tenant_with_retry_after_and_spares_another`.
+
 **Implements**: `cpt-cf-bss-products-flow-degrade`, `cpt-cf-bss-products-algo-read-errors`
 
 **Touches**:
@@ -697,7 +750,7 @@ fifth name is minted, which would be `design/08`'s edit rather than this one's.)
 
 ### The three polled dashboards, which are not the projector's
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-dashboards`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-dashboards`
 
 `products_read_deferred_intent`, `products_read_freeze_status` and `products_read_delivery_state`
 exist. **None ships.**
@@ -715,6 +768,15 @@ consumer will find nothing to consume.
 or a staleness bound for these three. §7 carries it; the DoD is met by the tables and their stated
 sources.
 
+**Ticked (P-D-150).** The three tables exist (`m20260901_000029`) and are **polled projections**:
+`projector::poll_dashboards` runs on the runtime loop every `read_dashboard_poll_secs` (interim 30;
+P-D-126 row 10) over 04's deferred-retirement table, 06's ledger (per version, the participant counts
+by state) and the projector's own inbox and poison park, each row stamped `polled_at`. Their doors —
+`GET /bss-products/v1/read/deferred-intents` (`scheduled_transition × read`), `/read/freeze-status`
+(`catalog_version × read`), `/read/delivery-state` (`audit × read`) — sit behind the limiter and carry
+the stamp; the broker consumer is not involved (probed with no projector pass at all). Probe:
+`the_three_dashboards_answer_from_their_polled_tables`.
+
 **Implements**: `cpt-cf-bss-products-algo-projection`
 
 **Touches**:
@@ -724,7 +786,7 @@ sources.
 
 ### The convergence and availability meters
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-nfr-meters`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-nfr-meters`
 
 Four meters: p95 latency and QPS **per tenant partition** at the API edge; convergence
 **from write commit**, decomposed into `01-foundation`'s commit-to-durable-acceptance meter and this
@@ -740,6 +802,14 @@ which is why §6's criterion states the origin explicitly rather than inheriting
 commit-to-acceptance half has no owner. §7 carries it; this feature builds its own half and cannot
 close the composed budget alone.
 
+**Ticked (P-D-150), as tracing events.** `read_edge_latency` per served read with the door and the
+tenant (p95 and QPS per tenant partition are the metrics backend's aggregation over it);
+`read_model_convergence` per projected event, **measured from write commit** — the inbox row's
+`created_at`, written in the mutating transaction, is P-D-124's origin — decomposed from `01`'s
+commit-to-durable-acceptance half exactly as C5 names; `read_model_lag` past the budget while
+serving continues. The availability split is by construction (the serving store is the projection),
+and its probe stays owed to a write-path-outage fixture.
+
 **Implements**: `cpt-cf-bss-products-algo-read-nfrs`
 
 **Touches**:
@@ -749,7 +819,7 @@ close the composed budget alone.
 
 ### Facets and filters
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-dod-facets`
+- [x] `p2` - **ID**: `cpt-cf-bss-products-dod-facets`
 
 Facets over the category tree, type, tier label, `sellable` and unit build from the **same**
 projection — no second store — and filter under **every** assigned category, primary and secondary
@@ -763,6 +833,12 @@ states no facet rule at all, so the rule is this feature's and the model is 02's
 A facet that filtered on the primary assignment alone would hide a Product from a category it is
 genuinely assigned to, which is a wrong answer rather than a partial one.
 
+**Ticked (P-D-150).** `includeFacets=true` on the browse door renders the facets from the **same**
+serving rows the query admitted — category paths (every path in the row's `category_paths`, primary
+and secondary alike), SKU type, tier label, `sellable`, unit — as value/count buckets; the `category`
+filter matches any assigned category's path. No second store. Probe: the browse probe's facet
+assertion.
+
 **Implements**: `cpt-cf-bss-products-flow-browse`
 
 **Touches**:
@@ -770,7 +846,7 @@ genuinely assigned to, which is a wrong answer rather than a partial one.
 
 ### The re-parent subtree recompute
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-dod-reparent`
+- [x] `p2` - **ID**: `cpt-cf-bss-products-dod-reparent`
 
 A category re-parent re-files **every** descendant's browse path, the projector recomputing the
 affected subtree from the event.
@@ -780,6 +856,12 @@ affected subtree from the event.
 and names *"08's bounded subtree recompute"* as one of four rules that read them. **Its owner is the
 §17.1 policy owner**, not this feature. So the recompute is bounded in principle and unbounded in
 practice until those rows exist, and §7 carries it.
+
+**Ticked (P-D-150).** A `CategoryReparented` (and a rename, retirement, deletion or display
+update) re-files every Product row's paths from the live tree (`projector::refresh_category_paths`):
+each row's assignments are read and its paths re-rendered, rows whose paths did not move untouched.
+Recomputing the tenant's rows rather than diffing the subtree is bounded by 02's depth and children
+caps, which `ProductsConfig` carries since P-D-107, so the recompute terminates by configuration.
 
 **Implements**: `cpt-cf-bss-products-flow-project`
 
@@ -846,14 +928,14 @@ answer is *ontological*, this sweep and this DoD's rationale both reverse.
 
 **The stamp**
 
-- [ ] Every response shape — success, empty, error, degraded — carries both
+- [x] Every response shape — success, empty, error, degraded — carries both
       `asOfCatalogVersion` and `projectedAt`.
-- [ ] A zero-version tenant's response carries `asOfCatalogVersion = null` **and** a `projectedAt`.
+- [x] A zero-version tenant's response carries `asOfCatalogVersion = null` **and** a `projectedAt`.
       A response omitting the field fails: absence is indistinguishable from a dropped stamp.
 - [ ] **A retirement flip removes a row's content without advancing any catalog version, and the
       stamp does not regress.** The floor's negative case — a projector built on the
       strictly-additive premise passes every additive test and fails this one.
-- [ ] `CatalogVersionPublished` arriving **before** that version's entity events does not advance the
+- [x] `CatalogVersionPublished` arriving **before** that version's entity events does not advance the
       stamp until the changed-entity list is projected.
 
 **Convergence, measured from commit**
@@ -865,9 +947,9 @@ answer is *ontological*, this sweep and this DoD's rationale both reverse.
 
 **Degradation**
 
-- [ ] Under simulated overload the door answers `503 READ_MODEL_OVERLOADED` with `Retry-After`, and
+- [x] Under simulated overload the door answers `503 READ_MODEL_OVERLOADED` with `Retry-After`, and
       the response leaks neither content nor counts.
-- [ ] Shedding one tenant partition does not shed another's traffic — the criterion a global
+- [x] Shedding one tenant partition does not shed another's traffic — the criterion a global
       limiter passes on aggregate load and fails here.
 - [ ] The limiter answers on **all four** read endpoints: browse, history, facets, dashboards — the
       facets and dashboards arms **blocked on §7 rows 10 and 22**, neither surface having a declared
@@ -876,9 +958,9 @@ answer is *ontological*, this sweep and this DoD's rationale both reverse.
 **Availability and rebuild**
 
 - [ ] A browse read is served during a simulated write-path outage.
-- [ ] A checkpoint behind the tail fails **loudly**, rebuilds from the bootstrap path, and cuts over
+- [x] A checkpoint behind the tail fails **loudly**, rebuilds from the bootstrap path, and cuts over
       — with the old projection serving throughout.
-- [ ] The anchorless arm: a tenant with zero published versions rebuilds from the empty catalog plus
+- [x] The anchorless arm: a tenant with zero published versions rebuilds from the empty catalog plus
       the whole retained tail.
 
 **The projection's own rules**
@@ -886,15 +968,15 @@ answer is *ontological*, this sweep and this DoD's rationale both reverse.
 - [ ] The metadata map is absent from **every** searchable field. **The single-entity-read half is
       blocked on §7 row 11**: no flow in this document declares that door and the row shape carries
       no metadata field.
-- [ ] The three dashboard tables refresh **with the broker consumer stopped** — the probe that
+- [x] The three dashboard tables refresh **with the broker consumer stopped** — the probe that
       proves they are polled rather than consumed.
 - [ ] A category re-parent re-files a subtree completely, leaving no orphan path.
-- [ ] A parked row is withheld from browse and never rendered as a placeholder.
+- [x] A parked row is withheld from browse and never rendered as a placeholder.
 - [ ] A facet filters a Product under a **secondary** category assignment, not the primary alone —
       the case a primary-only build passes every aggregate test and fails here.
-- [ ] A **re-delivered** event applies once against the per-aggregate checkpoint: neither skipped nor
+- [x] A **re-delivered** event applies once against the per-aggregate checkpoint: neither skipped nor
       double-applied. **Blocked on §7 row 24** for what that checkpoint is at the broker.
-- [ ] Product and SKU content in a projected row matches the **frozen** version, and
+- [x] Product and SKU content in a projected row matches the **frozen** version, and
       `lifecycle_state`, `deprecation_provenance` and `replaced_by_sku_id` match the **head** — both
       halves in one probe, since either alone passes a build that got the other wrong.
 

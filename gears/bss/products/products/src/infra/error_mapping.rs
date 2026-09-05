@@ -158,6 +158,7 @@ fn denied(code: &'static str) -> CanonicalError {
 }
 
 impl From<DomainError> for CanonicalError {
+    #[allow(clippy::cognitive_complexity)] // the one ladder: one arm per class, by design
     fn from(err: DomainError) -> Self {
         use DomainError as D;
         match err {
@@ -308,6 +309,14 @@ impl From<DomainError> for CanonicalError {
                 precondition("override", &detail, "BULK_OVERRIDE_UNACKNOWLEDGED")
             }
             D::BulkLimit(detail) => aborted(detail, "BULK_LIMIT"),
+
+            // -- `08`'s one code (`design/08` §3.2): a 503 the read door
+            // itself renders with `Retry-After`; here it is the codeless
+            // unavailable class, the code riding `code()` into the audit row.
+            D::ReadModelOverloaded(detail) => {
+                tracing::warn!(detail, "bss-products: read path shed a request");
+                CanonicalError::service_unavailable().create()
+            }
 
             // -- The watermark door's four (`design/07` §3.2). The future
             // bound is the architectural 422; the other three follow the

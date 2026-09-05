@@ -320,6 +320,20 @@ fn a_zero_cap_is_refused_at_boot() {
                 ..ProductsConfig::default()
             },
         ),
+        (
+            "read_path_qps_ceiling",
+            ProductsConfig {
+                read_path_qps_ceiling: 0,
+                ..ProductsConfig::default()
+            },
+        ),
+        (
+            "read_active_locales",
+            ProductsConfig {
+                read_active_locales: Vec::new(),
+                ..ProductsConfig::default()
+            },
+        ),
     ];
     for (name, cfg) in cases {
         let message = cfg

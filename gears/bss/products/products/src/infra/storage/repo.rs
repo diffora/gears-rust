@@ -3213,6 +3213,57 @@ pub async fn entity_version_at(
     Ok(row.map(|row| row.content))
 }
 
+/// One frozen version as the history timeline renders it (`inst-rh-timeline`).
+#[derive(Debug, Clone)]
+pub struct FrozenVersionRow {
+    pub published_version: i64,
+    pub content: String,
+    pub approval_ref: Option<Uuid>,
+    pub actor_ref: Uuid,
+    pub published_at: DateTime<Utc>,
+}
+
+/// Every frozen version of one entity, oldest first — the request-time read
+/// over `products_entity_version` the timeline is (P-D-150).
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn entity_versions_of(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    entity_kind: VersionedEntityKind,
+    entity_id: Uuid,
+) -> Result<Vec<FrozenVersionRow>, RepoError> {
+    let rows = entity_version::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(entity_version::Column::TenantId.eq(tenant_id))
+                .add(entity_version::Column::EntityKind.eq(entity_kind.as_str()))
+                .add(entity_version::Column::EntityId.eq(entity_id)),
+        )
+        .order_by(
+            entity_version::Column::PublishedVersion,
+            sea_orm::Order::Asc,
+        )
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read frozen versions of {entity_id}"), e))?;
+    Ok(rows
+        .into_iter()
+        .map(|row| FrozenVersionRow {
+            published_version: row.published_version,
+            content: row.content,
+            approval_ref: row.approval_ref,
+            actor_ref: row.actor_ref,
+            published_at: row.published_at,
+        })
+        .collect())
+}
+
 #[cfg(test)]
 #[path = "repo_tests.rs"]
 mod repo_tests;

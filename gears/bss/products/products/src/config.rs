@@ -104,6 +104,29 @@ pub const BULK_MAX_CONCURRENT_DEFAULT: u32 = 5;
 /// after a week, releasing the tenant's concurrency slot.
 pub const BULK_BATCH_TTL_HOURS_DEFAULT: u32 = 168;
 
+/// [`ProductsConfig::read_path_qps_ceiling`]'s interim default: the per-tenant
+/// requests-per-second ceiling above which the `ReadPathLimiter` sheds with
+/// `503 READ_MODEL_OVERLOADED` (`dod-degradation`, P-D-150).
+pub const READ_PATH_QPS_CEILING_DEFAULT: u32 = 200;
+
+/// [`ProductsConfig::read_poison_retry_ceiling`]'s interim default: how many
+/// passes a poison inbox row is retried before it is parked for good and
+/// alarmed (P-D-126 rows 9 and 12, on the P-D-107 idiom).
+pub const READ_POISON_RETRY_CEILING_DEFAULT: u32 = 5;
+
+/// [`ProductsConfig::read_convergence_budget_secs`]'s interim default: the
+/// commit-to-projected budget past which `read_model_lag` is raised while
+/// serving continues (`inst-dg-lag`).
+pub const READ_CONVERGENCE_BUDGET_SECS_DEFAULT: u32 = 5;
+
+/// [`ProductsConfig::read_dashboard_poll_secs`]'s interim default: the polled
+/// dashboards' cadence (P-D-126 row 10).
+pub const READ_DASHBOARD_POLL_SECS_DEFAULT: u32 = 30;
+
+/// [`ProductsConfig::read_inbox_retention_hours`]'s interim default: how long
+/// consumed inbox rows are kept for replay before the sweep takes them.
+pub const READ_INBOX_RETENTION_HOURS_DEFAULT: u32 = 72;
+
 /// The gear's boot configuration.
 ///
 /// @cpt-cf-bss-products-fr-idempotent-authoring
@@ -169,6 +192,29 @@ pub struct ProductsConfig {
     /// is superseded by the abandonment; the tenant's slot is released.
     /// `dod-batch-state-machine`.
     pub bulk_batch_ttl_hours: u32,
+
+    /// `08`'s per-tenant read ceiling, requests per second: above it the
+    /// `ReadPathLimiter` sheds with `503 READ_MODEL_OVERLOADED` and
+    /// `Retry-After` (`dod-degradation`; P-D-150).
+    pub read_path_qps_ceiling: u32,
+
+    /// How many projector passes retry a poison inbox row before it stays
+    /// parked and alarmed (P-D-126 rows 9 and 12).
+    pub read_poison_retry_ceiling: u32,
+
+    /// The commit-to-projected budget, seconds: past it the projector raises
+    /// `read_model_lag` while the read path keeps serving (`inst-dg-lag`).
+    pub read_convergence_budget_secs: u32,
+
+    /// The polled dashboards' cadence, seconds (P-D-126 row 10).
+    pub read_dashboard_poll_secs: u32,
+
+    /// How long consumed inbox rows stay for replay before the sweep.
+    pub read_inbox_retention_hours: u32,
+
+    /// The active locale set `display_attributes` are materialised for
+    /// (P-D-126 row 2); an empty set is refused at boot.
+    pub read_active_locales: Vec<String>,
 
     /// How long a posted reference watermark stays **fresh**, in minutes
     /// (interim 15 — **P-D-87** arm 1). Past it a producer's verdict is
@@ -401,6 +447,12 @@ impl Default for ProductsConfig {
             bulk_max_rows_per_batch: BULK_MAX_ROWS_DEFAULT,
             bulk_max_concurrent_batches_per_tenant: BULK_MAX_CONCURRENT_DEFAULT,
             bulk_batch_ttl_hours: BULK_BATCH_TTL_HOURS_DEFAULT,
+            read_path_qps_ceiling: READ_PATH_QPS_CEILING_DEFAULT,
+            read_poison_retry_ceiling: READ_POISON_RETRY_CEILING_DEFAULT,
+            read_convergence_budget_secs: READ_CONVERGENCE_BUDGET_SECS_DEFAULT,
+            read_dashboard_poll_secs: READ_DASHBOARD_POLL_SECS_DEFAULT,
+            read_inbox_retention_hours: READ_INBOX_RETENTION_HOURS_DEFAULT,
+            read_active_locales: vec!["en".to_owned()],
             reference_freshness_minutes: REFERENCE_FRESHNESS_MINUTES_DEFAULT,
             watermark_skew_tolerance_minutes: WATERMARK_SKEW_MINUTES_DEFAULT,
             tripwire_max_overrides_per_30_days: TRIPWIRE_MAX_OVERRIDES_DEFAULT,
@@ -557,6 +609,26 @@ impl ProductsConfig {
         if self.bulk_batch_ttl_hours == 0 {
             return Err(
                 "bulk_batch_ttl_hours = 0 would abandon every reported batch on the next tick"
+                    .to_owned(),
+            );
+        }
+        if self.read_path_qps_ceiling == 0 {
+            return Err("read_path_qps_ceiling = 0 sheds every read".to_owned());
+        }
+        if self.read_poison_retry_ceiling == 0 || self.read_dashboard_poll_secs == 0 {
+            return Err(
+                "read_poison_retry_ceiling and read_dashboard_poll_secs must be at least 1"
+                    .to_owned(),
+            );
+        }
+        if self.read_active_locales.is_empty()
+            || self
+                .read_active_locales
+                .iter()
+                .any(|locale| locale.trim().is_empty())
+        {
+            return Err(
+                "read_active_locales must name at least one non-blank locale (P-D-126 row 2)"
                     .to_owned(),
             );
         }

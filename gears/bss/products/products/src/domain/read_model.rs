@@ -64,7 +64,6 @@ use bss_products_sdk::models::LifecycleState;
 use chrono::{DateTime, Utc};
 use sea_orm::{ColumnTrait, Condition};
 use toolkit_macros::domain_model;
-use uuid::Uuid;
 
 use crate::infra::storage::entity::read_entity;
 
@@ -151,7 +150,7 @@ pub struct StalenessStamp {
     /// The last catalog version projected, or `None` for a tenant that has
     /// published none — the anchorless case P-D-70 arm 6 states rather than
     /// glosses.
-    pub as_of_catalog_version: Option<Uuid>,
+    pub as_of_catalog_version: Option<i64>,
     /// The last apply's instant. Advances on **every** apply, version or
     /// none, so the sole freshness signal always has a writer.
     pub projected_at: DateTime<Utc>,
@@ -195,7 +194,7 @@ pub enum StampCatalogTouch {
     Unchanged,
     /// Set the floor to this catalog version — a `CatalogVersionPublished`
     /// whose changed-entity list has already been projected in this step.
-    Set(Uuid),
+    Set(i64),
     /// Explicit null: a zero-version tenant's bootstrap. The null is a
     /// stated value, not an absence.
     Anchorless,

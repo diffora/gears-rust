@@ -230,7 +230,7 @@ fn projected_at_advances_on_every_apply_version_or_none() {
     let t0 = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
     let t1 = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 1).unwrap();
     let t2 = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 2).unwrap();
-    let version = uuid::Uuid::from_u128(0xca_01);
+    let version: i64 = 0xca_01;
 
     let after_bootstrap = advance_stamp(
         None,
@@ -272,7 +272,7 @@ fn projected_at_advances_on_every_apply_version_or_none() {
 #[test]
 fn the_stamp_refuses_to_advance_before_entities_are_projected() {
     let at = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
-    let version = uuid::Uuid::from_u128(0xca_02);
+    let version: i64 = 0xca_02;
     let err = advance_stamp(
         None,
         StampApply {
@@ -291,7 +291,7 @@ fn the_stamp_refuses_to_advance_before_entities_are_projected() {
 /// `as_of` stays.
 #[test]
 fn a_retirement_removal_is_admitted_by_the_floor_and_rejected_by_completeness() {
-    let version = uuid::Uuid::from_u128(0xca_03);
+    let version: i64 = 0xca_03;
     let t0 = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
     let t1 = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 1).unwrap();
     let before = StalenessStamp {

@@ -7179,6 +7179,7 @@ mod read_entity_schema_tests {
                 "entity_code",
                 "entity_id",
                 "entity_kind",
+                "generation",
                 "lifecycle_state",
                 "metering_unit",
                 "name",

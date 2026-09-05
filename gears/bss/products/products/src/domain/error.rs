@@ -488,6 +488,10 @@ pub enum DomainError {
     /// @cpt-dod:cpt-cf-bss-products-dod-bulk-errors:p1
     #[error("bulk limit: {0}")]
     BulkLimit(String),
+    /// `08`'s one code (`dod-degradation`, `design/08` §3.2): the per-tenant
+    /// limiter shed the read; the door carries `Retry-After`.
+    #[error("read model overloaded: {0}")]
+    ReadModelOverloaded(String),
 
     /// A watermark posted by a name outside the tenant's registered
     /// producer set. **403**: the caller's identity is the refusal's
@@ -657,6 +661,7 @@ impl DomainError {
             Self::PromotionDirtyHead(_) => "PROMOTION_DIRTY_HEAD",
             Self::BulkOverrideUnacknowledged(_) => "BULK_OVERRIDE_UNACKNOWLEDGED",
             Self::BulkLimit(_) => "BULK_LIMIT",
+            Self::ReadModelOverloaded(_) => "READ_MODEL_OVERLOADED",
             Self::ProducerUnregistered(_) => "PRODUCER_UNREGISTERED",
             Self::WatermarkRegression(_) => "WATERMARK_REGRESSION",
             Self::WatermarkConflict(_) => "WATERMARK_CONFLICT",

@@ -7,7 +7,7 @@
 use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
-use sea_orm::{ColumnTrait, Condition, EntityTrait};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, QuerySelect};
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureDeleteExt, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
@@ -20,7 +20,7 @@ use crate::infra::storage::entity::{
     freeze_participant, metadata,
 };
 
-use super::{SnapshotEntityRef, driver_failure};
+use super::{SnapshotEntityRef, TenantIdRow, driver_failure};
 
 /// One committed version row, in this repository's vocabulary.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -629,4 +629,30 @@ pub async fn metadata_rows(
         .into_iter()
         .map(|row| (row.entity_kind, row.entity_id, row.key, row.value))
         .collect())
+}
+
+/// The tenants holding at least one catalog version — the freeze-status
+/// dashboard's discovery read (P-D-150).
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage or scope failure.
+pub async fn tenants_with_catalog_versions(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+) -> Result<Vec<Uuid>, RepoError> {
+    let rows: Vec<TenantIdRow> = catalog_version::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .project_all(runner, |q| {
+            q.select_only()
+                .column(catalog_version::Column::TenantId)
+                .distinct()
+                .into_model::<TenantIdRow>()
+        })
+        .await
+        .map_err(|e| driver_failure("discover version tenants".to_owned(), e))?;
+    let mut tenants: Vec<Uuid> = rows.into_iter().map(|row| row.tenant_id).collect();
+    tenants.sort();
+    Ok(tenants)
 }
