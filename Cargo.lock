@@ -2002,6 +2002,7 @@ dependencies = [
  "cf-gears-authz-resolver",
  "cf-gears-authz-resolver-sdk",
  "cf-gears-bss-coord",
+ "cf-gears-bss-pricing-sdk",
  "cf-gears-bss-products-sdk",
  "cf-gears-event-broker-sdk",
  "cf-gears-toolkit",
@@ -2026,6 +2027,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
+ "toml 0.8.23",
  "tower",
  "tracing",
  "tracing-opentelemetry",
@@ -2044,6 +2046,7 @@ dependencies = [
  "cf-gears-toolkit-gts",
  "cf-gears-toolkit-security",
  "chrono",
+ "regex",
  "toml 0.8.23",
  "uuid",
 ]
