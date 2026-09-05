@@ -1569,6 +1569,77 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-147 — 07's doors: the correction door on the publish's third argument, the producer doors under the stored host with the retirement rule, the seven codes, the three events, the tripwire
+
+- **Date**: 2026-09-05 (the lead, group 5 of the solo plan; `07` §7 rows 2, 5, 6, 8, 9, 10, 11,
+  22, 23, 24 as already answered by P-D-129)
+- **The correction door exists.** `POST /bss-products/v1/skus/{id}/corrections` on `sku × correct`
+  — a new **action** on the `sku` label (`actions::CORRECT`, permission `sku_correct`), which is
+  the answer to the roster question `dod-reference-authz` carried: the door corrects a SKU. The body
+  spells one of two bucket-ii fields, `sku_type` or the meter pair as a whole; nothing else can be
+  spelled, so structural identity is unwritable by shape rather than refused. The head doors' refusals
+  still name the door and do not forward to it (P-D-41's posture).
+- **The ceremony is the record.** P-D-129 rows 10, 11 and 23 built: a `sku_correction` approval at
+  the head's revision whose `content_snapshot` **is the payload** — the door compares canonically and
+  refuses a mismatch as `APPROVAL_REQUIRED`, so the bytes an approver signed are the bytes applied.
+  The door spends the record in its own transaction, re-runs **the lane's own predicate** at commit
+  (row 22: fresh-zero on the normal lane, every-producer-unavailable on arm (a); arm (b)'s operand
+  is the resolver's pre-transaction answer, P-D-121 row 19's shape), then calls `run_publish` with
+  the correction as its **third argument**: the head is judged as corrected, re-published as N+1
+  through the ordinary pipeline, and `publish_sku_head` writes the column(s) and a fresh
+  `correction_ref` in the bump statement — the only form the row-image trigger admits (row 6). A
+  corrected meter re-resolves its new `usageTypeRef` and freezes the binding (P-D-05).
+- **Three admission gates, two preconditions.** Normal: fresh-zero, else `CORRECTION_REFERENCED`
+  naming every producer whose verdict holds the SKU. Arm (a): `lane = breakglass`, the deployment
+  flag on (`BREAKGLASS_CORRECTION_DISABLED`, 403), at least one producer and every one stale or
+  never-received (a fresh one is `CORRECTION_SIGNAL_AVAILABLE`), a reason. Arm (b): a meter
+  correction whose current ref the resolver answers **not-found** for, on any lane, not behind the
+  flag (P-D-16, P-D-48); a timeout admits nothing. Preconditions: the head is **clean** — its
+  frozen-roster rendering equals its last version row's content, row 24's digest equality — else
+  `CORRECTION_DIRTY_HEAD`; and no pending publish approval on the subject, else
+  `CORRECTION_APPROVAL_OPEN`. Every break-glass reason passes 02's PII gate first.
+- **The evidence.** A break-glass correction writes its `products_correction_override` row
+  (`producer_unavailable` with the per-producer verdict snapshot; `unresolvable_target` with the
+  dead reference), announces `SkuCorrectionOverride` beside `SkuImmutableFieldCorrected`, writes an
+  audit row **carrying the ceremony reference** (`AuditEntry::CeremonyAct` — the audit plane's
+  `ceremony_ref` column has its first writer) and feeds the tripwire.
+- **The tripwire and the blocker, rows 8 and 9 built.** A windowed count over the override table
+  per arm, rolling 30 days, never stored; above the configured rate it raises
+  `reference_breakglass_tripwire` (a structured warn event, the `retirement_held` shape).
+  `signal_delivery_release_blocker` is **derived** from the `producer_unavailable` arm's window and
+  clears when the window rolls; `09`'s release door is its production reader (group 7), which is
+  why the reader carries a test-only allowance today.
+- **The producer doors have a gate and the retirement rule.** Register and retire ride
+  `GovernedLiveOp` on `reference_producer/{producer}` (unpinned) under the stored host, P-D-144's
+  shape at the sixth and seventh live-op doors, and each emits `ReferenceProducerSetChanged` —
+  entity-less, **`aggregate_id = tenant_id`** (P-D-71), its own subject type. The rule P-D-129 rows
+  2 and 5 settled: the last registered producer is `PRODUCER_SET_EMPTY_FORBIDDEN`; a stale or
+  never-received one is `PRODUCER_RETIREMENT_WOULD_FREE` unless the caller supplies a
+  **justification** (the retirement body, optional), which passes the PII gate and rides
+  `breakglass × elevate` as a second grant on the same door — then one `producer_unavailable`
+  override row per SKU the stale watermark held, the ceremony on the audit row, the tripwire fed. A
+  live producer posts an empty set and retires fresh, bodiless.
+- **The seven codes and the rosters.** `PRODUCER_SET_EMPTY_FORBIDDEN`,
+  `PRODUCER_RETIREMENT_WOULD_FREE`, `CORRECTION_REFERENCED`, `CORRECTION_DIRTY_HEAD`,
+  `CORRECTION_APPROVAL_OPEN`, `CORRECTION_SIGNAL_AVAILABLE` at 409 and
+  `BREAKGLASS_CORRECTION_DISABLED` at 403, `design/07` §3.2's statuses; both counters at **77**.
+  Three events in `SCHEMA_REFS` with `THE_REFERENCE_TRIO` in both roster families and typed twins on
+  the broker arm. `ReferenceKnobs` carries the freshness, the tripwire rate and the flag on
+  `ApiState`, read once from `ProductsConfig`.
+- **Ticks.** `07`: `dod-producer-registration`, `dod-correction-door`, `dod-correction-republish`,
+  `dod-breakglass-unavailable`, `dod-breakglass-unresolvable`, `dod-tripwire`,
+  `dod-reference-error-taxonomy`, `dod-reference-authz`, `dod-reference-events`,
+  `dod-reference-audit` — 07 reaches **17 of 17**. §6: seventeen criteria ticked on probes; the
+  race criterion (a reference between submission and approval), the recovery halves of the
+  re-check criterion, the historical-verdict half of the onboarding probe and the watermark
+  positive-control lines stay unticked for want of a probe, not of a door. `10`'s last criterion
+  (every reason-bearing door raises `CONTENT_PII_BLOCKED`) gains the correction door's and the
+  retirement's probes; it still waits on a probe at `04`'s SKU retire door, so `10`'s status box
+  stays.
+- **Trace**: `dod-producer-registration`, `dod-correction-door`, `dod-correction-republish`,
+  `dod-breakglass-unavailable`, `dod-breakglass-unresolvable`, `dod-tripwire` markers on their
+  implementing items; `DESIGN.md` §Endpoints Overview (51 routes).
+
 #### P-D-146 — 03's second half: the sets door under the stored host with a label op, the bundle gate condition on the publish, a computed finance operand, and the binding snapshot beside the version row
 
 - **Date**: 2026-09-05 (the lead, group 4 of the solo plan; `03` §7 rows 6, 14, 16, 20 as already

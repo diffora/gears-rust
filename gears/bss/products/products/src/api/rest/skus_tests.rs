@@ -1348,6 +1348,7 @@ fn api_state(harness: &TestHarness) -> ApiState {
         bulk_max_concurrent_batches_per_tenant: ProductsConfig::default()
             .bulk_max_concurrent_batches_per_tenant,
         watermark_skew_tolerance: ProductsConfig::default().watermark_skew_tolerance(),
+        reference: crate::api::rest::ReferenceKnobs::from(&ProductsConfig::default()),
         breakglass_window_hours: crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT,
         breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
         usage_type_resolver: crate::test_support::resolved_usage_types(),
@@ -7081,4 +7082,587 @@ async fn a_type_change_after_first_publish_is_refused_and_a_sellable_flip_is_fro
         frozen.contains("\"sellable\":false"),
         "the flip is content: the frozen row carries it - {frozen}"
     );
+}
+
+/// `07`'s correction door — `POST /skus/{id}/corrections` (`dod-correction-door`,
+/// `dod-correction-republish`, `dod-breakglass-unavailable`,
+/// `dod-breakglass-unresolvable`; P-D-147).
+mod correction_door_tests {
+    use super::*;
+
+    /// The SKU and reference routers merged, with the resolver and the
+    /// break-glass flag a probe chooses.
+    fn correction_app(
+        harness: &TestHarness,
+        stub: Option<&Arc<crate::test_support::StubUsageTypes>>,
+        breakglass_enabled: bool,
+    ) -> Router {
+        let mut state = api_state(harness);
+        if let Some(stub) = stub {
+            state.usage_type_resolver =
+                Arc::clone(stub) as Arc<dyn crate::infra::usage_types::UsageTypeResolver>;
+        }
+        state.reference.breakglass_correction_enabled = breakglass_enabled;
+        let state = Arc::new(state);
+        let openapi = OpenApiRegistryImpl::new();
+        router(Arc::clone(&state), &openapi)
+            .merge(crate::api::rest::reference::router(state, &openapi))
+            .layer(axum::Extension(flat_in_enforcer(TENANT)))
+    }
+
+    async fn post_correction(
+        app: Router,
+        sku_id: Uuid,
+        etag: &str,
+        body: &serde_json::Value,
+    ) -> axum::http::Response<Body> {
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/bss-products/v1/skus/{sku_id}/corrections"))
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .header(axum::http::header::IF_MATCH, etag)
+                .extension(authed_ctx(TENANT))
+                .body(Body::from(body.to_string()))
+                .expect("build the request"),
+        )
+        .await
+        .expect("the router answers")
+    }
+
+    fn etag_of(response: &axum::http::Response<Body>) -> String {
+        response.headers()[axum::http::header::ETAG]
+            .to_str()
+            .expect("ASCII etag")
+            .to_owned()
+    }
+
+    /// The revision an `ETag` names — the correction record's pin.
+    fn revision_of(etag: &str) -> i64 {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::IF_MATCH,
+            axum::http::HeaderValue::from_str(etag).expect("an ASCII etag"),
+        );
+        preconditions::if_match(&headers)
+            .expect("the etag names a revision")
+            .get()
+    }
+
+    /// A published `product` SKU with both codes; the etag its publish minted.
+    async fn published_product(harness: &TestHarness, code: &str) -> (Uuid, String) {
+        let parent = seed_parent(harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+        let (sku_id, etag) = created_sku(harness, &typed_body(parent, code)).await;
+        let published = post_publish(harness, TENANT, sku_id, Some(&etag)).await;
+        assert_eq!(published.status(), StatusCode::OK, "premise: published");
+        (sku_id, etag_of(&published))
+    }
+
+    async fn register_producer(harness: &TestHarness, app: Router, producer: &str) {
+        crate::test_support::seed_satisfied_approval(
+            &harness.db,
+            TENANT,
+            crate::api::rest::reference::producer_op_subject(TENANT, producer),
+            0,
+        )
+        .await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/bss-products/v1/reference-producers")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .extension(authed_ctx(TENANT))
+                    .body(Body::from(json!({ "producer": producer }).to_string()))
+                    .expect("build the request"),
+            )
+            .await
+            .expect("the router answers");
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "premise: registered"
+        );
+    }
+
+    async fn post_watermark(
+        app: Router,
+        producer: &str,
+        at: chrono::DateTime<Utc>,
+        members: &[Uuid],
+    ) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/bss-products/v1/reference-watermarks")
+                    .header(axum::http::header::CONTENT_TYPE, "application/json")
+                    .extension(authed_ctx(TENANT))
+                    .body(Body::from(
+                        json!({ "producer": producer, "watermark_at": at, "sku_ids": members })
+                            .to_string(),
+                    ))
+                    .expect("build the request"),
+            )
+            .await
+            .expect("the router answers");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "premise: the watermark lands"
+        );
+    }
+
+    /// Seed the ceremony's record for this payload at the head's revision.
+    async fn approve_correction(
+        harness: &TestHarness,
+        sku_id: Uuid,
+        etag: &str,
+        payload: &serde_json::Value,
+    ) {
+        crate::test_support::seed_satisfied_correction_approval(
+            &harness.db,
+            TENANT,
+            sku_id,
+            revision_of(etag),
+            payload,
+        )
+        .await;
+    }
+
+    fn type_correction(lane: &str, reason: Option<&str>) -> serde_json::Value {
+        let mut body = json!({ "field": "sku_type", "sku_type": "service", "lane": lane });
+        if let Some(reason) = reason {
+            body["reason"] = json!(reason);
+        }
+        body
+    }
+
+    async fn head(harness: &TestHarness, sku_id: Uuid) -> repo::SkuRecord {
+        let conn = harness.db.conn().expect("connection");
+        let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+        repo::find_sku(&conn, &scope, TENANT, sku_id)
+            .await
+            .expect("read")
+            .expect("the head exists")
+    }
+
+    /// **The normal lane**: fresh-zero admits, and the correction is one
+    /// statement — version N+1 carries the new type and the head carries a
+    /// fresh `correction_ref`; `SkuImmutableFieldCorrected` announces it. A
+    /// referenced SKU is refused `CORRECTION_REFERENCED` **naming the
+    /// producer**, and the same SKU at fresh-zero is the positive control.
+    #[tokio::test]
+    async fn a_fresh_zero_correction_republishes_and_a_referenced_one_is_refused_naming_the_producer()
+     {
+        let harness = harness().await;
+        let (sku_id, etag) = published_product(&harness, "SKU-CORR-1").await;
+        let app = || correction_app(&harness, None, false);
+        register_producer(&harness, app(), "pricing").await;
+        let other = Uuid::now_v7();
+
+        // pricing references the SKU: the normal lane is shut.
+        post_watermark(app(), "pricing", Utc::now(), &[sku_id, other]).await;
+        let payload = type_correction("normal", None);
+        approve_correction(&harness, sku_id, &etag, &payload).await;
+        let refused = post_correction(app(), sku_id, &etag, &payload).await;
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+        let body = body_json(refused).await;
+        assert_eq!(body["context"]["reason"], json!("CORRECTION_REFERENCED"));
+        assert!(
+            body.to_string().contains("pricing (referenced)"),
+            "the refusal names the blocking producer: {body}"
+        );
+        assert_eq!(
+            head(&harness, sku_id).await.sku_type.as_deref(),
+            Some("product")
+        );
+
+        // pricing posts a newer set omitting the SKU: fresh-zero.
+        post_watermark(app(), "pricing", Utc::now(), &[other]).await;
+        let corrected = post_correction(app(), sku_id, &etag, &payload).await;
+        assert_eq!(
+            corrected.status(),
+            StatusCode::OK,
+            "{}",
+            body_json(corrected).await
+        );
+        let after = head(&harness, sku_id).await;
+        assert_eq!(after.sku_type.as_deref(), Some("service"));
+        assert_eq!(after.published_version, 2, "re-published as N+1");
+        assert!(
+            after.correction_ref.is_some(),
+            "the statement wrote correction_ref"
+        );
+        let frozen = crate::test_support::raw_string_opt(
+            &harness.dsn,
+            &format!(
+                "SELECT content AS v FROM products_entity_version WHERE entity_id = X'{}' \
+                 AND published_version = 2",
+                sku_id.simple()
+            ),
+        )
+        .await
+        .expect("version 2 is frozen");
+        assert!(
+            frozen.contains("\"sku_type\":\"service\""),
+            "the frozen content is the corrected one: {frozen}"
+        );
+        assert_eq!(
+            enqueued_event_count(&harness.dsn, "SkuImmutableFieldCorrected").await,
+            1
+        );
+        assert_eq!(
+            enqueued_event_count(&harness.dsn, "SkuCorrectionOverride").await,
+            0,
+            "the normal lane writes no evidence"
+        );
+        assert_eq!(
+            crate::test_support::raw_i64(
+                &harness.dsn,
+                "SELECT count(*) AS v FROM products_correction_override"
+            )
+            .await,
+            0
+        );
+    }
+
+    /// **The record is the ceremony**: without a satisfied `sku_correction`
+    /// record the door answers `APPROVAL_REQUIRED`; with one whose snapshot is
+    /// a different payload it refuses too — the bytes an approver signed are
+    /// the bytes applied (P-D-129 rows 10 and 11). Structural identity cannot
+    /// be spelled at all.
+    #[tokio::test]
+    async fn the_correction_rides_its_own_record_and_only_the_two_bucket_ii_fields_can_be_spelled()
+    {
+        let harness = harness().await;
+        let (sku_id, etag) = published_product(&harness, "SKU-CORR-2").await;
+        let app = || correction_app(&harness, None, false);
+        register_producer(&harness, app(), "pricing").await;
+        post_watermark(app(), "pricing", Utc::now(), &[Uuid::now_v7()]).await;
+
+        let payload = type_correction("normal", None);
+        let no_record = post_correction(app(), sku_id, &etag, &payload).await;
+        assert_eq!(no_record.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            body_json(no_record).await["context"]["reason"],
+            json!("APPROVAL_REQUIRED")
+        );
+
+        approve_correction(
+            &harness,
+            sku_id,
+            &etag,
+            &json!({ "field": "sku_type", "sku_type": "bundle", "lane": "normal" }),
+        )
+        .await;
+        let other_payload = post_correction(app(), sku_id, &etag, &payload).await;
+        assert_eq!(
+            other_payload.status(),
+            StatusCode::FORBIDDEN,
+            "signed bytes differ from the presented ones"
+        );
+        assert_eq!(
+            body_json(other_payload).await["context"]["reason"],
+            json!("APPROVAL_REQUIRED")
+        );
+
+        let structural = post_correction(
+            app(),
+            sku_id,
+            &etag,
+            &json!({ "field": "sku_code", "sku_type": "X", "lane": "normal" }),
+        )
+        .await;
+        assert_eq!(
+            structural.status(),
+            StatusCode::BAD_REQUEST,
+            "bucket i is unwritable by shape"
+        );
+    }
+
+    /// **The two preconditions**: a head with an unpublished bucket-iii edit
+    /// is `CORRECTION_DIRTY_HEAD`; a subject with a pending publish approval
+    /// is `CORRECTION_APPROVAL_OPEN`.
+    #[tokio::test]
+    async fn a_dirty_head_and_an_open_approval_are_refused() {
+        let harness = harness().await;
+        let (sku_id, etag) = published_product(&harness, "SKU-CORR-3").await;
+        let app = || correction_app(&harness, None, false);
+        register_producer(&harness, app(), "pricing").await;
+        post_watermark(app(), "pricing", Utc::now(), &[Uuid::now_v7()]).await;
+
+        // A bucket-iii save dirties the head.
+        let saved = patch_sku(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &json!({ "sellable": false }),
+            &[("If-Match", &etag)],
+        )
+        .await;
+        assert_eq!(
+            saved.status(),
+            StatusCode::OK,
+            "premise: a bucket-iii save on the published head"
+        );
+        let dirty_etag = etag_of(&saved);
+        let payload = type_correction("normal", None);
+        approve_correction(&harness, sku_id, &dirty_etag, &payload).await;
+        let dirty = post_correction(app(), sku_id, &dirty_etag, &payload).await;
+        assert_eq!(dirty.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            body_json(dirty).await["context"]["reason"],
+            json!("CORRECTION_DIRTY_HEAD")
+        );
+
+        // Publishing the edit cleans the head; a pending publish approval then
+        // blocks the correction until it is decided.
+        let published = post_publish(&harness, TENANT, sku_id, Some(&dirty_etag)).await;
+        assert_eq!(published.status(), StatusCode::OK);
+        let clean_etag = etag_of(&published);
+        let pending = post_approval(&harness, sku_id).await;
+        assert_eq!(pending.status(), StatusCode::CREATED);
+        assert_eq!(
+            body_json(pending).await["state"],
+            json!("pending"),
+            "N = 2: pending"
+        );
+        approve_correction(&harness, sku_id, &clean_etag, &payload).await;
+        let open = post_correction(app(), sku_id, &clean_etag, &payload).await;
+        assert_eq!(open.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            body_json(open).await["context"]["reason"],
+            json!("CORRECTION_APPROVAL_OPEN")
+        );
+    }
+
+    /// **Break-glass arm (a)**: `lane = breakglass` with the flag off is a
+    /// `403`; with a fresh producer answering it is
+    /// `CORRECTION_SIGNAL_AVAILABLE`; with every producer stale and a reason it
+    /// admits, writes the `producer_unavailable` evidence row, announces
+    /// `SkuCorrectionOverride`, files the ceremony on the audit row and feeds
+    /// the tripwire. The reason passes 02's PII gate first.
+    #[tokio::test]
+    async fn break_glass_arm_a_needs_the_flag_every_producer_stale_and_a_clean_reason() {
+        let harness = harness().await;
+        let (sku_id, etag) = published_product(&harness, "SKU-CORR-4").await;
+        let off = || correction_app(&harness, None, false);
+        let on = || correction_app(&harness, None, true);
+        register_producer(&harness, off(), "pricing").await;
+        register_producer(&harness, off(), "billing").await;
+        let stale_at = Utc::now() - chrono::Duration::hours(2);
+        post_watermark(off(), "pricing", stale_at, &[sku_id]).await;
+        post_watermark(off(), "billing", Utc::now(), &[Uuid::now_v7()]).await;
+
+        let payload = type_correction("breakglass", Some("pricing has been down for two hours"));
+        approve_correction(&harness, sku_id, &etag, &payload).await;
+
+        let disabled = post_correction(off(), sku_id, &etag, &payload).await;
+        assert_eq!(disabled.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            body_json(disabled).await["context"]["reason"],
+            json!("BREAKGLASS_CORRECTION_DISABLED")
+        );
+
+        let available = post_correction(on(), sku_id, &etag, &payload).await;
+        assert_eq!(available.status(), StatusCode::CONFLICT);
+        let body = body_json(available).await;
+        assert_eq!(
+            body["context"]["reason"],
+            json!("CORRECTION_SIGNAL_AVAILABLE")
+        );
+        assert!(body.to_string().contains("billing"), "{body}");
+
+        // billing retires fresh (a watermark cannot be posted backwards), leaving
+        // pricing the only — and stale — registered producer.
+        crate::test_support::seed_satisfied_approval(
+            &harness.db,
+            TENANT,
+            crate::api::rest::reference::producer_op_subject(TENANT, "billing"),
+            0,
+        )
+        .await;
+        let retired = on()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/bss-products/v1/reference-producers/billing/retirements")
+                    .extension(authed_ctx(TENANT))
+                    .body(Body::empty())
+                    .expect("build the request"),
+            )
+            .await
+            .expect("the router answers");
+        assert_eq!(
+            retired.status(),
+            StatusCode::OK,
+            "{}",
+            body_json(retired).await
+        );
+
+        let pii = post_correction(
+            on(),
+            sku_id,
+            &etag,
+            &type_correction("breakglass", Some("requested by Ann Fritz")),
+        )
+        .await;
+        assert_eq!(
+            pii.status(),
+            StatusCode::BAD_REQUEST,
+            "a person-shaped reason fails 02's gate"
+        );
+
+        let admitted = post_correction(on(), sku_id, &etag, &payload).await;
+        assert_eq!(
+            admitted.status(),
+            StatusCode::OK,
+            "{}",
+            body_json(admitted).await
+        );
+        let after = head(&harness, sku_id).await;
+        assert_eq!(after.sku_type.as_deref(), Some("service"));
+        assert_eq!(after.published_version, 2);
+        assert_eq!(
+            crate::test_support::raw_i64(
+                &harness.dsn,
+                "SELECT count(*) AS v FROM products_correction_override \
+                 WHERE admitting_arm = 'producer_unavailable' AND field = 'sku_type'"
+            )
+            .await,
+            1,
+            "the evidence row"
+        );
+        assert_eq!(
+            enqueued_event_count(&harness.dsn, "SkuCorrectionOverride").await,
+            1
+        );
+        assert_eq!(
+            enqueued_event_count(&harness.dsn, "SkuImmutableFieldCorrected").await,
+            1
+        );
+        assert_eq!(
+            crate::test_support::raw_i64(
+                &harness.dsn,
+                "SELECT count(*) AS v FROM products_audit_log a JOIN products_correction_override o \
+                 ON a.ceremony_ref = o.ceremony_ref WHERE a.action = 'sku_correct_breakglass'"
+            )
+            .await,
+            1,
+            "the ceremony and the evidence share the reference"
+        );
+    }
+
+    /// **Break-glass arm (b)**: a meter correction whose current
+    /// `usageTypeRef` the collector answers **not-found** for is admitted on
+    /// the normal lane regardless of the reference predicate and without the
+    /// flag; a **timeout** is not not-found and admits nothing.
+    #[tokio::test]
+    async fn arm_b_admits_a_meter_correction_on_not_found_and_not_on_a_timeout() {
+        let harness = harness().await;
+        add_set_member(&harness, "metering_unit", "gib_month").await;
+        let parent = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+        let (sku_id, etag) = created_sku(&harness, &typed_body(parent, "SKU-CORR-5")).await;
+        // The meter pair is declared at the save door, as every declaration is.
+        let declared = patch_sku(
+            app_for(&harness, TENANT),
+            TENANT,
+            sku_id,
+            &json!({ "metering_unit": "gib_month", "usage_type_ref": "usage:gone" }),
+            &[("If-Match", &etag)],
+        )
+        .await;
+        assert_eq!(
+            declared.status(),
+            StatusCode::OK,
+            "premise: the meter pair is declared"
+        );
+        let etag = etag_of(&declared);
+        let published = post_publish(&harness, TENANT, sku_id, Some(&etag)).await;
+        assert_eq!(
+            published.status(),
+            StatusCode::OK,
+            "premise: published with a meter"
+        );
+        let etag = etag_of(&published);
+
+        let stub = |answers: Vec<crate::domain::recognized::UsageTypeAnswer>| {
+            Arc::new(crate::test_support::StubUsageTypes::scripted(answers))
+        };
+        let app_with = |stub: &Arc<crate::test_support::StubUsageTypes>| {
+            correction_app(&harness, Some(stub), false)
+        };
+        let referenced = app_with(&stub(vec![
+            crate::domain::recognized::UsageTypeAnswer::Resolved(
+                crate::test_support::probe_binding(),
+            ),
+        ]));
+        register_producer(&harness, referenced.clone(), "pricing").await;
+        post_watermark(referenced, "pricing", Utc::now(), &[sku_id]).await;
+
+        let payload = json!({
+            "field": "meter",
+            "metering_unit": "gib_month",
+            "usage_type_ref": "usage:storage",
+            "lane": "normal",
+            "reason": "the collector deleted usage:gone",
+        });
+        approve_correction(&harness, sku_id, &etag, &payload).await;
+
+        // A timeout on the current target is not not-found: the reference
+        // predicate rules, and pricing references the SKU.
+        let timeout = stub(vec![
+            crate::domain::recognized::UsageTypeAnswer::Unavailable,
+        ]);
+        let held = post_correction(app_with(&timeout), sku_id, &etag, &payload).await;
+        assert_eq!(held.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            body_json(held).await["context"]["reason"],
+            json!("CORRECTION_REFERENCED")
+        );
+
+        // Not-found on the current target admits arm (b); the new target
+        // resolves and its binding rides to the freeze.
+        let gone = stub(vec![
+            crate::domain::recognized::UsageTypeAnswer::Unresolved,
+            crate::domain::recognized::UsageTypeAnswer::Resolved(
+                crate::test_support::probe_binding(),
+            ),
+        ]);
+        let admitted = post_correction(app_with(&gone), sku_id, &etag, &payload).await;
+        assert_eq!(
+            admitted.status(),
+            StatusCode::OK,
+            "{}",
+            body_json(admitted).await
+        );
+        let after = head(&harness, sku_id).await;
+        assert_eq!(after.usage_type_ref.as_deref(), Some("usage:storage"));
+        assert_eq!(after.published_version, 2);
+        assert_eq!(
+            crate::test_support::raw_i64(
+                &harness.dsn,
+                "SELECT count(*) AS v FROM products_correction_override \
+                 WHERE admitting_arm = 'unresolvable_target' AND unresolvable_target = 'usage:gone'"
+            )
+            .await,
+            1,
+            "the evidence names the unresolvable target, not unavailability"
+        );
+        let snapshot = crate::test_support::raw_string_opt(
+            &harness.dsn,
+            &format!(
+                "SELECT binding_snapshot AS v FROM products_entity_version WHERE entity_id = X'{}' \
+                 AND published_version = 2",
+                sku_id.simple()
+            ),
+        )
+        .await
+        .expect("the corrected meter re-resolved and froze its binding");
+        assert_eq!(
+            snapshot,
+            crate::test_support::probe_binding().snapshot_json()
+        );
+    }
 }

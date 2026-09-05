@@ -541,7 +541,7 @@ fn register_head_act_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Ro
         .error_503(openapi)
         .register(router, openapi);
 
-    OperationBuilder::post("/bss-products/v1/skus/{id}/discard")
+    let router = OperationBuilder::post("/bss-products/v1/skus/{id}/discard")
         .operation_id("bss_products.discard_sku")
         .summary("Discard a never-published draft SKU")
         .description(
@@ -562,6 +562,49 @@ fn register_head_act_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Ro
             openapi,
             StatusCode::OK,
             "The discarded SKU head, at its new revision.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+    OperationBuilder::post("/bss-products/v1/skus/{id}/corrections")
+        .operation_id("bss_products.correct_sku")
+        .summary("Correct a published SKU's bucket-ii field (slice 07's correction door)")
+        .description(
+            "The only door that writes a bucket-ii column - `sku_type`, or the meter pair - \
+             after first publish. Gates on `sku x correct`. The correction is a governed act: \
+             a satisfied `sku_correction` approval for this SKU at the `If-Match` revision, \
+             whose snapshot is this exact payload, must exist (APPROVAL_REQUIRED otherwise) and \
+             is spent here. Three admission gates: the normal lane needs every registered \
+             producer fresh and omitting the SKU (CORRECTION_REFERENCED names the blockers); \
+             break-glass arm (a) needs `lane = breakglass`, the deployment flag on \
+             (BREAKGLASS_CORRECTION_DISABLED, 403), at least one producer and every one stale or \
+             never-received (CORRECTION_SIGNAL_AVAILABLE otherwise), and a reason; arm (b) \
+             admits a meter correction whose current usageTypeRef no longer resolves, on any \
+             lane, with a reason. The head must be clean (CORRECTION_DIRTY_HEAD) and carry no \
+             open publish approval (CORRECTION_APPROVAL_OPEN). On admission the head is \
+             re-published as version N+1 in one statement carrying the correction and a fresh \
+             `correction_ref`; the lane's predicate is re-checked inside that transaction. A \
+             break-glass arm also writes the override evidence row, announces it and feeds \
+             the tripwire.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("id", "The SKU to correct.")
+        .json_request::<CorrectSkuRequest>(
+            openapi,
+            "The correction: field, value(s), lane, reason.",
+        )
+        .handler(correct_sku)
+        .json_response_with_schema::<SkuView>(
+            openapi,
+            StatusCode::OK,
+            "The corrected SKU head, at its new revision and version.",
         )
         .error_400(openapi)
         .error_401(openapi)
@@ -630,6 +673,32 @@ fn register_undeprecate_door(router: Router, openapi: &dyn OpenApiRegistry) -> R
 
 /// `POST …/skus/{id}/retire` request — §3.3. Confirmation is a boolean
 /// (narrowest reading of `inst-rt-confirm`; the count pin is §6).
+/// `07`'s correction door body (`dod-correction-door`): one bucket-ii field —
+/// the type, or the meter pair as a whole — its new value(s), the lane asked
+/// for and the ceremony's reason.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request)]
+pub struct CorrectSkuRequest {
+    /// `sku_type` or `meter`. Nothing else is a bucket-ii column, so nothing
+    /// else can be spelled here: structural identity is unwritable by shape,
+    /// not refused.
+    pub field: String,
+    /// The new `sku_type` when `field` is `sku_type`.
+    pub sku_type: Option<String>,
+    /// The new unit when `field` is `meter`; both halves `null` clear the pair.
+    pub metering_unit: Option<String>,
+    /// The new usage type when `field` is `meter`; re-resolved before the
+    /// publish (P-D-05).
+    pub usage_type_ref: Option<String>,
+    /// `normal` (the fresh-zero gate) or `breakglass` (arm (a), behind
+    /// `breakglass_correction_enabled`). Arm (b) is not asked for: it admits
+    /// on the resolver's not-found whichever lane was named (P-D-16, P-D-48).
+    pub lane: String,
+    /// The ceremony's reason — mandatory on either break-glass arm, and the
+    /// text 02's PII gate inspects.
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(request)]
 pub struct RetireSkuRequest {
@@ -1980,6 +2049,10 @@ fn discard_endpoint(sku_id: Uuid) -> String {
     format!("/bss-products/v1/skus/{sku_id}/discard")
 }
 
+fn corrections_endpoint(sku_id: Uuid) -> String {
+    format!("/bss-products/v1/skus/{sku_id}/corrections")
+}
+
 fn undeprecate_endpoint(sku_id: Uuid) -> String {
     format!("/bss-products/v1/skus/{sku_id}/undeprecate")
 }
@@ -2333,6 +2406,8 @@ const PUBLISH_AUDIT_ACTION: &str = "publish";
 /// the audit vocabulary are two different sets, and [`open_act`] takes them
 /// as two arguments for that reason.
 const DISCARD_AUDIT_ACTION: &str = "discard";
+/// `07`'s correction door's audit action token.
+const CORRECTION_AUDIT_ACTION: &str = "correct";
 
 const UNDEPRECATE_AUDIT_ACTION: &str = "undeprecate";
 
@@ -3493,6 +3568,7 @@ pub(crate) async fn run_publish(
     mode: GateMode,
     outbox: &crate::infra::broker::EventSink,
     binding: Option<&crate::domain::recognized::UsageTypeBinding>,
+    correction: Option<&CorrectionOperand>,
 ) -> Result<MutationOutcome, HeadActError> {
     // -- Phase 1, idempotency: the claim, and the replay that ends the act
     // before any other phase is judged. --
@@ -3572,8 +3648,19 @@ pub(crate) async fn run_publish(
     // the door that catches it (`inst-mt-recognized`). Usage-type resolve
     // already ran before this transaction (P-D-121 row 19); this phase
     // never calls out.
-    recheck_meter_declaration(runner, inputs, &head, &head, head.published_version == 0).await?;
-    recheck_classification(runner, inputs, &head, &head, true).await?;
+    // A correction judges the head **as corrected** (P-D-41's third
+    // argument): the meter pair and the type profile are re-checked on the
+    // values about to be frozen, not the ones being replaced.
+    let judged = correction.map_or_else(
+        || head.clone(),
+        |operand| {
+            let mut corrected = head.clone();
+            operand.columns.apply(&mut corrected);
+            corrected
+        },
+    );
+    recheck_meter_declaration(runner, inputs, &head, &judged, head.published_version == 0).await?;
+    recheck_classification(runner, inputs, &head, &judged, true).await?;
 
     // -- The edge, and what the floor says it costs. `post_publish_state`
     // decides the `to` side from the row image, the same way the head-row
@@ -3584,29 +3671,37 @@ pub(crate) async fn run_publish(
 
     // -- Phase 7, the governance gate, in the mode this act was entered
     // under (`inst-fd-gate-mode`): `Gate` from every wire surface,
-    // `PreAuthorized` only from an in-process caller. --
-    let verdict = gate
-        .evaluate(
-            GateSubject::entity_publish(
-                EntityRef {
-                    tenant_id: inputs.tenant_id,
-                    entity_kind: EntityKind::Sku,
-                    entity_id: inputs.sku_id,
-                },
-                InternalRevision::new(inputs.expected),
-            ),
-            mode,
-        )
-        .map_err(|e| {
-            HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
-                "bss-products: the governance gate host failed: {e}"
-            ))))
-        })?;
-    let authorization = verdict
-        .into_authorization()
-        .map_err(HeadActError::Refused)?;
-    refuse_unacknowledged_bundle(&head, &authorization)?;
-    settle_sku_authorization(runner, inputs, &authorization).await?;
+    // `PreAuthorized` only from an in-process caller. A correction arrives
+    // with its own record already matched and spent by its door (P-D-129
+    // rows 10, 11 and 23): this publish is that record's consequence and asks
+    // for no second approval. --
+    let authorization = if let Some(operand) = correction {
+        operand.authorization.clone()
+    } else {
+        let verdict = gate
+            .evaluate(
+                GateSubject::entity_publish(
+                    EntityRef {
+                        tenant_id: inputs.tenant_id,
+                        entity_kind: EntityKind::Sku,
+                        entity_id: inputs.sku_id,
+                    },
+                    InternalRevision::new(inputs.expected),
+                ),
+                mode,
+            )
+            .map_err(|e| {
+                HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+                    "bss-products: the governance gate host failed: {e}"
+                ))))
+            })?;
+        let authorization = verdict
+            .into_authorization()
+            .map_err(HeadActError::Refused)?;
+        refuse_unacknowledged_bundle(&head, &authorization)?;
+        settle_sku_authorization(runner, inputs, &authorization).await?;
+        authorization
+    };
 
     // The one operand of the verdict this act carries into the head row
     // (`inst-fd-publish-freeze`, §4.2, **P-D-32**): *"On a `bundle` SKU that
@@ -3617,15 +3712,15 @@ pub(crate) async fn run_publish(
     // did not share would freeze one flag under the key of a row carrying the
     // other.
     //
-    // The `bundle` narrowing the instruction states is **not** implemented and
-    // is not silently dropped: `bundle` is a value of the `type` column, which
-    // is slice 03's and is not on `products_sku` at this commit, so there is
-    // no operand to test. What runs is the clause with its subject widened to
-    // every SKU. `repo::publish_sku_head`'s own doc records the narrowing as
-    // owed to 03 and says where it lands.
+    // The `bundle` narrowing is `refuse_unacknowledged_bundle`'s (P-D-146): a
+    // bundle is refused without the acknowledgment, so the flag rises only
+    // where the ceremony ran.
     let composition_pending = authorization.uncomposed_bundle_override;
 
-    let image = post_publish_image(&head, composition_pending, inputs.now);
+    let mut image = post_publish_image(&head, composition_pending, inputs.now);
+    if let Some(operand) = correction {
+        operand.columns.apply(&mut image);
+    }
 
     // -- a. Freeze the post-act image, at `published_version + 1`. --
     repo::insert_entity_version(
@@ -3653,6 +3748,7 @@ pub(crate) async fn run_publish(
         inputs.expected,
         composition_pending,
         inputs.now,
+        correction.map(|operand| &operand.write),
     )
     .await
     .map_err(|e| HeadActError::from_repo(&e))?;
@@ -3907,7 +4003,16 @@ async fn publish_in_one_transaction(
                 let inputs = inputs.clone();
                 let binding = binding.clone();
                 Box::pin(async move {
-                    run_publish(tx, &inputs, gate.as_ref(), mode, &outbox, binding.as_ref()).await
+                    run_publish(
+                        tx,
+                        &inputs,
+                        gate.as_ref(),
+                        mode,
+                        &outbox,
+                        binding.as_ref(),
+                        None,
+                    )
+                    .await
                 })
             },
         )
@@ -4274,6 +4379,959 @@ async fn settle_sku_authorization(
         crate::api::rest::SettleError::Refused(refusal) => HeadActError::Refused(refusal),
         crate::api::rest::SettleError::Repo(error) => HeadActError::from_repo(&error),
     })
+}
+
+// ---------------------------------------------------------------------------
+// `07`'s correction door — `POST /bss-products/v1/skus/{id}/corrections`
+// (`dod-correction-door`, `dod-correction-republish`,
+// `dod-breakglass-unavailable`, `dod-breakglass-unresolvable`; P-D-147)
+// ---------------------------------------------------------------------------
+
+/// The bucket-ii columns a correction may move — the closed set the door's
+/// body can spell (`dod-correction-door`: *"the door must be unable to write
+/// [structural identity] rather than refuse to"*).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CorrectedColumns {
+    /// `sku_type`.
+    SkuType(Option<String>),
+    /// The meter pair, moved as a whole (`03`'s CHECK: both or neither).
+    Meter {
+        unit: Option<String>,
+        usage_type_ref: Option<String>,
+    },
+}
+
+impl CorrectedColumns {
+    fn parse(body: &CorrectSkuRequest) -> Result<Self, ValidationReport> {
+        let mut report = ValidationReport::new();
+        match body.field.trim() {
+            "sku_type" => {
+                if body.metering_unit.is_some() || body.usage_type_ref.is_some() {
+                    report.violate(
+                        "VALIDATION",
+                        "field",
+                        "a sku_type correction carries no meter values",
+                    );
+                }
+                let value = body.sku_type.as_deref().map(str::trim).map(str::to_owned);
+                if value.as_deref().is_none_or(str::is_empty) {
+                    report.violate(
+                        "VALIDATION",
+                        "sku_type",
+                        "a sku_type correction names the type",
+                    );
+                }
+                if report.is_empty() {
+                    return Ok(Self::SkuType(value));
+                }
+            }
+            "meter" => {
+                if body.sku_type.is_some() {
+                    report.violate(
+                        "VALIDATION",
+                        "field",
+                        "a meter correction carries no sku_type",
+                    );
+                }
+                if report.is_empty() {
+                    return Ok(Self::Meter {
+                        unit: body
+                            .metering_unit
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned),
+                        usage_type_ref: body
+                            .usage_type_ref
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned),
+                    });
+                }
+            }
+            _ => report.violate(
+                "VALIDATION",
+                "field",
+                "field must be `sku_type` or `meter` - the bucket-ii columns; nothing else is \
+                 correctable through this door",
+            ),
+        }
+        Err(report)
+    }
+
+    /// The field token the events and the override row carry.
+    const fn field(&self) -> &'static str {
+        match self {
+            Self::SkuType(_) => "sku_type",
+            Self::Meter { .. } => "meter",
+        }
+    }
+
+    /// The value the correction event renders.
+    fn event_value(&self) -> Option<String> {
+        match self {
+            Self::SkuType(value) => value.clone(),
+            Self::Meter {
+                unit,
+                usage_type_ref,
+            } => Some(format!(
+                "{}/{}",
+                unit.as_deref().unwrap_or("null"),
+                usage_type_ref.as_deref().unwrap_or("null")
+            )),
+        }
+    }
+
+    /// Apply the correction to a head image before it is judged and frozen.
+    fn apply(&self, image: &mut SkuRecord) {
+        match self {
+            Self::SkuType(value) => image.sku_type.clone_from(value),
+            Self::Meter {
+                unit,
+                usage_type_ref,
+            } => {
+                image.metering_unit.clone_from(unit);
+                image.usage_type_ref.clone_from(usage_type_ref);
+            }
+        }
+    }
+
+    /// The statement operand: the column(s) and `correction_ref`.
+    fn write(&self, correction_ref: Uuid) -> repo::CorrectionWrite {
+        use crate::infra::storage::entity::sku;
+        let columns = match self {
+            Self::SkuType(value) => vec![(sku::Column::SkuType, value.clone())],
+            Self::Meter {
+                unit,
+                usage_type_ref,
+            } => vec![
+                (sku::Column::MeteringUnit, unit.clone()),
+                (sku::Column::UsageTypeRef, usage_type_ref.clone()),
+            ],
+        };
+        repo::CorrectionWrite {
+            correction_ref,
+            columns,
+        }
+    }
+}
+
+/// What the correction door hands [`run_publish`] — P-D-41's optional third
+/// argument: the record it already matched and spent, the statement operand,
+/// and the corrected columns to apply to the head image.
+pub(crate) struct CorrectionOperand {
+    pub(crate) authorization: GateAuthorization,
+    pub(crate) write: repo::CorrectionWrite,
+    pub(crate) columns: CorrectedColumns,
+}
+
+/// The lane the caller asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CorrectionLane {
+    Normal,
+    Breakglass,
+}
+
+impl CorrectionLane {
+    fn parse(raw: &str) -> Result<Self, ValidationReport> {
+        match raw.trim() {
+            "normal" => Ok(Self::Normal),
+            "breakglass" => Ok(Self::Breakglass),
+            _ => {
+                let mut report = ValidationReport::new();
+                report.violate(
+                    "VALIDATION",
+                    "lane",
+                    "lane must be `normal` or `breakglass`",
+                );
+                Err(report)
+            }
+        }
+    }
+}
+
+/// Which of the three admission gates let the correction through
+/// (`dod-correction-door`: *"three admission gates, and the third is the one
+/// a two-gate reading loses"*), with what the lane's re-check at commit and
+/// the evidence row need.
+#[derive(Debug, Clone)]
+enum Admission {
+    /// The normal lane: every registered producer fresh and omitting the SKU.
+    FreshZero,
+    /// Arm (a): every registered producer stale or never-received, the flag
+    /// on, the reason given.
+    ProducerUnavailable { reason: String, snapshot: String },
+    /// Arm (b): the declared `usageTypeRef` no longer resolves.
+    UnresolvableTarget { reason: String, target: String },
+}
+
+impl Admission {
+    /// The lane token the events carry.
+    const fn lane_token(&self) -> &'static str {
+        match self {
+            Self::FreshZero => "normal",
+            Self::ProducerUnavailable { .. } => "producer_unavailable",
+            Self::UnresolvableTarget { .. } => "unresolvable_target",
+        }
+    }
+
+    fn reason(&self) -> Option<&str> {
+        match self {
+            Self::FreshZero => None,
+            Self::ProducerUnavailable { reason, .. } | Self::UnresolvableTarget { reason, .. } => {
+                Some(reason)
+            }
+        }
+    }
+
+    /// The override row's evidence, on the two break-glass arms.
+    fn evidence(&self) -> Option<(String, repo::OverrideEvidence)> {
+        match self {
+            Self::FreshZero => None,
+            Self::ProducerUnavailable { reason, snapshot } => Some((
+                reason.clone(),
+                repo::OverrideEvidence::ProducerUnavailable {
+                    snapshot: snapshot.clone(),
+                },
+            )),
+            Self::UnresolvableTarget { reason, target } => Some((
+                reason.clone(),
+                repo::OverrideEvidence::UnresolvableTarget {
+                    target: target.clone(),
+                },
+            )),
+        }
+    }
+
+    /// **The lane's own predicate, re-checked inside the publish
+    /// transaction** (`dod-correction-republish`; P-D-129 row 22): a
+    /// reference arriving between submission and approval still refuses at
+    /// commit, and arm (a) re-asserts unavailability rather than fresh-zero.
+    /// Arm (b)'s operand is the resolver's pre-transaction answer, which the
+    /// transaction cannot re-ask (P-D-121 row 19's shape).
+    fn recheck(
+        &self,
+        evaluation: &crate::api::rest::reference::ReferenceEvaluation,
+    ) -> Result<(), DomainError> {
+        match self {
+            Self::FreshZero => {
+                if evaluation.referenced || evaluation.no_producers {
+                    return Err(DomainError::CorrectionReferenced(format!(
+                        "a reference arrived before commit: {}",
+                        blocking_producers(evaluation)
+                    )));
+                }
+                Ok(())
+            }
+            Self::ProducerUnavailable { .. } => {
+                if evaluation.no_producers || fresh_producers(evaluation).next().is_some() {
+                    return Err(DomainError::CorrectionSignalAvailable(format!(
+                        "a producer answered before commit: {}",
+                        blocking_producers(evaluation)
+                    )));
+                }
+                Ok(())
+            }
+            Self::UnresolvableTarget { .. } => Ok(()),
+        }
+    }
+}
+
+use crate::api::rest::reference::ProducerVerdict;
+
+fn fresh_producers(
+    evaluation: &crate::api::rest::reference::ReferenceEvaluation,
+) -> impl Iterator<Item = &str> {
+    evaluation
+        .per_producer
+        .iter()
+        .filter(|(_, verdict)| {
+            matches!(
+                verdict,
+                ProducerVerdict::Referenced | ProducerVerdict::FreshZero
+            )
+        })
+        .map(|(producer, _)| producer.as_str())
+}
+
+/// The producers whose verdict keeps the SKU referenced, named for the
+/// refusal (`dod-correction-door`'s *"naming the blocking producer"*).
+fn blocking_producers(evaluation: &crate::api::rest::reference::ReferenceEvaluation) -> String {
+    if evaluation.no_producers {
+        return "no registered producer (conservative, distinct from fresh-zero)".to_owned();
+    }
+    let named: Vec<String> = evaluation
+        .per_producer
+        .iter()
+        .filter(|(_, verdict)| *verdict != ProducerVerdict::FreshZero)
+        .map(|(producer, verdict)| {
+            let word = match verdict {
+                ProducerVerdict::Referenced => "referenced",
+                ProducerVerdict::FreshZero => "fresh-zero",
+                ProducerVerdict::ConservativelyReferencedStale => "stale",
+                ProducerVerdict::ConservativelyReferencedNeverReceived => "never-received",
+            };
+            format!("{producer} ({word})")
+        })
+        .collect();
+    named.join(", ")
+}
+
+/// The door's admission decision, before the transaction (a fast-fail; the
+/// lane's predicate is re-run at commit by [`Admission::recheck`]).
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-correction-door:p1
+/// @cpt-dod:cpt-cf-bss-products-dod-breakglass-unavailable:p2
+/// @cpt-dod:cpt-cf-bss-products-dod-breakglass-unresolvable:p1
+fn admit_correction(
+    evaluation: &crate::api::rest::reference::ReferenceEvaluation,
+    current_target: Option<(&str, &crate::domain::recognized::UsageTypeAnswer)>,
+    lane: CorrectionLane,
+    columns: &CorrectedColumns,
+    reason: Option<&str>,
+    knobs: crate::api::rest::ReferenceKnobs,
+) -> Result<Admission, DomainError> {
+    let fresh_zero = !evaluation.referenced && !evaluation.no_producers;
+    let reason_or = |arm: &str| -> Result<String, DomainError> {
+        reason
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                let mut report = ValidationReport::new();
+                report.violate(
+                    "VALIDATION",
+                    "reason",
+                    format!("a break-glass correction ({arm}) carries a mandatory reason"),
+                );
+                DomainError::Validation(report)
+            })
+    };
+    // Arm (b) admits on the resolver's not-found alone — a timeout does not
+    // (P-D-16, P-D-48): the target is unresolvable, not unreachable.
+    if let (CorrectedColumns::Meter { .. }, Some((target, answer))) = (columns, current_target)
+        && matches!(
+            answer,
+            crate::domain::recognized::UsageTypeAnswer::Unresolved
+        )
+        && !fresh_zero
+    {
+        return Ok(Admission::UnresolvableTarget {
+            reason: reason_or("unresolvable_target")?,
+            target: target.to_owned(),
+        });
+    }
+    match lane {
+        CorrectionLane::Normal => {
+            if fresh_zero {
+                Ok(Admission::FreshZero)
+            } else {
+                Err(DomainError::CorrectionReferenced(blocking_producers(
+                    evaluation,
+                )))
+            }
+        }
+        CorrectionLane::Breakglass => {
+            if !knobs.breakglass_correction_enabled {
+                return Err(DomainError::BreakglassCorrectionDisabled(
+                    "breakglass_correction_enabled is off for this deployment (P-D-71); arm (b) \
+                     - an unresolvable usageTypeRef - is not behind it"
+                        .to_owned(),
+                ));
+            }
+            if fresh_zero {
+                return Err(DomainError::CorrectionSignalAvailable(
+                    "every registered producer is fresh and omits the SKU: the normal lane is \
+                     open"
+                        .to_owned(),
+                ));
+            }
+            if evaluation.no_producers {
+                return Err(DomainError::CorrectionReferenced(
+                    "no producer is registered: arm (a) quantifies over at least one".to_owned(),
+                ));
+            }
+            let fresh: Vec<&str> = fresh_producers(evaluation).collect();
+            if !fresh.is_empty() {
+                return Err(DomainError::CorrectionSignalAvailable(format!(
+                    "a fresh producer can still answer: {}",
+                    fresh.join(", ")
+                )));
+            }
+            let snapshot = serde_json::json!({
+                "producers": evaluation
+                    .per_producer
+                    .iter()
+                    .map(|(producer, verdict)| {
+                        serde_json::json!({
+                            "producer": producer,
+                            "verdict": match verdict {
+                                ProducerVerdict::ConservativelyReferencedStale => "stale",
+                                ProducerVerdict::ConservativelyReferencedNeverReceived => {
+                                    "never-received"
+                                }
+                                ProducerVerdict::Referenced => "referenced",
+                                ProducerVerdict::FreshZero => "fresh-zero",
+                            },
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            })
+            .to_string();
+            Ok(Admission::ProducerUnavailable {
+                reason: reason_or("producer_unavailable")?,
+                snapshot,
+            })
+        }
+    }
+}
+
+/// The request as the approval's snapshot must spell it: the record an
+/// approver signed is the record the door applies (P-D-129 rows 10 and 11).
+fn correction_payload(body: &CorrectSkuRequest) -> JsonValue {
+    let mut map = JsonMap::new();
+    map.insert(
+        "field".to_owned(),
+        JsonValue::String(body.field.trim().to_owned()),
+    );
+    map.insert(
+        "lane".to_owned(),
+        JsonValue::String(body.lane.trim().to_owned()),
+    );
+    for (key, value) in [
+        ("sku_type", &body.sku_type),
+        ("metering_unit", &body.metering_unit),
+        ("usage_type_ref", &body.usage_type_ref),
+        ("reason", &body.reason),
+    ] {
+        if let Some(value) = value {
+            map.insert(key.to_owned(), JsonValue::String(value.trim().to_owned()));
+        }
+    }
+    JsonValue::Object(map)
+}
+
+fn snapshot_matches(stored: &str, payload: &JsonValue) -> bool {
+    serde_json::from_str::<JsonValue>(stored).is_ok_and(|stored| {
+        canonical::canonical_rendering(&stored, canonical::Absence::Omit)
+            == canonical::canonical_rendering(payload, canonical::Absence::Omit)
+    })
+}
+
+/// The two preconditions the door checks before asking the host
+/// (`dod-correction-door`): a **clean head** — the head's frozen-roster
+/// rendering equals its last version row's content, P-D-129 row 24 — and
+/// **no open publish approval** on the subject.
+async fn correction_preconditions(
+    runner: &impl toolkit_db::secure::DBRunner,
+    act: &ActContext,
+    head: &SkuRecord,
+    expected: InternalRevision,
+) -> Result<Result<(), DomainError>, CanonicalError> {
+    if head.published_version == 0 {
+        return Ok(Err(DomainError::IllegalFieldMutation(format!(
+            "`{}` has never been published: below first publish the save door writes a \
+             bucket-ii column; the correction door is for a published head",
+            head.sku_code
+        ))));
+    }
+    let latest = repo::latest_entity_version(
+        runner,
+        &act.scope,
+        act.tenant_id,
+        VersionedEntityKind::Sku,
+        head.sku_id,
+    )
+    .await
+    .map_err(|e| repo_error_to_canonical(&e))?;
+    let rendering = canonical::canonical_rendering(
+        &sku_version_content(head),
+        canonical::Absence::Null {
+            roster: &SKU_VERSION_CONTENT_ROSTER,
+        },
+    );
+    match latest {
+        Some((_, frozen)) if frozen == rendering => {}
+        Some((version, _)) => {
+            return Ok(Err(DomainError::CorrectionDirtyHead(format!(
+                "`{}` carries versioned content its last version row ({version}) does not: \
+                 publish the pending edit first, or discard it — a correction is surgical",
+                head.sku_code
+            ))));
+        }
+        None => {
+            return Ok(Err(DomainError::CorrectionDirtyHead(format!(
+                "`{}` is published but has no version row to compare against",
+                head.sku_code
+            ))));
+        }
+    }
+    let publish_subject = GateSubject::entity_publish(
+        EntityRef {
+            tenant_id: act.tenant_id,
+            entity_kind: EntityKind::Sku,
+            entity_id: head.sku_id,
+        },
+        expected,
+    );
+    let candidates = repo::gate_candidates(runner, &act.scope, &publish_subject)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?;
+    if let Some(open) = candidates
+        .iter()
+        .find(|c| c.state == crate::domain::approval::ApprovalState::Pending)
+    {
+        return Ok(Err(DomainError::CorrectionApprovalOpen(format!(
+            "approval {} is pending on this SKU's publish; decide or supersede it first",
+            open.approval_id.get()
+        ))));
+    }
+    Ok(Ok(()))
+}
+
+/// The body's shape: which bucket-ii field, and which lane; a refusal is
+/// audited under the act.
+async fn correction_shape(
+    state: &ApiState,
+    act: &ActContext,
+    sku_id: Uuid,
+    body: &CorrectSkuRequest,
+) -> Result<(CorrectedColumns, CorrectionLane), CanonicalError> {
+    let columns = match CorrectedColumns::parse(body) {
+        Ok(columns) => columns,
+        Err(report) => {
+            return Err(audit_act_refusal(
+                state,
+                act,
+                minted(sku_id, None),
+                DomainError::Validation(report),
+            )
+            .await);
+        }
+    };
+    let lane = match CorrectionLane::parse(&body.lane) {
+        Ok(lane) => lane,
+        Err(report) => {
+            return Err(audit_act_refusal(
+                state,
+                act,
+                minted(sku_id, None),
+                DomainError::Validation(report),
+            )
+            .await);
+        }
+    };
+    Ok((columns, lane))
+}
+
+/// A corrected meter re-resolves its new `usageTypeRef` before the publish
+/// (**P-D-05**); the binding rides to the freeze like any publish's.
+async fn resolve_new_meter(
+    state: &ApiState,
+    ctx: &SecurityContext,
+    act: &ActContext,
+    subject: RefusalSubject,
+    columns: &CorrectedColumns,
+) -> Result<Option<crate::domain::recognized::UsageTypeBinding>, CanonicalError> {
+    let CorrectedColumns::Meter {
+        usage_type_ref: Some(new_ref),
+        ..
+    } = columns
+    else {
+        return Ok(None);
+    };
+    let answer = state.usage_type_resolver.resolve(ctx, new_ref).await;
+    match crate::domain::recognized::judge_usage_type(answer, new_ref) {
+        Ok(binding) => Ok(Some(binding)),
+        Err(refusal) => Err(audit_act_refusal(state, act, subject, refusal).await),
+    }
+}
+
+async fn correct_sku(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    headers: HeaderMap,
+    Path(sku_id): Path<Uuid>,
+    Json(body): Json<CorrectSkuRequest>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    correct_sku_gated(&state, &enforcer, &ctx, &headers, sku_id, &body).await
+}
+
+/// The door: grant, claim, shape, the three admission gates, the two
+/// preconditions, then the host and the transaction.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-correction-republish:p1
+async fn correct_sku_gated(
+    state: &ApiState,
+    enforcer: &authz_resolver_sdk::PolicyEnforcer,
+    ctx: &SecurityContext,
+    headers: &HeaderMap,
+    sku_id: Uuid,
+    body: &CorrectSkuRequest,
+) -> Result<Response, CanonicalError> {
+    let now = canonical::write_instant(Utc::now());
+    let act = open_act(
+        state,
+        enforcer,
+        ctx,
+        sku_id,
+        crate::authz::actions::CORRECT,
+        CORRECTION_AUDIT_ACTION,
+        now,
+    )
+    .await?;
+    let payload = correction_payload(body);
+    let claim = match build_claim(
+        state,
+        headers,
+        corrections_endpoint(sku_id),
+        idempotency::payload_digest(&payload),
+        now,
+    ) {
+        Ok(claim) => claim,
+        Err(refusal) => {
+            return Err(audit_act_refusal(state, &act, minted(sku_id, None), refusal).await);
+        }
+    };
+    let expected = match preconditions::if_match(headers) {
+        Ok(expected) => expected,
+        Err(refusal) => {
+            return Err(audit_act_refusal(state, &act, minted(sku_id, None), refusal).await);
+        }
+    };
+    let (columns, lane) = correction_shape(state, &act, sku_id, body).await?;
+    let head = load_head(state, &act, sku_id).await?;
+    let subject = minted(sku_id, Some(head.internal_revision));
+
+    // -- The reads before the transaction (P-D-121 row 19's shape): the
+    // reference predicate, the current target's resolution (arm (b)'s
+    // operand) and the new meter's binding (P-D-05). --
+    let conn = state
+        .db
+        .conn()
+        .map_err(|e| CanonicalError::internal(format!("bss-products: db conn: {e}")).create())?;
+    let evaluation = crate::api::rest::reference::evaluate_reference(
+        &conn,
+        &act.scope,
+        act.tenant_id,
+        sku_id,
+        now,
+        state.reference.freshness,
+    )
+    .await
+    .map_err(|e| repo_error_to_canonical(&e))?;
+    let current_answer = match head.usage_type_ref.as_deref() {
+        Some(target) => Some((
+            target.to_owned(),
+            state.usage_type_resolver.resolve(ctx, target).await,
+        )),
+        None => None,
+    };
+    let admission = match admit_correction(
+        &evaluation,
+        current_answer
+            .as_ref()
+            .map(|(target, answer)| (target.as_str(), answer)),
+        lane,
+        &columns,
+        body.reason.as_deref(),
+        state.reference,
+    ) {
+        Ok(admission) => admission,
+        Err(refusal) => return Err(audit_act_refusal(state, &act, subject.clone(), refusal).await),
+    };
+    if let Some(reason) = admission.reason() {
+        let detector =
+            crate::api::rest::retention::tenant_pii_detector(state, act.tenant_id).await?;
+        if let Err(blocked) =
+            crate::domain::taxonomy::content_pii_block(detector.as_ref(), "reason", reason)
+        {
+            return Err(audit_act_refusal(
+                state,
+                &act,
+                subject,
+                DomainError::ContentPiiBlocked(blocked.into_detail()),
+            )
+            .await);
+        }
+    }
+    let binding = resolve_new_meter(state, ctx, &act, subject.clone(), &columns).await?;
+    if let Err(refusal) = correction_preconditions(&conn, &act, &head, expected).await? {
+        return Err(audit_act_refusal(state, &act, subject.clone(), refusal).await);
+    }
+
+    let inputs = HeadActInputs {
+        scope: act.scope.clone(),
+        tenant_id: act.tenant_id,
+        sku_id,
+        actor_ref: act.actor_ref,
+        expected: expected.get(),
+        now,
+        claim,
+    };
+    let correction_subject = GateSubject::sku_correction(act.tenant_id, sku_id, expected);
+    let outcome = match resolve_sku_host(
+        state,
+        &act,
+        crate::api::rest::GateHost::Real,
+        crate::api::rest::HostFor::Governed(correction_subject.clone()),
+    )
+    .await
+    {
+        Ok(gate) => {
+            correct_in_one_transaction(
+                state,
+                &inputs,
+                &gate,
+                CorrectionRun {
+                    subject: correction_subject,
+                    columns,
+                    admission,
+                    binding,
+                    payload,
+                },
+            )
+            .await
+        }
+        Err(refused) => Err(refused),
+    };
+    answer_head_act(state, &act, sku_id, head.internal_revision, outcome).await
+}
+
+/// What one correction carries into its transaction.
+struct CorrectionRun {
+    subject: GateSubject,
+    columns: CorrectedColumns,
+    admission: Admission,
+    binding: Option<crate::domain::recognized::UsageTypeBinding>,
+    payload: JsonValue,
+}
+
+fn events_failure(error: &events::EventsError) -> HeadActError {
+    HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+        "bss-products: correction event enqueue failed: {error}"
+    ))))
+}
+
+/// The record, the one-shot, the lane's re-check, the re-publish through
+/// [`run_publish`] with the correction as its third argument, and — on a
+/// break-glass arm — the evidence row, its event, the ceremony audit row and
+/// the tripwire; all in one transaction.
+async fn correct_in_one_transaction(
+    state: &ApiState,
+    inputs: &HeadActInputs,
+    gate: &Arc<dyn GovernanceGate + Send + Sync>,
+    run: CorrectionRun,
+) -> Result<MutationOutcome, HeadActError> {
+    let outbox = state.sink.clone();
+    let knobs = state.reference;
+    let gate = Arc::clone(gate);
+    let inputs = inputs.clone();
+    let run = Arc::new(run);
+    state
+        .db
+        .db()
+        .transaction_with_retry::<MutationOutcome, HeadActError, _, _>(
+            TxConfig::default(),
+            head_act_contention_db_err,
+            move |tx| {
+                let outbox = outbox.clone();
+                let gate = Arc::clone(&gate);
+                let inputs = inputs.clone();
+                let run = Arc::clone(&run);
+                Box::pin(async move {
+                    apply_correction(tx, &inputs, gate.as_ref(), &outbox, knobs, &run).await
+                })
+            },
+        )
+        .await
+}
+
+async fn apply_correction(
+    tx: &(impl toolkit_db::secure::DBRunner + Sync),
+    inputs: &HeadActInputs,
+    gate: &(dyn GovernanceGate + Send + Sync),
+    outbox: &crate::infra::broker::EventSink,
+    knobs: crate::api::rest::ReferenceKnobs,
+    run: &CorrectionRun,
+) -> Result<MutationOutcome, HeadActError> {
+    // -- The record: matched by the host, its snapshot compared to this
+    // payload, then spent here (P-D-129 rows 10, 11, 23). --
+    let verdict = gate
+        .evaluate(run.subject.clone(), GateMode::Gate)
+        .map_err(|e| {
+            HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+                "bss-products: the governance gate host failed: {e}"
+            ))))
+        })?;
+    let authorization = verdict
+        .into_authorization()
+        .map_err(HeadActError::Refused)?;
+    let approval_id = authorization.approval_ref().ok_or_else(|| {
+        HeadActError::Refused(DomainError::ApprovalRequired(
+            "a correction rides a satisfied sku_correction record; the host matched none"
+                .to_owned(),
+        ))
+    })?;
+    let record = repo::read_approval(tx, &inputs.scope, inputs.tenant_id, approval_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?
+        .ok_or(HeadActError::Vanished)?;
+    if !snapshot_matches(&record.content_snapshot, &run.payload) {
+        return Err(HeadActError::Refused(DomainError::ApprovalRequired(
+            format!(
+                "approval {} was submitted for a different correction payload than the one \
+             presented; submit this payload for approval",
+                approval_id.get()
+            ),
+        )));
+    }
+    let quorum_reduced = record.quorum_descriptor.contains("\"quorumReduced\":true");
+    settle_sku_authorization(tx, inputs, &authorization).await?;
+
+    // -- The lane's own predicate, re-checked at commit (P-D-129 row 22). --
+    let evaluation = crate::api::rest::reference::evaluate_reference(
+        tx,
+        &inputs.scope,
+        inputs.tenant_id,
+        inputs.sku_id,
+        inputs.now,
+        knobs.freshness,
+    )
+    .await
+    .map_err(|e| HeadActError::from_repo(&e))?;
+    run.admission
+        .recheck(&evaluation)
+        .map_err(HeadActError::Refused)?;
+
+    // -- The re-publish, the correction as its third argument. --
+    let correction_ref = Uuid::now_v7();
+    let operand = CorrectionOperand {
+        authorization,
+        write: run.columns.write(correction_ref),
+        columns: run.columns.clone(),
+    };
+    let outcome = run_publish(
+        tx,
+        inputs,
+        gate,
+        GateMode::Gate,
+        outbox,
+        run.binding.as_ref(),
+        Some(&operand),
+    )
+    .await?;
+    let MutationOutcome::Applied {
+        internal_revision, ..
+    } = &outcome
+    else {
+        return Ok(outcome);
+    };
+
+    // -- The announcements and, on a break-glass arm, the evidence. --
+    let after = repo::find_sku(tx, &inputs.scope, inputs.tenant_id, inputs.sku_id)
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?
+        .ok_or(HeadActError::Vanished)?;
+    let core = events::EventBodyCore {
+        tenant_id: inputs.tenant_id,
+        entity_kind: events::EntityKind::Sku.as_str(),
+        entity_id: inputs.sku_id,
+        internal_revision: *internal_revision,
+        lifecycle_state: after.lifecycle_state.as_str(),
+    };
+    let value = run.columns.event_value();
+    events::enqueue_correction_event(
+        outbox,
+        tx,
+        events::SKU_IMMUTABLE_FIELD_CORRECTED_PAYLOAD_TYPE,
+        events::CorrectionEventBody {
+            core: &core,
+            field: run.columns.field(),
+            value: value.as_deref(),
+            lane: run.admission.lane_token(),
+            quorum_reduced,
+            correction_ref,
+        },
+        None,
+        inputs.actor_ref,
+    )
+    .await
+    .map_err(|e| events_failure(&e))?;
+    if let Some((reason, evidence)) = run.admission.evidence() {
+        let arm = run.admission.lane_token();
+        repo::record_correction_override(
+            tx,
+            &inputs.scope,
+            inputs.tenant_id,
+            repo::NewCorrectionOverride {
+                override_id: Uuid::now_v7(),
+                sku_id: inputs.sku_id,
+                field: run.columns.field().to_owned(),
+                reason: reason.clone(),
+                evidence,
+                ceremony_ref: correction_ref,
+                recorded_at: inputs.now,
+            },
+        )
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+        events::enqueue_correction_event(
+            outbox,
+            tx,
+            events::SKU_CORRECTION_OVERRIDE_PAYLOAD_TYPE,
+            events::CorrectionEventBody {
+                core: &core,
+                field: run.columns.field(),
+                value: value.as_deref(),
+                lane: arm,
+                quorum_reduced,
+                correction_ref,
+            },
+            Some(events::OverrideEventBody {
+                core: &core,
+                arm,
+                field: run.columns.field(),
+                ceremony_ref: correction_ref,
+            }),
+            inputs.actor_ref,
+        )
+        .await
+        .map_err(|e| events_failure(&e))?;
+        repo::write_ceremony_act_audit(
+            tx,
+            &inputs.scope,
+            repo::AuditCommon {
+                audit_id: Uuid::now_v7(),
+                tenant_id: inputs.tenant_id,
+                actor_ref: inputs.actor_ref,
+                action: "sku_correct_breakglass".to_owned(),
+                subject_kind: crate::authz::labels::SKU.to_owned(),
+                reason: Some(reason),
+                correlation_id: events::correlation_id(),
+                written_at: inputs.now,
+            },
+            inputs.sku_id,
+            Some(*internal_revision),
+            correction_ref,
+        )
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+        crate::api::rest::reference::tripwire_after_override(
+            tx,
+            &inputs.scope,
+            inputs.tenant_id,
+            knobs,
+            arm,
+            inputs.now,
+        )
+        .await
+        .map_err(|e| HeadActError::from_repo(&e))?;
+    }
+    Ok(outcome)
 }
 
 async fn publish_sku_gated(

@@ -96,13 +96,26 @@ use crate::api::rest::dto::{
 use crate::api::rest::{ApiState, repo_error_to_canonical, require_authenticated};
 use crate::domain::canonical;
 use crate::domain::error::DomainError;
+use crate::domain::governance::{GateAuthorization, GateSubject, SubjectPin};
 use crate::domain::validation::ValidationReport;
+use crate::infra::events;
 use crate::infra::storage::repo::{self, RefusalSubject};
 
 /// `OpenAPI` tag for the reference surface's operations.
 const TAG: &str = "BSS Products";
 
 /// The canonical-error identity of this surface's refusals.
+/// The retirement door's optional body (`dod-producer-registration`,
+/// **P-D-129** rows 2 and 5): a producer whose watermark is fresh retires
+/// bodiless; a **dead** one — stale or never-received — retires only with the
+/// break-glass justification, under `breakglass × elevate`.
+#[toolkit_macros::api_dto(request)]
+pub struct RetireProducerRequest {
+    /// The ceremony's justification. Passes 02's PII gate before any row is
+    /// written (`CONTENT_PII_BLOCKED`).
+    pub justification: Option<String>,
+}
+
 #[resource_error(gts_id!("cf.bss.products.reference_signal.v1~"))]
 struct ReferenceResource;
 
@@ -297,12 +310,20 @@ fn register_producer_routes(router: Router, openapi: &dyn OpenApiRegistry) -> Ro
         .authenticated()
         .no_license_required()
         .path_param("producer", "The producer to retire.")
+        .json_request::<RetireProducerRequest>(
+            openapi,
+            "Optional. The break-glass justification for retiring a dead producer whose \
+             watermark is stale or never-received; a fresh producer retires bodiless. The last \
+             registered producer is refused PRODUCER_SET_EMPTY_FORBIDDEN; a stale or \
+             never-received one without a justification PRODUCER_RETIREMENT_WOULD_FREE (409).",
+        )
         .handler(retire_producer)
         .json_response_with_schema::<ProducerView>(openapi, StatusCode::OK, "The retired producer.")
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
         .error_404(openapi)
+        .error_409(openapi)
         .error_500(openapi)
         .error_503(openapi)
         .register(router, openapi)
@@ -325,6 +346,15 @@ const POST_TARGET: GateTarget = GateTarget {
 };
 
 /// The membership ops' target: `reference_producer x write`.
+/// The dead-producer retirement's second grant: `05`'s break-glass elevation
+/// (**P-D-129** rows 2 and 5 — the retirement door under elevation, not the
+/// correction door).
+const ELEVATE_TARGET: GateTarget = GateTarget {
+    resource: &crate::authz::resource_types::BREAKGLASS,
+    label: crate::authz::labels::BREAKGLASS,
+    action: crate::authz::actions::ELEVATE,
+};
+
 const PRODUCER_TARGET: GateTarget = GateTarget {
     resource: &crate::authz::resource_types::REFERENCE_PRODUCER,
     label: crate::authz::labels::REFERENCE_PRODUCER,
@@ -332,6 +362,209 @@ const PRODUCER_TARGET: GateTarget = GateTarget {
 };
 
 /// The reference surface's gate.
+/// The `GovernedLiveOp` subject a producer op rides
+/// (`dod-producer-registration`; **P-D-147**): the producer, unpinned — the
+/// same "no pin" P-D-144 gave every live-op door. `pub(crate)` so the tests'
+/// seeding double builds the identical subject.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-producer-registration:p1
+pub(crate) fn producer_op_subject(tenant_id: Uuid, producer: &str) -> GateSubject {
+    GateSubject::governed_live_op(
+        tenant_id,
+        &format!("reference_producer/{producer}"),
+        SubjectPin::Unpinned,
+    )
+}
+
+/// Resolve the stored host for one producer op before its transaction; a
+/// refusal is audited under the producer label and answered
+/// `APPROVAL_REQUIRED`.
+async fn authorize_producer_op(
+    state: &ApiState,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    actor_ref: Uuid,
+    producer: &str,
+) -> Result<GateAuthorization, CanonicalError> {
+    match crate::api::rest::authorize_live_op(
+        state,
+        scope,
+        tenant_id,
+        producer_op_subject(tenant_id, producer),
+    )
+    .await
+    {
+        Ok(authorization) => Ok(authorization),
+        Err(crate::api::rest::HostError::Refused(refusal)) => Err(refuse_reference(
+            state,
+            scope,
+            tenant_id,
+            actor_ref,
+            crate::authz::labels::REFERENCE_PRODUCER,
+            producer.to_owned(),
+            refusal,
+        )
+        .await),
+        Err(crate::api::rest::HostError::Repo(error)) => Err(repo_error_to_canonical(&error)),
+    }
+}
+
+/// The producer doors' transaction error: a refusal the door reports under
+/// its code, or a storage failure.
+enum ProducerTxError {
+    Refused(DomainError),
+    Repo(crate::infra::storage::RepoError),
+}
+
+impl From<toolkit_db::DbError> for ProducerTxError {
+    fn from(error: toolkit_db::DbError) -> Self {
+        Self::Repo(crate::infra::storage::RepoError::Db(error.to_string()))
+    }
+}
+
+fn producer_contention_db_err(error: &ProducerTxError) -> Option<&sea_orm::DbErr> {
+    match error {
+        ProducerTxError::Repo(crate::infra::storage::RepoError::Driver { source, .. }) => {
+            Some(source)
+        }
+        ProducerTxError::Repo(_) | ProducerTxError::Refused(_) => None,
+    }
+}
+
+/// Spend the authorization where the write commits (`inst-gv-one-shot`).
+async fn settle_producer_op(
+    tx: &impl toolkit_db::secure::DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    authorization: &GateAuthorization,
+    now: DateTime<Utc>,
+) -> Result<(), ProducerTxError> {
+    repo::settle_authorization(tx, scope, tenant_id, authorization, now)
+        .await
+        .map(|_spent| ())
+        .map_err(|error| match error {
+            repo::SettleError::Refused(refusal) => ProducerTxError::Refused(refusal),
+            repo::SettleError::Repo(error) => ProducerTxError::Repo(error),
+        })
+}
+
+/// What a producer's watermark says about it at `now`: the operand of the
+/// retirement rule (**P-D-129** rows 2 and 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WatermarkStanding {
+    Fresh,
+    Stale,
+    NeverReceived,
+}
+
+impl WatermarkStanding {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Stale => "stale",
+            Self::NeverReceived => "never-received",
+        }
+    }
+}
+
+fn watermark_standing(
+    watermark: Option<&repo::ReferenceWatermarkRecord>,
+    now: DateTime<Utc>,
+    freshness: std::time::Duration,
+) -> WatermarkStanding {
+    match watermark {
+        None => WatermarkStanding::NeverReceived,
+        Some(record) => {
+            let age = now
+                .signed_duration_since(record.watermark_at)
+                .to_std()
+                .unwrap_or_default();
+            if age <= freshness {
+                WatermarkStanding::Fresh
+            } else {
+                WatermarkStanding::Stale
+            }
+        }
+    }
+}
+
+/// The tripwire's verdict after one more override row (`dod-tripwire`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TripwireVerdict {
+    /// This arm's rows in the rolling 30-day window, the new one included.
+    pub count: u64,
+    /// Above the configured rate.
+    pub tripped: bool,
+}
+
+/// Count this arm's override rows in the rolling 30-day window and raise
+/// `reference_breakglass_tripwire` when they exceed the configured rate
+/// (`dod-tripwire`; **P-D-71**'s alarm name, **P-D-129** rows 8 and 9: the
+/// counter is a windowed count over the table, never stored state, and the
+/// `producer_unavailable` arm is the one that flips
+/// `signal_delivery_release_blocker`). Degraded operation is escalated, never
+/// normalized (C6).
+///
+/// # Errors
+///
+/// The store's own error.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-tripwire:p2
+pub(crate) async fn tripwire_after_override(
+    runner: &impl toolkit_db::secure::DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    knobs: crate::api::rest::ReferenceKnobs,
+    arm: &str,
+    now: DateTime<Utc>,
+) -> Result<TripwireVerdict, crate::infra::storage::RepoError> {
+    let since = now - chrono::Duration::days(30);
+    let count =
+        repo::correction_overrides_since_by_arm(runner, scope, tenant_id, since, arm).await?;
+    let tripped = count > u64::from(knobs.tripwire_max_overrides_per_30_days);
+    if tripped {
+        tracing::warn!(
+            event = "reference_breakglass_tripwire",
+            %tenant_id,
+            arm,
+            count,
+            max_per_30_days = knobs.tripwire_max_overrides_per_30_days,
+            signal_delivery_release_blocker = arm == "producer_unavailable",
+            "bss-products: break-glass corrections exceeded the tripwire rate in the rolling \
+             30-day window"
+        );
+    }
+    Ok(TripwireVerdict { count, tripped })
+}
+
+/// The standing `signal_delivery_release_blocker` status surface, **derived**
+/// (**P-D-129** row 9): raised while the `producer_unavailable` arm's rows in
+/// the rolling window exceed the tripwire rate, clear once the window rolls
+/// past them. `09`'s release door is its reader.
+///
+/// # Errors
+///
+/// The store's own error.
+#[cfg_attr(not(test), allow(dead_code))] // `09`'s release door is the production reader (group 7)
+pub(crate) async fn signal_delivery_release_blocker(
+    runner: &impl toolkit_db::secure::DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    knobs: crate::api::rest::ReferenceKnobs,
+    now: DateTime<Utc>,
+) -> Result<bool, crate::infra::storage::RepoError> {
+    let since = now - chrono::Duration::days(30);
+    let count = repo::correction_overrides_since_by_arm(
+        runner,
+        scope,
+        tenant_id,
+        since,
+        "producer_unavailable",
+    )
+    .await?;
+    Ok(count > u64::from(knobs.tripwire_max_overrides_per_30_days))
+}
+
 async fn reference_scope(
     state: &ApiState,
     enforcer: &authz_resolver_sdk::PolicyEnforcer,
@@ -932,21 +1165,28 @@ async fn register_producer(
     // `never-received` verdict conservatively references every SKU in the
     // tenant, with no row naming who caused it. The retirement door below
     // takes the same shape for the same reason.
+    let authorization =
+        authorize_producer_op(&state, &scope, tenant_id, actor_ref, &producer).await?;
+    let outbox = state.sink.clone();
     let scope_for_register = scope.clone();
     let producer_for_register = producer.clone();
-    state
+    let authorization_tx = authorization.clone();
+    let result = state
         .db
         .db()
-        .transaction_with_retry::<(), toolkit_db::DbError, _, _>(
+        .transaction_with_retry::<(), ProducerTxError, _, _>(
             toolkit_db::secure::TxConfig::default(),
-            crate::api::rest::contention_db_err,
+            producer_contention_db_err,
             move |tx| {
+                let outbox = outbox.clone();
                 let scope = scope_for_register.clone();
                 let producer = producer_for_register.clone();
+                let authorization = authorization_tx.clone();
                 Box::pin(async move {
+                    settle_producer_op(tx, &scope, tenant_id, &authorization, now).await?;
                     repo::register_reference_producer(tx, &scope, tenant_id, &producer, None, now)
                         .await
-                        .map_err(|e| toolkit_db::DbError::Sea(e.to_db_err()))?;
+                        .map_err(ProducerTxError::Repo)?;
                     audit_accepted_act(
                         tx,
                         &scope,
@@ -960,15 +1200,42 @@ async fn register_producer(
                         now,
                     )
                     .await
-                    .map_err(|e| toolkit_db::DbError::Sea(e.to_db_err()))?;
+                    .map_err(ProducerTxError::Repo)?;
+                    events::enqueue_producer_set_event(
+                        &outbox,
+                        tx,
+                        events::ProducerSetEventBody {
+                            tenant_id,
+                            producer: &producer,
+                            state: "registered",
+                        },
+                        actor_ref,
+                    )
+                    .await
+                    .map_err(|e| {
+                        ProducerTxError::Repo(crate::infra::storage::RepoError::Db(e.to_string()))
+                    })?;
                     Ok(())
                 })
             },
         )
-        .await
-        .map_err(|e| {
-            repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
-        })?;
+        .await;
+    match result {
+        Ok(()) => {}
+        Err(ProducerTxError::Refused(refusal)) => {
+            return Err(refuse_reference(
+                &state,
+                &scope,
+                tenant_id,
+                actor_ref,
+                crate::authz::labels::REFERENCE_PRODUCER,
+                producer,
+                refusal,
+            )
+            .await);
+        }
+        Err(ProducerTxError::Repo(error)) => return Err(repo_error_to_canonical(&error)),
+    }
 
     Ok((
         StatusCode::CREATED,
@@ -986,6 +1253,7 @@ async fn retire_producer(
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
     axum::extract::Path(producer): axum::extract::Path<String>,
+    body: Option<Json<RetireProducerRequest>>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
@@ -1003,67 +1271,134 @@ async fn retire_producer(
         producer.clone(),
     )
     .await?;
+    let justification = body
+        .and_then(|Json(request)| request.justification)
+        .map(|text| text.trim().to_owned())
+        .filter(|text| !text.is_empty());
 
     let conn = state.db.conn().map_err(|e| {
         repo_error_to_canonical(&crate::infra::storage::RepoError::Db(format!(
             "producer door connection: {e}"
         )))
     })?;
-    let known = repo::reference_producers(&conn, &scope, tenant_id)
+    let registered: Vec<String> = repo::reference_producers(&conn, &scope, tenant_id)
         .await
         .map_err(|e| repo_error_to_canonical(&e))?
         .into_iter()
-        .any(|row| row.producer == producer);
-    if !known {
-        return Err(
-            ReferenceResource::not_found("no such producer in the caller's tenant")
-                .with_resource(producer)
-                .create(),
-        );
+        .filter(|row| row.state == crate::domain::states::ProducerState::Registered)
+        .map(|row| row.producer)
+        .collect();
+    if !registered.contains(&producer) {
+        return Err(ReferenceResource::not_found(
+            "no such registered producer in the caller's tenant",
+        )
+        .with_resource(producer)
+        .create());
     }
+    // The last registered producer never retires: the predicate would lose
+    // its quantifier (`inst-pr-retirement`).
+    if registered.len() == 1 {
+        return Err(refuse_reference(
+            &state,
+            &scope,
+            tenant_id,
+            actor_ref,
+            crate::authz::labels::REFERENCE_PRODUCER,
+            producer.clone(),
+            DomainError::ProducerSetEmptyForbidden(format!(
+                "`{}` is the tenant's only registered producer; register its successor first",
+                registered[0]
+            )),
+        )
+        .await);
+    }
+    // A stale or never-received producer holds SKUs conservatively; retiring
+    // it frees them (P-D-129 rows 2 and 5). A live producer posts an empty
+    // set first and retires fresh; a dead one retires under break-glass
+    // elevation with a justification, leaving one override row per freed SKU.
+    let watermark = repo::find_reference_watermark(&conn, &scope, tenant_id, &producer)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?;
+    let standing = watermark_standing(watermark.as_ref(), now, state.reference.freshness);
+    let ceremony = if standing == WatermarkStanding::Fresh {
+        None
+    } else {
+        let Some(justification) = justification else {
+            return Err(refuse_reference(
+                &state,
+                &scope,
+                tenant_id,
+                actor_ref,
+                crate::authz::labels::REFERENCE_PRODUCER,
+                producer.clone(),
+                DomainError::ProducerRetirementWouldFree(format!(
+                    "`{}`'s watermark is {}: retiring it now would free every SKU it holds. A \
+                     live producer posts an empty set and retires fresh; a dead one retires \
+                     with a break-glass justification under `breakglass x elevate`",
+                    producer,
+                    standing.as_str()
+                )),
+            )
+            .await);
+        };
+        // The dead-producer lane: 02's PII gate on the justification, then
+        // the elevation grant.
+        let detector = crate::api::rest::retention::tenant_pii_detector(&state, tenant_id).await?;
+        if let Err(blocked) = crate::domain::taxonomy::content_pii_block(
+            detector.as_ref(),
+            "justification",
+            &justification,
+        ) {
+            return Err(refuse_reference(
+                &state,
+                &scope,
+                tenant_id,
+                actor_ref,
+                crate::authz::labels::REFERENCE_PRODUCER,
+                producer,
+                DomainError::ContentPiiBlocked(blocked.into_detail()),
+            )
+            .await);
+        }
+        reference_scope(
+            &state,
+            &enforcer,
+            &ctx,
+            tenant_id,
+            actor_ref,
+            ELEVATE_TARGET,
+            producer.clone(),
+        )
+        .await?;
+        let freed = repo::reference_members_of(&conn, &scope, tenant_id, &producer)
+            .await
+            .map_err(|e| repo_error_to_canonical(&e))?;
+        let snapshot = serde_json::json!({
+            "producer": producer,
+            "standing": standing.as_str(),
+            "watermark_at": watermark.as_ref().map(|w| w.watermark_at),
+            "freed": freed.len(),
+        })
+        .to_string();
+        Some(RetirementCeremony {
+            ceremony_ref: Uuid::now_v7(),
+            justification,
+            freed,
+            snapshot,
+        })
+    };
     return_pinned(conn);
 
-    let scope_for_tx = scope.clone();
-    let producer_for_tx = producer.clone();
-    state
-        .db
-        .db()
-        .transaction_with_retry::<(), toolkit_db::DbError, _, _>(
-            toolkit_db::secure::TxConfig::default(),
-            crate::api::rest::contention_db_err,
-            move |tx| {
-                let scope = scope_for_tx.clone();
-                let producer = producer_for_tx.clone();
-                Box::pin(async move {
-                    repo::retire_reference_producer(tx, &scope, tenant_id, &producer)
-                        .await
-                        .map_err(|e| toolkit_db::DbError::Sea(e.to_db_err()))?;
-                    // Inside the retirement's own transaction: the retirement
-                    // clears the watermark and member rows too (P-D-87 arm
-                    // 2), so an audit row on a second connection could
-                    // outlive a rollback that put them back.
-                    audit_accepted_act(
-                        tx,
-                        &scope,
-                        AcceptedAct {
-                            tenant_id,
-                            actor_ref,
-                            action: "reference_producer_retire",
-                            label: crate::authz::labels::REFERENCE_PRODUCER,
-                            subject: producer.clone(),
-                        },
-                        now,
-                    )
-                    .await
-                    .map_err(|e| toolkit_db::DbError::Sea(e.to_db_err()))?;
-                    Ok(())
-                })
-            },
-        )
-        .await
-        .map_err(|e| {
-            repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
-        })?;
+    commit_retirement(
+        &state,
+        &scope,
+        tenant_id,
+        actor_ref,
+        producer.clone(),
+        ceremony,
+        now,
+    )
+    .await?;
 
     Ok((
         StatusCode::OK,
@@ -1073,6 +1408,189 @@ async fn retire_producer(
         }),
     )
         .into_response())
+}
+
+/// The retirement's transaction: the one-shot, the state flip, the plain
+/// audit row or the ceremony's rows, and the set event — then the door's
+/// answer for a refusal inside it.
+async fn commit_retirement(
+    state: &ApiState,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    actor_ref: Uuid,
+    producer: String,
+    ceremony: Option<RetirementCeremony>,
+    now: DateTime<Utc>,
+) -> Result<(), CanonicalError> {
+    let authorization =
+        authorize_producer_op(state, scope, tenant_id, actor_ref, &producer).await?;
+    let outbox = state.sink.clone();
+    let knobs = state.reference;
+    let scope_for_tx = scope.clone();
+    let producer_for_tx = producer.clone();
+    let authorization_tx = authorization.clone();
+    let ceremony_tx = ceremony.clone();
+    let result = state
+        .db
+        .db()
+        .transaction_with_retry::<(), ProducerTxError, _, _>(
+            toolkit_db::secure::TxConfig::default(),
+            producer_contention_db_err,
+            move |tx| {
+                let outbox = outbox.clone();
+                let scope = scope_for_tx.clone();
+                let producer = producer_for_tx.clone();
+                let authorization = authorization_tx.clone();
+                let ceremony = ceremony_tx.clone();
+                Box::pin(async move {
+                    settle_producer_op(tx, &scope, tenant_id, &authorization, now).await?;
+                    repo::retire_reference_producer(tx, &scope, tenant_id, &producer)
+                        .await
+                        .map_err(ProducerTxError::Repo)?;
+                    match ceremony {
+                        None => {
+                            audit_accepted_act(
+                                tx,
+                                &scope,
+                                AcceptedAct {
+                                    tenant_id,
+                                    actor_ref,
+                                    action: "reference_producer_retire",
+                                    label: crate::authz::labels::REFERENCE_PRODUCER,
+                                    subject: producer.clone(),
+                                },
+                                now,
+                            )
+                            .await
+                            .map_err(ProducerTxError::Repo)?;
+                        }
+                        Some(ceremony) => {
+                            record_retirement_ceremony(
+                                tx, &scope, tenant_id, actor_ref, &producer, &ceremony, knobs, now,
+                            )
+                            .await?;
+                        }
+                    }
+                    events::enqueue_producer_set_event(
+                        &outbox,
+                        tx,
+                        events::ProducerSetEventBody {
+                            tenant_id,
+                            producer: &producer,
+                            state: "retired",
+                        },
+                        actor_ref,
+                    )
+                    .await
+                    .map_err(|e| {
+                        ProducerTxError::Repo(crate::infra::storage::RepoError::Db(e.to_string()))
+                    })?;
+                    Ok(())
+                })
+            },
+        )
+        .await;
+    match result {
+        Ok(()) => {}
+        Err(ProducerTxError::Refused(refusal)) => {
+            return Err(refuse_reference(
+                state,
+                scope,
+                tenant_id,
+                actor_ref,
+                crate::authz::labels::REFERENCE_PRODUCER,
+                producer,
+                refusal,
+            )
+            .await);
+        }
+        Err(ProducerTxError::Repo(error)) => return Err(repo_error_to_canonical(&error)),
+    }
+    Ok(())
+}
+
+/// The dead-producer retirement's ceremony (**P-D-129** rows 2 and 5): the
+/// justification, the SKUs the stale watermark held, and the evidence
+/// snapshot each override row carries.
+#[derive(Debug, Clone)]
+struct RetirementCeremony {
+    ceremony_ref: Uuid,
+    justification: String,
+    freed: Vec<Uuid>,
+    snapshot: String,
+}
+
+/// One `producer_unavailable` override row per freed SKU, the audit row
+/// carrying the ceremony reference (`dod-reference-audit`), and the tripwire
+/// fed (`dod-tripwire`): a dead producer that pinned six SKUs trips the
+/// signal-delivery blocker, which is the failure the tripwire measures.
+#[allow(clippy::too_many_arguments)]
+async fn record_retirement_ceremony(
+    tx: &impl toolkit_db::secure::DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    actor_ref: Uuid,
+    producer: &str,
+    ceremony: &RetirementCeremony,
+    knobs: crate::api::rest::ReferenceKnobs,
+    now: DateTime<Utc>,
+) -> Result<(), ProducerTxError> {
+    for sku_id in &ceremony.freed {
+        // A watermark may name a SKU this registry never had (the producer's
+        // set is its own); such a member is nothing to free and gets no row.
+        if repo::find_sku(tx, scope, tenant_id, *sku_id)
+            .await
+            .map_err(ProducerTxError::Repo)?
+            .is_none()
+        {
+            continue;
+        }
+        repo::record_correction_override(
+            tx,
+            scope,
+            tenant_id,
+            repo::NewCorrectionOverride {
+                override_id: Uuid::now_v7(),
+                sku_id: *sku_id,
+                field: "producer_retirement".to_owned(),
+                reason: ceremony.justification.clone(),
+                evidence: repo::OverrideEvidence::ProducerUnavailable {
+                    snapshot: ceremony.snapshot.clone(),
+                },
+                ceremony_ref: ceremony.ceremony_ref,
+                recorded_at: now,
+            },
+        )
+        .await
+        .map_err(ProducerTxError::Repo)?;
+    }
+    // The producer is a name, not a row id: the audit subject is the
+    // tenant-scoped v5 of the name, stable across re-registrations.
+    repo::write_ceremony_act_audit(
+        tx,
+        scope,
+        repo::AuditCommon {
+            audit_id: Uuid::now_v7(),
+            tenant_id,
+            actor_ref,
+            action: "reference_producer_retire_breakglass".to_owned(),
+            subject_kind: crate::authz::labels::REFERENCE_PRODUCER.to_owned(),
+            reason: Some(ceremony.justification.clone()),
+            correlation_id: crate::infra::events::correlation_id(),
+            written_at: now,
+        },
+        Uuid::new_v5(&tenant_id, producer.as_bytes()),
+        None,
+        ceremony.ceremony_ref,
+    )
+    .await
+    .map_err(ProducerTxError::Repo)?;
+    if !ceremony.freed.is_empty() {
+        tripwire_after_override(tx, scope, tenant_id, knobs, "producer_unavailable", now)
+            .await
+            .map_err(ProducerTxError::Repo)?;
+    }
+    Ok(())
 }
 
 /// The in-process binding, registered in `ClientHub` at boot — the default

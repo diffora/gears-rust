@@ -767,6 +767,7 @@ async fn a_sku_publish_and_an_edit_presenting_one_if_match_serialize_and_the_edi
                             CONTESTED_REVISION,
                             true,
                             at(11),
+                            None,
                         )
                         .await?;
                         written.notify_one();

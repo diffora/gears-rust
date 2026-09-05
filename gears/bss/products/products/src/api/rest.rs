@@ -226,6 +226,30 @@ impl From<&crate::config::ProductsConfig> for TaxonomyCaps {
     }
 }
 
+/// `07-reference-signal`'s three door-side knobs, read off `ProductsConfig`
+/// once at boot (P-D-87 arm 1 homes; P-D-147 puts them on the state).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReferenceKnobs {
+    /// How old a watermark may be before its producer reads *stale*.
+    pub(crate) freshness: std::time::Duration,
+    /// The tripwire's rate: break-glass overrides per rolling 30 days above
+    /// which `reference_breakglass_tripwire` fires.
+    pub(crate) tripwire_max_overrides_per_30_days: u32,
+    /// Whether break-glass arm (a) is admissible at all (**P-D-71**,
+    /// default off). Arm (b) is not behind it (**P-D-48**).
+    pub(crate) breakglass_correction_enabled: bool,
+}
+
+impl From<&crate::config::ProductsConfig> for ReferenceKnobs {
+    fn from(cfg: &crate::config::ProductsConfig) -> Self {
+        Self {
+            freshness: cfg.reference_freshness(),
+            tripwire_max_overrides_per_30_days: cfg.tripwire_max_overrides_per_30_days,
+            breakglass_correction_enabled: cfg.breakglass_correction_enabled,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ApiState {
     /// The provider `state.db.conn()` opens a non-transactional runner from,
@@ -274,6 +298,9 @@ pub(crate) struct ApiState {
     /// The watermark door's own bound (P-D-87 arm 1), resolved once at
     /// `init` from `ProductsConfig::watermark_skew_tolerance`.
     pub(crate) watermark_skew_tolerance: std::time::Duration,
+    /// `07`'s knobs the correction and retirement doors read
+    /// (`dod-reference-config`'s four minus the skew, which sits above).
+    pub(crate) reference: ReferenceKnobs,
     /// The elevation window, in hours (**P-D-132**, interim 4, zero refused
     /// at boot). Carried here for the reason every other configured number
     /// is: the break-glass door computes `valid_until` from it and **must not

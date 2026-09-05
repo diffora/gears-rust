@@ -131,6 +131,8 @@ pub(crate) struct ProductsRuntime {
     /// The watermark door's skew bound and the predicate's freshness
     /// threshold, resolved once from `ProductsConfig` (P-D-87 arm 1).
     pub watermark_skew_tolerance: std::time::Duration,
+    /// `07`'s door-side knobs, read once at boot.
+    pub reference: crate::api::rest::ReferenceKnobs,
 
     /// The elevation window and the post-hoc review SLA, in hours
     /// (**P-D-132**, **P-D-133**). Carried for the same reason
@@ -761,6 +763,7 @@ impl Gear for BssProductsGear {
             bulk_max_rows_per_batch: cfg.bulk_max_rows_per_batch,
             bulk_max_concurrent_batches_per_tenant: cfg.bulk_max_concurrent_batches_per_tenant,
             watermark_skew_tolerance: cfg.watermark_skew_tolerance(),
+            reference: crate::api::rest::ReferenceKnobs::from(&cfg),
             breakglass_window_hours: cfg.breakglass_window_hours,
             breakglass_review_sla_hours: cfg.breakglass_review_sla_hours,
             usage_type_resolver: Arc::clone(&usage_type_resolver),
@@ -784,6 +787,7 @@ impl Gear for BssProductsGear {
                         bulk_max_concurrent_batches_per_tenant: cfg
                             .bulk_max_concurrent_batches_per_tenant,
                         watermark_skew_tolerance: cfg.watermark_skew_tolerance(),
+                        reference: crate::api::rest::ReferenceKnobs::from(&cfg),
                         breakglass_window_hours: cfg.breakglass_window_hours,
                         breakglass_review_sla_hours: cfg.breakglass_review_sla_hours,
                         usage_type_resolver: Arc::clone(&usage_type_resolver),
@@ -799,6 +803,7 @@ impl Gear for BssProductsGear {
             bulk_max_rows_per_batch: cfg.bulk_max_rows_per_batch,
             bulk_max_concurrent_batches_per_tenant: cfg.bulk_max_concurrent_batches_per_tenant,
             watermark_skew_tolerance: cfg.watermark_skew_tolerance(),
+            reference: crate::api::rest::ReferenceKnobs::from(&cfg),
             breakglass_window_hours: cfg.breakglass_window_hours,
             breakglass_review_sla_hours: cfg.breakglass_review_sla_hours,
             sdk_state: Arc::clone(&sdk_state),
@@ -860,6 +865,7 @@ impl RestApiCapability for BssProductsGear {
             bulk_max_rows_per_batch: rt.bulk_max_rows_per_batch,
             bulk_max_concurrent_batches_per_tenant: rt.bulk_max_concurrent_batches_per_tenant,
             watermark_skew_tolerance: rt.watermark_skew_tolerance,
+            reference: rt.reference,
             breakglass_window_hours: rt.breakglass_window_hours,
             breakglass_review_sla_hours: rt.breakglass_review_sla_hours,
             usage_type_resolver: Arc::clone(&rt.usage_type_resolver),

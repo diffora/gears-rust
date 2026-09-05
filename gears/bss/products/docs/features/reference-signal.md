@@ -610,7 +610,7 @@ makes it unreachable is a rule that a later decision could relax.
 
 ### Producer registration as a governed live op
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-producer-registration`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-producer-registration`
 
 Membership changes **MUST** be `GovernedLiveOp`s on `reference_producer × write`, **material**, and
 each **MUST** emit `ReferenceProducerSetChanged` and audit. A registering producer's first watermark
@@ -627,6 +627,8 @@ contradiction.** Retiring a producer narrows the quantifier fresh-zero runs over
 producer's retirement can still free a SKU and walk a previously blocked correction through the
 **normal** door — no flag, no override row, no tripwire increment. §7 carries it verbatim from the
 slice, which registered it rather than drafting a fourth rule.
+
+**Ticked (P-D-147).** Register and retire resolve the stored approval host before their transaction and spend the record inside it (`reference::producer_op_subject`: `GovernedLiveOp` on `reference_producer/{producer}`, unpinned; `a_producer_op_without_a_satisfied_record_is_refused_approval_required`), `05`'s evaluator answers **material** for the registered kind, and each emits `ReferenceProducerSetChanged` with `aggregate_id = tenant_id` and writes its audit row. Onboarding starts never-received (`retirement_clears_the_watermark_and_re_registration_starts_never_received`). The last registered producer is refused `PRODUCER_SET_EMPTY_FORBIDDEN`; a stale or never-received one `PRODUCER_RETIREMENT_WOULD_FREE` — unless the caller supplies the break-glass justification, which passes 02's PII gate (`CONTENT_PII_BLOCKED`) and rides `breakglass × elevate`: the retirement then writes one `producer_unavailable` override row per SKU the stale watermark held, an audit row carrying the ceremony reference, and feeds the tripwire (**P-D-129** rows 2 and 5; `retiring_the_last_or_a_dead_producer_is_refused_unless_break_glass_justifies_it`). The rule this DoD does not state stands as §7 carries it.
 
 **Implements**: `cpt-cf-bss-products-flow-producer-registration`
 
@@ -658,7 +660,7 @@ its five foreign seams — the two halves are one obligation seen from two sides
 
 ### The correction door, and the three gates it admits on
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-correction-door`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-correction-door`
 
 The system **MUST** serve a correction door on `sku × correct` accepting
 `(skuId, field ∈ {type, meter declaration pair}, new value, expected revision)`, and it **MUST** be
@@ -688,6 +690,8 @@ the corrected version's content — and the subject **MUST** carry no open appro
 **MUST** pass 02's `inst-av-pii-block` before the row is written, a hit failing
 `CONTENT_PII_BLOCKED`.
 
+**Ticked (P-D-147).** `POST /bss-products/v1/skus/{id}/corrections` on `sku × correct` (`skus::correct_sku`), body `(field ∈ {sku_type, meter}, value(s), lane, reason)` under `If-Match` — the shape the shipped refusal announced, now the route. Structural identity is unwritable by shape: `CorrectedColumns` spells only the two bucket-ii fields (`the_correction_rides_its_own_record_and_only_the_two_bucket_ii_fields_can_be_spelled`). The head doors' refusals still name this door and do not forward to it. The three admission gates are `admit_correction` — fresh-zero, arm (a), arm (b) — and the two preconditions are `correction_preconditions`: **clean head** is digest-rendering equality with the last version row (**P-D-129** row 24, `CORRECTION_DIRTY_HEAD`), and a pending publish approval on the subject is `CORRECTION_APPROVAL_OPEN` (`a_dirty_head_and_an_open_approval_are_refused`). The ceremony is a `sku_correction` record whose snapshot **is the payload**; the door compares canonically and refuses a mismatch (`APPROVAL_REQUIRED`). The break-glass reasons pass 02's gate before any row is written.
+
 **Implements**: `cpt-cf-bss-products-flow-correction`
 
 **Touches**:
@@ -698,7 +702,7 @@ the corrected version's content — and the subject **MUST** carry no open appro
 
 ### The correction re-publish, and the validator that re-checks the lane
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-correction-republish`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-correction-republish`
 
 The correction **MUST** be a governed **material** act through `05-governance`'s quorum at the
 tenant's configured `N`, with **`quorumReduced` recorded on the `ApprovalRecord` and on the emitted
@@ -732,6 +736,8 @@ admission at commit and a correction could land after a producer recovered and r
 with an override row recording unavailability evidence **already false at the instant it was
 written**.
 
+**Ticked (P-D-147).** The correction is the matched `sku_correction` record's consequence: `apply_correction` spends it, re-runs **the lane's own predicate** inside the transaction (`Admission::recheck` — fresh-zero on the normal lane, every-producer-unavailable on arm (a); arm (b)'s operand is the resolver's pre-transaction answer, P-D-121 row 19's shape), then calls `run_publish` with the correction as its **third argument** (`CorrectionOperand`, P-D-41): the head is judged as corrected, re-published as N+1 through the ordinary pipeline, and `repo::publish_sku_head` writes the bucket-ii column(s) **and `correction_ref`** in the bump statement — the only form the row-image trigger admits (P-D-129 row 6). A corrected meter re-resolves its new `usageTypeRef` before the publish and freezes the binding (P-D-05; `arm_b_admits_a_meter_correction_on_not_found_and_not_on_a_timeout`). `quorumReduced` is read off the record's descriptor and rides `SkuImmutableFieldCorrected`. The race criterion (a reference arriving between submission and approval) has the re-check but no probe; §6 carries it unticked.
+
 **Implements**: `cpt-cf-bss-products-flow-correction`,
 `cpt-cf-bss-products-flow-breakglass-correction`
 
@@ -741,7 +747,7 @@ written**.
 
 ### Break-glass arm (a): the signal is unavailable
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-dod-breakglass-unavailable`
+- [x] `p2` - **ID**: `cpt-cf-bss-products-dod-breakglass-unavailable`
 
 Admissible **only** when `breakglass_correction_enabled` is `true` (**P-D-71**) **and** at least one
 producer is registered **and
@@ -758,6 +764,8 @@ unless arm (b) admits. The flag OFF **MUST** raise `BREAKGLASS_CORRECTION_DISABL
 
 **The flag governs this arm only.** Arm (b) is not behind it.
 
+**Ticked (P-D-147).** Arm (a) admits only with `ReferenceKnobs::breakglass_correction_enabled` (read off `ProductsConfig`, default off — `BREAKGLASS_CORRECTION_DISABLED` at 403), at least one registered producer, every one stale or never-received (never-received being the absent watermark row), and a reason; a fresh producer routes back with `CORRECTION_SIGNAL_AVAILABLE` naming it. The evidence row's `unavailability_snapshot` is the per-producer verdict set (`break_glass_arm_a_needs_the_flag_every_producer_stale_and_a_clean_reason`). The flag governs this arm only.
+
 **Implements**: `cpt-cf-bss-products-flow-breakglass-correction`
 
 **Touches**:
@@ -766,7 +774,7 @@ unless arm (b) admits. The flag OFF **MUST** raise `BREAKGLASS_CORRECTION_DISABL
 
 ### Break-glass arm (b): the unresolvable target
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-breakglass-unresolvable`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-breakglass-unresolvable`
 
 When the subject's declared `usageTypeRef` **no longer resolves** — the resolver answers
 **not-found**, not a timeout — the door **MUST** admit a meter-declaration correction **regardless
@@ -786,6 +794,8 @@ two-person count, which would re-block the `N = 0` tenant on the one door that c
 only exit from a state the PRD confirms is reachable — a collector deleting a referenced usage type
 wedges the SKU in every other lane at once.
 
+**Ticked (P-D-147).** A meter correction whose current `usageTypeRef` the resolver answers **not-found** for is admitted on whichever lane was named, regardless of the reference predicate and not behind the flag (P-D-16, P-D-48); a timeout (`Unavailable`) admits nothing. The full ceremony stays — the `sku_correction` record at the tenant's `N`, the mandatory reason — and the override row records `unresolvable_target` with the dead reference (`arm_b_admits_a_meter_correction_on_not_found_and_not_on_a_timeout`).
+
 **Implements**: `cpt-cf-bss-products-flow-breakglass-correction`
 
 **Touches**:
@@ -794,7 +804,7 @@ wedges the SKU in every other lane at once.
 
 ### The tripwire
 
-- [ ] `p2` - **ID**: `cpt-cf-bss-products-dod-tripwire`
+- [x] `p2` - **ID**: `cpt-cf-bss-products-dod-tripwire`
 
 Every break-glass correction — **both arms** — **MUST** increment the `TripwireCounter`, which
 **MUST** be a windowed count over `products_correction_override` rather than stored state. Past the
@@ -808,6 +818,8 @@ Degraded operation is escalated, never normalized (C6).
 **What the counter's population is, and what clears the status surface, are both open** — §7 carries
 them from the slice's own §6.
 
+**Ticked (P-D-147), on P-D-129 rows 8 and 9's answers.** `reference::tripwire_after_override` is a windowed count over `products_correction_override` per arm (`repo::correction_overrides_since_by_arm`, rolling 30 days, no stored state); above `tripwire_max_overrides_per_30_days` it raises `reference_breakglass_tripwire` (a structured `warn!` event carrying the arm and the count, the same shape as `retirement_held`). The `producer_unavailable` arm is the one that flips `signal_delivery_release_blocker`, **derived** by `reference::signal_delivery_release_blocker` from the same window — it clears when the window rolls past the rows (`the_tripwire_trips_on_the_sixth_override_in_the_window`). `09`'s release door is its production reader (group 7).
+
 **Implements**: `cpt-cf-bss-products-flow-breakglass-correction`
 
 **Touches**:
@@ -816,7 +828,7 @@ them from the slice's own §6.
 
 ### The error taxonomy, wired into `DomainError`
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-reference-error-taxonomy`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-reference-error-taxonomy`
 
 The system **MUST** add a `DomainError` variant for each of the **eleven** codes in §3, and each
 **MUST** carry its wire code through `DomainError::code`.
@@ -854,6 +866,8 @@ declare a 422 for an error **carrying a registry code** in `OpenAPI`"*. `WATERMA
 them, and so is the foreign `CONTENT_PII_BLOCKED`. Declaring either as a literal 422 is what
 `error_mapping_tests::the_products_owned_422_codes_stay_wire_400_by_design` exists to catch.
 
+**Ticked (P-D-147).** All eleven are `DomainError` variants carrying their codes: `PRODUCER_UNREGISTERED` and the three `WATERMARK_*` landed with the watermark door; the seven this group adds — `PRODUCER_SET_EMPTY_FORBIDDEN`, `PRODUCER_RETIREMENT_WOULD_FREE`, `CORRECTION_REFERENCED`, `CORRECTION_DIRTY_HEAD`, `CORRECTION_APPROVAL_OPEN`, `CORRECTION_SIGNAL_AVAILABLE` (409, `aborted`) and `BREAKGLASS_CORRECTION_DISABLED` (403, `denied`) — carry `design/07` §3.2's statuses through `error_mapping`'s ladder. The counters the DoD names moved: `DOMAIN_ERROR_VARIANTS` is **77** and `wire_code_roster` asserts 77, with `reference_wire_codes` as their roster. `CONTENT_PII_BLOCKED` is 02's variant (P-D-50) and is raised, not minted, on the correction reason and the retirement justification.
+
 **Implements**: `cpt-cf-bss-products-algo-reference-errors`
 
 **Touches**:
@@ -861,7 +875,7 @@ them, and so is the foreign `CONTENT_PII_BLOCKED`. Declaring either as a literal
 
 ### The authz surface, and the four rosters it reddens
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-reference-authz`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-reference-authz`
 
 The system **MUST** declare the authz labels and actions this feature's three doors spend —
 `reference_producer × write`, `sku × correct`, and the watermark door's **`reference_signal ×
@@ -890,6 +904,8 @@ and this feature's doors would have no `ResourceType` to hand the gate.
 
 **Whether `sku × correct` is a new action on the existing `sku` label or a new label is a question
 `05-governance`'s roster owns**, and §7 carries it rather than deciding it here.
+
+**Ticked (P-D-147).** `sku × correct` is a **new action on the existing `sku` label** (`authz::actions::CORRECT`, permission `cf.bss.products.sku_correct.v1`), answering the roster question this DoD carried: the door corrects a SKU, so the resource is the SKU. `reference_producer × write` and `reference_signal × post` landed with the producer and watermark doors. The rosters moved with it: `EXPECTED_PERMISSION_IDS` and the hard-coded `known` actions gain `correct`; `labels::ALL` is unchanged, so its positional test stands. The descriptor clause holds because the door hands `open_act` the SKU `ResourceType` like every other head act.
 
 **Implements**: `cpt-cf-bss-products-flow-watermark`,
 `cpt-cf-bss-products-flow-producer-registration`, `cpt-cf-bss-products-flow-correction`
@@ -934,7 +950,7 @@ own §5 and C5 have read it both ways. §7 carries it; the code stays the 403.
 
 ### The events and the alarms
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-reference-events`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-reference-events`
 
 The system **MUST** emit `SkuImmutableFieldCorrected`, `SkuCorrectionOverride` and
 `ReferenceProducerSetChanged`, each in the **same transaction** as the act it announces and each
@@ -974,6 +990,8 @@ the future-watermark alert, and the tripwire escalation. **Never-received
 is a verdict flag and MUST NOT raise an alarm** (C2) — the distinction is deliberate, because a
 producer that has never posted is a deployment state rather than an incident.
 
+**Ticked (P-D-147).** `SkuImmutableFieldCorrected` and `SkuCorrectionOverride` ride `EventBodyCore` plus the correction's fields (`events::enqueue_correction_event`, in the correcting transaction); `ReferenceProducerSetChanged` is entity-less with **`aggregate_id = tenant_id`** (`events::enqueue_producer_set_event`; `broker::ReferenceProducerSetChanged`'s subject is the tenant, `REFERENCE_PRODUCER_SUBJECT_TYPE`). All three carry versioned schema references in `SCHEMA_REFS`, and both `THE_*` roster families gained `THE_REFERENCE_TRIO`. Watermark ingestion emits nothing, as `inst-ws-no-event` says. The alarms: `reference_watermark_future` on the future-dated refusal, `reference_breakglass_tripwire` from the tripwire; the staleness gauge and `reference_watermark_stale` as an alerting rule over it remain the metrics plane's (§7 row 28).
+
 **Implements**: `cpt-cf-bss-products-flow-correction`,
 `cpt-cf-bss-products-flow-producer-registration`,
 `cpt-cf-bss-products-flow-breakglass-correction`
@@ -983,7 +1001,7 @@ producer that has never posted is a deployment state rather than an incident.
 
 ### The audit trail for this feature's acts
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-products-dod-reference-audit`
+- [x] `p1` - **ID**: `cpt-cf-bss-products-dod-reference-audit`
 
 Every producer registration and retirement, every correction on either lane, and every watermark
 post — **accepted or refused** — **MUST** write an audit row through `01-foundation`'s audit plane.
@@ -995,6 +1013,8 @@ overwrote is the only other record of what the producer claimed.
 A break-glass correction's row **MUST** carry the ceremony reference, the same value
 `products_correction_override` stores, so the ceremony and the evidence are joinable from either
 side.
+
+**Ticked (P-D-147).** Producer registration and retirement, every watermark post (accepted, replayed or refused) and every correction write audit rows through the Foundation's plane — the accepted acts through `audit_accepted_act`/`write_keyed_act_audit`, the refusals through `refuse_reference`/`audit_act_refusal`, the publish half of a correction through `run_publish`'s own row. A break-glass correction and a dead-producer retirement write a second row through `repo::write_ceremony_act_audit` (`AuditEntry::CeremonyAct`), carrying the **ceremony reference** the override row stores, so the two are joinable from either side — asserted by joining them in `break_glass_arm_a_needs_the_flag_every_producer_stale_and_a_clean_reason` and in the retirement probe.
 
 **Implements**: `cpt-cf-bss-products-flow-producer-registration`,
 `cpt-cf-bss-products-flow-correction`,
@@ -1039,38 +1059,38 @@ side.
 
 **Corrections**
 
-- [ ] **RED first**: a referenced SKU is refused `CORRECTION_REFERENCED` **naming the blocking
+- [x] **RED first**: a referenced SKU is refused `CORRECTION_REFERENCED` **naming the blocking
       producer**, then fresh-zero goes green through the full quorum, the re-publish and the
       `usageTypeRef` re-resolution.
-- [ ] A dirty head is refused `CORRECTION_DIRTY_HEAD`; the same correction on a clean head succeeds.
-- [ ] An open approval on the subject is refused `CORRECTION_APPROVAL_OPEN`.
+- [x] A dirty head is refused `CORRECTION_DIRTY_HEAD`; the same correction on a clean head succeeds.
+- [x] An open approval on the subject is refused `CORRECTION_APPROVAL_OPEN`.
 - [ ] A reference arriving **between submission and approval** still refuses at commit — the
       registered validator, not the door's fast-fail, is what catches it.
 - [ ] The validator re-checks **the lane's own** predicate: a break-glass arm-(a) re-publish succeeds
       while no producer is fresh and is refused once one recovers, and an arm-(b) re-publish succeeds
       while the target is unresolvable and is refused once it resolves. A fresh-zero-for-all-lanes
       reading fails this criterion in both directions, which is why it is written as two.
-- [ ] Structural identity cannot be submitted to this door at all.
+- [x] Structural identity cannot be submitted to this door at all.
 
 **Break-glass**
 
-- [ ] One fresh producer ⇒ `CORRECTION_SIGNAL_AVAILABLE`; every producer stale or never-received and
+- [x] One fresh producer ⇒ `CORRECTION_SIGNAL_AVAILABLE`; every producer stale or never-received and
       the flag ON ⇒ admitted with a per-producer unavailability snapshot recorded.
-- [ ] The flag OFF ⇒ `BREAKGLASS_CORRECTION_DISABLED` at **403**, on arm (a) **only**: an arm-(b)
+- [x] The flag OFF ⇒ `BREAKGLASS_CORRECTION_DISABLED` at **403**, on arm (a) **only**: an arm-(b)
       correction succeeds with the flag OFF.
-- [ ] Arm (b): a `fresh > 0` SKU whose `usageTypeRef` no longer resolves is admitted for a
+- [x] Arm (b): a `fresh > 0` SKU whose `usageTypeRef` no longer resolves is admitted for a
       meter-declaration correction, records **`unresolvable-target`**, and increments the counter.
-- [ ] A resolver **timeout** does **not** admit arm (b) — only not-found does. Asserted, because the
+- [x] A resolver **timeout** does **not** admit arm (b) — only not-found does. Asserted, because the
       two are one call away and the wrong one turns an outage into a write path.
-- [ ] The tripwire trips on the **sixth** within the window and the `signal_delivery_release_blocker`
+- [x] The tripwire trips on the **sixth** within the window and the `signal_delivery_release_blocker`
       surface flips.
 
 **Producer registration**
 
-- [ ] Retiring a **stale** producer ⇒ `PRODUCER_RETIREMENT_WOULD_FREE`, with the **fresh-producer
+- [x] Retiring a **stale** producer ⇒ `PRODUCER_RETIREMENT_WOULD_FREE`, with the **fresh-producer
       control** — which is the control that shows the guard is about silence rather than about
       retirement.
-- [ ] Retiring the **last** producer ⇒ `PRODUCER_SET_EMPTY_FORBIDDEN`.
+- [x] Retiring the **last** producer ⇒ `PRODUCER_SET_EMPTY_FORBIDDEN`.
 - [ ] Onboarding probe: registering a producer flips a previously fresh-zero SKU to conservative
       (never-received), and **no historical decision re-opens** — a past version's verdict still
       reads against the then-registered set.
@@ -1084,18 +1104,18 @@ here is ticked by inspection.
 - [ ] `WATERMARK_CONFLICT` — an equal `watermark_at` with a different set is refused; with the same
       set it is an idempotent success.
 - [ ] `WATERMARK_FUTURE` — above `now + skew` refused; at `now` accepted.
-- [ ] `PRODUCER_SET_EMPTY_FORBIDDEN` — retiring the only producer refused; retiring one of two
+- [x] `PRODUCER_SET_EMPTY_FORBIDDEN` — retiring the only producer refused; retiring one of two
       succeeds.
-- [ ] `PRODUCER_RETIREMENT_WOULD_FREE` — retiring a stale producer refused; retiring a fresh one
+- [x] `PRODUCER_RETIREMENT_WOULD_FREE` — retiring a stale producer refused; retiring a fresh one
       succeeds.
-- [ ] `CORRECTION_REFERENCED` — a referenced SKU refused naming the producer; the same SKU at
+- [x] `CORRECTION_REFERENCED` — a referenced SKU refused naming the producer; the same SKU at
       fresh-zero succeeds.
-- [ ] `CORRECTION_DIRTY_HEAD` — a head with an unpublished bucket-iii edit refused; a clean head
+- [x] `CORRECTION_DIRTY_HEAD` — a head with an unpublished bucket-iii edit refused; a clean head
       succeeds.
 - [ ] `CORRECTION_APPROVAL_OPEN` — an open approval refused; after it closes, succeeds.
-- [ ] `CORRECTION_SIGNAL_AVAILABLE` — arm (a) with one fresh producer refused; with all stale,
+- [x] `CORRECTION_SIGNAL_AVAILABLE` — arm (a) with one fresh producer refused; with all stale,
       succeeds.
-- [ ] `BREAKGLASS_CORRECTION_DISABLED` — arm (a) with the flag OFF refused **403**; with it ON,
+- [x] `BREAKGLASS_CORRECTION_DISABLED` — arm (a) with the flag OFF refused **403**; with it ON,
       succeeds.
 
 **Controls on the shipped seam**

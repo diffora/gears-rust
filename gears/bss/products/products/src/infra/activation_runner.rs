@@ -452,6 +452,7 @@ async fn drive_door(
                 GateMode::PreAuthorized(ApprovalId::new(drive.row.approval_ref)),
                 &ctx.sink,
                 None,
+                None,
             )
             .await;
             Ok(map_sku_door(outcome, drive.attempt, ctx.budget))

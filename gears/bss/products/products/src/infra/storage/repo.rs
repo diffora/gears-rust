@@ -916,6 +916,13 @@ pub enum AuditEntry {
         /// has one to give.
         subject_revision: Option<i64>,
     },
+    /// An accepted act under a ceremony — the row carries `ceremony_ref`
+    /// (`07`'s break-glass lanes, `dod-reference-audit`).
+    CeremonyAct {
+        subject_id: Uuid,
+        subject_revision: Option<i64>,
+        ceremony_ref: Uuid,
+    },
 }
 
 /// The fields every audit-row class carries, whatever its shape
@@ -973,6 +980,7 @@ async fn insert_audit_row(
     entry: AuditEntry,
 ) -> Result<(), RepoError> {
     let audit_id = common.audit_id;
+    let mut ceremony: Option<Uuid> = None;
 
     let (subject_id, subject_revision, error_code, attempted_key, session_id) = match entry {
         AuditEntry::Refusal {
@@ -996,6 +1004,14 @@ async fn insert_audit_row(
             subject_revision,
         } => (Some(subject_id), subject_revision, None, None, None),
         AuditEntry::KeyedAct { attempted_key } => (None, None, None, Some(attempted_key), None),
+        AuditEntry::CeremonyAct {
+            subject_id,
+            subject_revision,
+            ceremony_ref,
+        } => {
+            ceremony = Some(ceremony_ref);
+            (Some(subject_id), subject_revision, None, None, None)
+        }
         AuditEntry::ElevatedRead {
             session_id,
             subject_id,
@@ -1017,9 +1033,9 @@ async fn insert_audit_row(
         correlation_id: Set(common.correlation_id),
         written_at: Set(common.written_at),
         session_id: Set(session_id),
-        // P-D-129's column; the doors that write it (05's break-glass, 07's
-        // correction) are not built, so every row today is `None`.
-        ceremony_ref: Set(None),
+        // P-D-129's column; `07`'s ceremony lanes write it through
+        // `AuditEntry::CeremonyAct` (P-D-147), every other row is `None`.
+        ceremony_ref: Set(ceremony),
         seal_state: Set("unsealed".to_owned()),
         chain_id: Set(None),
         seq: Set(None),
@@ -1097,6 +1113,38 @@ pub async fn write_refusal_audit(
 /// # Errors
 /// [`RepoError::Driver`] on a storage failure, or [`RepoError::Db`] on a
 /// scope refusal that raised no driver error.
+/// An accepted act's audit row that **carries the ceremony reference** —
+/// `07`'s break-glass correction and its dead-producer retirement
+/// (`dod-reference-audit`: *"the same value `products_correction_override`
+/// stores, so the ceremony and the evidence are joinable from either side"*).
+/// The row is otherwise [`write_eventless_act_audit`]'s.
+///
+/// # Errors
+///
+/// [`RepoError`] on a driver failure.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-reference-audit:p1
+pub async fn write_ceremony_act_audit(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    common: AuditCommon,
+    subject_id: Uuid,
+    subject_revision: Option<i64>,
+    ceremony_ref: Uuid,
+) -> Result<(), RepoError> {
+    insert_audit_row(
+        runner,
+        scope,
+        common,
+        AuditEntry::CeremonyAct {
+            subject_id,
+            subject_revision,
+            ceremony_ref,
+        },
+    )
+    .await
+}
+
 pub async fn write_eventless_act_audit(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -1901,6 +1949,21 @@ pub enum HeadWrite {
     Unmatched,
 }
 
+/// What `07`'s correction door hands the publish statement
+/// (`dod-correction-republish`, **P-D-41**'s "optional third argument"): the
+/// bucket-ii column(s) and their new values, plus the `correction_ref` that
+/// is the version row's physical door identity (**P-D-129** row 6). Written
+/// **in the bump statement**, never on their own — the row-image trigger
+/// refuses either half alone after first publish.
+#[derive(Debug, Clone)]
+pub struct CorrectionWrite {
+    /// The fresh reference this correction is known by; the same value the
+    /// override row and the audit row carry on a break-glass lane.
+    pub correction_ref: Uuid,
+    /// The bucket-ii columns and their new values (`None` clears).
+    pub columns: Vec<(sku::Column, Option<String>)>,
+}
+
 /// Freeze one version row: insert `products_entity_version` for
 /// `(tenant_id, entity_kind, entity_id, published_version)`
 /// (`design/01-foundation.md` §4.3, `inst-fd-publish-freeze`).
@@ -2236,6 +2299,7 @@ pub async fn publish_product_head(
 /// scope refusal that raised no driver error. The driver failures include
 /// the head-row guard's refusal of a bump whose frozen version row is missing. A
 /// stale revision is [`HeadWrite::Unmatched`], not an error.
+#[allow(clippy::too_many_arguments)]
 pub async fn publish_sku_head(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -2244,6 +2308,7 @@ pub async fn publish_sku_head(
     expected_internal_revision: i64,
     composition_pending: bool,
     now: DateTime<Utc>,
+    correction: Option<&CorrectionWrite>,
 ) -> Result<HeadWrite, RepoError> {
     let next_state: SimpleExpr = Expr::case(
         Expr::col(sku::Column::LifecycleState).eq(LifecycleState::Draft.as_str()),
@@ -2252,7 +2317,7 @@ pub async fn publish_sku_head(
     .finally(Expr::col(sku::Column::LifecycleState))
     .into();
 
-    let result = sku::Entity::update_many()
+    let mut update = sku::Entity::update_many()
         .secure()
         .scope_with(scope)
         .col_expr(
@@ -2270,7 +2335,21 @@ pub async fn publish_sku_head(
             sku::Column::CompositionPending,
             Expr::value(composition_pending),
         )
-        .col_expr(sku::Column::UpdatedAt, Expr::value(now))
+        .col_expr(sku::Column::UpdatedAt, Expr::value(now));
+    // The correction rides the bump statement (P-D-41, P-D-129 row 6): the
+    // bucket-ii column(s) and `correction_ref` move in the same `UPDATE` as
+    // `published_version`, which is the only form the row-image trigger
+    // admits after first publish.
+    if let Some(correction) = correction {
+        update = update.col_expr(
+            sku::Column::CorrectionRef,
+            Expr::value(Some(correction.correction_ref)),
+        );
+        for (column, value) in &correction.columns {
+            update = update.col_expr(*column, Expr::value(value.clone()));
+        }
+    }
+    let result = update
         .filter(
             Condition::all()
                 .add(sku::Column::TenantId.eq(tenant_id))

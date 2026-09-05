@@ -2377,7 +2377,7 @@ async fn publishing_a_draft_sku_moves_both_counters_by_exactly_one_and_takes_the
         .expect("insert sku");
     freeze(&conn, &scope, VersionedEntityKind::Sku, SKU, 1).await;
 
-    let outcome = publish_sku_head(&conn, &scope, TENANT, SKU, 1, false, at(10))
+    let outcome = publish_sku_head(&conn, &scope, TENANT, SKU, 1, false, at(10), None)
         .await
         .expect("publish the sku head");
     assert_eq!(outcome, HeadWrite::Applied);
@@ -2577,7 +2577,7 @@ async fn discarding_a_published_sku_matches_no_row() {
         .await
         .expect("insert sku");
     freeze(&conn, &scope, VersionedEntityKind::Sku, SKU, 1).await;
-    publish_sku_head(&conn, &scope, TENANT, SKU, 1, false, at(10))
+    publish_sku_head(&conn, &scope, TENANT, SKU, 1, false, at(10), None)
         .await
         .expect("publish");
 
@@ -3305,7 +3305,7 @@ async fn a_bucket_i_sku_save_stops_matching_once_the_head_has_published() {
     );
 
     freeze(&conn, &scope, VersionedEntityKind::Sku, SKU, 1).await;
-    publish_sku_head(&conn, &scope, TENANT, SKU, 2, false, at(11))
+    publish_sku_head(&conn, &scope, TENANT, SKU, 2, false, at(11), None)
         .await
         .expect("publish the head");
     assert_eq!(

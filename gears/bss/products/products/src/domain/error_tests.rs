@@ -207,6 +207,7 @@ fn wire_code_roster() -> Vec<(DomainError, &'static str)> {
     roster.extend(governance_wire_codes());
     roster.extend(usage_type_wire_codes());
     roster.extend(classification_wire_codes());
+    roster.extend(reference_wire_codes());
     roster
 }
 
@@ -238,6 +239,42 @@ fn classification_wire_codes() -> Vec<(DomainError, &'static str)> {
         (
             DomainError::BundleOverrideRequired("b".into()),
             "BUNDLE_OVERRIDE_REQUIRED",
+        ),
+    ]
+}
+
+/// `07`'s seven (`dod-reference-error-taxonomy`, P-D-147), split out for the
+/// same reason as the rosters around it; the other four of its eleven ride
+/// the watermark door's roster above.
+fn reference_wire_codes() -> Vec<(DomainError, &'static str)> {
+    vec![
+        (
+            DomainError::ProducerSetEmptyForbidden("p".into()),
+            "PRODUCER_SET_EMPTY_FORBIDDEN",
+        ),
+        (
+            DomainError::ProducerRetirementWouldFree("p".into()),
+            "PRODUCER_RETIREMENT_WOULD_FREE",
+        ),
+        (
+            DomainError::CorrectionReferenced("c".into()),
+            "CORRECTION_REFERENCED",
+        ),
+        (
+            DomainError::CorrectionDirtyHead("c".into()),
+            "CORRECTION_DIRTY_HEAD",
+        ),
+        (
+            DomainError::CorrectionApprovalOpen("c".into()),
+            "CORRECTION_APPROVAL_OPEN",
+        ),
+        (
+            DomainError::CorrectionSignalAvailable("c".into()),
+            "CORRECTION_SIGNAL_AVAILABLE",
+        ),
+        (
+            DomainError::BreakglassCorrectionDisabled("b".into()),
+            "BREAKGLASS_CORRECTION_DISABLED",
         ),
     ]
 }
@@ -313,7 +350,7 @@ fn every_variant_carries_its_design_set_wire_code() {
     // until today. Read that file's own note before changing either.
     assert_eq!(
         cases.len(),
-        70,
+        77,
         "the Foundation owns fourteen raiseable codes and hosts two guests \
          (retention-erasure's ERASURE_UNKNOWN_ACTOR, P-D-64 keeping that \
          roster at one, and the clone door's CLONE_SOURCE_DISCARDED, \

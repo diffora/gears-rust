@@ -237,6 +237,12 @@ pub mod actions {
     pub const DECIDE: &str = "decide";
     /// Elevate action — opening a break-glass session (`inst-bg-open`).
     pub const ELEVATE: &str = "elevate";
+    /// `07`'s correction door — the only writer of a bucket-ii column after
+    /// first publish (`dod-reference-authz`; P-D-147). An action on the
+    /// existing `sku` label, not a label of its own: the door corrects a SKU.
+    ///
+    /// @cpt-dod:cpt-cf-bss-products-dod-reference-authz:p1
+    pub const CORRECT: &str = "correct";
     /// Export action — taking audit content out of the gear, as opposed to
     /// reading it in place.
     pub const EXPORT: &str = "export";

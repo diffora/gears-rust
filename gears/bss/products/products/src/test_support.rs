@@ -400,6 +400,44 @@ pub async fn seed_satisfied_approval_with_ack(
     revision: i64,
     override_ack: Option<&str>,
 ) -> crate::domain::governance::ApprovalId {
+    seed_satisfied_record(db, tenant_id, subject, revision, override_ack, "{}").await
+}
+
+/// The double for `07`'s correction ceremony (`dod-correction-door`): a
+/// satisfied `sku_correction` record for this SKU at `revision` whose
+/// snapshot **is the payload** the door will present — the door compares the
+/// two canonically and refuses a mismatch, so the double must carry the
+/// bytes an approver would have signed (P-D-129 rows 10 and 11).
+pub async fn seed_satisfied_correction_approval(
+    db: &toolkit_db::DBProvider<toolkit_db::DbError>,
+    tenant_id: Uuid,
+    sku_id: Uuid,
+    revision: i64,
+    payload: &serde_json::Value,
+) -> crate::domain::governance::ApprovalId {
+    seed_satisfied_record(
+        db,
+        tenant_id,
+        crate::domain::governance::GateSubject::sku_correction(
+            tenant_id,
+            sku_id,
+            crate::domain::concurrency::InternalRevision::new(revision),
+        ),
+        revision,
+        None,
+        &payload.to_string(),
+    )
+    .await
+}
+
+async fn seed_satisfied_record(
+    db: &toolkit_db::DBProvider<toolkit_db::DbError>,
+    tenant_id: Uuid,
+    subject: crate::domain::governance::GateSubject,
+    revision: i64,
+    override_ack: Option<&str>,
+    content_snapshot: &str,
+) -> crate::domain::governance::ApprovalId {
     use crate::domain::governance::ApprovalId;
     use crate::domain::materiality::{
         MaterialAct, MaterialityEvaluator, MaterialityPolicy, Resolution,
@@ -459,7 +497,7 @@ pub async fn seed_satisfied_approval_with_ack(
             approval_id,
             subject: &subject,
             internal_revision: revision,
-            content_snapshot: "{}",
+            content_snapshot,
             diff_basis: None,
             act: &act,
             evaluator,

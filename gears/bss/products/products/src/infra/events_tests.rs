@@ -80,6 +80,15 @@ const THE_SET_TRIO: &[&str] = &[
 /// uncountable.
 const THE_BULK_SUMMARY: &[&str] = &["CatalogBulkOperationCompleted"];
 
+/// `07-reference-signal`'s three (`dod-reference-events`), transcribed from
+/// **its** §1.8 roster — a list of its own for every list's reason. Watermark
+/// ingestion is deliberately absent: `inst-ws-no-event`.
+const THE_REFERENCE_TRIO: &[&str] = &[
+    "SkuImmutableFieldCorrected",
+    "SkuCorrectionOverride",
+    "ReferenceProducerSetChanged",
+];
+
 /// Slice `02`'s eight (`dod-taxonomy-events`), transcribed from its §4.3
 /// roster — its own list for the reason every list above is its own: folding
 /// them into [`THE_EIGHT`] would claim §4.5 announces them, and §4.5
@@ -166,6 +175,7 @@ fn every_declared_token_belongs_to_exactly_one_entry_point() {
     let taxonomy = THE_TAXONOMY_EIGHT;
     let retention = THE_RETENTION_PAIR;
     let governance = THE_GOVERNANCE_THREE;
+    let reference = THE_REFERENCE_TRIO;
 
     for (token, _) in SCHEMA_REFS {
         let owners = usize::from(published.contains(token))
@@ -174,7 +184,8 @@ fn every_declared_token_belongs_to_exactly_one_entry_point() {
             + usize::from(bulk.contains(token))
             + usize::from(taxonomy.contains(token))
             + usize::from(retention.contains(token))
-            + usize::from(governance.contains(token));
+            + usize::from(governance.contains(token))
+            + usize::from(reference.contains(token));
         assert!(
             owners <= 1,
             "{token} is claimed by more than one entry point's guard"
@@ -200,6 +211,9 @@ fn every_declared_token_belongs_to_exactly_one_entry_point() {
 /// at its first enqueue; a *surplus* entry is a schema reference announced for
 /// an event this gear does not emit, which a consumer contract would take for
 /// a promise.
+// Nine rosters, one membership assertion each: the branching is the roster
+// count, not logic.
+#[allow(clippy::cognitive_complexity)]
 #[test]
 fn the_schema_roster_names_exactly_the_declared_events() {
     let registered: Vec<&str> = SCHEMA_REFS.iter().map(|(token, _)| *token).collect();
@@ -252,6 +266,12 @@ fn the_schema_roster_names_exactly_the_declared_events() {
             "{event} is 05's governance event and carries no schema reference"
         );
     }
+    for event in THE_REFERENCE_TRIO {
+        assert!(
+            registered.contains(event),
+            "{event} is 07's reference event and carries no schema reference"
+        );
+    }
     for token in &registered {
         assert!(
             THE_EIGHT.contains(token)
@@ -261,7 +281,8 @@ fn the_schema_roster_names_exactly_the_declared_events() {
                 || THE_BULK_SUMMARY.contains(token)
                 || THE_TAXONOMY_EIGHT.contains(token)
                 || THE_RETENTION_PAIR.contains(token)
-                || THE_GOVERNANCE_THREE.contains(token),
+                || THE_GOVERNANCE_THREE.contains(token)
+                || THE_REFERENCE_TRIO.contains(token),
             "{token} carries a schema reference and belongs to no declared roster: an \
              event no design document announces is a promise nothing backs"
         );
@@ -275,7 +296,8 @@ fn the_schema_roster_names_exactly_the_declared_events() {
             + THE_BULK_SUMMARY.len()
             + THE_TAXONOMY_EIGHT.len()
             + THE_RETENTION_PAIR.len()
-            + THE_GOVERNANCE_THREE.len(),
+            + THE_GOVERNANCE_THREE.len()
+            + THE_REFERENCE_TRIO.len(),
         "the roster must carry each declared event exactly once"
     );
 }

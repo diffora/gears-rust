@@ -365,6 +365,33 @@ pub struct NewCorrectionOverride {
 /// (b) the reverse. Two `Option`s would let a caller build the row the
 /// database refuses, and the refusal would arrive as a driver error rather
 /// than as a type error.
+/// The SKUs a producer's current watermark names — the population a dead
+/// producer's retirement frees, one override row each (**P-D-129** rows 2
+/// and 5). Empty for a never-received producer, by construction.
+///
+/// # Errors
+///
+/// [`RepoError`] on a driver failure.
+pub async fn reference_members_of(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    producer: &str,
+) -> Result<Vec<Uuid>, RepoError> {
+    let rows = reference_member::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(reference_member::Column::TenantId.eq(tenant_id))
+                .add(reference_member::Column::Producer.eq(producer)),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read the members of {producer}"), e))?;
+    Ok(rows.into_iter().map(|row| row.sku_id).collect())
+}
+
 #[derive(Debug, Clone)]
 pub enum OverrideEvidence {
     /// Arm (a): the per-producer unavailability snapshot, canonically
@@ -456,6 +483,34 @@ pub async fn record_correction_override(
 /// # Errors
 ///
 /// [`RepoError`] on a storage or scope failure.
+/// One arm's override rows in the window — the tripwire's population per
+/// **P-D-129** rows 8 and 9: `producer_unavailable` feeds
+/// `signal_delivery_release_blocker`, `unresolvable_target` its own alarm.
+///
+/// # Errors
+///
+/// [`RepoError`] on a driver failure.
+pub async fn correction_overrides_since_by_arm(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    since: DateTime<Utc>,
+    arm: &str,
+) -> Result<u64, RepoError> {
+    correction_override::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(correction_override::Column::TenantId.eq(tenant_id))
+                .add(correction_override::Column::AdmittingArm.eq(arm))
+                .add(correction_override::Column::RecordedAt.gte(since)),
+        )
+        .count(runner)
+        .await
+        .map_err(|e| driver_failure(format!("count {arm} overrides of {tenant_id}"), e))
+}
+
 pub async fn correction_overrides_since(
     runner: &impl DBRunner,
     scope: &AccessScope,

@@ -141,6 +141,11 @@ pub(crate) const SKU_SUBJECT_TYPE: &str = "gts.cf.core.events.subject.v1~cf.bss.
 pub(crate) const RECOGNIZED_SET_SUBJECT_TYPE: &str =
     "gts.cf.core.events.subject.v1~cf.bss.products.recognized_set.v1";
 
+/// `07`'s producer set, the subject of `ReferenceProducerSetChanged` — one
+/// per tenant (**P-D-71**), so the subject value is the tenant id.
+pub(crate) const REFERENCE_PRODUCER_SUBJECT_TYPE: &str =
+    "gts.cf.core.events.subject.v1~cf.bss.products.reference_producer.v1";
+
 /// The subject type for the batch-completion summary — the subject is the
 /// batch id. Derived from `cf.bss.products.bulk.v1~`, the GTS type `05`
 /// §3.2's authz catalog declares for the bulk grants (P-D-94's derivation
@@ -429,6 +434,103 @@ set_event! {
     /// The plan-tier taxonomy moved — PRD-named, its own event by design.
     PlanTierUpdated,
     "gts.cf.core.events.event_type.v1~cf.bss.products.plan_tier_updated.v1"
+}
+
+/// `07`'s correction, announced from the correcting transaction
+/// (`dod-reference-events`; P-D-147): the core plus the corrected field, its
+/// value, the lane and `quorumReduced` (**P-D-13**).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SkuImmutableFieldCorrected {
+    #[serde(flatten)]
+    pub core: CatalogEventCore,
+    pub field: String,
+    pub value: Option<String>,
+    pub lane: String,
+    pub quorum_reduced: bool,
+    pub correction_ref: Uuid,
+}
+
+impl TypedEvent for SkuImmutableFieldCorrected {
+    const TYPE_ID: &'static str =
+        "gts.cf.core.events.event_type.v1~cf.bss.products.sku_immutable_field_corrected.v1";
+    const TOPIC: &'static str = TOPIC;
+    const SUBJECT_TYPE: &'static str = SKU_SUBJECT_TYPE;
+    const SOURCE: &'static str = SOURCE;
+
+    fn subject(&self) -> Cow<'_, str> {
+        Cow::Owned(self.core.entity_id.to_string())
+    }
+
+    fn tenant_id(&self) -> Option<Uuid> {
+        Some(self.core.tenant_id)
+    }
+
+    fn trace_parent(&self) -> Option<Cow<'_, str>> {
+        crate::infra::events::traceparent().map(Cow::Owned)
+    }
+}
+
+/// A break-glass correction's evidence row, announced beside the correction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SkuCorrectionOverride {
+    #[serde(flatten)]
+    pub core: CatalogEventCore,
+    pub arm: String,
+    pub field: String,
+    pub ceremony_ref: Uuid,
+}
+
+impl TypedEvent for SkuCorrectionOverride {
+    const TYPE_ID: &'static str =
+        "gts.cf.core.events.event_type.v1~cf.bss.products.sku_correction_override.v1";
+    const TOPIC: &'static str = TOPIC;
+    const SUBJECT_TYPE: &'static str = SKU_SUBJECT_TYPE;
+    const SOURCE: &'static str = SOURCE;
+
+    fn subject(&self) -> Cow<'_, str> {
+        Cow::Owned(self.core.entity_id.to_string())
+    }
+
+    fn tenant_id(&self) -> Option<Uuid> {
+        Some(self.core.tenant_id)
+    }
+
+    fn trace_parent(&self) -> Option<Cow<'_, str>> {
+        crate::infra::events::traceparent().map(Cow::Owned)
+    }
+}
+
+/// The tenant's registered producer set moved — entity-less, the tenant's
+/// set being the aggregate (**P-D-71**), so the subject is the tenant id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReferenceProducerSetChanged {
+    pub tenant_id: Uuid,
+    pub producer: String,
+    pub state: String,
+    pub actor_ref: Uuid,
+}
+
+impl TypedEvent for ReferenceProducerSetChanged {
+    const TYPE_ID: &'static str =
+        "gts.cf.core.events.event_type.v1~cf.bss.products.reference_producer_set_changed.v1";
+    const TOPIC: &'static str = TOPIC;
+    const SUBJECT_TYPE: &'static str = REFERENCE_PRODUCER_SUBJECT_TYPE;
+    const SOURCE: &'static str = SOURCE;
+
+    fn subject(&self) -> Cow<'_, str> {
+        Cow::Owned(self.tenant_id.to_string())
+    }
+
+    fn tenant_id(&self) -> Option<Uuid> {
+        Some(self.tenant_id)
+    }
+
+    fn trace_parent(&self) -> Option<Cow<'_, str>> {
+        crate::infra::events::traceparent().map(Cow::Owned)
+    }
 }
 
 /// `02`'s eight events share one body: which entity, which act, which state
@@ -980,6 +1082,9 @@ async fn prepare_every_event_type(
     producer.prepare::<RecognizedUnitUpdated>().await?;
     producer.prepare::<RecognizedCodeUpdated>().await?;
     producer.prepare::<PlanTierUpdated>().await?;
+    producer.prepare::<SkuImmutableFieldCorrected>().await?;
+    producer.prepare::<SkuCorrectionOverride>().await?;
+    producer.prepare::<ReferenceProducerSetChanged>().await?;
     producer.prepare::<CatalogBulkOperationCompleted>().await?;
     Ok(())
 }

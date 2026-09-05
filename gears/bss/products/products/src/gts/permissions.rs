@@ -175,6 +175,15 @@ gts_instance! {
 }
 gts_instance! {
     AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.sku_correct.v1"),
+        resource_type: labels::SKU.to_owned(),
+        action: actions::CORRECT.to_owned(),
+        display_name: "Correct a published SKU's bucket-ii field through the correction door"
+            .to_owned(),
+    }
+}
+gts_instance! {
+    AuthzPermissionV1 {
         id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.sku_read.v1"),
         resource_type: labels::SKU.to_owned(),
         action: actions::READ.to_owned(),
@@ -349,6 +358,7 @@ mod tests {
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.product_read.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.sku_write.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.sku_publish.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.sku_correct.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.sku_read.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.catalog_version_request.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.catalog_version_ack.v1"),
@@ -478,6 +488,7 @@ mod tests {
             crate::authz::actions::ELEVATE,
             crate::authz::actions::EXPORT,
             crate::authz::actions::CANCEL,
+            crate::authz::actions::CORRECT,
         ];
         // `10`'s three grants reuse EXECUTE, EXPORT and WRITE on their own
         // resources. `04`'s scheduled-transition cancel spends `CANCEL`

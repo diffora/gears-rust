@@ -75,6 +75,13 @@ fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
         D::PlanTierUnknown(_) => (400, Some("PLAN_TIER_UNKNOWN")),
         D::PlanTierDeprecated(_) => (400, Some("PLAN_TIER_DEPRECATED")),
         D::BundleOverrideRequired(_) => (400, Some("BUNDLE_OVERRIDE_REQUIRED")),
+        D::ProducerSetEmptyForbidden(_) => (409, Some("PRODUCER_SET_EMPTY_FORBIDDEN")),
+        D::ProducerRetirementWouldFree(_) => (409, Some("PRODUCER_RETIREMENT_WOULD_FREE")),
+        D::CorrectionReferenced(_) => (409, Some("CORRECTION_REFERENCED")),
+        D::CorrectionDirtyHead(_) => (409, Some("CORRECTION_DIRTY_HEAD")),
+        D::CorrectionApprovalOpen(_) => (409, Some("CORRECTION_APPROVAL_OPEN")),
+        D::CorrectionSignalAvailable(_) => (409, Some("CORRECTION_SIGNAL_AVAILABLE")),
+        D::BreakglassCorrectionDisabled(_) => (403, Some("BREAKGLASS_CORRECTION_DISABLED")),
         // The three delist blocks are 409s in the same note.
         D::UnitDelistBlocked(_) => (409, Some("UNIT_DELIST_BLOCKED")),
         D::PlanTierRetireBlocked(_) => (409, Some("PLAN_TIER_RETIRE_BLOCKED")),
@@ -191,6 +198,13 @@ fn one_of_every_variant() -> Vec<DomainError> {
         D::PlanTierUnknown(d()),
         D::PlanTierDeprecated(d()),
         D::BundleOverrideRequired(d()),
+        D::ProducerSetEmptyForbidden(d()),
+        D::ProducerRetirementWouldFree(d()),
+        D::CorrectionReferenced(d()),
+        D::CorrectionDirtyHead(d()),
+        D::CorrectionApprovalOpen(d()),
+        D::CorrectionSignalAvailable(d()),
+        D::BreakglassCorrectionDisabled(d()),
         D::UnitDelistBlocked(d()),
         D::PlanTierRetireBlocked(d()),
         D::AccountingCodeDelistBlocked(d()),
@@ -256,7 +270,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
 /// arithmetic is frozen history; this note exists so the miscount does not
 /// travel into the next brief, and so a strand that moves one number does not
 /// go looking for a third that is not there.
-const DOMAIN_ERROR_VARIANTS: usize = 70;
+const DOMAIN_ERROR_VARIANTS: usize = 77;
 
 /// Covers all 14 variants (§3.3's own count, `DomainError::code`'s own
 /// exhaustiveness note): every one lands on the status the design ladder

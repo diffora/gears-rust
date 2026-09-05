@@ -547,7 +547,7 @@ decision (P-D-132).
   code is a breaking change. **Versioning**: the path segment `/v1/` is the wire version; within
   it, payloads evolve under slice 12's compatibility rule (`nfr-backward-compatible-evolution`).
 
-**Endpoints Overview** — the routes registered in code today (50), by owning slice; stability
+**Endpoints Overview** — the routes registered in code today (51), by owning slice; stability
 `v1` throughout (the SDK's compatibility rule is the stability contract). Per-route semantics,
 authz resources and refusal codes live in each slice's §3; the authz mapping in slice 05 §3.2.
 
@@ -594,7 +594,8 @@ authz resources and refusal codes live in each slice's §3; the authz mapping in
 | `POST` | `/bss-products/v1/catalog-versions/{id}/acks` | a participant's `freezeComplete` ack | 06 | v1 |
 | `POST` | `/bss-products/v1/catalog-versions/{id}/releases` | release a version's liveness (P-D-18) | 06 | v1 |
 | `POST` | `/bss-products/v1/reference-producers` | register a reference producer (P-D-03) | 07 | v1 |
-| `POST` | `/bss-products/v1/reference-producers/{producer}/retirements` | a producer's retirement signal | 07 | v1 |
+| `POST` | `/bss-products/v1/reference-producers/{producer}/retirements` | a producer's retirement signal (optional break-glass justification for a dead producer) | 07 | v1 |
+| `POST` | `/bss-products/v1/skus/{id}/corrections` | correct a published SKU's bucket-ii field through the governed correction door | 07 | v1 |
 | `POST` | `/bss-products/v1/reference-watermarks` | ingest a producer watermark | 07 | v1 |
 | `POST` | `/bss-products/v1/bulk/imports` | start a bulk import batch | 09 | v1 |
 | `GET` | `/bss-products/v1/bulk/batches/{id}` | read a batch and its change report | 09 | v1 |

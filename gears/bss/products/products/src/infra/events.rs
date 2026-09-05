@@ -368,6 +368,20 @@ pub(crate) const RECOGNIZED_CODE_UPDATED_PAYLOAD_TYPE: &str = "RecognizedCodeUpd
 /// event by design.
 pub(crate) const PLAN_TIER_UPDATED_PAYLOAD_TYPE: &str = "PlanTierUpdated";
 
+/// `07`'s three (`dod-reference-events`; P-D-147). Two are SKU-subjected and
+/// ride [`EventBodyCore`] plus the correction's own fields; the third's
+/// aggregate is the tenant's producer set itself — `aggregate_id =
+/// tenant_id` (**P-D-71**, a per-tenant singleton) — and it carries the
+/// entity-less shape `features/catalog-version.md` §7 row 27 registers.
+/// Watermark ingestion emits **no** event (`inst-ws-no-event`): watermarks
+/// are queryable state, not history.
+pub(crate) const SKU_IMMUTABLE_FIELD_CORRECTED_PAYLOAD_TYPE: &str = "SkuImmutableFieldCorrected";
+/// A break-glass correction's evidence row, announced beside the correction.
+pub(crate) const SKU_CORRECTION_OVERRIDE_PAYLOAD_TYPE: &str = "SkuCorrectionOverride";
+/// The tenant's registered producer set moved — a registration or a
+/// retirement.
+pub(crate) const REFERENCE_PRODUCER_SET_CHANGED_PAYLOAD_TYPE: &str = "ReferenceProducerSetChanged";
+
 /// **The explicit no-event declaration** `dod-recognized-set-events`
 /// requires: a per-field classification edit on a SKU — its type,
 /// `sellable`, tier, meter pair or accounting codes — emits **no event of its
@@ -478,6 +492,18 @@ pub(crate) const SCHEMA_REFS: &[(&str, &str)] = &[
     (
         PLAN_TIER_UPDATED_PAYLOAD_TYPE,
         "bss-products.PlanTierUpdated.v1.0.0",
+    ),
+    (
+        SKU_IMMUTABLE_FIELD_CORRECTED_PAYLOAD_TYPE,
+        "bss-products.SkuImmutableFieldCorrected.v1.0.0",
+    ),
+    (
+        SKU_CORRECTION_OVERRIDE_PAYLOAD_TYPE,
+        "bss-products.SkuCorrectionOverride.v1.0.0",
+    ),
+    (
+        REFERENCE_PRODUCER_SET_CHANGED_PAYLOAD_TYPE,
+        "bss-products.ReferenceProducerSetChanged.v1.0.0",
     ),
     (
         CATALOG_BULK_OPERATION_COMPLETED_PAYLOAD_TYPE,
@@ -832,6 +858,11 @@ pub(crate) enum EventsError {
     /// reference.
     #[error("{0} carries a set body and must be enqueued through enqueue_set_event")]
     SetEventNeedsSetBody(String),
+    /// `07`'s two correction events carry the field, the value and the
+    /// ceremony beside the core; the plain-core entry point refuses them
+    /// (`enqueue_correction_event` is theirs).
+    #[error("{0} carries a correction body: use enqueue_correction_event")]
+    CorrectionEventNeedsBody(String),
     /// A token that is not the batch summary reached
     /// [`enqueue_bulk_completed`], whose batch-shaped body no other event
     /// carries — the fifth arm of the entry points' fail-closed rule.
@@ -1130,8 +1161,17 @@ pub(crate) async fn enqueue(
         RECOGNIZED_UNIT_UPDATED_PAYLOAD_TYPE
             | RECOGNIZED_CODE_UPDATED_PAYLOAD_TYPE
             | PLAN_TIER_UPDATED_PAYLOAD_TYPE
+            | REFERENCE_PRODUCER_SET_CHANGED_PAYLOAD_TYPE
     ) {
         return Err(EventsError::SetEventNeedsSetBody(payload_type.to_owned()));
+    }
+    if matches!(
+        payload_type,
+        SKU_IMMUTABLE_FIELD_CORRECTED_PAYLOAD_TYPE | SKU_CORRECTION_OVERRIDE_PAYLOAD_TYPE
+    ) {
+        return Err(EventsError::CorrectionEventNeedsBody(
+            payload_type.to_owned(),
+        ));
     }
     if payload_type == CATALOG_BULK_OPERATION_COMPLETED_PAYLOAD_TYPE {
         return Err(EventsError::BulkEventNeedsBatchBody(
@@ -2119,3 +2159,182 @@ pub(crate) fn retention_aggregate_id(tenant_id: Uuid, subject_ref: &str) -> Uuid
 #[cfg(test)]
 #[path = "events_tests.rs"]
 mod events_tests;
+
+/// `SkuImmutableFieldCorrected`'s body: the core plus what the correction
+/// changed and how it was approved (`dod-correction-republish`: `quorumReduced`
+/// rides the event as well as the record, **P-D-13**).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CorrectionEventBody<'core> {
+    #[serde(flatten)]
+    pub core: &'core EventBodyCore,
+    /// The corrected column, as `products_sku` spells it.
+    pub field: &'core str,
+    /// The new value; `null` clears.
+    pub value: Option<&'core str>,
+    /// The lane the correction rode: `normal`, `producer_unavailable` or
+    /// `unresolvable_target`.
+    pub lane: &'core str,
+    /// Whether the ceremony's effective quorum was below the default of two.
+    pub quorum_reduced: bool,
+    /// The correction's own `correction_ref`, the version row's physical door
+    /// identity (P-D-129 row 6).
+    pub correction_ref: Uuid,
+}
+
+/// `SkuCorrectionOverride`'s body: the evidence row a break-glass correction
+/// wrote, announced beside the correction so the ceremony and the evidence
+/// are joinable from the stream as well as from the tables.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OverrideEventBody<'core> {
+    #[serde(flatten)]
+    pub core: &'core EventBodyCore,
+    /// `producer_unavailable` or `unresolvable_target`.
+    pub arm: &'core str,
+    /// The corrected column.
+    pub field: &'core str,
+    /// The ceremony reference the override row and the audit row both carry.
+    pub ceremony_ref: Uuid,
+}
+
+/// `07`'s two SKU-subjected correction events, in the correcting transaction
+/// (`dod-reference-events`; P-D-147). Interim: the envelope carries the body
+/// as rendered here; broker: the typed twins in [`broker`].
+///
+/// # Errors
+///
+/// [`EventsError::NoTypedEvent`] for any other token; the sink's own error.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-reference-events:p1
+pub(crate) async fn enqueue_correction_event(
+    sink: &EventSink,
+    runner: &(impl DBRunner + Sync),
+    payload_type: &str,
+    body: CorrectionEventBody<'_>,
+    override_body: Option<OverrideEventBody<'_>>,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    match sink {
+        EventSink::Interim(outbox) => match payload_type {
+            SKU_IMMUTABLE_FIELD_CORRECTED_PAYLOAD_TYPE => {
+                enqueue_body(
+                    outbox,
+                    runner,
+                    body.core.tenant_id,
+                    body.core.entity_id,
+                    payload_type,
+                    &body,
+                    actor_ref,
+                )
+                .await
+            }
+            SKU_CORRECTION_OVERRIDE_PAYLOAD_TYPE => {
+                let evidence = override_body.ok_or_else(|| {
+                    EventsError::CorrectionEventNeedsBody(payload_type.to_owned())
+                })?;
+                enqueue_body(
+                    outbox,
+                    runner,
+                    evidence.core.tenant_id,
+                    evidence.core.entity_id,
+                    payload_type,
+                    &evidence,
+                    actor_ref,
+                )
+                .await
+            }
+            other => Err(EventsError::NoTypedEvent(other.to_owned())),
+        },
+        EventSink::Broker(producer) => match payload_type {
+            SKU_IMMUTABLE_FIELD_CORRECTED_PAYLOAD_TYPE => {
+                producer
+                    .enqueue(
+                        runner,
+                        broker::SkuImmutableFieldCorrected {
+                            core: broker::CatalogEventCore::from_core(body.core, actor_ref),
+                            field: body.field.to_owned(),
+                            value: body.value.map(str::to_owned),
+                            lane: body.lane.to_owned(),
+                            quorum_reduced: body.quorum_reduced,
+                            correction_ref: body.correction_ref,
+                        },
+                    )
+                    .await
+            }
+            SKU_CORRECTION_OVERRIDE_PAYLOAD_TYPE => {
+                let evidence = override_body.ok_or_else(|| {
+                    EventsError::CorrectionEventNeedsBody(payload_type.to_owned())
+                })?;
+                producer
+                    .enqueue(
+                        runner,
+                        broker::SkuCorrectionOverride {
+                            core: broker::CatalogEventCore::from_core(evidence.core, actor_ref),
+                            arm: evidence.arm.to_owned(),
+                            field: evidence.field.to_owned(),
+                            ceremony_ref: evidence.ceremony_ref,
+                        },
+                    )
+                    .await
+            }
+            other => return Err(EventsError::NoTypedEvent(other.to_owned())),
+        }
+        .map(|_| ())
+        .map_err(EventsError::Broker),
+    }
+}
+
+/// `ReferenceProducerSetChanged`'s body — entity-less: the tenant's producer
+/// set is the aggregate (**P-D-71**: `aggregate_id = tenant_id`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProducerSetEventBody<'a> {
+    pub tenant_id: Uuid,
+    /// The producer that registered or retired.
+    pub producer: &'a str,
+    /// `registered` or `retired`.
+    pub state: &'a str,
+}
+
+/// `ReferenceProducerSetChanged`, in the registering or retiring transaction
+/// (`dod-producer-registration`, `dod-reference-events`; P-D-147). Ordered
+/// per tenant: the aggregate is the tenant id itself.
+///
+/// # Errors
+///
+/// The sink's own error.
+pub(crate) async fn enqueue_producer_set_event(
+    sink: &EventSink,
+    runner: &(impl DBRunner + Sync),
+    body: ProducerSetEventBody<'_>,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    match sink {
+        EventSink::Interim(outbox) => {
+            enqueue_body(
+                outbox,
+                runner,
+                body.tenant_id,
+                body.tenant_id,
+                REFERENCE_PRODUCER_SET_CHANGED_PAYLOAD_TYPE,
+                &body,
+                actor_ref,
+            )
+            .await
+        }
+        EventSink::Broker(producer) => producer
+            .enqueue(
+                runner,
+                broker::ReferenceProducerSetChanged {
+                    tenant_id: body.tenant_id,
+                    producer: body.producer.to_owned(),
+                    state: body.state.to_owned(),
+                    actor_ref,
+                },
+            )
+            .await
+            .map(|_| ())
+            .map_err(EventsError::Broker),
+    }
+}

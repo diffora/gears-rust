@@ -208,6 +208,42 @@ pub enum DomainError {
     #[error("uncomposed bundle publish needs the override acknowledgment: {0}")]
     BundleOverrideRequired(String),
 
+    // -- `07-reference-signal`'s seven (`dod-reference-error-taxonomy`,
+    // P-D-147). The other four of its eleven — `PRODUCER_UNREGISTERED` and
+    // the three `WATERMARK_*` — landed with the watermark door. --
+    /// Retiring the **last** registered producer would leave the reference
+    /// predicate with no quantifier (`07 inst-pr-retirement`).
+    ///
+    /// @cpt-dod:cpt-cf-bss-products-dod-reference-error-taxonomy:p1
+    #[error("the last registered reference producer cannot retire: {0}")]
+    ProducerSetEmptyForbidden(String),
+    /// Retiring a producer whose watermark is stale or never-received would
+    /// free every SKU it conservatively holds (`07 inst-pr-retirement`,
+    /// **P-D-129** rows 2 and 5): a live producer posts an empty set first;
+    /// a dead one retires under break-glass elevation with a justification.
+    #[error("retiring this producer would free the SKUs it holds: {0}")]
+    ProducerRetirementWouldFree(String),
+    /// The correction door's normal lane: a registered producer still
+    /// references the SKU, named in the detail (`07 inst-cr-freshzero`).
+    #[error("the SKU is referenced: {0}")]
+    CorrectionReferenced(String),
+    /// The head carries versioned content its last version row does not —
+    /// digest inequality, **P-D-129** row 24 (`07 inst-cr-door`).
+    #[error("the head is dirty: {0}")]
+    CorrectionDirtyHead(String),
+    /// The subject carries an open approval besides the correction's own
+    /// (`07 inst-cr-door`).
+    #[error("an approval is open on the subject: {0}")]
+    CorrectionApprovalOpen(String),
+    /// Break-glass arm (a) asked while a fresh producer can still answer —
+    /// the normal lane is open (`07 inst-bc-admission`).
+    #[error("the signal is available, the normal lane is open: {0}")]
+    CorrectionSignalAvailable(String),
+    /// Break-glass arm (a) with `breakglass_correction_enabled` off
+    /// (**P-D-71**); arm (b) is not behind the flag (**P-D-48**).
+    #[error("break-glass correction is disabled: {0}")]
+    BreakglassCorrectionDisabled(String),
+
     /// A Product reaching `published` carries no primary category
     /// (`inst-tx-primary-at-publish`).
     ///
@@ -589,6 +625,13 @@ impl DomainError {
             Self::PlanTierUnknown(_) => "PLAN_TIER_UNKNOWN",
             Self::PlanTierDeprecated(_) => "PLAN_TIER_DEPRECATED",
             Self::BundleOverrideRequired(_) => "BUNDLE_OVERRIDE_REQUIRED",
+            Self::ProducerSetEmptyForbidden(_) => "PRODUCER_SET_EMPTY_FORBIDDEN",
+            Self::ProducerRetirementWouldFree(_) => "PRODUCER_RETIREMENT_WOULD_FREE",
+            Self::CorrectionReferenced(_) => "CORRECTION_REFERENCED",
+            Self::CorrectionDirtyHead(_) => "CORRECTION_DIRTY_HEAD",
+            Self::CorrectionApprovalOpen(_) => "CORRECTION_APPROVAL_OPEN",
+            Self::CorrectionSignalAvailable(_) => "CORRECTION_SIGNAL_AVAILABLE",
+            Self::BreakglassCorrectionDisabled(_) => "BREAKGLASS_CORRECTION_DISABLED",
             Self::PrimaryCategoryRequired(_) => "PRIMARY_CATEGORY_REQUIRED",
             Self::ApprovalRequired(_) => "APPROVAL_REQUIRED",
             Self::SelfApprovalForbidden(_) => "SELF_APPROVAL_FORBIDDEN",

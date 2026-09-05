@@ -236,6 +236,17 @@ impl From<DomainError> for CanonicalError {
             D::BundleOverrideRequired(detail) => {
                 precondition("composition_pending", &detail, "BUNDLE_OVERRIDE_REQUIRED")
             }
+            // `07`'s seven: `design/07` §3.2 pins six at 409 (the current
+            // state refuses the act) and the disabled arm at 403.
+            D::ProducerSetEmptyForbidden(detail) => aborted(detail, "PRODUCER_SET_EMPTY_FORBIDDEN"),
+            D::ProducerRetirementWouldFree(detail) => {
+                aborted(detail, "PRODUCER_RETIREMENT_WOULD_FREE")
+            }
+            D::CorrectionReferenced(detail) => aborted(detail, "CORRECTION_REFERENCED"),
+            D::CorrectionDirtyHead(detail) => aborted(detail, "CORRECTION_DIRTY_HEAD"),
+            D::CorrectionApprovalOpen(detail) => aborted(detail, "CORRECTION_APPROVAL_OPEN"),
+            D::CorrectionSignalAvailable(detail) => aborted(detail, "CORRECTION_SIGNAL_AVAILABLE"),
+            D::BreakglassCorrectionDisabled(_detail) => denied("BREAKGLASS_CORRECTION_DISABLED"),
             D::UnitDelistBlocked(detail) => aborted(detail, "UNIT_DELIST_BLOCKED"),
             D::PlanTierRetireBlocked(detail) => aborted(detail, "PLAN_TIER_RETIRE_BLOCKED"),
             D::AccountingCodeDelistBlocked(detail) => {

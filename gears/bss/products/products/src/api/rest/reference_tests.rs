@@ -95,6 +95,7 @@ fn app(harness: &TestHarness) -> Router {
         bulk_max_rows_per_batch: defaults.bulk_max_rows_per_batch,
         bulk_max_concurrent_batches_per_tenant: defaults.bulk_max_concurrent_batches_per_tenant,
         watermark_skew_tolerance: defaults.watermark_skew_tolerance(),
+        reference: crate::api::rest::ReferenceKnobs::from(&defaults),
         breakglass_window_hours: crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT,
         breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
         usage_type_resolver: crate::test_support::resolved_usage_types(),
@@ -157,7 +158,75 @@ async fn body_json(response: axum::http::Response<Body>) -> serde_json::Value {
     serde_json::from_slice(&bytes).expect("the response body is JSON")
 }
 
+/// A published SKU row this registry knows — the referent an override row's
+/// foreign key needs. Written in statements the head guard admits, the way
+/// the sets suite seeds its holders.
+async fn seed_sku_row(harness: &TestHarness, sku_code: &str) -> Uuid {
+    use sea_orm::ConnectionTrait as _;
+    let conn = sea_orm::Database::connect(&harness.dsn)
+        .await
+        .expect("open an auxiliary connection");
+    let product_id = Uuid::now_v7();
+    let sku_id = Uuid::now_v7();
+    let now = "2026-08-29 09:00:00.000000 +00:00";
+    for sql in [
+        format!(
+            "INSERT INTO products_product (product_id, tenant_id, brand_id, name, \
+             name_normalized, product_code, lifecycle_state, internal_revision, \
+             published_version, region_scope, brand_scope, created_by, created_at, updated_at) \
+             VALUES (X'{prod}', X'{tenant}', X'{brand}', 'Holder {sku_code}', \
+             'holder {sku_code}', NULL, 'draft', 1, 0, '', '', 'principal:author-1', \
+             '{now}', '{now}')",
+            prod = product_id.simple(),
+            tenant = TENANT.simple(),
+            brand = Uuid::from_u128(0xb1).simple(),
+        ),
+        format!(
+            "INSERT INTO products_sku (sku_id, tenant_id, product_id, sku_code, \
+             lifecycle_state, internal_revision, published_version, composition_pending, \
+             region_scope, brand_scope, created_by, created_at, updated_at) \
+             VALUES (X'{sku}', X'{tenant}', X'{prod}', '{sku_code}', 'draft', 1, 0, 0, '', '', \
+             'principal:author-1', '{now}', '{now}')",
+            sku = sku_id.simple(),
+            tenant = TENANT.simple(),
+            prod = product_id.simple(),
+        ),
+        format!(
+            "INSERT INTO products_entity_version (tenant_id, entity_kind, entity_id, \
+             published_version, content, content_digest, digest_version, actor_ref, \
+             published_at) VALUES (X'{tenant}', 'sku', X'{sku}', 1, '{{}}', X'00', 1, \
+             X'{tenant}', '{now}')",
+            tenant = TENANT.simple(),
+            sku = sku_id.simple(),
+        ),
+        format!(
+            "UPDATE products_sku SET lifecycle_state = 'published', published_version = 1, \
+             internal_revision = internal_revision + 1 WHERE sku_id = X'{sku}'",
+            sku = sku_id.simple(),
+        ),
+    ] {
+        conn.execute_unprepared(&sql)
+            .await
+            .expect("the head guard admits this fixture write");
+    }
+    sku_id
+}
+
+/// The in-test approval double every producer op needs under the stored host
+/// (`dod-producer-registration`, P-D-147): one satisfied record for the exact
+/// subject the door presents.
+async fn seed_producer_op(harness: &TestHarness, producer: &str) {
+    crate::test_support::seed_satisfied_approval(
+        &harness.db,
+        TENANT,
+        crate::api::rest::reference::producer_op_subject(TENANT, producer),
+        0,
+    )
+    .await;
+}
+
 async fn register(harness: &TestHarness, producer: &str) {
+    seed_producer_op(harness, producer).await;
     let response = post_json(
         app(harness),
         "/bss-products/v1/reference-producers",
@@ -169,6 +238,21 @@ async fn register(harness: &TestHarness, producer: &str) {
         StatusCode::CREATED,
         "premise: registered"
     );
+}
+
+/// Retire through the door with the double seeded; `justification` selects
+/// the dead-producer lane.
+async fn retire(
+    harness: &TestHarness,
+    producer: &str,
+    justification: Option<&str>,
+) -> axum::http::Response<Body> {
+    seed_producer_op(harness, producer).await;
+    let uri = format!("/bss-products/v1/reference-producers/{producer}/retirements");
+    match justification {
+        Some(text) => post_json(app(harness), &uri, &json!({ "justification": text })).await,
+        None => post_empty(app(harness), &uri).await,
+    }
 }
 
 fn watermark_body(producer: &str, at: chrono::DateTime<Utc>, skus: &[Uuid]) -> serde_json::Value {
@@ -312,11 +396,10 @@ async fn retirement_clears_the_watermark_and_re_registration_starts_never_receiv
     )
     .await;
 
-    let retired = post_empty(
-        app(&harness),
-        "/bss-products/v1/reference-producers/pricing/retirements",
-    )
-    .await;
+    // A second producer, so the retirement is not the set's last
+    // (`PRODUCER_SET_EMPTY_FORBIDDEN`); the one under test is fresh.
+    register(&harness, "billing").await;
+    let retired = retire(&harness, "pricing", None).await;
     assert_eq!(retired.status(), StatusCode::OK);
     assert_eq!(body_json(retired).await["state"], json!("retired"));
 
@@ -480,6 +563,7 @@ async fn the_in_process_binding_shares_the_gate_and_the_store() {
             bulk_max_rows_per_batch: 2,
             bulk_max_concurrent_batches_per_tenant: defaults.bulk_max_concurrent_batches_per_tenant,
             watermark_skew_tolerance: defaults.watermark_skew_tolerance(),
+            reference: crate::api::rest::ReferenceKnobs::from(&defaults),
             breakglass_window_hours: crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT,
             breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
             usage_type_resolver: crate::test_support::resolved_usage_types(),
@@ -623,6 +707,7 @@ mod accepted_audit_tests {
         // day that guard lands — a failure that reads as an audit
         // regression rather than as a fixture needing a second producer.
         for producer in ["pricing", "rating"] {
+            seed_producer_op(&harness, producer).await;
             let response = post_json(
                 app(&harness),
                 "/bss-products/v1/reference-producers",
@@ -685,11 +770,8 @@ mod accepted_audit_tests {
             "and the replay did not file itself as a write"
         );
 
-        let retired = post_empty(
-            app(&harness),
-            "/bss-products/v1/reference-producers/pricing/retirements",
-        )
-        .await;
+        register(&harness, "billing").await;
+        let retired = retire(&harness, "pricing", None).await;
         assert_eq!(retired.status(), axum::http::StatusCode::OK);
         assert_eq!(
             audit_rows(&harness.dsn, "reference_producer_retire").await,
@@ -697,4 +779,239 @@ mod accepted_audit_tests {
             "an accepted retirement leaves a row"
         );
     }
+}
+
+/// **The producer doors have a gate** (`dod-producer-registration`, P-D-147):
+/// without a satisfied record for the producer's `GovernedLiveOp` subject a
+/// registration answers `APPROVAL_REQUIRED` and writes nothing; with it the
+/// set moves and `ReferenceProducerSetChanged` announces per tenant.
+#[tokio::test]
+async fn a_producer_op_without_a_satisfied_record_is_refused_approval_required() {
+    let harness = harness().await;
+    let refused = post_json(
+        app(&harness),
+        "/bss-products/v1/reference-producers",
+        &json!({ "producer": "pricing" }),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        body_json(refused).await["context"]["reason"],
+        json!("APPROVAL_REQUIRED")
+    );
+    assert_eq!(
+        crate::test_support::enqueued_event_count(&harness.dsn, "ReferenceProducerSetChanged")
+            .await,
+        0
+    );
+
+    register(&harness, "pricing").await;
+    assert_eq!(
+        crate::test_support::enqueued_event_count(&harness.dsn, "ReferenceProducerSetChanged")
+            .await,
+        1,
+        "a registration announces the set change in its own transaction"
+    );
+}
+
+/// **The retirement rule, P-D-129 rows 2 and 5** (`dod-producer-registration`):
+/// the last registered producer never retires; a stale or never-received one
+/// retires only with the break-glass justification, which passes the PII gate
+/// and leaves one `producer_unavailable` override row per SKU it held plus an
+/// audit row carrying the ceremony reference.
+#[tokio::test]
+async fn retiring_the_last_or_a_dead_producer_is_refused_unless_break_glass_justifies_it() {
+    let harness = harness().await;
+    register(&harness, "pricing").await;
+
+    let last = retire(&harness, "pricing", None).await;
+    assert_eq!(last.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        body_json(last).await["context"]["reason"],
+        json!("PRODUCER_SET_EMPTY_FORBIDDEN")
+    );
+
+    register(&harness, "billing").await;
+    // pricing posts a stale watermark naming one real SKU: it now holds that
+    // SKU conservatively, and its retirement would free it.
+    let held = seed_sku_row(&harness, "HELD-1").await;
+    let stale_at = Utc::now() - chrono::Duration::hours(2);
+    let posted = post_json(
+        app(&harness),
+        "/bss-products/v1/reference-watermarks",
+        &watermark_body("pricing", stale_at, &[held]),
+    )
+    .await;
+    assert_eq!(
+        posted.status(),
+        StatusCode::OK,
+        "premise: the stale watermark lands"
+    );
+
+    let would_free = retire(&harness, "pricing", None).await;
+    assert_eq!(would_free.status(), StatusCode::CONFLICT);
+    let body = body_json(would_free).await;
+    assert_eq!(
+        body["context"]["reason"],
+        json!("PRODUCER_RETIREMENT_WOULD_FREE")
+    );
+    assert!(
+        body.to_string().contains("stale"),
+        "the refusal names the standing: {body}"
+    );
+
+    let pii = retire(&harness, "pricing", Some("requested by Ann Fritz")).await;
+    assert_eq!(
+        pii.status(),
+        StatusCode::BAD_REQUEST,
+        "a person-shaped justification fails 02's gate"
+    );
+    assert_eq!(
+        body_json(pii).await["context"]["violations"][0]["type"],
+        json!("CONTENT_PII_BLOCKED")
+    );
+
+    let retired = retire(
+        &harness,
+        "pricing",
+        Some("producer decommissioned, host gone"),
+    )
+    .await;
+    assert_eq!(
+        retired.status(),
+        StatusCode::OK,
+        "{}",
+        body_json(retired).await
+    );
+    assert_eq!(
+        crate::test_support::raw_i64(
+            &harness.dsn,
+            "SELECT count(*) AS v FROM products_correction_override \
+             WHERE admitting_arm = 'producer_unavailable' AND field = 'producer_retirement'"
+        )
+        .await,
+        1,
+        "one override row per SKU the dead producer held"
+    );
+    assert_eq!(
+        crate::test_support::raw_i64(
+            &harness.dsn,
+            "SELECT count(*) AS v FROM products_audit_log \
+             WHERE action = 'reference_producer_retire_breakglass' AND ceremony_ref IS NOT NULL"
+        )
+        .await,
+        1,
+        "the audit row carries the ceremony reference"
+    );
+    assert_eq!(
+        crate::test_support::raw_i64(
+            &harness.dsn,
+            "SELECT count(*) AS v FROM products_audit_log a JOIN products_correction_override o \
+             ON a.ceremony_ref = o.ceremony_ref"
+        )
+        .await,
+        1,
+        "the ceremony and the evidence are joinable from either side"
+    );
+    assert_eq!(
+        crate::test_support::enqueued_event_count(&harness.dsn, "ReferenceProducerSetChanged")
+            .await,
+        3,
+        "two registrations and one retirement"
+    );
+}
+
+/// **The tripwire is a windowed count over the override table**
+/// (`dod-tripwire`, P-D-129 rows 8 and 9): the sixth `producer_unavailable`
+/// row in thirty days trips it and raises the derived
+/// `signal_delivery_release_blocker`; the `unresolvable_target` arm counts
+/// separately and never raises the blocker.
+#[tokio::test]
+async fn the_tripwire_trips_on_the_sixth_override_in_the_window() {
+    let harness = harness().await;
+    let conn = harness.db.conn().expect("conn");
+    let knobs = crate::api::rest::ReferenceKnobs::from(&ProductsConfig::default());
+    let now = Utc::now();
+    let mut last = None;
+    for n in 0..6_u32 {
+        crate::infra::storage::repo::record_correction_override(
+            &conn,
+            &scope(),
+            TENANT,
+            crate::infra::storage::repo::NewCorrectionOverride {
+                override_id: Uuid::now_v7(),
+                sku_id: seed_sku_row(&harness, &format!("TRIP-{n}")).await,
+                field: "meter".to_owned(),
+                reason: "signal unavailable".to_owned(),
+                evidence: crate::infra::storage::repo::OverrideEvidence::ProducerUnavailable {
+                    snapshot: "{}".to_owned(),
+                },
+                ceremony_ref: Uuid::now_v7(),
+                recorded_at: now - chrono::Duration::days(i64::from(n)),
+            },
+        )
+        .await
+        .expect("record the override");
+        last = Some(
+            crate::api::rest::reference::tripwire_after_override(
+                &conn,
+                &scope(),
+                TENANT,
+                knobs,
+                "producer_unavailable",
+                now,
+            )
+            .await
+            .expect("count the window"),
+        );
+        if n < 5 {
+            assert!(
+                !last.expect("verdict").tripped,
+                "{} rows do not trip",
+                n + 1
+            );
+        }
+    }
+    let verdict = last.expect("verdict");
+    assert_eq!(verdict.count, 6);
+    assert!(verdict.tripped, "the sixth within the window trips");
+    assert!(
+        crate::api::rest::reference::signal_delivery_release_blocker(
+            &conn,
+            &scope(),
+            TENANT,
+            knobs,
+            now
+        )
+        .await
+        .expect("derive the blocker"),
+        "the blocker is derived from the same window"
+    );
+    // The other arm's rows are its own population.
+    let other = crate::api::rest::reference::tripwire_after_override(
+        &conn,
+        &scope(),
+        TENANT,
+        knobs,
+        "unresolvable_target",
+        now,
+    )
+    .await
+    .expect("count the other arm");
+    assert_eq!(other.count, 0);
+    assert!(!other.tripped);
+    // Past the window the rows fall out and the blocker clears.
+    assert!(
+        !crate::api::rest::reference::signal_delivery_release_blocker(
+            &conn,
+            &scope(),
+            TENANT,
+            knobs,
+            now + chrono::Duration::days(31)
+        )
+        .await
+        .expect("derive the blocker later"),
+        "a rolling window, not stored state"
+    );
+    return_pinned(conn);
 }

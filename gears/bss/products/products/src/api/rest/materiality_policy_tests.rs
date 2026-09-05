@@ -97,6 +97,7 @@ fn app_for(harness: &TestHarness, tenant: Uuid) -> Router {
         bulk_max_concurrent_batches_per_tenant: ProductsConfig::default()
             .bulk_max_concurrent_batches_per_tenant,
         watermark_skew_tolerance: ProductsConfig::default().watermark_skew_tolerance(),
+        reference: crate::api::rest::ReferenceKnobs::from(&ProductsConfig::default()),
         breakglass_window_hours: crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT,
         breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
         usage_type_resolver: crate::test_support::resolved_usage_types(),

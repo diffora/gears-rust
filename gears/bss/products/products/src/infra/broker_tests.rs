@@ -12,9 +12,10 @@ use super::{
     METADATA_SUBJECT_TYPE, MetadataUpdated, PRODUCT_SUBJECT_TYPE, PiiAllowlistChanged,
     PlanTierUpdated, ProductCreated, ProductDeprecated, ProductDiscarded, ProductHeadSaved,
     ProductPublished, ProductRetired, ProductRetirementEffective, ProductUndeprecated,
-    RecognizedCodeUpdated, RecognizedUnitUpdated, SKU_SUBJECT_TYPE, SOURCE, SkuCreated,
-    SkuDeprecated, SkuDiscarded, SkuHeadSaved, SkuPublished, SkuRetired, SkuRetirementEffective,
-    SkuUndeprecated, TOPIC,
+    REFERENCE_PRODUCER_SUBJECT_TYPE, RecognizedCodeUpdated, RecognizedUnitUpdated,
+    ReferenceProducerSetChanged, SKU_SUBJECT_TYPE, SOURCE, SkuCorrectionOverride, SkuCreated,
+    SkuDeprecated, SkuDiscarded, SkuHeadSaved, SkuImmutableFieldCorrected, SkuPublished,
+    SkuRetired, SkuRetirementEffective, SkuUndeprecated, TOPIC,
 };
 
 const TENANT: Uuid = Uuid::from_u128(0x7e_42);
@@ -151,6 +152,9 @@ const THE_LIFECYCLE_REST: &[(&str, &str, &str)] = &[
     ),
 ];
 
+// One branch per entry point the roster declares: the branching is the
+// roster's width, not logic.
+#[allow(clippy::cognitive_complexity)]
 /// Enqueue one declared event through **the entry point that owns its body
 /// shape**, and record the subject the read-back will find it by.
 ///
@@ -280,6 +284,51 @@ async fn enqueue_one(
         expected.push((set_kind.to_owned(), type_id));
         return;
     }
+    if token == crate::infra::events::REFERENCE_PRODUCER_SET_CHANGED_PAYLOAD_TYPE {
+        crate::infra::events::enqueue_producer_set_event(
+            sink,
+            conn,
+            crate::infra::events::ProducerSetEventBody {
+                tenant_id: TENANT,
+                producer: "pricing",
+                state: "registered",
+            },
+            ACTOR,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue_producer_set_event: {e}"));
+        expected.push((TENANT.to_string(), type_id));
+        return;
+    }
+    if token == crate::infra::events::SKU_IMMUTABLE_FIELD_CORRECTED_PAYLOAD_TYPE
+        || token == crate::infra::events::SKU_CORRECTION_OVERRIDE_PAYLOAD_TYPE
+    {
+        let ceremony = Uuid::from_u128(0xce_01);
+        crate::infra::events::enqueue_correction_event(
+            sink,
+            conn,
+            token,
+            crate::infra::events::CorrectionEventBody {
+                core: &core,
+                field: "sku_type",
+                value: Some("service"),
+                lane: "producer_unavailable",
+                quorum_reduced: false,
+                correction_ref: ceremony,
+            },
+            Some(crate::infra::events::OverrideEventBody {
+                core: &core,
+                arm: "producer_unavailable",
+                field: "sku_type",
+                ceremony_ref: ceremony,
+            }),
+            ACTOR,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{token} must enqueue through enqueue_correction_event: {e}"));
+        expected.push((entity_id.to_string(), type_id));
+        return;
+    }
     if token.ends_with("Published") {
         crate::infra::events::enqueue_published(sink, conn, entity_id, token, &core, 7, ACTOR)
             .await
@@ -341,6 +390,26 @@ const THE_SET_TRIO: &[(&str, &str, &str)] = &[
         "PlanTierUpdated",
         "gts.cf.core.events.event_type.v1~cf.bss.products.plan_tier_updated.v1",
         TRANSCRIBED_SET_SUBJECT,
+    ),
+];
+
+/// `07`'s three — two SKU-subjected, one on the producer set — names from its
+/// §1.8 roster, ids and subjects derived by this module's naming rule.
+const THE_REFERENCE_TRIO: &[(&str, &str, &str)] = &[
+    (
+        "SkuImmutableFieldCorrected",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.sku_immutable_field_corrected.v1",
+        TRANSCRIBED_SKU_SUBJECT,
+    ),
+    (
+        "SkuCorrectionOverride",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.sku_correction_override.v1",
+        TRANSCRIBED_SKU_SUBJECT,
+    ),
+    (
+        "ReferenceProducerSetChanged",
+        "gts.cf.core.events.event_type.v1~cf.bss.products.reference_producer_set_changed.v1",
+        "gts.cf.core.events.subject.v1~cf.bss.products.reference_producer.v1",
     ),
 ];
 
@@ -446,6 +515,7 @@ fn every_declared_event() -> Vec<(&'static str, &'static str, &'static str)> {
         .chain(THE_BULK_SUMMARY)
         .chain(THE_TAXONOMY_EIGHT)
         .chain(THE_RETENTION_PAIR)
+        .chain(THE_REFERENCE_TRIO)
         .copied()
         .collect()
 }
@@ -603,7 +673,40 @@ fn declared() -> Vec<(&'static str, &'static str, &'static str)> {
             PiiAllowlistChanged::SUBJECT_TYPE,
             PiiAllowlistChanged::TOPIC,
         ),
+        (
+            SkuImmutableFieldCorrected::TYPE_ID,
+            SkuImmutableFieldCorrected::SUBJECT_TYPE,
+            SkuImmutableFieldCorrected::TOPIC,
+        ),
+        (
+            SkuCorrectionOverride::TYPE_ID,
+            SkuCorrectionOverride::SUBJECT_TYPE,
+            SkuCorrectionOverride::TOPIC,
+        ),
+        (
+            ReferenceProducerSetChanged::TYPE_ID,
+            ReferenceProducerSetChanged::SUBJECT_TYPE,
+            ReferenceProducerSetChanged::TOPIC,
+        ),
     ]
+}
+
+/// `07`'s producer-set event names the tenant as its subject (P-D-71): the
+/// registered set is a per-tenant singleton, so per-aggregate ordering
+/// serializes set changes per tenant.
+#[test]
+fn the_producer_set_event_is_subjected_by_tenant() {
+    let event = ReferenceProducerSetChanged {
+        tenant_id: TENANT,
+        producer: "pricing".to_owned(),
+        state: "registered".to_owned(),
+        actor_ref: ACTOR,
+    };
+    assert_eq!(event.subject(), TENANT.to_string());
+    assert_eq!(
+        ReferenceProducerSetChanged::SUBJECT_TYPE,
+        REFERENCE_PRODUCER_SUBJECT_TYPE
+    );
 }
 
 /// **Each of the eight declares the id this module's doc derived for it, and
@@ -687,8 +790,8 @@ fn the_subject_type_follows_the_entity_the_event_is_about() {
         "eight of the catalog entity events are about a Product"
     );
     assert_eq!(
-        sku_events, 8,
-        "eight of the catalog entity events are about a SKU"
+        sku_events, 10,
+        "eight of the catalog entity events plus 07's two correction events are about a SKU"
     );
     let set_events = declared()
         .iter()
