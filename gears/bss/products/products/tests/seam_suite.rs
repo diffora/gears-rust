@@ -39,7 +39,10 @@
 //! OWED, each with its measured reason (`OWED_FIXTURES`). C4 admits a fixture
 //! only when the counterpart raises the code the fixture asserts, and a
 //! vacuously green fixture is worse than an absent one, so none of the five is
-//! written. Re-measured at `14344c110` against pricing's tree: no watermark
+//! written as a green check. **Their registry-side halves are** (P-D-160): one
+//! `#[ignore]`d test each, compiled against both SDKs, doing the registry's
+//! setup and ending on the counterpart's absence with the ask in the ignore
+//! reason — so the joint build starts from a half that already runs. Re-measured at `14344c110` against pricing's tree: no watermark
 //! producer, no consumer of any registry event, no adoption-guard code raised
 //! (`SKU_NOT_PUBLISHED` is named and not raised), no meter-binding rule.
 //!
@@ -390,5 +393,185 @@ fn the_owed_fixtures_are_five_and_each_names_its_measured_reason() {
     assert_eq!(names.len(), 5, "five distinct fixtures");
     for (_, row, why) in OWED_FIXTURES {
         assert!(!row.is_empty() && why.len() > 40, "a reason, not a shrug");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The products-side halves of the five OWED fixtures (P-D-160)
+// ---------------------------------------------------------------------------
+//
+// Each half does what the registry side of the fixture will do — builds the
+// shape it posts or reads, checks the pin and the roster the fixture leans
+// on — and then stops at the counterpart's absence with the ask spelled out.
+// `#[ignore]`d, with the ask in the reason, so `--ignored` runs them and shows
+// exactly what pricing owes; the ignore comes off the day the counterpart
+// raises its code (C4), and the `panic!` at the end becomes the assertion.
+
+fn pin_member(pin: &Pin, name: &str) -> Option<bool> {
+    pin.member
+        .iter()
+        .find(|m| m.name == name)
+        .map(|m| m.comparable)
+}
+
+fn system_ctx() -> toolkit_security::SecurityContext {
+    toolkit_security::SecurityContext::builder()
+        .subject_id(uuid::Uuid::now_v7())
+        .subject_type("bss-products.seam-suite")
+        .subject_tenant_id(uuid::Uuid::nil())
+        .build()
+        .expect("both required builder fields are set")
+}
+
+/// The watermark fixture, registry half: the post pricing's producer will make
+/// carries exactly `producer`, `watermark_at` and `sku_ids`, the port answers
+/// an error while unconfigured (never a silent ack), and `skuId` is pinned
+/// comparable — the operand the register names.
+#[tokio::test]
+#[ignore = "pricing ask (P-D-160, row 1): a SkuReferenceCount producer calling WatermarkPosts::post per watermark — pricing has no producer type or call site"]
+async fn watermark_fixture_registry_half() {
+    use bss_products_sdk::watermarks::{
+        UnconfiguredWatermarkPosts, WatermarkPost, WatermarkPosts as _,
+    };
+    let post = WatermarkPost {
+        producer: "pricing".to_owned(),
+        watermark_at: chrono::Utc::now(),
+        sku_ids: vec![uuid::Uuid::now_v7()],
+    };
+    let answer = UnconfiguredWatermarkPosts
+        .post(&system_ctx(), uuid::Uuid::now_v7(), post)
+        .await;
+    assert!(
+        answer.is_err(),
+        "an unconfigured port refuses; it never acks"
+    );
+    assert_eq!(pin_member(&read_pin(), "skuId"), Some(true));
+    panic!("counterpart absent: pricing produces no SkuReferenceCount watermark (register row 13)");
+}
+
+/// The adoption-block fixture, registry half: a `deprecated` SKU as pricing
+/// reads it, under the pinned two-value `status` vocabulary; the fixture's
+/// assertion will be pricing refusing the adoption at retirement or
+/// unpublishing with `SKU_NOT_PUBLISHED`.
+#[tokio::test]
+#[ignore = "pricing ask (P-D-160, row 2): raise SKU_NOT_PUBLISHED on adopting a deprecated SKU at retirement or unpublishing (pricing AC #82) — named in pricing's plan rules, raised nowhere"]
+async fn adoption_block_fixture_registry_half() {
+    let deprecated = CatalogSku {
+        sku_id: uuid::Uuid::now_v7(),
+        sku_code: "FIBRE-500-1".to_owned(),
+        name: "Fibre 500".to_owned(),
+        metering_unit: None,
+        status: LifecycleState::Deprecated.as_str().to_owned(),
+        plan_tier: None,
+        sku_type: "product".to_owned(),
+        sellable: true,
+        usage_type_ref: None,
+    };
+    assert_eq!(
+        deprecated.status, "deprecated",
+        "the wire subset's second value"
+    );
+    assert_eq!(pin_member(&read_pin(), "status"), Some(true));
+    panic!("counterpart absent: pricing raises SKU_NOT_PUBLISHED nowhere (register row 2)");
+}
+
+/// The usage-binding fixture, registry half: the meter pair as pricing reads
+/// it, both members pinned comparable; the fixture's assertion will be
+/// pricing's binding rule refusing an unbound meter and a `deprecated` bound
+/// unit.
+#[tokio::test]
+#[ignore = "pricing ask (P-D-160, row 3): a meter-binding rule raising METER_USAGE_TYPE_UNBOUND / METER_DIMENSION_UNDECLARED and judging a deprecated bound unit — pricing's foundation calls the binding deferred"]
+async fn usage_binding_fixture_registry_half() {
+    let usage = CatalogSku {
+        sku_id: uuid::Uuid::now_v7(),
+        sku_code: "STORAGE-GIB".to_owned(),
+        name: "Storage".to_owned(),
+        metering_unit: Some("gib_month".to_owned()),
+        status: "published".to_owned(),
+        plan_tier: Some("standard".to_owned()),
+        sku_type: "product".to_owned(),
+        sellable: true,
+        usage_type_ref: Some("usage:storage".to_owned()),
+    };
+    assert!(
+        usage.metering_unit.is_some() && usage.usage_type_ref.is_some(),
+        "the pair travels together"
+    );
+    let pin = read_pin();
+    assert_eq!(pin_member(&pin, "unit"), Some(true));
+    assert_eq!(pin_member(&pin, "usageTypeRef"), Some(true));
+    panic!("counterpart absent: pricing has no meter-binding rule (register rows 5 and 6)");
+}
+
+/// The grandfathered-resolution fixture, registry half: pricing's own port for
+/// the frozen snapshot exists and refuses while unconfigured, and
+/// `CatalogVersion` is pinned as a surface; the fixture's assertion will be a
+/// byte-identical re-resolution after registry churn through a real
+/// implementor.
+#[tokio::test]
+#[ignore = "pricing ask (P-D-160, row 4): a CatalogVersionRegistryV1 implementor on the posted-use path — pricing has only local-dev and test stubs"]
+async fn grandfathered_resolution_fixture_registry_half() {
+    use bss_pricing_sdk::catalog_version_registry::{
+        CatalogVersionRegistryV1 as _, UnconfiguredCatalogVersionRegistryV1,
+    };
+    let answer = UnconfiguredCatalogVersionRegistryV1
+        .committed_version(&system_ctx(), "pending:1")
+        .await;
+    assert!(answer.is_err(), "an unconfigured registry port refuses");
+    let pin = read_pin();
+    assert!(
+        pin.member
+            .iter()
+            .any(|m| m.name == "CatalogVersion" && m.kind == "surface"),
+        "the surface entry the fixture rides on"
+    );
+    panic!("counterpart absent: no posted-use path resolves a frozen snapshot (register row 7)");
+}
+
+/// The correction fixture, registry half: `SkuImmutableFieldCorrected` is on
+/// the versioned event roster with its schema reference; the fixture's
+/// assertion will be pricing re-validating on it.
+#[tokio::test]
+#[ignore = "pricing ask (P-D-160, row 5): consume SkuImmutableFieldCorrected and re-validate (07 inst-cr-republish) — pricing consumes no registry event"]
+async fn correction_fixture_registry_half() {
+    let roster = bss_products_sdk::events::SCHEMA_REFS;
+    let entry = roster
+        .iter()
+        .find(|(name, _)| *name == "SkuImmutableFieldCorrected")
+        .expect("the correction event is on the roster");
+    assert!(
+        entry.1.ends_with(".v1.0.0"),
+        "a semver schema reference: {}",
+        entry.1
+    );
+    panic!("counterpart absent: pricing consumes no bss-products event (register row 8)");
+}
+
+/// The five asks are filed where pricing's owner will read them: `design/12`
+/// §2.2's counterpart table names each fixture, and pricing's own register
+/// carries the section (P-D-160).
+#[test]
+fn the_counterpart_asks_are_filed_on_both_sides() {
+    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let design = std::fs::read_to_string(here.join("../docs/design/12-consumer-contracts.md"))
+        .expect("design/12");
+    let asks = design
+        .find("#### Counterpart asks (P-D-160)")
+        .expect("the counterpart table is filed");
+    let table = &design[asks..];
+    let pricing = std::fs::read_to_string(here.join("../../pricing/docs/DECISIONS.md"))
+        .expect("pricing's register is in the same workspace");
+    let filed = pricing
+        .find("Asks from the products gear")
+        .expect("pricing's register carries the asks");
+    for (name, _, _) in OWED_FIXTURES {
+        assert!(
+            table.contains(name),
+            "design/12 names the `{name}` fixture's ask"
+        );
+        assert!(
+            pricing[filed..].contains(name),
+            "pricing's register names `{name}`"
+        );
     }
 }

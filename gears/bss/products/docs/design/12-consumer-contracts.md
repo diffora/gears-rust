@@ -133,6 +133,21 @@ Every row is a fixture in the suite, an explicitly OWED line, or one of the two 
 `assertable now` / `deferred with post-v1 EOL` — the register is the
 suite's backlog, reviewed whenever a counterpart lands an AC (C4).
 
+#### Counterpart asks (P-D-160)
+
+The five OWED fixtures, each with the pricing rule that makes it authorable, the code that rule
+must raise, the AC it answers to, and the registry half that already runs (`products/tests/seam_suite.rs`,
+`#[ignore]`d with the same ask as its reason). Filed in pricing's register under *Asks from the
+products gear*; owned there, dated 2026-09-05.
+
+| Fixture | Pricing rule to build | Code it must raise | AC | Registry half |
+|---|---|---|---|---|
+| `watermark` (row 13) | a `SkuReferenceCount` producer calling `WatermarkPosts::post` per watermark (P-D-03) | none — a post, acked or refused by the registry's four watermark codes | PRD AC #38; 07 | `watermark_fixture_registry_half` |
+| `adoption-block` (row 2) | refuse adoption of a `deprecated` SKU at retirement or unpublishing | `SKU_NOT_PUBLISHED` | pricing AC #82 | `adoption_block_fixture_registry_half` |
+| `usage-binding` (rows 5, 6) | the meter-binding rule, the `deprecated` bound unit included | `METER_USAGE_TYPE_UNBOUND`, `METER_DIMENSION_UNDECLARED` | P-D-05; PRD AC #38 | `usage_binding_fixture_registry_half` |
+| `grandfathered-resolution` (row 7) | a `CatalogVersionRegistryV1` implementor on the posted-use path | none — byte identity across registry churn (06 `inst-gf-invariant`) | PRD AC #23 | `grandfathered_resolution_fixture_registry_half` |
+| `correction` (row 8) | consume `SkuImmutableFieldCorrected` and re-validate | pricing's re-validation refusal, unminted | 07 `inst-cr-republish` | `correction_fixture_registry_half` |
+
 ### 2.3 Event versioning, replay & bootstrap
 
 Declared by [`../features/consumer-contracts.md`](../features/consumer-contracts.md) §2 as `cpt-cf-bss-products-flow-replay`.

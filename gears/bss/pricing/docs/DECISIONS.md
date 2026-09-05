@@ -16,6 +16,8 @@
 - [F.1 Open product forks (2026-07-29)](#f1-open-product-forks-2026-07-29--not-decided-by-the-review)
 - [F.2 Carried forward — findings not closed this round](#f2-carried-forward--findings-not-closed-this-round)
 - [G. Ratifications — decisions already applied by the review fix wave](#g-ratifications--decisions-already-applied-by-the-review-fix-wave)
+- [H. Tooling / traceability notes](#h-tooling--traceability-notes)
+- [I. Asks from the products gear (filed 2026-09-05 — products P-D-160)](#i-asks-from-the-products-gear-filed-2026-09-05--products-p-d-160)
 
 <!-- /toc -->
 
@@ -4505,3 +4507,25 @@ insert durable, leaving a gap the race walks back into.
 that — and now asserts that the second writer is refused, that one window
 survives, and that the refusal arrives as `WindowOverlap` rather than an
 unrecognized `Db` failure.
+
+## I. Asks from the products gear (filed 2026-09-05 — products P-D-160)
+
+Cross-gear asks the registry's seam suite is waiting on, filed here so they sit in the register
+their owner reads (products `design/12` §2.2 *Counterpart asks* carries the same rows from the
+other side). Each is a pricing build; the registry half of every fixture already runs, `#[ignore]`d,
+in `gears/bss/products/products/tests/seam_suite.rs` with the ask as its reason. Owner: pricing's
+owner. None is decided here.
+
+| # | Ask | What the registry side already carries | Products source |
+|---|-----|-----------------------------------------|-----------------|
+| I-1 | The inbox envelope: rename `submitter_principal` → `submitter` on `ApprovalView` and gain a `quorum` card (`required`, `satisfied`, `quorum_reduced`), so both gears' inbox cards share one shape | `ApprovalInboxCard` renders `submitter` and `quorum`; the seam suite pins the five fields both cards share today (`the_inbox_envelope_cross_check_pins_the_shared_fields`) | products P-D-130, P-D-151, P-D-160 |
+| I-2 | `compositionPending` on `CatalogSku`, the adoption operand for an uncomposed bundle (PRD AC #36) | `products_sku.composition_pending` and the SDK member; the pin flags the member not-yet-comparable and the two-sided check fails the change that ships it on one side only | products P-D-35, P-D-57 |
+| I-3 | Pin `CatalogSku.status`'s vocabulary to the registry's two-value wire subset (`published`, `deprecated`) rather than a free `String` | the pin's `status` member with per-side names (P-D-66); `the_status_vocabulary_is_the_registrys_wire_subset` | products P-D-66 |
+| I-4 | A `SkuReferenceCount` watermark producer calling `WatermarkPosts::post` per watermark — the P-D-03 joint build (fixture `watermark`) | the four watermark refusals and the ack shape; `watermark_fixture_registry_half` | products P-D-03, 07 |
+| I-5 | Raise `SKU_NOT_PUBLISHED` on adopting a `deprecated` SKU at retirement or unpublishing (AC #82; fixture `adoption-block`) | `adoption_block_fixture_registry_half` | products P-D-160 |
+| I-6 | The meter-binding rule: `METER_USAGE_TYPE_UNBOUND`, `METER_DIMENSION_UNDECLARED`, the `deprecated` bound unit judged (fixture `usage-binding`) | the meter pair on `CatalogSku` and the pin; `usage_binding_fixture_registry_half` | products P-D-05 |
+| I-7 | A `CatalogVersionRegistryV1` implementor on the posted-use path (fixture `grandfathered-resolution`) | the resolver's `posted` intent serves stable bytes; `grandfathered_resolution_fixture_registry_half` | products 06 `inst-gf-invariant` |
+| I-8 | Consume `SkuImmutableFieldCorrected` and re-validate (fixture `correction`) | the event on the versioned roster with its schema reference; `correction_fixture_registry_half` | products 07 `inst-cr-republish` |
+
+`name` on `CatalogSku` is **not** an ask: it stays pricing's rendering (the registry has no SKU
+name column and mints none — products P-D-159).

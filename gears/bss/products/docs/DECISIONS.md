@@ -1569,6 +1569,38 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-160 — The pricing seams from this side: five registry halves written and ignored, the asks filed in both registers, a consumer guide
+
+- **Date**: 2026-09-05 (the lead, group 18 of the follow-on plan; nothing here builds pricing)
+- **The five OWED fixtures gain their registry halves.** Each is an `#[ignore]`d test in
+  `products/tests/seam_suite.rs`, compiled against both SDKs, doing what the registry side of the
+  fixture will do — the watermark post pricing's producer will make, the `deprecated` SKU as
+  pricing reads it, the meter pair on `CatalogSku`, pricing's own snapshot port refusing while
+  unconfigured, the correction event on the versioned roster — and ending on the counterpart's
+  absence with the ask as the ignore reason. `--ignored` runs them and shows exactly what pricing
+  owes; the ignore comes off the day the counterpart raises its code, and the closing `panic!`
+  becomes the assertion. C4 stands: none is a green check. *Counter-argument:* write the halves
+  as plain green tests over the registry side alone; rejected — that is the vacuous fixture the
+  DoD's closing rule forbids, dressed as coverage.
+- **The asks are filed in both registers.** `design/12` §2.2 gains a *Counterpart asks* table —
+  fixture, the pricing rule to build, the code it must raise, the AC, the registry half — and
+  pricing's `DECISIONS.md` gains section *I. Asks from the products gear*: the inbox envelope
+  (rename `submitter_principal` → `submitter`, gain `quorum`; the registry's card is the design's),
+  `compositionPending` on `CatalogSku`, the `status` vocabulary pinned to the two-value wire
+  subset, and the five fixture counterparts. Owned there, dated; none decided here. `name` is
+  not an ask (P-D-159). A seam-suite test asserts both filings name every fixture, so a register
+  edit that drops one fails here.
+- **The consumer guide** joins `DESIGN.md` §3.3: the six clients and what each binds, the
+  precondition pair and its three refusals, the error vocabulary as the match target, the
+  versioned event roster, the bootstrap contract, and where a consumer's fixture lands.
+- **Not done here**: the three consumer-contracts DoDs stay unticked by their own rules —
+  `dod-seam-suite-home`'s CI clause (P-D-132), `dod-joint-fixtures`' closing rule (no
+  counterpart raises a code yet), `dod-lint-gate` (a job outside the gear).
+- **Propagated**: `design/12-consumer-contracts.md` §2.2 (the counterpart table), `DESIGN.md`
+  §3.3 (the consumer guide); pricing's register (section I) as the cross-gear filing.
+- **Trace**: `seam_suite::{watermark,adoption_block,usage_binding,grandfathered_resolution,correction}_fixture_registry_half`,
+  `seam_suite::the_counterpart_asks_are_filed_on_both_sides`.
+
 #### P-D-159 — Route reconciliation: ten doors declared and paired, lint 3's code half, the composition door's own word for nothing, and the casing question with its recommendation
 
 - **Date**: 2026-09-05 (the lead, group 17 of the follow-on plan)

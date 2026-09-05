@@ -547,6 +547,26 @@ decision (P-D-132).
   code is a breaking change. **Versioning**: the path segment `/v1/` is the wire version; within
   it, payloads evolve under slice 12's compatibility rule (`nfr-backward-compatible-evolution`).
 
+**Consumer guide (P-D-160).** A consuming gear resolves the six `products-sdk` clients from
+`ClientHub` — `ProductsClient` (the read shape: `get_product`, `get_sku`), `Authoring` (create,
+save, publish under both preconditions), `FreezeAcks` (a participant's ack and release),
+`CompositionSignals` (the composition-completed signal; outcomes `cleared`, `held`, `replayed`,
+`nothing`), `WatermarkPosts` (a producer's watermark), `IncrementRequests` (a version request and
+its committed answer) — and binds nothing else; the unconfigured implementors refuse, never
+answer silently. **Preconditions**: a `Precondition { if_match, idempotency_key }` travels with
+every authoring call — `if_match` is the `internal_revision` the read returned, `idempotency_key`
+the caller's own; a save without `if_match` is `VALIDATION`, a stale one `STALE_REVISION`, a
+replayed key returns the stored outcome with `replayed = true`. **Errors** cross the port as
+canonical errors whose code is one of `ErrorCode::ALL` — the vocabulary the SDK ships and the
+gear's `error_tests` pin to the domain roster — so a consumer matches on the code and never on
+the message. **Events** are the versioned roster `events::SCHEMA_REFS` (name → semver schema
+reference); a consumer subscribes by schema reference and tolerates additive change within
+`v1` (slice 12's compatibility rule). **Bootstrap**: a consumer of the read projection starts
+from the latest `CatalogVersion` under `browse` intent plus the event tail from that version's
+instant (slice 08's bootstrap contract), and a zero-version tenant starts from the empty catalog
+plus the whole retained tail. The seam suite (`products/tests/seam_suite.rs`) is where a
+consumer's joint fixture lands, and `design/12` §2.2 carries what each consumer owes.
+
 **Endpoints Overview** — the routes registered in code today (65), by owning slice; stability
 `v1` throughout (the SDK's compatibility rule is the stability contract). Per-route semantics,
 authz resources and refusal codes live in each slice's §3; the authz mapping in slice 05 §3.2.
