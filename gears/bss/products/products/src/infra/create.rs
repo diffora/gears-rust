@@ -176,6 +176,11 @@ pub(crate) struct JoinedRecords {
     pub claim: Option<IdempotencyClaimInput>,
     /// The bulk ledger's row, where the caller is the batch worker.
     pub stamp: Option<BulkRowStamp>,
+    /// A clone's copied content (`design/11` §3.1, P-D-154): the assignment
+    /// set, the value set and the metadata map, written **inside the create
+    /// transaction** after the head row — a clone with half its rows would be
+    /// a new defect, not a partial success. `None` on every other create.
+    pub content: Option<crate::domain::disposition::CloneContent>,
 }
 
 /// A bulk-ledger row to stamp **inside the create transaction**.
@@ -212,8 +217,13 @@ pub(crate) async fn insert_product_with_event(
     render: fn(ProductRecord) -> Result<JsonValue, serde_json::Error>,
 ) -> Result<CreateOutcome, DbError> {
     let outbox = sink.clone();
-    let JoinedRecords { claim, stamp } = joined;
+    let JoinedRecords {
+        claim,
+        stamp,
+        content,
+    } = joined;
     let tenant_id = new.tenant_id;
+    let now = new.created_at;
     db.db()
         .transaction_with_retry::<CreateOutcome, DbError, _, _>(
             TxConfig::default(),
@@ -231,6 +241,7 @@ pub(crate) async fn insert_product_with_event(
                 let new = new.clone();
                 let claim = claim.clone();
                 let stamp = stamp.clone();
+                let content = content.clone();
                 Box::pin(async move {
                     if let Some(input) = claim.as_ref() {
                         match claim_idempotency(tx, &scope, tenant_id, input)
@@ -250,6 +261,19 @@ pub(crate) async fn insert_product_with_event(
                     let record = repo::insert_product(tx, &scope, new)
                         .await
                         .map_err(|e| DbError::Sea(e.to_db_err()))?;
+                    if let Some(content) = content.as_ref() {
+                        write_clone_content(
+                            tx,
+                            &scope,
+                            tenant_id,
+                            "product",
+                            record.product_id,
+                            content,
+                            now,
+                        )
+                        .await
+                        .map_err(|e| DbError::Sea(e.to_db_err()))?;
+                    }
                     let stamped_id = record.product_id;
 
                     let core = events::EventBodyCore {
@@ -406,8 +430,13 @@ pub(crate) async fn insert_sku_with_event(
     render: fn(SkuRecord) -> Result<JsonValue, serde_json::Error>,
 ) -> Result<CreateOutcome, DbError> {
     let outbox = sink.clone();
-    let JoinedRecords { claim, stamp } = joined;
+    let JoinedRecords {
+        claim,
+        stamp,
+        content,
+    } = joined;
     let tenant_id = new.tenant_id;
+    let now = new.created_at;
     db.db()
         .transaction_with_retry::<CreateOutcome, DbError, _, _>(
             TxConfig::default(),
@@ -425,6 +454,7 @@ pub(crate) async fn insert_sku_with_event(
                 let new = new.clone();
                 let claim = claim.clone();
                 let stamp = stamp.clone();
+                let content = content.clone();
                 Box::pin(async move {
                     if let Some(input) = claim.as_ref() {
                         match claim_idempotency(tx, &scope, tenant_id, input)
@@ -444,6 +474,19 @@ pub(crate) async fn insert_sku_with_event(
                     let record = repo::insert_sku(tx, &scope, new)
                         .await
                         .map_err(|e| DbError::Sea(e.to_db_err()))?;
+                    if let Some(content) = content.as_ref() {
+                        write_clone_content(
+                            tx,
+                            &scope,
+                            tenant_id,
+                            "sku",
+                            record.sku_id,
+                            content,
+                            now,
+                        )
+                        .await
+                        .map_err(|e| DbError::Sea(e.to_db_err()))?;
+                    }
                     let stamped_id = record.sku_id;
 
                     let core = events::EventBodyCore {
@@ -511,4 +554,66 @@ pub(crate) async fn insert_sku_with_event(
             },
         )
         .await
+}
+
+/// Write a clone's copied content beside its new head row, in the caller's
+/// transaction (P-D-154): the assignment set (Products), every attribute value
+/// at its coordinate, every metadata entry. The rows were re-validated before
+/// the transaction opened (`products::clone_content_report`); this is the
+/// write, not the judgement.
+///
+/// # Errors
+///
+/// [`RepoError`] on a storage failure below the domain.
+pub(crate) async fn write_clone_content(
+    runner: &(impl toolkit_db::secure::DBRunner + Sync),
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    entity_kind: &str,
+    entity_id: Uuid,
+    content: &crate::domain::disposition::CloneContent,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<(), crate::infra::storage::RepoError> {
+    if entity_kind == "product" && !content.assignments.is_empty() {
+        repo::replace_category_assignments(
+            runner,
+            scope,
+            tenant_id,
+            entity_id,
+            &content.assignments,
+            now,
+        )
+        .await?;
+    }
+    for value in &content.values {
+        repo::upsert_attribute_value(
+            runner,
+            scope,
+            tenant_id,
+            repo::AttributeCoordinate {
+                entity_kind,
+                entity_id,
+                definition_id: value.definition_id,
+                locale: &value.coordinate.locale,
+                region: &value.coordinate.region,
+                brand: &value.coordinate.brand,
+            },
+            &value.coordinate.value,
+            now,
+        )
+        .await?;
+    }
+    for (key, value) in &content.metadata {
+        repo::upsert_metadata(
+            runner,
+            scope,
+            tenant_id,
+            entity_kind,
+            entity_id,
+            (key, value),
+            now,
+        )
+        .await?;
+    }
+    Ok(())
 }

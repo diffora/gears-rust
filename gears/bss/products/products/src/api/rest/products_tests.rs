@@ -5661,7 +5661,7 @@ mod family_clone_tests {
 
     /// Seed one SKU under `parent_id` through the repository, contained in
     /// the parent's `eu` region scope.
-    async fn seed_child(harness: &TestHarness, parent_id: Uuid, sku_code: &str) -> Uuid {
+    pub(super) async fn seed_child(harness: &TestHarness, parent_id: Uuid, sku_code: &str) -> Uuid {
         let conn = harness
             .db
             .conn()
@@ -5687,6 +5687,8 @@ mod family_clone_tests {
                 plan_tier: "standard".to_owned(),
                 tax_category_ref: Some("TC-STD".to_owned()),
                 gl_code_ref: Some("GL-4000".to_owned()),
+                metering_unit: None,
+                usage_type_ref: None,
             },
         )
         .await
@@ -5924,6 +5926,8 @@ mod family_clone_tests {
                 plan_tier: "standard".to_owned(),
                 tax_category_ref: Some("TC-STD".to_owned()),
                 gl_code_ref: Some("GL-4000".to_owned()),
+                metering_unit: None,
+                usage_type_ref: None,
             },
         )
         .await
@@ -6454,6 +6458,8 @@ mod deprecate_door_tests {
                 plan_tier: "standard".to_owned(),
                 tax_category_ref: Some("TC-STD".to_owned()),
                 gl_code_ref: Some("GL-4000".to_owned()),
+                metering_unit: None,
+                usage_type_ref: None,
             },
         )
         .await
@@ -8634,4 +8640,588 @@ async fn the_product_validate_door_reports_the_missing_primary_category_without_
         (after.internal_revision, after.published_version),
         "a dry run moves no head"
     );
+}
+
+/// **The clone copies `02`'s rows and re-validates them** (`dod-disposition-rules`,
+/// `dod-revalidation-codes`, `dod-clone-tests`; P-D-154): every case below is a
+/// refusal **paired with the positive control** — the same fixture with the
+/// referenced entity live clones and carries the rows — so no arm passes
+/// because the fixture could never have succeeded.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-clone-tests:p3
+mod clone_revalidation_tests {
+    use std::collections::BTreeSet;
+
+    use super::clone_door_tests::{post_clone, view_of};
+    use super::*;
+
+    async fn sql(harness: &TestHarness, statement: &str) {
+        let conn = Database::connect(&harness.dsn)
+            .await
+            .expect("open an auxiliary connection");
+        conn.execute_unprepared(statement)
+            .await
+            .expect("the statement runs");
+    }
+
+    async fn violation_types(response: axum::http::Response<Body>) -> BTreeSet<String> {
+        let view = json_body(response).await;
+        view["context"]["violations"]
+            .as_array()
+            .expect("a validation report")
+            .iter()
+            .filter_map(|v| v["type"].as_str().map(str::to_owned))
+            .collect()
+    }
+
+    /// A draft source with one assignment, one value and one metadata entry,
+    /// written through the repository (the fixture, not the doors under test).
+    async fn source_with_content_ids(
+        harness: &TestHarness,
+        category_state: &str,
+        definition_state: &str,
+    ) -> (Uuid, Uuid, Uuid) {
+        let source_id = Uuid::now_v7();
+        seed_draft(harness, source_id).await;
+        let category = seed_category(harness, category_state).await;
+        let definition =
+            seed_definition(harness, "displayName", "string", definition_state, "").await;
+        let conn = harness.db.conn().expect("conn");
+        let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+        let now = crate::domain::canonical::write_instant(Utc::now());
+        repo::replace_category_assignments(
+            &conn,
+            &scope,
+            TENANT,
+            source_id,
+            &[(category, crate::domain::taxonomy::AssignmentRole::Primary)],
+            now,
+        )
+        .await
+        .expect("assign");
+        repo::upsert_attribute_value(
+            &conn,
+            &scope,
+            TENANT,
+            repo::AttributeCoordinate {
+                entity_kind: "product",
+                entity_id: source_id,
+                definition_id: definition,
+                // The global coordinate: what a publish demands of a localized
+                // definition, so the fixture can be published where a case needs it.
+                locale: "",
+                region: "",
+                brand: "",
+            },
+            "Fibre 500",
+            now,
+        )
+        .await
+        .expect("value");
+        repo::upsert_metadata(
+            &conn,
+            &scope,
+            TENANT,
+            "product",
+            source_id,
+            ("color", "blue"),
+            now,
+        )
+        .await
+        .expect("metadata");
+        (source_id, category, definition)
+    }
+
+    async fn source_with_content(
+        harness: &TestHarness,
+        category_state: &str,
+        definition_state: &str,
+    ) -> Uuid {
+        source_with_content_ids(harness, category_state, definition_state)
+            .await
+            .0
+    }
+
+    async fn count(harness: &TestHarness, table: &str, product_id: Uuid) -> i64 {
+        let column = if table == "products_product_category" {
+            "product_id"
+        } else {
+            "entity_id"
+        };
+        raw_i64(
+            &harness.dsn,
+            &format!(
+                "SELECT COUNT(*) AS v FROM {table} WHERE {}",
+                id_matches(column, product_id)
+            ),
+        )
+        .await
+    }
+
+    /// **The positive control**: a live category, an active definition — the
+    /// clone lands and carries the assignment, the value and the metadata entry.
+    #[tokio::test]
+    async fn a_clone_copies_the_sources_collections_and_metadata() {
+        let harness = harness().await;
+        let source = source_with_content(&harness, "active", "active").await;
+        let response = post_clone(app_for(&harness, TENANT), TENANT, source, json!({}), &[]).await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let clone_id: Uuid = view_of(response).await["product_id"]
+            .as_str()
+            .expect("the clone's id")
+            .parse()
+            .expect("a uuid");
+        assert_eq!(
+            count(&harness, "products_product_category", clone_id).await,
+            1,
+            "the assignment"
+        );
+        assert_eq!(
+            count(&harness, "products_attribute_value", clone_id).await,
+            1,
+            "the value"
+        );
+        assert_eq!(
+            count(&harness, "products_metadata", clone_id).await,
+            1,
+            "the metadata entry"
+        );
+        assert_eq!(
+            count(&harness, "products_product_category", source).await,
+            1,
+            "the source keeps its own"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_retired_category_on_the_source_is_re_validated_at_clone() {
+        let harness = harness().await;
+        let source = source_with_content(&harness, "retired", "active").await;
+        let response = post_clone(app_for(&harness, TENANT), TENANT, source, json!({}), &[]).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            violation_types(response).await,
+            BTreeSet::from(["CATEGORY_RETIRED".to_owned()])
+        );
+        assert_eq!(
+            raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_product").await,
+            1,
+            "a refused clone writes no head row"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_deprecated_definition_on_the_source_is_re_validated_at_clone() {
+        let harness = harness().await;
+        let source = source_with_content(&harness, "active", "deprecated").await;
+        let response = post_clone(app_for(&harness, TENANT), TENANT, source, json!({}), &[]).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            violation_types(response).await,
+            BTreeSet::from(["ATTRIBUTE_DEFINITION_DEPRECATED".to_owned()])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_removed_definition_reads_as_unknown_at_clone() {
+        let harness = harness().await;
+        let source = source_with_content(&harness, "active", "removed").await;
+        let response = post_clone(app_for(&harness, TENANT), TENANT, source, json!({}), &[]).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            violation_types(response).await,
+            BTreeSet::from(["ATTRIBUTE_DEFINITION_UNKNOWN".to_owned()])
+        );
+    }
+
+    /// **The flagship**: three failing classes on one source yield three named
+    /// codes in one response, asserted as a **set** — an assertion on the first
+    /// code would pass on a build that short-circuits (P-D-49 arm 3).
+    #[tokio::test]
+    async fn the_flagship_refusal_names_every_failing_class_at_once() {
+        let harness = harness().await;
+        let source = source_with_content(&harness, "retired", "deprecated").await;
+        // A child under the source makes this a product-with-SKUs clone: a
+        // failing parent must create nothing and attempt no child.
+        super::family_clone_tests::seed_child(&harness, source, "FLAG-CHILD").await;
+        let removed = seed_definition(&harness, "legacyName", "string", "removed", "").await;
+        {
+            let conn = harness.db.conn().expect("conn");
+            repo::upsert_attribute_value(
+                &conn,
+                &toolkit_db::secure::AccessScope::for_tenant(TENANT),
+                TENANT,
+                repo::AttributeCoordinate {
+                    entity_kind: "product",
+                    entity_id: source,
+                    definition_id: removed,
+                    locale: "en-US",
+                    region: "",
+                    brand: "",
+                },
+                "Old",
+                crate::domain::canonical::write_instant(Utc::now()),
+            )
+            .await
+            .expect("value");
+        }
+        let response = post_clone(app_for(&harness, TENANT), TENANT, source, json!({}), &[]).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            violation_types(response).await,
+            BTreeSet::from([
+                "CATEGORY_RETIRED".to_owned(),
+                "ATTRIBUTE_DEFINITION_DEPRECATED".to_owned(),
+                "ATTRIBUTE_DEFINITION_UNKNOWN".to_owned(),
+            ])
+        );
+        assert_eq!(
+            raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_product").await,
+            1,
+            "a failing parent creates nothing"
+        );
+        assert_eq!(
+            raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_sku").await,
+            1,
+            "the source's own child only: no child was attempted"
+        );
+        assert_eq!(
+            audit_error_code(&harness.dsn).await.as_deref(),
+            Some("VALIDATION"),
+            "exactly one audit row, coded VALIDATION - the shipped answer to section 7 row 13, \
+             named here so a changed answer fails here"
+        );
+    }
+
+    /// **A family clone reports the failing child and lands the sibling**: a
+    /// child whose tier no longer exists fails `PLAN_TIER_UNKNOWN` in the
+    /// receipt; the clean child and the parent are created.
+    #[tokio::test]
+    async fn a_family_clone_reports_a_child_whose_tier_no_longer_exists() {
+        let harness = harness().await;
+        let parent = Uuid::now_v7();
+        seed_draft(&harness, parent).await;
+        let clean = super::family_clone_tests::seed_child(&harness, parent, "CLEAN-1").await;
+        let stale = super::family_clone_tests::seed_child(&harness, parent, "STALE-1").await;
+        sql(
+            &harness,
+            &format!(
+                "UPDATE products_sku SET plan_tier = 'vanished', internal_revision = internal_revision + 1 WHERE {}",
+                id_matches("sku_id", stale)
+            ),
+        )
+        .await;
+        let response = post_clone(app_for(&harness, TENANT), TENANT, parent, json!({}), &[]).await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let view = view_of(response).await;
+        let children = view["children"].as_array().expect("the receipt");
+        assert_eq!(children.len(), 2);
+        let entry_of = |id: Uuid| {
+            children
+                .iter()
+                .find(|c| c["source_sku_id"] == json!(id))
+                .expect("every child has an entry")
+        };
+        assert_eq!(entry_of(clean)["disposition"], json!("created"));
+        assert_eq!(entry_of(stale)["disposition"], json!("failed"));
+        let codes: BTreeSet<String> = entry_of(stale)["violations"]
+            .as_array()
+            .expect("the failed child's violations")
+            .iter()
+            .filter_map(|v| v["code"].as_str().map(str::to_owned))
+            .collect();
+        assert_eq!(codes, BTreeSet::from(["PLAN_TIER_UNKNOWN".to_owned()]));
+    }
+
+    /// **Visibility-scope drift is re-judged at clone** (`design/11` §3.1's
+    /// attributes row: `ATTRIBUTE_SCOPE_VIOLATION`): a value written while its
+    /// region was inside the definition's scope, cloned after the scope was
+    /// narrowed past it. The clone before the narrowing is the control.
+    #[tokio::test]
+    async fn a_value_outside_a_narrowed_definition_scope_is_re_validated_at_clone() {
+        let harness = harness().await;
+        let source_id = Uuid::now_v7();
+        seed_draft(&harness, source_id).await;
+        let category = seed_category(&harness, "active").await;
+        let definition =
+            seed_definition(&harness, "displayName", "string", "active", "eu,us").await;
+        {
+            let conn = harness.db.conn().expect("conn");
+            let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+            let now = crate::domain::canonical::write_instant(Utc::now());
+            repo::replace_category_assignments(
+                &conn,
+                &scope,
+                TENANT,
+                source_id,
+                &[(category, crate::domain::taxonomy::AssignmentRole::Primary)],
+                now,
+            )
+            .await
+            .expect("assign");
+            repo::upsert_attribute_value(
+                &conn,
+                &scope,
+                TENANT,
+                repo::AttributeCoordinate {
+                    entity_kind: "product",
+                    entity_id: source_id,
+                    definition_id: definition,
+                    locale: "",
+                    region: "eu",
+                    brand: "",
+                },
+                "Fibre 500",
+                now,
+            )
+            .await
+            .expect("value");
+        }
+        let admitted =
+            post_clone(app_for(&harness, TENANT), TENANT, source_id, json!({}), &[]).await;
+        assert_eq!(
+            admitted.status(),
+            StatusCode::CREATED,
+            "the control: `eu` is inside `eu,us`"
+        );
+
+        sql(
+            &harness,
+            "UPDATE products_attribute_definition SET region_scope = 'us' WHERE key = 'displayName'",
+        )
+        .await;
+        let refused =
+            post_clone(app_for(&harness, TENANT), TENANT, source_id, json!({}), &[]).await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            violation_types(refused).await,
+            BTreeSet::from(["ATTRIBUTE_SCOPE_VIOLATION".to_owned()]),
+            "today's scope column judges the copied coordinate"
+        );
+    }
+
+    /// **A once-allowed name is judged by today's list** (`design/11` §5's PII
+    /// re-screen): the value went through the save door while Legal's entry
+    /// was active, the clone under the same entry is the control, and the
+    /// same clone after the entry is revoked is `CONTENT_PII_BLOCKED`.
+    #[tokio::test]
+    async fn a_de_listed_name_blocks_at_clone_under_todays_policy() {
+        let harness = harness().await;
+        let source_id = Uuid::now_v7();
+        seed_draft(&harness, source_id).await;
+        seed_definition(&harness, "displayName", "localized_string", "active", "").await;
+        sql(
+            &harness,
+            &format!(
+                "INSERT INTO products_pii_allowlist (tenant_id, entry_id, value_normalized, \
+                 justification, signed_off_by, signed_off_at, state, created_at, updated_at) \
+                 VALUES (X'{tenant}', X'{entry}', 'ann fritz', 'a line named after its founder', \
+                 'legal-1', '2026-09-01T00:00:00Z', 'active', '2026-09-01T00:00:00Z', \
+                 '2026-09-01T00:00:00Z')",
+                tenant = TENANT.simple(),
+                entry = Uuid::now_v7().simple(),
+            ),
+        )
+        .await;
+        let saved = save_at(
+            &harness,
+            source_id,
+            1,
+            &json!({ "attributes": [{ "key": "displayName", "value": "Ann Fritz" }] }),
+        )
+        .await;
+        assert_eq!(
+            saved.status(),
+            StatusCode::OK,
+            "the list of the day admits the name at the source"
+        );
+
+        let admitted =
+            post_clone(app_for(&harness, TENANT), TENANT, source_id, json!({}), &[]).await;
+        assert_eq!(
+            admitted.status(),
+            StatusCode::CREATED,
+            "the control: the entry is still active"
+        );
+
+        sql(
+            &harness,
+            "UPDATE products_pii_allowlist SET state = 'revoked'",
+        )
+        .await;
+        let refused =
+            post_clone(app_for(&harness, TENANT), TENANT, source_id, json!({}), &[]).await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            violation_types(refused).await,
+            BTreeSet::from(["CONTENT_PII_BLOCKED".to_owned()]),
+            "the policy of today governs, not the one the source was written under"
+        );
+    }
+
+    /// **A published source clones its frozen collections, not the pending
+    /// edit** — `dod-clone-read-surface`'s leak, closed over the collections
+    /// P-D-153 froze: a second assignment and a second value filed after the
+    /// publish exist on the live tables and are absent from the clone.
+    #[tokio::test]
+    async fn a_published_source_clones_the_frozen_collections_and_not_the_pending_edit() {
+        let harness = harness().await;
+        let (source, category, definition) =
+            source_with_content_ids(&harness, "active", "active").await;
+        let published = post_head_act(
+            &harness,
+            TENANT,
+            source,
+            "publish",
+            &[("If-Match", &if_match(1))],
+        )
+        .await;
+        assert_eq!(published.status(), StatusCode::OK, "the fixture publishes");
+
+        let second = seed_category(&harness, "active").await;
+        {
+            let conn = harness.db.conn().expect("conn");
+            let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+            let now = crate::domain::canonical::write_instant(Utc::now());
+            repo::replace_category_assignments(
+                &conn,
+                &scope,
+                TENANT,
+                source,
+                &[
+                    (category, crate::domain::taxonomy::AssignmentRole::Primary),
+                    (second, crate::domain::taxonomy::AssignmentRole::Secondary),
+                ],
+                now,
+            )
+            .await
+            .expect("the pending assignment");
+            repo::upsert_attribute_value(
+                &conn,
+                &scope,
+                TENANT,
+                repo::AttributeCoordinate {
+                    entity_kind: "product",
+                    entity_id: source,
+                    definition_id: definition,
+                    locale: "de-DE",
+                    region: "",
+                    brand: "",
+                },
+                "Faser 500",
+                now,
+            )
+            .await
+            .expect("the pending value");
+        }
+        assert_eq!(
+            count(&harness, "products_product_category", source).await,
+            2,
+            "the edit is live"
+        );
+        assert_eq!(
+            count(&harness, "products_attribute_value", source).await,
+            2,
+            "the edit is live"
+        );
+
+        let response = post_clone(app_for(&harness, TENANT), TENANT, source, json!({}), &[]).await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let clone_id: Uuid = view_of(response).await["product_id"]
+            .as_str()
+            .expect("the clone's id")
+            .parse()
+            .expect("a uuid");
+        assert_eq!(
+            count(&harness, "products_product_category", clone_id).await,
+            1,
+            "the frozen assignment set, without the pending second"
+        );
+        assert_eq!(
+            count(&harness, "products_attribute_value", clone_id).await,
+            1,
+            "the frozen value set, without the pending locale"
+        );
+    }
+
+    /// **The revival flagship** (`design/11` §5; `inst-cn-rename`): a
+    /// `retired` source clones whole — new ids, the forced `-revived` name,
+    /// the identical display name, the source untouched, `clonedFrom` naming
+    /// the version read — and the metadata map rides along though no frozen
+    /// version holds it. Five assertions in one probe, because the
+    /// source-untouched half alone passes on a build that cloned nothing.
+    #[tokio::test]
+    async fn a_retired_source_is_revived_whole_with_its_metadata() {
+        let harness = harness().await;
+        let (source, _category, _definition) =
+            source_with_content_ids(&harness, "active", "active").await;
+        let published = post_head_act(
+            &harness,
+            TENANT,
+            source,
+            "publish",
+            &[("If-Match", &if_match(1))],
+        )
+        .await;
+        assert_eq!(published.status(), StatusCode::OK, "the fixture publishes");
+        // The edge trigger admits one step at a time.
+        for state in ["deprecated", "retired"] {
+            sql(
+                &harness,
+                &format!(
+                    "UPDATE products_product SET lifecycle_state = '{state}', \
+                     internal_revision = internal_revision + 1 WHERE {}",
+                    id_matches("product_id", source)
+                ),
+            )
+            .await;
+        }
+        let before = head_of(&harness, source).await;
+        assert_eq!(before.lifecycle_state.as_str(), "retired", "premise");
+
+        let response = post_clone(app_for(&harness, TENANT), TENANT, source, json!({}), &[]).await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let view = view_of(response).await;
+        let clone_id: Uuid = view["product_id"]
+            .as_str()
+            .expect("the clone's id")
+            .parse()
+            .expect("a uuid");
+        assert_ne!(clone_id, source, "new ids");
+        assert_eq!(
+            view["name"],
+            json!(format!("{}-revived", before.name)),
+            "the forced canonical rename"
+        );
+        let display = crate::test_support::raw_string_opt(
+            &harness.dsn,
+            &format!(
+                "SELECT value AS v FROM products_attribute_value WHERE {}",
+                id_matches("entity_id", clone_id)
+            ),
+        )
+        .await;
+        assert_eq!(
+            display.as_deref(),
+            Some("Fibre 500"),
+            "the identical display name"
+        );
+        let after = head_of(&harness, source).await;
+        assert_eq!(
+            (after.internal_revision, after.lifecycle_state.as_str()),
+            (before.internal_revision, "retired"),
+            "the source is untouched"
+        );
+        let clone_head = head_of(&harness, clone_id).await;
+        assert_eq!(
+            (clone_head.cloned_from, clone_head.cloned_from_version),
+            (Some(source), Some(1)),
+            "clonedFrom names the source and the version read"
+        );
+        assert_eq!(
+            count(&harness, "products_metadata", clone_id).await,
+            1,
+            "the map rides along though the frozen version does not hold it"
+        );
+    }
 }

@@ -7,8 +7,8 @@
 use uuid::Uuid;
 
 use super::{
-    ProductCloneSource, SkuCloneSource, suggested_product_code, suggested_product_name,
-    suggested_sku_code,
+    CloneContent, ProductCloneSource, SkuCloneSource, suggested_product_code,
+    suggested_product_name, suggested_sku_code,
 };
 
 /// A live-lineage source with `name` and an optional code.
@@ -21,6 +21,7 @@ fn live_source(name: &str, code: Option<&str>) -> ProductCloneSource {
         brand_scope: "all".to_owned(),
         read_at_version: Some(1),
         retired: false,
+        content: CloneContent::default(),
     }
 }
 
@@ -83,6 +84,9 @@ fn the_sku_code_suggestion_has_no_flavored_arm() {
         region_scope: "global".to_owned(),
         brand_scope: "all".to_owned(),
         read_at_version: Some(1),
+        metering_unit: None,
+        usage_type_ref: None,
+        content: CloneContent::default(),
     };
     assert_eq!(suggested_sku_code(&source, 3), "SKU-1-copy-3");
 }

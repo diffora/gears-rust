@@ -302,6 +302,8 @@ fn sku_contender(sku_id: Uuid) -> NewSku {
         plan_tier: "standard".to_owned(),
         tax_category_ref: None,
         gl_code_ref: None,
+        metering_unit: None,
+        usage_type_ref: None,
         sku_id,
         tenant_id: TENANT,
         product_id: PARENT,

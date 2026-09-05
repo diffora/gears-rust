@@ -1682,6 +1682,10 @@ pub fn assignment_collection(assignments: &[(Uuid, AssignmentRole)]) -> serde_js
     )
 }
 
+/// The two collections as a frozen version carries them, decoded: the
+/// assignment set and the value set.
+pub type DecodedCollections = (Vec<(Uuid, AssignmentRole)>, Vec<FrozenAttributeValue>);
+
 /// Render the attribute-value set as a frozen version carries it.
 ///
 /// # The sort key is the whole coordinate, and §7 row 9 is why
@@ -1703,6 +1707,50 @@ pub fn assignment_collection(assignments: &[(Uuid, AssignmentRole)]) -> serde_js
 /// byte-identical across both engines, and an identifier sort cannot satisfy
 /// it: the two sentences contradict each other, and only one of them can be
 /// built. Registered, and the `DoD` stays unticked.
+/// The inverse of [`assignment_collection`] and [`value_collection`] over a
+/// decoded frozen content: the two collections as the freeze rendered them
+/// (P-D-153, P-D-154). `None` when the content predates the collections
+/// (digest scheme 2) — a caller then reads the live rows instead.
+#[must_use]
+pub fn decode_collections(
+    content: &serde_json::Map<String, serde_json::Value>,
+) -> Option<DecodedCollections> {
+    let attributes = content.get("attributes")?.as_array()?;
+    let str_of = |row: &serde_json::Value, key: &str| -> Option<String> {
+        row.get(key)?.as_str().map(str::to_owned)
+    };
+    let values = attributes
+        .iter()
+        .filter_map(|row| {
+            Some(FrozenAttributeValue {
+                definition_id: str_of(row, "definitionId")?.parse().ok()?,
+                coordinate: LocalizedValue {
+                    locale: str_of(row, "locale")?,
+                    region: str_of(row, "region")?,
+                    brand: str_of(row, "brand")?,
+                    value: str_of(row, "value")?,
+                },
+            })
+        })
+        .collect();
+    // A SKU's content carries no `categories`; a Product's always does.
+    let assignments = content
+        .get("categories")
+        .and_then(serde_json::Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| {
+                    Some((
+                        str_of(row, "categoryId")?.parse().ok()?,
+                        AssignmentRole::parse(&str_of(row, "role")?)?,
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some((assignments, values))
+}
+
 #[must_use]
 pub fn value_collection(values: &[FrozenAttributeValue]) -> serde_json::Value {
     let mut rows: Vec<&FrozenAttributeValue> = values.iter().collect();

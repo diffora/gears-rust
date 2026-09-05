@@ -142,6 +142,7 @@ pub(super) async fn draft_product(harness: &Harness, name: &str, region: &str) -
         crate::infra::create::JoinedRecords {
             claim: None,
             stamp: None,
+            content: None,
         },
         ACTOR,
         render_nothing,

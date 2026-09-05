@@ -161,14 +161,12 @@ rather than trust them.
   `EXPECTED_PERMISSION_IDS` is exactly six under a **two-way** set-equality assertion plus a
   duplicate-registration check.
 
-**One thing the crate says that no design document does, recorded for its owner and not repaired
-here.** Two migration module docs attribute `cloned_from` to **slice 03** —
-`migrations/m20260829_000002_create_products_product.rs:111-112` and
-`m20260829_000003_create_products_sku.rs:101-102` — while **four** other files attribute it to slice 11
-(`domain/bucket.rs`, `domain/bucket_tests.rs`, `api/rest/products.rs`, `api/rest/skus.rs`). Two more
-name the column without naming a slice (`domain/error.rs`,
-`infra/storage/migrations_tests.rs`), and `design/03-sku-classification.md` mentions `cloned_from`
-zero times. §7 carries it.
+**One thing the crate said that no design document did, since closed by measurement (P-D-154).**
+Two migration module docs attributed `cloned_from` to **slice 03**
+(`migrations/m20260829_000002_create_products_product.rs`, `m20260829_000003_create_products_sku.rs`)
+while **four** other files attributed it to slice 11. Measured at P-D-154, both module docs read
+slice **11** (`m…002:112`, `m…003:134`), and `design/03-sku-classification.md` still mentions
+`cloned_from` zero times — the right count for a column that is not its. §7 carries the closed row.
 
 ## 2. Actor Flows (CDSL)
 
@@ -569,7 +567,7 @@ same brand, same name — would no longer hold and the rename rule would lose it
 
 ### The disposition matrix, registered as rules over one phase
 
-- [ ] `p3` - **ID**: `cpt-cf-bss-products-dod-disposition-rules`
+- [x] `p3` - **ID**: `cpt-cf-bss-products-dod-disposition-rules`
 
 Every row of `design/11` §3.1 is implemented, per entity kind, as the matrix's `Applies to` column
 states. The **copy** and **reset** rows are field mapping in the clone's assembly step; the
@@ -626,6 +624,25 @@ rows would copy pending edits, the leak `dod-clone-read-surface` exists to preve
 and owed together with the freeze: the copy, then `content_save_pipeline` over the assembled
 clone, then `03`'s recognition checks over the copied columns.
 
+**Ticked (P-D-154).** The copy and the re-validation run at both clone doors, before any row is
+written. **Copy**: `clone_content_live` (a `draft` source) and `clone_content_frozen` (every other
+state, from the `categories`/`attributes` collections P-D-153 froze) assemble a `CloneContent` —
+assignments, values and the metadata map, the map read live because no frozen version holds it —
+and `infra::create::write_clone_content` files the three sets **inside the creating transaction**,
+which gives P-D-75's "the clone door itself" rule its writer; the SKU clone copies the meter pair
+with the rest of `03`'s columns. **Re-validate**: `clone_content_report` runs `02`'s registered
+`content_save_pipeline` over the assembled content and the PII block over every copied value
+against **today's** allow-list; `clone_classification_report` judges the copied unit, tier and
+accounting codes against the live sets and the type profile; the two merge into **one**
+`ValidationReport`, so a single refusal carries every code and writes nothing. **The re-validating
+rows are not a second registry**: the content rows *are* `02`'s registered rules in that pipeline's
+order, and the classification rows are `03`'s verdict functions called in §3.1's row order — the
+one-declaration rule and P-D-55's order without a duplicate. The phase stays unchosen, as the
+third paragraph allowed. The parent row's second half — a live retire intent on the copied parent
+— was **missing at the SKU clone** (the probe found a clone landing under a retiring parent) and is
+now `refuse_if_parent_retiring`, the create door's own check. Probes:
+`products_tests::clone_revalidation_tests`, `skus_tests::clone_revalidation_tests`.
+
 **Implements**: `cpt-cf-bss-products-algo-disposition`
 
 **Constraints**: `cpt-cf-bss-products-constraint-no-commercial-concern`
@@ -636,7 +653,7 @@ clone, then `03`'s recognition checks over the copied columns.
 
 ### The error vocabulary, twelve codes of which none has a variant
 
-- [ ] `p3` - **ID**: `cpt-cf-bss-products-dod-revalidation-codes`
+- [x] `p3` - **ID**: `cpt-cf-bss-products-dod-revalidation-codes`
 
 The refusal names, per failing field class, the code its owning slice declares. The roster is
 `design/11`'s and is normative there: **§4's per-field map carries thirteen codes**, and §3.1 and §6
@@ -677,6 +694,14 @@ codes"*, and this document adds nothing to that.
 which is the form a collected refusal carries them in. What the DoD asks — that the clone
 **raises** them — waits on `dod-disposition-rules`' pipeline run; the five Foundation codes the
 create path raises are unchanged.
+
+**Ticked (P-D-154).** The clone raises them. Each of the twelve non-Foundation codes has a
+clone-door probe naming it — `02`'s four and `CONTENT_PII_BLOCKED` through `clone_content_report`,
+`03`'s six through `clone_classification_report`, `RETIREMENT_PENDING` through the parent check —
+beside the five Foundation codes the create path raised already. No code is minted: each is raised
+in the form its owner declares it, a `DomainError` variant or a report type, and the report-borne
+classes land in one `VALIDATION` refusal whose audit row is **one**
+(`the_flagship_refusal_names_every_failing_class_at_once`, on both doors).
 
 **Implements**: `cpt-cf-bss-products-algo-disposition`
 
@@ -859,7 +884,7 @@ ontological claim is §7 row 24's.
 
 ### The test posture, with a positive control per code
 
-- [ ] `p3` - **ID**: `cpt-cf-bss-products-dod-clone-tests`
+- [x] `p3` - **ID**: `cpt-cf-bss-products-dod-clone-tests`
 
 `design/11` §5's posture is implemented in full, and the criteria are §6's. Two obligations that are
 this DoD's rather than §6's:
@@ -886,6 +911,26 @@ sixteen paired positive controls this DoD asks for are `dod-disposition-rules`' 
 first — a control for a code the door cannot raise proves nothing — and the collected-refusal
 fixture likewise.
 
+**Ticked (P-D-154).** Twenty-two probes across the two `clone_revalidation_tests` modules, beside
+the eleven door probes. **The sixteen pairs**: `CATEGORY_RETIRED`, `ATTRIBUTE_DEFINITION_UNKNOWN`,
+`ATTRIBUTE_DEFINITION_DEPRECATED`, `ATTRIBUTE_SCOPE_VIOLATION`, `CONTENT_PII_BLOCKED` (Products);
+`UNRECOGNIZED_UNIT`, `UNIT_DEPRECATED`, `PLAN_TIER_UNKNOWN`, `PLAN_TIER_DEPRECATED`,
+`ACCOUNTING_CODE_UNKNOWN`, `ACCOUNTING_CODE_DEPRECATED`, `PARENT_TERMINAL`, `RETIREMENT_PENDING`
+(SKUs) — each a refusal against the positive control that clones the same fixture whole — and
+`DUPLICATE_NAME`, `DUPLICATE_CODE` (the override collisions in the door suites) and
+`ILLEGAL_FIELD_MUTATION` (the lineage pair's create-only refusal). `ENTITY_TERMINAL` stays unpaired
+because its only candidate trigger, the `discarded` source, is answered `CLONE_SOURCE_DISCARDED`
+(P-D-75) — the door cannot raise it, so a pair would prove nothing. **The flagship is asserted as a set on both doors**, three codes each, with the one audit
+row coded `VALIDATION` — and `design/11` §5's literal fixture, unit + tier + category on one
+source, **cannot exist**: a category is a Product collection, a unit and a tier are SKU columns, so
+the set-of-three is proven per kind (recorded beside `design/11` §5's bullet). §6's other ticks:
+the revival flagship (`a_retired_source_is_revived_whole_with_its_metadata`), the frozen
+collections against a pending edit, the de-listed name, the scope drift, the two parent carve-outs,
+the `usageTypeRef` pass-through, the family with one failing child and the family whose parent
+fails. Unticked and honestly so: the deprecated-source rename case, the SKU no-rename statement, the
+clone-of-a-clone step, `ILLEGAL_FIELD_MUTATION` on the SKU kind, the no-event/no-audit-row commit
+and the two authorization criteria — none has a probe yet.
+
 **Implements**: `cpt-cf-bss-products-flow-clone`, `cpt-cf-bss-products-algo-disposition`
 
 **Touches**:
@@ -895,10 +940,10 @@ fixture likewise.
 
 **The revival flagship**
 
-- [ ] Clone a `retired` Product: new ids, a **forced canonical rename**, an **identical display
+- [x] Clone a `retired` Product: new ids, a **forced canonical rename**, an **identical display
       name**, the source **untouched**, and `clonedFrom` recording the version read. All five
       asserted in one probe — the source-untouched half alone passes on a build that cloned nothing.
-- [ ] The cloned entity is `draft` with `published_version = 0` and `internal_revision = 1`.
+- [x] The cloned entity is `draft` with `published_version = 0` and `internal_revision = 1`.
 
 **Rename is not revival-only**
 
@@ -906,29 +951,29 @@ fixture likewise.
       Three cases, because the rule's premise is the index over every non-`discarded` state and a
       retired-only test proves the weaker rule.
 - [ ] A SKU clone does **not** rename, `products_sku` carrying no name column.
-- [ ] An operator-supplied name that collides is `DUPLICATE_NAME`; an operator-supplied code that
+- [x] An operator-supplied name that collides is `DUPLICATE_NAME`; an operator-supplied code that
       collides is `DUPLICATE_CODE`.
 
 **The re-validation matrix**
 
-- [ ] The flagship fixture — a source with a deprecated unit, a retired tier and a retired category
+- [x] The flagship fixture — a source with a deprecated unit, a retired tier and a retired category
       — yields **three named failures in one response**, asserted as a set, **none silently copied**.
-- [ ] Each of the seventeen codes `design/11` names — thirteen in §4's per-field map, four in §3.1
+- [x] Each of the seventeen codes `design/11` names — thirteen in §4's per-field map, four in §3.1
       and §6 — has a failing case **and** its clean-source positive control, **except**
       `ENTITY_TERMINAL`, whose trigger §7 row 5 leaves undecided. Sixteen pairs.
-- [ ] No case exists for `USAGE_TYPE_UNRESOLVED` or `USAGE_TYPE_UNAVAILABLE`: they are `design/03`'s,
+- [x] No case exists for `USAGE_TYPE_UNRESOLVED` or `USAGE_TYPE_UNAVAILABLE`: they are `design/03`'s,
       raised at publish, and the criterion below asserts the clone admits an unresolvable ref.
-- [ ] A PII value allow-listed when the source was created, since de-listed, **blocks on clone** —
+- [x] A PII value allow-listed when the source was created, since de-listed, **blocks on clone** —
       the policy of today governs, not the policy the source was written under.
-- [ ] `usageTypeRef` is **not** re-validated at clone: a source carrying an unresolvable one clones
+- [x] `usageTypeRef` is **not** re-validated at clone: a source carrying an unresolvable one clones
       successfully and fails at publish.
 
 **The read surface**
 
-- [ ] A `published` source with pending head edits clones its **frozen** content, and the probe
+- [x] A `published` source with pending head edits clones its **frozen** content, and the probe
       asserts the pending edit is **absent** from the clone.
-- [ ] A `draft` source clones its head.
-- [ ] The metadata map is carried for a `retired` source, whose frozen content does not hold it.
+- [x] A `draft` source clones its head.
+- [x] The metadata map is carried for a `retired` source, whose frozen content does not hold it.
 
 **Lineage**
 
@@ -939,27 +984,27 @@ fixture likewise.
       distinction `domain/bucket.rs` names as owed to this feature.
 - [ ] The clone emits `ProductCreated`/`SkuCreated` and **no clone event**, and a committed clone
       writes **no audit row**.
-- [ ] A clone refused for three field classes returns **three** violations to the caller and writes
+- [x] A clone refused for three field classes returns **three** violations to the caller and writes
       **exactly one** audit row. The stored `error_code` is asserted against whichever answer §7
       row 13 receives — `VALIDATION` on today's shipped path — and the assertion names the answer it
       encodes, so a later change of that answer fails here rather than silently.
 
 **Product-with-SKUs**
 
-- [ ] One failing child: the parent and the surviving siblings land, and the response reports the
+- [x] One failing child: the parent and the surviving siblings land, and the response reports the
       failed child.
-- [ ] A failing parent creates **nothing**, and no child was attempted.
-- [ ] Children's parent links point at the **new** parent.
+- [x] A failing parent creates **nothing**, and no child was attempted.
+- [x] Children's parent links point at the **new** parent.
 
 **The lone-SKU carve-out**
 
-- [ ] A lone clone of a SKU whose parent is `retired` is refused `PARENT_TERMINAL`; naming a new,
+- [x] A lone clone of a SKU whose parent is `retired` is refused `PARENT_TERMINAL`; naming a new,
       non-terminal parent admits it.
-- [ ] A lone clone under a parent holding a live retire intent is refused `RETIREMENT_PENDING`.
+- [x] A lone clone under a parent holding a live retire intent is refused `RETIREMENT_PENDING`.
 
 **The registry row**
 
-- [ ] `classify` returns `FieldClass::CreateOnly` for `cloned_from` on both kinds, and
+- [x] `classify` returns `FieldClass::CreateOnly` for `cloned_from` on both kinds, and
       `count_of(kind, FieldClass::CreateOnly)` is **one** per kind — the restatement
       `no_column_carries_the_create_only_class_today` demands when this feature lands.
 
@@ -1332,7 +1377,10 @@ duplicating it.
 
 ### Owed to other documents, recorded and deliberately not edited
 
-- **Two migration module docs attribute `cloned_from` to slice 03.**
+- ~~**Two migration module docs attribute `cloned_from` to slice 03.**~~ **Closed by measurement
+  (P-D-154, 2026-09-05)**: both module docs now read slice **11** — `m…002:112` *"`cloned_from`
+  landed with slice **11** (**P-D-76**)"*, `m…003:134` *"`cloned_from` arrived with slice **11**"*.
+  *The row's text stood as:*
   `products/src/infra/storage/migrations/m20260829_000002_create_products_product.rs:111-112` reads
   *"Slice 03 brings `cloned_from`, `deprecation_provenance` and `replaced_by_sku_id`"* and
   `m20260829_000003_create_products_sku.rs:101-102` reads *"`cloned_from`, `deprecation_provenance` and
@@ -1355,15 +1403,19 @@ duplicating it.
   follow-up migration"*; the SKU migration says nothing about where its next column lands, and
   `cpt-cf-bss-products-dod-cloned-from-column` applies the product migration's rule to it. Owner:
   `01-foundation`'s migration owner.
-- **`design/05-governance`'s `metadata × write` has no code.** The pair is declared in §3.2's RBAC
-  catalog against
+- ~~**`design/05-governance`'s `metadata × write` has no code.**~~ **Closed by measurement (P-D-154,
+  2026-09-05)**: `authz::labels::METADATA` and its resource type exist, `gts/permissions.rs`
+  declares `cf.bss.products.metadata_write.v1`, and `02`'s map door maps its resource to that
+  label; `labels::ALL` is fourteen and the permission roster twelve. *The row's text stood as:* The
+  pair is declared in §3.2's RBAC catalog against
   `02`'s map door; `authz::labels::ALL` is `[PRODUCT, SKU]` and the permission roster is closed at
   six. Owner: `05-governance`'s owner. Recorded here because row 3 above turns on it.
 
-- **The clone's remaining three DoDs wait on the copy and re-validation over the now-frozen collections** (P-D-152; the freeze landed with P-D-153, so the blocker is this feature's own build — the next group's). `02`'s category
+- ~~**The clone's remaining three DoDs wait on the copy and re-validation over the now-frozen collections**~~ **Paid (P-D-154, 2026-09-05)**: the copy, the re-validation run and the paired controls are built; the three DoDs tick. *The row's text stood as:* (P-D-152; the freeze landed with P-D-153, so the blocker is this feature's own build — the next group's). `02`'s category
   assignments and attribute values are not in any frozen version
   (`features/taxonomy-attributes.md` §7), so a published source's collections cannot be copied
   without reading live rows — the leak `dod-clone-read-surface` forbids. Until they are frozen the
   disposition matrix's copy rows, the re-validation run and the paired controls stay unbuilt.
-  **Owner**: this feature, after `01`/`02` land the freeze. **Blocks**: `dod-disposition-rules`,
-  `dod-revalidation-codes`, `dod-clone-tests`.
+  **Owner**: this feature, after `01`/`02` land the freeze. **Blocks**: no DoD — **resolved by
+  P-D-154** *(was: `cpt-cf-bss-products-dod-disposition-rules`,
+  `cpt-cf-bss-products-dod-revalidation-codes`, `cpt-cf-bss-products-dod-clone-tests`.)*

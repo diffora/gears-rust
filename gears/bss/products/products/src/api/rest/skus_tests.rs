@@ -4386,7 +4386,7 @@ mod clone_door_tests {
     use super::*;
 
     /// `POST /bss-products/v1/skus/{id}/clone` with `body`.
-    async fn post_clone(
+    pub(super) async fn post_clone(
         app: Router,
         tenant: Uuid,
         sku_id: Uuid,
@@ -4411,7 +4411,7 @@ mod clone_door_tests {
     }
 
     /// The stored head of one SKU, read back for lineage assertions.
-    async fn sku_head_of(harness: &TestHarness, sku_id: Uuid) -> repo::SkuRecord {
+    pub(super) async fn sku_head_of(harness: &TestHarness, sku_id: Uuid) -> repo::SkuRecord {
         let conn = harness
             .db
             .conn()
@@ -4694,7 +4694,7 @@ mod meter_declaration_tests {
     /// Put `code` into the metering-unit set in `state`, over SQL — the set
     /// doors live in their own router, and what is under test here is the
     /// SKU door's read of the set, not the set's own machine.
-    async fn seed_unit(harness: &TestHarness, code: &str, state: &str) {
+    pub(super) async fn seed_unit(harness: &TestHarness, code: &str, state: &str) {
         let conn = Database::connect(&harness.dsn)
             .await
             .expect("open an auxiliary connection");
@@ -5022,7 +5022,7 @@ mod meter_declaration_tests {
     /// Drive the publish door with a scripted collector: the probe the `DoD`
     /// names (*"a stub collector for three distinct outcomes"*), through the
     /// door and not the judge alone (P-D-141).
-    async fn publish_under_collector(
+    pub(super) async fn publish_under_collector(
         harness: &TestHarness,
         sku_id: Uuid,
         etag: &str,
@@ -8048,4 +8048,430 @@ async fn the_override_ceremony_names_the_bundle_condition_and_the_approver_ackno
         head_of_sku(&harness, bundle_id).await.composition_pending,
         "published with the flag raised"
     );
+}
+
+/// **The SKU clone copies its values and meter pair and re-validates its
+/// classification** (`dod-disposition-rules`, `dod-revalidation-codes`,
+/// `dod-clone-tests`; P-D-154). Each refusal is paired with the positive
+/// control — the same shape with the referenced member live clones.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-clone-tests:p3
+mod clone_revalidation_tests {
+    use std::collections::BTreeSet;
+
+    use super::clone_door_tests::{post_clone, sku_head_of};
+    use super::meter_declaration_tests::seed_unit;
+    use super::*;
+
+    async fn sql(harness: &TestHarness, statement: &str) {
+        let conn = Database::connect(&harness.dsn)
+            .await
+            .expect("open an auxiliary connection");
+        conn.execute_unprepared(statement)
+            .await
+            .expect("the statement runs");
+    }
+
+    async fn violation_types(response: axum::http::Response<Body>) -> BTreeSet<String> {
+        let view = body_json(response).await;
+        view["context"]["violations"]
+            .as_array()
+            .expect("a validation report")
+            .iter()
+            .filter_map(|v| v["type"].as_str().map(str::to_owned))
+            .collect()
+    }
+
+    fn etag_of(response: &axum::http::Response<Body>) -> String {
+        response.headers()[axum::http::header::ETAG]
+            .to_str()
+            .expect("ASCII")
+            .to_owned()
+    }
+
+    /// A draft SKU carrying a live unit (`kwh`), a live tier (`gold`), a live
+    /// tax code (`TC-9`) and one attribute value, all written through the doors
+    /// while every member was active. The refusal cases then move one member.
+    async fn source_with_classification(harness: &TestHarness) -> Uuid {
+        let parent_id = seed_parent(harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+        let (sku_id, etag) = seed_draft_sku(harness, parent_id, "CLASS-1").await;
+        seed_unit(harness, "kwh", "active").await;
+        add_set_member(harness, "plan_tier", "gold").await;
+        add_set_member(harness, "tax_category", "TC-9").await;
+        seed_sku_definition(harness, "displayName", "localized_string", "active").await;
+        let saved = save_sku_at(
+            harness,
+            sku_id,
+            &etag,
+            &json!({
+                "metering_unit": "kwh",
+                "usage_type_ref": "usage:kwh",
+                "plan_tier": "gold",
+                "tax_category_ref": "TC-9",
+            }),
+        )
+        .await;
+        let status = saved.status();
+        assert!(
+            status == StatusCode::OK,
+            "the fixture's classification saves: {}",
+            body_json(saved).await
+        );
+        let etag = etag_of(&saved);
+        let saved = save_sku_at(
+            harness,
+            sku_id,
+            &etag,
+            // Lowercase on purpose: two adjacent capitalized words read as a
+            // personal name to the PII detector, which fails closed.
+            &json!({ "attributes": [{ "key": "displayName", "value": "standard class" }] }),
+        )
+        .await;
+        let status = saved.status();
+        assert!(
+            status == StatusCode::OK,
+            "the fixture's value saves: {}",
+            body_json(saved).await
+        );
+        sku_id
+    }
+
+    async fn clone_of(harness: &TestHarness, source: Uuid) -> axum::http::Response<Body> {
+        post_clone(app_for(harness, TENANT), TENANT, source, &json!({}), &[]).await
+    }
+
+    async fn flip_member(harness: &TestHarness, kind: &str, code: &str, state: &str) {
+        sql(
+            harness,
+            &format!(
+                "UPDATE products_recognized_set SET state = '{state}' WHERE set_kind = '{kind}' AND member_code = '{code}'"
+            ),
+        )
+        .await;
+    }
+
+    /// **The positive control**: every member live — the clone lands carrying
+    /// the meter pair, the tier, the code and the value.
+    #[tokio::test]
+    async fn a_clone_copies_the_meter_pair_the_classification_and_the_values() {
+        let harness = harness().await;
+        let source = source_with_classification(&harness).await;
+        let response = clone_of(&harness, source).await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let clone_id: Uuid = body_json(response).await["sku_id"]
+            .as_str()
+            .expect("the clone's id")
+            .parse()
+            .expect("a uuid");
+        let head = sku_head_of(&harness, clone_id).await;
+        assert_eq!(head.metering_unit.as_deref(), Some("kwh"));
+        assert_eq!(head.usage_type_ref.as_deref(), Some("usage:kwh"));
+        assert_eq!(head.plan_tier.as_deref(), Some("gold"));
+        assert_eq!(head.tax_category_ref.as_deref(), Some("TC-9"));
+        let values = raw_i64(
+            &harness.dsn,
+            &format!(
+                "SELECT COUNT(*) AS v FROM products_attribute_value WHERE {}",
+                id_matches("entity_id", clone_id)
+            ),
+        )
+        .await;
+        assert_eq!(values, 1, "the value rode along");
+    }
+
+    #[tokio::test]
+    async fn a_deprecated_unit_is_re_validated_at_clone() {
+        let harness = harness().await;
+        let source = source_with_classification(&harness).await;
+        flip_member(&harness, "metering_unit", "kwh", "deprecated").await;
+        let response = clone_of(&harness, source).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            violation_types(response).await,
+            BTreeSet::from(["UNIT_DEPRECATED".to_owned()])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_removed_unit_is_unrecognized_at_clone() {
+        let harness = harness().await;
+        let source = source_with_classification(&harness).await;
+        flip_member(&harness, "metering_unit", "kwh", "removed").await;
+        let response = clone_of(&harness, source).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            violation_types(response).await,
+            BTreeSet::from(["UNRECOGNIZED_UNIT".to_owned()])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_deprecated_tier_is_re_validated_at_clone() {
+        let harness = harness().await;
+        let source = source_with_classification(&harness).await;
+        flip_member(&harness, "plan_tier", "gold", "deprecated").await;
+        let response = clone_of(&harness, source).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            violation_types(response).await,
+            BTreeSet::from(["PLAN_TIER_DEPRECATED".to_owned()])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_vanished_tier_is_unknown_at_clone() {
+        let harness = harness().await;
+        let source = source_with_classification(&harness).await;
+        flip_member(&harness, "plan_tier", "gold", "removed").await;
+        let response = clone_of(&harness, source).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            violation_types(response).await,
+            BTreeSet::from(["PLAN_TIER_UNKNOWN".to_owned()])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_deprecated_accounting_code_is_re_validated_at_clone() {
+        let harness = harness().await;
+        let source = source_with_classification(&harness).await;
+        flip_member(&harness, "tax_category", "TC-9", "deprecated").await;
+        let response = clone_of(&harness, source).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            violation_types(response).await,
+            BTreeSet::from(["ACCOUNTING_CODE_DEPRECATED".to_owned()])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_removed_accounting_code_is_unknown_at_clone() {
+        let harness = harness().await;
+        let source = source_with_classification(&harness).await;
+        flip_member(&harness, "tax_category", "TC-9", "removed").await;
+        let response = clone_of(&harness, source).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            violation_types(response).await,
+            BTreeSet::from(["ACCOUNTING_CODE_UNKNOWN".to_owned()])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_deprecated_definition_behind_a_value_is_re_validated_at_clone() {
+        let harness = harness().await;
+        let source = source_with_classification(&harness).await;
+        sql(
+            &harness,
+            "UPDATE products_attribute_definition SET state = 'deprecated' WHERE key = 'displayName'",
+        )
+        .await;
+        let response = clone_of(&harness, source).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            violation_types(response).await,
+            BTreeSet::from(["ATTRIBUTE_DEFINITION_DEPRECATED".to_owned()])
+        );
+    }
+
+    /// **The flagship, SKU side**: a deprecated unit, a deprecated tier and a
+    /// deprecated definition — three codes in one response, as a set.
+    #[tokio::test]
+    async fn the_flagship_refusal_names_every_failing_class_at_once() {
+        let harness = harness().await;
+        let source = source_with_classification(&harness).await;
+        flip_member(&harness, "metering_unit", "kwh", "deprecated").await;
+        flip_member(&harness, "plan_tier", "gold", "deprecated").await;
+        sql(
+            &harness,
+            "UPDATE products_attribute_definition SET state = 'deprecated' WHERE key = 'displayName'",
+        )
+        .await;
+        let response = clone_of(&harness, source).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            violation_types(response).await,
+            BTreeSet::from([
+                "UNIT_DEPRECATED".to_owned(),
+                "PLAN_TIER_DEPRECATED".to_owned(),
+                "ATTRIBUTE_DEFINITION_DEPRECATED".to_owned(),
+            ])
+        );
+        assert_eq!(
+            audit_error_code(&harness.dsn).await.as_deref(),
+            Some("VALIDATION"),
+            "exactly one audit row for three violations, coded VALIDATION"
+        );
+    }
+
+    /// The code a refusal carries, read the way a consumer reads it: the
+    /// `context.reason` of a classified refusal, else the first violation.
+    async fn refusal_code(response: axum::http::Response<Body>) -> String {
+        let view = body_json(response).await;
+        view["context"]["reason"]
+            .as_str()
+            .or_else(|| view["context"]["violations"][0]["type"].as_str())
+            .unwrap_or_else(|| panic!("a coded refusal: {view}"))
+            .to_owned()
+    }
+
+    /// **`usageTypeRef` is not re-validated at clone** (`design/11` §3.1's
+    /// metering row: re-resolution stays `03`'s, at publish). Under a resolver
+    /// that answers `Unresolved` for everything the clone still lands, was
+    /// never asked, and carries the ref — and the clone's own publish under
+    /// the same resolver is `USAGE_TYPE_UNRESOLVED`, asked exactly once.
+    #[tokio::test]
+    async fn an_unresolvable_usage_type_is_not_re_validated_at_clone_and_fails_at_publish() {
+        let harness = harness().await;
+        let source = source_with_classification(&harness).await;
+        let stub = Arc::new(crate::test_support::StubUsageTypes::always(
+            crate::domain::recognized::UsageTypeAnswer::Unresolved,
+        ));
+        let mut state = api_state(&harness);
+        state.usage_type_resolver =
+            Arc::clone(&stub) as Arc<dyn crate::infra::usage_types::UsageTypeResolver>;
+        let openapi = OpenApiRegistryImpl::new();
+        let app =
+            router(Arc::new(state), &openapi).layer(axum::Extension(flat_in_enforcer(TENANT)));
+
+        let response = post_clone(app, TENANT, source, &json!({}), &[]).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "the clone does not judge the ref"
+        );
+        assert_eq!(
+            stub.asked.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the resolver is not consulted at clone"
+        );
+        let clone_id: Uuid = body_json(response).await["sku_id"]
+            .as_str()
+            .expect("the clone's id")
+            .parse()
+            .expect("a uuid");
+        let head = sku_head_of(&harness, clone_id).await;
+        assert_eq!(
+            head.usage_type_ref.as_deref(),
+            Some("usage:kwh"),
+            "the ref rode along"
+        );
+
+        let etag = preconditions::etag(InternalRevision::new(head.internal_revision));
+        let Err(refusal) = super::meter_declaration_tests::publish_under_collector(
+            &harness,
+            clone_id,
+            &etag,
+            "clone-usage-1",
+            &stub,
+        )
+        .await
+        else {
+            panic!("the clone's publish must be the one to refuse the ref");
+        };
+        let response = refusal.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            violation_types(response)
+                .await
+                .contains("USAGE_TYPE_UNRESOLVED"),
+            "the deferred judgement lands at publish"
+        );
+        assert_eq!(
+            stub.asked.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "asked once, at publish"
+        );
+    }
+
+    /// **The lone-SKU carve-out, terminal half** (`design/11` §3.1's parent
+    /// row, M6): the copied parent link is judged by the create door's own
+    /// check — a `retired` parent is `PARENT_TERMINAL` and nothing is written;
+    /// the same source under a live `new_parent_id` is admitted.
+    #[tokio::test]
+    async fn a_lone_clone_under_a_retired_parent_is_parent_terminal_and_a_new_parent_admits_it() {
+        let harness = harness().await;
+        let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+        let (source_id, _etag) = seed_draft_sku(&harness, parent_id, "CARVE-1").await;
+        // The edge trigger admits one step at a time: draft → published →
+        // deprecated → retired, each moving the revision by exactly one.
+        for state in ["published", "deprecated", "retired"] {
+            sql(
+                &harness,
+                &format!(
+                    "UPDATE products_product SET lifecycle_state = '{state}', \
+                     internal_revision = internal_revision + 1 WHERE {}",
+                    id_matches("product_id", parent_id)
+                ),
+            )
+            .await;
+        }
+
+        let refused = clone_of(&harness, source_id).await;
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+        assert_eq!(refusal_code(refused).await, "PARENT_TERMINAL");
+        assert_eq!(
+            raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_sku").await,
+            1,
+            "the source alone; a refused clone writes no SKU"
+        );
+
+        let mut other = new_parent_product(Uuid::now_v7(), TENANT);
+        other.name = "Fibre Line Second".to_owned();
+        other.name_normalized = "fibre line second".to_owned();
+        let other_parent_id = seed_parent(&harness, other).await;
+        let admitted = post_clone(
+            app_for(&harness, TENANT),
+            TENANT,
+            source_id,
+            &json!({ "new_parent_id": other_parent_id }),
+            &[],
+        )
+        .await;
+        assert_eq!(
+            admitted.status(),
+            StatusCode::CREATED,
+            "the carve-out: a live new parent admits it"
+        );
+    }
+
+    /// **The lone-SKU carve-out, pending half**: a parent holding a live
+    /// retire intent refuses the lone clone `RETIREMENT_PENDING`, the create
+    /// door's own answer, and nothing is written.
+    #[tokio::test]
+    async fn a_lone_clone_under_a_retiring_parent_is_retirement_pending() {
+        let harness = harness().await;
+        let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+        let (source_id, _etag) = seed_draft_sku(&harness, parent_id, "CARVE-2").await;
+        {
+            let conn = harness.db.conn().expect("conn");
+            let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+            repo::insert_scheduled_transition(
+                &conn,
+                &scope,
+                &repo::NewScheduledTransition {
+                    transition_id: Uuid::now_v7(),
+                    tenant_id: TENANT,
+                    entity_kind: "product".to_owned(),
+                    entity_id: parent_id,
+                    kind: "retire".to_owned(),
+                    at: Utc.with_ymd_and_hms(2026, 12, 1, 0, 0, 0).unwrap(),
+                    approval_ref: Uuid::now_v7(),
+                    retirement_reason: Some("fixture".to_owned()),
+                    now: Utc.with_ymd_and_hms(2026, 9, 4, 10, 0, 0).unwrap(),
+                },
+            )
+            .await
+            .expect("seed a live retire intent on the parent");
+        }
+
+        let refused = clone_of(&harness, source_id).await;
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+        assert_eq!(refusal_code(refused).await, "RETIREMENT_PENDING");
+        assert_eq!(
+            raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_sku").await,
+            1,
+            "the source alone; a refused clone writes no SKU"
+        );
+    }
 }

@@ -1744,6 +1744,8 @@ async fn a_non_terminal_sku_carrying_a_value_blocks_the_removal() {
             plan_tier: "standard".to_owned(),
             tax_category_ref: None,
             gl_code_ref: None,
+            metering_unit: None,
+            usage_type_ref: None,
         },
     )
     .await

@@ -145,6 +145,12 @@ minted takes its place when it is.
 | `timestamps` | both | **Reset** by the create door |
 | Pricing/plan anything | both | **Never** (not carried here at all — the boundary) |
 
+**Built (P-D-154, 2026-09-05).** Every *Copy + re-validate* row runs at the clone doors over the
+collections P-D-153 froze, the three sets filed in the creating transaction (P-D-75's writer); the
+parent row's retire-intent half reaches the SKU clone through the create door's own check. The
+re-validating rows are not a second rule registry: the content rows reuse `02`'s pipeline, the
+classification rows `03`'s verdicts in this table's order.
+
 ## 4. Data / Storage
 
 **Two columns (P-D-76)** — `cloned_from` and `cloned_from_version`, the P-D-50 convention (`NULL` version under a set source = read at the head), shape-CHECKed, in 01's §4.1/§4.2 rosters, create-only, a later write
@@ -171,7 +177,9 @@ re-validation codes with their owners (`02`, `03`, `04`) when they are minted.
   display name, source untouched, `clonedFrom` recorded.
 - Re-validation matrix: one fixture with a deprecated unit + retired tier + retired category on
   the source — three named failures/re-selections, none silently copied (each with the
-  clean-source positive control).
+  clean-source positive control). *(Measured at P-D-154: the three classes live on two kinds — a
+  category is a Product collection, a unit and a tier are SKU columns — so the set-of-three is
+  asserted per door, each with its own positive control.)*
 - PII re-screen: a value allow-listed at source-creation time but since de-listed blocks on
   clone (the policy of *today* governs).
 - Child-ledger probe: one failing child, siblings land.

@@ -1569,6 +1569,56 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-154 — The clone copies the collections and re-validates them at the door: one report, every code, the sixteen pairs
+
+- **Date**: 2026-09-05 (the lead, group 12 of the follow-on plan; pays the debt P-D-152 recorded
+  and P-D-153 unblocked)
+- **Decision.** The clone doors assemble the source's content — category assignments, attribute
+  values and the metadata map — into a `CloneContent`, read **frozen** for every non-`draft` source
+  (P-D-153's `categories`/`attributes` collections) and **live** for a `draft`, the map live in
+  every case because no frozen version holds it (`design/11` §3.1's attributes row), and
+  `infra::create::write_clone_content` files the three sets **inside the creating transaction** —
+  P-D-75's "the clone door itself" rule, which had no writer. The SKU clone copies the meter pair
+  with the rest of `03`'s columns (`NewSku` carries `metering_unit`/`usage_type_ref` at insert).
+- **Re-validation is one report, assembled before any write.** `clone_content_report` runs `02`'s
+  registered `content_save_pipeline` over the assembled content and the PII block over every
+  copied value against **today's** allow-list; `clone_classification_report` judges the copied
+  unit, tier and accounting codes against the live recognized sets and the type profile. The two
+  merge, so a refusal carries every failing class at once, lands as `VALIDATION` with one audit
+  row, and writes nothing. *Counter-argument:* register the re-validating rows as
+  `ValidationRule`s of their own in §3.1's row order (P-D-55) and run them as a phase; rejected —
+  the content rows already are registered rules (`02`'s pipeline, in its order) and the
+  classification rows are `03`'s verdict functions, so a second registry would either duplicate
+  the declarations or force the SKU verdicts into a subject shape they were not written for.
+  §3.1's order is kept by calling them in it; the phase stays unchosen, as the DoD allowed.
+- **The parent row's second half was missing.** The SKU clone judged the copied parent by
+  `resolve_parent_scope` (terminal → `PARENT_TERMINAL`) and never asked about a live retire
+  intent; the probe found it — a clone under a retiring parent landed. `refuse_if_parent_retiring`,
+  the create door's own check, now runs at the clone too: `RETIREMENT_PENDING`, audited against
+  the source's code.
+- **`usageTypeRef` is copied and not judged.** The clone never consults the resolver; the clone's
+  own publish does (`03`'s `inst-mt-resolve`), and one probe pins both halves with a resolver that
+  answers `Unresolved` for everything.
+- **The flagship fixture cannot exist on one entity.** `design/11` §5 asks for one source carrying
+  a deprecated unit, a retired tier and a retired category; a category is a Product collection and
+  a unit and a tier are SKU columns. The set-of-three is asserted **per door** — Products:
+  `CATEGORY_RETIRED` + `ATTRIBUTE_DEFINITION_DEPRECATED` + `ATTRIBUTE_DEFINITION_UNKNOWN`; SKUs:
+  `UNIT_DEPRECATED` + `PLAN_TIER_DEPRECATED` + `ATTRIBUTE_DEFINITION_DEPRECATED` — each with the
+  one audit row. Noted beside `design/11` §5's bullet, which is left as the slice wrote it.
+- **Ticks.** `11`: `dod-disposition-rules`, `dod-revalidation-codes`, `dod-clone-tests`; §6:
+  eighteen criteria. Twenty-two probes in the two `clone_revalidation_tests` modules; the sixteen
+  pairs are complete; `ENTITY_TERMINAL` stays unpaired because its only trigger is answered
+  `CLONE_SOURCE_DISCARDED` (P-D-75) and the door cannot raise it. Three §7 rows close by
+  measurement: the two migration module docs read slice **11** (`m…002:112`, `m…003:134`),
+  `metadata × write` has its label, resource type and permission id, and the "wait on the freeze"
+  row is paid.
+- **Propagated**: `features/clone.md` (the three ticks, §6, §1.4, §7), `design/11-clone.md`
+  (§3.1's built note, §5's measured note).
+- **Trace**: `disposition::CloneContent`, `taxonomy::decode_collections`,
+  `create::write_clone_content`, `products::clone_content_report`,
+  `skus::clone_classification_report`, `skus::clone_sku` (`refuse_if_parent_retiring`),
+  `products_tests::clone_revalidation_tests`, `skus_tests::clone_revalidation_tests`.
+
 #### P-D-153 — The two collections are content: frozen at publish, digest scheme 3, and the projector reads the published assignment set
 
 - **Date**: 2026-09-05 (the lead, group 11 of the follow-on plan; answers `02` §7's freeze row and

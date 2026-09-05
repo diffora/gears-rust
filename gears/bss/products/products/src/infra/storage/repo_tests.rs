@@ -138,6 +138,8 @@ fn new_sku(sku_id: Uuid, tenant_id: Uuid, product_id: Uuid) -> NewSku {
         plan_tier: "standard".to_owned(),
         tax_category_ref: None,
         gl_code_ref: None,
+        metering_unit: None,
+        usage_type_ref: None,
     }
 }
 

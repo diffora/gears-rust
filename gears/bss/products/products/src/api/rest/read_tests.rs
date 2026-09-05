@@ -141,6 +141,7 @@ pub(super) async fn draft_product(harness: &Harness, name: &str, region: &str) -
         crate::infra::create::JoinedRecords {
             claim: None,
             stamp: None,
+            content: None,
         },
         ACTOR,
         render_nothing,
@@ -512,6 +513,7 @@ async fn the_timeline_carries_lineage_forward_and_the_reverse_lookup() {
         crate::infra::create::JoinedRecords {
             claim: None,
             stamp: None,
+            content: None,
         },
         ACTOR,
         render_nothing,

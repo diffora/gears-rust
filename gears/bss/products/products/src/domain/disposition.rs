@@ -63,6 +63,11 @@ pub struct ProductCloneSource {
     /// Whether the source is `retired`, which flavors the name suggestion
     /// `-revived` rather than `-copy-N` (`inst-cn-rename`).
     pub retired: bool,
+    /// The content the copy rows carry over (`design/11` §3.1's copy rows;
+    /// P-D-154): the assignment set and the attribute-value set as the source
+    /// was read — frozen for a published source, live for a draft — and the
+    /// metadata map from the beside-entity store in both cases (P-D-06).
+    pub content: CloneContent,
 }
 
 /// The SKU clone's source fields, on [`ProductCloneSource`]'s read rule.
@@ -90,6 +95,31 @@ pub struct SkuCloneSource {
     pub brand_scope: String,
     /// `None` = read at the head; `Some(v)` = read at frozen version `v`.
     pub read_at_version: Option<i64>,
+    /// The meter pair (`design/11` §3.1 *Metering declaration*: **Copy +
+    /// re-validate**, P-D-154) — copied as the source was read; the unit is
+    /// re-judged against the live recognized set at clone, `usageTypeRef`'s
+    /// re-resolution stays `03`'s at publish.
+    pub metering_unit: Option<String>,
+    /// The other half of the pair.
+    pub usage_type_ref: Option<String>,
+    /// The attribute values and the metadata map (P-D-154).
+    pub content: CloneContent,
+}
+
+/// What a clone copies beyond the head row: `02`'s two collections and the
+/// metadata map (`design/11` §3.1 rows *Display/localized attributes +
+/// metadata map* and *Category assignments*, both **Copy + re-validate**).
+/// The values are keyed by definition **id**, as the frozen content carries
+/// them; the re-validation resolves the ids to their live definitions and
+/// judges each against `02`'s rules before a row is written.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CloneContent {
+    /// `(category_id, role)` — a Product's assignments; empty for a SKU.
+    pub assignments: Vec<(Uuid, crate::domain::taxonomy::AssignmentRole)>,
+    /// The attribute values at their coordinates.
+    pub values: Vec<crate::domain::taxonomy::FrozenAttributeValue>,
+    /// The metadata map, `(key, value)`.
+    pub metadata: Vec<(String, String)>,
 }
 
 /// The classification a clone writes on the copy (P-D-145): the source's,

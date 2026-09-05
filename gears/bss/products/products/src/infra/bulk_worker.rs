@@ -259,7 +259,11 @@ async fn stage_product(
         &ctx.sink,
         scope.clone(),
         new,
-        crate::infra::create::JoinedRecords { claim: None, stamp },
+        crate::infra::create::JoinedRecords {
+            claim: None,
+            stamp,
+            content: None,
+        },
         actor_ref,
         discard_render,
     )
@@ -331,13 +335,19 @@ async fn stage_sku(
             .unwrap_or_else(|| crate::domain::recognized::DEFAULT_PLAN_TIER.to_owned()),
         tax_category_ref: field(payload, "tax_category_ref"),
         gl_code_ref: field(payload, "gl_code_ref"),
+        metering_unit: None,
+        usage_type_ref: None,
     };
     match crate::infra::create::insert_sku_with_event(
         &ctx.db,
         &ctx.sink,
         scope.clone(),
         new,
-        crate::infra::create::JoinedRecords { claim: None, stamp },
+        crate::infra::create::JoinedRecords {
+            claim: None,
+            stamp,
+            content: None,
+        },
         actor_ref,
         discard_render,
     )

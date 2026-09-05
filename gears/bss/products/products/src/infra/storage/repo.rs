@@ -244,6 +244,12 @@ pub struct NewSku {
     pub plan_tier: String,
     pub tax_category_ref: Option<String>,
     pub gl_code_ref: Option<String>,
+    /// The meter pair, set at create only by the clone (`design/11` §3.1's
+    /// *Metering declaration: Copy*, P-D-154); the create door leaves both
+    /// `None` and the save door writes them.
+    pub metering_unit: Option<String>,
+    /// The other half of the pair.
+    pub usage_type_ref: Option<String>,
 }
 
 /// A SKU as this repository hands it back.
@@ -569,12 +575,12 @@ pub async fn insert_sku(
         // Slice 04's columns: a create never names them.
         deprecation_provenance: Set(None),
         replaced_by_sku_id: Set(None),
+        metering_unit: Set(new.metering_unit),
+        usage_type_ref: Set(new.usage_type_ref),
         // The meter pair arrives through the save door (bucket-ii, admitted
-        // while `published_version = 0`), never at create — open item 11's
-        // create-writes-no-content reading, and `inst-mt-atomic-pair`'s door
-        // is the save.
-        metering_unit: Set(None),
-        usage_type_ref: Set(None),
+        // while `published_version = 0`) — or, since P-D-154, copied by the
+        // clone from its source; the create door itself hands `None` for both.
+        // Set above, with the head columns.
         // P-D-129's door identity: only the correction re-publish writes it.
         correction_ref: Set(None),
         // 03's classification (P-D-145): the type and tier the create judged,

@@ -281,6 +281,8 @@ async fn seed_sku_draft(pg: &Pg) {
                         plan_tier: "standard".to_owned(),
                         tax_category_ref: None,
                         gl_code_ref: None,
+                        metering_unit: None,
+                        usage_type_ref: None,
                         sku_id: SKU,
                         tenant_id: TENANT,
                         product_id: SUBJECT,

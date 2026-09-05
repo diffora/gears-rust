@@ -1104,13 +1104,18 @@ pub(crate) async fn insert_sku_with_event(
     new: NewSku,
     claim: Option<IdempotencyClaimInput>,
     actor_ref: Uuid,
+    content: Option<disposition::CloneContent>,
 ) -> Result<CreateOutcome, DbError> {
     crate::infra::create::insert_sku_with_event(
         &state.db,
         &state.sink,
         scope,
         new,
-        crate::infra::create::JoinedRecords { claim, stamp: None },
+        crate::infra::create::JoinedRecords {
+            claim,
+            stamp: None,
+            content,
+        },
         actor_ref,
         render_created_sku,
     )
@@ -1572,7 +1577,8 @@ pub(crate) async fn create_sku(
         classification,
     );
 
-    let insert_outcome = insert_sku_with_event(&state, scope.clone(), new, claim, actor_ref).await;
+    let insert_outcome =
+        insert_sku_with_event(&state, scope.clone(), new, claim, actor_ref, None).await;
 
     match insert_outcome {
         Ok(CreateOutcome::Created {
@@ -1762,6 +1768,77 @@ fn sku_frozen_str(
 /// everything else at the last frozen version through
 /// [`canonical::decode_rendering`] (**P-D-77**), a `discarded` source
 /// refused `CLONE_SOURCE_DISCARDED` (P-D-75).
+/// Re-judge a clone's copied classification against the live recognized sets
+/// (`design/11` §3.1's re-validate rows for `PlanTier`, the metering
+/// declaration and the accounting codes; `dod-revalidation-codes`, P-D-154):
+/// every failing verdict becomes a violation carrying the owning slice's code,
+/// so one refusal names them all. The report is empty when everything
+/// re-validates. `usageTypeRef`'s re-resolution stays `03`'s, at publish.
+///
+/// # Errors
+///
+/// The store's error, canonical.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-revalidation-codes:p3
+pub(crate) async fn clone_classification_report(
+    state: &ApiState,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    source: &SkuCloneSource,
+    class: &disposition::SourceClassification,
+    now: DateTime<Utc>,
+) -> Result<ValidationReport, CanonicalError> {
+    use crate::domain::recognized::{self as classification, SetKind};
+    let mut report = ValidationReport::new();
+    let conn = state.db.conn().map_err(|e| {
+        repo_error_to_canonical(&RepoError::Db(format!(
+            "clone re-validation connection: {e}"
+        )))
+    })?;
+    if let Err(refusal) = classification::type_profile(Some(&class.sku_type)) {
+        report.violate(refusal.code(), "sku_type", refusal.to_string());
+    }
+    repo::ensure_recognized_seeds(&conn, scope, tenant_id, SetKind::PlanTier, now)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?;
+    let tier =
+        repo::recognized_member(&conn, scope, tenant_id, SetKind::PlanTier, &class.plan_tier)
+            .await
+            .map_err(|e| repo_error_to_canonical(&e))?;
+    if let Err(refusal) =
+        classification::tier_verdict(&class.plan_tier, tier.map(|m| m.state), true)
+    {
+        report.violate(refusal.code(), "plan_tier", refusal.to_string());
+    }
+    for (field, kind, code) in [
+        (
+            "tax_category_ref",
+            SetKind::TaxCategory,
+            class.tax_category_ref.as_deref(),
+        ),
+        ("gl_code_ref", SetKind::GlCode, class.gl_code_ref.as_deref()),
+    ] {
+        let Some(code) = code else { continue };
+        let member = repo::recognized_member(&conn, scope, tenant_id, kind, code)
+            .await
+            .map_err(|e| repo_error_to_canonical(&e))?;
+        if let Err(refusal) =
+            classification::accounting_code_verdict(field, code, member.map(|m| m.state), true)
+        {
+            report.violate(refusal.code(), field, refusal.to_string());
+        }
+    }
+    if let Some(unit) = source.metering_unit.as_deref() {
+        let member = repo::recognized_member(&conn, scope, tenant_id, SetKind::MeteringUnit, unit)
+            .await
+            .map_err(|e| repo_error_to_canonical(&e))?;
+        if let Err(refusal) = classification::declaration_verdict(unit, member.map(|m| m.state)) {
+            report.violate(refusal.code(), "metering_unit", refusal.to_string());
+        }
+    }
+    Ok(report)
+}
+
 async fn resolve_sku_clone_source(
     state: &ApiState,
     scope: &AccessScope,
@@ -1785,6 +1862,9 @@ async fn resolve_sku_clone_source(
     }
 
     if head.lifecycle_state == LifecycleState::Draft {
+        let content =
+            crate::api::rest::products::clone_content_live(state, scope, tenant_id, "sku", sku_id)
+                .await?;
         return Ok(Some(SkuCloneSource {
             sku_type: head.sku_type.clone(),
             sellable: head.sellable,
@@ -1796,6 +1876,9 @@ async fn resolve_sku_clone_source(
             region_scope: head.region_scope,
             brand_scope: head.brand_scope,
             read_at_version: None,
+            metering_unit: head.metering_unit.clone(),
+            usage_type_ref: head.usage_type_ref.clone(),
+            content,
         }));
     }
 
@@ -1820,6 +1903,10 @@ async fn resolve_sku_clone_source(
         )))
     })?;
 
+    let copy = crate::api::rest::products::clone_content_frozen(
+        state, scope, tenant_id, "sku", sku_id, &content,
+    )
+    .await?;
     Ok(Some(SkuCloneSource {
         sku_type: sku_frozen_str(&content, "sku_type"),
         sellable: content
@@ -1848,6 +1935,9 @@ async fn resolve_sku_clone_source(
             )))
         })?,
         read_at_version: Some(version),
+        metering_unit: sku_frozen_str(&content, "metering_unit"),
+        usage_type_ref: sku_frozen_str(&content, "usage_type_ref"),
+        content: copy,
     }))
 }
 
@@ -1858,6 +1948,7 @@ async fn resolve_sku_clone_source(
 /// lone SKU is a single-entity act, so its keyed claim keeps the create
 /// door's in-transaction answer, and the parent — copied or overridden — is
 /// judged by [`resolve_parent_scope`], the ordinary create-door checks.
+#[allow(clippy::too_many_lines)] // one door: overrides, source, parent, re-validation, the first-free walk
 async fn clone_sku(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
@@ -2008,8 +2099,48 @@ async fn clone_sku(
         },
     )
     .await?;
+    // The carve-out's second half (`design/11` §3.1's parent row): a parent
+    // holding a live retire intent refuses the lone clone the way it refuses
+    // a create — `RETIREMENT_PENDING`, audited against the source's code.
+    refuse_if_parent_retiring(
+        &state,
+        &scope,
+        tenant_id,
+        actor_ref,
+        &source.sku_code,
+        parent_id,
+    )
+    .await?;
 
     // -- the first-free walk (P-D-62). --
+    // Re-validate the copied content and classification before any row is
+    // written (`dod-disposition-rules`, P-D-154): one report, every code.
+    let class = source.classification();
+    let mut report =
+        clone_classification_report(&state, &scope, tenant_id, &source, &class, now).await?;
+    if let Some(found) = crate::api::rest::products::clone_content_report(
+        &state,
+        &scope,
+        tenant_id,
+        &child_scope.region.render(),
+        &child_scope.brand.render(),
+        &source.content,
+    )
+    .await?
+    {
+        crate::api::rest::products::merge_violations(&mut report, &found);
+    }
+    if !report.is_empty() {
+        return Err(audit_sku_refusal(
+            &state,
+            &scope,
+            tenant_id,
+            actor_ref,
+            &source.sku_code,
+            DomainError::Validation(report),
+        )
+        .await);
+    }
     let mut code_n: u32 = 1;
     for _attempt in 0..CLONE_SUGGESTION_ATTEMPTS {
         let code = code_override
@@ -2032,8 +2163,19 @@ async fn clone_sku(
             plan_tier: class.plan_tier,
             tax_category_ref: class.tax_category_ref,
             gl_code_ref: class.gl_code_ref,
+            metering_unit: source.metering_unit.clone(),
+            usage_type_ref: source.usage_type_ref.clone(),
         };
-        match insert_sku_with_event(&state, scope.clone(), new, claim.clone(), actor_ref).await {
+        match insert_sku_with_event(
+            &state,
+            scope.clone(),
+            new,
+            claim.clone(),
+            actor_ref,
+            Some(source.content.clone()),
+        )
+        .await
+        {
             Ok(CreateOutcome::Created {
                 internal_revision,
                 body,
@@ -7734,6 +7876,8 @@ fn new_sku_for_create(
         plan_tier: classification.plan_tier,
         tax_category_ref: classification.tax_category_ref,
         gl_code_ref: classification.gl_code_ref,
+        metering_unit: None,
+        usage_type_ref: None,
     }
 }
 

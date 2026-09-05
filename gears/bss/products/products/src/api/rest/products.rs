@@ -1291,7 +1291,11 @@ pub(crate) async fn insert_product_with_event(
         &state.sink,
         scope,
         new,
-        crate::infra::create::JoinedRecords { claim, stamp: None },
+        crate::infra::create::JoinedRecords {
+            claim,
+            stamp: None,
+            content: None,
+        },
         actor_ref,
         render_created_product,
     )
@@ -7640,6 +7644,176 @@ fn frozen_str(content: &JsonMap<String, JsonValue>, key: &str) -> Option<String>
 /// parse of this door's own (**P-D-77**).
 ///
 /// @cpt-dod:cpt-cf-bss-products-dod-clone-read-surface:p3
+/// The content a clone copies from a **draft** source: its live assignment
+/// and value rows and its metadata map (`design/11` §3.1, P-D-154).
+///
+/// # Errors
+///
+/// The store's error, canonical.
+pub(crate) async fn clone_content_live(
+    state: &ApiState,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    entity_kind: &str,
+    entity_id: Uuid,
+) -> Result<disposition::CloneContent, CanonicalError> {
+    let conn = state.db.conn().map_err(|e| {
+        repo_error_to_canonical(&RepoError::Db(format!("clone content connection: {e}")))
+    })?;
+    let collections = repo::frozen_collections(&conn, scope, tenant_id, entity_kind, entity_id)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?;
+    let metadata = repo::metadata_of(&conn, scope, tenant_id, entity_kind, entity_id)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?;
+    Ok(disposition::CloneContent {
+        assignments: collections.assignments,
+        values: collections.values,
+        metadata: metadata.into_iter().map(|m| (m.key, m.value)).collect(),
+    })
+}
+
+/// The content a clone copies from a **frozen** source: the two collections
+/// as the frozen version carries them (P-D-153; the pending head edits are
+/// exactly what `dod-clone-read-surface` keeps out), and the metadata map
+/// from the beside-entity store, which sits outside frozen content and
+/// survives retirement (P-D-06). A scheme-2 version without the collections
+/// copies none — there is nothing frozen to copy.
+///
+/// # Errors
+///
+/// The store's error, canonical.
+pub(crate) async fn clone_content_frozen(
+    state: &ApiState,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    entity_kind: &str,
+    entity_id: Uuid,
+    frozen: &serde_json::Map<String, JsonValue>,
+) -> Result<disposition::CloneContent, CanonicalError> {
+    let conn = state.db.conn().map_err(|e| {
+        repo_error_to_canonical(&RepoError::Db(format!("clone content connection: {e}")))
+    })?;
+    let (assignments, values) =
+        crate::domain::taxonomy::decode_collections(frozen).unwrap_or_default();
+    let metadata = repo::metadata_of(&conn, scope, tenant_id, entity_kind, entity_id)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?;
+    Ok(disposition::CloneContent {
+        assignments,
+        values,
+        metadata: metadata.into_iter().map(|m| (m.key, m.value)).collect(),
+    })
+}
+
+/// Re-validate a clone's copied content before any row is written
+/// (`dod-disposition-rules`, `dod-revalidation-codes`, P-D-154): the
+/// assignment set and the value set through `02`'s own `content_save_pipeline`
+/// — every failing rule into **one** report, so a single refusal carries
+/// every code — and every copied value through the PII write block, a value
+/// allow-listed when the source was created and since de-listed blocking now.
+/// `None` when everything re-validates.
+///
+/// # Errors
+///
+/// The store's error, canonical.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-disposition-rules:p3
+pub(crate) async fn clone_content_report(
+    state: &ApiState,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    entity_region_scope: &str,
+    entity_brand_scope: &str,
+    content: &disposition::CloneContent,
+) -> Result<Option<ValidationReport>, CanonicalError> {
+    use crate::domain::taxonomy::{
+        AssignmentCandidate, ContentSaveSubject, ResolvedDefinition, ValueCandidate,
+        content_pii_block, content_save_pipeline,
+    };
+    let conn = state.db.conn().map_err(|e| {
+        repo_error_to_canonical(&RepoError::Db(format!(
+            "clone re-validation connection: {e}"
+        )))
+    })?;
+    let detector = crate::api::rest::retention::tenant_pii_detector(state, tenant_id).await?;
+    let mut report = ValidationReport::new();
+
+    let ids: Vec<Uuid> = content.assignments.iter().map(|(id, _)| *id).collect();
+    let states = repo::category_states(&conn, scope, tenant_id, &ids)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?;
+    let roster = repo::attribute_definitions(&conn, scope, tenant_id)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?;
+    let mut values = Vec::with_capacity(content.values.len());
+    for value in &content.values {
+        let definition = roster
+            .iter()
+            .find(|d| d.definition_id == value.definition_id);
+        // A definition removed since the source was written is unknown by
+        // id; its key is gone with it, so the id stands in as the subject.
+        let key = definition.map_or_else(|| value.definition_id.to_string(), |d| d.key.clone());
+        if let Err(blocked) = content_pii_block(
+            detector.as_ref(),
+            &format!("attributes.{key}"),
+            &value.coordinate.value,
+        ) {
+            report.violate(
+                "CONTENT_PII_BLOCKED",
+                format!("attributes.{key}"),
+                blocked.into_detail(),
+            );
+        }
+        values.push(ValueCandidate {
+            definition_key: key,
+            locale: value.coordinate.locale.clone(),
+            region: value.coordinate.region.clone(),
+            brand: value.coordinate.brand.clone(),
+            value: value.coordinate.value.clone(),
+            resolved: definition.map(|d| ResolvedDefinition {
+                state: d.state,
+                value_type: d.value_type.clone(),
+                localized: d.localized,
+                region_scope: d.region_scope.clone(),
+                brand_scope: d.brand_scope.clone(),
+            }),
+        });
+    }
+    let subject = ContentSaveSubject {
+        assignments: content
+            .assignments
+            .iter()
+            .map(|(category_id, role)| AssignmentCandidate {
+                category_id: *category_id,
+                role: *role,
+                resolved: states
+                    .iter()
+                    .find(|(id, _)| id == category_id)
+                    .map(|(_, state)| *state),
+            })
+            .collect(),
+        values,
+        entity_region_scope: entity_region_scope.to_owned(),
+        entity_brand_scope: entity_brand_scope.to_owned(),
+    };
+    if let Some((_phase, found)) = content_save_pipeline().run(&subject) {
+        merge_violations(&mut report, &found);
+    }
+    Ok((!report.is_empty()).then_some(report))
+}
+
+/// Fold one report's violations into another — the clone's single refusal.
+pub(crate) fn merge_violations(into: &mut ValidationReport, from: &ValidationReport) {
+    for violation in from.violations() {
+        into.violate(
+            violation.code,
+            violation.subject.clone(),
+            violation.detail.clone(),
+        );
+    }
+}
+
 async fn resolve_clone_source(
     state: &ApiState,
     scope: &AccessScope,
@@ -7666,6 +7840,7 @@ async fn resolve_clone_source(
     }
 
     if head.lifecycle_state == LifecycleState::Draft {
+        let content = clone_content_live(state, scope, tenant_id, "product", product_id).await?;
         return Ok(Some(ProductCloneSource {
             brand_id: head.brand_id,
             name: head.name,
@@ -7674,6 +7849,7 @@ async fn resolve_clone_source(
             brand_scope: head.brand_scope,
             read_at_version: None,
             retired: false,
+            content,
         }));
     }
 
@@ -7715,6 +7891,8 @@ async fn resolve_clone_source(
         )))
     })?;
 
+    let copy =
+        clone_content_frozen(state, scope, tenant_id, "product", product_id, &content).await?;
     Ok(Some(ProductCloneSource {
         brand_id,
         name,
@@ -7734,6 +7912,7 @@ async fn resolve_clone_source(
         })?,
         read_at_version: Some(version),
         retired: head.lifecycle_state == LifecycleState::Retired,
+        content: copy,
     }))
 }
 
@@ -7877,9 +8056,11 @@ async fn insert_clone_parent(
     new: NewProduct,
     claim: Option<IdempotencyClaimInput>,
     actor_ref: Uuid,
+    content: disposition::CloneContent,
 ) -> Result<CloneParentOutcome, DbError> {
     let outbox = state.sink.clone();
     let tenant_id = new.tenant_id;
+    let now = new.created_at;
     state
         .db
         .db()
@@ -7891,6 +8072,7 @@ async fn insert_clone_parent(
                 let scope = scope.clone();
                 let new = new.clone();
                 let claim = claim.clone();
+                let content = content.clone();
                 Box::pin(async move {
                     if let Some(input) = claim.as_ref() {
                         match claim_composite_idempotency(tx, &scope, tenant_id, input)
@@ -7915,6 +8097,18 @@ async fn insert_clone_parent(
                     let record = repo::insert_product(tx, &scope, new)
                         .await
                         .map_err(|e| DbError::Sea(e.to_db_err()))?;
+                    // The copied content, in the same transaction (P-D-154).
+                    crate::infra::create::write_clone_content(
+                        tx,
+                        &scope,
+                        tenant_id,
+                        "product",
+                        record.product_id,
+                        &content,
+                        now,
+                    )
+                    .await
+                    .map_err(|e| DbError::Sea(e.to_db_err()))?;
 
                     if let Some(input) = claim.as_ref() {
                         repo::stamp_idempotency_entity_ref(
@@ -8074,6 +8268,7 @@ async fn resolve_child_source(
     child: &SkuRecord,
 ) -> Result<SkuCloneSource, CanonicalError> {
     if child.lifecycle_state == LifecycleState::Draft {
+        let content = clone_content_live(state, scope, tenant_id, "sku", child.sku_id).await?;
         return Ok(SkuCloneSource {
             sku_type: child.sku_type.clone(),
             sellable: child.sellable,
@@ -8085,6 +8280,9 @@ async fn resolve_child_source(
             region_scope: child.region_scope.clone(),
             brand_scope: child.brand_scope.clone(),
             read_at_version: None,
+            metering_unit: child.metering_unit.clone(),
+            usage_type_ref: child.usage_type_ref.clone(),
+            content,
         });
     }
 
@@ -8121,6 +8319,7 @@ async fn resolve_child_source(
             child.sku_id
         )))
     })?;
+    let copy = clone_content_frozen(state, scope, tenant_id, "sku", child.sku_id, &content).await?;
     Ok(SkuCloneSource {
         sku_type: frozen_str(&content, "sku_type"),
         sellable: content
@@ -8147,6 +8346,9 @@ async fn resolve_child_source(
             )))
         })?,
         read_at_version: Some(version),
+        metering_unit: frozen_str(&content, "metering_unit"),
+        usage_type_ref: frozen_str(&content, "usage_type_ref"),
+        content: copy,
     })
 }
 
@@ -8199,6 +8401,40 @@ async fn clone_family_child(
     }
 
     // The first-free walk (P-D-62), unflavored: SKU codes have no -revived.
+    // Re-validate the child's copied content and classification before its
+    // insert (P-D-154); a failing child is reported, the siblings proceed.
+    let class = source.classification();
+    let mut report = crate::api::rest::skus::clone_classification_report(
+        state, sku_scope, tenant_id, &source, &class, now,
+    )
+    .await?;
+    if let Some(found) = clone_content_report(
+        state,
+        sku_scope,
+        tenant_id,
+        &child_pair.region.render(),
+        &child_pair.brand.render(),
+        &source.content,
+    )
+    .await?
+    {
+        merge_violations(&mut report, &found);
+    }
+    if !report.is_empty() {
+        let refusal = DomainError::Validation(report);
+        let entry = child_failed_entry(child.sku_id, &refusal);
+        audit_failed_child(
+            state,
+            sku_scope,
+            tenant_id,
+            actor_ref,
+            source.sku_code.clone(),
+            refusal,
+        )
+        .await;
+        return Ok(entry);
+    }
+
     let mut code_n: u32 = 1;
     for _attempt in 0..CLONE_SUGGESTION_ATTEMPTS {
         let code = disposition::suggested_sku_code(&source, code_n);
@@ -8219,8 +8455,19 @@ async fn clone_family_child(
             plan_tier: class.plan_tier,
             tax_category_ref: class.tax_category_ref,
             gl_code_ref: class.gl_code_ref,
+            metering_unit: source.metering_unit.clone(),
+            usage_type_ref: source.usage_type_ref.clone(),
         };
-        match insert_sku_with_event(state, sku_scope.clone(), new, None, actor_ref).await {
+        match insert_sku_with_event(
+            state,
+            sku_scope.clone(),
+            new,
+            None,
+            actor_ref,
+            Some(source.content.clone()),
+        )
+        .await
+        {
             Ok(CreateOutcome::Created { body, .. }) => {
                 let new_sku_id = body
                     .get("sku_id")
@@ -8443,6 +8690,7 @@ async fn finish_family_act(
 /// @cpt-dod:cpt-cf-bss-products-dod-clone-door:p1
 /// @cpt-dod:cpt-cf-bss-products-dod-clone-children:p1
 /// @cpt-dod:cpt-cf-bss-products-dod-rename-rule:p1
+#[allow(clippy::too_many_lines)] // one door: overrides, source, re-validation, the first-free walk, the family
 async fn clone_product(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
@@ -8550,6 +8798,31 @@ async fn clone_product(
     // -- the parent's first-free walk (P-D-62): the index arbitrates, the
     // loop only moves to the next candidate on the exact conflict its
     // candidate owns. --
+    // Re-validate the copied content before any row is written
+    // (`dod-disposition-rules`, P-D-154): one report, every code.
+    if let Some(report) = clone_content_report(
+        &state,
+        &product_scope,
+        tenant_id,
+        &source.region_scope,
+        &source.brand_scope,
+        &source.content,
+    )
+    .await?
+    {
+        let domain_err = DomainError::Validation(report);
+        return Err(refuse_clone(
+            &state,
+            &product_scope,
+            tenant_id,
+            actor_ref,
+            domain_err.code(),
+            source_id.to_string(),
+            CanonicalError::from(domain_err),
+        )
+        .await);
+    }
+
     let mut name_n: u32 = 1;
     let mut code_n: u32 = 1;
     for _attempt in 0..CLONE_SUGGESTION_ATTEMPTS {
@@ -8575,8 +8848,15 @@ async fn clone_product(
             cloned_from_version: source.read_at_version,
         };
 
-        match insert_clone_parent(&state, product_scope.clone(), new, claim.clone(), actor_ref)
-            .await
+        match insert_clone_parent(
+            &state,
+            product_scope.clone(),
+            new,
+            claim.clone(),
+            actor_ref,
+            source.content.clone(),
+        )
+        .await
         {
             Ok(CloneParentOutcome::Created { record }) => {
                 return finish_family_act_boxed(
