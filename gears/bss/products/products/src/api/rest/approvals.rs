@@ -1963,6 +1963,18 @@ async fn open_breakglass(
     let scope_tx = write_scope;
     let reason_tx = reason.clone();
     let target = body.target_tenant_id;
+    // **The stored principal is the opener's pseudonym IN THE TARGET TENANT.**
+    // The row lives there (`tenant_col = "target_tenant"`), 10's identity map is
+    // per tenant, and the elevation gate re-resolves the caller against
+    // `session.target_tenant` before admitting a call — so a principal minted in
+    // the opener's own map can never equal it, and every elevated call answered
+    // `BREAK_GLASS_SESSION_UNKNOWN`. Measured on benidorm (2026-09-06); the
+    // gear's own tier seeds the row with the actor_ref the gate computes, so it
+    // cannot see the two maps at all. The pseudonym has to be the target's for
+    // the same reason the row is: an operator's acts inside that tenant are
+    // audited there, and `compliance × export` resolves them there.
+    let principal =
+        crate::api::rest::resolve_creator_actor_ref(&state, target, ctx.subject_id(), now).await?;
     let sink = state.sink.clone();
     let opened = state
         .db
@@ -1980,7 +1992,7 @@ async fn open_breakglass(
                         &scope,
                         NewElevation {
                             session_id,
-                            principal: actor_ref,
+                            principal,
                             target_tenant: target,
                             valid_from: now,
                             valid_until,

@@ -1293,6 +1293,57 @@ async fn audit_rows(harness: &TestHarness) -> i64 {
 /// The two halves are one case because either alone is satisfiable by a
 /// defect: a gate that refused everything would pass the first, and one that
 /// refused nothing would pass the second.
+/// **A session opened through the DOOR is usable** — the half every seeded
+/// case above assumes and none of them asks.
+///
+/// `open_session` writes the row with `actor_ref_of(subject)`, the pseudonym the
+/// **gate** computes in the target tenant; so every elevation case here agreed
+/// with the reader and nobody checked the writer. The door resolved its
+/// principal in the **caller's** tenant instead, and 10's identity map is per
+/// tenant — two maps, two pseudonyms, never equal — so on a real deployment
+/// every elevated call answered `BREAK_GLASS_SESSION_UNKNOWN` and the whole
+/// surface was inert. Measured on the benidorm stand (2026-09-06).
+#[tokio::test]
+async fn a_session_opened_through_the_door_admits_an_elevated_read() {
+    let harness = harness().await;
+    let subject = Uuid::from_u128(0x5a_b0);
+    let opened = post(
+        app_for(&harness, TENANT),
+        "/bss-products/v1/breakglass-sessions",
+        ctx_without_roles(subject),
+        json!({ "target_tenant_id": TARGET_TENANT, "reason": "incident 4471" }),
+    )
+    .await;
+    assert_eq!(
+        opened.status(),
+        201,
+        "this case's own premise: the door opens one"
+    );
+    let session = Uuid::parse_str(
+        body_of(opened).await["session_id"]
+            .as_str()
+            .expect("the receipt names the session"),
+    )
+    .expect("a uuid");
+
+    let read = elevated(
+        elevated_app(&harness, TENANT),
+        "GET",
+        "/bss-products/v1/_probe/tenant",
+        subject,
+        session,
+        json!({}),
+    )
+    .await;
+    let status = read.status();
+    let body = body_of(read).await;
+    assert_eq!(
+        status, 200,
+        "the door's own session must be the one the gate admits: {body}"
+    );
+    assert_eq!(body["tenant"], json!(TARGET_TENANT));
+}
+
 #[tokio::test]
 async fn an_elevation_refuses_every_write_and_admits_a_read_under_the_target() {
     let harness = harness().await;
