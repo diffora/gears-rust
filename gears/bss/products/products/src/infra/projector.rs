@@ -699,8 +699,17 @@ async fn project_entity(
                 head.lifecycle_state == bss_products_sdk::models::LifecycleState::Deprecated;
             row.deprecation_provenance = head.deprecation_provenance.map(|p| p.as_str().to_owned());
             row.replaced_by_sku_id = head.replaced_by_sku_id;
+            // **The author's own flag, carried — not a derived one.** This line
+            // read `published && !composition_pending` until the stand caught it
+            // (2026-09-06): the row already carries `lifecycle_state` and
+            // `composition_pending` as members of its own, so deriving `sellable`
+            // from them said nothing new and **dropped** the one fact only the
+            // head holds — `inst-cl-sellable`'s bucket-iii flag, which is
+            // pricing's operand for predicate 6 (`03` §1.8). A SKU saved
+            // `sellable = false` served `true` on browse, and the filter
+            // `?sellable=false` could not find it.
+            row.sellable = Some(head.sellable);
         }
-        row.sellable = Some(row.lifecycle_state == "published" && !row.composition_pending);
     } else {
         row.entity_code = text("product_code");
         row.name = text("name").unwrap_or_default();

@@ -94,7 +94,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
             category_paths     text,
             published_version  bigint      NOT NULL,
             projected_at       timestamptz NOT NULL,
-            generation         integer     NOT NULL DEFAULT 0,
+            generation         bigint    NOT NULL DEFAULT 0,
             CONSTRAINT products_read_entity_pkey PRIMARY KEY (tenant_id, entity_kind, entity_id),
             CONSTRAINT chk_products_read_entity_kind CHECK (entity_kind IN ('product', 'sku')),
             CONSTRAINT chk_products_read_entity_state CHECK (lifecycle_state IN ('draft', 'published', 'deprecated', 'retired', 'discarded')),

@@ -154,16 +154,16 @@ pub struct AllowlistEntryRequest {
     /// is normalized before it is stored, and the normalization is the whole
     /// of the match rule — see
     /// [`crate::domain::retention::normalize_allowlist_value`].
-    pub value: String,
+    pub value: Option<String>,
     /// Why Legal admitted it. Operator free text, and inside the content-PII
     /// write block.
-    pub justification: String,
+    pub justification: Option<String>,
     /// The reference to the external Legal decision — the artifact, never a
     /// person. **Mandatory**: an entry offered without it is refused riding
     /// `01`'s `VALIDATION` naming the field (P-D-64).
-    pub signed_off_by: String,
+    pub signed_off_by: Option<String>,
     /// When Legal signed off.
-    pub signed_off_at: DateTime<Utc>,
+    pub signed_off_at: Option<DateTime<Utc>>,
 }
 
 /// What the sign-off door answers.
@@ -905,6 +905,11 @@ async fn refuse_allowlist(
 /// `POST /bss-products/v1/pii-allowlist-entries`.
 ///
 /// @cpt-flow:cpt-cf-bss-products-flow-pii-policy:p1
+#[allow(
+    clippy::too_many_lines,
+    reason = "the door runs its phases in order in one body; the four members' own violations \
+              (P-D-64, made reachable 2026-09-06) put it thirteen lines over the floor"
+)]
 async fn sign_off_allowlist_entry(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
@@ -928,9 +933,25 @@ async fn sign_off_allowlist_entry(
     )
     .await?;
 
-    let value = body.value.trim().to_owned();
-    let justification = body.justification.trim().to_owned();
-    let signed_off_by = body.signed_off_by.trim().to_owned();
+    // **Every member is `Option` on the DTO and mandatory at this door**, which
+    // is what makes P-D-64's promise true: a member the caller omitted has to
+    // reach the door to be refused `VALIDATION` naming its field. While
+    // `signed_off_by` was a bare `String`, an entry offered without it was
+    // rejected by the deserializer with a bare `422` that named nothing — the
+    // refusal the decision rules out, found on the stand (2026-09-06).
+    let value = body.value.clone().unwrap_or_default().trim().to_owned();
+    let justification = body
+        .justification
+        .clone()
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    let signed_off_by = body
+        .signed_off_by
+        .clone()
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
     let mut report = crate::domain::validation::ValidationReport::new();
     if value.is_empty() {
         report.violate("VALIDATION", "value", "value must not be blank");
@@ -953,6 +974,22 @@ async fn sign_off_allowlist_entry(
              sign-off reference, and an entry without one records nothing",
         );
     }
+    let Some(signed_off_at) = body.signed_off_at else {
+        report.violate(
+            "VALIDATION",
+            "signedOffAt",
+            "signedOffAt is required: the entry records when Legal signed the decision off",
+        );
+        return Err(refuse_allowlist(
+            &state,
+            &scope,
+            tenant_id,
+            actor_ref,
+            ALLOWLIST_LIVE_OP_TARGET.to_owned(),
+            DomainError::Validation(report),
+        )
+        .await);
+    };
     let normalized = crate::domain::retention::normalize_allowlist_value(&value);
     if !value.is_empty() && normalized.is_empty() {
         report.violate(
@@ -1031,7 +1068,7 @@ async fn sign_off_allowlist_entry(
         value_normalized: normalized.clone(),
         justification: justification.clone(),
         signed_off_by: signed_off_by.clone(),
-        signed_off_at: canonical::write_instant(body.signed_off_at),
+        signed_off_at: canonical::write_instant(signed_off_at),
         now,
     };
     let scope_tx = scope.clone();
@@ -1048,6 +1085,7 @@ async fn sign_off_allowlist_entry(
                 let scope = scope_tx.clone();
                 let sink = sink_tx.clone();
                 let entry = entry.clone();
+                let normalized_tx = entry.value_normalized.clone();
                 let reason = reason_tx.clone();
                 let authorization = authorization_tx.clone();
                 Box::pin(async move {
@@ -1059,7 +1097,7 @@ async fn sign_off_allowlist_entry(
                         })?;
                     repo::insert_entry(tx, &scope, entry)
                         .await
-                        .map_err(TxError::Repo)?;
+                        .map_err(|error| classify_allowlist_insert(&normalized_tx, error))?;
                     write_allowlist_audit(
                         tx,
                         &scope,
@@ -1428,6 +1466,29 @@ fn contention_db_err(error: &TxError) -> Option<&sea_orm::DbErr> {
         TxError::Repo(crate::infra::storage::RepoError::Driver { source, .. }) => Some(source),
         TxError::Repo(_) | TxError::Events(_) | TxError::Refused(_) => None,
     }
+}
+
+/// A duplicate active value is a **refusal**, never an internal error.
+///
+/// `uq_products_pii_allowlist_active` is partial on `state = 'active'`, so a
+/// second add of a value the tenant already allows breaks it — and until the
+/// stand caught this (2026-09-06) that surfaced as a bare `500`. The sibling
+/// governed-set door already had the answer for its own set
+/// (`recognized_sets::classify_member_insert`): the same `DUPLICATE_CODE`,
+/// naming what is already carried. A revoked entry does not collide — the
+/// index admits it — so re-listing a value stays a fresh add.
+fn classify_allowlist_insert(normalized: &str, error: crate::infra::storage::RepoError) -> TxError {
+    let message = error.to_string().to_ascii_lowercase();
+    if message.contains("unique constraint")
+        || message.contains("duplicate key")
+        || message.contains("primary key")
+    {
+        return TxError::Refused(DomainError::DuplicateCode(format!(
+            "the tenant's allow-list already carries `{normalized}` in state `active`: revoke \
+             that entry before offering the value under a new Legal sign-off"
+        )));
+    }
+    TxError::Repo(error)
 }
 
 #[derive(Debug)]

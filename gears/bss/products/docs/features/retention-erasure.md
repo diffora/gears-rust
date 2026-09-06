@@ -867,6 +867,12 @@ one as a soft warning. Six of the eight probes are the `DoD`'s own named failure
 - **every** hold is reported rather than the first, because an operator repairing one and re-running
   would otherwise meet the rest one pass at a time.
 
+**The allow-list door's refusals are the door's own (P-D-164).** Every member of the offered entry
+is `Option` on the DTO and mandatory at the door, so an omitted `signedOffBy` rides `VALIDATION`
+naming the field as P-D-64 promises — while it was a bare `String` the deserializer answered a
+`422` naming nothing. A value the tenant already allows answers `DUPLICATE_CODE`, the sibling
+governed-set door's own word, where the partial unique index used to surface a `500`.
+
 `FreezeRegistration` — the domain's type, `domain::retention::FreezeRegistration`, re-exported by
 the repository (P-D-163) — carries the state and the stamp **separately** rather than deriving one
 from the other, and that is the shape the two arms force: a door-released row is `released` with a NULL

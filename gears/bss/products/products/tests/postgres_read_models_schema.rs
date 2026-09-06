@@ -174,3 +174,43 @@ async fn the_read_projection_oracle_can_fail() {
         roster(&conn, "products_read_delivery_state").await
     );
 }
+
+/// One `(table, data_type)` row of `information_schema.columns`.
+#[derive(Debug, sea_orm::FromQueryResult)]
+struct TypeRow {
+    table_name: String,
+    data_type: String,
+}
+
+/// **The two `generation` columns are `bigint`.** The entity maps them to
+/// `i64`, and an `integer` column decodes into it with a driver error that
+/// surfaces as a `500` on every browse once the projector has written a
+/// checkpoint — which is exactly how benidorm found it (2026-09-06): the
+/// name-and-nullability oracle above cannot see a width, so this pins it.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn the_generation_columns_are_bigint() {
+    let pg = Pg::applied().await;
+    let conn = pg.raw().await;
+    let rows = TypeRow::find_by_statement(Statement::from_string(
+        sea_orm::DatabaseBackend::Postgres,
+        "SELECT table_name, data_type FROM information_schema.columns \
+         WHERE table_schema = 'bss' AND column_name = 'generation' ORDER BY table_name"
+            .to_owned(),
+    ))
+    .all(&conn)
+    .await
+    .expect("information_schema answers");
+    let got: Vec<(String, String)> = rows
+        .into_iter()
+        .map(|r| (r.table_name, r.data_type))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("products_read_checkpoint".to_owned(), "bigint".to_owned()),
+            ("products_read_entity".to_owned(), "bigint".to_owned()),
+        ],
+        "an i64 field needs an INT8 column on the engine that serves it"
+    );
+}

@@ -731,6 +731,12 @@ read would trade a labelled staleness — which C3 makes safe — for an outage.
 
 **A shed response leaks neither content nor counts.**
 
+**The row's `sellable` is the head's own flag, not a derived one (P-D-164).** The projection
+computed `published && !composition_pending` until the benidorm wave measured it: the row already
+carries `lifecycle_state` and `compositionPending` as members of its own, so deriving said nothing
+new and dropped `inst-cl-sellable`'s bucket-iii flag — pricing's operand for predicate 6. A SKU
+saved `sellable = false` served `true` on browse and `?sellable=false` could not find it.
+
 **Ticked (P-D-150).** `read::ReadPathLimiter` — the fifth name `design/08` §1.7 minted (P-D-126) —
 is one process-wide component, a token bucket **per tenant** at `read_path_qps_ceiling` (interim
 200/s), installed at boot and consulted first by all six read doors; above the ceiling a door answers

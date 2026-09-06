@@ -851,7 +851,16 @@ pub async fn resolve_actor_ref(
                 Condition::all()
                     .add(identity_ref::Column::TenantId.eq(tenant_id))
                     .add(identity_ref::Column::ActorRef.eq(row.actor_ref))
-                    .add(identity_ref::Column::TombstonedAt.is_null()),
+                    .add(identity_ref::Column::TombstonedAt.is_null())
+                    // **Never advance the stamp backwards.** Two of a
+                    // principal's first requests race: the winner mints the row
+                    // at its own `now`, and the loser — whose `now` is earlier —
+                    // then wrote `last_seen_at < first_seen_at` and broke
+                    // `chk_products_identity_ref_seen_order`, answering a `500`
+                    // on an ordinary create (benidorm, 2026-09-06). An
+                    // out-of-order advance now matches no row, and the branch
+                    // below reads the winner's row rather than minting a second.
+                    .add(identity_ref::Column::FirstSeenAt.lte(now)),
             )
             .exec(runner)
             .await
@@ -867,6 +876,13 @@ pub async fn resolve_actor_ref(
         // live ref — so fall through to it and mint a fresh one, which is
         // what the design requires of a principal acting after its erasure.
         if advanced.rows_affected > 0 {
+            return Ok(row.actor_ref);
+        }
+        // Zero rows has two causes and only one of them is a vanished row: the
+        // clamp above also declines an out-of-order advance. The row we read is
+        // still this principal's actor, so answer it rather than minting a
+        // second ref for the same principal.
+        if row.first_seen_at > now {
             return Ok(row.actor_ref);
         }
     }
@@ -1839,11 +1855,17 @@ pub async fn has_primary_category(
 /// [`RepoError`] as the statement raises it.
 pub async fn supersede_open_approval(
     runner: &impl DBRunner,
-    scope: &AccessScope,
+    _door_scope: &AccessScope,
     tenant_id: Uuid,
     subject: &crate::domain::governance::GateSubject,
     now: DateTime<Utc>,
 ) -> Result<Option<Uuid>, RepoError> {
+    // Tenant-scoped for `gate_candidates`' reason: `products_approval`'s
+    // `resource_col` is `approval_id`, so a door scope pinned to the entity it
+    // gates would supersede **nothing** — silently, since a supersession that
+    // matches no row is not an error. See that function's note (benidorm,
+    // 2026-09-06).
+    let scope = &AccessScope::for_tenant(tenant_id);
     let open = approval::Entity::find()
         .secure()
         .scope_with(scope)

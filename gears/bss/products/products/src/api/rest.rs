@@ -448,20 +448,46 @@ pub(crate) async fn resolve_creator_actor_ref(
     now: DateTime<Utc>,
 ) -> Result<Uuid, CanonicalError> {
     let principal_ref = principal_id.to_string();
-    let self_scope = AccessScope::for_tenant(tenant_id);
-    state
-        .db
-        .transaction(move |tx| {
-            Box::pin(async move {
-                repo::resolve_actor_ref(tx, &self_scope, tenant_id, &principal_ref, now)
-                    .await
-                    .map_err(|e| DbError::Sea(DbErr::Custom(e.to_string())))
+    // Two attempts, never more. A principal's **first two requests** can race
+    // on the mint: both miss the live row, both insert, and the loser's
+    // `INSERT` breaks the identity map's unique key — which aborts its
+    // transaction, so the re-read has to be a second transaction rather than
+    // a statement after the failure. On Postgres the two-request race is
+    // ordinary (a browser opening two tabs); `SQLite` serialises writers and
+    // could never show it, which is why the stand found it first. The second
+    // attempt finds the winner's row through the ordinary resolve path; a
+    // failure that survives it is a real storage fault and answers 5xx.
+    let mut last = None;
+    for _attempt in 0..2 {
+        let self_scope = AccessScope::for_tenant(tenant_id);
+        let principal_ref = principal_ref.clone();
+        match state
+            .db
+            .transaction(move |tx| {
+                Box::pin(async move {
+                    repo::resolve_actor_ref(tx, &self_scope, tenant_id, &principal_ref, now)
+                        .await
+                        .map_err(|e| DbError::Sea(DbErr::Custom(e.to_string())))
+                })
             })
-        })
-        .await
-        .map_err(|e| {
-            CanonicalError::internal(format!("bss-products: resolve actor ref: {e}")).create()
-        })
+            .await
+        {
+            Ok(actor_ref) => return Ok(actor_ref),
+            Err(error) => {
+                tracing::debug!(
+                    %error,
+                    %tenant_id,
+                    "bss-products: actor-ref resolve attempt failed; retrying once"
+                );
+                last = Some(error);
+            }
+        }
+    }
+    Err(CanonicalError::internal(format!(
+        "bss-products: resolve actor ref: {}",
+        last.map_or_else(|| "no attempt ran".to_owned(), |e| e.to_string())
+    ))
+    .create())
 }
 
 /// The audit row's identity fields for one refusal, grouped exactly the way

@@ -233,7 +233,7 @@ pub(crate) struct ProductsRuntime {
 }
 
 /// The products gear.
-#[toolkit::gear(name = "bss-products", deps = [authz_resolver], capabilities = [db, rest, stateful], lifecycle(entry = "serve", stop_timeout = "30s"))]
+#[toolkit::gear(name = "bss-products", deps = [authz_resolver, types_registry, usage_collector], capabilities = [db, rest, stateful], lifecycle(entry = "serve", stop_timeout = "30s"))]
 pub struct BssProductsGear {
     /// `None` until `init()` completes, and on a boot where the gear is
     /// compiled in but not configured.

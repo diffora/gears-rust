@@ -207,12 +207,21 @@ async fn sign_off(
 }
 
 async fn sign_off_via(app: Router, value: &str, signed_off_by: &str) -> axum::http::Response<Body> {
-    let body = json!({
-        "value": value,
-        "justification": "product line named for its founder",
-        "signed_off_by": signed_off_by,
-        "signed_off_at": "2026-09-01T00:00:00Z",
-    });
+    sign_off_body(
+        app,
+        json!({
+            "value": value,
+            "justification": "product line named for its founder",
+            "signed_off_by": signed_off_by,
+            "signed_off_at": "2026-09-01T00:00:00Z",
+        }),
+    )
+    .await
+}
+
+/// The door with a body the case composes itself — the one way to offer an
+/// entry with a member **absent** rather than blank.
+async fn sign_off_body(app: Router, body: JsonValue) -> axum::http::Response<Body> {
     app.oneshot(
         Request::builder()
             .method("POST")
@@ -1112,5 +1121,101 @@ fn neither_retention_payload_has_a_field_an_identity_could_reach() {
     assert!(
         !body.contains("identity_payload") && !body.contains("principal_identity"),
         "the one column that may hold a real identity has no route into an event"
+    );
+}
+
+/// **A member the caller omitted is refused by the door, naming the field —
+/// not by the deserializer.**
+///
+/// P-D-64's promise is about the *offered* entry: "a missing mandatory member
+/// … is a shape-class refusal, and the caller's discriminator is the
+/// violation's field". While the DTO carried bare `String`s, an omitted
+/// `signedOffBy` never reached the door at all — serde answered a bare `422`
+/// naming nothing, which is the one refusal the decision rules out. Found on
+/// the benidorm stand (2026-09-06); every member is `Option` on the DTO now
+/// and mandatory at the door, so each has a violation of its own.
+#[tokio::test]
+async fn an_omitted_member_is_refused_by_the_door_and_names_its_field() {
+    let harness = harness().await;
+    for (omitted, subject) in [
+        ("signed_off_by", "signedOffBy"),
+        ("signed_off_at", "signedOffAt"),
+        ("justification", "justification"),
+        ("value", "value"),
+    ] {
+        seed_allowlist_record(&harness).await;
+        let mut body = serde_json::json!({
+            "value": "Ann Fritz",
+            "justification": "product line named for its founder",
+            "signed_off_by": "legal-2026-114",
+            "signed_off_at": "2026-09-01T00:00:00Z",
+        });
+        body.as_object_mut().expect("object").remove(omitted);
+        let refused = sign_off_body(app_for(&harness, TENANT), body).await;
+        assert_eq!(
+            refused.status(),
+            axum::http::StatusCode::BAD_REQUEST,
+            "omitting {omitted} must reach the door, never the deserializer"
+        );
+        let json = body_json(refused).await;
+        assert_eq!(
+            json["context"]["violations"][0]["type"]
+                .as_str()
+                .unwrap_or_default(),
+            "VALIDATION"
+        );
+        assert_eq!(
+            json["context"]["violations"][0]["subject"]
+                .as_str()
+                .unwrap_or_default(),
+            subject,
+            "the violation names the omitted member"
+        );
+    }
+}
+
+/// **A value the tenant already allows is a refusal, never an internal
+/// error.**
+///
+/// `uq_products_pii_allowlist_active` is partial on `state = 'active'`, so a
+/// second add of a live value breaks it — and that surfaced as a bare `500`
+/// until the stand caught it (2026-09-06). The answer is the sibling
+/// governed-set door's: `DUPLICATE_CODE`, naming what is already carried. The
+/// positive control is the revoked value, which the partial index admits, so
+/// re-listing after a revoke stays an ordinary add.
+#[tokio::test]
+async fn a_value_already_allowed_is_refused_and_a_revoked_one_can_be_re_listed() {
+    let harness = harness().await;
+
+    let first = sign_off(&harness, "Ann Fritz", "legal-2026-114").await;
+    assert_eq!(first.status(), axum::http::StatusCode::OK);
+    let entry_id = Uuid::parse_str(
+        body_json(first).await["entry_id"]
+            .as_str()
+            .expect("the receipt carries the entry id"),
+    )
+    .expect("a uuid");
+
+    let again = sign_off(&harness, "ANN   fritz", "legal-2026-115").await;
+    assert_eq!(
+        again.status(),
+        axum::http::StatusCode::CONFLICT,
+        "the same normalized value is a conflict, not a 500"
+    );
+    assert_eq!(
+        body_json(again).await["context"]["reason"]
+            .as_str()
+            .unwrap_or_default(),
+        "DUPLICATE_CODE",
+        "the conflict class carries its code as `context.reason`"
+    );
+
+    let revoked = revoke(&harness, entry_id).await;
+    assert_eq!(revoked.status(), axum::http::StatusCode::OK);
+    let relisted = sign_off(&harness, "Ann Fritz", "legal-2026-116").await;
+    assert_eq!(
+        relisted.status(),
+        axum::http::StatusCode::OK,
+        "a revoked value re-enters through an ordinary add: the index is partial on active"
     );
 }

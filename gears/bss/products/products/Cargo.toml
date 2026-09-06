@@ -95,6 +95,9 @@ arc-swap = { workspace = true }
 # implementation is referenced through the macro expansion only; the SDK crate
 # is the contract `init()` resolves from `ClientHub`.
 authz-resolver = { workspace = true }
+# The two gears the registry orders this one after: their clients are read at init.
+types-registry = { workspace = true }
+usage-collector = { workspace = true }
 authz-resolver-sdk = { workspace = true }
 types-registry-sdk = { workspace = true }
 usage-collector-sdk = { workspace = true }

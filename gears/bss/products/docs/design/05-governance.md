@@ -499,3 +499,12 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
   widens with it or the narrower wording is deliberate and says so. Owner: was this slice; **closed**.
   *(Filed from 01 §6 by the P-D-43…49 propagation audit — the eighth pass's own repair note
   claimed this was filed and it was not.)*
+- **Is a tenant's FIRST materiality policy exempt from the gate?** Raised by the 2026-09-06 e2e
+  wave (**P-D-164**): an unconfigured tenant reads `N = 2` (P-D-135), the policy mutation is
+  itself material (`MaterialAct::PolicyMutation`), and no principal can decide while nothing mints
+  the approver-role claim — so the first `PUT /materiality-policy` answers `403 APPROVAL_REQUIRED`
+  and **nothing governed can ever run on a fresh tenant through the wire**. *Recommendation:*
+  exempt the first write, as a bootstrap is exempt everywhere else. *Counter-argument:* the
+  mutation is governed by design and the real fix is the role claim, which this gear does not own.
+  Owner: this slice with the platform. *(Raised by the 2026-09-06 e2e wave.)*
+

@@ -1000,11 +1000,25 @@ pub async fn read_approval(
 /// [`RepoError`] on a storage or scope failure.
 pub async fn consume_approval(
     runner: &impl DBRunner,
-    scope: &AccessScope,
+    _door_scope: &AccessScope,
     tenant_id: Uuid,
     approval_id: ApprovalId,
     now: DateTime<Utc>,
 ) -> Result<Consumption, RepoError> {
+    // **The approval store is scoped to the tenant, never to the caller's
+    // door.** `products_approval` declares `resource_col = "approval_id"`, so a
+    // scope a real PDP compiled for a head act — which pins `resource_id` to the
+    // *entity's* id — filters this table by `approval_id = <entity id>` and
+    // matches nothing. Measured on the benidorm stand (2026-09-06): every
+    // governed act answered `APPROVAL_REQUIRED` while its satisfied record sat
+    // in the table, and the gear's own tier cannot see it because its enforcer
+    // double answers an unconstrained tenant scope.
+    //
+    // The caller has already passed its own door's authz; this access is the
+    // gear consulting its own governance state inside that tenant — the posture
+    // `api::rest::retention::tenant_pii_detector` states for the allow-list, for
+    // the same reason.
+    let scope = &AccessScope::for_tenant(tenant_id);
     let outcome = approval::Entity::update_many()
         .secure()
         .scope_with(scope)
@@ -1061,9 +1075,23 @@ pub enum Consumption {
 /// never a request-borne value.
 pub async fn gate_candidates(
     runner: &impl DBRunner,
-    scope: &AccessScope,
+    _door_scope: &AccessScope,
     subject: &GateSubject,
 ) -> Result<Vec<CandidateApproval>, RepoError> {
+    // **The approval store is scoped to the tenant, never to the caller's
+    // door.** `products_approval` declares `resource_col = "approval_id"`, so a
+    // scope a real PDP compiled for a head act — which pins `resource_id` to the
+    // *entity's* id — filters this table by `approval_id = <entity id>` and
+    // matches nothing. Measured on the benidorm stand (2026-09-06): every
+    // governed act answered `APPROVAL_REQUIRED` while its satisfied record sat
+    // in the table, and the gear's own tier cannot see it because its enforcer
+    // double answers an unconstrained tenant scope.
+    //
+    // The caller has already passed its own door's authz; this access is the
+    // gear consulting its own governance state inside that tenant — the posture
+    // `api::rest::retention::tenant_pii_detector` states for the allow-list, for
+    // the same reason.
+    let scope = &AccessScope::for_tenant(subject.tenant_id);
     let rows = approval::Entity::find()
         .secure()
         .scope_with(scope)
@@ -1160,10 +1188,24 @@ pub async fn gate_candidates(
 /// for a `state` or `subject_kind` outside its `CHECK`'s roster.
 pub async fn gate_candidate_by_id(
     runner: &impl DBRunner,
-    scope: &AccessScope,
+    _door_scope: &AccessScope,
     tenant_id: Uuid,
     approval_id: ApprovalId,
 ) -> Result<Option<CandidateApproval>, RepoError> {
+    // **The approval store is scoped to the tenant, never to the caller's
+    // door.** `products_approval` declares `resource_col = "approval_id"`, so a
+    // scope a real PDP compiled for a head act — which pins `resource_id` to the
+    // *entity's* id — filters this table by `approval_id = <entity id>` and
+    // matches nothing. Measured on the benidorm stand (2026-09-06): every
+    // governed act answered `APPROVAL_REQUIRED` while its satisfied record sat
+    // in the table, and the gear's own tier cannot see it because its enforcer
+    // double answers an unconstrained tenant scope.
+    //
+    // The caller has already passed its own door's authz; this access is the
+    // gear consulting its own governance state inside that tenant — the posture
+    // `api::rest::retention::tenant_pii_detector` states for the allow-list, for
+    // the same reason.
+    let scope = &AccessScope::for_tenant(tenant_id);
     let Some(row) = read_approval(runner, scope, tenant_id, approval_id).await? else {
         return Ok(None);
     };

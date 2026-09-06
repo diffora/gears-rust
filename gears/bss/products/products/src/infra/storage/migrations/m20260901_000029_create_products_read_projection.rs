@@ -49,7 +49,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
     "CREATE TABLE bss.products_read_checkpoint (
             tenant_id     uuid        NOT NULL,
             inbox_id      bigint      NOT NULL,
-            generation    integer     NOT NULL DEFAULT 0,
+            generation    bigint    NOT NULL DEFAULT 0,
             updated_at    timestamptz NOT NULL,
             CONSTRAINT products_read_checkpoint_pkey PRIMARY KEY (tenant_id)
         )",

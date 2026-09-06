@@ -1569,6 +1569,80 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-164 — The stand's own reading: nine defects the gear's tier cannot see, and the two seams the platform owes
+
+- **Date**: 2026-09-06 (the lead; the first e2e wave for this gear, `tests/e2e/tests/bss-products/`
+  in vhp-core's `bss/products-e2e`, 98 scenarios over five deploys to benidorm)
+- **What this decision records.** The gear's own tier is 1249 unit + REST cases over a
+  `tower::oneshot` router, an authz **double**, and `SQLite`. The suite added here is the second
+  reading of the same design set through the real stack: the api-gateway, the platform's PDP over
+  AM users and RBAC grants, Postgres under the shared `bss` schema, and the gear's own tickers.
+  Every finding below is a thing that tier cannot see **by construction**, and each is now fixed
+  or named.
+- **The defect that mattered: every governed act was unreachable on a real PDP.**
+  `products_approval` declares `resource_col = "approval_id"`, and each head door read its gate
+  candidates under its **own** `AccessScope` — which a real PDP compiles with `resource_id`
+  pinned to the *entity*. The secure layer then filtered `approval_id = <entity id>`, so no record
+  could ever match: correct, deprecate, undeprecate, retire and every governed live op answered
+  `403 APPROVAL_REQUIRED` while their satisfied records sat in the table. The quiet half was
+  `supersede_open_approval` — matching no row is not an error, so a save's invalidation hook
+  superseded nothing. `gate_candidates`, `gate_candidate_by_id`, `consume_approval` and
+  `supersede_open_approval` now scope by the tenant they are given, the posture
+  `tenant_pii_detector` already states for the allow-list. Invisible to the gear's tier because
+  `flat_in_enforcer` answers an unconstrained tenant scope.
+- **Eight more, each fixed at its site.** (1) The gear read `UsageCollectorClientV1` at init while
+  the collector initialised *after* it — `deps = [authz_resolver, types_registry, usage_collector]`
+  on the gear attribute orders it. (2) `products_read_entity.generation` and
+  `products_read_checkpoint.generation` were `integer` on Postgres against an `i64` field: every
+  browse answered `500` once the projector had written a checkpoint. Both are `bigint`, and
+  `postgres_read_models_schema` pins the width the name-and-nullability oracle cannot see.
+  (3) `resolve_creator_actor_ref` retries once — a principal's first two concurrent requests both
+  missed the identity row and the loser's `INSERT` broke the unique key. (4) The same race in its
+  second form: the loser's `now` was *earlier*, so advancing `last_seen_at` broke
+  `chk_products_identity_ref_seen_order`; the advance is clamped and answers the winner's row.
+  (5) The read projection **derived** `sellable` as `published && !composition_pending` and
+  dropped the head's own bucket-iii flag — pricing's operand for predicate 6 — so a SKU saved
+  `sellable = false` browsed as sellable and `?sellable=false` could not find it; the row carries
+  `head.sellable`. (6) An **omitted** `signedOffBy` on the allow-list door was refused by serde
+  with a bare `422` naming nothing, against P-D-64's own promise: every member is `Option` on the
+  DTO and mandatory at the door now, each with its own violation. (7) A value the tenant already
+  allows broke the partial unique index as a `500`; it answers `DUPLICATE_CODE`, the sibling
+  governed-set door's own answer. (8) Both allow-list halves carry probes in the gear's tier.
+- **Two seams the platform owes, asserted rather than skipped.** The **decide** door answers
+  `403 APPROVER_ROLE_REQUIRED` for every principal, because nothing mints the approver-role claim
+  (`design/05` C1, P-D-134 row 25) — so `SELF_APPROVAL_FORBIDDEN`, `DECISION_ALREADY_RECORDED` and
+  `APPROVER_SCOPE_EXCEEDED` have no wire path. And a **break-glass** session substitutes the target
+  tenant into the `SecurityContext` while the PDP resolves the caller's roles against the token's
+  own tenant, so an elevated read is `403` even with a role granted in the target. Both are
+  `xfail`ed with the ticket text, which turns green the day the platform closes them.
+- **Two open items for the owner.** (a) **The governance bootstrap is unreachable through the
+  wire**: an unconfigured tenant reads `N = 2` (P-D-135), the policy mutation is itself material,
+  and no principal can decide — so the first `PUT /materiality-policy` answers
+  `403 APPROVAL_REQUIRED` and nothing governed can ever run on a fresh tenant. *Recommendation:*
+  exempt a tenant's **first** policy write, the way a bootstrap is exempt everywhere else; the
+  counter-argument is that it is a governed act by design and the real answer is the role claim
+  above. The suite seeds the row out of band and pins the gap with its own scenario.
+  (b) The allow-list duplicate answers `DUPLICATE_CODE` on `SQLite` and `200` with no second row
+  on Postgres — one door, two engines, and the set invariant (one active entry per normalized
+  value) holds either way; which answer is the contract is the owner's call.
+- **Two contract gaps, recorded.** The REST `SkuView` does not carry `compositionPending` while
+  `12`'s consumer shape and the SDK's `Sku` both list it — a reader of the head view cannot see
+  the flag. And query parameters are **camelCase** (`excludeDeprecated`, `includeFacets`,
+  `skuType`) while every request body is snake_case, with an unknown query key silently ignored
+  rather than refused: `exclude_deprecated=true` quietly served the deprecated rows. The casing
+  split is P-D-159's open question; the silent-ignore half is new.
+- **Where the suite lives.** vhp-core branch `bss/products-e2e` — the gear wired as a workspace
+  path-dep beside pricing, a `gears.bss-products` block in both server configs, and
+  `tests/e2e/tests/bss-products/` with `lib/products.py` and two plans. The submodule points at
+  gears-rust `bss/products-on-upstream`, this branch's crate ported onto constructorfabric's
+  `05cee7b56`, because vhp-core's `main` compiles against a newer toolkit than this branch carries.
+- **Propagated**: `design/05-governance.md` §6 (the bootstrap item), `features/read-models.md`
+  (the projected `sellable`), `features/retention-erasure.md` (the allow-list refusals).
+- **Trace**: `retention_tests::an_omitted_member_is_refused_by_the_door_and_names_its_field`,
+  `retention_tests::a_value_already_allowed_is_refused_and_a_revoked_one_can_be_re_listed`,
+  `postgres_read_models_schema::the_generation_columns_are_bigint`, and the 98 scenarios of
+  `tests/e2e/tests/bss-products/`.
+
 #### P-D-163 — Review wave 1: the twenty-three findings of the one-agent branch review, twenty-two fixed at the site and one design question filed
 
 - **Date**: 2026-09-06 (the lead; the `toolkit-pr-review-v2` local run over the whole branch,
