@@ -78,6 +78,16 @@ pub struct ReadPathLimiter {
 
 static LIMITER: OnceLock<ReadPathLimiter> = OnceLock::new();
 
+/// The bucket count past which [`ReadPathLimiter::try_acquire`] drops the
+/// idle buckets before inserting. A bucket idle for a full second is back at
+/// capacity — the refill rate equals the capacity — which is exactly what an
+/// absent bucket means, so the eviction is lossless and the map is bounded by
+/// the tenants active in the last second rather than every tenant ever seen.
+const LIMITER_BUCKET_HIGH_WATER: usize = 4_096;
+
+/// How long a bucket must sit untouched before it is provably full again.
+const LIMITER_BUCKET_IDLE: std::time::Duration = std::time::Duration::from_secs(1);
+
 impl ReadPathLimiter {
     fn new(ceiling: u32) -> Self {
         Self {
@@ -100,8 +110,10 @@ impl ReadPathLimiter {
     }
 
     /// A per-tenant ceiling override — the probes' operand for forcing a shed
-    /// without waiting on the default's two hundred per second.
-    pub fn set_ceiling_for(&self, tenant_id: Uuid, ceiling: u32) {
+    /// without waiting on the default's two hundred per second. Compiled for
+    /// the probes only: no door and no boot path sets a ceiling per tenant.
+    #[cfg(test)]
+    pub(crate) fn set_ceiling_for(&self, tenant_id: Uuid, ceiling: u32) {
         self.overrides
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -129,6 +141,10 @@ impl ReadPathLimiter {
             .buckets
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if buckets.len() >= LIMITER_BUCKET_HIGH_WATER {
+            buckets
+                .retain(|_, bucket| now.duration_since(bucket.refilled_at) < LIMITER_BUCKET_IDLE);
+        }
         let bucket = buckets.entry(tenant_id).or_insert(Bucket {
             tokens: ceiling,
             refilled_at: now,
@@ -150,11 +166,17 @@ impl ReadPathLimiter {
 /// being the metrics backend's aggregation over it.
 ///
 /// @cpt-dod:cpt-cf-bss-products-dod-nfr-meters:p1
-fn observe_edge(door: &'static str, tenant_id: Uuid, started: Instant) {
+fn observe_edge(door: &'static str, ctx: &SecurityContext, started: Instant) {
+    let tenant_id = ctx.subject_tenant_id();
+    // An elevated read names its session on the line (P-D-163): the meter
+    // is the one place every served read passes, so a break-glass read is
+    // visible in the stream and not only in the gate's audit row.
+    let breakglass_session = crate::api::rest::breakglass_session_of(ctx);
     tracing::info!(
         event = "read_edge_latency",
         %tenant_id,
         door,
+        breakglass_session = ?breakglass_session,
         latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         "bss-products: read served"
     );
@@ -463,7 +485,9 @@ async fn browse(
     let want_facets = params.include_facets.unwrap_or(false);
     let limit = params.limit.unwrap_or(50).clamp(1, BROWSE_LIMIT_MAX);
     let query = BrowseQuery {
-        visibility: Some(VisibilityFilter::for_surface(surface).condition()),
+        visibility: Some(repo::visibility_condition(VisibilityFilter::for_surface(
+            surface,
+        ))),
         entity_kind: kind.map(str::to_owned),
         category_path: params.category.filter(|c| !c.trim().is_empty()),
         sku_type: params.sku_type,
@@ -485,7 +509,7 @@ async fn browse(
         .take(usize::try_from(limit).unwrap_or(usize::MAX))
         .map(row_view)
         .collect();
-    observe_edge("browse", tenant_id, started);
+    observe_edge("browse", &ctx, started);
     Ok((
         StatusCode::OK,
         Json(BrowseView {
@@ -660,7 +684,7 @@ async fn history(
             cloned_from_version: c.cloned_from_version,
         })
         .collect();
-    observe_edge("history", tenant_id, started);
+    observe_edge("history", ctx, started);
     Ok((
         StatusCode::OK,
         Json(HistoryView {
@@ -803,7 +827,7 @@ async fn deferred_intents(
             polled_at: row.polled_at,
         })
         .collect();
-    observe_edge("deferred-intents", tenant_id, started);
+    observe_edge("deferred-intents", &ctx, started);
     Ok((StatusCode::OK, Json(DeferredIntentsView { stamp, items })).into_response())
 }
 
@@ -846,7 +870,7 @@ async fn freeze_status(
             polled_at: row.polled_at,
         })
         .collect();
-    observe_edge("freeze-status", tenant_id, started);
+    observe_edge("freeze-status", &ctx, started);
     Ok((StatusCode::OK, Json(FreezeStatusesView { stamp, items })).into_response())
 }
 
@@ -894,7 +918,7 @@ async fn delivery_state(
             polled_at: None,
         },
     };
-    observe_edge("delivery-state", tenant_id, started);
+    observe_edge("delivery-state", &ctx, started);
     Ok((StatusCode::OK, Json(view)).into_response())
 }
 

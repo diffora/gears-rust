@@ -1483,3 +1483,129 @@ async fn a_request_without_the_header_passes_through_unchanged() {
     );
     assert_eq!(audit_rows(&harness).await, 0, "and no elevation audit row");
 }
+
+/// **The inbox is a page on the queue, not the queue** (P-D-163): `limit`
+/// bounds the cards, `has_more` says the queue continues, and the page is
+/// the oldest first — so a consumer draining the inbox sees the same order
+/// the unbounded read served.
+#[tokio::test]
+async fn the_inbox_serves_a_page_and_says_whether_the_queue_continues() {
+    let harness = harness().await;
+    seed_head(&harness).await;
+    let second = Uuid::from_u128(0x5a_f2);
+    seed_scoped_head(&harness, second, "Fibre 600", "eu", "").await;
+    set_quorum(&harness, 1).await;
+    let first_id = submit(&harness, Uuid::from_u128(0x5a_a0)).await;
+    let second_id = submit_for(&harness, Uuid::from_u128(0x5a_a0), second).await;
+
+    let page = body_of(
+        get(
+            app_for(&harness, TENANT),
+            "/bss-products/v1/approvals?state=pending&limit=1",
+            ctx_without_roles(Uuid::from_u128(0x5a_b0)),
+        )
+        .await,
+    )
+    .await;
+    let items = page["items"].as_array().expect("an items array");
+    assert_eq!(items.len(), 1, "the page is the limit");
+    assert_eq!(
+        items[0]["approval_id"],
+        json!(first_id.to_string()),
+        "oldest first"
+    );
+    assert_eq!(
+        page["has_more"],
+        json!(true),
+        "the queue continues past the page"
+    );
+
+    let whole = body_of(
+        get(
+            app_for(&harness, TENANT),
+            "/bss-products/v1/approvals?state=pending",
+            ctx_without_roles(Uuid::from_u128(0x5a_b0)),
+        )
+        .await,
+    )
+    .await;
+    let items = whole["items"].as_array().expect("an items array");
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[1]["approval_id"], json!(second_id.to_string()));
+    assert_eq!(
+        whole["has_more"],
+        json!(false),
+        "nothing past the default page"
+    );
+
+    let clamped = get(
+        app_for(&harness, TENANT),
+        "/bss-products/v1/approvals?state=pending&limit=0",
+        ctx_without_roles(Uuid::from_u128(0x5a_b0)),
+    )
+    .await;
+    assert_eq!(
+        clamped.status(),
+        200,
+        "a limit below one is clamped, not refused"
+    );
+    assert_eq!(
+        body_of(clamped).await["items"]
+            .as_array()
+            .expect("items")
+            .len(),
+        1
+    );
+}
+
+/// **A stored `subject_ref` that is not a `kind/id` pair fails the decision
+/// internally** — `subject_scope_of`'s corrupt arms, armed (P-D-163). The
+/// row is poisoned out of band; the approver's decision answers `500` and
+/// writes no decision row, because a corrupt record is this gear's own fault
+/// and must not be filed as the approver's scope refusal.
+#[tokio::test]
+async fn a_corrupt_subject_ref_fails_the_decision_internally() {
+    use sea_orm::ConnectionTrait as _;
+    let harness = harness().await;
+    seed_head(&harness).await;
+    set_quorum(&harness, 1).await;
+    let approval = submit(&harness, Uuid::from_u128(0x5a_a0)).await;
+
+    let conn = sea_orm::Database::connect(&harness.dsn)
+        .await
+        .expect("an auxiliary connection");
+    let poisoned = conn
+        .execute_unprepared(&format!(
+            "UPDATE products_approval SET subject_ref = 'garbage' \
+             WHERE subject_ref = 'product/{PRODUCT}'"
+        ))
+        .await
+        .expect("the approval table has no guard on subject_ref");
+    assert_eq!(
+        poisoned.rows_affected(),
+        1,
+        "the record this case poisons exists"
+    );
+    conn.close().await.ok();
+
+    let response = decide_as(
+        &harness,
+        approval,
+        ctx_with_roles(Uuid::from_u128(0x5a_b1), &[ApproverRole::CatalogAdmin]),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        500,
+        "a subject_ref with no kind/id pair is a corrupt row, not a refusal"
+    );
+    assert_eq!(
+        count(
+            &harness,
+            "SELECT COUNT(*) AS v FROM products_approval_decision"
+        )
+        .await,
+        0,
+        "no decision was recorded against a record the gear cannot read"
+    );
+}

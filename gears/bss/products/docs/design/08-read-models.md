@@ -354,3 +354,11 @@ clause — M5); the §5.1 p2 rows "Advanced search, filter & faceting" and the r
   says whether the clear emits `SkuPublished` beside `SkuCompositionCleared`. If only the latter
   fires, every composed bundle stays flagged in browse. Owner: as 06 states it, with this slice.
   *(Raised by the slice-08 first lens pass.)*
+- **Does the browse door adopt `toolkit-odata` for its query surface?** Filed by **P-D-163**
+  (review wave 1, finding 10): `BrowseParams` is hand-rolled while pricing uses `toolkit-odata` in
+  nine files, and `12`'s merge-compatibility half wants the two gears' list surfaces to read
+  alike. *Recommendation:* not for `p1` — this slice's browse vocabulary is closed by design and
+  the visibility and scope predicates are built into the one statement (`inst-rb-query`), so an
+  `$filter` surface is a second query language the contract would have to be re-proven against.
+  *Counter-argument:* pricing's consumers already speak OData and adopting later is a wire
+  change. Owner: this slice with 12. *(Raised by the 2026-09-06 branch review.)*

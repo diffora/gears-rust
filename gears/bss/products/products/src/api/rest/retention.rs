@@ -830,7 +830,13 @@ async fn export_identity_map(
             },
         )
         .await
-        .map_err(|_| {
+        .map_err(|error| {
+            tracing::error!(
+                event = "compliance_export_audit_failed",
+                %tenant_id,
+                error = ?error,
+                "bss-products: the compliance export's audit row could not be written"
+            );
             CanonicalError::from(DomainError::AuditUnavailable(
                 "the compliance export's audit row could not be written, and an unaudited export \
                  is not served"
@@ -1424,6 +1430,7 @@ fn contention_db_err(error: &TxError) -> Option<&sea_orm::DbErr> {
     }
 }
 
+#[derive(Debug)]
 enum TxError {
     /// The record the act was authorized on could not be spent by it.
     Refused(DomainError),

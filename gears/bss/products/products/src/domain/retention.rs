@@ -56,9 +56,30 @@
 
 use chrono::{DateTime, Utc};
 
-use crate::infra::storage::repo::FreezeRegistration;
-
 use crate::domain::states::FreezeAckState;
+
+/// One registration row as the **retention gate** reads it: the participant,
+/// its state, and whether `released_at` is stamped
+/// (`dod-retention-gate`).
+///
+/// The stamp is carried separately from the state because the gate's two arms
+/// need both and they are not derivable from one another: a door-released row
+/// is `state = released` with the stamp **NULL**, while force-completion
+/// stamps it in the same transaction as `not_frozen(forced)` and a recovered
+/// participant's later ack leaves the stamp behind (P-D-67).
+///
+/// Defined here and not in the repository: the gate is a domain rule and the
+/// repository is its reader, so the type the rule quantifies over is the
+/// domain's — `infra::storage::repo` re-exports it for its own callers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FreezeRegistration {
+    /// The participant the row is for.
+    pub participant: String,
+    /// Its state in the ledger.
+    pub state: FreezeAckState,
+    /// Whether `released_at` carries a value.
+    pub released_at_stamped: bool,
+}
 
 /// Why a version's manifest rows are held back.
 #[derive(Clone, Debug, PartialEq, Eq)]

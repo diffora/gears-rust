@@ -1241,7 +1241,10 @@ principals, `finance_required`, `predicate_unsatisfiable`, `quorum_reduced` — 
 diff payload (`content_snapshot`, `diff_basis`). The wire names follow the gear's DTO convention
 (snake_case, as every receipt does), not the design's camelCase prose; any other `state` is
 refused. Probe: `the_inbox_lists_pending_records_with_effective_counts_and_progress`. The
-merge-compatibility half is `12-consumer-contracts`' to assert.
+merge-compatibility half is `12-consumer-contracts`' to assert. **The inbox is a page on the
+queue (P-D-163):** `limit` (default 50, at most 200, clamped rather than refused) bounds the cards
+and `has_more` says whether the queue continues, oldest first; the repository reads one page and
+never the whole queue. Probe: `the_inbox_serves_a_page_and_says_whether_the_queue_continues`.
 
 **Implements**: `cpt-cf-bss-products-flow-queue`
 

@@ -21,7 +21,9 @@ use toolkit_db::secure::{
 };
 use uuid::Uuid;
 
-use crate::domain::read_model::{StalenessStamp, StampAdvanceRefusal, StampApply, advance_stamp};
+use crate::domain::read_model::{
+    StalenessStamp, StampAdvanceRefusal, StampApply, VisibilityFilter, advance_stamp,
+};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
     read_checkpoint, read_deferred_intent, read_delivery_state, read_entity, read_freeze_status,
@@ -252,6 +254,93 @@ pub async fn count_read_entities(
         .await
         .map_err(|e| driver_failure(format!("count read entities of {tenant_id}"), e))?;
     Ok(rows.len())
+}
+
+/// The visibility contract's `WHERE` fragment (`dod-visibility`,
+/// `inst-rb-query`): an `IN` over the states the surface serves, rendered
+/// here rather than in the domain so `domain::read_model` names no ORM type
+/// (P-D-163). The list is the domain's — [`VisibilityFilter::served_states`]
+/// — and this function only spells it as SQL.
+///
+/// An `IN` over the served states rather than a `NOT IN` over the withheld
+/// ones: the negative form serves any state added later, and
+/// `lifecycle_state`'s roster is a five-value `CHECK` that a migration can
+/// widen.
+#[must_use]
+pub fn visibility_condition(filter: VisibilityFilter) -> Condition {
+    let served: Vec<String> = filter
+        .served_states()
+        .into_iter()
+        .map(|s| s.as_str().to_owned())
+        .collect();
+    Condition::all().add(read_entity::Column::LifecycleState.is_in(served))
+}
+
+/// The query-build scope predicate for one axis (**P-D-39**).
+///
+/// **Empty means unrestricted**, so the predicate matches a row whose set is
+/// empty **or** contains the caller's claim. Written as containment alone it
+/// hides every unrestricted row — which is the whole catalogue of a tenant
+/// that has set no scopes.
+///
+/// # It is set membership, and `contains` was a leak
+///
+/// The column is a **comma-joined token set**, not a scalar:
+/// [`crate::domain::containment::SCOPE_VALUE_SEPARATOR`] is `,` and
+/// `domain::containment` owns the rule. `ColumnTrait::contains` renders an
+/// unanchored `LIKE '%claim%'` with nothing escaped, and the first version of
+/// this function used it. Measured consequences, each a cross-scope read:
+/// claim `eu` matched a row stored `eur`, `eu-west` or `aus,eu-central`;
+/// claim `us` matched `aus`; and a claim containing `%` matched **every**
+/// restricted row in the table. `SQLite`'s `LIKE` is ASCII-case-insensitive
+/// and Postgres's is not, so the two engines disagreed as well.
+///
+/// The predicate below matches a **token by position** — the whole value, or
+/// the set's first, last or a middle member — so `eu` cannot match `eur` or
+/// `aus,eu-central`. A claim carrying the separator or either wildcard is
+/// refused the containment arm entirely rather than escaped: it cannot be a
+/// member of a well-formed set, and there is then no operand a caller
+/// supplies that can widen the predicate.
+///
+/// **One residual, recorded rather than closed**: `SQLite`'s `LIKE` is
+/// ASCII-case-insensitive and Postgres's is not, so on `SQLite` a claim `eu`
+/// also admits a stored token `EU`. Scope values are resolved before
+/// persistence (`domain::containment`) and nothing in the crate writes a
+/// mixed-case token; closing it needs custom SQL, and the Postgres tier is
+/// the authority for the served behaviour.
+///
+/// # It carries no tenant predicate, and must not be used alone
+///
+/// This is one axis of a `WHERE` clause. The tenant comes from the secure
+/// scope (`.secure().scope_with(scope)`), and a query built with this filter
+/// and no scope serves every tenant's unrestricted rows — which P-D-39 makes
+/// the majority of rows. The probes compose it through the secure path for
+/// that reason: a bare `Entity::find()` example is the one a door would copy.
+#[must_use]
+pub fn scope_condition(column: read_entity::Column, claim: &str) -> Condition {
+    let sep = crate::domain::containment::SCOPE_VALUE_SEPARATOR;
+    let unrestricted = Condition::any().add(column.eq(""));
+
+    // **Fail closed on anything that is not a single token.** A scope value
+    // is a resolved region or brand identifier; `domain::containment` chose a
+    // comma precisely because neither kind is expected to contain one. A
+    // claim carrying the separator, or either `LIKE` wildcard, cannot be a
+    // member of a well-formed set — and admitting it as a pattern is the
+    // leak: `%` alone matched every restricted row. Dropping the containment
+    // arm leaves only the unrestricted rows, which is the safe direction.
+    if claim.is_empty() || claim.contains([sep, '%', '_', '\\']) {
+        return unrestricted;
+    }
+
+    // Token membership by position, in plain `sea_orm`: the whole value, the
+    // first member, the last, or a middle one. No custom SQL and no `ESCAPE`
+    // clause, because the guard above means the claim carries no wildcard to
+    // escape — the two engines therefore agree on the pattern.
+    unrestricted
+        .add(column.eq(claim))
+        .add(column.like(format!("{claim}{sep}%")))
+        .add(column.like(format!("%{sep}{claim}")))
+        .add(column.like(format!("%{sep}{claim}{sep}%")))
 }
 
 #[cfg(test)]
@@ -874,16 +963,10 @@ fn browse_condition(tenant_id: Uuid, query: &BrowseQuery) -> Condition {
         condition = condition.add(read_entity::Column::Name.like(format!("{escaped}%")));
     }
     if let Some(brand) = &query.brand_claim {
-        condition = condition.add(crate::domain::read_model::scope_condition(
-            read_entity::Column::BrandScope,
-            brand,
-        ));
+        condition = condition.add(scope_condition(read_entity::Column::BrandScope, brand));
     }
     if let Some(region) = &query.region_claim {
-        condition = condition.add(crate::domain::read_model::scope_condition(
-            read_entity::Column::RegionScope,
-            region,
-        ));
+        condition = condition.add(scope_condition(read_entity::Column::RegionScope, region));
     }
     condition
 }

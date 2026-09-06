@@ -74,6 +74,7 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-taxonomy-errors:p1
 //! @cpt-cf-bss-products-dod-taxonomy-walk
 
+use std::collections::{HashMap, HashSet};
 use toolkit_macros::domain_model;
 use uuid::Uuid;
 
@@ -292,21 +293,29 @@ pub fn children_of(parent: Option<Uuid>, edges: &[(Uuid, Option<Uuid>)]) -> u32 
 /// exactly as [`depth_of`] reports a finite depth.
 #[must_use]
 pub fn subtree_height(node: Uuid, edges: &[(Uuid, Option<Uuid>)]) -> u32 {
-    let mut seen = vec![node];
+    // One children index and one visited set, so the walk is linear in the
+    // edge list: the first version re-scanned every edge per level against a
+    // `Vec::contains` frontier and seen list, which ran inside the writer
+    // lock as O(depth × edges × nodes) on a wide tenant.
+    let mut children: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
+    for (child, parent) in edges {
+        if let Some(parent) = parent {
+            children.entry(*parent).or_default().push(*child);
+        }
+    }
+    let mut seen: HashSet<Uuid> = HashSet::from([node]);
     let mut frontier = vec![node];
     let mut height = 0_u32;
     loop {
-        let next: Vec<Uuid> = edges
+        let next: Vec<Uuid> = frontier
             .iter()
-            .filter(|(child, parent)| {
-                parent.is_some_and(|p| frontier.contains(&p)) && !seen.contains(child)
-            })
-            .map(|(child, _)| *child)
+            .flat_map(|parent| children.get(parent).into_iter().flatten())
+            .copied()
+            .filter(|child| seen.insert(*child))
             .collect();
         if next.is_empty() {
             return height;
         }
-        seen.extend(next.iter().copied());
         frontier = next;
         height = height.saturating_add(1);
     }

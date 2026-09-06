@@ -214,6 +214,9 @@ pub(crate) struct TaxonomyCaps {
     pub(crate) metadata_max_key_bytes: u32,
     /// `metadata_max_value_bytes`.
     pub(crate) metadata_max_value_bytes: u32,
+    /// `attribute_values_max_per_patch` — bounds one live-value patch's
+    /// transaction (P-D-163).
+    pub(crate) attribute_values_max_per_patch: u32,
 }
 
 impl From<&crate::config::ProductsConfig> for TaxonomyCaps {
@@ -224,6 +227,7 @@ impl From<&crate::config::ProductsConfig> for TaxonomyCaps {
             metadata_max_keys: cfg.metadata_max_keys,
             metadata_max_key_bytes: cfg.metadata_max_key_bytes,
             metadata_max_value_bytes: cfg.metadata_max_value_bytes,
+            attribute_values_max_per_patch: cfg.attribute_values_max_per_patch,
         }
     }
 }
@@ -791,6 +795,18 @@ pub(crate) async fn audit_refusal_of_action_and_report(
 /// `Idempotency-Key`, and none requires it).
 pub(crate) const IDEMPOTENCY_KEY_HEADER: &str = "Idempotency-Key";
 
+/// The longest `Idempotency-Key` a door admits, in bytes. The key is stored
+/// on the claim row and compared on replay, so an unbounded one is an
+/// unbounded row and an unbounded comparison; 255 holds every UUID, ULID and
+/// hash a client would send and refuses a payload smuggled in as a key.
+pub(crate) const IDEMPOTENCY_KEY_MAX_BYTES: usize = 255;
+
+/// The one wording every over-length shape refusal carries, so a `name`, a
+/// code and a key refused for length read the same and name their ceiling.
+pub(crate) fn over_length_detail(field: &str, len: usize, max: usize) -> String {
+    format!("{field} is {len} bytes long and at most {max} are admitted")
+}
+
 /// The idempotency key on this request, if it carries one.
 ///
 /// `Ok(None)` is the **skip**, not a failure: a create without the header
@@ -823,6 +839,12 @@ pub(crate) fn idempotency_key(headers: &HeaderMap) -> Result<Option<String>, Dom
             "the header is present but blank; send a stable, caller-chosen key or omit the \
              header entirely",
         ));
+    }
+    if value.len() > IDEMPOTENCY_KEY_MAX_BYTES {
+        return Err(refuse_idempotency_key(&format!(
+            "the header value is {} bytes long and a key is at most {IDEMPOTENCY_KEY_MAX_BYTES}",
+            value.len()
+        )));
     }
     Ok(Some(value.to_owned()))
 }
@@ -1115,17 +1137,55 @@ pub(crate) async fn elevation_gate(
 
     // The substitution. Everything below this line runs under the target
     // tenant, through the policy point, read-only by the check above.
+    let elevated = elevated_context(&ctx, &session)?;
+    request.extensions_mut().insert(elevated);
+    Ok(next.run(request).await)
+}
+
+/// The prefix of the token scope an elevated context carries, followed by
+/// the session id. See [`elevated_context`].
+pub(crate) const BREAK_GLASS_SCOPE_PREFIX: &str = "bss-products.breakglass:";
+
+/// The substituted context an admitted elevated read runs under: the
+/// caller's own subject, the **target** tenant, every scope the caller
+/// carried, **plus one marker scope naming the session**.
+///
+/// The marker is what makes an elevated context distinguishable from an
+/// ordinary one once the middleware has run. Before it, a door, an audit row
+/// or a log line downstream saw a context indistinguishable from a native
+/// principal of the target tenant — and the audit trail the gate writes was
+/// the only place the elevation was visible at all. A door that must answer
+/// differently under elevation reads [`breakglass_session_of`].
+///
+/// # Errors
+///
+/// The builder refusing the context — answered as `unauthenticated`, the same
+/// word the gate uses for a context it cannot form.
+pub(crate) fn elevated_context(
+    ctx: &SecurityContext,
+    session: &crate::infra::storage::entity::breakglass_session::Model,
+) -> Result<SecurityContext, CanonicalError> {
+    let mut scopes = ctx.token_scopes().to_vec();
+    scopes.push(format!("{BREAK_GLASS_SCOPE_PREFIX}{}", session.session_id));
     let elevated = SecurityContext::builder()
         .subject_id(ctx.subject_id())
         .subject_tenant_id(session.target_tenant)
-        .token_scopes(ctx.token_scopes().to_vec());
+        .token_scopes(scopes);
     let elevated = match ctx.subject_type() {
         Some(subject_type) => elevated.subject_type(subject_type),
         None => elevated,
     };
-    let elevated = elevated.build().map_err(|_| unauthenticated())?;
-    request.extensions_mut().insert(elevated);
-    Ok(next.run(request).await)
+    elevated.build().map_err(|_| unauthenticated())
+}
+
+/// The break-glass session a context runs under, read off the marker scope
+/// [`elevated_context`] adds; `None` for an ordinary context.
+#[must_use]
+pub(crate) fn breakglass_session_of(ctx: &SecurityContext) -> Option<uuid::Uuid> {
+    ctx.token_scopes()
+        .iter()
+        .find_map(|scope| scope.strip_prefix(BREAK_GLASS_SCOPE_PREFIX))
+        .and_then(|id| uuid::Uuid::parse_str(id).ok())
 }
 
 /// The elevation gate's own transaction error.
@@ -1272,3 +1332,8 @@ async fn audit_elevated_access(
     .await
     .map_err(|e| repo_error_to_canonical(&e))
 }
+
+// Declared last on purpose: `retention_tests` reads this file's production
+// half as everything before its first `#[cfg(test)]`.
+#[cfg(test)]
+mod elevation_tests;

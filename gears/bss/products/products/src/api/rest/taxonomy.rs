@@ -1570,6 +1570,31 @@ async fn patch_category_values(
     )
     .await?;
 
+    // Bounded before a row is read: every coordinate is one write inside one
+    // transaction under the category's token, so the list's length is the
+    // transaction's length and the hold on the row (P-D-163).
+    let max_per_patch = state.taxonomy_caps.attribute_values_max_per_patch as usize;
+    if body.values.len() > max_per_patch {
+        return Err(refuse(
+            &state,
+            &scope,
+            tenant_id,
+            actor_ref,
+            Gate::Category,
+            category_id.to_string(),
+            violation(
+                "VALIDATION",
+                "values",
+                format!(
+                    "a live-value patch carries at most {max_per_patch} coordinates; this one \
+                     carries {}",
+                    body.values.len()
+                ),
+            ),
+        )
+        .await);
+    }
+
     let conn = state.db.conn().map_err(|e| {
         repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
     })?;

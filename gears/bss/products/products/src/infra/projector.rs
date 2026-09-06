@@ -1004,6 +1004,41 @@ async fn rebuild_tenant(
 // The polled dashboards (`inst-ps-dashboards`, P-D-126 row 10)
 // ---------------------------------------------------------------------------
 
+/// How many children a deferred retirement's `children_snapshot` names, or
+/// `None` for a snapshot that does not parse or is not a list — a corrupt
+/// row, named on the log and **skipped**: showing `0` for it would read as
+/// "safe to retire" on a row whose children are unknown.
+fn deferred_children_count(
+    tenant_id: Uuid,
+    product_id: Uuid,
+    children_snapshot: &str,
+) -> Option<usize> {
+    match serde_json::from_str::<JsonValue>(children_snapshot) {
+        Ok(JsonValue::Array(children)) => Some(children.len()),
+        Ok(_) => {
+            tracing::warn!(
+                event = "deferred_intent_snapshot_unreadable",
+                %tenant_id,
+                %product_id,
+                "bss-products: a deferred retirement's children_snapshot is not a list; the \
+                 dashboard row is skipped"
+            );
+            None
+        }
+        Err(error) => {
+            tracing::warn!(
+                event = "deferred_intent_snapshot_unreadable",
+                %tenant_id,
+                %product_id,
+                %error,
+                "bss-products: a deferred retirement's children_snapshot does not parse; the \
+                 dashboard row is skipped"
+            );
+            None
+        }
+    }
+}
+
 /// One poll of the three dashboard tables over every tenant that has a
 /// source row: 04's deferred table, 06's ledger, the inbox and the park.
 ///
@@ -1013,6 +1048,7 @@ async fn rebuild_tenant(
 pub(crate) async fn poll_dashboards(
     ctx: &ProjectorContext,
     now: DateTime<Utc>,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<(), RepoError> {
     let conn = ctx
         .db
@@ -1024,15 +1060,22 @@ pub(crate) async fn poll_dashboards(
     tenants.extend(repo::tenants_with_catalog_versions(&conn, &all).await?);
     tenants.extend(repo::tenants_with_unresolved_deferred_retirements(&conn, &all).await?);
     for tenant_id in tenants {
+        // Each tenant's poll is its own set of upserts; a stop between two
+        // tenants leaves the rest one poll stale, which the next process's
+        // first tick repairs.
+        if cancel.is_cancelled() {
+            return Ok(());
+        }
         let scope = AccessScope::for_tenant(tenant_id);
         // Deferred intents, from 04's table.
         let intents = repo::unresolved_deferred_retirements(&conn, &scope, tenant_id).await?;
         let mut keep = Vec::with_capacity(intents.len());
         for intent in intents {
-            let children = serde_json::from_str::<JsonValue>(&intent.children_snapshot)
-                .ok()
-                .and_then(|v| v.as_array().map(Vec::len))
-                .unwrap_or(0);
+            let Some(children) =
+                deferred_children_count(tenant_id, intent.product_id, &intent.children_snapshot)
+            else {
+                continue;
+            };
             keep.push(intent.product_id);
             repo::upsert_read_deferred_intent(
                 &conn,
@@ -1112,6 +1155,7 @@ pub(crate) async fn poll_dashboards(
 pub(crate) async fn sweep_inbox(
     ctx: &ProjectorContext,
     now: DateTime<Utc>,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<u64, RepoError> {
     let conn = ctx
         .db
@@ -1120,6 +1164,9 @@ pub(crate) async fn sweep_inbox(
     let before = now - ChronoDuration::hours(i64::from(ctx.knobs.inbox_retention_hours));
     let mut swept = 0;
     for tenant_id in repo::tenants_with_inbox(&conn, &AccessScope::allow_all()).await? {
+        if cancel.is_cancelled() {
+            break;
+        }
         let scope = AccessScope::for_tenant(tenant_id);
         let Some((checkpoint, _)) = repo::load_read_checkpoint(&conn, &scope, tenant_id).await?
         else {

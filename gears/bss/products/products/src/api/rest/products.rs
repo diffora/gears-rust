@@ -1381,6 +1381,11 @@ fn render_created_product(
 ///    [`refuse_insert_conflict`]; on an idempotency verdict, a replay served
 ///    from the stored answer or a refusal audited through
 ///    `crate::api::rest::audit_refusal_and_report` — never a fourth path.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the door runs its phases in order in one body (P-D-37); the two shape ceilings \
+              (P-D-163) put it eight lines over the floor"
+)]
 pub(crate) async fn create_product(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
@@ -1490,6 +1495,30 @@ pub(crate) async fn create_product(
     let mut report = ValidationReport::new();
     if trimmed_name.is_empty() {
         report.violate("VALIDATION", "name", "name must not be blank");
+    }
+    if trimmed_name.len() > crate::config::ENTITY_NAME_MAX_BYTES {
+        report.violate(
+            "VALIDATION",
+            "name",
+            crate::api::rest::over_length_detail(
+                "name",
+                trimmed_name.len(),
+                crate::config::ENTITY_NAME_MAX_BYTES,
+            ),
+        );
+    }
+    if let Some(code) = raw_product_code.as_deref().map(str::trim)
+        && code.len() > crate::config::ENTITY_CODE_MAX_BYTES
+    {
+        report.violate(
+            "VALIDATION",
+            "product_code",
+            crate::api::rest::over_length_detail(
+                "product_code",
+                code.len(),
+                crate::config::ENTITY_CODE_MAX_BYTES,
+            ),
+        );
     }
     if brand_id.is_nil() {
         report.violate("VALIDATION", "brand_id", "brand_id is required");
@@ -6146,6 +6175,16 @@ fn parse_product_value(
             }
             let raw = expect_string(wire, value)?;
             let trimmed = raw.trim();
+            if trimmed.len() > crate::config::ENTITY_CODE_MAX_BYTES {
+                return Err((
+                    wire.to_owned(),
+                    crate::api::rest::over_length_detail(
+                        wire,
+                        trimmed.len(),
+                        crate::config::ENTITY_CODE_MAX_BYTES,
+                    ),
+                ));
+            }
             Ok(ProductSaveValue::ProductCode(if trimmed.is_empty() {
                 NullableText::Clear
             } else {
@@ -6166,6 +6205,16 @@ fn parse_product_value(
         ProductSaveField::Name => {
             let raw = expect_string(wire, value)?;
             let trimmed = raw.trim();
+            if trimmed.len() > crate::config::ENTITY_NAME_MAX_BYTES {
+                return Err((
+                    wire.to_owned(),
+                    crate::api::rest::over_length_detail(
+                        wire,
+                        trimmed.len(),
+                        crate::config::ENTITY_NAME_MAX_BYTES,
+                    ),
+                ));
+            }
             let normalized = name::normalize(trimmed);
             Ok(ProductSaveValue::Name(SavedName {
                 value: trimmed.to_owned(),

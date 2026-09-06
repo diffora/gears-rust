@@ -168,24 +168,9 @@ pub async fn freeze_ack_rows(
         .collect()
 }
 
-/// One registration row as the **retention gate** reads it: the participant,
-/// its state, and whether `released_at` is stamped
-/// (`dod-retention-gate`).
-///
-/// The stamp is carried separately from the state because the gate's two arms
-/// need both and they are not derivable from one another: a door-released row
-/// is `state = released` with the stamp **NULL**, while force-completion
-/// stamps it in the same transaction as `not_frozen(forced)` and a recovered
-/// participant's later ack leaves the stamp behind (P-D-67).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FreezeRegistration {
-    /// The participant the row is for.
-    pub participant: String,
-    /// Its state in the ledger.
-    pub state: FreezeAckState,
-    /// Whether `released_at` carries a value.
-    pub released_at_stamped: bool,
-}
+/// The registration row the retention gate reads — the domain's type,
+/// re-exported so the repository's callers keep one path to it.
+pub use crate::domain::retention::FreezeRegistration;
 
 /// Every registration row of one version, with the release stamp
 /// (`dod-retention-gate`'s operand).

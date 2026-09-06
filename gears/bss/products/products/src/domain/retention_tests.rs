@@ -1,9 +1,8 @@
 //! Tests for the retention gate (`dod-retention-gate`). Each case is one of
 //! the `DoD`'s named failures, armed as the failure rather than as its fix.
 
-use super::{RetentionHold, RetentionVerdict, evaluate};
+use super::{FreezeRegistration, RetentionHold, RetentionVerdict, evaluate};
 use crate::domain::states::FreezeAckState;
-use crate::infra::storage::repo::FreezeRegistration;
 
 fn reg(participant: &str, state: FreezeAckState, stamped: bool) -> FreezeRegistration {
     FreezeRegistration {

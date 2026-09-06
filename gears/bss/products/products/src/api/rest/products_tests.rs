@@ -9262,3 +9262,96 @@ mod clone_revalidation_tests {
         );
     }
 }
+
+/// **`name` and `product_code` have a byte ceiling, and the ceiling is the
+/// admitted edge** (P-D-163). A name one byte over the cap is refused
+/// `VALIDATION` naming the field; a name exactly at the cap is admitted. The
+/// code is probed the same way, and the refused create writes nothing —
+/// before the ceilings a caller could store an arbitrarily long value that
+/// the next publish would freeze verbatim into version content.
+#[tokio::test]
+async fn the_name_and_code_ceilings_refuse_one_over_and_admit_the_cap() {
+    let harness = harness().await;
+    let name_cap = crate::config::ENTITY_NAME_MAX_BYTES;
+    let code_cap = crate::config::ENTITY_CODE_MAX_BYTES;
+
+    let over_name = post_create_product(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": BRAND, "name": "n".repeat(name_cap + 1) }),
+    )
+    .await;
+    assert_eq!(over_name.status(), StatusCode::BAD_REQUEST);
+    let view = json_body(over_name).await;
+    assert_eq!(
+        view["context"]["violations"][0]["type"],
+        json!("VALIDATION")
+    );
+    assert_eq!(
+        view["context"]["violations"][0]["subject"],
+        json!("name"),
+        "the refusal names the field: {view}"
+    );
+
+    let over_code = post_create_product(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": BRAND, "name": "Fibre 500", "product_code": "c".repeat(code_cap + 1) }),
+    )
+    .await;
+    assert_eq!(over_code.status(), StatusCode::BAD_REQUEST);
+    let view = json_body(over_code).await;
+    assert_eq!(
+        view["context"]["violations"][0]["subject"],
+        json!("product_code"),
+        "{view}"
+    );
+    let persisted = raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_product").await;
+    assert_eq!(persisted, 0, "neither refused create wrote a Product");
+
+    let at_cap = post_create_product(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": BRAND, "name": "n".repeat(name_cap), "product_code": "c".repeat(code_cap) }),
+    )
+    .await;
+    assert_eq!(
+        at_cap.status(),
+        StatusCode::CREATED,
+        "the cap itself is admitted: the ceiling is an edge, not a margin"
+    );
+}
+
+/// **An over-long `Idempotency-Key` is refused `VALIDATION`, not stored**
+/// (P-D-163). The key lands on the claim row and is compared on every
+/// replay, so a key with no ceiling was an unbounded row and an unbounded
+/// comparison; a key at the ceiling is admitted and claims as usual.
+#[tokio::test]
+async fn an_over_long_idempotency_key_is_refused_and_the_cap_is_admitted() {
+    let harness = harness().await;
+    let cap = crate::api::rest::IDEMPOTENCY_KEY_MAX_BYTES;
+
+    let refused = post_create_product_with_key(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": BRAND, "name": "Fibre 500" }),
+        &"k".repeat(cap + 1),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let persisted = raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_product").await;
+    assert_eq!(persisted, 0, "the refused create wrote no Product");
+
+    let admitted = post_create_product_with_key(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "brand_id": BRAND, "name": "Fibre 500" }),
+        &"k".repeat(cap),
+    )
+    .await;
+    assert_eq!(
+        admitted.status(),
+        StatusCode::CREATED,
+        "the cap is admitted"
+    );
+}

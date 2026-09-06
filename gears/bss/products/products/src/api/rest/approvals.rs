@@ -202,7 +202,20 @@ pub struct SubmitApprovalReceipt {
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct ApprovalsQuery {
     pub state: Option<String>,
+    /// How many cards to serve, oldest first; absent is
+    /// [`APPROVAL_INBOX_LIMIT_DEFAULT`], and the value is clamped to
+    /// `1..=`[`APPROVAL_INBOX_LIMIT_MAX`]. `has_more` on the envelope says
+    /// whether the queue continues past the page.
+    pub limit: Option<u32>,
 }
+
+/// The inbox page size when the caller names none.
+pub(crate) const APPROVAL_INBOX_LIMIT_DEFAULT: u32 = 50;
+
+/// The largest inbox page a caller may ask for. The queue is read whole
+/// into one response, so the page is what bounds the read and the body —
+/// before this ceiling an inbox was one unbounded `SELECT` (P-D-163).
+pub(crate) const APPROVAL_INBOX_LIMIT_MAX: u32 = 200;
 
 /// The common inbox envelope (`inst-gv-queue`): one card per pending record,
 /// oldest first. Merge-compatibility with pricing's queue is
@@ -210,6 +223,9 @@ pub struct ApprovalsQuery {
 #[toolkit_macros::api_dto(response)]
 pub struct ApprovalInbox {
     pub items: Vec<ApprovalInboxCard>,
+    /// Whether pending records remain past this page's `limit`, oldest
+    /// first: the page is a window on the queue, not the queue.
+    pub has_more: bool,
 }
 
 /// One pending record as the inbox shows it.
@@ -472,9 +488,19 @@ async fn list_pending_approvals(
     let conn = state.db.conn().map_err(|e| {
         repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
     })?;
-    let pending = repo::pending_approvals_with_progress(&conn, &scope, tenant_id)
-        .await
-        .map_err(|e| repo_error_to_canonical(&e))?;
+    let limit = query
+        .limit
+        .unwrap_or(APPROVAL_INBOX_LIMIT_DEFAULT)
+        .clamp(1, APPROVAL_INBOX_LIMIT_MAX);
+    // One row past the page says whether the queue continues, without a
+    // second count query.
+    let mut pending =
+        repo::pending_approvals_with_progress(&conn, &scope, tenant_id, u64::from(limit) + 1)
+            .await
+            .map_err(|e| repo_error_to_canonical(&e))?;
+    let page = limit as usize;
+    let has_more = pending.len() > page;
+    pending.truncate(page);
     let mut items = Vec::with_capacity(pending.len());
     for entry in pending {
         let record = entry.record;
@@ -506,7 +532,7 @@ async fn list_pending_approvals(
             diff_basis: record.diff_basis,
         });
     }
-    Ok((StatusCode::OK, Json(ApprovalInbox { items })).into_response())
+    Ok((StatusCode::OK, Json(ApprovalInbox { items, has_more })).into_response())
 }
 
 // ---------------------------------------------------------------------------

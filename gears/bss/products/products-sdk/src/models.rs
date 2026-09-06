@@ -29,6 +29,19 @@ impl EntityKind {
             Self::Sku => "sku",
         }
     }
+
+    /// Parse a stored or wire value.
+    ///
+    /// Returns `None` for anything outside the two-member roster rather than
+    /// defaulting — a row whose `entity_kind` is neither is not a Product.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "product" => Some(Self::Product),
+            "sku" => Some(Self::Sku),
+            _ => None,
+        }
+    }
 }
 
 /// The lifecycle state of a catalog entity.

@@ -51,6 +51,20 @@ pub const METADATA_MAX_KEY_BYTES_DEFAULT: u32 = 128;
 /// `METADATA_LIMIT`'s value-length ceiling, in bytes — **interim, P-D-107 arm 1**.
 pub const METADATA_MAX_VALUE_BYTES_DEFAULT: u32 = 2_048;
 
+/// Shipped default for [`ProductsConfig::attribute_values_max_per_patch`].
+pub const ATTRIBUTE_VALUES_MAX_PER_PATCH_DEFAULT: u32 = 200;
+
+/// The longest entity `name` a door admits, in bytes. A fixed limit and not
+/// a knob: the column is unbounded text, and what the ceiling bounds is the
+/// row, the normalized-name index entry and the frozen version content the
+/// value lands in — none of which an operator tunes per deployment
+/// (review wave 1, P-D-163).
+pub const ENTITY_NAME_MAX_BYTES: usize = 256;
+
+/// The longest `product_code` / `sku_code` a door admits, in bytes; see
+/// [`ENTITY_NAME_MAX_BYTES`] for why it is fixed.
+pub const ENTITY_CODE_MAX_BYTES: usize = 128;
+
 /// The runner's claim lease, in seconds — **interim, P-D-113 arm 4**. See
 /// [`ProductsConfig::activation_claim_lease_secs`].
 pub const ACTIVATION_CLAIM_LEASE_SECS_DEFAULT: u32 = 60;
@@ -359,6 +373,14 @@ pub struct ProductsConfig {
     /// [`Self::metadata_max_keys`] for the shared reason.
     pub metadata_max_value_bytes: u32,
 
+    /// Maximum coordinates one category live-value patch may carry.
+    /// **Interim 200 — P-D-163.** Every coordinate is one row write inside
+    /// one transaction under the category's token, so the list's length is
+    /// the transaction's length; two hundred holds a definition across every
+    /// locale, region and brand a tenant realistically carries, and a larger
+    /// change is two patches.
+    pub attribute_values_max_per_patch: u32,
+
     /// How long a worker's claim on a `products_scheduled_transition` row
     /// holds before another worker may reclaim it, in seconds.
     /// **Interim 60 — P-D-113 arm 4.** The lifecycle loop ticks every second
@@ -477,6 +499,7 @@ impl Default for ProductsConfig {
             metadata_max_keys: METADATA_MAX_KEYS_DEFAULT,
             metadata_max_key_bytes: METADATA_MAX_KEY_BYTES_DEFAULT,
             metadata_max_value_bytes: METADATA_MAX_VALUE_BYTES_DEFAULT,
+            attribute_values_max_per_patch: ATTRIBUTE_VALUES_MAX_PER_PATCH_DEFAULT,
             activation_claim_lease_secs: ACTIVATION_CLAIM_LEASE_SECS_DEFAULT,
             activation_attempt_budget: ACTIVATION_ATTEMPT_BUDGET_DEFAULT,
             retention_days_financial: RETENTION_DAYS_DEFAULT,
@@ -578,6 +601,10 @@ impl ProductsConfig {
             ("metadata_max_keys", self.metadata_max_keys),
             ("metadata_max_key_bytes", self.metadata_max_key_bytes),
             ("metadata_max_value_bytes", self.metadata_max_value_bytes),
+            (
+                "attribute_values_max_per_patch",
+                self.attribute_values_max_per_patch,
+            ),
             (
                 "activation_claim_lease_secs",
                 self.activation_claim_lease_secs,

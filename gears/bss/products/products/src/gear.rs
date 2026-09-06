@@ -297,19 +297,19 @@ impl BssProductsGear {
                     coalescer_tick(&db, &rt.sink, &cancel).await;
                     batch_tick(&worker_ctx, rt.system_actor_ref, &cancel).await;
                     activation_tick(&rt, &cancel).await;
-                    breakglass_sla_tick(&rt).await;
+                    breakglass_sla_tick(&rt, &cancel).await;
                     if tick_count.is_multiple_of(OVERDUE_SCAN_EVERY_TICKS) {
                         let now = crate::domain::canonical::write_instant(chrono::Utc::now());
-                        report_overdue_freezes(&db, now, rt.freeze_timeout_hours).await;
-                        report_overdue_requests(&db, now).await;
+                        report_overdue_freezes(&db, now, rt.freeze_timeout_hours, &cancel).await;
+                        report_overdue_requests(&db, now, &cancel).await;
                     }
                     retention_tick(&db, &rt, tick_count, &cancel).await;
                     projector_tick(&rt, &cancel).await;
                     if tick_count.is_multiple_of(u64::from(rt.read.dashboard_poll_secs.max(1))) {
-                        dashboard_tick(&rt).await;
+                        dashboard_tick(&rt, &cancel).await;
                     }
                     if tick_count.is_multiple_of(INBOX_SWEEP_EVERY_TICKS) {
-                        inbox_sweep_tick(&rt).await;
+                        inbox_sweep_tick(&rt, &cancel).await;
                     }
                     tick_count += 1;
                 }
@@ -371,7 +371,10 @@ async fn activation_tick(rt: &ProductsRuntime, cancel: &tokio_util::sync::Cancel
 /// **once**, on the channel the open-time alert used, stamped so a later tick
 /// is silent. Platform-wide — sessions name their target tenant, and the
 /// obligation is the platform principal's.
-async fn breakglass_sla_tick(rt: &ProductsRuntime) {
+async fn breakglass_sla_tick(rt: &ProductsRuntime, cancel: &tokio_util::sync::CancellationToken) {
+    if cancel.is_cancelled() {
+        return;
+    }
     let now = crate::domain::canonical::write_instant(chrono::Utc::now());
     let Ok(conn) = rt.sdk_state.db.conn() else {
         return;
@@ -392,6 +395,11 @@ async fn breakglass_sla_tick(rt: &ProductsRuntime) {
         }
     };
     for session in overdue {
+        // A stop mid-list leaves the rest for the next process's tick: the
+        // stamp is a CAS, so nothing is alerted twice or lost.
+        if cancel.is_cancelled() {
+            return;
+        }
         alert_overdue_session(rt, &conn, &scope, &session, now).await;
     }
 }
@@ -461,7 +469,11 @@ async fn coalescer_tick(
 async fn report_overdue_requests(
     db: &toolkit_db::DBProvider<toolkit_db::DbError>,
     now: chrono::DateTime<chrono::Utc>,
+    cancel: &tokio_util::sync::CancellationToken,
 ) {
+    if cancel.is_cancelled() {
+        return;
+    }
     match crate::infra::increment::overdue_requests(db, now).await {
         Ok(overdue) => {
             for entry in overdue {
@@ -484,7 +496,11 @@ async fn report_overdue_freezes(
     db: &toolkit_db::DBProvider<toolkit_db::DbError>,
     now: chrono::DateTime<chrono::Utc>,
     freeze_timeout_hours: u32,
+    cancel: &tokio_util::sync::CancellationToken,
 ) {
+    if cancel.is_cancelled() {
+        return;
+    }
     match crate::infra::increment::overdue_freezes(db, now, freeze_timeout_hours).await {
         Ok(overdue) => {
             for entry in overdue {
@@ -603,18 +619,19 @@ async fn projector_tick(rt: &ProductsRuntime, cancel: &tokio_util::sync::Cancell
 }
 
 /// One poll of the three dashboards (`inst-ps-dashboards`, P-D-126 row 10).
-async fn dashboard_tick(rt: &ProductsRuntime) {
+async fn dashboard_tick(rt: &ProductsRuntime, cancel: &tokio_util::sync::CancellationToken) {
     let now = crate::domain::canonical::write_instant(chrono::Utc::now());
-    if let Err(error) = crate::infra::projector::poll_dashboards(&projector_context(rt), now).await
+    if let Err(error) =
+        crate::infra::projector::poll_dashboards(&projector_context(rt), now, cancel).await
     {
         tracing::warn!(%error, "bss-products: dashboard poll failed");
     }
 }
 
 /// The inbox sweep past the retention window.
-async fn inbox_sweep_tick(rt: &ProductsRuntime) {
+async fn inbox_sweep_tick(rt: &ProductsRuntime, cancel: &tokio_util::sync::CancellationToken) {
     let now = crate::domain::canonical::write_instant(chrono::Utc::now());
-    match crate::infra::projector::sweep_inbox(&projector_context(rt), now).await {
+    match crate::infra::projector::sweep_inbox(&projector_context(rt), now, cancel).await {
         Ok(swept) if swept > 0 => {
             tracing::info!(swept, "bss-products: read inbox swept past retention");
         }

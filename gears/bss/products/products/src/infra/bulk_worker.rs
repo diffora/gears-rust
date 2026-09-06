@@ -1810,12 +1810,17 @@ pub(crate) async fn abandon_batch(
         let disposition = if lifecycle_op(&row).is_some() {
             crate::domain::batch::AbandonDisposition::DropPendingOp
         } else {
-            crate::domain::batch::abandon_disposition(
-                &row.entity_kind,
-                row.disposition.is_some(),
-                row.entity_id.is_some(),
+            crate::domain::batch::abandon_disposition(crate::domain::batch::AbandonRow {
+                kind: bss_products_sdk::models::EntityKind::parse(&row.entity_kind),
+                standing: if row.disposition.is_some() {
+                    crate::domain::batch::RowStanding::Terminal
+                } else if row.entity_id.is_none() {
+                    crate::domain::batch::RowStanding::NeverMaterialised
+                } else {
+                    crate::domain::batch::RowStanding::Live
+                },
                 edits_existing,
-            )
+            })
         };
         match disposition {
             crate::domain::batch::AbandonDisposition::AlreadyTerminal => {

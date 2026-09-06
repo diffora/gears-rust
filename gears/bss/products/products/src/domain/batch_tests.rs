@@ -1,10 +1,32 @@
 //! The batch machine's edges and the abandon dispositions, each probed on
 //! the case whose absence §7 row 5 recorded.
 
+use bss_products_sdk::models::EntityKind;
+
 use super::{
-    ABANDON_REASON, AbandonDisposition, abandon_disposition, all_rows_terminal, batch_edge,
+    ABANDON_REASON, AbandonDisposition, AbandonRow, RowStanding, abandon_disposition,
+    all_rows_terminal, batch_edge,
 };
 use crate::domain::states::BatchState;
+
+fn row(
+    kind: Option<EntityKind>,
+    terminal: bool,
+    entity_id_present: bool,
+    edits_existing: bool,
+) -> AbandonRow {
+    AbandonRow {
+        kind,
+        standing: if terminal {
+            RowStanding::Terminal
+        } else if entity_id_present {
+            RowStanding::Live
+        } else {
+            RowStanding::NeverMaterialised
+        },
+        edits_existing,
+    }
+}
 
 /// The six admitted edges, by name — including the two P-D-69 added, whose
 /// absence was the whole of §7 row 5.
@@ -77,15 +99,15 @@ fn abandon_is_reachable_only_from_reported() {
 #[test]
 fn each_row_kind_has_its_own_abandon_path() {
     assert_eq!(
-        abandon_disposition("product", false, true, false),
+        abandon_disposition(row(Some(EntityKind::Product), false, true, false)),
         AbandonDisposition::DiscardDraft
     );
     assert_eq!(
-        abandon_disposition("sku", false, true, true),
+        abandon_disposition(row(Some(EntityKind::Sku), false, true, true)),
         AbandonDisposition::RevertToPublished
     );
     assert_eq!(
-        abandon_disposition("governed_live_op", false, true, false),
+        abandon_disposition(row(None, false, true, false)),
         AbandonDisposition::DropPendingOp,
         "a pending live-entity operation is dropped, never applied"
     );
@@ -97,12 +119,12 @@ fn each_row_kind_has_its_own_abandon_path() {
 #[test]
 fn a_closed_or_unmaterialised_row_is_left_alone() {
     assert_eq!(
-        abandon_disposition("product", true, true, false),
+        abandon_disposition(row(Some(EntityKind::Product), true, true, false)),
         AbandonDisposition::AlreadyTerminal,
         "a row whose ledger disposition stands is history, not work"
     );
     assert_eq!(
-        abandon_disposition("product", false, false, false),
+        abandon_disposition(row(Some(EntityKind::Product), false, false, false)),
         AbandonDisposition::AlreadyTerminal,
         "a row staging never materialised has no entity to undo"
     );

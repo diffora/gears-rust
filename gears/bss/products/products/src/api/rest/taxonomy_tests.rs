@@ -1552,3 +1552,52 @@ async fn a_metadata_merge_announces_on_the_owning_entity() {
     assert_eq!(body["act"], "merged");
     assert_eq!(body["state"], "draft");
 }
+
+/// **A live-value patch is bounded** (P-D-163): one coordinate over
+/// `attribute_values_max_per_patch` is refused `VALIDATION` before a row is
+/// read, and the token does not move. Every coordinate is one write inside
+/// one transaction under the category's token, so the list's length was the
+/// hold on the row.
+#[tokio::test]
+async fn a_live_value_patch_over_the_coordinate_cap_is_refused_before_the_transaction() {
+    let h = harness().await;
+    let category = create_category(app(&h), "Hardware", None).await;
+    let category_id = category["category_id"].as_str().expect("id").to_owned();
+    let definition = seed_definition(&h, "displayName").await;
+    let uri = format!("/bss-products/v1/categories/{category_id}/attribute-values");
+    let cap = crate::config::ProductsConfig::default().attribute_values_max_per_patch as usize;
+
+    let values: Vec<JsonValue> = (0..=cap)
+        .map(|i| {
+            json!({ "definition_id": definition, "locale": format!("l{i}"), "region": "", "brand": "", "value": "Kit" })
+        })
+        .collect();
+    let response = send(
+        &h,
+        "PATCH",
+        &uri,
+        &json!({ "expected_seq": 0, "values": values }),
+    )
+    .await;
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(error_code(response).await, "VALIDATION");
+
+    // The positive control doubles as the token probe: a one-coordinate patch
+    // at `expected_seq: 0` lands, so the refused patch moved no token.
+    let control = send(
+        &h,
+        "PATCH",
+        &uri,
+        &json!({
+            "expected_seq": 0,
+            "values": [{ "definition_id": definition, "locale": "", "region": "", "brand": "", "value": "Kit" }]
+        }),
+    )
+    .await;
+    assert_eq!(control.status(), axum::http::StatusCode::OK);
+    assert_eq!(
+        body_json(control).await["mutation_seq"],
+        json!(1),
+        "the token moved once, for the admitted patch alone"
+    );
+}

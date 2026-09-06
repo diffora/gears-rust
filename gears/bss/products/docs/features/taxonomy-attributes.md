@@ -411,7 +411,11 @@ Product and SKU attribute-value and metadata writes need no extra machinery: the
 row's `If-Match`. The category live-value door is the exception and carries its own token,
 `products_category.mutation_seq`, which counts **acts, not row writes** — the door spends a
 `GovernedLiveOp`, and an approval subject built from an act identity must render the same subject
-on the approved retry, which a counter advanced by non-operator writes would break.
+on the approved retry, which a counter advanced by non-operator writes would break. One patch
+carries at most `attribute_values_max_per_patch` coordinates (**interim 200**, a knob beside the
+three metadata caps — P-D-163): every coordinate is one write inside the token's transaction, so
+the list's length was the hold on the row, and one over is refused `VALIDATION` before a row is
+read. Probe: `a_live_value_patch_over_the_coordinate_cap_is_refused_before_the_transaction`.
 
 ### Error taxonomy
 

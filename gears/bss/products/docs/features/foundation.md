@@ -314,6 +314,10 @@ failing phase collected
 resolution, precondition, shape, state, identity, registered validators, governance gate. The run
 stops at the first failing phase. Authorization is **not** a phase: it runs before the pipeline
 opens, so a denied caller neither consumes an idempotency key nor writes a claim row (P-D-30).
+The shape phase also bounds its inputs (P-D-163): `name` at `ENTITY_NAME_MAX_BYTES` (256 bytes),
+`product_code` and `sku_code` at `ENTITY_CODE_MAX_BYTES` (128) — fixed limits, not knobs, at both
+the create and the save doors — and the `Idempotency-Key` at 255 bytes; one over is refused
+`VALIDATION` naming the field and the cap itself is admitted.
 
 **Registration** is compile-time code — a feature ships its validators with its handler. The
 pipeline exposes `rule_names()` for observability only; attribution in a rejection rides the

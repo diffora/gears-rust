@@ -1378,6 +1378,11 @@ async fn resolve_parent_scope(
 ///    [`refuse_sku_insert_conflict`]; on an idempotency verdict, a replay
 ///    served from the stored answer or a refusal audited through the same
 ///    [`audit_sku_refusal`] wrapper every other refusal here uses.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the door runs its phases in order in one body (P-D-37); the two shape ceilings \
+              (P-D-163) put it eight lines over the floor"
+)]
 pub(crate) async fn create_sku(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
@@ -1491,6 +1496,17 @@ pub(crate) async fn create_sku(
     let mut report = ValidationReport::new();
     if trimmed_sku_code.is_empty() {
         report.violate("VALIDATION", "sku_code", "sku_code must not be blank");
+    }
+    if trimmed_sku_code.len() > crate::config::ENTITY_CODE_MAX_BYTES {
+        report.violate(
+            "VALIDATION",
+            "sku_code",
+            crate::api::rest::over_length_detail(
+                "sku_code",
+                trimmed_sku_code.len(),
+                crate::config::ENTITY_CODE_MAX_BYTES,
+            ),
+        );
     }
     if product_id.is_nil() {
         report.violate("VALIDATION", "product_id", "product_id is required");
@@ -7164,6 +7180,16 @@ fn parse_sku_value(
                     "sku_code must contain at least one non-whitespace character".to_owned(),
                 ));
             }
+            if trimmed.len() > crate::config::ENTITY_CODE_MAX_BYTES {
+                return Err((
+                    wire.to_owned(),
+                    crate::api::rest::over_length_detail(
+                        wire,
+                        trimmed.len(),
+                        crate::config::ENTITY_CODE_MAX_BYTES,
+                    ),
+                ));
+            }
             Ok(SkuSaveValue::SkuCode(trimmed.to_owned()))
         }
         SkuSaveField::ProductId => {
@@ -8812,7 +8838,15 @@ pub(crate) async fn try_apply_composition_clear(
         InternalRevision::new(head.internal_revision),
     )
     .await
-    .map_err(|_| HeadActError::Vanished)?;
+    .map_err(|e| {
+        // A storage failure reading the precondition is this gear's own
+        // (`Db`), never `Vanished`: the latter is the `ok_or` above's word for
+        // a head that is gone, and folding a driver error into it would
+        // record a `dod-composition-clear` hold as "the SKU vanished".
+        HeadActError::Db(DbError::Sea(DbErr::Custom(format!(
+            "composition clear preconditions: {e}"
+        ))))
+    })?;
     if let Err(blocker) = precondition {
         tracing::warn!(
             event = "composition_clear_held",

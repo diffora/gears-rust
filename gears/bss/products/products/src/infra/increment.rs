@@ -127,6 +127,38 @@ pub const CAPTURE_KINDS: [&str; 7] = [
     "reference_producer_set",
 ];
 
+/// The three captures the builder writes at this commit, read **off the
+/// roster** by position so a kind outside it cannot be built: the roster is
+/// sorted, and these are its fourth, fifth and seventh members. The
+/// compile-time pins below hold each position to its name, so a roster edit
+/// that shifts a position fails the build rather than the next manifest.
+const FREEZE_PARTICIPANT_SET: &str = CAPTURE_KINDS[3];
+const METADATA_MAPS: &str = CAPTURE_KINDS[4];
+const REFERENCE_PRODUCER_SET: &str = CAPTURE_KINDS[6];
+const _: () = {
+    assert!(str_eq(FREEZE_PARTICIPANT_SET, "freeze_participant_set"));
+    assert!(str_eq(METADATA_MAPS, "metadata_maps"));
+    assert!(str_eq(REFERENCE_PRODUCER_SET, "reference_producer_set"));
+};
+
+/// Byte-wise string equality usable in a `const` context — `==` on `&str`
+/// is not `const`, and the capture positions above are pinned at compile
+/// time rather than asserted at run time.
+const fn str_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 /// One pass's verdict over one tenant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DrainOutcome {
@@ -363,26 +395,23 @@ impl SnapshotBuilder {
                 })
                 .collect(),
         );
+        // Each kind is **read off the roster** rather than spelled again here,
+        // so a capture outside `CAPTURE_KINDS` cannot be built at all (the
+        // three pins beside the roster hold the positions to their names).
         let captures = vec![
             (
-                "freeze_participant_set".to_owned(),
+                FREEZE_PARTICIPANT_SET.to_owned(),
                 canonical::canonical_rendering(&participants_value, canonical::Absence::Omit),
             ),
             (
-                "metadata_maps".to_owned(),
+                METADATA_MAPS.to_owned(),
                 canonical::canonical_rendering(&metadata_value, canonical::Absence::Omit),
             ),
             (
-                "reference_producer_set".to_owned(),
+                REFERENCE_PRODUCER_SET.to_owned(),
                 canonical::canonical_rendering(&producers_value, canonical::Absence::Omit),
             ),
         ];
-        for (kind, _) in &captures {
-            assert!(
-                CAPTURE_KINDS.contains(&kind.as_str()),
-                "capture kind {kind} is outside the admitted roster"
-            );
-        }
 
         Ok(VersionManifest {
             entries,

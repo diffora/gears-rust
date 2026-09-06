@@ -1569,6 +1569,85 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-163 — Review wave 1: the twenty-three findings of the one-agent branch review, twenty-two fixed at the site and one design question filed
+
+- **Date**: 2026-09-06 (the lead; the `toolkit-pr-review-v2` local run over the whole branch,
+  one agent, 23 findings, every one re-measured at `b3356d71f` before a line was changed)
+- **What the review found, by class.** One wrong error class (a storage failure on the
+  composition-clear precondition read filed as `Vanished`); one quadratic walk under the taxonomy
+  writer lock and one double read beside it; the freeze ledger's Postgres trigger with none of its
+  four `RAISE` arms executed; an elevated context indistinguishable from a native one once the
+  gate had run; four unbounded inputs (entity `name` and codes, the `Idempotency-Key`, a
+  live-value patch's coordinate list, the approvals inbox read); a limiter whose bucket map only
+  grew; two silent skips and one silent zero on corrupt rows; five background ticks that never
+  saw the cancellation token; a domain module importing the ORM and another importing a
+  repository type; a bool-tuple API; a run-time assert on a literal roster; a public method with a
+  test-only caller; and two probe gaps (the internal-failure channel asserted once, no over-length
+  probe anywhere).
+- **Fixed, 22 of 23, in one group.** (1) `try_apply_composition_clear` maps the precondition
+  read's failure to `HeadActError::Db`, keeping `Vanished` for the missing head alone.
+  (2, 20) `domain::taxonomy::subtree_height` walks a children index once, and
+  `infra::taxonomy::reparent_under_lock` reads `category_parents` once for both verdicts.
+  (3) `postgres_freeze_ledger_guards.rs` drives all four arms on the engine — the delete refusal,
+  the immutable key, the write-once `released_at` with the recovered ack beside it, and every
+  ordered pair of the four states against P-D-60's six edges (twelve pairs, six admitted, six
+  refused by name). (4) `rest::elevated_context` builds the substituted context and adds one
+  marker scope, `bss-products.breakglass:<session_id>`; `breakglass_session_of` reads it, and the
+  read edge meter names it on every served read. (5) `GET /approvals?state=pending` takes `limit`
+  (default 50, at most 200) and answers `has_more`; the repository reads one page, never the
+  queue. (6, 12, 8) `ENTITY_NAME_MAX_BYTES` **256** and `ENTITY_CODE_MAX_BYTES` **128** — fixed
+  limits, not knobs — refuse `VALIDATION` at both create doors and both save doors, one over
+  refused and the cap admitted, probed. (21) `IDEMPOTENCY_KEY_MAX_BYTES` **255** at
+  `rest::idempotency_key`, probed both sides of the edge. (13) `attribute_values_max_per_patch`
+  joins `ProductsConfig` (**interim 200**, a knob like the three metadata caps of P-D-107) and
+  `TaxonomyCaps`; the live-value door refuses one over before a row is read, and the positive
+  control proves the token did not move. (9) `ReadPathLimiter::try_acquire` drops every bucket
+  idle for a second once the map passes 4 096 entries — lossless, since an idle bucket is a full
+  one — and the probe evicts and re-admits. (11) the compliance export's audit failure logs its
+  cause before answering `AUDIT_UNAVAILABLE`. (18, 23) a held `composition_clear` whose snapshot
+  does not parse, and a deferred intent whose `children_snapshot` is not a list, are named on the
+  log and skipped — never silently dropped, never shown as zero children. (17) the break-glass
+  SLA sweep, both overdue reports, the dashboard poll and the inbox sweep take `&cancel` and stop
+  between rows or tenants. (14) `abandon_disposition` takes an `AbandonRow` — `Option<EntityKind>`,
+  a `RowStanding` enum, one bool — with the unknown-kind arm explicit. (15) `visibility_condition`
+  and `scope_condition` move to `infra::storage::repo::read_models` with their rendering probes;
+  `domain::read_model` keeps `served_states()` and names no ORM type. (16) `FreezeRegistration` is
+  defined in `domain::retention` and re-exported by the repository. (19) the three capture kinds
+  are read off `CAPTURE_KINDS` by position with compile-time pins; the run-time assert is gone.
+  (22) `set_ceiling_for` is `#[cfg(test)]`. (7) two probes arm the internal channel where the
+  review found it asserted once: a parent whose stored scope no longer parses fails the SKU
+  publish `500` with no `SCOPE_NOT_CONTAINED` audit row, and an approval whose `subject_ref` is
+  not a `kind/id` pair fails the decision `500` with no decision row.
+- **Filed, 1 of 23 — `toolkit-odata` for the two list surfaces (finding 10, and finding 5's
+  second half).** The browse door hand-rolls `BrowseParams`; pricing uses `toolkit-odata` in nine
+  files and products declares none. *Recommendation:* **do not adopt for `p1`.** `08`'s browse
+  vocabulary is closed by design — the visibility contract and the scope predicates are built
+  into the one statement (`inst-rb-query`: nothing fetched and dropped) — and an `$filter`
+  surface is a second query language over the same table that the contract would have to be
+  re-proven against. *Counter-argument:* `12-consumer-contracts` wants the two gears' list
+  surfaces to read alike, and pricing's consumers already speak OData; the merge-compatibility
+  half is theirs to assert, and adopting later means a wire change. The owner's call; `08` §6
+  carries the row.
+- **What the wave did not change.** No route moved and no wire field was removed; the two new
+  wire members (`limit`, `has_more`) are additive. The limits are the review's numbers, chosen to
+  admit every value the fixtures and the donor's data carry, and the NFR workshop overrides the
+  one that is a knob by configuration.
+- **Propagated**: `design/05-governance.md` §6 (the marker), `design/08-read-models.md` §6 (the
+  `toolkit-odata` row), `features/foundation.md` (the ceilings), `features/governance.md` (the
+  inbox page), `features/taxonomy-attributes.md` (the coordinate cap), `features/read-models.md`
+  (the predicates' new home, the limiter's bound), `features/catalog-version.md` (the ledger's
+  Postgres probes), `features/retention-erasure.md` (`FreezeRegistration`'s home).
+- **Trace**: `products_tests::the_name_and_code_ceilings_refuse_one_over_and_admit_the_cap`,
+  `products_tests::an_over_long_idempotency_key_is_refused_and_the_cap_is_admitted`,
+  `skus_tests::the_sku_code_ceiling_refuses_one_over_and_admits_the_cap`,
+  `skus_tests::a_parent_whose_stored_scope_does_not_parse_fails_the_publish_internally`,
+  `taxonomy_tests::a_live_value_patch_over_the_coordinate_cap_is_refused_before_the_transaction`,
+  `approvals_tests::the_inbox_serves_a_page_and_says_whether_the_queue_continues`,
+  `approvals_tests::a_corrupt_subject_ref_fails_the_decision_internally`,
+  `read_tests::idle_limiter_buckets_are_evicted_past_the_high_water_mark`,
+  `elevation_tests::an_elevated_context_keeps_its_scopes_and_carries_the_session_marker`,
+  `postgres_freeze_ledger_guards.rs` (four cases).
+
 #### P-D-162 — Close-out of the follow-on plan: the first item-level code markers, the status-box chain measured to its end, nine open items struck by their commits, and the remainder named
 
 - **Date**: 2026-09-05 (the lead, group 20 of the follow-on plan — the last)

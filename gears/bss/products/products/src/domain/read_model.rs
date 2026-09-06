@@ -1,15 +1,18 @@
 //! The read side's four design-introduced names, each addressable
 //! (`design/08-read-models.md` §1.7; **P-D-07**, **P-D-39**, **P-D-70**).
 //!
-//! # Why the visibility contract is a `Condition` and not a predicate over rows
+//! # Why the visibility contract is a served-state list and not a predicate over rows
 //!
 //! `inst-rb-query` forbids post-filtering in as many words — *"post-filtering
 //! is forbidden because a shed row must never have been fetched"* — and
 //! `dod-visibility` states the same rule as *"The contract is applied at
 //! query build. A row a caller may not see is not fetched."* So
-//! [`VisibilityFilter::condition`] answers a `sea_orm` `Condition`, and this
-//! module exposes **no** `fn visible(&row) -> bool`: the shape that would
-//! admit the defect is not expressible here rather than merely discouraged.
+//! [`VisibilityFilter::served_states`] answers the list a query is built
+//! from, and this module exposes **no** `fn visible(&row) -> bool`: the shape
+//! that would admit the defect is not expressible here rather than merely
+//! discouraged. The `WHERE` fragment itself is the repository's to render —
+//! `infra::storage::repo::visibility_condition` and `scope_condition` — so
+//! the domain names no ORM type (P-D-163).
 //!
 //! # The matrix is a total function over (state, surface)
 //!
@@ -62,10 +65,7 @@
 
 use bss_products_sdk::models::LifecycleState;
 use chrono::{DateTime, Utc};
-use sea_orm::{ColumnTrait, Condition};
 use toolkit_macros::domain_model;
-
-use crate::infra::storage::entity::read_entity;
 
 /// The single event-driven consumer (§1.7).
 ///
@@ -131,7 +131,7 @@ pub const POLLED_SURFACES: [&str; 3] = [
 
 /// The denormalized serving row's projection shape (§1.7).
 ///
-/// The columns live on [`read_entity::Model`]; what this type adds is the
+/// The columns live on [`crate::infra::storage::entity::read_entity::Model`]; what this type adds is the
 /// **name** §1.7 introduces plus the one rule a column list cannot carry —
 /// which fields are display-resolved per locale and therefore materialized
 /// rather than computed at read.
@@ -374,89 +374,6 @@ impl VisibilityFilter {
         .filter(|s| serves(*s, self.surface))
         .collect()
     }
-
-    /// The `WHERE` fragment the query is built with.
-    ///
-    /// An `IN` over the served states rather than a `NOT IN` over the
-    /// withheld ones: the negative form serves any state added later, and
-    /// `lifecycle_state`'s roster is a five-value `CHECK` that a migration
-    /// can widen.
-    #[must_use]
-    pub fn condition(self) -> Condition {
-        let served: Vec<String> = self
-            .served_states()
-            .into_iter()
-            .map(|s| s.as_str().to_owned())
-            .collect();
-        Condition::all().add(read_entity::Column::LifecycleState.is_in(served))
-    }
-}
-
-/// The query-build scope predicate for one axis (**P-D-39**).
-///
-/// **Empty means unrestricted**, so the predicate matches a row whose set is
-/// empty **or** contains the caller's claim. Written as containment alone it
-/// hides every unrestricted row — which is the whole catalogue of a tenant
-/// that has set no scopes.
-///
-/// # It is set membership, and `contains` was a leak
-///
-/// The column is a **comma-joined token set**, not a scalar:
-/// [`crate::domain::containment::SCOPE_VALUE_SEPARATOR`] is `,` and
-/// `domain::containment` owns the rule. `ColumnTrait::contains` renders an
-/// unanchored `LIKE '%claim%'` with nothing escaped, and the first version of
-/// this function used it. Measured consequences, each a cross-scope read:
-/// claim `eu` matched a row stored `eur`, `eu-west` or `aus,eu-central`;
-/// claim `us` matched `aus`; and a claim containing `%` matched **every**
-/// restricted row in the table. `SQLite`'s `LIKE` is ASCII-case-insensitive
-/// and Postgres's is not, so the two engines disagreed as well.
-///
-/// The predicate below matches a **token by position** — the whole value, or
-/// the set's first, last or a middle member — so `eu` cannot match `eur` or
-/// `aus,eu-central`. A claim carrying the separator or either wildcard is
-/// refused the containment arm entirely rather than escaped: it cannot be a
-/// member of a well-formed set, and there is then no operand a caller
-/// supplies that can widen the predicate.
-///
-/// **One residual, recorded rather than closed**: `SQLite`'s `LIKE` is
-/// ASCII-case-insensitive and Postgres's is not, so on `SQLite` a claim `eu`
-/// also admits a stored token `EU`. Scope values are resolved before
-/// persistence (`domain::containment`) and nothing in the crate writes a
-/// mixed-case token; closing it needs custom SQL, and the Postgres tier is
-/// the authority for the served behaviour.
-///
-/// # It carries no tenant predicate, and must not be used alone
-///
-/// This is one axis of a `WHERE` clause. The tenant comes from the secure
-/// scope (`.secure().scope_with(scope)`), and a query built with this filter
-/// and no scope serves every tenant's unrestricted rows — which P-D-39 makes
-/// the majority of rows. The probes compose it through the secure path for
-/// that reason: a bare `Entity::find()` example is the one a door would copy.
-#[must_use]
-pub fn scope_condition(column: read_entity::Column, claim: &str) -> Condition {
-    let sep = crate::domain::containment::SCOPE_VALUE_SEPARATOR;
-    let unrestricted = Condition::any().add(column.eq(""));
-
-    // **Fail closed on anything that is not a single token.** A scope value
-    // is a resolved region or brand identifier; `domain::containment` chose a
-    // comma precisely because neither kind is expected to contain one. A
-    // claim carrying the separator, or either `LIKE` wildcard, cannot be a
-    // member of a well-formed set — and admitting it as a pattern is the
-    // leak: `%` alone matched every restricted row. Dropping the containment
-    // arm leaves only the unrestricted rows, which is the safe direction.
-    if claim.is_empty() || claim.contains([sep, '%', '_', '\\']) {
-        return unrestricted;
-    }
-
-    // Token membership by position, in plain `sea_orm`: the whole value, the
-    // first member, the last, or a middle one. No custom SQL and no `ESCAPE`
-    // clause, because the guard above means the claim carries no wildcard to
-    // escape — the two engines therefore agree on the pattern.
-    unrestricted
-        .add(column.eq(claim))
-        .add(column.like(format!("{claim}{sep}%")))
-        .add(column.like(format!("%{sep}{claim}")))
-        .add(column.like(format!("%{sep}{claim}{sep}%")))
 }
 
 #[cfg(test)]

@@ -7,9 +7,8 @@ use chrono::{TimeZone, Utc};
 use super::{
     BrowseProjection, POLLED_SURFACES, ReadProjector, ReadSurface, StalenessStamp,
     StampAdvanceRefusal, StampApply, StampCatalogTouch, VisibilityFilter, advance_stamp,
-    completeness_rejects_removal, floor_admits_removal, scope_condition, serves,
+    completeness_rejects_removal, floor_admits_removal, serves,
 };
-use crate::infra::storage::entity::read_entity;
 
 /// **Every cell of `dod-visibility`'s table.** Five states by the three
 /// surfaces it names, plus P-D-70 arm 4's by-id read in both positions —
@@ -95,105 +94,6 @@ fn the_history_surface_adds_retired_and_nothing_else() {
             LifecycleState::Retired
         ]
     );
-}
-
-/// **The contract renders as an `IN` over the served states**, so a row a
-/// caller may not see is never fetched. The rendering is asserted rather
-/// than the shape, because "applied at query build" is a claim about the SQL
-/// and not about where the code sits.
-#[test]
-fn the_filter_renders_an_in_over_served_states_not_a_negation() {
-    use sea_orm::{EntityTrait, QueryFilter, QueryTrait};
-    let sql = read_entity::Entity::find()
-        .filter(VisibilityFilter::for_surface(ReadSurface::DefaultBrowse).condition())
-        .build(sea_orm::DatabaseBackend::Sqlite)
-        .to_string();
-    assert!(sql.contains("IN ("), "the predicate is an IN: {sql}");
-    assert!(
-        !sql.contains("NOT IN"),
-        "a NOT IN over withheld states would serve any state added later: {sql}"
-    );
-    assert!(
-        sql.contains("'published'") && sql.contains("'deprecated'"),
-        "{sql}"
-    );
-    for withheld in ["'retired'", "'draft'", "'discarded'"] {
-        assert!(
-            !sql.contains(withheld),
-            "{withheld} reached the query: {sql}"
-        );
-    }
-}
-
-/// The rendered statement for one claim: its SQL and its bound values.
-///
-/// **The values, not the SQL text.** `Expr::cust_with_exprs` binds its
-/// operands as parameters, so the pattern never appears in the statement
-/// string — and that difference is exactly what tells a substring match from
-/// a token match, which is why the first probe here could not see the leak.
-fn scope_sql(claim: &str) -> (String, Vec<String>) {
-    use sea_orm::{EntityTrait, QueryFilter, QueryTrait};
-    let stmt = read_entity::Entity::find()
-        .filter(scope_condition(read_entity::Column::RegionScope, claim))
-        .build(sea_orm::DatabaseBackend::Sqlite);
-    let values = stmt
-        .values
-        .as_ref()
-        .map(|v| v.0.iter().map(std::string::ToString::to_string).collect())
-        .unwrap_or_default();
-    (stmt.to_string(), values)
-}
-
-/// **The scope predicate admits the unrestricted row** (P-D-39). Containment
-/// alone hides the whole catalogue of a tenant that has set no scopes, which
-/// is the inverted-obvious the `DoD` warns about.
-///
-/// **And it is token membership, not a substring.** The first version used
-/// `ColumnTrait::contains`, an unanchored `LIKE '%eu%'`, so a row stored
-/// `eur` or `aus,eu-central` matched a claim of `eu`. The pattern below is
-/// separator-wrapped, so `,eu,` cannot be found inside `,eur,`.
-#[test]
-fn the_scope_predicate_is_token_membership_and_admits_the_empty_set() {
-    let (sql, values) = scope_sql("eu");
-    assert!(
-        sql.contains(" OR "),
-        "the predicate is a disjunction: {sql}"
-    );
-    assert!(sql.contains("= ''"), "the empty set is admitted: {sql}");
-    // Four positional arms plus the unrestricted one: the whole value, the
-    // first member, the last, and a middle one.
-    assert!(
-        values.iter().any(|v| v.contains("eu,%")),
-        "the first-member arm is bound: {values:?}"
-    );
-    assert!(
-        values.iter().any(|v| v.contains("%,eu,%")),
-        "and the middle-member arm: {values:?}"
-    );
-    assert!(
-        !values.iter().any(|v| v == "'%eu%'"),
-        "no unanchored substring pattern survives: {values:?}"
-    );
-}
-
-/// **A claim that is not a single token gets no containment arm at all.**
-/// The substring form answered every restricted row for a claim of `%`;
-/// here the predicate collapses to the unrestricted rows, which is the safe
-/// direction and is asserted, not assumed.
-#[test]
-fn a_claim_that_is_not_a_token_is_refused_the_containment_arm() {
-    for bad in ["%", "_", "eu,us", "", "a\\b"] {
-        let (sql, values) = scope_sql(bad);
-        assert!(
-            !sql.contains("LIKE"),
-            "claim {bad:?} must produce no pattern at all: {sql}"
-        );
-        assert_eq!(
-            values,
-            vec!["''".to_owned()],
-            "only the unrestricted arm survives for {bad:?}"
-        );
-    }
 }
 
 /// The stamp's anchorless arm exists and carries no version — the case a

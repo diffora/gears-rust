@@ -824,6 +824,12 @@ question of what creates the ledger rows is `design/06` §6's, both open.
 These rows **MUST NOT** be garbage-collected while their version exists: they are AC #44's
 version-liveness source, and never the per-SKU reference count, which carries no version dimension.
 
+**Executed on Postgres (P-D-163).** `postgres_freeze_ledger_guards.rs` drives the trigger's four
+`RAISE` arms on the engine that serves them — the delete refusal, the immutable key, the write-once
+`released_at` with the recovered participant's ack admitted beside it, and every ordered pair of
+the four states against the six edges (twelve pairs; six admitted, six refused by name). Until it,
+only the `SQLite` mirror's triggers had been executed.
+
 **Implements**: `cpt-cf-bss-products-flow-freeze`
 
 **Touches**:

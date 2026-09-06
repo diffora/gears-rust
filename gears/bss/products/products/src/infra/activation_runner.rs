@@ -153,6 +153,47 @@ async fn sweep_tenant(
     Ok(())
 }
 
+/// The `(sku_id, signal_ref)` a held `composition_clear` signal names, or
+/// `None` for a record that is some other signal — or one this lane cannot
+/// read. **An unreadable one is named, never skipped in silence**: the clear
+/// it carried will not re-evaluate, and a bare `continue` was the one place
+/// a held clear could be lost without a line.
+fn held_composition_clear(
+    tenant_id: Uuid,
+    record: &crate::infra::storage::entity::approval::Model,
+) -> Option<(Uuid, Uuid)> {
+    let snapshot = match serde_json::from_str::<serde_json::Value>(&record.content_snapshot) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            tracing::warn!(
+                event = "composition_clear_signal_unreadable",
+                %tenant_id,
+                approval_id = %record.approval_id,
+                %error,
+                "bss-products: a held system signal's snapshot does not parse; the clear it \
+                 carried is not re-evaluated"
+            );
+            return None;
+        }
+    };
+    if snapshot["act"].as_str() != Some("composition_clear") {
+        return None;
+    }
+    let id_at = |key: &str| snapshot[key].as_str().and_then(|s| s.parse::<Uuid>().ok());
+    if let (Some(sku_id), Some(signal_ref)) = (id_at("sku_id"), id_at("signal_ref")) {
+        Some((sku_id, signal_ref))
+    } else {
+        tracing::warn!(
+            event = "composition_clear_signal_unreadable",
+            %tenant_id,
+            approval_id = %record.approval_id,
+            "bss-products: a held composition_clear signal names no sku_id/signal_ref pair; \
+             the clear it carried is not re-evaluated"
+        );
+        None
+    }
+}
+
 /// The held composition clears, re-evaluated once their head goes clean
 /// (`dod-composition-clear`: *"the clear re-evaluates when the head next
 /// goes clean … without the signal being re-sent"*; P-D-148). A held signal is
@@ -168,21 +209,7 @@ async fn apply_held_composition_clears(
 ) -> Result<(), RepoError> {
     let open = repo::open_system_signals(conn, scope, tenant_id).await?;
     for record in open {
-        let Ok(snapshot) = serde_json::from_str::<serde_json::Value>(&record.content_snapshot)
-        else {
-            continue;
-        };
-        if snapshot["act"].as_str() != Some("composition_clear") {
-            continue;
-        }
-        let (Some(sku_id), Some(signal_ref)) = (
-            snapshot["sku_id"]
-                .as_str()
-                .and_then(|s| s.parse::<Uuid>().ok()),
-            snapshot["signal_ref"]
-                .as_str()
-                .and_then(|s| s.parse::<Uuid>().ok()),
-        ) else {
+        let Some((sku_id, signal_ref)) = held_composition_clear(tenant_id, &record) else {
             continue;
         };
         match skus::try_apply_composition_clear(

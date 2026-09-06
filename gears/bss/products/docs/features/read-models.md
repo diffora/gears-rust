@@ -461,7 +461,7 @@ materialized for the tenant's active locales; the category paths; and `published
 
 **It ships** as `m20260901_000023` on both dialect arms, with SeaORM entity
 `infra::storage::entity::read_entity`, schema oracles in `migrations_tests`, and the P-D-39
-scope predicate in `domain::read_model::scope_condition`. An earlier draft of this body claimed
+scope predicate in `infra::storage::repo::scope_condition` (moved there from `domain::read_model` by P-D-163, so the domain names no ORM type). An earlier draft of this body claimed
 *"It does not exist today — zero occurrences across `products/src`"*; that claim was true before
 the migration landed and is false at `d6cce574b`. The open §7 rows 2, 11 and 12 still name
 adjacent questions (locale config home, metadata field, parked-row exit) and do **not** retract
@@ -592,7 +592,7 @@ filters has already spent the budget and already read what the caller may not se
 
 **Ticked (P-D-150).** `GET /bss-products/v1/browse` (`read::browse`) on `product × read` and
 `sku × read` (both when `kind` is absent). The tenant predicate is the PEP's scope, the per-state
-contract `VisibilityFilter::for_surface(...).condition()` (default browse, or the filtered surface
+contract `repo::visibility_condition(VisibilityFilter::for_surface(...))` (default browse, or the filtered surface
 under `excludeDeprecated`), brand and region claims `scope_condition`s — all inside the one statement
 `repo::browse_read_entities` runs; nothing is fetched and dropped. Filters: name prefix, category
 path (any assigned category), SKU type, tier label, sellable, unit; `includeFacets` adds the facets;
@@ -738,6 +738,9 @@ is one process-wide component, a token bucket **per tenant** at `read_path_qps_c
 `Retry-After` and no body content. One tenant's burst sheds that tenant alone. Under **lag** nothing
 sheds: the projector raises `read_model_lag` past `read_convergence_budget_secs` and the doors keep
 serving, stale-but-stamped. Probe: `the_limiter_sheds_one_tenant_with_retry_after_and_spares_another`.
+The bucket map is bounded (P-D-163): past 4 096 entries an acquire drops every bucket idle for a
+second — lossless, an idle bucket being a full one — so the map holds the tenants active in the
+last second, not every tenant ever seen. Probe: `idle_limiter_buckets_are_evicted_past_the_high_water_mark`.
 
 **Implements**: `cpt-cf-bss-products-flow-degrade`, `cpt-cf-bss-products-algo-read-errors`
 

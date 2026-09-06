@@ -867,8 +867,9 @@ one as a soft warning. Six of the eight probes are the `DoD`'s own named failure
 - **every** hold is reported rather than the first, because an operator repairing one and re-running
   would otherwise meet the rest one pass at a time.
 
-`FreezeRegistration` carries the state and the stamp **separately** rather than deriving one from
-the other, and that is the shape the two arms force: a door-released row is `released` with a NULL
+`FreezeRegistration` — the domain's type, `domain::retention::FreezeRegistration`, re-exported by
+the repository (P-D-163) — carries the state and the stamp **separately** rather than deriving one
+from the other, and that is the shape the two arms force: a door-released row is `released` with a NULL
 stamp while a forced row carries both (**P-D-67** — *"the state moving is what makes the stamp
 inert"*).
 

@@ -446,6 +446,7 @@ async fn the_three_dashboards_answer_from_their_polled_tables() {
     poll_dashboards(
         &ctx(&harness),
         crate::domain::canonical::write_instant(Utc::now()),
+        &tokio_util::sync::CancellationToken::new(),
     )
     .await
     .expect("poll");
@@ -570,4 +571,51 @@ async fn the_timeline_carries_lineage_forward_and_the_reverse_lookup() {
         view["clones"].as_array().expect("clones").is_empty(),
         "nothing was cloned from the clone"
     );
+}
+
+/// **The limiter's bucket map is bounded** (P-D-163). Past the high-water
+/// mark an acquire drops every bucket idle for a full second, and the drop is
+/// lossless: an idle bucket is back at capacity, which is what an absent one
+/// means, so the evicted tenant's next acquire still succeeds.
+#[test]
+fn idle_limiter_buckets_are_evicted_past_the_high_water_mark() {
+    let limiter = ReadPathLimiter::new(200);
+    let mark = super::LIMITER_BUCKET_HIGH_WATER;
+    for i in 1..=(mark + 8) {
+        limiter
+            .try_acquire(Uuid::from_u128(u128::try_from(i).expect("small")))
+            .expect("a fresh tenant has a full bucket");
+    }
+    let len = || {
+        limiter
+            .buckets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    };
+    assert!(
+        len() > mark,
+        "nothing was idle, so nothing was evicted: {} buckets",
+        len()
+    );
+
+    // Age every bucket past the idle window, then one more acquire.
+    {
+        let mut buckets = limiter
+            .buckets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for bucket in buckets.values_mut() {
+            bucket.refilled_at = bucket
+                .refilled_at
+                .checked_sub(std::time::Duration::from_secs(2))
+                .expect("the clock has been up for two seconds");
+        }
+    }
+    let newcomer = Uuid::from_u128(0xffff_ffff);
+    limiter.try_acquire(newcomer).expect("admitted");
+    assert_eq!(len(), 1, "only the newcomer's bucket survives the sweep");
+    limiter
+        .try_acquire(Uuid::from_u128(1))
+        .expect("an evicted tenant is back at capacity, exactly as if never seen");
 }

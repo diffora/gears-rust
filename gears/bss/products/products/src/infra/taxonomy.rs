@@ -296,9 +296,9 @@ pub async fn reparent_under_lock(
         .conn()
         .map_err(|e| RepoError::Db(format!("taxonomy connection: {e}")))?;
 
-    // Read the tree under the lock, and judge the chain it gives.
+    // Read the tree **once** under the lock; both verdicts judge that read.
+    let edges = repo::category_parents(&conn, scope, tenant_id).await?;
     if let Some(parent) = new_parent {
-        let edges = repo::category_parents(&conn, scope, tenant_id).await?;
         let parent_of = |id: Uuid| {
             edges
                 .iter()
@@ -312,7 +312,6 @@ pub async fn reparent_under_lock(
 
     // Judged on the same read, after the cycle rule: a chain that closes on
     // itself has no meaningful depth, so the cycle verdict must answer first.
-    let edges = repo::category_parents(&conn, scope, tenant_id).await?;
     if let Err(refusal) = limits_verdict_for(Some(category_id), new_parent, &edges, limits) {
         return Ok(Err(refusal));
     }

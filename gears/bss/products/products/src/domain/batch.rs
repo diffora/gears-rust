@@ -33,6 +33,7 @@
 
 use super::error::DomainError;
 use super::states::BatchState;
+use bss_products_sdk::models::EntityKind;
 
 /// The batch machine's admitted edges, as `design/09` §2 names them.
 ///
@@ -81,26 +82,53 @@ pub enum AbandonDisposition {
     AlreadyTerminal,
 }
 
-/// The disposition for one row.
+/// What the abandon procedure knows about one row before disposing of it.
 ///
-/// `terminal` is whether the ledger already carries a disposition for it;
-/// `entity_id` is `Some` once staging minted or resolved the row's entity.
-/// A row with no entity was never materialised, so there is nothing to undo
-/// and it counts as terminal for this procedure's purposes.
+/// Named fields rather than a run of booleans: the call site reads as the
+/// row it describes, and a caller cannot swap two flags without the compiler
+/// noticing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AbandonRow {
+    /// The row's staged kind, or `None` where the stored `entity_kind` is
+    /// outside the roster staging admits. The roster is closed
+    /// ([`EntityKind`] has two members), so `None` is a row no head door
+    /// ever materialised; its pending operation is dropped, never applied.
+    pub kind: Option<EntityKind>,
+    /// Where the row stands in the ledger.
+    pub standing: RowStanding,
+    /// Whether the row's governed op edits an existing head — the one case
+    /// where abandoning means **reverting** rather than discarding.
+    pub edits_existing: bool,
+}
+
+/// Where one staged row stands when the abandon reaches it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowStanding {
+    /// The ledger already carries a disposition for it.
+    Terminal,
+    /// Staging never minted or resolved the row's entity, so there is
+    /// nothing to undo; it counts as terminal for this procedure's purposes.
+    NeverMaterialised,
+    /// A materialised row with no disposition yet — the one the abandon
+    /// actually disposes of.
+    Live,
+}
+
+/// The disposition for one row.
 #[must_use]
-pub fn abandon_disposition(
-    entity_kind: &str,
-    terminal: bool,
-    entity_id_present: bool,
-    edits_existing: bool,
-) -> AbandonDisposition {
-    if terminal || !entity_id_present {
-        return AbandonDisposition::AlreadyTerminal;
+pub fn abandon_disposition(row: AbandonRow) -> AbandonDisposition {
+    match row.standing {
+        RowStanding::Terminal | RowStanding::NeverMaterialised => {
+            return AbandonDisposition::AlreadyTerminal;
+        }
+        RowStanding::Live => {}
     }
-    match entity_kind {
-        "product" | "sku" if edits_existing => AbandonDisposition::RevertToPublished,
-        "product" | "sku" => AbandonDisposition::DiscardDraft,
-        _ => AbandonDisposition::DropPendingOp,
+    match (row.kind, row.edits_existing) {
+        (Some(EntityKind::Product | EntityKind::Sku), true) => {
+            AbandonDisposition::RevertToPublished
+        }
+        (Some(EntityKind::Product | EntityKind::Sku), false) => AbandonDisposition::DiscardDraft,
+        (None, _) => AbandonDisposition::DropPendingOp,
     }
 }
 

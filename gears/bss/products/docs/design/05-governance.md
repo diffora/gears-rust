@@ -453,7 +453,7 @@ finance fields), 04 (un-deprecation, retirement confirmation, scheduled-approval
   CatalogAdmin/FinanceReviewer floor to material changes; a non-material change gets `min(N, 1)` and
   the descriptor carries no base role set. Nothing says whether any holder of `approval × decide`
   may close one. Owner: this slice. *(Raised by the slice-05 first lens pass.)*
-- ~~**What does an elevation change about the authorization decision?**~~ **Answered (P-D-133, 2026-09-04): the pre-pipeline gate substitutes a read-only `AccessScope::for_tenant(target)` from the session; writes refused.** *The item's text stood as:* C6 is deny-by-default over
+- ~~**What does an elevation change about the authorization decision?**~~ **Answered (P-D-133, 2026-09-04): the pre-pipeline gate substitutes a read-only `AccessScope::for_tenant(target)` from the session; writes refused.** **Marked (P-D-163):** the substituted `SecurityContext` keeps the caller's subject and scopes and carries one added token scope, `bss-products.breakglass:<session_id>`, so a door, an audit row or a log line downstream can tell an elevated read from a native principal of the target tenant; the read edge meter names it on every served read. *The item's text stood as:* C6 is deny-by-default over
   tenant-scoped IdP claims and 01 C4 puts all repository access through SecureORM tenant scoping;
   no rule anywhere says how a live `BreakGlassSession` widens either the grant check or the query
   scoping. Owner: this slice with the ToolKit/SecureORM owner — the operand a door reads, and where

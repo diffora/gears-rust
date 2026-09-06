@@ -1920,6 +1920,34 @@ pub async fn pending_approvals(
         .map_err(|e| driver_failure(format!("pending approvals of {tenant_id}"), e))
 }
 
+/// The oldest `limit` pending records of one tenant — [`pending_approvals`]
+/// with a page, the inbox door's own read (P-D-163: the door serves a
+/// window on the queue, never the queue).
+///
+/// # Errors
+///
+/// A storage failure.
+pub async fn pending_approvals_page(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    limit: u64,
+) -> Result<Vec<approval::Model>, RepoError> {
+    approval::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(approval::Column::TenantId.eq(tenant_id))
+                .add(approval::Column::State.eq("pending")),
+        )
+        .order_by(approval::Column::SubmittedAt, sea_orm::Order::Asc)
+        .limit(limit)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("pending approvals page of {tenant_id}"), e))
+}
+
 #[cfg(test)]
 #[path = "governance_tests.rs"]
 mod governance_tests;
@@ -2119,8 +2147,9 @@ pub async fn pending_approvals_with_progress(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
+    limit: u64,
 ) -> Result<Vec<PendingApproval>, RepoError> {
-    let rows = pending_approvals(runner, scope, tenant_id).await?;
+    let rows = pending_approvals_page(runner, scope, tenant_id, limit).await?;
     if rows.is_empty() {
         return Ok(Vec::new());
     }

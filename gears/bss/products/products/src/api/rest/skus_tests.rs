@@ -8756,3 +8756,84 @@ mod clone_revalidation_tests {
         );
     }
 }
+
+/// **`sku_code` has a byte ceiling, and the ceiling is the admitted edge**
+/// (P-D-163): one over is refused `VALIDATION` naming the field and writes
+/// nothing; exactly at the cap is admitted.
+#[tokio::test]
+async fn the_sku_code_ceiling_refuses_one_over_and_admits_the_cap() {
+    let harness = harness().await;
+    let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let cap = crate::config::ENTITY_CODE_MAX_BYTES;
+
+    let over = post_create_sku(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "product_id": parent_id, "sku_code": "c".repeat(cap + 1), "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000" }),
+    )
+    .await;
+    assert_eq!(over.status(), StatusCode::BAD_REQUEST);
+    let view = body_json(over).await;
+    assert_eq!(
+        view["context"]["violations"][0]["type"],
+        json!("VALIDATION")
+    );
+    assert_eq!(
+        view["context"]["violations"][0]["subject"],
+        json!("sku_code"),
+        "{view}"
+    );
+    let persisted = raw_i64(&harness.dsn, "SELECT COUNT(*) AS v FROM products_sku").await;
+    assert_eq!(persisted, 0, "the refused create wrote no SKU");
+
+    let at_cap = post_create_sku(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({ "product_id": parent_id, "sku_code": "c".repeat(cap), "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000" }),
+    )
+    .await;
+    assert_eq!(at_cap.status(), StatusCode::CREATED, "the cap is admitted");
+}
+
+/// **A parent whose stored scope no longer parses answers the publish 5xx,
+/// never a domain refusal** — `recheck_parent_containment`'s internal
+/// channel, armed (P-D-163). The poison is written out of band, the only way
+/// to reach the state, and the SKU's publish detonates it: a `500`, and no
+/// `SCOPE_NOT_CONTAINED` audit row, because a storage-invariant breach is
+/// this gear's own fault and must not be filed as the caller's.
+#[tokio::test]
+async fn a_parent_whose_stored_scope_does_not_parse_fails_the_publish_internally() {
+    let harness = harness().await;
+    let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+    let (sku_id, etag) = seed_draft_sku(&harness, parent_id, "LINE-POISON").await;
+    narrow_parent_region(&harness.dsn, parent_id, "eu,,us").await;
+
+    let publish = post_head_act(&harness, TENANT, sku_id, "publish", Some(&etag), None).await;
+    assert_eq!(
+        publish.status(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "an unparseable *stored* parent scope is gear-borne corruption"
+    );
+    let head = raw_string_opt(
+        &harness.dsn,
+        &format!(
+            "SELECT lifecycle_state AS v FROM products_sku WHERE {}",
+            id_matches("sku_id", sku_id)
+        ),
+    )
+    .await;
+    assert_eq!(
+        head.as_deref(),
+        Some("draft"),
+        "the failed publish moved nothing"
+    );
+    let refusals = raw_i64(
+        &harness.dsn,
+        "SELECT COUNT(*) AS v FROM products_audit_log WHERE error_code = 'SCOPE_NOT_CONTAINED'",
+    )
+    .await;
+    assert_eq!(
+        refusals, 0,
+        "a storage-invariant breach is not audited as the caller's containment refusal"
+    );
+}

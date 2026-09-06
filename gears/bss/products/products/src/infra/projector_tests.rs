@@ -490,6 +490,7 @@ async fn a_poison_row_is_parked_retried_then_skipped_and_surfaced() {
     poll_dashboards(
         &ctx(&harness),
         crate::domain::canonical::write_instant(Utc::now()),
+        &tokio_util::sync::CancellationToken::new(),
     )
     .await
     .expect("poll");
