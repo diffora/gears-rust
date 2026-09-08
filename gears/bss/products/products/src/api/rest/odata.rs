@@ -100,18 +100,42 @@ pub(crate) const LISTING_LIMIT_CFG: LimitCfg = LimitCfg {
 /// `$skiptoken`.
 ///
 /// `toolkit`'s `ODataParams` binds `limit` as an alias of `$top` and
-/// `cursor` as an alias of `$skiptoken`, so both spellings reach a door
-/// whatever it declares. Every list door therefore permits them, which is
-/// also why adopting this module did not break the `limit` these doors
-/// already shipped.
+/// `cursor` as an alias of `$skiptoken`, so both spellings reach a door that
+/// binds the extractor whatever else it declares. That is also why adopting
+/// this module did not break the `limit` these doors already shipped.
 const PAGINATION_ALIASES: [&str; 2] = ["limit", "cursor"];
 
-/// Refuse any query key that is neither reserved by the protocol nor
-/// declared by this door.
+/// Whether a door binds the platform's query family at all.
+///
+/// The distinction is load-bearing and its absence was a defect: the guard
+/// used to permit [`PAGINATION_ALIASES`] unconditionally, so `?limit=10` on
+/// a door that pages nothing was **dropped** and answered `200` with the
+/// whole collection — the very shape this module exists to refuse, and one
+/// the version-diff door's own comment claimed to have closed. A door that
+/// serves no pagination has no more business accepting `limit` than
+/// accepting `status`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum QueryFamily {
+    /// The door binds [`toolkit::api::odata::OData`]: the `$` family is the
+    /// extractor's to police, and `limit`/`cursor` are the platform's own
+    /// spellings of two of its members.
+    Odata,
+    /// The door binds none of it — its only query keys are the operands it
+    /// declares. Every `$` key and both pagination aliases are as
+    /// undeclared here as an invented word, and are refused rather than
+    /// ignored: the extractor is not there to refuse them either.
+    OperandsOnly,
+}
+
+/// Refuse any query key that is neither served by this door's query family
+/// nor declared by the door itself.
 ///
 /// `declared` carries the door's own custom query options — the operands
-/// that are not filters (`includeFacets`, `intent`, `principalRef`, …). The
-/// pagination aliases are permitted everywhere and need not be listed.
+/// that are not filters (`includeFacets`, `intent`, `principalRef`, …).
+/// `family` says what else is admissible: on [`QueryFamily::Odata`] the `$`
+/// keys are the extractor's to police and `limit`/`cursor` are two of its
+/// members, and on [`QueryFamily::OperandsOnly`] neither is admissible at
+/// all.
 ///
 /// Every offender is reported, not just the first: a caller who mis-spelled
 /// two keys should learn both in one round trip, which is the same reason
@@ -126,15 +150,20 @@ const PAGINATION_ALIASES: [&str; 2] = ["limit", "cursor"];
 /// sees *which* parameter it invented without parsing prose.
 pub(crate) fn reject_undeclared_query_params(
     raw: &HashMap<String, String>,
+    family: QueryFamily,
     declared: &[&str],
 ) -> Result<(), DomainError> {
+    let odata = family == QueryFamily::Odata;
     let mut offenders: Vec<&str> = raw
         .keys()
         .map(String::as_str)
-        // The extractor owns the `$` family, including the refusal of what
-        // it does not bind. See the module doc.
-        .filter(|key| !key.starts_with('$'))
-        .filter(|key| !PAGINATION_ALIASES.contains(key))
+        // On an `OData` door the extractor owns the `$` family, including
+        // the refusal of what it does not bind, and it tells an unsupported
+        // option from a typo better than a second check could. On a door
+        // that binds no extractor there is no such owner, so a `$` key is
+        // simply undeclared.
+        .filter(|key| !(odata && key.starts_with('$')))
+        .filter(|key| !(odata && PAGINATION_ALIASES.contains(key)))
         .filter(|key| !declared.contains(key))
         .collect();
     if offenders.is_empty() {
@@ -147,8 +176,13 @@ pub(crate) fn reject_undeclared_query_params(
             UNDECLARED_QUERY_PARAM,
             key,
             format!(
-                "unrecognized query parameter `{key}`. This door accepts the OData family \
-                 (`$filter`, `$orderby`, `$select`, `$top`/`limit`, `$skiptoken`/`cursor`){}",
+                "unrecognized query parameter `{key}`. {}{}",
+                if odata {
+                    "This door accepts the OData family (`$filter`, `$orderby`, `$top`/`limit`, \
+                     `$skiptoken`/`cursor`)"
+                } else {
+                    "This door serves no filtering, ordering or paging"
+                },
                 describe_declared(declared)
             ),
         );
@@ -160,16 +194,23 @@ pub(crate) fn reject_undeclared_query_params(
 /// when it has none.
 fn describe_declared(declared: &[&str]) -> String {
     if declared.is_empty() {
-        return ". Filtering is `$filter`, not a bare field name.".to_owned();
+        return " and no parameters of its own.".to_owned();
     }
-    format!(
-        " and this door's own parameters ({}). Filtering is `$filter`, not a bare field name.",
-        declared.join(", ")
-    )
+    format!(" and this door's own parameters ({}).", declared.join(", "))
 }
 
 /// A `$` option this platform binds but **this door** does not serve.
 pub(crate) const UNSUPPORTED_QUERY_OPTION: &str = "UNSUPPORTED_QUERY_OPTION";
+
+/// Why no door in this gear serves `$select`.
+///
+/// The extractor parses and validates the field list, so without this every
+/// paginated door accepted a projection, bound it to nothing, and answered
+/// `200` with every field — the same silent-drop shape the rest of this
+/// module refuses, one level down. P-D-165 recorded it as an open item; a
+/// recorded defect is still a defect, and the fix is one call per door.
+pub(crate) const NO_SELECT: &str = "this door does not project fields: every row carries its whole shape. Ask for the \
+     fields you need by reading them off the response.";
 
 /// Refuse the `OData` options a door binds nothing to.
 ///
@@ -211,6 +252,63 @@ pub(crate) fn reject_unsupported_odata_options(
     if report.violations().is_empty() {
         return Ok(());
     }
+    Err(DomainError::Validation(report))
+}
+
+/// Refuse a continuation token whose walk is not the one this door serves.
+///
+/// The order-option guard above tests `odata.order`, and the platform's
+/// extractor **empties** that field whenever a cursor is present — the
+/// effective order is then re-derived from the token's own signed field
+/// list. A door that refuses `$orderby` by name therefore refuses only the
+/// spelling: the token is unsigned base64url JSON, so a caller can put the
+/// order it was denied inside one and be served it. On the version timeline
+/// that is not merely a different order — each entry's `changed_keys` is the
+/// diff against the version *before* it, so a descending walk diffs every
+/// entry against the version above and the body is silently wrong.
+///
+/// `expected` is the order the door serves, as `paginate_odata` would see
+/// it after `ensure_tiebreaker`.
+///
+/// # Errors
+///
+/// [`DomainError::Validation`] under [`INVALID_CURSOR`]: the token does not
+/// describe a walk this door performs, which is the caller's to fix.
+pub(crate) fn reject_cursor_reordering(
+    odata: &toolkit_odata::ODataQuery,
+    expected: &[(&str, toolkit_odata::SortDir)],
+) -> Result<(), DomainError> {
+    let Some(cursor) = odata.cursor.as_ref() else {
+        return Ok(());
+    };
+    let carried = toolkit_odata::ODataOrderBy::from_signed_tokens(&cursor.s).map_err(|e| {
+        let mut report = ValidationReport::new();
+        report.violate(INVALID_CURSOR, "cursor", format!("unreadable cursor: {e}"));
+        DomainError::Validation(report)
+    })?;
+    let matches = carried.0.len() == expected.len()
+        && carried
+            .0
+            .iter()
+            .zip(expected)
+            .all(|(key, (field, dir))| key.field == *field && key.dir == *dir);
+    if matches {
+        return Ok(());
+    }
+    let mut report = ValidationReport::new();
+    report.violate(
+        INVALID_CURSOR,
+        "cursor",
+        format!(
+            "this cursor describes an order this door does not serve; it is served in {} order \
+             and no other",
+            expected
+                .iter()
+                .map(|(field, dir)| format!("{field} {dir:?}").to_lowercase())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    );
     Err(DomainError::Validation(report))
 }
 

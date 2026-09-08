@@ -177,9 +177,11 @@ The roster below is this slice's and is the normative one; the FEATURE carries t
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-contract-read-errors`
 
-`READ_MODEL_OVERLOADED` (shed; carries `Retry-After`) — raised by the **single per-tenant-partition limiter component in front of every read endpoint** (browse, history, facets, dashboards): one door (L4). Everything else on this surface is standard not-found/validation via 01's envelope — reads introduce no new failure semantics.
+`READ_MODEL_OVERLOADED` (shed; carries `Retry-After`) — raised by the **single per-tenant-partition limiter component in front of every read endpoint** (browse, history, facets, dashboards): one door (L4). Beyond that and the six query-surface codes below, this surface is standard not-found/validation via 01's envelope.
 
-**Problem responses (RFC 9457):** `READ_MODEL_OVERLOADED` (503).
+1. [ ] - `p1` - **The query surface names the parameter to fix** (**P-D-165**): a query key the door does not serve is `UNDECLARED_QUERY_PARAM` with the key itself as the violation subject; an `OData` option the platform binds but the door does not serve is `UNSUPPORTED_QUERY_OPTION`; and the four ways a caller can write an unservable query are `INVALID_FILTER` (`$filter`), `INVALID_ORDERBY` (`$orderby`), `INVALID_LIMIT` (`$top`) and `INVALID_CURSOR` (`cursor` — including a token whose order or filter is not the walk being asked for). All six are `422`-class and reach the wire as `400`; a **driver** failure inside the same walk is not one of them and is a `500`, because a request-borne value and a service fault owe different answers. The limiter is consulted **before** any of them, so a shedding tenant hears `503` and not a refusal about a parameter - `inst-rq-codes`
+
+**Problem responses (RFC 9457):** `READ_MODEL_OVERLOADED` (503); `UNDECLARED_QUERY_PARAM`, `UNSUPPORTED_QUERY_OPTION`, `INVALID_FILTER`, `INVALID_ORDERBY`, `INVALID_CURSOR`, `INVALID_LIMIT` (422, declared in `01` §3.3 with the rest of the class — **P-D-165**). *This block read "reads introduce no new failure semantics" until P-D-165, which minted six.*
 
 *Statuses added, corrected the same day by the fix-wave review. The gear declared
 its codes with no HTTP status and no problem-response block in any slice, against
@@ -359,11 +361,14 @@ clause — M5); the §5.1 p2 rows "Advanced search, filter & faceting" and the r
   list door in the gear.** The owner's
   call reversed the recommendation below, and the recommendation's own premise did not survive
   measurement: the canon is `gears/system/account-management`, not pricing, and pricing had
-  adopted only the envelope and the cursor, never the `$filter` extractor. Browse's twelve
-  hand-rolled keys are now `$filter` over a declared vocabulary, minus the four that are not
-  column comparisons (`kind` is an **authorization** operand; `brand`/`region` are set membership
-  over a token set where empty means unrestricted; `excludeDeprecated` selects the visibility
-  surface). *The item's text stood as:* `BrowseParams` is hand-rolled while pricing uses
+  adopted only the envelope and the cursor, never the `$filter` extractor. Of browse's twelve
+  hand-rolled keys, **six** became `$filter` fields (`q` as `startswith(name,…)`, `category` as
+  `contains(category_paths,…)`, and `skuType`/`tier`/`sellable`/`unit` as `eq` on their own),
+  `limit` moved to the extractor as an alias of `$top`, and **five** stayed the door's own
+  operands: the four that are not column comparisons (`kind` is an **authorization** operand;
+  `brand`/`region` are set membership over a token set where empty means unrestricted;
+  `excludeDeprecated` selects the visibility surface) plus `includeFacets`, which asks for a second
+  thing rather than narrowing the first. *The item's text stood as:* `BrowseParams` is hand-rolled while pricing uses
   `toolkit-odata` in nine files, and `12`'s merge-compatibility half wants the two gears' list
   surfaces to read alike. *Recommendation:* not for `p1` — this slice's browse vocabulary is
   closed by design and the visibility and scope predicates are built into the one statement

@@ -2084,7 +2084,7 @@ pub async fn pending_approvals_page(
             .add(approval::Column::TenantId.eq(tenant_id))
             .add(approval::Column::State.eq("pending")),
     );
-    let effective = super::effective_odata(odata, INBOX_DEFAULT_ORDER);
+    let effective = super::effective_odata(odata, INBOX_DEFAULT_ORDER, None);
     paginate_odata::<ApprovalInboxFilterField, ApprovalInboxODataMapper, _, _, _, _>(
         base,
         runner,

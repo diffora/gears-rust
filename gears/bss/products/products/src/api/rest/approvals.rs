@@ -480,7 +480,12 @@ async fn list_pending_approvals(
     OData(odata): OData,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    odata_seam::reject_undeclared_query_params(&raw, &APPROVAL_PARAMS)?;
+    odata_seam::reject_undeclared_query_params(
+        &raw,
+        odata_seam::QueryFamily::Odata,
+        &APPROVAL_PARAMS,
+    )?;
+    odata_seam::reject_unsupported_odata_options(&odata, None, None, Some(odata_seam::NO_SELECT))?;
     let tenant_id = ctx.subject_tenant_id();
     let now = canonical::write_instant(Utc::now());
     let actor_ref =

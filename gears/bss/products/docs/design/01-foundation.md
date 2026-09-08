@@ -668,7 +668,16 @@ operand inside this slice's `identity` phase** and is not registered as a slice-
 code rather than declaring their own. Codes are
 part of the SDK contract; renames are breaking.
 
-**Problem responses (RFC 9457):** `APPROVAL_REQUIRED` (403); `DUPLICATE_NAME`, `DUPLICATE_CODE`, `IDEMPOTENCY_CONFLICT`, `IDEMPOTENCY_KEY_IN_FLIGHT`, `PARENT_TERMINAL`, `PARENT_NOT_PUBLISHED`, `RETIREMENT_PENDING`, `STALE_REVISION`, `ENTITY_TERMINAL`, `ILLEGAL_TRANSITION`, `ILLEGAL_FIELD_MUTATION` (409); `AUDIT_UNAVAILABLE` (503); `SCOPE_NOT_CONTAINED`, `INCOMPLETE_ENTITY`, `VALIDATION`, `CONTENT_PII_BLOCKED` (422).
+**Problem responses (RFC 9457):** `APPROVAL_REQUIRED` (403); `DUPLICATE_NAME`, `DUPLICATE_CODE`, `IDEMPOTENCY_CONFLICT`, `IDEMPOTENCY_KEY_IN_FLIGHT`, `PARENT_TERMINAL`, `PARENT_NOT_PUBLISHED`, `RETIREMENT_PENDING`, `STALE_REVISION`, `ENTITY_TERMINAL`, `ILLEGAL_TRANSITION`, `ILLEGAL_FIELD_MUTATION` (409); `AUDIT_UNAVAILABLE` (503); `SCOPE_NOT_CONTAINED`, `INCOMPLETE_ENTITY`, `VALIDATION`, `CONTENT_PII_BLOCKED`, `UNDECLARED_QUERY_PARAM`, `UNSUPPORTED_QUERY_OPTION`, `INVALID_FILTER`, `INVALID_ORDERBY`, `INVALID_CURSOR`, `INVALID_LIMIT` (422).
+
+*The last six are the **query surface**'s, minted by **P-D-165** and declared here because this
+block is where every code of the class is declared — they ride `Validation` and reach a caller as
+the violation's own code, exactly as the rest do. They are the only codes in the set raised by a
+**read**: `UNDECLARED_QUERY_PARAM` names a query key the door does not serve,
+`UNSUPPORTED_QUERY_OPTION` an `OData` option the platform binds but the door does not, and the
+other four the four ways a caller can write an unservable filter, order, page size or continuation
+token. Their subject is the parameter to fix (`$filter`, `$orderby`, `$top`, `cursor`, or the
+invented key itself), which is what makes the refusal actionable without parsing prose.*
 
 *`ILLEGAL_TRANSITION` and `ILLEGAL_FIELD_MUTATION` moved 422 → **409** by P-D-32: all four codes
 the `state` phase raises are refusals by the row's **current state**, which is this block's own

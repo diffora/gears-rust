@@ -226,10 +226,10 @@ pub struct AllowlistExport {
 /// and paged with the platform's two spellings.
 const ALLOWLIST_PARAMS: [&str; 0] = [];
 
-/// The export's query parameters.
 /// The non-`OData` keys the identity export declares.
 const IDENTITY_EXPORT_PARAMS: [&str; 2] = ["principalRef", "justification"];
 
+/// The export's query parameters.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ExportQuery {
@@ -751,7 +751,11 @@ async fn export_identity_map(
     axum::extract::Query(query): axum::extract::Query<ExportQuery>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    odata_seam::reject_undeclared_query_params(&raw, &IDENTITY_EXPORT_PARAMS)?;
+    odata_seam::reject_undeclared_query_params(
+        &raw,
+        odata_seam::QueryFamily::OperandsOnly,
+        &IDENTITY_EXPORT_PARAMS,
+    )?;
     let tenant_id = ctx.subject_tenant_id();
     let now = canonical::write_instant(Utc::now());
     let principal_ref = query.principal_ref.trim().to_owned();
@@ -1370,7 +1374,12 @@ async fn export_allowlist(
     OData(odata): OData,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    odata_seam::reject_undeclared_query_params(&raw, &ALLOWLIST_PARAMS)?;
+    odata_seam::reject_undeclared_query_params(
+        &raw,
+        odata_seam::QueryFamily::Odata,
+        &ALLOWLIST_PARAMS,
+    )?;
+    odata_seam::reject_unsupported_odata_options(&odata, None, None, Some(odata_seam::NO_SELECT))?;
     let tenant_id = ctx.subject_tenant_id();
     let now = canonical::write_instant(Utc::now());
     let actor_ref =

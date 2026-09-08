@@ -161,7 +161,12 @@ async fn list_scheduled_transitions(
     OData(odata): OData,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    odata_seam::reject_undeclared_query_params(&raw, &SCHEDULE_PARAMS)?;
+    odata_seam::reject_undeclared_query_params(
+        &raw,
+        odata_seam::QueryFamily::Odata,
+        &SCHEDULE_PARAMS,
+    )?;
+    odata_seam::reject_unsupported_odata_options(&odata, None, None, Some(odata_seam::NO_SELECT))?;
     let tenant_id = ctx.subject_tenant_id();
     // Collection read: the PDP derives the scope; `resource_id` is unset.
     // `owner_tenant_id` stays `None` the way [`super::products::get_product`]

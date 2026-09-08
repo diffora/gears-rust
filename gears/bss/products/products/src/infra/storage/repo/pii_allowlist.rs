@@ -197,7 +197,7 @@ pub async fn allowlist_entries(
         .secure()
         .scope_with(scope)
         .filter(Condition::all().add(pii_allowlist::Column::TenantId.eq(tenant_id)));
-    let effective = super::effective_odata(odata, ALLOWLIST_DEFAULT_ORDER);
+    let effective = super::effective_odata(odata, ALLOWLIST_DEFAULT_ORDER, None);
     paginate_odata::<AllowlistEntryFilterField, AllowlistEntryODataMapper, _, _, _, _>(
         base,
         runner,

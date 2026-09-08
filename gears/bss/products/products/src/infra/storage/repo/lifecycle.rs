@@ -659,7 +659,7 @@ pub async fn list_scheduled_transitions(
         .secure()
         .scope_with(scope)
         .filter(Condition::all().add(scheduled_transition::Column::TenantId.eq(tenant_id)));
-    let effective = super::effective_odata(odata, SCHEDULE_DEFAULT_ORDER);
+    let effective = super::effective_odata(odata, SCHEDULE_DEFAULT_ORDER, None);
     paginate_odata::<ScheduledTransitionFilterField, ScheduledTransitionODataMapper, _, _, _, _>(
         base,
         runner,

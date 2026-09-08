@@ -1591,6 +1591,16 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   would otherwise answer `200` with the **unfiltered** set. Products had **none** of it:
   `toolkit-odata` was not a dependency and `OData(` had zero call sites.
 
+- **The canon is not uniform, and this gear is stricter than it.** AM's guard is
+  `reject_non_odata_params` — "any query key without a `$` is refused" — and it is called on
+  **two** of AM's five list doors, both in `handlers/conversions.rs`; `users`, `tenants` and
+  `metadata` never call it, so `?status=approved` on AM's users door is still dropped today.
+  Products applies its equivalent on every door that takes a query. AM also clamps `$top`
+  **twice** — `clamp_listing_top(query, svc.max_listing_top())` in the handler on top of the
+  repository ceiling, so a deployment that lowered `listing.max_top` is not bypassed — and
+  products took only the constant: there is no per-deployment cap here. That half is **not**
+  adopted and is a residual, below.
+
 - **The defect this was, not the preference it looked like.** Three consequences, each measured on
   the shipped code:
   1. **An unrecognized query key was dropped.** `serde` ignores a field it does not know and Axum
@@ -1607,16 +1617,29 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   3. **Five envelopes for one idea**: `{stamp, rows, facets}`, `{items, has_more}`, `{items}`,
      `{entries}`, and the export artifact.
 
-- **What was taken, part for part.** `api/rest/odata.rs` is the seam: the `LimitCfg` (AM's numbers,
-  taken rather than re-derived), the undeclared-key guard, the unsupported-option guard, and the
-  `ODataError` → `(400 | 500)` classification. Seven doors now answer `toolkit_odata::PageInfo`
-  and walk a keyset with a unique tiebreaker: **browse** (`name ASC` + `entity_id`), the **approval
-  inbox** (`submitted_at ASC` + `approval_id`), **scheduled transitions** (`at ASC` +
-  `transition_id`, which had no `ORDER BY` at all before), both **version timelines**
-  (`published_version ASC`), the **deferred-intent** and **freeze-status** dashboards, and the
-  **PII allow-list export** (`created_at ASC` + `entry_id`). Six declared filter vocabularies
-  replace the bespoke keys, and the `OpenAPI` `$filter`/`$orderby` documentation is generated from
-  them by `OperationBuilderODataExt` rather than written twice.
+- **What was taken, and what is this gear's own.** `api/rest/odata.rs` is the seam. **Taken from
+  AM:** the `LimitCfg` numbers (rather than re-derived), the extractor, the typed vocabulary, the
+  `paginate_odata` walk over a scoped select, the `Page`/`PageInfo` envelope, and the shape of the
+  undeclared-key guard. **This gear's own, and not in the canon at all:** the per-door
+  unsupported-option guard (AM has no such refusal), the `ODataError` → `(400 | 500)` split (all
+  three of AM's repositories collapse *every* `toolkit_odata::Error`, driver failures included, to
+  a 400), the `QueryFamily` distinction, and the two cursor-identity stamps below. **Eight routes**
+  now answer `toolkit_odata::PageInfo` and walk a keyset with a unique tiebreaker — **browse**
+  (`name ASC` + `entity_id`), the **approval inbox** (`submitted_at ASC` + `approval_id`),
+  **scheduled transitions** (`at ASC` + `transition_id`, which had no `ORDER BY` at all before),
+  the **two version timelines** (`published_version ASC`), the **deferred-intent** and
+  **freeze-status** dashboards, and the **PII allow-list export** (`created_at ASC` + `entry_id`) —
+  carrying seven envelope types between them, since the two timelines share `HistoryView`. Six
+  declared filter vocabularies replace the bespoke keys (a seventh, `EntityVersionQuery`, is an
+  internal order-key declaration on a door that refuses `$filter`).
+
+  The `OpenAPI` `$filter` documentation is generated from the vocabularies by
+  `OperationBuilderODataExt` rather than written twice — but **`$orderby` on browse is not**, and
+  cannot be: the generator enumerates the whole vocabulary, and browse is the one vocabulary whose
+  filterable and orderable sets differ (six of its twelve fields are nullable and refused as order
+  keys). Generating it would have advertised twelve order keys of which six answer 400, so browse
+  declares `$orderby` by hand. The toolkit has no way to express "filterable, not orderable"; AM
+  has the same divergence unfixed on two of its own doors.
 
 - **Four things the canon's own rules say not to move into `$filter`.** AM keeps path-scoped
   `parent_id` off its filter columns for this class of reason, and each of these is the same shape:
@@ -1653,15 +1676,73 @@ per-decision anchors, and it was corrected by running the command it prescribed.
      the other. `BrowseODataMapper::is_orderable` refuses the six nullable columns as order keys and
      keeps them filterable.
   3. **The browse facet counts were silently a lower bound.** One number was both the page ceiling
-     and the facet window, so past 500 matches the counts were wrong with nothing saying so. The
-     window is now its own constant, the facet pass runs over the **matching set** rather than the
-     page (`browse_facet_rows`, sharing the `$filter` lowering so the counts cannot disagree with
-     the rows beside them), and `facets.complete` states whether the window covered it.
+     and the facet window, so past 500 matches the counts were wrong with nothing saying so. Stated
+     precisely, because the first draft of this entry overstated it: the pre-move door already
+     forced the query limit to 500 whenever `includeFacets=true` and then truncated the *rows* to
+     the caller's `limit`, so the old counts were over a 500-row window of the matching set and
+     never over the page. What was wrong was that nothing said the window was a window — and that
+     the window was the page ceiling, which this change drops from 500 to 200. So the fixes are:
+     the window is now its own constant (`BROWSE_FACET_WINDOW`, decoupled from the page size it
+     would otherwise have shrunk with), the facet pass shares the `$filter` lowering with the page
+     so the counts cannot disagree with the rows beside them, and `facets.complete` states whether
+     the window covered the set.
+
+- **Six more the review of this change found, each fixed here.** Two read-only lenses over the
+  landed commit; every finding below was re-measured before acting.
+  1. **The pagination aliases bypassed the guard.** `limit` and `cursor` were permitted on *every*
+     door, because the platform's extractor folds them onto `$top`/`$skiptoken`. Four doors bind no
+     extractor and page nothing — the resolver, the bulk export, the identity export, the version
+     diff — so `?limit=10` there was **dropped and answered `200` with the whole collection**,
+     which is the very defect this change exists to close, and the version diff's own comment
+     claimed the guard had closed it. `$`-prefixed keys were exempted on the same four doors for a
+     reason that only holds where an extractor is bound. Both are now decided by `QueryFamily`: on
+     an `OData` door the extractor owns the `$` family and the two aliases are its members; on a
+     door that binds none, every one of them is as undeclared as an invented word.
+  2. **`$select` reached nothing on six doors** — recorded below as an open item in the first draft
+     of this entry, which was the wrong disposition: a recorded defect is still a defect and the
+     fix was one call per door. All six now refuse it with the reason.
+  3. **The walk's identity omitted the serving generation.** The `$filter` hole above was closed in
+     both directions and the same hole one axis over was not: browse re-reads the generation from
+     the checkpoint on every request, so a shadow rebuild completing mid-walk moves it and deletes
+     the old rows, and the keyset predicate then lands on a different set — a row renamed across
+     the cursor's position is skipped for good or served twice, with `next_cursor` giving no
+     signal. The generation now rides the same stamp.
+  4. **The timeline's `$orderby` refusal was bypassable.** The extractor *empties* `order` whenever
+     a cursor is present and re-derives it from the token, and the token is unsigned base64url
+     JSON — so a caller could put the order the door had refused by name inside one and be served
+     it, which on this door means every entry diffed against the version *above* it.
+     `reject_cursor_reordering` reads the token.
+  5. **A third unbounded collection read**, not counted in the residuals: `GET /bulk/batches/{id}`
+     answers one ledger entry per import row, bounded only by `bulk.max_rows` (50 000). Unlike the
+     export and the diff it is not an artifact whose partial form is invalid — it is a worklist,
+     and paging it is the right answer. It has the guard now, so `?limit=` is refused rather than
+     dropped; the paging itself is a residual.
+  6. **Three doors had no pagination probe at all** — both dashboards and the allow-list export —
+     so `DeferredIntentODataMapper`, `FreezeStatusODataMapper` and `AllowlistEntryODataMapper` were
+     exercised on no surface and a wrong column in any of them would have shipped green. The facet
+     window had none either: the one facet assertion ran on a two-row fixture where the page, the
+     matching set and the window coincide. Both gaps are probed now, the facet one over a
+     501-row projection.
+
+- **Nine claims in the first draft of this entry were wrong, and are corrected above.** The count
+  of paginated doors (seven → eight routes, seven envelope types); two of the four "parts taken
+  part for part" being this gear's own inventions rather than AM's; AM's guard being on two of its
+  five doors rather than all of them; `limit`/`cursor` surviving because of *this gear's* alias
+  whitelist and not only the extractor's aliases; AM's second, deployment-configurable clamp not
+  being adopted; the facet pre-state (the old counts were already over a 500-row window, not over
+  the page); the LIKE-escaping improvement being Postgres-only; the `$orderby` documentation being
+  generated when browse's is hand-written; and the residuals list naming two unbounded doors when
+  there are three. Recorded rather than quietly amended, because a register whose numbers are not
+  re-measured is the thing this gear keeps learning it cannot trust.
 
 - **The wire changes, stated.** Browse's `?q=` becomes `$filter=startswith(name,'…')` and
-  `?category=` becomes `contains(category_paths,'…')` — both **better escaped** than before, since
+  `?category=` becomes `contains(category_paths,'…')` — both **better escaped on Postgres**, since
   the platform escapes the LIKE metacharacters the hand-rolled prefix deleted and the category LIKE
-  never escaped at all; `?skuType=`/`?tier=`/`?sellable=`/`?unit=` become `eq` on their own fields;
+  never escaped at all. The qualifier is measured: `escape_like` emits backslash escapes and no
+  `ESCAPE` clause, so Postgres (whose LIKE takes `\` as the default escape) honours them and
+  `SQLite` (which has none) matches a literal backslash instead — under-matching rather than
+  leaking, and the served engine is the correct one, but it is a silent behavioural split between
+  the two engines the gear ships on and it is the toolkit's to close; `?skuType=`/`?tier=`/`?sellable=`/`?unit=` become `eq` on their own fields;
   the inbox's `has_more: bool` becomes `page_info.next_cursor`; the resolver's `bound_version`
   becomes `boundVersion` (the spelling the design and FEATURE documents already used, and the one
   its two sibling doors already served); browse's page ceiling drops from 500 to 200, which is safe
@@ -1671,20 +1752,36 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   `$skiptoken`.
 
 - **What this decision does NOT settle.**
-  - **The two whole-artifact doors are still unbounded**: `GET /bulk/exports` answers a version's
-    entire manifest and `GET /catalog-versions/{a}/diff/{b}` answers a whole diff. Both are
-    deliberate — a partial export is not a valid promotion operand and a partial diff is not a
-    diff — and both are spent under bulk/compliance grants rather than open browse. Neither is
-    *bounded*, and a refusal above a size ceiling (rather than a truncation, which would corrupt
-    the artifact) is the shape to consider. **Open, owner: 09 with 06.**
+  - **Three collection reads are still unbounded.** `GET /bulk/exports` answers a version's entire
+    manifest and `GET /catalog-versions/{a}/diff/{b}` answers a whole diff: both are deliberate, a
+    partial export being no valid promotion operand and a partial diff no diff, and both are spent
+    under bulk/compliance grants rather than open browse. **`GET /bulk/batches/{id}` is not in that
+    class** — its row ledger is a worklist bounded only by `bulk.max_rows` (50 000 by default), and
+    a page of it is perfectly meaningful, so it should be paged like the other eight. All three now
+    refuse `?limit=` rather than dropping it, and for the two artifacts a refusal above a size
+    ceiling — never a truncation, which would corrupt the artifact — is the shape to consider.
+    **Open, owner: 09 with 06.**
+  - **No per-deployment page cap.** AM clamps `$top` against `listing.max_top` in the handler *on
+    top of* its repository ceiling, so lowering the configured cap is not bypassed; products took
+    the constant and not the second clamp. Adding it is a config field and one clamp per door.
+    **Open, owner: this slice.**
+  - **The six new wire reason codes are declared in no requirements document.**
+    `UNDECLARED_QUERY_PARAM`, `INVALID_FILTER`, `INVALID_ORDERBY`, `INVALID_CURSOR`,
+    `INVALID_LIMIT` and `UNSUPPORTED_QUERY_OPTION` reach a caller as the violation's own code, and
+    the gear declares every other code of that class in `design/01`'s `Problem responses` block.
+    They are declared there now, and `design/08`'s "reads introduce no new failure semantics"
+    sentence is amended — but the **PRD** has no matching requirement, and neither did the codes
+    this change did not mint. **Open, owner: the requirements owner with 12.**
   - **The filter vocabularies are impl-crate types, not SDK types.** AM declares its three in its
     SDK because an `IdP` **plugin** consumes `FilterNode<IdpUserFilterField>` in Rust; products has
     no such in-process consumer — its list doors are REST-only — so the vocabularies live beside
     the doors that own them. Promoting them to `bss-products-sdk` is additive if a Rust consumer
     ever needs to build a filter.
-  - `$select` is bound by the extractor and served by no door here; the timelines refuse it
-    explicitly and the rest ignore it, which is the one place this wave left the silent-drop shape
-    standing. **Open, owner: 12.**
+  - **`escape_like` is inert on `SQLite`.** The toolkit emits backslash escapes with no `ESCAPE`
+    clause, so `startswith(name,'a_b')` under-matches on `SQLite` and is correct on Postgres. Fail
+    -closed, and the served engine is the right one, but it is the same class of cross-engine split
+    as the NULL-ordering defect this change went looking for. **Toolkit's to close; filed here so
+    the asymmetry is not rediscovered.**
 
 - **Propagated**: `design/08-read-models.md` (§6's `toolkit-odata` item, answered, and
   `inst-rb-query`), `design/12-consumer-contracts.md` (the §9 surface),
@@ -1793,7 +1890,8 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   marker scope, `bss-products.breakglass:<session_id>`; `breakglass_session_of` reads it, and the
   read edge meter names it on every served read. (5) `GET /approvals?state=pending` takes `limit`
   (default 50, at most 200) and answers `has_more`; the repository reads one page, never the
-  queue. (6, 12, 8) `ENTITY_NAME_MAX_BYTES` **256** and `ENTITY_CODE_MAX_BYTES` **128** — fixed
+  queue. *(`has_more` was replaced by `page_info.next_cursor` in **P-D-165** — the page survives,
+  the boolean does not. Text left as written per this register's convention.)* (6, 12, 8) `ENTITY_NAME_MAX_BYTES` **256** and `ENTITY_CODE_MAX_BYTES` **128** — fixed
   limits, not knobs — refuse `VALIDATION` at both create doors and both save doors, one over
   refused and the cap admitted, probed. (21) `IDEMPOTENCY_KEY_MAX_BYTES` **255** at
   `rest::idempotency_key`, probed both sides of the edge. (13) `attribute_values_max_per_patch`
@@ -1827,7 +1925,8 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   half is theirs to assert, and adopting later means a wire change. The owner's call; `08` §6
   carries the row.
 - **What the wave did not change.** No route moved and no wire field was removed; the two new
-  wire members (`limit`, `has_more`) are additive. The limits are the review's numbers, chosen to
+  wire members (`limit`, `has_more`) are additive. *(**P-D-165** later removed `has_more`, which
+  makes this the one field of the wave that did not survive; `limit` did, as an alias of `$top`.)* The limits are the review's numbers, chosen to
   admit every value the fixtures and the donor's data carry, and the NFR workshop overrides the
   one that is a knob by configuration.
 - **Propagated**: `design/05-governance.md` §6 (the marker), `design/08-read-models.md` §6 (the
@@ -2589,7 +2688,8 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   the pass stops at the row so the tenant's order holds. The delivery-state dashboard surfaces the
   park.
 - **The read path.** `GET /browse` on `product|sku × read` with `VisibilityFilter` and the claim
-  `scope_condition`s in the statement, facets from the served rows on request, at most 500 rows;
+  `scope_condition`s in the statement, facets from the served rows on request, at most 500 rows
+  *(the page is at most 200 and the facet window 500 since **P-D-165**, which separated the two)*;
   `GET /{products|skus}/{id}/versions` as a **request-time read** over the frozen rows (the history
   DoD's open half: no materialised history, the convergence budget does not apply); three dashboard
   doors under their sources' own `× read` grants (`scheduled_transition`, `catalog_version`, `audit`

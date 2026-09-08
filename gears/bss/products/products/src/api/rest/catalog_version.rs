@@ -291,7 +291,7 @@ fn register_resolver_route(router: Router, openapi: &dyn OpenApiRegistry) -> Rou
              from the STORED manifest, never a re-collect, and re-verifies the stored \
              checksum before serving; the checksum is returned and verifiable. An unknown id is \
              CATALOG_VERSION_UNKNOWN (404), raised here for resolve and diff alike. When \
-             bound_version is supplied and differs, the response carries bound_version, \
+             boundVersion is supplied and differs, the response carries bound_version, \
              resolved_version and diff_ref. Gates on catalog_version x read.",
         )
         .tag(TAG)
@@ -982,7 +982,11 @@ async fn resolve_catalog_version(
     axum::extract::Query(query): axum::extract::Query<ResolveQuery>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    crate::api::rest::odata::reject_undeclared_query_params(&raw, &RESOLVE_PARAMS)?;
+    crate::api::rest::odata::reject_undeclared_query_params(
+        &raw,
+        crate::api::rest::odata::QueryFamily::OperandsOnly,
+        &RESOLVE_PARAMS,
+    )?;
     let tenant_id = ctx.subject_tenant_id();
     let now = canonical::write_instant(Utc::now());
     let subject = catalog_version_id.to_string();
@@ -1779,7 +1783,11 @@ async fn diff_catalog_versions(
     // guard is here so `?limit=` — which a caller has every reason to try on
     // a surface this size — is refused rather than dropped. Why the diff is
     // not paged is P-D-165's own record: a partial diff is not a diff.
-    crate::api::rest::odata::reject_undeclared_query_params(&raw, &[])?;
+    crate::api::rest::odata::reject_undeclared_query_params(
+        &raw,
+        crate::api::rest::odata::QueryFamily::OperandsOnly,
+        &[],
+    )?;
     let tenant_id = ctx.subject_tenant_id();
     let now = canonical::write_instant(Utc::now());
     let actor_ref =

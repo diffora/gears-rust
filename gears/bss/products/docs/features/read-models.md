@@ -709,7 +709,11 @@ answer decides whether the convergence budget applies to this surface at all.
 
 **Ticked (P-D-150), as a request-time read.** `GET /bss-products/v1/{products|skus}/{id}/versions`
 (`read::product_history` / `read::sku_history`) reads `products_entity_version` through
-`repo::entity_versions_of` at request time — no materialised history table, so the convergence
+`repo::entity_versions_page` at request time — one **page** per call since P-D-165, oldest version
+first and paged by `$top`/`limit` plus `$skiptoken`/`cursor`, with the version immediately before
+the page fetched alongside it so each entry's `changedKeys` is the diff against the previous
+*stored* version rather than the previous row the caller happened to be shown; `$filter`,
+`$orderby` and `$select` are refused on this door for exactly that reason — no materialised history table, so the convergence
 budget does not apply to this surface (the open question above, answered by the build: the frozen
 rows are append-only history a read contends with nothing on). Each version carries its
 `publishedVersion`, `publishedAt`, `approvalRef`, the actor's pseudonym and the keys whose values
@@ -747,11 +751,16 @@ read would trade a labelled staleness — which C3 makes safe — for an outage.
 computed `published && !composition_pending` until the benidorm wave measured it: the row already
 carries `lifecycle_state` and `compositionPending` as members of its own, so deriving said nothing
 new and dropped `inst-cl-sellable`'s bucket-iii flag — pricing's operand for predicate 6. A SKU
-saved `sellable = false` served `true` on browse and `?sellable=false` could not find it.
+saved `sellable = false` served `true` on browse and `?sellable=false` could not find it. *(That
+query spelling is itself retired: the same question is `$filter=sellable eq false` since P-D-165.
+The defect it describes is history either way.)*
 
 **Ticked (P-D-150).** `read::ReadPathLimiter` — the fifth name `design/08` §1.7 minted (P-D-126) —
 is one process-wide component, a token bucket **per tenant** at `read_path_qps_ceiling` (interim
-200/s), installed at boot and consulted first by all six read doors; above the ceiling a door answers
+200/s), installed at boot and consulted first by all six read doors — **first in the handler, ahead of even
+the query refusals P-D-165 added**, so a shedding tenant hears the 503 and not a 400 about a
+parameter (the extractor's own parse necessarily precedes the handler and is not the door's to
+order); above the ceiling a door answers
 `503 READ_MODEL_OVERLOADED` (`DomainError::ReadModelOverloaded`, the code on the audit channel) with
 `Retry-After` and no body content. One tenant's burst sheds that tenant alone. Under **lag** nothing
 sheds: the projector raises `read_model_lag` past `read_convergence_budget_secs` and the doors keep

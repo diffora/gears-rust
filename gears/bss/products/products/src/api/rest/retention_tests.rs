@@ -197,6 +197,113 @@ async fn seed_allowlist_record(harness: &TestHarness) {
     .await;
 }
 
+/// The review export is **paged, filtered and ordered** like every other
+/// list door (**P-D-165**).
+///
+/// Written because the review found this door's mapper exercised on no
+/// surface at all: the only existing assertion sends an empty query, so a
+/// wrong column in `AllowlistEntryODataMapper` would have shipped green on
+/// the one surface whose rows are all evidence a reviewer has to read.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-pii-allowlist:p2
+#[tokio::test]
+async fn the_review_export_is_paged_and_filtered() {
+    let harness = harness().await;
+    for value in ["Ada Lovelace", "Grace Hopper", "Alan Turing"] {
+        let signed = sign_off(&harness, value, "legal-ref-1").await;
+        // The sign-off door answers 200, not 201: the entry is the record of
+        // a governed live op rather than a created resource.
+        assert_eq!(
+            signed.status(),
+            axum::http::StatusCode::OK,
+            "{value}: {}",
+            signed.status()
+        );
+    }
+
+    // Oldest first, one entry per page, and the walk advances.
+    let first =
+        body_json(allowlist_review_query(app_for(&harness, TENANT), "?limit=1").await).await;
+    let entries = first["entries"].as_array().expect("entries");
+    assert_eq!(entries.len(), 1, "the page is the limit: {first}");
+    assert_eq!(entries[0]["value_normalized"], json!("ada lovelace"));
+    let cursor = first["page_info"]["next_cursor"]
+        .as_str()
+        .expect("two more entries remain")
+        .to_owned();
+    let second = body_json(
+        allowlist_review_query(
+            app_for(&harness, TENANT),
+            &format!("?limit=1&cursor={}", percent(&cursor)),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        second["entries"][0]["value_normalized"],
+        json!("grace hopper"),
+        "the second page is the next entry, not the first again: {second}"
+    );
+
+    // `state eq 'active'` is the live allow-list, which is what the door's
+    // own description calls it.
+    let revoked_id: Uuid = first["entries"][0]["entry_id"]
+        .as_str()
+        .expect("an entry id")
+        .parse()
+        .expect("the entry id is a uuid");
+    let revoked = revoke(&harness, revoked_id).await;
+    assert_eq!(
+        revoked.status(),
+        axum::http::StatusCode::OK,
+        "the revoke lands"
+    );
+    let active = body_json(
+        allowlist_review_query(
+            app_for(&harness, TENANT),
+            &format!("?%24filter={}", percent("state eq 'active'")),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        active["entries"].as_array().expect("entries").len(),
+        2,
+        "the revoked entry is out of the live list but still in the ledger: {active}"
+    );
+    let whole = body_json(allowlist_review(app_for(&harness, TENANT)).await).await;
+    assert_eq!(whole["entries"].as_array().expect("entries").len(), 3);
+
+    // The record's own free text is not a filter field, and an invented key
+    // is refused rather than dropped.
+    for query in [
+        "?%24filter=justification%20eq%20%27x%27",
+        "?state=active",
+        "?%24orderby=justification%20asc",
+    ] {
+        let response = allowlist_review_query(app_for(&harness, TENANT), query).await;
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::BAD_REQUEST,
+            "`{query}` must be refused"
+        );
+    }
+}
+
+/// Percent-encode one query-string value: `$filter` carries spaces and
+/// quotes, and a cursor is base64url with `=` padding.
+fn percent(value: &str) -> String {
+    value
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect()
+}
+
 async fn sign_off(
     harness: &TestHarness,
     value: &str,
@@ -258,10 +365,16 @@ async fn revoke_via(app: Router, entry_id: Uuid) -> axum::http::Response<Body> {
 }
 
 async fn allowlist_review(app: Router) -> axum::http::Response<Body> {
+    allowlist_review_query(app, "").await
+}
+
+/// The review export with a query string appended — the paging and filtering
+/// half of the door (**P-D-165**).
+async fn allowlist_review_query(app: Router, query: &str) -> axum::http::Response<Body> {
     app.oneshot(
         Request::builder()
             .method("GET")
-            .uri("/bss-products/v1/compliance/pii-allowlist")
+            .uri(format!("/bss-products/v1/compliance/pii-allowlist{query}"))
             .extension(authed_ctx(TENANT))
             .body(Body::empty())
             .expect("build the request"),

@@ -1941,9 +1941,20 @@ pub const NO_FILTER_HASH: &str = "no-filter";
 ///   `$filter` and be served the keyset predicate over a different set — and
 ///   a walk begun filtered could drop the filter the same way. Giving "no
 ///   filter" a stamp of its own closes both directions.
+///
+/// `walk_id` extends that stamp to whatever else identifies the set being
+/// walked but is **not** in the caller's query. Browse passes its serving
+/// generation, and the reason is the same defect one axis over: the
+/// generation is re-read from the checkpoint on every request, so a shadow
+/// rebuild completing mid-walk moves it, the old rows are deleted, and the
+/// keyset predicate lands on a *different* set — a row renamed across the
+/// cursor's position is then skipped for good or served twice, with
+/// `next_cursor` giving no signal. Folding it into the stamp turns that
+/// into the refusal the filter case already gets.
 pub fn effective_odata(
     odata: &toolkit_odata::ODataQuery,
     default_order: (&str, toolkit_odata::SortDir),
+    walk_id: Option<&str>,
 ) -> toolkit_odata::ODataQuery {
     let mut effective = odata.clone();
     if effective.cursor.is_none() && effective.order.is_empty() {
@@ -1951,9 +1962,14 @@ pub fn effective_odata(
             .order
             .ensure_tiebreaker(default_order.0, default_order.1);
     }
-    if effective.filter_hash.is_none() {
-        effective.filter_hash = Some(NO_FILTER_HASH.to_owned());
-    }
+    let stamp = effective
+        .filter_hash
+        .take()
+        .unwrap_or_else(|| NO_FILTER_HASH.to_owned());
+    effective.filter_hash = Some(match walk_id {
+        Some(id) => format!("{stamp}~{id}"),
+        None => stamp,
+    });
     effective
 }
 
@@ -3486,7 +3502,7 @@ pub async fn entity_versions_page(
         .secure()
         .scope_with(scope)
         .filter(of_entity.clone());
-    let effective = effective_odata(odata, TIMELINE_ORDER);
+    let effective = effective_odata(odata, TIMELINE_ORDER, None);
     let page = toolkit_db::odata::sea_orm_filter::paginate_odata::<
         EntityVersionFilterField,
         EntityVersionODataMapper,
@@ -3526,42 +3542,13 @@ pub async fn entity_versions_page(
     Ok((page, predecessor))
 }
 
-/// Every frozen version of one entity, oldest first — the request-time read
-/// over `products_entity_version` the timeline is (P-D-150).
-///
-/// # Errors
-///
-/// [`RepoError`] on a storage or scope failure.
-pub async fn entity_versions_of(
-    runner: &impl DBRunner,
-    scope: &AccessScope,
-    tenant_id: Uuid,
-    entity_kind: VersionedEntityKind,
-    entity_id: Uuid,
-) -> Result<Vec<FrozenVersionRow>, RepoError> {
-    let rows = entity_version::Entity::find()
-        .secure()
-        .scope_with(scope)
-        .filter(
-            Condition::all()
-                .add(entity_version::Column::TenantId.eq(tenant_id))
-                .add(entity_version::Column::EntityKind.eq(entity_kind.as_str()))
-                .add(entity_version::Column::EntityId.eq(entity_id)),
-        )
-        .order_by(
-            entity_version::Column::PublishedVersion,
-            sea_orm::Order::Asc,
-        )
-        .all(runner)
-        .await
-        .map_err(|e| driver_failure(format!("read frozen versions of {entity_id}"), e))?;
-    Ok(rows.into_iter().map(frozen_version_row).collect())
-}
-
 /// One stored version row as the timeline reads it.
 ///
-/// Shared by the whole-history read and the paginated one so a field added
-/// to [`FrozenVersionRow`] cannot reach one surface and not the other.
+/// Extracted from the whole-history read this commit's paginated door
+/// replaced. That read had no callers left once the timeline was paged
+/// (P-D-165) and is gone; the helper stays because the mapping is the
+/// paginated door's, and a `pub fn` kept alive only by its own definition is
+/// a second answer waiting to drift from the first.
 fn frozen_version_row(row: entity_version::Model) -> FrozenVersionRow {
     FrozenVersionRow {
         published_version: row.published_version,

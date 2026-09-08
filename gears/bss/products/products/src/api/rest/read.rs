@@ -273,13 +273,16 @@ async fn read_scope(
 /// The browse door's **own** query operands — everything the caller says
 /// that is not the `OData` family (P-D-165).
 ///
-/// Seven parameters went away when the door adopted the platform's query
-/// contract, because each of them was a column comparison spelled by hand:
-/// `?q=` is `$filter=startswith(name,'...')`, `?category=` is
+/// **Six** of the twelve parameters went away when the door adopted the
+/// platform's query contract, because each was a column comparison spelled
+/// by hand: `?q=` is `$filter=startswith(name,'...')`, `?category=` is
 /// `contains(category_paths,'...')`, and `?skuType=` / `?tier=` /
-/// `?sellable=` / `?unit=` are `eq` on their own fields. The four that
-/// remain are the ones that are not comparisons — see
-/// [`repo::BrowseRowQuery`] for why each cannot be a filter field.
+/// `?sellable=` / `?unit=` are `eq` on their own fields. A seventh, `limit`,
+/// moved to the extractor, which binds it as an alias of `$top`. The five
+/// that remain are the four that are not comparisons — see
+/// [`repo::BrowseRowQuery`] for why each cannot be a filter field — plus
+/// `includeFacets`, which asks for a second thing rather than narrowing the
+/// first.
 ///
 /// `limit` and `cursor` are bound by the `OData` extractor (which folds them
 /// onto `$top` and `$skiptoken`) and so do not appear here, but they are
@@ -517,12 +520,19 @@ async fn browse(
     OData(odata): OData,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    reject_undeclared_query_params(&raw, &BROWSE_PARAMS)?;
     let started = Instant::now();
     let tenant_id = ctx.subject_tenant_id();
+    // The limiter is consulted **first** in the handler, before the door
+    // spends anything on the query — including refusing it. A shedding
+    // tenant must hear 503 with a `Retry-After`, not a 400 about a
+    // parameter, which is what the guards would have answered had they run
+    // ahead of it. (The extractor's own parse necessarily precedes the
+    // handler; only what this body does is ours to order.)
     if let Err(retry) = ReadPathLimiter::global().try_acquire(tenant_id) {
         return Ok(shed(tenant_id, retry));
     }
+    reject_undeclared_query_params(&raw, odata_seam::QueryFamily::Odata, &BROWSE_PARAMS)?;
+    odata_seam::reject_unsupported_odata_options(&odata, None, None, Some(odata_seam::NO_SELECT))?;
     let kind = params
         .kind
         .as_deref()
@@ -723,18 +733,23 @@ async fn history(
     raw: &HashMap<String, String>,
     odata: &toolkit_odata::ODataQuery,
 ) -> Result<Response, CanonicalError> {
-    reject_undeclared_query_params(raw, &TIMELINE_PARAMS)?;
+    let started = Instant::now();
+    let tenant_id = ctx.subject_tenant_id();
+    // Shed before spending anything on the query — see `browse`.
+    if let Err(retry) = ReadPathLimiter::global().try_acquire(tenant_id) {
+        return Ok(shed(tenant_id, retry));
+    }
+    reject_undeclared_query_params(raw, odata_seam::QueryFamily::Odata, &TIMELINE_PARAMS)?;
     odata_seam::reject_unsupported_odata_options(
         odata,
         Some(TIMELINE_NO_FILTER),
         Some(TIMELINE_NO_ORDERBY),
         Some(TIMELINE_NO_SELECT),
     )?;
-    let started = Instant::now();
-    let tenant_id = ctx.subject_tenant_id();
-    if let Err(retry) = ReadPathLimiter::global().try_acquire(tenant_id) {
-        return Ok(shed(tenant_id, retry));
-    }
+    // The option guard above sees an empty `order` whenever a cursor is
+    // present, so the refusal has to read the token too — see
+    // `odata_seam::reject_cursor_reordering`.
+    odata_seam::reject_cursor_reordering(odata, &[repo::TIMELINE_ORDER])?;
     let (resource, versioned) = if entity_kind == "sku" {
         (
             &crate::authz::resource_types::SKU,
@@ -961,12 +976,18 @@ async fn deferred_intents(
     OData(odata): OData,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    reject_undeclared_query_params(&raw, &DEFERRED_INTENT_PARAMS)?;
     let started = Instant::now();
     let tenant_id = ctx.subject_tenant_id();
+    // Shed before spending anything on the query — see `browse`.
     if let Err(retry) = ReadPathLimiter::global().try_acquire(tenant_id) {
         return Ok(shed(tenant_id, retry));
     }
+    reject_undeclared_query_params(
+        &raw,
+        odata_seam::QueryFamily::Odata,
+        &DEFERRED_INTENT_PARAMS,
+    )?;
+    odata_seam::reject_unsupported_odata_options(&odata, None, None, Some(odata_seam::NO_SELECT))?;
     let scope = read_scope(
         &enforcer,
         &ctx,
@@ -1022,12 +1043,14 @@ async fn freeze_status(
     OData(odata): OData,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    reject_undeclared_query_params(&raw, &FREEZE_STATUS_PARAMS)?;
     let started = Instant::now();
     let tenant_id = ctx.subject_tenant_id();
+    // Shed before spending anything on the query — see `browse`.
     if let Err(retry) = ReadPathLimiter::global().try_acquire(tenant_id) {
         return Ok(shed(tenant_id, retry));
     }
+    reject_undeclared_query_params(&raw, odata_seam::QueryFamily::Odata, &FREEZE_STATUS_PARAMS)?;
+    odata_seam::reject_unsupported_odata_options(&odata, None, None, Some(odata_seam::NO_SELECT))?;
     let scope = read_scope(
         &enforcer,
         &ctx,
@@ -1082,13 +1105,20 @@ async fn delivery_state(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    axum::extract::Query(raw): axum::extract::Query<HashMap<String, String>>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let started = Instant::now();
     let tenant_id = ctx.subject_tenant_id();
+    // Shed before spending anything on the query — see `browse`.
     if let Err(retry) = ReadPathLimiter::global().try_acquire(tenant_id) {
         return Ok(shed(tenant_id, retry));
     }
+    // Scalar counters, so nothing can be filtered away — but it is
+    // registered beside two dashboards that do refuse an invented key, and a
+    // client polling all three should not have to learn that `?limit=10` is
+    // a 400 on two of them and a 200 on the third.
+    reject_undeclared_query_params(&raw, odata_seam::QueryFamily::OperandsOnly, &[])?;
     let scope = read_scope(
         &enforcer,
         &ctx,
@@ -1180,8 +1210,10 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .query_param(
             "includeFacets",
             false,
-            "Add the facets over the matching set. `facets.complete` says whether the \
-             counts cover the whole set or only its first 500 rows.",
+            format!(
+                "Add the facets over the matching set. `facets.complete` says whether the \
+                 counts cover the whole set or only its first {BROWSE_FACET_WINDOW} rows."
+            ),
         )
         .query_param_typed(
             "limit",
@@ -1197,7 +1229,23 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
              continuation requests carrying the same cursor.",
         )
         .with_odata_filter::<repo::BrowseFilterField>()
-        .with_odata_orderby::<repo::BrowseFilterField>()
+        // `$orderby` is declared by hand here, unlike every other paginated
+        // door: `with_odata_orderby` enumerates the **whole** filter
+        // vocabulary, and this is the one vocabulary where the two sets
+        // differ — six of its twelve fields are nullable and refused as
+        // order keys (`BrowseODataMapper::is_orderable`). Generating the
+        // list would advertise twelve keys of which six answer 400, and the
+        // toolkit has no way to say "filterable, not orderable".
+        .query_param(
+            "$orderby",
+            false,
+            "OData v4 order, over the NOT NULL fields only: entity_id, name, \
+             lifecycle_state, deprecated, composition_pending, published_version - each \
+             asc|desc. The six nullable fields are filterable but refused as order keys, \
+             because SQLite sorts NULLs first and Postgres last, and the keyset predicate \
+             `col > :value` is false for a NULL row on either. Default: name asc, \
+             entity_id asc.",
+        )
         .handler(browse)
         .json_response_with_schema::<BrowseView>(
             openapi,
@@ -1225,16 +1273,16 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .query_param_typed(
             "limit",
             false,
-            "Versions per page, oldest first; default 50, at most 200. Also spelled \\
-             $top. $filter, $orderby and $select are refused: each entry's \\
-             `changedKeys` is the diff against the version before it, so the order is \\
+            "Versions per page, oldest first; default 50, at most 200. Also spelled \
+             $top. $filter, $orderby and $select are refused: each entry's \
+             `changedKeys` is the diff against the version before it, so the order is \
              the version order and nothing else.",
             "integer",
         )
         .query_param(
             "cursor",
             false,
-            "The previous page's `page_info.next_cursor`, opaque. Also spelled \\
+            "The previous page's `page_info.next_cursor`, opaque. Also spelled \
              $skiptoken.",
         )
         .handler(product_history)
@@ -1261,16 +1309,16 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .query_param_typed(
             "limit",
             false,
-            "Versions per page, oldest first; default 50, at most 200. Also spelled \\
-             $top. $filter, $orderby and $select are refused: each entry's \\
-             `changedKeys` is the diff against the version before it, so the order is \\
+            "Versions per page, oldest first; default 50, at most 200. Also spelled \
+             $top. $filter, $orderby and $select are refused: each entry's \
+             `changedKeys` is the diff against the version before it, so the order is \
              the version order and nothing else.",
             "integer",
         )
         .query_param(
             "cursor",
             false,
-            "The previous page's `page_info.next_cursor`, opaque. Also spelled \\
+            "The previous page's `page_info.next_cursor`, opaque. Also spelled \
              $skiptoken.",
         )
         .handler(sku_history)

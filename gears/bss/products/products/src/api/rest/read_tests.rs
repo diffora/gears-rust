@@ -228,7 +228,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt as _;
 
-use super::ReadPathLimiter;
+use super::{BROWSE_FACET_WINDOW, ReadPathLimiter};
 
 fn app(harness: &Harness, tenant: Uuid) -> Router {
     super::router(
@@ -797,6 +797,248 @@ async fn a_timeline_page_is_diffed_against_the_version_before_it() {
             json!(key),
             "the refusal must name the option: {body}"
         );
+    }
+}
+
+/// The facet counts are over the **matching set** and say when the window
+/// did not cover it (**P-D-165**).
+///
+/// Written because the review found the fix unproven: the only facet
+/// assertion in the suite ran on a two-row fixture where the page, the
+/// matching set and the window coincide, so it could not tell a count over
+/// the page from a count over the set, and `facets.complete` was read
+/// nowhere. Inverting the window comparison, dropping the `+1` probe row, or
+/// handing the page's rows to the facet pass all left the suite green.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-facets:p2
+#[tokio::test]
+async fn the_facet_counts_are_over_the_matching_set_and_say_when_they_are_not() {
+    let harness = harness().await;
+    let conn = harness.state.db.conn().expect("conn");
+    let now = crate::domain::canonical::write_instant(Utc::now());
+
+    // One row past the window, seeded straight into the projection: the
+    // door's own publish path would be 501 governed acts for a property of
+    // the read model.
+    let seeded = usize::try_from(BROWSE_FACET_WINDOW).expect("the window fits a usize") + 1;
+    for n in 0..seeded {
+        repo::upsert_read_entity(
+            &conn,
+            &scope(),
+            repo::ReadEntityRow {
+                tenant_id: TENANT,
+                entity_kind: "product".to_owned(),
+                entity_id: Uuid::from_u128(0xfa_ce_00 + n as u128),
+                entity_code: None,
+                // Zero-padded so `name ASC` is the insertion order and the
+                // window is the first 500 by name, deterministically.
+                name: format!("Facet {n:04}"),
+                lifecycle_state: "published".to_owned(),
+                deprecated: false,
+                composition_pending: false,
+                sellable: None,
+                deprecation_provenance: None,
+                replaced_by_sku_id: None,
+                region_scope: String::new(),
+                brand_scope: String::new(),
+                sku_type: None,
+                plan_tier_label: None,
+                metering_unit: None,
+                display_attributes: None,
+                // Every row in one category, so the category bucket's count
+                // is the number of rows the facet pass actually read.
+                category_paths: Some("[\"Facet\"]".to_owned()),
+                published_version: 1,
+                projected_at: now,
+                generation: 0,
+            },
+        )
+        .await
+        .expect("the projection row lands");
+    }
+
+    let body = body_json(
+        get(
+            &harness,
+            &browse_url(&[("includeFacets", "true"), ("limit", "10")]),
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        body["rows"].as_array().expect("rows").len(),
+        10,
+        "the page is the caller's limit"
+    );
+    let facets = &body["facets"];
+    assert_eq!(
+        facets["complete"],
+        json!(false),
+        "the matching set is one row past the window, so the counts are a lower bound: {facets}"
+    );
+    assert_eq!(
+        facets["categories"],
+        json!([{ "value": "Facet", "count": BROWSE_FACET_WINDOW }]),
+        "counted over the window, not over the ten rows served: {facets}"
+    );
+
+    // Narrowed to inside the window, the counts are exact and say so.
+    let narrowed = body_json(
+        get(
+            &harness,
+            &browse_url(&[
+                ("includeFacets", "true"),
+                ("limit", "10"),
+                ("$filter", "startswith(name,'Facet 000')"),
+            ]),
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(narrowed["facets"]["complete"], json!(true));
+    assert_eq!(
+        narrowed["facets"]["categories"],
+        json!([{ "value": "Facet", "count": 10 }]),
+        "ten names match `Facet 000*`, and the facet pass applies the caller's filter: {narrowed}"
+    );
+}
+
+/// The two dashboards and the allow-list export are paged like every other
+/// list door — and until this probe their mappers were never exercised on
+/// any surface, so a wrong column in one of the three would have shipped
+/// green (the review's finding).
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-dashboards:p1
+#[tokio::test]
+async fn the_dashboards_are_paged_filtered_and_ordered() {
+    let harness = harness().await;
+    let conn = harness.state.db.conn().expect("conn");
+    let now = crate::domain::canonical::write_instant(Utc::now());
+
+    for n in 0..3_u128 {
+        repo::upsert_read_deferred_intent(
+            &conn,
+            &scope(),
+            crate::infra::storage::entity::read_deferred_intent::Model {
+                tenant_id: TENANT,
+                product_id: Uuid::from_u128(0xde_f0_00 + n),
+                cascade_ref: Uuid::from_u128(0xca_50_00 + n),
+                children_count: i32::try_from(n).expect("small") + 1,
+                created_at: now + chrono::Duration::seconds(i64::try_from(n).expect("small")),
+                age_secs: 60,
+                polled_at: now,
+            },
+        )
+        .await
+        .expect("the intent row lands");
+        repo::upsert_read_freeze_status(
+            &conn,
+            &scope(),
+            crate::infra::storage::entity::read_freeze_status::Model {
+                tenant_id: TENANT,
+                catalog_version_id: i64::try_from(n).expect("small") + 1,
+                freeze_state: if n == 0 { "open" } else { "complete" }.to_owned(),
+                pending: i32::try_from(n).expect("small"),
+                acked: 1,
+                released: 0,
+                forced: 0,
+                published_at: now,
+                polled_at: now,
+            },
+        )
+        .await
+        .expect("the freeze row lands");
+    }
+
+    // Deferred intents: oldest first, one per page, and `children_count gt 1`
+    // is the worklist the vocabulary's own doc names.
+    let first = body_json(
+        get(
+            &harness,
+            "/bss-products/v1/read/deferred-intents?limit=1",
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        first["items"][0]["product_id"],
+        json!(Uuid::from_u128(0xde_f0_00))
+    );
+    let cursor = first["page_info"]["next_cursor"]
+        .as_str()
+        .expect("two more intents remain")
+        .to_owned();
+    let second = body_json(
+        get(
+            &harness,
+            &format!(
+                "/bss-products/v1/read/deferred-intents?limit=1&cursor={}",
+                qval(&cursor)
+            ),
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        second["items"][0]["product_id"],
+        json!(Uuid::from_u128(0xde_f0_01)),
+        "the walk advances: {second}"
+    );
+    let worklist = body_json(
+        get(
+            &harness,
+            &format!(
+                "/bss-products/v1/read/deferred-intents?%24filter={}",
+                qval("children_count gt 1")
+            ),
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(worklist["items"].as_array().expect("items").len(), 2);
+
+    // Freeze statuses: newest version first, and the open-freeze worklist.
+    let freezes =
+        body_json(get(&harness, "/bss-products/v1/read/freeze-status", TENANT).await).await;
+    assert_eq!(
+        freezes["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .map(|row| row["catalog_version_id"].clone())
+            .collect::<Vec<_>>(),
+        vec![json!(3), json!(2), json!(1)],
+        "newest version first: {freezes}"
+    );
+    let open = body_json(
+        get(
+            &harness,
+            &format!(
+                "/bss-products/v1/read/freeze-status?%24filter={}",
+                qval("freeze_state eq 'open'")
+            ),
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(open["items"].as_array().expect("items").len(), 1);
+    assert_eq!(open["items"][0]["catalog_version_id"], json!(1));
+
+    // And an undeclared key on either is refused, not dropped.
+    for door in ["read/deferred-intents", "read/freeze-status"] {
+        let response = get(
+            &harness,
+            &format!("/bss-products/v1/{door}?state=open"),
+            TENANT,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{door}");
     }
 }
 

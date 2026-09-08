@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use toolkit::api::canonical_prelude::CanonicalError;
 
 use super::{
-    INVALID_CURSOR, INVALID_FILTER, INVALID_LIMIT, INVALID_ORDERBY, LISTING_LIMIT_CFG,
+    INVALID_CURSOR, INVALID_FILTER, INVALID_LIMIT, INVALID_ORDERBY, LISTING_LIMIT_CFG, QueryFamily,
     UNDECLARED_QUERY_PARAM, odata_error_to_canonical, reject_undeclared_query_params,
 };
 use crate::domain::error::DomainError;
@@ -42,8 +42,9 @@ fn violations(err: &DomainError) -> Vec<(String, String)> {
 
 #[test]
 fn an_undeclared_key_is_refused_and_names_itself() {
-    let err = reject_undeclared_query_params(&raw(&[("status", "approved")]), &[])
-        .expect_err("a key no door declared must not be admitted");
+    let err =
+        reject_undeclared_query_params(&raw(&[("status", "approved")]), QueryFamily::Odata, &[])
+            .expect_err("a key no door declared must not be admitted");
     assert_eq!(
         violations(&err),
         vec![(UNDECLARED_QUERY_PARAM.to_owned(), "status".to_owned())],
@@ -57,6 +58,7 @@ fn an_undeclared_key_is_refused_and_names_itself() {
 fn a_miscased_declared_key_is_still_undeclared() {
     let err = reject_undeclared_query_params(
         &raw(&[("excludedeprecated", "true")]),
+        QueryFamily::Odata,
         &["excludeDeprecated"],
     )
     .expect_err("case is part of the parameter's name on the wire");
@@ -71,8 +73,12 @@ fn a_miscased_declared_key_is_still_undeclared() {
 
 #[test]
 fn a_declared_operand_is_admitted() {
-    reject_undeclared_query_params(&raw(&[("includeFacets", "true")]), &["includeFacets"])
-        .expect("a door's own custom query option is not an accident");
+    reject_undeclared_query_params(
+        &raw(&[("includeFacets", "true")]),
+        QueryFamily::Odata,
+        &["includeFacets"],
+    )
+    .expect("a door's own custom query option is not an accident");
 }
 
 /// The two aliases the platform's extractor folds onto `$top` and
@@ -81,8 +87,12 @@ fn a_declared_operand_is_admitted() {
 /// already shipped working when the seam landed.
 #[test]
 fn the_pagination_aliases_need_no_declaration() {
-    reject_undeclared_query_params(&raw(&[("limit", "10"), ("cursor", "abc")]), &[])
-        .expect("`limit` and `cursor` are the platform's own spellings");
+    reject_undeclared_query_params(
+        &raw(&[("limit", "10"), ("cursor", "abc")]),
+        QueryFamily::Odata,
+        &[],
+    )
+    .expect("`limit` and `cursor` are the platform's own spellings");
 }
 
 /// The `$` family belongs to the extractor, which can distinguish an
@@ -97,6 +107,7 @@ fn a_dollar_key_is_left_to_the_extractor() {
             ("$skip", "10"),
             ("$filtre", "typo"),
         ]),
+        QueryFamily::Odata,
         &[],
     )
     .expect("this guard is the seam for non-OData accidents only");
@@ -109,6 +120,7 @@ fn a_dollar_key_is_left_to_the_extractor() {
 fn every_offender_is_named_in_a_stable_order() {
     let err = reject_undeclared_query_params(
         &raw(&[("zeta", "1"), ("alpha", "2"), ("includeFacets", "true")]),
+        QueryFamily::Odata,
         &["includeFacets"],
     )
     .expect_err("two undeclared keys are two violations");
@@ -125,8 +137,12 @@ fn every_offender_is_named_in_a_stable_order() {
 /// own operands — otherwise the refusal is correct and useless.
 #[test]
 fn the_refusal_names_the_doors_own_parameters() {
-    let err = reject_undeclared_query_params(&raw(&[("facets", "true")]), &["includeFacets"])
-        .expect_err("`facets` is not `includeFacets`");
+    let err = reject_undeclared_query_params(
+        &raw(&[("facets", "true")]),
+        QueryFamily::Odata,
+        &["includeFacets"],
+    )
+    .expect_err("`facets` is not `includeFacets`");
     let CanonicalError::FailedPrecondition { ctx, .. } = CanonicalError::from(err) else {
         panic!("expected a precondition refusal");
     };
@@ -139,7 +155,48 @@ fn the_refusal_names_the_doors_own_parameters() {
 
 #[test]
 fn nothing_undeclared_is_nothing_to_refuse() {
-    reject_undeclared_query_params(&raw(&[]), &[]).expect("an empty query is a valid query");
+    reject_undeclared_query_params(&raw(&[]), QueryFamily::Odata, &[])
+        .expect("an empty query is a valid query");
+}
+
+/// **The alias whitelist is per-door, and that is the finding this probe
+/// records.** The guard permitted `limit` and `cursor` unconditionally, so a
+/// door that pages nothing — the version diff, the resolver, the bulk export,
+/// the identity export, the batch ledger — accepted `?limit=10` and dropped
+/// it, answering `200` with the whole collection. The version diff's own
+/// comment claimed the guard closed exactly that.
+#[test]
+fn a_door_that_pages_nothing_refuses_the_pagination_aliases() {
+    for key in ["limit", "cursor", "$top", "$skiptoken", "$filter"] {
+        let err = reject_undeclared_query_params(
+            &raw(&[(key, "10")]),
+            QueryFamily::OperandsOnly,
+            &["intent"],
+        )
+        .expect_err("a door that binds nothing must not admit a pagination key");
+        assert_eq!(
+            violations(&err),
+            vec![(UNDECLARED_QUERY_PARAM.to_owned(), key.to_owned())],
+            "the refusal must name `{key}`"
+        );
+    }
+    // Its own operands still pass.
+    reject_undeclared_query_params(
+        &raw(&[("intent", "browse"), ("boundVersion", "7")]),
+        QueryFamily::OperandsOnly,
+        &["intent", "boundVersion"],
+    )
+    .expect("the door's declared operands are what it serves");
+}
+
+/// The same key is admitted on one family and refused on the other — which
+/// is what makes the split real rather than a renaming.
+#[test]
+fn the_family_is_what_decides_an_alias() {
+    reject_undeclared_query_params(&raw(&[("limit", "10")]), QueryFamily::Odata, &[])
+        .expect("a paginated door serves `limit`");
+    reject_undeclared_query_params(&raw(&[("limit", "10")]), QueryFamily::OperandsOnly, &[])
+        .expect_err("a door that pages nothing does not");
 }
 
 /// Each caller-side failure names the parameter the caller has to fix. A

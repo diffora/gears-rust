@@ -1087,13 +1087,16 @@ impl FieldToColumn<BrowseFilterField> for BrowseODataMapper {
 
     /// A keyset walk may order only by a column that is **NOT NULL**.
     ///
-    /// This is not fastidiousness about nulls: `SQLite` sorts NULLs first
-    /// and Postgres sorts them last, so an order over a nullable column is a
-    /// *different* order on the two engines the gear ships on. The cursor
-    /// predicate `(a, b) > (a0, b0)` derived on one engine would then skip
-    /// or repeat rows on the other, and the walk's whole guarantee is that
-    /// it does neither. The six nullable columns stay filterable and are
-    /// refused as order keys.
+    /// Two reasons, and the second is the one that survives a single-engine
+    /// deployment. **Across engines:** `SQLite` sorts NULLs first and
+    /// Postgres sorts them last, so an order over a nullable column is a
+    /// *different* order on the two engines the gear ships on, and a cursor
+    /// derived on one would skip or repeat rows on the other. **On either
+    /// engine alone:** the keyset predicate is `col > :value`, which is
+    /// `NULL` — hence false — for every NULL row, so a NULL-valued row is
+    /// unreachable by any continuation page, and a cursor taken *from* one
+    /// yields an empty next page and ends the walk early. The six nullable
+    /// columns stay filterable and are refused as order keys.
     fn is_orderable(field: BrowseFilterField) -> bool {
         !matches!(
             field,
@@ -1150,11 +1153,19 @@ pub const BROWSE_DEFAULT_ORDER: (&str, SortDir) = ("name", SortDir::Asc);
 /// `paginate_odata` appends it to the effective order so the order is total
 /// and the keyset predicate cannot straddle two rows that compare equal. It
 /// must be a column the row is *uniquely* identified by within the walked
-/// set, and `entity_id` is: the set is one tenant's one generation, and the
-/// id is a v4 UUID minted per entity. (`account-management`'s note about a
-/// non-unique tiebreaker is about two siblings sharing a `created_at`
-/// microsecond — a collision with probability near one on a batch insert.
-/// The collision this one would need is a UUID collision.)
+/// set.
+///
+/// The walked set is one tenant's one generation but **not** one entity
+/// kind — `browse_condition` pins `entity_kind` only when the caller names
+/// a `kind`, and the table's primary key is
+/// `(tenant_id, entity_kind, entity_id)`, so the schema explicitly
+/// contemplates one id under two kinds. What establishes uniqueness is the
+/// id space rather than the row key: both create doors refuse a
+/// caller-supplied id, so every `entity_id` is a v4 UUID this gear minted,
+/// and a straddle needs a genuine UUID collision. (`account-management`'s
+/// note about a non-unique tiebreaker is about two siblings sharing a
+/// `created_at` microsecond — a collision with probability near one on a
+/// batch insert. This one is 2^-122.)
 pub const BROWSE_TIEBREAKER: (&str, SortDir) = ("entity_id", SortDir::Asc);
 
 /// The caller's `$filter` lowered onto the read entity's columns.
@@ -1184,8 +1195,11 @@ pub fn browse_filter_condition(odata: &ODataQuery) -> Result<Condition, toolkit_
 ///
 /// Facets answer "what else is in this result", so computing them over the
 /// page would make them a restatement of what the caller already has. They
-/// are therefore taken over their own window of the matching set, in the
-/// same order the page walks so the window is deterministic.
+/// are therefore taken over their own window of the matching set, in this
+/// door's **default** order — deliberately not the caller's `$orderby`,
+/// because a facet count is contracted to describe the matching set and a
+/// window that moved with the ordering would make the same set answer
+/// different counts.
 ///
 /// One row past `window` is fetched deliberately: whether it came back is
 /// how the answer knows to say the counts are partial rather than leaving
@@ -1251,7 +1265,13 @@ pub async fn browse_read_entities_page(
         .scope_with(scope)
         .filter(browse_condition(tenant_id, query));
 
-    let effective = super::effective_odata(odata, BROWSE_DEFAULT_ORDER);
+    // The serving generation is part of this walk's identity: see
+    // `super::effective_odata`.
+    let effective = super::effective_odata(
+        odata,
+        BROWSE_DEFAULT_ORDER,
+        Some(&format!("g{}", query.generation)),
+    );
     paginate_odata::<BrowseFilterField, BrowseODataMapper, _, _, _, _>(
         base,
         runner,
@@ -1349,11 +1369,6 @@ pub async fn prune_read_deferred_intents(
     Ok(result.rows_affected)
 }
 
-/// The deferred-intent dashboard rows of a tenant.
-///
-/// # Errors
-///
-/// [`RepoError`] on a storage or scope failure.
 /// The deferred-intent dashboard's **filterable vocabulary** (P-D-165).
 ///
 /// A declaration read by the derive macro; every column of this projection
@@ -1446,7 +1461,7 @@ pub async fn read_deferred_intents(
         .secure()
         .scope_with(scope)
         .filter(Condition::all().add(read_deferred_intent::Column::TenantId.eq(tenant_id)));
-    let effective = super::effective_odata(odata, DEFERRED_INTENT_DEFAULT_ORDER);
+    let effective = super::effective_odata(odata, DEFERRED_INTENT_DEFAULT_ORDER, None);
     paginate_odata::<DeferredIntentFilterField, DeferredIntentODataMapper, _, _, _, _>(
         base,
         runner,
@@ -1496,11 +1511,6 @@ pub async fn upsert_read_freeze_status(
     }
 }
 
-/// The freeze-status dashboard rows of a tenant, newest version first.
-///
-/// # Errors
-///
-/// [`RepoError`] on a storage or scope failure.
 /// The freeze-status dashboard's **filterable vocabulary** (P-D-165).
 ///
 /// Every column of this projection is `NOT NULL`, so all eight are
@@ -1605,7 +1615,7 @@ pub async fn read_freeze_statuses(
         .secure()
         .scope_with(scope)
         .filter(Condition::all().add(read_freeze_status::Column::TenantId.eq(tenant_id)));
-    let effective = super::effective_odata(odata, FREEZE_STATUS_DEFAULT_ORDER);
+    let effective = super::effective_odata(odata, FREEZE_STATUS_DEFAULT_ORDER, None);
     paginate_odata::<FreezeStatusFilterField, FreezeStatusODataMapper, _, _, _, _>(
         base,
         runner,

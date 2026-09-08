@@ -530,13 +530,26 @@ async fn import_batch(
 }
 
 /// `GET /bss-products/v1/bulk/batches/{id}`.
+///
+/// **Not paged, and unlike the export that is a residual rather than a
+/// decision** (P-D-165): the row ledger is a worklist with one row per
+/// import row, bounded only by `bulk.max_rows` (50 000 by default), and a
+/// partial page of it is perfectly meaningful. The guard is here so the
+/// `?limit=` a caller reaches for on a body that size is **refused** rather
+/// than dropped and answered `200` with all fifty thousand.
 async fn read_batch(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
     axum::extract::Path(batch_id): axum::extract::Path<Uuid>,
+    axum::extract::Query(raw): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    crate::api::rest::odata::reject_undeclared_query_params(
+        &raw,
+        crate::api::rest::odata::QueryFamily::OperandsOnly,
+        &[],
+    )?;
     let tenant_id = ctx.subject_tenant_id();
     let now = canonical::write_instant(Utc::now());
 
@@ -685,7 +698,11 @@ async fn export_catalog_version(
     axum::extract::Query(query): axum::extract::Query<ExportQuery>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    crate::api::rest::odata::reject_undeclared_query_params(&raw, &EXPORT_PARAMS)?;
+    crate::api::rest::odata::reject_undeclared_query_params(
+        &raw,
+        crate::api::rest::odata::QueryFamily::OperandsOnly,
+        &EXPORT_PARAMS,
+    )?;
     let tenant_id = ctx.subject_tenant_id();
     let now = canonical::write_instant(Utc::now());
     let actor_ref =
