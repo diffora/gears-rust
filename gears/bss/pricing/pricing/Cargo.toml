@@ -42,9 +42,10 @@ async-trait = { workspace = true }
 # provider the platform installs at bootstrap, exactly as the sibling ledger's
 # posting gate uses); no non-FIPS hasher enters the graph.
 aws-lc-rs = { workspace = true }
-# `DateTime<Utc>` for the `cohort` scope-key axis (the UTC cutover instant that
-# created a grandfathering generation) and the pin-frontier instant.
-chrono = { workspace = true }
+# Instants are `time::OffsetDateTime` end-to-end (entity, domain, REST), matching
+# AM. `serde-well-known` is the RFC 3339 wire form; the default `time` serde
+# format is a tuple and must not leak onto the catalog contract.
+time = { workspace = true, features = ["serde-well-known"] }
 serde = { workspace = true }
 # Authz-label stub type-schemas registered at init (`authz::authz_label_type_schemas`).
 serde_json = { workspace = true }
@@ -93,7 +94,7 @@ toolkit-odata = { workspace = true, features = ["with-utoipa"] }
 base64 = { workspace = true }
 # `#[toolkit_macros::api_dto(...)]` expands to `#[derive(utoipa::ToSchema)]`, so
 # the crate has to be a direct dependency of every gear carrying REST DTOs.
-utoipa = { workspace = true }
+utoipa = { workspace = true, features = ["time"] }
 # Holds the per-process runtime populated in `init()`.
 arc-swap = { workspace = true }
 

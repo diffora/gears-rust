@@ -3,7 +3,6 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use chrono::{DateTime, TimeZone, Utc};
 use uuid::Uuid;
 
 use super::{
@@ -14,6 +13,7 @@ use super::{
 use crate::domain::bundle_rules::BUNDLE_TAX_BASIS_MIXED;
 use crate::domain::concurrency::RowVersion;
 use crate::domain::contracts::{BillingAnchorPolicy, ProrationBasis, ProrationContract};
+use crate::domain::instant::utc_ymd_hms;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::plan_rules::{
@@ -31,15 +31,14 @@ use crate::domain::tax_display::{RegionReadiness, RegionTaxReadiness, TaxDisplay
 use crate::domain::taxonomy::REGION_UNKNOWN;
 use crate::domain::taxonomy::ROUNDING_POLICY_UNKNOWN;
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
+use time::OffsetDateTime;
 
 fn plan() -> PlanId {
     PlanId::new(Uuid::from_u128(0x91a4))
 }
 
-fn now() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 3, 12, 0, 0)
-        .single()
-        .expect("the fixed instant is unambiguous")
+fn now() -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 3, 12, 0, 0)
 }
 
 fn params(default_rounding_policy: Option<&str>) -> PublishRuleParams {

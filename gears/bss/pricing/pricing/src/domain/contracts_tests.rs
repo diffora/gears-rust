@@ -4,7 +4,6 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, TimeZone, Utc};
 use uuid::Uuid;
 
 use super::consumer_contract_rules;
@@ -20,6 +19,7 @@ use super::{
 };
 use super::{EntitlementGrants, GRANT_SET_PHASE_UNKNOWN, GrantSet, GrantSetPhasesKnown};
 use crate::domain::concurrency::RowVersion;
+use crate::domain::instant::utc_ymd_hms;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::plan_shape::{PhaseGraph, PhaseKind, PlanPhase, PlanShape};
@@ -29,11 +29,10 @@ use crate::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
 use crate::domain::validation::{ValidationReport, ValidationRule};
+use time::OffsetDateTime;
 
-fn now() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 7, 12, 0, 0)
-        .single()
-        .expect("the fixed instant is unambiguous")
+fn now() -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 7, 12, 0, 0)
 }
 
 fn plan() -> PlanId {

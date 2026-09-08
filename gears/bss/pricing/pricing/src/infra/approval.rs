@@ -116,10 +116,10 @@
 
 use std::collections::BTreeSet;
 
-use chrono::{DateTime, Utc};
 use serde_json::{Value as JsonValue, json};
 use toolkit_db::secure::{AccessScope, DBRunner};
 use toolkit_db::{DBProvider, DbError};
+use toolkit_odata::{ODataQuery, Page};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
@@ -134,6 +134,7 @@ use crate::domain::approval::{
 use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::error::DomainError;
+use crate::domain::instant::format_rfc3339;
 use crate::domain::materiality::{ThresholdEntry, ThresholdVersion};
 use crate::domain::membership_change::MembershipMoveSet;
 use crate::domain::money::CurrencyCode;
@@ -141,6 +142,7 @@ use crate::domain::overlay::{OverlayRevision, ScopeClass};
 use crate::domain::plan_shape::PlanShape;
 use crate::domain::ports::CatalogVersionRegistryV1;
 use crate::domain::scope_key::{PlanId, Region};
+use crate::infra::storage::odata_mapping::OdataPageError;
 use crate::infra::storage::repo::approval_repo::{ApprovalRecord, NewApproval};
 use crate::infra::storage::repo::bundle_repo::{self, CompositionDraft};
 use crate::infra::storage::repo::{
@@ -148,6 +150,7 @@ use crate::infra::storage::repo::{
     repricing_journal_repo, threshold_repo,
 };
 use crate::infra::storage::{RepoError, repo_failure};
+use time::OffsetDateTime;
 
 /// The `reason` a TOCTOU void writes on the record it closes.
 ///
@@ -1078,7 +1081,7 @@ impl ApprovalService {
         scope: &AccessScope,
         tenant_id: Uuid,
         key: &crate::domain::scope_key::ScopeKey,
-        changeover: DateTime<Utc>,
+        changeover: OffsetDateTime,
         approval_id: Uuid,
         materiality: JsonValue,
         stamp: AuditStamp,
@@ -1106,7 +1109,7 @@ impl ApprovalService {
             return Err(DomainError::PendingChangeUnitExists(format!(
                 "this supersession of {key} at {}: approval {} is still submitted over it; decide \
                  it, or withdraw it to free the subject",
-                changeover.to_rfc3339(),
+                format_rfc3339(changeover),
                 held.approval_id
             )));
         }
@@ -1180,7 +1183,7 @@ impl ApprovalService {
         scope: &AccessScope,
         tenant_id: Uuid,
         selected: &[crate::domain::scope_key::ScopeKey],
-        cutover_at: DateTime<Utc>,
+        cutover_at: OffsetDateTime,
         approval_id: Uuid,
         materiality: JsonValue,
         stamp: AuditStamp,
@@ -1227,7 +1230,7 @@ impl ApprovalService {
             return Err(DomainError::PendingChangeUnitExists(format!(
                 "this cutover of plan {plan_id} at {}: approval {} is still submitted over it; \
                  decide it, or withdraw it to free the subject",
-                cutover_at.to_rfc3339(),
+                format_rfc3339(cutover_at),
                 held.approval_id
             )));
         }
@@ -1672,6 +1675,24 @@ impl ApprovalService {
             .map_err(|e| repo_failure(&e))
     }
 
+    /// One `OData` page of the tenant's approval records.
+    ///
+    /// # Errors
+    /// [`OdataPageError::Db`] on a connection or storage failure;
+    /// [`OdataPageError::Odata`] on a malformed `$filter` / `$orderby` / cursor.
+    pub async fn list_odata(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        query: &ODataQuery,
+    ) -> Result<Page<ApprovalRecord>, OdataPageError> {
+        let conn = self
+            .db
+            .conn()
+            .map_err(|e| OdataPageError::Db(format!("bss-pricing: approval list: {e}")))?;
+        approval_repo::list_odata(&conn, scope, tenant_id, query).await
+    }
+
     /// One record **and the content its pin covers** — D-61's reviewability
     /// invariant.
     ///
@@ -1701,7 +1722,7 @@ impl ApprovalService {
         scope: &AccessScope,
         tenant_id: Uuid,
         approval_id: Uuid,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<Option<ApprovalDetail>, DomainError> {
         let conn = self
             .db
@@ -2235,7 +2256,7 @@ async fn current_revision_shape(
     scope: &AccessScope,
     tenant_id: Uuid,
     plan_id: PlanId,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<Option<PinnedSubject>, DomainError> {
     let Some(revision) = plan_repo::load_current(runner, scope, tenant_id, plan_id)
         .await
@@ -2264,7 +2285,7 @@ async fn re_derive(
     scope: &AccessScope,
     tenant_id: Uuid,
     record: &ApprovalRecord,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<Option<PinnedSubject>, DomainError> {
     // **The same assembly the pin was taken under, per subject kind**, and that is
     // the whole of what makes a re-derivation comparable to a pin rather than to a
@@ -2877,7 +2898,7 @@ pub async fn void_pending_units_of(
     scope: &AccessScope,
     tenant_id: Uuid,
     plan_id: PlanId,
-    voided_at: DateTime<Utc>,
+    voided_at: OffsetDateTime,
 ) -> Result<u64, RepoError> {
     approval_repo::void_pending_for_plan(runner, scope, tenant_id, plan_id, voided_at).await
 }

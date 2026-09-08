@@ -14,6 +14,7 @@
 pub mod api;
 pub mod catalog_version;
 pub mod catalog_version_registry;
+pub mod odata;
 pub mod product_catalog;
 
 pub use api::PricingCatalogClientV1;

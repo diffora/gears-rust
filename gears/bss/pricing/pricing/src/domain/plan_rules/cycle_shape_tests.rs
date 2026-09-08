@@ -10,7 +10,6 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use chrono::{DateTime, Duration, TimeZone, Utc};
 use uuid::Uuid;
 
 use super::{
@@ -18,6 +17,7 @@ use super::{
     HybridCompleteness, PurchaseQtyRange, SetupRowShape, UsageMarketCompleteness,
 };
 use crate::domain::concurrency::RowVersion;
+use crate::domain::instant::utc_ymd_hms;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::plan_rules::{
@@ -39,6 +39,8 @@ use crate::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
 use crate::domain::validation::{ValidationReport, ValidationRule};
+use time::Duration;
+use time::OffsetDateTime;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -64,10 +66,8 @@ fn phase_id(seed: u128) -> PhaseId {
     PhaseId::new(Uuid::from_u128(seed))
 }
 
-fn now() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 3, 12, 0, 0)
-        .single()
-        .expect("the fixed instant is unambiguous")
+fn now() -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 3, 12, 0, 0)
 }
 
 fn minor(units: i64) -> MinorAmount {

@@ -75,7 +75,6 @@
 
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
 use toolkit_db::secure::{AccessScope, DBRunner};
 use toolkit_db::{DBProvider, DbError};
 use toolkit_security::SecurityContext;
@@ -84,6 +83,8 @@ use uuid::Uuid;
 use crate::domain::audit::{AuditAction, AuditSubjectKind, subject_state};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::error::DomainError;
+use crate::domain::instant::from_unix_millis;
+use crate::domain::instant::timestamp_millis;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::plan::PlanRevision;
 use crate::domain::plan_shape::{PhaseGraph, PlanShape, PublishedBaseline};
@@ -104,6 +105,7 @@ use crate::infra::storage::repo::{
     price_repo, taxonomy_repo, window_repo,
 };
 use crate::infra::storage::repo_failure;
+use time::OffsetDateTime;
 
 /// The lifecycle states a publish subject's candidate row set is drawn from.
 ///
@@ -238,7 +240,7 @@ impl PublishService {
         scope: &AccessScope,
         tenant_id: Uuid,
         plan_id: PlanId,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<ValidationReport, DomainError> {
         let conn = self
             .db
@@ -521,7 +523,7 @@ impl PublishService {
         authorization: PublishAuthorization,
         actor_principal_id: Uuid,
         correlation_id: Uuid,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
     ) -> Result<PublishReceipt, DomainError> {
         let ctx = ctx.clone();
         let scope = scope.clone();
@@ -1162,7 +1164,7 @@ pub(crate) async fn assemble(
     scope: &AccessScope,
     tenant_id: Uuid,
     plan_id: PlanId,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<PlanShape, DomainError> {
     let draft = plan_repo::load_open_draft(runner, scope, tenant_id, plan_id)
         .await
@@ -1194,7 +1196,7 @@ pub(crate) async fn assemble_from(
     tenant_id: Uuid,
     plan_id: PlanId,
     draft: crate::domain::plan::PlanRevision,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<PlanShape, DomainError> {
     // **Destructured, so a field added to `PlanRevision` and forgotten here is a
     // compile error** (D-259). This assembly was written field by field and was
@@ -1314,8 +1316,8 @@ pub(crate) async fn assemble_from(
 }
 
 /// Truncate to the millisecond quantum every authored instant is held to (D-144).
-fn quantized(at: DateTime<Utc>) -> DateTime<Utc> {
-    DateTime::from_timestamp_millis(at.timestamp_millis()).unwrap_or(at)
+fn quantized(at: OffsetDateTime) -> OffsetDateTime {
+    from_unix_millis(timestamp_millis(at)).unwrap_or(at)
 }
 
 /// Open a window on every billable key of this publish that has none (D-332).
@@ -1347,7 +1349,7 @@ async fn open_initial_windows(
     tenant_id: Uuid,
     shape: &PlanShape,
     actor_principal_id: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     correlation_id: Uuid,
 ) -> Result<(), DomainError> {
     let report = crate::domain::coverage::check_shape(shape);

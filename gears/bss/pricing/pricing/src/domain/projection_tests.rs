@@ -10,7 +10,6 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use chrono::{TimeZone, Utc};
 use serde_json::json;
 use std::collections::BTreeMap;
 
@@ -21,6 +20,7 @@ use super::{
 use crate::domain::concurrency::RowVersion;
 use crate::domain::contracts::{EntitlementGrants, PlanChangeContract};
 use crate::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
+use crate::domain::instant::{format_rfc3339_serde, utc_ymd_hms};
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::overlay::{
@@ -40,6 +40,7 @@ use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
+use time::OffsetDateTime;
 
 fn plan_id() -> PlanId {
     PlanId::new(uuid::Uuid::from_u128(0x9_1a4))
@@ -96,7 +97,7 @@ fn shape_only() -> PlanSubjectDelta {
         plan_tier_override: false,
         billing_cycle: Some(BillingCycle::Recurring),
         frequency: Some(Frequency::Monthly),
-        available_from: Some(Utc.with_ymd_and_hms(2026, 8, 1, 0, 0, 0).unwrap()),
+        available_from: Some(utc_ymd_hms(2026, 8, 1, 0, 0, 0)),
         available_to: None,
         purchase_min_qty: None,
         purchase_max_qty: None,
@@ -186,7 +187,7 @@ fn graduated_row() -> PriceRecord {
         supersedes_price_id: None,
         lifecycle_state: LifecycleState::Published,
         created_by: uuid::Uuid::from_u128(0xac_10),
-        created_at_utc: Utc.with_ymd_and_hms(2026, 8, 1, 10, 0, 0).unwrap(),
+        created_at_utc: utc_ymd_hms(2026, 8, 1, 10, 0, 0),
         row_version: RowVersion::new(0),
     }
 }
@@ -1046,10 +1047,8 @@ fn recurring_key() -> ScopeKey {
     .expect("a valid canonical scope key")
 }
 
-fn at(day: u32) -> chrono::DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 9, day, 0, 0, 0)
-        .single()
-        .expect("a well-defined UTC instant")
+fn at(day: u32) -> OffsetDateTime {
+    utc_ymd_hms(2026, 9, day, 0, 0, 0)
 }
 
 /// D-121's projected window states: `scheduled | active | expired`.
@@ -1124,13 +1123,13 @@ fn the_payload_carries_intervals_and_a_coverage_end_and_no_active_flag() {
         group.get("intervals"),
         Some(&json!([
             {
-                "effectiveFrom": at(10),
-                "effectiveTo": at(20),
+                "effectiveFrom": format_rfc3339_serde(at(10)),
+                "effectiveTo": format_rfc3339_serde(at(20)),
                 "state": "expired",
             },
             {
-                "effectiveFrom": at(20),
-                "effectiveTo": at(30),
+                "effectiveFrom": format_rfc3339_serde(at(20)),
+                "effectiveTo": format_rfc3339_serde(at(30)),
                 "state": "active",
             },
         ]))
@@ -1140,7 +1139,7 @@ fn the_payload_carries_intervals_and_a_coverage_end_and_no_active_flag() {
     // opposite answers under the D-80 horizon predicate.
     assert_eq!(
         group.get("coverageEnd"),
-        Some(&json!({ "kind": "ends", "at": at(30) }))
+        Some(&json!({ "kind": "ends", "at": format_rfc3339_serde(at(30)) }))
     );
 
     // And no point-in-time answer anywhere in the document, under any spelling.
@@ -1213,7 +1212,7 @@ fn overlay_revision() -> OverlayRevision {
         .expect("a valued class"),
         precedence: 40,
         interval: OverlayInterval {
-            from: Some(Utc.with_ymd_and_hms(2026, 9, 1, 0, 0, 0).unwrap()),
+            from: Some(utc_ymd_hms(2026, 9, 1, 0, 0, 0)),
             to: None,
         },
         tax_basis: TaxBasis::Exclusive,

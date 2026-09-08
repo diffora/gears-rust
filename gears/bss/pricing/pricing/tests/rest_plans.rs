@@ -4712,3 +4712,218 @@ async fn two_period_bounds_on_two_markets_land_together() {
         "one currency in two regions is two markets: {body}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// GET /plans — AM-style OData (D-125 amendment).
+// ---------------------------------------------------------------------------
+
+fn plan_ids(body: &serde_json::Value) -> Vec<String> {
+    body["items"]
+        .as_array()
+        .expect("plans ride `items`")
+        .iter()
+        .map(|row| {
+            row["plan_id"]
+                .as_str()
+                .expect("each summary names plan_id")
+                .to_owned()
+        })
+        .collect()
+}
+
+/// Named `lifecycle_state=` is retired. The page is narrowed only through `$filter`.
+#[tokio::test]
+async fn a_named_lifecycle_state_key_on_the_plan_list_is_refused() {
+    let harness = Harness::new().await;
+    seed_draft_plan(&harness, Uuid::now_v7()).await;
+
+    let named = harness
+        .allowed()
+        .send(request(
+            "GET",
+            &format!("{PLANS}?lifecycle_state=draft"),
+            None,
+        ))
+        .await;
+    assert_eq!(named.status(), StatusCode::BAD_REQUEST);
+    refused_by(
+        &body_json(named).await,
+        "invalid_argument",
+        "unrecognized query parameter `lifecycle_state`",
+    );
+
+    let extra = harness
+        .allowed()
+        .send(request("GET", &format!("{PLANS}?status=draft"), None))
+        .await;
+    assert_eq!(extra.status(), StatusCode::BAD_REQUEST);
+    refused_by(
+        &body_json(extra).await,
+        "invalid_argument",
+        "unrecognized query parameter `status`",
+    );
+}
+
+/// Omit `lifecycle_state` → one authoring revision per plan (draft if any, else current).
+#[tokio::test]
+async fn omitting_lifecycle_on_the_plan_list_keeps_the_authoring_default() {
+    let harness = Harness::new().await;
+    let draft = Uuid::now_v7();
+    let published = Uuid::now_v7();
+    seed_draft_plan(&harness, draft).await;
+    seed_current_plan(&harness, published).await;
+
+    let page = body_json(harness.allowed().send(request("GET", PLANS, None)).await).await;
+    let ids = plan_ids(&page);
+    assert!(
+        ids.contains(&draft.to_string()) && ids.contains(&published.to_string()),
+        "a listing over current revisions alone would hide the open draft: {page}"
+    );
+
+    let only_draft = body_json(
+        harness
+            .allowed()
+            .send(request(
+                "GET",
+                &format!("{PLANS}?$filter=lifecycle_state%20eq%20'draft'"),
+                None,
+            ))
+            .await,
+    )
+    .await;
+    assert_eq!(
+        plan_ids(&only_draft),
+        vec![draft.to_string()],
+        "$filter=lifecycle_state eq 'draft' must drop the published plan: {only_draft}"
+    );
+
+    let only_published = body_json(
+        harness
+            .allowed()
+            .send(request(
+                "GET",
+                &format!("{PLANS}?$filter=lifecycle_state%20eq%20'published'"),
+                None,
+            ))
+            .await,
+    )
+    .await;
+    assert_eq!(
+        plan_ids(&only_published),
+        vec![published.to_string()],
+        "$filter=lifecycle_state eq 'published' must drop the draft: {only_published}"
+    );
+}
+
+/// `$top` is `limit`. A bounded page names a cursor the next request resumes from
+/// without repeating `$orderby` (the extractor forbids the pair).
+#[tokio::test]
+async fn the_plan_list_walks_with_top_and_a_cursor() {
+    let harness = Harness::new().await;
+    let mut authored = Vec::new();
+    for _ in 0..3 {
+        let plan_id = Uuid::now_v7();
+        seed_draft_plan(&harness, plan_id).await;
+        authored.push(plan_id.to_string());
+    }
+
+    let first = body_json(
+        harness
+            .allowed()
+            .send(request("GET", &format!("{PLANS}?$top=2"), None))
+            .await,
+    )
+    .await;
+    let page_one = plan_ids(&first);
+    assert_eq!(page_one.len(), 2, "$top=2 bounds the page: {first}");
+    assert_eq!(first["page_info"]["limit"], serde_json::json!(2));
+    let token = first["page_info"]["next_cursor"]
+        .as_str()
+        .expect("a page with more behind it names where to resume")
+        .to_owned();
+
+    let second = body_json(
+        harness
+            .allowed()
+            .send(request(
+                "GET",
+                &format!("{PLANS}?limit=2&cursor={token}"),
+                None,
+            ))
+            .await,
+    )
+    .await;
+    let page_two = plan_ids(&second);
+    assert!(
+        page_one.iter().all(|id| !page_two.contains(id)),
+        "the walk must not repeat a row: {page_one:?} ∩ {page_two:?}"
+    );
+    let mut seen = page_one;
+    seen.extend(page_two);
+    seen.sort();
+    authored.sort();
+    assert_eq!(
+        seen, authored,
+        "every seeded plan appears exactly once across the two pages"
+    );
+}
+
+/// A cursor is valid only for the same `$filter`. Reusing it under another is 400.
+#[tokio::test]
+async fn a_plan_list_cursor_is_invalid_under_a_different_filter() {
+    let harness = Harness::new().await;
+    seed_draft_plan(&harness, Uuid::now_v7()).await;
+    seed_draft_plan(&harness, Uuid::now_v7()).await;
+
+    let first = body_json(
+        harness
+            .allowed()
+            .send(request(
+                "GET",
+                &format!("{PLANS}?$filter=lifecycle_state%20eq%20'draft'&limit=1"),
+                None,
+            ))
+            .await,
+    )
+    .await;
+    let token = first["page_info"]["next_cursor"]
+        .as_str()
+        .expect("two drafts and limit=1 leave a cursor")
+        .to_owned();
+
+    let reused = harness
+        .allowed()
+        .send(request(
+            "GET",
+            &format!("{PLANS}?$filter=lifecycle_state%20eq%20'published'&cursor={token}"),
+            None,
+        ))
+        .await;
+    assert_eq!(
+        reused.status(),
+        StatusCode::BAD_REQUEST,
+        "a cursor walked under one $filter must not continue under another: {}",
+        body_json(reused).await
+    );
+}
+
+/// Authoring collapse walks `plan_id` only. `$orderby` on any other advertised
+/// filter field would be a 200 with a different order than the client asked.
+#[tokio::test]
+async fn the_plan_list_refuses_an_orderby_the_walk_cannot_honour() {
+    let harness = Harness::new().await;
+    let response = harness
+        .allowed()
+        .send(request(
+            "GET",
+            &format!("{PLANS}?$orderby=created_at_utc%20desc"),
+            None,
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    refused_by(
+        &body_json(response).await,
+        "invalid_argument",
+        "created_at_utc",
+    );
+}

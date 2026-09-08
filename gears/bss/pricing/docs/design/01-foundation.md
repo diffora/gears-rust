@@ -414,6 +414,9 @@ unit the export SLO is expressed in) plus an **opaque `cursor`**, with `next_cur
 on every page until the result is exhausted. Ordering is **stable and append-consistent** —
 commit/append order on history and audit reads, so a cursor walk concurrent with writes never
 skips or duplicates a row at or before the cursor; a deterministic key order on catalog lists.
+The order is the request's `$orderby` when present; when `$orderby` is absent, the defaults
+above apply. The cursor is valid only for the same `$filter` and the same `$orderby` (or the
+same default) — a reused token with a different filter or order is a malformed request (400).
 Offset/`$skip` pagination is not offered (unstable over append-only stores at the ≥ 7-year
 retention). Slice surfaces (`/bss-pricing/v1/plans*`, `…/prices`, `/bss-pricing/v1/price-overlays`,
 `/bss-pricing/v1/approvals`, `/bss-pricing/v1/history`, `/bss-pricing/v1/audit`, batch reports' row lists)

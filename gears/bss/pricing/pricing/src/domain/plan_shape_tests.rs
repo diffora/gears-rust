@@ -11,13 +11,13 @@
 
 use std::fmt;
 
-use chrono::{DateTime, TimeZone, Utc};
 use uuid::Uuid;
 
 use super::{
     BillingCycle, CustomIntervalUnit, Frequency, PhaseGraph, PhaseKind, PlanPhase, PlanShape,
 };
 use crate::domain::concurrency::RowVersion;
+use crate::domain::instant::utc_ymd_hms;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::CurrencyCode;
 use crate::domain::price_record::PriceRecord;
@@ -25,6 +25,7 @@ use crate::domain::price_row::{ModelKind, PriceRow};
 use crate::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
 };
+use time::OffsetDateTime;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -46,10 +47,8 @@ fn region(value: &str) -> Region {
     Region::new(value).expect("test region is non-blank")
 }
 
-fn now() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 3, 12, 0, 0)
-        .single()
-        .expect("the fixed instant is unambiguous")
+fn now() -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 3, 12, 0, 0)
 }
 
 fn phase(seed: u128, kind: PhaseKind, ordinal: i32, converts_to: Option<PhaseId>) -> PlanPhase {

@@ -27,7 +27,8 @@ use bss_pricing::domain::approval::ApprovalState;
 use bss_pricing::domain::window::WindowState;
 use bss_pricing::infra::jobs::window_activation::WindowActivationJob;
 use bss_pricing::infra::storage::repo::window_repo;
-use chrono::{TimeZone, Utc};
+
+use bss_pricing::domain::instant::utc_ymd_hms;
 use rest_support::{
     Harness, approval_row, approval_rows, audit_rows, body_json, problem_code, refused_by,
     seed_publishable_plan, with_headers,
@@ -568,8 +569,12 @@ async fn the_record_carries_the_content_its_pin_covers() {
         serde_json::json!([{
             "scope_key": pinned["rows"][0]["scope_key"],
             "intervals": [{
-                "effective_from": Utc.with_ymd_and_hms(from_y, from_m, from_d, 0, 0, 0).unwrap(),
-                "effective_to": Utc.with_ymd_and_hms(to_y, to_m, to_d, 0, 0, 0).unwrap(),
+                "effective_from": utc_ymd_hms(from_y, from_m, from_d, 0, 0, 0)
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .expect("rfc3339"),
+                "effective_to": utc_ymd_hms(to_y, to_m, to_d, 0, 0, 0)
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .expect("rfc3339"),
                 "state": "scheduled",
             }],
         }]),
@@ -663,10 +668,7 @@ async fn an_activation_under_a_pending_unit_does_not_void_the_approval() {
     // The clock arrives at the fixture window's start. `inst-ws-activate` fires on
     // `now >= effectiveFrom`, so the boundary instant itself is due.
     let (year, month, day) = common::COVERAGE_FROM_UTC;
-    let boundary = Utc
-        .with_ymd_and_hms(year, month, day, 0, 0, 0)
-        .single()
-        .expect("a fixed UTC instant is unambiguous");
+    let boundary = utc_ymd_hms(year, month, day, 0, 0, 0);
 
     let report = WindowActivationJob::new(h.db.clone(), JobsConfig::default())
         .run(boundary)
@@ -859,7 +861,7 @@ async fn the_queue_lists_pending_and_decided_units_and_filters_by_state() {
         h.allowed_as(APPROVER)
             .send(with_headers(
                 "GET",
-                "/bss-pricing/v1/approvals?state=submitted",
+                "/bss-pricing/v1/approvals?$filter=state%20eq%20'submitted'",
                 None,
                 &[],
             ))
@@ -926,7 +928,7 @@ async fn the_queue_pages_and_the_cursor_resumes_after_the_last_row() {
 }
 
 #[tokio::test]
-async fn an_unknown_state_filter_is_refused_rather_than_ignored() {
+async fn an_unknown_query_parameter_state_is_refused() {
     let h = Harness::new().await;
 
     let response = h
@@ -940,15 +942,32 @@ async fn an_unknown_state_filter_is_refused_rather_than_ignored() {
         .await;
 
     assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
-    // And it names the token it rejected, beside the vocabulary it was judged
-    // against. This route renders several 400s — a malformed cursor and a
-    // non-numeric limit among them — so a bare status is satisfied by one
-    // raised before the filter was read at all, which is precisely the state
-    // this case is named against: refused rather than ignored.
     refused_by(
         &body_json(response).await,
         "invalid_argument",
-        "state `pending` is not one of submitted, approved, rejected, voided",
+        "unrecognized query parameter `state`",
+    );
+}
+
+#[tokio::test]
+async fn an_unknown_state_filter_is_refused_rather_than_ignored() {
+    let h = Harness::new().await;
+
+    let response = h
+        .allowed_as(APPROVER)
+        .send(with_headers(
+            "GET",
+            "/bss-pricing/v1/approvals?$filter=state%20eq%20'pending'",
+            None,
+            &[],
+        ))
+        .await;
+
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    refused_by(
+        &body_json(response).await,
+        "invalid_argument",
+        "unknown approval state `pending`",
     );
 }
 

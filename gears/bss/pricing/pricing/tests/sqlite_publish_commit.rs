@@ -52,6 +52,7 @@ use bss_pricing::domain::contracts::{
 };
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
+use bss_pricing::domain::instant::utc_ymd_hms;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::plan::PlanShapePatch;
@@ -84,7 +85,8 @@ use bss_pricing_sdk::catalog_version::CatalogVersion;
 use bss_pricing_sdk::catalog_version_registry::{
     CatalogVersionRegistryV1, PendingVersionRef, UnconfiguredCatalogVersionRegistryV1,
 };
-use chrono::{DateTime, TimeZone, Utc};
+use time::OffsetDateTime;
+
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use sea_orm_migration::MigratorTrait;
 use std::path::{Path, PathBuf};
@@ -184,8 +186,8 @@ fn terminal_phase() -> PhaseId {
     PhaseId::new(Uuid::from_u128(0xfa_5e))
 }
 
-fn at(hour: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 3, hour, 0, 0).unwrap()
+fn at(hour: u32) -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 3, hour, 0, 0)
 }
 
 fn ctx() -> SecurityContext {
@@ -1466,17 +1468,14 @@ async fn a_row_authored_after_the_precheck_is_judged_by_the_second_run() {
 fn stamp() -> bss_pricing::domain::audit::AuditStamp {
     bss_pricing::domain::audit::AuditStamp {
         actor_principal_id: uuid::Uuid::from_u128(0xac_10),
-        recorded_at: chrono::Utc::now(),
+        recorded_at: OffsetDateTime::now_utc(),
         correlation_id: TEST_CORRELATION,
     }
 }
 
 /// The stamp a decision is taken under: who acted, when, and the request's
 /// correlation.
-fn stamp_of(
-    actor: uuid::Uuid,
-    when: chrono::DateTime<chrono::Utc>,
-) -> bss_pricing::domain::audit::AuditStamp {
+fn stamp_of(actor: uuid::Uuid, when: OffsetDateTime) -> bss_pricing::domain::audit::AuditStamp {
     bss_pricing::domain::audit::AuditStamp {
         actor_principal_id: actor,
         recorded_at: when,
@@ -1711,9 +1710,7 @@ async fn drive_the_window_plane(h: &Harness) {
             // 2099 is a fact rather than a date off the clock: a window dated today
             // races the activation sweep, which is a defect this program has already
             // paid for once.
-            Utc.with_ymd_and_hms(2099, 9, 1, 0, 0, 0)
-                .single()
-                .expect("a real instant"),
+            utc_ymd_hms(2099, 9, 1, 0, 0, 0),
             None,
             "audited-window-writer".to_owned(),
             bss_pricing::api::rest::windows::verdict_json,
@@ -2117,7 +2114,7 @@ async fn drive_the_migration_plane(h: &Harness) {
                 migration_id: Uuid::now_v7(),
                 source_plan_id: plan_id(),
                 target_plan_id: target,
-                effective_at: at(17) + chrono::Duration::days(120),
+                effective_at: at(17) + time::Duration::days(120),
                 scope_json: serde_json::json!({ "kind": "all" }),
             },
             stamp_of(ACTOR, at(17)),
