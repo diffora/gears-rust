@@ -43,8 +43,8 @@ use bss_products::infra::broker::EventSink;
 use bss_products::infra::events;
 use bss_products::infra::storage::{RepoError, repo};
 use bss_products::infra::taxonomy;
-use chrono::{TimeZone as _, Utc};
 use pg_support::Pg;
+use time::OffsetDateTime;
 use toolkit_db::migration_runner::run_migrations_for_testing;
 use toolkit_db::outbox::{Outbox, OutboxHandle, Partitions, outbox_migrations_with_prefix};
 use toolkit_db::secure::AccessScope;
@@ -101,8 +101,8 @@ fn scope() -> AccessScope {
     AccessScope::for_tenant(TENANT)
 }
 
-fn at(hour: u32) -> chrono::DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 9, 2, hour, 0, 0).unwrap()
+fn at(hour: u32) -> OffsetDateTime {
+    utc(2026, 9, 2, u8::try_from(hour).expect("a component"), 0, 0)
 }
 
 /// Two roots, `A` and `B`, with distinct names.
@@ -614,4 +614,18 @@ async fn two_concurrent_primary_assignments_leave_exactly_one() {
         1,
         "exactly one primary assignment survives"
     );
+}
+
+/// One UTC instant from its civil components — the local twin of
+/// `bss_products::test_support::utc`, which is crate-private.
+fn utc(year: i32, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> OffsetDateTime {
+    time::Date::from_calendar_date(
+        year,
+        time::Month::try_from(month).expect("a month of the year"),
+        day,
+    )
+    .expect("a real date")
+    .with_hms(hour, minute, second)
+    .expect("a real civil time")
+    .assume_utc()
 }

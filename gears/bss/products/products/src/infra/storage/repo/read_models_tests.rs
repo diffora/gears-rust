@@ -3,7 +3,6 @@
 //! table.
 #![allow(clippy::expect_used)]
 
-use chrono::{TimeZone, Utc};
 use sea_orm_migration::MigratorTrait;
 use toolkit_db::secure::AccessScope;
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
@@ -47,7 +46,7 @@ async fn a_zero_version_tenant_persists_null_with_a_projected_at() {
     let provider = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
-    let at = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let at = crate::test_support::utc(2026, 9, 2, 12, 0, 0);
 
     let written = apply_read_stamp(
         &conn,
@@ -79,7 +78,7 @@ async fn a_premature_catalog_stamp_writes_nothing() {
     let provider = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
-    let at = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let at = crate::test_support::utc(2026, 9, 2, 12, 0, 0);
 
     let err = apply_read_stamp(
         &conn,
@@ -114,9 +113,9 @@ async fn a_retirement_removal_advances_projected_at_without_moving_the_version()
     let provider = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
-    let t0 = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
-    let t1 = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 1).unwrap();
-    let t2 = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 2).unwrap();
+    let t0 = crate::test_support::utc(2026, 9, 2, 12, 0, 0);
+    let t1 = crate::test_support::utc(2026, 9, 2, 12, 0, 1);
+    let t2 = crate::test_support::utc(2026, 9, 2, 12, 0, 2);
 
     apply_read_stamp(
         &conn,

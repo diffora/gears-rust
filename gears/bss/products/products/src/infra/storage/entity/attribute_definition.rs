@@ -33,8 +33,8 @@ pub struct Model {
     /// The well-known marker; a seeded definition is deprecatable but not
     /// removable.
     pub seeded_by: Option<String>,
-    pub created_at: ChronoDateTimeUtc,
-    pub updated_at: ChronoDateTimeUtc,
+    pub created_at: TimeDateTimeWithTimeZone,
+    pub updated_at: TimeDateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

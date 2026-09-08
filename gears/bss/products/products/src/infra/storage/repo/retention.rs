@@ -51,9 +51,9 @@
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-identity-map:p1
 
-use chrono::{DateTime, Utc};
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
+use time::OffsetDateTime;
 use toolkit_db::secure::{AccessScope, DBRunner, SecureEntityExt, SecureUpdateExt};
 use uuid::Uuid;
 
@@ -74,11 +74,11 @@ pub struct IdentityEntry {
     /// The identity, where one was ever stored and has not been destroyed.
     pub identity_payload: Option<String>,
     /// Set once, by erasure, and never cleared.
-    pub tombstoned_at: Option<DateTime<Utc>>,
+    pub tombstoned_at: Option<OffsetDateTime>,
     /// When this ref was minted.
-    pub first_seen_at: DateTime<Utc>,
+    pub first_seen_at: OffsetDateTime,
     /// When an act last **resolved** it, never when it was minted alone.
-    pub last_seen_at: DateTime<Utc>,
+    pub last_seen_at: OffsetDateTime,
 }
 
 /// Tombstone a principal's live map entry, in the caller's transaction.
@@ -116,7 +116,7 @@ pub async fn tombstone_principal(
     scope: &AccessScope,
     tenant_id: Uuid,
     principal_ref: &str,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<Option<Uuid>, RepoError> {
     let live = identity_ref::Entity::find()
         .secure()

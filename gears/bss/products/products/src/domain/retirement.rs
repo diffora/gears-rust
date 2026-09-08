@@ -21,7 +21,7 @@
 //! @cpt-cf-bss-products-dod-eol-lockout
 //! @cpt-dod:cpt-cf-bss-products-dod-lead-window-reannounce:p1
 
-use chrono::{DateTime, Duration, Utc};
+use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use bss_products_sdk::models::LifecycleState;
@@ -187,9 +187,9 @@ pub fn eol_lockout(flag_on: bool, must_migrate_by_present: bool) -> Result<(), L
 /// `[scheduled_at, effective_at)` and must re-emit the retirement event.
 #[must_use]
 pub fn publish_reannounces_retirement(
-    published_at: DateTime<Utc>,
-    scheduled_at: DateTime<Utc>,
-    effective_at: DateTime<Utc>,
+    published_at: OffsetDateTime,
+    scheduled_at: OffsetDateTime,
+    effective_at: OffsetDateTime,
 ) -> bool {
     published_at >= scheduled_at && published_at < effective_at
 }
@@ -201,10 +201,10 @@ pub fn publish_reannounces_retirement(
 /// [`LifecycleRefusal::RETIREMENT_LEAD_TIME`] when the supplied instant is
 /// earlier than the floor.
 pub fn effective_at(
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     lead: Duration,
-    supplied: Option<DateTime<Utc>>,
-) -> Result<DateTime<Utc>, LifecycleRefusal> {
+    supplied: Option<OffsetDateTime>,
+) -> Result<OffsetDateTime, LifecycleRefusal> {
     let floor = now + lead;
     match supplied {
         None => Ok(floor),

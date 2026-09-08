@@ -2,7 +2,6 @@
 //! §1.7's four names probed on what its own doc claims.
 
 use bss_products_sdk::models::LifecycleState;
-use chrono::{TimeZone, Utc};
 
 use super::{
     BrowseProjection, POLLED_SURFACES, ReadProjector, ReadSurface, StalenessStamp,
@@ -100,7 +99,7 @@ fn the_history_surface_adds_retired_and_nothing_else() {
 /// non-`Option` column could not answer.
 #[test]
 fn the_stamp_answers_a_tenant_with_no_catalog_version() {
-    let at = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let at = crate::test_support::utc(2026, 9, 2, 12, 0, 0);
     let stamp = StalenessStamp::anchorless(at);
     assert_eq!(stamp.as_of_catalog_version, None);
     assert_eq!(stamp.projected_at, at);
@@ -110,7 +109,7 @@ fn the_stamp_answers_a_tenant_with_no_catalog_version() {
 /// real `projectedAt`, and only once the (empty) entity list is projected.
 #[test]
 fn a_zero_version_bootstrap_stamps_null_with_a_projected_at() {
-    let at = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let at = crate::test_support::utc(2026, 9, 2, 12, 0, 0);
     let stamp = advance_stamp(
         None,
         StampApply {
@@ -127,9 +126,9 @@ fn a_zero_version_bootstrap_stamps_null_with_a_projected_at() {
 /// `projectedAt` advances on every admitted apply, version or none.
 #[test]
 fn projected_at_advances_on_every_apply_version_or_none() {
-    let t0 = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
-    let t1 = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 1).unwrap();
-    let t2 = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 2).unwrap();
+    let t0 = crate::test_support::utc(2026, 9, 2, 12, 0, 0);
+    let t1 = crate::test_support::utc(2026, 9, 2, 12, 0, 1);
+    let t2 = crate::test_support::utc(2026, 9, 2, 12, 0, 2);
     let version: i64 = 0xca_01;
 
     let after_bootstrap = advance_stamp(
@@ -171,7 +170,7 @@ fn projected_at_advances_on_every_apply_version_or_none() {
 /// make the stamp a claim of content it is missing.
 #[test]
 fn the_stamp_refuses_to_advance_before_entities_are_projected() {
-    let at = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let at = crate::test_support::utc(2026, 9, 2, 12, 0, 0);
     let version: i64 = 0xca_02;
     let err = advance_stamp(
         None,
@@ -192,8 +191,8 @@ fn the_stamp_refuses_to_advance_before_entities_are_projected() {
 #[test]
 fn a_retirement_removal_is_admitted_by_the_floor_and_rejected_by_completeness() {
     let version: i64 = 0xca_03;
-    let t0 = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
-    let t1 = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 1).unwrap();
+    let t0 = crate::test_support::utc(2026, 9, 2, 12, 0, 0);
+    let t1 = crate::test_support::utc(2026, 9, 2, 12, 0, 1);
     let before = StalenessStamp {
         as_of_catalog_version: Some(version),
         projected_at: t0,
@@ -223,7 +222,7 @@ fn a_retirement_removal_is_admitted_by_the_floor_and_rejected_by_completeness() 
 /// so a dashboard's stamp is not read as a bootstrap.
 #[test]
 fn a_polled_surfaces_stamp_is_named_apart_from_a_bootstrap() {
-    let at = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+    let at = crate::test_support::utc(2026, 9, 2, 12, 0, 0);
     assert_eq!(StalenessStamp::polled(at), StalenessStamp::anchorless(at));
     // Equal by value and distinct by call site: the assertion above is the
     // measurement, and the two names are what a reader routes by.

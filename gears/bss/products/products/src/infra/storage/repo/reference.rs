@@ -3,10 +3,10 @@
 //!
 //! Split out of the foundation repository move-only; every item re-exports
 //! through `super` (`crate::infra::storage::repo`) unchanged.
-use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
+use time::OffsetDateTime;
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureDeleteExt, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
@@ -78,7 +78,7 @@ pub async fn register_reference_producer(
     tenant_id: Uuid,
     producer: &str,
     ceremony_ref: Option<Uuid>,
-    registered_at: DateTime<Utc>,
+    registered_at: OffsetDateTime,
 ) -> Result<(), RepoError> {
     let existing = reference_producer::Entity::find()
         .secure()
@@ -205,7 +205,7 @@ pub async fn clear_reference_watermark(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReferenceWatermarkRecord {
     /// The instant the set is complete as of.
-    pub watermark_at: DateTime<Utc>,
+    pub watermark_at: OffsetDateTime,
     /// The hex digest of the posted set (P-D-71).
     pub set_hash: String,
 }
@@ -244,9 +244,9 @@ pub struct PostedWatermark<'a> {
     /// The posting producer.
     pub producer: &'a str,
     /// The instant the set is complete as of.
-    pub watermark_at: DateTime<Utc>,
+    pub watermark_at: OffsetDateTime,
     /// When the post arrived.
-    pub posted_at: DateTime<Utc>,
+    pub posted_at: OffsetDateTime,
     /// The hex digest of the set (P-D-71).
     pub set_hash: &'a str,
     /// The complete SKU set.
@@ -355,7 +355,7 @@ pub struct NewCorrectionOverride {
     /// door that would write one does not ship.
     pub ceremony_ref: Uuid,
     /// The instant — the tripwire's operand.
-    pub recorded_at: DateTime<Utc>,
+    pub recorded_at: OffsetDateTime,
 }
 
 /// The admitting arm and its own evidence, as one value.
@@ -494,7 +494,7 @@ pub async fn correction_overrides_since_by_arm(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-    since: DateTime<Utc>,
+    since: OffsetDateTime,
     arm: &str,
 ) -> Result<u64, RepoError> {
     correction_override::Entity::find()
@@ -515,7 +515,7 @@ pub async fn correction_overrides_since(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-    since: DateTime<Utc>,
+    since: OffsetDateTime,
 ) -> Result<u64, RepoError> {
     correction_override::Entity::find()
         .secure()

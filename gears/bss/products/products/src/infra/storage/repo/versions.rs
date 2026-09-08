@@ -4,10 +4,10 @@
 //!
 //! Split out of the foundation repository move-only; every item re-exports
 //! through `super` (`crate::infra::storage::repo`) unchanged.
-use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, QuerySelect};
+use time::OffsetDateTime;
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureDeleteExt, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
@@ -32,7 +32,7 @@ pub struct CatalogVersionRecord {
     /// The digest rule the checksum was computed under.
     pub digest_version: i32,
     /// The commit instant.
-    pub published_at: DateTime<Utc>,
+    pub published_at: OffsetDateTime,
     /// The derived participant cache (P-D-67).
     pub participant_set_snapshot: String,
     /// The ledger's derived cache, typed at the storage boundary.
@@ -251,7 +251,7 @@ pub async fn ack_freeze_row(
     tenant_id: Uuid,
     catalog_version_id: i64,
     participant: &str,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<FreezeEdgeOutcome, RepoError> {
     let result = freeze_ack::Entity::update_many()
         .secure()
@@ -263,7 +263,7 @@ pub async fn ack_freeze_row(
         .col_expr(freeze_ack::Column::AckedAt, Expr::value(Some(now)))
         .col_expr(
             freeze_ack::Column::ForcedAt,
-            Expr::value(Option::<DateTime<Utc>>::None),
+            Expr::value(Option::<OffsetDateTime>::None),
         )
         .col_expr(
             freeze_ack::Column::CeremonyRef,
@@ -321,7 +321,7 @@ pub async fn release_freeze_row(
         )
         .col_expr(
             freeze_ack::Column::ForcedAt,
-            Expr::value(Option::<DateTime<Utc>>::None),
+            Expr::value(Option::<OffsetDateTime>::None),
         )
         .col_expr(
             freeze_ack::Column::CeremonyRef,
@@ -412,7 +412,7 @@ pub async fn force_pending_freeze_rows(
     tenant_id: Uuid,
     catalog_version_id: i64,
     ceremony_ref: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<Vec<String>, RepoError> {
     let pending: Vec<String> = freeze_ack_rows(runner, scope, tenant_id, catalog_version_id)
         .await?
@@ -459,7 +459,7 @@ pub async fn register_freeze_participant(
     scope: &AccessScope,
     tenant_id: Uuid,
     participant: &str,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<bool, RepoError> {
     let present = freeze_participant::Entity::find()
         .secure()
@@ -564,7 +564,7 @@ pub async fn refresh_freeze_state(
 pub async fn overdue_open_versions(
     runner: &impl DBRunner,
     scope: &AccessScope,
-    published_before: DateTime<Utc>,
+    published_before: OffsetDateTime,
 ) -> Result<Vec<(Uuid, i64)>, RepoError> {
     let rows = catalog_version::Entity::find()
         .secure()

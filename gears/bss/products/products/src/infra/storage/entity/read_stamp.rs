@@ -27,7 +27,7 @@ pub struct Model {
     /// The last apply's instant. Advances on **every** apply, version or
     /// none (P-D-70 arm 3), so the sole freshness signal always has a
     /// writer.
-    pub projected_at: ChronoDateTimeUtc,
+    pub projected_at: TimeDateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

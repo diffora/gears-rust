@@ -41,7 +41,7 @@ pub struct Model {
     /// carry none.
     pub operation_key: Option<String>,
     /// The door's ingress stamp; the lane SLO's zero point.
-    pub requested_at: ChronoDateTimeUtc,
+    pub requested_at: TimeDateTimeWithTimeZone,
     /// `pending` or `coalesced` — P-D-60 struck `superseded`.
     pub state: String,
     /// The version that satisfied this request; written together with the

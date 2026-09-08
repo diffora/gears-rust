@@ -32,6 +32,7 @@ use crate::infra::events;
 use crate::infra::storage::migrations::Migrator;
 use crate::infra::storage::repo;
 use crate::test_support::{authed_ctx, flat_in_enforcer};
+use time::OffsetDateTime;
 
 const TENANT: Uuid = Uuid::from_u128(0x7e_44);
 const BRAND: Uuid = Uuid::from_u128(0xb1_02);
@@ -227,8 +228,8 @@ async fn error_code(response: axum::http::Response<Body>) -> String {
         .to_owned()
 }
 
-fn now() -> chrono::DateTime<chrono::Utc> {
-    crate::domain::canonical::write_instant(chrono::Utc::now())
+fn now() -> OffsetDateTime {
+    crate::domain::canonical::write_instant(OffsetDateTime::now_utc())
 }
 
 /// Seed a live Product head, the operand the metadata door needs.

@@ -21,8 +21,8 @@ pub struct Model {
     pub payload_type: String,
     pub attempts: i32,
     pub last_error: String,
-    pub parked_at: ChronoDateTimeUtc,
-    pub released_at: Option<ChronoDateTimeUtc>,
+    pub parked_at: TimeDateTimeWithTimeZone,
+    pub released_at: Option<TimeDateTimeWithTimeZone>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

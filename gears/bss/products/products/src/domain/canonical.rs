@@ -64,8 +64,8 @@
 //! own doc for why an edit to it is a migration.
 
 use aws_lc_rs::digest::{SHA256, digest as sha256};
-use chrono::{DateTime, Utc};
 use serde_json::{Number, Value as JsonValue};
+use time::OffsetDateTime;
 
 /// The digest version every rendering in this module is computed under, as
 /// `products_entity_version.digest_version` stores it (§4.3, **P-D-33**).
@@ -395,9 +395,13 @@ fn render_number(number: &Number) -> String {
 /// engine sees them, and [`render_instant`]'s own truncation becomes
 /// defense in depth instead of the only line.
 #[must_use]
-pub fn write_instant(instant: DateTime<Utc>) -> DateTime<Utc> {
-    let sub_micro = i64::from(instant.timestamp_subsec_nanos() % 1000);
-    instant - chrono::Duration::nanoseconds(sub_micro)
+pub fn write_instant(instant: OffsetDateTime) -> OffsetDateTime {
+    // `replace_nanosecond` cannot fail for a value derived from the
+    // instant's own microsecond field, which is `0..1_000_000` by
+    // construction; the fallback keeps the instant rather than inventing one.
+    instant
+        .replace_nanosecond(instant.microsecond() * 1_000)
+        .unwrap_or(instant)
 }
 
 /// One instant, as §4.3's timestamp clause renders it: `RFC 3339` in `UTC` at
@@ -422,7 +426,7 @@ pub fn write_instant(instant: DateTime<Utc>) -> DateTime<Utc> {
 /// hazard is a real one against §4.3's *"computed application-side, so both
 /// engines store identical bytes"*:
 ///
-/// `created_at` originates from `Utc::now()`, which carries nanoseconds.
+/// `created_at` originates from `OffsetDateTime::now_utc()`, which carries nanoseconds.
 /// `SQLite` stores all nine digits, as text. Postgres `timestamptz`
 /// **rounds** to microseconds on write. So a head created at
 /// `...:00.123456789Z` is read back as `.123456789` from `SQLite` and
@@ -442,8 +446,53 @@ pub fn write_instant(instant: DateTime<Utc>) -> DateTime<Utc> {
 /// truncation is defense in depth rather than the only line, and both
 /// engines store identical bytes.
 #[must_use]
-pub fn render_instant(instant: DateTime<Utc>) -> String {
-    instant.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
+pub fn render_instant(instant: OffsetDateTime) -> String {
+    // Built from the components rather than through `time`'s well-known
+    // `Rfc3339`, which renders the offset as `+00:00` and the fraction at
+    // the value's own width — two differences from the bytes this gear's
+    // content digests and golden vectors are computed over. The sibling
+    // ledger gear renders its own clause the same way and for the same
+    // reason; a format description would need a crate feature the workspace
+    // does not enable, and this cannot fail.
+    let instant = instant.to_offset(time::UtcOffset::UTC);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{micros:06}Z",
+        year = instant.year(),
+        month = u8::from(instant.month()),
+        day = instant.day(),
+        hour = instant.hour(),
+        minute = instant.minute(),
+        second = instant.second(),
+        // `microsecond()` rather than `nanosecond() / 1_000`: the same six
+        // digits, read off the value instead of divided out of it, so the
+        // `integer_division` lint has nothing to warn about and the
+        // truncation this clause performs is named by the accessor.
+        micros = instant.microsecond()
+    )
+}
+
+/// One instant at **seconds** precision with a `Z` designator — the form the
+/// lifecycle events' `effectiveAt` and `mustMigrateBy` carry.
+///
+/// A separate function rather than a parameter on [`render_instant`] because
+/// the two answer different questions: that one renders a **content** field
+/// a digest is computed over, this one renders an **announcement** a consumer
+/// keys on, and `(skuId, effectiveAt)` is a key a subsecond digit would
+/// fracture. Byte-identical to the `to_rfc3339_opts(SecondsFormat::Secs,
+/// true)` these call sites used before the `time` migration, which is what
+/// the event probes pin.
+#[must_use]
+pub fn render_instant_secs(instant: OffsetDateTime) -> String {
+    let instant = instant.to_offset(time::UtcOffset::UTC);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z",
+        year = instant.year(),
+        month = u8::from(instant.month()),
+        day = instant.day(),
+        hour = instant.hour(),
+        minute = instant.minute(),
+        second = instant.second(),
+    )
 }
 
 #[cfg(test)]

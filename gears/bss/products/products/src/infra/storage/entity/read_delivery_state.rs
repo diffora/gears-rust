@@ -20,7 +20,7 @@ pub struct Model {
     pub inbox_pending: i64,
     pub parked: i64,
     pub oldest_pending_age_secs: i64,
-    pub polled_at: ChronoDateTimeUtc,
+    pub polled_at: TimeDateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

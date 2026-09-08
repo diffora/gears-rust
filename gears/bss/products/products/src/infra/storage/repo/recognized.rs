@@ -17,10 +17,10 @@
 //! why [`member_state`] answers the stored state and leaves set-membership
 //! judgements to `domain::recognized`, one rule with every caller.
 
-use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::{Expr, Query};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, ExprTrait};
+use time::OffsetDateTime;
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
@@ -123,7 +123,7 @@ pub async fn insert_recognized_member(
     member_code: &str,
     display_label: Option<String>,
     seeded_by: Option<&str>,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<RecognizedMember, RepoError> {
     let row = recognized_set::ActiveModel {
         tenant_id: Set(tenant_id),
@@ -190,7 +190,7 @@ pub async fn flip_recognized_member(
     set_kind: SetKind,
     member_code: &str,
     flip: StateFlip,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<bool, RepoError> {
     let StateFlip { expected, to } = flip;
     let mut filter = Condition::all()
@@ -318,7 +318,7 @@ pub async fn relabel_recognized_member(
     set_kind: SetKind,
     member_code: &str,
     display_label: Option<String>,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<bool, RepoError> {
     let result = recognized_set::Entity::update_many()
         .secure()
@@ -353,7 +353,7 @@ pub async fn ensure_recognized_seeds(
     scope: &AccessScope,
     tenant_id: Uuid,
     kind: SetKind,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), RepoError> {
     let roster = crate::domain::recognized::seed_roster(kind);
     if roster.is_empty() {

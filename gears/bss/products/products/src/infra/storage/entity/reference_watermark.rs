@@ -17,9 +17,9 @@ pub struct Model {
     pub producer: String,
     /// The instant the producer's set is complete **as of** — the
     /// freshness verdict's operand.
-    pub watermark_at: ChronoDateTimeUtc,
+    pub watermark_at: TimeDateTimeWithTimeZone,
     /// When the post arrived, which is not the same instant.
-    pub posted_at: ChronoDateTimeUtc,
+    pub posted_at: TimeDateTimeWithTimeZone,
     /// The hex digest of the posted set — the equal-`watermark_at`
     /// comparison's operand (**P-D-71**), which is what tells an idempotent
     /// replay from a `WATERMARK_CONFLICT`.

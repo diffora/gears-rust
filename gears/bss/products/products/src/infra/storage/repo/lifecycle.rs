@@ -9,10 +9,10 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-scheduled-transition-store:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-deferred-retirement-store:p1
 
-use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, ExprTrait, QuerySelect};
+use time::OffsetDateTime;
 use toolkit_db::odata::sea_orm_filter::{
     FieldToColumn, LimitCfg, ODataFieldMapping, paginate_odata,
 };
@@ -46,13 +46,13 @@ pub struct NewScheduledTransition {
     /// `publish` or `retire`.
     pub kind: String,
     /// UTC activation instant.
-    pub at: DateTime<Utc>,
+    pub at: OffsetDateTime,
     /// Pinned approval snapshot.
     pub approval_ref: Uuid,
     /// Operator retirement text; `None` on a publish intent.
     pub retirement_reason: Option<String>,
     /// Insert clock.
-    pub now: DateTime<Utc>,
+    pub now: OffsetDateTime,
 }
 
 /// Insert one `pending` scheduled transition with `attempt = 0`.
@@ -141,7 +141,7 @@ pub struct NewDeferredRetirement {
     /// Actor who recorded the deferral.
     pub created_by: Uuid,
     /// Insert clock.
-    pub now: DateTime<Utc>,
+    pub now: OffsetDateTime,
 }
 
 /// Insert one unresolved deferred-retirement snapshot.
@@ -283,7 +283,7 @@ pub async fn list_held_deferrals(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-    cutoff: DateTime<Utc>,
+    cutoff: OffsetDateTime,
 ) -> Result<Vec<scheduled_transition::Model>, RepoError> {
     scheduled_transition::Entity::find()
         .secure()
@@ -334,7 +334,7 @@ pub async fn list_due_transitions(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     lease: ClaimLease,
 ) -> Result<Vec<scheduled_transition::Model>, RepoError> {
     let cutoff = now - lease.ttl;
@@ -375,7 +375,7 @@ pub async fn list_due_transitions(
 pub async fn tenants_with_due_transitions(
     runner: &impl DBRunner,
     scope: &AccessScope,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     lease: ClaimLease,
 ) -> Result<Vec<Uuid>, RepoError> {
     let cutoff = now - lease.ttl;
@@ -422,7 +422,7 @@ pub async fn claim_due_transition(
     scope: &AccessScope,
     tenant_id: Uuid,
     transition_id: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<bool, RepoError> {
     let result = scheduled_transition::Entity::update_many()
         .secure()
@@ -458,7 +458,7 @@ pub async fn reclaim_expired_lease(
     scope: &AccessScope,
     tenant_id: Uuid,
     transition_id: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     lease: ClaimLease,
 ) -> Result<bool, RepoError> {
     let cutoff = now - lease.ttl;
@@ -468,7 +468,7 @@ pub async fn reclaim_expired_lease(
         .col_expr(scheduled_transition::Column::State, Expr::value("pending"))
         .col_expr(
             scheduled_transition::Column::ClaimedAt,
-            Expr::value(Option::<DateTime<Utc>>::None),
+            Expr::value(Option::<OffsetDateTime>::None),
         )
         .col_expr(
             scheduled_transition::Column::Attempt,
@@ -502,7 +502,7 @@ pub async fn finish_scheduled_transition(
     tenant_id: Uuid,
     transition_id: Uuid,
     finish: &RunFinish,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<bool, RepoError> {
     let outcome_reason = match finish {
         RunFinish::Applied => None,
@@ -571,7 +571,7 @@ pub struct ScheduledTransitionQuery {
     /// The activation instant. The default order — a schedule read in any
     /// other order is not a schedule.
     #[odata(filter(kind = "DateTimeUtc"))]
-    pub at: chrono::DateTime<Utc>,
+    pub at: OffsetDateTime,
     /// `pending|running|applied|failed|deferred|superseded`.
     #[odata(filter(kind = "String"))]
     pub state: String,
@@ -579,7 +579,7 @@ pub struct ScheduledTransitionQuery {
     #[odata(filter(kind = "Uuid"))]
     pub approval_ref: Uuid,
     #[odata(filter(kind = "DateTimeUtc"))]
-    pub created_at: chrono::DateTime<Utc>,
+    pub created_at: OffsetDateTime,
 }
 
 /// The vocabulary under the name the rest of the gear uses.
@@ -681,7 +681,7 @@ pub async fn supersede_scheduled_transition(
     scope: &AccessScope,
     tenant_id: Uuid,
     transition_id: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<bool, RepoError> {
     let result = scheduled_transition::Entity::update_many()
         .secure()
@@ -716,7 +716,7 @@ pub async fn supersede_live_intents(
     tenant_id: Uuid,
     entity_id: Uuid,
     kind: &str,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<u64, RepoError> {
     let result = scheduled_transition::Entity::update_many()
         .secure()
@@ -751,7 +751,7 @@ pub async fn resolve_deferred_retirement(
     product_id: Uuid,
     cascade_ref: Uuid,
     resolution: &str,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<bool, RepoError> {
     let result = deferred_retirement::Entity::update_many()
         .secure()
@@ -793,7 +793,7 @@ pub async fn deprecate_sku_head(
     sku_id: Uuid,
     expected_internal_revision: i64,
     provenance: Provenance,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<HeadWrite, RepoError> {
     let result = sku::Entity::update_many()
         .secure()
@@ -840,7 +840,7 @@ pub async fn undeprecate_product_head(
     tenant_id: Uuid,
     product_id: Uuid,
     expected_internal_revision: i64,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<HeadWrite, RepoError> {
     let result = product::Entity::update_many()
         .secure()
@@ -890,7 +890,7 @@ pub async fn undeprecate_sku_head(
     sku_id: Uuid,
     expected_internal_revision: i64,
     required_provenance: Option<Provenance>,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<HeadWrite, RepoError> {
     let mut filter = Condition::all()
         .add(sku::Column::TenantId.eq(tenant_id))
@@ -941,7 +941,7 @@ pub async fn write_replaced_by(
     sku_id: Uuid,
     expected_internal_revision: i64,
     replaced_by: Option<Uuid>,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<HeadWrite, RepoError> {
     let result = sku::Entity::update_many()
         .secure()
@@ -980,7 +980,7 @@ pub async fn clear_replaced_by(
     tenant_id: Uuid,
     sku_id: Uuid,
     expected_internal_revision: i64,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<HeadWrite, RepoError> {
     write_replaced_by(
         runner,
@@ -1008,7 +1008,7 @@ pub struct SkuDeprecationWrite {
     /// Optional successor.
     pub replaced_by: Option<Uuid>,
     /// Write clock.
-    pub now: DateTime<Utc>,
+    pub now: OffsetDateTime,
 }
 
 /// Stamp `replaced_by` in the same statement as a deprecation.
@@ -1076,7 +1076,7 @@ pub async fn retire_sku_head(
     tenant_id: Uuid,
     sku_id: Uuid,
     expected_internal_revision: i64,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<HeadWrite, RepoError> {
     let result = sku::Entity::update_many()
         .secure()
@@ -1118,7 +1118,7 @@ pub async fn retire_product_head(
     tenant_id: Uuid,
     product_id: Uuid,
     expected_internal_revision: i64,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<HeadWrite, RepoError> {
     let result = product::Entity::update_many()
         .secure()

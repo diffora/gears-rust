@@ -10,11 +10,11 @@
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-staleness-stamp:p1
 
-use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, QuerySelect};
+use time::OffsetDateTime;
 use toolkit_db::odata::sea_orm_filter::{
     FieldToColumn, LimitCfg, ODataFieldMapping, filter_node_to_condition, paginate_odata,
 };
@@ -155,7 +155,7 @@ pub struct NewReadEntity {
     /// Published version carried on the serving row.
     pub published_version: i64,
     /// This row's own last apply.
-    pub projected_at: DateTime<Utc>,
+    pub projected_at: OffsetDateTime,
 }
 
 /// Insert one serving row. The table admits overwrite on rebuild; this
@@ -367,7 +367,7 @@ pub struct InboxRow {
     pub payload_type: String,
     pub payload: String,
     pub actor_ref: Uuid,
-    pub created_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
 }
 
 /// Write one consumed event to the inbox **inside the caller's transaction**
@@ -386,7 +386,7 @@ pub async fn record_read_inbox(
     payload_type: &str,
     payload: &str,
     actor_ref: Uuid,
-    created_at: DateTime<Utc>,
+    created_at: OffsetDateTime,
 ) -> Result<(), RepoError> {
     let scope = AccessScope::for_tenant(tenant_id);
     let model = read_inbox::ActiveModel {
@@ -517,7 +517,7 @@ pub async fn inbox_pending(
     scope: &AccessScope,
     tenant_id: Uuid,
     after: i64,
-) -> Result<(u64, Option<DateTime<Utc>>), RepoError> {
+) -> Result<(u64, Option<OffsetDateTime>), RepoError> {
     let rows = read_inbox::Entity::find()
         .secure()
         .scope_with(scope)
@@ -545,7 +545,7 @@ pub async fn sweep_inbox(
     scope: &AccessScope,
     tenant_id: Uuid,
     up_to: i64,
-    before: DateTime<Utc>,
+    before: OffsetDateTime,
 ) -> Result<u64, RepoError> {
     let result = read_inbox::Entity::delete_many()
         .secure()
@@ -594,7 +594,7 @@ pub async fn write_read_checkpoint(
     tenant_id: Uuid,
     inbox_id: i64,
     generation: i64,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), RepoError> {
     let updated = read_checkpoint::Entity::update_many()
         .secure()
@@ -637,7 +637,7 @@ pub async fn park_poison(
     inbox_id: i64,
     payload_type: &str,
     error: &str,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<i32, RepoError> {
     let existing = read_poison::Entity::find()
         .secure()
@@ -715,7 +715,7 @@ pub async fn release_poison(
     runner: &impl DBRunner,
     scope: &AccessScope,
     inbox_id: i64,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), RepoError> {
     read_poison::Entity::update_many()
         .secure()
@@ -750,7 +750,7 @@ pub struct ReadEntityRow {
     pub display_attributes: Option<String>,
     pub category_paths: Option<String>,
     pub published_version: i64,
-    pub projected_at: DateTime<Utc>,
+    pub projected_at: OffsetDateTime,
     pub generation: i64,
 }
 
@@ -855,7 +855,7 @@ pub async fn set_read_entity_head_fields(
     deprecated: bool,
     deprecation_provenance: Option<&str>,
     replaced_by_sku_id: Option<Uuid>,
-    projected_at: DateTime<Utc>,
+    projected_at: OffsetDateTime,
 ) -> Result<bool, RepoError> {
     let sellable = if entity_kind == "sku" {
         Some(lifecycle_state == "published")
@@ -1393,7 +1393,7 @@ pub struct DeferredIntentQuery {
     pub children_count: i64,
     /// When the intent was recorded. The default order.
     #[odata(filter(kind = "DateTimeUtc"))]
-    pub created_at: chrono::DateTime<Utc>,
+    pub created_at: OffsetDateTime,
     /// How long it has been held, at the projector's last apply.
     #[odata(filter(kind = "I64"))]
     pub age_secs: i64,
@@ -1540,9 +1540,9 @@ pub struct FreezeStatusQuery {
     #[odata(filter(kind = "I64"))]
     pub forced: i64,
     #[odata(filter(kind = "DateTimeUtc"))]
-    pub published_at: chrono::DateTime<Utc>,
+    pub published_at: OffsetDateTime,
     #[odata(filter(kind = "DateTimeUtc"))]
-    pub polled_at: chrono::DateTime<Utc>,
+    pub polled_at: OffsetDateTime,
 }
 
 /// The vocabulary under the name the rest of the gear uses.

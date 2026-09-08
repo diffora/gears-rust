@@ -90,7 +90,7 @@ pub struct Model {
     /// The pseudonymous reference of the principal who published, resolved
     /// through `products_identity_ref` (`inst-fd-actor-ref`).
     pub actor_ref: Uuid,
-    pub published_at: ChronoDateTimeUtc,
+    pub published_at: TimeDateTimeWithTimeZone,
     /// What the metering `usageTypeRef` resolved to at publish — provenance
     /// beside the content, **outside the digest** (**P-D-134** row 6,
     /// `dod-binding-snapshot`, P-D-146). `NULL` for a Product row and for a

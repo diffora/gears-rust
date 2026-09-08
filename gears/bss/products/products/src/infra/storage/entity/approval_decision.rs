@@ -28,7 +28,7 @@ pub struct Model {
     pub verdict: String,
     pub reason: Option<String>,
     pub override_acknowledgments: Option<String>,
-    pub decided_at: ChronoDateTimeUtc,
+    pub decided_at: TimeDateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

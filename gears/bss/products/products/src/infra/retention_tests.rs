@@ -22,8 +22,8 @@
 
 use std::sync::Arc;
 
-use chrono::{Duration, Utc};
 use sea_orm_migration::MigratorTrait;
+use time::{Duration, OffsetDateTime};
 use toolkit_db::outbox::{Outbox, OutboxHandle, Partitions, outbox_migrations_with_prefix};
 use toolkit_db::secure::AccessScope;
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
@@ -116,17 +116,12 @@ fn scope() -> AccessScope {
 }
 
 /// An instant `days` in the past, truncated the way every write path does.
-fn days_ago(days: i64) -> chrono::DateTime<Utc> {
-    canonical::write_instant(Utc::now() - Duration::days(days))
+fn days_ago(days: i64) -> OffsetDateTime {
+    canonical::write_instant(OffsetDateTime::now_utc() - Duration::days(days))
 }
 
 /// Freeze one entity version.
-async fn seed_entity_version(
-    h: &Harness,
-    entity_id: Uuid,
-    version: i64,
-    at: chrono::DateTime<Utc>,
-) {
+async fn seed_entity_version(h: &Harness, entity_id: Uuid, version: i64, at: OffsetDateTime) {
     let conn = h.db.conn().expect("connection");
     let content = format!("{{\"name\":\"v{version}\"}}");
     repo::insert_entity_version(
@@ -156,7 +151,7 @@ async fn seed_corrupt_entity_version(
     h: &Harness,
     entity_id: Uuid,
     version: i64,
-    at: chrono::DateTime<Utc>,
+    at: OffsetDateTime,
     digest_version: i32,
 ) {
     let conn = h.db.conn().expect("connection");
@@ -185,7 +180,7 @@ async fn seed_corrupt_entity_version(
 async fn seed_catalog_version(
     h: &Harness,
     catalog_version_id: i64,
-    at: chrono::DateTime<Utc>,
+    at: OffsetDateTime,
     entries: &[(Uuid, i64)],
 ) {
     seed_catalog_version_with_participants(h, catalog_version_id, at, entries, "[]").await;
@@ -197,7 +192,7 @@ async fn seed_catalog_version(
 async fn seed_catalog_version_with_participants(
     h: &Harness,
     catalog_version_id: i64,
-    at: chrono::DateTime<Utc>,
+    at: OffsetDateTime,
     entries: &[(Uuid, i64)],
     participants: &str,
 ) {
@@ -274,7 +269,7 @@ async fn seed_capture(h: &Harness, catalog_version_id: i64, kind: &str) {
 
 /// One audit row, so the tenant exists for discovery and the audit class has
 /// a candidate.
-async fn seed_audit_row(h: &Harness, at: chrono::DateTime<Utc>) -> Uuid {
+async fn seed_audit_row(h: &Harness, at: OffsetDateTime) -> Uuid {
     let conn = h.db.conn().expect("connection");
     let audit_id = Uuid::now_v7();
     repo::write_eventless_act_audit(
@@ -335,9 +330,16 @@ async fn each_class_reads_its_own_window() {
     // Every window at 200 days: nothing is a candidate anywhere.
     let wide = caps(200);
     for class in RecordClass::ALL {
-        let outcome = sweep_class(&h.db, &wide, TENANT, class, SYSTEM, Utc::now())
-            .await
-            .expect("the pass runs");
+        let outcome = sweep_class(
+            &h.db,
+            &wide,
+            TENANT,
+            class,
+            SYSTEM,
+            OffsetDateTime::now_utc(),
+        )
+        .await
+        .expect("the pass runs");
         assert_eq!(
             outcome.candidates,
             0,
@@ -357,7 +359,7 @@ async fn each_class_reads_its_own_window() {
         TENANT,
         RecordClass::Version,
         SYSTEM,
-        Utc::now(),
+        OffsetDateTime::now_utc(),
     )
     .await
     .expect("the pass runs");
@@ -366,9 +368,16 @@ async fn each_class_reads_its_own_window() {
         "the version class must see its own narrowed window"
     );
     for other in [RecordClass::Financial, RecordClass::Audit] {
-        let outcome = sweep_class(&h.db, &narrowed, TENANT, other, SYSTEM, Utc::now())
-            .await
-            .expect("the pass runs");
+        let outcome = sweep_class(
+            &h.db,
+            &narrowed,
+            TENANT,
+            other,
+            SYSTEM,
+            OffsetDateTime::now_utc(),
+        )
+        .await
+        .expect("the pass runs");
         assert_eq!(
             outcome.candidates,
             0,
@@ -414,10 +423,17 @@ async fn the_excluded_populations_are_never_candidates() {
     let all = caps(0);
     let mut total = 0_u32;
     for class in RecordClass::ALL {
-        total += sweep_class(&h.db, &all, TENANT, class, SYSTEM, Utc::now())
-            .await
-            .expect("the pass runs")
-            .candidates;
+        total += sweep_class(
+            &h.db,
+            &all,
+            TENANT,
+            class,
+            SYSTEM,
+            OffsetDateTime::now_utc(),
+        )
+        .await
+        .expect("the pass runs")
+        .candidates;
     }
     assert!(
         total > 0,
@@ -449,7 +465,7 @@ async fn a_refusing_class_is_held_and_the_others_still_collect() {
         TENANT,
         RecordClass::Audit,
         SYSTEM,
-        Utc::now(),
+        OffsetDateTime::now_utc(),
     )
     .await
     .expect("the pass runs");
@@ -468,7 +484,7 @@ async fn a_refusing_class_is_held_and_the_others_still_collect() {
         TENANT,
         RecordClass::Version,
         SYSTEM,
-        Utc::now(),
+        OffsetDateTime::now_utc(),
     )
     .await
     .expect("the pass runs");
@@ -491,9 +507,16 @@ async fn every_pass_writes_an_audit_row_carrying_its_class_clock_and_verdict() {
     seed_audit_row(&h, days_ago(100)).await;
 
     for class in RecordClass::ALL {
-        sweep_class(&h.db, &caps(1), TENANT, class, SYSTEM, Utc::now())
-            .await
-            .expect("the pass runs");
+        sweep_class(
+            &h.db,
+            &caps(1),
+            TENANT,
+            class,
+            SYSTEM,
+            OffsetDateTime::now_utc(),
+        )
+        .await
+        .expect("the pass runs");
     }
     let reasons = sweep_audit_reasons(&h).await;
     assert_eq!(reasons.len(), 3, "one row per class per pass");
@@ -544,7 +567,7 @@ async fn a_referenced_version_is_refused_by_the_guard_and_not_by_the_sweep() {
         TENANT,
         RecordClass::Version,
         SYSTEM,
-        Utc::now(),
+        OffsetDateTime::now_utc(),
     )
     .await
     .expect("the pass runs");
@@ -603,7 +626,7 @@ async fn a_released_catalog_version_collects_whole() {
         TENANT,
         RecordClass::Financial,
         SYSTEM,
-        Utc::now(),
+        OffsetDateTime::now_utc(),
     )
     .await
     .expect("the pass runs");
@@ -658,7 +681,7 @@ async fn a_freeze_held_catalog_version_keeps_its_entries() {
         TENANT,
         RecordClass::Financial,
         SYSTEM,
-        Utc::now(),
+        OffsetDateTime::now_utc(),
     )
     .await
     .expect("the pass runs");
@@ -734,7 +757,7 @@ async fn the_release_stamp_is_what_the_delete_arm_reads() {
             &scope(),
             TENANT,
             1,
-            canonical::write_instant(Utc::now())
+            canonical::write_instant(OffsetDateTime::now_utc())
         )
         .await
         .expect("the stamp is admitted once"),
@@ -756,7 +779,7 @@ async fn the_release_stamp_cannot_be_moved_or_cleared() {
     seed_audit_row(&h, days_ago(100)).await;
     seed_catalog_version(&h, 1, days_ago(100), &[]).await;
     let conn = h.db.conn().expect("connection");
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
 
     assert!(
         repo::stamp_retention_release(&conn, &scope(), TENANT, 1, now)
@@ -835,7 +858,7 @@ async fn the_age_trigger_tombstones_the_aged_principal_and_only_that_one() {
         &sink,
         &caps(730),
         SYSTEM,
-        canonical::write_instant(Utc::now()),
+        canonical::write_instant(OffsetDateTime::now_utc()),
         &tokio_util::sync::CancellationToken::new(),
     )
     .await;
@@ -874,7 +897,7 @@ async fn the_age_path_writes_the_same_map_state_and_announces_the_same_event() {
         &sink,
         &caps(730),
         SYSTEM,
-        canonical::write_instant(Utc::now()),
+        canonical::write_instant(OffsetDateTime::now_utc()),
         &tokio_util::sync::CancellationToken::new(),
     )
     .await;
@@ -931,7 +954,7 @@ async fn a_second_age_pass_neither_restamps_nor_re_announces() {
         &sink,
         &caps(730),
         SYSTEM,
-        canonical::write_instant(Utc::now()),
+        canonical::write_instant(OffsetDateTime::now_utc()),
         &cancel,
     )
     .await;
@@ -941,7 +964,7 @@ async fn a_second_age_pass_neither_restamps_nor_re_announces() {
         &sink,
         &caps(730),
         SYSTEM,
-        canonical::write_instant(Utc::now()),
+        canonical::write_instant(OffsetDateTime::now_utc()),
         &cancel,
     )
     .await;
@@ -1007,7 +1030,7 @@ async fn a_clean_restore_verifies_both_halves() {
         &h.db,
         &caps_with_target(&target),
         SYSTEM,
-        canonical::write_instant(Utc::now()),
+        canonical::write_instant(OffsetDateTime::now_utc()),
         &tokio_util::sync::CancellationToken::new(),
     )
     .await;
@@ -1052,7 +1075,7 @@ async fn a_corrupted_restore_raises_the_alarm() {
         &h.db,
         &caps_with_target(&target),
         SYSTEM,
-        canonical::write_instant(Utc::now()),
+        canonical::write_instant(OffsetDateTime::now_utc()),
         &tokio_util::sync::CancellationToken::new(),
     )
     .await;
@@ -1091,7 +1114,7 @@ async fn a_foreign_digest_version_is_unverifiable_and_not_corruption() {
         &h.db,
         &caps_with_target(&target),
         SYSTEM,
-        canonical::write_instant(Utc::now()),
+        canonical::write_instant(OffsetDateTime::now_utc()),
         &tokio_util::sync::CancellationToken::new(),
     )
     .await;
@@ -1122,7 +1145,7 @@ async fn an_unconfigured_drill_still_records_its_run() {
         &h.db,
         &caps(3650),
         SYSTEM,
-        canonical::write_instant(Utc::now()),
+        canonical::write_instant(OffsetDateTime::now_utc()),
         &tokio_util::sync::CancellationToken::new(),
     )
     .await;
@@ -1300,7 +1323,7 @@ async fn a_failure_that_is_not_the_derive_rule_is_reported_as_a_storage_refusal(
         TENANT,
         RecordClass::Version,
         SYSTEM,
-        Utc::now(),
+        OffsetDateTime::now_utc(),
     )
     .await;
     // The candidate read itself now fails, which is the pass's own error --

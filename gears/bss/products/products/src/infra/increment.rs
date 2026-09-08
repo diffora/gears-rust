@@ -87,8 +87,8 @@
 
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use serde_json::{Map as JsonMap, Value as JsonValue};
+use time::OffsetDateTime;
 use toolkit_db::secure::AccessScope;
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
@@ -186,7 +186,7 @@ struct ReadyBatch {
 }
 
 /// Pick the ready window, bulk first (the starvation rule).
-fn ready_batch(pending: &[PendingIncrementRequest], now: DateTime<Utc>) -> Option<ReadyBatch> {
+fn ready_batch(pending: &[PendingIncrementRequest], now: OffsetDateTime) -> Option<ReadyBatch> {
     // Bulk groups, keyed by operation_key, ready when their own earliest
     // request has aged past the hard max. `pending` arrives oldest-first,
     // so the first ready group found is the longest-waiting one.
@@ -209,8 +209,7 @@ fn ready_batch(pending: &[PendingIncrementRequest], now: DateTime<Utc>) -> Optio
             .min()
             .unwrap_or(request.requested_at);
         if now
-            >= earliest
-                + chrono::Duration::from_std(BULK_WINDOW_MAX).unwrap_or(chrono::Duration::zero())
+            >= earliest + time::Duration::try_from(BULK_WINDOW_MAX).unwrap_or(time::Duration::ZERO)
         {
             return Some(ReadyBatch {
                 keys: group
@@ -229,8 +228,7 @@ fn ready_batch(pending: &[PendingIncrementRequest], now: DateTime<Utc>) -> Optio
         .collect();
     let earliest = interactive.iter().map(|r| r.requested_at).min()?;
     if now
-        >= earliest
-            + chrono::Duration::from_std(INTERACTIVE_WINDOW).unwrap_or(chrono::Duration::zero())
+        >= earliest + time::Duration::try_from(INTERACTIVE_WINDOW).unwrap_or(time::Duration::ZERO)
     {
         return Some(ReadyBatch {
             keys: interactive
@@ -432,7 +430,7 @@ pub async fn drain_tenant(
     db: &DBProvider<DbError>,
     sink: &crate::infra::broker::EventSink,
     tenant_id: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<DrainOutcome, RepoError> {
     let scope = AccessScope::for_tenant(tenant_id);
     // Demand first, on a plain connection: a tenant with nothing pending must
@@ -452,7 +450,7 @@ pub async fn drain_tenant(
         // The `requested → published` meter's operands (`dod-posting-safe-
         // observability`, P-D-56's batching SLO): each satisfied request's
         // lane and instant, read before the lease so the commit logs them.
-        let requested: Vec<(IncrementLane, DateTime<Utc>)> = pending
+        let requested: Vec<(IncrementLane, OffsetDateTime)> = pending
             .iter()
             .filter(|r| {
                 batch
@@ -533,15 +531,15 @@ pub async fn drain_tenant(
 /// structured line each.
 fn report_lane_latency(
     tenant_id: Uuid,
-    requested: &[(IncrementLane, DateTime<Utc>)],
-    now: DateTime<Utc>,
+    requested: &[(IncrementLane, OffsetDateTime)],
+    now: OffsetDateTime,
 ) {
     for (lane, requested_at) in requested {
         tracing::info!(
             event = "catalog_version_lane_latency",
             %tenant_id,
             lane = ?lane,
-            latency_ms = now.signed_duration_since(*requested_at).num_milliseconds(),
+            latency_ms = (now - *requested_at).whole_milliseconds(),
             "bss-products: requested -> published"
         );
     }
@@ -596,7 +594,7 @@ pub async fn commit_increment(
     tenant_id: Uuid,
     staged: VersionManifest,
     keys: Vec<(String, String)>,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<DrainOutcome, RepoError> {
     let scope = AccessScope::for_tenant(tenant_id);
 
@@ -770,13 +768,13 @@ pub struct OverdueFreeze {
 /// [`RepoError`] as the reads raise it.
 pub async fn overdue_freezes(
     db: &DBProvider<DbError>,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     freeze_timeout_hours: u32,
 ) -> Result<Vec<OverdueFreeze>, RepoError> {
     let conn = db
         .conn()
         .map_err(|e| RepoError::Db(format!("overdue scan connection: {e}")))?;
-    let cutoff = now - chrono::Duration::hours(i64::from(freeze_timeout_hours));
+    let cutoff = now - time::Duration::hours(i64::from(freeze_timeout_hours));
     let versions = repo::overdue_open_versions(&conn, &AccessScope::allow_all(), cutoff).await?;
     let mut overdue = Vec::with_capacity(versions.len());
     for (tenant_id, catalog_version_id) in versions {
@@ -820,7 +818,7 @@ const LEASE_TTL: Duration = Duration::from_secs(30);
 pub async fn sweep(
     db: &DBProvider<DbError>,
     sink: &crate::infra::broker::EventSink,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<(), RepoError> {
     let tenants = {
@@ -928,16 +926,15 @@ pub const INTERACTIVE_MAX: Duration = Duration::from_mins(5);
 /// @cpt-dod:cpt-cf-bss-products-dod-posting-safe-observability:p2
 pub async fn overdue_requests(
     db: &DBProvider<DbError>,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<Vec<OverdueRequest>, RepoError> {
     let conn = db
         .conn()
         .map_err(|e| RepoError::Db(format!("overdue request scan connection: {e}")))?;
     let tenants = repo::tenants_with_pending_requests(&conn, &AccessScope::allow_all()).await?;
-    let interactive =
-        chrono::Duration::from_std(INTERACTIVE_MAX).unwrap_or(chrono::Duration::zero());
-    let bulk = chrono::Duration::from_std(BULK_WINDOW_MAX).unwrap_or(chrono::Duration::zero())
-        + interactive;
+    let interactive = time::Duration::try_from(INTERACTIVE_MAX).unwrap_or(time::Duration::ZERO);
+    let bulk =
+        time::Duration::try_from(BULK_WINDOW_MAX).unwrap_or(time::Duration::ZERO) + interactive;
     let mut overdue = Vec::new();
     for tenant_id in tenants {
         let scope = AccessScope::for_tenant(tenant_id);
@@ -952,9 +949,7 @@ pub async fn overdue_requests(
                     lane: request.lane,
                     source: request.source.clone(),
                     request_key: request.request_key.clone(),
-                    age_secs: now
-                        .signed_duration_since(request.requested_at)
-                        .num_seconds(),
+                    age_secs: (now - request.requested_at).whole_seconds(),
                 });
             }
         }

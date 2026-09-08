@@ -43,10 +43,6 @@ opentelemetry = { workspace = true }
 # today only because `toolkit-db` happens to enable `v4` and Cargo unifies
 # features across the graph, which is a dependency this crate never stated.
 uuid = { workspace = true, features = ["v4"] }
-# `NewProduct`/`NewSku`'s and `ProductRecord`/`SkuRecord`'s `created_at` /
-# `updated_at`, carried as `DateTime<Utc>` at the repository boundary rather
-# than the `sea-orm`-internal alias the entities use.
-chrono = { workspace = true }
 
 # `SHA-256` for the idempotency payload digest and, from slice 06 on, a frozen
 # version row's `content_digest` (`domain::canonical`). The platform's own
@@ -81,6 +77,15 @@ toolkit-macros = { workspace = true }
 # typed `FilterField` vocabulary. `with-utoipa` because every paginated door
 # registers `Page<T>` as an `OpenAPI` schema, exactly as the sibling pricing
 # gear's manifest does.
+# The gear's one instant type (P-D-167): every column, domain field, DTO and
+# fixture is `time::OffsetDateTime`. It replaced `chrono` wholesale rather
+# than beside it, because two representations of one instant is what let a
+# keyset walk over a timestamp lose every tied row — the platform's cursor
+# codec decodes `FieldKind::DateTimeUtc` to this crate's type, and a column
+# of the other one did not compare equal to it on `SQLite`. The sibling
+# `account-management` and `chat-engine` gears are typed this way for the
+# same reason, and the ledger's own instant module says so in its first line.
+time = { workspace = true }
 toolkit-odata = { workspace = true, features = ["with-utoipa"] }
 # `#[derive(ODataFilterable)]` on the per-door filter declarations: one
 # struct per list surface whose fields ARE the filterable vocabulary, so the

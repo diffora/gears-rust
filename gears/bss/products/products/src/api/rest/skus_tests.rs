@@ -38,11 +38,11 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::IntoResponse as _;
-use chrono::{TimeZone, Utc};
 use sea_orm::sea_query::Expr;
 use sea_orm::{ConnectionTrait, Database};
 use sea_orm_migration::MigratorTrait;
 use serde_json::json;
+use time::OffsetDateTime;
 use toolkit::api::OpenApiRegistryImpl;
 use toolkit_db::outbox::{Outbox, OutboxHandle, Partitions, outbox_migrations_with_prefix};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
@@ -185,9 +185,9 @@ async fn freeze_parent_version(
     version: i64,
 ) {
     use crate::infra::storage::entity::entity_version;
-    use chrono::Utc;
     use sea_orm::ActiveValue::Set;
     use sea_orm::EntityTrait;
+    use time::OffsetDateTime;
     use toolkit_db::secure::SecureInsertExt as _;
 
     let conn = provider.conn().expect("scoped connection");
@@ -201,7 +201,7 @@ async fn freeze_parent_version(
         digest_version: Set(1),
         approval_ref: Set(None),
         actor_ref: Set(Uuid::from_u128(0xd1_09)),
-        published_at: Set(Utc::now()),
+        published_at: Set(OffsetDateTime::now_utc()),
         binding_snapshot: Set(None),
     };
     entity_version::Entity::insert(model.clone())
@@ -287,7 +287,7 @@ fn new_parent_product(product_id: Uuid, tenant_id: Uuid) -> NewProduct {
         region_scope: String::new(),
         brand_scope: String::new(),
         created_by: "principal:author-1".to_owned(),
-        created_at: Utc.with_ymd_and_hms(2026, 8, 29, 9, 0, 0).unwrap(),
+        created_at: crate::test_support::utc(2026, 8, 29, 9, 0, 0),
         cloned_from: None,
         cloned_from_version: None,
     }
@@ -380,7 +380,7 @@ async fn seed_live_claim(harness: &TestHarness, client_key: &str, payload_hash: 
         .conn()
         .expect("checkout the pinned production connection");
     let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let held = repo::claim_idempotency_key(
         &conn,
         &scope,
@@ -389,7 +389,7 @@ async fn seed_live_claim(harness: &TestHarness, client_key: &str, payload_hash: 
         client_key,
         payload_hash,
         now,
-        now + chrono::TimeDelta::hours(24),
+        now + time::Duration::hours(24),
     )
     .await
     .expect("seed the live claim this case collides with");
@@ -2360,8 +2360,8 @@ fn the_sku_content_builder_writes_exactly_the_roster() {
         region_scope: "eu".to_owned(),
         brand_scope: "acme".to_owned(),
         created_by: "principal:author-1".to_owned(),
-        created_at: Utc.with_ymd_and_hms(2026, 8, 29, 9, 0, 0).unwrap(),
-        updated_at: Utc.with_ymd_and_hms(2026, 8, 29, 9, 0, 0).unwrap(),
+        created_at: crate::test_support::utc(2026, 8, 29, 9, 0, 0),
+        updated_at: crate::test_support::utc(2026, 8, 29, 9, 0, 0),
         // Populated on the roster test's own premise (P-D-76 added the pair):
         // the builder legitimately omits an absent optional, so against a
         // bare fixture the equality would hold for a builder that dropped
@@ -4702,7 +4702,7 @@ mod meter_declaration_tests {
             "INSERT INTO products_recognized_set (tenant_id, set_kind, member_code, \
              display_label, state, seeded_by, created_at, updated_at) VALUES (X'{tenant}', \
              'metering_unit', '{code}', NULL, '{state}', NULL, \
-             '2026-08-29 09:00:00.000000 +00:00', '2026-08-29 09:00:00.000000 +00:00')",
+             '2026-08-29T09:00:00.000000Z', '2026-08-29T09:00:00.000000Z')",
             tenant = TENANT.simple(),
         ))
         .await
@@ -5351,10 +5351,10 @@ mod undeprecate_door_tests {
                 entity_kind: "sku".to_owned(),
                 entity_id: sku_id,
                 kind: "retire".to_owned(),
-                at: Utc.with_ymd_and_hms(2026, 12, 1, 0, 0, 0).unwrap(),
+                at: crate::test_support::utc(2026, 12, 1, 0, 0, 0),
                 approval_ref: Uuid::now_v7(),
                 retirement_reason: Some("fixture".to_owned()),
-                now: Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap(),
+                now: crate::test_support::utc(2026, 9, 2, 12, 0, 0),
             },
         )
         .await
@@ -5625,7 +5625,7 @@ mod retire_door_tests {
             .into_iter()
             .next()
             .expect("retire wrote a live intent");
-        let announced_at = intent.at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let announced_at = crate::domain::canonical::render_instant_secs(intent.at);
 
         let republished =
             post_publish(&harness, TENANT, sku_id, Some(&if_match_for(rev + 1))).await;
@@ -6328,10 +6328,10 @@ async fn creating_a_sku_under_a_retiring_parent_is_retirement_pending() {
             entity_kind: "product".to_owned(),
             entity_id: parent_id,
             kind: "retire".to_owned(),
-            at: Utc.with_ymd_and_hms(2026, 12, 1, 0, 0, 0).unwrap(),
+            at: crate::test_support::utc(2026, 12, 1, 0, 0, 0),
             approval_ref: Uuid::now_v7(),
             retirement_reason: Some("fixture".to_owned()),
-            now: Utc.with_ymd_and_hms(2026, 9, 4, 10, 0, 0).unwrap(),
+            now: crate::test_support::utc(2026, 9, 4, 10, 0, 0),
         },
     )
     .await
@@ -6381,10 +6381,10 @@ async fn reparenting_a_sku_onto_a_retiring_parent_is_retirement_pending() {
             entity_kind: "product".to_owned(),
             entity_id: retiring,
             kind: "retire".to_owned(),
-            at: Utc.with_ymd_and_hms(2026, 12, 1, 0, 0, 0).unwrap(),
+            at: crate::test_support::utc(2026, 12, 1, 0, 0, 0),
             approval_ref: Uuid::now_v7(),
             retirement_reason: Some("fixture".to_owned()),
-            now: Utc.with_ymd_and_hms(2026, 9, 4, 10, 0, 0).unwrap(),
+            now: crate::test_support::utc(2026, 9, 4, 10, 0, 0),
         },
     )
     .await
@@ -6476,9 +6476,15 @@ async fn a_record_spent_under_the_act_refuses_the_retirement_and_writes_nothing(
 
     let conn = harness.db.conn().expect("connection");
     let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
-    let spent = repo::consume_approval(&conn, &scope, TENANT, approval_id, Utc::now())
-        .await
-        .expect("consume out of band");
+    let spent = repo::consume_approval(
+        &conn,
+        &scope,
+        TENANT,
+        approval_id,
+        OffsetDateTime::now_utc(),
+    )
+    .await
+    .expect("consume out of band");
     assert_eq!(spent, repo::Consumption::Spent);
 
     let Err(refusal) = retire_under(&harness, sku_id, &etag, &stale_gate).await else {
@@ -7363,12 +7369,7 @@ mod correction_door_tests {
         );
     }
 
-    async fn post_watermark(
-        app: Router,
-        producer: &str,
-        at: chrono::DateTime<Utc>,
-        members: &[Uuid],
-    ) {
+    async fn post_watermark(app: Router, producer: &str, at: OffsetDateTime, members: &[Uuid]) {
         let response = app
             .oneshot(
                 Request::builder()
@@ -7377,8 +7378,13 @@ mod correction_door_tests {
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
                     .extension(authed_ctx(TENANT))
                     .body(Body::from(
-                        json!({ "producer": producer, "watermark_at": at, "sku_ids": members })
-                            .to_string(),
+                        json!({
+                            "producer": producer,
+                            "watermark_at":
+                                crate::domain::canonical::render_instant(at),
+                            "sku_ids": members,
+                        })
+                        .to_string(),
                     ))
                     .expect("build the request"),
             )
@@ -7440,7 +7446,13 @@ mod correction_door_tests {
         let other = Uuid::now_v7();
 
         // pricing references the SKU: the normal lane is shut.
-        post_watermark(app(), "pricing", Utc::now(), &[sku_id, other]).await;
+        post_watermark(
+            app(),
+            "pricing",
+            OffsetDateTime::now_utc(),
+            &[sku_id, other],
+        )
+        .await;
         let payload = type_correction("normal", None);
         approve_correction(&harness, sku_id, &etag, &payload).await;
         let refused = post_correction(app(), sku_id, &etag, &payload).await;
@@ -7457,7 +7469,7 @@ mod correction_door_tests {
         );
 
         // pricing posts a newer set omitting the SKU: fresh-zero.
-        post_watermark(app(), "pricing", Utc::now(), &[other]).await;
+        post_watermark(app(), "pricing", OffsetDateTime::now_utc(), &[other]).await;
         let corrected = post_correction(app(), sku_id, &etag, &payload).await;
         assert_eq!(
             corrected.status(),
@@ -7517,7 +7529,13 @@ mod correction_door_tests {
         let (sku_id, etag) = published_product(&harness, "SKU-CORR-2").await;
         let app = || correction_app(&harness, None, false);
         register_producer(&harness, app(), "pricing").await;
-        post_watermark(app(), "pricing", Utc::now(), &[Uuid::now_v7()]).await;
+        post_watermark(
+            app(),
+            "pricing",
+            OffsetDateTime::now_utc(),
+            &[Uuid::now_v7()],
+        )
+        .await;
 
         let payload = type_correction("normal", None);
         let no_record = post_correction(app(), sku_id, &etag, &payload).await;
@@ -7568,7 +7586,13 @@ mod correction_door_tests {
         let (sku_id, etag) = published_product(&harness, "SKU-CORR-3").await;
         let app = || correction_app(&harness, None, false);
         register_producer(&harness, app(), "pricing").await;
-        post_watermark(app(), "pricing", Utc::now(), &[Uuid::now_v7()]).await;
+        post_watermark(
+            app(),
+            "pricing",
+            OffsetDateTime::now_utc(),
+            &[Uuid::now_v7()],
+        )
+        .await;
 
         // A bucket-iii save dirties the head.
         let saved = patch_sku(
@@ -7629,9 +7653,15 @@ mod correction_door_tests {
         let on = || correction_app(&harness, None, true);
         register_producer(&harness, off(), "pricing").await;
         register_producer(&harness, off(), "billing").await;
-        let stale_at = Utc::now() - chrono::Duration::hours(2);
+        let stale_at = OffsetDateTime::now_utc() - time::Duration::hours(2);
         post_watermark(off(), "pricing", stale_at, &[sku_id]).await;
-        post_watermark(off(), "billing", Utc::now(), &[Uuid::now_v7()]).await;
+        post_watermark(
+            off(),
+            "billing",
+            OffsetDateTime::now_utc(),
+            &[Uuid::now_v7()],
+        )
+        .await;
 
         let payload = type_correction("breakglass", Some("pricing has been down for two hours"));
         approve_correction(&harness, sku_id, &etag, &payload).await;
@@ -7785,7 +7815,7 @@ mod correction_door_tests {
             ),
         ]));
         register_producer(&harness, referenced.clone(), "pricing").await;
-        post_watermark(referenced, "pricing", Utc::now(), &[sku_id]).await;
+        post_watermark(referenced, "pricing", OffsetDateTime::now_utc(), &[sku_id]).await;
 
         let payload = json!({
             "field": "meter",
@@ -8155,7 +8185,7 @@ async fn a_composition_clear_is_held_on_a_dirty_head_and_applies_once_it_is_publ
         bundle_id,
         signal,
         Uuid::nil(),
-        crate::domain::canonical::write_instant(Utc::now()),
+        crate::domain::canonical::write_instant(OffsetDateTime::now_utc()),
     )
     .await
     .unwrap_or_else(|_| panic!("the runner's re-evaluation runs"));
@@ -8226,7 +8256,7 @@ async fn a_composition_clear_is_held_behind_an_open_approval_and_applies_once_it
         bundle_id,
         signal,
         Uuid::nil(),
-        crate::domain::canonical::write_instant(Utc::now()),
+        crate::domain::canonical::write_instant(OffsetDateTime::now_utc()),
     )
     .await
     .unwrap_or_else(|_| panic!("the runner's re-evaluation runs"));
@@ -8736,10 +8766,10 @@ mod clone_revalidation_tests {
                     entity_kind: "product".to_owned(),
                     entity_id: parent_id,
                     kind: "retire".to_owned(),
-                    at: Utc.with_ymd_and_hms(2026, 12, 1, 0, 0, 0).unwrap(),
+                    at: crate::test_support::utc(2026, 12, 1, 0, 0, 0),
                     approval_ref: Uuid::now_v7(),
                     retirement_reason: Some("fixture".to_owned()),
-                    now: Utc.with_ymd_and_hms(2026, 9, 4, 10, 0, 0).unwrap(),
+                    now: crate::test_support::utc(2026, 9, 4, 10, 0, 0),
                 },
             )
             .await

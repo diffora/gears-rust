@@ -50,8 +50,8 @@ use std::time::Duration;
 
 use bss_products::infra::storage::RepoError;
 use bss_products::infra::storage::repo::{self, IdempotencyClaim};
-use chrono::{DateTime, TimeZone, Utc};
 use pg_support::Pg;
+use time::OffsetDateTime;
 use tokio::sync::Notify;
 use toolkit_db::secure::AccessScope;
 use uuid::Uuid;
@@ -77,8 +77,8 @@ const HASH_B: &[u8] = b"hash-b-0123456789abcdef0123456789";
 
 const RACE_TIMEOUT: Duration = Duration::from_secs(30);
 
-fn at(hour: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 30, hour, 0, 0).unwrap()
+fn at(hour: u32) -> OffsetDateTime {
+    utc(2026, 8, 30, u8::try_from(hour).expect("a component"), 0, 0)
 }
 
 fn scope() -> AccessScope {
@@ -92,8 +92,8 @@ fn scope() -> AccessScope {
 async fn claim(
     pg: &Pg,
     payload_hash: &'static [u8],
-    now: DateTime<Utc>,
-    expires_at: DateTime<Utc>,
+    now: OffsetDateTime,
+    expires_at: OffsetDateTime,
     park: Option<(Arc<Notify>, Arc<Notify>)>,
 ) -> tokio::task::JoinHandle<Result<IdempotencyClaim, toolkit_db::secure::TxError<RepoError>>> {
     let db = pg.db().await;
@@ -367,4 +367,18 @@ async fn held_hash(conn: &sea_orm::DatabaseConnection) -> Vec<u8> {
     .expect("the row is there")
     .try_get::<Vec<u8>>("", "v")
     .expect("read the payload hash")
+}
+
+/// One UTC instant from its civil components — the local twin of
+/// `bss_products::test_support::utc`, which is crate-private.
+fn utc(year: i32, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> OffsetDateTime {
+    time::Date::from_calendar_date(
+        year,
+        time::Month::try_from(month).expect("a month of the year"),
+        day,
+    )
+    .expect("a real date")
+    .with_hms(hour, minute, second)
+    .expect("a real civil time")
+    .assume_utc()
 }

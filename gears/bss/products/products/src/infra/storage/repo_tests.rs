@@ -43,11 +43,11 @@
 //! leaves unmeasured is the door, not the rule.
 #![allow(clippy::expect_used)]
 
-use chrono::Utc;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, DbBackend, DbErr, EntityTrait, RuntimeErr};
 use sea_orm_migration::MigratorTrait;
 use serde_json::json;
+use time::OffsetDateTime;
 use toolkit_db::contention::is_retryable_contention;
 use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureUpdateExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
@@ -499,7 +499,7 @@ async fn tombstone(
     scope: &AccessScope,
     tenant_id: Uuid,
     actor_ref: Uuid,
-    at: chrono::DateTime<Utc>,
+    at: OffsetDateTime,
 ) {
     identity_ref::Entity::update_many()
         .secure()
@@ -725,7 +725,7 @@ fn common(
     actor_ref: Uuid,
     action: &str,
     subject_kind: &str,
-    written_at: chrono::DateTime<Utc>,
+    written_at: OffsetDateTime,
 ) -> AuditCommon {
     AuditCommon {
         audit_id,
@@ -934,7 +934,7 @@ async fn stub_refusing_door(
     scope: &AccessScope,
     tenant_id: Uuid,
     principal_ref: &str,
-    now: chrono::DateTime<Utc>,
+    now: OffsetDateTime,
     product_id: Uuid,
     audit_id: Uuid,
 ) -> Result<(), DomainError> {
@@ -3467,7 +3467,7 @@ mod correction_override_tests {
         db
     }
 
-    fn override_at(at: chrono::DateTime<Utc>) -> NewCorrectionOverride {
+    fn override_at(at: OffsetDateTime) -> NewCorrectionOverride {
         NewCorrectionOverride {
             override_id: Uuid::new_v4(),
             sku_id: SKU,

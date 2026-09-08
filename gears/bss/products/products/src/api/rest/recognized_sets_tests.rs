@@ -273,7 +273,7 @@ async fn seed_holder(harness: &TestHarness, sku_code: &str, unit: &str) -> Uuid 
         .expect("open an auxiliary connection");
     let product_id = Uuid::now_v7();
     let sku_id = Uuid::now_v7();
-    let now = "2026-08-29 09:00:00.000000 +00:00";
+    let now = "2026-08-29T09:00:00.000000Z";
     for sql in [
         format!(
             "INSERT INTO products_product (product_id, tenant_id, brand_id, name, \
@@ -342,7 +342,7 @@ async fn draft_for_declaration(harness: &TestHarness) -> (Uuid, String) {
         .expect("open an auxiliary connection");
     let product_id = Uuid::now_v7();
     let sku_id = Uuid::now_v7();
-    let now = "2026-08-29 09:00:00.000000 +00:00";
+    let now = "2026-08-29T09:00:00.000000Z";
     for sql in [
         format!(
             "INSERT INTO products_product (product_id, tenant_id, brand_id, name, \
@@ -665,8 +665,8 @@ async fn a_seeded_member_deprecates_and_never_removes() {
     conn.execute_unprepared(&format!(
         "INSERT INTO products_recognized_set (tenant_id, set_kind, member_code, display_label, \
          state, seeded_by, created_at, updated_at) VALUES (X'{tenant}', 'metering_unit', \
-         'seeded_gib', NULL, 'active', 'platform-seed', '2026-08-29 09:00:00.000000 +00:00', \
-         '2026-08-29 09:00:00.000000 +00:00')",
+         'seeded_gib', NULL, 'active', 'platform-seed', '2026-08-29T09:00:00.000000Z', \
+         '2026-08-29T09:00:00.000000Z')",
         tenant = TENANT.simple(),
     ))
     .await
@@ -850,7 +850,7 @@ async fn seed_carrier(harness: &TestHarness, sku_code: &str, column: &str, value
         .expect("open an auxiliary connection");
     let product_id = Uuid::now_v7();
     let sku_id = Uuid::now_v7();
-    let now = "2026-08-29 09:00:00.000000 +00:00";
+    let now = "2026-08-29T09:00:00.000000Z";
     for sql in [
         format!(
             "INSERT INTO products_product (product_id, tenant_id, brand_id, name, \

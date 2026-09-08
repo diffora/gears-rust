@@ -37,12 +37,12 @@ pub struct Model {
     /// that table is 05's and does not ship.
     pub approval_ref: Option<Uuid>,
     /// The worker's claim stamp.
-    pub claimed_at: Option<ChronoDateTimeUtc>,
+    pub claimed_at: Option<TimeDateTimeWithTimeZone>,
     /// The worker's attempt counter, against its budget.
     pub attempt: i64,
-    pub created_at: ChronoDateTimeUtc,
+    pub created_at: TimeDateTimeWithTimeZone,
     /// Stamped when the batch reaches a terminal state.
-    pub terminal_at: Option<ChronoDateTimeUtc>,
+    pub terminal_at: Option<TimeDateTimeWithTimeZone>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

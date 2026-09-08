@@ -14,7 +14,7 @@
 //! suite from `canonical_tests`' own vector, so a drift on either engine
 //! fails on that engine and names itself.
 //!
-//! This was **unassertable until P-D-82**: `Utc::now()` carries nanoseconds,
+//! This was **unassertable until P-D-82**: `OffsetDateTime::now_utc()` carries nanoseconds,
 //! `SQLite` stores nine digits and Postgres `timestamptz` **rounds** to six,
 //! so the same logical entity could freeze under two `content` strings. The
 //! instants below are literal microsecond values inside the content string —

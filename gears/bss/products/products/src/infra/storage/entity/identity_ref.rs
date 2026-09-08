@@ -44,13 +44,13 @@ pub struct Model {
     /// Set once, by erasure, and never cleared. A tombstoned ref is retired
     /// permanently — a principal acting after its erasure mints a fresh row
     /// rather than reusing this one.
-    pub tombstoned_at: Option<ChronoDateTimeUtc>,
+    pub tombstoned_at: Option<TimeDateTimeWithTimeZone>,
     /// Stamped once, at mint, and never moved again.
-    pub first_seen_at: ChronoDateTimeUtc,
+    pub first_seen_at: TimeDateTimeWithTimeZone,
     /// The M2 age operand. Advanced by every act that resolves this ref, not
     /// by minting it — see this module's doc for the recorded failure that
     /// rule fixes.
-    pub last_seen_at: ChronoDateTimeUtc,
+    pub last_seen_at: TimeDateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

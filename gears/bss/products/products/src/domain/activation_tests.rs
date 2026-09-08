@@ -1,9 +1,10 @@
 //! Claim protocol and the two deferral populations.
 
-use chrono::{Duration, TimeZone, Utc};
+use time::Duration;
 use uuid::Uuid;
 
 use crate::domain::concurrency::InternalRevision;
+use time::OffsetDateTime;
 
 use super::{
     ACTIVATION_LANE, AttemptBudget, ClaimDecision, ClaimLease, DeferralPopulation, DoorRefusal,
@@ -20,8 +21,8 @@ fn lease() -> ClaimLease {
     }
 }
 
-fn t0() -> chrono::DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap()
+fn t0() -> OffsetDateTime {
+    crate::test_support::utc(2026, 9, 2, 12, 0, 0)
 }
 
 #[test]

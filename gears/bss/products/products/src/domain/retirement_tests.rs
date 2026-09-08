@@ -1,7 +1,7 @@
 //! Five flip-guard states, replacedBy, EOL, the lead window, and the
 //! `effectiveAt` host.
 
-use chrono::{Duration, TimeZone, Utc};
+use time::Duration;
 use uuid::Uuid;
 
 use super::{
@@ -91,20 +91,20 @@ fn eol_flag_off_refuses_must_migrate_by_and_admits_its_absence() {
 
 #[test]
 fn a_publish_inside_the_window_reannounces_and_one_outside_does_not() {
-    let scheduled = Utc.with_ymd_and_hms(2026, 9, 1, 0, 0, 0).unwrap();
-    let effective = Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
+    let scheduled = crate::test_support::utc(2026, 9, 1, 0, 0, 0);
+    let effective = crate::test_support::utc(2026, 10, 1, 0, 0, 0);
     assert!(publish_reannounces_retirement(
-        Utc.with_ymd_and_hms(2026, 9, 15, 0, 0, 0).unwrap(),
+        crate::test_support::utc(2026, 9, 15, 0, 0, 0),
         scheduled,
         effective
     ));
     assert!(!publish_reannounces_retirement(
-        Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap(),
+        crate::test_support::utc(2026, 10, 1, 0, 0, 0),
         scheduled,
         effective
     ));
     assert!(!publish_reannounces_retirement(
-        Utc.with_ymd_and_hms(2026, 8, 31, 0, 0, 0).unwrap(),
+        crate::test_support::utc(2026, 8, 31, 0, 0, 0),
         scheduled,
         effective
     ));
@@ -112,7 +112,7 @@ fn a_publish_inside_the_window_reannounces_and_one_outside_does_not() {
 
 #[test]
 fn effective_at_computes_the_floor_and_refuses_an_early_operator_instant() {
-    let now = Utc.with_ymd_and_hms(2026, 9, 2, 0, 0, 0).unwrap();
+    let now = crate::test_support::utc(2026, 9, 2, 0, 0, 0);
     let lead = Duration::days(30);
     assert_eq!(effective_at(now, lead, None).expect("computed"), now + lead);
     assert_eq!(

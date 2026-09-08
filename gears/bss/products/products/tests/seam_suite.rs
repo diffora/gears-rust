@@ -55,6 +55,7 @@ use std::path::{Path, PathBuf};
 
 use bss_pricing_sdk::product_catalog::CatalogSku;
 use bss_products_sdk::models::{LifecycleState, Sku};
+use time::OffsetDateTime;
 
 // ---------------------------------------------------------------------------
 // The two SDK shapes, exhaustively
@@ -435,7 +436,7 @@ async fn watermark_fixture_registry_half() {
     };
     let post = WatermarkPost {
         producer: "pricing".to_owned(),
-        watermark_at: chrono::Utc::now(),
+        watermark_at: OffsetDateTime::now_utc(),
         sku_ids: vec![uuid::Uuid::now_v7()],
     };
     let answer = UnconfiguredWatermarkPosts

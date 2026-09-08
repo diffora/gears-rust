@@ -121,8 +121,8 @@ use bss_products::infra::storage::repo::{
     self, HeadWrite, NewEntityVersion, NewProduct, NewSku, ProductHeadSave, SavedName, SkuHeadSave,
     VersionedEntityKind,
 };
-use chrono::{DateTime, TimeZone, Utc};
 use pg_support::Pg;
+use time::OffsetDateTime;
 use tokio::sync::Notify;
 use toolkit_db::secure::AccessScope;
 use uuid::Uuid;
@@ -140,8 +140,8 @@ const CONTESTED_REVISION: i64 = 1;
 
 const RACE_TIMEOUT: Duration = Duration::from_secs(30);
 
-fn at(hour: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 30, hour, 0, 0).unwrap()
+fn at(hour: u32) -> OffsetDateTime {
+    utc(2026, 8, 30, u8::try_from(hour).expect("a component"), 0, 0)
 }
 
 fn scope() -> AccessScope {
@@ -897,4 +897,18 @@ async fn sku_published_version(conn: &sea_orm::DatabaseConnection) -> i64 {
 /// guards, and the one this table has that its twin does not.
 async fn sku_composition_pending(conn: &sea_orm::DatabaseConnection) -> bool {
     head_column(conn, "products_sku", "sku_id", SKU, "composition_pending").await
+}
+
+/// One UTC instant from its civil components — the local twin of
+/// `bss_products::test_support::utc`, which is crate-private.
+fn utc(year: i32, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> OffsetDateTime {
+    time::Date::from_calendar_date(
+        year,
+        time::Month::try_from(month).expect("a month of the year"),
+        day,
+    )
+    .expect("a real date")
+    .with_hms(hour, minute, second)
+    .expect("a real civil time")
+    .assume_utc()
 }

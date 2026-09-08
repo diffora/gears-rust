@@ -26,7 +26,7 @@ pub struct Model {
     /// The digest rule the checksum was computed under (P-D-73 arm 1).
     pub digest_version: i32,
     /// The commit instant.
-    pub published_at: ChronoDateTimeUtc,
+    pub published_at: TimeDateTimeWithTimeZone,
     /// Derived cache of the participant set; the authoritative copy is the
     /// capture store's, inside the checksum (P-D-67).
     pub participant_set_snapshot: String,
@@ -43,7 +43,7 @@ pub struct Model {
     /// deletion is then always a deliberate two-step recorded in the row.
     /// That only the GC stamps is a code invariant, counted by
     /// `lib_tests::every_writer_of_a_release_stamp_is_counted`.
-    pub retention_released_at: Option<ChronoDateTimeUtc>,
+    pub retention_released_at: Option<TimeDateTimeWithTimeZone>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

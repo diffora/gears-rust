@@ -75,6 +75,7 @@ use toolkit::contracts::RestApiCapability;
 use toolkit::{Gear, GearCtx};
 
 use crate::config::ProductsConfig;
+use time::OffsetDateTime;
 
 /// Table-family prefix for this gear's `toolkit_db::outbox` instance
 /// (P-D-22: "its tables ... carry a configurable prefix"). Names the gear
@@ -299,7 +300,7 @@ impl BssProductsGear {
                     activation_tick(&rt, &cancel).await;
                     breakglass_sla_tick(&rt, &cancel).await;
                     if tick_count.is_multiple_of(OVERDUE_SCAN_EVERY_TICKS) {
-                        let now = crate::domain::canonical::write_instant(chrono::Utc::now());
+                        let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
                         report_overdue_freezes(&db, now, rt.freeze_timeout_hours, &cancel).await;
                         report_overdue_requests(&db, now, &cancel).await;
                     }
@@ -344,11 +345,11 @@ pub(crate) fn system_actor_ref() -> uuid::Uuid {
 }
 
 async fn activation_tick(rt: &ProductsRuntime, cancel: &tokio_util::sync::CancellationToken) {
-    let now = crate::domain::canonical::write_instant(chrono::Utc::now());
+    let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
     let ctx = crate::infra::activation_runner::ActivationContext {
         db: rt.sdk_state.db.clone(),
         lease: crate::domain::activation::ClaimLease {
-            ttl: chrono::Duration::seconds(i64::from(rt.activation_claim_lease_secs)),
+            ttl: time::Duration::seconds(i64::from(rt.activation_claim_lease_secs)),
         },
         budget: crate::domain::activation::AttemptBudget {
             max: i32::try_from(rt.activation_attempt_budget).unwrap_or(i32::MAX),
@@ -375,7 +376,7 @@ async fn breakglass_sla_tick(rt: &ProductsRuntime, cancel: &tokio_util::sync::Ca
     if cancel.is_cancelled() {
         return;
     }
-    let now = crate::domain::canonical::write_instant(chrono::Utc::now());
+    let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
     let Ok(conn) = rt.sdk_state.db.conn() else {
         return;
     };
@@ -411,7 +412,7 @@ async fn alert_overdue_session(
     conn: &(impl toolkit_db::secure::DBRunner + Sync),
     scope: &toolkit_db::secure::AccessScope,
     session: &crate::infra::storage::entity::breakglass_session::Model,
-    now: chrono::DateTime<chrono::Utc>,
+    now: OffsetDateTime,
 ) {
     match crate::infra::storage::repo::stamp_posthoc_overdue(conn, scope, session.session_id, now)
         .await
@@ -438,7 +439,7 @@ async fn batch_tick(
     actor_ref: uuid::Uuid,
     cancel: &tokio_util::sync::CancellationToken,
 ) {
-    let now = crate::domain::canonical::write_instant(chrono::Utc::now());
+    let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
     if let Err(error) = crate::infra::bulk_worker::sweep(ctx, actor_ref, now, cancel).await {
         tracing::warn!(%error, "bss-products: batch worker sweep failed");
     }
@@ -454,7 +455,7 @@ async fn coalescer_tick(
     sink: &crate::infra::broker::EventSink,
     cancel: &tokio_util::sync::CancellationToken,
 ) {
-    let now = crate::domain::canonical::write_instant(chrono::Utc::now());
+    let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
     if let Err(error) = crate::infra::increment::sweep(db, sink, now, cancel).await {
         tracing::warn!(%error, "bss-products: coalescer sweep failed");
     }
@@ -468,7 +469,7 @@ async fn coalescer_tick(
 /// lane and the age — the pending-request-age gauge's rows, too.
 async fn report_overdue_requests(
     db: &toolkit_db::DBProvider<toolkit_db::DbError>,
-    now: chrono::DateTime<chrono::Utc>,
+    now: OffsetDateTime,
     cancel: &tokio_util::sync::CancellationToken,
 ) {
     if cancel.is_cancelled() {
@@ -494,7 +495,7 @@ async fn report_overdue_requests(
 
 async fn report_overdue_freezes(
     db: &toolkit_db::DBProvider<toolkit_db::DbError>,
-    now: chrono::DateTime<chrono::Utc>,
+    now: OffsetDateTime,
     freeze_timeout_hours: u32,
     cancel: &tokio_util::sync::CancellationToken,
 ) {
@@ -550,7 +551,7 @@ async fn retention_tick(
     cancel: &tokio_util::sync::CancellationToken,
 ) {
     if tick_count.is_multiple_of(RETENTION_SWEEP_EVERY_TICKS) {
-        let now = crate::domain::canonical::write_instant(chrono::Utc::now());
+        let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
         crate::infra::retention::sweep(db, &rt.retention_caps, rt.system_actor_ref, now, cancel)
             .await;
         crate::infra::retention::tombstone_aged_principals(
@@ -564,7 +565,7 @@ async fn retention_tick(
         .await;
     }
     if drill_due(tick_count, rt.retention_caps.drill_cadence_hours) {
-        let now = crate::domain::canonical::write_instant(chrono::Utc::now());
+        let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
         crate::infra::retention::run_restore_drill(
             db,
             &rt.retention_caps,
@@ -612,7 +613,7 @@ fn projector_context(rt: &ProductsRuntime) -> crate::infra::projector::Projector
 /// its checkpoint. A failed pass is logged and retried next tick — the inbox
 /// is the record.
 async fn projector_tick(rt: &ProductsRuntime, cancel: &tokio_util::sync::CancellationToken) {
-    let now = crate::domain::canonical::write_instant(chrono::Utc::now());
+    let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
     if let Err(error) = crate::infra::projector::sweep(&projector_context(rt), now, cancel).await {
         tracing::warn!(%error, "bss-products: read projector pass failed");
     }
@@ -620,7 +621,7 @@ async fn projector_tick(rt: &ProductsRuntime, cancel: &tokio_util::sync::Cancell
 
 /// One poll of the three dashboards (`inst-ps-dashboards`, P-D-126 row 10).
 async fn dashboard_tick(rt: &ProductsRuntime, cancel: &tokio_util::sync::CancellationToken) {
-    let now = crate::domain::canonical::write_instant(chrono::Utc::now());
+    let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
     if let Err(error) =
         crate::infra::projector::poll_dashboards(&projector_context(rt), now, cancel).await
     {
@@ -630,7 +631,7 @@ async fn dashboard_tick(rt: &ProductsRuntime, cancel: &tokio_util::sync::Cancell
 
 /// The inbox sweep past the retention window.
 async fn inbox_sweep_tick(rt: &ProductsRuntime, cancel: &tokio_util::sync::CancellationToken) {
-    let now = crate::domain::canonical::write_instant(chrono::Utc::now());
+    let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
     match crate::infra::projector::sweep_inbox(&projector_context(rt), now, cancel).await {
         Ok(swept) if swept > 0 => {
             tracing::info!(swept, "bss-products: read inbox swept past retention");

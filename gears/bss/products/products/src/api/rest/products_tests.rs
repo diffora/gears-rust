@@ -65,10 +65,10 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::IntoResponse as _;
-use chrono::{TimeZone, Utc};
 use sea_orm::{ConnectionTrait, Database};
 use sea_orm_migration::MigratorTrait;
 use serde_json::json;
+use time::OffsetDateTime;
 use toolkit::api::OpenApiRegistryImpl;
 use toolkit_db::outbox::{Outbox, OutboxHandle, Partitions, outbox_migrations_with_prefix};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
@@ -224,7 +224,7 @@ fn new_product(product_id: Uuid, tenant_id: Uuid) -> NewProduct {
         region_scope: "eu".to_owned(),
         brand_scope: String::new(),
         created_by: "principal:author-1".to_owned(),
-        created_at: Utc.with_ymd_and_hms(2026, 8, 29, 9, 0, 0).unwrap(),
+        created_at: crate::test_support::utc(2026, 8, 29, 9, 0, 0),
         cloned_from: None,
         cloned_from_version: None,
     }
@@ -325,7 +325,7 @@ async fn seed_live_claim(harness: &TestHarness, client_key: &str, payload_hash: 
         .conn()
         .expect("checkout the pinned production connection");
     let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let held = repo::claim_idempotency_key(
         &conn,
         &scope,
@@ -334,7 +334,7 @@ async fn seed_live_claim(harness: &TestHarness, client_key: &str, payload_hash: 
         client_key,
         payload_hash,
         now,
-        now + chrono::TimeDelta::hours(24),
+        now + time::Duration::hours(24),
     )
     .await
     .expect("seed the live claim this case collides with");
@@ -365,7 +365,7 @@ async fn seed_answered_claim(harness: &TestHarness, client_key: &str, payload_ha
         .conn()
         .expect("checkout the pinned production connection");
     let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let outcome = repo::claim_idempotency_key(
         &conn,
         &scope,
@@ -374,7 +374,7 @@ async fn seed_answered_claim(harness: &TestHarness, client_key: &str, payload_ha
         client_key,
         payload_hash,
         now,
-        now + chrono::TimeDelta::hours(24),
+        now + time::Duration::hours(24),
     )
     .await
     .expect("seed the claim this case answers");
@@ -1322,7 +1322,7 @@ async fn the_same_key_against_a_different_endpoint_also_claims() {
         .conn()
         .expect("checkout the pinned production connection");
     let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let outcome = repo::claim_idempotency_key(
         &conn,
         &scope,
@@ -1331,7 +1331,7 @@ async fn the_same_key_against_a_different_endpoint_also_claims() {
         "shared-key",
         b"a-lane's-own-digest",
         now,
-        now + chrono::TimeDelta::hours(24),
+        now + time::Duration::hours(24),
     )
     .await
     .expect("the lane's claim is taken");
@@ -5679,7 +5679,7 @@ mod family_clone_tests {
                 region_scope: "eu".to_owned(),
                 brand_scope: String::new(),
                 created_by: "principal:author-1".to_owned(),
-                created_at: Utc.with_ymd_and_hms(2026, 8, 29, 9, 30, 0).unwrap(),
+                created_at: crate::test_support::utc(2026, 8, 29, 9, 30, 0),
                 cloned_from: None,
                 cloned_from_version: None,
                 sku_type: "product".to_owned(),
@@ -5867,7 +5867,7 @@ mod family_clone_tests {
         let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
         let endpoint = format!("/bss-products/v1/products/{source_id}/clone");
         let digest = crate::domain::idempotency::payload_digest(&serde_json::json!({}));
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let claimed = repo::claim_idempotency_key(
             &conn,
             &scope,
@@ -5876,7 +5876,7 @@ mod family_clone_tests {
             "resume-key",
             &digest,
             now,
-            now + chrono::Duration::hours(24),
+            now + time::Duration::hours(24),
         )
         .await
         .expect("seed the crashed claim");
@@ -6450,7 +6450,7 @@ mod deprecate_door_tests {
                 region_scope: "eu".to_owned(),
                 brand_scope: String::new(),
                 created_by: "principal:author-1".to_owned(),
-                created_at: Utc.with_ymd_and_hms(2026, 8, 29, 9, 30, 0).unwrap(),
+                created_at: crate::test_support::utc(2026, 8, 29, 9, 30, 0),
                 cloned_from: None,
                 cloned_from_version: None,
                 sku_type: "product".to_owned(),
@@ -6860,7 +6860,7 @@ mod deprecate_door_tests {
             TENANT,
             live,
             99,
-            Utc.with_ymd_and_hms(2026, 8, 29, 10, 0, 0).unwrap(),
+            crate::test_support::utc(2026, 8, 29, 10, 0, 0),
         )
         .await
         .expect("the write itself runs");
@@ -6883,7 +6883,7 @@ mod deprecate_door_tests {
             TENANT,
             live,
             row.internal_revision,
-            Utc.with_ymd_and_hms(2026, 8, 29, 10, 0, 0).unwrap(),
+            crate::test_support::utc(2026, 8, 29, 10, 0, 0),
         )
         .await
         .expect("the write itself runs");
@@ -6921,10 +6921,10 @@ mod undeprecate_door_tests {
                 entity_kind: entity_kind.to_owned(),
                 entity_id,
                 kind: "retire".to_owned(),
-                at: Utc.with_ymd_and_hms(2026, 12, 1, 0, 0, 0).unwrap(),
+                at: crate::test_support::utc(2026, 12, 1, 0, 0, 0),
                 approval_ref: Uuid::now_v7(),
                 retirement_reason: Some("fixture".to_owned()),
-                now: Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap(),
+                now: crate::test_support::utc(2026, 9, 2, 12, 0, 0),
             },
         )
         .await
@@ -7325,7 +7325,7 @@ mod retire_door_tests {
             .into_iter()
             .next()
             .expect("retire wrote a live intent");
-        let announced_at = intent.at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let announced_at = crate::domain::canonical::render_instant_secs(intent.at);
 
         let republished = post_head_act(
             &harness,
@@ -7456,10 +7456,10 @@ mod retire_door_tests {
                     entity_kind: "sku".to_owned(),
                     entity_id: child,
                     kind: "retire".to_owned(),
-                    at: Utc.with_ymd_and_hms(2026, 12, 1, 0, 0, 0).unwrap(),
+                    at: crate::test_support::utc(2026, 12, 1, 0, 0, 0),
                     approval_ref: Uuid::now_v7(),
                     retirement_reason: Some("earlier".to_owned()),
-                    now: Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap(),
+                    now: crate::test_support::utc(2026, 9, 2, 12, 0, 0),
                 },
             )
             .await
@@ -7591,7 +7591,7 @@ mod cancel_retire_door_tests {
                 .conn()
                 .expect("checkout the pinned production connection");
             let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
-            let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
+            let now = crate::test_support::utc(2026, 9, 2, 12, 0, 0);
             repo::insert_scheduled_transition(
                 &conn,
                 &scope,
@@ -7601,7 +7601,7 @@ mod cancel_retire_door_tests {
                     entity_kind: "product".to_owned(),
                     entity_id: product_id,
                     kind: "retire".to_owned(),
-                    at: Utc.with_ymd_and_hms(2026, 12, 1, 0, 0, 0).unwrap(),
+                    at: crate::test_support::utc(2026, 12, 1, 0, 0, 0),
                     approval_ref: Uuid::now_v7(),
                     retirement_reason: Some("cascade".to_owned()),
                     now,
@@ -8725,7 +8725,7 @@ mod clone_revalidation_tests {
             seed_definition(harness, "displayName", "string", definition_state, "").await;
         let conn = harness.db.conn().expect("conn");
         let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
-        let now = crate::domain::canonical::write_instant(Utc::now());
+        let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
         repo::replace_category_assignments(
             &conn,
             &scope,
@@ -8897,7 +8897,7 @@ mod clone_revalidation_tests {
                     brand: "",
                 },
                 "Old",
-                crate::domain::canonical::write_instant(Utc::now()),
+                crate::domain::canonical::write_instant(OffsetDateTime::now_utc()),
             )
             .await
             .expect("value");
@@ -8985,7 +8985,7 @@ mod clone_revalidation_tests {
         {
             let conn = harness.db.conn().expect("conn");
             let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
-            let now = crate::domain::canonical::write_instant(Utc::now());
+            let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
             repo::replace_category_assignments(
                 &conn,
                 &scope,
@@ -9119,7 +9119,7 @@ mod clone_revalidation_tests {
         {
             let conn = harness.db.conn().expect("conn");
             let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
-            let now = crate::domain::canonical::write_instant(Utc::now());
+            let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
             repo::replace_category_assignments(
                 &conn,
                 &scope,

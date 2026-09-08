@@ -5,7 +5,7 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-runner-failure-posture:p1
 
 use axum::http::StatusCode;
-use chrono::{DateTime, SecondsFormat, Utc};
+use time::OffsetDateTime;
 use toolkit_db::secure::{AccessScope, TxConfig};
 use uuid::Uuid;
 
@@ -87,7 +87,7 @@ fn system_security_context(tenant_id: Uuid) -> toolkit_security::SecurityContext
 pub(crate) async fn sweep(
     ctx: &ActivationContext,
     actor_ref: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<(), RepoError> {
     let tenants = {
@@ -133,7 +133,7 @@ async fn sweep_tenant(
     ctx: &ActivationContext,
     tenant_id: Uuid,
     actor_ref: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<(), RepoError> {
     let conn = ctx
@@ -203,7 +203,7 @@ async fn apply_held_composition_clears(
     conn: &impl toolkit_db::secure::DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     ctx: &ActivationContext,
     actor_ref: Uuid,
 ) -> Result<(), RepoError> {
@@ -254,11 +254,11 @@ async fn emit_retirement_held_alerts(
     runner: &(impl toolkit_db::secure::DBRunner + Sync),
     scope: &AccessScope,
     tenant_id: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     ctx: &ActivationContext,
     actor_ref: Uuid,
 ) -> Result<(), RepoError> {
-    let cutoff = now - chrono::Duration::hours(i64::from(ctx.retirement_held_alert_hours));
+    let cutoff = now - time::Duration::hours(i64::from(ctx.retirement_held_alert_hours));
     let held = repo::list_held_deferrals(runner, scope, tenant_id, cutoff).await?;
     for row in held {
         let reason = row.outcome_reason.clone().unwrap_or_default();
@@ -297,7 +297,7 @@ async fn run_one(
     scope: &AccessScope,
     tenant_id: Uuid,
     row: &scheduled_transition::Model,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     ctx: &ActivationContext,
     actor_ref: Uuid,
 ) -> Result<(), RepoError> {
@@ -338,7 +338,7 @@ async fn persist_finish(
     tenant_id: Uuid,
     row: &scheduled_transition::Model,
     finish: &RunFinish,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     actor_ref: Uuid,
 ) -> Result<(), RepoError> {
     let sink = ctx.sink.clone();
@@ -439,7 +439,7 @@ async fn pin_finish(
     scope: &AccessScope,
     tenant_id: Uuid,
     row: &scheduled_transition::Model,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     ctx: &ActivationContext,
     actor_ref: Uuid,
 ) -> Result<RunFinish, RepoError> {
@@ -549,7 +549,7 @@ struct DoorDrive<'a> {
     row: &'a scheduled_transition::Model,
     kind: EntityKind,
     expected: InternalRevision,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     actor_ref: Uuid,
     gate: &'a StoredApprovalGate,
     attempt: i32,
@@ -634,7 +634,7 @@ async fn flip_sku_retired(
     scope: &AccessScope,
     tenant_id: Uuid,
     row: &scheduled_transition::Model,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     freshness: std::time::Duration,
 ) -> Result<RunFinish, RepoError> {
     // @cpt-dod:cpt-cf-bss-products-dod-replaced-by:p1 — live pointers defer.
@@ -704,7 +704,7 @@ async fn consult_flip_guard(
     scope: &AccessScope,
     tenant_id: Uuid,
     entity_id: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     freshness: std::time::Duration,
 ) -> Result<Option<RunFinish>, RepoError> {
     let eval = crate::api::rest::reference::evaluate_reference(
@@ -763,7 +763,7 @@ async fn apply_retire_flip(
     scope: &AccessScope,
     tenant_id: Uuid,
     row: &scheduled_transition::Model,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     sink: &EventSink,
     actor_ref: Uuid,
 ) -> Result<(), RepoError> {
@@ -867,7 +867,7 @@ async fn announce_retirement_effective(
             from_version,
             reason: row.retirement_reason.clone().unwrap_or_default(),
             replaced_by,
-            effective_at: row.at.to_rfc3339_opts(SecondsFormat::Secs, true),
+            effective_at: crate::domain::canonical::render_instant_secs(row.at),
             must_migrate_by: None,
         },
         actor_ref,

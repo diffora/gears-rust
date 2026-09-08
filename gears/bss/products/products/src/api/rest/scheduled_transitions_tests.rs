@@ -6,7 +6,6 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use chrono::{TimeZone, Utc};
 use serde_json::{Value as JsonValue, json};
 use toolkit::api::OpenApiRegistryImpl;
 use toolkit_db::outbox::{Outbox, OutboxHandle, Partitions, outbox_migrations_with_prefix};
@@ -180,14 +179,14 @@ async fn body_of(response: axum::http::Response<Body>) -> JsonValue {
 }
 
 fn seed_row(transition_id: Uuid, tenant_id: Uuid) -> NewScheduledTransition {
-    let now = Utc.with_ymd_and_hms(2026, 9, 4, 10, 0, 0).unwrap();
+    let now = crate::test_support::utc(2026, 9, 4, 10, 0, 0);
     NewScheduledTransition {
         transition_id,
         tenant_id,
         entity_kind: "sku".to_owned(),
         entity_id: ENTITY,
         kind: "retire".to_owned(),
-        at: now - chrono::Duration::hours(1),
+        at: now - time::Duration::hours(1),
         approval_ref: APPROVAL,
         retirement_reason: Some("operator text".to_owned()),
         now,
@@ -202,7 +201,7 @@ async fn get_lists_deferred_rows_with_outcome_reason_and_filters_by_state() {
     let conn = harness.db.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
     let other_scope = AccessScope::for_tenant(OTHER);
-    let now = Utc.with_ymd_and_hms(2026, 9, 4, 11, 0, 0).unwrap();
+    let now = crate::test_support::utc(2026, 9, 4, 11, 0, 0);
 
     insert_scheduled_transition(&conn, &scope, &seed_row(TRANSITION, TENANT))
         .await
@@ -307,7 +306,7 @@ async fn cancel_supersedes_the_row_and_the_runner_never_claims_it() {
     let harness = harness().await;
     let conn = harness.db.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
-    let now = Utc.with_ymd_and_hms(2026, 9, 4, 11, 0, 0).unwrap();
+    let now = crate::test_support::utc(2026, 9, 4, 11, 0, 0);
 
     insert_scheduled_transition(&conn, &scope, &seed_row(TRANSITION, TENANT))
         .await
@@ -328,7 +327,7 @@ async fn cancel_supersedes_the_row_and_the_runner_never_claims_it() {
         TENANT,
         now,
         ClaimLease {
-            ttl: chrono::Duration::seconds(60),
+            ttl: time::Duration::seconds(60),
         },
     )
     .await

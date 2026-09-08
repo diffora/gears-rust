@@ -4,11 +4,11 @@
 //! byte-identity re-render, and `inst-sn-revalidate`'s stage-vs-commit
 //! compare through the [`commit_increment`] seam.
 
-use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::EntityTrait as _;
 use sea_orm_migration::MigratorTrait;
 use serde_json::Value as JsonValue;
+use time::OffsetDateTime;
 use toolkit_db::secure::{AccessScope, SecureEntityExt as _, SecureInsertExt as _};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
@@ -97,8 +97,8 @@ fn scope() -> AccessScope {
 
 /// The test clock: a fixed whole-second instant, so window arithmetic is
 /// exact and stored instants trivially satisfy P-D-82.
-fn t0() -> chrono::DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 9, 1, 12, 0, 0).unwrap()
+fn t0() -> OffsetDateTime {
+    crate::test_support::utc(2026, 9, 1, 12, 0, 0)
 }
 
 async fn seed_published_product(harness: &Harness, name: &str) -> Uuid {
@@ -117,7 +117,7 @@ async fn seed_published_product(harness: &Harness, name: &str) -> Uuid {
             region_scope: String::new(),
             brand_scope: String::new(),
             created_by: "principal:coalescer-test".to_owned(),
-            created_at: t0() - ChronoDuration::hours(1),
+            created_at: t0() - time::Duration::hours(1),
             cloned_from: None,
             cloned_from_version: None,
         },
@@ -139,7 +139,7 @@ async fn seed_published_product(harness: &Harness, name: &str) -> Uuid {
             digest_version: 1,
             approval_ref: None,
             actor_ref: Uuid::now_v7(),
-            published_at: t0() - ChronoDuration::minutes(30),
+            published_at: t0() - time::Duration::minutes(30),
             binding_snapshot: None,
         },
     )
@@ -151,7 +151,7 @@ async fn seed_published_product(harness: &Harness, name: &str) -> Uuid {
         TENANT,
         product_id,
         1,
-        t0() - ChronoDuration::minutes(30),
+        t0() - time::Duration::minutes(30),
     )
     .await
     .expect("move the head to published");
@@ -175,7 +175,7 @@ async fn enqueue(
             request_key: key,
             lane,
             operation_key: op,
-            requested_at: t0() - ChronoDuration::seconds(age_secs),
+            requested_at: t0() - time::Duration::seconds(age_secs),
         },
     )
     .await
@@ -375,7 +375,7 @@ async fn the_participant_snapshot_seeds_the_ledger() {
         let model = freeze_participant::ActiveModel {
             tenant_id: Set(TENANT),
             participant: Set("pricing".to_owned()),
-            registered_at: Set(t0() - ChronoDuration::hours(2)),
+            registered_at: Set(t0() - time::Duration::hours(2)),
         };
         freeze_participant::Entity::insert(model.clone())
             .secure()
@@ -636,7 +636,7 @@ async fn the_overdue_scan_names_the_silent_participants() {
         let model = freeze_participant::ActiveModel {
             tenant_id: Set(TENANT),
             participant: Set("pricing".to_owned()),
-            registered_at: Set(t0() - ChronoDuration::hours(3)),
+            registered_at: Set(t0() - time::Duration::hours(3)),
         };
         freeze_participant::Entity::insert(model.clone())
             .secure()
@@ -659,7 +659,7 @@ async fn the_overdue_scan_names_the_silent_participants() {
         "a version inside the timeout is not named"
     );
 
-    let overdue = super::overdue_freezes(&harness.db, t0() + ChronoDuration::hours(25), 24)
+    let overdue = super::overdue_freezes(&harness.db, t0() + time::Duration::hours(25), 24)
         .await
         .expect("scan");
     assert_eq!(overdue.len(), 1);
@@ -682,7 +682,7 @@ async fn the_registered_producer_set_rides_the_capture_store() {
             TENANT,
             "pricing",
             None,
-            t0() - ChronoDuration::hours(1),
+            t0() - time::Duration::hours(1),
         )
         .await
         .expect("register");

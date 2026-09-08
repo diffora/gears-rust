@@ -80,7 +80,7 @@ use axum::Router;
 use axum::extract::Extension;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use toolkit::api::OpenApiRegistry;
 use toolkit::api::canonical_prelude::{CanonicalError, resource_error};
 use toolkit::api::operation_builder::OperationBuilder;
@@ -154,7 +154,7 @@ pub async fn evaluate_reference(
     scope: &AccessScope,
     tenant_id: Uuid,
     sku_id: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     freshness: std::time::Duration,
 ) -> Result<ReferenceEvaluation, crate::infra::storage::RepoError> {
     let producers: Vec<String> = repo::reference_producers(runner, scope, tenant_id)
@@ -172,8 +172,7 @@ pub async fn evaluate_reference(
         });
     }
 
-    let stale_before =
-        now - chrono::Duration::from_std(freshness).unwrap_or_else(|_| chrono::Duration::zero());
+    let stale_before = now - time::Duration::try_from(freshness).unwrap_or(time::Duration::ZERO);
     let mut per_producer = Vec::with_capacity(producers.len());
     let mut referenced = false;
     for producer in producers {
@@ -437,7 +436,7 @@ async fn settle_producer_op(
     scope: &AccessScope,
     tenant_id: Uuid,
     authorization: &GateAuthorization,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), ProducerTxError> {
     repo::settle_authorization(tx, scope, tenant_id, authorization, now)
         .await
@@ -469,16 +468,13 @@ impl WatermarkStanding {
 
 fn watermark_standing(
     watermark: Option<&repo::ReferenceWatermarkRecord>,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     freshness: std::time::Duration,
 ) -> WatermarkStanding {
     match watermark {
         None => WatermarkStanding::NeverReceived,
         Some(record) => {
-            let age = now
-                .signed_duration_since(record.watermark_at)
-                .to_std()
-                .unwrap_or_default();
+            let age = (now - record.watermark_at).unsigned_abs();
             if age <= freshness {
                 WatermarkStanding::Fresh
             } else {
@@ -516,9 +512,9 @@ pub(crate) async fn tripwire_after_override(
     tenant_id: Uuid,
     knobs: crate::api::rest::ReferenceKnobs,
     arm: &str,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<TripwireVerdict, crate::infra::storage::RepoError> {
-    let since = now - chrono::Duration::days(30);
+    let since = now - time::Duration::days(30);
     let count =
         repo::correction_overrides_since_by_arm(runner, scope, tenant_id, since, arm).await?;
     let tripped = count > u64::from(knobs.tripwire_max_overrides_per_30_days);
@@ -551,9 +547,9 @@ pub(crate) async fn signal_delivery_release_blocker(
     scope: &AccessScope,
     tenant_id: Uuid,
     knobs: crate::api::rest::ReferenceKnobs,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<bool, crate::infra::storage::RepoError> {
-    let since = now - chrono::Duration::days(30);
+    let since = now - time::Duration::days(30);
     let count = repo::correction_overrides_since_by_arm(
         runner,
         scope,
@@ -623,7 +619,7 @@ struct PostedFacts<'a> {
     /// The producer, as the refusals name it.
     subject: &'a str,
     /// The instant the producer claimed.
-    watermark_at: DateTime<Utc>,
+    watermark_at: OffsetDateTime,
     /// How many members the post carried.
     member_count: usize,
 }
@@ -748,7 +744,7 @@ async fn audit_accepted_act(
     runner: &impl toolkit_db::secure::DBRunner,
     scope: &AccessScope,
     act: AcceptedAct<'_>,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), crate::infra::storage::RepoError> {
     let AcceptedAct {
         tenant_id,
@@ -809,7 +805,7 @@ async fn record_watermark(
     tenant_id: Uuid,
     actor_ref: Uuid,
     post: WatermarkPost,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     skew: std::time::Duration,
 ) -> Result<WatermarkAck, CanonicalError> {
     let WatermarkPost {
@@ -899,8 +895,7 @@ async fn record_watermark(
     }
 
     // The future bound, alerted as well as refused.
-    let ceiling =
-        now + chrono::Duration::from_std(skew).unwrap_or_else(|_| chrono::Duration::zero());
+    let ceiling = now + time::Duration::try_from(skew).unwrap_or(time::Duration::ZERO);
     if watermark_at > ceiling {
         tracing::warn!(
             %producer,
@@ -1063,7 +1058,7 @@ enum WatermarkTxVerdict {
     /// The posted instant is older than the stored head.
     Regression {
         /// The stored head's instant, named in the refusal.
-        stored_at: DateTime<Utc>,
+        stored_at: OffsetDateTime,
     },
     /// Equal instant, different set hash.
     Conflict,
@@ -1078,7 +1073,7 @@ async fn post_watermark(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let actor_ref =
         crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
             .await?;
@@ -1128,7 +1123,7 @@ async fn register_producer(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let producer = body.producer.trim().to_owned();
     let actor_ref =
         crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
@@ -1257,7 +1252,7 @@ async fn retire_producer(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let actor_ref =
         crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
             .await?;
@@ -1420,7 +1415,7 @@ async fn commit_retirement(
     actor_ref: Uuid,
     producer: String,
     ceremony: Option<RetirementCeremony>,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), CanonicalError> {
     let authorization =
         authorize_producer_op(state, scope, tenant_id, actor_ref, &producer).await?;
@@ -1533,7 +1528,7 @@ async fn record_retirement_ceremony(
     producer: &str,
     ceremony: &RetirementCeremony,
     knobs: crate::api::rest::ReferenceKnobs,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), ProducerTxError> {
     for sku_id in &ceremony.freed {
         // A watermark may name a SKU this registry never had (the producer's
@@ -1610,7 +1605,7 @@ impl WatermarkPosts for InProcessWatermarkPosts {
         tenant_id: Uuid,
         post: WatermarkPost,
     ) -> Result<WatermarkAck, CanonicalError> {
-        let now = canonical::write_instant(Utc::now());
+        let now = canonical::write_instant(OffsetDateTime::now_utc());
         let actor_ref = crate::api::rest::resolve_creator_actor_ref(
             &self.state,
             tenant_id,

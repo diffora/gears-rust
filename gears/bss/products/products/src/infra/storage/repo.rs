@@ -72,11 +72,11 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-audit-trail:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-idempotency-store:p1
 
-use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::{Expr, ExprTrait, OnConflict, SimpleExpr};
 use sea_orm::{ColumnTrait, Condition, DbErr, EntityTrait, FromQueryResult};
 use serde_json::Value as JsonValue;
+use time::OffsetDateTime;
 use toolkit_db::secure::{
     AccessScope, DBRunner, ScopeError, SecureDeleteExt, SecureEntityExt, SecureInsertExt,
     SecureUpdateExt,
@@ -151,7 +151,7 @@ pub struct NewProduct {
     /// The pseudonymous ref of whoever created the row.
     pub created_by: String,
     /// The commit instant; `updated_at` starts equal to it.
-    pub created_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
     /// The clone's immediate source and the frozen version its content was
     /// read at (`None` for an ordinary create; version `None` under a set
     /// source means the source was read at its head — P-D-76). Create-only:
@@ -194,9 +194,9 @@ pub struct ProductRecord {
     /// The pseudonymous ref of whoever created the row.
     pub created_by: String,
     /// The commit instant.
-    pub created_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
     /// The instant of the row's last admitted write.
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: OffsetDateTime,
     /// The clone's immediate source and the frozen version its content was
     /// read at (P-D-76; `None`/`None` for a non-clone).
     pub cloned_from: Option<Uuid>,
@@ -231,7 +231,7 @@ pub struct NewSku {
     /// The pseudonymous ref of whoever created the row.
     pub created_by: String,
     /// The commit instant; `updated_at` starts equal to it.
-    pub created_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
     /// The clone's immediate source and the frozen version its content was
     /// read at (`None` for an ordinary create; version `None` under a set
     /// source means the source was read at its head — P-D-76). Create-only:
@@ -288,9 +288,9 @@ pub struct SkuRecord {
     /// The pseudonymous ref of whoever created the row.
     pub created_by: String,
     /// The commit instant.
-    pub created_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
     /// The instant of the row's last admitted write.
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: OffsetDateTime,
     /// The clone's immediate source and the frozen version its content was
     /// read at (P-D-76; `None`/`None` for a non-clone).
     pub cloned_from: Option<Uuid>,
@@ -817,7 +817,7 @@ pub async fn resolve_actor_ref(
     scope: &AccessScope,
     tenant_id: Uuid,
     principal_ref: &str,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<Uuid, RepoError> {
     let live = identity_ref::Entity::find()
         .secure()
@@ -1050,8 +1050,8 @@ pub struct AuditCommon {
     pub correlation_id: Option<String>,
     /// The commit instant; the operand `10-retention-erasure`'s
     /// `RetentionClock` reads. Taken as a parameter rather than read from
-    /// `Utc::now()`, matching [`resolve_actor_ref`].
-    pub written_at: DateTime<Utc>,
+    /// `OffsetDateTime::now_utc()`, matching [`resolve_actor_ref`].
+    pub written_at: OffsetDateTime,
 }
 
 /// Insert one `products_audit_log` row. Private: every public writer below
@@ -1464,8 +1464,8 @@ pub async fn claim_idempotency_key(
     endpoint: &str,
     client_key: &str,
     payload_hash: &[u8],
-    now: DateTime<Utc>,
-    expires_at: DateTime<Utc>,
+    now: OffsetDateTime,
+    expires_at: OffsetDateTime,
 ) -> Result<IdempotencyClaim, RepoError> {
     let model = idempotency::ActiveModel {
         tenant_id: Set(tenant_id),
@@ -1587,7 +1587,7 @@ async fn take_over_expired_idempotency_claim(
     scope: &AccessScope,
     held: &idempotency::Model,
     payload_hash: &[u8],
-    new_expires_at: DateTime<Utc>,
+    new_expires_at: OffsetDateTime,
 ) -> Result<IdempotencyClaim, RepoError> {
     let result = idempotency::Entity::update_many()
         .secure()
@@ -1859,7 +1859,7 @@ pub async fn supersede_open_approval(
     _door_scope: &AccessScope,
     tenant_id: Uuid,
     subject: &crate::domain::governance::GateSubject,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<Option<Uuid>, RepoError> {
     // Tenant-scoped for `gate_candidates`' reason: `products_approval`'s
     // `resource_col` is `approval_id`, so a door scope pinned to the entity it
@@ -2110,7 +2110,7 @@ pub struct NewEntityVersion {
     /// The pseudonymous ref of whoever published.
     pub actor_ref: Uuid,
     /// The publish instant.
-    pub published_at: DateTime<Utc>,
+    pub published_at: OffsetDateTime,
     /// What the metering `usageTypeRef` resolved to at publish, as
     /// `UsageTypeBinding::snapshot_json` renders it — **provenance beside the
     /// content, outside the digest** (`dod-binding-snapshot`, P-D-134 row 6,
@@ -2393,7 +2393,7 @@ pub async fn publish_product_head(
     tenant_id: Uuid,
     product_id: Uuid,
     expected_internal_revision: i64,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<HeadWrite, RepoError> {
     let next_state: SimpleExpr = Expr::case(
         Expr::col(product::Column::LifecycleState).eq(LifecycleState::Draft.as_str()),
@@ -2496,7 +2496,7 @@ pub async fn publish_sku_head(
     sku_id: Uuid,
     expected_internal_revision: i64,
     composition_pending: bool,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     correction: Option<&CorrectionWrite>,
 ) -> Result<HeadWrite, RepoError> {
     let next_state: SimpleExpr = Expr::case(
@@ -2590,7 +2590,7 @@ pub async fn deprecate_product_head(
     product_id: Uuid,
     expected_internal_revision: i64,
     provenance: Provenance,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<HeadWrite, RepoError> {
     let result = product::Entity::update_many()
         .secure()
@@ -2658,7 +2658,7 @@ pub async fn cascade_deprecate_child(
     tenant_id: Uuid,
     sku_id: Uuid,
     expected_internal_revision: i64,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<HeadWrite, RepoError> {
     let result = sku::Entity::update_many()
         .secure()
@@ -2738,7 +2738,7 @@ pub async fn discard_product_head(
     tenant_id: Uuid,
     product_id: Uuid,
     expected_internal_revision: i64,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<HeadWrite, RepoError> {
     let result = product::Entity::update_many()
         .secure()
@@ -2792,7 +2792,7 @@ pub async fn discard_sku_head(
     tenant_id: Uuid,
     sku_id: Uuid,
     expected_internal_revision: i64,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<HeadWrite, RepoError> {
     let result = sku::Entity::update_many()
         .secure()
@@ -3115,7 +3115,7 @@ pub async fn save_product_head(
     product_id: Uuid,
     expected_internal_revision: i64,
     save: &ProductHeadSave,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<HeadWrite, RepoError> {
     if save.is_empty() {
         return Err(empty_save());
@@ -3207,7 +3207,7 @@ pub async fn save_sku_head(
     sku_id: Uuid,
     expected_internal_revision: i64,
     save: &SkuHeadSave,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<HeadWrite, RepoError> {
     if save.is_empty() {
         return Err(empty_save());
@@ -3409,7 +3409,7 @@ pub struct FrozenVersionRow {
     pub content: String,
     pub approval_ref: Option<Uuid>,
     pub actor_ref: Uuid,
-    pub published_at: DateTime<Utc>,
+    pub published_at: OffsetDateTime,
 }
 
 /// The timeline door's order key vocabulary (P-D-165).

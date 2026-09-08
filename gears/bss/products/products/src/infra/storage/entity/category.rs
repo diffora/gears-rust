@@ -31,8 +31,8 @@ pub struct Model {
     /// The live-value door's `If-Match` operand (P-D-50). Counts **acts**,
     /// not row writes.
     pub mutation_seq: i64,
-    pub created_at: ChronoDateTimeUtc,
-    pub updated_at: ChronoDateTimeUtc,
+    pub created_at: TimeDateTimeWithTimeZone,
+    pub updated_at: TimeDateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

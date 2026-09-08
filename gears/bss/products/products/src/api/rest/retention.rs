@@ -55,7 +55,7 @@ use axum::Router;
 use axum::extract::Extension;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use toolkit::api::OpenApiRegistry;
 use toolkit::api::canonical_prelude::{CanonicalError, resource_error};
 use toolkit::api::odata::OData;
@@ -117,7 +117,8 @@ pub struct ErasureReceipt {
     /// The pseudonym that was retired. It stays in every immutable record.
     pub actor_ref: Uuid,
     /// When the tombstone was stamped.
-    pub tombstoned_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub tombstoned_at: OffsetDateTime,
 }
 
 /// One map entry, as the export renders it.
@@ -128,11 +129,14 @@ pub struct IdentityEntryView {
     /// The identity, where one was stored and has not been destroyed.
     pub identity_payload: Option<String>,
     /// Set once, by erasure, and never cleared.
-    pub tombstoned_at: Option<DateTime<Utc>>,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub tombstoned_at: Option<OffsetDateTime>,
     /// When the ref was minted.
-    pub first_seen_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub first_seen_at: OffsetDateTime,
     /// When an act last resolved it.
-    pub last_seen_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub last_seen_at: OffsetDateTime,
 }
 
 /// The DSAR answer for one principal.
@@ -165,7 +169,8 @@ pub struct AllowlistEntryRequest {
     /// `01`'s `VALIDATION` naming the field (P-D-64).
     pub signed_off_by: Option<String>,
     /// When Legal signed off.
-    pub signed_off_at: Option<DateTime<Utc>>,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub signed_off_at: Option<OffsetDateTime>,
 }
 
 /// What the sign-off door answers.
@@ -198,13 +203,16 @@ pub struct AllowlistEntryView {
     pub justification: String,
     /// The reference to the external Legal decision.
     pub signed_off_by: String,
-    pub signed_off_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub signed_off_at: OffsetDateTime,
     /// `active` or `revoked`. Revoked entries are **in** the review: a
     /// revocation is a state flip precisely so the sign-off that admitted the
     /// entry stays on record.
     pub state: String,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
 }
 
 /// The Legal review's answer.
@@ -588,7 +596,7 @@ async fn execute_erasure(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let principal_ref = body.principal_ref.trim().to_owned();
     let reason = body.reason.trim().to_owned();
     let actor_ref =
@@ -757,7 +765,7 @@ async fn export_identity_map(
         &IDENTITY_EXPORT_PARAMS,
     )?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let principal_ref = query.principal_ref.trim().to_owned();
     let justification = query.justification.trim().to_owned();
     let actor_ref =
@@ -957,7 +965,7 @@ async fn sign_off_allowlist_entry(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let actor_ref =
         crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
             .await?;
@@ -1195,7 +1203,7 @@ async fn operate_allowlist_entry(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let actor_ref =
         crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
             .await?;
@@ -1381,7 +1389,7 @@ async fn export_allowlist(
     )?;
     odata_seam::reject_unsupported_odata_options(&odata, None, None, Some(odata_seam::NO_SELECT))?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let actor_ref =
         crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
             .await?;
@@ -1441,7 +1449,7 @@ struct AllowlistAudit {
     entry_id: Uuid,
     action: &'static str,
     reason: String,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 }
 
 /// One allow-list audit row, in the act's own transaction.

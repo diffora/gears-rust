@@ -4,9 +4,9 @@
 
 use std::sync::Arc;
 
-use chrono::{Duration as ChronoDuration, Utc};
 use sea_orm_migration::MigratorTrait as _;
 use serde_json::json;
+use time::OffsetDateTime;
 use toolkit_db::outbox::{Outbox, OutboxHandle, Partitions, outbox_migrations_with_prefix};
 use toolkit_db::secure::AccessScope;
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
@@ -119,7 +119,7 @@ fn render_nothing(_record: repo::ProductRecord) -> Result<serde_json::Value, ser
 /// row: `ProductCreated`) and given its primary category.
 pub(super) async fn draft_product(harness: &Harness, name: &str, region: &str) -> Uuid {
     let product_id = Uuid::new_v4();
-    let now = crate::domain::canonical::write_instant(Utc::now());
+    let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
     let new = NewProduct {
         product_id,
         tenant_id: TENANT,
@@ -192,7 +192,7 @@ pub(super) async fn publish_product(harness: &Harness, product_id: Uuid) -> i64 
         product_id,
         actor_ref: ACTOR,
         expected: head.internal_revision,
-        now: crate::domain::canonical::write_instant(Utc::now()),
+        now: crate::domain::canonical::write_instant(OffsetDateTime::now_utc()),
         claim: None,
     };
     let outcome = products::run_publish(
@@ -218,7 +218,7 @@ pub(super) async fn project(harness: &Harness) -> PassOutcome {
     project_tenant(
         &ctx(harness),
         TENANT,
-        crate::domain::canonical::write_instant(Utc::now()),
+        crate::domain::canonical::write_instant(OffsetDateTime::now_utc()),
     )
     .await
     .expect("the pass runs")
@@ -265,7 +265,7 @@ pub(super) async fn synthetic_inbox(
         payload_type,
         &payload.to_string(),
         ACTOR,
-        crate::domain::canonical::write_instant(Utc::now()),
+        crate::domain::canonical::write_instant(OffsetDateTime::now_utc()),
     )
     .await
     .expect("record the inbox row");
@@ -414,7 +414,7 @@ async fn a_deprecation_flips_the_head_fields_on_the_row() {
         product_id: product,
         actor_ref: ACTOR,
         expected: head.internal_revision,
-        now: crate::domain::canonical::write_instant(Utc::now()),
+        now: crate::domain::canonical::write_instant(OffsetDateTime::now_utc()),
         claim: None,
     };
     let outcome = products::run_deprecate(
@@ -489,7 +489,7 @@ async fn a_poison_row_is_parked_retried_then_skipped_and_surfaced() {
 
     poll_dashboards(
         &ctx(&harness),
-        crate::domain::canonical::write_instant(Utc::now()),
+        crate::domain::canonical::write_instant(OffsetDateTime::now_utc()),
         &tokio_util::sync::CancellationToken::new(),
     )
     .await
@@ -525,12 +525,12 @@ async fn a_checkpoint_behind_the_swept_tail_rebuilds_and_swaps() {
         &scope(),
         TENANT,
         checkpoint,
-        Utc::now() + ChronoDuration::hours(1),
+        OffsetDateTime::now_utc() + time::Duration::hours(1),
     )
     .await
     .expect("sweep");
     assert_eq!(swept, 2);
-    repo::write_read_checkpoint(&conn, &scope(), TENANT, 1, 0, Utc::now())
+    repo::write_read_checkpoint(&conn, &scope(), TENANT, 1, 0, OffsetDateTime::now_utc())
         .await
         .expect("rewind");
     synthetic_inbox(

@@ -1569,6 +1569,83 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-167 — The gear moves off `chrono` onto `time` wholesale, which closes P-D-166 at the source
+
+- **Date**: 2026-09-08 (owner call: the branch is not in `main`, so there is no deployed data and
+  no migration owed — *"we have freedom, let's change completely"*)
+- **What this decides.** Every instant in this gear is `time::OffsetDateTime`: the sea-orm column
+  types, the domain structs, the repository boundary, the REST DTOs, the event payloads and the
+  fixtures. `chrono` is **removed from both crates' manifests**, so there is one instant type and
+  the compiler enforces it.
+- **Why, in one line.** P-D-166 measured a live row-loss defect — a keyset walk over a timestamp
+  lost every tied row past the first page — whose cause was **two representations of one instant**:
+  the platform's cursor codec decodes `FieldKind::DateTimeUtc` to `time::OffsetDateTime`, and a
+  `ChronoDateTimeUtc` column did not compare equal to it on `SQLite`. The alternative was one arm
+  of `parse_cursor_value` in the toolkit. This is the fix at the source, and it makes the gear
+  consistent with the only convention the tree actually has.
+- **The convention, measured rather than asserted.** All seventeen `kind = "DateTimeUtc"` filter
+  keys in the tree were censused: `account-management` declares six, `chat-engine` two,
+  `usage-collector` one (filter-only, no cursor) — every one of them over a `time`-typed column.
+  `pricing` and `ledger` declare **none**, so neither was exposed, and the ledger's own
+  `domain/instant.rs` opens with *"Instants … are UTC `time::OffsetDateTime`, matching AM and
+  pricing"*. Products held the only chrono-typed timestamp cursor keys in the repository and was
+  the only gear losing rows. There is **no** written rule about `chrono` versus `time` in
+  `.cf-studio/config/rules/` or `guidelines/` — the convention is in the code, and this entry is
+  where this gear records following it.
+- **What was checked before starting, because each could have stopped it.**
+  1. **The wire form is byte-identical.** `serde_json` renders a chrono `DateTime<Utc>` and a
+     `time::OffsetDateTime` under `#[serde(with = "time::serde::rfc3339")]` as the same string
+     (`"2025-09-04T15:33:20.123456Z"`), measured on one instant through both paths. Without the
+     attribute `time` serializes a **component array**, which is what 43 test failures said in the
+     first pass and why all twenty-six DTO instant fields carry it.
+  2. **The DDL does not change.** The migrations declare `timestamptz` in raw SQL, which sea-orm
+     maps from either type; no migration file was touched and the schema oracles are unmoved.
+  3. **The canonical rendering does not change.** `canonical::render_instant` is §4.3's timestamp
+     clause and its bytes are what content digests and the golden vector are computed over. It is
+     now built from the instant's components — not through `time`'s well-known `Rfc3339`, which
+     renders the offset `+00:00` and the fraction at the value's own width, two differences from
+     the clause. The sibling ledger renders its own clause the same way and for the same reason.
+     `postgres_golden_vector` passing is the proof, not the reasoning above.
+  4. **No data migration is owed** — and only because nothing is deployed. The branch is not in
+     `main`; benidorm runs Postgres, where both representations bind as `timestamptz` and existing
+     rows would have been fine anyway. On `SQLite`, which C1 declares a supported engine, rows
+     written in the chrono text form would **not** be readable after this change. If this gear
+     ships on `SQLite` and later needs a type change, that is a data migration and this entry is
+     the reason it was free this once.
+- **What it cost.** 337 `DateTime<Utc>` occurrences across 109 files, and seven mechanical classes
+  the compiler enumerated: the entity column alias, the type itself, `Utc::now()`, `chrono::Duration`
+  (whose `time` twin is `SignedDuration` since 0.3.5x — infallible constructors, no `try_hours`),
+  `signed_duration_since` (now subtraction), `num_*` accessors (now `whole_*`), and
+  `to_rfc3339*` (now this gear's own two renderers, `render_instant` and the new
+  `render_instant_secs` for the events' `effectiveAt`, which a subsecond digit would fracture
+  since consumers key on `(skuId, effectiveAt)`).
+- **Three things only the suite could have found.**
+  1. **Eighty-three fixture instants** were `Utc.with_ymd_and_hms(..).unwrap()`. `time` builds an
+     instant through a `Date` and a civil time, so the inline form is four calls where chrono's was
+     one — they go through one `test_support::utc` helper rather than carrying the arithmetic in
+     eighty-three places.
+  2. **Two tests put an `OffsetDateTime` straight into `json!`**, whose bare `Serialize` is a
+     component array, so the door answered `422` on a body it could not parse. Both render through
+     `canonical::render_instant` now.
+  3. **Eight raw-SQL seed literals** carried the chrono text form
+     (`'2026-08-29 09:00:00.000000 +00:00'`) which a `time`-typed column does not read — a 500 on
+     every read of the seeded row. The suite's other 112 timestamp literals were already the
+     RFC-3339 `Z` form, so the eight were the anomaly, not the convention.
+- **What this closes.** `read_tests::a_timestamp_walk_visits_every_row_of_a_tied_page` was
+  `#[ignore]`d by P-D-166 as a platform gap; it **passes** now and is un-ignored, keeping its
+  non-timestamp half as the contrast that told the cause apart from the tie. The four exposed
+  doors — the approval inbox, scheduled transitions, the deferred-intent dashboard and the
+  allow-list export — walk tied instants correctly.
+- **What it does not close.** The codec asymmetry itself stands: `parse_cursor_value` still decodes
+  `FieldKind::DateTimeUtc` to whichever crate parses the token first rather than to the variant the
+  mapper extracts, and the toolkit's own
+  `datetime_utc_cursor_keeps_the_mapped_variant` test still states that invariant in prose without
+  checking it. **The next gear with chrono columns and a timestamp cursor key hits this exactly as
+  this one did.** Owner: the toolkit. P-D-166 keeps the measurements.
+- **Propagated**: `DECISIONS.md` (P-D-166, marked resolved here),
+  `design/08-read-models.md` §6 (the P-D-166 item, struck).
+
+
 #### P-D-166 — A timestamp order key loses every tied row past the first page, and the fix is one arm of the platform's cursor codec
 
 - **Date**: 2026-09-08 (found while answering a question about a neighbouring branch's
@@ -1595,6 +1672,11 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   withdrawn along with the `time` dependency it needed. Making the entity columns `time`-typed —
   which is why `account-management` and `chat-engine` do not have this defect — is a migration
   across every table in the gear and not a thing to do under a cursor codec.
+- **RESOLVED by P-D-167 the same day**, and not by the fix named below: the gear moved off
+  `chrono` onto `time` wholesale, so the column and the codec now agree on one representation and
+  the probe is un-ignored and passing. The fix below remains the right one for the **platform** —
+  the next gear with chrono columns and a timestamp cursor key hits this exactly as this one did —
+  and the measurements in this entry are what a toolkit change should be checked against.
 - **The fix, named.** One arm of `parse_cursor_value`: decode `FieldKind::DateTimeUtc` to the
   variant the mapper extracts rather than to whichever crate parses the token first. That is
   already the invariant the toolkit's own `datetime_utc_cursor_keeps_the_mapped_variant` test

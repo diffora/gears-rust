@@ -27,20 +27,20 @@ pub struct Model {
     /// `publish` or `retire` — `chk_products_scheduled_transition_kind`.
     pub kind: String,
     /// UTC activation instant.
-    pub at: ChronoDateTimeUtc,
+    pub at: TimeDateTimeWithTimeZone,
     /// The pinned slice-05 approval snapshot, consumed at scheduling.
     pub approval_ref: Uuid,
     /// `pending|running|applied|failed|deferred|superseded`.
     pub state: String,
-    pub claimed_at: Option<ChronoDateTimeUtc>,
+    pub claimed_at: Option<TimeDateTimeWithTimeZone>,
     /// Claim / reclaim counter; NOT NULL, default 0.
     pub attempt: i32,
     /// Operator text, written once at retirement initiation (**P-D-46**).
     pub retirement_reason: Option<String>,
     /// Runner outcome text on `applied|failed|deferred` (**P-D-46**).
     pub outcome_reason: Option<String>,
-    pub created_at: ChronoDateTimeUtc,
-    pub updated_at: ChronoDateTimeUtc,
+    pub created_at: TimeDateTimeWithTimeZone,
+    pub updated_at: TimeDateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

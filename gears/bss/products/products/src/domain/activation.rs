@@ -24,7 +24,7 @@
 //! @cpt-cf-bss-products-dod-runner-failure-posture
 //! @cpt-cf-bss-products-dod-scheduled-publish-pin
 
-use chrono::{DateTime, Duration, Utc};
+use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::domain::governance::{ApprovalId, GateMode, GateSubject, GateVerdict, GovernanceGate};
@@ -93,9 +93,9 @@ pub enum StoredRunState {
 #[must_use]
 pub fn claim_decision(
     state: StoredRunState,
-    at: DateTime<Utc>,
-    claimed_at: Option<DateTime<Utc>>,
-    now: DateTime<Utc>,
+    at: OffsetDateTime,
+    claimed_at: Option<OffsetDateTime>,
+    now: OffsetDateTime,
     lease: ClaimLease,
 ) -> ClaimDecision {
     match state {

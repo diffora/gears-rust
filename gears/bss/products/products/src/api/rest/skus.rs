@@ -229,9 +229,9 @@ use axum::http::StatusCode;
 use axum::http::header::ETAG;
 use axum::response::{IntoResponse, Response};
 use bss_products_sdk::models::{EntityKind, LifecycleState};
-use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use sea_orm::DbErr;
 use serde_json::{Map as JsonMap, Value as JsonValue};
+use time::{Duration, OffsetDateTime};
 use toolkit::api::OpenApiRegistry;
 use toolkit::api::canonical_prelude::{CanonicalError, resource_error};
 use toolkit::api::operation_builder::OperationBuilder;
@@ -343,9 +343,11 @@ pub struct SkuView {
     /// The pseudonymous ref of whoever created the row.
     pub created_by: String,
     /// The commit instant.
-    pub created_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
     /// The instant of the row's last admitted write.
-    pub updated_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
     /// The declared metering unit, or absent where no declaration stands.
     pub metering_unit: Option<String>,
     /// The declaration's usage-type reference — present exactly when the
@@ -768,9 +770,11 @@ pub struct RetireSkuRequest {
     /// Optional successor SKU.
     pub replaced_by: Option<Uuid>,
     /// Optional operator instant. Absent: now + interim lead (30 days).
-    pub effective_at: Option<DateTime<Utc>>,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub effective_at: Option<OffsetDateTime>,
     /// Accepted so a supplied value raises `EOL_DISABLED`.
-    pub must_migrate_by: Option<DateTime<Utc>>,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub must_migrate_by: Option<OffsetDateTime>,
     /// Narrowest confirmation that lets the door exist.
     pub confirmed: bool,
 }
@@ -1392,7 +1396,7 @@ pub(crate) async fn create_sku(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
 
     // Taken from the parsed request before it is destructured, so the
     // operand is what the caller sent rather than what the steps below
@@ -1802,7 +1806,7 @@ pub(crate) async fn clone_classification_report(
     tenant_id: Uuid,
     source: &SkuCloneSource,
     class: &disposition::SourceClassification,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<ValidationReport, CanonicalError> {
     use crate::domain::recognized::{self as classification, SetKind};
     let mut report = ValidationReport::new();
@@ -1975,7 +1979,7 @@ async fn clone_sku(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let payload_hash = clone_sku_payload_digest(&body);
 
     let code_override = body.code.as_deref().map(str::trim).map(str::to_owned);
@@ -2507,7 +2511,7 @@ async fn open_act(
     sku_id: Uuid,
     authz_action: &'static str,
     audit_action: &'static str,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<ActContext, CanonicalError> {
     let tenant_id = ctx.subject_tenant_id();
     let actor_ref =
@@ -2806,7 +2810,7 @@ fn post_publish_state(from: LifecycleState) -> LifecycleState {
 fn post_publish_image(
     head: &SkuRecord,
     composition_pending: bool,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> SkuRecord {
     SkuRecord {
         lifecycle_state: post_publish_state(head.lifecycle_state),
@@ -2821,7 +2825,7 @@ fn post_publish_image(
 /// The head row as a discard leaves it: `discarded`, one revision on, the
 /// version counter untouched (`inst-fd-discard` admits the act only from
 /// `published_version = 0`, and a discard publishes nothing).
-fn post_discard_image(head: &SkuRecord, now: DateTime<Utc>) -> SkuRecord {
+fn post_discard_image(head: &SkuRecord, now: OffsetDateTime) -> SkuRecord {
     SkuRecord {
         lifecycle_state: LifecycleState::Discarded,
         internal_revision: head.internal_revision.saturating_add(1),
@@ -2988,7 +2992,7 @@ fn freeze_for(
     image: &SkuRecord,
     actor_ref: Uuid,
     approval_ref: Option<Uuid>,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     binding: Option<&crate::domain::recognized::UsageTypeBinding>,
     values: &[crate::domain::taxonomy::FrozenAttributeValue],
 ) -> NewEntityVersion {
@@ -3061,12 +3065,15 @@ fn retire_payload_digest(request: &RetireSkuRequest) -> Vec<u8> {
         map.insert("replacedBy".to_owned(), JsonValue::String(id.to_string()));
     }
     if let Some(at) = request.effective_at {
-        map.insert("effectiveAt".to_owned(), JsonValue::String(at.to_rfc3339()));
+        map.insert(
+            "effectiveAt".to_owned(),
+            JsonValue::String(crate::domain::canonical::render_instant(at)),
+        );
     }
     if let Some(at) = request.must_migrate_by {
         map.insert(
             "mustMigrateBy".to_owned(),
-            JsonValue::String(at.to_rfc3339()),
+            JsonValue::String(crate::domain::canonical::render_instant(at)),
         );
     }
     idempotency::payload_digest(&JsonValue::Object(map))
@@ -3283,7 +3290,7 @@ pub(crate) struct HeadActInputs {
     /// (**P-D-33**) — never a value this door re-read.
     pub(crate) expected: i64,
     /// The act's instant, stamped once before the first attempt.
-    pub(crate) now: DateTime<Utc>,
+    pub(crate) now: OffsetDateTime,
     /// The claim to take as the transaction's first statement, or `None`
     /// where the request carried no key (P-D-34's skip).
     pub(crate) claim: Option<IdempotencyClaimInput>,
@@ -3507,7 +3514,7 @@ async fn reannounce_retirement_if_live(
             // re-announcing `None` erases it. See
             // `repo::SkuRecord::replaced_by_sku_id`.
             replaced_by,
-            effective_at: intent.at.to_rfc3339_opts(SecondsFormat::Secs, true),
+            effective_at: crate::domain::canonical::render_instant_secs(intent.at),
             must_migrate_by: None,
         },
         inputs.actor_ref,
@@ -4481,7 +4488,7 @@ fn build_claim(
     headers: &HeaderMap,
     endpoint: String,
     digest: Vec<u8>,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<Option<IdempotencyClaimInput>, DomainError> {
     let client_key = idempotency_key(headers)?;
     Ok(client_key.map(|key| {
@@ -5250,7 +5257,7 @@ async fn correct_sku_gated(
     sku_id: Uuid,
     body: &CorrectSkuRequest,
 ) -> Result<Response, CanonicalError> {
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let act = open_act(
         state,
         enforcer,
@@ -5624,7 +5631,7 @@ async fn publish_sku_gated(
     host: crate::api::rest::GateHost,
     mode: GateMode,
 ) -> Result<Response, CanonicalError> {
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let act = open_act(
         state,
         enforcer,
@@ -5794,7 +5801,7 @@ async fn discard_sku_gated(
     sku_id: Uuid,
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
 ) -> Result<Response, CanonicalError> {
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let act = open_act(
         state,
         enforcer,
@@ -5883,7 +5890,7 @@ async fn undeprecate_sku_gated(
     sku_id: Uuid,
     host: crate::api::rest::GateHost,
 ) -> Result<Response, CanonicalError> {
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let act = open_act(
         state,
         enforcer,
@@ -5983,7 +5990,7 @@ async fn deprecate_sku_gated(
     sku_id: Uuid,
     host: crate::api::rest::GateHost,
 ) -> Result<Response, CanonicalError> {
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let act = open_act(
         state,
         enforcer,
@@ -6363,7 +6370,7 @@ async fn retire_sku_gated(
     request: RetireSkuRequest,
     host: crate::api::rest::GateHost,
 ) -> Result<Response, CanonicalError> {
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let act = open_act(
         state,
         enforcer,
@@ -6661,7 +6668,7 @@ pub(crate) async fn run_retire(
             from_version: image.published_version,
             reason: request.reason.clone(),
             replaced_by: request.replaced_by,
-            effective_at: at.to_rfc3339_opts(SecondsFormat::Secs, true),
+            effective_at: crate::domain::canonical::render_instant_secs(at),
             must_migrate_by: None,
         },
         inputs.actor_ref,
@@ -6747,7 +6754,7 @@ async fn cancel_sku_retirement_gated(
     request: CancelRetirementRequest,
     host: crate::api::rest::GateHost,
 ) -> Result<Response, CanonicalError> {
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let act = open_act(
         state,
         enforcer,
@@ -7389,7 +7396,7 @@ async fn write_sku_content(
     runner: &impl toolkit_db::secure::DBRunner,
     inputs: &HeadActInputs,
     writes: &[AttributeWrite],
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), HeadActError> {
     for write in writes {
         let definition =
@@ -7833,7 +7840,7 @@ async fn classify_create(
     actor_ref: Uuid,
     attempted_code: &str,
     input: CreateClassificationInput,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<disposition::SourceClassification, CanonicalError> {
     let plan_tier = input
         .plan_tier
@@ -7883,7 +7890,7 @@ fn new_sku_for_create(
     sku_code: String,
     child_scope: &ScopePair,
     actor_ref: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     classification: disposition::SourceClassification,
 ) -> NewSku {
     NewSku {
@@ -7922,7 +7929,7 @@ async fn validate_classification_on_create(
     plan_tier: &str,
     tax_category_ref: Option<&str>,
     gl_code_ref: Option<&str>,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), CanonicalError> {
     match classify_on_create(
         state,
@@ -7964,7 +7971,7 @@ async fn classify_on_create(
     plan_tier: &str,
     tax_category_ref: Option<&str>,
     gl_code_ref: Option<&str>,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), HeadActError> {
     use crate::domain::recognized::{self as classification, SetKind};
     classification::type_profile(Some(sku_type)).map_err(HeadActError::Refused)?;
@@ -8002,7 +8009,7 @@ async fn classify_on_create(
 /// the operand of the door's *answer*: that is re-read off the committed row
 /// ([`run_save`]), so the client is told what the database holds rather than
 /// what this door believes it wrote.
-fn post_save_image(head: &SkuRecord, save: &repo::SkuHeadSave, now: DateTime<Utc>) -> SkuRecord {
+fn post_save_image(head: &SkuRecord, save: &repo::SkuHeadSave, now: OffsetDateTime) -> SkuRecord {
     let mut image = head.clone();
     if let Some(sku_code) = save.sku_code.clone() {
         image.sku_code = sku_code;
@@ -8479,7 +8486,7 @@ async fn save_sku_gated(
     request: SaveSkuRequest,
     gate: &Arc<dyn GovernanceGate + Send + Sync>,
 ) -> Result<Response, CanonicalError> {
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let act = open_act(
         state,
         enforcer,
@@ -8627,7 +8634,7 @@ pub(crate) async fn lint_sku_publish(
         sku_id,
         actor_ref: Uuid::nil(),
         expected: head.internal_revision,
-        now: canonical::write_instant(Utc::now()),
+        now: canonical::write_instant(OffsetDateTime::now_utc()),
         claim: None,
     };
     match recheck_parent_containment(runner, &inputs, &head).await {
@@ -8707,7 +8714,7 @@ async fn validate_sku(
     Path(sku_id): Path<Uuid>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let act = open_act(
         &state,
         &enforcer,
@@ -8795,7 +8802,7 @@ pub(crate) async fn try_apply_composition_clear(
     sku_id: Uuid,
     signal_ref: Uuid,
     actor_ref: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<ClearOutcome, HeadActError> {
     let scope = AccessScope::for_tenant(tenant_id);
     let conn = db.conn().map_err(|e| {
@@ -9001,7 +9008,7 @@ pub(crate) async fn clear_composition(
     Json(body): Json<CompositionClearRequest>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let act = open_act(
         &state,
         &enforcer,

@@ -7,9 +7,9 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use chrono::{Duration as ChronoDuration, Utc};
 use sea_orm_migration::MigratorTrait as _;
 use serde_json::json;
+use time::OffsetDateTime;
 use toolkit::api::OpenApiRegistryImpl;
 use toolkit_db::outbox::{Outbox, OutboxHandle, Partitions, outbox_migrations_with_prefix};
 use toolkit_db::secure::AccessScope;
@@ -121,8 +121,8 @@ fn scope() -> AccessScope {
 /// date is refused `WATERMARK_FUTURE` whenever the suite runs before it —
 /// which is what a fixed 12:00 UTC anchor did on the first run of this
 /// file.
-fn anchor() -> chrono::DateTime<Utc> {
-    Utc::now() - ChronoDuration::minutes(1)
+fn anchor() -> OffsetDateTime {
+    OffsetDateTime::now_utc() - time::Duration::minutes(1)
 }
 
 async fn post_json(app: Router, uri: &str, body: &serde_json::Value) -> axum::http::Response<Body> {
@@ -169,7 +169,7 @@ async fn seed_sku_row(harness: &TestHarness, sku_code: &str) -> Uuid {
         .expect("open an auxiliary connection");
     let product_id = Uuid::now_v7();
     let sku_id = Uuid::now_v7();
-    let now = "2026-08-29 09:00:00.000000 +00:00";
+    let now = "2026-08-29T09:00:00.000000Z";
     for sql in [
         format!(
             "INSERT INTO products_product (product_id, tenant_id, brand_id, name, \
@@ -256,10 +256,12 @@ async fn retire(
     }
 }
 
-fn watermark_body(producer: &str, at: chrono::DateTime<Utc>, skus: &[Uuid]) -> serde_json::Value {
+fn watermark_body(producer: &str, at: OffsetDateTime, skus: &[Uuid]) -> serde_json::Value {
     json!({
         "producer": producer,
-        "watermark_at": at,
+        // Rendered rather than handed to `json!`: `OffsetDateTime`'s bare
+        // `Serialize` is a component array, and the door parses RFC 3339.
+        "watermark_at": crate::domain::canonical::render_instant(at),
         "sku_ids": skus,
     })
 }
@@ -328,7 +330,7 @@ async fn the_timestamp_verdicts_are_told_apart() {
     let older = post_json(
         app(&harness),
         "/bss-products/v1/reference-watermarks",
-        &watermark_body("pricing", at - ChronoDuration::minutes(1), &[SKU]),
+        &watermark_body("pricing", at - time::Duration::minutes(1), &[SKU]),
     )
     .await;
     assert_eq!(older.status(), StatusCode::CONFLICT);
@@ -352,7 +354,7 @@ async fn the_timestamp_verdicts_are_told_apart() {
     let newer = post_json(
         app(&harness),
         "/bss-products/v1/reference-watermarks",
-        &watermark_body("pricing", at + ChronoDuration::seconds(30), &[OTHER_SKU]),
+        &watermark_body("pricing", at + time::Duration::seconds(30), &[OTHER_SKU]),
     )
     .await;
     assert_eq!(
@@ -369,7 +371,7 @@ async fn the_timestamp_verdicts_are_told_apart() {
 async fn a_future_dated_post_is_refused() {
     let harness = harness().await;
     register(&harness, "pricing").await;
-    let far_future = Utc::now() + ChronoDuration::hours(1);
+    let far_future = OffsetDateTime::now_utc() + time::Duration::hours(1);
     let refused = post_json(
         app(&harness),
         "/bss-products/v1/reference-watermarks",
@@ -393,7 +395,7 @@ async fn retirement_clears_the_watermark_and_re_registration_starts_never_receiv
     post_json(
         app(&harness),
         "/bss-products/v1/reference-watermarks",
-        &watermark_body("pricing", Utc::now(), &[SKU]),
+        &watermark_body("pricing", OffsetDateTime::now_utc(), &[SKU]),
     )
     .await;
 
@@ -433,7 +435,7 @@ async fn retirement_clears_the_watermark_and_re_registration_starts_never_receiv
         &scope(),
         TENANT,
         SKU,
-        Utc::now(),
+        OffsetDateTime::now_utc(),
         ProductsConfig::default().reference_freshness(),
     )
     .await
@@ -459,7 +461,7 @@ async fn the_predicate_answers_four_verdicts() {
         &scope(),
         TENANT,
         SKU,
-        Utc::now(),
+        OffsetDateTime::now_utc(),
         ProductsConfig::default().reference_freshness(),
     )
     .await
@@ -475,7 +477,7 @@ async fn the_predicate_answers_four_verdicts() {
     post_json(
         app(&harness),
         "/bss-products/v1/reference-watermarks",
-        &watermark_body("pricing", Utc::now(), &[SKU]),
+        &watermark_body("pricing", OffsetDateTime::now_utc(), &[SKU]),
     )
     .await;
 
@@ -485,7 +487,7 @@ async fn the_predicate_answers_four_verdicts() {
         &scope(),
         TENANT,
         SKU,
-        Utc::now(),
+        OffsetDateTime::now_utc(),
         ProductsConfig::default().reference_freshness(),
     )
     .await
@@ -505,7 +507,7 @@ async fn the_predicate_answers_four_verdicts() {
         &scope(),
         TENANT,
         OTHER_SKU,
-        Utc::now(),
+        OffsetDateTime::now_utc(),
         ProductsConfig::default().reference_freshness(),
     )
     .await
@@ -519,7 +521,7 @@ async fn the_predicate_answers_four_verdicts() {
     post_json(
         app(&harness),
         "/bss-products/v1/reference-watermarks",
-        &watermark_body("contracts", Utc::now(), &[]),
+        &watermark_body("contracts", OffsetDateTime::now_utc(), &[]),
     )
     .await;
     let conn = harness.db.conn().expect("conn");
@@ -528,7 +530,7 @@ async fn the_predicate_answers_four_verdicts() {
         &scope(),
         TENANT,
         OTHER_SKU,
-        Utc::now(),
+        OffsetDateTime::now_utc(),
         ProductsConfig::default().reference_freshness(),
     )
     .await
@@ -611,7 +613,7 @@ async fn the_in_process_binding_shares_the_gate_and_the_store() {
             TENANT,
             WatermarkPost {
                 producer: "pricing".to_owned(),
-                watermark_at: at + ChronoDuration::seconds(30),
+                watermark_at: at + time::Duration::seconds(30),
                 sku_ids: vec![SKU, OTHER_SKU, Uuid::from_u128(0xfe_04)],
             },
         )
@@ -641,7 +643,7 @@ async fn the_in_process_binding_shares_the_gate_and_the_store() {
 async fn a_stale_watermark_holds_the_sku_conservatively() {
     let harness = harness().await;
     register(&harness, "pricing").await;
-    let posted_at = Utc::now() - ChronoDuration::minutes(30);
+    let posted_at = OffsetDateTime::now_utc() - time::Duration::minutes(30);
     post_json(
         app(&harness),
         "/bss-products/v1/reference-watermarks",
@@ -655,7 +657,7 @@ async fn a_stale_watermark_holds_the_sku_conservatively() {
         &scope(),
         TENANT,
         SKU,
-        Utc::now(),
+        OffsetDateTime::now_utc(),
         ProductsConfig::default().reference_freshness(),
     )
     .await
@@ -837,7 +839,7 @@ async fn retiring_the_last_or_a_dead_producer_is_refused_unless_break_glass_just
     // pricing posts a stale watermark naming one real SKU: it now holds that
     // SKU conservatively, and its retirement would free it.
     let held = seed_sku_row(&harness, "HELD-1").await;
-    let stale_at = Utc::now() - chrono::Duration::hours(2);
+    let stale_at = OffsetDateTime::now_utc() - time::Duration::hours(2);
     let posted = post_json(
         app(&harness),
         "/bss-products/v1/reference-watermarks",
@@ -933,7 +935,7 @@ async fn the_tripwire_trips_on_the_sixth_override_in_the_window() {
     let harness = harness().await;
     let conn = harness.db.conn().expect("conn");
     let knobs = crate::api::rest::ReferenceKnobs::from(&ProductsConfig::default());
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let mut last = None;
     for n in 0..6_u32 {
         crate::infra::storage::repo::record_correction_override(
@@ -949,7 +951,7 @@ async fn the_tripwire_trips_on_the_sixth_override_in_the_window() {
                     snapshot: "{}".to_owned(),
                 },
                 ceremony_ref: Uuid::now_v7(),
-                recorded_at: now - chrono::Duration::days(i64::from(n)),
+                recorded_at: now - time::Duration::days(i64::from(n)),
             },
         )
         .await
@@ -1009,7 +1011,7 @@ async fn the_tripwire_trips_on_the_sixth_override_in_the_window() {
             &scope(),
             TENANT,
             knobs,
-            now + chrono::Duration::days(31)
+            now + time::Duration::days(31)
         )
         .await
         .expect("derive the blocker later"),

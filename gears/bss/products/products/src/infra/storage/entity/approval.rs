@@ -40,10 +40,10 @@ pub struct Model {
     /// Written by the submit door only when the effective quorum is zero
     /// (P-D-68 arm 1); paired with its instant by a CHECK.
     pub author_override_ack: Option<String>,
-    pub author_override_ack_at: Option<ChronoDateTimeUtc>,
-    pub submitted_at: ChronoDateTimeUtc,
+    pub author_override_ack_at: Option<TimeDateTimeWithTimeZone>,
+    pub submitted_at: TimeDateTimeWithTimeZone,
     /// Non-null exactly when the state is terminal.
-    pub finalized_at: Option<ChronoDateTimeUtc>,
+    pub finalized_at: Option<TimeDateTimeWithTimeZone>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

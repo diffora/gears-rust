@@ -26,7 +26,7 @@ pub struct Model {
     /// `inst-tx-primary-at-publish`'s validator.
     #[sea_orm(primary_key, auto_increment = false)]
     pub role: String,
-    pub assigned_at: ChronoDateTimeUtc,
+    pub assigned_at: TimeDateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

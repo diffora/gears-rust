@@ -8,7 +8,7 @@
 //! them is its own churn and follows separately if the layout rule is
 //! extended to them.
 
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// One row of an import request.
@@ -189,7 +189,8 @@ pub struct ResolvedVersionView {
     /// The digest rule the checksum was computed under.
     pub digest_version: i32,
     /// The commit instant.
-    pub published_at: chrono::DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub published_at: OffsetDateTime,
     /// The strict flag (P-D-84 arm 3): `freeze_state = 'complete'` and
     /// nothing else.
     pub freeze_complete: bool,
@@ -217,7 +218,8 @@ pub struct PostWatermarkRequest {
     /// The posting producer.
     pub producer: String,
     /// The instant the set is complete as of.
-    pub watermark_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub watermark_at: OffsetDateTime,
     /// The complete SKU set — never a delta.
     pub sku_ids: Vec<Uuid>,
 }
@@ -227,7 +229,8 @@ pub struct PostWatermarkRequest {
 #[toolkit_macros::api_dto(response)]
 pub struct WatermarkAckView {
     /// The stored instant after the post.
-    pub watermark_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub watermark_at: OffsetDateTime,
     /// How many SKUs the stored set holds.
     pub member_count: usize,
     /// Whether this was the admitted idempotent replay.

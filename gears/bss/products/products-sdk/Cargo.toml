@@ -28,8 +28,10 @@ toolkit-security = { workspace = true }
 # The resource-error identity is a GTS id, the platform's own naming.
 toolkit-gts = { workspace = true }
 # The watermark contract carries the instant its set is complete as of; a
-# string would move the parse to every consumer.
-chrono = { workspace = true }
+# string would move the parse to every consumer. `time::OffsetDateTime`
+# rather than chrono since P-D-167: one instant type across the gear, and the
+# one the platform's OData cursor codec decodes to.
+time = { workspace = true }
 
 [dev-dependencies]
 # Lint 9 (`dod-lint-pin-coupling`) parses `schema-pin.toml` — the committed

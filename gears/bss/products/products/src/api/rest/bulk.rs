@@ -58,7 +58,7 @@ use axum::Router;
 use axum::extract::Extension;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use chrono::Utc;
+use time::OffsetDateTime;
 use toolkit::api::OpenApiRegistry;
 use toolkit::api::canonical_prelude::{CanonicalError, resource_error};
 use toolkit::api::operation_builder::OperationBuilder;
@@ -372,7 +372,7 @@ async fn import_batch(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let batch_key = body.batch_key.trim().to_owned();
 
     let actor_ref =
@@ -551,7 +551,7 @@ async fn read_batch(
         &[],
     )?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
 
     let actor_ref =
         crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
@@ -666,7 +666,8 @@ pub struct ExportArtifactView {
     /// The digest rule the checksum was computed under.
     pub digest_version: i32,
     /// The version's publish instant.
-    pub published_at: chrono::DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub published_at: OffsetDateTime,
     /// Every entry, sorted by `(entity_kind, entity_id)`.
     pub entries: Vec<ExportEntryView>,
     /// Every capture, sorted by kind.
@@ -704,7 +705,7 @@ async fn export_catalog_version(
         &EXPORT_PARAMS,
     )?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let actor_ref =
         crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
             .await?;
@@ -881,7 +882,7 @@ async fn start_lifecycle_batch(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let batch_key = body.batch_key.trim().to_owned();
     let actor_ref =
         crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)

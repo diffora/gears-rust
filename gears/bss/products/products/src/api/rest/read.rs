@@ -34,7 +34,7 @@ use axum::extract::Extension;
 use axum::http::StatusCode;
 use axum::http::header::{HeaderValue, RETRY_AFTER};
 use axum::response::{IntoResponse, Response};
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use toolkit::api::OpenApiRegistry;
 use toolkit::api::canonical_prelude::{CanonicalError, resource_error};
 use toolkit::api::odata::OData;
@@ -215,7 +215,8 @@ pub struct StampView {
     pub as_of_catalog_version: Option<i64>,
     /// The projection's last advance; a tenant nothing was projected for yet
     /// reads the request instant, so the stamp is never omitted.
-    pub projected_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub projected_at: OffsetDateTime,
 }
 
 impl From<StalenessStamp> for StampView {
@@ -231,7 +232,7 @@ async fn stamp_of(
     conn: &(impl toolkit_db::secure::DBRunner + Sync),
     scope: &AccessScope,
     tenant_id: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<StampView, CanonicalError> {
     let stamp = repo::load_read_stamp(conn, scope, tenant_id)
         .await
@@ -573,7 +574,7 @@ async fn browse(
         }
         scope
     };
-    let now = crate::domain::canonical::write_instant(Utc::now());
+    let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
     let conn = state.db.conn().map_err(|e| {
         repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
     })?;
@@ -651,7 +652,8 @@ async fn browse(
 #[toolkit_macros::api_dto(response)]
 pub struct VersionEntryView {
     pub published_version: i64,
-    pub published_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub published_at: OffsetDateTime,
     /// The record that authorized the publish, when one did.
     pub approval_ref: Option<Uuid>,
     /// The actor's pseudonymous reference (P-D-117: never resolved here).
@@ -762,7 +764,7 @@ async fn history(
         )
     };
     let scope = read_scope(enforcer, ctx, resource, tenant_id).await?;
-    let now = crate::domain::canonical::write_instant(Utc::now());
+    let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
     let conn = state.db.conn().map_err(|e| {
         repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
     })?;
@@ -905,9 +907,11 @@ pub struct DeferredIntentView {
     pub product_id: Uuid,
     pub cascade_ref: Uuid,
     pub children_count: i32,
-    pub created_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
     pub age_secs: i64,
-    pub polled_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub polled_at: OffsetDateTime,
 }
 
 /// The deferred-intent dashboard.
@@ -933,8 +937,10 @@ pub struct FreezeStatusView {
     pub acked: i32,
     pub released: i32,
     pub forced: i32,
-    pub published_at: DateTime<Utc>,
-    pub polled_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub published_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub polled_at: OffsetDateTime,
 }
 
 /// The freeze-status dashboard.
@@ -961,7 +967,8 @@ pub struct DeliveryStateView {
     pub parked: i64,
     pub oldest_pending_age_secs: i64,
     /// `None` before the first poll.
-    pub polled_at: Option<DateTime<Utc>>,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub polled_at: Option<OffsetDateTime>,
 }
 
 /// `GET /bss-products/v1/read/deferred-intents` on `scheduled_transition × read`
@@ -995,7 +1002,7 @@ async fn deferred_intents(
         tenant_id,
     )
     .await?;
-    let now = crate::domain::canonical::write_instant(Utc::now());
+    let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
     let conn = state.db.conn().map_err(|e| {
         repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
     })?;
@@ -1058,7 +1065,7 @@ async fn freeze_status(
         tenant_id,
     )
     .await?;
-    let now = crate::domain::canonical::write_instant(Utc::now());
+    let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
     let conn = state.db.conn().map_err(|e| {
         repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
     })?;
@@ -1126,7 +1133,7 @@ async fn delivery_state(
         tenant_id,
     )
     .await?;
-    let now = crate::domain::canonical::write_instant(Utc::now());
+    let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
     let conn = state.db.conn().map_err(|e| {
         repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
     })?;

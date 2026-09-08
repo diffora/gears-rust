@@ -32,8 +32,8 @@
 //! needs. Fetching whole rows would put a decade of retained records in
 //! memory to decide that none of them may be deleted.
 
-use chrono::{DateTime, Utc};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, FromQueryResult, QuerySelect};
+use time::OffsetDateTime;
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureDeleteExt, SecureEntityExt, SecureUpdateExt,
 };
@@ -124,7 +124,7 @@ pub async fn catalog_version_candidates(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-    cutoff: DateTime<Utc>,
+    cutoff: OffsetDateTime,
 ) -> Result<Vec<i64>, RepoError> {
     let rows: Vec<VersionIdRow> = catalog_version::Entity::find()
         .secure()
@@ -183,7 +183,7 @@ pub async fn entity_version_candidates(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-    cutoff: DateTime<Utc>,
+    cutoff: OffsetDateTime,
 ) -> Result<Vec<EntityVersionKey>, RepoError> {
     let rows: Vec<EntityVersionKey> = entity_version::Entity::find()
         .secure()
@@ -291,7 +291,7 @@ pub async fn stamp_retention_release(
     scope: &AccessScope,
     tenant_id: Uuid,
     catalog_version_id: i64,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<bool, RepoError> {
     let outcome = catalog_version::Entity::update_many()
         .secure()
@@ -340,7 +340,7 @@ pub async fn audit_class_candidates(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-    cutoff: DateTime<Utc>,
+    cutoff: OffsetDateTime,
     bound: u64,
 ) -> Result<Vec<AuditClassCandidate>, RepoError> {
     let mut out = Vec::new();
@@ -684,7 +684,7 @@ pub async fn principals_older_than(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-    cutoff: DateTime<Utc>,
+    cutoff: OffsetDateTime,
     bound: u64,
 ) -> Result<Vec<String>, RepoError> {
     let rows = identity_ref::Entity::find()

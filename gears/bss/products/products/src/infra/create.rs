@@ -27,6 +27,7 @@ use crate::infra::idempotency::{
 };
 use crate::infra::storage::contention_db_err;
 use crate::infra::storage::repo::{self, NewProduct, NewSku, ProductRecord, SkuRecord};
+use time::OffsetDateTime;
 
 /// What a create door's mutation transaction produced.
 ///
@@ -204,7 +205,7 @@ pub(crate) struct BulkRowStamp {
     /// The row's key within it.
     pub row_key: String,
     /// The act's instant.
-    pub now: chrono::DateTime<chrono::Utc>,
+    pub now: OffsetDateTime,
 }
 
 pub(crate) async fn insert_product_with_event(
@@ -572,7 +573,7 @@ pub(crate) async fn write_clone_content(
     entity_kind: &str,
     entity_id: Uuid,
     content: &crate::domain::disposition::CloneContent,
-    now: chrono::DateTime<chrono::Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), crate::infra::storage::RepoError> {
     if entity_kind == "product" && !content.assignments.is_empty() {
         repo::replace_category_assignments(

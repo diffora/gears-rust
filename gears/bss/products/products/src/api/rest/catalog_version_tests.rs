@@ -24,6 +24,7 @@ use crate::config::ProductsConfig;
 use crate::infra::events;
 use crate::infra::storage::migrations::Migrator;
 use crate::test_support::{authed_ctx, flat_in_enforcer};
+use time::OffsetDateTime;
 
 fn unique_sqlite_path(label: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
@@ -372,7 +373,7 @@ async fn stored_instants_carry_no_sub_microsecond_digits() {
 // dod-liveness-and-release, dod-intentful-resolver, dod-version-binding)
 
 mod freeze_and_resolve_tests {
-    use chrono::Duration as ChronoDuration;
+
     use sea_orm::ActiveValue::Set;
     use sea_orm::EntityTrait as _;
     use toolkit_db::secure::SecureInsertExt as _;
@@ -407,7 +408,7 @@ mod freeze_and_resolve_tests {
             let model = freeze_participant::ActiveModel {
                 tenant_id: Set(TENANT),
                 participant: Set((*participant).to_owned()),
-                registered_at: Set(chrono::Utc::now() - ChronoDuration::hours(1)),
+                registered_at: Set(OffsetDateTime::now_utc() - time::Duration::hours(1)),
             };
             freeze_participant::Entity::insert(model.clone())
                 .secure()
@@ -426,7 +427,7 @@ mod freeze_and_resolve_tests {
                 request_key: key,
                 lane: bss_products_sdk::increments::IncrementLane::Interactive,
                 operation_key: None,
-                requested_at: chrono::Utc::now() - ChronoDuration::seconds(10),
+                requested_at: OffsetDateTime::now_utc() - time::Duration::seconds(10),
             },
         )
         .await
@@ -436,7 +437,7 @@ mod freeze_and_resolve_tests {
             &harness.db,
             &crate::infra::broker::EventSink::Interim(Arc::clone(&harness.outbox)),
             TENANT,
-            chrono::Utc::now(),
+            OffsetDateTime::now_utc(),
         )
         .await
         .expect("drain");

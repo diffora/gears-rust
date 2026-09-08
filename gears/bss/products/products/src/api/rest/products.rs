@@ -427,9 +427,9 @@ use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::http::header::ETAG;
 use axum::response::{IntoResponse, Response};
-use chrono::{DateTime, SecondsFormat, Utc};
 use sea_orm::DbErr;
 use serde_json::{Map as JsonMap, Value as JsonValue};
+use time::OffsetDateTime;
 use toolkit::api::OpenApiRegistry;
 use toolkit::api::canonical_prelude::{CanonicalError, resource_error};
 use toolkit::api::operation_builder::OperationBuilder;
@@ -567,9 +567,11 @@ pub struct ProductView {
     /// The pseudonymous ref of whoever created the row.
     pub created_by: String,
     /// The commit instant.
-    pub created_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
     /// The instant of the row's last admitted write.
-    pub updated_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
 }
 
 /// `POST /products/{id}/deprecate`'s `200` body: the head as
@@ -608,9 +610,11 @@ pub struct DeprecatedProductView {
     /// The pseudonymous ref of whoever created the row.
     pub created_by: String,
     /// The commit instant.
-    pub created_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
     /// The instant of the row's last admitted write.
-    pub updated_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub updated_at: OffsetDateTime,
     /// The children this act moved to `deprecated` with a `cascaded` stamp.
     pub cascaded_skus: Vec<Uuid>,
     /// The children left untouched because they were already `deprecated` —
@@ -1018,9 +1022,11 @@ pub struct RetireProductRequest {
     /// Optional successor. No Product column; accepted, not written.
     pub replaced_by: Option<Uuid>,
     /// Optional operator instant. Absent: now + interim lead (30 days).
-    pub effective_at: Option<DateTime<Utc>>,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub effective_at: Option<OffsetDateTime>,
     /// Accepted so a supplied value raises `EOL_DISABLED`.
-    pub must_migrate_by: Option<DateTime<Utc>>,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub must_migrate_by: Option<OffsetDateTime>,
     /// Narrowest confirmation that lets the door exist.
     pub confirmed: bool,
     /// Absent or false over live children is `CASCADE_CONFIRMATION_REQUIRED`.
@@ -1395,7 +1401,7 @@ pub(crate) async fn create_product(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
 
     // The digest is taken from the parsed request before it is destructured,
     // so the operand is what the caller sent rather than what the steps
@@ -2127,7 +2133,7 @@ struct OpenedHeadDoor {
     /// P-D-34).
     claim: Option<IdempotencyClaimInput>,
     /// The door's own request instant, stamped once.
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 }
 
 impl OpenedHeadDoor {
@@ -2295,7 +2301,7 @@ async fn open_head_door(
     act: &HeadAct,
 ) -> Result<OpenedHeadDoor, CanonicalError> {
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
 
     // -- 1. actor_ref resolution: its own transaction, ahead of the gate. --
     let actor_ref =
@@ -2434,7 +2440,7 @@ pub(crate) struct HeadActInputs {
     /// The revision the caller pinned, as the head-row filter compares it.
     pub(crate) expected: i64,
     /// The act's instant, stamped once before the first attempt.
-    pub(crate) now: DateTime<Utc>,
+    pub(crate) now: OffsetDateTime,
     /// The claim to take as the transaction's first statement, or `None`
     /// where the request carried no key (P-D-34's skip).
     pub(crate) claim: Option<IdempotencyClaimInput>,
@@ -2805,7 +2811,7 @@ async fn reannounce_retirement_if_live(
             from_version,
             reason,
             replaced_by: None,
-            effective_at: intent.at.to_rfc3339_opts(SecondsFormat::Secs, true),
+            effective_at: crate::domain::canonical::render_instant_secs(intent.at),
             must_migrate_by: None,
         },
         inputs.actor_ref,
@@ -4083,12 +4089,15 @@ fn retire_product_payload_digest(request: &RetireProductRequest) -> Vec<u8> {
         map.insert("replacedBy".to_owned(), JsonValue::String(id.to_string()));
     }
     if let Some(at) = request.effective_at {
-        map.insert("effectiveAt".to_owned(), JsonValue::String(at.to_rfc3339()));
+        map.insert(
+            "effectiveAt".to_owned(),
+            JsonValue::String(crate::domain::canonical::render_instant(at)),
+        );
     }
     if let Some(at) = request.must_migrate_by {
         map.insert(
             "mustMigrateBy".to_owned(),
-            JsonValue::String(at.to_rfc3339()),
+            JsonValue::String(crate::domain::canonical::render_instant(at)),
         );
     }
     if let Some(confirmed) = request.cascade_confirmed {
@@ -4456,7 +4465,7 @@ struct CascadeApply<'a> {
     children: &'a [SkuRecord],
     referenced: &'a [bool],
     reason: &'a str,
-    at: DateTime<Utc>,
+    at: OffsetDateTime,
     approval_ref: Uuid,
 }
 
@@ -4582,7 +4591,7 @@ async fn announce_retired_and_answer(
     outbox: &crate::infra::broker::EventSink,
     inputs: &HeadActInputs,
     reason: &str,
-    at: DateTime<Utc>,
+    at: OffsetDateTime,
     from_version: i64,
 ) -> Result<HeadActOutcome, HeadActError> {
     let head = repo::find_product(runner, &inputs.scope, inputs.tenant_id, inputs.product_id)
@@ -4608,7 +4617,7 @@ async fn announce_retired_and_answer(
             from_version,
             reason: reason.to_owned(),
             replaced_by: None,
-            effective_at: at.to_rfc3339_opts(SecondsFormat::Secs, true),
+            effective_at: crate::domain::canonical::render_instant_secs(at),
             must_migrate_by: None,
         },
         inputs.actor_ref,
@@ -6963,7 +6972,7 @@ async fn write_content_rows(
     runner: &impl DBRunner,
     inputs: &HeadActInputs,
     payload: &ContentSavePayload,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), HeadActError> {
     if let Some(set) = payload.categories.as_ref() {
         let written = repo::replace_category_assignments(
@@ -8278,7 +8287,7 @@ fn child_failed_entry(source_sku_id: Uuid, refusal: &DomainError) -> JsonValue {
 struct ActStamp {
     tenant_id: Uuid,
     actor_ref: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 }
 
 async fn audit_failed_child(
@@ -8750,7 +8759,7 @@ async fn clone_product(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let payload_hash = clone_payload_digest(&body);
 
     let name_override = body.name.as_deref().map(str::trim).map(str::to_owned);
@@ -9054,7 +9063,7 @@ async fn validate_product(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let actor_ref =
         crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
             .await?;

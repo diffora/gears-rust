@@ -24,7 +24,7 @@
 //! `uuid` becomes `text` and the `bss.` qualification is dropped. Every
 //! `CHECK`, index and the primary key are preserved on both sides. Timestamps
 //! are `timestamptz` on Postgres and `text` on `SQLite`, which is what the
-//! driver pair stores a `DateTime<Utc>` as.
+//! driver pair stores a `OffsetDateTime` as.
 //!
 //! # The append-only head-row guard (`cpt-cf-bss-products-dod-append-only-guard`)
 //!

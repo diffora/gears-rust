@@ -24,10 +24,10 @@ pub struct Model {
     pub participant: String,
     /// `pending`, `acked`, `released` or `not_frozen(forced)`.
     pub state: String,
-    pub acked_at: Option<ChronoDateTimeUtc>,
+    pub acked_at: Option<TimeDateTimeWithTimeZone>,
     /// The ceremony's alone, write-once (P-D-67).
-    pub released_at: Option<ChronoDateTimeUtc>,
-    pub forced_at: Option<ChronoDateTimeUtc>,
+    pub released_at: Option<TimeDateTimeWithTimeZone>,
+    pub forced_at: Option<TimeDateTimeWithTimeZone>,
     pub ceremony_ref: Option<Uuid>,
 }
 

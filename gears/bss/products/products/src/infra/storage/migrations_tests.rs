@@ -164,7 +164,7 @@ mod audit_row {
         pub attempted_key: Option<String>,
         pub reason: Option<String>,
         pub correlation_id: Option<String>,
-        pub written_at: ChronoDateTimeUtc,
+        pub written_at: TimeDateTimeWithTimeZone,
         pub session_id: Option<Uuid>,
         pub ceremony_ref: Option<Uuid>,
         pub seal_state: String,
@@ -181,11 +181,11 @@ mod audit_row {
 }
 
 mod audit_log_guard_tests {
-    use chrono::{TimeZone, Utc};
     use sea_orm::ActiveValue::Set;
     use sea_orm::sea_query::Expr;
     use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter};
     use sea_orm_migration::MigratorTrait;
+    use time::OffsetDateTime;
     use toolkit_db::secure::{
         AccessScope, ScopeError, SecureDeleteExt, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
     };
@@ -219,8 +219,8 @@ mod audit_log_guard_tests {
         DBProvider::<DbError>::new(db)
     }
 
-    fn at(hour: u32) -> chrono::DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 8, 29, hour, 0, 0).unwrap()
+    fn at(hour: u32) -> OffsetDateTime {
+        crate::test_support::utc(2026, 8, 29, u8::try_from(hour).expect("a component"), 0, 0)
     }
 
     /// A minimal, well-formed `unsealed` row: a subject id is present, every
@@ -567,9 +567,9 @@ mod identity_ref_row {
         pub actor_ref: Uuid,
         pub principal_ref: String,
         pub identity_payload: Option<String>,
-        pub tombstoned_at: Option<ChronoDateTimeUtc>,
-        pub first_seen_at: ChronoDateTimeUtc,
-        pub last_seen_at: ChronoDateTimeUtc,
+        pub tombstoned_at: Option<TimeDateTimeWithTimeZone>,
+        pub first_seen_at: TimeDateTimeWithTimeZone,
+        pub last_seen_at: TimeDateTimeWithTimeZone,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -579,11 +579,11 @@ mod identity_ref_row {
 }
 
 mod identity_ref_guard_tests {
-    use chrono::{TimeZone, Utc};
     use sea_orm::ActiveValue::Set;
     use sea_orm::sea_query::{Expr, Value};
     use sea_orm::{ColumnTrait, Condition, EntityTrait};
     use sea_orm_migration::MigratorTrait;
+    use time::OffsetDateTime;
     use toolkit_db::secure::{AccessScope, ScopeError, SecureInsertExt, SecureUpdateExt};
     use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
     use uuid::Uuid;
@@ -615,8 +615,8 @@ mod identity_ref_guard_tests {
         DBProvider::<DbError>::new(db)
     }
 
-    fn at(hour: u32) -> chrono::DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 8, 29, hour, 0, 0).unwrap()
+    fn at(hour: u32) -> OffsetDateTime {
+        crate::test_support::utc(2026, 8, 29, u8::try_from(hour).expect("a component"), 0, 0)
     }
 
     /// A minimal, well-formed live ref: no tombstone, a non-`NULL` payload,
@@ -817,7 +817,7 @@ mod idempotency_row {
         pub payload_hash: Vec<u8>,
         pub response_status: Option<i32>,
         pub response_body: Option<String>,
-        pub expires_at: ChronoDateTimeUtc,
+        pub expires_at: TimeDateTimeWithTimeZone,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -827,10 +827,10 @@ mod idempotency_row {
 }
 
 mod idempotency_guard_tests {
-    use chrono::{TimeZone, Utc};
     use sea_orm::ActiveValue::Set;
     use sea_orm::EntityTrait;
     use sea_orm_migration::MigratorTrait;
+    use time::OffsetDateTime;
     use toolkit_db::secure::{AccessScope, ScopeError, SecureInsertExt};
     use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
     use uuid::Uuid;
@@ -863,8 +863,8 @@ mod idempotency_guard_tests {
         DBProvider::<DbError>::new(db)
     }
 
-    fn at(hour: u32) -> chrono::DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 8, 29, hour, 0, 0).unwrap()
+    fn at(hour: u32) -> OffsetDateTime {
+        crate::test_support::utc(2026, 8, 29, u8::try_from(hour).expect("a component"), 0, 0)
     }
 
     /// A minimal, well-formed `claimed` row: both response columns absent, as
@@ -1127,7 +1127,7 @@ async fn a_trigger_may_reference_a_table_a_later_migration_creates() {
 /// `digest_version` all bite on it, so a mis-seeded row fails loudly here
 /// rather than quietly weakening the probe it feeds.
 mod frozen_version {
-    use chrono::{TimeZone, Utc};
+
     use sea_orm::ActiveValue::Set;
     use sea_orm::EntityTrait;
     use toolkit_db::secure::{AccessScope, SecureInsertExt};
@@ -1157,7 +1157,7 @@ mod frozen_version {
             digest_version: Set(1),
             approval_ref: Set(None),
             actor_ref: Set(ACTOR),
-            published_at: Set(Utc.with_ymd_and_hms(2026, 8, 29, 10, 0, 0).unwrap()),
+            published_at: Set(crate::test_support::utc(2026, 8, 29, 10, 0, 0)),
             binding_snapshot: Set(None),
         };
         let conn = provider.conn().expect("scoped connection");
@@ -1205,8 +1205,8 @@ mod product_row {
         pub region_scope: String,
         pub brand_scope: String,
         pub created_by: String,
-        pub created_at: ChronoDateTimeUtc,
-        pub updated_at: ChronoDateTimeUtc,
+        pub created_at: TimeDateTimeWithTimeZone,
+        pub updated_at: TimeDateTimeWithTimeZone,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -1244,8 +1244,8 @@ mod sku_row {
         pub region_scope: String,
         pub brand_scope: String,
         pub created_by: String,
-        pub created_at: ChronoDateTimeUtc,
-        pub updated_at: ChronoDateTimeUtc,
+        pub created_at: TimeDateTimeWithTimeZone,
+        pub updated_at: TimeDateTimeWithTimeZone,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -1264,11 +1264,11 @@ mod sku_row {
 /// could pass on a guard that admits every `UPDATE` unconditionally. Only the
 /// pair together tells a correct whitelist apart from either extreme.
 mod product_guard_tests {
-    use chrono::{TimeZone, Utc};
     use sea_orm::ActiveValue::Set;
     use sea_orm::sea_query::Expr;
     use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter};
     use sea_orm_migration::MigratorTrait;
+    use time::OffsetDateTime;
     use toolkit_db::secure::{
         AccessScope, ScopeError, SecureDeleteExt, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
     };
@@ -1301,8 +1301,8 @@ mod product_guard_tests {
         DBProvider::<DbError>::new(db)
     }
 
-    fn at(hour: u32) -> chrono::DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 8, 29, hour, 0, 0).unwrap()
+    fn at(hour: u32) -> OffsetDateTime {
+        crate::test_support::utc(2026, 8, 29, u8::try_from(hour).expect("a component"), 0, 0)
     }
 
     /// A minimal, well-formed `draft` head, unpublished (`published_version =
@@ -2194,11 +2194,11 @@ mod product_guard_tests {
 /// mirrors — Postgres's function and `SQLite`'s per-clause triggers — carry
 /// the same whitelist rather than diverging where the schema differs.
 mod sku_guard_tests {
-    use chrono::{TimeZone, Utc};
     use sea_orm::ActiveValue::Set;
     use sea_orm::sea_query::Expr;
     use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter};
     use sea_orm_migration::MigratorTrait;
+    use time::OffsetDateTime;
     use toolkit_db::secure::{
         AccessScope, ScopeError, SecureDeleteExt, SecureInsertExt, SecureUpdateExt,
     };
@@ -2230,8 +2230,8 @@ mod sku_guard_tests {
         DBProvider::<DbError>::new(db)
     }
 
-    fn at(hour: u32) -> chrono::DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 8, 29, hour, 0, 0).unwrap()
+    fn at(hour: u32) -> OffsetDateTime {
+        crate::test_support::utc(2026, 8, 29, u8::try_from(hour).expect("a component"), 0, 0)
     }
 
     /// A minimal, well-formed parent Product, published — a SKU's foreign key
@@ -3132,7 +3132,7 @@ mod sku_guard_tests {
 /// unconditionally — which is strictly stronger than the predicate it stands
 /// in for; the owed probe lands with the predicate it exercises.
 mod entity_version_guard_tests {
-    use chrono::{TimeZone, Utc};
+
     use sea_orm::ActiveValue::Set;
     use sea_orm::sea_query::Expr;
     use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter};
@@ -3201,7 +3201,7 @@ mod entity_version_guard_tests {
             digest_version: Set(1),
             approval_ref: Set(Some(APPROVAL)),
             actor_ref: Set(ACTOR),
-            published_at: Set(Utc.with_ymd_and_hms(2026, 8, 29, 11, 0, 0).unwrap()),
+            published_at: Set(crate::test_support::utc(2026, 8, 29, 11, 0, 0)),
             binding_snapshot: Set(None),
         }
     }
@@ -3258,7 +3258,7 @@ mod entity_version_guard_tests {
         assert_eq!(row.actor_ref, ACTOR);
         assert_eq!(
             row.published_at,
-            Utc.with_ymd_and_hms(2026, 8, 29, 11, 0, 0).unwrap()
+            crate::test_support::utc(2026, 8, 29, 11, 0, 0)
         );
     }
 

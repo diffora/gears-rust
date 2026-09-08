@@ -56,8 +56,8 @@ pub struct Model {
     /// The pseudonymous ref of whoever created the row. Outside the bucket
     /// scheme entirely: admitted in no update at all.
     pub created_by: String,
-    pub created_at: ChronoDateTimeUtc,
-    pub updated_at: ChronoDateTimeUtc,
+    pub created_at: TimeDateTimeWithTimeZone,
+    pub updated_at: TimeDateTimeWithTimeZone,
     /// The clone's immediate source (P-D-72: for a SKU child, its own source
     /// SKU) — create-only, guarded immutable by the head trigger (P-D-76).
     pub cloned_from: Option<Uuid>,

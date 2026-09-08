@@ -41,6 +41,7 @@ use toolkit_security::{SecurityContext, pep_properties};
 use uuid::Uuid;
 
 use crate::infra::events;
+use time::OffsetDateTime;
 
 /// Degraded flat-`In` PDP fake: permits and emits a single flat
 /// `In([allowed])` constraint over `OWNER_TENANT_ID` — **the shape the
@@ -94,14 +95,43 @@ impl AuthZResolverClient for FlatInResolver {
 ///
 /// `.single()` rather than `.unwrap()`, which is the form one of the four
 /// already used and the only one that says what it is asserting: that the
+/// One UTC instant from its civil components — the fixture spelling that
+/// replaced `chrono`'s `crate::test_support::utc(..)` when the gear
+/// moved to `time` (P-D-167).
+///
+/// A helper rather than seventy-two inline conversions: `time` builds an
+/// instant through a `Date` and a civil time, so the inline form is four
+/// calls where chrono's was one, and the suite would have carried the
+/// arithmetic in seventy-two places.
+///
+/// # Panics
+///
+/// On components that name no real instant, which is a fixture typo rather
+/// than a runtime case.
+#[must_use]
+pub fn utc(year: i32, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> OffsetDateTime {
+    time::Date::from_calendar_date(
+        year,
+        time::Month::try_from(month).expect("a month of the year"),
+        day,
+    )
+    .expect("a real date")
+    .with_hms(hour, minute, second)
+    .expect("a real civil time")
+    .assume_utc()
+}
+
 /// civil time names exactly one instant.
 #[must_use]
-pub fn at(hour: u32) -> chrono::DateTime<chrono::Utc> {
-    use chrono::TimeZone as _;
-    chrono::Utc
-        .with_ymd_and_hms(2026, 9, 2, hour, 0, 0)
-        .single()
-        .expect("a real instant")
+pub fn at(hour: u32) -> OffsetDateTime {
+    utc(
+        2026,
+        9,
+        2,
+        u8::try_from(hour).expect("an hour of the day"),
+        0,
+        0,
+    )
 }
 
 /// A [`PolicyEnforcer`] over [`FlatInResolver`], scoped to one tenant.
@@ -474,7 +504,7 @@ async fn seed_satisfied_record(
                 )
                 .col_expr(
                     approval::Column::AuthorOverrideAckAt,
-                    Expr::value(Some(chrono::Utc::now())),
+                    Expr::value(Some(OffsetDateTime::now_utc())),
                 )
                 .filter(
                     Condition::all()
@@ -507,7 +537,7 @@ async fn seed_satisfied_record(
             author_override_ack: None,
             override_conditions: Vec::new(),
         },
-        chrono::Utc::now(),
+        OffsetDateTime::now_utc(),
     )
     .await
     .expect("submit the record");
@@ -533,7 +563,7 @@ async fn seed_satisfied_record(
             )
             .col_expr(
                 approval::Column::AuthorOverrideAckAt,
-                Expr::value(Some(chrono::Utc::now())),
+                Expr::value(Some(OffsetDateTime::now_utc())),
             )
             .filter(
                 Condition::all()
@@ -556,7 +586,7 @@ pub async fn seed_finance_codes(db: &toolkit_db::DBProvider<toolkit_db::DbError>
     use crate::infra::storage::repo;
     let conn = db.conn().expect("connection");
     let scope = toolkit_db::secure::AccessScope::for_tenant(tenant_id);
-    let now = chrono::Utc::now();
+    let now = OffsetDateTime::now_utc();
     for (kind, code) in [
         (SetKind::TaxCategory, "TC-STD"),
         (SetKind::GlCode, "GL-4000"),

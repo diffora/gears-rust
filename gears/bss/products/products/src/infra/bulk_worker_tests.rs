@@ -3,9 +3,9 @@
 
 use std::sync::Arc;
 
-use chrono::Utc;
 use sea_orm_migration::MigratorTrait as _;
 use serde_json::json;
+use time::OffsetDateTime;
 use toolkit_db::outbox::{Outbox, OutboxHandle, Partitions, outbox_migrations_with_prefix};
 use toolkit_db::secure::AccessScope;
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
@@ -145,7 +145,7 @@ async fn seed_batch(harness: &Harness, key: &str, rows: Vec<NewBulkRow>) -> Uuid
             mode: "import".to_owned(),
             lane: "import".to_owned(),
             operation_key: None,
-            created_at: Utc::now(),
+            created_at: OffsetDateTime::now_utc(),
         },
         &rows,
     )
@@ -171,7 +171,7 @@ async fn a_batch_stages_its_rows_and_reports() {
         &worker_ctx(&harness),
         TENANT,
         ACTOR,
-        Utc::now(),
+        OffsetDateTime::now_utc(),
         &tokio_util::sync::CancellationToken::new(),
     )
     .await
@@ -236,7 +236,7 @@ async fn a_failing_row_fails_alone_with_the_owning_code() {
         &worker_ctx(&harness),
         TENANT,
         ACTOR,
-        Utc::now(),
+        OffsetDateTime::now_utc(),
         &tokio_util::sync::CancellationToken::new(),
     )
     .await
@@ -271,7 +271,7 @@ async fn a_collision_carries_the_foundations_own_code() {
         &worker_ctx(&harness),
         TENANT,
         ACTOR,
-        Utc::now(),
+        OffsetDateTime::now_utc(),
         &tokio_util::sync::CancellationToken::new(),
     )
     .await
@@ -282,7 +282,7 @@ async fn a_collision_carries_the_foundations_own_code() {
         &worker_ctx(&harness),
         TENANT,
         ACTOR,
-        Utc::now(),
+        OffsetDateTime::now_utc(),
         &tokio_util::sync::CancellationToken::new(),
     )
     .await
@@ -306,7 +306,7 @@ async fn a_resumed_batch_skips_the_rows_it_already_staged() {
         &worker_ctx(&harness),
         TENANT,
         ACTOR,
-        Utc::now(),
+        OffsetDateTime::now_utc(),
         &tokio_util::sync::CancellationToken::new(),
     )
     .await
@@ -325,7 +325,7 @@ async fn a_resumed_batch_skips_the_rows_it_already_staged() {
         batch_id,
         crate::domain::states::BatchState::Reported,
         crate::domain::states::BatchState::Staging,
-        Utc::now(),
+        OffsetDateTime::now_utc(),
     )
     .await
     .expect("rewind");
@@ -336,7 +336,7 @@ async fn a_resumed_batch_skips_the_rows_it_already_staged() {
         &worker_ctx(&harness),
         TENANT,
         ACTOR,
-        Utc::now(),
+        OffsetDateTime::now_utc(),
         &tokio_util::sync::CancellationToken::new(),
     )
     .await
@@ -363,8 +363,8 @@ async fn a_stale_claim_loses() {
             batch_id,
             BatchState::Staging,
             0,
-            Utc::now(),
-            chrono::Duration::minutes(10),
+            OffsetDateTime::now_utc(),
+            time::Duration::minutes(10),
         )
         .await
         .expect("claim"),
@@ -378,8 +378,8 @@ async fn a_stale_claim_loses() {
             batch_id,
             BatchState::Staging,
             0,
-            Utc::now(),
-            chrono::Duration::minutes(10),
+            OffsetDateTime::now_utc(),
+            time::Duration::minutes(10),
         )
         .await
         .expect("claim"),
@@ -395,7 +395,7 @@ async fn an_empty_queue_is_a_quiet_pass() {
         &worker_ctx(&harness),
         TENANT,
         ACTOR,
-        Utc::now(),
+        OffsetDateTime::now_utc(),
         &tokio_util::sync::CancellationToken::new(),
     )
     .await
@@ -412,9 +412,17 @@ mod terminal_edges_tests {
     async fn move_state(harness: &Harness, batch_id: Uuid, from: BatchState, to: BatchState) {
         let conn = harness.state.db.conn().expect("conn");
         assert!(
-            repo::move_bulk_batch_state(&conn, &scope(), TENANT, batch_id, from, to, Utc::now())
-                .await
-                .expect("the CAS runs"),
+            repo::move_bulk_batch_state(
+                &conn,
+                &scope(),
+                TENANT,
+                batch_id,
+                from,
+                to,
+                OffsetDateTime::now_utc()
+            )
+            .await
+            .expect("the CAS runs"),
             "the fixture's own edge {} -> {} must land",
             from.as_str(),
             to.as_str()
@@ -443,7 +451,7 @@ mod terminal_edges_tests {
                 disposition: Some(disposition),
                 code: None,
                 reason: None,
-                now: Utc::now(),
+                now: OffsetDateTime::now_utc(),
             },
         )
         .await
@@ -462,7 +470,7 @@ mod terminal_edges_tests {
             &ctx,
             TENANT,
             ACTOR,
-            Utc::now(),
+            OffsetDateTime::now_utc(),
             &tokio_util::sync::CancellationToken::new(),
         )
         .await
@@ -472,7 +480,7 @@ mod terminal_edges_tests {
             "{staged:?}"
         );
 
-        let outcome = abandon_batch(&ctx, TENANT, batch_id, Utc::now())
+        let outcome = abandon_batch(&ctx, TENANT, batch_id, OffsetDateTime::now_utc())
             .await
             .expect("abandon runs");
         assert_eq!(
@@ -509,7 +517,7 @@ mod terminal_edges_tests {
             &ctx,
             TENANT,
             ACTOR,
-            Utc::now(),
+            OffsetDateTime::now_utc(),
             &tokio_util::sync::CancellationToken::new(),
         )
         .await
@@ -529,7 +537,7 @@ mod terminal_edges_tests {
         )
         .await;
 
-        let outcome = abandon_batch(&ctx, TENANT, batch_id, Utc::now())
+        let outcome = abandon_batch(&ctx, TENANT, batch_id, OffsetDateTime::now_utc())
             .await
             .expect("abandon runs");
         assert_eq!(outcome, AbandonOutcome::NotReported);
@@ -552,7 +560,7 @@ mod terminal_edges_tests {
             &ctx,
             TENANT,
             ACTOR,
-            Utc::now(),
+            OffsetDateTime::now_utc(),
             &tokio_util::sync::CancellationToken::new(),
         )
         .await
@@ -575,7 +583,7 @@ mod terminal_edges_tests {
         // One row in flight: the batch stays open and nothing is emitted.
         close_row(&harness, batch_id, "r1", "published").await;
         assert_eq!(
-            complete_batch(&ctx, TENANT, batch_id, ACTOR, Utc::now())
+            complete_batch(&ctx, TENANT, batch_id, ACTOR, OffsetDateTime::now_utc())
                 .await
                 .expect("completion runs"),
             CompleteOutcome::RowsInFlight
@@ -593,7 +601,7 @@ mod terminal_edges_tests {
         // A FAILED row still completes the batch: parts-succeeded is the
         // honest end state, not an error.
         close_row(&harness, batch_id, "r2", "failed").await;
-        let first = complete_batch(&ctx, TENANT, batch_id, ACTOR, Utc::now())
+        let first = complete_batch(&ctx, TENANT, batch_id, ACTOR, OffsetDateTime::now_utc())
             .await
             .expect("completion runs");
         let CompleteOutcome::Completed { ledger_digest } = first else {
@@ -623,7 +631,7 @@ mod terminal_edges_tests {
                     },
                 },
                 ACTOR,
-                Utc::now(),
+                OffsetDateTime::now_utc(),
             )
             .await
             .expect("the CAS runs"),
@@ -641,7 +649,7 @@ mod terminal_edges_tests {
 
         // And the caller's own fast path still answers honestly.
         assert_eq!(
-            complete_batch(&ctx, TENANT, batch_id, ACTOR, Utc::now())
+            complete_batch(&ctx, TENANT, batch_id, ACTOR, OffsetDateTime::now_utc())
                 .await
                 .expect("completion runs"),
             CompleteOutcome::NotCommitting
@@ -658,7 +666,7 @@ mod batch_machine_tests {
     use axum::Router;
     use axum::body::Body;
     use axum::http::Request;
-    use chrono::Duration as ChronoDuration;
+
     use sea_orm::ConnectionTrait as _;
     use tower::ServiceExt as _;
 
@@ -682,7 +690,7 @@ mod batch_machine_tests {
             TENANT,
             &MaterialityPolicy::new(Vec::new(), 1, approver_count),
             ACTOR,
-            Utc::now(),
+            OffsetDateTime::now_utc(),
         )
         .await
         .expect("write the policy");
@@ -723,21 +731,38 @@ mod batch_machine_tests {
     }
 
     async fn stage_only(harness: &Harness) {
-        stage_next_batch(&worker_ctx(harness), TENANT, ACTOR, Utc::now(), &cancel())
-            .await
-            .expect("staging runs");
+        stage_next_batch(
+            &worker_ctx(harness),
+            TENANT,
+            ACTOR,
+            OffsetDateTime::now_utc(),
+            &cancel(),
+        )
+        .await
+        .expect("staging runs");
     }
 
     async fn advance(harness: &Harness) -> crate::infra::bulk_worker::AdvanceOutcome {
-        advance_batches(&worker_ctx(harness), TENANT, ACTOR, Utc::now(), &cancel())
-            .await
-            .expect("the advance pass runs")
+        advance_batches(
+            &worker_ctx(harness),
+            TENANT,
+            ACTOR,
+            OffsetDateTime::now_utc(),
+            &cancel(),
+        )
+        .await
+        .expect("the advance pass runs")
     }
 
     async fn full_sweep(harness: &Harness) {
-        sweep(&worker_ctx(harness), ACTOR, Utc::now(), &cancel())
-            .await
-            .expect("the sweep runs");
+        sweep(
+            &worker_ctx(harness),
+            ACTOR,
+            OffsetDateTime::now_utc(),
+            &cancel(),
+        )
+        .await
+        .expect("the sweep runs");
     }
 
     async fn seed_batch_with(
@@ -745,7 +770,7 @@ mod batch_machine_tests {
         key: &str,
         mode: &str,
         lane: &str,
-        created_at: chrono::DateTime<Utc>,
+        created_at: OffsetDateTime,
         rows: Vec<NewBulkRow>,
     ) -> Uuid {
         let conn = harness.state.db.conn().expect("conn");
@@ -827,7 +852,7 @@ mod batch_machine_tests {
                 name: "Fixture",
                 name_normalized: "fixture",
             },
-            Utc::now(),
+            OffsetDateTime::now_utc(),
         )
         .await
         .expect("the category insert runs");
@@ -837,7 +862,7 @@ mod batch_machine_tests {
             TENANT,
             product_id,
             &[(CATEGORY, crate::domain::taxonomy::AssignmentRole::Primary)],
-            Utc::now(),
+            OffsetDateTime::now_utc(),
         )
         .await
         .expect("assign the primary category");
@@ -1135,7 +1160,7 @@ mod batch_machine_tests {
             "b-old",
             "import",
             "import",
-            Utc::now() - ChronoDuration::hours(200),
+            OffsetDateTime::now_utc() - time::Duration::hours(200),
             vec![product_row("o1", "Fibre Old")],
         )
         .await;
@@ -1256,7 +1281,7 @@ mod batch_machine_tests {
             "b-promote",
             "promote",
             "import",
-            Utc::now(),
+            OffsetDateTime::now_utc(),
             vec![
                 product_row_in("same", "Alpha Line", "eu"),
                 product_row_in("upd", "Alpha Line", "us"),
@@ -1268,10 +1293,15 @@ mod batch_machine_tests {
         // The reported beta batch would commit under this sweep; stage the
         // promote batch alone.
         loop {
-            let outcome =
-                stage_next_batch(&worker_ctx(&harness), TENANT, ACTOR, Utc::now(), &cancel())
-                    .await
-                    .expect("staging runs");
+            let outcome = stage_next_batch(
+                &worker_ctx(&harness),
+                TENANT,
+                ACTOR,
+                OffsetDateTime::now_utc(),
+                &cancel(),
+            )
+            .await
+            .expect("staging runs");
             if matches!(outcome, StageOutcome::NoBatch) {
                 break;
             }
@@ -1307,9 +1337,14 @@ mod batch_machine_tests {
             "an unknown identity creates"
         );
 
-        let outcome = abandon_batch(&worker_ctx(&harness), TENANT, promote, Utc::now())
-            .await
-            .expect("abandon runs");
+        let outcome = abandon_batch(
+            &worker_ctx(&harness),
+            TENANT,
+            promote,
+            OffsetDateTime::now_utc(),
+        )
+        .await
+        .expect("abandon runs");
         assert!(
             matches!(outcome, AbandonOutcome::Abandoned { .. }),
             "{outcome:?}"
@@ -1360,7 +1395,7 @@ mod batch_machine_tests {
             "l-batch",
             "import",
             "lifecycle",
-            Utc::now(),
+            OffsetDateTime::now_utc(),
             vec![lifecycle_row(a), lifecycle_row(b), lifecycle_row(draft)],
         )
         .await;
@@ -1411,7 +1446,7 @@ mod batch_machine_tests {
             &harness.state.db,
             &harness.state.sink,
             TENANT,
-            Utc::now() + ChronoDuration::minutes(6),
+            OffsetDateTime::now_utc() + time::Duration::minutes(6),
         )
         .await
         .expect("drain");

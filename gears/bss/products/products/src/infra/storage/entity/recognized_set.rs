@@ -31,8 +31,8 @@ pub struct Model {
     /// The registry-seeded marker: a seeded member is deprecatable and never
     /// retired.
     pub seeded_by: Option<String>,
-    pub created_at: ChronoDateTimeUtc,
-    pub updated_at: ChronoDateTimeUtc,
+    pub created_at: TimeDateTimeWithTimeZone,
+    pub updated_at: TimeDateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

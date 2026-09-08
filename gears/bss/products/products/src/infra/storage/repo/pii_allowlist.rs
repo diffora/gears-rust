@@ -27,9 +27,9 @@
 //! rows would put `justification` — operator free text this table exists to
 //! keep inside the write block — on a path that has no reason to carry it.
 
-use chrono::{DateTime, Utc};
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Set};
+use time::OffsetDateTime;
 use toolkit_db::odata::sea_orm_filter::{
     FieldToColumn, LimitCfg, ODataFieldMapping, paginate_odata,
 };
@@ -59,11 +59,11 @@ pub struct AllowlistEntry {
     pub justification: String,
     /// The reference to the external Legal decision.
     pub signed_off_by: String,
-    pub signed_off_at: DateTime<Utc>,
+    pub signed_off_at: OffsetDateTime,
     /// [`pii_allowlist::STATE_ACTIVE`] or [`pii_allowlist::STATE_REVOKED`].
     pub state: String,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
 }
 
 /// The tenant's active allow-list values, normalized, for the detector.
@@ -119,13 +119,13 @@ pub struct AllowlistEntryQuery {
     #[odata(filter(kind = "String"))]
     pub signed_off_by: String,
     #[odata(filter(kind = "DateTimeUtc"))]
-    pub signed_off_at: chrono::DateTime<Utc>,
+    pub signed_off_at: OffsetDateTime,
     /// `active` or `revoked`. `state eq 'active'` is the live allow-list.
     #[odata(filter(kind = "String"))]
     pub state: String,
     /// When the entry was signed on. The default order.
     #[odata(filter(kind = "DateTimeUtc"))]
-    pub created_at: chrono::DateTime<Utc>,
+    pub created_at: OffsetDateTime,
 }
 
 /// The vocabulary under the name the rest of the gear uses.
@@ -233,8 +233,8 @@ pub struct NewAllowlistEntry {
     pub value_normalized: String,
     pub justification: String,
     pub signed_off_by: String,
-    pub signed_off_at: DateTime<Utc>,
-    pub now: DateTime<Utc>,
+    pub signed_off_at: OffsetDateTime,
+    pub now: OffsetDateTime,
 }
 
 /// Sign an entry on, in the caller's transaction.
@@ -289,7 +289,7 @@ pub async fn revoke_entry(
     scope: &AccessScope,
     tenant_id: Uuid,
     entry_id: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<bool, RepoError> {
     let outcome = pii_allowlist::Entity::update_many()
         .secure()

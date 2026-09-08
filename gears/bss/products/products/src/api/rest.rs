@@ -140,9 +140,9 @@ use axum::Router;
 use axum::extract::Extension;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use chrono::{DateTime, Utc};
 use sea_orm::DbErr;
 use serde_json::Value as JsonValue;
+use time::OffsetDateTime;
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit_db::DbError;
 use toolkit_db::secure::AccessScope;
@@ -446,7 +446,7 @@ pub(crate) async fn resolve_creator_actor_ref(
     state: &ApiState,
     tenant_id: Uuid,
     principal_id: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<Uuid, CanonicalError> {
     let principal_ref = principal_id.to_string();
     // Two attempts, never more. A principal's **first two requests** can race
@@ -789,7 +789,7 @@ pub(crate) async fn audit_refusal_of_action_and_report(
         // 32-hex rendering that joins the access log and the error envelope
         // is stored as is).
         correlation_id: crate::infra::events::correlation_id(),
-        written_at: Utc::now(),
+        written_at: OffsetDateTime::now_utc(),
     };
 
     let scope_for_audit = scope.clone();
@@ -1032,7 +1032,7 @@ pub(crate) async fn elevation_gate(
     let Some(ctx) = request.extensions().get::<SecurityContext>().cloned() else {
         return Err(unauthenticated());
     };
-    let now = crate::domain::canonical::write_instant(Utc::now());
+    let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
 
     let conn = state.db.conn().map_err(|e| {
         repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
@@ -1248,7 +1248,7 @@ fn elevation_contention(error: &ElevationTxError) -> Option<&sea_orm::DbErr> {
 struct ElevationRefusal<'a> {
     session: &'a crate::infra::storage::entity::breakglass_session::Model,
     actor_ref: uuid::Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 }
 
 /// Refuse a call past the window, emitting `BreakGlassExpired` for exactly
@@ -1281,7 +1281,7 @@ async fn elevated_write_forbidden(
     scope: &AccessScope,
     session: &crate::infra::storage::entity::breakglass_session::Model,
     actor_ref: uuid::Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> CanonicalError {
     audit_refusal_and_report_for_elevation(
         state,
@@ -1303,7 +1303,7 @@ async fn audit_refusal_and_report_for_elevation(
     scope: &AccessScope,
     session: &crate::infra::storage::entity::breakglass_session::Model,
     actor_ref: uuid::Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     refusal: DomainError,
 ) -> CanonicalError {
     let code = refusal.code();
@@ -1334,7 +1334,7 @@ async fn audit_elevated_access(
     scope: &AccessScope,
     session: &crate::infra::storage::entity::breakglass_session::Model,
     actor_ref: uuid::Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     action: &str,
 ) -> Result<(), CanonicalError> {
     let conn = state.db.conn().map_err(|e| {

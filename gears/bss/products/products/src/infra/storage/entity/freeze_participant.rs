@@ -18,7 +18,7 @@ pub struct Model {
     pub tenant_id: Uuid,
     #[sea_orm(primary_key, auto_increment = false)]
     pub participant: String,
-    pub registered_at: ChronoDateTimeUtc,
+    pub registered_at: TimeDateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

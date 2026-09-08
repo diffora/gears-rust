@@ -35,8 +35,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde_json::Value as JsonValue;
+use time::OffsetDateTime;
 use toolkit_db::secure::AccessScope;
 use uuid::Uuid;
 
@@ -184,7 +184,7 @@ impl From<RepoError> for ApplyError {
 /// failing tenant is logged and the others continue.
 pub(crate) async fn sweep(
     ctx: &ProjectorContext,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<(), RepoError> {
     let tenants = {
@@ -222,7 +222,7 @@ pub(crate) async fn sweep(
 pub(crate) async fn project_tenant(
     ctx: &ProjectorContext,
     tenant_id: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<PassOutcome, RepoError> {
     let scope = AccessScope::for_tenant(tenant_id);
     let conn = ctx
@@ -249,7 +249,7 @@ pub(crate) async fn project_tenant(
     if rows.is_empty() {
         return Ok(PassOutcome::Idle);
     }
-    let budget = ChronoDuration::seconds(i64::from(ctx.knobs.convergence_budget_secs));
+    let budget = time::Duration::seconds(i64::from(ctx.knobs.convergence_budget_secs));
     let mut applied = 0usize;
     let mut parked = 0usize;
     let mut touched_entities = false;
@@ -268,19 +268,19 @@ pub(crate) async fn project_tenant(
                     )
                     .await?;
                 }
-                let latency = now.signed_duration_since(row.created_at);
+                let latency = now - row.created_at;
                 tracing::info!(
                     event = "read_model_convergence",
                     %tenant_id,
                     payload_type = %row.payload_type,
-                    latency_ms = latency.num_milliseconds(),
+                    latency_ms = latency.whole_milliseconds(),
                     "bss-products: commit -> projected"
                 );
                 if latency > budget {
                     tracing::warn!(
                         event = "read_model_lag",
                         %tenant_id,
-                        lag_secs = latency.num_seconds(),
+                        lag_secs = latency.whole_seconds(),
                         budget_secs = ctx.knobs.convergence_budget_secs,
                         "bss-products: read model behind its convergence budget; serving continues"
                     );
@@ -344,7 +344,7 @@ async fn advance_stamp(
     tenant_id: Uuid,
     catalog: StampCatalogTouch,
     entities_projected: bool,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), RepoError> {
     match repo::apply_read_stamp(
         conn,
@@ -402,7 +402,7 @@ async fn apply_event(
     tenant_id: Uuid,
     row: &repo::InboxRow,
     generation: i64,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<Applied, ApplyError> {
     let data: JsonValue = serde_json::from_str(&row.payload)
         .map_err(|e| ApplyError::Poison(format!("payload does not decode: {e}")))?;
@@ -627,7 +627,7 @@ async fn project_entity(
     entity_id: Uuid,
     version: i64,
     generation: i64,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), ApplyError> {
     let versioned = match entity_kind {
         "product" => repo::VersionedEntityKind::Product,
@@ -765,7 +765,7 @@ async fn refresh_head_fields(
     tenant_id: Uuid,
     entity_kind: &str,
     entity_id: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), RepoError> {
     let (state, provenance, replaced_by) = match entity_kind {
         "sku" => match repo::find_sku(conn, scope, tenant_id, entity_id).await? {
@@ -810,7 +810,7 @@ async fn refresh_category_paths(
     scope: &AccessScope,
     tenant_id: Uuid,
     generation: i64,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), RepoError> {
     let nodes: BTreeMap<Uuid, (Option<Uuid>, String)> =
         repo::category_nodes(conn, scope, tenant_id)
@@ -865,7 +865,7 @@ async fn refresh_display_fields(
     scope: &AccessScope,
     tenant_id: Uuid,
     generation: i64,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), RepoError> {
     for existing in repo::read_entities_of(conn, scope, tenant_id, generation).await? {
         let display = display_attributes_for(
@@ -912,7 +912,7 @@ async fn refresh_display_fields(
 
 fn row_from(
     existing: crate::infra::storage::entity::read_entity::Model,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     patch: impl FnOnce(&mut ReadEntityRow),
 ) -> ReadEntityRow {
     let mut row = ReadEntityRow {
@@ -963,7 +963,7 @@ async fn rebuild_tenant(
     tenant_id: Uuid,
     next_generation: i64,
     tail: i64,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<usize, RepoError> {
     let newest = repo::newest_catalog_versions(conn, scope, tenant_id, 1).await?;
     let mut rows = 0usize;
@@ -1056,7 +1056,7 @@ fn deferred_children_count(
 /// [`RepoError`] on a storage failure.
 pub(crate) async fn poll_dashboards(
     ctx: &ProjectorContext,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<(), RepoError> {
     let conn = ctx
@@ -1095,10 +1095,7 @@ pub(crate) async fn poll_dashboards(
                     cascade_ref: intent.cascade_ref,
                     children_count: i32::try_from(children).unwrap_or(i32::MAX),
                     created_at: intent.created_at,
-                    age_secs: now
-                        .signed_duration_since(intent.created_at)
-                        .num_seconds()
-                        .max(0),
+                    age_secs: (now - intent.created_at).whole_seconds().max(0),
                     polled_at: now,
                 },
             )
@@ -1146,8 +1143,7 @@ pub(crate) async fn poll_dashboards(
                 tenant_id,
                 inbox_pending: i64::try_from(pending).unwrap_or(i64::MAX),
                 parked: i64::try_from(parked).unwrap_or(i64::MAX),
-                oldest_pending_age_secs: oldest
-                    .map_or(0, |at| now.signed_duration_since(at).num_seconds().max(0)),
+                oldest_pending_age_secs: oldest.map_or(0, |at| (now - at).whole_seconds().max(0)),
                 polled_at: now,
             },
         )
@@ -1163,14 +1159,14 @@ pub(crate) async fn poll_dashboards(
 /// [`RepoError`] on a storage failure.
 pub(crate) async fn sweep_inbox(
     ctx: &ProjectorContext,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<u64, RepoError> {
     let conn = ctx
         .db
         .conn()
         .map_err(|e| RepoError::Db(format!("inbox sweep connection: {e}")))?;
-    let before = now - ChronoDuration::hours(i64::from(ctx.knobs.inbox_retention_hours));
+    let before = now - time::Duration::hours(i64::from(ctx.knobs.inbox_retention_hours));
     let mut swept = 0;
     for tenant_id in repo::tenants_with_inbox(&conn, &AccessScope::allow_all()).await? {
         if cancel.is_cancelled() {

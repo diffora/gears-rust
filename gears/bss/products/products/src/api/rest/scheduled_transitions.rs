@@ -15,7 +15,7 @@ use axum::Router;
 use axum::extract::{Extension, Path, Query};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use toolkit::api::OpenApiRegistry;
 use toolkit::api::canonical_prelude::{CanonicalError, resource_error};
 use toolkit::api::odata::OData;
@@ -57,7 +57,8 @@ pub struct ScheduledTransitionView {
     /// `publish` or `retire`.
     pub kind: String,
     /// UTC activation instant.
-    pub at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub at: OffsetDateTime,
     /// Stored run state.
     pub state: String,
     /// Runner outcome text, present on `applied|failed|deferred`.
@@ -228,7 +229,7 @@ async fn operate_scheduled_transition(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let actor_ref =
         crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
             .await?;

@@ -39,6 +39,7 @@ use crate::infra::storage::entity::entity_version;
 use crate::infra::storage::migrations::Migrator;
 use crate::infra::storage::repo;
 use crate::test_support::{authed_ctx, flat_in_enforcer, raw_i64};
+use time::OffsetDateTime;
 
 const TENANT: Uuid = Uuid::from_u128(0x7e_43);
 const ALICE: &str = "principal:alice";
@@ -131,7 +132,7 @@ async fn seed_principal(harness: &TestHarness, principal_ref: &str) -> Uuid {
         &scope,
         TENANT,
         principal_ref,
-        crate::domain::canonical::write_instant(chrono::Utc::now()),
+        crate::domain::canonical::write_instant(OffsetDateTime::now_utc()),
     )
     .await
     .expect("mint the subject's ref")
@@ -619,7 +620,7 @@ async fn an_erasure_leaves_a_frozen_record_byte_identical() {
             approval_ref: None,
             // The frozen row is stamped with the ref about to be erased.
             actor_ref: seeded,
-            published_at: crate::domain::canonical::write_instant(chrono::Utc::now()),
+            published_at: crate::domain::canonical::write_instant(OffsetDateTime::now_utc()),
             binding_snapshot: None,
         },
     )

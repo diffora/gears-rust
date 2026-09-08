@@ -75,7 +75,7 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-retire-delete-guard:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-taxonomy-events:p1
 
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use toolkit_db::secure::{AccessScope, DBRunner, TxConfig};
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
@@ -288,7 +288,7 @@ pub async fn reparent_under_lock(
     category_id: Uuid,
     new_parent: Option<Uuid>,
     limits: TaxonomyLimits,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     authorization: &crate::domain::governance::GateAuthorization,
 ) -> Result<Result<repo::CategoryWrite, DomainError>, RepoError> {
     let _guard = take_writer_lock(db, tenant_id).await?;
@@ -392,7 +392,7 @@ pub async fn rename_under_lock(
     actor_ref: Uuid,
     category_id: Uuid,
     name: &str,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     authorization: &crate::domain::governance::GateAuthorization,
 ) -> Result<Result<repo::CategoryWrite, DomainError>, RepoError> {
     let _guard = take_writer_lock(db, tenant_id).await?;
@@ -535,7 +535,7 @@ pub async fn create_under_lock(
     new: repo::NewCategory<'_>,
     actor_ref: Uuid,
     limits: TaxonomyLimits,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<Result<(), DomainError>, RepoError> {
     let tenant_id = new.tenant_id;
     let _guard = take_writer_lock(db, tenant_id).await?;
@@ -624,7 +624,7 @@ pub async fn retire_under_lock(
     actor_ref: Uuid,
     category_id: Uuid,
     sample: u64,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     authorization: &crate::domain::governance::GateAuthorization,
 ) -> Result<Result<repo::CategoryWrite, DomainError>, RepoError> {
     let _guard = take_writer_lock(db, tenant_id).await?;
@@ -717,7 +717,7 @@ pub async fn delete_under_lock(
     actor_ref: Uuid,
     category_id: Uuid,
     sample: u64,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     authorization: &crate::domain::governance::GateAuthorization,
 ) -> Result<Result<repo::CategoryWrite, DomainError>, RepoError> {
     let _guard = take_writer_lock(db, tenant_id).await?;

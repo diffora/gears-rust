@@ -28,8 +28,8 @@ pub struct Model {
     pub reason: String,
     /// The window is half-open: expiry gates admission, so an act admitted
     /// inside it finishes (P-D-68 arm 2).
-    pub valid_from: ChronoDateTimeUtc,
-    pub valid_until: ChronoDateTimeUtc,
+    pub valid_from: TimeDateTimeWithTimeZone,
+    pub valid_until: TimeDateTimeWithTimeZone,
     /// Exactly one of the two paths is taken, and a CHECK enforces the
     /// exclusivity. This one carries no FK: whether the referent is an
     /// `ApprovalRecord` is an open item P-D-68 arm 3 deliberately did not
@@ -56,13 +56,13 @@ pub struct Model {
     /// `pending` or `reviewed` (P-D-68 arm 3).
     pub posthoc_state: Option<String>,
     pub reviewed_by: Option<Uuid>,
-    pub reviewed_at: Option<ChronoDateTimeUtc>,
+    pub reviewed_at: Option<TimeDateTimeWithTimeZone>,
     /// When the post-hoc review's SLA lapse was alerted (P-D-133) — a CAS
     /// stamp the lifecycle tick sets once; `NULL` until then.
-    pub posthoc_overdue_alerted_at: Option<ChronoDateTimeUtc>,
+    pub posthoc_overdue_alerted_at: Option<TimeDateTimeWithTimeZone>,
     /// The CAS stamp `BreakGlassExpired`'s one emitter flips.
     pub expired_emitted: bool,
-    pub opened_at: ChronoDateTimeUtc,
+    pub opened_at: TimeDateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

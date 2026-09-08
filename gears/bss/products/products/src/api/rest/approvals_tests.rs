@@ -38,6 +38,7 @@ use crate::infra::events;
 use crate::infra::storage::migrations::Migrator;
 use crate::infra::storage::repo;
 use crate::test_support::flat_in_enforcer;
+use time::OffsetDateTime;
 
 const TENANT: Uuid = Uuid::from_u128(0x5a_11);
 const BRAND: Uuid = Uuid::from_u128(0x5a_b1);
@@ -1073,18 +1074,22 @@ async fn an_elevation_stores_its_two_platform_approvers_and_a_configured_window(
     assert_eq!(status, 201, "{body}");
     assert_eq!(body["path"], "two_person");
 
-    let from: chrono::DateTime<chrono::Utc> = body["valid_from"]
+    let from: OffsetDateTime = body["valid_from"]
         .as_str()
-        .expect("the receipt carries the window")
-        .parse()
-        .expect("an instant");
-    let until: chrono::DateTime<chrono::Utc> = body["valid_until"]
+        .map(|s| {
+            OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
+                .expect("an RFC 3339 instant")
+        })
+        .expect("the receipt carries the window");
+    let until: OffsetDateTime = body["valid_until"]
         .as_str()
-        .expect("the receipt carries the window")
-        .parse()
-        .expect("an instant");
+        .map(|s| {
+            OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339)
+                .expect("an RFC 3339 instant")
+        })
+        .expect("the receipt carries the window");
     assert_eq!(
-        (until - from).num_hours(),
+        (until - from).whole_hours(),
         i64::from(crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT),
         "the window is `breakglass_window_hours`, read and never inlined"
     );
@@ -1225,10 +1230,10 @@ async fn open_session(harness: &TestHarness, opener: Uuid, from_h: i64, until_h:
             session_id,
             principal: opener,
             target_tenant: TARGET_TENANT,
-            valid_from: chrono::Utc::now() + chrono::TimeDelta::try_hours(from_h).expect("hours"),
-            valid_until: chrono::Utc::now() + chrono::TimeDelta::try_hours(until_h).expect("hours"),
+            valid_from: OffsetDateTime::now_utc() + time::Duration::hours(from_h),
+            valid_until: OffsetDateTime::now_utc() + time::Duration::hours(until_h),
             path: repo::ApprovalPath::PostHoc,
-            opened_at: chrono::Utc::now(),
+            opened_at: OffsetDateTime::now_utc(),
         },
         "incident 4471",
     )
@@ -1247,7 +1252,7 @@ async fn actor_ref_of(harness: &TestHarness, subject: Uuid) -> Uuid {
         &scope,
         TARGET_TENANT,
         &subject.to_string(),
-        chrono::Utc::now(),
+        OffsetDateTime::now_utc(),
     )
     .await
     .expect("resolve the pseudonym")

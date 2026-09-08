@@ -52,7 +52,7 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-erasure-age:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-restore-drill:p2
 
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use toolkit_db::secure::AccessScope;
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
@@ -86,7 +86,7 @@ pub async fn sweep(
     db: &DBProvider<DbError>,
     caps: &RetentionCaps,
     actor_ref: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     cancel: &tokio_util::sync::CancellationToken,
 ) {
     let Some(tenants) = discover_tenants(db, "retention sweep").await else {
@@ -151,7 +151,7 @@ pub(crate) async fn sweep_class(
     tenant_id: Uuid,
     class: RecordClass,
     actor_ref: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<ClassOutcome, RepoError> {
     let scope = AccessScope::for_tenant(tenant_id);
     let cutoff = caps.cutoff(class, now);
@@ -242,7 +242,7 @@ async fn collect_catalog_version(
     scope: &AccessScope,
     tenant_id: Uuid,
     catalog_version_id: i64,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), HeldReason> {
     let conn = db
         .conn()
@@ -393,15 +393,15 @@ async fn write_pass_audit(
     scope: &AccessScope,
     tenant_id: Uuid,
     class: RecordClass,
-    cutoff: DateTime<Utc>,
+    cutoff: OffsetDateTime,
     outcome: &ClassOutcome,
     actor_ref: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), RepoError> {
     let reason = format!(
         "class={} cutoff={} candidates={} collected={} held={} held_reason={}",
         class.as_str(),
-        cutoff.to_rfc3339(),
+        crate::domain::canonical::render_instant(cutoff),
         outcome.candidates,
         outcome.collected,
         outcome.held,
@@ -539,7 +539,7 @@ pub async fn tombstone_aged_principals(
     sink: &crate::infra::broker::EventSink,
     caps: &RetentionCaps,
     actor_ref: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     cancel: &tokio_util::sync::CancellationToken,
 ) {
     let cutoff = crate::domain::retention::cutoff_before(now, caps.pseudonymization_age_days);
@@ -565,9 +565,9 @@ async fn tombstone_tenant(
     db: &DBProvider<DbError>,
     sink: &crate::infra::broker::EventSink,
     tenant_id: Uuid,
-    cutoff: DateTime<Utc>,
+    cutoff: OffsetDateTime,
     actor_ref: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<u32, RepoError> {
     let scope = AccessScope::for_tenant(tenant_id);
     let aged = {
@@ -715,7 +715,7 @@ pub async fn run_restore_drill(
     db: &DBProvider<DbError>,
     caps: &RetentionCaps,
     actor_ref: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     cancel: &tokio_util::sync::CancellationToken,
 ) {
     let Some(tenants) = discover_tenants(db, "restore drill").await else {
@@ -967,7 +967,7 @@ async fn write_drill_audit(
     tenant_id: Uuid,
     outcome: &DrillOutcome,
     actor_ref: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) {
     let reason = format!(
         "status={} versions={} verified={} unverifiable={} corrupt={}",

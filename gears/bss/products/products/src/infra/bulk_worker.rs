@@ -89,11 +89,11 @@
 /// mid-pass releases the batch without an operator. A pass that outruns it
 /// meets the case the resume operand exists for — the ledger records what
 /// landed.
-const STAGE_LEASE: chrono::Duration = chrono::Duration::minutes(10);
+const STAGE_LEASE: time::Duration = time::Duration::minutes(10);
 
 /// The commit claim's lease: the per-row publishes of a large batch outlast a
 /// staging pass, and a peer must not re-claim a batch mid-walk.
-const COMMIT_LEASE: chrono::Duration = chrono::Duration::minutes(30);
+const COMMIT_LEASE: time::Duration = time::Duration::minutes(30);
 
 /// The worker's attempt budget (`inst-ar-failure`'s own arm, **P-D-69**): a
 /// batch claimed this many times without reaching its edge is `failed`; row
@@ -123,8 +123,8 @@ pub(crate) const NO_ACKNOWLEDGER_REASON: &str = "no-acknowledger-at-quorum-zero"
 
 use std::collections::BTreeSet;
 
-use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
+use time::OffsetDateTime;
 use toolkit_db::secure::AccessScope;
 use uuid::Uuid;
 
@@ -218,7 +218,7 @@ async fn stage_product(
     tenant_id: Uuid,
     actor_ref: Uuid,
     payload: &JsonValue,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     stamp: Option<crate::infra::create::BulkRowStamp>,
 ) -> Result<Uuid, StageRowError> {
     let mut report = ValidationReport::new();
@@ -291,7 +291,7 @@ async fn stage_sku(
     tenant_id: Uuid,
     actor_ref: Uuid,
     payload: &JsonValue,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     stamp: Option<crate::infra::create::BulkRowStamp>,
 ) -> Result<Uuid, StageRowError> {
     let mut report = ValidationReport::new();
@@ -430,7 +430,7 @@ async fn stage_one_row(
     actor_ref: Uuid,
     batch: &repo::BulkBatchRecord,
     row: &repo::BulkRowRecord,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<bool, RepoError> {
     let batch_id = batch.batch_id;
     // A lifecycle row stages no draft: it names a live head and the op the
@@ -573,7 +573,7 @@ pub(crate) async fn stage_next_batch(
     ctx: &BulkWorkerContext,
     tenant_id: Uuid,
     actor_ref: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<StageOutcome, RepoError> {
     let scope = AccessScope::for_tenant(tenant_id);
@@ -827,7 +827,7 @@ async fn report_and_submit(
     tenant_id: Uuid,
     batch: &repo::BulkBatchRecord,
     actor_ref: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<ApprovalId, RepoError> {
     let conn = ctx
         .db
@@ -1035,7 +1035,7 @@ pub(crate) async fn advance_batches(
     ctx: &BulkWorkerContext,
     tenant_id: Uuid,
     actor_ref: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<AdvanceOutcome, RepoError> {
     let scope = AccessScope::for_tenant(tenant_id);
@@ -1053,7 +1053,7 @@ pub(crate) async fn advance_batches(
         )
         .await?
     };
-    let ttl = chrono::Duration::hours(i64::from(ctx.batch_ttl_hours));
+    let ttl = time::Duration::hours(i64::from(ctx.batch_ttl_hours));
     for batch in reported {
         if cancel.is_cancelled() {
             return Ok(outcome);
@@ -1082,7 +1082,7 @@ pub(crate) async fn advance_batches(
             // Pending (or an unsubmitted report, or a record already spent
             // by a peer): the reaper's TTL is the only other exit.
             _ => {
-                if now.signed_duration_since(batch.created_at) >= ttl {
+                if (now - batch.created_at) >= ttl {
                     abandon_batch(ctx, tenant_id, batch.batch_id, now).await?;
                     outcome.abandoned += 1;
                 }
@@ -1158,7 +1158,7 @@ async fn begin_commit(
     tenant_id: Uuid,
     batch_id: Uuid,
     _actor_ref: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<bool, RepoError> {
     let scope = AccessScope::for_tenant(tenant_id);
     ctx.db
@@ -1287,7 +1287,7 @@ pub(crate) async fn commit_rows(
     tenant_id: Uuid,
     batch: &repo::BulkBatchRecord,
     actor_ref: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<CommitOutcome, RepoError> {
     let scope = AccessScope::for_tenant(tenant_id);
@@ -1505,7 +1505,7 @@ async fn record_row(
     entity_id: Option<Uuid>,
     result: Result<i64, String>,
     applied: bool,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), RepoError> {
     let (disposition, code) = match &result {
         Ok(_) if applied => ("applied", None),
@@ -1535,7 +1535,7 @@ fn row_claim(
     ctx: &BulkWorkerContext,
     batch_id: Uuid,
     row_key: &str,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> IdempotencyClaimInput {
     IdempotencyClaimInput::new(
         BULK_ROW_LANE,
@@ -1564,7 +1564,7 @@ async fn publish_sku_row(
     gate: &StoredApprovalGate,
     approval_id: ApprovalId,
     actor_ref: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<Result<i64, String>, RepoError> {
     use crate::api::rest::skus;
     let Some(head) = repo::find_sku(conn, scope, tenant_id, sku_id).await? else {
@@ -1639,7 +1639,7 @@ async fn publish_product_row(
     gate: &StoredApprovalGate,
     approval_id: ApprovalId,
     actor_ref: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<Result<i64, String>, RepoError> {
     use crate::api::rest::products;
     let Some(head) = repo::find_product(conn, scope, tenant_id, product_id).await? else {
@@ -1774,7 +1774,7 @@ pub(crate) async fn abandon_batch(
     ctx: &BulkWorkerContext,
     tenant_id: Uuid,
     batch_id: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<AbandonOutcome, RepoError> {
     let scope = AccessScope::for_tenant(tenant_id);
     let conn = ctx
@@ -1991,7 +1991,7 @@ pub(crate) async fn complete_batch(
     tenant_id: Uuid,
     batch_id: Uuid,
     actor_ref: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<CompleteOutcome, RepoError> {
     let scope = AccessScope::for_tenant(tenant_id);
     let conn = ctx
@@ -2069,7 +2069,7 @@ async fn flip_and_announce(
     batch_id: Uuid,
     summary: CompletionSummary<'_>,
     actor_ref: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<bool, RepoError> {
     let CompletionSummary {
         batch_key,
@@ -2202,7 +2202,7 @@ fn disposition_counts(rows: &[repo::BulkRowRecord]) -> crate::infra::events::Bul
 pub(crate) async fn sweep(
     ctx: &BulkWorkerContext,
     actor_ref: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<(), RepoError> {
     let tenants = {
@@ -2566,7 +2566,7 @@ async fn stage_update_as_draft(
     entity_id: Uuid,
     revision: i64,
     fields: std::collections::BTreeMap<String, JsonValue>,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<bool, RepoError> {
     let conn = ctx
         .db
@@ -2699,7 +2699,7 @@ async fn stage_lifecycle_row(
     tenant_id: Uuid,
     batch_id: Uuid,
     row: &repo::BulkRowRecord,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<bool, RepoError> {
     use bss_products_sdk::models::LifecycleState;
     let conn = ctx
@@ -2741,7 +2741,7 @@ async fn fail_row(
     batch_id: Uuid,
     row: &repo::BulkRowRecord,
     code: &str,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<bool, RepoError> {
     repo::record_bulk_row_outcome(
         conn,
@@ -2777,7 +2777,7 @@ async fn apply_lifecycle_row(
     gate: &StoredApprovalGate,
     approval_id: ApprovalId,
     actor_ref: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<Result<i64, String>, RepoError> {
     let Some(op) = lifecycle_op(row) else {
         return Ok(Err("VALIDATION".to_owned()));
@@ -2908,7 +2908,7 @@ async fn revert_update_as_draft(
     tenant_id: Uuid,
     row: &repo::BulkRowRecord,
     entity_id: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<bool, RepoError> {
     let touched: Vec<String> = row
         .governed_live_op

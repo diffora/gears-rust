@@ -96,7 +96,7 @@ use axum::Router;
 use axum::extract::Extension;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use toolkit::api::OpenApiRegistry;
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit::api::operation_builder::OperationBuilder;
@@ -392,7 +392,7 @@ async fn enqueue_increment(
     tenant_id: Uuid,
     actor_ref: Uuid,
     request: IncrementRequest,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<IncrementAck, CanonicalError> {
     let source = request.source.trim().to_owned();
     let request_key = request.request_key.trim().to_owned();
@@ -548,7 +548,7 @@ async fn request_catalog_version(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
 
     let actor_ref =
         crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
@@ -709,7 +709,7 @@ async fn drive_freeze_edge(
     edge: FreezeEdge,
 ) -> Result<Response, CanonicalError> {
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let participant = body.participant.trim().to_owned();
     let subject = format!("{catalog_version_id}/{participant}");
 
@@ -806,9 +806,7 @@ async fn drive_freeze_edge(
                                 %tenant_id,
                                 catalog_version_id,
                                 participant = %participant,
-                                latency_ms = now
-                                    .signed_duration_since(version.published_at)
-                                    .num_milliseconds(),
+                                latency_ms = (now - version.published_at).whole_milliseconds(),
                                 "bss-products: event -> ack"
                             );
                         }
@@ -988,7 +986,7 @@ async fn resolve_catalog_version(
         &RESOLVE_PARAMS,
     )?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let subject = catalog_version_id.to_string();
 
     let actor_ref =
@@ -1176,7 +1174,7 @@ impl IncrementRequests for InProcessIncrementRequests {
         tenant_id: Uuid,
         request: IncrementRequest,
     ) -> Result<IncrementAck, CanonicalError> {
-        let now = canonical::write_instant(Utc::now());
+        let now = canonical::write_instant(OffsetDateTime::now_utc());
         let actor_ref = crate::api::rest::resolve_creator_actor_ref(
             &self.state,
             tenant_id,
@@ -1204,7 +1202,7 @@ impl IncrementRequests for InProcessIncrementRequests {
         source: &str,
         request_key: &str,
     ) -> Result<Option<CommittedIncrement>, CanonicalError> {
-        let now = canonical::write_instant(Utc::now());
+        let now = canonical::write_instant(OffsetDateTime::now_utc());
         let actor_ref = crate::api::rest::resolve_creator_actor_ref(
             &self.state,
             tenant_id,
@@ -1391,7 +1389,7 @@ async fn settle_cv_op(
     scope: &AccessScope,
     tenant_id: Uuid,
     authorization: &crate::domain::governance::GateAuthorization,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), CvTxError> {
     repo::settle_authorization(tx, scope, tenant_id, authorization, now)
         .await
@@ -1427,7 +1425,7 @@ async fn force_complete_catalog_version(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let actor_ref =
         crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
             .await?;
@@ -1584,7 +1582,7 @@ async fn change_freeze_participant(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let actor_ref =
         crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
             .await?;
@@ -1789,7 +1787,7 @@ async fn diff_catalog_versions(
         &[],
     )?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let actor_ref =
         crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
             .await?;

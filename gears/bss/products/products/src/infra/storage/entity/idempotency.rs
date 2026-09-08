@@ -68,7 +68,7 @@ pub struct Model {
     /// The retention deadline, stamped at the claim `INSERT`, and also the
     /// compare-and-swap operand the expired-key takeover reads before it
     /// writes (**P-D-49**).
-    pub expires_at: ChronoDateTimeUtc,
+    pub expires_at: TimeDateTimeWithTimeZone,
     /// The composite act's parent handle (P-D-79): `NULL` for every
     /// single-entity door; the family clone stamps the new parent's id here
     /// in the parent's own transaction and reads it back to resume.

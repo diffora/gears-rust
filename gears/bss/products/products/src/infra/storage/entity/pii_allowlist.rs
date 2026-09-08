@@ -55,11 +55,11 @@ pub struct Model {
     /// refusal itself rides `01`'s `VALIDATION` naming the field (P-D-64),
     /// and this column is the backstop rather than the message.
     pub signed_off_by: String,
-    pub signed_off_at: ChronoDateTimeUtc,
+    pub signed_off_at: TimeDateTimeWithTimeZone,
     /// [`STATE_ACTIVE`] or [`STATE_REVOKED`], the `CHECK`'s closed pair.
     pub state: String,
-    pub created_at: ChronoDateTimeUtc,
-    pub updated_at: ChronoDateTimeUtc,
+    pub created_at: TimeDateTimeWithTimeZone,
+    pub updated_at: TimeDateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

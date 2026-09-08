@@ -3,9 +3,9 @@
 
 use std::sync::Arc;
 
-use chrono::Utc;
 use sea_orm_migration::MigratorTrait as _;
 use serde_json::json;
+use time::OffsetDateTime;
 use toolkit_db::outbox::{Outbox, OutboxHandle, Partitions, outbox_migrations_with_prefix};
 use toolkit_db::secure::AccessScope;
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
@@ -118,7 +118,7 @@ fn render_nothing(_record: repo::ProductRecord) -> Result<serde_json::Value, ser
 /// row: `ProductCreated`) and given its primary category.
 pub(super) async fn draft_product(harness: &Harness, name: &str, region: &str) -> Uuid {
     let product_id = Uuid::new_v4();
-    let now = crate::domain::canonical::write_instant(Utc::now());
+    let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
     let new = NewProduct {
         product_id,
         tenant_id: TENANT,
@@ -191,7 +191,7 @@ pub(super) async fn publish_product(harness: &Harness, product_id: Uuid) -> i64 
         product_id,
         actor_ref: ACTOR,
         expected: head.internal_revision,
-        now: crate::domain::canonical::write_instant(Utc::now()),
+        now: crate::domain::canonical::write_instant(OffsetDateTime::now_utc()),
         claim: None,
     };
     let outcome = products::run_publish(
@@ -217,7 +217,7 @@ pub(super) async fn project(harness: &Harness) -> PassOutcome {
     project_tenant(
         &ctx(harness),
         TENANT,
-        crate::domain::canonical::write_instant(Utc::now()),
+        crate::domain::canonical::write_instant(OffsetDateTime::now_utc()),
     )
     .await
     .expect("the pass runs")
@@ -300,7 +300,7 @@ async fn browse_serves_the_projection_under_the_visibility_contract_with_the_sta
             product_id: deprecated,
             actor_ref: ACTOR,
             expected: head.internal_revision,
-            now: crate::domain::canonical::write_instant(Utc::now()),
+            now: crate::domain::canonical::write_instant(OffsetDateTime::now_utc()),
             claim: None,
         };
         let outcome = products::run_deprecate(
@@ -815,7 +815,7 @@ async fn a_timeline_page_is_diffed_against_the_version_before_it() {
 async fn the_facet_counts_are_over_the_matching_set_and_say_when_they_are_not() {
     let harness = harness().await;
     let conn = harness.state.db.conn().expect("conn");
-    let now = crate::domain::canonical::write_instant(Utc::now());
+    let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
 
     // One row past the window, seeded straight into the projection: the
     // door's own publish path would be 501 governed acts for a property of
@@ -915,7 +915,7 @@ async fn the_facet_counts_are_over_the_matching_set_and_say_when_they_are_not() 
 async fn the_dashboards_are_paged_filtered_and_ordered() {
     let harness = harness().await;
     let conn = harness.state.db.conn().expect("conn");
-    let now = crate::domain::canonical::write_instant(Utc::now());
+    let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
 
     for n in 0..3_u128 {
         repo::upsert_read_deferred_intent(
@@ -926,7 +926,7 @@ async fn the_dashboards_are_paged_filtered_and_ordered() {
                 product_id: Uuid::from_u128(0xde_f0_00 + n),
                 cascade_ref: Uuid::from_u128(0xca_50_00 + n),
                 children_count: i32::try_from(n).expect("small") + 1,
-                created_at: now + chrono::Duration::seconds(i64::try_from(n).expect("small")),
+                created_at: now + time::Duration::seconds(i64::try_from(n).expect("small")),
                 age_secs: 60,
                 polled_at: now,
             },
@@ -1042,45 +1042,6 @@ async fn the_dashboards_are_paged_filtered_and_ordered() {
     }
 }
 
-/// A walk ordered by a timestamp visits every row of a **tied** page.
-///
-/// **Ignored: the defect is the platform's and the fix is not this gear's.**
-/// Measured, not assumed — the diagnosis below is complete, so this is a
-/// named platform gap rather than a test parked before it was understood.
-///
-/// `libs/toolkit-db`'s `parse_cursor_value` decodes `FieldKind::DateTimeUtc`
-/// by trying `time::OffsetDateTime` **first**, so the value the keyset seek
-/// binds is always `sea_orm::Value::TimeDateTimeWithTimeZone`. This gear's
-/// timestamp columns are `ChronoDateTimeUtc`, and on `SQLite` — where both
-/// are text — the two do not compare equal. Measured on this fixture:
-///
-/// * `created_at = <chrono variant>` matches **3 of 3** rows;
-/// * `created_at = <time variant>` matches **0 of 3**;
-/// * and no text rendering matches either — RFC-3339 with nanos, with
-///   micros, `sea-orm`'s chrono form and the naive form all match **0 of
-///   3** — which is what rules out `ODataFieldMapping::cursor_kind`, the one
-///   lever a gear has.
-///
-/// The seek is `(a > a0) OR (a = a0 AND b > b0)`; with the `=` conjunct
-/// always false, a page of tied rows has no successor. The walk below
-/// reaches **one** of three and reports itself finished, while an unpaged
-/// read of the same door serves all three — the same three rows walked under
-/// a UUID order key reach all three, which is what isolates the cause to the
-/// representation rather than to the tie.
-///
-/// Four doors order by a timestamp and are therefore exposed wherever rows
-/// share an instant: the approval inbox (`submitted_at`), scheduled
-/// transitions (`at` — an operator-chosen instant, so a batch scheduled for
-/// one moment is the ordinary case), and the deferred-intent and allow-list
-/// walks (`created_at` — the allow-list's own repository comment already
-/// noted that two entries signed off in one act share it). Postgres binds
-/// both variants as `timestamptz` and is unaffected.
-///
-/// **The fix is one arm of `parse_cursor_value`**: decode to the variant the
-/// mapper extracts, which is the invariant the toolkit's own
-/// `datetime_utc_cursor_keeps_the_mapped_variant` test states. Filed as
-/// P-D-166. Un-ignore this probe when it lands.
-///
 /// Walk the deferred-intent dashboard one row per page and return the ids in
 /// the order they were served.
 ///
@@ -1102,9 +1063,6 @@ async fn walk_deferred_intents(harness: &Harness, orderby: Option<&str>) -> Vec<
             seen.push(row["product_id"].as_str().expect("an id").to_owned());
         }
         match body["page_info"]["next_cursor"].as_str() {
-            // A continuation must NOT resend `$orderby`: the platform
-            // refuses the pair (`ORDER_WITH_CURSOR`) and recovers the
-            // order from the token's own signed fields.
             Some(cursor) => {
                 url = format!(
                     "/bss-products/v1/read/deferred-intents?limit=1&cursor={}",
@@ -1117,19 +1075,44 @@ async fn walk_deferred_intents(harness: &Harness, orderby: Option<&str>) -> Vec<
     seen
 }
 
-/// Carries **no** `@cpt-dod` marker on purpose: it guards the platform's
-/// cursor codec, not a criterion of this gear, and the deferred-intent
-/// dashboard is only the fixture it happens to use. Marking it against
-/// `dod-dashboards` would count a platform gap as that criterion's coverage.
+/// A walk ordered by a timestamp visits every row of a **tied** page.
+///
+/// **This is what the `chrono` -> `time` migration bought** (P-D-167), and it
+/// was `#[ignore]`d as a platform gap until that landed (P-D-166). The
+/// defect: `libs/toolkit-db`'s `parse_cursor_value` decodes
+/// `FieldKind::DateTimeUtc` by trying `time::OffsetDateTime` first, so the
+/// value a keyset seek binds is always the `time` variant. While this gear's
+/// columns were `ChronoDateTimeUtc`, on `SQLite` — where both are text — the
+/// two did not compare equal, the seek's `a = a0` conjunct was false for
+/// every row, and a page of rows sharing an instant had no successor. The
+/// walk reached **one** of three and reported itself finished while an
+/// unpaged read served all three. Measured then: `created_at = <chrono
+/// variant>` matched 3 of 3, `= <time variant>` 0 of 3, and no text
+/// rendering matched either — which is what ruled out
+/// `ODataFieldMapping::cursor_kind`, the one lever a gear had.
+///
+/// Three rows sharing an instant to the nanosecond is the case that makes
+/// the representation decide the answer rather than the timestamp: the
+/// unique tiebreaker is then the only thing separating them. The second
+/// assertion walks the same rows under a UUID order key, which passed even
+/// before the migration — that contrast is what isolated the cause to the
+/// representation rather than to the tie, and it stays so a regression in
+/// either half is told apart from the other.
+///
+/// Carries **no** `@cpt-dod` marker on purpose: it guards a property of the
+/// platform's cursor codec against this gear's column types, not a criterion
+/// of the gear, and the deferred-intent dashboard is only the fixture it
+/// happens to use. Marking it against `dod-dashboards` would count this as
+/// that criterion's coverage.
 #[tokio::test]
-#[ignore = "platform: toolkit-db parse_cursor_value decodes DateTimeUtc to the time variant while this gear's columns are chrono; see P-D-166"]
 async fn a_timestamp_walk_visits_every_row_of_a_tied_page() {
     let harness = harness().await;
     let conn = harness.state.db.conn().expect("conn");
     // One instant, carried by all three rows.
-    let tied = crate::domain::canonical::write_instant(chrono::DateTime::from_timestamp_nanos(
-        1_757_000_000_123_456_789,
-    ));
+    let tied = crate::domain::canonical::write_instant(
+        OffsetDateTime::from_unix_timestamp_nanos(1_757_000_000_123_456_789)
+            .expect("a fixed instant"),
+    );
     let ids: Vec<Uuid> = (0..3_u128)
         .map(|n| Uuid::from_u128(0x71_ed_00 + n))
         .collect();
@@ -1258,7 +1241,7 @@ async fn the_three_dashboards_answer_from_their_polled_tables() {
     publish_product(&harness, product).await;
     poll_dashboards(
         &ctx(&harness),
-        crate::domain::canonical::write_instant(Utc::now()),
+        crate::domain::canonical::write_instant(OffsetDateTime::now_utc()),
         &tokio_util::sync::CancellationToken::new(),
     )
     .await
@@ -1305,7 +1288,7 @@ async fn the_timeline_carries_lineage_forward_and_the_reverse_lookup() {
     // A clone: the create path with the lineage columns set, as the clone
     // door writes them (`cloned_from` = the immediate source, the version read).
     let clone_id = Uuid::new_v4();
-    let now = crate::domain::canonical::write_instant(Utc::now());
+    let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
     crate::infra::create::insert_product_with_event(
         &harness.state.db,
         &harness.state.sink,

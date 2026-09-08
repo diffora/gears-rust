@@ -64,7 +64,7 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-projection-table:p1
 
 use bss_products_sdk::models::LifecycleState;
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use toolkit_macros::domain_model;
 
 /// The single event-driven consumer (§1.7).
@@ -153,14 +153,14 @@ pub struct StalenessStamp {
     pub as_of_catalog_version: Option<i64>,
     /// The last apply's instant. Advances on **every** apply, version or
     /// none, so the sole freshness signal always has a writer.
-    pub projected_at: DateTime<Utc>,
+    pub projected_at: OffsetDateTime,
 }
 
 impl StalenessStamp {
     /// The stamp a tenant's bootstrap writes before any catalog version
     /// exists. An apply, and it stamps.
     #[must_use]
-    pub const fn anchorless(projected_at: DateTime<Utc>) -> Self {
+    pub const fn anchorless(projected_at: OffsetDateTime) -> Self {
         Self {
             as_of_catalog_version: None,
             projected_at,
@@ -178,7 +178,7 @@ impl StalenessStamp {
     /// would make a dashboard's stamp indistinguishable from a zero-version
     /// tenant's bootstrap.
     #[must_use]
-    pub const fn polled(projected_at: DateTime<Utc>) -> Self {
+    pub const fn polled(projected_at: OffsetDateTime) -> Self {
         Self {
             as_of_catalog_version: None,
             projected_at,
@@ -211,7 +211,7 @@ pub struct StampApply {
     /// How this apply moves the catalog-version coordinate.
     pub catalog: StampCatalogTouch,
     /// The apply's instant. Advances on every admitted apply.
-    pub projected_at: DateTime<Utc>,
+    pub projected_at: OffsetDateTime,
     /// Whether this step's changed-entity list has already been projected
     /// from frozen rows. Required for any advance, including an empty list
     /// (bootstrap / version-or-none apply with nothing to rewrite).

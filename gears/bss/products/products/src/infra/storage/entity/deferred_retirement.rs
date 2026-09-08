@@ -28,10 +28,10 @@ pub struct Model {
     /// Leave-and-list snapshot (children + reasons), JSON text.
     pub children_snapshot: String,
     pub created_by: Uuid,
-    pub resolved_at: Option<ChronoDateTimeUtc>,
+    pub resolved_at: Option<TimeDateTimeWithTimeZone>,
     /// `children_cleared` or `cascade_cancelled` when resolved; NULL while live.
     pub resolution: Option<String>,
-    pub created_at: ChronoDateTimeUtc,
+    pub created_at: TimeDateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

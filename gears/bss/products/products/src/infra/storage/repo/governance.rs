@@ -41,11 +41,11 @@
 
 use std::collections::BTreeSet;
 
-use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use serde_json::Value as JsonValue;
+use time::OffsetDateTime;
 use toolkit_db::odata::sea_orm_filter::{
     FieldToColumn, LimitCfg, ODataFieldMapping, paginate_odata,
 };
@@ -191,7 +191,7 @@ pub async fn submit_approval(
     runner: &impl DBRunner,
     scope: &AccessScope,
     new: NewApproval<'_>,
-    submitted_at: DateTime<Utc>,
+    submitted_at: OffsetDateTime,
 ) -> Result<Submitted, ApprovalStoreError> {
     // The tenant is the subject's, never a second argument: see
     // `NewApproval`'s own doc.
@@ -467,7 +467,7 @@ pub async fn record_decision(
     scope: &AccessScope,
     new: NewDecision<'_>,
     acting_principal: Uuid,
-    decided_at: DateTime<Utc>,
+    decided_at: OffsetDateTime,
 ) -> Result<DecisionOutcome, ApprovalStoreError> {
     if acting_principal != new.approver_principal {
         return Err(ApprovalStoreError::Repo(RepoError::Db(format!(
@@ -648,7 +648,7 @@ pub async fn settle_quorum(
     approval_id: ApprovalId,
     acting_roles: &[ApproverRole],
     acting_principal: Uuid,
-    at: DateTime<Utc>,
+    at: OffsetDateTime,
 ) -> Result<Settled, ApprovalStoreError> {
     let record = read_approval(runner, scope, tenant_id, approval_id)
         .await?
@@ -858,7 +858,7 @@ async fn finalize_rejected(
     scope: &AccessScope,
     tenant_id: Uuid,
     approval_id: ApprovalId,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), ApprovalStoreError> {
     let outcome = approval::Entity::update_many()
         .secure()
@@ -1008,7 +1008,7 @@ pub async fn consume_approval(
     _door_scope: &AccessScope,
     tenant_id: Uuid,
     approval_id: ApprovalId,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<Consumption, RepoError> {
     // **The approval store is scoped to the tenant, never to the caller's
     // door.** `products_approval` declares `resource_col = "approval_id"`, so a
@@ -1429,15 +1429,15 @@ pub struct NewElevation {
     /// The tenant whose data the session reaches.
     pub target_tenant: Uuid,
     /// The window's start, inclusive.
-    pub valid_from: DateTime<Utc>,
+    pub valid_from: OffsetDateTime,
     /// The window's end, **exclusive** — the interval is half-open, because
     /// expiry gates admission and an act admitted inside it finishes
     /// (P-D-68 arm 2).
-    pub valid_until: DateTime<Utc>,
+    pub valid_until: OffsetDateTime,
     /// Which approval path was taken.
     pub path: ApprovalPath,
     /// When the session opened.
-    pub opened_at: DateTime<Utc>,
+    pub opened_at: OffsetDateTime,
 }
 
 /// Open an elevation session (`inst-bg-open`).
@@ -1610,7 +1610,7 @@ pub async fn admit_elevated_call(
     runner: &impl DBRunner,
     scope: &AccessScope,
     session_id: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<Elevation, RepoError> {
     let session = breakglass_session::Entity::find()
         .secure()
@@ -1689,7 +1689,7 @@ pub async fn discharge_posthoc_review(
     session_id: Uuid,
     reviewed_by: Uuid,
     acting_principal: Uuid,
-    reviewed_at: DateTime<Utc>,
+    reviewed_at: OffsetDateTime,
 ) -> Result<bool, RepoError> {
     if acting_principal != reviewed_by {
         return Err(RepoError::Db(format!(
@@ -1880,7 +1880,7 @@ pub async fn write_materiality_policy(
     tenant_id: Uuid,
     policy: &MaterialityPolicy,
     updated_by: Uuid,
-    updated_at: DateTime<Utc>,
+    updated_at: OffsetDateTime,
 ) -> Result<(), RepoError> {
     let field_set = encode_field_set(policy.field_set());
     let trigger = i32::try_from(policy.affected_entity_trigger()).unwrap_or(i32::MAX);
@@ -2007,7 +2007,7 @@ pub struct ApprovalInboxQuery {
     pub submitter: Uuid,
     /// When the record joined the queue. The default order.
     #[odata(filter(kind = "DateTimeUtc"))]
-    pub submitted_at: chrono::DateTime<Utc>,
+    pub submitted_at: OffsetDateTime,
 }
 
 /// The inbox vocabulary under the name the rest of the gear uses.
@@ -2134,7 +2134,7 @@ pub async fn settle_authorization(
     scope: &AccessScope,
     tenant_id: Uuid,
     authorization: &crate::domain::governance::GateAuthorization,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<Option<crate::domain::governance::ApprovalId>, SettleError> {
     use crate::domain::governance::ApprovalDisposition;
     match &authorization.disposition {
@@ -2186,7 +2186,7 @@ pub struct NewSystemSignal<'a> {
     /// The pseudonymous actor the audit row names — the system actor, since
     /// no human acted.
     pub actor_ref: Uuid,
-    pub now: DateTime<Utc>,
+    pub now: OffsetDateTime,
 }
 
 /// Write [`NewSystemSignal`]'s record and its audit row on `runner`.
@@ -2344,10 +2344,10 @@ pub async fn pending_approvals_with_progress(
 pub async fn overdue_posthoc_sessions(
     runner: &impl DBRunner,
     scope: &AccessScope,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     sla_hours: u32,
 ) -> Result<Vec<breakglass_session::Model>, RepoError> {
-    let deadline = now - chrono::Duration::hours(i64::from(sla_hours));
+    let deadline = now - time::Duration::hours(i64::from(sla_hours));
     breakglass_session::Entity::find()
         .secure()
         .scope_with(scope)
@@ -2373,7 +2373,7 @@ pub async fn stamp_posthoc_overdue(
     runner: &impl DBRunner,
     scope: &AccessScope,
     session_id: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<bool, RepoError> {
     use toolkit_db::secure::SecureUpdateExt as _;
     let result = breakglass_session::Entity::update_many()

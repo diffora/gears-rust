@@ -38,7 +38,7 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub brand: String,
     pub value: String,
-    pub updated_at: ChronoDateTimeUtc,
+    pub updated_at: TimeDateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

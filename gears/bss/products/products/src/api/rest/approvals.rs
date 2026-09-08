@@ -76,7 +76,7 @@ use axum::Router;
 use axum::extract::{Extension, Path};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use chrono::{DateTime, TimeDelta, Utc};
+use time::OffsetDateTime;
 use toolkit::api::OpenApiRegistry;
 use toolkit::api::canonical_prelude::{CanonicalError, resource_error};
 use toolkit::api::odata::OData;
@@ -243,7 +243,8 @@ pub struct ApprovalInboxCard {
     pub state: String,
     /// Pseudonymous.
     pub submitter: Uuid,
-    pub submitted_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub submitted_at: OffsetDateTime,
     pub quorum: ApprovalInboxQuorum,
     /// The per-kind diff payload: the stored snapshot and the published
     /// version it is diffed against (`None` for a first publish or a
@@ -314,9 +315,11 @@ pub struct BreakglassReceipt {
     /// The session's own id, which an elevated call names in its header.
     pub session_id: Uuid,
     /// The window's start, inclusive.
-    pub valid_from: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub valid_from: OffsetDateTime,
     /// The window's end, **exclusive**.
-    pub valid_until: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub valid_until: OffsetDateTime,
     /// `two_person` or `post_hoc`.
     pub path: String,
 }
@@ -487,7 +490,7 @@ async fn list_pending_approvals(
     )?;
     odata_seam::reject_unsupported_odata_options(&odata, None, None, Some(odata_seam::NO_SELECT))?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let actor_ref =
         crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
             .await?;
@@ -1204,7 +1207,7 @@ async fn submit_approval(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let actor_ref =
         crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
             .await?;
@@ -1538,7 +1541,7 @@ async fn decide_approval(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let actor_ref =
         crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
             .await?;
@@ -1913,7 +1916,7 @@ async fn open_breakglass(
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let caller_tenant = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let actor_ref =
         crate::api::rest::resolve_creator_actor_ref(&state, caller_tenant, ctx.subject_id(), now)
             .await?;
@@ -1993,9 +1996,7 @@ async fn open_breakglass(
     // cross-tenant elevation, which is every elevation this door exists for.
     let write_scope = AccessScope::for_tenant(body.target_tenant_id);
     let session_id = Uuid::now_v7();
-    let valid_until = now
-        + TimeDelta::try_hours(i64::from(state.breakglass_window_hours))
-            .unwrap_or_else(|| TimeDelta::try_hours(4).unwrap_or_default());
+    let valid_until = now + time::Duration::hours(i64::from(state.breakglass_window_hours));
     let audit_id = Uuid::now_v7();
     let scope_tx = write_scope;
     let reason_tx = reason.clone();

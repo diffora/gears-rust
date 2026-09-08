@@ -37,10 +37,10 @@
 //! per-tenant taxonomy writer lock"*, and a re-parent's cycle verdict is only
 //! trustworthy under it.
 
-use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::{Expr, ExprTrait, OnConflict};
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
+use time::OffsetDateTime;
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureDeleteExt, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
@@ -84,7 +84,7 @@ pub async fn insert_category(
     runner: &impl DBRunner,
     scope: &AccessScope,
     new: NewCategory<'_>,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<Result<(), DomainError>, RepoError> {
     let model = category::ActiveModel {
         tenant_id: Set(new.tenant_id),
@@ -127,7 +127,7 @@ pub async fn rename_category(
     category_id: Uuid,
     name: &str,
     name_normalized: &str,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<Result<CategoryWrite, DomainError>, RepoError> {
     let outcome = category::Entity::update_many()
         .secure()
@@ -178,7 +178,7 @@ pub async fn reparent_category(
     tenant_id: Uuid,
     category_id: Uuid,
     new_parent: Option<Uuid>,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<Result<CategoryWrite, DomainError>, RepoError> {
     let outcome = category::Entity::update_many()
         .secure()
@@ -313,7 +313,7 @@ pub struct CategoryAssignment {
     /// `primary` or `secondary`, parsed fail-closed.
     pub role: AssignmentRole,
     /// When the assignment was written.
-    pub assigned_at: DateTime<Utc>,
+    pub assigned_at: OffsetDateTime,
 }
 
 /// Which index refused an assignment write.
@@ -356,7 +356,7 @@ pub async fn replace_category_assignments(
     tenant_id: Uuid,
     product_id: Uuid,
     assignments: &[(Uuid, AssignmentRole)],
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<AssignmentWrite, RepoError> {
     product_category::Entity::delete_many()
         .secure()
@@ -693,7 +693,7 @@ pub async fn insert_attribute_definition(
     runner: &impl DBRunner,
     scope: &AccessScope,
     new: NewAttributeDefinition<'_>,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<AttributeDefinitionRecord, RepoError> {
     let model = attribute_definition::ActiveModel {
         tenant_id: Set(new.tenant_id),
@@ -832,7 +832,7 @@ pub async fn seed_well_known_definitions(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), RepoError> {
     for seed in WELL_KNOWN_SEEDS {
         let outcome = insert_attribute_definition(
@@ -905,7 +905,7 @@ pub async fn flip_definition_state(
     tenant_id: Uuid,
     definition_id: Uuid,
     flip: DefinitionFlip,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<bool, RepoError> {
     let DefinitionFlip { expected, to } = flip;
     let result = attribute_definition::Entity::update_many()
@@ -978,7 +978,7 @@ pub struct AttributeValueRecord {
     /// The value itself.
     pub value: String,
     /// When it was last written.
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: OffsetDateTime,
 }
 
 /// Write one value at its coordinate, overwriting whatever stood there.
@@ -998,7 +998,7 @@ pub async fn upsert_attribute_value(
     tenant_id: Uuid,
     coordinate: AttributeCoordinate<'_>,
     value: &str,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), RepoError> {
     let model = attribute_value::ActiveModel {
         tenant_id: Set(tenant_id),
@@ -1152,9 +1152,9 @@ pub struct MetadataEntry {
     /// The value.
     pub value: String,
     /// When the key was first written.
-    pub created_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
     /// When it was last overwritten.
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: OffsetDateTime,
 }
 
 /// Write one metadata key, overwriting whatever stood there.
@@ -1173,7 +1173,7 @@ pub async fn upsert_metadata(
     entity_kind: &str,
     entity_id: Uuid,
     entry: (&str, &str),
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), RepoError> {
     let (key, value) = entry;
     let model = metadata::ActiveModel {
@@ -1401,7 +1401,7 @@ pub async fn retire_category(
     scope: &AccessScope,
     tenant_id: Uuid,
     category_id: Uuid,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<CategoryWrite, RepoError> {
     let result = category::Entity::update_many()
         .secure()
@@ -1694,7 +1694,7 @@ pub async fn bump_category_mutation_seq(
     tenant_id: Uuid,
     category_id: Uuid,
     expected_seq: i64,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<Result<i64, StaleCategoryToken>, RepoError> {
     let taken = category::Entity::update_many()
         .secure()
@@ -1738,7 +1738,7 @@ pub async fn write_category_display_value(
     category_id: Uuid,
     expected_seq: i64,
     value: (Uuid, &str),
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<Result<i64, StaleCategoryToken>, RepoError> {
     let (definition_id, text) = value;
     // One CAS, shared with the live-value door: two copies of a

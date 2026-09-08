@@ -26,6 +26,7 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-watermark-port:p1
 
 use async_trait::async_trait;
+use time::OffsetDateTime;
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
@@ -37,7 +38,7 @@ pub struct WatermarkPost {
     /// `PRODUCER_UNREGISTERED`.
     pub producer: String,
     /// The instant the set below is complete as of.
-    pub watermark_at: chrono::DateTime<chrono::Utc>,
+    pub watermark_at: OffsetDateTime,
     /// **Every** SKU this producer references at `watermark_at` — the
     /// complete set, never a delta.
     pub sku_ids: Vec<Uuid>,
@@ -49,7 +50,7 @@ pub struct WatermarkPost {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WatermarkAck {
     /// The stored `watermark_at` after the post.
-    pub watermark_at: chrono::DateTime<chrono::Utc>,
+    pub watermark_at: OffsetDateTime,
     /// How many SKUs the stored set holds.
     pub member_count: usize,
     /// `true` when the post matched the stored watermark exactly and

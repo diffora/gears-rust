@@ -54,7 +54,7 @@
 //!
 //! @cpt-dod:cpt-cf-bss-products-dod-pii-detector:p1
 
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 
 use crate::domain::states::FreezeAckState;
 
@@ -586,7 +586,7 @@ impl RetentionCaps {
     /// **everything** a candidate, which is the one arithmetic slip in a
     /// deleter that cannot be undone.
     #[must_use]
-    pub fn cutoff(&self, class: RecordClass, now: DateTime<Utc>) -> DateTime<Utc> {
+    pub fn cutoff(&self, class: RecordClass, now: OffsetDateTime) -> OffsetDateTime {
         cutoff_before(now, self.window_days(class))
     }
 }
@@ -597,10 +597,9 @@ impl RetentionCaps {
 /// one arithmetic: two copies of a subtraction, one of which saturates and
 /// one of which wraps, is the shape this is written to prevent.
 #[must_use]
-pub fn cutoff_before(now: DateTime<Utc>, days: u32) -> DateTime<Utc> {
-    chrono::TimeDelta::try_days(i64::from(days))
-        .and_then(|delta| now.checked_sub_signed(delta))
-        .unwrap_or(DateTime::<Utc>::MIN_UTC)
+pub fn cutoff_before(now: OffsetDateTime, days: u32) -> OffsetDateTime {
+    now.checked_sub(time::Duration::days(i64::from(days)))
+        .unwrap_or(OffsetDateTime::UNIX_EPOCH)
 }
 
 /// Why one candidate was not collected.

@@ -9,8 +9,8 @@
 //! store-facing walk.
 
 use axum::http::StatusCode;
-use chrono::{DateTime, TimeDelta, Utc};
 use serde_json::Value as JsonValue;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use toolkit_db::secure::{AccessScope, DBRunner};
@@ -46,10 +46,8 @@ use crate::infra::storage::repo::{self, IdempotencyClaim};
 /// no window at all. The fallback is therefore the floor, and it is logged:
 /// the boot-time ceiling makes this unreachable, and an unreachable arm that
 /// is wrong is exactly the kind that stays wrong.
-fn idempotency_expiry(now: DateTime<Utc>, retention_hours: u32) -> DateTime<Utc> {
-    let stamp = |hours: u32| {
-        TimeDelta::try_hours(i64::from(hours)).and_then(|window| now.checked_add_signed(window))
-    };
+fn idempotency_expiry(now: OffsetDateTime, retention_hours: u32) -> OffsetDateTime {
+    let stamp = |hours: u32| now.checked_add(time::Duration::hours(i64::from(hours)));
     if let Some(expires_at) = stamp(retention_hours) {
         return expires_at;
     }
@@ -102,9 +100,9 @@ pub(crate) struct IdempotencyClaimInput {
     /// `crate::domain::idempotency::payload_digest` over the parsed body.
     pub(crate) payload_hash: Vec<u8>,
     /// The door's own request instant.
-    pub(crate) now: DateTime<Utc>,
+    pub(crate) now: OffsetDateTime,
     /// [`idempotency_expiry`]'s answer for that instant.
-    pub(crate) expires_at: DateTime<Utc>,
+    pub(crate) expires_at: OffsetDateTime,
 }
 
 impl IdempotencyClaimInput {
@@ -120,7 +118,7 @@ impl IdempotencyClaimInput {
         endpoint: impl Into<String>,
         client_key: String,
         payload_hash: Vec<u8>,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
         retention_hours: u32,
     ) -> Self {
         Self {

@@ -53,8 +53,8 @@ use std::time::Duration;
 
 use bss_products::infra::storage::RepoError;
 use bss_products::infra::storage::repo::{self, NewProduct};
-use chrono::{DateTime, TimeZone, Utc};
 use pg_support::Pg;
+use time::OffsetDateTime;
 use tokio::sync::Notify;
 use toolkit_db::secure::AccessScope;
 use uuid::Uuid;
@@ -70,8 +70,8 @@ const NAME_NORMALIZED: &str = "fibre 500";
 
 const RACE_TIMEOUT: Duration = Duration::from_secs(30);
 
-fn at(hour: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 30, hour, 0, 0).unwrap()
+fn at(hour: u32) -> OffsetDateTime {
+    utc(2026, 8, 30, u8::try_from(hour).expect("a component"), 0, 0)
 }
 
 fn scope() -> AccessScope {
@@ -221,4 +221,18 @@ async fn surviving_holders(conn: &sea_orm::DatabaseConnection) -> Vec<String> {
     .iter()
     .map(|row| row.try_get::<String>("", "id").expect("read the id"))
     .collect()
+}
+
+/// One UTC instant from its civil components — the local twin of
+/// `bss_products::test_support::utc`, which is crate-private.
+fn utc(year: i32, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> OffsetDateTime {
+    time::Date::from_calendar_date(
+        year,
+        time::Month::try_from(month).expect("a month of the year"),
+        day,
+    )
+    .expect("a real date")
+    .with_hms(hour, minute, second)
+    .expect("a real civil time")
+    .assume_utc()
 }

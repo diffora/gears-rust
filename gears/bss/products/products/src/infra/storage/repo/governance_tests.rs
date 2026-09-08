@@ -1982,7 +1982,7 @@ async fn an_overdue_posthoc_review_is_listed_and_stamped_once() {
         .await
         .expect("the session opens");
     let platform = AccessScope::allow_all();
-    let hours = chrono::Duration::hours;
+    let hours = time::Duration::hours;
     let inside = super::overdue_posthoc_sessions(&conn, &platform, at(10) + hours(1), 24)
         .await
         .expect("read");

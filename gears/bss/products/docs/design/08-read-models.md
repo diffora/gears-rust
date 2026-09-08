@@ -356,7 +356,11 @@ clause — M5); the §5.1 p2 rows "Advanced search, filter & faceting" and the r
   says whether the clear emits `SkuPublished` beside `SkuCompositionCleared`. If only the latter
   fires, every composed bundle stays flagged in browse. Owner: as 06 states it, with this slice.
   *(Raised by the slice-08 first lens pass.)*
-- **A timestamp order key loses every tied row past the first page** (**P-D-166**, 2026-09-08).
+- ~~**A timestamp order key loses every tied row past the first page**~~ (**P-D-166**, 2026-09-08)
+  **— resolved the same day by P-D-167**, which moved the gear off `chrono` onto `time` wholesale
+  so the column and the platform's cursor codec agree on one representation; the probe is
+  un-ignored and passing. The codec asymmetry itself is still the toolkit's to close, for the next
+  gear with chrono columns. *The item's text stood as:*
   Measured: `parse_cursor_value` decodes `FieldKind::DateTimeUtc` to the `time` variant while this
   gear's columns are `ChronoDateTimeUtc`, so the seek's equality conjunct is always false on
   `SQLite` and a page of rows sharing an instant has no successor. Four walks are exposed

@@ -43,7 +43,7 @@ pub struct Model {
     /// Whether the batch override ceremony acknowledged this row.
     pub override_acknowledged: bool,
     /// Stamped with the disposition, the two moving together by CHECK.
-    pub terminal_at: Option<ChronoDateTimeUtc>,
+    pub terminal_at: Option<TimeDateTimeWithTimeZone>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

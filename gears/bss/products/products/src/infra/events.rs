@@ -84,6 +84,7 @@ use toolkit_db::outbox::{Outbox, OutboxError};
 use toolkit_db::secure::DBRunner;
 
 use crate::infra::broker::{self, EventSink};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// Table-family prefix this door's events are enqueued under.
@@ -2121,7 +2122,7 @@ async fn record_inbox(
         payload_type,
         &payload,
         actor_ref,
-        crate::domain::canonical::write_instant(chrono::Utc::now()),
+        crate::domain::canonical::write_instant(OffsetDateTime::now_utc()),
     )
     .await
     .map_err(|e| EventsError::Inbox(e.to_string()))

@@ -43,7 +43,7 @@ pub struct Model {
     /// The principal whose governed mutation last wrote this row,
     /// pseudonymous like every actor-bearing column here.
     pub updated_by: Uuid,
-    pub updated_at: ChronoDateTimeUtc,
+    pub updated_at: TimeDateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

@@ -4,7 +4,7 @@
 //! door, an audit row or a log line downstream can tell an elevated read from
 //! a native principal of the target tenant.
 
-use chrono::Utc;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::{BREAK_GLASS_SCOPE_PREFIX, breakglass_session_of, elevated_context};
@@ -13,7 +13,7 @@ use crate::infra::storage::entity::breakglass_session;
 const SESSION: Uuid = Uuid::from_u128(0x5e_55);
 
 fn session(target_tenant: Uuid) -> breakglass_session::Model {
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     breakglass_session::Model {
         session_id: SESSION,
         principal: Uuid::from_u128(0x5a_b0),

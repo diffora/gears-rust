@@ -1,7 +1,6 @@
 //! Insert-and-readback probes for the two lifecycle stores.
 #![allow(clippy::expect_used)]
 
-use chrono::{TimeZone, Utc};
 use sea_orm_migration::MigratorTrait;
 use toolkit_db::secure::AccessScope;
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
@@ -43,8 +42,8 @@ async fn a_scheduled_transition_round_trips_with_separate_reason_columns() {
     let provider = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
-    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
-    let at = Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
+    let now = crate::test_support::utc(2026, 9, 2, 12, 0, 0);
+    let at = crate::test_support::utc(2026, 10, 1, 0, 0, 0);
 
     insert_scheduled_transition(
         &conn,
@@ -80,8 +79,8 @@ async fn a_second_live_intent_for_the_same_entity_and_kind_is_refused() {
     let provider = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
-    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
-    let at = Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
+    let now = crate::test_support::utc(2026, 9, 2, 12, 0, 0);
+    let at = crate::test_support::utc(2026, 10, 1, 0, 0, 0);
     let row = NewScheduledTransition {
         transition_id: TRANSITION,
         tenant_id: TENANT,
@@ -113,8 +112,8 @@ async fn a_deferred_retirement_round_trips_unresolved() {
     let provider = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
-    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
-    let at = Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
+    let now = crate::test_support::utc(2026, 9, 2, 12, 0, 0);
+    let at = crate::test_support::utc(2026, 10, 1, 0, 0, 0);
 
     insert_scheduled_transition(
         &conn,
@@ -163,8 +162,8 @@ async fn a_due_row_claims_and_finishes_applied() {
     let provider = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
-    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
-    let at = now - chrono::Duration::hours(1);
+    let now = crate::test_support::utc(2026, 9, 2, 12, 0, 0);
+    let at = now - time::Duration::hours(1);
 
     insert_scheduled_transition(
         &conn,
@@ -218,10 +217,10 @@ async fn reclaim_moves_running_to_pending_and_increments_attempt() {
     let provider = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
-    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
-    let at = now - chrono::Duration::hours(1);
+    let now = crate::test_support::utc(2026, 9, 2, 12, 0, 0);
+    let at = now - time::Duration::hours(1);
     let lease = ClaimLease {
-        ttl: chrono::Duration::seconds(30),
+        ttl: time::Duration::seconds(30),
     };
 
     insert_scheduled_transition(
@@ -247,14 +246,14 @@ async fn reclaim_moves_running_to_pending_and_increments_attempt() {
             .expect("claim")
     );
 
-    let too_soon = now + chrono::Duration::seconds(5);
+    let too_soon = now + time::Duration::seconds(5);
     assert!(
         !reclaim_expired_lease(&conn, &scope, TENANT, TRANSITION, too_soon, lease)
             .await
             .expect("lease still held")
     );
 
-    let later = now + chrono::Duration::seconds(31);
+    let later = now + time::Duration::seconds(31);
     assert!(
         reclaim_expired_lease(&conn, &scope, TENANT, TRANSITION, later, lease)
             .await
@@ -277,8 +276,8 @@ async fn a_transient_deferral_finish_increments_attempt() {
     let provider = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
-    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
-    let at = now - chrono::Duration::hours(1);
+    let now = crate::test_support::utc(2026, 9, 2, 12, 0, 0);
+    let at = now - time::Duration::hours(1);
 
     insert_scheduled_transition(
         &conn,
@@ -337,8 +336,8 @@ async fn supersede_clears_the_live_slot_and_resolve_flips_the_deferral() {
     let provider = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
-    let now = Utc.with_ymd_and_hms(2026, 9, 2, 12, 0, 0).unwrap();
-    let at = Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
+    let now = crate::test_support::utc(2026, 9, 2, 12, 0, 0);
+    let at = crate::test_support::utc(2026, 10, 1, 0, 0, 0);
 
     insert_scheduled_transition(
         &conn,
@@ -415,9 +414,9 @@ async fn list_due_returns_a_due_pending_and_skips_a_future_row() {
     let provider = harness().await;
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(TENANT);
-    let now = Utc.with_ymd_and_hms(2026, 9, 4, 12, 0, 0).unwrap();
+    let now = crate::test_support::utc(2026, 9, 4, 12, 0, 0);
     let lease = ClaimLease {
-        ttl: chrono::Duration::seconds(60),
+        ttl: time::Duration::seconds(60),
     };
     let due = Uuid::from_u128(0xaa_11);
     let future = Uuid::from_u128(0xaa_12);
@@ -431,7 +430,7 @@ async fn list_due_returns_a_due_pending_and_skips_a_future_row() {
             entity_kind: "sku".to_owned(),
             entity_id: ENTITY,
             kind: "publish".to_owned(),
-            at: now - chrono::Duration::hours(1),
+            at: now - time::Duration::hours(1),
             approval_ref: APPROVAL,
             retirement_reason: None,
             now,
@@ -448,7 +447,7 @@ async fn list_due_returns_a_due_pending_and_skips_a_future_row() {
             entity_kind: "sku".to_owned(),
             entity_id: Uuid::from_u128(0xdd_12),
             kind: "publish".to_owned(),
-            at: now + chrono::Duration::hours(1),
+            at: now + time::Duration::hours(1),
             approval_ref: APPROVAL,
             retirement_reason: None,
             now,

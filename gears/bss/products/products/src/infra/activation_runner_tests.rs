@@ -4,10 +4,10 @@
 
 use std::sync::Arc;
 
-use chrono::{TimeZone, Utc};
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait as _, Condition, EntityTrait as _};
 use sea_orm_migration::MigratorTrait;
+use time::OffsetDateTime;
 use tokio_util::sync::CancellationToken;
 use toolkit_db::outbox::{Outbox, OutboxHandle, Partitions, outbox_migrations_with_prefix};
 use toolkit_db::secure::{AccessScope, SecureEntityExt as _, SecureUpdateExt as _};
@@ -82,7 +82,7 @@ fn context(harness: &Harness) -> ActivationContext {
     ActivationContext {
         db: harness.db.clone(),
         lease: ClaimLease {
-            ttl: chrono::Duration::seconds(60),
+            ttl: time::Duration::seconds(60),
         },
         budget: AttemptBudget { max: 5 },
         retirement_held_alert_hours: 72,
@@ -97,7 +97,7 @@ fn context(harness: &Harness) -> ActivationContext {
 async fn a_due_row_defers_while_the_host_refuses_preauthorized() {
     let harness = harness().await;
     let scope = AccessScope::for_tenant(TENANT);
-    let now = Utc.with_ymd_and_hms(2026, 9, 4, 12, 0, 0).unwrap();
+    let now = crate::test_support::utc(2026, 9, 4, 12, 0, 0);
     {
         let conn = harness.db.conn().expect("scoped connection");
         insert_scheduled_transition(
@@ -109,7 +109,7 @@ async fn a_due_row_defers_while_the_host_refuses_preauthorized() {
                 entity_kind: "sku".to_owned(),
                 entity_id: ENTITY,
                 kind: "publish".to_owned(),
-                at: now - chrono::Duration::hours(1),
+                at: now - time::Duration::hours(1),
                 approval_ref: APPROVAL,
                 retirement_reason: None,
                 now,
@@ -151,7 +151,7 @@ const SEEDED_APPROVAL: Uuid = Uuid::from_u128(0xbb_12);
 async fn seed_scheduled_publish(
     harness: &Harness,
     scope: &AccessScope,
-    now: chrono::DateTime<Utc>,
+    now: OffsetDateTime,
     metering: Option<(&str, &str)>,
 ) {
     let conn = harness.db.conn().expect("scoped connection");
@@ -288,7 +288,7 @@ async fn seed_scheduled_publish(
             entity_kind: "sku".to_owned(),
             entity_id: SKU,
             kind: "publish".to_owned(),
-            at: now - chrono::Duration::hours(1),
+            at: now - time::Duration::hours(1),
             approval_ref: SEEDED_APPROVAL,
             retirement_reason: None,
             now,
@@ -305,7 +305,7 @@ async fn seed_scheduled_publish(
 async fn a_seeded_consumed_approval_drives_the_foundation_publish_door() {
     let harness = harness().await;
     let scope = AccessScope::for_tenant(TENANT);
-    let now = Utc.with_ymd_and_hms(2026, 9, 4, 12, 0, 0).unwrap();
+    let now = crate::test_support::utc(2026, 9, 4, 12, 0, 0);
     seed_scheduled_publish(&harness, &scope, now, None).await;
 
     let ctx = context(&harness);
@@ -344,7 +344,7 @@ async fn a_usage_skus_scheduled_publish_defers_while_the_collector_is_unavailabl
  {
     let harness = harness().await;
     let scope = AccessScope::for_tenant(TENANT);
-    let now = Utc.with_ymd_and_hms(2026, 9, 4, 12, 0, 0).unwrap();
+    let now = crate::test_support::utc(2026, 9, 4, 12, 0, 0);
     seed_scheduled_publish(&harness, &scope, now, Some(("gib_month", "usage:storage"))).await;
 
     let unavailable = Arc::new(crate::test_support::StubUsageTypes::always(
@@ -401,7 +401,7 @@ async fn a_usage_skus_scheduled_publish_defers_while_the_collector_is_unavailabl
     }
 
     // The collector answers on the next sweep: the same pin applies.
-    let later = now + chrono::Duration::hours(2);
+    let later = now + time::Duration::hours(2);
     let ctx = context(&harness);
     sweep(&ctx, ACTOR, later, &CancellationToken::new())
         .await
@@ -435,7 +435,7 @@ async fn walk_sku(
     conn: &impl toolkit_db::secure::DBRunner,
     scope: &AccessScope,
     sku_id: Uuid,
-    now: chrono::DateTime<Utc>,
+    now: OffsetDateTime,
     states: &[&str],
 ) {
     for (step, state) in states.iter().enumerate() {
@@ -461,7 +461,7 @@ async fn walk_sku(
 async fn seed_fresh_zero(
     conn: &impl toolkit_db::secure::DBRunner,
     scope: &AccessScope,
-    now: chrono::DateTime<Utc>,
+    now: OffsetDateTime,
 ) {
     crate::infra::storage::repo::register_reference_producer(
         conn, scope, TENANT, "pricing", None, now,
@@ -488,7 +488,7 @@ async fn seed_fresh_zero(
 async fn a_seeded_consumed_approval_flips_deprecated_sku_to_retired() {
     let harness = harness().await;
     let scope = AccessScope::for_tenant(TENANT);
-    let now = Utc.with_ymd_and_hms(2026, 9, 4, 12, 0, 0).unwrap();
+    let now = crate::test_support::utc(2026, 9, 4, 12, 0, 0);
     {
         let conn = harness.db.conn().expect("scoped connection");
         insert_product(
@@ -609,7 +609,7 @@ async fn a_seeded_consumed_approval_flips_deprecated_sku_to_retired() {
                 entity_kind: "sku".to_owned(),
                 entity_id: RETIRE_SKU,
                 kind: "retire".to_owned(),
-                at: now - chrono::Duration::hours(1),
+                at: now - time::Duration::hours(1),
                 approval_ref: RETIRE_APPROVAL,
                 retirement_reason: Some("end of life".to_owned()),
                 now,
@@ -660,7 +660,7 @@ async fn a_seeded_consumed_approval_flips_deprecated_sku_to_retired() {
 async fn a_product_retire_defers_when_a_published_child_would_orphan() {
     let harness = harness().await;
     let scope = AccessScope::for_tenant(TENANT);
-    let now = Utc.with_ymd_and_hms(2026, 9, 4, 12, 0, 0).unwrap();
+    let now = crate::test_support::utc(2026, 9, 4, 12, 0, 0);
     {
         let conn = harness.db.conn().expect("scoped connection");
         insert_product(
@@ -783,7 +783,7 @@ async fn a_product_retire_defers_when_a_published_child_would_orphan() {
                 entity_kind: "product".to_owned(),
                 entity_id: PRODUCT,
                 kind: "retire".to_owned(),
-                at: now - chrono::Duration::hours(1),
+                at: now - time::Duration::hours(1),
                 approval_ref: ORPHAN_APPROVAL,
                 retirement_reason: Some("cascade".to_owned()),
                 now,
@@ -830,7 +830,7 @@ const HELD_APPROVAL: Uuid = Uuid::from_u128(0x00bb_0042);
 async fn a_product_retire_defers_while_a_deprecated_child_is_non_terminal() {
     let harness = harness().await;
     let scope = AccessScope::for_tenant(TENANT);
-    let now = Utc.with_ymd_and_hms(2026, 9, 4, 12, 0, 0).unwrap();
+    let now = crate::test_support::utc(2026, 9, 4, 12, 0, 0);
     {
         let conn = harness.db.conn().expect("scoped connection");
         insert_product(
@@ -953,7 +953,7 @@ async fn a_product_retire_defers_while_a_deprecated_child_is_non_terminal() {
                 entity_kind: "product".to_owned(),
                 entity_id: PRODUCT,
                 kind: "retire".to_owned(),
-                at: now - chrono::Duration::hours(1),
+                at: now - time::Duration::hours(1),
                 approval_ref: HELD_APPROVAL,
                 retirement_reason: Some("cascade".to_owned()),
                 now,
@@ -998,7 +998,7 @@ const BROKEN_APPROVAL: Uuid = Uuid::from_u128(0x00bb_0052);
 async fn a_sku_retire_defers_when_a_live_pointer_names_it() {
     let harness = harness().await;
     let scope = AccessScope::for_tenant(TENANT);
-    let now = Utc.with_ymd_and_hms(2026, 9, 4, 12, 0, 0).unwrap();
+    let now = crate::test_support::utc(2026, 9, 4, 12, 0, 0);
     {
         let conn = harness.db.conn().expect("scoped connection");
         insert_product(
@@ -1157,7 +1157,7 @@ async fn a_sku_retire_defers_when_a_live_pointer_names_it() {
                 entity_kind: "sku".to_owned(),
                 entity_id: RETIRE_SKU,
                 kind: "retire".to_owned(),
-                at: now - chrono::Duration::hours(1),
+                at: now - time::Duration::hours(1),
                 approval_ref: BROKEN_APPROVAL,
                 retirement_reason: Some("replaced".to_owned()),
                 now,
@@ -1191,7 +1191,7 @@ async fn a_sku_retire_defers_when_a_live_pointer_names_it() {
 async fn a_stale_deferral_writes_the_retirement_held_audit() {
     let harness = harness().await;
     let scope = AccessScope::for_tenant(TENANT);
-    let now = Utc.with_ymd_and_hms(2026, 9, 4, 12, 0, 0).unwrap();
+    let now = crate::test_support::utc(2026, 9, 4, 12, 0, 0);
     {
         let conn = harness.db.conn().expect("scoped connection");
         insert_scheduled_transition(
@@ -1203,7 +1203,7 @@ async fn a_stale_deferral_writes_the_retirement_held_audit() {
                 entity_kind: "sku".to_owned(),
                 entity_id: ENTITY,
                 kind: "publish".to_owned(),
-                at: now - chrono::Duration::hours(73),
+                at: now - time::Duration::hours(73),
                 approval_ref: APPROVAL,
                 retirement_reason: None,
                 now,
@@ -1236,7 +1236,7 @@ async fn a_stale_deferral_writes_the_retirement_held_audit() {
 async fn a_sku_retire_defers_when_no_producer_is_registered() {
     let harness = harness().await;
     let scope = AccessScope::for_tenant(TENANT);
-    let now = Utc.with_ymd_and_hms(2026, 9, 4, 12, 0, 0).unwrap();
+    let now = crate::test_support::utc(2026, 9, 4, 12, 0, 0);
     {
         let conn = harness.db.conn().expect("scoped connection");
         insert_product(
@@ -1355,7 +1355,7 @@ async fn a_sku_retire_defers_when_no_producer_is_registered() {
                 entity_kind: "sku".to_owned(),
                 entity_id: RETIRE_SKU,
                 kind: "retire".to_owned(),
-                at: now - chrono::Duration::hours(1),
+                at: now - time::Duration::hours(1),
                 approval_ref: RETIRE_APPROVAL,
                 retirement_reason: Some("end of life".to_owned()),
                 now,
@@ -1406,7 +1406,7 @@ const SKIP_APPROVAL: Uuid = Uuid::from_u128(0x00bb_0062);
 async fn a_product_retire_skips_the_07_predicate_when_no_producer_is_registered() {
     let harness = harness().await;
     let scope = AccessScope::for_tenant(TENANT);
-    let now = Utc.with_ymd_and_hms(2026, 9, 4, 12, 0, 0).unwrap();
+    let now = crate::test_support::utc(2026, 9, 4, 12, 0, 0);
     {
         let conn = harness.db.conn().expect("scoped connection");
         insert_product(
@@ -1536,7 +1536,7 @@ async fn a_product_retire_skips_the_07_predicate_when_no_producer_is_registered(
                 entity_kind: "product".to_owned(),
                 entity_id: PRODUCT,
                 kind: "retire".to_owned(),
-                at: now - chrono::Duration::hours(1),
+                at: now - time::Duration::hours(1),
                 approval_ref: SKIP_APPROVAL,
                 retirement_reason: Some("cascade".to_owned()),
                 now,

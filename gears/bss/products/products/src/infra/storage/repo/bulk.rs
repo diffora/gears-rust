@@ -5,10 +5,10 @@
 //! through `super` (`crate::infra::storage::repo`) unchanged.
 use std::collections::BTreeSet;
 
-use chrono::{DateTime, Duration, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, QuerySelect};
+use time::{Duration, OffsetDateTime};
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
@@ -58,7 +58,7 @@ pub struct NewBulkBatch {
     /// The creating act's idempotency key, where one was carried.
     pub operation_key: Option<String>,
     /// The creation instant.
-    pub created_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
 }
 
 /// One batch head, read back.
@@ -84,9 +84,9 @@ pub struct BulkBatchRecord {
     /// reported.
     pub approval_ref: Option<Uuid>,
     /// The worker's claim lease stamp (P-D-54).
-    pub claimed_at: Option<DateTime<Utc>>,
+    pub claimed_at: Option<OffsetDateTime>,
     /// The creation instant.
-    pub created_at: DateTime<Utc>,
+    pub created_at: OffsetDateTime,
 }
 
 /// One ledger row, read back — the `RowLedger` reader's payload.
@@ -323,7 +323,7 @@ pub async fn claim_bulk_batch(
     batch_id: Uuid,
     state: BatchState,
     attempt: i64,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     lease: Duration,
 ) -> Result<bool, RepoError> {
     // The lease predicate. `(state, attempt)` alone excludes only a racer that
@@ -373,7 +373,7 @@ pub async fn release_bulk_batch_claim(
         .scope_with(scope)
         .col_expr(
             bulk_batch::Column::ClaimedAt,
-            Expr::value(Option::<DateTime<Utc>>::None),
+            Expr::value(Option::<OffsetDateTime>::None),
         )
         .filter(
             Condition::all()
@@ -400,7 +400,7 @@ pub async fn move_bulk_batch_state(
     batch_id: Uuid,
     from: BatchState,
     to: BatchState,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<bool, RepoError> {
     let mut statement = bulk_batch::Entity::update_many()
         .secure()
@@ -735,7 +735,7 @@ pub struct BulkRowOutcome<'a> {
     /// content-PII enumeration no longer names it.
     pub reason: Option<&'a str>,
     /// The instant the disposition landed.
-    pub now: DateTime<Utc>,
+    pub now: OffsetDateTime,
 }
 
 /// Write the batch head and its whole ledger, one transaction's worth

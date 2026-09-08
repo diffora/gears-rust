@@ -54,7 +54,7 @@ pub struct Model {
     /// request.
     pub correlation_id: Option<String>,
     /// The operand `10-retention-erasure`'s `RetentionClock` reads.
-    pub written_at: ChronoDateTimeUtc,
+    pub written_at: TimeDateTimeWithTimeZone,
     /// Present on the elevation class only.
     pub session_id: Option<Uuid>,
     /// The audit side of `07`'s ceremony join (P-D-129): the same value `06`'s

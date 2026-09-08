@@ -23,7 +23,7 @@ pub struct Model {
     pub payload_type: String,
     pub payload: String,
     pub actor_ref: Uuid,
-    pub created_at: ChronoDateTimeUtc,
+    pub created_at: TimeDateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

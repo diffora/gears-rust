@@ -24,8 +24,8 @@ pub struct Model {
     pub acked: i32,
     pub released: i32,
     pub forced: i32,
-    pub published_at: ChronoDateTimeUtc,
-    pub polled_at: ChronoDateTimeUtc,
+    pub published_at: TimeDateTimeWithTimeZone,
+    pub polled_at: TimeDateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

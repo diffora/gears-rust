@@ -102,7 +102,7 @@ use axum::Router;
 use axum::extract::{Extension, Path};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use chrono::{DateTime, Utc};
+use time::OffsetDateTime;
 use toolkit::api::OpenApiRegistry;
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit::api::operation_builder::OperationBuilder;
@@ -242,7 +242,7 @@ async fn settle_member_op(
     scope: &AccessScope,
     tenant_id: Uuid,
     authorization: &GateAuthorization,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
 ) -> Result<(), TxError> {
     repo::settle_authorization(tx, scope, tenant_id, authorization, now)
         .await
@@ -490,7 +490,7 @@ async fn relabel_member(
     let ctx = require_authenticated(extension_ctx)?;
     let kind = parse_kind(&set_kind)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let actor_ref =
         crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
             .await?;
@@ -602,7 +602,7 @@ async fn add_member(
     let ctx = require_authenticated(extension_ctx)?;
     let kind = parse_kind(&set_kind)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let member_code = body.member_code.trim().to_owned();
     let actor_ref =
         crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
@@ -738,7 +738,7 @@ async fn transition_member(
     let ctx = require_authenticated(extension_ctx)?;
     let kind = parse_kind(&set_kind)?;
     let tenant_id = ctx.subject_tenant_id();
-    let now = canonical::write_instant(Utc::now());
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
     let actor_ref =
         crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
             .await?;

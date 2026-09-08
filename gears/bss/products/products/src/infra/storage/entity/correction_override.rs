@@ -57,7 +57,7 @@ pub struct Model {
     /// table"*), so there is no counter state to drift from the rows. A
     /// filter on this column alone would count every tenant's overrides into
     /// one window.
-    pub recorded_at: ChronoDateTimeUtc,
+    pub recorded_at: TimeDateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

@@ -16,7 +16,7 @@ pub struct Model {
     /// `registered` or `retired` — the predicate quantifies over the
     /// first only.
     pub state: String,
-    pub registered_at: ChronoDateTimeUtc,
+    pub registered_at: TimeDateTimeWithTimeZone,
     /// The ceremony that admitted the registration, where one ran.
     pub ceremony_ref: Option<Uuid>,
     /// The reserved declaration field (`PRD` §15).

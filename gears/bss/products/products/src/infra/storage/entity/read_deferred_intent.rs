@@ -21,9 +21,9 @@ pub struct Model {
     pub product_id: Uuid,
     pub cascade_ref: Uuid,
     pub children_count: i32,
-    pub created_at: ChronoDateTimeUtc,
+    pub created_at: TimeDateTimeWithTimeZone,
     pub age_secs: i64,
-    pub polled_at: ChronoDateTimeUtc,
+    pub polled_at: TimeDateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

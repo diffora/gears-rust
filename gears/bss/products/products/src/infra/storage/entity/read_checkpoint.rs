@@ -19,7 +19,7 @@ pub struct Model {
     pub tenant_id: Uuid,
     pub inbox_id: i64,
     pub generation: i64,
-    pub updated_at: ChronoDateTimeUtc,
+    pub updated_at: TimeDateTimeWithTimeZone,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

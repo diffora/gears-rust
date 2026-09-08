@@ -4,10 +4,10 @@
 //!
 //! Split out of the foundation repository move-only; every item re-exports
 //! through `super` (`crate::infra::storage::repo`) unchanged.
-use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, Condition, DbErr, EntityTrait, QuerySelect};
+use time::OffsetDateTime;
 use toolkit_db::secure::{
     AccessScope, DBRunner, ScopeError, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
@@ -37,7 +37,7 @@ pub struct NewIncrementRequest<'a> {
     /// The bulk batch key, absent on the interactive lane.
     pub operation_key: Option<&'a str>,
     /// The door's ingress stamp.
-    pub requested_at: DateTime<Utc>,
+    pub requested_at: OffsetDateTime,
 }
 
 /// One row of the increment queue, in this repository's vocabulary.
@@ -189,7 +189,7 @@ pub struct PendingIncrementRequest {
     /// The bulk batch key.
     pub operation_key: Option<String>,
     /// The door's ingress stamp — the window arithmetic's zero point.
-    pub requested_at: DateTime<Utc>,
+    pub requested_at: OffsetDateTime,
 }
 
 /// Every tenant holding at least one `pending` increment request — the
@@ -450,7 +450,7 @@ pub struct NewCatalogVersion {
     /// The digest rule the checksum was computed under.
     pub digest_version: i32,
     /// The commit instant.
-    pub published_at: DateTime<Utc>,
+    pub published_at: OffsetDateTime,
     /// The participant cache column's rendering (P-D-67).
     pub participant_set_snapshot: String,
     /// `Open`, or `Complete` for an empty participant set.
