@@ -687,7 +687,7 @@ never that Legal approved. The control is the paper sign-off plus the export.
 | refused riding `01`'s `VALIDATION`, the violation naming the field (**P-D-64**) | `sign_off_allowlist_entry`'s `report.violate("VALIDATION", "signedOffBy", …)` | the same case, which asserts the violation's `type` **and** its `subject` — the code alone would pass on a violation naming the wrong field |
 | per tenant | PK `(tenant_id, entry_id)`, every read filtered on `tenant_id` | the roster probe |
 | audited | `write_allowlist_audit`, in the act's transaction | `each_allowlist_act_writes_one_audit_row_and_one_event`, counted at **1** per act |
-| exportable for the Legal review | `GET /bss-products/v1/compliance/pii-allowlist` → `repo::allowlist_entries` | `a_revocation_keeps_the_row_and_its_sign_off_in_the_review` |
+| exportable for the Legal review | `GET /bss-products/v1/compliance/pii-allowlist` → `repo::allowlist_entries`, one page per call over `(created_at ASC, entry_id ASC)` with `$filter`/`$orderby`/`$top`/`$skiptoken` (**P-D-165**; `state eq 'active'` is the live list) | `a_revocation_keeps_the_row_and_its_sign_off_in_the_review` |
 | a `GovernedLiveOp` on `pii_allowlist × write` under the base quorum (**P-D-10**) | `submit_allowlist_to_gate`, at both mutating doors | `both_allowlist_doors_submit_their_act_to_the_gate` — **call sites, not a verdict**: the registered host authorizes everything, so a green verdict would prove nothing about whether the ceremony was asked |
 | emit `PiiAllowlistChanged` | `emit_allowlist_changed`, same transaction | `each_allowlist_act_writes_one_audit_row_and_one_event` asserts **2** after both acts: a revocation nobody hears leaves a stale cache admitting a withdrawn name |
 

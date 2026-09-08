@@ -608,10 +608,20 @@ async fn read_batch(
 pub const EXPORT_FORMAT_VERSION: u32 = 1;
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ExportQuery {
-    #[serde(rename = "catalogVersionId")]
     catalog_version_id: Option<i64>,
 }
+
+/// The non-`OData` keys the export declares (P-D-165).
+///
+/// The export is **not** paged, and that is a decision rather than an
+/// omission: the artifact carries a `formatVersion` and is the operand of a
+/// promotion, so a partial one is not a valid export. Its size is bounded by
+/// the catalog it exports and the door is spent under the bulk grant, not
+/// open browse. P-D-165 records the residual — bounding the two whole-artifact
+/// doors is an open item, not something this wave settled.
+const EXPORT_PARAMS: [&str; 1] = ["catalogVersionId"];
 
 /// One manifest entry with its frozen content and its promotion identity.
 #[derive(Debug, Clone)]
@@ -671,9 +681,11 @@ async fn export_catalog_version(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    axum::extract::Query(raw): axum::extract::Query<std::collections::HashMap<String, String>>,
     axum::extract::Query(query): axum::extract::Query<ExportQuery>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    crate::api::rest::odata::reject_undeclared_query_params(&raw, &EXPORT_PARAMS)?;
     let tenant_id = ctx.subject_tenant_id();
     let now = canonical::write_instant(Utc::now());
     let actor_ref =

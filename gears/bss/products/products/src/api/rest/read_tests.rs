@@ -357,10 +357,447 @@ async fn browse_serves_the_projection_under_the_visibility_contract_with_the_sta
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["entity_id"], json!(published));
 
-    let by_prefix = body_json(get(&harness, "/bss-products/v1/browse?q=Alp", TENANT).await).await;
-    assert_eq!(by_prefix["rows"].as_array().expect("rows").len(), 1);
+    // The prefix search the door used to spell `?q=`. `startswith` is the
+    // platform's own lowering, which escapes the LIKE metacharacters the
+    // hand-rolled prefix used to delete.
+    let by_prefix = body_json(
+        get(
+            &harness,
+            &browse_url(&[("$filter", "startswith(name,'Alp')")]),
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        by_prefix["rows"].as_array().expect("rows").len(),
+        1,
+        "{by_prefix}"
+    );
     let bad_kind = get(&harness, "/bss-products/v1/browse?kind=widget", TENANT).await;
     assert_eq!(bad_kind.status(), StatusCode::BAD_REQUEST);
+}
+
+/// The defect the query seam exists to stop (**P-D-165**): a parameter this
+/// door does not declare used to be **dropped**, so a caller asking for a
+/// filter received `200` and the whole unfiltered set. Every spelling the
+/// door retired is now a refusal that names the key.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-browse-door:p2
+#[tokio::test]
+async fn a_retired_or_invented_query_key_is_refused_and_not_dropped() {
+    let harness = harness().await;
+    let published = draft_product(&harness, "Alpha Line", "eu").await;
+    publish_product(&harness, published).await;
+    project(&harness).await;
+
+    // Every key the hand-rolled surface used to bind and no longer does,
+    // plus one a caller might invent from a generic-REST habit.
+    for (key, value) in [
+        ("q", "Alp"),
+        ("category", "Fixture"),
+        ("skuType", "plan"),
+        ("tier", "gold"),
+        ("sellable", "true"),
+        ("unit", "GB"),
+        ("status", "published"),
+        ("excludedeprecated", "true"),
+    ] {
+        let response = get(&harness, &browse_url(&[(key, value)]), TENANT).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "`?{key}=` must be refused, not silently ignored"
+        );
+        let body = body_json(response).await;
+        assert_eq!(
+            body["context"]["violations"][0]["subject"],
+            json!(key),
+            "the refusal must name `{key}`: {body}"
+        );
+    }
+
+    // The four the door still owns, and the OData family, are admitted.
+    for (key, value) in [
+        ("kind", "product"),
+        ("excludeDeprecated", "true"),
+        ("brand", "acme"),
+        ("region", "eu"),
+        ("includeFacets", "true"),
+        ("limit", "1"),
+        ("$filter", "deprecated eq false"),
+        ("$orderby", "name desc"),
+        ("$top", "1"),
+    ] {
+        let response = get(&harness, &browse_url(&[(key, value)]), TENANT).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "`?{key}={value}` is part of this door's contract"
+        );
+    }
+}
+
+/// `$filter` and `$orderby` are validated against the door's declared
+/// vocabulary, so an unknown field, an unorderable one and an operator the
+/// field's kind does not admit are each a `400` rather than a query that
+/// quietly matches everything.
+#[tokio::test]
+async fn the_filter_vocabulary_is_closed() {
+    let harness = harness().await;
+    for (key, value) in [
+        // Not a field this door exposes.
+        ("$filter", "tenant_id eq 'x'"),
+        ("$filter", "brand_scope eq 'acme'"),
+        ("$filter", "entity_kind eq 'sku'"),
+        ("$orderby", "region_scope asc"),
+        // A nullable column cannot be an order key: SQLite sorts NULLs
+        // first and Postgres sorts them last, so the keyset walk would not
+        // be the same walk on the two engines.
+        ("$orderby", "sku_type asc"),
+        ("$orderby", "category_paths desc"),
+        // Not a system query option this platform binds.
+        ("$skip", "10"),
+        ("$filtre", "name eq 'x'"),
+    ] {
+        let response = get(&harness, &browse_url(&[(key, value)]), TENANT).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "`?{key}={value}` must be refused"
+        );
+    }
+    // The orderable columns are the NOT NULL ones, and they work.
+    for (key, value) in [
+        ("$orderby", "name desc"),
+        ("$orderby", "published_version asc"),
+        ("$orderby", "lifecycle_state asc"),
+        ("$orderby", "entity_id asc"),
+        ("$filter", "published_version ge 1"),
+        ("$filter", "contains(category_paths,'Fix')"),
+    ] {
+        let response = get(&harness, &browse_url(&[(key, value)]), TENANT).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "`?{key}={value}` is in the declared vocabulary"
+        );
+    }
+}
+
+/// The page is a window on the set and the set is reachable through it: the
+/// walk visits every row exactly once and stops by saying so.
+///
+/// This is the capability the door did not have — `limit` was a ceiling with
+/// nothing past it, and a tenant with more matching rows than the ceiling
+/// could not read them at all.
+#[tokio::test]
+async fn the_walk_visits_every_row_once_and_then_says_it_is_done() {
+    let harness = harness().await;
+    let mut expected = Vec::new();
+    for name in ["Alpha", "Bravo", "Charlie", "Delta", "Echo"] {
+        let id = draft_product(&harness, name, "eu").await;
+        publish_product(&harness, id).await;
+        expected.push(id);
+    }
+    project(&harness).await;
+
+    let mut seen: Vec<serde_json::Value> = Vec::new();
+    let mut url = browse_url(&[("limit", "2")]);
+    let mut pages = 0_u32;
+    loop {
+        let body = body_json(get(&harness, &url, TENANT).await).await;
+        let rows = body["rows"].as_array().expect("rows").clone();
+        assert!(rows.len() <= 2, "the page honours `limit`: {body}");
+        seen.extend(rows.iter().map(|r| r["entity_id"].clone()));
+        assert_eq!(body["page_info"]["limit"], json!(2));
+        pages += 1;
+        assert!(pages <= 5, "a five-row set cannot need six pages of two");
+        match body["page_info"]["next_cursor"].as_str() {
+            Some(cursor) => url = browse_url(&[("limit", "2"), ("cursor", cursor)]),
+            None => break,
+        }
+    }
+    assert_eq!(pages, 3, "five rows at two per page: 2 + 2 + 1");
+    assert_eq!(seen.len(), 5, "every row once, no duplicates: {seen:?}");
+    let mut unique = seen.clone();
+    unique.sort_by_key(std::string::ToString::to_string);
+    unique.dedup();
+    assert_eq!(unique.len(), 5);
+    // Default order is `name ASC`, which is what the door always served.
+    let names: Vec<&str> = seen
+        .iter()
+        .map(|id| {
+            let idx = expected
+                .iter()
+                .position(|e| json!(e) == *id)
+                .expect("a known id");
+            ["Alpha", "Bravo", "Charlie", "Delta", "Echo"][idx]
+        })
+        .collect();
+    assert_eq!(names, ["Alpha", "Bravo", "Charlie", "Delta", "Echo"]);
+}
+
+/// The continuation token describes one walk, and changing the walk under it
+/// is refused rather than answered from the wrong set.
+#[tokio::test]
+async fn a_cursor_from_another_walk_is_refused() {
+    let harness = harness().await;
+    for name in ["Alpha", "Bravo", "Charlie"] {
+        let id = draft_product(&harness, name, "eu").await;
+        publish_product(&harness, id).await;
+    }
+    project(&harness).await;
+
+    let first = body_json(get(&harness, &browse_url(&[("limit", "1")]), TENANT).await).await;
+    let cursor = first["page_info"]["next_cursor"]
+        .as_str()
+        .expect("more rows remain")
+        .to_owned();
+
+    // Same token, a different `$orderby` — the walk it describes is not the
+    // walk being asked for.
+    let mismatched = get(
+        &harness,
+        &browse_url(&[
+            ("limit", "1"),
+            ("cursor", &cursor),
+            ("$orderby", "published_version desc"),
+        ]),
+        TENANT,
+    )
+    .await;
+    assert_eq!(mismatched.status(), StatusCode::BAD_REQUEST);
+
+    // Same token, a different `$filter` — the set has changed underneath it.
+    // The walk began unfiltered, which the platform stamps as *no* hash at
+    // all; without the door's own "no filter" stamp this request was served
+    // a keyset predicate over a different set, with a 200.
+    let refiltered = get(
+        &harness,
+        &browse_url(&[
+            ("limit", "1"),
+            ("cursor", &cursor),
+            ("$filter", "published_version ge 1"),
+        ]),
+        TENANT,
+    )
+    .await;
+    assert_eq!(refiltered.status(), StatusCode::BAD_REQUEST);
+
+    // And the other direction: a walk begun *with* a filter cannot drop it.
+    let filtered_first = body_json(
+        get(
+            &harness,
+            &browse_url(&[("limit", "1"), ("$filter", "published_version ge 1")]),
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+    let filtered_cursor = filtered_first["page_info"]["next_cursor"]
+        .as_str()
+        .expect("more rows remain")
+        .to_owned();
+    let unfiltered = get(
+        &harness,
+        &browse_url(&[("limit", "1"), ("cursor", &filtered_cursor)]),
+        TENANT,
+    )
+    .await;
+    assert_eq!(unfiltered.status(), StatusCode::BAD_REQUEST);
+
+    let garbage = get(
+        &harness,
+        &browse_url(&[("limit", "1"), ("cursor", "not-a-token")]),
+        TENANT,
+    )
+    .await;
+    assert_eq!(garbage.status(), StatusCode::BAD_REQUEST);
+}
+
+/// The walk is bidirectional: the platform's `page_info` carries a
+/// `prev_cursor` and it goes back to the page it came from.
+///
+/// Written because the door's own author assumed the opposite — the sibling
+/// pricing gear serves `prev_cursor: null` by its own decision (D-125), and
+/// reading that as the platform's behaviour would have shipped a documented
+/// `null` over a token that works.
+#[tokio::test]
+async fn the_walk_goes_back_the_way_it_came() {
+    let harness = harness().await;
+    for name in ["Alpha", "Bravo", "Charlie"] {
+        let id = draft_product(&harness, name, "eu").await;
+        publish_product(&harness, id).await;
+    }
+    project(&harness).await;
+
+    let first = body_json(get(&harness, &browse_url(&[("limit", "1")]), TENANT).await).await;
+    let first_row = first["rows"][0]["entity_id"].clone();
+    let forward = first["page_info"]["next_cursor"]
+        .as_str()
+        .expect("more rows remain")
+        .to_owned();
+
+    let second = body_json(
+        get(
+            &harness,
+            &browse_url(&[("limit", "1"), ("cursor", &forward)]),
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+    assert_ne!(second["rows"][0]["entity_id"], first_row);
+    let back = second["page_info"]["prev_cursor"]
+        .as_str()
+        .expect("the second page knows where it came from")
+        .to_owned();
+
+    let again = body_json(
+        get(
+            &harness,
+            &browse_url(&[("limit", "1"), ("cursor", &back)]),
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        again["rows"][0]["entity_id"], first_row,
+        "walking back lands on the page the forward token left: {again}"
+    );
+}
+
+/// Percent-encode one query-string **value**.
+///
+/// `$filter` and `$orderby` carry spaces, quotes and parentheses, and a
+/// cursor is base64url with `=` padding — none of which may travel raw in a
+/// URI. Encoding only the value, and only the characters that need it, keeps
+/// the test URLs readable: a helper that encoded the whole query string
+/// would also encode the `?`, `&` and `=` that give it its shape, and one
+/// that encoded nothing would be a test that fails on the encoder rather
+/// than on the door.
+fn qval(value: &str) -> String {
+    value
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b',' => {
+                (b as char).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect()
+}
+
+/// A browse URL from `(key, value)` pairs, each value encoded by [`qval`].
+fn browse_url(params: &[(&str, &str)]) -> String {
+    let query: Vec<String> = params
+        .iter()
+        .map(|(k, v)| format!("{}={}", qval(k), qval(v)))
+        .collect();
+    format!("/bss-products/v1/browse?{}", query.join("&"))
+}
+
+/// The timeline is paged, and a page that does not start at version one is
+/// still diffed against the version **before** it — not against the
+/// previous row the caller happened to be shown.
+///
+/// This is what the page costs and what pays for it: without the
+/// predecessor seed, page two's first entry would report every key as
+/// changed, which is the same wrongness as a fresh history.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-history-timeline:p2
+#[tokio::test]
+async fn a_timeline_page_is_diffed_against_the_version_before_it() {
+    let harness = harness().await;
+    let product = draft_product(&harness, "Zeta Line", "eu").await;
+    // A published head is publishable again as version N+1, so three
+    // publishes give a history whose middle page neither starts nor ends it.
+    for expected in 1..=3 {
+        assert_eq!(publish_product(&harness, product).await, expected);
+    }
+
+    let url = format!("/bss-products/v1/products/{product}/versions");
+    let whole = body_json(get(&harness, &url, TENANT).await).await;
+    let versions = whole["versions"].as_array().expect("versions");
+    assert_eq!(versions.len(), 3, "three publishes: {whole}");
+    assert_eq!(
+        whole["page_info"]["next_cursor"],
+        json!(null),
+        "three versions fit one page"
+    );
+
+    // Page two of one-per-page: version two, whose `changedKeys` must be
+    // the diff against version one and therefore name `name` and not every
+    // key.
+    let first = body_json(get(&harness, &format!("{url}?limit=1"), TENANT).await).await;
+    assert_eq!(first["versions"][0]["published_version"], json!(1));
+    let cursor = first["page_info"]["next_cursor"]
+        .as_str()
+        .expect("two more versions remain")
+        .to_owned();
+    let second = body_json(
+        get(
+            &harness,
+            &format!("{url}?limit=1&cursor={}", qval(&cursor)),
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(second["versions"][0]["published_version"], json!(2));
+    let changed = second["versions"][0]["changed_keys"]
+        .as_array()
+        .expect("changed keys")
+        .clone();
+    // Nothing changed between the two publishes, so nothing is reported.
+    // Without the predecessor seed this page would have no previous version
+    // in hand and would report **every** key — which is exactly the wrong
+    // answer this probe is armed against, and it is the assertion that
+    // fails if the seed is removed.
+    assert!(
+        changed.is_empty(),
+        "version two republished the same content: {second}"
+    );
+    assert!(
+        !versions[0]["changed_keys"]
+            .as_array()
+            .expect("the first version's keys")
+            .is_empty(),
+        "and version one, which has no predecessor, changed everything"
+    );
+
+    // Lineage and clones are the entity's, not the page's: every page
+    // carries them whole.
+    assert_eq!(second["entity_id"], json!(product));
+    assert_eq!(second["clones"], json!([]));
+
+    // The three options this door binds nothing to are refused, each naming
+    // itself, rather than accepted and ignored.
+    for (key, value) in [
+        ("$filter", "published_version eq 2"),
+        ("$orderby", "published_version desc"),
+        ("$select", "published_version"),
+    ] {
+        let response = get(
+            &harness,
+            &format!("{url}?{}={}", qval(key), qval(value)),
+            TENANT,
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "`?{key}=` must be refused on the timeline"
+        );
+        let body = body_json(response).await;
+        assert_eq!(
+            body["context"]["violations"][0]["subject"],
+            json!(key),
+            "the refusal must name the option: {body}"
+        );
+    }
 }
 
 /// `dod-degradation`: above the tenant's ceiling the door answers `503

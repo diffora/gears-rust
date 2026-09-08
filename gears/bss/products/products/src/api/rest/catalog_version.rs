@@ -300,7 +300,7 @@ fn register_resolver_route(router: Router, openapi: &dyn OpenApiRegistry) -> Rou
         .path_param("id", "The catalog version to resolve.")
         .query_param("intent", false, "Required: browse or posted.")
         .query_param(
-            "bound_version",
+            "boundVersion",
             false,
             "The caller's bound version, for the re-binding surface.",
         )
@@ -947,12 +947,30 @@ pub(crate) async fn release_catalog_version(
     .await
 }
 
-/// The resolver's query operands.
+/// The resolver's query operands — neither of them a filter (P-D-165).
+///
+/// `intent` selects which resolution the door performs (browse or posted
+/// use), and `boundVersion` is the caller's own claim about what it bound,
+/// which the door answers a re-binding triple against. Both are custom
+/// query options in the `OData` sense (Part 2, §11.2.1) and are declared to
+/// the guard so every other key is refused rather than dropped.
+///
+/// **`bound_version` became `boundVersion`.** The snake spelling was this
+/// door's alone: `catalogVersionId` on the bulk export and `principalRef` on
+/// the identity export were already camel, so a caller who had learned one
+/// would guess the other and be silently ignored. The design and FEATURE
+/// documents spell the triple `(boundVersion, resolvedVersion, diffRef)`,
+/// which is the spelling taken here. The response body stays `snake_case`,
+/// which is this gear's convention for every body it serves.
 #[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ResolveQuery {
     intent: Option<String>,
     bound_version: Option<i64>,
 }
+
+/// The non-`OData` keys the resolver declares.
+const RESOLVE_PARAMS: [&str; 2] = ["intent", "boundVersion"];
 
 /// `GET /bss-products/v1/catalog-versions/{id}` — the `IntentfulResolver`.
 async fn resolve_catalog_version(
@@ -960,9 +978,11 @@ async fn resolve_catalog_version(
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
     axum::extract::Path(catalog_version_id): axum::extract::Path<i64>,
+    axum::extract::Query(raw): axum::extract::Query<std::collections::HashMap<String, String>>,
     axum::extract::Query(query): axum::extract::Query<ResolveQuery>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    crate::api::rest::odata::reject_undeclared_query_params(&raw, &RESOLVE_PARAMS)?;
     let tenant_id = ctx.subject_tenant_id();
     let now = canonical::write_instant(Utc::now());
     let subject = catalog_version_id.to_string();
@@ -1752,8 +1772,14 @@ async fn diff_catalog_versions(
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
     axum::extract::Path((a, b)): axum::extract::Path<(i64, i64)>,
+    axum::extract::Query(raw): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    // The diff takes no operand at all: both versions are in the path. The
+    // guard is here so `?limit=` — which a caller has every reason to try on
+    // a surface this size — is refused rather than dropped. Why the diff is
+    // not paged is P-D-165's own record: a partial diff is not a diff.
+    crate::api::rest::odata::reject_undeclared_query_params(&raw, &[])?;
     let tenant_id = ctx.subject_tenant_id();
     let now = canonical::write_instant(Utc::now());
     let actor_ref =

@@ -30,9 +30,14 @@
 use chrono::{DateTime, Utc};
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Set};
+use toolkit_db::odata::sea_orm_filter::{
+    FieldToColumn, LimitCfg, ODataFieldMapping, paginate_odata,
+};
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
+use toolkit_odata::SortDir;
+use toolkit_odata_macros::ODataFilterable;
 use uuid::Uuid;
 
 use super::driver_failure;
@@ -86,34 +91,120 @@ pub async fn active_allowlist_values(
     Ok(rows.into_iter().map(|row| row.value_normalized).collect())
 }
 
-/// Every entry in the tenant's allow-list, active and revoked, for the Legal
-/// review export.
+/// The allow-list export's **filterable vocabulary** (P-D-165).
 ///
-/// Ordered by `created_at` then `entry_id` so the review is reproducible
-/// across calls: `created_at` alone is not unique when two entries are signed
-/// off in one act.
+/// # What is deliberately absent
+///
+/// * `tenant_id` — `AccessScope`'s.
+/// * `justification` — operator free text that rides the content-PII write
+///   block. A filter over it would be a substring search over prose a
+///   reviewer wrote about a person, which is the one thing this table is
+///   careful about.
+/// * `updated_at` — the revoke's own stamp; `state` is the question a
+///   reviewer actually asks, and `signed_off_at` is the one with meaning.
+#[derive(ODataFilterable)]
+#[allow(
+    dead_code,
+    reason = "a declaration read by the derive macro: only the generated \
+              `AllowlistEntryQueryFilterField` is ever named in code"
+)]
+pub struct AllowlistEntryQuery {
+    /// The entry. Also the walk's unique tiebreaker.
+    #[odata(filter(kind = "Uuid"))]
+    pub entry_id: Uuid,
+    /// The admitted string, normalized.
+    #[odata(filter(kind = "String"))]
+    pub value_normalized: String,
+    /// The external Legal sign-off reference (P-D-10).
+    #[odata(filter(kind = "String"))]
+    pub signed_off_by: String,
+    #[odata(filter(kind = "DateTimeUtc"))]
+    pub signed_off_at: chrono::DateTime<Utc>,
+    /// `active` or `revoked`. `state eq 'active'` is the live allow-list.
+    #[odata(filter(kind = "String"))]
+    pub state: String,
+    /// When the entry was signed on. The default order.
+    #[odata(filter(kind = "DateTimeUtc"))]
+    pub created_at: chrono::DateTime<Utc>,
+}
+
+/// The vocabulary under the name the rest of the gear uses.
+pub use AllowlistEntryQueryFilterField as AllowlistEntryFilterField;
+
+/// The vocabulary's storage mapping.
+pub struct AllowlistEntryODataMapper;
+
+impl FieldToColumn<AllowlistEntryFilterField> for AllowlistEntryODataMapper {
+    type Column = pii_allowlist::Column;
+
+    fn map_field(field: AllowlistEntryFilterField) -> pii_allowlist::Column {
+        use AllowlistEntryFilterField as F;
+        match field {
+            F::EntryId => pii_allowlist::Column::EntryId,
+            F::ValueNormalized => pii_allowlist::Column::ValueNormalized,
+            F::SignedOffBy => pii_allowlist::Column::SignedOffBy,
+            F::SignedOffAt => pii_allowlist::Column::SignedOffAt,
+            F::State => pii_allowlist::Column::State,
+            F::CreatedAt => pii_allowlist::Column::CreatedAt,
+        }
+    }
+}
+
+impl ODataFieldMapping<AllowlistEntryFilterField> for AllowlistEntryODataMapper {
+    type Entity = pii_allowlist::Entity;
+
+    fn extract_cursor_value(
+        model: &pii_allowlist::Model,
+        field: AllowlistEntryFilterField,
+    ) -> sea_orm::Value {
+        use AllowlistEntryFilterField as F;
+        match field {
+            F::EntryId => sea_orm::Value::from(model.entry_id),
+            F::ValueNormalized => sea_orm::Value::from(model.value_normalized.clone()),
+            F::SignedOffBy => sea_orm::Value::from(model.signed_off_by.clone()),
+            F::SignedOffAt => sea_orm::Value::from(model.signed_off_at),
+            F::State => sea_orm::Value::from(model.state.clone()),
+            F::CreatedAt => sea_orm::Value::from(model.created_at),
+        }
+    }
+}
+
+/// The order the export answers in when the caller names none: oldest entry
+/// first, which is the order a reviewer reads a ledger.
+pub const ALLOWLIST_DEFAULT_ORDER: (&str, SortDir) = ("created_at", SortDir::Asc);
+
+/// The walk's unique tiebreaker.
+///
+/// `created_at` alone is not unique — two entries signed off in one act
+/// share it, which the unpaginated read already had to say out loud in its
+/// own second `order_by`.
+pub const ALLOWLIST_TIEBREAKER: (&str, SortDir) = ("entry_id", SortDir::Asc);
+
+/// One page of the tenant's allow-list, active and revoked, for the Legal
+/// review export (P-D-165).
 ///
 /// # Errors
 ///
-/// [`RepoError::Driver`] on a storage failure, or [`RepoError::Db`] on a
-/// scope refusal that raised no driver error.
+/// [`toolkit_odata::Error`] on an unservable query, or a driver failure.
 pub async fn allowlist_entries(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-) -> Result<Vec<AllowlistEntry>, RepoError> {
-    let rows = pii_allowlist::Entity::find()
+    odata: &toolkit_odata::ODataQuery,
+    limits: LimitCfg,
+) -> Result<toolkit_odata::Page<AllowlistEntry>, toolkit_odata::Error> {
+    let base = pii_allowlist::Entity::find()
         .secure()
         .scope_with(scope)
-        .filter(Condition::all().add(pii_allowlist::Column::TenantId.eq(tenant_id)))
-        .order_by(pii_allowlist::Column::CreatedAt, sea_orm::Order::Asc)
-        .order_by(pii_allowlist::Column::EntryId, sea_orm::Order::Asc)
-        .all(runner)
-        .await
-        .map_err(|e| driver_failure(format!("read allow-list, tenant {tenant_id}"), e))?;
-    Ok(rows
-        .into_iter()
-        .map(|row| AllowlistEntry {
+        .filter(Condition::all().add(pii_allowlist::Column::TenantId.eq(tenant_id)));
+    let effective = super::effective_odata(odata, ALLOWLIST_DEFAULT_ORDER);
+    paginate_odata::<AllowlistEntryFilterField, AllowlistEntryODataMapper, _, _, _, _>(
+        base,
+        runner,
+        &effective,
+        ALLOWLIST_TIEBREAKER,
+        limits,
+        |row| AllowlistEntry {
             entry_id: row.entry_id,
             value_normalized: row.value_normalized,
             justification: row.justification,
@@ -122,8 +213,9 @@ pub async fn allowlist_entries(
             state: row.state,
             created_at: row.created_at,
             updated_at: row.updated_at,
-        })
-        .collect())
+        },
+    )
+    .await
 }
 
 /// The columns a caller supplies when signing an entry on.

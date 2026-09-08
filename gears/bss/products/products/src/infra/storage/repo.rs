@@ -81,6 +81,7 @@ use toolkit_db::secure::{
     AccessScope, DBRunner, ScopeError, SecureDeleteExt, SecureEntityExt, SecureInsertExt,
     SecureUpdateExt,
 };
+use toolkit_odata_macros::ODataFilterable;
 use uuid::Uuid;
 
 use bss_products_sdk::models::LifecycleState;
@@ -1913,6 +1914,49 @@ pub async fn supersede_open_approval(
     Ok(Some(approval_id))
 }
 
+/// The cursor stamp that stands for "this walk carries no `$filter`".
+///
+/// Deliberately not hex and not sixteen characters, so it cannot be mistaken
+/// for `toolkit_odata::short_filter_hash`'s output — a collision would make
+/// a real filter compare equal to no filter.
+pub const NO_FILTER_HASH: &str = "no-filter";
+
+/// The query a paginated door actually walks: the caller's, with this door's
+/// default order and its "no filter" stamp filled in.
+///
+/// Both fills are conditional and both conditions matter.
+///
+/// * **Default order** is injected into `order` rather than passed as the
+///   tiebreaker, which is reserved for the unique key: `ensure_tiebreaker`
+///   inside `paginate_odata` appends that key afterwards, so the effective
+///   order is `(this door's default, the unique key)`. It is skipped on a
+///   continuation because the helper re-derives the order from the token's
+///   signed fields — injecting there would mean a caller who paginated under
+///   their own `$orderby` silently walked a different order on page two.
+/// * **The filter stamp** is what makes changing `$filter` mid-walk a
+///   refusal. The platform computes it from the expression, so *absence* of
+///   a filter has no stamp, and the mismatch check fires only when both the
+///   request and the token carry one. Measured consequence: a walk begun
+///   unfiltered minted an unstamped token, so page two could add a
+///   `$filter` and be served the keyset predicate over a different set — and
+///   a walk begun filtered could drop the filter the same way. Giving "no
+///   filter" a stamp of its own closes both directions.
+pub fn effective_odata(
+    odata: &toolkit_odata::ODataQuery,
+    default_order: (&str, toolkit_odata::SortDir),
+) -> toolkit_odata::ODataQuery {
+    let mut effective = odata.clone();
+    if effective.cursor.is_none() && effective.order.is_empty() {
+        effective.order = effective
+            .order
+            .ensure_tiebreaker(default_order.0, default_order.1);
+    }
+    if effective.filter_hash.is_none() {
+        effective.filter_hash = Some(NO_FILTER_HASH.to_owned());
+    }
+    effective
+}
+
 mod bulk;
 mod governance;
 mod increment;
@@ -3352,6 +3396,136 @@ pub struct FrozenVersionRow {
     pub published_at: DateTime<Utc>,
 }
 
+/// The timeline door's order key vocabulary (P-D-165).
+///
+/// One field, and that is the point: the timeline is **not** a filterable
+/// or re-orderable surface. Each entry's `changed_keys` is computed against
+/// the version before it, so a caller-chosen order or a filter that removed
+/// intermediate versions would silently change what "changed" means. The
+/// declaration exists so `paginate_odata` can resolve the order key it walks
+/// and appends as the tiebreaker; the door refuses `$filter`, `$orderby` and
+/// `$select` outright, with that reason.
+#[derive(ODataFilterable)]
+#[allow(
+    dead_code,
+    reason = "a declaration read by the derive macro: only the generated \
+              `EntityVersionQueryFilterField` is ever named in code"
+)]
+pub struct EntityVersionQuery {
+    /// The version this row freezes, `>= 1`. Unique within one entity, so
+    /// it is both the order and the walk's tiebreaker.
+    #[odata(filter(kind = "I64"))]
+    pub published_version: i64,
+}
+
+/// The vocabulary under the name the rest of the gear uses.
+pub use EntityVersionQueryFilterField as EntityVersionFilterField;
+
+/// The vocabulary's storage mapping.
+pub struct EntityVersionODataMapper;
+
+impl toolkit_db::odata::sea_orm_filter::FieldToColumn<EntityVersionFilterField>
+    for EntityVersionODataMapper
+{
+    type Column = entity_version::Column;
+
+    fn map_field(field: EntityVersionFilterField) -> entity_version::Column {
+        match field {
+            EntityVersionFilterField::PublishedVersion => entity_version::Column::PublishedVersion,
+        }
+    }
+}
+
+impl toolkit_db::odata::sea_orm_filter::ODataFieldMapping<EntityVersionFilterField>
+    for EntityVersionODataMapper
+{
+    type Entity = entity_version::Entity;
+
+    fn extract_cursor_value(
+        model: &entity_version::Model,
+        field: EntityVersionFilterField,
+    ) -> sea_orm::Value {
+        match field {
+            EntityVersionFilterField::PublishedVersion => {
+                sea_orm::Value::from(model.published_version)
+            }
+        }
+    }
+}
+
+/// The only order the timeline is served in: oldest version first.
+pub const TIMELINE_ORDER: (&str, toolkit_odata::SortDir) =
+    ("published_version", toolkit_odata::SortDir::Asc);
+
+/// One page of an entity's frozen versions, oldest first, plus the version
+/// immediately **before** the page.
+///
+/// The predecessor is what makes `changed_keys` correct on a page that does
+/// not start at version one: the diff is against the previous *stored*
+/// version, not against the previous row the caller happens to have been
+/// shown. Returning `None` for it is how the caller's renderer knows this
+/// page starts the history.
+///
+/// # Errors
+///
+/// [`toolkit_odata::Error`] on an unservable query, or a driver failure.
+pub async fn entity_versions_page(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    entity_kind: VersionedEntityKind,
+    entity_id: Uuid,
+    odata: &toolkit_odata::ODataQuery,
+    limits: toolkit_db::odata::sea_orm_filter::LimitCfg,
+) -> Result<(toolkit_odata::Page<FrozenVersionRow>, Option<String>), toolkit_odata::Error> {
+    let of_entity = Condition::all()
+        .add(entity_version::Column::TenantId.eq(tenant_id))
+        .add(entity_version::Column::EntityKind.eq(entity_kind.as_str()))
+        .add(entity_version::Column::EntityId.eq(entity_id));
+    let base = entity_version::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(of_entity.clone());
+    let effective = effective_odata(odata, TIMELINE_ORDER);
+    let page = toolkit_db::odata::sea_orm_filter::paginate_odata::<
+        EntityVersionFilterField,
+        EntityVersionODataMapper,
+        _,
+        _,
+        _,
+        _,
+    >(
+        base,
+        runner,
+        &effective,
+        TIMELINE_ORDER,
+        limits,
+        frozen_version_row,
+    )
+    .await?;
+
+    let predecessor = match page.items.first() {
+        Some(first) if first.published_version > 1 => entity_version::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(
+                of_entity.add(entity_version::Column::PublishedVersion.lt(first.published_version)),
+            )
+            .order_by(
+                entity_version::Column::PublishedVersion,
+                sea_orm::Order::Desc,
+            )
+            .one(runner)
+            .await
+            .map_err(|e| toolkit_odata::Error::Db(e.to_string()))?
+            .map(|row| row.content),
+        // Version one has no predecessor, and an empty page has no first
+        // row to diff.
+        _ => None,
+    };
+    Ok((page, predecessor))
+}
+
 /// Every frozen version of one entity, oldest first — the request-time read
 /// over `products_entity_version` the timeline is (P-D-150).
 ///
@@ -3381,16 +3555,21 @@ pub async fn entity_versions_of(
         .all(runner)
         .await
         .map_err(|e| driver_failure(format!("read frozen versions of {entity_id}"), e))?;
-    Ok(rows
-        .into_iter()
-        .map(|row| FrozenVersionRow {
-            published_version: row.published_version,
-            content: row.content,
-            approval_ref: row.approval_ref,
-            actor_ref: row.actor_ref,
-            published_at: row.published_at,
-        })
-        .collect())
+    Ok(rows.into_iter().map(frozen_version_row).collect())
+}
+
+/// One stored version row as the timeline reads it.
+///
+/// Shared by the whole-history read and the paginated one so a field added
+/// to [`FrozenVersionRow`] cannot reach one surface and not the other.
+fn frozen_version_row(row: entity_version::Model) -> FrozenVersionRow {
+    FrozenVersionRow {
+        published_version: row.published_version,
+        content: row.content,
+        approval_ref: row.approval_ref,
+        actor_ref: row.actor_ref,
+        published_at: row.published_at,
+    }
 }
 
 #[cfg(test)]

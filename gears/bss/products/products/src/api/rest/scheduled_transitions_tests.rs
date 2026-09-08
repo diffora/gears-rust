@@ -241,19 +241,64 @@ async fn get_lists_deferred_rows_with_outcome_reason_and_filters_by_state() {
     assert_eq!(items[0]["state"], "deferred");
     assert_eq!(items[0]["outcome_reason"], "retention_orphan_blocked");
 
-    let filtered = get_list(app_for(&harness, TENANT), TENANT, "?state=pending").await;
+    assert_eq!(
+        body["page_info"]["next_cursor"],
+        json!(null),
+        "one row is one page: {body}"
+    );
+
+    // The state question in the platform's spelling (P-D-165). The bare
+    // `?state=` it replaced is now refused rather than dropped — which on
+    // this door mattered, because a dropped `?state=pending` answered the
+    // whole schedule with a 200.
+    let filtered = get_list(
+        app_for(&harness, TENANT),
+        TENANT,
+        "?%24filter=state%20eq%20%27pending%27",
+    )
+    .await;
     assert_eq!(filtered.status(), StatusCode::OK);
     let filtered_body = body_of(filtered).await;
     assert_eq!(
         filtered_body["items"].as_array().expect("items").len(),
         0,
-        "state=pending excludes the deferred row"
+        "state eq 'pending' excludes the deferred row"
     );
 
-    let deferred = get_list(app_for(&harness, TENANT), TENANT, "?state=deferred").await;
+    let deferred = get_list(
+        app_for(&harness, TENANT),
+        TENANT,
+        "?%24filter=state%20eq%20%27deferred%27",
+    )
+    .await;
     assert_eq!(deferred.status(), StatusCode::OK);
     let deferred_body = body_of(deferred).await;
     assert_eq!(deferred_body["items"].as_array().expect("items").len(), 1);
+
+    let retired = get_list(app_for(&harness, TENANT), TENANT, "?state=pending").await;
+    assert_eq!(
+        retired.status(),
+        StatusCode::BAD_REQUEST,
+        "the retired spelling is refused, not silently ignored"
+    );
+    let named = body_of(retired).await;
+    assert_eq!(named["context"]["violations"][0]["subject"], json!("state"));
+
+    // And the vocabulary composes: two fields at once, over the same walk.
+    let composed = get_list(
+        app_for(&harness, TENANT),
+        TENANT,
+        "?%24filter=state%20eq%20%27deferred%27%20and%20kind%20eq%20%27retire%27",
+    )
+    .await;
+    assert_eq!(composed.status(), StatusCode::OK);
+    assert_eq!(
+        body_of(composed).await["items"]
+            .as_array()
+            .expect("items")
+            .len(),
+        1
+    );
 }
 
 /// Cancel supersedes the live row; the runner's due list no longer sees it.

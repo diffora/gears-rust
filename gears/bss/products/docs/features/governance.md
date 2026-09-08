@@ -1242,9 +1242,16 @@ diff payload (`content_snapshot`, `diff_basis`). The wire names follow the gear'
 (snake_case, as every receipt does), not the design's camelCase prose; any other `state` is
 refused. Probe: `the_inbox_lists_pending_records_with_effective_counts_and_progress`. The
 merge-compatibility half is `12-consumer-contracts`' to assert. **The inbox is a page on the
-queue (P-D-163):** `limit` (default 50, at most 200, clamped rather than refused) bounds the cards
-and `has_more` says whether the queue continues, oldest first; the repository reads one page and
-never the whole queue. Probe: `the_inbox_serves_a_page_and_says_whether_the_queue_continues`.
+queue (P-D-163), and the page is the platform's (P-D-165):** `$top`/`limit` (default 50, at most
+200; above the ceiling clamped, `0` refused by the extractor) bounds the cards, `$skiptoken`/`cursor`
+walks the queue over `(submitted_at ASC, approval_id ASC)`, and `page_info.next_cursor` both says
+whether the queue continues and is the token that continues it — replacing the `has_more: bool`
+this envelope carried until P-D-165, which said so and gave nothing to continue with. `$filter`
+narrows over the declared `ApprovalInboxFilterField` vocabulary (`approval_id`, `subject_kind`,
+`subject_ref`, `submitter`, `submitted_at`); the record's stored `content_snapshot` and
+`quorum_descriptor` are **not** filter fields. `state` stays a door operand rather than a filter
+field because any other state is refused with an audit row, where a filter would answer an empty
+page. Probe: `the_inbox_serves_a_page_and_says_whether_the_queue_continues`.
 
 **Implements**: `cpt-cf-bss-products-flow-queue`
 

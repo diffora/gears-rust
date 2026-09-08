@@ -15,10 +15,16 @@ use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, QuerySelect};
+use toolkit_db::odata::sea_orm_filter::{
+    FieldToColumn, LimitCfg, ODataFieldMapping, filter_node_to_condition, paginate_odata,
+};
 use toolkit_db::secure::{
     AccessScope, DBRunner, ScopeError, SecureDeleteExt, SecureEntityExt, SecureInsertExt,
     SecureUpdateExt,
 };
+use toolkit_odata::filter::convert_expr_to_filter_node;
+use toolkit_odata::{ODataQuery, Page, SortDir};
+use toolkit_odata_macros::ODataFilterable;
 use uuid::Uuid;
 
 use crate::domain::read_model::{
@@ -913,22 +919,126 @@ pub async fn find_read_entity(
         .map_err(|e| driver_failure(format!("read entity {entity_id}"), e))
 }
 
-/// The browse query's operands (`inst-rb-query`): the visibility and scope
-/// predicates are built into the statement — a shed row is never fetched.
+/// The browse door's **filterable vocabulary** (`inst-rb-query`, P-D-165).
+///
+/// A declaration, never constructed: `#[derive(ODataFilterable)]` reads the
+/// fields and emits [`BrowseRowQueryFilterField`] (re-exported below as
+/// [`BrowseFilterField`]), which is what `$filter` and `$orderby` are
+/// validated against and what the `OpenAPI` `$filter` documentation is
+/// generated from. Declaring the vocabulary as a struct rather than writing
+/// the enum by hand is what keeps the wire contract, the spec and the
+/// storage mapping from drifting apart — the `account-management` gear
+/// declares its three the same way.
+///
+/// # What is deliberately absent, and why
+///
+/// * `tenant_id` — the caller does not choose it. `AccessScope` does, on the
+///   `SecureSelect` this vocabulary is applied on top of.
+/// * `entity_kind` — **an authorization operand, not a filter.** The door
+///   gates on `product x read` when a Product may be in the answer and on
+///   `sku x read` when a SKU may be, and it decides which by reading the
+///   caller's requested kind: naming one kind narrows the grants required to
+///   that kind's. A `$filter` cannot carry that decision safely, because
+///   `entity_kind eq 'sku' or entity_kind eq 'product'` restricts nothing
+///   while *reading* as a request for one kind — so a caller holding only
+///   the SKU grant could reach Product rows. It stays the door's `kind`
+///   operand, the way `account-management` keeps path-scoped `parent_id` off
+///   its filter columns.
+/// * `region_scope` / `brand_scope` — these are **not scalars**. The column
+///   holds a comma-joined token set where *empty means unrestricted*
+///   (P-D-39), and the predicate that reads it matches a token **by
+///   position** precisely because an unanchored `LIKE '%claim%'` was a
+///   measured cross-scope leak (claim `eu` matching a row stored `eur` or
+///   `aus,eu-central`; a claim carrying `%` matching every restricted row).
+///   Exposing them as `$filter` fields would hand that leak back to the
+///   caller under a new spelling, so they stay the door's own operands
+///   (`brand`, `region`) over [`scope_condition`]. `account-management`
+///   keeps `parent_id` off its filter columns for the same class of reason.
+/// * `display_attributes` — a canonical JSON rendering, not a queryable
+///   value.
+/// * `projected_at` / `generation` — the projection's own bookkeeping. The
+///   serving generation is the checkpoint's and a caller may not pick
+///   another one.
+/// * `deprecation_provenance` / `replaced_by_sku_id` — no declared use.
+///   Adding a field here later is additive; removing one is a wire break, so
+///   the surface starts at what is asked for.
+#[derive(ODataFilterable)]
+#[allow(
+    dead_code,
+    reason = "a declaration read by the derive macro: only the generated \
+              `BrowseRowQueryFilterField` is ever named in code, exactly as \
+              `account-management`'s `IdpUserQuery` / `TenantInfoQuery` are"
+)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the fields are a wire vocabulary, not state: each one names a \
+              column and its comparison kind, and three of the projection's \
+              columns happen to be boolean. Folding them into an enum would \
+              change the filter surface a caller writes (`deprecated eq \
+              false`) into something the storage cannot compare"
+)]
+pub struct BrowseRowQuery {
+    /// The row's entity. Also the walk's unique tiebreaker.
+    #[odata(filter(kind = "Uuid"))]
+    pub entity_id: Uuid,
+    /// `productCode` or `skuCode`; a Product may carry none.
+    #[odata(filter(kind = "String"))]
+    pub entity_code: String,
+    /// The display name. `startswith(name, '...')` is the prefix search the
+    /// door used to spell `?q=`, and the platform's lowering **escapes** the
+    /// LIKE metacharacters that the hand-rolled prefix silently deleted.
+    #[odata(filter(kind = "String"))]
+    pub name: String,
+    /// Narrowing only. The visibility predicate is `AND`ed underneath and
+    /// decides what is servable at all (C2), so a caller cannot reach a
+    /// state this surface does not serve by naming it here.
+    #[odata(filter(kind = "String"))]
+    pub lifecycle_state: String,
+    /// `inst-ps-shape`'s three flags.
+    #[odata(filter(kind = "Bool"))]
+    pub deprecated: bool,
+    #[odata(filter(kind = "Bool"))]
+    pub composition_pending: bool,
+    /// Only a SKU carries it.
+    #[odata(filter(kind = "Bool"))]
+    pub sellable: bool,
+    #[odata(filter(kind = "String"))]
+    pub sku_type: String,
+    #[odata(filter(kind = "String"))]
+    pub plan_tier_label: String,
+    #[odata(filter(kind = "String"))]
+    pub metering_unit: String,
+    /// Every assigned category's full path, primary and secondary alike.
+    /// `contains(category_paths, '...')` is what `?category=` spelled.
+    #[odata(filter(kind = "String"))]
+    pub category_paths: String,
+    #[odata(filter(kind = "I64"))]
+    pub published_version: i64,
+}
+
+/// The browse vocabulary under the name the rest of the gear uses, following
+/// `account-management`'s `TenantInfoQueryFilterField as TenantInfoFilterField`.
+pub use BrowseRowQueryFilterField as BrowseFilterField;
+
+/// The browse query's operands (`inst-rb-query`): the predicates the **door**
+/// owns rather than the caller's `$filter`.
+///
+/// Everything expressible as a column comparison moved to
+/// [`BrowseRowQuery`]'s vocabulary when the door adopted the platform's
+/// query contract (P-D-165). What is left is what cannot be a filter field:
+/// the visibility surface (a policy over which lifecycle states are
+/// servable), the entity kind (an authorization operand), the two scope
+/// claims (set membership, not equality) and the serving generation (the
+/// projection's, not the caller's) — see [`BrowseRowQuery`] for each reason.
 #[derive(Debug, Clone, Default)]
 pub struct BrowseQuery {
     pub visibility: Option<Condition>,
+    /// `product`, `sku`, or both when absent — the kind the caller asked for
+    /// and was authorized for.
     pub entity_kind: Option<String>,
-    pub category_path: Option<String>,
-    pub sku_type: Option<String>,
-    pub plan_tier_label: Option<String>,
-    pub sellable: Option<bool>,
-    pub metering_unit: Option<String>,
     pub brand_claim: Option<String>,
     pub region_claim: Option<String>,
-    pub name_prefix: Option<String>,
     pub generation: i64,
-    pub limit: u64,
 }
 
 fn browse_condition(tenant_id: Uuid, query: &BrowseQuery) -> Condition {
@@ -941,27 +1051,6 @@ fn browse_condition(tenant_id: Uuid, query: &BrowseQuery) -> Condition {
     if let Some(kind) = &query.entity_kind {
         condition = condition.add(read_entity::Column::EntityKind.eq(kind.as_str()));
     }
-    if let Some(path) = &query.category_path {
-        // Every assigned category, primary and secondary alike
-        // (`inst-rb-facets`): the paths column carries them all.
-        condition = condition.add(read_entity::Column::CategoryPaths.like(format!("%{path}%")));
-    }
-    if let Some(sku_type) = &query.sku_type {
-        condition = condition.add(read_entity::Column::SkuType.eq(sku_type.as_str()));
-    }
-    if let Some(label) = &query.plan_tier_label {
-        condition = condition.add(read_entity::Column::PlanTierLabel.eq(label.as_str()));
-    }
-    if let Some(sellable) = query.sellable {
-        condition = condition.add(read_entity::Column::Sellable.eq(sellable));
-    }
-    if let Some(unit) = &query.metering_unit {
-        condition = condition.add(read_entity::Column::MeteringUnit.eq(unit.as_str()));
-    }
-    if let Some(prefix) = &query.name_prefix {
-        let escaped = prefix.replace(['%', '_', '\\'], "");
-        condition = condition.add(read_entity::Column::Name.like(format!("{escaped}%")));
-    }
     if let Some(brand) = &query.brand_claim {
         condition = condition.add(scope_condition(read_entity::Column::BrandScope, brand));
     }
@@ -971,27 +1060,207 @@ fn browse_condition(tenant_id: Uuid, query: &BrowseQuery) -> Condition {
     condition
 }
 
-/// Browse: the serving rows the query admits, ordered by name then id.
+/// The browse vocabulary's storage mapping: which column each filter field
+/// reads, which of them a keyset walk may order by, and how a row's value is
+/// encoded into a continuation token.
+pub struct BrowseODataMapper;
+
+impl FieldToColumn<BrowseFilterField> for BrowseODataMapper {
+    type Column = read_entity::Column;
+
+    fn map_field(field: BrowseFilterField) -> read_entity::Column {
+        match field {
+            BrowseFilterField::EntityId => read_entity::Column::EntityId,
+            BrowseFilterField::EntityCode => read_entity::Column::EntityCode,
+            BrowseFilterField::Name => read_entity::Column::Name,
+            BrowseFilterField::LifecycleState => read_entity::Column::LifecycleState,
+            BrowseFilterField::Deprecated => read_entity::Column::Deprecated,
+            BrowseFilterField::CompositionPending => read_entity::Column::CompositionPending,
+            BrowseFilterField::Sellable => read_entity::Column::Sellable,
+            BrowseFilterField::SkuType => read_entity::Column::SkuType,
+            BrowseFilterField::PlanTierLabel => read_entity::Column::PlanTierLabel,
+            BrowseFilterField::MeteringUnit => read_entity::Column::MeteringUnit,
+            BrowseFilterField::CategoryPaths => read_entity::Column::CategoryPaths,
+            BrowseFilterField::PublishedVersion => read_entity::Column::PublishedVersion,
+        }
+    }
+
+    /// A keyset walk may order only by a column that is **NOT NULL**.
+    ///
+    /// This is not fastidiousness about nulls: `SQLite` sorts NULLs first
+    /// and Postgres sorts them last, so an order over a nullable column is a
+    /// *different* order on the two engines the gear ships on. The cursor
+    /// predicate `(a, b) > (a0, b0)` derived on one engine would then skip
+    /// or repeat rows on the other, and the walk's whole guarantee is that
+    /// it does neither. The six nullable columns stay filterable and are
+    /// refused as order keys.
+    fn is_orderable(field: BrowseFilterField) -> bool {
+        !matches!(
+            field,
+            BrowseFilterField::EntityCode
+                | BrowseFilterField::Sellable
+                | BrowseFilterField::SkuType
+                | BrowseFilterField::PlanTierLabel
+                | BrowseFilterField::MeteringUnit
+                | BrowseFilterField::CategoryPaths
+        )
+    }
+}
+
+impl ODataFieldMapping<BrowseFilterField> for BrowseODataMapper {
+    type Entity = read_entity::Entity;
+
+    /// Only the orderable fields can ever be asked for: `extract_cursor_value`
+    /// is reached through `extract_cursor_values`, which walks the effective
+    /// order, and `paginate_odata` has already refused a non-orderable key by
+    /// then. The nullable arms are still written out rather than left to a
+    /// catch-all so that adding a column to the vocabulary is a compile error
+    /// here instead of a silently wrong token.
+    fn extract_cursor_value(
+        model: &read_entity::Model,
+        field: BrowseFilterField,
+    ) -> sea_orm::Value {
+        match field {
+            BrowseFilterField::EntityId => sea_orm::Value::from(model.entity_id),
+            BrowseFilterField::EntityCode => sea_orm::Value::from(model.entity_code.clone()),
+            BrowseFilterField::Name => sea_orm::Value::from(model.name.clone()),
+            BrowseFilterField::LifecycleState => {
+                sea_orm::Value::from(model.lifecycle_state.clone())
+            }
+            BrowseFilterField::Deprecated => sea_orm::Value::from(model.deprecated),
+            BrowseFilterField::CompositionPending => {
+                sea_orm::Value::from(model.composition_pending)
+            }
+            BrowseFilterField::Sellable => sea_orm::Value::from(model.sellable),
+            BrowseFilterField::SkuType => sea_orm::Value::from(model.sku_type.clone()),
+            BrowseFilterField::PlanTierLabel => sea_orm::Value::from(model.plan_tier_label.clone()),
+            BrowseFilterField::MeteringUnit => sea_orm::Value::from(model.metering_unit.clone()),
+            BrowseFilterField::CategoryPaths => sea_orm::Value::from(model.category_paths.clone()),
+            BrowseFilterField::PublishedVersion => sea_orm::Value::from(model.published_version),
+        }
+    }
+}
+
+/// The order a browse answers in when the caller names none: `name ASC`,
+/// which is what the door served before it could be asked for anything else.
+pub const BROWSE_DEFAULT_ORDER: (&str, SortDir) = ("name", SortDir::Asc);
+
+/// The walk's unique tiebreaker.
+///
+/// `paginate_odata` appends it to the effective order so the order is total
+/// and the keyset predicate cannot straddle two rows that compare equal. It
+/// must be a column the row is *uniquely* identified by within the walked
+/// set, and `entity_id` is: the set is one tenant's one generation, and the
+/// id is a v4 UUID minted per entity. (`account-management`'s note about a
+/// non-unique tiebreaker is about two siblings sharing a `created_at`
+/// microsecond — a collision with probability near one on a batch insert.
+/// The collision this one would need is a UUID collision.)
+pub const BROWSE_TIEBREAKER: (&str, SortDir) = ("entity_id", SortDir::Asc);
+
+/// The caller's `$filter` lowered onto the read entity's columns.
+///
+/// `paginate_odata` does this internally for the page; the facet pass needs
+/// the same predicate over the same set, so the lowering is exposed rather
+/// than approximated a second time. Two answers to "which rows match" is
+/// exactly how a facet count comes to disagree with the rows beside it.
 ///
 /// # Errors
 ///
-/// [`RepoError`] on a storage or scope failure.
-pub async fn browse_read_entities(
+/// [`toolkit_odata::Error::InvalidFilter`] when the expression names a field
+/// this door does not expose, compares it with an operator its kind does not
+/// admit, or does not parse.
+pub fn browse_filter_condition(odata: &ODataQuery) -> Result<Condition, toolkit_odata::Error> {
+    let Some(ast) = odata.filter.as_deref() else {
+        return Ok(Condition::all());
+    };
+    let node = convert_expr_to_filter_node::<BrowseFilterField>(ast)
+        .map_err(|e| toolkit_odata::Error::InvalidFilter(e.to_string()))?;
+    filter_node_to_condition::<BrowseFilterField, BrowseODataMapper>(&node)
+        .map_err(toolkit_odata::Error::InvalidFilter)
+}
+
+/// The rows the facet counts are computed over: the filtered set, bounded,
+/// and **not** the page.
+///
+/// Facets answer "what else is in this result", so computing them over the
+/// page would make them a restatement of what the caller already has. They
+/// are therefore taken over their own window of the matching set, in the
+/// same order the page walks so the window is deterministic.
+///
+/// One row past `window` is fetched deliberately: whether it came back is
+/// how the answer knows to say the counts are partial rather than leaving
+/// the caller to assume they are not. (Before this door was paginated the
+/// window and the page ceiling were the same 500 and nothing said which of
+/// the two a number meant — so past 500 matches the counts were simply
+/// wrong, silently.)
+///
+/// # Errors
+///
+/// [`toolkit_odata::Error`] on an unservable `$filter`, or a driver failure.
+pub async fn browse_facet_rows(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
     query: &BrowseQuery,
-) -> Result<Vec<read_entity::Model>, RepoError> {
-    read_entity::Entity::find()
+    odata: &ODataQuery,
+    window: u64,
+) -> Result<(Vec<read_entity::Model>, bool), toolkit_odata::Error> {
+    let rows = read_entity::Entity::find()
         .secure()
         .scope_with(scope)
         .filter(browse_condition(tenant_id, query))
+        .filter(browse_filter_condition(odata)?)
         .order_by(read_entity::Column::Name, sea_orm::Order::Asc)
         .order_by(read_entity::Column::EntityId, sea_orm::Order::Asc)
-        .limit(query.limit.max(1))
+        .limit(window.saturating_add(1))
         .all(runner)
         .await
-        .map_err(|e| driver_failure(format!("browse read entities of {tenant_id}"), e))
+        .map_err(|e| toolkit_odata::Error::Db(e.to_string()))?;
+    let complete = rows.len() as u64 <= window;
+    let mut rows = rows;
+    rows.truncate(usize::try_from(window).unwrap_or(usize::MAX));
+    Ok((rows, complete))
+}
+
+/// Browse: one page of the serving rows the query admits, as a keyset walk.
+///
+/// The door's own predicates (visibility, the two scope claims, the serving
+/// generation) are applied to the scoped select first; the caller's
+/// `$filter`, `$orderby`, `$top` and continuation token are applied on top by
+/// `paginate_odata`, which also returns the `next_cursor` the answer carries.
+///
+/// `limits` is the door's, not this module's: a page size is a property of
+/// what the wire will carry, so the API layer owns the number and this layer
+/// does not reach up for it.
+///
+/// # Errors
+///
+/// [`toolkit_odata::Error`] — the caller's four ways of writing an unservable
+/// query, or a driver failure. `api::rest::odata::odata_error_to_canonical`
+/// is what tells those apart.
+pub async fn browse_read_entities_page(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    query: &BrowseQuery,
+    odata: &ODataQuery,
+    limits: LimitCfg,
+) -> Result<Page<read_entity::Model>, toolkit_odata::Error> {
+    let base = read_entity::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(browse_condition(tenant_id, query));
+
+    let effective = super::effective_odata(odata, BROWSE_DEFAULT_ORDER);
+    paginate_odata::<BrowseFilterField, BrowseODataMapper, _, _, _, _>(
+        base,
+        runner,
+        &effective,
+        BROWSE_TIEBREAKER,
+        limits,
+        |model| model,
+    )
+    .await
 }
 
 /// The serving rows under a generation (the swap's operands).
@@ -1085,19 +1354,108 @@ pub async fn prune_read_deferred_intents(
 /// # Errors
 ///
 /// [`RepoError`] on a storage or scope failure.
+/// The deferred-intent dashboard's **filterable vocabulary** (P-D-165).
+///
+/// A declaration read by the derive macro; every column of this projection
+/// is `NOT NULL`, so all five are orderable.
+#[derive(ODataFilterable)]
+#[allow(
+    dead_code,
+    reason = "a declaration read by the derive macro: only the generated \
+              `DeferredIntentQueryFilterField` is ever named in code"
+)]
+pub struct DeferredIntentQuery {
+    /// The parent whose retirement is deferred. Unique within a tenant, so
+    /// it is the walk's tiebreaker.
+    #[odata(filter(kind = "Uuid"))]
+    pub product_id: Uuid,
+    /// The cascade that deferred it.
+    #[odata(filter(kind = "Uuid"))]
+    pub cascade_ref: Uuid,
+    /// How many children are still holding it. `children_count gt 0` is the
+    /// worklist an operator actually wants.
+    #[odata(filter(kind = "I64"))]
+    pub children_count: i64,
+    /// When the intent was recorded. The default order.
+    #[odata(filter(kind = "DateTimeUtc"))]
+    pub created_at: chrono::DateTime<Utc>,
+    /// How long it has been held, at the projector's last apply.
+    #[odata(filter(kind = "I64"))]
+    pub age_secs: i64,
+}
+
+/// The vocabulary under the name the rest of the gear uses.
+pub use DeferredIntentQueryFilterField as DeferredIntentFilterField;
+
+/// The vocabulary's storage mapping.
+pub struct DeferredIntentODataMapper;
+
+impl FieldToColumn<DeferredIntentFilterField> for DeferredIntentODataMapper {
+    type Column = read_deferred_intent::Column;
+
+    fn map_field(field: DeferredIntentFilterField) -> read_deferred_intent::Column {
+        use DeferredIntentFilterField as F;
+        match field {
+            F::ProductId => read_deferred_intent::Column::ProductId,
+            F::CascadeRef => read_deferred_intent::Column::CascadeRef,
+            F::ChildrenCount => read_deferred_intent::Column::ChildrenCount,
+            F::CreatedAt => read_deferred_intent::Column::CreatedAt,
+            F::AgeSecs => read_deferred_intent::Column::AgeSecs,
+        }
+    }
+}
+
+impl ODataFieldMapping<DeferredIntentFilterField> for DeferredIntentODataMapper {
+    type Entity = read_deferred_intent::Entity;
+
+    fn extract_cursor_value(
+        model: &read_deferred_intent::Model,
+        field: DeferredIntentFilterField,
+    ) -> sea_orm::Value {
+        use DeferredIntentFilterField as F;
+        match field {
+            F::ProductId => sea_orm::Value::from(model.product_id),
+            F::CascadeRef => sea_orm::Value::from(model.cascade_ref),
+            F::ChildrenCount => sea_orm::Value::from(model.children_count),
+            F::CreatedAt => sea_orm::Value::from(model.created_at),
+            F::AgeSecs => sea_orm::Value::from(model.age_secs),
+        }
+    }
+}
+
+/// The order the deferred-intent dashboard answers in when the caller names
+/// none: oldest intent first, which is the order an operator works it.
+pub const DEFERRED_INTENT_DEFAULT_ORDER: (&str, SortDir) = ("created_at", SortDir::Asc);
+
+/// The walk's unique tiebreaker.
+pub const DEFERRED_INTENT_TIEBREAKER: (&str, SortDir) = ("product_id", SortDir::Asc);
+
+/// One page of the deferred-intent dashboard (P-D-165).
+///
+/// # Errors
+///
+/// [`toolkit_odata::Error`] on an unservable query, or a driver failure.
 pub async fn read_deferred_intents(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-) -> Result<Vec<read_deferred_intent::Model>, RepoError> {
-    read_deferred_intent::Entity::find()
+    odata: &ODataQuery,
+    limits: LimitCfg,
+) -> Result<Page<read_deferred_intent::Model>, toolkit_odata::Error> {
+    let base = read_deferred_intent::Entity::find()
         .secure()
         .scope_with(scope)
-        .filter(Condition::all().add(read_deferred_intent::Column::TenantId.eq(tenant_id)))
-        .order_by(read_deferred_intent::Column::CreatedAt, sea_orm::Order::Asc)
-        .all(runner)
-        .await
-        .map_err(|e| driver_failure(format!("deferred intent dashboard of {tenant_id}"), e))
+        .filter(Condition::all().add(read_deferred_intent::Column::TenantId.eq(tenant_id)));
+    let effective = super::effective_odata(odata, DEFERRED_INTENT_DEFAULT_ORDER);
+    paginate_odata::<DeferredIntentFilterField, DeferredIntentODataMapper, _, _, _, _>(
+        base,
+        runner,
+        &effective,
+        DEFERRED_INTENT_TIEBREAKER,
+        limits,
+        |model| model,
+    )
+    .await
 }
 
 /// Upsert one freeze-status dashboard row.
@@ -1143,22 +1501,120 @@ pub async fn upsert_read_freeze_status(
 /// # Errors
 ///
 /// [`RepoError`] on a storage or scope failure.
+/// The freeze-status dashboard's **filterable vocabulary** (P-D-165).
+///
+/// Every column of this projection is `NOT NULL`, so all eight are
+/// orderable. `freeze_state eq 'open'` is what the door's own description
+/// calls the worklist.
+#[derive(ODataFilterable)]
+#[allow(
+    dead_code,
+    reason = "a declaration read by the derive macro: only the generated \
+              `FreezeStatusQueryFilterField` is ever named in code"
+)]
+pub struct FreezeStatusQuery {
+    /// The version. Unique within a tenant, so it is both the default order
+    /// and the walk's tiebreaker.
+    #[odata(filter(kind = "I64"))]
+    pub catalog_version_id: i64,
+    #[odata(filter(kind = "String"))]
+    pub freeze_state: String,
+    /// Participants that have neither acked nor released.
+    #[odata(filter(kind = "I64"))]
+    pub pending: i64,
+    #[odata(filter(kind = "I64"))]
+    pub acked: i64,
+    #[odata(filter(kind = "I64"))]
+    pub released: i64,
+    /// Participants pinned `not_frozen` by a force-completion.
+    #[odata(filter(kind = "I64"))]
+    pub forced: i64,
+    #[odata(filter(kind = "DateTimeUtc"))]
+    pub published_at: chrono::DateTime<Utc>,
+    #[odata(filter(kind = "DateTimeUtc"))]
+    pub polled_at: chrono::DateTime<Utc>,
+}
+
+/// The vocabulary under the name the rest of the gear uses.
+pub use FreezeStatusQueryFilterField as FreezeStatusFilterField;
+
+/// The vocabulary's storage mapping.
+pub struct FreezeStatusODataMapper;
+
+impl FieldToColumn<FreezeStatusFilterField> for FreezeStatusODataMapper {
+    type Column = read_freeze_status::Column;
+
+    fn map_field(field: FreezeStatusFilterField) -> read_freeze_status::Column {
+        use FreezeStatusFilterField as F;
+        match field {
+            F::CatalogVersionId => read_freeze_status::Column::CatalogVersionId,
+            F::FreezeState => read_freeze_status::Column::FreezeState,
+            F::Pending => read_freeze_status::Column::Pending,
+            F::Acked => read_freeze_status::Column::Acked,
+            F::Released => read_freeze_status::Column::Released,
+            F::Forced => read_freeze_status::Column::Forced,
+            F::PublishedAt => read_freeze_status::Column::PublishedAt,
+            F::PolledAt => read_freeze_status::Column::PolledAt,
+        }
+    }
+}
+
+impl ODataFieldMapping<FreezeStatusFilterField> for FreezeStatusODataMapper {
+    type Entity = read_freeze_status::Entity;
+
+    fn extract_cursor_value(
+        model: &read_freeze_status::Model,
+        field: FreezeStatusFilterField,
+    ) -> sea_orm::Value {
+        use FreezeStatusFilterField as F;
+        match field {
+            F::CatalogVersionId => sea_orm::Value::from(model.catalog_version_id),
+            F::FreezeState => sea_orm::Value::from(model.freeze_state.clone()),
+            F::Pending => sea_orm::Value::from(model.pending),
+            F::Acked => sea_orm::Value::from(model.acked),
+            F::Released => sea_orm::Value::from(model.released),
+            F::Forced => sea_orm::Value::from(model.forced),
+            F::PublishedAt => sea_orm::Value::from(model.published_at),
+            F::PolledAt => sea_orm::Value::from(model.polled_at),
+        }
+    }
+}
+
+/// The order the freeze dashboard answers in when the caller names none:
+/// newest version first, because a freeze that is still open is a recent
+/// one.
+pub const FREEZE_STATUS_DEFAULT_ORDER: (&str, SortDir) = ("catalog_version_id", SortDir::Desc);
+
+/// The walk's unique tiebreaker — the same column, which is unique within a
+/// tenant, so the effective order is exactly the default.
+pub const FREEZE_STATUS_TIEBREAKER: (&str, SortDir) = ("catalog_version_id", SortDir::Desc);
+
+/// One page of the freeze-status dashboard (P-D-165).
+///
+/// # Errors
+///
+/// [`toolkit_odata::Error`] on an unservable query, or a driver failure.
 pub async fn read_freeze_statuses(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-) -> Result<Vec<read_freeze_status::Model>, RepoError> {
-    read_freeze_status::Entity::find()
+    odata: &ODataQuery,
+    limits: LimitCfg,
+) -> Result<Page<read_freeze_status::Model>, toolkit_odata::Error> {
+    let base = read_freeze_status::Entity::find()
         .secure()
         .scope_with(scope)
-        .filter(Condition::all().add(read_freeze_status::Column::TenantId.eq(tenant_id)))
-        .order_by(
-            read_freeze_status::Column::CatalogVersionId,
-            sea_orm::Order::Desc,
-        )
-        .all(runner)
-        .await
-        .map_err(|e| driver_failure(format!("freeze status dashboard of {tenant_id}"), e))
+        .filter(Condition::all().add(read_freeze_status::Column::TenantId.eq(tenant_id)));
+    let effective = super::effective_odata(odata, FREEZE_STATUS_DEFAULT_ORDER);
+    paginate_odata::<FreezeStatusFilterField, FreezeStatusODataMapper, _, _, _, _>(
+        base,
+        runner,
+        &effective,
+        FREEZE_STATUS_TIEBREAKER,
+        limits,
+        |model| model,
+    )
+    .await
 }
 
 /// Upsert the tenant's delivery-state dashboard row.

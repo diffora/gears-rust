@@ -37,11 +37,14 @@ use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
 use toolkit::api::OpenApiRegistry;
 use toolkit::api::canonical_prelude::{CanonicalError, resource_error};
-use toolkit::api::operation_builder::OperationBuilder;
+use toolkit::api::odata::OData;
+use toolkit::api::operation_builder::{OperationBuilder, OperationBuilderODataExt};
 use toolkit_db::secure::AccessScope;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
+use crate::api::rest::odata as odata_seam;
+use crate::api::rest::odata::reject_undeclared_query_params;
 use crate::api::rest::{
     ApiState, authz_error_to_canonical, repo_error_to_canonical, require_authenticated,
 };
@@ -267,25 +270,49 @@ async fn read_scope(
 // Browse (`inst-rb-query`, `inst-rb-visibility`, `inst-rb-facets`)
 // ---------------------------------------------------------------------------
 
+/// The browse door's **own** query operands — everything the caller says
+/// that is not the `OData` family (P-D-165).
+///
+/// Seven parameters went away when the door adopted the platform's query
+/// contract, because each of them was a column comparison spelled by hand:
+/// `?q=` is `$filter=startswith(name,'...')`, `?category=` is
+/// `contains(category_paths,'...')`, and `?skuType=` / `?tier=` /
+/// `?sellable=` / `?unit=` are `eq` on their own fields. The four that
+/// remain are the ones that are not comparisons — see
+/// [`repo::BrowseRowQuery`] for why each cannot be a filter field.
+///
+/// `limit` and `cursor` are bound by the `OData` extractor (which folds them
+/// onto `$top` and `$skiptoken`) and so do not appear here, but they are
+/// still the spellings this door has always accepted.
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BrowseParams {
-    /// `product` or `sku`; both when absent.
+    /// `product` or `sku`; both when absent. An **authorization** operand:
+    /// it decides which grants the door requires.
     kind: Option<String>,
-    /// A name prefix.
-    q: Option<String>,
-    /// A category path segment or full path; every assigned category counts.
-    category: Option<String>,
-    sku_type: Option<String>,
-    tier: Option<String>,
-    sellable: Option<bool>,
-    unit: Option<String>,
+    /// Whether deprecated rows are served at all — a choice of visibility
+    /// surface, not a row predicate. `$filter=deprecated eq false` narrows
+    /// within the surface; this selects it.
     exclude_deprecated: Option<bool>,
+    /// A brand claim. Set membership over a comma-joined token set where
+    /// empty means unrestricted, not equality.
     brand: Option<String>,
+    /// A region claim, on the same footing as `brand`.
     region: Option<String>,
+    /// Add the facets over the served set.
     include_facets: Option<bool>,
-    limit: Option<u64>,
 }
+
+/// The non-`OData` keys this door declares, for the guard that refuses every
+/// other one. Kept beside [`BrowseParams`] so a field added there without a
+/// spelling added here is visible in one screen.
+const BROWSE_PARAMS: [&str; 5] = [
+    "kind",
+    "excludeDeprecated",
+    "brand",
+    "region",
+    "includeFacets",
+];
 
 /// One browse row.
 #[derive(Debug, Clone)]
@@ -322,7 +349,7 @@ pub struct FacetBucketView {
     pub count: u64,
 }
 
-/// The facets over the served set (`inst-rb-facets`).
+/// The facets over the matching set (`inst-rb-facets`).
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(response)]
 pub struct FacetsView {
@@ -331,19 +358,40 @@ pub struct FacetsView {
     pub tiers: Vec<FacetBucketView>,
     pub sellable: Vec<FacetBucketView>,
     pub units: Vec<FacetBucketView>,
+    /// Whether the counts cover the **whole** matching set or only the first
+    /// [`BROWSE_FACET_WINDOW`] rows of it.
+    ///
+    /// Facets are counted in application code because a category facet has
+    /// to split a row's stored path set, which no `GROUP BY` over this
+    /// column can do — so the count is over a bounded window and past it it
+    /// is a lower bound. Saying which of the two a number is costs one field;
+    /// not saying it is how the counts were wrong without anyone noticing.
+    pub complete: bool,
 }
 
-/// The browse answer: rows, facets when asked, the stamp always.
+/// The browse answer: rows, facets when asked, the stamp always, and the
+/// page this is one of.
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(response)]
 pub struct BrowseView {
     pub stamp: StampView,
     pub rows: Vec<BrowseRowView>,
     pub facets: Option<FacetsView>,
+    /// `next_cursor`, `prev_cursor` and the `limit` this page was served at
+    /// — [`toolkit_odata::PageInfo`], the same envelope every paginated read
+    /// on the platform answers with.
+    ///
+    /// The family keeps its own view rather than answering a bare
+    /// `Page<BrowseRowView>` because the response also carries the staleness
+    /// stamp and the facets, which `Page<T>` has nowhere to put. The sibling
+    /// pricing gear's customer-group listing keeps its own view for the same
+    /// reason.
+    ///
+    /// `next_cursor` is `null` on the last page and **only** there: it is
+    /// the answer to "is there more", which is what the door could not say
+    /// before this envelope — the ceiling was the whole result set.
+    pub page_info: toolkit_odata::PageInfo,
 }
-
-/// The most rows one browse answers.
-pub const BROWSE_LIMIT_MAX: u64 = 500;
 
 fn buckets(counts: BTreeMap<String, u64>) -> Vec<FacetBucketView> {
     counts
@@ -352,7 +400,46 @@ fn buckets(counts: BTreeMap<String, u64>) -> Vec<FacetBucketView> {
         .collect()
 }
 
-fn facets_of(rows: &[crate::infra::storage::entity::read_entity::Model]) -> FacetsView {
+/// The timeline declares no operand of its own: it is addressed by path and
+/// paged by the platform's own two spellings.
+const TIMELINE_PARAMS: [&str; 0] = [];
+
+/// Neither dashboard declares an operand of its own: both are whole-tenant
+/// worklists, narrowed with `$filter` and paged with the platform's two
+/// spellings.
+const DEFERRED_INTENT_PARAMS: [&str; 0] = [];
+
+/// See [`DEFERRED_INTENT_PARAMS`].
+const FREEZE_STATUS_PARAMS: [&str; 0] = [];
+
+/// Why `$filter` is refused here rather than ignored.
+const TIMELINE_NO_FILTER: &str = "the version timeline is not a filterable surface: each entry's \
+     `changed_keys` is the diff against the version before it, so removing \
+     intermediate versions would silently change what `changed` means. Page \
+     it with `$top`/`limit` and `$skiptoken`/`cursor`.";
+
+/// Why `$orderby` is refused here rather than ignored.
+const TIMELINE_NO_ORDERBY: &str = "the version timeline is served oldest-version-first and in no \
+     other order, because each entry's `changed_keys` is the diff against \
+     the version before it.";
+
+/// Why `$select` is refused here rather than ignored.
+const TIMELINE_NO_SELECT: &str =
+    "this door does not project fields; every entry carries its whole shape.";
+
+/// The most rows the facet pass counts over.
+///
+/// This was the browse door's page ceiling before the door was paginated,
+/// when one number had to serve as both — which is why the facet counts were
+/// silently a lower bound past 500 matches. The page size is now
+/// [`odata_seam::LISTING_LIMIT_CFG`]'s and this is only the facet window,
+/// with [`FacetsView::complete`] saying when it was not enough.
+pub const BROWSE_FACET_WINDOW: u64 = 500;
+
+fn facets_of(
+    rows: &[crate::infra::storage::entity::read_entity::Model],
+    complete: bool,
+) -> FacetsView {
     let mut categories: BTreeMap<String, u64> = BTreeMap::new();
     let mut sku_types: BTreeMap<String, u64> = BTreeMap::new();
     let mut tiers: BTreeMap<String, u64> = BTreeMap::new();
@@ -388,6 +475,7 @@ fn facets_of(rows: &[crate::infra::storage::entity::read_entity::Model]) -> Face
         tiers: buckets(tiers),
         sellable: buckets(sellable),
         units: buckets(units),
+        complete,
     }
 }
 
@@ -415,13 +503,21 @@ fn row_view(row: crate::infra::storage::entity::read_entity::Model) -> BrowseRow
 }
 
 /// `GET /bss-products/v1/browse` — the browse door.
+///
+/// `Query<HashMap<..>>` rides beside the two typed extractors on purpose: it
+/// is the only way to see the keys **nothing** claimed, which is what
+/// [`reject_undeclared_query_params`] refuses. Axum drops an unclaimed key
+/// silently, and a dropped filter reads as a correct unfiltered answer.
 async fn browse(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    axum::extract::Query(raw): axum::extract::Query<HashMap<String, String>>,
     axum::extract::Query(params): axum::extract::Query<BrowseParams>,
+    OData(odata): OData,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    reject_undeclared_query_params(&raw, &BROWSE_PARAMS)?;
     let started = Instant::now();
     let tenant_id = ctx.subject_tenant_id();
     if let Err(retry) = ReadPathLimiter::global().try_acquire(tenant_id) {
@@ -483,32 +579,46 @@ async fn browse(
         None => ReadSurface::DefaultBrowse,
     };
     let want_facets = params.include_facets.unwrap_or(false);
-    let limit = params.limit.unwrap_or(50).clamp(1, BROWSE_LIMIT_MAX);
     let query = BrowseQuery {
         visibility: Some(repo::visibility_condition(VisibilityFilter::for_surface(
             surface,
         ))),
         entity_kind: kind.map(str::to_owned),
-        category_path: params.category.filter(|c| !c.trim().is_empty()),
-        sku_type: params.sku_type,
-        plan_tier_label: params.tier,
-        sellable: params.sellable,
-        metering_unit: params.unit,
         brand_claim: params.brand,
         region_claim: params.region,
-        name_prefix: params.q.filter(|q| !q.trim().is_empty()),
         generation,
-        limit: if want_facets { BROWSE_LIMIT_MAX } else { limit },
     };
-    let rows = repo::browse_read_entities(&conn, &scope, tenant_id, &query)
+    let page = repo::browse_read_entities_page(
+        &conn,
+        &scope,
+        tenant_id,
+        &query,
+        &odata,
+        odata_seam::LISTING_LIMIT_CFG,
+    )
+    .await
+    .map_err(|e| odata_seam::odata_error_to_canonical("browse", &e))?;
+
+    // The facet pass runs over its own window of the matching set, not over
+    // this page: see `repo::browse_facet_rows`. Skipped entirely when the
+    // caller did not ask, so the ordinary browse is still one statement.
+    let facets = if want_facets {
+        let (rows, complete) = repo::browse_facet_rows(
+            &conn,
+            &scope,
+            tenant_id,
+            &query,
+            &odata,
+            BROWSE_FACET_WINDOW,
+        )
         .await
-        .map_err(|e| repo_error_to_canonical(&e))?;
-    let facets = want_facets.then(|| facets_of(&rows));
-    let rows: Vec<BrowseRowView> = rows
-        .into_iter()
-        .take(usize::try_from(limit).unwrap_or(usize::MAX))
-        .map(row_view)
-        .collect();
+        .map_err(|e| odata_seam::odata_error_to_canonical("browse facets", &e))?;
+        Some(facets_of(&rows, complete))
+    } else {
+        None
+    };
+
+    let rows: Vec<BrowseRowView> = page.items.into_iter().map(row_view).collect();
     observe_edge("browse", &ctx, started);
     Ok((
         StatusCode::OK,
@@ -516,6 +626,7 @@ async fn browse(
             stamp,
             rows,
             facets,
+            page_info: page.page_info,
         }),
     )
         .into_response())
@@ -556,6 +667,18 @@ pub struct HistoryView {
     /// The entities cloned **from** this one — the reverse lookup `design/11`
     /// §2 promised; drafts included, since a clone is born a draft.
     pub clones: Vec<CloneRefView>,
+    /// `next_cursor`, `prev_cursor` and the `limit` this page of `versions`
+    /// was served at.
+    ///
+    /// Only `versions` is paged. `lineage` and `clones` are properties of
+    /// the entity rather than of the page, so they are answered whole on
+    /// every page — a caller assembling a timeline from several pages gets
+    /// the same lineage each time rather than a fragment of it.
+    ///
+    /// Before P-D-165 this door answered an entity's **entire** publish
+    /// history in one body, which for a long-lived SKU is unbounded in the
+    /// only dimension that matters here: how many times it was published.
+    pub page_info: toolkit_odata::PageInfo,
 }
 
 /// The forward lineage pointer.
@@ -597,7 +720,16 @@ async fn history(
     ctx: &SecurityContext,
     entity_kind: &str,
     entity_id: Uuid,
+    raw: &HashMap<String, String>,
+    odata: &toolkit_odata::ODataQuery,
 ) -> Result<Response, CanonicalError> {
+    reject_undeclared_query_params(raw, &TIMELINE_PARAMS)?;
+    odata_seam::reject_unsupported_odata_options(
+        odata,
+        Some(TIMELINE_NO_FILTER),
+        Some(TIMELINE_NO_ORDERBY),
+        Some(TIMELINE_NO_SELECT),
+    )?;
     let started = Instant::now();
     let tenant_id = ctx.subject_tenant_id();
     if let Err(retry) = ReadPathLimiter::global().try_acquire(tenant_id) {
@@ -659,12 +791,27 @@ async fn history(
                 .create(),
         );
     }
-    let frozen = repo::entity_versions_of(&conn, &scope, tenant_id, versioned, entity_id)
-        .await
-        .map_err(|e| repo_error_to_canonical(&e))?;
-    let mut previous: Option<serde_json::Value> = None;
-    let mut versions = Vec::with_capacity(frozen.len());
-    for row in frozen {
+    let (page, predecessor) = repo::entity_versions_page(
+        &conn,
+        &scope,
+        tenant_id,
+        versioned,
+        entity_id,
+        odata,
+        odata_seam::LISTING_LIMIT_CFG,
+    )
+    .await
+    .map_err(|e| odata_seam::odata_error_to_canonical("version timeline", &e))?;
+    // The diff is against the previous **stored** version, so a page that
+    // does not start at version one is seeded with the row before it. A page
+    // that does start there gets `None`, which is what makes the first
+    // entry's `changed_keys` "every key".
+    let mut previous: Option<serde_json::Value> = predecessor
+        .as_deref()
+        .map(|content| serde_json::from_str(content).unwrap_or_default());
+    let page_info = page.page_info;
+    let mut versions = Vec::with_capacity(page.items.len());
+    for row in page.items {
         let current: serde_json::Value = serde_json::from_str(&row.content).unwrap_or_default();
         versions.push(VersionEntryView {
             published_version: row.published_version,
@@ -698,6 +845,7 @@ async fn history(
                 cloned_from_version,
             }),
             clones,
+            page_info,
         }),
     )
         .into_response())
@@ -711,9 +859,11 @@ async fn product_history(
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
     axum::extract::Path(id): axum::extract::Path<Uuid>,
+    axum::extract::Query(raw): axum::extract::Query<HashMap<String, String>>,
+    OData(odata): OData,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    history(&state, &enforcer, &ctx, "product", id).await
+    history(&state, &enforcer, &ctx, "product", id, &raw, &odata).await
 }
 
 /// `GET /bss-products/v1/skus/{id}/versions`.
@@ -722,9 +872,11 @@ async fn sku_history(
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
     axum::extract::Path(id): axum::extract::Path<Uuid>,
+    axum::extract::Query(raw): axum::extract::Query<HashMap<String, String>>,
+    OData(odata): OData,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    history(&state, &enforcer, &ctx, "sku", id).await
+    history(&state, &enforcer, &ctx, "sku", id, &raw, &odata).await
 }
 
 // ---------------------------------------------------------------------------
@@ -749,6 +901,11 @@ pub struct DeferredIntentView {
 pub struct DeferredIntentsView {
     pub stamp: StampView,
     pub items: Vec<DeferredIntentView>,
+    /// `next_cursor`, `prev_cursor` and the `limit` this page was served at.
+    ///
+    /// Before P-D-165 this dashboard answered every row a tenant had, with
+    /// no bound of any kind — and the studio polls it every 30 seconds.
+    pub page_info: toolkit_odata::PageInfo,
 }
 
 /// One version's freeze status.
@@ -771,6 +928,11 @@ pub struct FreezeStatusView {
 pub struct FreezeStatusesView {
     pub stamp: StampView,
     pub items: Vec<FreezeStatusView>,
+    /// `next_cursor`, `prev_cursor` and the `limit` this page was served at.
+    ///
+    /// Before P-D-165 this dashboard answered every row a tenant had, with
+    /// no bound of any kind — and the studio polls it every 30 seconds.
+    pub page_info: toolkit_odata::PageInfo,
 }
 
 /// The delivery-state dashboard: the projector's own health.
@@ -795,8 +957,11 @@ async fn deferred_intents(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    axum::extract::Query(raw): axum::extract::Query<HashMap<String, String>>,
+    OData(odata): OData,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    reject_undeclared_query_params(&raw, &DEFERRED_INTENT_PARAMS)?;
     let started = Instant::now();
     let tenant_id = ctx.subject_tenant_id();
     if let Err(retry) = ReadPathLimiter::global().try_acquire(tenant_id) {
@@ -814,9 +979,18 @@ async fn deferred_intents(
         repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
     })?;
     let stamp = stamp_of(&conn, &scope, tenant_id, now).await?;
-    let items = repo::read_deferred_intents(&conn, &scope, tenant_id)
-        .await
-        .map_err(|e| repo_error_to_canonical(&e))?
+    let page = repo::read_deferred_intents(
+        &conn,
+        &scope,
+        tenant_id,
+        &odata,
+        odata_seam::LISTING_LIMIT_CFG,
+    )
+    .await
+    .map_err(|e| odata_seam::odata_error_to_canonical("deferred intents", &e))?;
+    let page_info = page.page_info;
+    let items = page
+        .items
         .into_iter()
         .map(|row| DeferredIntentView {
             product_id: row.product_id,
@@ -828,7 +1002,15 @@ async fn deferred_intents(
         })
         .collect();
     observe_edge("deferred-intents", &ctx, started);
-    Ok((StatusCode::OK, Json(DeferredIntentsView { stamp, items })).into_response())
+    Ok((
+        StatusCode::OK,
+        Json(DeferredIntentsView {
+            stamp,
+            items,
+            page_info,
+        }),
+    )
+        .into_response())
 }
 
 /// `GET /bss-products/v1/read/freeze-status` on `catalog_version × read`.
@@ -836,8 +1018,11 @@ async fn freeze_status(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    axum::extract::Query(raw): axum::extract::Query<HashMap<String, String>>,
+    OData(odata): OData,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    reject_undeclared_query_params(&raw, &FREEZE_STATUS_PARAMS)?;
     let started = Instant::now();
     let tenant_id = ctx.subject_tenant_id();
     if let Err(retry) = ReadPathLimiter::global().try_acquire(tenant_id) {
@@ -855,9 +1040,18 @@ async fn freeze_status(
         repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
     })?;
     let stamp = stamp_of(&conn, &scope, tenant_id, now).await?;
-    let items = repo::read_freeze_statuses(&conn, &scope, tenant_id)
-        .await
-        .map_err(|e| repo_error_to_canonical(&e))?
+    let page = repo::read_freeze_statuses(
+        &conn,
+        &scope,
+        tenant_id,
+        &odata,
+        odata_seam::LISTING_LIMIT_CFG,
+    )
+    .await
+    .map_err(|e| odata_seam::odata_error_to_canonical("freeze status", &e))?;
+    let page_info = page.page_info;
+    let items = page
+        .items
         .into_iter()
         .map(|row| FreezeStatusView {
             catalog_version_id: row.catalog_version_id,
@@ -871,7 +1065,15 @@ async fn freeze_status(
         })
         .collect();
     observe_edge("freeze-status", &ctx, started);
-    Ok((StatusCode::OK, Json(FreezeStatusesView { stamp, items })).into_response())
+    Ok((
+        StatusCode::OK,
+        Json(FreezeStatusesView {
+            stamp,
+            items,
+            page_info,
+        }),
+    )
+        .into_response())
 }
 
 /// `GET /bss-products/v1/read/delivery-state` on `audit × read` — the
@@ -927,6 +1129,14 @@ async fn delivery_state(
 // ---------------------------------------------------------------------------
 
 /// The read surface's six doors.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one registration per door, and each door now declares its paging \
+              and filter surface as well as its own operands (P-D-165). \
+              Splitting the function would put a door's route and its \
+              parameter documentation in two places, which is exactly the \
+              drift the declarations exist to prevent"
+)]
 pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
     let router = OperationBuilder::get("/bss-products/v1/browse")
         .operation_id("bss_products.browse")
@@ -943,22 +1153,51 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .tag(TAG)
         .authenticated()
         .no_license_required()
-        .query_param("kind", false, "product or sku; both when absent.")
-        .query_param("q", false, "A name prefix.")
         .query_param(
-            "category",
+            "kind",
             false,
-            "A category path (any assigned category).",
+            "product or sku; both when absent. An authorization operand: naming one \
+             kind narrows the grants the door requires to that kind's, which is why it \
+             is not a $filter field.",
         )
-        .query_param("skuType", false, "A SKU type.")
-        .query_param("tier", false, "A plan tier label.")
-        .query_param("sellable", false, "true or false.")
-        .query_param("unit", false, "A metering unit.")
-        .query_param("excludeDeprecated", false, "Drop deprecated rows.")
-        .query_param("brand", false, "A brand claim value.")
-        .query_param("region", false, "A region claim value.")
-        .query_param("includeFacets", false, "Add the facets.")
-        .query_param("limit", false, "Rows per answer, at most 500.")
+        .query_param(
+            "excludeDeprecated",
+            false,
+            "Choose the visibility surface: whether deprecated rows are served at all. \
+             `$filter=deprecated eq false` narrows within a surface; this selects one.",
+        )
+        .query_param(
+            "brand",
+            false,
+            "A brand claim. Set membership over a token set where empty means \
+             unrestricted - not equality, which is why it is not a $filter field.",
+        )
+        .query_param(
+            "region",
+            false,
+            "A region claim, on the same footing as brand.",
+        )
+        .query_param(
+            "includeFacets",
+            false,
+            "Add the facets over the matching set. `facets.complete` says whether the \
+             counts cover the whole set or only its first 500 rows.",
+        )
+        .query_param_typed(
+            "limit",
+            false,
+            "Rows per page; default 50, at most 200. Also spelled $top.",
+            "integer",
+        )
+        .query_param(
+            "cursor",
+            false,
+            "The previous page's `page_info.next_cursor`, opaque. Also spelled \
+             $skiptoken. A caller MUST NOT change $filter or $orderby between \
+             continuation requests carrying the same cursor.",
+        )
+        .with_odata_filter::<repo::BrowseFilterField>()
+        .with_odata_orderby::<repo::BrowseFilterField>()
         .handler(browse)
         .json_response_with_schema::<BrowseView>(
             openapi,
@@ -983,8 +1222,28 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .authenticated()
         .no_license_required()
         .path_param("id", "The product.")
+        .query_param_typed(
+            "limit",
+            false,
+            "Versions per page, oldest first; default 50, at most 200. Also spelled \\
+             $top. $filter, $orderby and $select are refused: each entry's \\
+             `changedKeys` is the diff against the version before it, so the order is \\
+             the version order and nothing else.",
+            "integer",
+        )
+        .query_param(
+            "cursor",
+            false,
+            "The previous page's `page_info.next_cursor`, opaque. Also spelled \\
+             $skiptoken.",
+        )
         .handler(product_history)
-        .json_response_with_schema::<HistoryView>(openapi, StatusCode::OK, "The timeline.")
+        .json_response_with_schema::<HistoryView>(
+            openapi,
+            StatusCode::OK,
+            "One page of the timeline.",
+        )
+        .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
         .error_404(openapi)
@@ -999,8 +1258,28 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .authenticated()
         .no_license_required()
         .path_param("id", "The SKU.")
+        .query_param_typed(
+            "limit",
+            false,
+            "Versions per page, oldest first; default 50, at most 200. Also spelled \\
+             $top. $filter, $orderby and $select are refused: each entry's \\
+             `changedKeys` is the diff against the version before it, so the order is \\
+             the version order and nothing else.",
+            "integer",
+        )
+        .query_param(
+            "cursor",
+            false,
+            "The previous page's `page_info.next_cursor`, opaque. Also spelled \\
+             $skiptoken.",
+        )
         .handler(sku_history)
-        .json_response_with_schema::<HistoryView>(openapi, StatusCode::OK, "The timeline.")
+        .json_response_with_schema::<HistoryView>(
+            openapi,
+            StatusCode::OK,
+            "One page of the timeline.",
+        )
+        .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
         .error_404(openapi)
@@ -1017,8 +1296,28 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .tag(TAG)
         .authenticated()
         .no_license_required()
+        .query_param_typed(
+            "limit",
+            false,
+            "Rows per page; default 50, at most 200. Also spelled $top.",
+            "integer",
+        )
+        .query_param(
+            "cursor",
+            false,
+            "The previous page's `page_info.next_cursor`, opaque. Also spelled \
+             $skiptoken. A caller MUST NOT change $filter or $orderby between \
+             continuation requests carrying the same cursor.",
+        )
+        .with_odata_filter::<repo::DeferredIntentFilterField>()
+        .with_odata_orderby::<repo::DeferredIntentFilterField>()
         .handler(deferred_intents)
-        .json_response_with_schema::<DeferredIntentsView>(openapi, StatusCode::OK, "The dashboard.")
+        .json_response_with_schema::<DeferredIntentsView>(
+            openapi,
+            StatusCode::OK,
+            "One page of the dashboard.",
+        )
+        .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
         .error_500(openapi)
@@ -1034,8 +1333,28 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .tag(TAG)
         .authenticated()
         .no_license_required()
+        .query_param_typed(
+            "limit",
+            false,
+            "Rows per page; default 50, at most 200. Also spelled $top.",
+            "integer",
+        )
+        .query_param(
+            "cursor",
+            false,
+            "The previous page's `page_info.next_cursor`, opaque. Also spelled \
+             $skiptoken. A caller MUST NOT change $filter or $orderby between \
+             continuation requests carrying the same cursor.",
+        )
+        .with_odata_filter::<repo::FreezeStatusFilterField>()
+        .with_odata_orderby::<repo::FreezeStatusFilterField>()
         .handler(freeze_status)
-        .json_response_with_schema::<FreezeStatusesView>(openapi, StatusCode::OK, "The dashboard.")
+        .json_response_with_schema::<FreezeStatusesView>(
+            openapi,
+            StatusCode::OK,
+            "One page of the dashboard.",
+        )
+        .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
         .error_500(openapi)

@@ -710,7 +710,7 @@ mod freeze_and_resolve_tests {
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     }
 
-    /// A differing `bound_version` surfaces the re-binding triple
+    /// A differing `boundVersion` surfaces the re-binding triple
     /// (`dod-version-binding`): the diff is handed TO the module.
     #[tokio::test]
     async fn a_differing_bound_version_surfaces_the_rebinding_triple() {
@@ -720,7 +720,7 @@ mod freeze_and_resolve_tests {
         let same = get_resolve(
             app_for(&harness, TENANT),
             version,
-            &format!("?intent=browse&bound_version={version}"),
+            &format!("?intent=browse&boundVersion={version}"),
         )
         .await;
         assert_eq!(body_json(same).await["diff_ref"], json!(null));
@@ -728,13 +728,26 @@ mod freeze_and_resolve_tests {
         let moved = get_resolve(
             app_for(&harness, TENANT),
             version,
-            "?intent=browse&bound_version=7",
+            "?intent=browse&boundVersion=7",
         )
         .await;
         let view = body_json(moved).await;
         assert_eq!(view["bound_version"], json!(7));
+
         assert_eq!(view["resolved_version"], json!(version));
         assert_eq!(view["diff_ref"], json!(format!("7..{version}")));
+
+        // The snake spelling this door used to bind is now refused, not
+        // dropped — dropped, it answered `200` with no triple at all, which
+        // reads exactly like "your bound version is the current one".
+        for undeclared in ["?intent=browse&bound_version=7", "?intent=browse&version=7"] {
+            let response = get_resolve(app_for(&harness, TENANT), version, undeclared).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "`{undeclared}` must be refused, not silently ignored"
+            );
+        }
     }
 
     async fn post_json(

@@ -18,11 +18,13 @@ use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
 use toolkit::api::OpenApiRegistry;
 use toolkit::api::canonical_prelude::{CanonicalError, resource_error};
-use toolkit::api::operation_builder::OperationBuilder;
+use toolkit::api::odata::OData;
+use toolkit::api::operation_builder::{OperationBuilder, OperationBuilderODataExt};
 use toolkit_db::secure::AccessScope;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
+use crate::api::rest::odata as odata_seam;
 use crate::api::rest::{ApiState, repo_error_to_canonical, require_authenticated};
 use crate::domain::canonical;
 use crate::domain::error::DomainError;
@@ -37,12 +39,11 @@ const LIVE_OP_TARGET: &str = "scheduled_transition.cancel";
 #[resource_error(gts_id!("cf.bss.products.scheduled_transition.v1~"))]
 struct ScheduledTransitionResource;
 
-/// Filter for [`GET /bss-products/v1/scheduled-transitions`].
-#[derive(Debug, Default, serde::Deserialize)]
-pub struct ListQuery {
-    /// Stored state (`pending`, `deferred`, `applied`, …). Absent: every row.
-    pub state: Option<String>,
-}
+/// The scheduled-transition list door declares **no** operand of its own
+/// (P-D-165): `?state=` became `$filter=state eq '...'`, which is the same
+/// question asked in the platform's spelling and now also composes with
+/// every other field the vocabulary declares.
+const SCHEDULE_PARAMS: [&str; 0] = [];
 
 /// One scheduled-transition row on the wire.
 #[toolkit_macros::api_dto(response)]
@@ -66,8 +67,13 @@ pub struct ScheduledTransitionView {
 /// The list the GET answers.
 #[toolkit_macros::api_dto(response)]
 pub struct ScheduledTransitionList {
-    /// Tenant-scoped rows, optionally filtered by `state`.
+    /// One page of the tenant's rows, soonest first.
     pub items: Vec<ScheduledTransitionView>,
+    /// `next_cursor`, `prev_cursor` and the `limit` this page was served at.
+    ///
+    /// Before P-D-165 this door answered the tenant's **whole** schedule in
+    /// one body, in whatever order the engine chose.
+    pub page_info: toolkit_odata::PageInfo,
 }
 
 /// The cancel operation envelope. Only `cancel` is admitted.
@@ -84,19 +90,37 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .operation_id("bss_products.list_scheduled_transitions")
         .summary("List scheduled transitions")
         .description(
-            "The deferred-intent surface this feature owns and `08` projects. \
-             Filterable by state; each row carries `outcomeReason`. Tenant-scoped \
-             through the ordinary pipeline under `scheduled_transition x read`.",
+            "The deferred-intent surface this feature owns and `08` projects. One page, \
+             soonest first; each row carries `outcomeReason`. Filter with `$filter` over \
+             the declared fields - `$filter=state eq 'deferred'` is what `?state=` used \
+             to spell. Tenant-scoped through the ordinary pipeline under \
+             `scheduled_transition x read`.",
         )
         .tag(TAG)
         .authenticated()
         .no_license_required()
+        .query_param_typed(
+            "limit",
+            false,
+            "Rows per page; default 50, at most 200. Also spelled $top.",
+            "integer",
+        )
+        .query_param(
+            "cursor",
+            false,
+            "The previous page's `page_info.next_cursor`, opaque. Also spelled \
+             $skiptoken. A caller MUST NOT change $filter or $orderby between \
+             continuation requests carrying the same cursor.",
+        )
+        .with_odata_filter::<repo::ScheduledTransitionFilterField>()
+        .with_odata_orderby::<repo::ScheduledTransitionFilterField>()
         .handler(list_scheduled_transitions)
         .json_response_with_schema::<ScheduledTransitionList>(
             openapi,
             StatusCode::OK,
-            "The tenant's scheduled transitions.",
+            "One page of the tenant's scheduled transitions.",
         )
+        .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
         .error_500(openapi)
@@ -133,9 +157,11 @@ async fn list_scheduled_transitions(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
-    Query(query): Query<ListQuery>,
+    Query(raw): Query<std::collections::HashMap<String, String>>,
+    OData(odata): OData,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    odata_seam::reject_undeclared_query_params(&raw, &SCHEDULE_PARAMS)?;
     let tenant_id = ctx.subject_tenant_id();
     // Collection read: the PDP derives the scope; `resource_id` is unset.
     // `owner_tenant_id` stays `None` the way [`super::products::get_product`]
@@ -160,11 +186,18 @@ async fn list_scheduled_transitions(
     let conn = state.db.conn().map_err(|e| {
         repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
     })?;
-    let rows = repo::list_scheduled_transitions(&conn, &scope, tenant_id, query.state.as_deref())
-        .await
-        .map_err(|e| repo_error_to_canonical(&e))?;
+    let page = repo::list_scheduled_transitions(
+        &conn,
+        &scope,
+        tenant_id,
+        &odata,
+        odata_seam::LISTING_LIMIT_CFG,
+    )
+    .await
+    .map_err(|e| odata_seam::odata_error_to_canonical("scheduled transitions", &e))?;
     let body = ScheduledTransitionList {
-        items: rows
+        items: page
+            .items
             .into_iter()
             .map(|row| ScheduledTransitionView {
                 transition_id: row.transition_id,
@@ -176,6 +209,7 @@ async fn list_scheduled_transitions(
                 outcome_reason: row.outcome_reason,
             })
             .collect(),
+        page_info: page.page_info,
     };
     Ok((StatusCode::OK, Json(body)).into_response())
 }

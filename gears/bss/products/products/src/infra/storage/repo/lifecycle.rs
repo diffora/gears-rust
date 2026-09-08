@@ -13,9 +13,14 @@ use chrono::{DateTime, Utc};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, ExprTrait, QuerySelect};
+use toolkit_db::odata::sea_orm_filter::{
+    FieldToColumn, LimitCfg, ODataFieldMapping, paginate_odata,
+};
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
+use toolkit_odata::{ODataQuery, Page, SortDir};
+use toolkit_odata_macros::ODataFilterable;
 use uuid::Uuid;
 
 use bss_products_sdk::models::LifecycleState;
@@ -528,28 +533,142 @@ pub async fn finish_scheduled_transition(
     Ok(result.rows_affected == 1)
 }
 
-/// Tenant-scoped list for the scheduled-transition read door (**P-D-134**).
+/// The scheduled-transition door's **filterable vocabulary** (P-D-134,
+/// P-D-165).
+///
+/// A declaration read by the derive macro. Unlike the approval inbox's
+/// `state`, this door's carries no policy: every stored state is servable
+/// and absence of a filter means every row, so `state` is an ordinary filter
+/// field and the `?state=` operand it replaced is retired.
+///
+/// # What is deliberately absent
+///
+/// * `tenant_id` — `AccessScope`'s.
+/// * `claimed_at` / `attempt` / `updated_at` — the runner's own bookkeeping,
+///   and `claimed_at` is nullable.
+/// * `retirement_reason` / `outcome_reason` — operator free text that rides
+///   the content-PII block; a filter over it would be a search over
+///   operator prose, and both are nullable.
+#[derive(ODataFilterable)]
+#[allow(
+    dead_code,
+    reason = "a declaration read by the derive macro: only the generated \
+              `ScheduledTransitionQueryFilterField` is ever named in code"
+)]
+pub struct ScheduledTransitionQuery {
+    /// The row. Also the walk's unique tiebreaker.
+    #[odata(filter(kind = "Uuid"))]
+    pub transition_id: Uuid,
+    /// `product` or `sku`.
+    #[odata(filter(kind = "String"))]
+    pub entity_kind: String,
+    /// The subject entity.
+    #[odata(filter(kind = "Uuid"))]
+    pub entity_id: Uuid,
+    /// `publish` or `retire`.
+    #[odata(filter(kind = "String"))]
+    pub kind: String,
+    /// The activation instant. The default order — a schedule read in any
+    /// other order is not a schedule.
+    #[odata(filter(kind = "DateTimeUtc"))]
+    pub at: chrono::DateTime<Utc>,
+    /// `pending|running|applied|failed|deferred|superseded`.
+    #[odata(filter(kind = "String"))]
+    pub state: String,
+    /// The pinned approval this schedule consumed.
+    #[odata(filter(kind = "Uuid"))]
+    pub approval_ref: Uuid,
+    #[odata(filter(kind = "DateTimeUtc"))]
+    pub created_at: chrono::DateTime<Utc>,
+}
+
+/// The vocabulary under the name the rest of the gear uses.
+pub use ScheduledTransitionQueryFilterField as ScheduledTransitionFilterField;
+
+/// The vocabulary's storage mapping.
+pub struct ScheduledTransitionODataMapper;
+
+impl FieldToColumn<ScheduledTransitionFilterField> for ScheduledTransitionODataMapper {
+    type Column = scheduled_transition::Column;
+
+    fn map_field(field: ScheduledTransitionFilterField) -> scheduled_transition::Column {
+        use ScheduledTransitionFilterField as F;
+        match field {
+            F::TransitionId => scheduled_transition::Column::TransitionId,
+            F::EntityKind => scheduled_transition::Column::EntityKind,
+            F::EntityId => scheduled_transition::Column::EntityId,
+            F::Kind => scheduled_transition::Column::Kind,
+            F::At => scheduled_transition::Column::At,
+            F::State => scheduled_transition::Column::State,
+            F::ApprovalRef => scheduled_transition::Column::ApprovalRef,
+            F::CreatedAt => scheduled_transition::Column::CreatedAt,
+        }
+    }
+
+    // Every column here is NOT NULL, so all eight are orderable.
+}
+
+impl ODataFieldMapping<ScheduledTransitionFilterField> for ScheduledTransitionODataMapper {
+    type Entity = scheduled_transition::Entity;
+
+    fn extract_cursor_value(
+        model: &scheduled_transition::Model,
+        field: ScheduledTransitionFilterField,
+    ) -> sea_orm::Value {
+        use ScheduledTransitionFilterField as F;
+        match field {
+            F::TransitionId => sea_orm::Value::from(model.transition_id),
+            F::EntityKind => sea_orm::Value::from(model.entity_kind.clone()),
+            F::EntityId => sea_orm::Value::from(model.entity_id),
+            F::Kind => sea_orm::Value::from(model.kind.clone()),
+            F::At => sea_orm::Value::from(model.at),
+            F::State => sea_orm::Value::from(model.state.clone()),
+            F::ApprovalRef => sea_orm::Value::from(model.approval_ref),
+            F::CreatedAt => sea_orm::Value::from(model.created_at),
+        }
+    }
+}
+
+/// The order the schedule answers in when the caller names none.
+pub const SCHEDULE_DEFAULT_ORDER: (&str, SortDir) = ("at", SortDir::Asc);
+
+/// The walk's unique tiebreaker: the row's primary key.
+///
+/// `at` is an operator-chosen instant, so a batch of transitions scheduled
+/// for the same moment is the ordinary case rather than a coincidence — and
+/// a keyset over `at` alone would straddle it.
+pub const SCHEDULE_TIEBREAKER: (&str, SortDir) = ("transition_id", SortDir::Asc);
+
+/// One page of the tenant's scheduled transitions (**P-D-134**, P-D-165).
+///
+/// The unbounded, **unordered** read this replaced returned whatever order
+/// the engine chose, which is not the same order on the two engines the gear
+/// ships on and not a stable one on either.
 ///
 /// # Errors
 ///
-/// [`RepoError`] on a storage or scope failure.
+/// [`toolkit_odata::Error`] on an unservable query, or a driver failure.
 pub async fn list_scheduled_transitions(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-    state: Option<&str>,
-) -> Result<Vec<scheduled_transition::Model>, RepoError> {
-    let mut filter = Condition::all().add(scheduled_transition::Column::TenantId.eq(tenant_id));
-    if let Some(state) = state {
-        filter = filter.add(scheduled_transition::Column::State.eq(state));
-    }
-    scheduled_transition::Entity::find()
+    odata: &ODataQuery,
+    limits: LimitCfg,
+) -> Result<Page<scheduled_transition::Model>, toolkit_odata::Error> {
+    let base = scheduled_transition::Entity::find()
         .secure()
         .scope_with(scope)
-        .filter(filter)
-        .all(runner)
-        .await
-        .map_err(|e| driver_failure(format!("list scheduled transitions for {tenant_id}"), e))
+        .filter(Condition::all().add(scheduled_transition::Column::TenantId.eq(tenant_id)));
+    let effective = super::effective_odata(odata, SCHEDULE_DEFAULT_ORDER);
+    paginate_odata::<ScheduledTransitionFilterField, ScheduledTransitionODataMapper, _, _, _, _>(
+        base,
+        runner,
+        &effective,
+        SCHEDULE_TIEBREAKER,
+        limits,
+        |model| model,
+    )
+    .await
 }
 
 /// Supersede one live row by id — the governed cancel (**P-D-114**).

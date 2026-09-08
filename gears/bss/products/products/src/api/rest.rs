@@ -160,6 +160,7 @@ pub mod bulk;
 pub mod catalog_version;
 pub mod dto;
 pub mod materiality_policy;
+pub mod odata;
 pub mod preconditions;
 pub mod products;
 pub mod read;

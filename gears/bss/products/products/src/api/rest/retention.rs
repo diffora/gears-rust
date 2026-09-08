@@ -58,11 +58,13 @@ use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
 use toolkit::api::OpenApiRegistry;
 use toolkit::api::canonical_prelude::{CanonicalError, resource_error};
-use toolkit::api::operation_builder::OperationBuilder;
+use toolkit::api::odata::OData;
+use toolkit::api::operation_builder::{OperationBuilder, OperationBuilderODataExt};
 use toolkit_db::secure::AccessScope;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
+use crate::api::rest::odata as odata_seam;
 use crate::api::rest::{ApiState, repo_error_to_canonical, require_authenticated};
 use crate::domain::canonical;
 use crate::domain::error::DomainError;
@@ -208,11 +210,26 @@ pub struct AllowlistEntryView {
 /// The Legal review's answer.
 #[toolkit_macros::api_dto(response)]
 pub struct AllowlistExport {
-    /// Every entry in this tenant, active and revoked, oldest first.
+    /// One page of this tenant's entries, active and revoked, oldest first.
     pub entries: Vec<AllowlistEntryView>,
+    /// `next_cursor`, `prev_cursor` and the `limit` this page was served at.
+    ///
+    /// Before P-D-165 this door answered **every** entry a tenant had in one
+    /// body — on the one surface whose rows are all evidence a reviewer has
+    /// to read, which is exactly the surface where "the whole thing or
+    /// nothing" is the wrong contract.
+    pub page_info: toolkit_odata::PageInfo,
 }
 
+/// The allow-list export declares no operand of its own: it is the tenant's
+/// ledger, narrowed with `$filter` (`state eq 'active'` is the live list)
+/// and paged with the platform's two spellings.
+const ALLOWLIST_PARAMS: [&str; 0] = [];
+
 /// The export's query parameters.
+/// The non-`OData` keys the identity export declares.
+const IDENTITY_EXPORT_PARAMS: [&str; 2] = ["principalRef", "justification"];
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ExportQuery {
@@ -361,20 +378,36 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .operation_id("bss_products.export_pii_allowlist")
         .summary("Export the PII allow-list for the Legal review")
         .description(
-            "Returns every entry in this tenant, active and revoked, oldest first - the review \
-             `inst-pp-allowlist` obliges. Spends `compliance x export` and not \
-             `pii_allowlist x write`: the table is a PII store by construction and takes the \
-             identity map's posture (P-D-117 item 12), excluded from every export EXCEPT the \
-             compliance surface, and a read served under a write grant would be the second.",
+            "One page of this tenant's entries, active and revoked, oldest first - the review \
+             `inst-pp-allowlist` obliges. Narrow with `$filter` (`state eq 'active'` is the \
+             live allow-list) and walk with `$skiptoken`/`cursor`. Spends \
+             `compliance x export` and not `pii_allowlist x write`: the table is a PII store \
+             by construction and takes the identity map's posture (P-D-117 item 12), excluded \
+             from every export EXCEPT the compliance surface, and a read served under a write \
+             grant would be the second.",
         )
         .tag(TAG)
         .authenticated()
         .no_license_required()
+        .query_param_typed(
+            "limit",
+            false,
+            "Entries per page; default 50, at most 200. Also spelled $top.",
+            "integer",
+        )
+        .query_param(
+            "cursor",
+            false,
+            "The previous page's `page_info.next_cursor`, opaque. Also spelled \
+             $skiptoken.",
+        )
+        .with_odata_filter::<repo::AllowlistEntryFilterField>()
+        .with_odata_orderby::<repo::AllowlistEntryFilterField>()
         .handler(export_allowlist)
         .json_response_with_schema::<AllowlistExport>(
             openapi,
             StatusCode::OK,
-            "Every entry in this tenant.",
+            "One page of this tenant's entries.",
         )
         .error_400(openapi)
         .error_401(openapi)
@@ -714,9 +747,11 @@ async fn export_identity_map(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    axum::extract::Query(raw): axum::extract::Query<std::collections::HashMap<String, String>>,
     axum::extract::Query(query): axum::extract::Query<ExportQuery>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    odata_seam::reject_undeclared_query_params(&raw, &IDENTITY_EXPORT_PARAMS)?;
     let tenant_id = ctx.subject_tenant_id();
     let now = canonical::write_instant(Utc::now());
     let principal_ref = query.principal_ref.trim().to_owned();
@@ -1331,8 +1366,11 @@ async fn export_allowlist(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    axum::extract::Query(raw): axum::extract::Query<std::collections::HashMap<String, String>>,
+    OData(odata): OData,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    odata_seam::reject_undeclared_query_params(&raw, &ALLOWLIST_PARAMS)?;
     let tenant_id = ctx.subject_tenant_id();
     let now = canonical::write_instant(Utc::now());
     let actor_ref =
@@ -1352,14 +1390,22 @@ async fn export_allowlist(
     let conn = state.db.conn().map_err(|e| {
         repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
     })?;
-    let entries = repo::allowlist_entries(&conn, &scope, tenant_id)
-        .await
-        .map_err(|e| repo_error_to_canonical(&e))?;
+    let page = repo::allowlist_entries(
+        &conn,
+        &scope,
+        tenant_id,
+        &odata,
+        odata_seam::LISTING_LIMIT_CFG,
+    )
+    .await
+    .map_err(|e| odata_seam::odata_error_to_canonical("allow-list export", &e))?;
+    let page_info = page.page_info;
 
     Ok((
         StatusCode::OK,
         Json(AllowlistExport {
-            entries: entries
+            entries: page
+                .items
                 .into_iter()
                 .map(|entry| AllowlistEntryView {
                     entry_id: entry.entry_id,
@@ -1372,6 +1418,7 @@ async fn export_allowlist(
                     updated_at: entry.updated_at,
                 })
                 .collect(),
+            page_info,
         }),
     )
         .into_response())

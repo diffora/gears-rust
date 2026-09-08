@@ -76,6 +76,18 @@ sea-orm-migration = { workspace = true }
 # `#[domain_model]` marker on the domain types (enforced by dylint DE0309).
 toolkit-macros = { workspace = true }
 
+# The list surfaces' query contract, taken from the platform rather than
+# hand-rolled (P-D-165): `ODataQuery`/`Page`/`PageInfo`/`CursorV1` and the
+# typed `FilterField` vocabulary. `with-utoipa` because every paginated door
+# registers `Page<T>` as an `OpenAPI` schema, exactly as the sibling pricing
+# gear's manifest does.
+toolkit-odata = { workspace = true, features = ["with-utoipa"] }
+# `#[derive(ODataFilterable)]` on the per-door filter declarations: one
+# struct per list surface whose fields ARE the filterable vocabulary, so the
+# wire contract, the `OpenAPI` `$filter` doc and the storage mapping cannot
+# drift apart. The account-management gear declares its own the same way.
+toolkit-odata-macros = { workspace = true }
+
 # REST surface: the axum router `api::rest::router` mounts under the gear's
 # reserved `/bss-products/v1` prefix.
 axum = { workspace = true }

@@ -46,9 +46,14 @@ use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use serde_json::Value as JsonValue;
+use toolkit_db::odata::sea_orm_filter::{
+    FieldToColumn, LimitCfg, ODataFieldMapping, paginate_odata,
+};
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
+use toolkit_odata::{ODataQuery, Page, SortDir};
+use toolkit_odata_macros::ODataFilterable;
 use uuid::Uuid;
 
 use super::{driver_failure, supersede_open_approval};
@@ -1962,32 +1967,133 @@ pub async fn pending_approvals(
         .map_err(|e| driver_failure(format!("pending approvals of {tenant_id}"), e))
 }
 
-/// The oldest `limit` pending records of one tenant — [`pending_approvals`]
-/// with a page, the inbox door's own read (P-D-163: the door serves a
-/// window on the queue, never the queue).
+/// The inbox's **filterable vocabulary** (`inst-gv-queue`, P-D-165).
+///
+/// A declaration read by the derive macro; see
+/// `read_models::BrowseRowQuery` for the shape and the rules.
+///
+/// # What is deliberately absent
+///
+/// * `tenant_id` — `AccessScope`'s, not the caller's.
+/// * `state` — the inbox **is** the pending queue, which is a surface and
+///   not a predicate: naming another state is refused with an audit row
+///   rather than answered with an empty page, so it stays the door's
+///   `state` operand.
+/// * `content_snapshot` / `quorum_descriptor` — stored renderings, and the
+///   first is the record's evidential copy. Neither is a queryable value.
+/// * `internal_revision` / `diff_basis` / `author_override_ack*` /
+///   `finalized_at` — no declared use on an inbox of pending records, and
+///   `finalized_at` is null on every row this surface serves.
+#[derive(ODataFilterable)]
+#[allow(
+    dead_code,
+    reason = "a declaration read by the derive macro: only the generated \
+              `ApprovalInboxQueryFilterField` is ever named in code"
+)]
+pub struct ApprovalInboxQuery {
+    /// The record. Also the walk's unique tiebreaker.
+    #[odata(filter(kind = "Uuid"))]
+    pub approval_id: Uuid,
+    /// One of the six subject kinds.
+    #[odata(filter(kind = "String"))]
+    pub subject_kind: String,
+    /// The subject's own identifier, rendered.
+    #[odata(filter(kind = "String"))]
+    pub subject_ref: String,
+    /// The submitter's pseudonym. `submitter eq <uuid>` is how a reviewer
+    /// finds what they themselves sent — and, with it, what they may not
+    /// approve.
+    #[odata(filter(kind = "Uuid"))]
+    pub submitter: Uuid,
+    /// When the record joined the queue. The default order.
+    #[odata(filter(kind = "DateTimeUtc"))]
+    pub submitted_at: chrono::DateTime<Utc>,
+}
+
+/// The inbox vocabulary under the name the rest of the gear uses.
+pub use ApprovalInboxQueryFilterField as ApprovalInboxFilterField;
+
+/// The inbox vocabulary's storage mapping.
+pub struct ApprovalInboxODataMapper;
+
+impl FieldToColumn<ApprovalInboxFilterField> for ApprovalInboxODataMapper {
+    type Column = approval::Column;
+
+    fn map_field(field: ApprovalInboxFilterField) -> approval::Column {
+        match field {
+            ApprovalInboxFilterField::ApprovalId => approval::Column::ApprovalId,
+            ApprovalInboxFilterField::SubjectKind => approval::Column::SubjectKind,
+            ApprovalInboxFilterField::SubjectRef => approval::Column::SubjectRef,
+            ApprovalInboxFilterField::Submitter => approval::Column::Submitter,
+            ApprovalInboxFilterField::SubmittedAt => approval::Column::SubmittedAt,
+        }
+    }
+
+    // Every column in this vocabulary is NOT NULL, so all five are orderable
+    // and the nullable-column rule `read_models::BrowseODataMapper` documents
+    // has nothing to exclude here.
+}
+
+impl ODataFieldMapping<ApprovalInboxFilterField> for ApprovalInboxODataMapper {
+    type Entity = approval::Entity;
+
+    fn extract_cursor_value(
+        model: &approval::Model,
+        field: ApprovalInboxFilterField,
+    ) -> sea_orm::Value {
+        match field {
+            ApprovalInboxFilterField::ApprovalId => sea_orm::Value::from(model.approval_id),
+            ApprovalInboxFilterField::SubjectKind => {
+                sea_orm::Value::from(model.subject_kind.clone())
+            }
+            ApprovalInboxFilterField::SubjectRef => sea_orm::Value::from(model.subject_ref.clone()),
+            ApprovalInboxFilterField::Submitter => sea_orm::Value::from(model.submitter),
+            ApprovalInboxFilterField::SubmittedAt => sea_orm::Value::from(model.submitted_at),
+        }
+    }
+}
+
+/// The order the inbox answers in when the caller names none: oldest first,
+/// which is what the queue has always meant.
+pub const INBOX_DEFAULT_ORDER: (&str, SortDir) = ("submitted_at", SortDir::Asc);
+
+/// The walk's unique tiebreaker: the record's own id.
+///
+/// Not decorative — `submitted_at` is a clock and two records submitted in
+/// the same instant are what a keyset over it alone would straddle. The
+/// submit path is one door under load, so that tie is reachable.
+pub const INBOX_TIEBREAKER: (&str, SortDir) = ("approval_id", SortDir::Asc);
+
+/// One page of the pending queue, oldest first, as a keyset walk.
+///
+/// `state = 'pending'` is the door's, not the caller's: the inbox is the
+/// open queue and a finalized record is read by its id.
 ///
 /// # Errors
 ///
-/// A storage failure.
+/// [`toolkit_odata::Error`] on an unservable query, or a driver failure.
 pub async fn pending_approvals_page(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-    limit: u64,
-) -> Result<Vec<approval::Model>, RepoError> {
-    approval::Entity::find()
-        .secure()
-        .scope_with(scope)
-        .filter(
-            Condition::all()
-                .add(approval::Column::TenantId.eq(tenant_id))
-                .add(approval::Column::State.eq("pending")),
-        )
-        .order_by(approval::Column::SubmittedAt, sea_orm::Order::Asc)
-        .limit(limit)
-        .all(runner)
-        .await
-        .map_err(|e| driver_failure(format!("pending approvals page of {tenant_id}"), e))
+    odata: &ODataQuery,
+    limits: LimitCfg,
+) -> Result<Page<approval::Model>, toolkit_odata::Error> {
+    let base = approval::Entity::find().secure().scope_with(scope).filter(
+        Condition::all()
+            .add(approval::Column::TenantId.eq(tenant_id))
+            .add(approval::Column::State.eq("pending")),
+    );
+    let effective = super::effective_odata(odata, INBOX_DEFAULT_ORDER);
+    paginate_odata::<ApprovalInboxFilterField, ApprovalInboxODataMapper, _, _, _, _>(
+        base,
+        runner,
+        &effective,
+        INBOX_TIEBREAKER,
+        limits,
+        |model| model,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -2179,8 +2285,10 @@ pub struct PendingApproval {
     pub satisfied: u32,
 }
 
-/// [`pending_approvals`] with each record's progress — the operand of
-/// `GET /approvals?state=pending`'s envelope.
+/// Each record's progress — the operand of the inbox envelope's `satisfied`.
+///
+/// Takes the rows a page already selected rather than selecting its own, so
+/// the progress query is one `IN` over exactly what is being answered.
 ///
 /// # Errors
 ///
@@ -2189,9 +2297,8 @@ pub async fn pending_approvals_with_progress(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-    limit: u64,
+    rows: Vec<approval::Model>,
 ) -> Result<Vec<PendingApproval>, RepoError> {
-    let rows = pending_approvals_page(runner, scope, tenant_id, limit).await?;
     if rows.is_empty() {
         return Ok(Vec::new());
     }

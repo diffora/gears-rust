@@ -125,7 +125,7 @@ Declared by [`../features/read-models.md`](../features/read-models.md) §2 as `c
 The steps below are this slice's and are the normative ones; the FEATURE carries the
 actor, the scenarios and the boundary.
 
-1. [ ] - `p1` - `GET /bss-products/v1/browse…` (`product|sku × read`, plus `category × read` for the category/facet half): tenant/brand/region scope is resolved from claims and applied **inside the query** (`VisibilityFilter` + scope predicates at query build — post-filtering is forbidden because a shed row must never have been fetched) - `inst-rb-query`
+1. [ ] - `p1` - `GET /bss-products/v1/browse…` (`product|sku × read`, plus `category × read` for the category/facet half): tenant/brand/region scope is resolved from claims and applied **inside the query** (`VisibilityFilter` + scope predicates at query build — post-filtering is forbidden because a shed row must never have been fetched); the caller's own filtering, ordering and paging is the platform's `OData` surface over a declared vocabulary and **not** a per-door parameter set (**P-D-165**), applied on top of those predicates by `paginate_odata` over a scoped `SecureSelect` — an undeclared query key is refused, never dropped - `inst-rb-query`
 2. [ ] - `p1` - Per-state contract (C2): `deprecated` rows carry the machine-readable flag and an `excludeDeprecated` filter; `retired` appears only through the explicit history surface - `inst-rb-visibility`
 3. [ ] - `p1` - Every response carries the `StalenessStamp` (C3) — including error and degraded responses - `inst-rb-stamp`
 4. [ ] - `p2` - Facets (category tree, type, tier label, sellable, unit) build from the same projection; filterable under **every** assigned category (primary + secondary — the 02 contract) - `inst-rb-facets`
@@ -354,11 +354,19 @@ clause — M5); the §5.1 p2 rows "Advanced search, filter & faceting" and the r
   says whether the clear emits `SkuPublished` beside `SkuCompositionCleared`. If only the latter
   fires, every composed bundle stays flagged in browse. Owner: as 06 states it, with this slice.
   *(Raised by the slice-08 first lens pass.)*
-- **Does the browse door adopt `toolkit-odata` for its query surface?** Filed by **P-D-163**
-  (review wave 1, finding 10): `BrowseParams` is hand-rolled while pricing uses `toolkit-odata` in
-  nine files, and `12`'s merge-compatibility half wants the two gears' list surfaces to read
-  alike. *Recommendation:* not for `p1` — this slice's browse vocabulary is closed by design and
-  the visibility and scope predicates are built into the one statement (`inst-rb-query`), so an
-  `$filter` surface is a second query language the contract would have to be re-proven against.
-  *Counter-argument:* pricing's consumers already speak OData and adopting later is a wire
-  change. Owner: this slice with 12. *(Raised by the 2026-09-06 branch review.)*
+- ~~**Does the browse door adopt `toolkit-odata` for its query surface?**~~ Filed by **P-D-163**
+  (review wave 1, finding 10); **answered (P-D-165, 2026-09-08): yes, and not only browse — every
+  list door in the gear.** The owner's
+  call reversed the recommendation below, and the recommendation's own premise did not survive
+  measurement: the canon is `gears/system/account-management`, not pricing, and pricing had
+  adopted only the envelope and the cursor, never the `$filter` extractor. Browse's twelve
+  hand-rolled keys are now `$filter` over a declared vocabulary, minus the four that are not
+  column comparisons (`kind` is an **authorization** operand; `brand`/`region` are set membership
+  over a token set where empty means unrestricted; `excludeDeprecated` selects the visibility
+  surface). *The item's text stood as:* `BrowseParams` is hand-rolled while pricing uses
+  `toolkit-odata` in nine files, and `12`'s merge-compatibility half wants the two gears' list
+  surfaces to read alike. *Recommendation:* not for `p1` — this slice's browse vocabulary is
+  closed by design and the visibility and scope predicates are built into the one statement
+  (`inst-rb-query`), so an `$filter` surface is a second query language the contract would have to
+  be re-proven against. *Counter-argument:* pricing's consumers already speak OData and adopting
+  later is a wire change. Owner: this slice with 12. *(Raised by the 2026-09-06 branch review.)*

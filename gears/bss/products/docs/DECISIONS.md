@@ -1569,6 +1569,130 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-165 — The list surfaces adopt the platform's query contract: the canon is account-management, and the hand-rolled surface was dropping filters silently
+
+- **Date**: 2026-09-08 (owner instruction: change to the canon, products only — the pricing side
+  is being changed in its own PR)
+- **What this decision records.** Every list door in this gear bound a hand-rolled
+  `axum::extract::Query<T>` struct of its own. The owner asked for the platform's contract, naming
+  `gears/system/account-management` as the canon; this entry records the measurement, what was
+  taken part for part, the four places the canon's own rules say *not* to take it, and the two
+  residuals it does not settle.
+
+- **The measurement, before anything was written.** AM's four list doors
+  (`users`, `tenants`, `metadata`, `conversions`×2) run one stack: the
+  `toolkit::api::odata::OData` extractor binding `$filter`/`$orderby`/`$select`/`$top`/`$skiptoken`
+  and refusing every other `$` key (OASIS `OData` 4.01 Part 1 §6.1); a typed `FilterField` set per
+  door from `#[derive(ODataFilterable)]`, so an unknown field, a type mismatch or an unsupported
+  operator is a `400`; `toolkit_db::odata::sea_orm_filter::paginate_odata` walking a keyset over an
+  already-scoped `SecureSelect`, with a **unique** tiebreaker and `LimitCfg { default: 50, max: 200 }`
+  on all three of its repositories; `toolkit_odata::Page<T>` on the wire; and
+  `reject_non_odata_params`, whose own comment names the cost of its absence — `?status=approved`
+  would otherwise answer `200` with the **unfiltered** set. Products had **none** of it:
+  `toolkit-odata` was not a dependency and `OData(` had zero call sites.
+
+- **The defect this was, not the preference it looked like.** Three consequences, each measured on
+  the shipped code:
+  1. **An unrecognized query key was dropped.** `serde` ignores a field it does not know and Axum
+     claims nothing it cannot bind, so `?status=approved`, a mis-cased `?excludedeprecated=true`,
+     or the resolver's `?boundVersion=` against a door that bound `bound_version` all answered
+     `200` with the parameter gone. A caller cannot tell that answer from a correct one, and the
+     resolver's case is worse than a wrong row set: a dropped `boundVersion` reads as *"your bound
+     version is the current one"*.
+  2. **`limit` was a ceiling, not a page.** Past it there was no continuation of any kind. A tenant
+     with more than 500 matching browse rows could not read the rest; the approval inbox said
+     `has_more: true` and gave nothing to continue with; and six collection doors — both version
+     timelines, both dashboards, the allow-list export, the version diff — took no query at all and
+     answered every row a tenant had. The studio polls two of those every 30 seconds.
+  3. **Five envelopes for one idea**: `{stamp, rows, facets}`, `{items, has_more}`, `{items}`,
+     `{entries}`, and the export artifact.
+
+- **What was taken, part for part.** `api/rest/odata.rs` is the seam: the `LimitCfg` (AM's numbers,
+  taken rather than re-derived), the undeclared-key guard, the unsupported-option guard, and the
+  `ODataError` → `(400 | 500)` classification. Seven doors now answer `toolkit_odata::PageInfo`
+  and walk a keyset with a unique tiebreaker: **browse** (`name ASC` + `entity_id`), the **approval
+  inbox** (`submitted_at ASC` + `approval_id`), **scheduled transitions** (`at ASC` +
+  `transition_id`, which had no `ORDER BY` at all before), both **version timelines**
+  (`published_version ASC`), the **deferred-intent** and **freeze-status** dashboards, and the
+  **PII allow-list export** (`created_at ASC` + `entry_id`). Six declared filter vocabularies
+  replace the bespoke keys, and the `OpenAPI` `$filter`/`$orderby` documentation is generated from
+  them by `OperationBuilderODataExt` rather than written twice.
+
+- **Four things the canon's own rules say not to move into `$filter`.** AM keeps path-scoped
+  `parent_id` off its filter columns for this class of reason, and each of these is the same shape:
+  - **`kind` on browse is an authorization operand.** The door gates on `product × read` when a
+    Product may be in the answer and on `sku × read` when a SKU may be, and it decides which by
+    reading the requested kind. A `$filter` cannot carry that decision safely: `entity_kind eq
+    'sku' or entity_kind eq 'product'` restricts nothing while *reading* as a request for one kind,
+    so a caller holding only the SKU grant could reach Product rows.
+  - **`brand`/`region` are set membership, not equality.** The column is a comma-joined token set
+    where **empty means unrestricted** (P-D-39), and the predicate matches a token *by position*
+    precisely because an unanchored `LIKE '%claim%'` was a measured cross-scope leak — claim `eu`
+    matched a row stored `eur` or `aus,eu-central`, and a claim carrying `%` matched every
+    restricted row. Exposing the columns as filter fields would hand that leak back under a new
+    spelling.
+  - **`excludeDeprecated` selects a visibility surface**, which is a policy over which lifecycle
+    states are servable (C2), not a row predicate. `$filter=deprecated eq false` narrows *within*
+    a surface; this chooses one.
+  - **`state` on the approval inbox** stays an operand because naming another state is **refused
+    with an audit row** — the `dod-inbox-envelope` contract — where a filter field would answer an
+    empty page and tell the caller nothing.
+  The scheduled-transition door's `state` carries none of that and **did** become `$filter`.
+
+- **Three defects the adoption itself found and closed.**
+  1. **A walk begun unfiltered could change its own filter mid-walk.** The platform stamps `$filter`
+     into the token and refuses a mismatch — but it computes the stamp *from the expression*, so
+     absence of a filter has no stamp, and the check fires only when both sides carry one. A first
+     page with no `$filter` therefore minted an unstamped token, and page two could add a `$filter`
+     and be served the keyset predicate over a different set; a walk begun filtered could drop the
+     filter the same way. `repo::effective_odata` gives "no filter" a stamp of its own
+     (`NO_FILTER_HASH`, deliberately not sixteen hex characters), closing both directions.
+  2. **A nullable column cannot be an order key on two engines.** `SQLite` sorts NULLs first and
+     Postgres sorts them last, so an order over a nullable column is a *different* order on the two
+     engines this gear ships on, and a cursor predicate derived on one would skip or repeat rows on
+     the other. `BrowseODataMapper::is_orderable` refuses the six nullable columns as order keys and
+     keeps them filterable.
+  3. **The browse facet counts were silently a lower bound.** One number was both the page ceiling
+     and the facet window, so past 500 matches the counts were wrong with nothing saying so. The
+     window is now its own constant, the facet pass runs over the **matching set** rather than the
+     page (`browse_facet_rows`, sharing the `$filter` lowering so the counts cannot disagree with
+     the rows beside them), and `facets.complete` states whether the window covered it.
+
+- **The wire changes, stated.** Browse's `?q=` becomes `$filter=startswith(name,'…')` and
+  `?category=` becomes `contains(category_paths,'…')` — both **better escaped** than before, since
+  the platform escapes the LIKE metacharacters the hand-rolled prefix deleted and the category LIKE
+  never escaped at all; `?skuType=`/`?tier=`/`?sellable=`/`?unit=` become `eq` on their own fields;
+  the inbox's `has_more: bool` becomes `page_info.next_cursor`; the resolver's `bound_version`
+  becomes `boundVersion` (the spelling the design and FEATURE documents already used, and the one
+  its two sibling doors already served); browse's page ceiling drops from 500 to 200, which is safe
+  only *because* there is now a continuation past it; and `limit=0` is refused by the extractor
+  rather than clamped to one, which is the better answer to a request for zero rows. `limit` and
+  `cursor` keep working unchanged: the platform's extractor binds them as aliases of `$top` and
+  `$skiptoken`.
+
+- **What this decision does NOT settle.**
+  - **The two whole-artifact doors are still unbounded**: `GET /bulk/exports` answers a version's
+    entire manifest and `GET /catalog-versions/{a}/diff/{b}` answers a whole diff. Both are
+    deliberate — a partial export is not a valid promotion operand and a partial diff is not a
+    diff — and both are spent under bulk/compliance grants rather than open browse. Neither is
+    *bounded*, and a refusal above a size ceiling (rather than a truncation, which would corrupt
+    the artifact) is the shape to consider. **Open, owner: 09 with 06.**
+  - **The filter vocabularies are impl-crate types, not SDK types.** AM declares its three in its
+    SDK because an `IdP` **plugin** consumes `FilterNode<IdpUserFilterField>` in Rust; products has
+    no such in-process consumer — its list doors are REST-only — so the vocabularies live beside
+    the doors that own them. Promoting them to `bss-products-sdk` is additive if a Rust consumer
+    ever needs to build a filter.
+  - `$select` is bound by the extractor and served by no door here; the timelines refuse it
+    explicitly and the rest ignore it, which is the one place this wave left the silent-drop shape
+    standing. **Open, owner: 12.**
+
+- **Propagated**: `design/08-read-models.md` (§6's `toolkit-odata` item, answered, and
+  `inst-rb-query`), `design/12-consumer-contracts.md` (the §9 surface),
+  `features/read-models.md` (the browse door and the facet rule),
+  `features/governance.md` (the inbox envelope), `features/retention-erasure.md` (the allow-list
+  export).
+
+
 #### P-D-164 — The stand's own reading: nine defects the gear's tier cannot see, and the two seams the platform owes
 
 - **Date**: 2026-09-06 (the lead; the first e2e wave for this gear, `tests/e2e/tests/bss-products/`

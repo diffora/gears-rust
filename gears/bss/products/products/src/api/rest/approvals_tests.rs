@@ -1536,9 +1536,10 @@ async fn a_request_without_the_header_passes_through_unchanged() {
 }
 
 /// **The inbox is a page on the queue, not the queue** (P-D-163): `limit`
-/// bounds the cards, `has_more` says the queue continues, and the page is
-/// the oldest first — so a consumer draining the inbox sees the same order
-/// the unbounded read served.
+/// bounds the cards, `page_info.next_cursor` both says the queue continues
+/// and is the token that continues it (P-D-165), and the page is the oldest
+/// first — so a consumer draining the inbox sees the same order the
+/// unbounded read served.
 #[tokio::test]
 async fn the_inbox_serves_a_page_and_says_whether_the_queue_continues() {
     let harness = harness().await;
@@ -1565,10 +1566,34 @@ async fn the_inbox_serves_a_page_and_says_whether_the_queue_continues() {
         json!(first_id.to_string()),
         "oldest first"
     );
+    let cursor = page["page_info"]["next_cursor"]
+        .as_str()
+        .expect("the queue continues past the page")
+        .to_owned();
+    assert_eq!(page["page_info"]["limit"], json!(1));
+
+    // And the token continues it — which `has_more: true` could not do.
+    let next = body_of(
+        get(
+            app_for(&harness, TENANT),
+            &format!(
+                "/bss-products/v1/approvals?state=pending&limit=1&cursor={}",
+                qval(&cursor)
+            ),
+            ctx_without_roles(Uuid::from_u128(0x5a_b0)),
+        )
+        .await,
+    )
+    .await;
     assert_eq!(
-        page["has_more"],
-        json!(true),
-        "the queue continues past the page"
+        next["items"][0]["approval_id"],
+        json!(second_id.to_string()),
+        "the second page is the next record, not the first again: {next}"
+    );
+    assert_eq!(
+        next["page_info"]["next_cursor"],
+        json!(null),
+        "two records, one per page: the second page is the last"
     );
 
     let whole = body_of(
@@ -1584,29 +1609,104 @@ async fn the_inbox_serves_a_page_and_says_whether_the_queue_continues() {
     assert_eq!(items.len(), 2);
     assert_eq!(items[1]["approval_id"], json!(second_id.to_string()));
     assert_eq!(
-        whole["has_more"],
-        json!(false),
+        whole["page_info"]["next_cursor"],
+        json!(null),
         "nothing past the default page"
     );
 
-    let clamped = get(
+    // `limit=0` used to be clamped to one page of one. The platform's
+    // extractor refuses it instead, which is the better answer: a caller
+    // asking for zero rows has made a mistake, and a page of one is not
+    // what they asked for either.
+    let zero = get(
         app_for(&harness, TENANT),
         "/bss-products/v1/approvals?state=pending&limit=0",
         ctx_without_roles(Uuid::from_u128(0x5a_b0)),
     )
     .await;
+    assert_eq!(zero.status(), 400, "a page of zero rows is not a page");
+
+    // Above the ceiling is still clamped, not refused: the caller asked for
+    // more than the door serves, and the door serves what it can plus a
+    // token for the rest.
+    let over = body_of(
+        get(
+            app_for(&harness, TENANT),
+            "/bss-products/v1/approvals?state=pending&limit=9999",
+            ctx_without_roles(Uuid::from_u128(0x5a_b0)),
+        )
+        .await,
+    )
+    .await;
     assert_eq!(
-        clamped.status(),
-        200,
-        "a limit below one is clamped, not refused"
+        over["page_info"]["limit"],
+        json!(200),
+        "clamped to the gear's ceiling: {over}"
     );
+
+    // The retired spelling of the state operand, and one invented key: both
+    // used to be dropped, which on this door meant the whole queue.
+    for undeclared in ["state=pending&stat=pending", "state=pending&page=2"] {
+        let response = get(
+            app_for(&harness, TENANT),
+            &format!("/bss-products/v1/approvals?{undeclared}"),
+            ctx_without_roles(Uuid::from_u128(0x5a_b0)),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            400,
+            "`?{undeclared}` must be refused, not silently ignored"
+        );
+    }
+
+    // A filter over the declared vocabulary narrows the queue; one outside
+    // it is refused.
+    let mine = body_of(
+        get(
+            app_for(&harness, TENANT),
+            &format!(
+                "/bss-products/v1/approvals?state=pending&%24filter={}",
+                qval(&format!("submitter eq {}", Uuid::from_u128(0x5a_a0)))
+            ),
+            ctx_without_roles(Uuid::from_u128(0x5a_b0)),
+        )
+        .await,
+    )
+    .await;
     assert_eq!(
-        body_of(clamped).await["items"]
-            .as_array()
-            .expect("items")
-            .len(),
-        1
+        mine["items"].as_array().expect("items").len(),
+        0,
+        "the submitter column holds a pseudonym, not the caller's principal: {mine}"
     );
+    let outside = get(
+        app_for(&harness, TENANT),
+        &format!(
+            "/bss-products/v1/approvals?state=pending&%24filter={}",
+            qval("content_snapshot eq 'x'")
+        ),
+        ctx_without_roles(Uuid::from_u128(0x5a_b0)),
+    )
+    .await;
+    assert_eq!(
+        outside.status(),
+        400,
+        "the record's evidential copy is not a filter field"
+    );
+}
+
+/// Percent-encode one query-string value: `$filter` carries spaces and
+/// quotes, and a cursor is base64url with `=` padding.
+fn qval(value: &str) -> String {
+    value
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect()
 }
 
 /// **A stored `subject_ref` that is not a `kind/id` pair fails the decision

@@ -594,11 +594,23 @@ filters has already spent the budget and already read what the caller may not se
 `sku × read` (both when `kind` is absent). The tenant predicate is the PEP's scope, the per-state
 contract `repo::visibility_condition(VisibilityFilter::for_surface(...))` (default browse, or the filtered surface
 under `excludeDeprecated`), brand and region claims `scope_condition`s — all inside the one statement
-`repo::browse_read_entities` runs; nothing is fetched and dropped. Filters: name prefix, category
-path (any assigned category), SKU type, tier label, sellable, unit; `includeFacets` adds the facets;
-`limit` at most 500. Every answer — rows or none — carries the `StampView`, the anchorless tenant
-reading `asOfCatalogVersion = null` with a `projectedAt`. Probe:
-`browse_serves_the_projection_under_the_visibility_contract_with_the_stamp`.
+`repo::browse_read_entities_page` runs; nothing is fetched and dropped. **The query surface is the
+platform's** (P-D-165): filtering is `$filter` over the declared `BrowseFilterField` vocabulary —
+`startswith(name,'…')` is the name prefix, `contains(category_paths,'…')` matches any assigned
+category, and `sku_type`, `plan_tier_label`, `sellable`, `metering_unit`, `lifecycle_state`,
+`deprecated`, `composition_pending`, `entity_code`, `entity_id` and `published_version` compare on
+their own fields — ordered by `$orderby` over the same set minus its nullable columns, and paged by
+`$top`/`limit` (default 50, at most 200) plus `$skiptoken`/`cursor` over `(name ASC, entity_id ASC)`.
+The door's own four operands are not filters and stay operands: `kind` (an **authorization** operand
+— it decides which grants are required), `brand`/`region` (set membership over a token set where
+empty means unrestricted, not equality), and `excludeDeprecated` (a choice of visibility surface).
+`includeFacets` adds the facets. Every answer — rows or none — carries the `StampView`, the
+anchorless tenant reading `asOfCatalogVersion = null` with a `projectedAt`, and the `page_info`
+whose `next_cursor` is `null` on the last page and only there. Probes:
+`browse_serves_the_projection_under_the_visibility_contract_with_the_stamp`,
+`a_retired_or_invented_query_key_is_refused_and_not_dropped`, `the_filter_vocabulary_is_closed`,
+`the_walk_visits_every_row_once_and_then_says_it_is_done`, `the_walk_goes_back_the_way_it_came`,
+`a_cursor_from_another_walk_is_refused`.
 
 **Implements**: `cpt-cf-bss-products-flow-browse`
 
@@ -842,11 +854,17 @@ states no facet rule at all, so the rule is this feature's and the model is 02's
 A facet that filtered on the primary assignment alone would hide a Product from a category it is
 genuinely assigned to, which is a wrong answer rather than a partial one.
 
-**Ticked (P-D-150).** `includeFacets=true` on the browse door renders the facets from the **same**
-serving rows the query admitted — category paths (every path in the row's `category_paths`, primary
-and secondary alike), SKU type, tier label, `sellable`, unit — as value/count buckets; the `category`
-filter matches any assigned category's path. No second store. Probe: the browse probe's facet
-assertion.
+**Ticked (P-D-150).** `includeFacets=true` on the browse door renders the facets from the rows the
+query admitted — category paths (every path in the row's `category_paths`, primary and secondary
+alike), SKU type, tier label, `sellable`, unit — as value/count buckets;
+`contains(category_paths,'…')` matches any assigned category's path. No second store.
+
+**Amended (P-D-165).** The facet pass runs over the **matching set** and not over the page — a
+count over the page would restate what the caller already holds — bounded by
+`BROWSE_FACET_WINDOW` (500) and sharing the `$filter` lowering with the page so the counts cannot
+disagree with the rows beside them. `facets.complete` says whether the window covered the whole
+set: before P-D-165 one number was both the page ceiling and the facet window, so past 500 matches
+the counts were a lower bound with nothing saying so. Probe: the browse probe's facet assertion.
 
 **Implements**: `cpt-cf-bss-products-flow-browse`
 

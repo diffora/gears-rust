@@ -79,11 +79,13 @@ use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, TimeDelta, Utc};
 use toolkit::api::OpenApiRegistry;
 use toolkit::api::canonical_prelude::{CanonicalError, resource_error};
-use toolkit::api::operation_builder::OperationBuilder;
+use toolkit::api::odata::OData;
+use toolkit::api::operation_builder::{OperationBuilder, OperationBuilderODataExt};
 use toolkit_db::secure::AccessScope;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
+use crate::api::rest::odata as odata_seam;
 use crate::api::rest::{ApiState, repo_error_to_canonical, require_authenticated};
 use crate::domain::approval::{
     ApprovalState, ApproverRole, ApproverScopeVerdict, approver_covers_subject, diff_basis_for,
@@ -197,25 +199,25 @@ pub struct SubmitApprovalReceipt {
     pub quorum_reduced: bool,
 }
 
-/// `GET /approvals?state=pending`'s query. Only `pending` is admitted: the
-/// inbox is the open queue, and finalized records are read by id.
+/// `GET /approvals?state=pending`'s **own** operand. Only `pending` is
+/// admitted: the inbox is the open queue, and finalized records are read by
+/// id.
+///
+/// `state` stays a door operand rather than becoming a `$filter` field
+/// (P-D-165) because naming another state is **refused, with an audit row**
+/// — the `dod-inbox-envelope` contract — and a filter field would instead
+/// answer an empty page, which tells a caller nothing about why.
+///
+/// `limit` left this struct when the door adopted the platform's query
+/// contract: it is bound by the `OData` extractor, which folds `limit` and
+/// `$top` onto one slot, so the spelling the door shipped still works.
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct ApprovalsQuery {
     pub state: Option<String>,
-    /// How many cards to serve, oldest first; absent is
-    /// [`APPROVAL_INBOX_LIMIT_DEFAULT`], and the value is clamped to
-    /// `1..=`[`APPROVAL_INBOX_LIMIT_MAX`]. `has_more` on the envelope says
-    /// whether the queue continues past the page.
-    pub limit: Option<u32>,
 }
 
-/// The inbox page size when the caller names none.
-pub(crate) const APPROVAL_INBOX_LIMIT_DEFAULT: u32 = 50;
-
-/// The largest inbox page a caller may ask for. The queue is read whole
-/// into one response, so the page is what bounds the read and the body —
-/// before this ceiling an inbox was one unbounded `SELECT` (P-D-163).
-pub(crate) const APPROVAL_INBOX_LIMIT_MAX: u32 = 200;
+/// The non-`OData` keys this door declares.
+const APPROVAL_PARAMS: [&str; 1] = ["state"];
 
 /// The common inbox envelope (`inst-gv-queue`): one card per pending record,
 /// oldest first. Merge-compatibility with pricing's queue is
@@ -223,9 +225,13 @@ pub(crate) const APPROVAL_INBOX_LIMIT_MAX: u32 = 200;
 #[toolkit_macros::api_dto(response)]
 pub struct ApprovalInbox {
     pub items: Vec<ApprovalInboxCard>,
-    /// Whether pending records remain past this page's `limit`, oldest
-    /// first: the page is a window on the queue, not the queue.
-    pub has_more: bool,
+    /// `next_cursor`, `prev_cursor` and the `limit` this page was served at.
+    ///
+    /// Replaces the `has_more: bool` this envelope carried until P-D-165.
+    /// The boolean said the queue continued and gave nothing to continue
+    /// with; `next_cursor` both says so — it is `null` on the last page and
+    /// only there — and is the token for the next one.
+    pub page_info: toolkit_odata::PageInfo,
 }
 
 /// One pending record as the inbox shows it.
@@ -425,11 +431,33 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .tag(TAG)
         .authenticated()
         .no_license_required()
+        .query_param(
+            "state",
+            true,
+            "Must be `pending`: the inbox is the open queue and a finalized record is \
+             read by its id. A door operand rather than a $filter field, because another \
+             state is refused with an audit row and not answered with an empty page.",
+        )
+        .query_param_typed(
+            "limit",
+            false,
+            "Cards per page; default 50, at most 200. Also spelled $top.",
+            "integer",
+        )
+        .query_param(
+            "cursor",
+            false,
+            "The previous page's `page_info.next_cursor`, opaque. Also spelled \
+             $skiptoken. A caller MUST NOT change $filter or $orderby between \
+             continuation requests carrying the same cursor.",
+        )
+        .with_odata_filter::<repo::ApprovalInboxFilterField>()
+        .with_odata_orderby::<repo::ApprovalInboxFilterField>()
         .handler(list_pending_approvals)
         .json_response_with_schema::<ApprovalInbox>(
             openapi,
             StatusCode::OK,
-            "The tenant's pending records, oldest first.",
+            "One page of the tenant's pending records, oldest first.",
         )
         .error_400(openapi)
         .error_401(openapi)
@@ -447,9 +475,12 @@ async fn list_pending_approvals(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    axum::extract::Query(raw): axum::extract::Query<std::collections::HashMap<String, String>>,
     axum::extract::Query(query): axum::extract::Query<ApprovalsQuery>,
+    OData(odata): OData,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
+    odata_seam::reject_undeclared_query_params(&raw, &APPROVAL_PARAMS)?;
     let tenant_id = ctx.subject_tenant_id();
     let now = canonical::write_instant(Utc::now());
     let actor_ref =
@@ -488,19 +519,20 @@ async fn list_pending_approvals(
     let conn = state.db.conn().map_err(|e| {
         repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
     })?;
-    let limit = query
-        .limit
-        .unwrap_or(APPROVAL_INBOX_LIMIT_DEFAULT)
-        .clamp(1, APPROVAL_INBOX_LIMIT_MAX);
-    // One row past the page says whether the queue continues, without a
-    // second count query.
-    let mut pending =
-        repo::pending_approvals_with_progress(&conn, &scope, tenant_id, u64::from(limit) + 1)
-            .await
-            .map_err(|e| repo_error_to_canonical(&e))?;
-    let page = limit as usize;
-    let has_more = pending.len() > page;
-    pending.truncate(page);
+    let page = repo::pending_approvals_page(
+        &conn,
+        &scope,
+        tenant_id,
+        &odata,
+        odata_seam::LISTING_LIMIT_CFG,
+    )
+    .await
+    .map_err(|e| odata_seam::odata_error_to_canonical("approval inbox", &e))?;
+    let page_info = page.page_info;
+    // Progress is one `IN` over exactly the rows being answered.
+    let pending = repo::pending_approvals_with_progress(&conn, &scope, tenant_id, page.items)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?;
     let mut items = Vec::with_capacity(pending.len());
     for entry in pending {
         let record = entry.record;
@@ -532,7 +564,7 @@ async fn list_pending_approvals(
             diff_basis: record.diff_basis,
         });
     }
-    Ok((StatusCode::OK, Json(ApprovalInbox { items, has_more })).into_response())
+    Ok((StatusCode::OK, Json(ApprovalInbox { items, page_info })).into_response())
 }
 
 // ---------------------------------------------------------------------------
