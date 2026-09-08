@@ -356,6 +356,13 @@ clause — M5); the §5.1 p2 rows "Advanced search, filter & faceting" and the r
   says whether the clear emits `SkuPublished` beside `SkuCompositionCleared`. If only the latter
   fires, every composed bundle stays flagged in browse. Owner: as 06 states it, with this slice.
   *(Raised by the slice-08 first lens pass.)*
+- **A timestamp order key loses every tied row past the first page** (**P-D-166**, 2026-09-08).
+  Measured: `parse_cursor_value` decodes `FieldKind::DateTimeUtc` to the `time` variant while this
+  gear's columns are `ChronoDateTimeUtc`, so the seek's equality conjunct is always false on
+  `SQLite` and a page of rows sharing an instant has no successor. Four walks are exposed
+  (`submitted_at`, `at`, `created_at` twice); Postgres is not. The fix is one arm of the platform's
+  cursor codec and is not this gear's to make — `cursor_kind` is ruled out by measurement. Owner:
+  the toolkit. *(Raised by the P-D-165 wave's own follow-up.)*
 - ~~**Does the browse door adopt `toolkit-odata` for its query surface?**~~ Filed by **P-D-163**
   (review wave 1, finding 10); **answered (P-D-165, 2026-09-08): yes, and not only browse — every
   list door in the gear.** The owner's

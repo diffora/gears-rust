@@ -1569,6 +1569,51 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-166 — A timestamp order key loses every tied row past the first page, and the fix is one arm of the platform's cursor codec
+
+- **Date**: 2026-09-08 (found while answering a question about a neighbouring branch's
+  `libs/toolkit-odata` commit; measured on the products suite)
+- **What this records.** Four of the eight walks P-D-165 built order by a timestamp — the approval
+  inbox (`submitted_at`), scheduled transitions (`at`), and the deferred-intent and allow-list
+  walks (`created_at`). On `SQLite`, a page of rows **sharing an instant** has no successor: the
+  walk serves the first row and reports itself finished, and the rest are unreachable through
+  pagination while an unpaged read of the same door serves them all.
+- **The cause, measured rather than reasoned.** `libs/toolkit-db`'s `parse_cursor_value` decodes
+  `FieldKind::DateTimeUtc` by trying `time::OffsetDateTime` **first**, so the value a keyset seek
+  binds is always `sea_orm::Value::TimeDateTimeWithTimeZone`. This gear's timestamp columns are
+  `ChronoDateTimeUtc` throughout. On the same three-row fixture:
+  `created_at = <chrono variant>` matched **3 of 3**, `= <time variant>` **0 of 3**, and no text
+  rendering matched either — RFC-3339 with nanos, with micros, `sea-orm`'s chrono form and the
+  naive form all **0 of 3**. The seek is `(a > a0) OR (a = a0 AND b > b0)`; with the `=` conjunct
+  always false, the tiebreaker never gets its chance. Isolated by walking the *same* three tied
+  rows under a UUID order key, which reaches all three.
+- **Why there is no fix on this side.** The one lever a gear has is
+  `ODataFieldMapping::cursor_kind`, and the text measurements above are what rule it out: no
+  `FieldKind::String` rendering compares equal to the column either. `extract_cursor_value` is not
+  the lever — it feeds the *token*, while the predicate is built from what `parse_cursor_value`
+  returns; converting the extraction to the `time` variant was tried and changed nothing, and was
+  withdrawn along with the `time` dependency it needed. Making the entity columns `time`-typed —
+  which is why `account-management` and `chat-engine` do not have this defect — is a migration
+  across every table in the gear and not a thing to do under a cursor codec.
+- **The fix, named.** One arm of `parse_cursor_value`: decode `FieldKind::DateTimeUtc` to the
+  variant the mapper extracts rather than to whichever crate parses the token first. That is
+  already the invariant the toolkit's own `datetime_utc_cursor_keeps_the_mapped_variant` test
+  states in prose ("Every `FieldKind::DateTimeUtc` mapper in the tree extracts
+  `TimeDateTimeWithTimeZone`") — a statement this gear's mappers falsify, and which the test does
+  not check. **Owner: the toolkit, with whoever is next in `libs/toolkit-db`.** Postgres binds
+  both variants as `timestamptz` and is unaffected, so the served engine is correct and the gate
+  engine is not — the reverse of the usual asymmetry.
+- **What stands here meanwhile.** `read_tests::a_timestamp_walk_visits_every_row_of_a_tied_page`
+  asserts the correct behaviour and is `#[ignore]`d with the diagnosis and this entry named; it
+  also asserts, un-ignored, that a non-timestamp order key walks the tie, so the tiebreaker
+  mechanism itself stays guarded. Un-ignore when the codec lands. The exposure is real rather
+  than theoretical: `at` is an operator-chosen instant, so a batch of transitions scheduled for
+  one moment is the ordinary case, and the allow-list repository's own comment already noted that
+  two entries signed off in one act share `created_at`.
+- **Propagated**: `design/08-read-models.md` §6 (the open item), and the probe's own doc comment,
+  which carries the measurements.
+
+
 #### P-D-165 — The list surfaces adopt the platform's query contract: the canon is account-management, and the hand-rolled surface was dropping filters silently
 
 - **Date**: 2026-09-08 (owner instruction: change to the canon, products only — the pricing side

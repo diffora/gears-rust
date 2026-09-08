@@ -1042,6 +1042,140 @@ async fn the_dashboards_are_paged_filtered_and_ordered() {
     }
 }
 
+/// A walk ordered by a timestamp visits every row of a **tied** page.
+///
+/// **Ignored: the defect is the platform's and the fix is not this gear's.**
+/// Measured, not assumed — the diagnosis below is complete, so this is a
+/// named platform gap rather than a test parked before it was understood.
+///
+/// `libs/toolkit-db`'s `parse_cursor_value` decodes `FieldKind::DateTimeUtc`
+/// by trying `time::OffsetDateTime` **first**, so the value the keyset seek
+/// binds is always `sea_orm::Value::TimeDateTimeWithTimeZone`. This gear's
+/// timestamp columns are `ChronoDateTimeUtc`, and on `SQLite` — where both
+/// are text — the two do not compare equal. Measured on this fixture:
+///
+/// * `created_at = <chrono variant>` matches **3 of 3** rows;
+/// * `created_at = <time variant>` matches **0 of 3**;
+/// * and no text rendering matches either — RFC-3339 with nanos, with
+///   micros, `sea-orm`'s chrono form and the naive form all match **0 of
+///   3** — which is what rules out `ODataFieldMapping::cursor_kind`, the one
+///   lever a gear has.
+///
+/// The seek is `(a > a0) OR (a = a0 AND b > b0)`; with the `=` conjunct
+/// always false, a page of tied rows has no successor. The walk below
+/// reaches **one** of three and reports itself finished, while an unpaged
+/// read of the same door serves all three — the same three rows walked under
+/// a UUID order key reach all three, which is what isolates the cause to the
+/// representation rather than to the tie.
+///
+/// Four doors order by a timestamp and are therefore exposed wherever rows
+/// share an instant: the approval inbox (`submitted_at`), scheduled
+/// transitions (`at` — an operator-chosen instant, so a batch scheduled for
+/// one moment is the ordinary case), and the deferred-intent and allow-list
+/// walks (`created_at` — the allow-list's own repository comment already
+/// noted that two entries signed off in one act share it). Postgres binds
+/// both variants as `timestamptz` and is unaffected.
+///
+/// **The fix is one arm of `parse_cursor_value`**: decode to the variant the
+/// mapper extracts, which is the invariant the toolkit's own
+/// `datetime_utc_cursor_keeps_the_mapped_variant` test states. Filed as
+/// P-D-166. Un-ignore this probe when it lands.
+///
+/// Walk the deferred-intent dashboard one row per page and return the ids in
+/// the order they were served.
+///
+/// `orderby` is sent on the first request only: the platform refuses
+/// `$orderby` beside a cursor (`ORDER_WITH_CURSOR`) and recovers the order
+/// from the token's own signed fields.
+async fn walk_deferred_intents(harness: &Harness, orderby: Option<&str>) -> Vec<String> {
+    let suffix = orderby.map_or_else(String::new, |o| format!("&%24orderby={}", qval(o)));
+    let mut seen = Vec::new();
+    let mut url = format!("/bss-products/v1/read/deferred-intents?limit=1{suffix}");
+    for _ in 0..6 {
+        let response = get(harness, &url, TENANT).await;
+        let status = response.status();
+        let body = body_json(response).await;
+        let items = body["items"]
+            .as_array()
+            .unwrap_or_else(|| panic!("a page must carry items, got {status}: {body}"));
+        for row in items {
+            seen.push(row["product_id"].as_str().expect("an id").to_owned());
+        }
+        match body["page_info"]["next_cursor"].as_str() {
+            // A continuation must NOT resend `$orderby`: the platform
+            // refuses the pair (`ORDER_WITH_CURSOR`) and recovers the
+            // order from the token's own signed fields.
+            Some(cursor) => {
+                url = format!(
+                    "/bss-products/v1/read/deferred-intents?limit=1&cursor={}",
+                    qval(cursor)
+                );
+            }
+            None => break,
+        }
+    }
+    seen
+}
+
+/// Carries **no** `@cpt-dod` marker on purpose: it guards the platform's
+/// cursor codec, not a criterion of this gear, and the deferred-intent
+/// dashboard is only the fixture it happens to use. Marking it against
+/// `dod-dashboards` would count a platform gap as that criterion's coverage.
+#[tokio::test]
+#[ignore = "platform: toolkit-db parse_cursor_value decodes DateTimeUtc to the time variant while this gear's columns are chrono; see P-D-166"]
+async fn a_timestamp_walk_visits_every_row_of_a_tied_page() {
+    let harness = harness().await;
+    let conn = harness.state.db.conn().expect("conn");
+    // One instant, carried by all three rows.
+    let tied = crate::domain::canonical::write_instant(chrono::DateTime::from_timestamp_nanos(
+        1_757_000_000_123_456_789,
+    ));
+    let ids: Vec<Uuid> = (0..3_u128)
+        .map(|n| Uuid::from_u128(0x71_ed_00 + n))
+        .collect();
+    for id in &ids {
+        repo::upsert_read_deferred_intent(
+            &conn,
+            &scope(),
+            crate::infra::storage::entity::read_deferred_intent::Model {
+                tenant_id: TENANT,
+                product_id: *id,
+                cascade_ref: Uuid::from_u128(0xca_11),
+                children_count: 1,
+                created_at: tied,
+                age_secs: 0,
+                polled_at: tied,
+            },
+        )
+        .await
+        .expect("the intent row lands");
+    }
+
+    // The unpaged read serves all three, so the rows are there and visible.
+    let whole =
+        body_json(get(&harness, "/bss-products/v1/read/deferred-intents", TENANT).await).await;
+    assert_eq!(
+        whole["items"].as_array().expect("items").len(),
+        3,
+        "{whole}"
+    );
+
+    let expected: Vec<String> = ids.iter().map(std::string::ToString::to_string).collect();
+    // Passes today — a UUID order key binds a variant the column compares
+    // equal to, so the tie is resolved by the tiebreaker as designed.
+    assert_eq!(
+        walk_deferred_intents(&harness, Some("product_id asc")).await,
+        expected,
+        "a non-timestamp order key walks the tie"
+    );
+    // Fails today: this is the platform gap.
+    assert_eq!(
+        walk_deferred_intents(&harness, None).await,
+        expected,
+        "three rows sharing one instant are walked once each, in tiebreaker order"
+    );
+}
+
 /// `dod-degradation`: above the tenant's ceiling the door answers `503
 /// READ_MODEL_OVERLOADED` with `Retry-After` and no rows; another tenant is
 /// unaffected (per-partition shedding).
