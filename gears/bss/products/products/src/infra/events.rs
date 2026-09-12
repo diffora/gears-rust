@@ -1,0 +1,2618 @@
+//! The Foundation event envelope, shared by every create/save/publish door
+//! this gear opens (`design/01-foundation.md` §4.5, P-D-27).
+//!
+//! # One home for the body core, so `SkuCreated` does not duplicate it
+//!
+//! §4.5 fixes one body core across all eight Foundation events — and 04's
+//! announced pair rides the same core —
+//! `{tenantId, entityKind, entityId, internalRevision, lifecycleState}` — and
+//! names anything beyond it where the act that adds it is specified (only
+//! `*Published`, with `publishedVersion`). [`EventBodyCore`] is that shape;
+//! six of the Foundation's eight carry **only** the core, built through this same type,
+//! rather than each redeclaring the five fields a second time.
+//!
+//! # `publishedVersion` sits **outside** the core, not inside it
+//!
+//! §4.5's sentence is two clauses, and the second one is what fixes the
+//! shape: *"every one of the eight carries the same body core"*, and
+//! `ProductPublished`/`SkuPublished` ***additionally*** *carry
+//! `publishedVersion`*. A sixth field on [`EventBodyCore`] would satisfy the
+//! two publish events and break the other six, which would then announce a
+//! `publishedVersion` §4.5 does not put on them — and, worse, would have to
+//! invent a value for it on a `ProductDiscarded`, whose act writes no
+//! version at all. So the extra field lives on
+//! [`PublishedEventBody`], which **borrows** a core and adds the one field
+//! beside it through `serde`'s `flatten`. The wire shape is a single flat
+//! object either way, which is what §4.5 describes; the type is what keeps
+//! "additionally" from quietly becoming "always".
+//!
+//! [`enqueue`] is the core-only entry and [`enqueue_published`] the
+//! publish one; both go through the same private body writer, so neither can
+//! drift from the other on the partition formula or the envelope.
+//!
+//! # One home for the partition formula, so the SKU door does not grow a
+//! second copy
+//!
+//! P-D-22 fixes `partition = hash(tenant_id, aggregate_id) mod N`: every
+//! event of one aggregate lands in one partition of **this gear's own
+//! toolkit outbox**. [`partition_for`] is the one function that computes it;
+//! a door calls it, never re-derives it.
+//!
+//! **It is not the ordering AC #28 gets.** §4.4 is explicit under **P-D-47**:
+//! *"Ordering comes from the broker's partition selection, not from a
+//! column"* — the gear sets no `partition_key`, so the broker's ADR-0002
+//! default applies (`MurmurHash3-32` over `tenant_id`, modulo
+//! `topic.partitions`, re-computed authoritatively at ingest), and the
+//! consumer-visible operand beyond the idempotency window is the **broker's**
+//! read-side `sequence`, server-assigned per `(topic, partition)`. What the
+//! partition below orders is the local pipeline: the toolkit outbox's `seq`,
+//! which the SDK sends on as the producer chain's `meta.sequence`. So this
+//! formula is a *pipeline* invariant that P-D-47 supersedes for the guarantee
+//! a consumer actually reads, and §4.4 records the broker's ordering as
+//! **stronger** than the `(tenant, aggregate)` key the envelope promises. The hash itself is the same idiom
+//! `gears/mini-chat`'s own `InfraOutboxEnqueuer::compute_partition` uses for
+//! its single-operand case (`tenant_id.as_u128() % num_partitions`) —
+//! extended here to **two** operands, since P-D-22's key is the pair, not
+//! `tenant_id` alone. It is a plain, unsalted combination
+//! (`tenant_id.as_u128() ^ aggregate_id.as_u128().rotate_left(64)`, then `%
+//! N`) rather than a cryptographic hash: nothing here needs collision
+//! resistance, only a deterministic, stable-across-restarts spread over `[0,
+//! N)`, and every input is already a high-entropy `Uuid`.
+//!
+//! # What this module does not do
+//!
+//! It does not register a queue, does not run a consumer, and does not
+//! decide **which** running [`toolkit_db::outbox::Outbox`] a door enqueues
+//! against — that instance is [`crate::api::rest::ApiState`]'s to hold and
+//! `crate::gear::BssProductsGear`'s to build and hand to the router.
+//! `gear.rs` registers the queue from this module's own
+//! [`OUTBOX_TABLE_PREFIX`], [`QUEUE_NAME`] and [`PARTITIONS`], so the three
+//! have one definition site between them.
+//!
+//! **Whether delivery happens is decided at boot, not here.** `gear.rs` binds
+//! the broker SDK's producer as this queue's processor when the `ClientHub`
+//! carries an `EventBrokerApi` (**P-D-47**), and [`PendingBrokerProducer`] —
+//! which holds every message rather than publishing it — when it does not.
+//! `crate::infra::broker` owns that fork and records why the second arm exists
+//! at all. This module writes the interim envelope the second arm carries; the
+//! first carries the SDK's, built from `broker`'s typed events.
+//!
+//! @cpt-dod:cpt-cf-bss-products-dod-outbox-eventing:p1
+
+use serde::Serialize;
+use toolkit_db::outbox::{Outbox, OutboxError};
+use toolkit_db::secure::DBRunner;
+
+use crate::infra::broker::{self, EventSink};
+use time::OffsetDateTime;
+use uuid::Uuid;
+
+/// Table-family prefix this door's events are enqueued under.
+///
+/// **The one definition.** `crate::gear` imports this constant rather than
+/// declaring its own, so the prefix the pipeline creates its tables under and
+/// the prefix this door enqueues against cannot disagree. The duplication an
+/// earlier revision of this doc warned about was closed when `gear.rs` came
+/// into scope; the warning outlived it and is removed here.
+pub const OUTBOX_TABLE_PREFIX: &str = "bss_products_outbox";
+
+/// The one queue every Foundation event on this gear's Product/SKU surface
+/// enqueues onto. One queue rather than one per entity: P-D-27's ordering
+/// key is `(tenant, aggregate)`, not `(tenant, aggregate, entity_kind)`, and
+/// splitting the queue would not change the partitioning, only the registry
+/// entry a consumer subscribes to.
+pub const QUEUE_NAME: &str = "bss_products_events";
+
+/// The fixed partition count P-D-22's modulus divides by. Chosen once, here,
+/// so [`partition_for`] and the queue's own registration in `gear.rs` — which
+/// reads this very constant (`Gear::init`) — never disagree on `N`; a
+/// registration with a
+/// different count fails closed with `OutboxError::PartitionCountMismatch`
+/// rather than silently reassigning aggregates to different partitions.
+pub const PARTITIONS: u16 = 8;
+
+/// The queue's processor until Phase 8 binds the real one.
+///
+/// A queue cannot be declared without a handler — every finishing path on
+/// `QueueBuilder` registers a processor factory — but the processor this
+/// queue is *supposed* to have is not this gear's to write. **P-D-47**: the
+/// processor is the **broker SDK's** outbox producer
+/// (`gears/system/event-broker/event-broker-sdk`: a `DbProducer` bound to a
+/// `toolkit_db::outbox` queue, in managed monotonic mode), and the plan puts
+/// that wiring in Phase 8 with `dod-outbox-eventing`.
+///
+/// So this handler exists to make the queue declarable while delivery is
+/// still owed, and it answers [`toolkit_db::outbox::MessageResult::Retry`] to every message:
+/// a transient failure, which leaves the row in the queue and dead-letters
+/// nothing. That is the honest shape of "enqueued, not yet deliverable".
+///
+/// It deliberately does **not** answer `Ok`. An `Ok` would mark the message
+/// delivered and hand it to the vacuum, so every event this gear enqueues
+/// before the producer lands would be reclaimed having reached no broker at
+/// all — a silent loss of exactly the events `fr-registry-eventing-audit`
+/// requires. A queue that visibly cannot deliver is recoverable; one that
+/// quietly discards is not.
+///
+/// # Two things this handler's absence leaves owed, recorded here
+///
+/// 1. **"Emitted" before durable broker acceptance.** The requirement
+///    (`fr-event-delivery-resilience`, registry-side half) is the *handler's*
+///    contract, not a column to mark, so it cannot be discharged until the
+///    handler exists. Today nothing is reported emitted at all, which is the
+///    safe side of that requirement rather than a breach of it.
+/// 2. **The sub-3-second publication-propagation probe is owed**, and the
+///    01/06 split of that budget is open at the PRD owner. No measurement in
+///    the design set establishes it, and none can be taken here: the elapsed
+///    time from a committed act to a consumer-visible event is dominated by
+///    the broker leg this handler does not yet make. Recorded rather than
+///    estimated — a number produced against a handler that holds every
+///    message would describe this stub, not the system.
+pub struct PendingBrokerProducer;
+
+#[async_trait::async_trait]
+impl toolkit_db::outbox::LeasedMessageHandler for PendingBrokerProducer {
+    async fn handle(
+        &self,
+        msg: &toolkit_db::outbox::OutboxMessage,
+    ) -> toolkit_db::outbox::MessageResult {
+        tracing::debug!(
+            queue = QUEUE_NAME,
+            payload_type = %msg.payload_type,
+            "bss-products: no EventBrokerApi was present at boot, so P-D-47's SDK producer \
+             was not bound; holding the message in the queue"
+        );
+        toolkit_db::outbox::MessageResult::Retry
+    }
+}
+
+/// `ProductCreated`'s payload type token, carried on the outbox row and read
+/// back by whatever eventually drains this queue. Named for the event
+/// itself, matching `design/01-foundation.md` §4.5's own name for it (P-D-27
+/// renamed only the two `*DraftSaved` events; `ProductCreated` was never
+/// renamed).
+pub(crate) const PRODUCT_CREATED_PAYLOAD_TYPE: &str = "ProductCreated";
+
+/// `SkuCreated`'s payload type token — [`PRODUCT_CREATED_PAYLOAD_TYPE`]'s SKU
+/// sibling, carrying the identical [`EventBodyCore`] shape (this module's
+/// doc, "One home for the body core").
+pub(crate) const SKU_CREATED_PAYLOAD_TYPE: &str = "SkuCreated";
+
+/// `ProductPublished`'s payload type token (§4.5, `inst-fd-publish-emit`).
+///
+/// It and the three below were each declared inside the door that emits
+/// them, by two slices running in parallel, and each of the four carried a
+/// note saying it belonged here beside [`PRODUCT_CREATED_PAYLOAD_TYPE`].
+/// They are here now, so this gear's payload-type roster reads in one place
+/// and a consumer contract can be checked against one list.
+///
+/// Its body is [`PublishedEventBody`] — the core plus `publishedVersion` —
+/// and it is enqueued through [`enqueue_published`].
+pub(crate) const PRODUCT_PUBLISHED_PAYLOAD_TYPE: &str = "ProductPublished";
+
+/// `ProductDiscarded`'s payload type token (§4.5, `inst-fd-discard`). Its
+/// body is the bare [`EventBodyCore`]: §4.5 names nothing beyond the core
+/// for it, and a discard writes no version there could be a
+/// `publishedVersion` to announce.
+pub(crate) const PRODUCT_DISCARDED_PAYLOAD_TYPE: &str = "ProductDiscarded";
+
+/// `SkuPublished`'s payload type token — [`PRODUCT_PUBLISHED_PAYLOAD_TYPE`]'s
+/// SKU sibling, on the same [`PublishedEventBody`] shape.
+pub(crate) const SKU_PUBLISHED_PAYLOAD_TYPE: &str = "SkuPublished";
+
+/// `SkuDiscarded`'s payload type token — [`PRODUCT_DISCARDED_PAYLOAD_TYPE`]'s
+/// SKU sibling, carrying the bare core for the same reason.
+pub(crate) const SKU_DISCARDED_PAYLOAD_TYPE: &str = "SkuDiscarded";
+
+/// `ProductHeadSaved`'s payload type token (§4.5's roster of eight).
+///
+/// It and its SKU twin below spent two phases declared inside the doors that
+/// emit them, each carrying a note saying it belonged here. Both notes gave
+/// the same reason — that this module was outside that slice's target paths
+/// — and that reason expired with the slice. They are here now, so the
+/// roster of eight reads as one list and [`SCHEMA_REFS`] can be checked
+/// against it.
+pub(crate) const PRODUCT_HEAD_SAVED_PAYLOAD_TYPE: &str = "ProductHeadSaved";
+
+/// `SkuHeadSaved`'s payload type token — [`PRODUCT_HEAD_SAVED_PAYLOAD_TYPE`]'s
+/// SKU sibling, carrying the bare core.
+pub(crate) const SKU_HEAD_SAVED_PAYLOAD_TYPE: &str = "SkuHeadSaved";
+
+/// `ProductDeprecated`'s payload type token — and **not one of §4.5's
+/// eight**.
+///
+/// `design/01` §4.5 records that the floor's three remaining edges —
+/// `published→deprecated`, `deprecated→published`, `deprecated→retired` —
+/// carry *"no event here"*, and that **04 announces them**
+/// (`design/04-lifecycle.md` §3 `inst-lc-deprecate`, its Events roster).
+/// So this token and its SKU twin widen the gear's roster past the
+/// Foundation's eight rather than filling a gap in it, and `events_tests`
+/// names the two rosters separately for exactly that reason: a token
+/// wrongly attributed to §4.5 would make the Foundation's own completeness
+/// check unfalsifiable.
+///
+/// Its body is [`DeprecatedEventBody`] — the core plus `provenance`, which
+/// `dod-deprecation-provenance` requires *"in its payload"*.
+pub(crate) const PRODUCT_DEPRECATED_PAYLOAD_TYPE: &str = "ProductDeprecated";
+
+/// `SkuDeprecated`'s payload type token — [`PRODUCT_DEPRECATED_PAYLOAD_TYPE`]'s
+/// SKU sibling, on the same body shape.
+///
+/// This is the one pricing AC #82 keys on, and `design/04` has the
+/// retirement arm emit it too, with `direct` or `cascaded` provenance
+/// according to who drove the act.
+pub(crate) const SKU_DEPRECATED_PAYLOAD_TYPE: &str = "SkuDeprecated";
+
+/// `ProductUndeprecated` — 04's reversal of the deprecation pair. Not one
+/// of §4.5's eight; sits in `THE_LIFECYCLE_REST`.
+pub(crate) const PRODUCT_UNDEPRECATED_PAYLOAD_TYPE: &str = "ProductUndeprecated";
+
+/// `SkuUndeprecated` — [`PRODUCT_UNDEPRECATED_PAYLOAD_TYPE`]'s SKU sibling.
+pub(crate) const SKU_UNDEPRECATED_PAYLOAD_TYPE: &str = "SkuUndeprecated";
+
+/// `SkuRetired` — initiation, not the flip. Body is [`RetiredEventBody`].
+pub(crate) const SKU_RETIRED_PAYLOAD_TYPE: &str = "SkuRetired";
+
+/// `ProductRetired` — initiation. Row 5 (Product flip) is a different
+/// token and is not added.
+pub(crate) const PRODUCT_RETIRED_PAYLOAD_TYPE: &str = "ProductRetired";
+
+/// `SkuRetirementEffective` — the SKU flip.
+pub(crate) const SKU_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE: &str = "SkuRetirementEffective";
+
+/// `ProductRetirementEffective` — the Product flip (**P-D-115** row 5).
+pub(crate) const PRODUCT_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE: &str = "ProductRetirementEffective";
+
+/// The five taxonomy-tree acts (`dod-taxonomy-events`), all ordering on
+/// [`crate::infra::taxonomy::TAXONOMY_TREE_AGGREGATE`] — one aggregate per
+/// tenant, matching `inst-tc-writer-lock`'s per-tenant serialization. A
+/// per-node key would promise an ordering across nodes that nothing enforces.
+///
+/// **Emitted since 2026-09-03, on both sinks, through [`enqueue_taxonomy`].**
+/// The history matters: they were declared with no emitter twice over —
+/// first because the doors had no route (P-D-106 gave them one), then because
+/// the broker arm had no typed struct for them and the argument ran *"a door
+/// that announces in one deployment shape and is silent in the other"*. That
+/// argument was wrong in one word: the broker arm answers
+/// [`EventsError::NoTypedEvent`], which is a **refusal** that rolls the act
+/// back, not silence — `04`'s retirement events shipped on exactly that
+/// footing. Still, the completion is the typed structs, and `infra::broker`
+/// carries all eight now (**P-D-122**). Declared with their [`SCHEMA_REFS`]
+/// entries together, because that pairing is the one an exhaustive `match`
+/// cannot enforce: a type added without its entry compiles clean,
+/// `schema_ref_for` answers `None`, and the act rolls back at runtime rather
+/// than at build time.
+pub(crate) const CATEGORY_CREATED_PAYLOAD_TYPE: &str = "CategoryCreated";
+/// See [`CATEGORY_CREATED_PAYLOAD_TYPE`].
+pub(crate) const CATEGORY_RENAMED_PAYLOAD_TYPE: &str = "CategoryRenamed";
+/// See [`CATEGORY_CREATED_PAYLOAD_TYPE`].
+pub(crate) const CATEGORY_REPARENTED_PAYLOAD_TYPE: &str = "CategoryReparented";
+/// See [`CATEGORY_CREATED_PAYLOAD_TYPE`].
+pub(crate) const CATEGORY_RETIRED_PAYLOAD_TYPE: &str = "CategoryRetired";
+/// See [`CATEGORY_CREATED_PAYLOAD_TYPE`].
+pub(crate) const CATEGORY_DELETED_PAYLOAD_TYPE: &str = "CategoryDeleted";
+
+/// `CategoryDisplayUpdated` — the category live-value door's act. Orders on
+/// **its own entity's id** (**P-D-116** row 15), not the tree key: display
+/// writes take no writer lock, so the tree key would claim a serialization the
+/// door does not provide; `products_category.mutation_seq` is the door's own
+/// precondition and the row is what serializes the write. The body carries the
+/// token the act spent (`mutationSeq`), which is what a consumer can order on.
+pub(crate) const CATEGORY_DISPLAY_UPDATED_PAYLOAD_TYPE: &str = "CategoryDisplayUpdated";
+
+/// `AttributeDefinitionUpdated` — every applied change to a definition
+/// (`inst-ad-event`: create, deprecate, remove, re-list, label edit; the roster
+/// has no `Created`, so the first write is an update to the roster). Same
+/// aggregate rule as its sibling above: the definition's own id.
+pub(crate) const ATTRIBUTE_DEFINITION_UPDATED_PAYLOAD_TYPE: &str = "AttributeDefinitionUpdated";
+
+/// The metadata map's act, ordering on the owning entity
+/// ([`crate::infra::taxonomy::metadata_aggregate`]): a metadata write takes no
+/// taxonomy lock and rides the entity row's own `If-Match`, so the entity is
+/// both the serialization the door provides and the key the event claims.
+///
+/// Emitted by the metadata door since 2026-09-03, inside the merge's own
+/// transaction. Its own second reason was discharged earlier: the metadata
+/// door's grant pair landed with the door itself under **P-D-106**, and
+/// `dod-metadata-door` is ticked.
+pub(crate) const METADATA_UPDATED_PAYLOAD_TYPE: &str = "MetadataUpdated";
+
+/// `10`'s erasure event (`inst-er-event`), ordering on the erased
+/// principal's `principal_ref` (**P-D-118** item 26: the aggregate is the
+/// thing the act serializes on, and an erasure serializes on the principal's
+/// row). A **defensive cache-buster** whose consumer set is legitimately
+/// empty: no projection in the design set materializes identities, and one
+/// that did would be a `12-consumer-contracts` Lint 7 failure.
+pub(crate) const ACTOR_ERASED_PAYLOAD_TYPE: &str = "ActorErased";
+
+/// `10`'s allow-list event (`inst-pp-allowlist`), ordering on the entry's own
+/// id (**P-D-118** item 26). Carries the entry's id and never its value: the
+/// value is a person-named string, which is what the write block exists to
+/// keep out of records erasure cannot rewrite.
+pub(crate) const PII_ALLOWLIST_CHANGED_PAYLOAD_TYPE: &str = "PiiAllowlistChanged";
+/// `ApprovalDecided` — `design/05` §2 rule 4 and `dod-governance-events`:
+/// emitted **on either verdict**, inside the decide door's own mutating
+/// transaction. One token for approve and reject alike, because the fact
+/// announced is *a principal decided this record* and `verdict` says which;
+/// two tokens would make a consumer subscribe twice to learn one thing.
+///
+/// Ordering is on the **record**, which is the aggregate a decision belongs
+/// to: two verdicts on one record must reach a consumer in the order they
+/// were cast, and verdicts on different records have no order to keep.
+pub(crate) const APPROVAL_DECIDED_PAYLOAD_TYPE: &str = "ApprovalDecided";
+
+/// `BreakGlassElevated` — emitted when a session opens, alongside the
+/// distinct alert channel `dod-breakglass-open` requires. The aggregate is
+/// the **session**: an elevation is a thing with a lifetime, and its open and
+/// its expiry are two facts about one row.
+pub(crate) const BREAK_GLASS_ELEVATED_PAYLOAD_TYPE: &str = "BreakGlassElevated";
+
+/// `BreakGlassExpired` — emitted **exactly once** by the first post-expiry
+/// act, through a CAS flip of the session's `expired_emitted` stamp in the
+/// same transaction as that act's refusal (**P-D-68** arm 2). An untouched
+/// session emits nothing: its expiry is a stored fact, observable as a gauge
+/// with an alerting rule on top (P-D-59's shape), and emitting for a session
+/// nobody called would announce an event with no act behind it.
+pub(crate) const BREAK_GLASS_EXPIRED_PAYLOAD_TYPE: &str = "BreakGlassExpired";
+
+/// `RecognizedUnitUpdated`'s payload type token — `design/03` §4's roster,
+/// the metering-unit set's own event, emitted **in the same transaction** as
+/// the membership mutation (`inst-rs-shape`). Not one of §4.5's eight and
+/// not 04's pair: a third declared roster, 03's, and `events_tests` names it
+/// separately for the same reason as the other two.
+pub(crate) const RECOGNIZED_UNIT_UPDATED_PAYLOAD_TYPE: &str = "RecognizedUnitUpdated";
+
+/// `RecognizedCodeUpdated`'s payload type token — the tax-category and
+/// GL-code sets share it (`design/03` §4).
+pub(crate) const RECOGNIZED_CODE_UPDATED_PAYLOAD_TYPE: &str = "RecognizedCodeUpdated";
+
+/// `PlanTierUpdated`'s payload type token — PRD-named; the tier set's own
+/// event by design.
+pub(crate) const PLAN_TIER_UPDATED_PAYLOAD_TYPE: &str = "PlanTierUpdated";
+
+/// `07`'s three (`dod-reference-events`; P-D-147). Two are SKU-subjected and
+/// ride [`EventBodyCore`] plus the correction's own fields; the third's
+/// aggregate is the tenant's producer set itself — `aggregate_id =
+/// tenant_id` (**P-D-71**, a per-tenant singleton) — and it carries the
+/// entity-less shape `features/catalog-version.md` §7 row 27 registers.
+/// Watermark ingestion emits **no** event (`inst-ws-no-event`): watermarks
+/// are queryable state, not history.
+pub(crate) const SKU_IMMUTABLE_FIELD_CORRECTED_PAYLOAD_TYPE: &str = "SkuImmutableFieldCorrected";
+/// A break-glass correction's evidence row, announced beside the correction.
+pub(crate) const SKU_CORRECTION_OVERRIDE_PAYLOAD_TYPE: &str = "SkuCorrectionOverride";
+/// The tenant's registered producer set moved — a registration or a
+/// retirement.
+pub(crate) const REFERENCE_PRODUCER_SET_CHANGED_PAYLOAD_TYPE: &str = "ReferenceProducerSetChanged";
+
+/// `06`'s four (`dod-cv-events`; **P-D-125** row 27, P-D-148). Three ride the
+/// **catalog-version body** — no entity dimension: the version or the
+/// participant set is the subject — and `SkuCompositionCleared` rides the
+/// entity core beside the `SkuPublished` its own re-publish emits (P-D-60:
+/// two facts, two events). Acks and re-triggers are audit-plane and emit
+/// nothing.
+pub(crate) const CATALOG_VERSION_PUBLISHED_PAYLOAD_TYPE: &str = "CatalogVersionPublished";
+/// A force-completion ceremony closed a timed-out freeze.
+pub(crate) const FREEZE_FORCE_COMPLETED_PAYLOAD_TYPE: &str = "FreezeForceCompleted";
+/// The tenant's registered freeze-participant set moved.
+pub(crate) const FREEZE_PARTICIPANT_SET_CHANGED_PAYLOAD_TYPE: &str = "FreezeParticipantSetChanged";
+/// The inbound composition signal cleared `composition_pending` on a bundle.
+pub(crate) const SKU_COMPOSITION_CLEARED_PAYLOAD_TYPE: &str = "SkuCompositionCleared";
+
+/// **The explicit no-event declaration** `dod-recognized-set-events`
+/// requires: a per-field classification edit on a SKU — its type,
+/// `sellable`, tier, meter pair or accounting codes — emits **no event of its
+/// own**. It rides the Foundation's entity events (`SkuHeadSaved` on the
+/// save, `SkuPublished` on the publish that freezes it), and the three
+/// recognized-set events above announce the *sets*, never one SKU's use of a
+/// member. `events_tests` holds this list against [`SCHEMA_REFS`]: none of
+/// these names is a payload type, and each is a registered SKU column.
+///
+/// A declaration has no runtime reader by design — the test is its reader —
+/// hence the `dead_code` allowance outside `cfg(test)`.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-recognized-set-events:p1
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const SKU_CLASSIFICATION_EDITS_EMIT_NO_EVENT: [&str; 7] = [
+    "sku_type",
+    "sellable",
+    "plan_tier",
+    "metering_unit",
+    "usage_type_ref",
+    "tax_category_ref",
+    "gl_code_ref",
+];
+
+/// `CatalogBulkOperationCompleted`'s payload type token — **slice 09's only
+/// event**, and the fourth declared roster.
+///
+/// `design/09`'s eight state-changing instructions carry an inline *no
+/// event* marker on 01's convention (**P-D-61**): a row's own act is
+/// announced by the 01 and 04 doors it drives, and the batch's history —
+/// the ledger, the `ChangeReport`, 05's approval record — is audit-plane
+/// (**P-D-21**). This one summary is the exception, and it is **additive**:
+/// what it coalesces is per-row progress noise, never a row's domain event,
+/// so `12`'s bookkeeping lint reads it as an addition to the register
+/// rather than as events withheld.
+pub(crate) const CATALOG_BULK_OPERATION_COMPLETED_PAYLOAD_TYPE: &str =
+    "CatalogBulkOperationCompleted";
+
+/// Every payload type this gear emits, paired with the **versioned schema
+/// reference** its envelope carries (P-D-01: *"versioned (semver) schema
+/// references — the broker-native equivalent of `dataschema`"*).
+///
+/// One list rather than a constant beside each token, because the property
+/// that matters is *coverage*: an added event, or a renamed token, must not
+/// be able to reach the wire with no schema reference. [`schema_ref_for`] is
+/// total over this array and nothing else.
+///
+/// **This array is the gear's roster, not the Foundation's.** It carries
+/// `01` §4.5's **eight** and, since `04-lifecycle`'s deprecation act landed,
+/// the **two** that slice announces on the edges §4.5 leaves eventless
+/// ([`PRODUCT_DEPRECATED_PAYLOAD_TYPE`] and its twin). `events_tests` checks
+/// the two rosters separately — §4.5's eight must all be here, and every
+/// token here must belong to one of the two named rosters — because a single
+/// "exactly eight" assertion would either refuse a legitimate addition or,
+/// once widened, stop testing §4.5's completeness at all.
+///
+/// **The version is per event, not per gear.** §4.5's own rule makes an added
+/// optional field a minor bump, so one event's schema may move while the
+/// others stand still; a single gear-wide version would force false bumps or
+/// hide a real one. Every entry reads `1.0.0` today because none has shipped a
+/// second shape.
+pub(crate) const SCHEMA_REFS: &[(&str, &str)] = &[
+    (
+        PRODUCT_CREATED_PAYLOAD_TYPE,
+        "bss-products.ProductCreated.v1.0.0",
+    ),
+    (SKU_CREATED_PAYLOAD_TYPE, "bss-products.SkuCreated.v1.0.0"),
+    (
+        PRODUCT_HEAD_SAVED_PAYLOAD_TYPE,
+        "bss-products.ProductHeadSaved.v1.0.0",
+    ),
+    (
+        SKU_HEAD_SAVED_PAYLOAD_TYPE,
+        "bss-products.SkuHeadSaved.v1.0.0",
+    ),
+    (
+        PRODUCT_PUBLISHED_PAYLOAD_TYPE,
+        "bss-products.ProductPublished.v1.0.0",
+    ),
+    (
+        SKU_PUBLISHED_PAYLOAD_TYPE,
+        "bss-products.SkuPublished.v1.0.0",
+    ),
+    (
+        PRODUCT_DISCARDED_PAYLOAD_TYPE,
+        "bss-products.ProductDiscarded.v1.0.0",
+    ),
+    (
+        SKU_DISCARDED_PAYLOAD_TYPE,
+        "bss-products.SkuDiscarded.v1.0.0",
+    ),
+    (
+        PRODUCT_DEPRECATED_PAYLOAD_TYPE,
+        "bss-products.ProductDeprecated.v1.0.0",
+    ),
+    (
+        SKU_DEPRECATED_PAYLOAD_TYPE,
+        "bss-products.SkuDeprecated.v1.0.0",
+    ),
+    (
+        RECOGNIZED_UNIT_UPDATED_PAYLOAD_TYPE,
+        "bss-products.RecognizedUnitUpdated.v1.0.0",
+    ),
+    (
+        RECOGNIZED_CODE_UPDATED_PAYLOAD_TYPE,
+        "bss-products.RecognizedCodeUpdated.v1.0.0",
+    ),
+    (
+        PLAN_TIER_UPDATED_PAYLOAD_TYPE,
+        "bss-products.PlanTierUpdated.v1.0.0",
+    ),
+    (
+        SKU_IMMUTABLE_FIELD_CORRECTED_PAYLOAD_TYPE,
+        "bss-products.SkuImmutableFieldCorrected.v1.0.0",
+    ),
+    (
+        SKU_CORRECTION_OVERRIDE_PAYLOAD_TYPE,
+        "bss-products.SkuCorrectionOverride.v1.0.0",
+    ),
+    (
+        REFERENCE_PRODUCER_SET_CHANGED_PAYLOAD_TYPE,
+        "bss-products.ReferenceProducerSetChanged.v1.0.0",
+    ),
+    (
+        CATALOG_VERSION_PUBLISHED_PAYLOAD_TYPE,
+        "bss-products.CatalogVersionPublished.v1.0.0",
+    ),
+    (
+        FREEZE_FORCE_COMPLETED_PAYLOAD_TYPE,
+        "bss-products.FreezeForceCompleted.v1.0.0",
+    ),
+    (
+        FREEZE_PARTICIPANT_SET_CHANGED_PAYLOAD_TYPE,
+        "bss-products.FreezeParticipantSetChanged.v1.0.0",
+    ),
+    (
+        SKU_COMPOSITION_CLEARED_PAYLOAD_TYPE,
+        "bss-products.SkuCompositionCleared.v1.0.0",
+    ),
+    (
+        CATALOG_BULK_OPERATION_COMPLETED_PAYLOAD_TYPE,
+        "bss-products.CatalogBulkOperationCompleted.v1.0.0",
+    ),
+    (
+        PRODUCT_UNDEPRECATED_PAYLOAD_TYPE,
+        "bss-products.ProductUndeprecated.v1.0.0",
+    ),
+    (
+        SKU_UNDEPRECATED_PAYLOAD_TYPE,
+        "bss-products.SkuUndeprecated.v1.0.0",
+    ),
+    (SKU_RETIRED_PAYLOAD_TYPE, "bss-products.SkuRetired.v1.0.0"),
+    (
+        PRODUCT_RETIRED_PAYLOAD_TYPE,
+        "bss-products.ProductRetired.v1.0.0",
+    ),
+    (
+        SKU_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE,
+        "bss-products.SkuRetirementEffective.v1.0.0",
+    ),
+    (
+        PRODUCT_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE,
+        "bss-products.ProductRetirementEffective.v1.0.0",
+    ),
+    (
+        CATEGORY_CREATED_PAYLOAD_TYPE,
+        "bss-products.CategoryCreated.v1.0.0",
+    ),
+    (
+        CATEGORY_RENAMED_PAYLOAD_TYPE,
+        "bss-products.CategoryRenamed.v1.0.0",
+    ),
+    (
+        CATEGORY_REPARENTED_PAYLOAD_TYPE,
+        "bss-products.CategoryReparented.v1.0.0",
+    ),
+    (
+        CATEGORY_RETIRED_PAYLOAD_TYPE,
+        "bss-products.CategoryRetired.v1.0.0",
+    ),
+    (
+        CATEGORY_DELETED_PAYLOAD_TYPE,
+        "bss-products.CategoryDeleted.v1.0.0",
+    ),
+    (
+        METADATA_UPDATED_PAYLOAD_TYPE,
+        "bss-products.MetadataUpdated.v1.0.0",
+    ),
+    (
+        CATEGORY_DISPLAY_UPDATED_PAYLOAD_TYPE,
+        "bss-products.CategoryDisplayUpdated.v1.0.0",
+    ),
+    (
+        ATTRIBUTE_DEFINITION_UPDATED_PAYLOAD_TYPE,
+        "bss-products.AttributeDefinitionUpdated.v1.0.0",
+    ),
+    (ACTOR_ERASED_PAYLOAD_TYPE, "bss-products.ActorErased.v1.0.0"),
+    (
+        PII_ALLOWLIST_CHANGED_PAYLOAD_TYPE,
+        "bss-products.PiiAllowlistChanged.v1.0.0",
+    ),
+    (
+        APPROVAL_DECIDED_PAYLOAD_TYPE,
+        "bss-products.ApprovalDecided.v1.0.0",
+    ),
+    (
+        BREAK_GLASS_ELEVATED_PAYLOAD_TYPE,
+        "bss-products.BreakGlassElevated.v1.0.0",
+    ),
+    (
+        BREAK_GLASS_EXPIRED_PAYLOAD_TYPE,
+        "bss-products.BreakGlassExpired.v1.0.0",
+    ),
+];
+
+/// `02`'s eight, as one roster: the tokens [`enqueue_taxonomy`] owns and
+/// [`enqueue`] refuses.
+pub(crate) const TAXONOMY_PAYLOAD_TYPES: [&str; 8] = [
+    CATEGORY_CREATED_PAYLOAD_TYPE,
+    CATEGORY_RENAMED_PAYLOAD_TYPE,
+    CATEGORY_REPARENTED_PAYLOAD_TYPE,
+    CATEGORY_RETIRED_PAYLOAD_TYPE,
+    CATEGORY_DELETED_PAYLOAD_TYPE,
+    CATEGORY_DISPLAY_UPDATED_PAYLOAD_TYPE,
+    ATTRIBUTE_DEFINITION_UPDATED_PAYLOAD_TYPE,
+    METADATA_UPDATED_PAYLOAD_TYPE,
+];
+
+/// `10`'s two, as one roster: the tokens [`enqueue_retention`] owns and
+/// [`enqueue`] refuses. Its own list for the reason every roster in
+/// `events_tests` is its own — folding them into
+/// [`TAXONOMY_PAYLOAD_TYPES`] would put a second slice's events behind a
+/// guard whose error says *"the taxonomy's eight"*.
+pub(crate) const RETENTION_PAYLOAD_TYPES: [&str; 2] = [
+    ACTOR_ERASED_PAYLOAD_TYPE,
+    PII_ALLOWLIST_CHANGED_PAYLOAD_TYPE,
+];
+
+/// `05`'s three, as one roster: the tokens [`enqueue_governance`] owns and
+/// [`enqueue`] refuses.
+///
+/// **Its own array rather than a `match` arm list.** An exhaustive `match`
+/// constrains which arms exist, never which tokens are registered — so a
+/// fourth governance event added with an arm and without a line here would
+/// pass every compile gate and be refused at runtime by
+/// [`enqueue_governance`]'s own guard. `02`, `03`, `04`, `06` and `09` each
+/// keep a roster for the same reason.
+pub(crate) const GOVERNANCE_PAYLOAD_TYPES: [&str; 3] = [
+    APPROVAL_DECIDED_PAYLOAD_TYPE,
+    BREAK_GLASS_ELEVATED_PAYLOAD_TYPE,
+    BREAK_GLASS_EXPIRED_PAYLOAD_TYPE,
+];
+
+/// The versioned schema reference for a payload type, or `None` for a token
+/// [`SCHEMA_REFS`] does not name.
+///
+/// `None` rather than a woven-in default: a default would let an unregistered
+/// event reach a consumer announcing a schema it does not have, which is the
+/// one failure a schema reference exists to prevent. [`enqueue_body`] turns
+/// the `None` into [`EventsError::UnregisteredSchema`] and refuses the write,
+/// so the act rolls back rather than emitting an unidentifiable event.
+#[must_use]
+pub(crate) fn schema_ref_for(payload_type: &str) -> Option<&'static str> {
+    SCHEMA_REFS
+        .iter()
+        .find(|(token, _)| *token == payload_type)
+        .map(|(_, schema_ref)| *schema_ref)
+}
+
+/// Which entity a body core describes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EntityKind {
+    Product,
+    Sku,
+}
+
+impl EntityKind {
+    /// The wire spelling `entityKind` carries.
+    ///
+    /// **The same two bytes the SDK already publishes**, and that is the fact
+    /// to hold on to: `bss_products_sdk::models::EntityKind::as_str` renders
+    /// `"product"`/`"sku"` too, and its own doc calls that *"the stable wire
+    /// spelling, which is also the value the `entity_kind` column and the
+    /// event body core carry"*. Two definitions, one value. An earlier
+    /// revision of this doc called the value provisional while the SDK's
+    /// called it stable; the SDK's is the one a consumer reads, so **stable**
+    /// is the reading, and §4.5's silence on casing is not a licence for this
+    /// copy to drift from it.
+    ///
+    /// Why a second definition at all: this enum is `pub(crate)` and the SDK's
+    /// is the published contract. Collapsing them is a real simplification and
+    /// it is **owed**, not declined — it belongs with slice 12's consumer
+    /// contract, which is where the SDK type's own audience is decided. Until
+    /// then the guard is `events_tests`, which asserts the rendered value
+    /// rather than this function.
+    #[must_use]
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Product => "product",
+            Self::Sku => "sku",
+        }
+    }
+}
+
+/// The body core every Foundation event carries (§4.5, P-D-27):
+/// `{tenantId, entityKind, entityId, internalRevision, lifecycleState}`.
+///
+/// # The consumer contract, stated (`dod-body-core`)
+///
+/// Two sentences a consumer can get wrong while every field is present:
+///
+/// - **`internalRevision` is the value AS COMMITTED by the act** (P-D-29),
+///   never the pre-act number. A consumer correlating an event to an `ETag`
+///   compares the two **directly** — adjusting by one re-introduces exactly
+///   the off-by-one this sentence exists to rule out. For a create, that is
+///   always the freshly inserted row's own `1`, since nothing before this
+///   event could have moved it.
+/// - **`lifecycleState` is the discriminator on
+///   `ProductHeadSaved`/`SkuHeadSaved`**: one event type covers a save on a
+///   `draft`, `published` or `deprecated` head alike, and this field — not
+///   the event type — is what tells them apart.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-body-core:p1
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EventBodyCore {
+    pub tenant_id: Uuid,
+    pub entity_kind: &'static str,
+    pub entity_id: Uuid,
+    pub internal_revision: i64,
+    pub lifecycle_state: &'static str,
+}
+
+/// A `*Published` body: the shared [`EventBodyCore`], **plus** the one field
+/// §4.5 puts on `ProductPublished` and `SkuPublished` beyond it.
+///
+/// See this module's doc, "`publishedVersion` sits outside the core", for
+/// why this is a second type rather than a sixth field on the core. The
+/// `flatten` is what keeps the wire object flat: a consumer reads
+/// `{tenantId, entityKind, entityId, internalRevision, lifecycleState,
+/// publishedVersion}`, one object, exactly as §4.5 writes it.
+///
+/// The core is **borrowed**, not owned: every caller already built one for
+/// its own act and there is nothing here to take ownership of.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PublishedEventBody<'core> {
+    /// The five fields every Foundation event carries.
+    #[serde(flatten)]
+    pub core: &'core EventBodyCore,
+    /// The version the publish act **produced** — `N + 1`, the key the
+    /// frozen `products_entity_version` row was written at, never the `N`
+    /// the head carried before the act. `06` reads this as the content
+    /// pointer and `08`'s projector keys on it, so a body carrying the
+    /// pre-act number would point both at a version that is not the one this
+    /// event announces.
+    pub published_version: i64,
+}
+
+/// A `*Deprecated` body: the shared [`EventBodyCore`], **plus** the
+/// provenance `dod-deprecation-provenance` requires *"in its payload"*.
+///
+/// [`PublishedEventBody`]'s shape and for its reasons — flattened, so a
+/// consumer reads one object, and the core borrowed because the act already
+/// built one.
+///
+/// # Why the provenance is on the wire and not only on the row
+///
+/// A consumer's own reaction differs by cause. `design/04` has the registry
+/// marks and exposes while the new-adoption block is the consumer's
+/// (pricing AC #82), and a consumer that had to re-read the head to learn
+/// whether a deprecation was the operator's or a parent's would be reading a
+/// row that may have moved again by then. The cause travels with the
+/// announcement or it is not reliably knowable.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DeprecatedEventBody<'core> {
+    /// The five fields every event of this gear carries.
+    #[serde(flatten)]
+    pub core: &'core EventBodyCore,
+    /// `direct` or `cascaded` — the value written to the row in the very
+    /// statement this event announces, so the two cannot disagree.
+    pub provenance: &'static str,
+}
+
+/// A retirement-initiation body: the shared [`EventBodyCore`], plus the
+/// fields `design/04` puts on `SkuRetired` / `ProductRetired`. A third
+/// shape, not an overload of the core. `must_migrate_by` is always `None`
+/// in v1; the schema must round-trip that absence, not a null.
+///
+/// `replaced_by` is SKU-only. Product initiation leaves it `None`.
+/// Both flip tokens reuse this shape. Product initiation and
+/// `ProductRetirementEffective` leave `replaced_by` `None`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RetiredEventBody<'core> {
+    /// The five fields every event of this gear carries.
+    #[serde(flatten)]
+    pub core: &'core EventBodyCore,
+    /// The published version the retirement is taken from.
+    pub from_version: i64,
+    /// Operator retirement text (**P-D-46**), not the runner's outcome.
+    pub reason: String,
+    /// Named replacement SKU. `None` on a Product initiation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replaced_by: Option<Uuid>,
+    /// RFC3339 UTC effective instant.
+    pub effective_at: String,
+    /// Always `None` in v1; omitted on the wire so absence round-trips.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub must_migrate_by: Option<String>,
+}
+
+/// Failures constructing or enqueuing an event. Never a `DomainError`: an
+/// event that cannot be serialized or enqueued is an infrastructure fault of
+/// this door's own mutation, not a business refusal of the caller's request
+/// — the caller sees a `500`, mapped by whichever door calls this module,
+/// the same way [`crate::infra::storage::RepoError::Db`] renders one.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum EventsError {
+    /// Every field on [`EventBodyCore`] is a plain scalar, a `Uuid` or a
+    /// `&'static str` — none can fail to serialize as JSON — so this arm is
+    /// unreached in practice. It exists because `serde_json::to_vec` returns
+    /// a `Result`, and this door does not reach for `.expect()` (a denied
+    /// restriction lint) to discharge one it cannot prove is impossible from
+    /// the type alone.
+    #[error("serialize event payload: {0}")]
+    Serialize(#[from] serde_json::Error),
+    #[error("enqueue event: {0}")]
+    Outbox(#[from] OutboxError),
+    /// The projector's inbox row could not be written beside the event
+    /// (P-D-150); the transaction rolls back with it.
+    #[error("record read inbox: {0}")]
+    Inbox(String),
+    /// [`schema_ref_for`] did not recognise the payload type, so the event
+    /// has no versioned schema reference to announce.
+    ///
+    /// Refused rather than defaulted: see [`schema_ref_for`]'s own doc. It is
+    /// unreachable while every caller passes one of [`SCHEMA_REFS`]' thirteen
+    /// tokens, and `events_tests` holds that roster equal to the union of the
+    /// three declared ones — but a fourteenth event added without an entry
+    /// lands here, at its first enqueue, instead of on a consumer.
+    #[error("no versioned schema reference registered for payload type {0}")]
+    UnregisteredSchema(String),
+    /// A `*Published` token reached [`enqueue`], whose body has no
+    /// `publishedVersion` to carry.
+    ///
+    /// The two entry points exist precisely so a publish cannot be announced
+    /// without the version it published at (see [`enqueue_published`]'s own
+    /// doc). Until this variant the wrong entry point emitted a body §4.5 calls
+    /// incomplete and nothing noticed; the SDK's typed events made the
+    /// distinction a compile-time one on the broker path, and this makes it a
+    /// runtime one on both.
+    #[error("{0} carries a publishedVersion and must be enqueued through enqueue_published")]
+    PublishNeedsVersion(String),
+    /// A core-only token reached [`enqueue_published`], which would attach a
+    /// `publishedVersion` §4.5 does not put on it.
+    #[error("{0} carries no publishedVersion and must be enqueued through enqueue")]
+    NotAPublishEvent(String),
+    /// A token that is not one of the two `*Deprecated` events reached
+    /// [`enqueue_deprecated`], which would attach a `provenance` no design
+    /// document puts on it.
+    ///
+    /// The third arm of the same fail-closed rule as the two above: each
+    /// entry point admits exactly the tokens whose body shape it builds, so a
+    /// mis-routed call is a refusal rather than a wire body with a surplus
+    /// field.
+    #[error("{0} carries no provenance and belongs to the entry point owning its body shape")]
+    NotADeprecationEvent(String),
+    /// A `*Deprecated` token reached [`enqueue`], whose core-only body would
+    /// drop the one field `dod-deprecation-provenance` requires on the wire.
+    ///
+    /// [`Self::PublishNeedsVersion`]'s reciprocal for the deprecation pair:
+    /// without it the broker arm's typed-event `match` refuses the mis-route
+    /// while the interim arm writes the bare core straight through — the two
+    /// sinks disagreeing about a rule that is the body shape's, not the
+    /// sink's.
+    #[error("{0} carries a provenance and must be enqueued through enqueue_deprecated")]
+    DeprecationNeedsProvenance(String),
+    /// A token outside the three set events reached [`enqueue_set_event`],
+    /// whose set-shaped body no other event carries — the fourth arm of the
+    /// entry points' fail-closed rule.
+    #[error(
+        "{0} is not a recognized-set event and belongs to the entry point owning its body shape"
+    )]
+    NotASetEvent(String),
+    /// A set token reached [`enqueue`], whose entity-shaped
+    /// [`EventBodyCore`] carries none of the set's operands.
+    ///
+    /// The reciprocal the deprecation pair already had, and its absence
+    /// was the same sink divergence: the broker arm refused a mis-routed
+    /// set token as [`Self::NoTypedEvent`] while the interim arm wrote the
+    /// entity core straight through under the set event's schema
+    /// reference.
+    #[error("{0} carries a set body and must be enqueued through enqueue_set_event")]
+    SetEventNeedsSetBody(String),
+    /// `07`'s two correction events carry the field, the value and the
+    /// ceremony beside the core; the plain-core entry point refuses them
+    /// (`enqueue_correction_event` is theirs).
+    #[error("{0} carries a correction body: use enqueue_correction_event")]
+    CorrectionEventNeedsBody(String),
+    /// `06`'s three version-subjected events carry the catalog-version body,
+    /// not an entity core (P-D-125 row 27); the plain-core entry point
+    /// refuses them (`enqueue_catalog_version_event` is theirs).
+    #[error("{0} carries a catalog-version body: use enqueue_catalog_version_event")]
+    CatalogVersionEventNeedsBody(String),
+    /// A token that is not the batch summary reached
+    /// [`enqueue_bulk_completed`], whose batch-shaped body no other event
+    /// carries — the fifth arm of the entry points' fail-closed rule.
+    #[error(
+        "{0} is not the bulk completion summary and belongs to the entry point owning its body shape"
+    )]
+    NotABulkEvent(String),
+    /// The batch summary reached [`enqueue`], whose entity-shaped core
+    /// carries neither the batch id nor the digest.
+    #[error("{0} carries a batch body and must be enqueued through enqueue_bulk_completed")]
+    BulkEventNeedsBatchBody(String),
+    /// A `*Retired` token reached [`enqueue`], whose core-only body would
+    /// drop `fromVersion`, `effectiveAt` and the rest of the initiation
+    /// payload. The same fail-closed rule as the deprecation pair.
+    #[error("{0} carries a retirement body and must be enqueued through enqueue_retired")]
+    RetirementNeedsBody(String),
+    /// A token that is not one of the two `*Retired` events reached
+    /// [`enqueue_retired`], which would attach fields no other event carries.
+    #[error(
+        "{0} carries no retirement payload and belongs to the entry point owning its body shape"
+    )]
+    NotARetirementEvent(String),
+    /// One of `02`'s eight tokens reached [`enqueue`], which builds the
+    /// entity body core; those carry [`TaxonomyEventBody`] and go through
+    /// [`enqueue_taxonomy`]. Same fail-closed rule as the other five guards.
+    #[error("{0} carries a taxonomy body and must be enqueued through enqueue_taxonomy")]
+    TaxonomyEventNeedsBody(String),
+    /// A token outside `02`'s eight reached [`enqueue_taxonomy`].
+    #[error("{0} is not one of the taxonomy's eight events")]
+    NotATaxonomyEvent(String),
+    /// One of `10`'s two tokens reached [`enqueue`], which builds the entity
+    /// body core; those carry [`RetentionEventBody`] and go through
+    /// [`enqueue_retention`]. Same fail-closed rule as the other six guards.
+    #[error("{0} carries a retention body and must be enqueued through enqueue_retention")]
+    RetentionEventNeedsBody(String),
+    /// A token outside `10`'s two reached [`enqueue_retention`].
+    #[error("{0} is not one of the retention feature's two events")]
+    NotARetentionEvent(String),
+
+    /// A token outside [`GOVERNANCE_PAYLOAD_TYPES`] reached
+    /// [`enqueue_governance`].
+    #[error("{0} is not one of 05's three governance events")]
+    NotAGovernanceEvent(String),
+    /// The broker arm has no [`crate::infra::broker`] typed event for this
+    /// payload type.
+    ///
+    /// Distinct from [`Self::UnregisteredSchema`], which is the interim arm's
+    /// roster miss: the two arms resolve a token through two different rosters
+    /// — `SCHEMA_REFS` there, a `match` over the thirteen typed events here — and
+    /// naming both misses the same thing would send a reader to the wrong one.
+    /// A fourteenth event registered in `SCHEMA_REFS` but not wired here reaches
+    /// this variant, and a no-broker deployment would have emitted it.
+    #[error("no typed event is declared for payload type {0} on the broker arm")]
+    NoTypedEvent(String),
+    /// The broker SDK refused the enqueue.
+    ///
+    /// Reached only on [`crate::infra::broker::EventSink::Broker`]. The door
+    /// maps it exactly as it maps [`Self::Outbox`]: the act's transaction
+    /// rolls back, because an entity row whose announcement was refused is the
+    /// split `dod-create-doors` exists to prevent.
+    #[error("the broker producer refused the enqueue: {0}")]
+    Broker(#[from] event_broker_sdk::EventBrokerError),
+}
+
+/// The envelope every enqueued event is wrapped in.
+///
+/// # Why the obligations sit here and not on the broker's own envelope
+///
+/// P-D-01 fixes **five** semantic obligations and calls them
+/// **envelope-agnostic**: versioned (semver) schema references, `vN`->`vN+1`
+/// consumer compatibility, correlation/causation, per-aggregate ordering keys
+/// `(tenant, aggregate)`, and pseudonymous actors. The fifth of those is not
+/// this slice's: §4.5 puts the schema-versioning discipline and the
+/// replay/bootstrap path in **slice 12**, and leaves the Foundation the
+/// envelope itself. An earlier revision of this paragraph said "four" and
+/// dropped the compatibility clause outright, which is why it is spelled out
+/// here.
+///
+/// Measured against the platform as it stands, the broker's `Event`
+/// (`gears/system/event-broker/event-broker-sdk`, `models::Event`) carries
+/// `id`, `type_id`, `topic`, `tenant_id`, `source`, `subject`,
+/// `subject_type`, `partition_key`, `occurred_at`, `trace_parent` and `data`
+/// — and **no field for a causation id, and none for an actor**. Counted
+/// honestly, that is **two values with no broker slot**, not three
+/// obligations: a schema reference maps onto `type_id`, an ordering key onto
+/// `partition_key`, and a correlation id onto `trace_parent`. The two that
+/// do not map are discharged here, in the payload this gear controls, which
+/// is exactly what "envelope-agnostic" licenses.
+///
+/// # This envelope is an interim shape, not one whose fields lift
+///
+/// It is tempting to read the struct below as a draft of what the producer
+/// will hand the broker. It is not. `producer::outbox::ProducerOutboxEnvelope`
+/// owns **both** ends already: it declares its own field set, stamps its own
+/// fixed payload-type token (`PRODUCER_OUTBOX_PAYLOAD_TYPE`, a versioned MIME
+/// string) and carries its own `broker_partition`, which the SDK computes from
+/// the broker's rule and not from [`partition_for`]. When P-D-47's producer is
+/// bound to [`QUEUE_NAME`] it will neither deserialize the rows this module
+/// writes nor agree with the partition they were routed on. So the honest
+/// reading is that the SDK **replaces** this envelope rather than lifting
+/// fields out of it, and the rows written before that point are this gear's
+/// own record, not a consumer's.
+///
+/// # `data` is a nested object, not a flattening
+///
+/// The body core keeps its own object rather than being `flatten`ed beside
+/// these five, so a consumer reading §4.5's five fields reads them from one
+/// place whatever the envelope grows next, and an envelope field can never
+/// collide with a body field of the same name.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EventEnvelope<'body, B: Serialize> {
+    /// The event's own identity **on this interim envelope**, minted per
+    /// enqueue: a consumer that sees this id twice has seen one enqueue twice.
+    ///
+    /// **Not P-D-47's idempotency key, and it cannot become one.** That key is
+    /// the id on the broker's `Event`, and the SDK mints it itself:
+    /// `producer::event_factory` sets `id: Uuid::now_v7()` unconditionally,
+    /// while `ProducerOutbox::enqueue` takes a `TypedEvent` and no id — there
+    /// is no parameter through which a value minted here could reach it. So
+    /// when the producer lands there will be **two** ids per event, and the
+    /// consumer-visible one will be the SDK's, not this. Read this field as
+    /// what it is: the interim envelope's own handle, useful for correlating
+    /// an outbox row with the act that wrote it, and superseded the moment
+    /// P-D-47's producer is bound.
+    ///
+    /// Minted rather than derived from the act, because the same act may
+    /// legitimately emit more than one event and a derived id would make them
+    /// indistinguishable.
+    pub event_id: Uuid,
+    /// The versioned schema reference for [`Self::data`]'s shape
+    /// ([`SCHEMA_REFS`]).
+    pub schema_ref: &'static str,
+    /// The W3C trace id of the request that caused this event, where this
+    /// gear is running inside a traced request.
+    ///
+    /// **Read from the ambient span, never minted** ([`correlation_id`]). A
+    /// minted-per-event value would correlate nothing while reading, to an
+    /// operator, as though it did — the same judgement
+    /// `repo::AuditCommon::correlation_id` records for the audit trail's own
+    /// column, and the reason this field is an `Option` that is honestly
+    /// absent rather than a `Uuid` that is always present and usually a lie.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    /// The event that caused this one.
+    ///
+    /// **`None` for every event this gear emits, and that is the measurement
+    /// rather than an omission**: every one of them is caused by an operator
+    /// request, not by another event, so there is no event id to name. It
+    /// becomes populated the first time a slice emits an event *in reaction
+    /// to* one. Carrying the field with an honest `None` is what lets a
+    /// consumer tell "not caused by an event" from "nobody filled this in";
+    /// minting the correlation id into it would collapse the distinction the
+    /// pair exists to draw.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub causation_id: Option<Uuid>,
+    /// The acting principal's **pseudonymous** ref — never a direct operator
+    /// identity. The value slice 10's identity-reference map minted; the same
+    /// one the act's audit row would carry.
+    pub actor_ref: Uuid,
+    /// The event body: [`EventBodyCore`], or [`PublishedEventBody`] for the
+    /// two publish events.
+    pub data: &'body B,
+}
+
+/// The W3C trace id of the request in scope, where there is one.
+///
+/// `None` outside a traced request — a background task, or a test that
+/// installed no subscriber — which is why every caller carries it as an
+/// `Option` rather than substituting a value.
+///
+/// The idiom, not an invention: `gears/mini-chat`'s
+/// `domain::service::current_otel_trace_id` reads the same id the same way,
+/// and `toolkit`'s `api::canonical_error_layer::extract_trace_id` puts the
+/// same 32-hex trace-id segment on every canonical error. Rendering it as
+/// that hex string rather than as a `Uuid` is what keeps this value
+/// **grep-equal** to the one in the access log, the `OTel` span and the error
+/// envelope; a `Uuid` rendering of the same 128 bits would carry hyphens and
+/// join to none of them by string equality.
+///
+/// # What has to be true of the host for this to answer anything
+///
+/// This reads a layer it does not install. Three conditions of the *host*
+/// binary, none of them this gear's to satisfy, each of which makes every
+/// answer here a permanent `None`:
+///
+/// - `toolkit::telemetry::init_tracing` — the only builder of the
+///   `OpenTelemetryLayer` in this workspace (`libs/toolkit/src/telemetry/
+///   init.rs:184`) — is `#[cfg(feature = "otel")]`, so it is absent from the
+///   API of a `toolkit` built without it. That feature is in `toolkit`'s own
+///   `default` set (`libs/toolkit/Cargo.toml:28`), so this bites only a host
+///   that opts out with `default-features = false`;
+/// - it returns `Err` outright when `opentelemetry.tracing.enabled` is false;
+/// - it otherwise builds an OTLP exporter from the resolved endpoint, and a
+///   failure there is an `Err` too.
+///
+/// In each case the host's subscriber carries no `OpenTelemetry` layer,
+/// `Span::current()` has no `OTel` context to hand back, and this function
+/// answers `None` for every request for the life of the process — the events
+/// still emit, and their `correlationId` is absent rather than wrong. The
+/// in-crate positive control installs the layer itself precisely so that a
+/// `None` caused by *this* function, rather than by the host, is a red test.
+#[must_use]
+pub(crate) fn correlation_id() -> Option<String> {
+    use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+
+    let context = tracing::Span::current().context();
+    let trace_id = opentelemetry::trace::TraceContextExt::span(&context)
+        .span_context()
+        .trace_id();
+    (trace_id != opentelemetry::trace::TraceId::INVALID).then(|| trace_id.to_string())
+}
+
+/// The full W3C `traceparent` of the request in scope, where there is one.
+///
+/// [`correlation_id`]'s sibling, and **not** interchangeable with it. That one
+/// answers the bare 32-hex trace id, which is the value the interim envelope
+/// calls `correlationId` and which stays grep-equal to the access log. This one
+/// answers the header form — `00-<trace-id>-<span-id>-<flags>` — because that
+/// is what the broker's `Event.trace_parent` field is named for, and putting a
+/// bare trace id in a field called `trace_parent` would be a claim about the
+/// value that is not true of it.
+///
+/// `None` under exactly the conditions [`correlation_id`] answers `None`; see
+/// that function's doc for the three host preconditions.
+#[must_use]
+pub(crate) fn traceparent() -> Option<String> {
+    use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+
+    let context = tracing::Span::current().context();
+    let span = opentelemetry::trace::TraceContextExt::span(&context);
+    let span_context = span.span_context();
+    (span_context.trace_id() != opentelemetry::trace::TraceId::INVALID).then(|| {
+        format!(
+            "00-{}-{}-{:02x}",
+            span_context.trace_id(),
+            span_context.span_id(),
+            span_context.trace_flags().to_u8()
+        )
+    })
+}
+
+/// P-D-22's partition formula, the one place it is computed.
+///
+/// `N` is fixed at [`PARTITIONS`]; a door never passes its own count, which
+/// is what keeps this the single source `gear.rs`'s queue registration — made,
+/// not eventual — is kept equal to.
+#[must_use]
+pub(crate) fn partition_for(tenant_id: Uuid, aggregate_id: Uuid) -> u32 {
+    let combined = tenant_id.as_u128() ^ aggregate_id.as_u128().rotate_left(64);
+    #[allow(clippy::cast_possible_truncation)]
+    {
+        (combined % u128::from(PARTITIONS)) as u32
+    }
+}
+
+/// Enqueue one Foundation event on [`QUEUE_NAME`], in the caller's own
+/// transaction.
+///
+/// `runner` MUST be the door's own mutation transaction — the same one the
+/// entity insert this event announces just committed into — since
+/// `dod-create-doors` requires the entity row and its creation outbox row in
+/// one transaction. This function does not open one of its own, for the same
+/// reason every function in `infra::storage::repo` does not (see that
+/// module's doc): it takes whatever runner the caller hands it.
+///
+/// # Errors
+/// [`EventsError::Serialize`] if `core` cannot be rendered as JSON (see that
+/// variant's own doc for why this is unreached in practice);
+/// [`EventsError::Outbox`] on a queue/partition/storage failure from
+/// [`Outbox::enqueue`].
+pub(crate) async fn enqueue(
+    sink: &EventSink,
+    runner: &(impl DBRunner + Sync),
+    aggregate_id: Uuid,
+    payload_type: &str,
+    core: &EventBodyCore,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    if matches!(
+        payload_type,
+        PRODUCT_PUBLISHED_PAYLOAD_TYPE | SKU_PUBLISHED_PAYLOAD_TYPE
+    ) {
+        return Err(EventsError::PublishNeedsVersion(payload_type.to_owned()));
+    }
+    if matches!(
+        payload_type,
+        PRODUCT_DEPRECATED_PAYLOAD_TYPE | SKU_DEPRECATED_PAYLOAD_TYPE
+    ) {
+        return Err(EventsError::DeprecationNeedsProvenance(
+            payload_type.to_owned(),
+        ));
+    }
+    if matches!(
+        payload_type,
+        RECOGNIZED_UNIT_UPDATED_PAYLOAD_TYPE
+            | RECOGNIZED_CODE_UPDATED_PAYLOAD_TYPE
+            | PLAN_TIER_UPDATED_PAYLOAD_TYPE
+            | REFERENCE_PRODUCER_SET_CHANGED_PAYLOAD_TYPE
+    ) {
+        return Err(EventsError::SetEventNeedsSetBody(payload_type.to_owned()));
+    }
+    if matches!(
+        payload_type,
+        SKU_IMMUTABLE_FIELD_CORRECTED_PAYLOAD_TYPE | SKU_CORRECTION_OVERRIDE_PAYLOAD_TYPE
+    ) {
+        return Err(EventsError::CorrectionEventNeedsBody(
+            payload_type.to_owned(),
+        ));
+    }
+    if matches!(
+        payload_type,
+        CATALOG_VERSION_PUBLISHED_PAYLOAD_TYPE
+            | FREEZE_FORCE_COMPLETED_PAYLOAD_TYPE
+            | FREEZE_PARTICIPANT_SET_CHANGED_PAYLOAD_TYPE
+    ) {
+        return Err(EventsError::CatalogVersionEventNeedsBody(
+            payload_type.to_owned(),
+        ));
+    }
+    if payload_type == CATALOG_BULK_OPERATION_COMPLETED_PAYLOAD_TYPE {
+        return Err(EventsError::BulkEventNeedsBatchBody(
+            payload_type.to_owned(),
+        ));
+    }
+    if matches!(
+        payload_type,
+        PRODUCT_RETIRED_PAYLOAD_TYPE
+            | SKU_RETIRED_PAYLOAD_TYPE
+            | SKU_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE
+            | PRODUCT_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE
+    ) {
+        return Err(EventsError::RetirementNeedsBody(payload_type.to_owned()));
+    }
+    if TAXONOMY_PAYLOAD_TYPES.contains(&payload_type) {
+        return Err(EventsError::TaxonomyEventNeedsBody(payload_type.to_owned()));
+    }
+    if RETENTION_PAYLOAD_TYPES.contains(&payload_type) {
+        return Err(EventsError::RetentionEventNeedsBody(
+            payload_type.to_owned(),
+        ));
+    }
+    record_inbox(
+        runner,
+        core.tenant_id,
+        aggregate_id,
+        payload_type,
+        core,
+        actor_ref,
+    )
+    .await?;
+    match sink {
+        EventSink::Interim(outbox) => {
+            enqueue_body(
+                outbox,
+                runner,
+                core.tenant_id,
+                aggregate_id,
+                payload_type,
+                core,
+                actor_ref,
+            )
+            .await
+        }
+        EventSink::Broker(producer) => {
+            let body = broker::CatalogEventCore::from_core(core, actor_ref);
+            match payload_type {
+                PRODUCT_CREATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::ProductCreated { core: body })
+                        .await
+                }
+                SKU_CREATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::SkuCreated { core: body })
+                        .await
+                }
+                PRODUCT_HEAD_SAVED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::ProductHeadSaved { core: body })
+                        .await
+                }
+                SKU_HEAD_SAVED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::SkuHeadSaved { core: body })
+                        .await
+                }
+                PRODUCT_DISCARDED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::ProductDiscarded { core: body })
+                        .await
+                }
+                SKU_DISCARDED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::SkuDiscarded { core: body })
+                        .await
+                }
+                PRODUCT_UNDEPRECATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::ProductUndeprecated { core: body })
+                        .await
+                }
+                SKU_UNDEPRECATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::SkuUndeprecated { core: body })
+                        .await
+                }
+                SKU_COMPOSITION_CLEARED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::SkuCompositionCleared { core: body })
+                        .await
+                }
+                // Not `UnregisteredSchema`: that variant's own doc says
+                // `schema_ref_for` did not recognise the token, and on this arm
+                // `schema_ref_for` was never called. The condition here is "no
+                // `TypedEvent` is declared for this token", which is a different
+                // repair — the rosters are equal today and a fourteenth event
+                // would have to be added to both.
+                other => return Err(EventsError::NoTypedEvent(other.to_owned())),
+            }
+            .map(|_| ())
+            .map_err(EventsError::Broker)
+        }
+    }
+}
+
+/// Enqueue a `*Deprecated` event — [`enqueue`]'s twin for the one body shape
+/// that carries a cause ([`DeprecatedEventBody`]).
+///
+/// # Why a third function and not a `provenance: Option<&str>` on [`enqueue`]
+///
+/// [`enqueue_published`]'s own argument, unchanged: an `Option` would make
+/// every other `enqueue` call site pass a `None` that means nothing to
+/// them, and would let a `*Deprecated` event reach the wire with no
+/// provenance — the one field `dod-deprecation-provenance` requires it to
+/// carry. The token guard below is the same fail-closed shape: this function
+/// refuses any payload type that is not one of the two, so a caller cannot
+/// route a `ProductCreated` through the provenance-carrying body.
+///
+/// # Errors
+///
+/// [`EventsError::NotADeprecationEvent`] for any other token;
+/// otherwise as [`enqueue`].
+pub(crate) async fn enqueue_deprecated(
+    sink: &EventSink,
+    runner: &(impl DBRunner + Sync),
+    aggregate_id: Uuid,
+    payload_type: &str,
+    core: &EventBodyCore,
+    provenance: &'static str,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    if !matches!(
+        payload_type,
+        PRODUCT_DEPRECATED_PAYLOAD_TYPE | SKU_DEPRECATED_PAYLOAD_TYPE
+    ) {
+        return Err(EventsError::NotADeprecationEvent(payload_type.to_owned()));
+    }
+    record_inbox(
+        runner,
+        core.tenant_id,
+        aggregate_id,
+        payload_type,
+        &DeprecatedEventBody { core, provenance },
+        actor_ref,
+    )
+    .await?;
+    match sink {
+        EventSink::Interim(outbox) => {
+            let body = DeprecatedEventBody { core, provenance };
+            enqueue_body(
+                outbox,
+                runner,
+                core.tenant_id,
+                aggregate_id,
+                payload_type,
+                &body,
+                actor_ref,
+            )
+            .await
+        }
+        EventSink::Broker(producer) => {
+            let body = broker::CatalogEventCore::from_core(core, actor_ref);
+            let provenance = provenance.to_owned();
+            match payload_type {
+                PRODUCT_DEPRECATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(
+                            runner,
+                            broker::ProductDeprecated {
+                                core: body,
+                                provenance,
+                            },
+                        )
+                        .await
+                }
+                SKU_DEPRECATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(
+                            runner,
+                            broker::SkuDeprecated {
+                                core: body,
+                                provenance,
+                            },
+                        )
+                        .await
+                }
+                // Unreachable while the guard above owns the condition; kept
+                // total so a third `*Deprecated` token added to that guard and
+                // forgotten here is a refusal, not a body published under
+                // `sku_deprecated.v1`'s id with the wrong subject.
+                other => return Err(EventsError::NoTypedEvent(other.to_owned())),
+            }
+            .map(|_| ())
+            .map_err(EventsError::Broker)
+        }
+    }
+}
+
+/// A recognized-set event's body: which set, which member, which state it
+/// now carries. Set-shaped, not entity-shaped — no id, no revision, no
+/// lifecycle state — so it is its own type rather than a
+/// [`EventBodyCore`] wearing blanks.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SetEventBody<'a> {
+    /// The owning tenant — the ordering key's first half.
+    pub tenant_id: Uuid,
+    /// The set — the ordering key's second half.
+    pub set_kind: &'a str,
+    /// The member the mutation touched.
+    pub member_code: &'a str,
+    /// The member's state as this mutation committed it.
+    pub state: &'a str,
+}
+
+/// Enqueue a recognized-set event — the fourth entry point, owning the
+/// set-shaped body the same way [`enqueue_deprecated`] owns the
+/// provenance-carrying one.
+///
+/// # The interim aggregate id is derived, and the derivation is the ordering
+///
+/// `design/03` §4 keys these events `(tenant, set_kind)`, and the interim
+/// outbox partitions by `(tenant, aggregate_id)` — so the aggregate id is a
+/// **v5 UUID of the set kind in the tenant's namespace**: deterministic, one
+/// per `(tenant, set_kind)`, which makes the outbox's ordering exactly the
+/// declared key. The broker arm needs no such derivation — its typed events
+/// carry the set kind as the subject.
+///
+/// # Errors
+///
+/// [`EventsError::NotASetEvent`] for any token outside the three; otherwise
+/// as [`enqueue`].
+pub(crate) async fn enqueue_set_event(
+    sink: &EventSink,
+    runner: &(impl DBRunner + Sync),
+    payload_type: &str,
+    body: SetEventBody<'_>,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    if !matches!(
+        payload_type,
+        RECOGNIZED_UNIT_UPDATED_PAYLOAD_TYPE
+            | RECOGNIZED_CODE_UPDATED_PAYLOAD_TYPE
+            | PLAN_TIER_UPDATED_PAYLOAD_TYPE
+    ) {
+        return Err(EventsError::NotASetEvent(payload_type.to_owned()));
+    }
+    record_inbox(
+        runner,
+        body.tenant_id,
+        body.tenant_id,
+        payload_type,
+        &body,
+        actor_ref,
+    )
+    .await?;
+    match sink {
+        EventSink::Interim(outbox) => {
+            let aggregate_id = Uuid::new_v5(&body.tenant_id, body.set_kind.as_bytes());
+            enqueue_body(
+                outbox,
+                runner,
+                body.tenant_id,
+                aggregate_id,
+                payload_type,
+                &body,
+                actor_ref,
+            )
+            .await
+        }
+        EventSink::Broker(producer) => {
+            let tenant_id = body.tenant_id;
+            let set_kind = body.set_kind.to_owned();
+            let member_code = body.member_code.to_owned();
+            let state = body.state.to_owned();
+            match payload_type {
+                RECOGNIZED_UNIT_UPDATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(
+                            runner,
+                            broker::RecognizedUnitUpdated {
+                                tenant_id,
+                                set_kind,
+                                member_code,
+                                state,
+                                actor_ref,
+                            },
+                        )
+                        .await
+                }
+                RECOGNIZED_CODE_UPDATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(
+                            runner,
+                            broker::RecognizedCodeUpdated {
+                                tenant_id,
+                                set_kind,
+                                member_code,
+                                state,
+                                actor_ref,
+                            },
+                        )
+                        .await
+                }
+                PLAN_TIER_UPDATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(
+                            runner,
+                            broker::PlanTierUpdated {
+                                tenant_id,
+                                set_kind,
+                                member_code,
+                                state,
+                                actor_ref,
+                            },
+                        )
+                        .await
+                }
+                // Total for the guard's own reason: a fourth set event added
+                // to the guard and forgotten here is a refusal, not a body
+                // published under another event's type id.
+                other => return Err(EventsError::NoTypedEvent(other.to_owned())),
+            }
+            .map(|_| ())
+            .map_err(EventsError::Broker)
+        }
+    }
+}
+
+/// The batch-completion summary's body: which batch, and the digest over
+/// the ledger it completed.
+///
+/// Batch-shaped, like the set events are set-shaped: there is no entity id,
+/// no revision and no lifecycle state, because the subject is the batch.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BulkCompletedEventBody<'a> {
+    /// The owning tenant.
+    pub tenant_id: Uuid,
+    /// The batch the summary closes — the subject.
+    pub batch_id: Uuid,
+    /// The import door's idempotency operand, echoed so a caller that only
+    /// holds its own key can match the summary to its request.
+    pub batch_key: &'a str,
+    /// The digest over the completed ledger. **What it covers is `§7`'s
+    /// open question**, not this type's: the design names *"the ledger
+    /// digest"* and defines no computation, so the producer states its
+    /// covered set and the register carries the question.
+    pub ledger_digest: &'a str,
+    /// How many rows the ledger closed, by the four terminal dispositions —
+    /// the summary a consumer would otherwise re-derive by reading the whole
+    /// ledger back.
+    pub rows: BulkCompletedRows,
+}
+
+/// The completion summary's per-disposition counts.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BulkCompletedRows {
+    /// Rows whose entity published.
+    pub published: u32,
+    /// Rows whose live-entity operation applied.
+    pub applied: u32,
+    /// Rows that were already in the requested state.
+    pub no_op: u32,
+    /// Rows that failed row-locally. **A batch with failed rows still
+    /// completes** — parts-succeeded is the honest end state.
+    pub failed: u32,
+}
+
+/// Enqueue the batch-completion summary — the fifth entry point, owning the
+/// batch-shaped body.
+///
+/// # Errors
+///
+/// [`EventsError::NotABulkEvent`] for any other token; otherwise as
+/// [`enqueue`].
+pub(crate) async fn enqueue_bulk_completed(
+    sink: &EventSink,
+    runner: &(impl DBRunner + Sync),
+    payload_type: &str,
+    body: BulkCompletedEventBody<'_>,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    if payload_type != CATALOG_BULK_OPERATION_COMPLETED_PAYLOAD_TYPE {
+        return Err(EventsError::NotABulkEvent(payload_type.to_owned()));
+    }
+    match sink {
+        EventSink::Interim(outbox) => {
+            enqueue_body(
+                outbox,
+                runner,
+                body.tenant_id,
+                body.batch_id,
+                payload_type,
+                &body,
+                actor_ref,
+            )
+            .await
+        }
+        EventSink::Broker(producer) => producer
+            .enqueue(
+                runner,
+                broker::CatalogBulkOperationCompleted {
+                    tenant_id: body.tenant_id,
+                    batch_id: body.batch_id,
+                    batch_key: body.batch_key.to_owned(),
+                    ledger_digest: body.ledger_digest.to_owned(),
+                    published: body.rows.published,
+                    applied: body.rows.applied,
+                    no_op: body.rows.no_op,
+                    failed: body.rows.failed,
+                    actor_ref,
+                },
+            )
+            .await
+            .map(|_| ())
+            .map_err(EventsError::Broker),
+    }
+}
+
+/// [`enqueue`] for the two `*Published` events, whose body is the core
+/// **plus** `publishedVersion` (§4.5, [`PublishedEventBody`]).
+///
+/// A separate entry point rather than an `Option<i64>` on [`enqueue`]: the
+/// six core-only events have no version to pass and would each have to write
+/// a `None` that means nothing, and a publish that passed `None` by mistake
+/// would silently emit a body §4.5 says is incomplete. Here the field is a
+/// plain `i64` the caller cannot omit.
+///
+/// `published_version` MUST be the **post-act** version — the key the frozen
+/// row was written at; see [`PublishedEventBody::published_version`].
+///
+/// # Errors
+/// [`EventsError::Serialize`] and [`EventsError::Outbox`], exactly as
+/// [`enqueue`] raises them.
+pub(crate) async fn enqueue_published(
+    sink: &EventSink,
+    runner: &(impl DBRunner + Sync),
+    aggregate_id: Uuid,
+    payload_type: &str,
+    core: &EventBodyCore,
+    published_version: i64,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    // Hoisted above the match, like [`enqueue`]'s twin guard. It used to sit
+    // inside the `Interim` arm while the `Broker` arm relied on its own
+    // fallthrough — two copies of one rule, so a third publish event added to
+    // the broker's match and forgotten in this list would have been accepted on
+    // one arm and refused on the other.
+    if !matches!(
+        payload_type,
+        PRODUCT_PUBLISHED_PAYLOAD_TYPE | SKU_PUBLISHED_PAYLOAD_TYPE
+    ) {
+        return Err(EventsError::NotAPublishEvent(payload_type.to_owned()));
+    }
+    record_inbox(
+        runner,
+        core.tenant_id,
+        aggregate_id,
+        payload_type,
+        &PublishedEventBody {
+            core,
+            published_version,
+        },
+        actor_ref,
+    )
+    .await?;
+    match sink {
+        EventSink::Interim(outbox) => {
+            let body = PublishedEventBody {
+                core,
+                published_version,
+            };
+            enqueue_body(
+                outbox,
+                runner,
+                core.tenant_id,
+                aggregate_id,
+                payload_type,
+                &body,
+                actor_ref,
+            )
+            .await
+        }
+        EventSink::Broker(producer) => {
+            let body = broker::CatalogEventCore::from_core(core, actor_ref);
+            match payload_type {
+                PRODUCT_PUBLISHED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(
+                            runner,
+                            broker::ProductPublished {
+                                core: body,
+                                published_version,
+                            },
+                        )
+                        .await
+                }
+                SKU_PUBLISHED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(
+                            runner,
+                            broker::SkuPublished {
+                                core: body,
+                                published_version,
+                            },
+                        )
+                        .await
+                }
+                // Unreachable while the hoisted guard above owns the
+                // condition; kept so the `match` stays total if the roster of
+                // publish events ever grows past that guard's list.
+                other => return Err(EventsError::NotAPublishEvent(other.to_owned())),
+            }
+            .map(|_| ())
+            .map_err(EventsError::Broker)
+        }
+    }
+}
+
+/// Enqueue a `*Retired` event — [`enqueue`]'s twin for the initiation
+/// body (`fromVersion`, `effectiveAt`, the operator reason). The lead-window
+/// re-announcement uses this same entry: a new row, same identity, new
+/// `fromVersion`.
+///
+/// # Errors
+///
+/// [`EventsError::NotARetirementEvent`] for any other token; otherwise as
+/// [`enqueue`].
+pub(crate) async fn enqueue_retired(
+    sink: &EventSink,
+    runner: &(impl DBRunner + Sync),
+    aggregate_id: Uuid,
+    payload_type: &str,
+    body: RetiredEventBody<'_>,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    if !matches!(
+        payload_type,
+        PRODUCT_RETIRED_PAYLOAD_TYPE
+            | SKU_RETIRED_PAYLOAD_TYPE
+            | SKU_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE
+            | PRODUCT_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE
+    ) {
+        return Err(EventsError::NotARetirementEvent(payload_type.to_owned()));
+    }
+    record_inbox(
+        runner,
+        body.core.tenant_id,
+        aggregate_id,
+        payload_type,
+        &body,
+        actor_ref,
+    )
+    .await?;
+    match sink {
+        EventSink::Interim(outbox) => {
+            enqueue_body(
+                outbox,
+                runner,
+                body.core.tenant_id,
+                aggregate_id,
+                payload_type,
+                &body,
+                actor_ref,
+            )
+            .await
+        }
+        EventSink::Broker(producer) => {
+            let core = broker::CatalogEventCore::from_core(body.core, actor_ref);
+            let from_version = body.from_version;
+            let reason = body.reason.clone();
+            let replaced_by = body.replaced_by;
+            let effective_at = body.effective_at.clone();
+            let must_migrate_by = body.must_migrate_by.clone();
+            match payload_type {
+                PRODUCT_RETIRED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(
+                            runner,
+                            broker::ProductRetired {
+                                core,
+                                from_version,
+                                reason,
+                                replaced_by,
+                                effective_at,
+                                must_migrate_by,
+                            },
+                        )
+                        .await
+                }
+                SKU_RETIRED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(
+                            runner,
+                            broker::SkuRetired {
+                                core,
+                                from_version,
+                                reason,
+                                replaced_by,
+                                effective_at,
+                                must_migrate_by,
+                            },
+                        )
+                        .await
+                }
+                SKU_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(
+                            runner,
+                            broker::SkuRetirementEffective {
+                                core,
+                                from_version,
+                                reason,
+                                replaced_by,
+                                effective_at,
+                                must_migrate_by,
+                            },
+                        )
+                        .await
+                }
+                PRODUCT_RETIREMENT_EFFECTIVE_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(
+                            runner,
+                            broker::ProductRetirementEffective {
+                                core,
+                                from_version,
+                                reason,
+                                replaced_by,
+                                effective_at,
+                                must_migrate_by,
+                            },
+                        )
+                        .await
+                }
+                other => return Err(EventsError::NoTypedEvent(other.to_owned())),
+            }
+            .map(|_| ())
+            .map_err(EventsError::Broker)
+        }
+    }
+}
+
+/// The body every one of `02`'s eight events carries (**P-D-122**).
+///
+/// One shape for eight tokens, because the eight announce the same kind of
+/// thing — *an act on a taxonomy entity* — and differ only in which act:
+/// `entityKind` says which table, `act` says what happened, `state` is the
+/// entity's state after it. Two optionals, omitted rather than null when
+/// absent: `mutationSeq`, the token the category live-value door spent, which
+/// is the only ordering a consumer of `CategoryDisplayUpdated` can rely on
+/// (P-D-116 row 15); and `operationKind`, the `GovernedLiveOp` kind where the
+/// act rode an envelope. `inst-tx-event` asks for *"the op envelope id"* and
+/// the envelope carries none — the kind is what exists; the request's
+/// `traceparent` is the correlation channel; minting an envelope id is `05`'s
+/// with the approval subject (P-D-122 routes it).
+///
+/// Borrowed, like [`EventBodyCore`]: this is serialized once and never read
+/// back. The broker arm's owned twin is `broker::TaxonomyEventPayload`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaxonomyEventBody<'a> {
+    pub tenant_id: Uuid,
+    /// `category`, `attribute_definition`, or the metadata map's owner —
+    /// `product` / `sku`.
+    pub entity_kind: &'a str,
+    /// The entity the act touched; also the subject on the broker arm.
+    pub entity_id: Uuid,
+    /// `created`, `renamed`, `reparented`, `retired`, `deleted`,
+    /// `display_updated`, `deprecated`, `removed`, `relisted`,
+    /// `label_updated`, `merged`.
+    pub act: &'a str,
+    /// The entity's state after the act (`deleted` for a row that is gone).
+    pub state: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mutation_seq: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_kind: Option<&'a str>,
+}
+
+/// Enqueue one of `02`'s eight events — [`enqueue`]'s twin for the taxonomy
+/// body shape ([`TaxonomyEventBody`]).
+///
+/// The aggregate is the caller's: the five tree acts pass
+/// `infra::taxonomy::TAXONOMY_TREE_AGGREGATE` (one aggregate per tenant,
+/// matching the writer lock), the two display events and `MetadataUpdated`
+/// pass the entity's own id (P-D-116 row 15; `metadata_aggregate`). On the
+/// broker arm the eight typed structs partition on the tenant alone (P-D-47),
+/// so every taxonomy event of one tenant is in publish order there — a
+/// stronger ordering than the interim arm's per-aggregate one, never a weaker.
+///
+/// # Errors
+///
+/// [`EventsError::NotATaxonomyEvent`] for any other token; otherwise as
+/// [`enqueue`].
+pub(crate) async fn enqueue_taxonomy(
+    sink: &EventSink,
+    runner: &(impl DBRunner + Sync),
+    aggregate_id: Uuid,
+    payload_type: &str,
+    body: &TaxonomyEventBody<'_>,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    if !TAXONOMY_PAYLOAD_TYPES.contains(&payload_type) {
+        return Err(EventsError::NotATaxonomyEvent(payload_type.to_owned()));
+    }
+    record_inbox(
+        runner,
+        body.tenant_id,
+        aggregate_id,
+        payload_type,
+        body,
+        actor_ref,
+    )
+    .await?;
+    match sink {
+        EventSink::Interim(outbox) => {
+            enqueue_body(
+                outbox,
+                runner,
+                body.tenant_id,
+                aggregate_id,
+                payload_type,
+                body,
+                actor_ref,
+            )
+            .await
+        }
+        EventSink::Broker(producer) => {
+            let payload = broker::TaxonomyEventPayload::from_body(body, actor_ref);
+            match payload_type {
+                CATEGORY_CREATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::CategoryCreated { payload })
+                        .await
+                }
+                CATEGORY_RENAMED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::CategoryRenamed { payload })
+                        .await
+                }
+                CATEGORY_REPARENTED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::CategoryReparented { payload })
+                        .await
+                }
+                CATEGORY_RETIRED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::CategoryRetired { payload })
+                        .await
+                }
+                CATEGORY_DELETED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::CategoryDeleted { payload })
+                        .await
+                }
+                CATEGORY_DISPLAY_UPDATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::CategoryDisplayUpdated { payload })
+                        .await
+                }
+                ATTRIBUTE_DEFINITION_UPDATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::AttributeDefinitionUpdated { payload })
+                        .await
+                }
+                METADATA_UPDATED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::MetadataUpdated { payload })
+                        .await
+                }
+                // Unreachable behind the guard above; kept so a ninth token
+                // added to the roster without its arm is a refusal, not a
+                // silent fall-through.
+                other => return Err(EventsError::NoTypedEvent(other.to_owned())),
+            }
+            .map(|_| ())
+            .map_err(EventsError::Broker)
+        }
+    }
+}
+
+/// The body `05`'s three events carry.
+///
+/// One shape for three tokens, on P-D-122's precedent and for its reason: the
+/// three announce acts on **one ceremony** and differ in which act. Every
+/// optional is omitted rather than null when absent, so a consumer reading
+/// `verdict` on a `BreakGlassElevated` finds no key rather than a null it has
+/// to interpret.
+///
+/// `sessionId` and `approvalId` are separate rather than one polymorphic
+/// `subjectId`: a consumer joining break-glass rows to sessions and approval
+/// rows to records should not have to read `act` first to know which table an
+/// id points at.
+///
+/// Borrowed, like [`EventBodyCore`]: serialized once and never read back.
+/// **No broker twin**, and none is owed here — see [`enqueue_governance`].
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GovernanceEventBody<'a> {
+    pub tenant_id: Uuid,
+    /// `decided`, `elevated`, `expired`.
+    pub act: &'a str,
+    /// The record a decision was cast on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<Uuid>,
+    /// The elevation session an open or an expiry is about.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<Uuid>,
+    /// `approved` or `rejected`, on a decision only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<&'a str>,
+    /// The record's state **after** the act, on a decision only —
+    /// `pending`, `satisfied` or `rejected`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<&'a str>,
+    /// The tenant an elevation targets, which is **not** `tenantId`: a
+    /// cross-tenant elevation is opened by a platform principal outside the
+    /// target, and P-D-13's whole point is that the two differ.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_tenant_id: Option<Uuid>,
+}
+
+/// Enqueue one of `05`'s three governance events — [`enqueue`]'s twin for
+/// [`GovernanceEventBody`].
+///
+/// # The broker arm answers `NoTypedEvent`, and that is the shipped policy
+///
+/// `infra::broker` holds no typed struct for these three, and it is not this
+/// slice's file. **P-D-122** settled what that means: the broker arm answers
+/// [`EventsError::NoTypedEvent`], *"a refusal that rolls the act back"*, and
+/// `04`'s retirement events ship on exactly that footing today
+/// ([`enqueue_retired`]). So a deployment on the broker sink refuses the
+/// decide door rather than announcing silently — which is the loud state, not
+/// a gap: the alternative, emitting on the interim sink alone, is the door
+/// that announces in one deployment shape and is silent in the other, and
+/// P-D-122 named that as the defect.
+///
+/// The typed structs are owed to `infra::broker`'s owner, with `02`'s macro
+/// as the template and `04`'s pair as the other outstanding case.
+///
+/// # Errors
+///
+/// [`EventsError::NotAGovernanceEvent`] for any other token;
+/// [`EventsError::NoTypedEvent`] on the broker sink; otherwise as
+/// [`enqueue`].
+/// @cpt-dod:cpt-cf-bss-products-dod-governance-events:p1
+pub(crate) async fn enqueue_governance(
+    sink: &EventSink,
+    runner: &(impl DBRunner + Sync),
+    aggregate_id: Uuid,
+    payload_type: &str,
+    body: &GovernanceEventBody<'_>,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    if !GOVERNANCE_PAYLOAD_TYPES.contains(&payload_type) {
+        return Err(EventsError::NotAGovernanceEvent(payload_type.to_owned()));
+    }
+    match sink {
+        EventSink::Interim(outbox) => {
+            enqueue_body(
+                outbox,
+                runner,
+                body.tenant_id,
+                aggregate_id,
+                payload_type,
+                body,
+                actor_ref,
+            )
+            .await
+        }
+        EventSink::Broker(_) => Err(EventsError::NoTypedEvent(payload_type.to_owned())),
+    }
+}
+
+/// Write the event to the `ReadProjector`'s inbox in the caller's
+/// transaction (P-D-150): the consumer side of the outbox pattern, since the
+/// gear cannot read the toolkit's outbox rows. Only the families the
+/// projector consumes call this.
+async fn record_inbox(
+    runner: &(impl DBRunner + Sync),
+    tenant_id: Uuid,
+    aggregate_id: Uuid,
+    payload_type: &str,
+    body: &impl Serialize,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    let payload = serde_json::to_string(body)?;
+    crate::infra::storage::repo::record_read_inbox(
+        runner,
+        tenant_id,
+        partition_for(tenant_id, aggregate_id),
+        aggregate_id,
+        payload_type,
+        &payload,
+        actor_ref,
+        crate::domain::canonical::write_instant(OffsetDateTime::now_utc()),
+    )
+    .await
+    .map_err(|e| EventsError::Inbox(e.to_string()))
+}
+
+/// The one place a body is wrapped, rendered, partitioned and handed to the
+/// outbox.
+///
+/// Both public entry points above go through it, so the envelope, the queue
+/// and P-D-22's partition formula are written once and a new body shape
+/// cannot arrive with its own copy of any of the three. `tenant_id` is an
+/// argument rather than read off `body` because a `Serialize` value has no
+/// field a function can read; both callers pass their own core's
+/// `tenant_id`, which is the same value the body itself carries.
+///
+/// The schema reference is resolved **before** anything is written, so an
+/// event with no registered schema fails the caller's transaction rather than
+/// reaching the queue unidentifiable.
+///
+/// # Errors
+/// [`EventsError::UnregisteredSchema`] if `payload_type` is not one of
+/// [`SCHEMA_REFS`]'; [`EventsError::Serialize`] if the envelope cannot be
+/// rendered as JSON; [`EventsError::Outbox`] on a queue/partition/storage
+/// failure.
+async fn enqueue_body(
+    outbox: &Outbox,
+    runner: &(impl DBRunner + Sync),
+    tenant_id: Uuid,
+    aggregate_id: Uuid,
+    payload_type: &str,
+    body: &impl Serialize,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    let schema_ref = schema_ref_for(payload_type)
+        .ok_or_else(|| EventsError::UnregisteredSchema(payload_type.to_owned()))?;
+    let envelope = EventEnvelope {
+        event_id: Uuid::new_v4(),
+        schema_ref,
+        correlation_id: correlation_id(),
+        // See the field's own doc: an operator request causes every one,
+        // and a request is not an event.
+        causation_id: None,
+        actor_ref,
+        data: body,
+    };
+    let payload = serde_json::to_vec(&envelope)?;
+    let partition = partition_for(tenant_id, aggregate_id);
+    outbox
+        .enqueue(runner, QUEUE_NAME, partition, payload, payload_type)
+        .await?;
+    Ok(())
+}
+
+/// The body `10`'s two events carry (`dod-retention-events`).
+///
+/// **Neither fits [`EventBodyCore`]**, and the `DoD` says why: an `actor_ref`
+/// and an allow-list entry have none of its five fields, `EntityKind` is
+/// exactly `Product | Sku`, and neither subject is either. So this is the
+/// entity-less shape those two need, declared here rather than waiting on
+/// `features/catalog-version.md` §7 rows 27 and 47 — which raise the general
+/// question of a shared entity-less core and a `SUBJECT_TYPE` convention, and
+/// which this feature **cites rather than re-raises**: `02`'s eight already
+/// took the same route under P-D-122, and a second slice-local body is the
+/// precedent applied, not a new answer to their question.
+///
+/// **No field can carry an identity.** `ActorErased` is a *"defensive
+/// cache-buster"* whose whole point is that it does not, and the allow-list
+/// arm names the entry and never its person-named value. `subject_ref` is a
+/// `principal_ref` or an `entry_id` rendered — both pseudonymous by
+/// construction.
+///
+/// Borrowed, like [`EventBodyCore`]: serialized once and never read back. The
+/// broker arm's owned twin is `broker::RetentionEventPayload`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RetentionEventBody<'a> {
+    pub tenant_id: Uuid,
+    /// The aggregate the act serializes on, rendered (**P-D-118** item 26).
+    pub subject_ref: &'a str,
+    /// `erased`, `signed_off` or `revoked`.
+    pub act: &'a str,
+    /// The **retired** pseudonym, on the erasure arm only. Never `actorRef`:
+    /// that name is the gear-wide *acting* principal, asserted across the
+    /// whole typed roster by `broker_tests`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub erased_actor_ref: Option<Uuid>,
+}
+
+/// Enqueue one of `10`'s two events — [`enqueue`]'s twin for the retention
+/// body shape ([`RetentionEventBody`]).
+///
+/// The aggregate is the caller's and is the same string the body carries as
+/// `subject_ref`: `ActorErased` orders on the erased `principal_ref` and
+/// `PiiAllowlistChanged` on its `entry_id` (**P-D-118** item 26). Because a
+/// `principal_ref` is a string and `partition_for` takes a `Uuid`, the
+/// caller passes a **derived** aggregate id — see
+/// [`retention_aggregate_id`] — rather than the string itself; the ordering
+/// the partition provides is then per principal, which is what the decision
+/// asks for.
+///
+/// # Errors
+///
+/// [`EventsError::NotARetentionEvent`] for any other token; otherwise as
+/// [`enqueue`].
+pub(crate) async fn enqueue_retention(
+    sink: &EventSink,
+    runner: &(impl DBRunner + Sync),
+    aggregate_id: Uuid,
+    payload_type: &str,
+    body: &RetentionEventBody<'_>,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    if !RETENTION_PAYLOAD_TYPES.contains(&payload_type) {
+        return Err(EventsError::NotARetentionEvent(payload_type.to_owned()));
+    }
+    match sink {
+        EventSink::Interim(outbox) => {
+            enqueue_body(
+                outbox,
+                runner,
+                body.tenant_id,
+                aggregate_id,
+                payload_type,
+                body,
+                actor_ref,
+            )
+            .await
+        }
+        EventSink::Broker(producer) => {
+            let payload = broker::RetentionEventPayload::from_body(body, actor_ref);
+            match payload_type {
+                ACTOR_ERASED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::ActorErased { payload })
+                        .await
+                }
+                PII_ALLOWLIST_CHANGED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::PiiAllowlistChanged { payload })
+                        .await
+                }
+                // Unreachable behind the guard above; kept so a third token
+                // added to the roster without its arm is a refusal, not a
+                // silent fall-through.
+                other => return Err(EventsError::NoTypedEvent(other.to_owned())),
+            }
+            .map(|_| ())
+            .map_err(EventsError::Broker)
+        }
+    }
+}
+
+/// The aggregate id for an event whose aggregate is a **string**.
+///
+/// `partition_for` takes a `Uuid` and `ActorErased`'s aggregate is a
+/// `principal_ref`, which is text. A UUID **v5** over the tenant and the
+/// string — computed, never stored — gives the same principal the same
+/// partition in every process on every host, which is the whole of what the
+/// aggregate is for. `gear::system_actor_ref`'s reasoning, one derivation
+/// over.
+///
+/// Scoped by `tenant_id` deliberately: two tenants' principals share no
+/// ordering requirement, and a global derivation would put unrelated tenants'
+/// erasures on one partition.
+#[must_use]
+pub(crate) fn retention_aggregate_id(tenant_id: Uuid, subject_ref: &str) -> Uuid {
+    Uuid::new_v5(
+        &Uuid::NAMESPACE_OID,
+        format!("bss-products:retention:{tenant_id}:{subject_ref}").as_bytes(),
+    )
+}
+
+#[cfg(test)]
+#[path = "events_tests.rs"]
+mod events_tests;
+
+/// `SkuImmutableFieldCorrected`'s body: the core plus what the correction
+/// changed and how it was approved (`dod-correction-republish`: `quorumReduced`
+/// rides the event as well as the record, **P-D-13**).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CorrectionEventBody<'core> {
+    #[serde(flatten)]
+    pub core: &'core EventBodyCore,
+    /// The corrected column, as `products_sku` spells it.
+    pub field: &'core str,
+    /// The new value; `null` clears.
+    pub value: Option<&'core str>,
+    /// The lane the correction rode: `normal`, `producer_unavailable` or
+    /// `unresolvable_target`.
+    pub lane: &'core str,
+    /// Whether the ceremony's effective quorum was below the default of two.
+    pub quorum_reduced: bool,
+    /// The correction's own `correction_ref`, the version row's physical door
+    /// identity (P-D-129 row 6).
+    pub correction_ref: Uuid,
+}
+
+/// `SkuCorrectionOverride`'s body: the evidence row a break-glass correction
+/// wrote, announced beside the correction so the ceremony and the evidence
+/// are joinable from the stream as well as from the tables.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OverrideEventBody<'core> {
+    #[serde(flatten)]
+    pub core: &'core EventBodyCore,
+    /// `producer_unavailable` or `unresolvable_target`.
+    pub arm: &'core str,
+    /// The corrected column.
+    pub field: &'core str,
+    /// The ceremony reference the override row and the audit row both carry.
+    pub ceremony_ref: Uuid,
+}
+
+/// `07`'s two SKU-subjected correction events, in the correcting transaction
+/// (`dod-reference-events`; P-D-147). Interim: the envelope carries the body
+/// as rendered here; broker: the typed twins in [`broker`].
+///
+/// # Errors
+///
+/// [`EventsError::NoTypedEvent`] for any other token; the sink's own error.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-reference-events:p1
+pub(crate) async fn enqueue_correction_event(
+    sink: &EventSink,
+    runner: &(impl DBRunner + Sync),
+    payload_type: &str,
+    body: CorrectionEventBody<'_>,
+    override_body: Option<OverrideEventBody<'_>>,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    record_inbox(
+        runner,
+        body.core.tenant_id,
+        body.core.entity_id,
+        payload_type,
+        &body,
+        actor_ref,
+    )
+    .await?;
+    match sink {
+        EventSink::Interim(outbox) => match payload_type {
+            SKU_IMMUTABLE_FIELD_CORRECTED_PAYLOAD_TYPE => {
+                enqueue_body(
+                    outbox,
+                    runner,
+                    body.core.tenant_id,
+                    body.core.entity_id,
+                    payload_type,
+                    &body,
+                    actor_ref,
+                )
+                .await
+            }
+            SKU_CORRECTION_OVERRIDE_PAYLOAD_TYPE => {
+                let evidence = override_body.ok_or_else(|| {
+                    EventsError::CorrectionEventNeedsBody(payload_type.to_owned())
+                })?;
+                enqueue_body(
+                    outbox,
+                    runner,
+                    evidence.core.tenant_id,
+                    evidence.core.entity_id,
+                    payload_type,
+                    &evidence,
+                    actor_ref,
+                )
+                .await
+            }
+            other => Err(EventsError::NoTypedEvent(other.to_owned())),
+        },
+        EventSink::Broker(producer) => match payload_type {
+            SKU_IMMUTABLE_FIELD_CORRECTED_PAYLOAD_TYPE => {
+                producer
+                    .enqueue(
+                        runner,
+                        broker::SkuImmutableFieldCorrected {
+                            core: broker::CatalogEventCore::from_core(body.core, actor_ref),
+                            field: body.field.to_owned(),
+                            value: body.value.map(str::to_owned),
+                            lane: body.lane.to_owned(),
+                            quorum_reduced: body.quorum_reduced,
+                            correction_ref: body.correction_ref,
+                        },
+                    )
+                    .await
+            }
+            SKU_CORRECTION_OVERRIDE_PAYLOAD_TYPE => {
+                let evidence = override_body.ok_or_else(|| {
+                    EventsError::CorrectionEventNeedsBody(payload_type.to_owned())
+                })?;
+                producer
+                    .enqueue(
+                        runner,
+                        broker::SkuCorrectionOverride {
+                            core: broker::CatalogEventCore::from_core(evidence.core, actor_ref),
+                            arm: evidence.arm.to_owned(),
+                            field: evidence.field.to_owned(),
+                            ceremony_ref: evidence.ceremony_ref,
+                        },
+                    )
+                    .await
+            }
+            other => return Err(EventsError::NoTypedEvent(other.to_owned())),
+        }
+        .map(|_| ())
+        .map_err(EventsError::Broker),
+    }
+}
+
+/// `ReferenceProducerSetChanged`'s body — entity-less: the tenant's producer
+/// set is the aggregate (**P-D-71**: `aggregate_id = tenant_id`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProducerSetEventBody<'a> {
+    pub tenant_id: Uuid,
+    /// The producer that registered or retired.
+    pub producer: &'a str,
+    /// `registered` or `retired`.
+    pub state: &'a str,
+}
+
+/// `ReferenceProducerSetChanged`, in the registering or retiring transaction
+/// (`dod-producer-registration`, `dod-reference-events`; P-D-147). Ordered
+/// per tenant: the aggregate is the tenant id itself.
+///
+/// # Errors
+///
+/// The sink's own error.
+pub(crate) async fn enqueue_producer_set_event(
+    sink: &EventSink,
+    runner: &(impl DBRunner + Sync),
+    body: ProducerSetEventBody<'_>,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    match sink {
+        EventSink::Interim(outbox) => {
+            enqueue_body(
+                outbox,
+                runner,
+                body.tenant_id,
+                body.tenant_id,
+                REFERENCE_PRODUCER_SET_CHANGED_PAYLOAD_TYPE,
+                &body,
+                actor_ref,
+            )
+            .await
+        }
+        EventSink::Broker(producer) => producer
+            .enqueue(
+                runner,
+                broker::ReferenceProducerSetChanged {
+                    tenant_id: body.tenant_id,
+                    producer: body.producer.to_owned(),
+                    state: body.state.to_owned(),
+                    actor_ref,
+                },
+            )
+            .await
+            .map(|_| ())
+            .map_err(EventsError::Broker),
+    }
+}
+
+/// One entity a catalog version froze, as `CatalogVersionPublished` lists it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChangedEntity {
+    pub entity_kind: String,
+    pub entity_id: Uuid,
+    pub published_version: i64,
+}
+
+/// `06`'s catalog-version body (**P-D-125** row 27 — a second body core, per
+/// family, on P-D-122's precedent): no entity dimension. `act` names the
+/// fact — `published`, `force_completed`, `participant_registered`,
+/// `participant_retired`; the version-shaped fields are `null`/empty where
+/// the act has none (a participant-set change names no version).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CatalogVersionEventBody<'a> {
+    pub tenant_id: Uuid,
+    pub catalog_version_id: Option<i64>,
+    pub act: &'a str,
+    /// The participants the act concerns: the snapshotted set on a publish,
+    /// the forced ones on a force-completion, the one that moved on a set
+    /// change.
+    pub participants: &'a [String],
+    /// `CatalogVersionPublished`'s changed-entity list; empty otherwise.
+    pub changed_entities: &'a [ChangedEntity],
+    /// `CatalogVersionPublished`'s `satisfiedRequests`.
+    pub satisfied_requests: u32,
+    /// `CatalogVersionPublished`'s checksum, hex.
+    pub checksum: Option<&'a str>,
+    /// `FreezeForceCompleted`'s `quorumReduced` (**P-D-13**).
+    pub quorum_reduced: Option<bool>,
+}
+
+/// The aggregate the interim queue orders `06`'s version-subjected events on:
+/// the tenant's version line is one serial machine, so one aggregate per
+/// tenant (P-D-71's reasoning for the producer set, applied here).
+fn catalog_version_aggregate(tenant_id: Uuid) -> Uuid {
+    Uuid::new_v5(&tenant_id, b"catalog_version")
+}
+
+/// `06`'s three version-subjected events, in the act's own transaction
+/// (`dod-cv-events`; P-D-148). Interim: the envelope carries the body as
+/// rendered here; broker: the typed twins in [`broker`].
+///
+/// # Errors
+///
+/// [`EventsError::NoTypedEvent`] for any other token; the sink's own error.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-cv-events:p1
+pub(crate) async fn enqueue_catalog_version_event(
+    sink: &EventSink,
+    runner: &(impl DBRunner + Sync),
+    payload_type: &str,
+    body: CatalogVersionEventBody<'_>,
+    actor_ref: Uuid,
+) -> Result<(), EventsError> {
+    if !matches!(
+        payload_type,
+        CATALOG_VERSION_PUBLISHED_PAYLOAD_TYPE
+            | FREEZE_FORCE_COMPLETED_PAYLOAD_TYPE
+            | FREEZE_PARTICIPANT_SET_CHANGED_PAYLOAD_TYPE
+    ) {
+        return Err(EventsError::NoTypedEvent(payload_type.to_owned()));
+    }
+    record_inbox(
+        runner,
+        body.tenant_id,
+        Uuid::new_v5(&body.tenant_id, b"catalog_version"),
+        payload_type,
+        &body,
+        actor_ref,
+    )
+    .await?;
+    match sink {
+        EventSink::Interim(outbox) => {
+            enqueue_body(
+                outbox,
+                runner,
+                body.tenant_id,
+                catalog_version_aggregate(body.tenant_id),
+                payload_type,
+                &body,
+                actor_ref,
+            )
+            .await
+        }
+        EventSink::Broker(producer) => {
+            let payload = broker::CatalogVersionPayload {
+                tenant_id: body.tenant_id,
+                catalog_version_id: body.catalog_version_id,
+                act: body.act.to_owned(),
+                participants: body.participants.to_vec(),
+                changed_entities: body
+                    .changed_entities
+                    .iter()
+                    .map(|entity| broker::ChangedEntityPayload {
+                        entity_kind: entity.entity_kind.clone(),
+                        entity_id: entity.entity_id,
+                        published_version: entity.published_version,
+                    })
+                    .collect(),
+                satisfied_requests: body.satisfied_requests,
+                checksum: body.checksum.map(str::to_owned),
+                quorum_reduced: body.quorum_reduced,
+                actor_ref,
+            };
+            match payload_type {
+                CATALOG_VERSION_PUBLISHED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::CatalogVersionPublished { payload })
+                        .await
+                }
+                FREEZE_FORCE_COMPLETED_PAYLOAD_TYPE => {
+                    producer
+                        .enqueue(runner, broker::FreezeForceCompleted { payload })
+                        .await
+                }
+                _ => {
+                    producer
+                        .enqueue(runner, broker::FreezeParticipantSetChanged { payload })
+                        .await
+                }
+            }
+            .map(|_| ())
+            .map_err(EventsError::Broker)
+        }
+    }
+}

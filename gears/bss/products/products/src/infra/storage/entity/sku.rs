@@ -1,0 +1,105 @@
+//! `SeaORM` entity for `bss.products_sku` — a SKU's identity, its parent link,
+//! its lifecycle and its two version counters.
+//!
+//! The capability columns a SKU carries — `type`, `sellable`, `plan_tier`, the
+//! accounting code refs, the metering unit — are **carried** on this row rather
+//! than in a side table, because a side table keyed the same way as its parent
+//! is a join nobody needs and a second place for one row's facts to live. Their
+//! write rules belong to the features that own them: the split is by validator,
+//! not by table. They arrive with those features.
+//!
+//! @cpt-cf-bss-products-fr-identifier-contract
+//! @cpt-cf-bss-products-fr-define-sku
+//! @cpt-dod:cpt-cf-bss-products-dod-entity-tables:p1
+
+use sea_orm::entity::prelude::*;
+use toolkit_db_macros::Scopable;
+use uuid::Uuid;
+
+#[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Scopable)]
+#[sea_orm(table_name = "products_sku")]
+#[secure(tenant_col = "tenant_id", resource_col = "sku_id", no_owner, no_type)]
+pub struct Model {
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub sku_id: Uuid,
+    pub tenant_id: Uuid,
+    /// The parent Product. A bucket-i column: re-parenting changes whose SKU it
+    /// is, not how it is described, so it is refused after first publish.
+    pub product_id: Uuid,
+    /// Tenant-unique among non-discarded rows, reserved by the insert itself.
+    pub sku_code: String,
+    /// `draft | published | deprecated | retired | discarded`, constrained by
+    /// `chk_products_sku_lifecycle_state`.
+    pub lifecycle_state: String,
+    /// Moves on every admitted write.
+    pub internal_revision: i64,
+    /// Moves only on publish.
+    pub published_version: i64,
+    /// The unresolved-composition flag (`design/01-foundation.md` §4.2,
+    /// **P-D-35**). `NOT NULL DEFAULT false`, and system-owned: the migration's
+    /// guard admits a change to it **only** in the same statement as a
+    /// `published_version` bump, so no operator save can move it. `bool`
+    /// rather than a nullable third reading, because the create flow writes it
+    /// nowhere and the unraised state is the default.
+    pub composition_pending: bool,
+    /// A flat value set, contained in the parent's. `NOT NULL`, default empty,
+    /// where **empty means unrestricted**.
+    pub region_scope: String,
+    /// The same shape and the same reading as `region_scope`.
+    pub brand_scope: String,
+    /// The pseudonymous ref of whoever created the row.
+    pub created_by: String,
+    pub created_at: TimeDateTimeWithTimeZone,
+    pub updated_at: TimeDateTimeWithTimeZone,
+    /// The clone's immediate source (P-D-72: for a SKU child, its own source
+    /// SKU) — create-only, guarded immutable by the head trigger (P-D-76).
+    pub cloned_from: Option<Uuid>,
+    /// The frozen version the source's content was read at; `NULL` under a
+    /// non-`NULL` `cloned_from` means the source was read at its head — a
+    /// draft (P-D-76's representable sentinel).
+    pub cloned_from_version: Option<i64>,
+    /// `direct` (an operator act) or `cascaded` (parent-driven) — slice 04's
+    /// stamp, written on terminal rows by design (`dod-lifecycle-columns`).
+    pub deprecation_provenance: Option<String>,
+    /// The successor a retirement names. **Write-once per RETIREMENT, not per
+    /// row** (P-D-49): the governed cancel clears it in the same statement as
+    /// its state change, which the head guard admits because that guard names
+    /// the immutable columns rather than the writable ones.
+    pub replaced_by_sku_id: Option<Uuid>,
+    /// The declared metering unit — slice 03's `MeterDeclaration`, atomic
+    /// with `usage_type_ref` (the paired `CHECK`: both null or both
+    /// non-null). **Bucket-ii**, the registry's first member: writable via
+    /// the save door only while `published_version = 0`, and after first
+    /// publish only in the same statement as a `published_version` bump —
+    /// the interim row-image predicate design/01 §4.2 pins (P-D-41, P-D-34)
+    /// — and, in both windows, only while the head is **non-terminal**, the
+    /// conjunct §4.2 states and the shipped trigger carries.
+    pub metering_unit: Option<String>,
+    /// The usage-type reference of the same declaration — the pair's other
+    /// half, same bucket, same predicate.
+    pub usage_type_ref: Option<String>,
+    /// The correction re-publish's door identity (P-D-129): the ceremony that
+    /// admitted a bucket-ii change after first publish. Written only by 07's
+    /// `CorrectionDoor`, in the same statement as the `published_version`
+    /// bump; the head guard refuses it anywhere else.
+    pub correction_ref: Option<Uuid>,
+    /// 03's `TypeProfile` (`product` | `service` | `bundle`), bucket ii —
+    /// required at create, correctable after first publish only through the
+    /// correction door (P-D-145).
+    pub sku_type: Option<String>,
+    /// `inst-cl-sellable`: defaults `true`; a flip is a bucket-iii save,
+    /// material by P-D-131 row 16.
+    pub sellable: bool,
+    /// The `PlanTier` code (`inst-pt-assign`), bucket iii; validated against
+    /// the recognized set at save and publish.
+    pub plan_tier: Option<String>,
+    /// Finance's tax-category code (P-D-131 row 5), bucket iii, opaque here.
+    pub tax_category_ref: Option<String>,
+    /// Finance's GL code, bucket iii, opaque here.
+    pub gl_code_ref: Option<String>,
+}
+
+#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+pub enum Relation {}
+
+impl ActiveModelBehavior for ActiveModel {}

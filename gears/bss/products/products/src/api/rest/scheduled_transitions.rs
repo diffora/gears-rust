@@ -1,0 +1,462 @@
+//! Scheduled-transition doors (**P-D-134**): the GET surface
+//! (`dod-deferred-intent`) and the governed cancel.
+//!
+//! `× write` is not minted: the retire doors write the rows under
+//! `sku × write` / `product × write` today, so this module spends only
+//! `scheduled_transition × read` and `× cancel`.
+//!
+//! @cpt-dod:cpt-cf-bss-products-dod-deferred-intent:p1
+//! @cpt-dod:cpt-cf-bss-products-dod-lifecycle-audit:p1
+
+use std::sync::Arc;
+
+use axum::Json;
+use axum::Router;
+use axum::extract::{Extension, Path, Query};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use time::OffsetDateTime;
+use toolkit::api::OpenApiRegistry;
+use toolkit::api::canonical_prelude::{CanonicalError, resource_error};
+use toolkit::api::odata::OData;
+use toolkit::api::operation_builder::{OperationBuilder, OperationBuilderODataExt};
+use toolkit_db::secure::AccessScope;
+use toolkit_security::SecurityContext;
+use uuid::Uuid;
+
+use crate::api::rest::odata as odata_seam;
+use crate::api::rest::{ApiState, repo_error_to_canonical, require_authenticated};
+use crate::domain::canonical;
+use crate::domain::error::DomainError;
+use crate::domain::governance::{GateSubject, SubjectPin};
+use crate::domain::validation::ValidationReport;
+use crate::infra::storage::repo::{self, RefusalSubject};
+
+const TAG: &str = "BSS Products";
+const SUBJECT_KIND: &str = "scheduled_transition";
+const LIVE_OP_TARGET: &str = "scheduled_transition.cancel";
+
+#[resource_error(gts_id!("cf.bss.products.scheduled_transition.v1~"))]
+struct ScheduledTransitionResource;
+
+/// The scheduled-transition list door declares **no** operand of its own
+/// (P-D-165): `?state=` became `$filter=state eq '...'`, which is the same
+/// question asked in the platform's spelling and now also composes with
+/// every other field the vocabulary declares.
+const SCHEDULE_PARAMS: [&str; 0] = [];
+
+/// One scheduled-transition row on the wire.
+#[toolkit_macros::api_dto(response)]
+pub struct ScheduledTransitionView {
+    /// Surrogate key.
+    pub transition_id: Uuid,
+    /// `product` or `sku`.
+    pub entity_kind: String,
+    /// Subject entity id.
+    pub entity_id: Uuid,
+    /// `publish` or `retire`.
+    pub kind: String,
+    /// UTC activation instant.
+    #[serde(with = "time::serde::rfc3339")]
+    pub at: OffsetDateTime,
+    /// Stored run state.
+    pub state: String,
+    /// Runner outcome text, present on `applied|failed|deferred`.
+    pub outcome_reason: Option<String>,
+}
+
+/// The list the GET answers.
+#[toolkit_macros::api_dto(response)]
+pub struct ScheduledTransitionList {
+    /// One page of the tenant's rows, soonest first.
+    pub items: Vec<ScheduledTransitionView>,
+    /// `next_cursor`, `prev_cursor` and the `limit` this page was served at.
+    ///
+    /// Before P-D-165 this door answered the tenant's **whole** schedule in
+    /// one body, in whatever order the engine chose.
+    pub page_info: toolkit_odata::PageInfo,
+}
+
+/// The cancel operation envelope. Only `cancel` is admitted.
+#[toolkit_macros::api_dto(request)]
+pub struct ScheduledTransitionOp {
+    /// Must be `cancel`.
+    pub op: String,
+}
+
+/// Register the two doors.
+pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
+    let router = Router::new();
+    let router = OperationBuilder::get("/bss-products/v1/scheduled-transitions")
+        .operation_id("bss_products.list_scheduled_transitions")
+        .summary("List scheduled transitions")
+        .description(
+            "The deferred-intent surface this feature owns and `08` projects. One page, \
+             soonest first; each row carries `outcomeReason`. Filter with `$filter` over \
+             the declared fields - `$filter=state eq 'deferred'` is what `?state=` used \
+             to spell. Tenant-scoped through the ordinary pipeline under \
+             `scheduled_transition x read`.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .query_param_typed(
+            "limit",
+            false,
+            "Rows per page; default 50, at most 200. Also spelled $top.",
+            "integer",
+        )
+        .query_param(
+            "cursor",
+            false,
+            "The previous page's `page_info.next_cursor`, opaque. Also spelled \
+             $skiptoken. A caller MUST NOT change $filter or $orderby between \
+             continuation requests carrying the same cursor.",
+        )
+        .with_odata_filter::<repo::ScheduledTransitionFilterField>()
+        .with_odata_orderby::<repo::ScheduledTransitionFilterField>()
+        .handler(list_scheduled_transitions)
+        .json_response_with_schema::<ScheduledTransitionList>(
+            openapi,
+            StatusCode::OK,
+            "One page of the tenant's scheduled transitions.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_500(openapi)
+        .register(router, openapi);
+
+    let router = OperationBuilder::post("/bss-products/v1/scheduled-transitions/{id}/operations")
+        .operation_id("bss_products.scheduled_transition_operation")
+        .summary("Operate on a scheduled transition")
+        .description(
+            "The governed cancel (`op: cancel`). Supersedes the row and its \
+             intent. Spends `scheduled_transition x cancel`. A cancelled row \
+             is one more state the runner never claims.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .json_request::<ScheduledTransitionOp>(openapi, "The operation. Only `cancel` is admitted.")
+        .handler(operate_scheduled_transition)
+        .no_content_response(
+            StatusCode::ACCEPTED,
+            "The cancel was accepted and the row superseded.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_500(openapi)
+        .register(router, openapi);
+
+    router.layer(Extension(state))
+}
+
+async fn list_scheduled_transitions(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Query(raw): Query<std::collections::HashMap<String, String>>,
+    OData(odata): OData,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    odata_seam::reject_undeclared_query_params(
+        &raw,
+        odata_seam::QueryFamily::Odata,
+        &SCHEDULE_PARAMS,
+    )?;
+    odata_seam::reject_unsupported_odata_options(&odata, None, None, Some(odata_seam::NO_SELECT))?;
+    let tenant_id = ctx.subject_tenant_id();
+    // Collection read: the PDP derives the scope; `resource_id` is unset.
+    // `owner_tenant_id` stays `None` the way [`super::products::get_product`]
+    // does — the SQL filter then binds the caller's tenant.
+    let scope = crate::authz::access_scope(
+        &enforcer,
+        &ctx,
+        &crate::authz::resource_types::SCHEDULED_TRANSITION,
+        crate::authz::actions::READ,
+        None,
+        None,
+        true,
+    )
+    .await
+    .map_err(|e| {
+        crate::api::rest::authz_error_to_canonical(e, |reason| {
+            ScheduledTransitionResource::permission_denied()
+                .with_reason(reason)
+                .create()
+        })
+    })?;
+    let conn = state.db.conn().map_err(|e| {
+        repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
+    })?;
+    let page = repo::list_scheduled_transitions(
+        &conn,
+        &scope,
+        tenant_id,
+        &odata,
+        odata_seam::LISTING_LIMIT_CFG,
+    )
+    .await
+    .map_err(|e| odata_seam::odata_error_to_canonical("scheduled transitions", &e))?;
+    let body = ScheduledTransitionList {
+        items: page
+            .items
+            .into_iter()
+            .map(|row| ScheduledTransitionView {
+                transition_id: row.transition_id,
+                entity_kind: row.entity_kind,
+                entity_id: row.entity_id,
+                kind: row.kind,
+                at: row.at,
+                state: row.state,
+                outcome_reason: row.outcome_reason,
+            })
+            .collect(),
+        page_info: page.page_info,
+    };
+    Ok((StatusCode::OK, Json(body)).into_response())
+}
+
+async fn operate_scheduled_transition(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path(transition_id): Path<Uuid>,
+    Json(body): Json<ScheduledTransitionOp>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let tenant_id = ctx.subject_tenant_id();
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
+    let actor_ref =
+        crate::api::rest::resolve_creator_actor_ref(&state, tenant_id, ctx.subject_id(), now)
+            .await?;
+    let scope = cancel_scope(&state, &enforcer, &ctx, tenant_id, actor_ref, transition_id).await?;
+
+    if body.op != "cancel" {
+        let mut report = ValidationReport::new();
+        report.violate(
+            "VALIDATION",
+            "op",
+            format!("op {} is not admitted; only cancel is", body.op),
+        );
+        return Err(refuse(
+            &state,
+            &scope,
+            tenant_id,
+            actor_ref,
+            DomainError::Validation(report),
+        )
+        .await);
+    }
+
+    let authorization = match crate::api::rest::authorize_live_op(
+        &state,
+        &scope,
+        tenant_id,
+        GateSubject::governed_live_op(tenant_id, LIVE_OP_TARGET, SubjectPin::Unpinned),
+    )
+    .await
+    {
+        Ok(authorization) => authorization,
+        Err(crate::api::rest::HostError::Refused(refusal)) => {
+            return Err(refuse(&state, &scope, tenant_id, actor_ref, refusal).await);
+        }
+        Err(crate::api::rest::HostError::Repo(error)) => {
+            return Err(repo_error_to_canonical(&error));
+        }
+    };
+
+    let conn = state.db.conn().map_err(|e| {
+        repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
+    })?;
+    let found = repo::find_scheduled_transition(&conn, &scope, tenant_id, transition_id)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?;
+    let Some(_) = found else {
+        return Err(ScheduledTransitionResource::not_found(
+            "no scheduled transition with this id in this tenant",
+        )
+        .with_resource(transition_id.to_string())
+        .create());
+    };
+
+    // The supersede, the one-shot and the audit row commit together: a cancel
+    // whose record was spent while its row still runs — or the reverse — is
+    // the shape `inst-gv-one-shot` forbids.
+    let scope_tx = scope.clone();
+    let authorization_tx = authorization.clone();
+    let outcome = state
+        .db
+        .db()
+        .transaction_with_retry::<bool, TxError, _, _>(
+            toolkit_db::secure::TxConfig::default(),
+            contention_db_err,
+            move |tx| {
+                let scope = scope_tx.clone();
+                let authorization = authorization_tx.clone();
+                Box::pin(async move {
+                    let superseded = repo::supersede_scheduled_transition(
+                        tx,
+                        &scope,
+                        tenant_id,
+                        transition_id,
+                        now,
+                    )
+                    .await
+                    .map_err(TxError::Repo)?;
+                    if !superseded {
+                        return Ok(false);
+                    }
+                    repo::settle_authorization(tx, &scope, tenant_id, &authorization, now)
+                        .await
+                        .map_err(|error| match error {
+                            repo::SettleError::Refused(refusal) => TxError::Refused(refusal),
+                            repo::SettleError::Repo(error) => TxError::Repo(error),
+                        })?;
+                    repo::write_eventless_act_audit(
+                        tx,
+                        &scope,
+                        repo::AuditCommon {
+                            audit_id: Uuid::now_v7(),
+                            tenant_id,
+                            actor_ref,
+                            action: "scheduled_transition.cancel".to_owned(),
+                            subject_kind: SUBJECT_KIND.to_owned(),
+                            reason: Some("governed cancel".to_owned()),
+                            correlation_id: crate::infra::events::correlation_id(),
+                            written_at: now,
+                        },
+                        transition_id,
+                        None,
+                    )
+                    .await
+                    .map_err(TxError::Repo)?;
+                    Ok(true)
+                })
+            },
+        )
+        .await;
+    let superseded = match outcome {
+        Ok(superseded) => superseded,
+        Err(TxError::Refused(refusal)) => {
+            return Err(refuse(&state, &scope, tenant_id, actor_ref, refusal).await);
+        }
+        Err(TxError::Repo(error)) => return Err(repo_error_to_canonical(&error)),
+    };
+    if !superseded {
+        return Err(refuse(
+            &state,
+            &scope,
+            tenant_id,
+            actor_ref,
+            DomainError::IllegalTransition {
+                from: "terminal".to_owned(),
+                to: "superseded".to_owned(),
+            },
+        )
+        .await);
+    }
+
+    Ok(StatusCode::ACCEPTED.into_response())
+}
+
+/// The cancel transaction's two failure classes, kept apart because the door
+/// maps them apart: a refusal is the act's own `4xx`, audited as one; a
+/// repository failure is the storage's `500`.
+enum TxError {
+    Refused(DomainError),
+    Repo(crate::infra::storage::RepoError),
+}
+
+impl From<toolkit_db::DbError> for TxError {
+    fn from(error: toolkit_db::DbError) -> Self {
+        Self::Repo(crate::infra::storage::RepoError::Db(error.to_string()))
+    }
+}
+
+/// The retry loop classifies `sea-orm`'s own error, which `RepoError::Driver`
+/// carries directly.
+fn contention_db_err(error: &TxError) -> Option<&sea_orm::DbErr> {
+    match error {
+        TxError::Repo(crate::infra::storage::RepoError::Driver { source, .. }) => Some(source),
+        TxError::Repo(_) | TxError::Refused(_) => None,
+    }
+}
+
+async fn cancel_scope(
+    state: &ApiState,
+    enforcer: &authz_resolver_sdk::PolicyEnforcer,
+    ctx: &SecurityContext,
+    tenant_id: Uuid,
+    actor_ref: Uuid,
+    transition_id: Uuid,
+) -> Result<AccessScope, CanonicalError> {
+    match crate::authz::access_scope(
+        enforcer,
+        ctx,
+        &crate::authz::resource_types::SCHEDULED_TRANSITION,
+        crate::authz::actions::CANCEL,
+        Some(tenant_id),
+        Some(transition_id),
+        true,
+    )
+    .await
+    {
+        Ok(scope) => Ok(scope),
+        Err(crate::authz::AuthzError::Denied(reason)) => {
+            let self_scope = AccessScope::for_tenant(tenant_id);
+            Err(crate::api::rest::audit_refusal_and_report(
+                state,
+                &self_scope,
+                crate::api::rest::RefusalAuditContext {
+                    tenant_id,
+                    actor_ref,
+                    subject_kind: SUBJECT_KIND,
+                    error_code: "PERMISSION_DENIED",
+                },
+                RefusalSubject::Attempted(LIVE_OP_TARGET.to_owned()),
+                ScheduledTransitionResource::permission_denied()
+                    .with_reason(reason)
+                    .create(),
+            )
+            .await)
+        }
+        Err(err @ crate::authz::AuthzError::Unavailable(_)) => {
+            Err(crate::api::rest::authz_error_to_canonical(err, |reason| {
+                ScheduledTransitionResource::permission_denied()
+                    .with_reason(reason)
+                    .create()
+            }))
+        }
+    }
+}
+
+async fn refuse(
+    state: &ApiState,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    actor_ref: Uuid,
+    refusal: DomainError,
+) -> CanonicalError {
+    let code = refusal.code();
+    crate::api::rest::audit_refusal_and_report(
+        state,
+        scope,
+        crate::api::rest::RefusalAuditContext {
+            tenant_id,
+            actor_ref,
+            subject_kind: SUBJECT_KIND,
+            error_code: code,
+        },
+        RefusalSubject::Attempted(LIVE_OP_TARGET.to_owned()),
+        CanonicalError::from(refusal),
+    )
+    .await
+}
+
+#[cfg(test)]
+#[path = "scheduled_transitions_tests.rs"]
+mod scheduled_transitions_tests;

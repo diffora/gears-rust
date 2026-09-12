@@ -81,7 +81,7 @@ the proration fractions, and the obligation shape.
 
 | ADR ID | Decision Summary |
 |--------|------------------|
-| `cpt-cf-bss-rating-adr-scope-key-adoption` | Every sub-window slice re-selects its base row on the adopted 8-axis key — a split never bypasses full-key selection. |
+| `cpt-cf-bss-rating-adr-scope-key-adoption` | Every sub-window slice re-selects its base row on the adopted ten-axis key — a split never bypasses full-key selection. |
 | `cpt-cf-bss-pricing-adr-pricewindow-consolidation` (adopted) | The pricing gear owns the `PriceWindow` store and activation; the mid-cycle split boundary is the pinned window's `effectiveFrom`, never a Rating-scheduled event. |
 
 ### 1.3 Architecture Layers
@@ -245,7 +245,7 @@ mints its own correction path.
 
 ### 3.7 Database Schemas and Tables
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-rating-storage-none-ppc`
+- [ ] `p1` - **ID**: `cpt-cf-bss-rating-datastore-none-ppc`
 
 **None owned.** Consistent with 01 §3.7: obligations and slice outcomes are emitted values
 persisted by Rating; whether and how a floor/cap was executed is Billing's state; period

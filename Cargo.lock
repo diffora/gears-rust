@@ -2030,6 +2030,71 @@ dependencies = [
 ]
 
 [[package]]
+name = "cf-gears-bss-products"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "async-trait",
+ "aws-lc-rs",
+ "axum",
+ "cf-gears-authz-resolver",
+ "cf-gears-authz-resolver-sdk",
+ "cf-gears-bss-coord",
+ "cf-gears-bss-pricing-sdk",
+ "cf-gears-bss-products-sdk",
+ "cf-gears-event-broker-sdk",
+ "cf-gears-toolkit",
+ "cf-gears-toolkit-canonical-errors",
+ "cf-gears-toolkit-db",
+ "cf-gears-toolkit-db-macros",
+ "cf-gears-toolkit-gts",
+ "cf-gears-toolkit-macros",
+ "cf-gears-toolkit-odata",
+ "cf-gears-toolkit-odata-macros",
+ "cf-gears-toolkit-security",
+ "cf-gears-types-registry",
+ "cf-gears-types-registry-sdk",
+ "cf-gears-usage-collector",
+ "cf-gears-usage-collector-sdk",
+ "futures-core",
+ "gts",
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "sea-orm",
+ "sea-orm-migration",
+ "serde",
+ "serde_json",
+ "testcontainers-modules",
+ "thiserror 2.0.18",
+ "time",
+ "tokio",
+ "tokio-util",
+ "toml 0.8.23",
+ "tower",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "unicode-normalization",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
+name = "cf-gears-bss-products-sdk"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "cf-gears-toolkit-canonical-errors",
+ "cf-gears-toolkit-gts",
+ "cf-gears-toolkit-security",
+ "regex",
+ "time",
+ "toml 0.8.23",
+ "uuid",
+]
+
+[[package]]
 name = "cf-gears-bss-rate-provider"
 version = "0.1.5"
 dependencies = [

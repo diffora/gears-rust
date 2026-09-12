@@ -1,0 +1,8634 @@
+# DECISIONS — Product & SKU Registry (`products` gear)
+
+Decision register for the products gear. Prefix **P-D-NN**. A decision lands here with its
+date, rationale, and the propagation list of every document that restates it; the §15 rows of
+[`PRD.md`](./PRD.md) that answered a gate cite these numbers rather than carrying the only copy.
+Historical context: D-46 (`sellable`) and D-47 (`CatalogVersion` increment taxonomy) predate this
+register and live in the **pricing** register (`gears/bss/pricing/docs/DECISIONS.md`) — they are
+joint contracts, cited from here by their pricing numbers, never duplicated.
+
+<!-- toc -->
+
+- [Decision register](#decision-register)
+  - [Entries](#entries)
+
+<!-- /toc -->
+
+## Decision register
+
+### Entries
+
+*Entries stay at `####` deliberately. `spec-check`'s propagation parser recognises a decision
+only as `#### <id> …`; promoting them to `###` to satisfy MD001's heading-increment rule —
+CodeRabbit's suggestion of 2026-08-26 — would make this register parse as zero decisions, which
+is a regression this gear has already paid for once. This intermediate heading satisfies MD001
+instead.*
+
+*Consequence for the TOC gate. `cfs validate-toc` indexes to `--max-level 3` by default, so at the
+default it does not see these `####` headings at all: **the default invocation is the one that
+returns exit 0**, and the TOC lists only the two `##`/`###` headings above. Passing
+`--max-level 4` makes every entry indexable and reports one `toc-heading-not-in-toc` per decision —
+**54 errors on 2026-08-31, not a defect in this file**. Do not "fix" that by listing the entries;
+run the gate at its default. (This paragraph said the opposite until 2026-08-31, measured against
+both invocations at that date: it described a state in which the TOC still carried the fifty
+per-decision anchors, and it was corrected by running the command it prescribed.)*
+
+#### P-D-01 — Broker-native event envelope (not CloudEvents 1.0)
+
+- **Date**: 2026-08-25 (product call; PRD §15 gate "Event-envelope conformance")
+- **Decision**: the registry publishes its events in the platform event-broker's **broker-native
+  schema** (`gears/system/event-broker`, its ADR-0003) — **not** CloudEvents 1.0. The semantic
+  obligations are envelope-agnostic and bind unchanged: versioned (semver) schema references
+  (the broker-native equivalent of `dataschema`), `vN`→`vN+1` consumer compatibility,
+  correlation/causation, per-aggregate ordering keys `(tenant, aggregate)`, pseudonymous actors.
+- **Why**: the manifest §7.2 CloudEvents mandate predates the built broker, whose ADR-0003
+  explicitly rejects CloudEvents wire conformance (no `dataschema` field). A mapping layer would
+  be a second envelope to keep honest with zero consumers asking for it.
+- **Residue owed**: manifest §7.2 amendment re-scoping the CloudEvents mandate (owner:
+  Architecture / Common Core).
+- **Propagated**: PRD §2, §4.1, §5.1, `fr-registry-eventing-audit`,
+  `fr-event-versioning-replay`, §9.2, AC #28/#29; `design/01-foundation.md` §4 (event fan-out); `DESIGN.md` §1.2 Key decisions.
+
+#### P-D-02 — CatalogVersion increments are mechanical; governance at entity publish
+
+- **Date**: 2026-08-25 (product call; PRD §15 gate "D-47 demand-driven increments vs publish governance")
+- **Decision**: a `CatalogVersion` increment — operator- or system-initiated (pricing D-47
+  lanes: interactive ≤ 5s coalescing, bulk ≤ 5 min) — is **mechanical**: it snapshots only
+  content whose governance already happened, and is never itself an approval gate. Every
+  governance gate attaches to the **entity publish** that introduces the exception; specifically
+  the uncomposed-`bundle` two-person override moves from `CatalogVersion` publish to the
+  bundle's entity publish (the lint findings presented to its approvers). The
+  `CatalogVersion`-publish lint is an informational report for operator publishes.
+- **Why**: the same FR carried both "manual two-person publish with blocking-with-override" and
+  D-47's "increment within 5 seconds of a downstream publish request" — a machine cannot wait
+  for two humans, skipping them breaks governance, and refusing breaks the ratified SLO. Moving
+  the override to the human act dissolves the contradiction without weakening either control.
+- **Propagated**: PRD §5.1/§5.2, `fr-define-sku`, `fr-catalog-version-publish`,
+  `fr-bundle-adoption-guard`, `fr-prepublish-lint`, AC #7/#19/#25/#45; `design/01-foundation.md` §1.2, `design/03-sku-classification.md` (`inst-cl-bundle-override`), `design/05-governance.md`, `design/06-catalog-version.md`, `design/09-bulk-promotion.md` (`inst-bk-override`) — **§4.1 struck**: its bullets say nothing about mechanical increments or entity-publish governance (item 31 of the 2026-08-26 review); `DESIGN.md` §1.2 Key decisions.
+
+#### P-D-03 — SkuReferenceCount v1 producer set = {pricing}
+
+- **Date**: 2026-08-25 (product call; PRD §15 gate "SkuReferenceCount owner + delivery date")
+- **Decision**: the v1 **registered producer set** of the `SkuReferenceCount` per-producer
+  watermark is **{plan-price (pricing gear)}**, built jointly with this gear's development and
+  delivered before products v1 GA. Subscriptions and Contracts register as producers at their
+  own build time; their GA is gated on producing the signal. Until the pricing watermark ships,
+  AC #2/#4/#18 run fail-safe (break-glass + tripwire).
+- **Why**: pricing is the only coded counterpart and already holds the data (live plan→SKU
+  references); `fr-reference-producer-registration` makes late onboarding safe by construction
+  (unregistered silence pins nothing, registration never re-flips history). One-party
+  commitment instead of a three-party negotiation with two docs-only gears.
+- **Propagated**: PRD §9.2, §14, `fr-reference-producer-registration`, AC #43; pricing PRD §15
+  (mirrored answered row); the rating gear's ownership matrix in
+  ../../rating/docs/SEAMS.md; `design/07-reference-signal.md`; `DESIGN.md` §1.2 Key decisions.
+
+#### P-D-04 — Absolute product-name uniqueness (region-independent)
+
+- **Date**: 2026-08-25 (product call; PRD §15 gate "Region-set algebra")
+- **Decision**: product-name uniqueness on `(tenantId, brandId, normalized(name))` is
+  **absolute** — two same-named Products under one tenant+brand are forbidden regardless of
+  region scope. The canonical internal name is a quasi-code; localized display names are
+  attributes and repeat freely (regional variants: distinct internal names, identical display
+  names). Region-set semantics survive only for **parent-child scope containment**
+  (`fr-parent-child-integrity`) — pinned in slice 01/04 Design, interim conservative
+  subset-check fail-closed.
+- **Why**: the overlap/disjointness algebra was a pre-approval gate with real false-reject and
+  false-allow risk; absolute uniqueness deletes the whole question from the create door.
+  Strict→loose later is a compatible widening; loose→strict would be a breaking migration.
+- **Propagated**: PRD glossary (Region), `fr-create-product`, `fr-expected-failure-behavior`,
+  AC #5, AC #33a (the promotion fallback identity), AC #38, §16; `design/01-foundation.md` (uniqueness index + `normalized(name)` pin), `design/02-taxonomy-attributes.md` (display-name coexistence), `design/04-lifecycle.md` (containment), `design/09-bulk-promotion.md` (C5 promotion identity); `DESIGN.md` §1.2 Key decisions.
+
+#### P-D-05 — `usageTypeRef` validates resolvability only; UC3(c) lives at the pricing meter binding
+
+- **Date**: 2026-08-25 (veto round over the UC3 adoption block of 2026-07-28)
+- **Decision**: registry publish validates that a declared `usageTypeRef` **resolves** in the
+  usage-collector's platform-global UsageType catalog — nothing more. "And is active" is dropped
+  (a UsageType carries no lifecycle state: register/get/list/delete only, deletion FK-guarded
+  against usage records — not against catalog meters, which rating's quarantine rule
+  fail-safes). The UC3(c) dimension-set cross-validation is **not** performed here (the registry
+  assigns dimension sets to plan-price and holds no operand): its home is pricing's
+  meter-binding rule (confirmed 2026-07-31 — **specified, not built**, corrected 2026-08-26:
+  pricing's `design/01-foundation.md` calls the binding "registry-dependent and deferred",
+  `design/03-price-structure.md` says "neither is enforced today and both codes are emitted
+  nowhere", and `pricing/src/domain/plan_rules.rs` lists `METER_USAGE_TYPE_UNBOUND` and
+  `METER_DIMENSION_UNDECLARED` under *What is deliberately absent*. **So no gate enforces
+  UC3(c) today, on either side** — the registry validates resolvability only, and pricing's
+  rule is authored and unbuilt. The invariant has a home and no enforcer; whoever builds
+  pricing's registry client owes it) — priced `dimensionKey` **⊆** the
+  UsageType's `metadata_fields` at plan publish.
+- **Why**: both original clauses named operands that do not exist registry-side; subset (not
+  equality) is the load-bearing invariant — pricing fewer dimensions than the source emits is
+  harmless, pricing one it never emits is the hazard.
+- **Propagated**: PRD `fr-metering-unit-declaration`, AC #8, §15 (answered row); rating SEAMS
+  UC3 row + ownership matrix; pricing's design slice 02 (stale "registry holds equality" premise
+  retired); `design/03-sku-classification.md`; `DESIGN.md` §1.2 Key decisions.
+- **Residue (2026-08-25, PR #14 review)**: quarantine-on-deleted-UsageType is a fail-safe, not
+  an operating mode — the deletion-guard/deletion-signal negotiation with usage-collector is a
+  PRD §15 open ("UsageType deletion vs published declarations").
+
+#### P-D-06 — Metadata map lives outside frozen version content
+
+- **Date**: 2026-08-25 (introduced by design slice 02 — first slice-born decision, not a §15
+  gate answer); **CONFIRMED by the product owner 2026-08-26**, flag struck
+- **Decision**: the per-entity metadata map is stored **beside** the entity, outside the frozen
+  `products_entity_version` content: mutable in place on any non-terminal entity **without a
+  published-version bump** (audited, `MetadataUpdated`-evented per write); a `CatalogVersion`
+  captures the map **as of its own snapshot instant**, and that copy freezes with the snapshot.
+- **Why**: the PRD demands both "ungoverned free-form channel" and "captured in CatalogVersion
+  snapshots" — putting the map inside version content would force a governed version bump per
+  sync-marker write (contradiction one) or mutate frozen versions (contradiction two). Beside
+  the entity, old snapshots stay byte-identical while the map moves freely.
+- **Accepted cost (recorded at confirmation, 2026-08-26)**: the map carries **no history
+  between snapshots**. `products_metadata`'s key is `(tenant_id, entity_kind, entity_id, key)`
+  — no version dimension, so versioning it is not merely unimplemented but structurally absent.
+  A value overwritten before the next `CatalogVersion` survives only as the audit row recording
+  the write. That is the ungoverned channel's nature; a key that needs version history is an
+  **Attribute**, which has governance, versioning and localization.
+- **Propagated**: `design/02-taxonomy-attributes.md` §2 (`inst-md-placement`) + §4.1/§5 + §6 (flag struck); slice
+  `design/06-catalog-version.md` (the snapshot-capture step it owes, and where it cites this decision), `design/01-foundation.md` §4, `design/05-governance.md` §3.2 and `design/README.md` (the three further documents that restate it — added 2026-08-26 after a census of the class rather than of the one site lint 5 named); `DESIGN.md` slice row + status line.
+- **No PRD edit owed**: the PRD glossary's "Metadata map" row is compatible as written. *(This
+  sentence sat inside the `**Propagated**` field, where a propagation check reads "PRD" as a
+  claimed target and then fails to find the citation — a claim of the exact opposite of what the
+  sentence says. 2026-08-26 branch review.)*
+
+#### P-D-07 — The staleness stamp is a floor, advanced only when its content is present
+
+- **Date**: 2026-08-26 (design slice 08; premise corrected by its own review, H1/H2);
+  **CONFIRMED by the product owner 2026-08-26 — conditionally**, flag struck (see Scope below)
+- **Decision**: `asOfCatalogVersion` on every read response is a **floor**: every catalog
+  version ≤ the stamp is fully reflected in the projection, and later entity events may add,
+  change, or **remove** content relative to the stamped version (`projectedAt` is the
+  fine-grained coordinate; `null` + `projectedAt` before a tenant's first version). The stamp
+  advances only after the `CatalogVersionPublished` changed-entity list is projected from
+  frozen rows in the same step — it never claims a version whose content the projection lacks.
+- **Why**: the PRD's one-signal rule binds staleness to resolvable catalog versions, but entity
+  events between versions are not additive (a retirement flip removes content without an
+  increment) — an "as of CV N" claim over mutated content would lie in the dangerous direction.
+- **Scope of the confirmation (2026-08-26)**: the floor is correct **given a separate serving
+  store**. It is a property of a projection that lags, so it has no subject without one — and
+  whether browse needs one at all is now an open PRD §15 question for the NFR workshop ("Does
+  browse need a separate serving store at all?"). If that answers *no*, this decision is
+  **deleted, not amended**: there is nothing to stamp. Recorded rather than left implicit so a
+  later reader does not treat the floor as load-bearing independently of the projection.
+- **Secondary, deliberately not decided**: the stamp's audience is a **UI** — `fr-cache-first-browse`
+  names one actor, `Presentation / Portals`, and slice 08's actor list is entirely human-facing,
+  while the machine-correctness surface is a different door with different guarantees (06's
+  `IntentfulResolver`: `intent` mandatory, byte-identical re-resolution, verifiable checksum, no
+  staleness by construction). A human asks "how fresh is this", which `projectedAt` answers;
+  `asOfCatalogVersion` answers the machine question "which numbered snapshot do I fully
+  contain", and NFR #7 nonetheless names *it* as the signal. `asOfCatalogVersion` currently has
+  **no reader anywhere** — no slice-12 consumer obligation mentions staleness, no other gear's
+  documents name it. Left as the PRD has it: changing which field is primary would edit NFR #7
+  and two ACs for a field nobody reads yet, and pricing has already shipped the same two-field
+  shape (`pricing_read_model` carries both `projected_at` and `catalog_version`, asserted in
+  its tests). Revisit with the first real portal consumer.
+- **Propagated**: `design/08-read-models.md` (`inst-rp-stamp`, §6 — flag struck); `DESIGN.md` slice row +
+  status line; PRD `fr-cache-first-browse` rationale re-derived + §15 serving-store row; NFR #7
+  unchanged.
+
+#### P-D-08 — Audit sealing is a platform capability: reserved seam + stated requirements
+
+- **Amended 2026-08-27 by P-D-21**: the v1 audit table it describes no longer holds a row per
+  mutating door — only refusals and reads under elevation. The reserved seam and S1–S9 stand
+  unchanged; what shrank is the table they guard.
+
+- **Date**: 2026-08-26 (product call, prompted by the audit-posture comparison against the
+  ledger and pricing registers — this gear had inherited pricing's G1/G2/G5 and silently
+  dropped its G4)
+- **Decision**: the registry does **not** build a gear-local tamper-evidence chain. Pricing's
+  **G4 / D-14** construction — hash-chained audit rows in the gear's own database, adopted there
+  as "ledger precedent" — is **deliberately not adopted here**. v1 ships the ordinary
+  append-only `products_audit_log` (complete: `actor_ref`, action, subject `(kind, id,
+  revision)`, reason, correlation id; exactly one row per mutating door inside that door's
+  transaction, rejections included; physically guarded per 01 C5) **over a reserved sealing
+  seam** — the columns a future **platform** audit capability needs, present from the first
+  migration and never written by this gear, plus one **stub marker** (`seal_state`) recording
+  per row that no seal was applied. Activation is then an activation, not a redesign. The
+  requirements that capability must satisfy are **S1–S9** below; the obligation itself is a PRD
+  §15 open owned by Architecture.
+- **Why**: tamper-evident audit is cross-cutting. Per gear it multiplies the chain
+  construction, the verification job, the WORM anchoring and the key handling by the number of
+  gears, and still leaves an auditor N unrelated chains to walk for one operator action that
+  crossed three of them. The ledger built its own because posted financial facts *are* its
+  subject matter; pricing took the pattern before any platform owner existed. The registry is
+  where the replication stops.
+- **What activation costs, corrected 2026-08-26**: "zero-migration" holds only because the
+  audit-table trigger whitelist admits a **one-way `unsealed → sealed` UPDATE** supplying the
+  hash columns in the same statement (01 §4.4). The seam as first written put `seal_state`
+  outside the whitelist entirely *and* required `row_hash` NOT NULL on `sealed`, so an
+  asynchronous sealer could neither update an existing row nor insert one already sealed — it
+  required exactly the migration the seam exists to avoid (item 7 of the 2026-08-26 review).
+- **Consequence, recorded rather than hidden**: rows written before activation are **never
+  retroactively provable** — hashing a stored row proves only that it hashes to what it now
+  contains. The seam therefore buys exactly two things: zero-migration activation, and an
+  **era marker queryable in the data** instead of inferred from a deployment date. Until
+  activation, audit immutability rests on `REVOKE` + the trigger whitelist and on nothing
+  cryptographic — and slice 10 C1's erasure-completeness argument plus NFR
+  `…-nfr-availability-audit`'s "100% write-path audit" lean on precisely that. Audit
+  *completeness* is delivered in v1; audit *tamper-evidence* is not.
+- **Sealing requirements on the platform capability (normative; cited, never restated)**:
+  - **S1 — Construction.** `row_hash = H(domain_sep ‖ canonical row fields ‖ prev_hash)`:
+    byte-reproducible across engines and releases, NULL-safe, over a **pinned** field list with
+    a golden vector committed at activation (01 C1's schema-oracle practice).
+  - **S2 — Segmentation.** Chains segmented per `(tenant_id, chain_id)` where `chain_id` is the
+    audited subject's aggregate, with a periodic per-tenant **roll-up** row chaining the segment
+    heads. A single chain per tenant is **non-compliant**: writing row *N* needs row *N−1*'s
+    hash, so one chain serializes every audited mutation of that tenant inside its own mutation
+    transaction (pricing learned this as D-135, after shipping D-14).
+  - **S3 — Never on the mutation path.** *(Amended 2026-08-27 by P-D-31, closing the conflict
+    flagged the same day: S1–S9 are **this gear's** stated requirements on a future platform
+    capability, so the amendment is the gear's to make; Architecture / Common Core owns the
+    capability's delivery, not this sentence.)* The audit *record* stays local and commits
+    inside the guarded mutation's transaction, as v1 already does — **except a refusal's row,
+    which commits in its own transaction** (P-D-23, P-D-26), the mutation's being precisely the
+    one a refusal rolls back. **What S3 requires is unchanged in both cases**: no audit write
+    depends on a network-reachable capability, which is the property "never on the mutation path"
+    exists to protect. Only the *seal* is platform-side and
+    asynchronous, computed over rows already immutable. A capability reachable only across the
+    network must never be a precondition for a write — an audit store that can be unavailable
+    independently of the database is fail-open by construction, which is the whole reason the
+    ledger and pricing put the row in the mutation's ACID transaction.
+  - **S4 — Verification cadence.** Incremental link check at seal time **plus** a periodic full
+    re-walk of every segment and the roll-up **plus** on-read spot checks. Sampling alone is
+    non-compliant as the sole production mechanism (ledger G2, normative there).
+  - **S5 — Anchoring.** The roll-up head anchored to WORM / object-lock storage **outside** the
+    audited gear's own database, so one compromised database cannot rewrite both the rows and
+    the evidence about them.
+  - **S6 — Residency.** Per-tenant chains only, never cross-tenant: residency-bound tenants
+    live on different cells' databases, so a cross-tenant chain is physically impossible and a
+    cross-tenant anchor would breach residency.
+  - **S7 — Erasure compatibility.** The canonical field list **MUST exclude every field the
+    erasure path mutates**. The registry's erasure is a pseudonym-map update precisely so no
+    record is ever rewritten (slice 10 C1); a seal covering a resolvable identity would make
+    GDPR erasure break the chain. Audit rows carry `actor_ref`, never names — the seal covers
+    the ref.
+  - **S8 — Retention.** Seal and anchors retained **≥** the audited rows' own retention (slice
+    10 C3: statutory maximum for the audit class). A seal expiring before its rows proves
+    nothing about the tail.
+  - **S9 — Coverage.** The seal MUST cover **every** mutating door of the participating gear,
+    **rejections included**. A seal over part of a trail is evidence about that part only; the
+    registry writes rejection rows (01 §4.4) specifically so the part is the whole.
+- **Propagated**: `design/01-foundation.md` §4.4 (the reserved seam + its CHECK); `design/05-governance.md` §1.6 C7 (the
+  G4-shaped constraint row, deferral stated); `design/10-retention-erasure.md` §1.6 C1/C3 (sealing requirements seven
+  and eight — the exclusion and the retention, spelled in words because the short label collides
+  with the slice shorthand and was read as a claim into two slices that know nothing of this
+  decision; 2026-08-26 branch review);
+  PRD §15 open row (owner: Architecture / Common Core) + §16 risk row; PRD NFR
+  `…-nfr-availability-audit` reads unchanged — it requires audit *completeness*, which v1
+  delivers; `DESIGN.md` §1.2 Key decisions.
+
+#### P-D-09 — Stage-vs-commit fail-closed is delivered per lane; the requirement says so
+
+- **Date**: 2026-08-26 (product call, answering the flagged M2 reading in design slice 06)
+- **Decision**: `fr-catalog-publish-concurrency` and **AC #40** are **amended** to state the
+  lane split explicitly instead of leaving it as a design reading. Fail-closed re-validation
+  is one mechanism with two dispositions: the **operator lane** rejects and names the changed
+  entity (`STAGED_ENTITY_CHANGED`); the **mechanical lane** re-collects fresh content and
+  retries within its lane SLO and **must not lose the request**. In neither lane may stale
+  content be frozen. The FR's actor list gains
+  `cpt-cf-bss-products-actor-plan-price` alongside the catalog admin.
+- **Why**: the requirement's remedy — "rejected, naming the changed entity" — presumes an
+  addressee. It was written when a `CatalogVersion` publish was an operator act, and D-47 +
+  P-D-02 then made increments demand-driven and mechanical ("never waits on a human", slice 06
+  §1.2), so the dominant caller is pricing over the increment-request contract and there is no
+  operator to reject to. Rejecting a machine request either drops it or forces the caller to
+  own a retry policy, putting the same logic in two gears. The invariant AC #40 protects is
+  *nothing stale is ever frozen*; rejection is the operator-facing delivery of it, and a retry
+  with fresh collection is the machine-facing delivery — which also preserves the request.
+  Evidence the requirement was operator-shaped from the start: its **only** listed actor was
+  the catalog admin.
+- **Why amend rather than confirm the reading**: the behaviour was already right; the defect
+  was that the normative text said the opposite of the design, in **two** places (the FR and
+  the AC both carried "rejected"). Such a disagreement is always resolved eventually, and
+  usually by whoever has least context — here by "fixing" the retry into a rejection, which
+  would silently drop pricing's requests and stall its pending refs (`commit_overdue` on its
+  side, `catalog_version_overdue` on ours). Related note: the lifecycle-state arm of the check
+  is the review's own H2 fix; a version-only comparison misses a retirement, which is exactly
+  the case the AC spells "retired".
+- **Propagated**: PRD `fr-catalog-publish-concurrency` (normative sentence, rationale, actor
+  list) + AC #40; `design/06-catalog-version.md` `inst-sn-revalidate` (flag struck) and §5's both-arm probes
+  (already assert both lanes, unchanged); `DESIGN.md` slice row + status line.
+
+#### P-D-10 — No gear-side Legal role: the allow-list records Legal's decision, it does not enact it
+
+- **Date**: 2026-08-26 (product call, answering the flagged M6 reading in design slice 10)
+- **Decision**: the PII allow-list is a `GovernedLiveOp` under the **base approver quorum**
+  (05 C1: the tenant's configured `N` distinct approvers, each distinct from the author, each
+  holding CatalogAdmin or FinanceReviewer — `N` default 2, floor 0 per **P-D-11**, which landed
+  the same day and amended C1 after this entry first quoted it as a fixed `≥ 2`). **No Legal
+  role is introduced into this gear** — no actor, no IdP claim, no
+  config row. Legal's authority is exercised outside the system and enters it as a **record**:
+  each allow-list entry carries a mandatory Legal sign-off reference beside its justification,
+  and an entry offered without one is refused. Consequently **role predicates narrow within the
+  base set and never replace it**, and v1 registers no extension point that could (05 C8).
+- **Why**: PRD AC #35 already specifies this construction in its own words — "curated
+  allow-list; **Legal sign-off recorded in the approval artifact**". It never gives Legal a
+  role, and §15 keeps the sign-off as an external obligation owned by Legal. Enforcing it
+  in-system would require Legal counsel to hold platform identities, which no requirement asks
+  for; and the two alternatives were both worse. "Predicate **adds**" would make a Legal
+  reviewer also hold **CatalogAdmin** — the role that publishes price-bearing catalog changes,
+  retires SKUs and governs the freeze participant set — i.e. a privilege escalation for a
+  staffing reason, against the separation of duties the gate exists for. "Predicate
+  **replaces**" is a bypass surface unless guarded, since a kind whose predicate admits anyone
+  passes a material change on one signature.
+- **What this closes**: the replacing-predicate grant lived in slice 05 `inst-mt-inputs` clause
+  (d) and was flagged there as "a design reading of the AC #35 'Legal sign-off' clause", with
+  slice 10 `inst-pp-allowlist` as its only intended user and the sole flag record in slice 10's
+  M6 note. Both are retired: clause (d) now states the narrowing rule and C8 carries it as a
+  constraint. Worth keeping in view — the gear's *other* predicate,
+  `inst-gv-finance-predicate`, was additive all along (C1 already demands
+  CatalogAdmin-or-FinanceReviewer; it demands that one of the two *be* a FinanceReviewer), and
+  `APPROVER_ROLE_REQUIRED` fires on an unmet *additional* constraint, so the replacing grant
+  was the one shape in the slice that no built predicate needed. Note also that slice 05 §6
+  never listed the question among its risks — only slice 10's parenthesis and clause (d)'s own
+  aside carried it, which is why it read as settled from either side alone.
+- **What the gear does not claim**: that Legal approved. It proves only that a reference was
+  recorded. The control remains the §15 paper sign-off plus the per-tenant audited export.
+  Stated explicitly so the recorded reference is not later mistaken for an enforced approval.
+- **Propagated**: `design/05-governance.md` §1.6 **C8** (the narrow-never-replace rule + the two guards
+  any future replacing predicate would owe); `design/10-retention-erasure.md` `inst-pp-allowlist` + §5 probe (base
+  quorum, mandatory reference, positive control); `design/README.md` slice-10 summary;
+  `DESIGN.md` slice row + status line.
+- **No PRD edit owed** — `fr-materiality-gated-publish` and AC #26 keep their closed approver
+  set, which this decision makes true again, and AC #35 is followed rather than amended. *(Moved
+  out of the `**Propagated**` field, where it read as a claim into the PRD — 2026-08-26 branch
+  review.)*
+
+#### P-D-11 — The approver count is a policy value with floor 0; the predicates are not
+
+- **Date**: 2026-08-26 (product call, answering the flagged quorum-strictness risk in design
+  slice 05)
+- **Decision**: the approver count `N` becomes part of the typed materiality policy —
+  **default 2, floor 0**. What does **not** become configurable: the FinanceReviewer predicate
+  on finance-material fields (it governs *who*, never *how many*), the refusal of self-approval
+  at every `N ≥ 1`, the requirement that `N` be reached only by explicit configuration (absent
+  ⇒ default, so `0` is never reached by omission), and the provisioning-time origin of the
+  initial value with every later change to it material under the then-current quorum. At
+  `N = 0` the `ApprovalRecord` still exists — author, pinned content snapshot, audit row,
+  `quorum {required: 0, satisfied: 0}` — and when the configured `N` cannot carry a mandatory
+  predicate the descriptor carries an explicit **`predicateUnsatisfiable`** marker.
+- **Why**: the fixed `≥ 2` was measured against the tenants it governs and against the sibling
+  gear, and lost on both counts. A two-person commercial team could publish no material change;
+  a **one-person** tenant could publish **nothing at all** — first publish and every lifecycle
+  transition to `published`/`deprecated`/`retired` are material, a non-material change still
+  demanded one approver, and C2 forbids self-approval. Meanwhile plan-price — the gear that
+  holds the money, which this one does not (01 C3) — ships `submitter + 1` in its **schema**
+  (`pricing_approval` carries `submitter_principal`/`approver_principal` as two columns under
+  `chk_pricing_approval_distinct_principals`, so more than one approver is structurally
+  impossible there) **and** an approver-less path for below-threshold non-first publishes
+  (`PublishAuthorization::AutoPublishable`). The strict-catalog/lenient-money asymmetry was
+  inverted from what risk suggests, and nothing recorded a decision to create it.
+- **Why floor 0 and not floor 1**: floor 1 does not unblock the case it exists for. First
+  publish is material by unscoreability (no baseline — pricing's G1, adopted here), so a solo
+  tenant at `N = 1` still cannot publish a first SKU, having no second principal. The count
+  therefore replaces the number everywhere, and materiality governs which predicates apply and
+  what is recorded rather than how many humans sign.
+- **Why 0 rather than permitting self-approval**: they are not the same act. At `N = 0` the
+  trail says "no approval required by policy". An author signing as their own approver produces
+  a trail saying "approved by X" where X is the author — **indistinguishable from a bypassed
+  control** to whoever reads it later. The honest mechanism for "the owner decides alone" is a
+  configured zero, which is why `SELF_APPROVAL_FORBIDDEN` is untouched at every `N ≥ 1`.
+- **Amended the same day (2026-08-26), closing a hole this entry had left**: "the FinanceReviewer
+  predicate is vacuous at `N = 0`" was stated here and **not built into the mechanism**. Slice 05's
+  `inst-gv-finance-predicate` set the predicate on any finance-material touch regardless of `N`,
+  `inst-gv-quorum`'s evaluator answers "satisfied" only on distinct principals holding the required
+  roles, and 01's `inst-fd-governance-gate` raises `APPROVAL_REQUIRED` otherwise — so at `N = 0`
+  the descriptor demanded a role no principal could hold and the change was **unpublishable
+  forever**, re-blocking the one-person tenant this decision exists for (`taxCategory` is required
+  at publish for product/service types, so their first such SKU could never publish). The register
+  said *vacuous*; the mechanism said *unsatisfiable*, and the mechanism is what gets built. Now
+  normative in both: at `N = 0` the predicate is **not set** and the descriptor records
+  `predicateUnsatisfiable = finance_reviewer`, which the evaluator treats as met while the record
+  and the inbox envelope keep it visible as unmet-by-policy; at `N ≥ 1` nothing changes. Found by
+  the CodeRabbit pass on the same branch, hours after the wave landed — the exact class this
+  programme keeps meeting: a decision's prose outrunning the mechanism that has to carry it.
+- **The reduction, stated rather than wrapped**: at `N = 0` a material catalog publish proceeds
+  on one person with no second pair of eyes, and the FinanceReviewer predicate has no subject. What
+  compensates is not another approver: the pinned content snapshot, the full audit row, the
+  attribution, the governed-ness of the lowering itself, and the `predicateUnsatisfiable`
+  marker that makes the missing control a stored fact rather than an inference from a config
+  value nobody re-opens.
+- **On divergence from pricing (asked explicitly)**: the default stays 2 and pricing's effective
+  count stays 1, so the two gears differ **by default** — deliberately, and cheaply. The shared
+  studio inbox envelope already carries `quorum {required, satisfied, …}` per row
+  (`inst-gv-queue`), so heterogeneous quorums render per card with no adapter; parity is one
+  configuration value away in either direction. The alternative parities were both worse:
+  lowering this gear's *default* to 1 weakens a stated control as a side effect of a
+  small-tenant concern, and raising pricing to 2 is a governance change in the money-holding
+  gear (41 non-test sites, 15 test files, 22 files, plus its distinctness CHECK and the move
+  from two columns to a decisions table) that belongs in the pricing register with its own
+  number, not in a line of ours.
+- **Terminology**: "two-person rule" meant author + 2 (three people) in this PRD and
+  `submitter != approver` (two people) in pricing. One phrase, two meanings, and it is the
+  likeliest origin of the floor being three without anyone deciding it. Normative text now
+  states the number.
+- **Propagated**: PRD `fr-materiality-gated-publish` (normative sentence) + AC #26 (two
+  bullets) + §17.1 materiality-threshold row; `design/05-governance.md` §1.6 C1, §1.7 `ApprovalRecord`,
+  `inst-gv-materiality` (the "nothing publishes approver-less" interim retired),
+  `inst-gv-queue` (envelope gains `predicateUnsatisfiable` **and `configuredQuorum`** — its
+  `required` is the record's *effective* count, `N` for material and `min(N, 1)` for non-material,
+  never the raw configured `N`, so a card cannot show "2 required" for a record closing on one),
+  §6 (flag struck); **`design/03-sku-classification.md` `inst-ac-required`** — the rule this decision's own amendment
+  names as the operand of the hole it closed (`taxCategory` required at publish for
+  `product`/`service` types is what made the `N = 0` tenant unpublishable forever), which
+  restated the substance without citing the decision until the 2026-08-26 branch review;
+  `DESIGN.md` slice row + status line.
+
+#### P-D-12 — The `SchemaPin`'s membership is a rule, not a list
+
+- **Date**: 2026-08-26 (product call, answering the flagged L1 item in design slice 12)
+- **Decision**: `fr-plan-price-seam` is **amended** so the pin covers exactly the **operands the
+  consumer obligations are enforced on** — the §2.2 `ObligationRegister`'s guards. Adding an
+  obligation therefore adds its operand, and the coupling is doc-linted in both directions by
+  the new `inst-cc-pin` (CoverageChecks #9). Derived v1 membership: `skuId`, `type` (the
+  `bundle` discriminator), the metering-unit declaration **and** `usageTypeRef`, `PlanTier`,
+  `status` **together with its value vocabulary**, `sellable`, `compositionPending`.
+  `CatalogVersion` is pinned as a **surface**, not a field. Explicitly **outside** with the
+  reason recorded: `skuCode` and `name` — read only by a pick-list that validates nothing, so
+  drift is cosmetic and its absence must not read as an oversight.
+- **Why a rule instead of the two fields the flag asked about**: measuring the register against
+  the FR's list found **four** operands outside the pin, not two — `status`,
+  `compositionPending`, `sellable`, `usageTypeRef` — and the FR **states three of those
+  obligations in its own sentence** ("reject adoption of `compositionPending`/`deprecated`
+  SKUs; reject a usage binding when the target SKU has no declared unit …") while pinning none
+  of their operands. A list that drifted from the obligations once will drift again; the rule
+  plus the lint is the only form that cannot.
+- **Second finding, which the list could not survive either way**: of the five items it named,
+  only **three** are comparable fields of the consumer's shape. Pricing's shipped `CatalogSku`
+  is `sku_id`, `sku_code`, `name`, `metering_unit`, `status`, `plan_tier` — `bundle` type is
+  absent from it (slice 12 adds it as `type`), and `CatalogVersion` is not a SKU field at all.
+  So the pin as written could not do its job even for what it listed.
+- **Why `status` needed pinning most, in pricing's own words**: its field doc reads
+  "`draft` | `published` | `deprecated`, **verbatim. Not an enum**: the registry owns this
+  vocabulary and a fifth state must not become a parse failure in the gear that merely displays
+  it." That is the right tolerance for display and exactly the wrong one for a guard — rename
+  `deprecated` or add a blocking state and pricing's adoption guard stops matching **and does
+  not error, it accepts**. Hence the vocabulary, not just the field name, is pinned.
+- **The failure the pin exists to prevent, concretely**: `compositionPending` unpinned means
+  pricing can adopt an uncomposed bundle — a bundle priced with no components, and a customer
+  billed for a set that resolves to nothing.
+- **Honest limit**: the seam suite does not exist yet (PRD §15 owns its home and owner —
+  "proposed: `api-contracts` CI"). This widens a **specification**, not a running gate. Getting
+  the membership right before the job is built is cheaper than after, and nobody should read
+  this as drift becoming detectable tomorrow.
+- **Propagated**: PRD `fr-plan-price-seam` (normative sentence); `design/12-consumer-contracts.md` §1.6 C1,
+  `inst-sdk-catalogsku` (`status` + vocabulary now normative pin members, previously a flagged
+  widening), §3.2 **`inst-cc-pin`** (CoverageChecks #9 — the count in prose moved with it),
+  §6 (flag struck); `DESIGN.md` slice row + status line.
+
+#### P-D-13 — The quorum shorthand's reach is enumerated; a floor only where the principal is not the tenant's
+
+- **Date**: 2026-08-26 (answering Blocking 1 of the bad-mood review of this branch)
+- **Decision**: P-D-11 made `N` a policy value with floor 0 and the glossary made the shorthand
+  total ("wherever *two-person* appears as shorthand below, read it as this quorum"). That reach
+  is now **enumerated and dispositioned**, six sites, rather than left to the reader:
+  - **Cross-tenant break-glass elevation** (AC #30, `inst-bg-open`) is **not `N`-governed at
+    all**. Its principal is a platform owner acting across tenants; no tenant's configured `N`
+    has standing over an act whose subject is another tenant's data. Fixed floor: **two distinct
+    platform principals**, or the AC's already-stated **post-hoc-review** arm.
+  - **Freeze force-completion** (AC #22), the **uncomposed-bundle override** (AC #19,
+    `inst-cl-bundle-override`), **un-deprecation** (AC #17, `inst-lc-undeprecate`) and the
+    **slice-07 correction door** (`inst-cr-republish`) follow `N` — and each **records the
+    reduction**: when the effective count is below the retained-name default of 2, the
+    authorizing `ApprovalRecord` and the act's event carry **`quorumReduced`**, so no audit
+    trail reads "two-person" for a one-person act. *(This entry first named `inst-mt-inputs`
+    here, which is slice 05's materiality-inputs instruction and not a door at all — the
+    correction door's own instruction is `inst-cr-republish`. The wrong id is why the sweep
+    reached three of these four and not the fourth: 2026-08-26 review of this branch.)*
+  - **The slice-07 break-glass correction** (`inst-bc-ceremony`) is the **sixth** site, and it
+    follows `N` with the reduction recorded, on this entry's own principle: a fixed floor is
+    right only where the acting principal is not the tenant's, and this principal **is** the
+    tenant's. It is a separate lane from `inst-bg-open` — both slices say so explicitly
+    (05 C5, 07 C5: it is **not** a §6.8 `BreakGlassSession`) — and a separate admission gate
+    from the ordinary correction door (`inst-cr-door`: "one door, three admission gates (two when P-D-13 was written; P-D-16 added the third on 2026-08-26)"), so it
+    inherits neither disposition and had to be dispositioned on its own. What makes the lane
+    safe at `N = 0` is not a quorum floor but the three controls it already carries — the
+    feature flag OFF by default, the mandatory reason with the `SkuCorrectionOverride` evidence
+    snapshot, and the `TripwireCounter` escalation that raises the release blocker past
+    5/30 days. A floor of 2 here would wedge the one-person tenant in the one state where the
+    ordinary safety predicate cannot answer, which is the class of block P-D-11 exists to
+    remove.
+  - The `OverrideCeremony` keeps its **informed** property at every `N`: at `N = 0` the
+    **author** performs the acknowledgment-of-findings-by-name, recorded identically. Multiple
+    people was never what that ceremony bought; informedness was.
+- **Why not a floor on all six**: floor 2 on force-completion leaves a solo tenant with a
+  `CatalogVersion` permanently past its freeze timeout and un-resolvable — the exact class of
+  block P-D-11 exists to remove. And floor 1 on un-deprecation would contradict P-D-11's own
+  enumeration, which already makes every lifecycle transition **to `published`** material and
+  therefore `N`-governed; un-deprecation is that transition. A fixed floor is right only where
+  the acting principal is not the tenant's, which is break-glass and nothing else in v1.
+- **Why `quorumReduced` rather than a second approver**: it is the `predicateUnsatisfiable`
+  device from P-D-11, applied to the count instead of the role — the missing control becomes a
+  **stored fact** on the record instead of an inference from a config value nobody re-opens. The
+  inbox envelope already carries `configuredQuorum` alongside the effective `required`
+  (`inst-gv-queue`), so the marker costs a column and no new surface.
+- **How this was missed, recorded because the class repeats**: the sweep followed P-D-11's
+  propagation list, and the four ceremonies are not on it — they are not materiality questions,
+  which is exactly why the shorthand reached them unexamined. Commit `a282041f8`'s message
+  asserted that break-glass and force-completion "carry their own fixed two-person rules"; **no
+  document stated such a rule**. The claim was true of the intent and false of the text, and the
+  text is what gets built (the same shape as P-D-11's own `predicateUnsatisfiable` finding).
+- **And how the fix itself was missed, same day**: this entry's first draft enumerated the
+  ceremonies correctly but named **the wrong instruction id** for one of them, and named a
+  ceremony's *sibling lane* nowhere at all. Both cost a site: the sweep that followed this
+  enumeration reached slice 03, 04 and 06 and never opened slice 07, so the correction door
+  and the break-glass correction still read a bare "two-person" a full wave after the decision
+  that governs them. **An enumeration is only as good as its ids** — an id that resolves to
+  another slice's instruction is worse than no id, because it reads as swept.
+- **Propagated**: PRD glossary **Two-person rule** row; AC #17, #19, #22, #30; `design/05-governance.md`
+  §1.6 C1, §1.7 `ApprovalRecord` + `OverrideCeremony`, `inst-bg-open`, `inst-gv-override`,
+  `inst-gv-queue`, `inst-mt-inputs` (the metering-unit clause that routes to slice 07's correction door (a route, not a propagation target)),
+  §4 `products_approval`/`products_breakglass_session`; `design/03-sku-classification.md` `inst-cl-bundle-override`;
+  `design/04-lifecycle.md` `inst-lc-undeprecate`; `design/06-catalog-version.md` `inst-fz-force`; **`design/07-reference-signal.md` C4, C5,
+  `inst-cr-republish`, `inst-bc-ceremony`**; `DESIGN.md` decision register summary.
+
+#### P-D-14 — `system_signal` is an approval subject kind, not an exemption; the authorizing principal is the signal
+
+- **Date**: 2026-08-26 (recorded 2026-08-26 by the branch review — **decided in prose on this
+  branch and never registered**, which is the defect this entry closes)
+- **Status**: **CONFIRMED as amended by P-D-48** — the subject kind stands; on a dirty head the
+  clear is **deferred, never refused**, the owning slice's reading, which this entry had stated the
+  other way. *(Was FLAGGED: the design is built on it; it was registered so the owner could veto a
+  publish path that has no human approver.)*
+- **Decision**: a publish whose **sole** content is a system-owned flag cleared by an inbound
+  governed signal — in v1 exactly one: 06's `compositionPending` clearing — uses `ApprovalRecord`
+  subject kind **`system_signal`**. The record is auto-satisfied with the **signal reference as
+  the authorizing principal**, audited like any other decision. There is no human approver and
+  **no exemption from the gate**: the act still produces a record, still lands in the audit
+  trail, and is still refused if its preconditions fail.
+- **Settled by the owner (P-D-48)**: on a dirty head the clear is **deferred, never refused** —
+  the owning slice's reading (`design/06-catalog-version.md` `inst-cc-clear`), which §3.2 already
+  carried by raising no error code: the caller is an inbound signal, not a request, so there is
+  nobody to answer a refusal to, and a deferral cannot wedge a publish queue. This entry's
+  *refused* reading is withdrawn; `fr-materiality-gated-publish`, AC #26 and 05 now say deferred.
+- **The precondition that makes it safe**: the head must be **clean**. A `system_signal` publish
+  carries the flag and nothing else; if the head holds unpublished bucket-iii/iv edits the
+  publish is **deferred** rather than carrying them out under a record with no human approver — held until the head is clean, never refused (the owner's call, P-D-48). This
+  is not decoration — `cc752aed4`'s own Blocking-5 note records the alternative concretely: a
+  publish "whose sole content is a system-owned flag" could otherwise "carry `taxCategory` and
+  `PlanTier` edits out under an `ApprovalRecord` with no human approver".
+- **Why a subject kind rather than an exemption**: an exemption leaves no record and therefore
+  no audit answer to "who cleared this". A subject kind spends one column and keeps the gate's
+  shape — the same device P-D-11 used for `predicateUnsatisfiable` and P-D-13 for
+  `quorumReduced`: turn the missing control into a **stored fact** rather than an absence.
+  The composition-clear gate was on the flag list as an *exemption* until the 2026-08-26
+  CodeRabbit pass forced its resolution; it left the list as a subject kind.
+- **Why it is independent of `N`**: the tenant's configured quorum governs acts whose principal
+  is a tenant principal. This act's principal is an inbound governed signal from a counterpart
+  gear, so `N` has no standing over it — the same reasoning P-D-13 applies to `inst-bg-open`
+  from the other direction. It follows that `N = 0` neither weakens nor strengthens this path.
+- **What "governed" means for the signal**: it arrives through a registered inbound machine
+  contract (PRD §9.2), S2S-authenticated as the producing gear, and is itself recorded. An
+  ungoverned or unauthenticated signal cannot open this path.
+- **Propagated**: `design/05-governance.md` `inst-gv-one-shot`; `design/06-catalog-version.md` §2 composition-clear flow and its
+  `compositionPending` clearing; `design/README.md` slice-06 bullet; `DESIGN.md` §6 status block
+  + decision register summary; PRD `fr-materiality-gated-publish` (the subject-kind sentence)
+  and AC #26 (its own `And` clause). *(Corrected 2026-08-26: this said AC #7, which is "Define a
+  SKU"; the materiality AC is #26. Both targets carried the claim and neither carried the
+  sentence until now — and the register's own gate read the claim as verified, because the
+  field names `PRD` and the PRD had begun citing P-D-14 in an unrelated change-log line.)*
+
+#### P-D-15 — The two inbound machine contracts are `products-sdk` clients from `ClientHub`, not out-of-process REST doors
+
+- **Date**: 2026-08-26 (the transport wave — **named in `DESIGN.md` as a decision that "landed
+  without having been flagged" and then never entered this register**; that asymmetry is what
+  this entry closes)
+- **Status**: **CONFIRMED as recorded (P-D-48)**. *(Was FLAGGED: it is a shape counterpart gears
+  build against, so it is the one entry here a neighbouring team can be broken by.)*
+- **Decision**: **every** inbound machine contract of PRD §9.2 is consumed as a **`products-sdk`
+  client resolved from `ClientHub`**, in-process, rather than as a REST door that binds the
+  counterpart out-of-process. §9.2 declares four — the `CatalogVersion` **increment request**,
+  the **`SkuReferenceCount`** watermark, the **freeze acknowledgment** (and its release half,
+  P-D-18) and the **bundle composition-completed** signal — so the rule is stated over the set
+  rather than over a pair. The increment request is registered in PRD §9.2 beside its sibling,
+  which is where the asymmetry between them was first visible.
+  *(Corrected 2026-08-26: this entry said "the two inbound machine contracts" and named the
+  increment request and the composition signal, while slice 12's `inst-sdk-surface` said "the
+  two" and named the increment request and the watermark. Two registers, two different pairs,
+  and §9.2 holds four contracts — so neither reading was right and the count was the defect.)*
+- **Why**: the platform's own composition model puts sibling BSS gears in one process behind
+  `ClientHub`; a REST door for an in-process call buys a network hop, a second authz surface and
+  a second failure mode for no isolation the deployment actually has. The SDK client keeps the
+  contract typed and versioned at the seam that slice 12 already pins.
+- **The cost, stated**: an out-of-process counterpart — a gear that later moves, or a
+  non-Rust producer — needs the REST door built. Nothing in v1 has that shape, and slice 12's
+  `ObligationRegister` is where such a consumer would be booked when it appears.
+- **Rejected alternative**: REST doors for both. Rejected on the cost above, not on principle;
+  if the owner expects an out-of-process producer inside v1's horizon, this decision flips and
+  §9.2 gains two door definitions.
+- **Propagated**: PRD §9.2 (both inbound contract blocks); `design/06-catalog-version.md` increment-request
+  intake; `design/12-consumer-contracts.md` `inst-sdk-surface` + the `ObligationRegister`; `DESIGN.md` §6 transport paragraph.
+
+#### P-D-16 — A third correction-admission arm: an unresolvable meter target
+
+- **Date**: 2026-08-26 (recorded by the branch review; the arm was authored into slice 07 as
+  item 19 of that day's earlier review and stood against two `MUST`s until this entry)
+- **Status**: **CONFIRMED (P-D-48), its open half closed — the arm carries no flag of its own.**
+  *(Was FLAGGED: it amends a normative FR and an AC.)*
+- **Decision**: `fr-immutable-field-correction` and AC #4 are **amended** to carry a third
+  admission arm. Besides (a) fresh-zero and (b) break-glass while the signal is entirely
+  unavailable, the correction door admits a **meter-declaration** correction when the subject's
+  declared `usageTypeRef` **no longer resolves** — the `UsageTypeResolver` answers not-found,
+  never a timeout — **regardless of the reference predicate**. The ceremony is unchanged
+  (`N`-governed + mandatory reason + `SkuCorrectionOverride`), and the override record's
+  evidence field carries **`unresolvable-target`** rather than unavailability evidence.
+- **Why the arm has to exist**: a sold SKU whose `UsageType` the collector deleted is wedged in
+  every lane at once — `fresh > 0` refuses the normal door (`CORRECTION_REFERENCED`), the signal
+  *being available* refuses break-glass (`CORRECTION_SIGNAL_AVAILABLE`), and retire-and-clone is
+  refused because the flip guard defers on anything but fresh-zero with no force-retire door in
+  v1 (04 C4). PRD §15 confirms the collector can delete a referenced usage type, so this is a
+  reachable state and not a hypothetical. Left unamended, the requirement's fail-closed default
+  has no exit and the SKU stays broken forever.
+- **Why `fresh > 0` is the reason to admit, not to refuse**: the fail-closed default exists to
+  stop a correction from silently changing what a live consumer already bound. Here the binding
+  is *already* broken — the declared target does not exist — so refusing preserves nothing and
+  repairs nothing. The reference being real is what makes the repair urgent.
+- **What this closes, and what it does not**: it closes the **registry-side** half of the PRD §15
+  row *"UsageType deletion vs published declarations"* — the wedged-SKU repair, whose answer
+  column read **TBD** while slice 07 already implemented an answer. It does **not** close the
+  cross-gear half: the deletion-guard / deletion-signal negotiation with usage-collector stays
+  an open §15 item owned by that gear, exactly as P-D-05's residue records it. (Corrected
+  2026-08-26: this entry read as closing the whole row, which contradicted P-D-05 on the same
+  row — a local repair arm is not a deletion contract.)
+- **Settled by the owner (P-D-48): no flag of its own.** This arm is deliberately **not** behind
+  `BREAKGLASS_CORRECTION_DISABLED`, because a default-OFF flag would withhold the exit the decision
+  exists to provide — and it carries no flag of its own for the same reason: its admission
+  predicate is a resolver fact (not-found), not operator discretion, and the arm already increments
+  the same `TripwireCounter` the break-glass lane uses (`inst-bc-unresolvable`). What remains is a
+  governed but permanently open write path onto a published, `fresh > 0` SKU's bucket-ii meter
+  declaration; the ceremony, the reason and the `SkuCorrectionOverride` evidence row are required on
+  every use.
+- **Rejected alternative**: drop `inst-bc-unresolvable` and leave the wedged SKU to the §15
+  negotiation. Rejected because the negotiation has no v1 landing and the state is reachable in
+  v1 — but this is the arm to strike if the owner prefers the quarantine fail-safe §15 names.
+- **Propagated**: PRD `fr-immutable-field-correction`, AC #4, §15 row (closed); `design/07-reference-signal.md`
+  C5, `inst-bc-admission` (the "only" quantifier now names both arms), `inst-bc-unresolvable`,
+  `inst-cr-republish` (the validator re-checks the admitting lane's own predicate).
+
+#### P-D-17 — Promotion identity collision with different content is update-as-draft, not a per-row conflict
+
+- **Date**: 2026-08-26 (recorded by the branch review; slice 09 was amended to this reading as
+  item 15 of that day's earlier review, against three unamended PRD statements)
+- **Status**: **CONFIRMED as recorded (P-D-48)**. *(Was FLAGGED: it amends an FR, an AC and a §10
+  use case.)*
+- **Decision**: `fr-bulk-import-export`, AC #33a and `usecase-environment-promotion` are
+  **amended** to carry slice 09's exhaustive four-way classification: unknown identity ⇒
+  **create**; identity bound to **matching** content ⇒ **no-op**; identity bound to **different**
+  content ⇒ **update-as-draft** against the existing entity; identity bound to an **incompatible
+  kind/type, a `retired` holder, or a dirty head** ⇒ **per-row conflict**.
+- **Why**: "an identity collision is a per-row conflict" makes the **modal** promotion row fail.
+  Promoting a changed SKU into an environment that already holds it *is* the workflow — the PRD
+  cites Stripe test/live and Zuora Deployment Manager as the parity target, and in both the
+  second promotion of an object is an update. Under the unamended sentence, every environment
+  after the first can be populated exactly once and never updated again.
+- **How AC #33a's "never a silent merge" survives**: it is satisfied, not dropped. The update
+  lands in **`draft`**, publication stays gated behind the batch's own quorum, and the
+  `ChangeReport` shows the row. Nothing merges silently because nothing publishes silently.
+- **Why the dirty-head arm is the load-bearing half**: a target holding **unpublished** edits is
+  a conflict, so promotion can never clobber work in progress. That is the data-loss path the
+  PRD's blunt sentence was protecting against, and it is protected precisely here.
+- **Rejected alternative**: restore `conflict` for content difference in C5 and
+  `inst-pm-resolve`. Rejected on the modal-row argument above; it is the change to make if the
+  owner reads promotion as a create-only channel.
+- **Propagated**: PRD `fr-bulk-import-export`, AC #33a, `usecase-environment-promotion`
+  (Alternative Flows); `design/09-bulk-promotion.md` C5 + `inst-pm-resolve`.
+
+#### P-D-18 — Version liveness ends by an explicit release; the release is a fifth inbound contract
+
+- **Date**: 2026-08-26 (recorded by the branch review; built into slices 06/10/12 as the
+  slice-10 review's H1 fix, while the PRD question that authorises it was still open)
+- **Status**: **CONFIRMED (P-D-48), with the v1 registered freeze-participant set narrowed to
+  {plan-price}** — the duty is booked on one counterpart that exists, not three. *(Was FLAGGED: it
+  closes an open §15 row and adds a duty on three counterpart gears.)*
+- **Amended 2026-08-28 by P-D-49**: the pair below stands; its **domain** does not. The
+  retention gate ranges over the version's **`participant_set_snapshot`** (06 §4), not over
+  whatever registration rows happen to exist — a snapshot member with **no registration row holds
+  the version**, because the fan-out has not reached it yet, while an **empty snapshot** (a tenant
+  with no participant registered at publish) has nobody who ever owed an ack and is collectable.
+  Quantifying over the registrations instead let an empty ledger satisfy the gate vacuously.
+- **Decision**: version liveness is **acked-and-not-yet-released**. A freeze participant that
+  holds no more live references to a `CatalogVersion` records that through a
+  **`catalog_version × release`** door (S2S, the participant's own identity), and the release is
+  added to PRD **§9.2** as an inbound machine contract beside the freeze acknowledgment — the
+  two halves of one participant obligation, documented together. §15's *"Snapshot-GC
+  version-liveness source"* row is **closed** on the freeze-registration option it offered.
+- **Why an explicit release rather than a `(catalogVersionId, producer)` count**: the per-SKU
+  reference signal has no version dimension (§15 says so), so a version-scoped count would be a
+  second signal with its own freshness, its own staleness alarm and its own producer set. The
+  release is one idempotent fact per participant per version, and it rides the acknowledgment
+  contract that already exists.
+- **Why it must be in §9.2 and not only in the design**: slice 10's `RetentionGate` refuses to
+  collect a version until **every** freeze registration satisfies the pair — `state = released`, or `not_frozen(forced)` with `released_at` stamped by force-completion (second arm 2026-08-26: a forced participant never acked and cannot use the S2S release door; a later recovery moves `state`, so a stale stamp frees nothing). That makes the release
+  a **precondition for garbage collection** — a participant that never releases pins storage
+  forever. A duty with that consequence cannot live only in the registry's own design; the
+  counterpart has to be told it owes it.
+- **The asymmetry this repairs**: the same branch already fixed exactly this shape for the
+  increment request (PRD §9.2: "the two inbound machine contracts from the same counterparty had
+  been documented asymmetrically"). The release door was missed by that sweep.
+- **Propagated**: PRD §9.2 (`contract-freeze-ack` gains the release half), AC #44, §15 row
+  (closed); `design/06-catalog-version.md` `inst-fz-liveness`; `design/05-governance.md` RBAC (`catalog_version × release`);
+  `design/10-retention-erasure.md` `inst-rt-gc`; `design/12-consumer-contracts.md` `ObligationRegister` row.
+
+#### P-D-19 — A force-completed version stays refused for posted use until opt-in; the pin is the registry's own door
+
+- **Date**: 2026-08-26 (recorded by the branch review)
+- **Status**: **CONFIRMED as amended by P-D-47** — the registry-side pin stands; the per-version
+  auto-fallback opt-in, this entry's second disjunct, is withdrawn from v1 and stays the PRD's
+  off-by-default later enhancement. *(Was FLAGGED for the owner: it moves an enforcement point back
+  from an unbuilt consumer to the registry, and it makes a forced version unpostable by default.)*
+- **Decision**: for a `CatalogVersion` at `freezeComplete = complete(forced)`, the registry's
+  `IntentfulResolver` **refuses `posted` resolution** (`VERSION_FORCED_INCOMPLETE`, naming each
+  `not_frozen(forced)` participant) until either every forced participant has since frozen or
+  released, or an explicit per-version operator **auto-fallback opt-in** is recorded. Browse
+  resolution is unaffected. The opt-in is off by default, which is the shape
+  `fr-freeze-recovery` already names as "an off-by-default later enhancement".
+- **Why the design's reading could not stand**: `fr-freeze-recovery` and AC #22 state
+  **"the default is pinned fail-closed for that participant's content"**. Slice 06 converted
+  that default into a **consumer** obligation, and slice 12 books that obligation as **owed** —
+  against pricing *and Billing, which has no gear at all*. So in v1 the enforcement existed on
+  neither side: the registry resolved `posted` against a partially-frozen version and nobody
+  refused it downstream. A stated safe default had become an unowned promise.
+- **Why the registry can hold the pin even though it cannot hold the content**: slice 06 is
+  right that the snapshot holds only *references* to a participant's content (C4), so the
+  registry cannot refuse that content. It does not follow that the **version** must resolve
+  `posted` — the resolver is a door the registry owns outright, and refusing the version is the
+  fail-closed behaviour the requirement asks for, expressed where it is enforceable.
+- **The cost, stated**: an operator who force-completes to unblock a stuck version cannot post
+  against it until they take the opt-in. That is one extra deliberate act on the abnormal path,
+  and it is the act that makes the risk a recorded decision instead of a silent one.
+- **Rejected alternative**: amend `fr-freeze-recovery` and AC #22 to move the pin to the
+  consumer, and promote slice 12's register row from `owed` to a launch gate. Rejected because
+  it makes v1 depend on a gear that does not exist — but it is the right change if the owner
+  intends posted resolution to stay available on forced versions.
+- **Propagated**: PRD `fr-freeze-recovery`, AC #22; `design/06-catalog-version.md` `inst-fz-force` +
+  `IntentfulResolver`, §5 error taxonomy (`VERSION_FORCED_INCOMPLETE`); `design/12-consumer-contracts.md`
+  `ObligationRegister` row (the consumer duty becomes belt-and-braces, not the only enforcement).
+
+#### P-D-20 — A publish during the retirement lead window re-announces `SkuRetired`; the door stays open
+
+- **Date**: 2026-08-26 (recorded by the branch review; slice 04 introduced the publish freeze as
+  item 16 of that day's earlier review)
+- **Status**: **CONFIRMED (P-D-48), and completed** — the re-emission rule now has its door, 01's
+  `inst-fd-publish-reannounce`. *(Was FLAGGED: it strikes a design-introduced normative refusal and
+  adds a re-emission rule in its place.)*
+- **Decision**: `RETIREMENT_PENDING` is **struck** from the `PublishDoor`. A live retire intent
+  does **not** close the head to publishes; new adoption is blocked from initiation, as
+  `fr-retirement-eol` requires, and the entity stays publishable. `fromVersion` remains pinned at
+  the **initiation** instant — where it must be, because `SkuRetired` is emitted at initiation
+  and the ≥ 30-day lead time exists precisely so consumers hear about the retirement early.
+  What changes is what happens next: **a publish during the lead window re-emits `SkuRetired`**
+  with the new `fromVersion`, the same `effectiveAt` and the same retirement identity. The
+  announcement is an announcement, and an announcement whose subject moved is re-issued.
+- **Why the freeze was wrong even though the problem was real**: the problem slice 04 found is
+  genuine — publishing versions 8, 9, 10 after announcing "retires from version 7" makes the
+  emitted payload a lie, and consumers pin against it. But the fix chosen was a
+  **product-visible refusal for at least 30 days** (§17.1 lead time) that no PRD requirement
+  carries. `fr-retirement-eol`'s only stated effects of initiation are that adoption is blocked
+  and the entity stays browsable; a month-long publish freeze on an entity that is still live is
+  a much larger constraint than either, and it arrived through a review fix rather than a
+  requirement.
+- **Why re-emission and not a flip-time `fromVersion`**: the tempting fix — resolve `fromVersion`
+  at the flip, where it is truthful by construction — **does not work here, and the reason is
+  worth recording because it is the obvious wrong answer.** `SkuRetired` is emitted **at
+  initiation** (slice 04 `inst-rt-initiate`, and `fr-retirement-eol`'s own sentence orders it
+  before the flip), so a flip-time value would arrive a month after the only event that carries
+  it. Re-emission keeps the early announcement the lead time exists for *and* keeps the payload
+  truthful, at the cost of one extra event on a path that is already rare.
+- **What consumers owe**: `SkuRetired` is no longer at-most-once per entity. Consumers key on
+  `(skuId, effectiveAt)` and take the **latest** `fromVersion`; the retirement identity does not
+  change, so a re-announcement is an update and never a second retirement. That duty is booked
+  in slice 12's `ObligationRegister`.
+- **The escape hatch the freeze offered was itself broken**: slice 04 told an operator who needs
+  to publish to "cancel the retirement first through the governed cancel that already exists" —
+  a ceremony that this same wave found registered material nowhere, so it would have run on one
+  approver. An escape hatch that under-specified is not an escape hatch.
+- **Rejected alternative**: keep the freeze and push `RETIREMENT_PENDING` into
+  `fr-retirement-eol` + AC #18 with `fromVersion`'s definition, which the PRD also lacks. That
+  is the change to make if the owner reads a retiring SKU as frozen by intent — but it should
+  then be a requirement, decided, and not a refusal that appeared in a fix commit.
+- **Propagated**: PRD `fr-retirement-eol` + AC #18 (`fromVersion`'s definition and the
+  re-announcement rule); `design/04-lifecycle.md` `inst-rt-initiate` (`RETIREMENT_PENDING` struck from the
+  publish door, re-emission added), §5 error taxonomy; `design/12-consumer-contracts.md` `ObligationRegister` (the
+  latest-wins consumer duty). *(Slice 01's `inst-fd-containment` is deliberately not a target
+  here — the clause did not move; the bullet below says why in words, because a target list is
+  a list of documents this decision changed.)*
+- **What the exemption leaves standing.** Corrected 2026-08-26: this entry first described
+  `inst-fd-containment` as guarding *re-parenting*, a door slice 01 does not have. It guards
+  **child creation** under a parent holding a live retire intent, and it is genuinely unaffected
+  by P-D-20, whose subject is the publish door. The consequence is worth stating rather than
+  leaving to be rediscovered: during the lead window the retiring parent's head stays
+  publishable while **no new SKU may be created under it**, and building the successor the
+  retirement's `replacedBy` must name is the window's most predictable use — slice 11's C1 says
+  exactly that. If that is the wrong trade, the fix belongs in `inst-fd-containment`, not here.
+  Named in words rather than as a propagation target, because this is a statement about a
+  clause that did **not** move.
+
+#### P-D-21 — The local audit table holds only what emits no event; the event stream is the success-path record
+
+- **Date**: 2026-08-27 (product call, in the slice-01 review, prompted by "didn't we decide to
+  defer audit?" and then "we are counting on the platform audit" — the owner spoke Russian; both
+  quotations are translated)
+- **Residue flagged, and only the residue**: the decision below is the owner's, taken in
+  conversation; two things in this entry are **not** and are open to veto. (1) The owner chose
+  "local row for refusals, success by events"; the **second and third classes — reads under
+  elevation, and committed acts declared to emit no broker event** — were added here because
+  measurement showed the boundary the owner named ("what the event stream cannot carry") includes
+  them: a read writes no outbox row, v1 elevation is read-only, and two sibling slices already
+  route committed acts to the audit plane by design. (2) That
+  **P-D-08's seam survives** is a reading of S1–S9, not something the owner said. Everything else
+  is either the decision as stated or a measured consequence of it.
+- **Decision**: v1 no longer writes a `products_audit_log` row for every mutating door. **The
+  event stream is the audit of record for everything that succeeds**, and the local table
+  survives only for acts the event stream structurally cannot carry. **The set was re-measured
+  2026-08-27 after the first measurement missed a class** — it searched the audit *write* sites and
+  not the phrase `audit-plane`/"no broker event", which is how sibling slices spell the third one.
+  Three classes:
+  - **refusals.** A rejected mutation rolls back its transaction and the outbox row rolls back
+    with it, so no event exists; the design set declares **no** rejection event anywhere, and
+    `fr-expected-failure-behavior` names **fifteen** cases that MUST fail closed *with an audited
+    reason*.
+  - **reads under elevation.** A read writes no outbox row at all. Break-glass in v1 is
+    **audit-export only** (05 — "any write under elevation is refused, full stop"), so every
+    audited act under elevation is a read, and 05 requires that "every elevated read leaves an
+    audit row with the session id (count asserted, not sampled)".
+  - **committed acts the design declares emit no broker event.** Not a structural limit like the
+    other two — a deliberate choice already made per act, and it lands in the same place: slice 04
+    writes `PublishScheduled`/`RetirementScheduled` as "audit-plane records, explicit \"no broker
+    event\" per 01 §4.5", and slice 10 records the erasure act itself "audit-plane, explicit **no
+    broker event** carrying identity". 04's two are committed and leave no event, so the event
+    stream is not their record either. **Found by the third lens on the pass that followed
+    this entry, not by the measurement that wrote it.** **Slice 10's erasure act is the
+    exception, corrected 2026-08-27**: `inst-er-event` declares that "a minimal
+    `ActorErased(actor_ref)` broker event exists as a **defensive cache-buster**", so the act is
+    eventless only for events *carrying identity* and sits outside this class — 10's GC deletes
+    (`inst-rt-gc`) stay in it. 01 §4.4 already states the membership this way.
+- **Why**: the outbox row is written inside the mutation's transaction, so for a *successful*
+  write the event is exactly as durable and as transactional as the audit row was — P-D-08 S3's
+  objection is to a **network call in the write path**, which the outbox pattern does not make.
+  Erasure survives untouched: `fr-retention-erasure` already reasons over event streams in the
+  same breath as audit rows ("because events carry only pseudonymous actor references, updating
+  the reference map completes erasure without touching immutable event streams"), and slice 10 C1
+  names "audit/event records" as one class. So duplicating every successful act into a second
+  local table bought retention cost and a second erasure surface, and no control the events did
+  not already provide.
+- **Consequences, recorded rather than hidden**:
+  - **The event payload must carry what the audit row carried.** The audit row's tuple is
+    `actor_ref`, action, subject `(kind, id, revision)`, reason, correlation id. The stated
+    payload (01 §4.4) carries the envelope, a versioned schema ref, correlation/causation, the
+    idempotency key and `actor_ref`; the event type supplies the action and `aggregate_id` the
+    subject id. **`revision` is not in it** — and without it a consumer cannot say which revision
+    an act applied to, which is the whole point of an audit trail over a versioned entity. Owed
+    as a payload amendment, not assumed here.
+  - **Slice 03's resolved-binding snapshot loses its home.** `inst-cd-stamp` stamps
+    `(gts_id, kind, metadata_fields)` "into the audit row of the publish", and a publish is a
+    success. §15's deletion negotiation and pricing's `meter_binding_divergent` remediation are
+    both written to reference it. It must move to the publish event payload or to
+    `products_entity_version`; **which one is slice 03's call and is registered there, not
+    decided here.**
+  - **Retention moves onto the event store.** `fr-retention-erasure` requires audit records kept
+    "for the configured retention duration" alongside financial records. A broker does not retain
+    on that horizon, so the durable sink must be the platform audit capability — which per PRD
+    §15 **does not yet exist** and is owned by Architecture. Until it does, successful-act audit
+    is retained only as long as the event store retains it, and that is a v1 gap this decision
+    creates deliberately.
+  - **`nfr-availability-audit`'s "100% write-path audit"** is now satisfied by two records of
+    different kinds — event for the committed path, local row for the refused path. The threshold
+    holds; the mechanism named in the NFR's prose does not, and the PRD sentence needs the
+    amendment.
+  - **P-D-08's sealing seam still applies**, now to a much smaller table. Nothing in P-D-08's
+    S1–S9 depends on the table's volume, and the seam's whole value — migration-free activation
+    plus an era marker in the data — is unchanged. The seam is **not** struck by this decision.
+- **Propagated**: `DECISIONS.md` P-D-08 (amended, pointer added), `design/01-foundation.md`
+  (§1.1/§1.5/§1.8 framing, every success-path flow row, §4.4's table scope) *(§6's "three
+  registered consequences" was listed until 2026-08-27 and trimmed by P-D-31: the 2026-08-27
+  owner round merged that backlog, §6 restates one of them, and a propagation field describes
+  what a document says rather than what was intended for it)*, `design/02-taxonomy-attributes.md` (`inst-tx-event`, `inst-gl-atomic`, `inst-ad-event`),
+  `design/11-clone.md` (`inst-cn-lineage`).
+- **Owed, and deliberately not applied by the wave that recorded this** — each needs its own
+  slice's judgment rather than a sweep, and none of them is a phrasing change:
+  - `PRD` `fr-registry-eventing-audit` and `nfr-availability-audit` prose — the "100% write-path
+    audit" threshold survives, the single-mechanism sentence under it does not.
+  - `design/03-sku-classification.md` `inst-cd-stamp` — the resolved-binding snapshot's
+    new home (publish event payload, or `products_entity_version`).
+  - `design/07-reference-signal.md` `inst-pr-governed` — its trailing audit obligation covers a
+    `GovernedLiveOp` that both succeeds and refuses; which half stays local needs the row read
+    whole.
+  - `design/10-retention-erasure.md` §4 — "retention/drill state is config + audit, no new record
+    tables" puts a *successful* drill's state in a store this decision empties.
+  - `design/05-governance.md` — its audit-row references are refusal- and elevation-side and look
+    correct as they stand, but were not read one by one.
+  - The event-payload amendment carrying `revision` (see Consequences).
+
+#### P-D-22 — The registry uses the toolkit's transactional outbox, not a gear-local one
+
+- **Date**: 2026-08-27 (product call, in the slice-01 review — "take the toolkit"; the owner
+  spoke Russian and the quotation is translated)
+- **Decision**: `products_outbox` as a gear-authored table is **struck**. The registry enqueues
+  through **`toolkit_db::outbox`** (`libs/toolkit-db/src/outbox`), which ships the whole pipeline:
+  `enqueue` inside the caller's transaction → `sequencer` assigning per-partition sequence numbers
+  → `processor` invoking the gear's handler → `vacuum` collecting delivered rows. Its tables
+  (`_body`, `_partitions`, `_incoming`, `_outgoing`, `_dead_letters`) carry a configurable prefix,
+  and it brings its own migrations.
+- **Why**: the design set copied the outbox shape from pricing, which its §1.4 names "the pattern
+  donor". Measured 2026-08-27: **pricing does not use the platform facility** — it has its own
+  `pricing_outbox` — while **mini-chat, the reference gear, imports `toolkit_db::outbox::Outbox`
+  directly**. So the gear had inherited a private re-invention from a sibling rather than the
+  platform's own component, and inherited it without the dead-letter table, the lease handling,
+  the vacuum, or the multi-backend migrations that come with it.
+- **The PRD contract is untouched, and that was checked before deciding**: `fr-registry-eventing-audit`
+  requires the *envelope* to stamp "per-aggregate ordering keys `(tenant, aggregate…)`" and AC #28
+  repeats it — a property of the message, not of a storage column. The toolkit's `enqueue` takes
+  the partition from the caller, so `partition = hash(tenant_id, aggregate_id) mod N` puts every
+  event of one aggregate in one partition and preserves their relative order, which is exactly
+  what the ordering key promises.
+- **Consequences**:
+  - **Delivery stops being a column.** The gear-local design had the dispatcher "mark delivered
+    only on durable broker acceptance" and never named a column to mark; in this model the row
+    leaves — the processor hands it to the handler and the vacuum reclaims it. Slice 10's
+    `RetentionClock` class "outbox-delivered" is therefore the **vacuum's** horizon, not a
+    retention rule this gear writes, and that slice owes the correction.
+  - **The UNIQUE `(tenant_id, aggregate_id, sequence)` this slice added earlier the same day is
+    superseded** by the toolkit's own unique index on `(partition, seq)`.
+  - **C1's "one migration per table, guards defined once" does not reach these tables** — they are
+    migrated by `outbox_migrations()`, and the schema oracle must therefore golden them as
+    imported rather than as gear-authored.
+  - **`products_outbox` disappears from §4.4**, and with it the only table in this gear whose
+    append-only posture C5 never governed.
+- **Left open here, closed by P-D-23 (2026-08-27): the registry runs `leased`.** The toolkit
+  offers `transactional` (exactly-once) and `leased` (at-least-once with lease-based locking).
+  Publishing to a broker is a network side effect, which argues for `leased`. The PRD does not
+  merely tolerate the consequence: `fr-event-versioning-replay` requires that
+  "out-of-order/duplicate delivery beyond the idempotency window **MUST** be detectable via
+  `(tenant, aggregate, sequence)`" — and the `sequence` operand's home, after this decision
+  superseded the `(tenant_id, aggregate_id, sequence)` index, is open in slice 01 §6.
+- **Pricing is out of scope of this call**: rewriting `pricing_outbox` onto the toolkit is a
+  separate task, recorded here only so the divergence is not read as products' error.
+- **Propagated**: `design/01-foundation.md` §1.5/§4.4. *(§4.5 was listed until 2026-08-27 and
+  trimmed by P-D-31: it names no outbox facility and restates nothing of this decision, which is
+  what `12 inst-cc-register` lints for.)*
+- **Owed**: `design/10-retention-erasure.md` §3 (the "outbox-delivered" retention class —
+  **discharged 2026-08-28** by the slice-10 first lens pass, which found the class still standing),
+  `gears/bss/pricing` (its own rewrite, separate task).
+
+#### P-D-23 — The 2026-08-27 slice-01 owner round: eighteen calls on standing open items
+
+- **Date**: 2026-08-27 (product call, worked through in one sitting during the slice-01 review)
+- **Decision**: the open items slice 01 had accumulated over three review passes were decided
+  rather than routed. Each call is recorded **inline in the rule it changes** — this entry exists
+  so the calls are discoverable from the register and so the ones that reach other slices can be
+  checked, not to restate them.
+
+  | Call | Reaches |
+  |---|---|
+  | The one-code-one-door rule counts pipeline **phases**, not doors or instruction rows | 12 (`inst-cc-errors`), and every slice that declares codes |
+  | A refusal's audit row is written in its own transaction and is a **precondition of answering**; 503 if it cannot be written | 05, 10 |
+  | **Every publish** bumps `internal_revision` | 05 (approval pinning) |
+  | Buckets: `name`/scope columns **iii**, `product_code` **i**, `cloned_from` stricter than **i** | 05 (bucket registry), 03 |
+  | The parent guard's arms split by nature: missing ⇒ `VALIDATION`, terminal ⇒ **`PARENT_TERMINAL`** (409) | 12 (error map) |
+  | A refusal before the mint carries the attempted natural key; `id`/`revision` absent | — |
+  | The idempotency store adopts the donor's **claimed/answered** model; **`IDEMPOTENCY_KEY_IN_FLIGHT`** (409); expiry at claim time | 12 (error map) |
+  | `PreAuthorized` is an **internal door argument**, never a wire parameter | 04, 05 |
+  | A stray caller-supplied id rides `VALIDATION` | — |
+  | A bucket-ii write at the head door is **refused naming 07's door**, not forwarded | 07 |
+  | **Engine-canonical serialization is pinned here** (field order, encoding, absent-value form) | 06, 10 |
+  | The transition floor records **"no event here"**; the completeness rule widens to *every* slice | 04, 12 |
+  | **Discard releases the name**, as it releases codes | — |
+  | A **slice-04 validator** reads the retire intent at the create door | 04 |
+  | The 422 `MUST NOT` stands as **this gear's choice**, not as an impossibility | 02–12 (the shared note) |
+  | The outbox runs **`leased`** (at-least-once); the frame is **`p1`**; `revision` rides the **payload**; slice 03's resolved-binding snapshot is **frozen into the version** | 03, 12 |
+  | A SKU's parent link `product_id` is **bucket-i** | — |
+  | `payload_hash` is over a **canonical rendering of the parsed request**, not the received bytes | — |
+
+- **Why one entry rather than eighteen**: the register's unit is a decision another document must
+  follow, and these are one owner's single pass over one slice's backlog. Splitting them would
+  bury the two that actually restructure a contract (`PARENT_TERMINAL` and
+  `IDEMPOTENCY_KEY_IN_FLIGHT` enter the SDK's error enum) among sixteen that only settle prose.
+- **What this round did *not* settle**: the six items whose owner is not this slice, now filed in
+  `PRD` §15 with owners named. *(The last two rows above were taken later the same day, after this
+  entry was first written; the entry said they were left open and was corrected 2026-08-28 when the
+  fourth review pass caught the register trailing the slice.)*
+- **Propagated**: `design/01-foundation.md` (§1.4 roster and every rule the calls change),
+  `design/03-sku-classification.md` (`inst-cd-stamp`).
+
+#### P-D-24 — The 2026-08-27 fifth-pass round: four calls closing slice-01 open items
+
+- **Amended 2026-08-28 by P-D-36**: the door→phase amendment below is withdrawn. A code's unit is
+  its **declaring slice**, not a pipeline phase; §3.1's seven phases remain the execution order.
+  The reason this entry gave for abandoning the *door* unit stands and is why the slice unit was
+  chosen. Every other call here — the `state` phase itself, `shape`'s scoping, the status move and
+  the frozen-content exclusions — is about execution order or status and is untouched.
+
+- **Context**: the fifth review pass over `design/01-foundation.md` (three lenses, two passes)
+  left four questions whose owner is this slice. Recorded as one entry for the same reason
+  P-D-23 was: the register's unit is a decision another document must follow, and these four
+  were taken together in one sitting.
+
+  | Call | Propagation |
+  |---|---|
+  | A **`state` phase** joins the pipeline **after `shape`** — the §2 edge list, bucket routing for a published-state field write, and the parent's own lifecycle state. It raises `ILLEGAL_TRANSITION`, `ILLEGAL_FIELD_MUTATION` and `PARENT_TERMINAL`, which until now belonged to no phase while §3.3 required exactly one per code. It sits **after** `shape` because the parent's state can only be judged once the reference naming it has resolved | 12 (the door→phase amendment) |
+  | **`shape` is scoped to include reference resolvability** — an unresolvable `productId` is a defect of the payload, which is why §2 already routes it to `VALIDATION`. This keeps `VALIDATION` single-phase and closes the second-raiser question the `state` phase would otherwise have opened | — |
+  | **`PARENT_NOT_PUBLISHED` is 409**, not 422: it is a refusal by the parent's current state, which is what §3.3's own discriminator assigns to 409 — the same reading that already put `PARENT_TERMINAL` there | 04 |
+  | **`brand_id` is bucket-i** structural identity — re-branding moves the row into a different `(tenant_id, brand_id, name_normalized)` scope, the key §4.1's partial unique index enforces on; it joins `sku_code`, `product_code` and the SKU→parent link | — |
+  | **`lifecycle_state`, `deprecation_provenance` and `replaced_by_sku_id` are excluded from frozen version content.** They move on transitions, which write no version row, so freezing them would require the digest to change on a write that produces no row to digest. They are read from the head row, as §4.3 already routed them | 08, 10 (the digest's column set) |
+
+- **Why the `state` phase rather than widening `identity` or adding carve-outs**: all three codes
+  are judged from the row as it now stands rather than from the payload, which is what separates
+  them from `identity`; and widening the carve-out list from one to four would have made the
+  "exactly one raising phase" rule vacuous rather than satisfied.
+- **What this round did *not* settle**: whose arm `RETIREMENT_PENDING`'s create-door check is —
+  01 reads it as a slice-04 validator and 04 reads it as 01's own guard. Still open in slice 01 §6
+  and in 04's, with owners named.
+- **Propagated**: `design/01-foundation.md` (§1.7, §2 publish row, §3.1, §3.3, §4.1, §4.3),
+  `design/04-lifecycle.md` (§3.2 problem-response map).
+- **Propagated** (2026-08-27, all three closed): `design/12-consumer-contracts.md`
+  (`inst-cc-errors`, now phase-shaped), `design/08-read-models.md` (C6) and
+  `design/10-retention-erasure.md` (the drill).
+
+#### P-D-25 — The error contract completed: DUPLICATE_CODE, ENTITY_TERMINAL, AUDIT_UNAVAILABLE, and the audit row's two columns
+
+- **Context**: the fifth review pass left four gaps in the error contract — two refusals a door
+  can take with no code to carry them, one status with no code at all, and an audit row that
+  could not record either the code or the key it refused on. Taken together because they are one
+  contract and one consumer reads all of it: the SDK's error enum and AC #38's map.
+
+  | Call | Propagation |
+  |---|---|
+  | **`DUPLICATE_SKU_CODE` becomes `DUPLICATE_CODE`**, covering both reservations. §2 already says `productCode` reserves "under the same rules as `skuCode`", so one rule carries one code; the SKU-named form was declared before `productCode` had an index of its own. **This is a rename, and §3.3 states renames are breaking** — taken now precisely because nothing is built yet | 09, 11 |
+  | **`ENTITY_TERMINAL` (409)** — a save on a `retired`/`discarded` head. The subject's own terminal state refusing the write, exactly as `PARENT_TERMINAL` is the parent's; both sit in the `state` phase (P-D-24). Without it an ordinary operator mistake reached the trigger and answered a bare 500 | 12 (error map) |
+  | **`AUDIT_UNAVAILABLE` (503)** — the refusal's audit row could not be written, so the door cannot report the domain refusal (§4.4). Names the condition rather than the mechanism, matching 08's `READ_MODEL_OVERLOADED` and 03's `USAGE_TYPE_UNAVAILABLE`, the gear's two other 503s | 12 (error map) |
+  | **`products_audit_log` gains nullable `error_code` and `attempted_key`.** §3.1 makes the code the attribution channel ("never the rule name") and AC #38 maps by it, so it is a column rather than free text; `attempted_key` carries the natural key a pre-mint refusal has in place of an id, which `DUPLICATE_NAME` and `DUPLICATE_CODE` both need | 10 (the audit class its `RetentionClock` reads) |
+
+- **Why `DUPLICATE_CODE` rather than a second, product-named code**: the alternative kept
+  `DUPLICATE_SKU_CODE` and added `DUPLICATE_PRODUCT_CODE`, which avoids a breaking rename but
+  writes the same rule twice in the enum and leaves a reader asking which applies to a clone that
+  suggests both. The owner took the rename while the contract is still unbuilt.
+- **What this entry does *not* settle**: what addresses a `products_audit_log` row, so the
+  sealing seam's one-way UPDATE can target one — still open in slice 01 §6 with P-D-08's owner.
+- **Propagated**: `design/01-foundation.md` (§2, §3.3, §4.4),
+  `design/09-bulk-promotion.md` and `design/11-clone.md` (the renamed code).
+- **Propagated** *(owed until 2026-08-27, all closed)*: `design/12-consumer-contracts.md` (`inst-cc-errors`' map gains two codes and a 503
+  class), `design/10-retention-erasure.md` (the audit roster its retention class reads).
+
+- **Amended 2026-08-28 by P-D-38**: the "a refusal answers the key" call below is withdrawn. A
+  refusal stores nothing and releases the key; a retry runs.
+- **Amended 2026-08-28 by P-D-42**: the "claim commits in its own transaction" call is withdrawn
+  too, its stated reason having been measured and found not to hold — the gate is the insert, not
+  a read, so a duplicate is stopped by the index conflict rather than by seeing the row. Two of
+  this entry's four boundaries stand.
+
+#### P-D-26 — Idempotency, identity and the publish bump: four transaction boundaries
+
+- **Context**: four fifth-pass items that all turned on the same unstated thing — which
+  transaction a write commits in, and what happens when the process holding it dies. None could
+  be built without an answer, and the donor (pricing) declares the `IDEMPOTENCY_KEY_IN_FLIGHT`
+  code but not the boundary, so "adopting the donor's model whole" inherited no answer here.
+
+  | Call | Propagation |
+  |---|---|
+  | **The `claimed` idempotency row commits in its own transaction**, ahead of the guarded operation — sharing the mutation's would make it invisible to the concurrent duplicate the row exists to refuse, and `IDEMPOTENCY_KEY_IN_FLIGHT` could never fire | — |
+  | **A refusal answers the key.** A refused request is a finished request, so the door sets `answered` with the refusal as the stored outcome and a retry replays it rather than re-running a rule whose verdict cannot change. `claimed` therefore means exactly "in flight", and the §4.4 CHECK stays true | 12 (replay semantics) |
+  | **A crashed claim is released by `in_flight_until`**, a new nullable column distinct from `expires_at`'s retention window. Retention is the answered key's; the in-flight deadline is short, and without it the only exit was `max(24h, max_freeze_timeout)` — a legitimate retry refused 409 for a day | — |
+  | **A non-wire caller writes a reserved lane name in `endpoint`** — `internal:scheduled-activation`, `internal:cascade-leg`, `internal:bulk-row` — and its own id in `client_key`. Two internal lanes cannot collide on one key, and the `internal:` prefix cannot collide with a wire endpoint | 04, 09 |
+  | **The first-appearance `actor_ref` mint commits in its own transaction, ahead of the guarded operation.** A refusal rolls the door's transaction back while the refusal's audit row commits independently and requires an `actor_ref`; a ref is a pseudonym rather than a domain record, so minting one for a principal that was then refused costs nothing | 10 |
+  | **A first publish bumps `internal_revision` once and fires no invalidation hook.** The publish door is one act, not a transition plus a publish: it owns the `draft→published` edge, so the transition guard's "every transition" does not reach it, and a hook firing against the record the same transaction consumes has no defined ordering | 05 |
+
+- **What this entry did *not* settle, both closed later the same day by P-D-29**: what the stored
+  outcome dereferences to (answer: the donor's `response_status`/`response_body`, replacing the
+  single `outcome_ref` this gear had imported), and whether the `internal_revision` on an event or
+  audit row is the value before or after the act's own bump (answer: after — as committed).
+- **Propagated**: `design/01-foundation.md` (§2 create and publish rows, §2 transition guard,
+  §3.2, §4.4).
+- **Propagated** *(owed until 2026-08-27, all closed)*: `design/04-lifecycle.md` and `design/09-bulk-promotion.md` (the lane names their
+  runners write), `design/05-governance.md` (the hook's non-firing on the door's own edge),
+  `design/10-retention-erasure.md` (the mint's transaction), `design/12-consumer-contracts.md`
+  (a replayed refusal is part of the consumer contract).
+
+#### P-D-27 — The event contract: HeadSaved, a common body core, the toolkit's seq, and what the third audit class covers
+
+- **Context**: `design/08-read-models.md`'s projector and `design/12-consumer-contracts.md`'s SDK
+  contract could not be built — §4.5 declared eight events whose bodies no document specified,
+  under a name that had been false since the H1 fix. Taken with the two remaining event-plane
+  questions from the same pass.
+
+  | Call | Propagation |
+  |---|---|
+  | **`ProductDraftSaved`/`SkuDraftSaved` become `ProductHeadSaved`/`SkuHeadSaved`.** The H1 fix made the head the authoring surface in every non-terminal state, so the old name was false for `published` and `deprecated` — two of the three. A rename, taken while nothing is built, on the same reasoning as P-D-25's | 02 |
+  | **Every one of the eight carries a common body core**: `{tenantId, entityKind, entityId, internalRevision, lifecycleState}`. `lifecycleState` is the discriminator a `*HeadSaved` consumer needs. `*Published` additionally carries **`publishedVersion`** — what 06 reads as content and 08's projector keys on. Anything beyond the core is named where the act is specified, as 04 already does for `SkuRetired` | 06, 08, 12 |
+  | **The envelope carries the toolkit outbox's `partition_id` and `seq`**, which the processor already hands the handler (`libs/toolkit-db/src/outbox/handler.rs`'s `OutboxMessage`). Since `partition = hash(tenant_id, aggregate_id) mod N`, every event of one aggregate shares a partition and `seq` is monotonic within it — which satisfies `fr-event-versioning-replay`'s "detectable via `(tenant, aggregate, sequence)`" without restoring the index P-D-22 superseded. Detectability needs monotonicity, not density; gaps left by neighbouring aggregates are harmless | 12 |
+  | **§4.4's third audit class covers *domain* acts** — one over a `Product`/`SKU` or a governed record. A door's own infrastructure writes are outside it, which is why `inst-fd-actor-ref` and `inst-fd-idem-claim` declare "no event" without also writing an audit row. Read literally the class would have put an audit row behind every ref resolution | 10 |
+
+- **Why the rename rather than a payload field alone**: a `lifecycleState` field fixes what a
+  consumer can *tell* but leaves the event's name asserting something false, and the name is what
+  a reader of the §9.2 outbound contract meets first.
+- **Propagated**: `design/01-foundation.md` (§2 save row, §4.4 payloads, §4.5),
+  `design/02-taxonomy-attributes.md` (the renamed event its attribute writes ride).
+- **Propagated** *(owed until 2026-08-27, all closed)*: `design/06-catalog-version.md` and `design/08-read-models.md` (the body core their
+  consumers read), `design/12-consumer-contracts.md` (`inst-rc-dedup` re-based on the published
+  `seq`, and the replay contract against the body core), `design/10-retention-erasure.md` (the
+  audit class's scope).
+
+#### P-D-28 — Four read paths the guard needed: the bucket-i writer, the BucketRegistry, the audit row's key, and one canonicalization rule
+
+- **Context**: four fifth-pass items that each named something the design *used* without saying
+  where it came from — a write with no admitted writer, a tag with no read path, a row with no
+  address, and a rule claimed to be shared that was defined over only one of its two subjects.
+
+  | Call | Propagation |
+  |---|---|
+  | **The save door writes bucket-i columns while `published_version = 0`**, and nothing writes them after. §4.2's whitelist named an admitting door for every other class and only a prohibition here, so the `skuCode`/`productCode` change §2 makes legal on an unpublished head had no admitted writer. No new door: `inst-fd-save-txn` already carries it | — |
+  | **`BucketRegistry` is a Foundation artifact**, named in §1.7 beside `RegisteredValidator`: a slice registers its columns' bucket tags exactly as it registers validators — code, not config — and 05 reads the same registry to judge materiality. 05 already attributed the frame here, and a physical guard of the Foundation's cannot depend on a capability slice's artifact (§1.1) | 05 |
+  | **`products_audit_log` gains `audit_id` (PK, uuid).** The sealing seam's one-way UPDATE must address a row that is *not yet* sealed, and `seq` is null until it is; the surrogate is independent of the chain's ordering, and matches the uuid-PK convention of every other §4 table | 10 |
+  | **The canonical rendering is stated over any named field set**, not only a version row's columns — "sorted lexicographically by **field** name". That is what lets §3.2 hash a parsed request under the same rendering and makes its "one such rule and not two" true; mechanically the rule was already field-shaped | 06 |
+
+- **What this entry does *not* settle**: how a **row collection** inside a frozen version (the
+  category-assignment set, the attribute-value set) is ordered for the digest — the rule orders
+  fields, not rows. **P-D-29** later settled the two collections named here (a JSON array sorted
+  by the collection's own identifier); the manifest's entry and capture rows remain open, in
+  slice 06 §6 (measured 2026-08-28: no item for this stood in 01 §6).
+- **Propagated**: `design/01-foundation.md` (§1.7, §4.2, §4.3, §4.4).
+- **Propagated** *(owed until 2026-08-27, all closed)*: `design/05-governance.md` (`BucketRegistry` by name where it reads the tags),
+  `design/10-retention-erasure.md` (the audit row's key), `design/06-catalog-version.md`
+  (the canonicalization rule its `inst-sn-checksum` points at).
+
+#### P-D-29 — What a replay, an envelope and a digest actually carry
+
+- **Context**: four fifth-pass items that each named a value the design relied on without saying
+  what it contained. Two of them were left open by P-D-26 earlier the same day; the other two are
+  what 10's restore drill compares byte-for-byte.
+
+  | Call | Propagation |
+  |---|---|
+  | **`outcome_ref` is replaced by the donor's two columns, `response_status` and `response_body`.** A replay must reproduce the original response *including its status*, which a bare reference to an entity cannot do — and after P-D-26 made a refusal answer the key, a refusal has no entity to reference at all. §3.2 already said the model was adopted from the donor "whole"; the single reference was the divergence, and it was the part that did not work | 12 (replay contract) |
+  | **The `internal_revision` on an envelope or audit row is the value *as committed by the act*** — N+1 where the act bumped it, the unchanged current value where it did not. The event is P-D-21's record of a *committed* act, so the number describes the state the act left behind and matches the caller's next ETag. "At the act" had admitted both readings | 12 |
+  | **The digest is SHA-256**, with a **`digest_version`** column beside it on `products_entity_version`. `sha2` is already a workspace dependency (`Cargo.toml`), and §4.3's "adding a column is a digest-version bump, not a silent change" is only checkable if the version a row was computed under is stored on that row | 10 |
+  | **A row collection inside frozen content is a JSON array sorted by the collection's own identifier** — the category id, the attribute id — each element rendered by the same field rule. P-D-28's rule orders *fields* and said nothing about *rows*, so two engines could have serialized one content in two orders | 02, 10 |
+
+- **Why the donor's two columns rather than a reference to the audit row**: under P-D-21 a
+  successful act writes no audit row at all, so that reference would have had nothing to point at
+  on exactly the path replay matters most.
+- **Propagated**: `design/01-foundation.md` (§3.2, §4.3, §4.4).
+- **Propagated** *(owed until 2026-08-27, all closed)*: `design/12-consumer-contracts.md` (the replay contract and the committed-revision
+  reading), `design/10-retention-erasure.md` (the digest's algorithm and version column its drill
+  compares), `design/02-taxonomy-attributes.md` (the ordering of its two collections).
+
+#### P-D-30 — Where the gate hosts, where authorization sits, whose validator, and what the door can see
+
+- **Context**: four fifth-pass items about *who runs what, where*. Two were scoping errors in
+  §3.1, one was a standing disagreement between 01 and 04 over the same code, and one asked the
+  Foundation to read an operand it cannot have.
+
+  | Call | Propagation |
+  |---|---|
+  | **The governance-gate phase runs on any gated act, not publish alone.** 05 words the obligation generically — "submit → quorum → publish/apply" over both entity publishes and `GovernedLiveOp`s — and 04's un-deprecation is two-person with a slice-05 gate registered on that edge. A transition door consumes the `satisfied` record exactly as the publish door does; scoping the phase to publish left that ceremony with a gate no phase hosted | 04, 05 |
+  | **Authorization is not a phase — it is a pre-pipeline gate**, run before the pipeline opens. The only order in which a denied caller neither consumes an idempotency key nor writes a claim row, and the order §2's flows already use. Its refusal code is 05's, RBAC grants being that slice's (§1.5) | 05 |
+  | **Both arms of `RETIREMENT_PENDING` are slice-04 validators** — the un-deprecation edge, and 04's validator registered on 01's create door. The operand is the live retire intent in `products_scheduled_transition`, a table 04 owns; reading it in the Foundation would put the floor in the business of lifecycle policy against §1.1. 04's contrary note is corrected. Both arms therefore sit in the **registered validators** phase and the code needs no carve-out | 04 |
+  | **The `PublishDoor` sets `composition_pending` when the publish carried the two-person uncomposed-bundle override**, not when the bundle "is uncomposed". Whether plan-price has composed it is 03's validator's judgement (`BUNDLE_OVERRIDE_REQUIRED`); what the door sees is whether *this* publish carried the override. It also removes the re-raise for free: 06's clearing re-publish is a `system_signal` subject carrying no override, so the predicate is false and the flag stays cleared | 03, 06 |
+
+- **Why the override rather than the composition itself**: §1.1's "the Foundation owns no
+  capability policy" is load-bearing, and a validator refuses rather than writing a column (§3.1) —
+  so neither side could own the write until the predicate was restated in terms the door can see.
+- **Owed by slice 04**: the instruction row registering the create-door validator. Until it
+  exists nobody builds the guard, and item 36's hole stays open.
+- **Propagated**: `design/01-foundation.md` (§1.7, §2 create row, §3.1, §4.2),
+  `design/04-lifecycle.md` (§3.2 code contract, open items),
+  `design/03-sku-classification.md` and `design/06-catalog-version.md` (the override-shaped
+  predicate, restated at `inst-cl-bundle-override` and `inst-cc-clear`).
+- **Propagated** *(owed until 2026-08-27, all closed)*: `design/05-governance.md` (the gate phase's wider scope, and the pre-pipeline
+  authorization gate its denial code answers to).
+
+- **Amended 2026-08-28 by P-D-40**: "the guard judges the row image" is widened to "the guard
+  judges the **data**". The objection recorded below is to a guard reading the *door* through a
+  session variable that exists on Postgres and not SQLite; a predicate that reads another table
+  judges data and both engines evaluate it. `products_entity_version`'s retention DELETE is
+  admitted under exactly such a referential predicate.
+
+#### P-D-31 — The four the slice had routed outward, decided here
+
+- **Context**: the fifth pass filed four items with owners outside this slice. Two of those
+  routings were wrong on inspection — **P-D-08's S1–S9 are this gear's own stated requirements**
+  on a future platform capability, and the wire shape of this gear's primary surface is nobody
+  else's — and the remaining two were decidable from constraints already in the set. Where an
+  answer binds another team, it binds as a **stated requirement on them**, not as a fact about
+  their artifact.
+
+  | Call | Propagation |
+  |---|---|
+  | **P-D-08 S3 is amended**: the audit record commits inside the guarded mutation's transaction **except a refusal's row, which commits in its own** (P-D-23, P-D-26) — the mutation's being the one a refusal rolls back. What S3 requires is unchanged either way: no audit write depends on a network-reachable capability, which is the property "never on the mutation path" protects. Architecture / Common Core owns the capability's *delivery*, not this sentence | — |
+  | **The head-row guard judges the row image, never the door.** A session variable exists on Postgres and not on SQLite, so a door-reading guard breaks C1 in both halves — dual-engine, and "guards defined once". Which door wrote is an **application** guarantee; the trigger enforces which column may move in which state. §4.2's per-door clauses are restated accordingly, and §3.1's claim that the physical guard enforces "one door, one effect" is corrected to name the application as the enforcer and the guard as the backstop | 07 |
+  | **The gear's primary wire surface is declared** in §2: `POST …/products`/`…/skus` → 201; `PATCH …/{id}` (If-Match required) → 200; `POST …/{id}/publish` → 200; `POST …/{id}/discard` → 200; `Idempotency-Key` on every mutating door. Paths follow the form 02/05/06/08/09/10/11 already use; the transition floor has no wire door of its own | 12 (door×grant lint), 05 (RBAC catalog) |
+  | **P-D-21's and P-D-22's propagation fields are trimmed to what the documents actually restate** — P-D-21 loses "§6's three registered consequences" (the 2026-08-27 round merged that backlog; §6 restates one), P-D-22 loses §4.5 (which names no outbox facility). A propagation field describes what a document says, not what was intended for it | — |
+
+- **Owed**: the row-image predicates that would let the trigger tighten two clauses it now admits
+  on the application's word — **04's** for `deprecation_provenance`/`replaced_by_sku_id`, and
+  **07's** for bucket-ii columns. Until those exist the guard is a backstop there rather than a
+  proof.
+- **Propagated**: `design/01-foundation.md` (§2 doors, §3.1, §4.2).
+- **Not propagation, recorded so the field above is not read as understating itself**: the third
+  row's slice-03 amendment and the two trimmed propagation fields are edits to **this register**,
+  not documents this decision reaches. They sat inside the `Propagated` field until 2026-08-30,
+  where a path token inside a disclaimer read as a target that never cites the decision — which
+  is exactly what a propagation field is checked for.
+
+
+#### P-D-32 — Six calls closing the slice-01 second lens wave
+
+- **Amended 2026-08-28 by P-D-36**: the call scoping the "exactly one raising phase" rule to codes
+  raised *inside* the pipeline is withdrawn with the rule itself. Its other five calls stand,
+  including the target-state registration key, which is about *when* a validator runs rather than
+  about code attribution.
+
+- **Date**: 2026-08-27 (owner call, on the second three-lens pass over `design/01-foundation.md`)
+- **Context**: the second pass raised twelve questions. Three merged into items the first pass had
+  already registered, one was closed by the same pass's fix to the audit-seal predicate, and two
+  are slice 12's. The six below were decidable from constraints already in the set, and are
+  recorded here rather than inline because four of them bind another document.
+
+  | Call | Propagation |
+  |---|---|
+  | **`composition_pending` is cleared by the publish door's own head-row UPDATE** — the one carrying `published_version += 1`. §4.2 admits the flag's change only in that statement, and `inst-fd-save-txn` never touches `published_version`, so a save cannot clear it. 06's "system save + re-publish" names the ceremony, not the writing statement | 01 §4.2; 06 `inst-cc-clear` |
+  | **The `BucketRegistry` is advisory for the physical layer.** A compile-time Rust map has no read path from a migration-time trigger, so §4.2's column classes stay static DDL; generating them from the registry would break C1's "guards defined once" and the schema-oracle goldens. A test asserts the two name the same columns in the same classes | 01 §1.7, §5 |
+  | **`→ published` in a validator's registration key names the target state, not the edge.** A re-publish takes no edge, so an edge-keyed reading runs no validator at all and empties the fail-closed re-run — while also pulling the `deprecated→published` two-person ceremony onto a content re-publish that changes no state | 01 §2 (`inst-fd-publish-revalidate`) |
+  | **`ILLEGAL_TRANSITION` and `ILLEGAL_FIELD_MUTATION` move 422 → 409.** All four codes the `state` phase raises are refusals by the row's **current state**, which is §3.3's own 409 rule; splitting them left one phase straddling two status classes. Wire-visible — a 422 reaches the wire as 400 — and taken while nothing is built | 01 §3.3; 07 (status repeat) |
+  | **`ENTITY_TERMINAL` covers any head write on a `retired`/`discarded` row** — save, publish or correction. The publish door's accepted set excludes a `retired` head and `ILLEGAL_TRANSITION` cannot cover it, a re-publish being no edge | 01 §3.3 |
+  | **The "exactly one raising phase" rule ranges over codes raised *inside* the pipeline.** Authorization is a pre-pipeline gate (P-D-30), so 05's owed denial code and `BREAKGLASS_WRITE_FORBIDDEN` sit outside the rule instead of forcing a third carve-out; the carve-out list stays closed at two | 01 §3.3; 12 `inst-cc-errors` |
+
+- **Left open, registered with their owners**: 12 `inst-cc-errors` is owed **both** carve-out
+  members, not one — it names none today — and `inst-cc-ids`' enumeration of continued ids is a
+  stale count against 01. Both are slice 12's.
+- **Propagated**: `design/01-foundation.md` (§1.7, §2, §3.3, §4.2, §5, §6),
+  `design/06-catalog-version.md` (`inst-cc-clear`), `design/07-reference-signal.md` (the
+  `ILLEGAL_FIELD_MUTATION` status repeat), `design/12-consumer-contracts.md` (open items).
+
+
+- **Amended 2026-08-28 by P-D-37**: the stop-at-first-phase call below stands. What it did not
+  say is what happens when one phase collects more than one *code* — the caller's rejection now
+  carries them all and the row records one, by a precedence §3.3 pins for the only phase that can.
+
+#### P-D-33 — Eight calls from weeding slice 01's open items
+
+- **Date**: 2026-08-27 (owner call, on weeding `design/01-foundation.md` §6 after four lens passes)
+- **Context**: four passes registered questions and only one round closed any, so §6 had grown to
+  22 items and 18% of the file against a sibling maximum of 14%. Weeding merged four thematic
+  groups (22 → 16) and found eight items already decidable from constraints the set had fixed
+  elsewhere. The eight below are those; the remaining ten need input this design set does not hold.
+
+  | Call | Propagation |
+  |---|---|
+  | **A read door is declared**: `GET /bss-products/v1/{products\|skus}/{id}` (`… × read`) returns the head with its internal revision as `ETag`. `inst-fd-etag` requires a precondition that no surface returned — 08's projections serve frozen content and expose no head revision, so an author who had not just written could obtain none | 01 §2 |
+  | **The publish door's pinned revision arrives as `If-Match`**, like every other head verb's, rather than as an unnamed door argument with no wire carrier | 01 §2 |
+  | **The freeze captures the post-act image** — including the `composition_pending` value the same UPDATE is about to write. The version row's key already carries `published_version = N+1`, so freezing the pre-UPDATE image would store content the act never produced and put the digest and 10's byte-for-byte restore drill on different bytes | 01 §2 |
+  | **`digest_version` starts at `1`**, pinned as a code constant by §5's golden vector rather than by config — the vector is already owed by that section, so no second carrier is introduced | 01 §4.3 |
+  | **The pipeline stops at the first failing phase**, collecting violations per-field *within* that phase. §4.4's audit row carries a single `error_code`, so collecting across phases would produce more codes than the row can record | 01 §3.1 |
+  | **"One phase, one status class" is a rationale, not an invariant.** P-D-32 used it to move two codes; read as a rule it would force `SCOPE_NOT_CONTAINED` to 409, contradicting §3.3's own "422 for content the door cannot process". The `identity` phase legitimately spans both | 01 §3.3 |
+  | **An absent `If-Match` rides `VALIDATION`**, not the bare 400. The request parsed, which is `inst-fd-mint-id`'s own criterion for what the malformed-request 400 does not cover | 01 §2 |
+  | **`inst-fd-save-txn` is the admitting door for every bucket-i column while `published_version = 0`** — `skuCode`/`productCode`, `brand_id` and a SKU's parent `product_id` — and **`brand_id` is a required payload field validated against the caller's brand claims**, refused `VALIDATION` when it names a brand the caller does not hold. §4.2 admitted the class with no door claiming it, and no step assigned the column at all; silent derivation breaks on a principal holding more than one brand | 01 §2, §4.1 |
+
+- **Left open**: ten items, each needing input outside this design set — the retention DELETE arm
+  (10 and the retention-duration owner), the interim trigger predicates owed by 04 and 07, the gate
+  phase's reach (05), `SCOPE_NOT_CONTAINED`'s phase and both codes' declaring slice (04), the
+  idempotency store's seven unpinned operands, the event-declaration criterion (12), and the
+  identity columns' bucket (the PRD owner who holds the matrix).
+- **Propagated**: `design/01-foundation.md` (§2, §3.1, §3.3, §4.1, §4.3, §6).
+
+
+#### P-D-34 — The remaining slice-01 items, decided from the set
+
+- **Date**: 2026-08-27 (owner call, after P-D-33's weeding left ten items)
+- **Context**: the ten were filed as "needing input this design set does not hold". On inspection
+  that was true of two — the envelope slot (the event-broker's contract) and the retention
+  *durations* (Legal/Finance), both already in `PRD` §15. The rest named owners — "this slice",
+  "the governance owner", "whoever took P-D-24", "the `nfr-availability-audit` owner" — who are
+  this set's own. Nine are decided here, plus five of the idempotency store's seven operands.
+
+  | Call | Propagation |
+  |---|---|
+  | **The no-hook exception reaches any transition that consumes an approval in the same transaction**, not `draft→published` alone — 05 C3's own reason (a hook firing against the record the act is consuming has no defined ordering) applies wherever P-D-30 put the gate. And **the gate phase passes trivially on an ungated act**: a head save invalidates approvals, never consumes one, so `Gate` mode imposes no approval requirement on create, save or discard | 01 §2, §3.1; 05 C3 |
+  | **A read under elevation commits its audit row in its own transaction, as a precondition of serving the read** — P-D-08 S3 is scoped to "the guarded mutation's transaction" and a read has none | 01 §4.4 |
+  | **A parsed request's named field set is the fields the request carries.** §4.3's "absent written `null`" addresses a *complete* set, so an omitted field and an explicit `null` hash differently — which is what they mean at the head door | 01 §4.3 |
+  | **The event-declaration unit is the act, not the row**: a step inside a transaction whose event another row of that transaction names inherits the declaration | 01 §4.5; 12 (completeness check) |
+  | **04's final containment rule replaces the operand inside 01's `identity` phase** rather than registering a slice-04 validator — the literal reading of C5's "the final form of 01's interim check", and the only one under which the code keeps one raising phase | 01 §3.3; 04 C5 |
+  | **`→ published` names the publish act, not the row's `lifecycle_state` afterwards** — the door accepts a `deprecated` head for N+1 and leaves it `deprecated`, so a state-after reading selects nothing there | 01 §1.7, §2 |
+  | **`AUDIT_UNAVAILABLE` is carved out of the audit class** (the class, not §3.3's phase list): its own row is the one that could not be written. Recorded out-of-band; `nfr-availability-audit`'s "100%" is scoped to domain refusals | 01 §4.4 |
+  | **`RETIREMENT_PENDING` is declared by 04** and listed in 01 for the response map only — P-D-30 gave 04 both arms, so 01 raises neither. **`SCOPE_NOT_CONTAINED` stays 01's**, with 04 carrying the reciprocal "named in 01, registered here" | 01 §3.3; 04 |
+  | **Four row-image predicates the first migration's trigger was missing**: `deprecation_provenance` only in the same statement as a `lifecycle_state` change; `replaced_by_sku_id` **write-once** (04: "Validated once, and the row is terminal at the flip"); bucket-ii only in the same statement as a `published_version` bump (07 defines its `CorrectionDoor` as ending in a re-publish); and **row identity — `tenant_id`, the PK, `created_by` — admitted in no UPDATE at all**, `cloned_from`'s treatment rather than the PRD matrix's bucket-iv catch-all, which that FR words as "other *descriptive* fields". Plus a **retention DELETE arm** predicated on `written_at` past the class's window, so 10 `inst-rt-gc` has an admitted path; the window's value stays Legal/Finance's | 01 §4.2, §4.4 |
+
+- **Five of the idempotency store's seven operands**, in §3.2: a keyless request runs unguarded (the
+  PRD scopes the guarantee to requests *with* a key); `AUDIT_UNAVAILABLE` is **not** stored as an
+  answer, being the one refusal whose verdict can change; the payload hash covers the body and not
+  the precondition; `expires_at` is stamped at the claim INSERT; and `answered` joins the
+  mutation's transaction on success, its own on a refusal.
+- **Left open**: `in_flight_until`'s value, which has no anchor until a door timeout is pinned, and
+  what the three `internal:` lanes store in the response columns — three workable shapes, none
+  following from what the set fixes.
+- **Propagated**: `design/01-foundation.md` (§1.7, §2, §3.1, §3.2, §3.3, §4.2, §4.3, §4.4, §4.5,
+  §6), `design/04-lifecycle.md` (both codes' reciprocal qualifiers).
+
+
+#### P-D-35 — The five slice-01 items the set already forced
+
+- **Date**: 2026-08-28 (owner call, after the sixth and seventh lens passes)
+- **Context**: the seventh pass left twelve open items in `design/01-foundation.md` §6. Five of
+  them were not open in the sense the other seven are: for each, this set already held a rule, a
+  precedent or a reciprocal claim that made one answer the only consistent one, and the item was
+  open only because nobody had said so out loud. Those five are decided here. The remaining seven
+  are genuine forks — each reopens something if answered the other way — and stay in §6 with their
+  owners named.
+
+  | Call | Propagation |
+  |---|---|
+  | **`internal_revision` joins §4.3's frozen-content exclusions**, and the digest column is named **`content_digest`**. The exclusion criterion is a column that moves on a transition writing no version row; `inst-fd-transition-bump` bumps `internal_revision` on **every** transition, so it met the criterion and was simply missing from the enumeration. Without the name, §5's golden vector and 10's restore drill both address a column the schema never declares | 01 §4.3, §5; 10 `inst-rd-drill` |
+  | **`composition_pending` is `NOT NULL` with default `false`.** The create flow writes it nowhere and the publish door on a `bundle` is its only raiser, so the default is the unraised state — the one value under which 11's **Reset** has a meaning and the first migration does not need a nullable third reading | 01 §4.2; 11 (the clone Reset row); 06 (semantics owner) |
+  | **`REVOKE` is a Postgres-only arm; the trigger whitelist is the whole guard on SQLite.** SQLite has no `GRANT`/`REVOKE`, so one migration cannot carry that arm on both engines, and C1 requires both dual-engine and "guards defined once". This is **P-D-31**'s reasoning applied a second time: where a mechanism exists on one engine only, the guard is the row-image trigger and the rest is an application or deployment guarantee. The schema-oracle goldens differ by exactly this statement, and the difference is now stated rather than discovered | 01 §1.6 C5, §4.4; 05 C7 |
+  | **A 404 is bare, carrying no registry code** — the reading §3.3 already applies to the bare 400. A path segment is judged before the pipeline opens, so no phase raises it; the governing `.cf-studio/config/rules/api-contracts.md` pins no code for it; and giving it one would require a raising phase this taxonomy cannot supply without reopening the one-phase rule | 01 §3.3; 12 (AC #38 map unchanged — nothing is added to it) |
+  | **The declaration rule: the slice that names a code for its response map holds the declaration unless the register moves it.** P-D-34's "raises neither and cannot hold the declaration" was a call about `RETIREMENT_PENDING`, not a general test — read generally it also selects `PARENT_NOT_PUBLISHED`, which 01 declares and 04 twice records as declared in 01. Narrowing the wording leaves both codes exactly where the set already puts them | 01 §3.3; 04 (its two reciprocal lines already agree) |
+
+- **Left open**: the other seven §6 items, none of which the set forces — what the "exactly one
+  raising phase" rule ranges over (raised independently by all three lenses); the idempotency
+  store's three unpinned operands (`in_flight_until`'s value, what the `internal:` lanes store in
+  the response columns, and whether `endpoint` is a route template or a concrete path); whether a
+  stored refusal replays or re-runs; one `error_code` against several codes in one phase, and the
+  same item's write-side half; which door writes bucket-ii on either side of first publish; the
+  scope columns no door writes; and `products_entity_version`'s missing DELETE arm against 10's
+  retention GC.
+- **Owed elsewhere**: `PRD` §15/§16 still word the interim audit control as "`REVOKE` + trigger
+  whitelist" without the engine split — precision, not a contradiction, and the PRD owner's to
+  take.
+- **Propagated**: `design/01-foundation.md` (§1.4, §1.6 C5, §3.3, §4.2, §4.3, §4.4, §6),
+  `design/05-governance.md` (C7), `design/10-retention-erasure.md` (`inst-rd-drill`),
+  `design/11-clone.md` (the clone-disposition table).
+
+
+#### P-D-36 — The phase unit is withdrawn; a code's unit is its declaring slice
+
+- **Date**: 2026-08-28 (owner call, taken against the donor's code rather than against this set)
+- **Context**: §3.3 required every code raised inside the pipeline to belong to exactly one of
+  §3.1's seven phases, with a carve-out list for the ones that could not. All three lenses of the
+  seventh pass raised the same contradiction independently: an absent `If-Match` rides
+  `VALIDATION`, but header presence can only be judged in the `precondition` phase while
+  `VALIDATION` is `shape`'s — and the carve-out list "closes at two" while both of its members are
+  stated to be raised outside every phase, exactly as **P-D-32** reasons the authorization-gate
+  codes are, on which reading it closes at zero.
+
+  **The question was settled by measurement, not by picking an arm.** `gears/bss/pricing` is the
+  gear whose validation pipeline this set copied, and it is built as well as designed. Its shared
+  `ValidationPipeline<S>` registers rules and returns a `ValidationReport`; its rules "append and
+  never short-circuit"; its codes are `const`s on the rules that raise them; everything that is not
+  a rule — `StaleVersion`, `NotFound`, `ConcurrentMutation`, `LifecycleForbidden` — is an early
+  `Err` at the point of detection. **It carries no notion of a validation stage at all**, and
+  `phase` in that gear names a plan phase. The phrase "one raising phase" occurs nowhere in the
+  repository outside this set's own four files. The phase taxonomy was this set's invention, and
+  the contradiction was a property of the invention.
+
+  | Call | Propagation |
+  |---|---|
+  | **The "exactly one raising phase" rule is withdrawn.** A code belongs to the rule that raises it, and the rule belongs to a slice. §3.1's seven phases remain the **execution order** — what runs before what, and therefore which refusal a caller meets first — and stop being a taxonomy | 01 §3.3; 12 `inst-cc-errors` |
+  | **The AC #38 map keys on code → declaring slice.** The declaring slice is **P-D-35**'s rule. This buys what the phase unit was introduced to buy and the door unit could not: **P-D-24** abandoned the door unit because one code is raised at many doors, and a code has exactly one declaring slice by construction | 12 `inst-cc-errors` |
+  | **There is no carve-out list**, because there is no longer a rule to carve out of. `CONTENT_PII_BLOCKED` (02), `AUDIT_UNAVAILABLE` (01), 05's owed denial code and `BREAKGLASS_WRITE_FORBIDDEN` (05) are codes their own slices declare, and nothing further is owed about them | 01 §3.3; 12; 05 |
+
+- **What this supersedes**: the phase-unit half of **P-D-24** (the door→phase amendment) and the
+  scoping half of **P-D-32** ("the rule ranges over codes raised inside the pipeline"). Both were
+  correct repairs of a rule that should not have existed; their other calls stand untouched — the
+  `state` phase, the code status moves, and the target-state registration key are unaffected,
+  because they are about execution order and status, not about attribution. **P-D-30**'s and
+  **P-D-34**'s rows likewise carry phase-worded justifications — "both arms sit in the registered
+  validators phase and the code needs no carve-out", "the only reading under which the code keeps
+  one raising phase" — whose *calls* are untouched: both arms of `RETIREMENT_PENDING` are still
+  04's, and 04's final rule still replaces the operand inside 01's `identity` phase. Only the
+  reason given has lapsed.
+- **What it closes besides its own question**: 12's "`inst-cc-errors` admits one phase carve-out
+  and the taxonomy now has two"; 05's "is `BREAKGLASS_WRITE_FORBIDDEN` a phase refusal?"; 01 §6's
+  mirror owed to 12; and the phase clause in 01 §6's standing containment risk.
+- **Settled since, by P-D-37 (2026-08-28)**: the within-phase half. Stop-at-first-*phase* stands
+  as P-D-33 wrote it. The paragraph below reads more broadly than it should have — what was open
+  was never the phase boundary but the code overflow inside one phase.
+- **Deliberately not decided here**: whether the run still stops at the first failing phase. The
+  donor appends and never short-circuits, but it renders a *report* into a response, while this
+  gear's `products_audit_log` carries a single `error_code` column — the constraint that produced
+  the stop-at-first rule. That is 01 §6's own open item and is unaffected by this call.
+- **Propagated**: `design/01-foundation.md` (§3.3, §4.4, §6), `design/04-lifecycle.md` (§3.2's
+  code block), `design/05-governance.md` (§6), `design/12-consumer-contracts.md`
+  (`inst-cc-errors`, §6).
+
+
+#### P-D-37 — One code per audit row, every violation in the answer
+
+- **Date**: 2026-08-28 (owner call)
+- **Context**: `inst-fd-fail-closed` stops the run at the first failing phase and collects
+  violations per-field *within* it, and **P-D-33**'s stated reason is that §4.4's audit row carries
+  a single `error_code`, so collecting *across* phases would overflow it. The seventh pass observed
+  that the same overflow can happen *inside* one phase, since the `identity` phase names three
+  codes and the `state` phase four.
+
+  **Measured before deciding, and the question turned out to be narrower than stated.** The
+  `identity` phase is decided by the index **under the write** (§3.4), and an insert violating two
+  unique constraints returns one violation — whichever the engine checked first; the donor's
+  storage layer folds every `is_unique_violation()` (Postgres `23505` and its SQLite equivalent)
+  into a single error without distinguishing the index. So the pass's own example — a create
+  colliding on both `name` and `productCode` — physically yields one code, not two. `shape` raises
+  a single code with many per-field entries. **Only the `state` phase can genuinely collect two**,
+  and it does: a save on a `retired` head that also moves a bucket-i column satisfies
+  `ENTITY_TERMINAL` and `ILLEGAL_FIELD_MUTATION` alike.
+
+  | Call | Propagation |
+  |---|---|
+  | **The caller's rejection carries every violation the failing phase collected; the audit row records one code.** This is the donor's split, and the reason the two differ here is structural: `gears/bss/pricing` renders a whole `ValidationReport` into one refusal and has no `error_code` in its audit record at all, because it does not audit validation refusals — this gear audits every one of them under `nfr-availability-audit`, and a row needs one code | 01 §3.1 `inst-fd-fail-closed`; 12 (the response envelope) |
+  | **Precedence over the `state` phase's four codes**: `ENTITY_TERMINAL` → `PARENT_TERMINAL` → `ILLEGAL_TRANSITION` → `ILLEGAL_FIELD_MUTATION`, running from the refusal that admits no write to the row at all down to the one that refuses a single column. Derived, not picked: it is the same ordering that makes terminality the physical floor — if the subject is terminal nothing else about the write matters | 01 §3.3; 12 (AC #38 map reads the stored code) |
+  | **The `identity` phase cannot collect a second code**, being decided under the write, and §3.1's per-field collection is therefore a property of the **read-decided** phases. Stated rather than left implicit, so the promise the rule makes is one the phase can keep | 01 §3.1, §3.4 |
+
+- **Not changed**: the column stays a single nullable `error_code`; AC #38 still maps by it; the
+  reserved sealing seam still hashes the row as it stands. That is what made the precedence the
+  cheaper arm than widening the column, which has three readers.
+- **Propagated**: `design/01-foundation.md` (§3.1, §3.3, §3.4, §6). Amends **P-D-33** (which said
+  nothing about the within-phase case) and narrows **P-D-36**'s "deliberately not decided" note.
+
+
+#### P-D-38 — A refusal stores nothing and releases the key
+
+- **Date**: 2026-08-28 (owner call)
+- **Context**: `inst-fd-idem-claim-refusal` stored a refusal on the idempotency key and replayed it
+  "rather than re-running a rule whose verdict cannot change", carving out `AUDIT_UNAVAILABLE` as
+  the one refusal whose verdict *can* change. `inst-fd-idem-hash` keeps the precondition out of the
+  payload hash for the opposite reason: a client refused `STALE_REVISION` that re-read the head and
+  retried "is making the same request" and must therefore **run**. The two rules of one section
+  prescribed opposite things about the same retry.
+
+  **Measured on both sides.** The donor settles it directly: `gears/bss/pricing`'s `idempotent.rs`
+  runs claim and answer inside the mutation's transaction precisely so that "a failure anywhere
+  rolls the claim back with the mutation" — it stores no refusal at all and needs no exception. And
+  the alternative was measured rather than assumed: keyed on "the verdict can change on retry", the
+  carve-out selects **ten of the taxonomy's fifteen codes** — `APPROVAL_REQUIRED`,
+  `PARENT_NOT_PUBLISHED`, `RETIREMENT_PENDING`, `SCOPE_NOT_CONTAINED`, `INCOMPLETE_ENTITY`,
+  `ILLEGAL_TRANSITION`, both `DUPLICATE_*`, `STALE_REVISION` and `AUDIT_UNAVAILABLE`. Only the two
+  payload-determined codes (`VALIDATION`, `CONTENT_PII_BLOCKED`) and the two irreversible ones
+  (`ENTITY_TERMINAL`, `PARENT_TERMINAL`) would stay. The exception would have become the rule.
+
+  | Call | Propagation |
+  |---|---|
+  | **A refusal stores nothing and releases the key.** The answer write joins the mutation's transaction and rolls back with it; the door then deletes the claim row in its own transaction, so the key is free immediately and a retry runs. A key exists to prevent a duplicate *side effect*, and a refusal has none — the mutation rolled back — so storing one protects nothing while freezing a transient verdict for `expires_at`'s window, up to a day | 01 §3.2, §4.4; 12 (the consumer note) |
+  | **The carve-out is withdrawn**, `AUDIT_UNAVAILABLE` having needed one only because refusals were stored | 01 §3.2 |
+  | **`in_flight_until` now covers exactly one case — a door that died**, which is what `inst-fd-idem-claim-inflight-until` always said `claimed` means. The `AUDIT_UNAVAILABLE` collision §6 carried is gone: that 503 is retryable immediately | 01 §3.2, §6 |
+
+- **The argument against, stated**: a retried refusal now writes one audit row per attempt instead
+  of one per key. That is what already happens to every refused request carrying no key, and
+  `nfr-availability-audit` asks for 100% of refusals rather than for their deduplication.
+- **What it does not settle**: `in_flight_until`'s *value* still has no anchor, the set pinning no
+  door timeout — §6's item (a), now narrowed to crash recovery alone. And what the three
+  `internal:` lanes store in the response columns — item (b) — narrows without closing: the columns
+  now only ever reproduce a **success**, and a lane with no wire surface still has none.
+- **Propagated**: `design/01-foundation.md` (§3.2, §4.4, §6), `design/12-consumer-contracts.md`
+  (the replay note). Amends **P-D-26** (whose "a refusal answers the key" arm is withdrawn) and
+  narrows **P-D-34**'s claim-write boundary.
+
+
+#### P-D-39 — The scope columns, and what the empty set means
+
+- **Date**: 2026-08-28 (owner call)
+- **Context**: `inst-fd-containment-scope` and 04 C5 both read a Product's `region_scope`/
+  `brand_scope`, and **no door wrote them**. §4.1 listed the pair with neither default nor
+  nullability, the create flow never reached them, and the PRD puts brand/region scope on the
+  Product create surface (§10's operator flow, "Create/select a Product (name, category,
+  description, brand/region scope)") without pinning requiredness or the empty-set reading. Under
+  the fail-closed wording — "anything not provably a subset" — a Product whose scope was never set
+  refuses **every** child SKU that names one, since nothing non-empty is a subset of the empty set.
+  The literal set mathematics gives exactly the opposite of the business meaning: an unscoped
+  Product sells everywhere, not nowhere.
+
+  | Call | Propagation |
+  |---|---|
+  | **Both columns are `NOT NULL` with the empty set as default, and the empty set means *unrestricted*.** One spelling of absence, one meaning for it — the alternative, a nullable column where `NULL` means unrestricted and `[]` means nothing, gives absence two spellings with different meanings, which this corpus has been bitten by before | 01 §4.1, §4.2 |
+  | **The create door writes them**, as an optional payload value set — `inst-fd-scope-write`. Unlike `brand_id` (P-D-33) they are **not** validated against the caller's claims: they say where the Product may be sold, not who owns it | 01 §2 |
+  | **Containment is defined over restrictions, not over raw sets**: an unrestricted parent contains every child; an unrestricted child is contained only by an unrestricted parent; between two non-empty sets it is ordinary subset. A SKU whose payload omits either set **takes the parent's**, so an inherited scope is contained by construction | 01 §2 `inst-fd-containment-scope`; 04 C5 and `inst-pc-containment` |
+
+- **The argument against, stated**: the subset rule gains two boundary cases instead of staying
+  pure set mathematics, and they have to be carried in two places — 01's interim check and 04's
+  final one. §6's standing risk already names that pair as a thing that must not silently diverge,
+  and both sides are amended in the same commit for exactly that reason.
+- **Not changed**: both columns stay **bucket-iii in both directions**, so widening and narrowing
+  alike are material and meet the governance gate; `PRD` §545's "a SKU's brand/region scope MUST be
+  contained within its parent's" holds unchanged under the restriction reading.
+- **Propagated**: `design/01-foundation.md` (§2 create flow and containment row, §4.1, §4.2, §6),
+  `design/04-lifecycle.md` (C5, `inst-pc-containment`).
+
+
+#### P-D-40 — The entity-version retention DELETE, under a referential predicate
+
+- **Date**: 2026-08-28 (owner call)
+- **Context**: §4.3 admitted no UPDATE or DELETE on `products_entity_version` ever, while 10
+  `inst-rt-gc` must collect those rows — "entity versions only after every referencing manifest".
+  **P-D-34**'s repair one table over does not transfer: `products_audit_log`'s DELETE arm is a
+  row-image predicate (`written_at` older than its class window), and a version row's
+  collectability is not a property of the row at all but of what still points at it. So the GC had
+  no admitted path and 10's ordering was a procedural promise with nothing enforcing it.
+
+  | Call | Propagation |
+  |---|---|
+  | **One DELETE is admitted, under a referential predicate**: a `products_entity_version` row may be deleted only when **no `products_catalog_version_entry` references it**. UPDATE stays refused in every form | 01 §4.2 (shared guard), §4.3; 10 `inst-rt-gc` |
+  | **A guard may read another table.** This is the first predicate here that does, and it is compatible with **P-D-31**, whose objection was to a guard reading the *door* through a session variable that exists on one engine only. A subquery judges data, and both engines evaluate it — so "the guard judges the row image" is widened to "the guard judges the **data**" | 01 §4.2; P-D-31 (amended) |
+  | **06's manifest carries an index on `(tenant_id, entity_kind, entity_id, published_version)`** — not for a read of its own, but because the manifest's key leads with `catalog_version_id` and is useless for this lookup | 06 `products_catalog_version_entry` |
+
+- **What this buys beyond an admitted path**: 10's deletion order stops being a promise. Under the
+  predicate a GC *cannot* delete a referenced version row, whichever order it walks — strictly more
+  than the audit table's window predicate buys, which still trusts the GC to compute the window.
+  It also subsumes the freeze-registration arm transitively: a live registration holds the catalog
+  version, which holds its manifest entries, which hold these rows, so **P-D-18**'s "a participant
+  that never releases pins that version's storage" needs no second predicate here.
+- **The argument against, stated**: a per-row index lookup on every collected version, and an index
+  on a table that grows as catalog versions × entities. Both are the price of the guarantee, and
+  the alternative that keeps predicates row-image — a denormalized reference counter on the version
+  row — buys a column that can drift from the thing it counts.
+- **Propagated**: `design/01-foundation.md` (§4.2, §4.3, §6), `design/06-catalog-version.md` (the
+  manifest's index), `design/10-retention-erasure.md` (`inst-rt-gc`). Amends **P-D-31**.
+
+
+#### P-D-41 — The two doors that write bucket-ii
+
+- **Date**: 2026-08-28 (owner call)
+- **Context**: §4.2 admits bucket-ii writes while `published_version = 0` and, after first publish,
+  only in the same statement as a `published_version` bump. Neither side named a door. Below first
+  publish the class was admitted with no writer at all — the same hole **P-D-28** had closed for
+  bucket-i, whose own test is that an admitted class needs a named admitting door. Above it, 07's
+  `CorrectionDoor` **already accepts** `(skuId, field, new value, expected revision)` and delegates
+  its re-publish to 01's `PublishDoor`, whose signature `(entity, expected internal revision)` has
+  no slot for the value — so the only statement permitted to write it could not receive it, while
+  07's own "clean head" gate forbids staging it as an ordinary edit first.
+
+  | Call | Propagation |
+  |---|---|
+  | **Below first publish, `inst-fd-save-txn` is the admitting door**, on the same terms as bucket-i. 03 `inst-mt-bucket` already says the draft plane "edits freely"; this names the door that lets it | 01 §2 `inst-fd-save-txn`, §4.2; 03 `inst-mt-bucket` |
+  | **After first publish, `PublishDoor` gains an optional third argument** — the corrected bucket-ii field and value — supplied only by 07's `CorrectionDoor`, and written by the door's own head-row UPDATE beside the `published_version` bump | 01 §2 `inst-fd-publish-pin`, new `inst-fd-publish-correction`; 07 `inst-cr-republish` |
+  | **This is the mechanism `composition_pending` already uses**, not a new one: the publish door already writes a value into that UPDATE that did not arrive as a head edit, and the freeze is already the **post-act image** "including the `composition_pending` value the same UPDATE is about to write" — so the corrected value is what freezes into version N+1, which is what a correction must do. §4.2's predicate is unchanged | 01 §2 freeze step, §4.2 |
+
+- **The argument against, stated**: 01's door signature widens, and three slices drive that door.
+  The argument is **optional and additive**, so 06's composition-clear and 09's per-row publishes
+  pass nothing and are untouched — only 07 passes it. The residue is that a door whose job is
+  otherwise "publish what the head says" now takes a field value. The alternative — 07 issuing its
+  own head-row UPDATE — was rejected because publish mechanics (freeze, version row, event, bump)
+  would then be spelled in two places and could diverge silently.
+- **Propagated**: `design/01-foundation.md` (§2 publish rows and `inst-fd-save-txn`, §4.2, §6),
+  `design/03-sku-classification.md` (`inst-mt-bucket`), `design/07-reference-signal.md`
+  (the re-publish step).
+
+
+#### P-D-168 — `origin/main` is merged in, and it brings three breaking platform changes and one reversal of this gear's own requirements
+
+- **Date**: 2026-09-12 (owner instruction: *"we merged the big pricing changes, a rebase and a
+  merge are needed, with the conflicts if there are any"*)
+- **Merge, not rebase.** The branch was 393 commits ahead of `origin/main` and 509 behind, over a
+  merge-base of `8e7a5d1f6`. A rebase replays 393 commits across a 1885-file delta and re-authors
+  every one of their hashes, which [[never-commit-to-a-shared-branch]]'s incident is about; a merge
+  keeps every commit's identity and confines the reconciliation to one commit. **The measured
+  conflict surface justified it**: of 330 files this branch changed and 1885 `main` changed, only
+  **51 were touched by both**, and only **six** conflicted.
+- **The six, and how each was resolved.** `.github/workflows/ci.yml`, `Makefile` and `Cargo.toml`
+  were union merges (both sides appended in one place); `gears/bss/pricing/docs/DECISIONS.md` was
+  ordered structurally — `main`'s D-353…D-359 are `####` entries belonging under its section `H`,
+  this branch's `## I. Asks from the products gear` is a new top-level section, and putting ours
+  first would have adopted their three entries into our section;
+  `gears/file-storage/docs/IMPLEMENTATION_PLAN_TEMP.txt` took `main`'s delete (our edit was a
+  home-directory-path fix *inside* a document its owner has since retired); `docs/PRD.md` is below.
+- **Three breaking platform changes, none of which this gear could see coming**, each found by the
+  build rather than by reading:
+
+  1. **`authz-resolver-sdk` 0.3.21 → 0.4.0** (`feat(authz-resolver)!: migrate to toolkit contract
+     with REST projection`). `AuthZResolverClient` is now `AuthZResolverApi`, `evaluate` gained a
+     platform-plane `ctx: PlatformSecurityContext`, and its error is `CanonicalError` rather than
+     `AuthZResolverError`. Four sites: the `ClientHub` lookup in `gear.rs` and three fake PDPs.
+     **`rustc`'s "a similar name exists" suggested `AuthZResolverApiRest`, which is the wrong
+     trait** — the REST projection, not the contract; the tree's own donors (`chat-engine`,
+     `usage-collector`, `oagw`) all name `AuthZResolverApi`, which is what settled it.
+  2. **`event-broker-sdk` 0.2.0 → 0.2.1** (`feat(event-broker)!: model topics and event types as
+     derived GTS types`) — the deep one, below.
+  3. **`toolkit-db`'s `ScopeError` became `#[non_exhaustive]`.** `driver_failure`'s match was
+     exhaustive over four variants. The replacement wildcard is written as a **rule over the enum**
+     (`Db` is the only variant carrying a driver error, so it is the only retryable one; everything
+     else is the scope layer refusing to build the statement) with the direction of its failure
+     stated: a future transient variant would be answered as a flat 500 rather than retried, never
+     the reverse — and the reverse is the one that would matter, since `RepoError::Driver` is what
+     the doors retry on.
+
+- **The broker change is a contract change, not a rename.** `TypedEvent` lost both `TOPIC` and
+  `partition_key`: *"both belong to the event type's traits, and the broker resolves them from
+  `TYPE_ID`. A second declaration here could only disagree with them."* And
+  **`gts.cf.core.events.event_type.v1~` was deleted outright** — the commit's own words are *"a
+  type whose instances were types"*. Consequences here, all applied:
+
+  | What | Before | After |
+  |------|--------|-------|
+  | The 37 event type ids | `…events.event_type.v1~cf.bss.products.<name>.v1` | `…events.event.v1~cf.bss.products.<name>.v1~` — a **derived type** of the event base, trailing `~` because a type is not an instance |
+  | The producer's selection pattern | `event_type.v1~cf.bss.products.*` | `event.v1~cf.bss.products.*` |
+  | The topic | `TypedEvent::TOPIC`, one Rust constant per type | the `topic` trait of each type's GTS registration |
+  | `partition_key` | a trait method this gear deliberately left unimplemented (P-D-47) | the type's `partition_key` GTS trait, a JSON Pointer defaulting to the tenant |
+
+  **This reverses, on the platform's authority, the argument `infra/broker.rs` made at length until
+  today** — that `event_type.v1~` was right and the SDK's own doc-example wrong. The module doc now
+  carries the reversal and its evidence rather than the old argument: the broker's committed worked
+  example (`…event.v1~fabrikam.shop.orders.order_placed.v1~.schema.json`) and `chat-engine`'s
+  webhook schemas, which carry the same shape. See [[a-module-doc-is-a-claim-not-a-measurement]] —
+  the claim was true when written and the authority it cited moved out from under it.
+- **What the broker change took away, stated rather than quietly dropped.** Two assertions lost
+  their subject and were narrowed, not deleted: `all_eight_share_one_topic` could assert that every
+  event type names one topic, and now can only assert that the constant the producer binds and the
+  consumer subscribes with equals its independently transcribed literal; the `partition_key` half
+  of P-D-47's ordering has no assertable site at all, because the absence it asserted is now true
+  by construction. **P-D-47 itself is unchanged — its mechanism moved.** Both tests say so at the
+  site.
+- **Owed, and not built here: a GTS schema document per event type.** The topic is now a trait on
+  each derived type's registration, and this gear ships none — so nothing registers the mapping
+  from its 37 types to its one topic. The producer's `prepare_all` already fails loudly when its
+  patterns match **zero** registered types, which is the guard this gap will trip. Building 37
+  schema documents is a slice-sized change with a design footprint (`design/01-foundation.md` §4.4,
+  `design/12-consumer-contracts.md` `inst-rc-dedup`), not a merge fix. *(Owner: this gear's owner,
+  with event-broker.)*
+- **What the merge imported as a requirements change, routed and not decided here.** `main` carries
+  a **Tax ownership amendment dated 2026-09-10** in this gear's own `PRD.md`: the tax-category
+  *dictionary* stays with Product Catalog, but *assignment* *"belongs solely to Pricing's
+  `price.tax_category_ref`, not a SKU field"*. That **reverses P-D-131 (2026-09-03), which is
+  recorded as the product owner's own decision** — *"`taxCategory` and `glCode` stay in the
+  registry"* — and which this gear built: **176 occurrences across 37 source files**, including the
+  `tax_category_ref` column in `m20260829_000003_create_products_sku`, the recognized-set table,
+  the materiality triggers, the events and the SDK models.
+
+  Two facts about the amendment, both measured, neither of them a judgement:
+
+  1. **It is partial.** It edits four places (the header block, the SKU glossary row, the
+     finance-reviewer role, and the two governance paragraphs) and leaves **six** stating the
+     reversed position: §2.1's parenthetical, §5's *"Catalog supplies only the tax-category/GL
+     **code** on the SKU"*, `fr-accounting-codes` (*"required at publish for product/service
+     types"*), the acceptance criterion at *"When a ProductManager sets tax-category and GL
+     codes"*, and both §17 interim-policy rows.
+  2. **The conflict resolution took the amendment's side in the two paragraphs that conflicted**,
+     because the four places it had already reached had merged cleanly — keeping `taxCategory` in
+     those two lists would have been *this* change introducing a contradiction with §5's own
+     glossary. The P-D-11 quorum structure is unchanged; only the field lists moved. **One
+     supporting clause had to be re-anchored**: the floor-0 argument read *"since `taxCategory` is
+     required at publish for product/service types"*, which the amendment makes false. `PlanTier`
+     carries the same weight and more — §5's glossary calls it *"Mandatory classification carried
+     on SKUs/Plans"* — so the clause now names it, and the argument is stronger than it was, since
+     *every* SKU publish is finance-material rather than only the product/service ones.
+
+  **Nothing about the code was changed on this question and nothing should be until the owner
+  rules.** The gear's implementation still follows P-D-131. *(Owner: PRD owner.)*
+- **Not measured here**: `toolkit-odata` also tightened in `main` (`b282d0d4e`, per-field operator
+  enforcement — ordering operators refused on `Bool`/`Uuid`, string functions only on `String`).
+  It is a behavioural change against the six vocabularies P-D-165 declared and no compile error can
+  find it; the suites are what answer it.
+- **Propagated**: `PRD` §`fr-materiality-gated-publish` and its acceptance criterion (the
+  finance-material field lists, and the floor-0 clause re-anchored from `taxCategory` to
+  `PlanTier`), `DESIGN.md` §"Platform dependencies" (the authz trait's new name). The broker and
+  authz migrations land in code, not in the design set: no slice document names a trait or an
+  event-type id namespace.
+
+#### P-D-167 — The gear moves off `chrono` onto `time` wholesale, which closes P-D-166 at the source
+
+- **Date**: 2026-09-08 (owner call: the branch is not in `main`, so there is no deployed data and
+  no migration owed — *"we have freedom, let's change completely"*)
+- **What this decides.** Every instant in this gear is `time::OffsetDateTime`: the sea-orm column
+  types, the domain structs, the repository boundary, the REST DTOs, the event payloads and the
+  fixtures. `chrono` is **removed from both crates' manifests**, so there is one instant type and
+  the compiler enforces it.
+- **Why, in one line.** P-D-166 measured a live row-loss defect — a keyset walk over a timestamp
+  lost every tied row past the first page — whose cause was **two representations of one instant**:
+  the platform's cursor codec decodes `FieldKind::DateTimeUtc` to `time::OffsetDateTime`, and a
+  `ChronoDateTimeUtc` column did not compare equal to it on `SQLite`. The alternative was one arm
+  of `parse_cursor_value` in the toolkit. This is the fix at the source, and it makes the gear
+  consistent with the only convention the tree actually has.
+- **The convention, measured rather than asserted.** All seventeen `kind = "DateTimeUtc"` filter
+  keys in the tree were censused: `account-management` declares six, `chat-engine` two,
+  `usage-collector` one (filter-only, no cursor) — every one of them over a `time`-typed column.
+  `pricing` and `ledger` declare **none**, so neither was exposed, and the ledger's own
+  `domain/instant.rs` opens with *"Instants … are UTC `time::OffsetDateTime`, matching AM and
+  pricing"*. Products held the only chrono-typed timestamp cursor keys in the repository and was
+  the only gear losing rows. There is **no** written rule about `chrono` versus `time` in
+  `.cf-studio/config/rules/` or `guidelines/` — the convention is in the code, and this entry is
+  where this gear records following it.
+- **What was checked before starting, because each could have stopped it.**
+  1. **The wire form is byte-identical.** `serde_json` renders a chrono `DateTime<Utc>` and a
+     `time::OffsetDateTime` under `#[serde(with = "time::serde::rfc3339")]` as the same string
+     (`"2025-09-04T15:33:20.123456Z"`), measured on one instant through both paths. Without the
+     attribute `time` serializes a **component array**, which is what 43 test failures said in the
+     first pass and why all twenty-six DTO instant fields carry it.
+  2. **The DDL does not change.** The migrations declare `timestamptz` in raw SQL, which sea-orm
+     maps from either type; no migration file was touched and the schema oracles are unmoved.
+  3. **The canonical rendering does not change.** `canonical::render_instant` is §4.3's timestamp
+     clause and its bytes are what content digests and the golden vector are computed over. It is
+     now built from the instant's components — not through `time`'s well-known `Rfc3339`, which
+     renders the offset `+00:00` and the fraction at the value's own width, two differences from
+     the clause. The sibling ledger renders its own clause the same way and for the same reason.
+     `postgres_golden_vector` passing is the proof, not the reasoning above.
+  4. **No data migration is owed** — and only because nothing is deployed. The branch is not in
+     `main`; benidorm runs Postgres, where both representations bind as `timestamptz` and existing
+     rows would have been fine anyway. On `SQLite`, which C1 declares a supported engine, rows
+     written in the chrono text form would **not** be readable after this change. If this gear
+     ships on `SQLite` and later needs a type change, that is a data migration and this entry is
+     the reason it was free this once.
+- **What it cost.** 337 `DateTime<Utc>` occurrences across 109 files, and seven mechanical classes
+  the compiler enumerated: the entity column alias, the type itself, `Utc::now()`, `chrono::Duration`
+  (whose `time` twin is `SignedDuration` since 0.3.5x — infallible constructors, no `try_hours`),
+  `signed_duration_since` (now subtraction), `num_*` accessors (now `whole_*`), and
+  `to_rfc3339*` (now this gear's own two renderers, `render_instant` and the new
+  `render_instant_secs` for the events' `effectiveAt`, which a subsecond digit would fracture
+  since consumers key on `(skuId, effectiveAt)`).
+- **Three things only the suite could have found.**
+  1. **Eighty-three fixture instants** were `Utc.with_ymd_and_hms(..).unwrap()`. `time` builds an
+     instant through a `Date` and a civil time, so the inline form is four calls where chrono's was
+     one — they go through one `test_support::utc` helper rather than carrying the arithmetic in
+     eighty-three places.
+  2. **Two tests put an `OffsetDateTime` straight into `json!`**, whose bare `Serialize` is a
+     component array, so the door answered `422` on a body it could not parse. Both render through
+     `canonical::render_instant` now.
+  3. **Eight raw-SQL seed literals** carried the chrono text form
+     (`'2026-08-29 09:00:00.000000 +00:00'`) which a `time`-typed column does not read — a 500 on
+     every read of the seeded row. The suite's other 112 timestamp literals were already the
+     RFC-3339 `Z` form, so the eight were the anomaly, not the convention.
+- **What this closes.** `read_tests::a_timestamp_walk_visits_every_row_of_a_tied_page` was
+  `#[ignore]`d by P-D-166 as a platform gap; it **passes** now and is un-ignored, keeping its
+  non-timestamp half as the contrast that told the cause apart from the tie. The four exposed
+  doors — the approval inbox, scheduled transitions, the deferred-intent dashboard and the
+  allow-list export — walk tied instants correctly.
+- **What it does not close.** The codec asymmetry itself stands: `parse_cursor_value` still decodes
+  `FieldKind::DateTimeUtc` to whichever crate parses the token first rather than to the variant the
+  mapper extracts, and the toolkit's own
+  `datetime_utc_cursor_keeps_the_mapped_variant` test still states that invariant in prose without
+  checking it. **The next gear with chrono columns and a timestamp cursor key hits this exactly as
+  this one did.** Owner: the toolkit. P-D-166 keeps the measurements.
+- **Propagated**: `DECISIONS.md` (P-D-166, marked resolved here),
+  `design/08-read-models.md` §6 (the P-D-166 item, struck).
+
+
+#### P-D-166 — A timestamp order key loses every tied row past the first page, and the fix is one arm of the platform's cursor codec
+
+- **Date**: 2026-09-08 (found while answering a question about a neighbouring branch's
+  `libs/toolkit-odata` commit; measured on the products suite)
+- **What this records.** Four of the eight walks P-D-165 built order by a timestamp — the approval
+  inbox (`submitted_at`), scheduled transitions (`at`), and the deferred-intent and allow-list
+  walks (`created_at`). On `SQLite`, a page of rows **sharing an instant** has no successor: the
+  walk serves the first row and reports itself finished, and the rest are unreachable through
+  pagination while an unpaged read of the same door serves them all.
+- **The cause, measured rather than reasoned.** `libs/toolkit-db`'s `parse_cursor_value` decodes
+  `FieldKind::DateTimeUtc` by trying `time::OffsetDateTime` **first**, so the value a keyset seek
+  binds is always `sea_orm::Value::TimeDateTimeWithTimeZone`. This gear's timestamp columns are
+  `ChronoDateTimeUtc` throughout. On the same three-row fixture:
+  `created_at = <chrono variant>` matched **3 of 3**, `= <time variant>` **0 of 3**, and no text
+  rendering matched either — RFC-3339 with nanos, with micros, `sea-orm`'s chrono form and the
+  naive form all **0 of 3**. The seek is `(a > a0) OR (a = a0 AND b > b0)`; with the `=` conjunct
+  always false, the tiebreaker never gets its chance. Isolated by walking the *same* three tied
+  rows under a UUID order key, which reaches all three.
+- **Why there is no fix on this side.** The one lever a gear has is
+  `ODataFieldMapping::cursor_kind`, and the text measurements above are what rule it out: no
+  `FieldKind::String` rendering compares equal to the column either. `extract_cursor_value` is not
+  the lever — it feeds the *token*, while the predicate is built from what `parse_cursor_value`
+  returns; converting the extraction to the `time` variant was tried and changed nothing, and was
+  withdrawn along with the `time` dependency it needed. Making the entity columns `time`-typed —
+  which is why `account-management` and `chat-engine` do not have this defect — is a migration
+  across every table in the gear and not a thing to do under a cursor codec.
+- **RESOLVED by P-D-167 the same day**, and not by the fix named below: the gear moved off
+  `chrono` onto `time` wholesale, so the column and the codec now agree on one representation and
+  the probe is un-ignored and passing. The fix below remains the right one for the **platform** —
+  the next gear with chrono columns and a timestamp cursor key hits this exactly as this one did —
+  and the measurements in this entry are what a toolkit change should be checked against.
+- **The fix, named.** One arm of `parse_cursor_value`: decode `FieldKind::DateTimeUtc` to the
+  variant the mapper extracts rather than to whichever crate parses the token first. That is
+  already the invariant the toolkit's own `datetime_utc_cursor_keeps_the_mapped_variant` test
+  states in prose ("Every `FieldKind::DateTimeUtc` mapper in the tree extracts
+  `TimeDateTimeWithTimeZone`") — a statement this gear's mappers falsify, and which the test does
+  not check. **Owner: the toolkit, with whoever is next in `libs/toolkit-db`.** Postgres binds
+  both variants as `timestamptz` and is unaffected, so the served engine is correct and the gate
+  engine is not — the reverse of the usual asymmetry.
+- **What stands here meanwhile.** `read_tests::a_timestamp_walk_visits_every_row_of_a_tied_page`
+  asserts the correct behaviour and is `#[ignore]`d with the diagnosis and this entry named; it
+  also asserts, un-ignored, that a non-timestamp order key walks the tie, so the tiebreaker
+  mechanism itself stays guarded. Un-ignore when the codec lands. The exposure is real rather
+  than theoretical: `at` is an operator-chosen instant, so a batch of transitions scheduled for
+  one moment is the ordinary case, and the allow-list repository's own comment already noted that
+  two entries signed off in one act share `created_at`.
+- **Propagated**: `design/08-read-models.md` §6 (the open item), and the probe's own doc comment,
+  which carries the measurements.
+
+
+#### P-D-165 — The list surfaces adopt the platform's query contract: the canon is account-management, and the hand-rolled surface was dropping filters silently
+
+- **Date**: 2026-09-08 (owner instruction: change to the canon, products only — the pricing side
+  is being changed in its own PR)
+- **What this decision records.** Every list door in this gear bound a hand-rolled
+  `axum::extract::Query<T>` struct of its own. The owner asked for the platform's contract, naming
+  `gears/system/account-management` as the canon; this entry records the measurement, what was
+  taken part for part, the four places the canon's own rules say *not* to take it, and the two
+  residuals it does not settle.
+
+- **The measurement, before anything was written.** AM's four list doors
+  (`users`, `tenants`, `metadata`, `conversions`×2) run one stack: the
+  `toolkit::api::odata::OData` extractor binding `$filter`/`$orderby`/`$select`/`$top`/`$skiptoken`
+  and refusing every other `$` key (OASIS `OData` 4.01 Part 1 §6.1); a typed `FilterField` set per
+  door from `#[derive(ODataFilterable)]`, so an unknown field, a type mismatch or an unsupported
+  operator is a `400`; `toolkit_db::odata::sea_orm_filter::paginate_odata` walking a keyset over an
+  already-scoped `SecureSelect`, with a **unique** tiebreaker and `LimitCfg { default: 50, max: 200 }`
+  on all three of its repositories; `toolkit_odata::Page<T>` on the wire; and
+  `reject_non_odata_params`, whose own comment names the cost of its absence — `?status=approved`
+  would otherwise answer `200` with the **unfiltered** set. Products had **none** of it:
+  `toolkit-odata` was not a dependency and `OData(` had zero call sites.
+
+- **The canon is not uniform, and this gear is stricter than it.** AM's guard is
+  `reject_non_odata_params` — "any query key without a `$` is refused" — and it is called on
+  **two** of AM's five list doors, both in `handlers/conversions.rs`; `users`, `tenants` and
+  `metadata` never call it, so `?status=approved` on AM's users door is still dropped today.
+  Products applies its equivalent on every door that takes a query. AM also clamps `$top`
+  **twice** — `clamp_listing_top(query, svc.max_listing_top())` in the handler on top of the
+  repository ceiling, so a deployment that lowered `listing.max_top` is not bypassed — and
+  products took only the constant: there is no per-deployment cap here. That half is **not**
+  adopted and is a residual, below.
+
+- **The defect this was, not the preference it looked like.** Three consequences, each measured on
+  the shipped code:
+  1. **An unrecognized query key was dropped.** `serde` ignores a field it does not know and Axum
+     claims nothing it cannot bind, so `?status=approved`, a mis-cased `?excludedeprecated=true`,
+     or the resolver's `?boundVersion=` against a door that bound `bound_version` all answered
+     `200` with the parameter gone. A caller cannot tell that answer from a correct one, and the
+     resolver's case is worse than a wrong row set: a dropped `boundVersion` reads as *"your bound
+     version is the current one"*.
+  2. **`limit` was a ceiling, not a page.** Past it there was no continuation of any kind. A tenant
+     with more than 500 matching browse rows could not read the rest; the approval inbox said
+     `has_more: true` and gave nothing to continue with; and six collection doors — both version
+     timelines, both dashboards, the allow-list export, the version diff — took no query at all and
+     answered every row a tenant had. The studio polls two of those every 30 seconds.
+  3. **Five envelopes for one idea**: `{stamp, rows, facets}`, `{items, has_more}`, `{items}`,
+     `{entries}`, and the export artifact.
+
+- **What was taken, and what is this gear's own.** `api/rest/odata.rs` is the seam. **Taken from
+  AM:** the `LimitCfg` numbers (rather than re-derived), the extractor, the typed vocabulary, the
+  `paginate_odata` walk over a scoped select, the `Page`/`PageInfo` envelope, and the shape of the
+  undeclared-key guard. **This gear's own, and not in the canon at all:** the per-door
+  unsupported-option guard (AM has no such refusal), the `ODataError` → `(400 | 500)` split (all
+  three of AM's repositories collapse *every* `toolkit_odata::Error`, driver failures included, to
+  a 400), the `QueryFamily` distinction, and the two cursor-identity stamps below. **Eight routes**
+  now answer `toolkit_odata::PageInfo` and walk a keyset with a unique tiebreaker — **browse**
+  (`name ASC` + `entity_id`), the **approval inbox** (`submitted_at ASC` + `approval_id`),
+  **scheduled transitions** (`at ASC` + `transition_id`, which had no `ORDER BY` at all before),
+  the **two version timelines** (`published_version ASC`), the **deferred-intent** and
+  **freeze-status** dashboards, and the **PII allow-list export** (`created_at ASC` + `entry_id`) —
+  carrying seven envelope types between them, since the two timelines share `HistoryView`. Six
+  declared filter vocabularies replace the bespoke keys (a seventh, `EntityVersionQuery`, is an
+  internal order-key declaration on a door that refuses `$filter`).
+
+  The `OpenAPI` `$filter` documentation is generated from the vocabularies by
+  `OperationBuilderODataExt` rather than written twice — but **`$orderby` on browse is not**, and
+  cannot be: the generator enumerates the whole vocabulary, and browse is the one vocabulary whose
+  filterable and orderable sets differ (six of its twelve fields are nullable and refused as order
+  keys). Generating it would have advertised twelve order keys of which six answer 400, so browse
+  declares `$orderby` by hand. The toolkit has no way to express "filterable, not orderable"; AM
+  has the same divergence unfixed on two of its own doors.
+
+- **Four things the canon's own rules say not to move into `$filter`.** AM keeps path-scoped
+  `parent_id` off its filter columns for this class of reason, and each of these is the same shape:
+  - **`kind` on browse is an authorization operand.** The door gates on `product × read` when a
+    Product may be in the answer and on `sku × read` when a SKU may be, and it decides which by
+    reading the requested kind. A `$filter` cannot carry that decision safely: `entity_kind eq
+    'sku' or entity_kind eq 'product'` restricts nothing while *reading* as a request for one kind,
+    so a caller holding only the SKU grant could reach Product rows.
+  - **`brand`/`region` are set membership, not equality.** The column is a comma-joined token set
+    where **empty means unrestricted** (P-D-39), and the predicate matches a token *by position*
+    precisely because an unanchored `LIKE '%claim%'` was a measured cross-scope leak — claim `eu`
+    matched a row stored `eur` or `aus,eu-central`, and a claim carrying `%` matched every
+    restricted row. Exposing the columns as filter fields would hand that leak back under a new
+    spelling.
+  - **`excludeDeprecated` selects a visibility surface**, which is a policy over which lifecycle
+    states are servable (C2), not a row predicate. `$filter=deprecated eq false` narrows *within*
+    a surface; this chooses one.
+  - **`state` on the approval inbox** stays an operand because naming another state is **refused
+    with an audit row** — the `dod-inbox-envelope` contract — where a filter field would answer an
+    empty page and tell the caller nothing.
+  The scheduled-transition door's `state` carries none of that and **did** become `$filter`.
+
+- **Three defects the adoption itself found and closed.**
+  1. **A walk begun unfiltered could change its own filter mid-walk.** The platform stamps `$filter`
+     into the token and refuses a mismatch — but it computes the stamp *from the expression*, so
+     absence of a filter has no stamp, and the check fires only when both sides carry one. A first
+     page with no `$filter` therefore minted an unstamped token, and page two could add a `$filter`
+     and be served the keyset predicate over a different set; a walk begun filtered could drop the
+     filter the same way. `repo::effective_odata` gives "no filter" a stamp of its own
+     (`NO_FILTER_HASH`, deliberately not sixteen hex characters), closing both directions.
+  2. **A nullable column cannot be an order key on two engines.** `SQLite` sorts NULLs first and
+     Postgres sorts them last, so an order over a nullable column is a *different* order on the two
+     engines this gear ships on, and a cursor predicate derived on one would skip or repeat rows on
+     the other. `BrowseODataMapper::is_orderable` refuses the six nullable columns as order keys and
+     keeps them filterable.
+  3. **The browse facet counts were silently a lower bound.** One number was both the page ceiling
+     and the facet window, so past 500 matches the counts were wrong with nothing saying so. Stated
+     precisely, because the first draft of this entry overstated it: the pre-move door already
+     forced the query limit to 500 whenever `includeFacets=true` and then truncated the *rows* to
+     the caller's `limit`, so the old counts were over a 500-row window of the matching set and
+     never over the page. What was wrong was that nothing said the window was a window — and that
+     the window was the page ceiling, which this change drops from 500 to 200. So the fixes are:
+     the window is now its own constant (`BROWSE_FACET_WINDOW`, decoupled from the page size it
+     would otherwise have shrunk with), the facet pass shares the `$filter` lowering with the page
+     so the counts cannot disagree with the rows beside them, and `facets.complete` states whether
+     the window covered the set.
+
+- **Six more the review of this change found, each fixed here.** Two read-only lenses over the
+  landed commit; every finding below was re-measured before acting.
+  1. **The pagination aliases bypassed the guard.** `limit` and `cursor` were permitted on *every*
+     door, because the platform's extractor folds them onto `$top`/`$skiptoken`. Four doors bind no
+     extractor and page nothing — the resolver, the bulk export, the identity export, the version
+     diff — so `?limit=10` there was **dropped and answered `200` with the whole collection**,
+     which is the very defect this change exists to close, and the version diff's own comment
+     claimed the guard had closed it. `$`-prefixed keys were exempted on the same four doors for a
+     reason that only holds where an extractor is bound. Both are now decided by `QueryFamily`: on
+     an `OData` door the extractor owns the `$` family and the two aliases are its members; on a
+     door that binds none, every one of them is as undeclared as an invented word.
+  2. **`$select` reached nothing on six doors** — recorded below as an open item in the first draft
+     of this entry, which was the wrong disposition: a recorded defect is still a defect and the
+     fix was one call per door. All six now refuse it with the reason.
+  3. **The walk's identity omitted the serving generation.** The `$filter` hole above was closed in
+     both directions and the same hole one axis over was not: browse re-reads the generation from
+     the checkpoint on every request, so a shadow rebuild completing mid-walk moves it and deletes
+     the old rows, and the keyset predicate then lands on a different set — a row renamed across
+     the cursor's position is skipped for good or served twice, with `next_cursor` giving no
+     signal. The generation now rides the same stamp.
+  4. **The timeline's `$orderby` refusal was bypassable.** The extractor *empties* `order` whenever
+     a cursor is present and re-derives it from the token, and the token is unsigned base64url
+     JSON — so a caller could put the order the door had refused by name inside one and be served
+     it, which on this door means every entry diffed against the version *above* it.
+     `reject_cursor_reordering` reads the token.
+  5. **A third unbounded collection read**, not counted in the residuals: `GET /bulk/batches/{id}`
+     answers one ledger entry per import row, bounded only by `bulk.max_rows` (50 000). Unlike the
+     export and the diff it is not an artifact whose partial form is invalid — it is a worklist,
+     and paging it is the right answer. It has the guard now, so `?limit=` is refused rather than
+     dropped; the paging itself is a residual.
+  6. **Three doors had no pagination probe at all** — both dashboards and the allow-list export —
+     so `DeferredIntentODataMapper`, `FreezeStatusODataMapper` and `AllowlistEntryODataMapper` were
+     exercised on no surface and a wrong column in any of them would have shipped green. The facet
+     window had none either: the one facet assertion ran on a two-row fixture where the page, the
+     matching set and the window coincide. Both gaps are probed now, the facet one over a
+     501-row projection.
+
+- **Nine claims in the first draft of this entry were wrong, and are corrected above.** The count
+  of paginated doors (seven → eight routes, seven envelope types); two of the four "parts taken
+  part for part" being this gear's own inventions rather than AM's; AM's guard being on two of its
+  five doors rather than all of them; `limit`/`cursor` surviving because of *this gear's* alias
+  whitelist and not only the extractor's aliases; AM's second, deployment-configurable clamp not
+  being adopted; the facet pre-state (the old counts were already over a 500-row window, not over
+  the page); the LIKE-escaping improvement being Postgres-only; the `$orderby` documentation being
+  generated when browse's is hand-written; and the residuals list naming two unbounded doors when
+  there are three. Recorded rather than quietly amended, because a register whose numbers are not
+  re-measured is the thing this gear keeps learning it cannot trust.
+
+- **The wire changes, stated.** Browse's `?q=` becomes `$filter=startswith(name,'…')` and
+  `?category=` becomes `contains(category_paths,'…')` — both **better escaped on Postgres**, since
+  the platform escapes the LIKE metacharacters the hand-rolled prefix deleted and the category LIKE
+  never escaped at all. The qualifier is measured: `escape_like` emits backslash escapes and no
+  `ESCAPE` clause, so Postgres (whose LIKE takes `\` as the default escape) honours them and
+  `SQLite` (which has none) matches a literal backslash instead — under-matching rather than
+  leaking, and the served engine is the correct one, but it is a silent behavioural split between
+  the two engines the gear ships on and it is the toolkit's to close; `?skuType=`/`?tier=`/`?sellable=`/`?unit=` become `eq` on their own fields;
+  the inbox's `has_more: bool` becomes `page_info.next_cursor`; the resolver's `bound_version`
+  becomes `boundVersion` (the spelling the design and FEATURE documents already used, and the one
+  its two sibling doors already served); browse's page ceiling drops from 500 to 200, which is safe
+  only *because* there is now a continuation past it; and `limit=0` is refused by the extractor
+  rather than clamped to one, which is the better answer to a request for zero rows. `limit` and
+  `cursor` keep working unchanged: the platform's extractor binds them as aliases of `$top` and
+  `$skiptoken`.
+
+- **What this decision does NOT settle.**
+  - **Three collection reads are still unbounded.** `GET /bulk/exports` answers a version's entire
+    manifest and `GET /catalog-versions/{a}/diff/{b}` answers a whole diff: both are deliberate, a
+    partial export being no valid promotion operand and a partial diff no diff, and both are spent
+    under bulk/compliance grants rather than open browse. **`GET /bulk/batches/{id}` is not in that
+    class** — its row ledger is a worklist bounded only by `bulk.max_rows` (50 000 by default), and
+    a page of it is perfectly meaningful, so it should be paged like the other eight. All three now
+    refuse `?limit=` rather than dropping it, and for the two artifacts a refusal above a size
+    ceiling — never a truncation, which would corrupt the artifact — is the shape to consider.
+    **Open, owner: 09 with 06.**
+  - **No per-deployment page cap.** AM clamps `$top` against `listing.max_top` in the handler *on
+    top of* its repository ceiling, so lowering the configured cap is not bypassed; products took
+    the constant and not the second clamp. Adding it is a config field and one clamp per door.
+    **Open, owner: this slice.**
+  - **The six new wire reason codes are declared in no requirements document.**
+    `UNDECLARED_QUERY_PARAM`, `INVALID_FILTER`, `INVALID_ORDERBY`, `INVALID_CURSOR`,
+    `INVALID_LIMIT` and `UNSUPPORTED_QUERY_OPTION` reach a caller as the violation's own code, and
+    the gear declares every other code of that class in `design/01`'s `Problem responses` block.
+    They are declared there now, and `design/08`'s "reads introduce no new failure semantics"
+    sentence is amended — but the **PRD** has no matching requirement, and neither did the codes
+    this change did not mint. **Open, owner: the requirements owner with 12.**
+  - **The filter vocabularies are impl-crate types, not SDK types.** AM declares its three in its
+    SDK because an `IdP` **plugin** consumes `FilterNode<IdpUserFilterField>` in Rust; products has
+    no such in-process consumer — its list doors are REST-only — so the vocabularies live beside
+    the doors that own them. Promoting them to `bss-products-sdk` is additive if a Rust consumer
+    ever needs to build a filter.
+  - **`escape_like` is inert on `SQLite`.** The toolkit emits backslash escapes with no `ESCAPE`
+    clause, so `startswith(name,'a_b')` under-matches on `SQLite` and is correct on Postgres. Fail
+    -closed, and the served engine is the right one, but it is the same class of cross-engine split
+    as the NULL-ordering defect this change went looking for. **Toolkit's to close; filed here so
+    the asymmetry is not rediscovered.**
+
+- **Propagated**: `design/08-read-models.md` (§6's `toolkit-odata` item, answered, and
+  `inst-rb-query`), `design/12-consumer-contracts.md` (the §9 surface),
+  `features/read-models.md` (the browse door and the facet rule),
+  `features/governance.md` (the inbox envelope), `features/retention-erasure.md` (the allow-list
+  export).
+
+
+#### P-D-164 — The stand's own reading: nine defects the gear's tier cannot see, and the two seams the platform owes
+
+- **Date**: 2026-09-06 (the lead; the first e2e wave for this gear, `tests/e2e/tests/bss-products/`
+  in vhp-core's `bss/products-e2e`, 98 scenarios over five deploys to benidorm)
+- **What this decision records.** The gear's own tier is 1249 unit + REST cases over a
+  `tower::oneshot` router, an authz **double**, and `SQLite`. The suite added here is the second
+  reading of the same design set through the real stack: the api-gateway, the platform's PDP over
+  AM users and RBAC grants, Postgres under the shared `bss` schema, and the gear's own tickers.
+  Every finding below is a thing that tier cannot see **by construction**, and each is now fixed
+  or named.
+- **The defect that mattered: every governed act was unreachable on a real PDP.**
+  `products_approval` declares `resource_col = "approval_id"`, and each head door read its gate
+  candidates under its **own** `AccessScope` — which a real PDP compiles with `resource_id`
+  pinned to the *entity*. The secure layer then filtered `approval_id = <entity id>`, so no record
+  could ever match: correct, deprecate, undeprecate, retire and every governed live op answered
+  `403 APPROVAL_REQUIRED` while their satisfied records sat in the table. The quiet half was
+  `supersede_open_approval` — matching no row is not an error, so a save's invalidation hook
+  superseded nothing. `gate_candidates`, `gate_candidate_by_id`, `consume_approval` and
+  `supersede_open_approval` now scope by the tenant they are given, the posture
+  `tenant_pii_detector` already states for the allow-list. Invisible to the gear's tier because
+  `flat_in_enforcer` answers an unconstrained tenant scope.
+- **Eight more, each fixed at its site.** (1) The gear read `UsageCollectorClientV1` at init while
+  the collector initialised *after* it — `deps = [authz_resolver, types_registry, usage_collector]`
+  on the gear attribute orders it. (2) `products_read_entity.generation` and
+  `products_read_checkpoint.generation` were `integer` on Postgres against an `i64` field: every
+  browse answered `500` once the projector had written a checkpoint. Both are `bigint`, and
+  `postgres_read_models_schema` pins the width the name-and-nullability oracle cannot see.
+  (3) `resolve_creator_actor_ref` retries once — a principal's first two concurrent requests both
+  missed the identity row and the loser's `INSERT` broke the unique key. (4) The same race in its
+  second form: the loser's `now` was *earlier*, so advancing `last_seen_at` broke
+  `chk_products_identity_ref_seen_order`; the advance is clamped and answers the winner's row.
+  (5) The read projection **derived** `sellable` as `published && !composition_pending` and
+  dropped the head's own bucket-iii flag — pricing's operand for predicate 6 — so a SKU saved
+  `sellable = false` browsed as sellable and `?sellable=false` could not find it; the row carries
+  `head.sellable`. (6) An **omitted** `signedOffBy` on the allow-list door was refused by serde
+  with a bare `422` naming nothing, against P-D-64's own promise: every member is `Option` on the
+  DTO and mandatory at the door now, each with its own violation. (7) A value the tenant already
+  allows broke the partial unique index as a `500`; it answers `DUPLICATE_CODE`, the sibling
+  governed-set door's own answer. (8) Both allow-list halves carry probes in the gear's tier.
+- **Two seams the platform owes, asserted rather than skipped.** The **decide** door answers
+  `403 APPROVER_ROLE_REQUIRED` for every principal, because nothing mints the approver-role claim
+  (`design/05` C1, P-D-134 row 25) — so `SELF_APPROVAL_FORBIDDEN`, `DECISION_ALREADY_RECORDED` and
+  `APPROVER_SCOPE_EXCEEDED` have no wire path. And a **break-glass** session substitutes the target
+  tenant into the `SecurityContext` while the PDP resolves the caller's roles against the token's
+  own tenant, so an elevated read is `403` even with a role granted in the target. Both are
+  `xfail`ed with the ticket text, which turns green the day the platform closes them.
+- **Two open items for the owner.** (a) **The governance bootstrap is unreachable through the
+  wire**: an unconfigured tenant reads `N = 2` (P-D-135), the policy mutation is itself material,
+  and no principal can decide — so the first `PUT /materiality-policy` answers
+  `403 APPROVAL_REQUIRED` and nothing governed can ever run on a fresh tenant. *Recommendation:*
+  exempt a tenant's **first** policy write, the way a bootstrap is exempt everywhere else; the
+  counter-argument is that it is a governed act by design and the real answer is the role claim
+  above. The suite seeds the row out of band and pins the gap with its own scenario.
+  (b) The allow-list duplicate answers `DUPLICATE_CODE` on `SQLite` and `200` with no second row
+  on Postgres — one door, two engines, and the set invariant (one active entry per normalized
+  value) holds either way; which answer is the contract is the owner's call.
+- **Two contract gaps, recorded.** The REST `SkuView` does not carry `compositionPending` while
+  `12`'s consumer shape and the SDK's `Sku` both list it — a reader of the head view cannot see
+  the flag. And query parameters are **camelCase** (`excludeDeprecated`, `includeFacets`,
+  `skuType`) while every request body is snake_case, with an unknown query key silently ignored
+  rather than refused: `exclude_deprecated=true` quietly served the deprecated rows. The casing
+  split is P-D-159's open question; the silent-ignore half is new.
+- **Where the suite lives.** vhp-core branch `bss/products-e2e` — the gear wired as a workspace
+  path-dep beside pricing, a `gears.bss-products` block in both server configs, and
+  `tests/e2e/tests/bss-products/` with `lib/products.py` and two plans. The submodule points at
+  gears-rust `bss/products-on-upstream`, this branch's crate ported onto constructorfabric's
+  `05cee7b56`, because vhp-core's `main` compiles against a newer toolkit than this branch carries.
+- **Propagated**: `design/05-governance.md` §6 (the bootstrap item), `features/read-models.md`
+  (the projected `sellable`), `features/retention-erasure.md` (the allow-list refusals).
+- **Trace**: `retention_tests::an_omitted_member_is_refused_by_the_door_and_names_its_field`,
+  `retention_tests::a_value_already_allowed_is_refused_and_a_revoked_one_can_be_re_listed`,
+  `postgres_read_models_schema::the_generation_columns_are_bigint`, and the 98 scenarios of
+  `tests/e2e/tests/bss-products/`.
+
+#### P-D-163 — Review wave 1: the twenty-three findings of the one-agent branch review, twenty-two fixed at the site and one design question filed
+
+- **Date**: 2026-09-06 (the lead; the `toolkit-pr-review-v2` local run over the whole branch,
+  one agent, 23 findings, every one re-measured at `b3356d71f` before a line was changed)
+- **What the review found, by class.** One wrong error class (a storage failure on the
+  composition-clear precondition read filed as `Vanished`); one quadratic walk under the taxonomy
+  writer lock and one double read beside it; the freeze ledger's Postgres trigger with none of its
+  four `RAISE` arms executed; an elevated context indistinguishable from a native one once the
+  gate had run; four unbounded inputs (entity `name` and codes, the `Idempotency-Key`, a
+  live-value patch's coordinate list, the approvals inbox read); a limiter whose bucket map only
+  grew; two silent skips and one silent zero on corrupt rows; five background ticks that never
+  saw the cancellation token; a domain module importing the ORM and another importing a
+  repository type; a bool-tuple API; a run-time assert on a literal roster; a public method with a
+  test-only caller; and two probe gaps (the internal-failure channel asserted once, no over-length
+  probe anywhere).
+- **Fixed, 22 of 23, in one group.** (1) `try_apply_composition_clear` maps the precondition
+  read's failure to `HeadActError::Db`, keeping `Vanished` for the missing head alone.
+  (2, 20) `domain::taxonomy::subtree_height` walks a children index once, and
+  `infra::taxonomy::reparent_under_lock` reads `category_parents` once for both verdicts.
+  (3) `postgres_freeze_ledger_guards.rs` drives all four arms on the engine — the delete refusal,
+  the immutable key, the write-once `released_at` with the recovered ack beside it, and every
+  ordered pair of the four states against P-D-60's six edges (twelve pairs, six admitted, six
+  refused by name). (4) `rest::elevated_context` builds the substituted context and adds one
+  marker scope, `bss-products.breakglass:<session_id>`; `breakglass_session_of` reads it, and the
+  read edge meter names it on every served read. (5) `GET /approvals?state=pending` takes `limit`
+  (default 50, at most 200) and answers `has_more`; the repository reads one page, never the
+  queue. *(`has_more` was replaced by `page_info.next_cursor` in **P-D-165** — the page survives,
+  the boolean does not. Text left as written per this register's convention.)* (6, 12, 8) `ENTITY_NAME_MAX_BYTES` **256** and `ENTITY_CODE_MAX_BYTES` **128** — fixed
+  limits, not knobs — refuse `VALIDATION` at both create doors and both save doors, one over
+  refused and the cap admitted, probed. (21) `IDEMPOTENCY_KEY_MAX_BYTES` **255** at
+  `rest::idempotency_key`, probed both sides of the edge. (13) `attribute_values_max_per_patch`
+  joins `ProductsConfig` (**interim 200**, a knob like the three metadata caps of P-D-107) and
+  `TaxonomyCaps`; the live-value door refuses one over before a row is read, and the positive
+  control proves the token did not move. (9) `ReadPathLimiter::try_acquire` drops every bucket
+  idle for a second once the map passes 4 096 entries — lossless, since an idle bucket is a full
+  one — and the probe evicts and re-admits. (11) the compliance export's audit failure logs its
+  cause before answering `AUDIT_UNAVAILABLE`. (18, 23) a held `composition_clear` whose snapshot
+  does not parse, and a deferred intent whose `children_snapshot` is not a list, are named on the
+  log and skipped — never silently dropped, never shown as zero children. (17) the break-glass
+  SLA sweep, both overdue reports, the dashboard poll and the inbox sweep take `&cancel` and stop
+  between rows or tenants. (14) `abandon_disposition` takes an `AbandonRow` — `Option<EntityKind>`,
+  a `RowStanding` enum, one bool — with the unknown-kind arm explicit. (15) `visibility_condition`
+  and `scope_condition` move to `infra::storage::repo::read_models` with their rendering probes;
+  `domain::read_model` keeps `served_states()` and names no ORM type. (16) `FreezeRegistration` is
+  defined in `domain::retention` and re-exported by the repository. (19) the three capture kinds
+  are read off `CAPTURE_KINDS` by position with compile-time pins; the run-time assert is gone.
+  (22) `set_ceiling_for` is `#[cfg(test)]`. (7) two probes arm the internal channel where the
+  review found it asserted once: a parent whose stored scope no longer parses fails the SKU
+  publish `500` with no `SCOPE_NOT_CONTAINED` audit row, and an approval whose `subject_ref` is
+  not a `kind/id` pair fails the decision `500` with no decision row.
+- **Filed, 1 of 23 — `toolkit-odata` for the two list surfaces (finding 10, and finding 5's
+  second half).** The browse door hand-rolls `BrowseParams`; pricing uses `toolkit-odata` in nine
+  files and products declares none. *Recommendation:* **do not adopt for `p1`.** `08`'s browse
+  vocabulary is closed by design — the visibility contract and the scope predicates are built
+  into the one statement (`inst-rb-query`: nothing fetched and dropped) — and an `$filter`
+  surface is a second query language over the same table that the contract would have to be
+  re-proven against. *Counter-argument:* `12-consumer-contracts` wants the two gears' list
+  surfaces to read alike, and pricing's consumers already speak OData; the merge-compatibility
+  half is theirs to assert, and adopting later means a wire change. The owner's call; `08` §6
+  carries the row.
+- **What the wave did not change.** No route moved and no wire field was removed; the two new
+  wire members (`limit`, `has_more`) are additive. *(**P-D-165** later removed `has_more`, which
+  makes this the one field of the wave that did not survive; `limit` did, as an alias of `$top`.)* The limits are the review's numbers, chosen to
+  admit every value the fixtures and the donor's data carry, and the NFR workshop overrides the
+  one that is a knob by configuration.
+- **Propagated**: `design/05-governance.md` §6 (the marker), `design/08-read-models.md` §6 (the
+  `toolkit-odata` row), `features/foundation.md` (the ceilings), `features/governance.md` (the
+  inbox page), `features/taxonomy-attributes.md` (the coordinate cap), `features/read-models.md`
+  (the predicates' new home, the limiter's bound), `features/catalog-version.md` (the ledger's
+  Postgres probes), `features/retention-erasure.md` (`FreezeRegistration`'s home).
+- **Trace**: `products_tests::the_name_and_code_ceilings_refuse_one_over_and_admit_the_cap`,
+  `products_tests::an_over_long_idempotency_key_is_refused_and_the_cap_is_admitted`,
+  `skus_tests::the_sku_code_ceiling_refuses_one_over_and_admits_the_cap`,
+  `skus_tests::a_parent_whose_stored_scope_does_not_parse_fails_the_publish_internally`,
+  `taxonomy_tests::a_live_value_patch_over_the_coordinate_cap_is_refused_before_the_transaction`,
+  `approvals_tests::the_inbox_serves_a_page_and_says_whether_the_queue_continues`,
+  `approvals_tests::a_corrupt_subject_ref_fails_the_decision_internally`,
+  `read_tests::idle_limiter_buckets_are_evicted_past_the_high_water_mark`,
+  `elevation_tests::an_elevated_context_keeps_its_scopes_and_carries_the_session_marker`,
+  `postgres_freeze_ledger_guards.rs` (four cases).
+
+#### P-D-162 — Close-out of the follow-on plan: the first item-level code markers, the status-box chain measured to its end, nine open items struck by their commits, and the remainder named
+
+- **Date**: 2026-09-05 (the lead, group 20 of the follow-on plan — the last)
+- **The studio's item-level markers work, single-line.** P-D-158 found the status box gated on
+  `code-no-marker` for a FEATURE's flows and algorithms. Measured here: a single-line
+  `@cpt-flow:<id>:pN` / `@cpt-algo:<id>:pN` doc marker on the implementing function satisfies the
+  validator (the begin/end pairs are the per-instruction form, not the gate), so `10`'s four
+  flows and two algorithms carry them — `execute_erasure`, `sign_off_allowlist_entry`,
+  `retention::sweep`, `run_restore_drill`, `export_identity_map`, `classify_entity_version_failure`
+  — and their six boxes tick. The validator then walked one level up: the feature id's box needs
+  `DECOMPOSITION.md`'s entry, whose own nested boxes are the PRD requirement definitions
+  (`fr-retention-erasure`, `fr-grandfathered-retention-coupling`, `fr-expected-failure-behavior`,
+  `nfr-snapshot-archival-dr`), the principle, the constraint and the component — and a requirement
+  shared with `06` at 26 / 27 cannot be marked done by one feature. **So the status box is the
+  owner's release call at the PRD level, not a feature's**; the two boxes stay open, the markers
+  and the six ticks stay, and the chain is now known end to end.
+- **Nine open items struck by the commits that closed them**: `03` §6's scheduled-lane row
+  (P-D-157), `05` §6's inbox envelope and `12` §7's envelope divergence (filed, P-D-160), `08` §6's
+  serving-store question (answered by the build, P-D-150), `12` §7's route census and `name` rows
+  (P-D-159), `03` §7's bucket-ii row (P-D-145/146), `07` §7's bucket-test row (P-D-158), `04` §7's
+  flip-guard stub row (P-D-156). The casing row is annotated with P-D-159's recommendation and
+  stays the owner's.
+- **The end state, measured at this commit.** DoDs **232 / 236** (open: `12`'s three by their own
+  rules — the CI clause, the counterpart rule, the job outside the gear — and `06`'s
+  `dod-require-broker`, the deployment's artifact); §6 criteria **277 / 393**, ticked clause by
+  clause; `cfs validate` 0 errors / 20 warnings, 295 artifacts, code coverage 385 / 385; spec-check
+  37 findings, unchanged since the plan's baseline; the tick census 0 shadowed; the suite 1238
+  lib + 3 harness + 7 seam (5 ignored halves), SDK 23, Postgres tier 49 / 49. Twenty-two solo
+  commits on `bss/products`, one per group, every one pushed.
+- **The remainder, counted, for the next plan.** The register's 28 `Owed` bullets (P-D-21 …
+  P-D-112) uncollected — the plan's item 1; the FEATURE §7 rows still live (37 after the nine
+  struck; a dozen of them are `12`'s stale-arithmetic rows against `design/12` §6); the design §6
+  items still live (23 after the three struck; `01`'s six are coverage records the census
+  miscounts as questions, `10`'s five are the posture questions for the owner); PRD §15's census
+  (item 4); `DECOMPOSITION`'s alignment and the status boxes (item 5, now known to end at the PRD
+  definitions); lints 10 and 11; the convergence harness (P-D-161); the Foundation head tables'
+  Postgres oracle.
+- **The owner questions, in one list.** (1) The wire casing — `camelCase` recommended (P-D-159).
+  (2) The collector client's identity on the scheduled lane — the hub's service credential
+  recommended (P-D-157). (3) The Postgres tier in CI and the five `#[ignore]` boxes — P-D-132
+  stands; the tier is named (P-D-161). (4) The status boxes — a release call at the PRD level
+  (this entry). (5) The sixteen taxonomy codes' precedence — the pipeline's phase order
+  recommended (P-D-157). (6) `10`'s five posture questions in `design/10` §6 — detector quality,
+  the watermark and ledger tables' retention class, encryption at rest for the map, who may
+  resolve an identity through the map, whether the allow-list is itself a PII store.
+  (7) The pricing asks — eight rows in pricing's register section I (P-D-160).
+- **Propagated**: `design/03-sku-classification.md` §6, `design/05-governance.md` §6,
+  `design/08-read-models.md` §6, `features/consumer-contracts.md` §7, `features/sku-classification.md`
+  §7, `features/reference-signal.md` §7, `features/lifecycle.md` §7 (the strikes and the
+  annotation), `features/retention-erasure.md` §2–§3 (the six ticks).
+- **Trace**: the six `@cpt-flow` / `@cpt-algo` markers in `api/rest/retention.rs` and
+  `infra/retention.rs`.
+
+#### P-D-161 — Operability: the alert contract per slice, the Postgres tier's oracles and races, the inbox seam as a type, the deployment posture and DR
+
+- **Date**: 2026-09-05 (the lead, group 19 of the follow-on plan)
+- **The alert contract is a table per slice, asserted at the site.** Fifteen `tracing` events
+  are emitted in production (`04` two, `05` three, `06` four, `07` one, `08` five); each slice's
+  §5 now carries them — event, labels, interim threshold, owner — and
+  `lib_tests::every_alert_event_carries_the_labels_its_table_names` reads each emitting site and
+  fails when a label the table promises is missing. The delivery channel stays the platform's.
+  *Counter-argument:* capture the events through a `tracing` subscriber in an integration
+  harness; rejected for now — fifteen harnesses for a contract a source census pins as well, and
+  the subscriber harness is the convergence work below.
+- **The Postgres tier gains the read projection's oracle and the primary-assignment race.**
+  `postgres_read_models_schema.rs` pins the eight read tables (the two by name as the SQLite
+  oracle does, the six of `m29` by name and nullability) with its own perturbation case;
+  `postgres_taxonomy_race.rs` gains `two_concurrent_primary_assignments_leave_exactly_one`,
+  which found that a uniqueness refusal on this path is a **classified write**
+  (`AssignmentWrite::PrimaryConflict`), not a storage failure — the probe asserts that shape. The
+  tier is 49 tests. The runbook is `DESIGN.md` §3.8; the five features whose §6 carries the
+  `#[ignore]` criterion now name the tier and leave the box to P-D-132.
+- **The inbox seam is a type.** `projector::InboxSource` (`bounds`, `after`) with `RepoInbox` as
+  its first implementor, reached through `ProjectorContext::source()`; the projection above it is
+  untouched, so P-D-150's "replace the hook, not the projection" is a trait a broker consumer
+  implements, not a sentence.
+- **Deployment posture and DR** join `DESIGN.md` §3.8: the manifest snippet a deployment carries
+  (`require_broker = true` and the read knobs with their defaults), and the DR section — the
+  records' durability class, the restore drill's cadence and its two outcomes.
+- **Not done here, and why.** The convergence budget measured end to end (a timing harness the
+  SQLite tier cannot bound honestly — the number belongs to the Postgres tier under load, which
+  is the NFR workshop's rig); the Foundation head tables' Postgres oracle (the head guards are
+  probed on the tier, the roster is not — G20); the writer-lock probe is already named and on the
+  tier (`the_lock_is_what_refuses_the_second_reparent`).
+- **Propagated**: `design/04-lifecycle.md` §5, `design/05-governance.md` §5,
+  `design/06-catalog-version.md` §5, `design/07-reference-signal.md` §5, `design/08-read-models.md`
+  §5 (the alert tables), `DESIGN.md` §3.8 (posture, runbook, DR), the five features' `#[ignore]`
+  criterion notes (`features/foundation.md`, `features/governance.md`, `features/lifecycle.md`,
+  `features/taxonomy-attributes.md`, `features/sku-classification.md`).
+- **Trace**: `lib_tests::ALERT_SITES`, `postgres_read_models_schema`,
+  `postgres_taxonomy_race::two_concurrent_primary_assignments_leave_exactly_one`,
+  `projector::InboxSource`, `projector::RepoInbox`.
+
+#### P-D-160 — The pricing seams from this side: five registry halves written and ignored, the asks filed in both registers, a consumer guide
+
+- **Date**: 2026-09-05 (the lead, group 18 of the follow-on plan; nothing here builds pricing)
+- **The five OWED fixtures gain their registry halves.** Each is an `#[ignore]`d test in
+  `products/tests/seam_suite.rs`, compiled against both SDKs, doing what the registry side of the
+  fixture will do — the watermark post pricing's producer will make, the `deprecated` SKU as
+  pricing reads it, the meter pair on `CatalogSku`, pricing's own snapshot port refusing while
+  unconfigured, the correction event on the versioned roster — and ending on the counterpart's
+  absence with the ask as the ignore reason. `--ignored` runs them and shows exactly what pricing
+  owes; the ignore comes off the day the counterpart raises its code, and the closing `panic!`
+  becomes the assertion. C4 stands: none is a green check. *Counter-argument:* write the halves
+  as plain green tests over the registry side alone; rejected — that is the vacuous fixture the
+  DoD's closing rule forbids, dressed as coverage.
+- **The asks are filed in both registers.** `design/12` §2.2 gains a *Counterpart asks* table —
+  fixture, the pricing rule to build, the code it must raise, the AC, the registry half — and
+  pricing's `DECISIONS.md` gains section *I. Asks from the products gear*: the inbox envelope
+  (rename `submitter_principal` → `submitter`, gain `quorum`; the registry's card is the design's),
+  `compositionPending` on `CatalogSku`, the `status` vocabulary pinned to the two-value wire
+  subset, and the five fixture counterparts. Owned there, dated; none decided here. `name` is
+  not an ask (P-D-159). A seam-suite test asserts both filings name every fixture, so a register
+  edit that drops one fails here.
+- **The consumer guide** joins `DESIGN.md` §3.3: the six clients and what each binds, the
+  precondition pair and its three refusals, the error vocabulary as the match target, the
+  versioned event roster, the bootstrap contract, and where a consumer's fixture lands.
+- **Not done here**: the three consumer-contracts DoDs stay unticked by their own rules —
+  `dod-seam-suite-home`'s CI clause (P-D-132), `dod-joint-fixtures`' closing rule (no
+  counterpart raises a code yet), `dod-lint-gate` (a job outside the gear).
+- **Propagated**: `design/12-consumer-contracts.md` §2.2 (the counterpart table), `DESIGN.md`
+  §3.3 (the consumer guide); pricing's register (section I) as the cross-gear filing.
+- **Trace**: `seam_suite::{watermark,adoption_block,usage_binding,grandfathered_resolution,correction}_fixture_registry_half`,
+  `seam_suite::the_counterpart_asks_are_filed_on_both_sides`.
+
+#### P-D-159 — Route reconciliation: ten doors declared and paired, lint 3's code half, the composition door's own word for nothing, and the casing question with its recommendation
+
+- **Date**: 2026-09-05 (the lead, group 17 of the follow-on plan)
+- **The census, measured.** The plan estimated fourteen undeclared code routes and five declared
+  spans with no code; a census that reads the Rust as text — `OperationBuilder::<verb>("…")`,
+  multi-line builders included, and the metadata door's path argument — against every design
+  slice's `` `VERB /bss-products/v1/…` `` spans finds **nine** code routes declared by no slice and
+  **none** declared without code: the two metadata `PATCH` doors are registered through
+  `register_metadata_door` and the set transitions through a multi-line builder, both invisible to
+  a one-line grep. The nine (and the label door, declared nowhere but registered): the diff
+  `GET`, the release `POST`, the three dashboards, the deferred-cascade resume, the two dry-run
+  `validate` doors, the composition clear, the member label.
+- **Each is declared in its slice and paired with its grant in `design/05` §3.2** — the diff and
+  the freeze-status dashboard under `catalog_version × read`, the release spelled in full under
+  `× release`, the deferred-intents dashboard under `scheduled_transition × read`, the
+  delivery-state dashboard under `audit × read` (the row that read "no route declared"), the
+  resume under 04's `product × write` doors with `inst-cp-deferred`, the two dry-run doors and the
+  composition clear under `× publish` (the action each spends in code), the label under
+  `recognized_set × write`. *Counter-argument:* remove the undeclared doors instead; rejected —
+  every one has a DoD, a probe and a caller, and the design set was behind the crate, not ahead of
+  it.
+- **Lint 3 gains its code half, executable both ways** (`coverage_lints.rs`): every code route is
+  declared by a design slice, every declared route is registered by code, under lint 3's own
+  normalisation; a red case proves each direction. It is not a tenth roster lint — `design/12`'s
+  lint 9 is the schema pin — but the half of lint 3 the plan named. The door × grant pairing runs
+  over the same declared set, so a route declared without a grant and a route registered without
+  a declaration are both one `cargo test` away. The `DESIGN.md` route table stays typed for now —
+  deriving it is the close-out group's, once the table's own reader is decided.
+- **The composition door says `nothing` in its own word.** The door rendered "nothing to clear"
+  (not a bundle, or the flag already down) as `replayed`, and the SDK carried the fold
+  (P-D-151); a consumer told `replayed` looks for a run that never happened. The outcome is now
+  `nothing`, `CompositionOutcome::Nothing` in the SDK, the binding reads it. *Counter-argument:*
+  keep one word for "nothing was written"; rejected — the two facts differ in what the caller does
+  next (retry the signal, or stop).
+- **Two SDK rows close as this feature's own calls.** `name` on the SKU read shape stays pricing's
+  rendering (the registry has no SKU name column and mints none); `ProductsClient` gains no browse
+  method (browse is a paged, scope-filtered REST surface, not a typed read of one entity).
+- **The casing, measured and not decided here.** The entity views (`ProductView`, `SkuView` and
+  their kin) serialize `snake_case` — no `rename_all` on any of them — while the act bodies and
+  every event body are `camelCase` (thirty-six `rename_all` sites, all camel). Two casings on one
+  wire is the defect; which one is the owner's call, and the register carries the recommendation:
+  **`camelCase` everywhere on the wire** — the events already are, the SDK consumers read both, v1
+  has no external consumer yet, `design/01` §3 says so, and the views change in one place. The
+  counter-argument is the toolkit's `snake_case` default and the sibling gears' views; if the
+  toolkit's convention wins, the act bodies and events move instead. Either answer is one P-D and
+  one group; nothing moves until it is given.
+- **Propagated**: `design/01-foundation.md` §3 (the dry-run doors), `design/03-sku-classification.md`
+  §3 (the label door), `design/04-lifecycle.md` §3's act table (the resume), `design/05-governance.md`
+  §3.2 (seven rows), `design/06-catalog-version.md` §3 (the diff span in full, the composition-clear
+  door), `design/08-read-models.md` §3 (the three dashboard routes).
+- **Trace**: `coverage_lints::lint_3_code_half_every_code_route_is_declared_and_every_declared_route_has_code`,
+  `coverage_lints::code_route_spans`, `skus::CompositionClearView` (`nothing`),
+  `bss_products_sdk::composition::CompositionOutcome::Nothing`, `sdk_bindings` (the read).
+
+#### P-D-158 — Criteria wave C: the PII hook probed at every reason door, `10` at 34 / 34, the status box gated by code markers, and 17 more criteria tick
+
+- **Date**: 2026-09-05 (the lead, group 16 of the follow-on plan)
+- **`10`'s last criterion ticks on six door probes** — the first feature at 13 / 13 DoDs **and**
+  34 / 34 criteria under P-D-137's convention. Each enumerated
+  reason-bearing door now has a probe posting a person-shaped reason and meeting
+  `CONTENT_PII_BLOCKED` at the wire with nothing written: the approval rejection and the break-glass
+  session (`approvals_tests`), the correction override (the arm-(a) probe, which refused the reason
+  before and now names the code), the `SkuRetired` reason on both retire doors, the
+  materiality-policy reason, and the audit-row reasons `10` already probed. Bulk and promotion rows
+  carry no reason field, so P-D-50's strike holds by shape. *Counter-argument:* one probe over a
+  roster of doors would be shorter; rejected — P-D-137 ticks a criterion by its probe, and a
+  roster probe passes when a door is missing from the roster.
+- **Catalog-version, 10 of 25 ticked.** The mechanical lane's retry →
+  `a_moved_head_between_stage_and_commit_restages_the_pass`; the timeout →
+  `the_overdue_scan_names_the_silent_participants` (names pricing),
+  `posted_is_fail_closed_until_the_ledger_settles` (posted refused),
+  `the_resolver_requires_intent_and_serves_stable_bytes` (browse served); the foreign ack →
+  `a_non_member_is_refused_participant_unknown`; both lane SLOs →
+  `a_closed_interactive_window_commits_one_version`,
+  `a_steady_interactive_trickle_does_not_defer_a_closed_bulk_window`,
+  `an_open_bulk_window_waits_for_its_hard_max`; the UPDATE message →
+  `an_update_of_a_frozen_row_is_refused`, `a_frozen_version_row_admits_neither_update_nor_delete`
+  (Postgres); the four controls → `the_resolver_requires_intent_and_serves_stable_bytes`,
+  `an_unregistered_source_is_refused_with_the_discriminator`,
+  `posted_is_fail_closed_until_the_ledger_settles`,
+  `a_forced_version_refuses_posted_naming_the_silent` with
+  `a_force_completion_closes_the_open_freeze_and_posted_waits_for_the_forced_ack`. **Open**: the
+  byte-identity flagship over everything mutable, the query-count re-resolution, the concurrent
+  increments and the refused run's id (G19), the operator lane's two `STAGED_ENTITY_CHANGED` arms,
+  the historical `freezeComplete`, the prior version's `compositionPending`, the two diff cases, the
+  referential predicate's delete arms and the `products_catalog_version` whitelist on both engines,
+  `STAGED_ENTITY_CHANGED`'s control, `PARTICIPANT_UNKNOWN`'s audit half.
+- **Bulk-promotion, 4 of 13 ticked.** The row retry → `a_resumed_batch_skips_the_rows_it_already_staged`;
+  the new-batch collision → `a_collision_carries_the_foundations_own_code`; the reserved lane →
+  `the_reserved_lane_carries_its_declared_name`; `BULK_LIMIT` both ways →
+  `both_bounds_refuse_bulk_limit`. **Open**: the ten-thousand-row fixture (§7 row 9), the
+  dependency-failed siblings (`a_failing_row_fails_alone_with_the_owning_code` asserts the owning
+  code, not `BULK_DEPENDENCY_FAILED`), `STALE_LIVE_OP` alone, the record-backed host refusal, the
+  retired holder's clone hint, mass retire under the guard, the import-pair caller, the five pairs,
+  code-not-status.
+- **Read-models, 3 of 11 ticked.** The fifteen-case matrix →
+  `the_visibility_matrix_is_the_dod_table_cell_for_cell`,
+  `browse_serves_the_projection_under_the_visibility_contract_with_the_stamp`; the empty scope set
+  → `the_scope_predicate_is_token_membership_and_admits_the_empty_set`; the retirement flip →
+  `a_retirement_removal_advances_projected_at_without_moving_the_version`,
+  `a_retirement_removal_is_admitted_by_the_floor_and_rejected_by_completeness`. **Open**: the
+  gateway-layer denial, convergence from commit and the lag alarm (G19), the four-endpoint limiter
+  (§7 rows 10 and 22), the outage read, the metadata-absent sweep (§7 row 11), the subtree re-file,
+  the secondary facet.
+- **Status boxes: `10`'s does not flip yet, and the reason is a finding.** The validator's
+  `parent-checked-nested-unchecked` rule makes the status box the parent of every `- [ ]` item in
+  the FEATURE — the flows, algorithms and the feature id beside the DoDs — and ticking those six
+  raises `code-no-marker` for each: the studio's code grammar for a flow or algorithm is a
+  `@cpt-begin:<id>:pN:<inst>` / `@cpt-end:…` pair over the instruction it implements, a grammar this
+  crate has never used (its 301 markers are all `@cpt-dod`); the feature id's own box raises
+  `ref-done-def-not-done` until `DECOMPOSITION.md`'s entry is ticked. P-D-137's convention (DoDs and
+  criteria) was one rule short. **Recommend** (G20): mark the six items over their `inst-er-*` /
+  `inst-im-*` instructions with the begin/end grammar, tick the DECOMPOSITION entry, then flip —
+  the counter-argument, ticking the boxes without markers, is exactly what the validator refuses.
+  The ticks reverted here; the criterion tick stands.
+- **Propagated**: `features/retention-erasure.md` (§6's last criterion, the header, the status
+  box), `features/catalog-version.md` §6, `features/bulk-promotion.md` §6,
+  `features/read-models.md` §6.
+- **Trace**: `approvals_tests::a_rejection_with_a_person_shaped_reason_is_refused_content_pii_blocked`,
+  `approvals_tests::an_elevation_with_a_person_shaped_reason_is_refused_content_pii_blocked`,
+  `skus_tests::retire_door_tests::a_retirement_reason_naming_a_person_is_refused_content_pii_blocked`,
+  `products_tests::retire_door_tests::a_product_retirement_reason_naming_a_person_is_refused_content_pii_blocked`,
+  `materiality_policy_tests::a_policy_reason_naming_a_person_is_refused_content_pii_blocked`.
+
+#### P-D-157 — Criteria wave B: the scheduled lane resolves the usage type, a deferral releases its claim, and 45 criteria tick
+
+- **Date**: 2026-09-05 (the lead, group 15 of the follow-on plan)
+- **The scheduled lane resolves `usageTypeRef`.** P-D-146 measured that the activation runner
+  entered `run_publish` without the pre-transaction resolve the REST door performs, so a usage
+  SKU's scheduled publish froze a ref nobody had resolved and `USAGE_TYPE_UNAVAILABLE` could not
+  reach the `deferred` set `design/03` §4 routes it to. The runner now carries the same resolver
+  the door asks (`ActivationContext::usage_type_resolver`, from the boot state) and judges the ref
+  under the **gear's system principal** — the broker producer lane's shape — before the publish;
+  `Unavailable` defers the row, `Unresolved` fails it, a SKU with no ref never calls the collector.
+  *Counter-argument:* keep the lane unresolved until the runner has a service credential, since a
+  token-forwarding collector client answers `Unavailable` to a caller-less context and every
+  scheduled usage publish would then defer; rejected — that is P-D-131's fail-closed reading
+  applied, and publishing under a ref nobody resolved is the defect, not the deferral. **Owner
+  question, recommendation attached:** the collector client's identity on the scheduled lane. *Recommend* the
+  gear's service credential on the `ClientHub` client (the hub's own identity, not a forwarded
+  bearer), which makes the system context sufficient; the counter-argument is a per-tenant
+  service token, which the platform's PDP does not mint today.
+- **A deferral releases its lane claim.** The probe that drove a usage SKU through the lane found
+  the second defect: the runner recorded an idempotency answer for **every** finish, so the sweep
+  after a deferral replayed the "deferred" answer as `Applied` and marked the row applied with the
+  SKU still `draft`. A held run consumed nothing: `repo::release_idempotency_claim` deletes the
+  `claimed` row and the next sweep claims `(lane, transition)` afresh; terminal finishes record as
+  before, so the crash-safety replay (door committed, finish not persisted) is unchanged.
+- **Taxonomy-attributes, 24 of 36 ticked.** Cycle → `a_reparent_that_closes_a_cycle_is_refused`;
+  the re-parent race and its lock → `postgres_taxonomy_race`; the name on create/rename/re-parent →
+  `every_mutation_rechecks_the_name_including_the_reparent`; the first write's global coordinate →
+  `the_first_write_of_a_definition_needs_its_global_coordinate`; `GovernedLiveOp` consumed by `03` →
+  `a_stale_expected_state_is_refused_stale_live_op` on the one envelope type; `CATEGORY_REFERENCED`
+  and the discarded link → `an_active_child_blocks_the_retire_and_a_retired_child_does_not`,
+  `a_discarded_draft_holding_a_link_does_not_block_the_retire`; the delete →
+  `only_a_retired_category_can_be_deleted`, `a_delete_is_refused_by_any_link_row_and_a_retire_is_not`;
+  the primary at publish → `a_publish_needs_a_primary_category_and_a_draft_does_not`;
+  `CATEGORY_RETIRED` → `a_retired_category_refuses_a_new_assignment`,
+  `the_assignment_rules_refuse_through_the_door`; the removal against a live value →
+  `a_non_terminal_sku_carrying_a_value_blocks_the_removal`,
+  `a_terminal_heads_frozen_value_does_not_block_the_definitions_removal`; the tombstone →
+  `a_definition_is_removed_by_a_flip_and_never_deleted`,
+  `removed_is_reached_by_a_flip_and_the_tombstone_still_reads`; the seed →
+  `a_seeded_definition_deprecates_and_never_removes`; `removed → active` →
+  `the_definition_walks_its_three_flips` (the relist edge); type mismatch →
+  `each_known_value_shape_refuses_and_admits`, `the_value_rules_refuse_through_the_door`; scope →
+  `a_coordinate_outside_either_scope_is_refused`; `DEFAULT_LOCALE_MISSING` →
+  `a_publish_needs_the_global_value_for_every_localized_definition`; the brand-B reader →
+  `a_brand_b_reader_never_reaches_brand_as_default_and_falls_to_global`; the token →
+  `a_stale_category_token_is_refused_with_this_slices_own_code`,
+  `a_non_door_row_write_does_not_advance_the_act_counter`; metadata `PATCH`, the cap, the ceilings
+  and the terminal entity → `the_metadata_merge_sets_leaves_and_removes_per_key`,
+  `a_map_at_the_key_cap_can_still_be_reduced`, `the_byte_ceilings_refuse_and_say_which`,
+  `a_terminal_entity_refuses_a_metadata_write`; the snapshot checksum →
+  `a_metadata_mutation_after_a_snapshot_does_not_move_its_checksum`; the eight events →
+  `every_tree_act_announces_itself_once`, `a_definition_announces_every_applied_change`,
+  `a_display_write_announces_on_its_own_id_with_the_token_it_spent`,
+  `a_metadata_merge_announces_on_the_owning_entity`, `a_refused_act_announces_nothing`,
+  `the_no_event_declaration_names_the_types_that_do_announce`; `STALE_LIVE_OP` →
+  `a_moved_world_is_stale_live_op_and_names_both_states`, `a_stale_op_never_runs_its_mutation`,
+  `an_envelope_pinned_to_the_wrong_state_is_stale`.
+- **Taxonomy-attributes, 12 open and why.** The gate-queueing sweep of all five ops (a source
+  census probe exists, not a per-op store assertion); the limit lowered after the fact; the NFKC
+  cross-engine name (G19); the clean-text control at every PII door and the enumerated reason
+  fields (P-D-152's standing answer); the writer-lock tier rule; the primary-index race (G19);
+  `DEFINITION_IN_USE` at the door; the tenant default-locale change against a published entity;
+  the sixteen-codes-one-rule census; the per-code control sweep; the `#[ignore]` rule.
+- **Sku-classification, 12 of 19 ticked.** `sellable` → the create view's default and the SDK
+  binding's flip (`the_authoring_binding_runs_the_doors_with_both_preconditions`); the unit codes →
+  `a_new_declaration_is_judged_against_the_set`, `a_first_publish_rejudges_the_drafts_unit`; the
+  three resolver answers → `an_unresolvable_usage_type_refuses_the_publish_through_the_door`,
+  `an_unavailable_collector_refuses_503_claims_no_key_and_the_retry_publishes_once`; the scheduled
+  lane → the **new** runner probe; the removed member → the same set probe; the registry and the
+  correction door → `bucket_ii_is_the_meter_pair_and_bucket_iv_is_empty`,
+  `the_pair_is_refused_at_the_save_door_after_first_publish`,
+  `the_correction_rides_its_own_record_and_only_the_two_bucket_ii_fields_can_be_spelled`; the
+  oracle → `the_recognized_set_oracle_pins_its_roster_and_can_fail`,
+  `the_recognized_set_roster_matches_on_postgres`; the deprecated tax code →
+  `an_unknown_or_deprecated_accounting_code_is_refused_and_a_known_one_is_admitted`; the three
+  controls → `half_a_declaration_is_refused_and_the_whole_pair_lands`,
+  `a_new_declaration_is_judged_against_the_set`,
+  `a_publish_freezes_the_resolved_binding_beside_the_version_row`; the bucket-ii build's three
+  reddened tests → their successors in `bucket_tests`. **Open**: the "free" SKU path (twice — the
+  gear has no price, so the criterion has no operand), the meter-pair `CHECK` with the app check
+  bypassed, the once-per-distinct-ref count (a SKU carries one ref), the blanket controls line, the
+  `CorruptRow` sweep, the `#[ignore]` rule.
+- **Reference-signal, 9 of 20 ticked.** `no_producers` in the verdict →
+  `the_predicate_answers_four_verdicts`; the idempotent replay →
+  `a_post_lands_and_an_identical_repost_replays`; `WATERMARK_CONFLICT`, `WATERMARK_REGRESSION` →
+  `the_timestamp_verdicts_are_told_apart`; `WATERMARK_FUTURE` → `a_future_dated_post_is_refused`;
+  `PRODUCER_UNREGISTERED` → `an_unregistered_poster_is_refused` with every registered post as the
+  control; the two shipped-seam controls → `bucket_ii_is_the_meter_pair_and_bucket_iv_is_empty`
+  (the named test's successor, reddened by `03`'s columns exactly as the criterion predicted) and
+  `the_pair_is_refused_at_the_save_door_after_first_publish`. **Open**: the six-case fixture (four
+  verdicts are probed), the fresh-zero control sweep, the gauge series, the atomic set replacement
+  (G19), the regression's "unmoved" and the future post's alert and "unmoved", the chain probe, the
+  commit-time re-check, the lane's-own-predicate pair, the onboarding probe's historical half,
+  `CORRECTION_APPROVAL_OPEN`'s after-close control.
+- **Lifecycle's oracle criterion ticks late**: "each with a perturbation case" is per table, and
+  `the_lifecycle_store_oracle_pins_both_rosters_and_can_fail` carries it for both; P-D-156 read it
+  per engine and left it open. Corrected here.
+- **Propagated**: `features/taxonomy-attributes.md` §6, `features/sku-classification.md` §5 (the
+  scheduled-lane sentence) and §6, `features/reference-signal.md` §6, `features/lifecycle.md` §6.
+- **Trace**: `activation_runner::ActivationContext::usage_type_resolver`,
+  `activation_runner::resolve_usage_type_for_scheduled_publish`,
+  `activation_runner::system_security_context`, `repo::release_idempotency_claim`,
+  `activation_runner_tests::a_usage_skus_scheduled_publish_defers_while_the_collector_is_unavailable_and_applies_once_it_answers`.
+
+#### P-D-156 — Criteria wave A: foundation and lifecycle ticked clause by clause, four probes written, the rest named
+
+- **Date**: 2026-09-05 (the lead, group 14 of the follow-on plan)
+- **Method.** Each criterion was split at its clause boundaries and ticked only where an assertion
+  exists per clause (the rule P-D-155's census taught); the map below is the tick's evidence and
+  the reason a box stayed open.
+- **Foundation, 18 of 27 ticked.** Create shape + one outbox row + no content row →
+  `a_well_formed_create_persists_a_draft_row_and_answers_with_the_created_view`,
+  `exactly_one_outbox_row_is_enqueued_and_no_content_row_is_written`. Discard frees the name →
+  `a_discarded_products_name_and_code_are_free_for_a_second_product`. A draft's `skuCode` change
+  frees the old code → **new** `changing_a_drafts_sku_code_frees_the_old_code_for_a_new_create`.
+  The code race, exactly one row, a real concurrency probe →
+  `two_creates_of_one_sku_code_contend_on_the_reservation_index_and_one_is_refused` (Postgres tier)
+  with the door's audit in `a_duplicate_sku_code_is_refused_and_audited`. Bucket ii after publish →
+  `a_bare_bucket_ii_write_after_publish_is_refused_by_the_trigger`,
+  `a_bucket_ii_write_riding_a_bump_that_sets_correction_ref_is_admitted`, the reason naming the
+  correction door in `the_pair_is_refused_at_the_save_door_after_first_publish`. Frozen row before
+  the head, +1, immutable on both engines → the `published_version` trigger probes,
+  `an_update_of_a_frozen_row_is_refused`, `every_frozen_column_is_refused_by_the_update_arm`,
+  `postgres_frozen_guards`. `PreAuthorized` against a consumed record →
+  `a_preauthorized_publish_reaches_the_host_in_that_mode_and_consumes_nothing` (both doors). The
+  referenced version's guard with the sweep bypassed →
+  `a_referenced_version_is_refused_by_the_guard_and_not_by_the_sweep`. Registry vs trigger →
+  `the_registry_and_the_whitelist_name_the_same_columns_in_the_same_classes`,
+  `bucket_ii_membership_matches_in_every_artifact`. The golden vector →
+  `the_golden_vector_pins_the_rendering_and_the_digest_independently`,
+  `the_digest_version_is_pinned_in_code_and_moves_only_with_the_roster`, `postgres_golden_vector`.
+  Audit seal → `an_insert_claiming_sealed_is_refused_by_the_seal_group_check`,
+  `a_second_sealing_update_on_an_already_sealed_row_is_refused`. `internal_revision` on every
+  admitted write → `every_admitted_edge_bumps_the_row_exactly_once`, the by-one trigger probes.
+  `ILLEGAL_TRANSITION` and the physical edge → the door probes,
+  `a_lifecycle_transition_off_the_edge_list_is_refused`,
+  `a_published_version_bump_on_a_retired_head_is_refused`. Idempotency replay and conflict →
+  `a_claim_after_the_answer_write_replays_the_recorded_response`,
+  `a_second_create_on_a_live_key_under_a_different_payload_is_refused_conflict` (both doors). The
+  expired-key race → `the_expired_key_takeover_race_admits_exactly_one_winner`,
+  `postgres_idempotency_race`. Keyless → `a_keyless_sku_create_succeeds_and_claims_nothing`. The
+  denial → **new** `a_denied_keyed_publish_claims_no_key_and_its_audit_row_names_a_resolved_actor`.
+- **Foundation, 9 open and why.** The holder in the `DUPLICATE_NAME` response (the detail names
+  it; no probe reads it); `name_normalized` across engines (no cross-engine probe — G19's tier
+  work); the paired-control sweep over §2; the `CorruptRow` probe per guarded column class (two
+  lifecycle-state probes exist, the class sweep does not); the schema oracle on Postgres for the
+  Foundation's tables (the tier has governance, lifecycle, retention and taxonomy oracles, not this
+  one — G19); the eight events' per-door emission sweep; the no-operator-identity clause on event
+  bodies; the audit read by `(tenant, subject, error_code)`; the `#[ignore]` tier rule (G19).
+- **Lifecycle, 19 of 36 ticked.** The roster → `the_five_admitted_edges_are_admitted` and **new**
+  `the_state_roster_has_exactly_five_members`. The cascade's three arms and the draft listing →
+  `the_cascade_states_a_disposition_per_child_state`. Un-deprecation's two halves →
+  `only_cascaded_children_reverse`. Scheduling consumes in its own transaction →
+  `a_retirement_pins_the_satisfied_record_and_spends_it_in_the_scheduling_transaction`,
+  `a_scheduled_flip_never_demands_a_satisfied_record_of_its_own`. Already-deprecated initiation,
+  the emitted set whole → `already_deprecated_takes_no_re_stamp` (**extended** with the set
+  equality). The lead-window re-emit and the outside publish →
+  `a_publish_during_the_lead_window_reannounces_retirement`,
+  `a_publish_outside_any_window_emits_no_retirement`,
+  `a_publish_inside_the_window_reannounces_and_one_outside_does_not`. Saves during the window →
+  **new** `a_save_during_the_lead_window_is_admitted`. The four-state flip guard and its stub →
+  `flip_guard_defers_all_four_other_states_and_names_producers`, `flip_guard_passes_only_fresh_zero`.
+  `replacedBy` → `unpublished_replaced_by_is_refused`,
+  `replaced_by_admits_omitted_or_published_and_refuses_the_rest`. The confirmation →
+  `missing_cascade_confirmation_is_refused`, `a_published_product_retires_and_cascades`. Three
+  children, one plan → `a_three_child_fixture_splits_across_all_three_arms`,
+  `a_draft_child_is_auto_discarded`, the parent's live intent in
+  `a_published_product_retires_and_cascades`. The parent's flip →
+  `the_parent_flip_waits_for_every_child_to_be_terminal`. Containment's three clauses → the
+  `clause_1`/`clause_2`/`clause_3` probes. EOL off → `must_migrate_by_is_eol_disabled`,
+  `eol_flag_off_refuses_must_migrate_by_and_admits_its_absence`,
+  `a_retirement_body_omits_must_migrate_by_when_absent`. The partial unique index →
+  `the_live_intent_partial_unique_admits_one_and_refuses_a_second`,
+  `a_terminal_row_frees_the_live_slot_for_a_new_intent`. The two reason columns →
+  `finishing_preserves_the_operator_retirement_reason`,
+  `the_two_reason_columns_are_nullable_independently_on_postgres`. The stub predicate → the flip
+  guard probes above.
+- **Lifecycle, 17 open and why.** Un-deprecation naming the child (refused, the name not
+  asserted); the governed cancel clearing `replaced_by` on every leg; the edited-after-scheduling
+  activation (`SCHEDULE_STALE_APPROVAL` is classified in the unit, not driven through the runner);
+  the crashed runner's identical re-execution; the deferral budget's two arms; the initiation's
+  reference count; the read surface's transitive successor (domain-level only); the failure that
+  leaves no child transitioned (one child probed, not the set); the publish-intent half of the
+  plan's supersession; `cascade_cancelled`; the re-publish re-running `PARENT_NOT_PUBLISHED`; the
+  narrowing refusal not naming the child; the six-codes-one-rule census; the schema oracle's
+  perturbation on Postgres; scheduling's empty emitted set; the audit-reason sweep; the `#[ignore]`
+  tier rule. Each is a probe, not a build — none found a defect.
+- **Propagated**: `features/foundation.md` §6, `features/lifecycle.md` §6 (the ticks and one
+  pointer sentence each).
+- **Trace**: `skus_tests::changing_a_drafts_sku_code_frees_the_old_code_for_a_new_create`,
+  `skus_tests::a_denied_keyed_publish_claims_no_key_and_its_audit_row_names_a_resolved_actor`,
+  `skus_tests::retire_door_tests::a_save_during_the_lead_window_is_admitted`,
+  `transition_tests::the_state_roster_has_exactly_five_members`.
+
+#### P-D-155 — Scope claims take the roles' lane, the decide door judges them, and the signal consumer is the clear
+
+- **Date**: 2026-09-05 (the lead, group 13 of the follow-on plan; `05`'s two open DoDs and its
+  criteria)
+- **Scope claims arrive as `token_scopes` entries, as the roles do (P-D-134 row 25).** An entry
+  `region:<code>` or `brand:<code>` restricts that dimension to the codes named; **no entry on a
+  dimension is the unrestricted claim set** — `01` P-D-39's boundary, where the empty set means
+  unrestricted. *Counter-argument:* read a missing claim as "no claim" and refuse, the way a
+  missing role claim refuses `APPROVER_ROLE_REQUIRED`; rejected — a role is a requirement the
+  approver must hold, a scope claim is a restriction on where they may act, and `inst-gv-scope`'s
+  own first clause says an unrestricted claim set covers every subject. Until the platform's PDP
+  encodes a claim, every approver is tenant-wide and the rule admits; that is the rule applied, not
+  deleted. Routed to the platform-identity owner with the roles' shape.
+- **The decide door runs `approver_covers_subject`** before the ceremony and the transaction,
+  after the role check. The subject's scope is the entity head's two columns for an
+  `entity_publish` record and **tenant-wide** for every other kind — a policy, a live op, a batch or
+  a signal has no narrower scope than the tenant, so only an unrestricted claim set covers it
+  (clause 2). A record the store does not hold, or whose head is gone, is left to the transaction's
+  own refusal; a scope column that will not parse is a corrupt row (500), never an admission. The
+  refusal rides `refuse`: 403 `APPROVER_SCOPE_EXCEEDED`, one audit row, no decision row; the
+  ladder's denial carries no detail, so the dimension is the domain verdict's to name.
+- **`dod-system-signal` ticks by census of `06`'s build (P-D-148).** The signal consumer is the
+  composition-clear door — the record born `satisfied` under the signal's principal, audited, `N`
+  given no standing, consumed through the gate like any record; a dirty head (digest inequality or
+  an open publish approval) **holds** the clear at 202 and the activation runner re-applies it once
+  the head is clean. The dirty-head half had no probe; it has one.
+- **Two `§7` bullets close by measurement.** `NoMaterialityPolicyGate` has no production
+  constructor since P-D-144 (its sites are its definition and six suites' `GateHost::Given`
+  doubles), so the handover moment was that decision; `RecordingGate` is two test doubles and no
+  production shape. The criterion asking for a probe that the gear no longer runs the no-policy
+  host stays unticked: a census is not a probe.
+- **Ticks.** `05`: `dod-approver-scope`, `dod-system-signal` — **27 / 27**; §6: twenty-four
+  criteria, five of them on probes new here (the three scope probes, the dirty-head hold, the
+  descriptor-stability-and-silent-supersession probe that also covers "N edited", "evaluated once"
+  and "no broker event"). Nineteen stay unticked and say why: the role predicate at the gate, the
+  `PreAuthorized` request-shape assertion, the queue's non-material rendering, the three grant
+  refusals, the three-door PII control, the six-codes-one-rule census, the schema oracle, the
+  no-policy-host probe, the elevation's three mandatory fields, the alert channel and the platform
+  approval path (external), no raw principal, `N` from provisioning (external), the index probe
+  with the app check bypassed, the audit-reason sweep, the `#[ignore]` tier rule.
+- **Propagated**: `features/governance.md` (the two ticks, §6, §7 rows 25 and the two bullets).
+- **Trace**: `approvals::claims_from_token_scopes`, `approvals::refuse_out_of_scope_approver`,
+  `approvals::subject_scope_of`, `approvals_tests` (four probes), `skus_tests`
+  (`a_composition_clear_is_held_on_a_dirty_head_and_applies_once_it_is_published`).
+
+#### P-D-154 — The clone copies the collections and re-validates them at the door: one report, every code, the sixteen pairs
+
+- **Date**: 2026-09-05 (the lead, group 12 of the follow-on plan; pays the debt P-D-152 recorded
+  and P-D-153 unblocked)
+- **Decision.** The clone doors assemble the source's content — category assignments, attribute
+  values and the metadata map — into a `CloneContent`, read **frozen** for every non-`draft` source
+  (P-D-153's `categories`/`attributes` collections) and **live** for a `draft`, the map live in
+  every case because no frozen version holds it (`design/11` §3.1's attributes row), and
+  `infra::create::write_clone_content` files the three sets **inside the creating transaction** —
+  P-D-75's "the clone door itself" rule, which had no writer. The SKU clone copies the meter pair
+  with the rest of `03`'s columns (`NewSku` carries `metering_unit`/`usage_type_ref` at insert).
+- **Re-validation is one report, assembled before any write.** `clone_content_report` runs `02`'s
+  registered `content_save_pipeline` over the assembled content and the PII block over every
+  copied value against **today's** allow-list; `clone_classification_report` judges the copied
+  unit, tier and accounting codes against the live recognized sets and the type profile. The two
+  merge, so a refusal carries every failing class at once, lands as `VALIDATION` with one audit
+  row, and writes nothing. *Counter-argument:* register the re-validating rows as
+  `ValidationRule`s of their own in §3.1's row order (P-D-55) and run them as a phase; rejected —
+  the content rows already are registered rules (`02`'s pipeline, in its order) and the
+  classification rows are `03`'s verdict functions, so a second registry would either duplicate
+  the declarations or force the SKU verdicts into a subject shape they were not written for.
+  §3.1's order is kept by calling them in it; the phase stays unchosen, as the DoD allowed.
+- **The parent row's second half was missing.** The SKU clone judged the copied parent by
+  `resolve_parent_scope` (terminal → `PARENT_TERMINAL`) and never asked about a live retire
+  intent; the probe found it — a clone under a retiring parent landed. `refuse_if_parent_retiring`,
+  the create door's own check, now runs at the clone too: `RETIREMENT_PENDING`, audited against
+  the source's code.
+- **`usageTypeRef` is copied and not judged.** The clone never consults the resolver; the clone's
+  own publish does (`03`'s `inst-mt-resolve`), and one probe pins both halves with a resolver that
+  answers `Unresolved` for everything.
+- **The flagship fixture cannot exist on one entity.** `design/11` §5 asks for one source carrying
+  a deprecated unit, a retired tier and a retired category; a category is a Product collection and
+  a unit and a tier are SKU columns. The set-of-three is asserted **per door** — Products:
+  `CATEGORY_RETIRED` + `ATTRIBUTE_DEFINITION_DEPRECATED` + `ATTRIBUTE_DEFINITION_UNKNOWN`; SKUs:
+  `UNIT_DEPRECATED` + `PLAN_TIER_DEPRECATED` + `ATTRIBUTE_DEFINITION_DEPRECATED` — each with the
+  one audit row. Noted beside `design/11` §5's bullet, which is left as the slice wrote it.
+- **Ticks.** `11`: `dod-disposition-rules`, `dod-revalidation-codes`, `dod-clone-tests`; §6:
+  eighteen criteria. Twenty-two probes in the two `clone_revalidation_tests` modules; the sixteen
+  pairs are complete; `ENTITY_TERMINAL` stays unpaired because its only trigger is answered
+  `CLONE_SOURCE_DISCARDED` (P-D-75) and the door cannot raise it. Three §7 rows close by
+  measurement: the two migration module docs read slice **11** (`m…002:112`, `m…003:134`),
+  `metadata × write` has its label, resource type and permission id, and the "wait on the freeze"
+  row is paid.
+- **Propagated**: `features/clone.md` (the three ticks, §6, §1.4, §7), `design/11-clone.md`
+  (§3.1's built note, §5's measured note).
+- **Trace**: `disposition::CloneContent`, `taxonomy::decode_collections`,
+  `create::write_clone_content`, `products::clone_content_report`,
+  `skus::clone_classification_report`, `skus::clone_sku` (`refuse_if_parent_retiring`),
+  `products_tests::clone_revalidation_tests`, `skus_tests::clone_revalidation_tests`.
+
+#### P-D-153 — The two collections are content: frozen at publish, digest scheme 3, and the projector reads the published assignment set
+
+- **Date**: 2026-09-05 (the lead, group 11 of the follow-on plan; answers `02` §7's freeze row and
+  the plan's first item)
+- **Decision.** `design/01` §4.3 and `design/02` §4 said the category-assignment and
+  attribute-value sets are rendered inside a frozen version; the renderers existed and nothing
+  called them. Now: `repo::frozen_collections` reads both sets **inside the publish transaction**
+  and the content builders render them under the keys **`categories`** (Products) and
+  **`attributes`** (both kinds), sorted by the collection's own full row key (P-D-29, P-D-103);
+  an empty set renders **`[]`, never `null`** — the absence rule is for a field the value lacks,
+  and a collection is never absent. Both rosters carry the keys (14 and 19 names).
+- **The `BucketRegistry` learns the two keys.** A publish's re-validation and a submission's
+  materiality walk the content keys and refuse an unregistered one; `categories` and `attributes`
+  are registered **bucket iii** (written by the save door, frozen by the next publish, like
+  `name`), as members with no head-row column — the registry-vs-schema agreement probes skip them
+  by `bucket::is_content_collection`. *Counter-argument:* exempt the keys from classification
+  instead; rejected — an exemption is a default bucket by another name, the refusal the registry
+  exists to make.
+- **Every head rendering follows.** A comparison of a head against its frozen row must render the
+  same shape or read every head dirty: the correction door's `CORRECTION_DIRTY_HEAD` check, the
+  bulk worker's promotion renderings and `head_is_dirty`, and the approval submission's content
+  snapshot (the reviewer's diff basis) all read the collections through the same function.
+- **`digest_version` 2 → 3.** §4.3's rule is *"a content-shape change is a digest-version bump,
+  not a silent change"*, and this is the first change that added row collections — arrays whose
+  element order is exactly what two engines could serialize differently and what `10`'s drill
+  compares. Scheme 2's golden vectors stay in the tree as its record; scheme 3 has its own on both
+  engines, the literal bytes and digest computed outside the crate. *Counter-argument:* the
+  constant's own doc argued that pre-production shape changes need not bump (no stored row exists
+  under 2 either); accepted as true and overruled — a stored row should say which shape it holds,
+  and the bump costs no re-rendering code precisely because no row exists.
+- **The projector reads the published assignment set.** `project_entity` takes a Product's
+  category ids from the frozen `categories` collection (the live tree still supplies the path
+  text), falling back to the live assignment table only for a scheme-2 version; a re-parent's
+  re-file reads each row's own frozen version the same way. So a category assigned after a publish
+  reaches browse with the next publish, which is what "published content" means.
+  *Counter-argument:* browse showed live assignments before and consumers may have liked the
+  immediacy; rejected — a projection of published versions that read unpublished rows was the
+  leak `dod-clone-read-surface` names for the clone.
+- **Ticks.** `02`: `dod-version-content-rendering`; §6 the byte-identical criterion. `11`'s three
+  DoDs now wait on this feature's own copy and re-validation (group 12).
+- **Propagated**: `design/01-foundation.md` §4.3, `design/02-taxonomy-attributes.md` §4,
+  `features/taxonomy-attributes.md` (the tick, the criterion, §7's row struck),
+  `features/clone.md` (§7's row re-aimed).
+- **Trace**: `repo::frozen_collections`, `PRODUCT_CONTENT_ROSTER`, `SKU_VERSION_CONTENT_ROSTER`,
+  `canonical::DIGEST_VERSION`, `projector::frozen_assignment_ids`, the two scheme-3 golden tests.
+
+#### P-D-152 — The remainders: the EOL flag, four `02`/`11` ticks by census, lineage on the timeline, and the freeze the collections never had
+
+- **Date**: 2026-09-05 (the lead, group 10 of the solo plan — the last; a census of every open
+  DoD in `02`, `04` and `11`, and of the owed design sentences the plan named)
+- **`04`'s EOL flag is configuration.** `ProductsConfig::eol_enabled`, **`false`** by default, on
+  `ApiState`, the runtime and the bulk lane's context, handed to both retire acts; off, a
+  retirement carrying `mustMigrateBy` is `EOL_DISABLED`, on, admitted. The consumer-acknowledgment
+  machinery behind it stays post-v1 (P-D-132). `dod-eol-lockout` ticks.
+- **Three `02` DoDs tick by census, not by new code.** `dod-governed-live-op`: both op doors
+  submit to the stored gate, the envelope's state is re-validated at apply, and the mutation and
+  its event are one transaction **by construction** — `events::enqueue` writes through the door's
+  runner on both sink arms. `dod-definition-lifecycle`: the routing under
+  `attribute_definition × write` ships (the grant is minted and declared), the machine is probed
+  both ways, and the type-change operand reads as P-D-131's live-reference condition.
+  `dod-pii-write-block`: the single raiser runs at **fourteen** production sites covering the whole
+  enumeration; door-level probes exist at three, so `10` §6's "same code at every door" criterion
+  stays unticked (P-D-137: a placement is verified by its call site, a criterion by its probe) and
+  `10`'s status box with it — no feature reaches a flipped box in this group.
+- **`dod-version-content-rendering` does not tick, and the reason is a finding.** The two
+  renderers ship and **nothing calls them**: a frozen version carries the Foundation rosters alone
+  — no categories, no attributes. What the DoD asks for literally is unbuilt, and a golden vector
+  carrying the collections would pin bytes nothing produces. The wiring is one change with a
+  measured blast radius (the two `freeze_for`s, the correction door's comparison, the bulk
+  worker's two renderings and `head_is_dirty`, both rosters, `DIGEST_VERSION` 2 → 3 with both
+  golden vectors) and is filed in `02` §7 as `01`'s and `02`'s jointly. *Counter-argument:* build
+  it here; rejected — a digest-version bump across every content site is not a remainder, and
+  doing it under the last group's clock is how a golden vector goes stale.
+- **`11`: three tick, three wait on that freeze.** `dod-clone-read-surface` (the frozen read and
+  the decoder P-D-77 owed both ship), `dod-clone-authz` (both write grants, `metadata_write`
+  minted since), `dod-clone-lineage` (the timeline gains `lineage` and `clones` — the reverse
+  lookup `design/11` §2 promised, `repo::clones_of`). `dod-disposition-rules`,
+  `dod-revalidation-codes` and `dod-clone-tests` are measured: the clone copies none of `02`'s rows
+  and re-validates nothing; copying a published source's collections needs them frozen first.
+- **The owed sentences.** `design/05`'s `ApprovalRecord` row states the per-kind pin (P-D-125 row
+  52, P-D-127 row 11, P-D-144's `Unpinned`); `design/09`'s `inst-bk-report` and `inst-bk-commit`
+  state the ledger digest as the pin and its covered set (P-D-127 rows 11, 23, 31);
+  `design/03`'s `inst-us-delist` states the one-transaction flip (P-D-121 row 21). The plan's
+  "collector-inside-transaction" sentence was **re-measured as accurate**: `design/03`'s resolver
+  row says the resolver runs before the publish transaction opens, and
+  `resolve_usage_type_before_publish` does exactly that; `design/04`'s flip-guard row makes no
+  transaction claim. Nothing to correct.
+- **§6 and the status boxes.** `12`: three replay criteria tick on `broker_tests`' redelivery probe
+  and the create doors' "the key is free" assertions; the neighbouring-gap criterion holds by the
+  projector's construction and stays unticked for want of a probe. Every other feature's unticked
+  criteria stay unticked: **90** across the six features at full DoD count (`bulk-promotion` 13,
+  `foundation` 27, `read-models` 11, `reference-signal` 20, `retention-erasure` 1,
+  `sku-classification` 19) — each wants a probe named beside it, and none is ticked by inspection.
+  No status box flips in this group.
+- **The plan is complete.** Ten groups, twelve commits, P-D-141 … P-D-152. The register of what
+  stays open is the features' own: six DoDs by owner decision or by the freeze (`12` three,
+  `11` three, `02` one), the criteria above, and `06`'s `dod-require-broker` (a deployment
+  artifact). The handoff carries the counts.
+- **Propagated**: `features/lifecycle.md`, `features/taxonomy-attributes.md` (§7 gains the freeze
+  row), `features/clone.md` (§7 gains its row), `features/consumer-contracts.md`,
+  `features/retention-erasure.md`, `design/05-governance.md`, `design/09-bulk-promotion.md`,
+  `design/03-sku-classification.md`.
+- **Trace**: `ProductsConfig::eol_enabled`, `ApiState::eol_enabled`, `products::run_retire` /
+  `skus::run_retire`; `repo::clones_of`, `read::HistoryView::{lineage, clones}`; the probes named
+  in the ticks.
+
+#### P-D-151 — 12's surface: the SDK's four remaining rows, the eight executable lints, the seam suite's home and the register's own hygiene
+
+- **Date**: 2026-09-05 (the lead, group 9 of the solo plan; `12` §7 rows on the lints' grammars
+  as P-D-130 stated them; two DoDs left unticked by P-D-132's refusal)
+- **The SDK carries §9 whole.** Row 1, the authoring/publish client, is `Authoring` — create, save
+  and publish for Products and SKUs with a typed `Precondition` (`if_match`, `idempotency_key`)
+  and a `HeadReceipt` that says whether the answer was replayed; row 2's read client gains the
+  caller's `SecurityContext` like the SDK's other traits (the trait had no implementor to break)
+  and its first binding; row 5 is `FreezeAcks` (ack **and release**), row 6 `CompositionSignals`;
+  row 7 is the **versioned schema roster** in the SDK (`events::SCHEMA_REFS`, forty semver
+  references) with the deserializable types staying in `infra::broker` as P-D-130 read it; row 8
+  is `ErrorCode`, seventy-eight variants, a documented vocabulary and not a second error type.
+  **Every in-process write binding calls the door's own handler** — the same phases, gate, key and
+  audit row as the REST binding, so nothing can drift; the read binding goes to the repository
+  under the same `× read` grant because the SDK shape carries `composition_pending` and the REST
+  view does not. Four bindings are registered in `ClientHub` at boot beside the two that were.
+  *Counter-argument:* a binding over a handler carries HTTP types into an in-process call;
+  accepted — the alternative re-implements six doors' phases and is the drift this closes.
+- **The read shape.** `Sku` gains `composition_pending` (the ninth `CatalogSku`-superset member);
+  the tenth, `name`, is the parent Product's — a SKU has no display name of its own, `sku_code`
+  being its operator-facing one — and is not added. The pin flips `type`, `unit`, `usageTypeRef`,
+  `PlanTier` and `sellable` to comparable (pricing's `CatalogSku` carries them since `2770cef58`);
+  `compositionPending` records its registry side and stays not-yet-comparable.
+- **The seam suite's home is the gear's own `tests/seam_suite.rs`**, not a new package: a new
+  package's `src` is no traceability root, and the suite needs both SDKs and the pin, which a test
+  target of the gear reaches as dev-dependencies (`bss-pricing-sdk`, `toml`; no production edge to
+  pricing). It runs on demand — P-D-132 refused the job — so `dod-seam-suite-home` **stays
+  unticked** by that reason. It carries the two-sided pin check with its RED, the status
+  vocabulary, and the **sixth fixture**: the studio single-inbox envelope cross-check, which
+  pins the five fields both gears' cards share and records the divergence it found — pricing spells
+  `submitter_principal` and carries no `quorum`, the registry spells `submitter` and carries the
+  quorum card `design/05` `inst-gv-queue` requires. **The other five fixtures are OWED**, each
+  with its measured reason: pricing produces no watermark, consumes no registry event, raises no
+  adoption-guard code (`SKU_NOT_PUBLISHED` is named and not raised), has no meter-binding rule and
+  no posted-use path against a frozen snapshot. `dod-joint-fixtures` therefore **stays unticked**:
+  one of six is authorable, and C4 forbids the five.
+- **The eight lints run** (`products-sdk/src/coverage_lints.rs`, beside lint 9, on P-D-130's
+  grammars), each with a failing case. Two grammar extensions, measured necessary: lint 3
+  compares path parameters by position (`{id}` = `{skuId}`) and drops query strings and
+  ellipses; lint 5 reads a bare `NN` as the slice pair (design or feature document) and admits
+  the register's live document spellings (`PRD`, `design/NN`, `NN`, a file name) — repo-relative
+  paths (P-D-43) are admitted, not required. **Their first run found the violators**: lint 3,
+  twelve declared doors unpaired in `design/05` §3.2 (the resolver GET, 04's four lifecycle doors
+  ×2, 07's four) — paired; lint 4, an empty register — filled (§4.2, forty rows and eleven
+  no-event rows, four instruction rows amended to name their events); lint 5, thirty-two
+  propagations whose document did not cite the decision — fifteen were owed/unchanged clauses
+  sitting inside `Propagated` fields (moved to their own `Owed`/`Unchanged` bullets), six were
+  bare tokens naming a slice's roster or another gear's document (reworded), five were genuine
+  filings without the id (`design/02`, `design/03`, `design/05` ×2, `PRD` §15 — cited), and five
+  were this lead's own entries without the field (added). Lint 1 and lint 6 were green at first
+  run; lint 7 reads `principal_ref`-class columns and finds one table; lint 8 finds no marker.
+  `dod-lint-gate` **stays unticked** by P-D-132.
+- **The map.** `ENTITY_TERMINAL` gets its owed §4.1 note — no row, by construction — and lint 2
+  pins every mapped code to the SDK vocabulary.
+- **Findings filed to `12` §7**, not fixed here: the inbox envelope divergence (pricing's and this
+  slice's owners); fourteen code routes with no declaring span in the design set and five declared
+  spans with no code (the metadata `PATCH` doors among them); the two casings the doors render
+  (`api_dto` views `snake_case`, the head-act bodies `camelCase`).
+- **Ticks.** `12`: `dod-bootstrap` (group 8's projector is the contract's first consumer),
+  `dod-sdk-surface`, `dod-catalogsku-shape`, `dod-event-versioning`, `dod-lint-prd-universe`,
+  `dod-lint-declarations`, `dod-lint-surfaces`, `dod-contract-seams` — `12` reaches **14 of 17**,
+  the three left open by P-D-132 and C4 named above. The plan's "eleven" was a claim, not a
+  census (P-D-132 had already settled two of them).
+- **Propagated**: `design/12-consumer-contracts.md` (§4.1 note, §4.2, §6), `design/05-governance.md`
+  §3.2, `design/01-foundation.md`, `design/03-sku-classification.md`, `design/04-lifecycle.md`,
+  `features/consumer-contracts.md`.
+- **Trace**: the eight `12` markers on their implementing items (`products-sdk/src/{authoring,
+  composition, errors, events, freeze, coverage_lints}.rs`, `api/rest/sdk_bindings.rs`,
+  `infra/projector.rs`, `tests/seam_suite.rs`); `schema-pin.toml`; `Cargo.toml` dev-dependencies.
+
+#### P-D-150 — 08's projector on a gear-owned inbox, the three-source read path, the browse door behind one limiter, the timelines and the polled dashboards
+
+- **Date**: 2026-09-05 (the lead, group 8 of the solo plan; `08` §7 rows 8, 9, 10, 12, 19, 23, 24
+  as already answered by P-D-124 and P-D-126; the history surface's open half answered here)
+- **The projector reads a gear-owned inbox, written in the event's transaction.** The design says
+  the `ReadProjector` consumes the broker per `(tenant, aggregate)`; in this gear the durable
+  acceptance is the toolkit outbox, whose rows the gear can neither read through the runner (no raw
+  SQL below the secure layer) nor through an outbox read API, and no broker consumer exists. So every
+  consumed family writes its event to `products_read_inbox` **in the same transaction** as its outbox
+  row (`infra::events::record_inbox`, eight families: the entity core, publishes, deprecations,
+  retirements, taxonomy, set events, corrections, catalog-version events). `created_at` is therefore
+  the commit instant P-D-124 names; ordering per tenant is the row id; the checkpoint is per tenant
+  with its serving generation (`products_read_checkpoint`), "per partition" read as per tenant.
+  Consumed rows are swept after `read_inbox_retention_hours`. *Counter-argument:* one more row per
+  event on the write path; accepted — a copy the projector owns is rebuildable state, and the broker
+  consumer, when the platform ships one, replaces the hook without touching the projection.
+- **The stamp names the resolver's own id.** `products_read_stamp.catalog_version_id` was `uuid`
+  while every catalog version is an `i64`; edited in place (`m20260901_000024`), the domain and the
+  probes following — a stamp a consumer cannot join to a version is not a stamp.
+- **Shadow-then-swap** rides a `generation` column on `products_read_entity` (edited in place,
+  `m20260901_000023`) and on the checkpoint: a checkpoint the swept tail ran past rebuilds from the
+  latest catalog version's manifest into generation N+1, moves the checkpoint's generation and drops
+  the old rows; the browse door reads the checkpoint's generation, so the old projection serves until
+  the swap. A tenant with no version rebuilds anchorless.
+- **Poison** (`products_read_poison`): a row that cannot apply is parked and retried up to
+  `read_poison_retry_ceiling` (interim 5), then skipped with `read_model_poison`; below the ceiling
+  the pass stops at the row so the tenant's order holds. The delivery-state dashboard surfaces the
+  park.
+- **The read path.** `GET /browse` on `product|sku × read` with `VisibilityFilter` and the claim
+  `scope_condition`s in the statement, facets from the served rows on request, at most 500 rows
+  *(the page is at most 200 and the facet window 500 since **P-D-165**, which separated the two)*;
+  `GET /{products|skus}/{id}/versions` as a **request-time read** over the frozen rows (the history
+  DoD's open half: no materialised history, the convergence budget does not apply); three dashboard
+  doors under their sources' own `× read` grants (`scheduled_transition`, `catalog_version`, `audit`
+  for the projector's own health). Every answer carries the stamp; an anchorless tenant reads
+  `null` and the request instant.
+- **The limiter** is `ReadPathLimiter`, one per process, a token bucket per tenant at
+  `read_path_qps_ceiling` (interim 200/s), consulted first by every read door; a shed is
+  `503 READ_MODEL_OVERLOADED` (the one code `08` declares, counters at **78**) with `Retry-After`
+  and no body content. Lag sheds nothing: `read_model_lag` is raised past
+  `read_convergence_budget_secs` while serving continues.
+- **Meters as tracing events.** `read_edge_latency` per served read; `read_model_convergence` per
+  projected event from the inbox row's `created_at` (P-D-124's origin, `01`'s half decomposed);
+  `read_model_lag`; `read_model_poison`; `read_model_rebuilt`.
+- **Reparent** re-files every Product row's paths from the live tree, bounded by 02's caps rather
+  than diffing the subtree; **facets** count every assigned category's path. Display attributes are
+  materialised for `read_active_locales` (P-D-126 row 2, interim `["en"]`, an empty set refused at
+  boot).
+- **Ticks.** `08`: `dod-projector`, `dod-frozen-read-path`, `dod-browse-door`, `dod-degradation`,
+  `dod-dashboards`, `dod-nfr-meters`, `dod-history-timeline`, `dod-facets`, `dod-reparent` — `08`
+  reaches **13 of 13**; §6: eleven criteria on probes (the stamp on every shape, the anchorless
+  tenant, the version floor, the shed with `Retry-After`, per-partition shedding, the loud rebuild,
+  the anchorless rebuild, the polled dashboards, the parked row withheld, the re-delivered event, the
+  frozen content). Not ticked: the fifteen-case visibility matrix, both scope-layer criteria, the
+  convergence budget measured end to end, the write-path-outage read, the metadata-absence
+  criterion, the secondary-category facet and the subtree re-file — probes owed, not doors. `08`'s
+  `featstatus` box stays the owner's. `DESIGN.md`'s route table reaches 65.
+- **Propagated**: `features/read-models.md`.
+- **Trace**: the nine `08` markers on their implementing items (`infra::projector`,
+  `api::rest::read`, `m20260901_000029`); `DESIGN.md` §Endpoints Overview (65 routes); six
+  `ProductsConfig` fields.
+
+#### P-D-149 — 09's machine end to end: the report as the batch's record, the commit under the consumed record, the reaper, the itemised ceremony, the resolver, the lifecycle lane, the export
+
+- **Date**: 2026-09-05 (the lead, group 7 of the solo plan; `09` §7 rows 2, 3 answered here, rows
+  4, 5, 6, 7, 10, 14, 19, 21, 23, 31 as already answered by P-D-69 and P-D-127)
+- **The report is the record.** Edge 1 (`staging → reported`) renders the `ChangeReport` from the
+  ledger and submits it as the batch's one `bulk_batch` approval in-process through the record
+  store — `content_snapshot` the report, pin its `ledgerDigest` (row 23's shape), materiality
+  `05`'s (`MaterialAct::BatchAct`, `affected` saturating on any first publish), the record's id on
+  `products_bulk_batch.approval_ref` before the state moves. Every staged row is pinned to the head
+  revision the report saw; the commit re-checks it as `STALE_REVISION`.
+- **Edges 2 and 3 are one transaction, the record consumed once.** `advance_batches` reads each
+  `reported` batch's record: `satisfied` → `begin_commit` evaluates it through the stored host,
+  `settle_authorization` spends it, `reported → approved → committing`; `rejected` or `superseded`
+  → `abandon_batch`; `pending` past `bulk_batch_ttl_hours` (new config, `168` interim, P-D-127 row
+  6) → the reaper abandons. A batch a crash left in `approved` moves on without a second
+  consumption. The staging claim's lease is handed back at the flip so the commit takes its own —
+  the claim now names the state it expects, a claim filtered on `staging` having made a
+  `committing` batch unclaimable.
+- **The commit walks the ledger under the consumed record.** Products before SKUs; each row through
+  the Foundation's own publish in `GateMode::PreAuthorized(approvalId)` over
+  `StoredApprovalGate::bulk_row`, claimed on the reserved `internal:bulk-row` lane with the ledger
+  outcome as its stored answer (P-D-69 on P-D-42); `STALE_REVISION`, `BULK_DEPENDENCY_FAILED:<code>`
+  (a SKU whose parent row failed this pass), `BULK_OVERRIDE_UNACKNOWLEDGED`, or the owning door's
+  code, all row-local; then **one** bulk-lane increment request keyed by the batch with its
+  `operation_key` (the import and lifecycle doors write the batch id at intake; the store is the
+  SDK binding's own, idempotent on the key); then edge 4. The attempt budget (`ATTEMPT_BUDGET`,
+  five) is `staging|committing → failed`, never a row's.
+- **The itemised ceremony.** The report marks every uncomposed-bundle row `override_acknowledged`
+  and records `BUNDLE_OVERRIDE_REQUIRED/{skuCode}` per row on the record's `overrideConditions`;
+  `05`'s decide door demands each by name (P-D-148's rule), so a satisfied record is the
+  acknowledgment over the itemised set, the row publishes with its flag raised, and a bundle that
+  appeared after the report fails alone before its publish. **At effective quorum zero** the worker
+  is no author and nobody can acknowledge by name (P-D-68): the itemised rows fail
+  `BULK_OVERRIDE_UNACKNOWLEDGED` at the report edge with the closed-set reason
+  `no-acknowledger-at-quorum-zero` and the rest of the batch proceeds. *Counter-argument:* the
+  operator who posted the import could be treated as the author and asked to acknowledge at the
+  door; but the conditions are known only after staging, so that acknowledgment would be blind —
+  the informed-override rule forbids it. Owner call if the lane should instead hold the batch.
+- **The promotion resolver** runs in the stage pass under `mode = promote`: identity by exported id,
+  then code, then `(brandId, normalized name)` (row 4); unknown → create; `retired`/`discarded`
+  holder → `PROMOTION_IDENTITY_CONFLICT`; a draft, a head whose rendering differs from its last
+  version row, or an open publish approval → `PROMOTION_DIRTY_HEAD`; the recognised save fields
+  compared canonically (row 21): all equal → `no_op`, else **update-as-draft** through the ordinary
+  save door with **only the differing fields**, the row stamped with the head, the new revision and
+  the touched fields in `governed_live_op`. A bucket-ii difference reaches the door and fails
+  `ILLEGAL_FIELD_MUTATION` (row 2, answered). Abandon reverts such a row through the save door to the
+  frozen values of the touched fields.
+- **The lifecycle lane.** `POST /bulk/lifecycle` on `bulk_lifecycle × execute` (the other label,
+  P-D-69) lands one row per id with `governed_live_op = {op}` — and the same JSON as its payload,
+  the ledger's shape CHECK wanting a payload on every product/sku row; stage validates the head
+  against `04`'s guard and pins; the commit drives `run_deprecate` / `run_retire` in `PreAuthorized`
+  (the four door entries gained a `GateMode` parameter), provenance `direct`, reason the literal
+  `bulk-lifecycle`, confirmation the batch's record; rows read `applied`; abandon drops the op.
+- **The export** `GET /bulk/exports?catalogVersionId=` on `bulk × read` (P-D-127; the DoD's
+  `catalog_version × read` is superseded) renders the stored manifest — frozen version rows by
+  number (`repo::entity_version_at`), C5 identities, captures — sorted, byte-identical, header
+  `format_version = 1` (row 3, answered).
+- **One defect the probes found, one reading left standing.** The batch claim filtered on
+  `staging` (above). An unreasoned rejection reaches the wire as a 500 today; the shipped probe pins
+  that as deliberate — `05` §3.3 declares no code for it, so it travels on the codeless channel
+  rather than borrowing one (P-D-119 row 37's family) — and this decision does not overturn it. It is
+  the caller's omission, so a `VALIDATION` on `reason` would fit better; the owner's call, filed
+  here rather than taken.
+- **Ticks.** `09`: `dod-batch-state-machine`, `dod-change-report`, `dod-commit-phase`,
+  `dod-bulk-override-ceremony`, `dod-operation-key`, `dod-coalesced-event`, `dod-export`,
+  `dod-promotion-resolver`, `dod-bulk-lifecycle`, `dod-resume-abandon` — `09` reaches **16 of 16**;
+  §6: twelve criteria on probes (the stale row, parts-succeeded, the one consumption, the
+  spend-nothing re-entry, the late override, the itemisation, the replayed batch key, the resume,
+  the four classifications, the dirty head, byte-identity, the header); `05` §6: the every-lane
+  clause. Not ticked: `09`'s `featstatus` box (the owner's, like `07`'s), the sizing flagship, the
+  `retired` holder and `STALE_LIVE_OP` criteria (no fixture), the lifecycle door's grant refusal
+  and the reserved-lane-by-name assertion (no probe). `DESIGN.md`'s route table reaches 59.
+- **Propagated**: `features/bulk-promotion.md`.
+- **Trace**: the ten `09` markers on their implementing items; `DESIGN.md` §Endpoints Overview (59
+  routes); `ProductsConfig::bulk_batch_ttl_hours`.
+
+#### P-D-148 — 06's doors: force-completion and the participant set under the stored host, the composition clear on a system signal, the diff, the dry-run lint as 05's override operand, the four events and the meters
+
+- **Date**: 2026-09-05 (the lead, group 6 of the solo plan; `06` §7 rows 2, 13, 17, 26, 27, 35,
+  39, 47, 48, 52 as already answered by P-D-67, P-D-124 and P-D-125; `05` §7 rows 10, 15, 39)
+- **Force-completion is a real grant and a live op.** `POST /catalog-versions/{id}/force-completions`
+  spends `catalog_version × force_complete` — the sixth action on the label, a permission instance
+  of its own — and rides `GovernedLiveOp` on `catalog_version/{id}/force-completion`, unpinned
+  (P-D-125's per-kind pin is the answer to row 52). This reconciles P-D-125 row 13's wording: the
+  struck grant is `publish`, not `force_complete`. One transaction spends the record, forces every
+  `pending` row (`forced_at`, `ceremony_ref`, `released_at` in one statement), flips the version to
+  `complete(forced)`, writes the ceremony's audit row and emits `FreezeForceCompleted` with
+  `quorumReduced` off the record's descriptor. A freeze that is not open is `ILLEGAL_TRANSITION`.
+- **The ledger's shape CHECK contradicted its own recovery edge.** `not_frozen(forced) → acked` is
+  one of the six admitted edges, and the CHECK's first arm demands `forced_at IS NULL AND
+  ceremony_ref IS NULL` off the forced state, so a recovered participant's ack failed the CHECK
+  (a 500 at the ack door, found by the force probe). The shipped migration test already models the
+  recovery as clearing the pair while `released_at` stays — the schema was the design and the
+  writers were short. Resolved in the writers: `ack_freeze_row` and `release_freeze_row` clear
+  `forced_at` / `ceremony_ref` on the edge; `released_at` remains the write-once stamp the retention
+  gate reads with the state; the ceremony stays joinable through its audit row, which is the record
+  that outlives the ledger's state. After every forced participant recovers the version reads
+  `complete`, `posted` resolves, and the ceremony's history is the audit row plus the stamps.
+- **The participant door.** `POST /freeze-participants`, body `{participant, op: register|retire}`,
+  a `GovernedLiveOp` on `freeze_participant/{participant}/participant-set` under
+  `freeze_participant × write`. A change audits and emits `FreezeParticipantSetChanged`; a no-op
+  spends the ceremony and writes nothing — a set that did not change is not announced as changed.
+- **Override conditions are lint codes.** The descriptor's sixth name, `overrideConditions`, is the
+  **overridable** subset of the codes the dry-run lint (`skus::lint_sku_publish`,
+  `products::lint_product_publish`) returns for the subject at submission —
+  `domain::approval::OVERRIDE_CONDITION_CODES`, today `BUNDLE_OVERRIDE_REQUIRED` alone, `09`'s own
+  reading (*today only an uncomposed bundle*); a finding the publish refuses regardless is a report
+  line an acknowledgment could not change, and recording it would have forced every `N = 0` author to
+  acknowledge a hard error (six shipped probes said so); an
+  approving decision must acknowledge every code by name in `override_acknowledgments`
+  (comma-separated, exact), else `VALIDATION` on that field (`05` §3 declares no code of its own for
+  it); the submit door runs the same check over `author_override_ack` at `N = 0`. The publish door's
+  `uncomposed_bundle_override` keeps reading the acknowledgment's presence — the by-name half is
+  enforced where the acknowledgment is written.
+- **The dry-run doors.** `POST /skus/{id}/validate` and `POST /products/{id}/validate` on the
+  entity's `publish` action run the publish pipeline to the governance gate exclusive and answer
+  `{clean, findings[{code, subject, detail}]}` — no audit row, no event, no revision. They are the
+  per-entity half of `fr-prepublish-lint` (`01`'s, P-D-125) and `09`'s lint producer reads the same
+  functions in group 7.
+- **The composition clear rides a `system_signal` record.** `POST /skus/{id}/composition-clears`
+  records the signal as a `system_signal` approval born satisfied — the signal is the principal,
+  independent of `N` — and `try_apply_composition_clear` (the door's and the runner's one entry) on
+  a clean head re-publishes through `run_publish` with the new `PublishOperands::system_clear`
+  operand: the record is the gate, the bundle condition is skipped so the flag is not re-raised,
+  `SkuPublished` and `SkuCompositionCleared` both name the new version. A dirty head — an
+  unpublished edit by digest equality or an open publish approval — is **202 `held`**, the flag and
+  the record kept, `composition_clear_held` warned, and the activation runner re-evaluates every
+  open signal each pass (`repo::open_system_signals`). A spent signal replays.
+- **The diff** reads both stored manifests through the resolver's rows and computes entity deltas
+  plus `changedCaptures`; sorted, byte-stable, no write; an unknown side is the resolver's
+  `CATALOG_VERSION_UNKNOWN`, audited under that code with a bare 404 body.
+- **Events and meters.** Four tokens in `SCHEMA_REFS` with `THE_VERSION_FOUR` in both roster
+  families; a second body core `CatalogVersionEventBody` for the three entity-less events with
+  `aggregate_id = uuid_v5(tenant, "catalog_version")` and two subject types; `CatalogVersionPublished`
+  is emitted in the coalescer's commit transaction. The meters are tracing events —
+  `catalog_version_lane_latency`, `catalog_version_overdue` (from `increment::overdue_requests`,
+  raised by the runtime per pass), `freeze_ack_latency` — and P-D-124's `commit →
+  durable-acceptance` stays `01`'s, asserted in group 8.
+- **Ticks.** `06`: `dod-force-completion`, `dod-participant-set`, `dod-composition-clear`,
+  `dod-diff-door`, `dod-cv-authz`, `dod-cv-events`, `dod-cv-audit`,
+  `dod-posting-safe-observability` — eight; `dod-require-broker` stays open because its deployment
+  artifact is outside this repository, as its own body says. `05`: `dod-quorum-descriptor`,
+  `dod-override-ceremony`. `06` §6: seven criteria on probes (force-completion, its lift, replay,
+  the deferred clear, byte-stability, `CATALOG_VERSION_UNKNOWN` on both paths, the negative
+  control); `05` §6: the by-name acknowledgment. `DESIGN.md`'s route table reaches 57.
+- **Propagated**: `features/catalog-version.md`, `features/governance.md`, `DECOMPOSITION.md` §2.6.
+- **Trace**: the eight `06` markers and the two `05` markers on their implementing items;
+  `DESIGN.md` §Endpoints Overview (57 routes); `DECOMPOSITION.md` 2.6 (the lint FR's halves).
+
+#### P-D-147 — 07's doors: the correction door on the publish's third argument, the producer doors under the stored host with the retirement rule, the seven codes, the three events, the tripwire
+
+- **Date**: 2026-09-05 (the lead, group 5 of the solo plan; `07` §7 rows 2, 5, 6, 8, 9, 10, 11,
+  22, 23, 24 as already answered by P-D-129)
+- **The correction door exists.** `POST /bss-products/v1/skus/{id}/corrections` on `sku × correct`
+  — a new **action** on the `sku` label (`actions::CORRECT`, permission `sku_correct`), which is
+  the answer to the roster question `dod-reference-authz` carried: the door corrects a SKU. The body
+  spells one of two bucket-ii fields, `sku_type` or the meter pair as a whole; nothing else can be
+  spelled, so structural identity is unwritable by shape rather than refused. The head doors' refusals
+  still name the door and do not forward to it (P-D-41's posture).
+- **The ceremony is the record.** P-D-129 rows 10, 11 and 23 built: a `sku_correction` approval at
+  the head's revision whose `content_snapshot` **is the payload** — the door compares canonically and
+  refuses a mismatch as `APPROVAL_REQUIRED`, so the bytes an approver signed are the bytes applied.
+  The door spends the record in its own transaction, re-runs **the lane's own predicate** at commit
+  (row 22: fresh-zero on the normal lane, every-producer-unavailable on arm (a); arm (b)'s operand
+  is the resolver's pre-transaction answer, P-D-121 row 19's shape), then calls `run_publish` with
+  the correction as its **third argument**: the head is judged as corrected, re-published as N+1
+  through the ordinary pipeline, and `publish_sku_head` writes the column(s) and a fresh
+  `correction_ref` in the bump statement — the only form the row-image trigger admits (row 6). A
+  corrected meter re-resolves its new `usageTypeRef` and freezes the binding (P-D-05).
+- **Three admission gates, two preconditions.** Normal: fresh-zero, else `CORRECTION_REFERENCED`
+  naming every producer whose verdict holds the SKU. Arm (a): `lane = breakglass`, the deployment
+  flag on (`BREAKGLASS_CORRECTION_DISABLED`, 403), at least one producer and every one stale or
+  never-received (a fresh one is `CORRECTION_SIGNAL_AVAILABLE`), a reason. Arm (b): a meter
+  correction whose current ref the resolver answers **not-found** for, on any lane, not behind the
+  flag (P-D-16, P-D-48); a timeout admits nothing. Preconditions: the head is **clean** — its
+  frozen-roster rendering equals its last version row's content, row 24's digest equality — else
+  `CORRECTION_DIRTY_HEAD`; and no pending publish approval on the subject, else
+  `CORRECTION_APPROVAL_OPEN`. Every break-glass reason passes 02's PII gate first.
+- **The evidence.** A break-glass correction writes its `products_correction_override` row
+  (`producer_unavailable` with the per-producer verdict snapshot; `unresolvable_target` with the
+  dead reference), announces `SkuCorrectionOverride` beside `SkuImmutableFieldCorrected`, writes an
+  audit row **carrying the ceremony reference** (`AuditEntry::CeremonyAct` — the audit plane's
+  `ceremony_ref` column has its first writer) and feeds the tripwire.
+- **The tripwire and the blocker, rows 8 and 9 built.** A windowed count over the override table
+  per arm, rolling 30 days, never stored; above the configured rate it raises
+  `reference_breakglass_tripwire` (a structured warn event, the `retirement_held` shape).
+  `signal_delivery_release_blocker` is **derived** from the `producer_unavailable` arm's window and
+  clears when the window rolls; `09`'s release door is its production reader (group 7), which is
+  why the reader carries a test-only allowance today.
+- **The producer doors have a gate and the retirement rule.** Register and retire ride
+  `GovernedLiveOp` on `reference_producer/{producer}` (unpinned) under the stored host, P-D-144's
+  shape at the sixth and seventh live-op doors, and each emits `ReferenceProducerSetChanged` —
+  entity-less, **`aggregate_id = tenant_id`** (P-D-71), its own subject type. The rule P-D-129 rows
+  2 and 5 settled: the last registered producer is `PRODUCER_SET_EMPTY_FORBIDDEN`; a stale or
+  never-received one is `PRODUCER_RETIREMENT_WOULD_FREE` unless the caller supplies a
+  **justification** (the retirement body, optional), which passes the PII gate and rides
+  `breakglass × elevate` as a second grant on the same door — then one `producer_unavailable`
+  override row per SKU the stale watermark held, the ceremony on the audit row, the tripwire fed. A
+  live producer posts an empty set and retires fresh, bodiless.
+- **The seven codes and the rosters.** `PRODUCER_SET_EMPTY_FORBIDDEN`,
+  `PRODUCER_RETIREMENT_WOULD_FREE`, `CORRECTION_REFERENCED`, `CORRECTION_DIRTY_HEAD`,
+  `CORRECTION_APPROVAL_OPEN`, `CORRECTION_SIGNAL_AVAILABLE` at 409 and
+  `BREAKGLASS_CORRECTION_DISABLED` at 403, `design/07` §3.2's statuses; both counters at **77**.
+  Three events in `SCHEMA_REFS` with `THE_REFERENCE_TRIO` in both roster families and typed twins on
+  the broker arm. `ReferenceKnobs` carries the freshness, the tripwire rate and the flag on
+  `ApiState`, read once from `ProductsConfig`.
+- **Ticks.** `07`: `dod-producer-registration`, `dod-correction-door`, `dod-correction-republish`,
+  `dod-breakglass-unavailable`, `dod-breakglass-unresolvable`, `dod-tripwire`,
+  `dod-reference-error-taxonomy`, `dod-reference-authz`, `dod-reference-events`,
+  `dod-reference-audit` — 07 reaches **17 of 17**. §6: seventeen criteria ticked on probes; the
+  race criterion (a reference between submission and approval), the recovery halves of the
+  re-check criterion, the historical-verdict half of the onboarding probe and the watermark
+  positive-control lines stay unticked for want of a probe, not of a door. `10`'s last criterion
+  (every reason-bearing door raises `CONTENT_PII_BLOCKED`) gains the correction door's and the
+  retirement's probes; it still waits on a probe at `04`'s SKU retire door, so `10`'s status box
+  stays.
+- **Propagated**: `features/reference-signal.md`.
+- **Trace**: `dod-producer-registration`, `dod-correction-door`, `dod-correction-republish`,
+  `dod-breakglass-unavailable`, `dod-breakglass-unresolvable`, `dod-tripwire` markers on their
+  implementing items; `DESIGN.md` §Endpoints Overview (51 routes).
+
+#### P-D-146 — 03's second half: the sets door under the stored host with a label op, the bundle gate condition on the publish, a computed finance operand, and the binding snapshot beside the version row
+
+- **Date**: 2026-09-05 (the lead, group 4 of the solo plan; `03` §7 rows 6, 14, 16, 20 as already
+  answered by P-D-121, P-D-125 and P-D-134)
+- **The sets door has a gate.** Add, transition and the new relabel each resolve the stored
+  approval host before their transaction (`api::rest::authorize_live_op`) and spend the record
+  inside it (`repo::settle_authorization`) — P-D-144's shape at the fifth live-op door. The subject
+  is `GovernedLiveOp` on `recognized_set/{set_kind}/{member_code}`, **unpinned**: the door's
+  staleness pin is `expected_state` in the body, not the approval's revision, so the stored `0`
+  sentinel and the door's `Unpinned` meet the way P-D-144 made them. Without a satisfied record the
+  door answers `APPROVAL_REQUIRED` and writes nothing; every probe seeds the record through the same
+  double the other doors use, and one probe drives the door without it.
+- **A third route, `POST …/members/{memberCode}/label`**, changes `display_label` and nothing
+  else — the rename `dod-plantier-governance` asks for, which `dod-unit-immutable` forbids being a
+  rename of the code. The trigger's whitelist already admitted exactly `state` and `display_label`;
+  the door now has the write that uses the second half. The design's route table gains the row —
+  and two rows it had been missing: the transitions route (registered since P-D-90) and the
+  inbox `GET /approvals` (P-D-144). Fifty routes, counted from the code.
+- **The removal guard is uniform across the four kinds.** `SetKind::carrier_column` names the
+  `products_sku` column each set's members are declared in, `repo::member_holders` samples holders
+  through it, and the flip's `NOT EXISTS` re-asserts it for every kind, not only `metering_unit`.
+  The door's module doc had said in so many words that a follower who wired the columns without
+  the lookup would ship the tier and code guards permanently off; P-D-145 wired the columns, this
+  wires the lookup. `PLAN_TIER_RETIRE_BLOCKED` and `ACCOUNTING_CODE_DELIST_BLOCKED` are now
+  raised, with a positive control that removes a member nobody carries.
+- **The bundle gate condition sits on the publish.** `skus::refuse_unacknowledged_bundle` runs in
+  `run_publish` after the verdict and **before** the one-shot: a `bundle` that is uncomposed by
+  P-D-134 row 20's reading — `published_version = 0`, or published with `composition_pending`
+  raised — publishes only under a record whose `override_acknowledged` is set, refusing
+  `BUNDLE_OVERRIDE_REQUIRED` (the fifteenth classification code, 400 precondition shape, both
+  counters at 70). Every lane carries it because every lane is `run_publish`. The refusal precedes
+  the settle so the record stays open for the acknowledged retry, and the acknowledgment is the same
+  operand `post_publish_image` writes into `composition_pending` (P-D-32). The runner's fixtures,
+  which P-D-145 had made bundles to dodge the codes, become `product` SKUs with Finance codes seeded
+  in that harness — a bundle would now need the ceremony. The test double for the ceremony,
+  `seed_satisfied_approval_with_ack`, stamps `author_override_ack` on the record after the fact:
+  above `N = 0` `submit_approval` refuses an author acknowledgment (P-D-68 arm 1), and the gate's
+  one reader treats the author's column and an approver's acknowledging decision alike.
+- **The finance-material operand is computed.** `dod-finance-predicate` sat unticked on *"whether
+  a change is finance-material cannot be computed: the columns are 03's and 03 has not registered
+  them."* They are registered (P-D-145), so the submit door now ORs the caller's `finance_material`
+  with `domain::recognized::is_finance_material(touched)` — `tax_category_ref` or `gl_code_ref` in
+  the diff (`plan_tier` is Product's, deliberately absent). A caller can still add a reason the
+  registry cannot see; it can no longer declare a code change *not* finance-material. The
+  one-person tenant's probe publishes a first `product` SKU at `N = 0` with the predicate recorded
+  `predicateUnsatisfiable = finance_reviewer` on the descriptor and no double seeded — the real host.
+  `dod-finance-predicate` (05) and `dod-finance-materiality` (03) tick together; 05 §7 row 25
+  (whether a recorded approver *held* FinanceReviewer) stays open as the decision door's question.
+- **The binding snapshot is a column beside the row, outside the digest** — P-D-134 row 6 built.
+  `products_entity_version.binding_snapshot` (nullable `text`, `m20260829_000007` in place on both
+  engines) holds `UsageTypeBinding::snapshot_json`: `{gts_id, kind, metadata_fields}`, keys and
+  fields sorted so equal bindings store equal bytes. `UsageTypeAnswer::Resolved` now carries the
+  binding; `resolve_usage_type_before_publish` returns it and `run_publish` hands it to `freeze_for`,
+  which computes `content` and `content_digest` before looking at it. **`DIGEST_VERSION` stays 2.**
+  P-D-134 wrote *"`DIGEST_VERSION` stays 1"* at row 6 and *"bumps to 2 with `06`'s build"* at `02`
+  row 22; P-D-145 moved it to 2 with 03's roster, so the bump `06`'s build owes is to **3**. A
+  Product row and a SKU with no meter freeze `NULL`.
+- **The no-event declaration is a constant.** `events::SKU_CLASSIFICATION_EDITS_EMIT_NO_EVENT`
+  names the seven per-field SKU columns whose edits ride `SkuHeadSaved`/`SkuPublished` and emit
+  nothing of their own; a test holds each against `SCHEMA_REFS` and the bucket roster.
+- **The SDK read shape carries 03's fields from day one.** `bss_products_sdk::models::Sku` gains
+  `sku_type` (a closed `SkuType`), `sellable`, `plan_tier`, `metering_unit`, `usage_type_ref`,
+  `tax_category_ref`, `gl_code_ref`. No read door constructs the shape yet and pricing's `CatalogSku`
+  lacks three of the seven — `12`'s, additive on the consumer side, as the DoD intends.
+- **Measured and routed, not built: the scheduled lane never resolves `usageTypeRef`.**
+  `activation_runner` enters `run_publish` under `PreAuthorized` without the pre-transaction
+  resolve, which lives in the REST door and needs the caller's `SecurityContext`. So a scheduled
+  publish of a metered SKU skips P-D-131's fail-closed check, freezes `NULL` into
+  `binding_snapshot`, and cannot reach the `deferred` arm `publish_refusal_is_transient` now holds
+  for `USAGE_TYPE_UNAVAILABLE`. The arm is built so the code lands in the right set when the lane
+  resolves; the lane is `03` §7 row 22 / design §6 item 22, owner `04`/`07`, fix shape stated there.
+- **Ticks.** `03`: `dod-recognized-set-mechanics`, `dod-sellable`, `dod-bundle-override`,
+  `dod-binding-snapshot`, `dod-meter-bucket`, `dod-unit-immutable`, `dod-plantier-governance`,
+  `dod-finance-materiality`, `dod-classification-errors`, `dod-recognized-set-events`,
+  `dod-sdk-read-shape` — 03 reaches **22 of 22**, every DoD in the feature (its status box
+  stays under P-D-137's convention until group 10's pass). `05`: `dod-finance-predicate`. §6 criteria ticked where a probe
+  reads them back; the *sellable end to end*, *deferred lane* and *correction door* criteria stay
+  open on `12`, row 22 and `07` respectively.
+- **Propagated**: `design/01-foundation.md`, `design/03-sku-classification.md`, `features/sku-classification.md`, `features/governance.md`.
+- **Trace**: `dod-recognized-set-mechanics`, `dod-bundle-override`, `dod-binding-snapshot`,
+  `dod-plantier-governance`, `dod-finance-materiality`, `dod-recognized-set-events`,
+  `dod-sdk-read-shape` markers on their implementing items; `design/01` §version-row column list;
+  `DESIGN.md` §Endpoints Overview.
+
+#### P-D-145 — 03's five columns land, the type profile and the tier and code validators run at three doors, and the platform seeds on the first write
+
+- **Date**: 2026-09-05 (the lead, group 3 of the solo plan; `03` §7 rows 5, 7, 10, 11, 13, 16, 18
+  as already answered by P-D-91, P-D-121 and P-D-131)
+- **The columns.** `products_sku` gains `sku_type`, `sellable`, `plan_tier`, `tax_category_ref`
+  and `gl_code_ref` in `m20260829_000003` in place, both engines. **The type column is named
+  `sku_type`**, the donor's name (`pricing`'s `CatalogSku.sku_type`), where the design writes
+  `type` — a column called `type` fights every engine's and every ORM's reserved word for nothing.
+  Nullable in the DDL except `sellable` (`NOT NULL DEFAULT true`): presence is the doors' rule,
+  not the schema's, because the shipped fixtures and the bulk lane insert rows the doors never
+  saw and a `NOT NULL` would have made them lie with a default. `sku_type` is **bucket ii** (the
+  type is the profile; after first publish only the correction door moves it), the other four
+  **bucket iii**; the trigger arms on both engines carry them and `bucket_agreement_tests` holds
+  the registry to the arms. No foreign key (P-D-91).
+- **Presence rules.** `sku_type` is required at create — absence is the shape's `VALIDATION`
+  (P-D-121 row 13), a value outside `product | service | bundle` is `SKU_TYPE_UNKNOWN`; at publish
+  an absent type is `SKU_TYPE_UNKNOWN` too, the arm the design calls unreachable being reachable
+  by a row the create door never saw. `plan_tier` defaults to the seeded `standard` at create
+  (P-D-131 row 11: mandatory on every SKU, so an empty tier would make the first publish
+  impossible) and is judged at create, save and publish. A `product` or `service` publishes only
+  with both accounting codes (`ACCOUNTING_CODE_REQUIRED` names the missing field); a `bundle`
+  needs neither. Codes and tiers are judged against their recognized sets at create, at a save
+  that moves them, and at publish: unknown or `removed` refuses, `deprecated` refuses a **new**
+  assignment only — a first publish counts every carried value as new, an existing published
+  carrier keeps its value.
+- **The platform seeds on the first write that could need it** (P-D-104, P-D-121 row 10):
+  `repo::ensure_recognized_seeds` writes the four PRD §17.1 units when a declaration is judged and
+  `standard` when a tier is, every row `seeded_by = platform`, a lost race read back; **Finance's
+  two sets seed nothing** — their roster is Finance's to fill through the governed door (P-D-131
+  row 5), so a fresh tenant publishes no `product` until Finance has added a code, which is the
+  fail-closed reading and is stated here. A seeded member's removal is `ILLEGAL_FIELD_MUTATION`
+  (P-D-131 row 18) — the sets door's placeholder `VALIDATION` is replaced.
+- **Six codes join the taxonomy** — `SKU_TYPE_UNKNOWN`, `ACCOUNTING_CODE_REQUIRED`,
+  `ACCOUNTING_CODE_UNKNOWN`, `ACCOUNTING_CODE_DEPRECATED`, `PLAN_TIER_UNKNOWN`,
+  `PLAN_TIER_DEPRECATED` — 422 architectural, 400 on the wire in the precondition shape the meter
+  codes use; both numeric counters move 63 → 69. `BUNDLE_OVERRIDE_REQUIRED` waits on
+  `dod-bundle-override` (group 4).
+- **The frozen content grows five names and the digest scheme moves to 2.** `sellable` freezes as
+  a JSON boolean, the other four as strings when carried; `SKU_VERSION_CONTENT_ROSTER` is 18;
+  `canonical::DIGEST_VERSION` is `2` (P-D-35's note: the gear is undeployed) and the golden vector
+  pins it. A clone copies the five (`SkuCloneSource`), from the head for a draft and from the
+  frozen rendering for a published source. The bulk lane inserts a row's classification as the
+  row carries it and defaults a bare row to a `product` on `standard` — 09's row shape carrying
+  these by contract is group 6's.
+- **Ticked**: `dod-classification-columns`, `dod-seeded-members`, `dod-type-profile`,
+  `dod-bucket-registration`, `dod-plantier-assign`, `dod-accounting-validators`; `03` §6 criteria
+  3, 5, 7, 32, 34, 37, 58, 61, 62. **Not ticked**: `dod-sellable` (its SDK read-shape clause is
+  `dod-sdk-read-shape`'s), `dod-classification-errors` (fourteen of fifteen; the scheduled-lane
+  `deferred` arm for `USAGE_TYPE_UNAVAILABLE` has no code yet).
+- **The suite's fixtures name a type and Finance's codes.** Every create body in the door suites
+  carries `sku_type: product` and the two codes, and each harness seeds `TC-STD` / `GL-4000` into
+  the tenant's Finance sets (`test_support::seed_finance_codes`) — a stand-in for Finance's
+  governed add, so the `product` fixtures can publish; the runner's fixtures are `bundle`s and need
+  none. Noted, because a suite that seeds Finance codes for itself is a suite in which
+  `ACCOUNTING_CODE_REQUIRED` must be probed on purpose — and it is.
+- **The arguments against, stated.** Naming the column `type` as the design does — rejected for
+  the reserved word; the design gains a parenthetical. `NOT NULL` on `sku_type` and `plan_tier` —
+  rejected; the doors carry presence and the fixtures and the bulk lane would have been forced
+  into defaults that lie. Seeding Finance's sets with a placeholder code — rejected; the codes
+  mean something to Finance and nothing to this gear, and a placeholder would publish products
+  under a code nobody chose. Judging `deprecated` as a refusal on every publish — rejected; the
+  design's "existing published carriers stay valid" is exactly the new-assignment scoping.
+- **Not changed**: the meter pair and its `CHECK`; the recognized-set door's transitions beyond
+  the seeded-removal code; the SDK read shape.
+- **Propagated**: `features/sku-classification.md` (six ticks, two status notes, nine criteria);
+  `design/03-sku-classification.md` §4 (the column name); the solo plan's group 3 entry.
+
+#### P-D-144 — Every door runs the stored host: the four live-op doors switch, the inbox envelope ships, the ledger-digest pin reads off the snapshot, a signal is born satisfied, and an SLA lapse is alerted once
+
+- **Date**: 2026-09-04 (the lead, group 2b of the solo plan; P-D-142's remainder, P-D-133's lapse
+  alert, P-D-137 row 41's read, `05` §7 rows 1–3, 7, 11–14, 18, 24, 25, 31 as already answered)
+- **The four live-op doors run `StoredApprovalGate::governed` and spend the record inside their
+  own transaction.** `api::rest::authorize_live_op` resolves the host over the store's candidates
+  for the envelope's subject and evaluates it before the door's transaction; the door then calls
+  `repo::settle_authorization` **inside** the transaction that writes the act — the taxonomy
+  category ops and definition ops through the lock functions (`infra::taxonomy::*_under_lock` and
+  `apply_definition_act` take the authorization), the materiality-policy `PUT` and the allow-list
+  sign-off and revoke inside their `transaction_with_retry`, and the scheduled-transition cancel,
+  which had run its supersede and its audit row as two statements on a connection and now runs
+  them and the one-shot as one transaction. No production door builds `NoMaterialityPolicyGate`.
+  `settle_authorization` moved from `api::rest` to `repo` (re-exported) so infra may call it.
+- **A stored live-op record had to read back as unpinned, or nothing would ever have matched.**
+  Every live-op door presents `SubjectPin::Unpinned` — a category or a definition has no counter
+  the ceremony pins — while the store rebuilt a `GovernedLiveOp` candidate's pin as
+  `MutationSeq(internal_revision)`, and the host compares subjects whole. `pin_for_kind` now reads
+  a stored `0` as `Unpinned` for that kind, which is P-D-120 row 14's own sentinel (*"`0` = no
+  pin"*), and `a_live_op_record_with_no_pin_matches_an_unpinned_subject` holds it.
+- **The ledger digest is read off the snapshot (P-D-137 row 41).** `pin_for_row` parses
+  `content_snapshot` for a `bulk_batch` record and returns `SubjectPin::LedgerDigest(ledgerDigest)`
+  — the key is fixed here, at the top level of the report object — so a bulk door presenting the
+  same digest is authorized and one presenting another is refused, with the `bigint` column never
+  holding a digest (`a_bulk_batch_records_pin_is_its_ledger_digest`).
+- **The inbox envelope ships as this slice's half.** `GET /bss-products/v1/approvals?state=pending`
+  under `approval × read`: one card per pending record, oldest first, the quorum block carrying
+  `required` as the **effective** count and `configured_quorum` as the raw `N`, `satisfied` as
+  distinct approving principals, `predicate_unsatisfiable` where the finance lens could not be
+  demanded. **Wire names are the gear's DTO convention — snake_case — not the design prose's
+  camelCase**; `12` pins the envelope and asserts merge-compatibility with pricing's queue.
+- **A `system_signal` is born satisfied at the store, and the REST door refuses to mint one.**
+  `repo::submit_system_signal` writes the record with the signal's id as `submitter` (P-D-120 row
+  14's answer), `required = 0` beside the raw `N` it gives no standing
+  (`QuorumDescriptor::system_signal`), audited as `approval.system_signal`; `POST /approvals` with
+  `subject_kind = system_signal` is refused `VALIDATION`. The head-cleanliness and deferral
+  clauses wait on the signal consumer (`06`); the DoD is not ticked.
+- **The SLA lapse is alerted once (P-D-133).** `products_breakglass_session` gains
+  `posthoc_overdue_alerted_at` (migration `m20260901_000017` edited in place, both engines, both
+  goldens); the lifecycle tick (`gear.rs::breakglass_sla_tick`, on the runner's loop) lists post-hoc
+  sessions still `pending` past `breakglass_review_sla_hours`, wins a CAS on the stamp and raises
+  `products_breakglass_review_overdue` on the same channel the open-time alert used; a lost CAS is
+  silent (`an_overdue_posthoc_review_is_listed_and_stamped_once`).
+- **`approval_ref` stays nullable — decided.** The tightening `m20260829_000007` owed to slice 05
+  is declined: a `NonMaterial` publish runs ungoverned and has no record, so `NULL` is the honest
+  value and a placeholder would write a false authority into a financial record. The header is
+  rewritten in place.
+- **A finding this group made and does not fix: P-D-45's convention is broken eight ways.** The
+  migrations hold `created_by` (three tables), `submitter`, `approver_principal`, `principal`,
+  `reviewed_by`, `approver_a`/`approver_b` and `updated_by`, every one a pseudonymous actor ref
+  under a name lint 7 cannot see; P-D-143 had counted one. Recorded as `05` §7 row 42 and corrected
+  in `DESIGN.md` §3.7; the choice — rename eight columns or give lint 7 a declared roster — is the
+  lead's with `12`, and this group takes neither.
+- **Ticked**: `dod-gate-host` (sixteen doors on the stored host, none permissive),
+  `dod-quorum-evaluator` (its blockers answered; the envelope shows the predicate),
+  `dod-rbac-catalog` (its seven rows answered by P-D-119/120/133/134),
+  `dod-inbox-envelope` (this slice's half). **Not ticked**: `dod-system-signal` (the `06`
+  clauses), `dod-finance-predicate` (`03`'s columns are still not in the bucket roster).
+- **Two more things measured and routed.** `recognized_sets.rs`' member door submits no envelope
+  at all while `03` prices set ops as governed — `03`'s group. The test suites' raw request
+  builders (`send`, `put_policy`, `post_op`, `sign_off`, `revoke`) now seed a satisfied record for
+  the live-op subject the door will present — the `[[census-the-request-builders]]` lesson applied
+  a second time.
+- **The arguments against, stated.** Running the gate before the transaction and settling inside
+  it leaves a window in which a concurrent decision could flip the record — accepted; the settle's
+  `UPDATE … WHERE state = 'satisfied'` is the one-shot, and a record spent meanwhile refuses the
+  act inside its own transaction. Reading `0` as `Unpinned` widens what a stored record matches —
+  accepted narrowly: only the live-op kind, and only the value P-D-120 already defines as "no
+  pin". Refusing `system_signal` at the REST door while the consumer is unbuilt leaves the kind
+  with no writer but a repo function — accepted; a REST writer would be the forgery the DoD
+  forbids. Snake-case wire names against camelCase design prose — accepted; every receipt the gear
+  ships is snake_case, and one envelope in another case would be the inconsistency.
+- **Not changed**: `01`'s `GovernanceGate` trait; the stored host's rules; the frozen-column set
+  of `products_breakglass_session`; the approval store's columns.
+- **Propagated**: `features/governance.md` (`dod-gate-host`, `dod-quorum-evaluator`,
+  `dod-rbac-catalog`, `dod-inbox-envelope`, `dod-system-signal`, `dod-approval-store`; §7 row 42
+  and the row counts); `DESIGN.md` §3.7; `design/05-governance.md` §4;
+  `m20260829_000007`'s header; the solo plan's group 2 entry.
+
+#### P-D-143 — `DESIGN.md` re-cut against the consolidated review: three sections restored, the census derived, the review log struck
+
+- **Date**: 2026-09-04 (the lead, acting on the consolidated design review of `DESIGN.md` — two
+  independent runs plus an adjudication pass, 33 findings, 20 candidates retracted; every finding
+  re-measured against HEAD `9674fc72f` before it was acted on)
+- **What changed and why, by finding class.** *(i) Structure* — the template's §3.4 Internal
+  Dependencies, §3.5 External Dependencies and §3.8 Deployment Topology were absent and §3 was
+  renumbered over their slots; all three now exist (§3.5 says "not applicable" for third-party
+  systems, in words) and Interactions/Database return to §3.6/§3.7. Every citation of
+  "`DESIGN.md` §3.5" in this register and in `DECOMPOSITION.md` was retargeted to §3.7 — six sites.
+  *(ii) Content moved to the right altitude* — the Domain Model gains its entity table,
+  relationships and invariants; the Component Model gains the four mandated subsections per
+  component, names the one registration contract the handlers share (`RegisteredValidator` +
+  `BucketRegistry`, P-D-28) and draws the three edges `RES`/`IDEM`/`AUD` lacked; API Contracts gains
+  the route census from the router (47 registered operations), the error envelope, the versioning
+  rule and the PRD's interface/contract ids; the NFR allocation is the template's five-column
+  table with a **Verification approach** per row that says "workshop" where no meter exists; the
+  three slice-05 security facts (the platform break-glass floor, the pre-pipeline read-only
+  scope, sealing absent by decision) and the N = 0 residual risk are stated at system level; four
+  platform-delegated concerns (data protection, observability, DR, threat model) each get the
+  one-line delegation authentication already had. *(iii) Facts corrected* — `fr-clone` is `p2`
+  (the PRD declares no `p3`; 42 + 15 = 57); the coverage table carries slice 02's claim on
+  `nfr-scale-extensibility` (P-D-130) and says "thirteen pairs and one triple"; the governance
+  principle is qualified by the two governed freeze ceremonies (P-D-67) it contradicted; the
+  dependency prose reads `01 → 02 → (03, 04, 05)` and the 04 ↔ 07 edge is marked
+  integration-only; `products_product_category` sits under the slice that defines it; the pricing
+  SDK sentence no longer claims a `sellable` member pricing "lacks" (`product_catalog.rs:92`
+  declares it) and names the trait `ProductCatalogClientV1`; the key-decisions block points at
+  the register instead of mirroring P-D-01…20; the next-phase sentence is gone (the gear ships
+  201 source files and 28 migrations). *(iv) The table census is derived* — from the slices' §4
+  declarations (36) and the migrations' `CREATE TABLE` statements (34), with the four-row
+  difference stated: three slice-08 tables unbuilt, and `products_read_stamp` built but
+  undeclared by slice 08's §4. `products_materiality_policy`, which no slice declared, is now in
+  `design/05-governance.md` §4 with its columns. *(v) The review log is struck* — the
+  parentheticals narrating earlier drafts (the 34/35 recount, the "wrong slice twice" note, the
+  P-D-14…20 flag history, the six-question table, the "two further decisions" paragraph) are
+  removed from normative text; every fact they carried lives in the register (P-D-06…P-D-20,
+  P-D-47, P-D-48, P-D-130) and in git. §6 keeps its status table and loses its narrative; the
+  "flags: none" verdict is replaced by the list of the nine PRD §15 rows this design depends on.
+  *(vi) The coverage table is folded to twelve rows* — one per owning slice, every id verbatim,
+  the split note only where true. This departs from the template's per-requirement row shape
+  deliberately: seventy-one rows carried twelve distinct responses, and a false split note on
+  fourteen of them.
+- **Two findings of the lead's own, made while deriving.** `products_materiality_policy.updated_by`
+  holds the pseudonymous `actor_ref` the door resolves, under a name P-D-45's lint cannot see —
+  disclosed in §3.7 and in the new §4 bullet; the rename is a slice-05 §7 item, not this wave's.
+  And the route census showed five specified doors unregistered (06's diff and force-completion,
+  09's export, 07's correction, 08's reads) — stated under the endpoints table rather than listed
+  as if built.
+- **Not acted on, and why.** The review's #28 (promote three decisions to ADRs) stays the
+  Architecture owner's question, restated with ledger's one ADR added to the census. Its #29
+  (drop §6 Status entirely) is refused in part: the per-slice status table is the tracker the
+  handoffs cite, so it stays and only its narrative went. Its #27 (split the < 3 s budget per hop)
+  is done structurally — the four hops and their timestamps are named — and the per-hop numbers
+  are left to the NFR workshop rather than invented here.
+- **The arguments against, stated.** Folding the coverage table breaks the template's row shape —
+  accepted; the alternative was seventy-one bespoke sentences authored in one sitting, and the
+  CFS coverage rule counts ids, which all remain. Striking the review log loses the in-document
+  account of how the design got here — accepted; git and the register hold it, and a reader of a
+  design needs the design. Writing §3.8 for a gear that has no deployable of its own could read as
+  padding — rejected; that the gear *is* a library compiled into the host is the deployment fact,
+  and the sibling designs all state theirs.
+- **Not changed**: any slice's normative text beyond the 05 §4 declaration; the PRD; the feature
+  documents; the register's earlier entries (their §3.5 citations retargeted, nothing else).
+- **Propagated**: `DESIGN.md` (rewritten in place); `design/05-governance.md` §4;
+  `DECOMPOSITION.md` and this register (six citation retargets); the lead handoff's DESIGN row.
+
+#### P-D-142 — Each door constructs the host it needs: the stored gate at twelve head-act doors, materiality by the columns a publish touches, the record spent in the act's transaction
+
+- **Date**: 2026-09-04 (the lead, group 2a of the solo plan; `features/governance.md`
+  `dod-gate-host`'s named choice, P-D-139's second half, `05` rows 26 and 40's residue)
+- **The choice `dod-gate-host` left the lead is taken the second way: the door constructs the
+  host, the seam does not grow.** `api::rest::resolve_host(runner, scope, tenant, GateHost, HostFor)`
+  is the one constructor site. A lifecycle transition, a cancel and the Product resume are
+  `HostFor::Governed(subject)` — material by enumeration (`inst-mt-inputs`) — and run
+  `StoredApprovalGate::governed(gate_candidates(subject))`. A publish is `HostFor::Publish { entity,
+  revision }`: the door resolves the tenant's stored policy (`resolve_materiality_policy`; an
+  unresolvable policy is a storage failure, not a permissive default), reads the columns the head
+  touches since its last frozen version (`approvals::resolve_entity_subject`, now `pub(crate)`),
+  and asks `MaterialityEvaluator::verdict(EntityPublish { kind, touched })`: `NonMaterial` runs
+  `ungoverned()`, `Material` runs the stored host, and a bucket-ii touch is refused
+  `ILLEGAL_FIELD_MUTATION` naming the correction door before any transaction opens. A save and a
+  discard are ungoverned by construction (`05` §3.1) and take the ungoverned host at the handler;
+  `HostFor::Ungoverned` was a variant nothing constructed and is gone. `GateHost::Given(host)` is
+  the in-process seam the probes enter through; no routed handler builds it, and the variant says
+  so (`allow(dead_code)` outside `cfg(test)`).
+- **A first publish touches every column and is Material, and its bucket-ii columns are not a
+  touch.** With no frozen version to diff against, `touched` is the whole content; the correctable
+  columns (`metering_unit`, `sku_code`, …) are excluded from that set, because there is no earlier
+  frozen value they could differ from and the save door admits no bucket-ii write after first
+  publish, so the exclusion has no second case.
+- **The diff is like-for-like, and that fixed a defect the submit door already had.** A frozen row
+  is §4.3's *complete* set (`Absence::Null` — a name with no value is a `null` member) while the
+  head is rendered as the parsed shape (`Absence::Omit`, P-D-34); comparing them raw made an
+  unmetered SKU's `metering_unit` "touched" on every re-publish and refused it `CorrectableTouch`.
+  Eight routed re-publish probes went red the moment the door judged materiality, and the same
+  computation had been answering B's approval-submit door. Both maps drop their `null` members
+  before the diff.
+- **The record is spent where the act commits.** Every governed door settles its authorization on
+  the act's own runner — `settle_sku_authorization` / `settle_product_authorization` over P-D-139's
+  `settle_authorization`: `Consume` flips `consumed` in the act's transaction and refuses
+  `APPROVAL_REQUIRED` when the record is already spent; `Verified` pins without consuming;
+  `NoRecord` leaves the placeholder. A refused act rolls the flip back with everything else.
+- **What the suite had to learn.** A routed governed act now needs a satisfied record for its
+  subject, so the test helpers seed one at the revision the `If-Match` asserts
+  (`test_support::seed_satisfied_publish_approval`, never superseding a record the case seeded
+  itself) — and the census of who bypasses the helpers was the request builders, not the helper
+  names: four raw `oneshot(` helpers (`product_head_act`, `sku_head_act`, `post_json_act`,
+  `post_retire`/`post_cancel`) and two `both_doors` calls carried fifteen red probes until they
+  seeded too. The retire probes' *"one candidate for the subject"* became *"one satisfied
+  candidate"*, because the publish that made the SKU leaves its spent record on the same subject.
+  `a_publish_does_not_supersede_the_record_it_consumes` now expects `consumed`: its `satisfied` was
+  the stand-in for a door that consumed nothing.
+- **Ticked, clause by clause**: `dod-one-shot-consumption` (the flip in the act's transaction; the
+  publish probe `two_publishes_off_one_satisfied_record_spend_it_once_and_the_second_is_refused`;
+  the refused publish that leaves the record `satisfied`), `dod-publish-door`, `dod-save-door`,
+  `dod-approval-store` (rows 9, 11, 14 answered by P-D-120/P-D-133), `dod-decision-store` (row 6 by
+  P-D-138); `governance` §6 criteria 25 and 26; `foundation` §6 criteria 15, 16, 18, 20, 25 and 27.
+  Markers on the module docs of `api/rest/skus.rs`, `entity/approval.rs`, `entity/approval_decision.rs`.
+- **Not ticked, and why**: `dod-gate-host` — four doors still build `NoMaterialityPolicyGate`
+  (`taxonomy.rs`, `materiality_policy.rs`, `retention.rs`, `scheduled_transitions.rs`; group 2b,
+  with the `LedgerDigest` read of P-D-137 row 41); `dod-quorum-evaluator` — its inbox-envelope
+  visibility clause is `dod-inbox-envelope`'s half; `dod-finance-predicate` — `03`'s
+  classification columns are not in `domain::bucket`'s roster, so `finance_material` is still an
+  argument nobody can compute. `foundation` §6 criteria 30 and 33 stay open: no probe drives a
+  `PreAuthorized` publish against an already-`consumed` record, and "refused by any update on both
+  engines" is asserted by the whitelist probes, not by a publish-door probe.
+- **The arguments against, stated.** Widening `GovernanceGate::evaluate` with the act would have put
+  the operand where the host is sure of it — rejected; it is `01`'s trait, every implementor and
+  probe changes, and the constructor already carries the operand. Judging a publish's materiality at
+  the door rather than at submission duplicates the submit door's computation — accepted, the same
+  function serves both, and a publish with no submission behind it (a `NonMaterial` one) has no
+  other place to be judged. Seeding records in test helpers hides the gate from routed probes —
+  accepted narrowly: the helpers seed exactly one record per act at the asserted revision, the
+  gate-specific probes enter through the seam with their own hosts, and the spent and refused
+  arms have named probes of their own.
+- **Not changed**: `01`'s `GovernanceGate` trait and vocabulary; `StoredApprovalGate`'s rules;
+  P-D-139's settle; P-D-141's door order (resolve, gate, claim).
+- **Propagated**: `features/governance.md` (`dod-gate-host`, `dod-one-shot-consumption`,
+  `dod-approval-store`, `dod-decision-store`; §6 rows 25, 26); `features/foundation.md`
+  (`dod-save-door`, `dod-publish-door`; §6 rows 15, 16, 18, 20, 25, 27); `skus_tests`' seam
+  comment; the solo plan's group 2b list.
+
+#### P-D-141 — The usage-type resolver is a trait on `ApiState`, the collector's client behind it, and no `cfg(test)` in the path
+
+- **Date**: 2026-09-04 (the lead, closing the one clause strand C's `052c40d64` was held on, and
+  wiring the collector; group 1 of the solo plan)
+- **The seam is a trait, not a fork.** `resolve_usage_type` answered `Resolved` under `cfg(test)`
+  and `Unavailable` otherwise — two programs, the production one exercised by nothing. It is now
+  `infra::usage_types::UsageTypeResolver`, carried on `ApiState` the way the PII detector is built
+  per door (P-D-136): `gear.rs` installs `CollectorResolver` over `usage-collector-sdk`'s
+  `UsageCollectorClientV1` when `ClientHub` carries one, and `NoCollector` — `Unavailable`, always,
+  with a boot-time warning — when it does not. The door reads `state.usage_type_resolver`; the
+  probes inject a scripted stub and drive the **door**, not the judge.
+- **The three answers, from the collector's errors.** `NotFound` → `Unresolved`; an invalid GTS id →
+  `Unresolved` without a call (an id that names nothing cannot resolve anywhere); every other error
+  and a call outliving `usage_type_resolver_timeout_ms` (2000, now read through
+  `ProductsConfig::usage_type_resolver_timeout`) → `Unavailable`, the fail-closed 503 P-D-131 decided
+  for usage SKUs. The call carries the caller's `SecurityContext`, threaded into
+  `publish_in_one_transaction`; the runner's scheduled lane still enters `run_publish` inside its
+  own transaction and does not resolve — consume-at-schedule's residue, unchanged.
+- **Retryable and idempotent, asserted.** The resolve runs before the publish transaction and
+  before the idempotency claim, so a `503` leaves the `Idempotency-Key` unclaimed and the retry with
+  the same key publishes exactly once — the probe the DoD names, written through the door.
+- **The arguments against, stated.** A trait object per request where a function would do —
+  accepted; the function was the fork. Threading `SecurityContext` one level down — accepted; the
+  collector's client requires it and the alternative was a synthetic context. `Unavailable` for a
+  deployment that simply has no collector — accepted; that is P-D-131, and the boot warning names
+  it.
+- **Not changed**: `judge_usage_type` and its three-answer probe; the timeout's interim value.
+- **Propagated**: `dod-usage-type-resolution`'s FEATURE note; the collector SDK joins
+  `products/Cargo.toml`; every test `ApiState` carries the resolved stub through
+  `test_support::resolved_usage_types`.
+
+
+#### P-D-140 — The detector swap is a standing rule the census enforces, and D's third delivery is accepted with its box honestly open
+
+- **Date**: 2026-09-04 (the lead, accepting strand D's `1e067c95f`, merged `34743cf3d`; the
+  question D put in its report, and the criterion that keeps `10`'s status box unticked)
+- **Any strand that finds a door building `NoPiiPolicyDetector` swaps it for
+  `api::rest::retention::tenant_pii_detector`, declares the swap in its commit, and leaves the
+  owning strand a line in its brief.** D asked whether the second reach into another strand's file
+  for this exact reason was a rule or a breach, and it is a rule: `dod-pii-detector` obliges *the
+  whole door set*, a permissive literal at one door is a hole in every other door's guarantee, and
+  the census (`no_production_door_builds_the_permissive_pii_host`) now **discovers its population**
+  — every crate source whose production half calls the hook — so a seventh door arriving with a
+  literal is red on the day it lands, whoever owns the file. The census with a hand-named
+  population had passed on B's `approvals.rs` for an afternoon; that is the defect one level up
+  from the one it exists to catch, and the discovered population is the fix. A door's **own** rule
+  stays its owner's: only the detector line is anyone's.
+- **The release stamp landed as P-D-137 decided**, on both engines and both ways, with the stamp
+  written first because it is what the arms read, and the release-stamp writer counted
+  (`every_writer_of_a_release_stamp_is_counted`: one site, and it is the sweep's).
+- **The live head's version is out of the candidates** (read once per pass from both head tables,
+  not a correlated `NOT EXISTS` per row) and **a storage failure is no longer a design hold**
+  (`classify_entity_version_failure` keys on the migration naming itself, P-D-40).
+- **The box stays unticked, and the reason stands — with one recount.** The criterion *"every
+  reason-bearing door in the enumerated set raises the same code"* names five doors: this
+  feature's audit reasons, approval rejections, break-glass sessions, correction overrides, and the
+  `SkuRetired` payload's reason. **Four of the five exist and run the hook**: D's audit reasons;
+  B's approval rejection and break-glass reasons (`approvals.rs`, after the swap); and `04`'s
+  retirement initiation, which runs `content_pii_block` over the retire reason before `SkuRetired`
+  carries it (`skus.rs run_retire`, since `5da022f6f`) — D's note counted that door as absent. The
+  fifth, `products_correction_override`'s reason, is `07`'s unbuilt correction door. The criterion
+  cannot be ticked against a door that does not exist, so `10`'s box waits on `07` — recorded
+  here so the wait is a fact about `07` and not a hole in `10`.
+- **The arguments against, stated.** A standing licence to edit any door's detector line loosens
+  the ownership table — accepted narrowly: one line, one function, declared, census-enforced; the
+  alternative is a green census over a permissive door. Reading D's recount against it —
+  accepted; the retire door's hook call is in the merged code and the criterion's own text names
+  the `SkuRetired` payload.
+- **Not changed**: P-D-136's detector; P-D-137's release stamp and conventions; the ownership
+  table otherwise.
+- **Propagated**: `RELAY-retention.md` (the recount, the standing rule); `RELAY-governance.md`
+  (B's `approvals.rs` detector line is D's swap); the lead handoff's rule 14 gains the exception.
+
+
+#### P-D-139 — Consume-at-schedule: the retire doors pin the record that authorized them and spend it in the scheduling transaction
+
+- **Date**: 2026-09-04 (the lead; the decision-before-code item the queue has carried since
+  P-D-105, taken once B's submit door made a record exist)
+- **One function settles what an authorized act owes its record**:
+  `api::rest::settle_authorization` reads the `ApprovalDisposition` once for every governed door —
+  `Consume(id)` flips the record `consumed` **in the act's transaction** and answers the id;
+  `Verified(id)` answers the id and consumes nothing; `NoRecord` answers nothing. A record that is
+  no longer `satisfied` when the consume statement runs was spent by a concurrent act or closed
+  under this one, and the act **refuses `APPROVAL_REQUIRED` inside its transaction** — the
+  one-shot's losing side, rolled back with the act's own writes. B's host switch reuses the
+  function at the publish, deprecate and discard doors rather than re-deciding it per door.
+- **The scheduled row names the consumed record.** Both retire doors call the function before
+  they write; the row's `approval_ref` is the consumed record's id — one record for a Product's
+  row and every cascade leg, the legs being the mechanical stages of one composite act — and the
+  activation runner then verifies it in `PreAuthorized` mode under P-D-105's predicate and consumes
+  nothing further. `dod-scheduled-publish-pin` ticks on those three clauses; the only scheduling
+  door the crate has is retirement's, and a scheduled publish takes the same call when it gets one.
+- **Under the default host the placeholder stays, and it stays fail-closed.** `NoRecord` is the
+  only answer `NoMaterialityPolicyGate` gives; the row keeps P-D-105's `Uuid::now_v7()` placeholder
+  and the runner defers it as before. After B's switch a governed act never gets that answer.
+- **The arguments against, stated.** Refusing on the consume race rather than proceeding under
+  `Verified` semantics — accepted; an act that did not spend its record has no authority for it.
+  A placeholder that survives into the switch window — accepted; it is fail-closed at the runner,
+  and the alternative (a nullable column) would let a row exist with no record at all.
+- **Not changed**: P-D-105's predicate and its writer count (three, unchanged); `dod-one-shot-consumption`
+  stays B's — this entry wires its retire instance, the doors' remainder rides the host switch.
+- **Propagated**: `dod-scheduled-publish-pin` ticked, its marker on the function; the lead
+  handoff's queue item 2 struck; `RELAY-governance.md` names the function for the switch.
+
+
+#### P-D-138 — The owner's three: the detector's run heuristic narrows to a name dictionary, a head keeps its last version, and a registered producer is a launch criterion
+
+- **Date**: 2026-09-04 (**the product owner's decision** on the lead's recommendations; `10` §7
+  items 33 and 35, and the C6 consequence P-D-137 recorded)
+- **Item 33 — the `Uncertain` arm narrows to runs that carry a given name.** `RegistryPiiDetector`
+  returned `Uncertain` for any run of two or more adjacent capitalized words, so an attribute value
+  reading *"Premium Cloud Backup"* was refused until Legal signed the string off. The arm now fires
+  only for a run in which **at least one word is in a given-name dictionary shipped with the gear**
+  — a few thousand common given names across the deployment's locales, a constant in
+  `domain/retention.rs`, not configuration. Email and telephone stay `Blocked`; uncertainty still
+  blocks; the allow-list's exact match still lifts a signed-off run. Strand D's build, one function.
+- **Item 35 — a head keeps its last version for as long as the head exists.** P-D-137 excluded any
+  head-named version from the GC's candidates; this extends it to **retired** heads. Head rows are
+  physically append-only, so the cost is one frozen row per entity, ever; the alternative left a
+  retired head naming a row that no longer existed, or asked the GC for a write the head guard
+  refuses on a terminal row. Nothing further to build: D's exclusion covers every head state.
+- **A registered reference producer is a v1 launch criterion.** D-47's flip guard defers every SKU
+  retirement as `no_producers` while the producer registry is empty — C6's fail-closed posture,
+  which stands — and the `retirement_held` alert names the hold after `retirement_held_alert_hours`.
+  So pricing (or whichever producer owns the watermark) **MUST be registered before the first
+  retirement is scheduled**; `PRD` §15's launch table gains the row beside P-D-132's ack criterion.
+  No code change.
+- **The arguments against, stated.** A dictionary is blind to a rare or foreign-spelled name —
+  accepted; that is item 1's recorded risk and it stays on Legal's allow-list loop, and a detector
+  that guessed `Clean` for it is no worse than the one that refused every marketing title. Keeping
+  a retired head's version reads against a literal *"retention for retired entities/versions"* —
+  accepted; every earlier version of that entity still expires, and the retained row is the one
+  the head's own record names. Making a producer registration a launch criterion rather than
+  admitting flips on an empty registry — accepted; an unregistered producer is the case D-47
+  exists for.
+- **Not changed**: C2's fail-closed hook; P-D-136's detector at six doors; P-D-137's exclusion.
+- **Propagated**: `10` §7 items 33 and 35 struck; `PRD` §15 launch table gains the producer row;
+  `05` §7 row 6 struck on the same commit (the retention interplay it deferred to `10` is built:
+  approvals and decisions are candidates of the audit class and held by their guard);
+  `RELAY-retention.md` §2.1c carries the dictionary arm.
+
+
+#### P-D-137 — Three deliveries accepted in one afternoon: B's two contradictions, D's financial class, C's three findings, and two conventions the first finished feature needed
+
+- **Date**: 2026-09-04 (the lead, accepting strand B's six commits (merged `c1b86fcbb`), strand D's
+  `3a7fda0e2` and strand C's `6e8df1197` + `5febef8aa`; `05` rows 40 and 41, `10` item 34, the
+  contradictions C's report named, and `10` reaching 13 / 13)
+- **`05` row 40 — the `>= 0` reading stands.** P-D-120 row 14 names `0` as `internal_revision` for a
+  subject with no counter; a `CHECK` that forbids a decided value is the schema's defect, and B
+  widened it in place. Struck.
+- **`05` row 41 — the batch's digest rides the snapshot.** P-D-127 row 11 makes a `bulk_batch`
+  subject's scalar pin the ledger digest and `products_approval.internal_revision` is `bigint`. The
+  digest lives in **`content_snapshot`'s `ChangeReport`**, where row 23 already puts the report and
+  the per-row pins; `internal_revision` is `0` for that kind; `SubjectPin::LedgerDigest` compares
+  against the report's digest field. No column widens and the decision does not narrow to *"the
+  gate's, not the record's"*. B wires the read with the host switch. Struck.
+- **`10` item 34 — the financial class is collectable, and the mechanism is a release stamp.** D
+  measured that three of the GC's four target tables refuse every `DELETE`: the catalog-version
+  chain (`m20260901_000010`, `_000013`) as well as the evidence stores, so P-D-118 item 25's *"one
+  catalog version at a time, whole"* described a transaction that always rolled back. A catalog
+  version is a **financial record with a statutory window** (PRD §330: *"Snapshots are financial
+  records"*), not evidence; item 25 stands, and `000013`'s interim message naming slice 10 as the
+  future admitter was right. Under P-D-31 (no identity channel) and P-D-118 (no date in DDL) the one
+  row-image fact the GC can make true is a stamp: **`retention_released_at`**, nullable, on
+  `products_catalog_version`, admitted by the update whitelist **once** (`NULL` → a value) and
+  written only by the GC's release function under a **writer-count guard** (P-D-105's pattern); the
+  `DELETE` arm admits `OLD.retention_released_at IS NOT NULL`; entries and captures ride the
+  parent through P-D-40's referential predicate, deleted first. Both migrations edited **in place**,
+  strand D's build under a grant. **The evidence class is unchanged** (P-D-136): approvals,
+  decisions, sessions, overrides and the audit log stay flat. Two classes, two shapes, stated.
+- **Two things the lead's read of D's sweep found, one a decision.** *(i)* **A version row that any
+  head names as its current `published_version` is never a candidate.** The schema's only `DELETE`
+  predicate on `products_entity_version` is P-D-40's — *no catalog-version entry references the
+  row* — and `entity_version_candidates` selects every row older than the cutoff, so a live entity
+  published once more than `retention_days_version` ago would lose its only frozen content and its
+  head would name a row that does not exist. PRD §15 retains *retired* entities' versions and
+  history; a head is a reference the way a manifest is, and the cost of honouring it is one row
+  per entity. The candidate query excludes those rows (D's build); whether a **retired** head's
+  last version expires with its window is the owner's refinement, filed as `10` §7 item 35.
+  *(ii)* `collect_entity_version` maps **every** failure to `ReferencedByRetainedManifest`, so a
+  connection error is audited as a design hold — error class follows provenance; only P-D-40's
+  refusal is that reason, the rest are `StorageRefused`. D's fix.
+- **C's three findings.** *(i)* The runner's reference freshness reads `ProductsConfig::default()`
+  because `ProductsRuntime` never carried the field — `config.rs` and `gear.rs` are the lead's, so
+  the field is **the lead's build**. *(ii)* `evaluate_reference` is SKU-keyed and a Product has no
+  watermark: **the Product flip skips the 07 predicate** — its guard is its children's states
+  (P-D-115) and the children are retired by then; C's one-line change. *(iii)* An empty producer
+  registry defers every SKU flip as `no_producers` — C6's fail-closed posture (`07`), **recorded for
+  the owner**: until pricing registers as a producer, no SKU retirement completes.
+- **Two conventions, because `10` is the first feature at 13 / 13.** A feature's status box flips
+  when every DoD is ticked **and** every §6 criterion box is ticked; criterion boxes tick with their
+  DoD, by the strand that ticks it, clause by clause — a criterion is not ticked by inspection. D
+  ticks `10`'s criteria and its box.
+- **The counters, corrected on B's measurement.** Two numeric counters (`error_tests`' roster and
+  `DOMAIN_ERROR_VARIANTS`, 61) and one roster of a different set (`02`'s sixteen codes). Every brief
+  said three; every brief is corrected.
+- **The arguments against, stated.** A release stamp is a two-statement shape that any code path
+  holding the grant could set — accepted; the writer-count guard names the one path, and the
+  alternative is a decade of snapshots kept as if they were evidence, which PRD §330 says they are
+  not. Reading a catalog version as evidence would spare the migration edit — rejected on the same
+  sentence. Skipping the 07 predicate on the Product flip loses nothing a child has not already
+  answered — accepted. Flipping a feature's box on DoDs alone would have let `10` finish with its
+  criteria unticked — rejected; the criteria are what the DoDs can fail.
+- **Not changed**: P-D-136's evidence class; P-D-118 item 25; the interim numbers.
+- **Propagated**: `05` rows 40 and 41 struck; `10` item 34 struck and item 35 added; `design/05` §3.2 names B's three
+  doors; `RELAY-governance.md`, `RELAY-lifecycle.md`, `RELAY-retention.md` rewritten; the lead
+  handoff's counters paragraph.
+
+
+#### P-D-136 — The flat-refusal class keeps its guard, the GC holds what it cannot delete, and D's detector ships as measured
+
+- **Date**: 2026-09-04 (the lead, accepting strand D's `4544b243f`, merged `dd464c108`; `07` row
+  38, `02` row 4, `10` §7 item 32's fifth criterion, and the lead's own census tool)
+- **The guard shape (`07` row 38) — P-D-129's recommendation is withdrawn, because its referent
+  does not exist.** It recommended *"the audit plane's row-image predicate (P-D-34)"* as the one
+  shape for the class. Measured by D at `951fd3bae` and confirmed: `m20260829_000004` refuses
+  **every** `DELETE` unconditionally on both engines and its own doc, citing P-D-118, says there
+  will never be a date arm, while P-D-31 removed the identity channel; the chain's only opened
+  `DELETE` predicate (`m20260829_000007`) is **referential**, not row-image. The reason generalises:
+  a trigger expresses properties of the row, never of the deleter, and `products_correction_override`
+  admits no `UPDATE` that could mark a row. **D's shape stands**: the sweep judges and deletes
+  **per class, per candidate, each in its own transaction** (P-D-118 item 25's discipline,
+  generalised); a class whose table refuses `DELETE` yields a **held** candidate with a named
+  reason, audited, never an abort; the five evidence migrations stay untouched. Evidence rows are
+  not deletable in v1 — at 3650 days no collector reaches one before 2036 — and opening a write
+  path on evidence is a decision for then, taken as one. Row 38 closes as *"the shape is the
+  application's, not the DDL's"*.
+- **The detector, as shipped, and its friction, measured.** An email or a telephone number is
+  `Blocked`; a run of two or more adjacent capitalized words no active entry covers is `Uncertain`,
+  and the hook refuses both. Under the hook: localized attribute values (`attributes.<key>`), every
+  operator reason, `displayLabel`, metadata values, the allow-list's own free text, the export
+  justification — **not** names or codes. Consequence, stated for the owner as `10` §7 **item 33**:
+  with an empty allow-list an attribute value carrying *"Premium Cloud Backup"* is refused until
+  Legal signs `premium cloud backup` off, while *"McDonald"* or a lowercase name is not a run at
+  all. That is C2's fail-closed posture and item 1's recorded friction; whether the run heuristic
+  narrows (a length cap, a field class) is the product owner's call.
+- **Six doors, not two.** `NoPiiPolicyDetector` had six construction sites; the DoD obliges the
+  whole door set; D swapped all six through one helper with a census against a seventh literal —
+  one line in B's `materiality_policy.rs` and two in A's `taxonomy.rs`, **accepted as declared
+  bends**. B merges canon before touching that file.
+- **The census tool was blind to two of §7's three shapes.** `tick-shadow-census.py` parsed 14
+  table rows across twelve files and none of the prose `**Blocks**:` clauses; *"0 of 99"* was a
+  statement about tables. Rewritten the same day to read all three; at `dd464c108` it reads
+  **0 of 104** over 427 items, 83 live. D's five ticks were read by hand under P-D-109 first.
+- **The fifth §6 criterion is `dod-identity-map`'s** — D's strict reading, accepted; item 32 said
+  five and named one.
+- **The arguments against, stated.** Leaving evidence undeletable for a decade contradicts C3's
+  *"never indefinite"* in letter — accepted; the clock computes the candidate and the held record
+  names why it stands, which is a verdict and not silence. A run heuristic that refuses Title-Case
+  marketing copy will be felt on day one — accepted; a detector that guessed `Clean` is the opt-out
+  the DoD forbids, and the owner holds the dial. Two other strands' files bent — accepted once,
+  declared in the commit.
+- **Not changed**: the five evidence migrations; P-D-118's trigger doc; P-D-117's list shape.
+- **Propagated**: `07` row 38 and `02` row 4 struck; `10` §7 item 33 added; `design/05` §3.2's
+  `pii_allowlist × write` and `compliance × export` cells name D's four routes;
+  `RELAY-retention.md` rewritten; the census script.
+
+
+#### P-D-135 — Three dispatch calls: the policy's provisioning clause, the drill's target, and the doors' grants
+
+- **Date**: 2026-09-04 (the lead, under the standing *"decide what is plainly clear"* rule, taken
+  while writing the three strand briefs; `05` `dod-materiality-policy`, `10` `dod-restore-drill`,
+  `04`'s scheduled-transition doors)
+- **`dod-materiality-policy`'s clause *"take its initial value from tenant provisioning"* is
+  P-D-112's default.** P-D-104 withdrew the tenant registry that provisioning would have run from —
+  one slice over, the reading P-D-121 gave `03`'s seeds — and a tenant's initial `N` **is** the
+  default until the tenant configures one; an absent row resolving to the default is that
+  provisioning. Strand B's first link (`8cc41aa73`: the store, the door, the two routed indexes) is
+  **accepted and merged**; B amends the clause in the FEATURE and ticks on P-D-109's terms, probes
+  named per clause.
+- **The restore drill's target is a restored copy the platform provides**, reached through
+  `drill_target_dsn` — optional, no default, on the P-D-107 idiom; strand D adds the field. The gear
+  owns the probe and the platform owns the restore (P-D-133). **A run with no target still writes
+  its audit row, outcome `no_target`, and raises `products_restore_drill_unverifiable`**: a drill
+  that cannot run is not a passed drill, and silence is exactly what P-D-133's *"report, never
+  skip"* forbids.
+- **`scheduled_transition × read` and `× cancel` are minted by strand C with the doors P-D-134
+  named** (`05` row 24: the door's owner mints the pair), under `authz_tests`' census rule — the
+  grant arrives with its door. **`× write` is measured, not minted**: the retire doors write the
+  rows under `sku × write` / `product × write`, so `design/05` §3.2's row narrows unless C finds the
+  act that spends it.
+- **The arguments against, stated.** Reading *"provisioning"* as satisfied by a default lets a
+  tenant run at `N = 2` without anyone having chosen it — accepted; that is P-D-11's design and the
+  whole point of *absent ⇒ default*. A `no_target` drill row could be mistaken for a run —
+  accepted; the outcome column and the warning name it. Minting only the pairs doors spend leaves
+  `× write` declared without a route — accepted; the alternative is a grant nobody can review.
+- **Propagated**: the three strand briefs (`RELAY-governance.md`, `RELAY-lifecycle.md`,
+  `RELAY-retention.md`); `design/05` §3.2's `materiality_policy × write` cell names B's door and its
+  `scheduled_transition` cell names P-D-134's doors as C's build. The FEATURE amendments are the
+  strands' own: B's `dod-materiality-policy` clause, D's `dod-restore-drill` criterion.
+
+
+#### P-D-134 — The design-set owner's twenty-five: one pass, measured
+
+- **Date**: 2026-09-04 (the lead's own rows, decided under the standing *"decide what is plainly
+  answerable"* rule and shown to the owner as one list; every measurement is at `2770cef58`)
+- **`05` row 1 — one of twenty-three, not eleven.** Measured: `design/05` §3.2's `Doors` column
+  carries a route for every grant but `scheduled_transition × write|cancel|read`. P-D-106, 120 and
+  125 doored the rest. **The route**: `GET /bss-products/v1/scheduled-transitions` and
+  `POST /bss-products/v1/scheduled-transitions/{id}/operations` (`op: cancel`), `04`'s doors,
+  strand C's build — which also answers `05` row 24: **the door's owner mints the pair**, and here the
+  owner is `04`.
+- **`05` row 2 — `× discard` is its own action.** The design declares the route under it, a discard
+  destroys a draft irreversibly, and *"edit"* does not describe that; the code's positional action
+  roster gains `discard` with the door's grant (01's).
+- **`05` row 7 — no new action for the authoring head read**: `× read` *is* the authoring read;
+  consumer reads go through `08`'s doors under their own grants.
+- **`05` row 25 — roles arrive as claims.** A principal's role is not on any surface today; when
+  the platform's PDP encodes it in `token_scopes`, `APPROVER_ROLE_REQUIRED` (P-D-119) and P-D-131's
+  predicate read it from there. Routed to the platform-identity owner with that shape; the gear's
+  role checks say *"no role claim"* until then.
+- **`05` row 32 — two obligations attach to existing DoDs.** `approval_ref`'s `NOT NULL` tightening
+  on `products_entity_version` is a clause of B's `dod-approval-store`, applied in place when the
+  store lands; `authz_label_type_schemas()` having no production caller is **01's defect** — the
+  schemas register at gear init (`gear.rs`), the lead's build.
+- **`04` rows 3 and 7 — the retire-intent guard is written into `design/04` and it covers the save
+  door too.** Measured: `find_live_retire_intents` is read at publish, un-deprecate, retire and
+  cancel, and **no create or save door reads it**; the save door may set `product_id` before first
+  publish (`skus.rs` 5707, 5849). New instruction `inst-rt-create-guard`: creating a SKU under a
+  Product with a live retire intent, or re-parenting one there through save, refuses
+  `RETIREMENT_PENDING` (the variant exists). Strand C's build.
+- **`04` row 12 — answered by P-D-115 and P-D-126**: the walk's cycle and bound are the crate's,
+  the surface is `08`'s entity read.
+- **`04` row 21 — nothing is replaced, and one clause is unbuilt.** `domain::containment` ships
+  the final restriction-based rule at three sites (create, publish, the Product publish's child
+  re-check); C5's *"the final form of 01's interim check"* is corrected — `01` ships that form and
+  `04` registers no operand. **Corrected 2026-09-04, the same day: the DoD ticks.** The entry's first
+  text said the *"evaluated on save"* clause had no call site; that was a grep of the primitive
+  (`check_containment`) and not of the wrapper's callers — `skus::run_save` calls
+  `recheck_parent_containment` and `products::run_save` calls `check_children_stay_contained`, and
+  the DoD's own body had named all four sites. A claim about absence needs the callers of every
+  wrapper, not the primitive's.
+- **`03` row 6 — the binding snapshot is provenance, outside the digest.** The digest is the
+  content contract (P-D-29); the snapshot is evidence about the publish, stored beside the version
+  row and keyed by it. `DIGEST_VERSION` stays 1.
+- **`03` row 14 — answered by P-D-125** (the dry-run door is the lint producer).
+- **`03` row 20 — `composition_pending` is set only by a composition-affecting publish.** A publish
+  of a bundle whose member set or members' bucket-i/ii content changed raises it; an ordinary
+  bucket-iii re-publish does not; *composed* is a published head with the flag clear and
+  *never composed* is `published_version = 0`. The override ceremony reads the flag on a published
+  head — no third state.
+- **`02` row 22 — the frozen assignment set carries name copies, P-D-47's shape.** A category can
+  still be deleted once its link rows are gone while frozen versions still name its id, so ids
+  alone dangle. **`DIGEST_VERSION` bumps to 2 with `06`'s build** and the golden vector re-pins;
+  the cost is stated and accepted, because a frozen version that renders a name it can no longer
+  resolve is the defect P-D-47 already closed for definitions.
+- **`02` row 24 — `09` has no operator free-text `reason`.** Measured: `design/09` §4's `reason`
+  is *"a literal from a closed set, never operator text"*. `02`'s PII enumeration drops the `09`
+  door.
+- **`10` row 6 — the drill's state is an audit row per run**, P-D-21's own class (an act that emits
+  no event); *"the last-verified watermark"* is the newest such row per tenant, a query and not a
+  table — §4's *"config + audit, no new record tables"* holds.
+- **`10` row 9 — cold re-resolution splits by object.** `10` owns **identity** cold re-resolution —
+  the compliance export *is* it (P-D-117); `06` owns **content** cold re-read from the manifest.
+  Neither owes a further p95 probe beyond its own door's; NFR #5's number is the workshop's.
+- **`10` row 16 — decided by P-D-118**, the build the lead's (one migration, P-D-129's columns).
+- **`12` row 7 — no CI gate, by the owner's decision** (P-D-132's refusal reaches this row); the
+  `spec-check` skill runs the subset off-VCS.
+- **Notes, not questions — struck as such**: `06` row 5 (the starvation probe is `dod-coalescer`'s
+  §6 criterion), `07` row 4 (a compressed watermark representation, booked to `dod-watermark-port`'s
+  builder).
+- **Kept, with what they are written on them**: `12` row 1 (the `EventRegister`'s rows, work owed
+  per slice under P-D-130's container) and row 3 (a posture statement); `10` rows 1 and 2
+  (recorded risks) and row 12 (Legal's half).
+- **Propagated**: the rows and items struck or annotated; `design/04` gains `inst-rt-create-guard`
+  and its C5 wording; `design/05` §6 four items. Builds owed: the label type-schema registration
+  (the lead, `01` — **landed 2026-09-04**); the scheduled-transition doors and the
+  retire-intent guard (C); `approval_ref`'s tightening (B); the name copies and the digest bump
+  (`06`'s builder).
+
+
+#### P-D-133 — Ops, platform and the cross-team seams: thirteen product-owner calls
+
+- **Date**: 2026-09-04 (**the product owner's decision** on the lead's third batch, accepted as
+  recommended; `05` rows 5, 9, 18, 21, `04` rows 1, 13, `10` rows 3, 7, 10, 11, 30, `03` rows 2, 4,
+  `07` row 3, and the matching design §6 items)
+- **Sealing (`05` row 21) — answered by P-D-08** since 2026-08-26: not built per gear, a reserved
+  seam and requirements S1–S9 to the platform. The organisational half — who on the platform, when
+  — is **Architecture's**, put there by the Program Lead.
+- **Post-hoc break-glass review (`05` row 5).** The owner exists (P-D-68: the second platform
+  principal); the number did not. **`breakglass_review_sla_hours`, 24 interim**, in
+  `ProductsConfig` and `PRD` §17.1; the obligation alert fires when the SLA lapses.
+- **The elevation's two-person approval lives on the session (`05` row 9).** Not an
+  `ApprovalRecord`: the store's `required` is `N` or `min(N, 1)` and its row is tenant-scoped,
+  while the elevation needs exactly two platform principals outside the tenant. P-D-111 already
+  made `two_person_approval_ref` the authority; the session row carries the two approvers
+  explicitly — `approver_a`, `approver_b`, distinct, platform-scoped. Strand B's seam build.
+- **What an elevation changes (`05` row 18).** The session names its target tenant; the door reads
+  the session id from a header in the pre-pipeline gate, checks the window (P-D-132) and
+  substitutes `AccessScope::for_tenant(target)` **read-only** for the caller's own scope; every
+  write is refused. `ToolKit` is unchanged — `AccessScope` already builds for any tenant.
+- **Held retirements become visible (`04` row 1).** The surface is P-D-126's deferred-intent
+  dashboard; the threshold is **`retirement_held_alert_hours`, 72 interim**: the `retirement_held`
+  alert fires for a deferral older than that. Ops owns the runbook.
+- **`replacement_chain_broken` is the deferral's `outcome_reason` (`04` row 13)** — the channel
+  P-D-113 arm 5 gave `retention_orphan_blocked`; the dashboard and the same alert read it. No new
+  table, no silent pointer.
+- **Encrypted-at-rest for the identity map (`10` row 3)** is a deployment gate: a mandatory item of
+  the deployment checklist, owned by the platform storage owner. No code.
+- **The restore drill on a digest-version mismatch (`10` row 7): report, never skip, never
+  re-render.** Rows whose `digest_version` has no recomputation code count as `unverifiable` and
+  raise the warning `products_restore_drill_unverifiable`; rows with code and a mismatch raise the
+  alarm `products_restore_drill_corruption`. Every row is scanned on every drill.
+- **The DR posture is the platform's (`10` rows 10 and 30).** Storage class, backups, RPO and RTO
+  are deployment properties; the gear owns the **restore drill** as the probe that a backup is
+  restorable and digest-verified. `design/10` §1.1 and its Scope In narrow to that; no thirteenth
+  DoD.
+- **`compliance × export` (`10` row 11)** is a new grant in `05`'s catalog held by a **platform
+  compliance principal**, not a tenant role; the door requires a justification and an audit row.
+  Which principal is **Legal's** to confirm, routed with this shape.
+- **Pricing's `CatalogSku` gains `sellable`, `usageTypeRef` and `type` (`03` row 4).** `PRD` §15
+  had it right — a consumer-side addition — and both gears are this programme's: **the lead lands
+  it in pricing**, with the row struck when it does.
+- **The pricing watermark (`07` row 3)** is scheduled by the Program Lead; the registry side is
+  ready and the fixture (P-D-130's products-side crate) runs on demand.
+- **The collector in the publish path (`03` row 2)** is answered by P-D-121 row 19 and P-D-131:
+  the resolve runs before the transaction and an unavailable collector is a fail-closed 503 for
+  usage SKUs only — a latency coupling, not a lock.
+- **Propagated**: the rows and items struck or annotated; `config.rs` gains the two fields;
+  `design/05`'s elevation instruction, `design/04`'s observability instruction and `design/10`
+  §1.1 carry their sentences; `PRD` §17.1 gains two rows.
+
+
+#### P-D-132 — Governance, lifecycle, launch and priority: seven product-owner calls, and one refusal
+
+- **Date**: 2026-09-03 (**the product owner's decision** on the lead's second batch; accepted as
+  recommended except item 7, which the owner refused)
+- **AC #26's last bullet is rewritten (`05` row 17).** A rejection **leaves the head in its current
+  state** — the head-row model has no unpublish edge — and records the reason on the decision row;
+  the approval record is voided and a later publish queues a new one; the quorum is the configured
+  `N` the same AC's first bullet already states (P-D-11). *"v1 uses a single two-person step"* is
+  struck as superseded.
+- **The break-glass window is configuration (`05` row 22).** `breakglass_window_hours`, **4**
+  interim, in `ProductsConfig` on the P-D-107 idiom, zero refused at boot; and `design/05`'s
+  elevation instruction says what §17.1 said: **no renewal** — a session is not extended, a new
+  session is a new two-person ceremony. *Accepted risk*: four hours is short for a real incident.
+- **`leave-and-list` covers referenced children (`04` row 16).** The design's operand — children
+  whose flip guard cannot clear — is the one with a v1 population; EOL-requiring children are its
+  post-v1 subset. The PRD's two sentences are widened to say so.
+- **EOL stays post-v1, explicitly (`04` row 6).** Nothing is decided until Subscriptions' AC, the
+  consumer-ack contract and the suspension event exist; `dod-eol-lockout` is re-priced **p3** so it
+  stops reading as blocked.
+- **A v1 launch criterion (`06` row 3).** Pricing's freeze ack must be registered and observed on
+  one real catalog version before the first posted use; until then every version is
+  posting-unsafe by construction, which is the protocol's intended loud state. Recorded in `PRD`
+  §15.
+- **`fr-clone` is p2 (`11` row 21).** Two `p1` requirements name the clone as their only remedy;
+  DECOMPOSITION §2.11 already carried p2. Not p1: a repair path is a v1 commitment, not a day-one
+  one. `design/11` and `features/clone.md` follow with `11`'s builder.
+- **The seam suite gets no CI job — the owner's refusal (`12` row 2).** The lead recommended a
+  `products-seam` job in `gear-scoped-ci.yml`; the owner decided **nothing is added to CI**. The
+  suite lives in the products-side crate (P-D-130) and runs on demand; `dod-seam-suite-home`'s CI
+  clause is unsatisfiable by decision and the DoD stays unticked with that reason, not as a gap.
+- **The NFR workshop (`08` rows 1 and 3, `06` row 4, `10`'s DR rows).** The owner will name the DRI
+  and the date; until it is held, every interim number set by P-D-107, 113, 118, 121, 127 and this
+  entry stands as a binding design target, `PRD` §15's own rule. Those rows stay live as the
+  workshop's, annotated.
+- **Propagated**: `PRD.md` (AC #26, §15 three rows, `fr-clone`, the two cascade sentences);
+  `design/05` §6 two items and the elevation instruction; `design/04`, `06`, `12`, `08` §6 items;
+  the feature rows; `config.rs`.
+
+
+#### P-D-131 — The recognized sets and their codes: eight product-owner calls, taken on the lead's recommendations
+
+- **Date**: 2026-09-03 (**the product owner's decision**, accepted as recommended after reading the lead's
+  research; `features/sku-classification.md` §7 rows 1, 3, 5, 11, 12 and 18,
+  `features/taxonomy-attributes.md` §7 rows 12 and 18, and the matching design §6 items)
+- **Set owners and the approver predicate (`03` row 1).** The owners were already in `PRD` §15:
+  metering units → Product + Rating, tax/GL codes → Finance, `PlanTier` → Product. The approver
+  predicate per set is **the set owner's reviewer role, enforced at the decide door through
+  `APPROVER_ROLE_REQUIRED` (P-D-119) once roles reach `SecurityContext`** (`05` §7 row 25); until
+  then any approver in the tenant's quorum. *Accepted risk*: a non-Finance approver can approve a
+  Finance code until roles exist.
+- **`taxCategory` and `glCode` stay in the registry (`03` row 5).** `PRD` §2.1's *"owned elsewhere"*
+  is about the **descriptor** (line 367: *"Catalog supplies only the tax-category/GL **code** on the
+  SKU"*); `fr-accounting-codes` requires the **reference** to Finance's recognized set. Both
+  sentences hold; §2.1 gains the clarifying parenthetical. *Accepted risk*: Finance may consider the
+  code its own — the reference is the registry's, the meaning is theirs.
+- **`PlanTier` seeds `standard` (`03` row 11).** `PlanTier` is mandatory on every SKU, so an empty
+  set makes the first publish impossible; `standard` is a default every consumer reads without a
+  special case, while a tier named `none` is one Subscriptions and the SLA policies would have to
+  special-case. `PRD` §17.1's row is settled. *Accepted risk*: `standard` presumes a ladder some
+  tenants lack. The seed itself is `03`'s build (P-D-104's first-write mechanism).
+- **`UsageType` deletion (`03` row 3).** The registry's half is built: a deleted type is the
+  correction door's `unresolvable_target` arm, and `products_correction_override` carries it. The
+  collector's obligation is recorded in `PRD` §15 for the collector's PRD owner: **a `UsageType`
+  with live bindings is never hard-deleted, only tombstoned with a signal.**
+- **The unavailable resolver (`03` row 12).** The causes are not distinguished on the wire: an
+  interactive publish of a **usage** SKU refuses through the gear's existing fail-closed 503
+  channel (non-usage SKUs never call the resolver); on the bulk lane the row takes disposition
+  `failed` and the batch continues, a retry being a resubmission. *Accepted risk*: an unwired
+  deployment answers 503 for years where *"not configured"* would be more honest.
+- **The live-reference condition is design-introduced and the PRD adopts it (`02` row 12).**
+  `fr-localized-attributes` gains one sentence: *a definition carrying a value on any non-terminal
+  head MUST NOT be removed* — the fixation of what is built.
+- **`CATEGORY_RETIRED` and `ATTRIBUTE_DEFINITION_DEPRECATED` stay 422 (`02` row 18).** The target
+  of the save is the Product; the category or definition is a reference in the payload, exactly as
+  `ATTRIBUTE_DEFINITION_UNKNOWN` is, and `05`'s 409 rule speaks of the *target's* state. Moving them
+  would pull both codes out of the pipeline into variants with no gain for a client. *Accepted
+  risk*: a client expecting 409 by analogy with `STALE_LIVE_OP`.
+- **The seeded member's removal refuses `ILLEGAL_FIELD_MUTATION` (`03` row 18)**, uniformly with
+  `02`'s seeded definition (measured 2026-09-03): the Foundation's variant, no sixteenth code.
+  *Accepted risk*: a code named for a field on an act over a set member.
+- **Propagated**: the eight rows and eight design items struck; `PRD.md` §2.1, `fr-localized-attributes`,
+  §15 (two rows answered, one collector obligation added) and §17.1 edited. `03`'s builder owes
+  the `standard` seed and the `ILLEGAL_FIELD_MUTATION` arm.
+
+
+#### P-D-129 — `07`'s open set: a producer retires empty or under break-glass, the correction is a `GovernedLiveOp`, and the guards that shared one question
+
+- **Date**: 2026-09-03 (owner call over `features/reference-signal.md` §7 rows 2, 5, 6, 8, 9, 10, 11,
+  14, 15, 17, 18, 20, 21, 22, 23, 24, 31, 33, 34, 35, 36 and 37, and `design/07` §6's matching
+  items; the correction door is unbuilt and these are recorded so its builder starts from answers)
+- **Rows 2 and 5 — the retirement rule, in one shape built from parts that exist.** *Which test
+  binds*: **the retiring producer's current watermark is non-empty** — a property of the producer
+  alone, no constellation delay. A live producer therefore **posts an empty set first** through its
+  own watermark door and then retires; any SKU that goes fresh-zero from that post walks the
+  normal correction lane like every other fresh-zero, and `AC #43`'s clause holds because the
+  retired producer's signals are gone before it is unregistered. *The exception* exists for one
+  case only — a **dead** producer that cannot post — and its lane is **the retirement door itself
+  under `05`'s break-glass elevation** (`reference_producer × write` plus `breakglass × elevate`),
+  not the correction door. *The evidence* is the record kind that already ships: one
+  `products_correction_override` row per freed SKU on the **`producer_unavailable`** arm, with the
+  unavailability snapshot. *The tripwire*: those rows feed it, and a dead producer that pinned six
+  SKUs **should** trip the signal-delivery blocker — that is the failure the tripwire measures. No
+  new record, no new window, no new lane.
+- **Rows 10, 11 and 23 — `sku_correction` becomes a registered `GovernedLiveOp` kind.** The
+  envelope carries the payload (`payload` is the op's canonical arguments), `05`'s snapshot pins
+  those bytes (the subject is the envelope, not the head — `05`'s live-op gate already asks with
+  the envelope as subject), and the apply writes the head and the override row in the re-publish
+  transaction. So the pending correction lives in the envelope between submission and approval;
+  `05`'s evaluator returns **material** for a registered kind, so `required = N`; and the admitting
+  lane rides the envelope's `kind` — `sku_correction.producer_unavailable` /
+  `.unresolvable_target` — which the re-publish's validator reads.
+- **Row 22 — the re-check inside the publish transaction is P-D-121 row 19's shape**: the door
+  resolves the watermark, member and producer reads (and, on arm (b), the resolver) **before** the
+  transaction and hands the phase a `Resolution`; inside, the check runs as a continuation of the
+  identity phase (P-D-97's precedent), never as a `Phase::Identity` rule that cannot reach its
+  operand.
+- **Row 24 — "the head is clean" is digest equality.** A head is clean when its content rendered
+  through `domain::canonical` over the frozen roster carries the same `content_digest` as its last
+  version row — the frozen roster excludes `lifecycle_state`, `deprecation_provenance`,
+  `replaced_by_sku_id` and `internal_revision` by definition, so this is exactly *"no versioned
+  content moved since publish"*. One operand for `CORRECTION_DIRTY_HEAD`, `CORRECTION_APPROVAL_OPEN`
+  and `09`'s `PROMOTION_DIRTY_HEAD`.
+- **Row 6 — the tighter row-image predicate `07` owes `01`.** Measured: the guard admits a bucket-ii
+  change after first publish *"only in the same statement as a `published_version` bump"*, and any
+  publish carrying the bump passes. The tighter predicate: **and the same statement sets
+  `correction_ref`**, a new nullable uuid on `products_sku` that only the correction re-publish
+  writes — a physical door identity. `01`'s migration, edited in place; the lead's build.
+- **Rows 8 and 9 — the tripwire's population and its blocker.** Two counters, one window: the
+  `producer_unavailable` arm feeds `signal_delivery_release_blocker`; the `unresolvable_target` arm
+  feeds its own alarm and blocks nothing — the name must match the population, and six deleted
+  `UsageType` repairs are not a delivery failure. The blocker is **derived**, a rolling-window
+  predicate over the override table with no row and no operator exit: C6's rate rule *is* a
+  rolling window, and the release stays blocked while the rate holds. The PRD owner may narrow
+  the split.
+- **Row 14 — `If-Match`.** Every mutating door's precondition rides the header (P-D-33's
+  convention); a body field would be a second channel for one operand.
+- **Row 15 — any principal holding `reference_producer × write` submits the governed act**; the
+  quorum is on the tenant's approvers, not on the submitter, so a service registering itself at
+  deploy time and an operator registering it are the same door. §1.3's catalog admin stands as the
+  authoring choice.
+- **Rows 20 and 21 — the route and the action.** The crate's own refusal message is adopted:
+  `POST /bss-products/v1/skus/{id}/corrections` is the correction door, declared in
+  `DECOMPOSITION` §2.7. `sku × correct` is a **new action on the existing `sku` label**; `sku ×
+  write` does not reach it.
+- **Rows 34, 35 and 36 — the audit side.** `PRODUCER_UNREGISTERED` **widens to the producer doors**:
+  one slice declares it and may raise it at two of its own doors, which is what `12`'s
+  one-declaring-slice rule protects. P-D-21's rule stands: the day `ReferenceProducerSetChanged`
+  lands, the registration and retirement audit rows go and `dod-reference-audit` narrows to
+  refusals. The ceremony join gets a **nullable `ceremony_ref` on `products_audit_log`**, riding the
+  same in-place migration as P-D-118's `correlation_id` — the lead's build.
+- **Row 37 — the window's lower edge is inclusive**, as shipped and probed (`recorded_at >=
+  since`); *"> 5 in 30 days"* counts over `[now − 30 d, now]`.
+- **Rows 31 and 33 — conventions.** A knob's *home* is `ProductsConfig` (P-D-107); `PRD` §17.1 is
+  the policy register of interim values, and *"homeless"* means *"owed a §17.1 row"* — rows 7 and
+  19 restate as that. `pN` is a per-id importance (P-D-125): a `p2` DoD may carry a `p1` arm's
+  obligation and nothing changes priority.
+- **Rows 17 and 18 — stale, by measurement.** `bucket_tests` now counts two `Correctable` members
+  and carries no *"arrive with slice 07"* message; `DomainError::ContentPiiBlocked` exists and
+  `content_pii_block` is called at five doors — `07`'s three reasons will call it when `07`'s doors
+  are built, which is a build and no longer a taxonomy gap.
+- **The arguments against, stated.** Refusing every non-empty retirement makes a live producer
+  perform two acts — accepted; the second act is the honest one. Making the correction a live-op
+  kind puts a bucket-ii payload in a `GovernedLiveOp` envelope, a shape built for taxonomy ops —
+  accepted; it is the one channel the design already pins bytes for. Digest equality for
+  *clean* costs a render per correction — accepted; it is the same render every publish pays.
+- **Propagated**: twenty-two rows and nine §6 items struck; rows 3 and 4 stay as owned notes; row
+  38 (the retention collector against a flat-refusal guard) is **routed to strand D** with the
+  recommendation that the audit plane's row-image predicate (P-D-34) is the one shape for the
+  class. Builds owed: `correction_ref` and `ceremony_ref` (the lead, `01` — **landed 2026-09-04**: one in-place edit of `m20260829_000003` and `_000004`, the bucket-ii predicate tightened to *bump and a fresh `correction_ref`*, `correction_ref` itself guarded to the bump statement), the `sku_correction`
+  kind and the door (`07`'s builder).
+
+
+#### P-D-130 — `12`'s open set: the lints' grammars, the register's own conventions, the fixtures' home, and the verification track brought In
+
+- **Date**: 2026-09-03 (owner call over `features/consumer-contracts.md` §7 rows 4, 5, 6, 8, 9, 10, 11,
+  12, 13, 14, 16, 17, 18, 19, 20, 21, 22, 23, 27, 28, 29, 30, 31, 32, 35, 36 and 37, and
+  `design/12` §6's matching items — the design-set owner's slice, answered as the design-set owner)
+- **The lints' grammars, stated once.** *Lint 1* reads *multiply claimed* as n ≥ 2 with n distinct
+  qualifiers: fourteen ids, thirteen pairs and one triple (`nfr-scale-extensibility`: `01`, `02`,
+  `06` — the third qualifier is `06`'s, the newest claimant). *Lint 2*'s *"fifteen rows"* is a
+  **transcribed constant** and the criterion checks §4.1 against the PRD's sentence at review, by
+  hand — a transcription is not a parse; `inst-cc-errors`' exclusion list is **one filter** (the
+  opening clause defines the universe, and the third exclusion folds into its wording); the
+  declaring unit is the **slice** (P-D-36), and `ENTITY_TERMINAL`'s map row reads *any head write on
+  a terminal head* (P-D-32). *Lint 3*'s population is **seventeen** routes, harvested, never a
+  literal; its grammar carries three normalisations — the table escape `\|` → `|`, a concrete verb
+  roster (`GET|POST|PATCH|PUT|DELETE`) that excludes the schematic `METHOD`, and a corpus of the
+  design set plus the PRD with `DECOMPOSITION` out. *Lint 4*'s unit is the **act** (P-D-34): rows
+  inheriting a declaration lint as one. *Lint 5* reads **every** `- **Propagated**` field of an
+  entry as one set, so the dated-amendment form is admitted; a propagation field names filings, not
+  citers (P-D-128), which closes the 62-of-179 gap as a non-gap and `composition_pending`'s clause
+  rests on P-D-48 as cited. *Lint 6*'s continuation enumeration becomes a **rule** — an id may sit
+  on several rows when each carries a distinct qualifier — not a count. *Lint 7* asserts *exactly one
+  table holds an identity* (`products_identity_ref`), matching real-identity columns and not every
+  pseudonymous `actor_ref`. *"Unqualified"* in the AC-existence check is the **sentence-context**
+  reading; the qualifier grammar governs Traces-to only.
+- **Two lints are added, declared and unenforced like the nine**: a **reciprocity lint** — every §6
+  item naming an owner document has a matching item there — and a **PII-hook lint** — every door
+  whose payload carries a free-text `reason` appears in `02`'s enumeration.
+- **The seam suite.** C4's authorability criterion binds: rows citing pricing instruction ids
+  re-key to their ACs. The studio-inbox envelope cross-check is the **sixth fixture** of
+  `dod-joint-fixtures`. The pin runs as **one CI job over the fixtures crate**, on which both
+  gears depend — *"both CIs must fail"* is satisfied by one job both require. **The suite's home
+  is a products-side crate**: `cf-gears-bss-fixtures`' grammar is pricing's and closed (`Family`,
+  `CaseKind`, a pricing-generated registry), and re-keying it is not this gear's to do — **P-D-44's
+  artifact row is amended** to that home; the job's name and trigger stay `PRD` §15's.
+- **The event side.** The deserializable payload types **already exist in `infra::broker`**: every
+  typed event derives `Deserialize` (`TypedEvent` requires it), so the compatibility test lives in
+  the gear and deserialises an old payload into the new struct under `#[serde(default)]`; the SDK
+  stays serde-free. The `EventRegister` is a **table in `design/12` §4**, a fifth named artifact,
+  with one row per emitting instruction and an explicit no-event row; its rows stay owed per
+  slice. The bootstrap gap is bounded by the **broker's** retention (the platform's number, `PRD`
+  §15), and a checkpoint older than the retained tail rebuilds from the store — `08`'s anchorless
+  arm (P-D-126).
+- **The verification track is In.** `DECOMPOSITION` §2.12 put the seam suite, the register, the
+  completeness checks and §17.2 traceability Out and called them *"not decomposed"*; thirteen of
+  the feature's seventeen DoDs deliver them and `design/12` §1.5 puts them In. The facts moved and
+  the entry follows: §2.12 is amended, the DoDs stay. `contract-` ids declared in the slice are
+  permitted `Implements` targets beside `flow`/`algo`/`state`.
+- **The arguments against, stated.** Two more declared-unenforced lints add to a set nothing runs
+  — accepted, because the `spec-check` skill already runs a subset off-VCS and a declared lint is
+  what it reads. Moving the suite out of the shared fixtures crate splits the seam across two
+  crates — accepted; the alternative re-keys another gear's generated registry.
+- **Propagated**: twenty-seven rows and sixteen §6 items struck; rows 1 and 3 stay as owned work
+  and posture; row 2 gains its owner in the requirements document's §15; row 7 is annotated with the skill that runs the
+  subset. `design/12` §3.2 lint 1 and `DECOMPOSITION` §2.12 and §2.7 edited; §4.1's
+  `ENTITY_TERMINAL` row and the `EventRegister` table's declaration are **owed** to `design/12`.
+
+
+#### P-D-127 — `09`'s open set: identity by id first, a reaper for the unapproved, the worker as the executor, the batch record as the subject, and the report's determinism
+
+- **Date**: 2026-09-03 (owner call over `features/bulk-promotion.md` §7 rows 4, 6, 7, 10, 11, 12, 13,
+  14, 16, 17, 21, 23, 28, 29 and 31, and `design/09` §6's matching items; `09` has no strand and
+  every arm here is recorded so its builder starts from answers)
+- **Row 4 — promotion identity is `productId`, then `productCode`, then `normalized(name)`.** An
+  export carries the source's ids, so a round-trip row resolves by id whatever was renamed; a
+  hand-authored row without id or code matches by name and is otherwise a create — the documented
+  residual risk, accepted because a name-only row *is* a new Product until something says
+  otherwise.
+- **Row 6 — a batch nobody approves is `abandoned` by a reaper.** The state exists (P-D-69); what
+  was missing is the clock: `bulk_batch_ttl_hours`, **168** interim on the P-D-107 idiom, applied
+  by a tick in `gear.rs`'s lifecycle loop (P-D-113's precedent) that flips `awaiting_approval` to
+  `abandoned` and supersedes the record (`APPROVAL_SUPERSEDED` is `05`'s existing state). A week
+  because the ceremony is human-paced and the harm is a held tenant slot.
+- **Row 7 — the bulk worker is the executor.** `batch_tick` already runs in the lifecycle loop;
+  it observes the batch's record `satisfied`, and **its claim transaction** writes `committing`
+  and consumes the record — one transaction, so the one-shot is enforced where the phase starts.
+  `05`'s decide door writes nothing of `09`'s.
+- **Row 10 — yes: the batch's record is the subject for every row it contains**, live-entity ops
+  included, in `PreAuthorized` mode under **P-D-105's own predicate** — the row's stored
+  `approval_ref` names the consumed record. P-D-105 scoped itself to one table because
+  `products_bulk_batch.approval_ref` has different writers; this arm extends it to that table
+  **with its own writer-count guard**, owed with the build. `05`'s composite-act enumeration gains
+  the bulk batch.
+- **Rows 11 and 23 — the record's scalar pin for a batch is the ledger digest, and the N per-row
+  pins live in `content_snapshot`.** P-D-125's per-kind pin (row 52) is the ledger digest for a
+  `bulk_batch` subject; the `ChangeReport` the quorum signs is the snapshot and carries the per-row
+  pinned revisions as JSON. One column holds N pins because the column holds the report.
+- **Row 12 — the diff reads staged content from `09`'s own ledger and the target's current heads
+  through `01`'s repository read**, rendered through `domain::canonical`. `08` is not the input:
+  it projects frozen rows and serves no draft.
+- **Row 13 — the lint producer is P-D-125's dry-run door**, per row.
+- **Row 14 — byte-determinism is P-D-29's rule applied to the artifact**: rendered through
+  `domain::canonical`, every collection sorted by its own identifier; `06`'s manifest sorts
+  entries by `(entity_kind, entity_id)`.
+- **Row 16 — a row kind with no draft state classifies as `update-as-live-op`**: the row becomes a
+  `GovernedLiveOp` envelope applied at commit under the batch record (row 10). C5's four-way
+  classification gains that arm for categories and definitions.
+- **Row 17 — the scope-values lint is advisory.** A finding rides the `ChangeReport` and is
+  acknowledged through the override ceremony (row 29); *"unseen"* means a region or brand token no
+  published entity of the tenant carries. A blocking lint would be a validator, which is the
+  publish pipeline's job.
+- **Row 21 — "matching content" is canonical equality of the bucket-iii/iv fields**, the row's
+  after the save door's normalization against the target head's, rendered through
+  `domain::canonical`; capture halves are derived and not compared. Equal ⇒ `no-op`.
+- **Row 28 — the sample is the first N rows by `row_key` ascending**, N a config on the P-D-107
+  idiom (**20** interim), so the report the quorum signs and the commit that follows reproduce it.
+- **Row 29 — answered by the crate**: the itemised acknowledgment is the decision row's
+  `override_acknowledgments` (text, JSON), beside each ledger row's `override_acknowledged`; the
+  approval row has and needs no column.
+- **Row 31 — the ledger digest's covered set is pinned as the executor renders it**:
+  `(row_key, disposition, code, entity_id)` per row, sorted by `row_key`, through
+  `domain::canonical`; the staged payload and the timestamps are excluded, for the reasons the
+  row states. `design/09` owes the sentence; `dod-coalesced-event` may tick against it.
+- **The arguments against, stated.** Extending P-D-105 to a second table widens the one predicate
+  that lets a stored column stand in for a caller's proof — accepted only with the guard. A
+  week's TTL abandons a batch a slow reviewer meant to approve — accepted; resubmission is cheap
+  and a held slot is not. Identity by id first makes an exported row un-renameable by name —
+  that is the point.
+- **Propagated**: fifteen rows and ten §6 items struck; rows 1, 2, 3 gain owners (notes, not
+  questions); row 22's grant half is answered (`bulk × read` for export, `bulk × execute` for
+  import) and its role half stays the requirements owner's.
+
+
+#### P-D-128 — `11`'s open set: the clone writes on the save door's terms, and the register's own conventions
+
+- **Date**: 2026-09-03 (owner call over `features/clone.md` §7 rows 3, 6, 9, 10, 11, 16, 17, 20, 22,
+  24, 25 and 27, and `design/11` §6's matching items)
+- **Rows 25 and 11 — the clone door runs `content_save_pipeline`, and the phase is
+  `RegisteredValidators`.** P-D-123 item 11 made the clone the second content writer *on the save
+  door's terms*; the disposition rules **are** that pipeline's registered validators, and a phase
+  collects every rule's violation into one report — which is how *"every failing field class"* is
+  named without a create-door pipeline. `ATTRIBUTE_SCOPE_VIOLATION` and `CONTENT_PII_BLOCKED` sit
+  where they sit today. The create door stays as it is.
+- **Row 3 — no `metadata × write`.** The clone writes a new draft's map inside its own transaction
+  under the authoring pair; `metadata × write` guards in-place edits on a published entity, which a
+  clone is not.
+- **Row 17 — the variantless codes ship with their owning slices as `Violation` codes inside one
+  `DomainError::Validation` report** — the shipped collector's form and P-D-121/P-D-123's reading;
+  `02`'s already do. No variants are minted here.
+- **Row 20 — answered by the crate**: `products_metadata` ships under `02`, placed beside the
+  entity (P-D-06), so a `retired` source's map is read from it.
+- **Row 16 — a source whose versions were collected is not clonable.** The read surface answers
+  its version not-found and no new code is minted (the 503 set is closed, and this is a 404);
+  `10`'s GC protects live freeze registrations, not future clones — retention wins by design.
+- **Row 22 — a clone reads a version and registers nothing.** Copying is not referencing;
+  `06`'s participant model enumerates holders, and a read holds nothing. Exempt by construction.
+- **Row 6 — no clone event, and the reverse lookup is `08`'s.** The column is the source: the
+  entity view exposes `clonedFrom` forward, and `08`'s history timeline renders lineage from the
+  column at render time — the reverse read joins the column, drafts included, because the
+  timeline is not the browse projection. Owed to `08`'s build.
+- **Row 27 — the count is stated against the codes as minted at test time**; P-D-47 arm 3
+  already makes the two accounting codes go with their columns if the PRD removes them, and the
+  count goes with them.
+- **Rows 9, 10 and 24 — the design-set's answers.** A propagation field names where a decision was
+  *filed*, not every document that cites it; citing obliges no entry unless the citing document
+  depends on an arm the entry does not state. Mass cloning is **out of v1 and claimed by nobody on
+  purpose**, recorded in `PRD` §15's terms; `09`'s resolver's conflict arm naming clone as the path
+  is the intended answer for a revival. `Domain Model Entities` is a **listing convention** (the
+  slice's §1.7 names); `dod-clone-seams`' rule rests on the slice's own *"neither is an
+  aggregate"* sentence, which stands.
+- **Propagated**: twelve rows and four §6 items struck; rows 8 and 21 stay the requirements owner's, with
+  the grant half of row 8 answered (the door spends the authoring pair).
+
+
+#### P-D-124 — The propagation budget's meter: declared by `01`, asserted by `08`, composed by `06`, with the outbox row's own clock as its origin
+
+- **Date**: 2026-09-03 (owner call over `features/catalog-version.md` §7 rows 2 and 17 and
+  `features/read-models.md` §7 rows 4, 5 and 23, and the matching `design/06` and `design/08` §6
+  items — five rows asking one question from three sides)
+- **Arm 1 — the budget sentence is read jointly, and that costs nothing.** `DESIGN.md` §1.2's
+  *"< 3 s propagation and < 5 s posting-safe budgets on the slice-01 outbox + slice-06 freeze
+  machine"* names two thresholds and one machine. The **< 3 s** budget is the outbox segment and
+  is `01`'s; the **< 5 s** posting-safe budget is `06`'s composite, derived from that segment plus
+  `06` §3.3's two freeze meters. One meter asserted against two thresholds is a measurement with
+  two assertions, not a contradiction — no second probe is owed.
+- **Arm 2 — the `commit → durable-acceptance` meter is declared by `01`.** The outbox is `01`'s
+  plane and the meter's two ends are both on it. `08`'s convergence probe instruments it and
+  asserts it against the < 3 s budget; `06` derives its composite from it. **The build is the
+  lead's** (`01` has no observability surface today) and lands with `dod-nfr-meters`' first
+  consumer.
+- **Arm 3 — the origin is the outbox body row's `created_at`.** Written inside the mutating
+  transaction on both engines by the toolkit's own migration (`TIMESTAMPTZ NOT NULL DEFAULT now()`
+  on Postgres, `TIMESTAMP(6)` on SQLite), so it is commit-adjacent for **every** event class — a
+  head save as much as a publish. `08` row 23's finding that *"the non-publish event classes have no
+  origin"* was true of the envelope and the entity tables and not of the row the event actually
+  rides in.
+- **The arguments against, stated.** A row's `created_at` precedes the commit by the transaction's
+  remaining duration — accepted; the meter's tolerance is seconds and the error is milliseconds,
+  and the alternative is a timestamp field on every body, which P-D-01's envelope deliberately does
+  not carry. Declaring the meter in `01` puts an observability surface on the slice that has none —
+  accepted, because that is the finding rows 17 and 5 made and the fix is to give it one.
+- **Propagated**: the five rows and four §6 items struck; the meter's build is in the lead's queue.
+
+
+#### P-D-125 — `06`'s open set: a spurious grant, the lint as a dry-run, a second body core, the roster convention, and a pin the gate's subject must carry
+
+- **Date**: 2026-09-03 (owner call over `features/catalog-version.md` §7 rows 13, 14, 27, 34, 35, 39,
+  47, 48, 50, 51 and 52, and `design/06` §6's matching items)
+- **Row 13 — `catalog_version × publish` is struck from `05`'s roster.** No door consumes it by
+  design: the operator lane is the request door and *"an entity publish NEVER enqueues an
+  increment"*. Measured: `gts/permissions.rs` already carries **four** `catalog_version` grants
+  (`request`, `ack`, `release`, `read`) — the roster's sixth was never in code, and
+  `force_complete` is `05`'s two-person elevation, not a grant.
+- **Row 14 — the pre-publish lint is a dry-run of `01`'s publish pipeline.** `POST
+  /bss-products/v1/{products|skus}/{id}/validate` runs the `→ published` phases up to the gate
+  **exclusive**, writes nothing, and returns the `ValidationReport` — which *is* the structured
+  per-entity report `PRD` §6.13 requires, and the only report this gear can produce. `06`'s freeze
+  aggregates per-entity reports for a version; `09` consumes them per row. **`01` gains the
+  per-entity half of `fr-prepublish-lint`** in `DECOMPOSITION.md`; `06` keeps the per-version half.
+  *Against*: `DECOMPOSITION` assigned the FR to `06` alone — moved because the report's content
+  belongs to the pipeline that computes it, and a second validator roster in `06` would drift.
+- **Row 27 — a second body core, per family (P-D-122's precedent).** `CatalogVersionPublished`,
+  `FreezeForceCompleted` and `FreezeParticipantSetChanged` carry a catalog-version body (`tenantId`,
+  `catalogVersionId`, `act`, and the changed-entity list where `06` §4 names it);
+  `SkuCompositionCleared` stays on the entity core. §4.5's *"one body core"* sentence is **scoped to
+  Foundation events**, not amended.
+- **Row 35, with `08` row 16 — "exactly four" binds `06`'s own roster, and the composition clear
+  emits two events.** It runs through `01`'s publish door, so `SkuPublished` announces the publish
+  and `SkuCompositionCleared` announces the clear — two facts, two events, and the projector
+  receives the re-publish it keys on.
+- **Row 39 — no: `06`'s four get their own roster array.** `THE_EIGHT` stays §4.5's transcription;
+  `02`, `03`, `04` and `09` already ship as their own arrays for exactly this reason.
+- **Row 47 — subject types by P-D-94's rule, obligations on the payload by P-D-51 arm 1.**
+  `gts.cf.core.events.subject.v1~cf.bss.products.catalog_version.v1` and
+  `…freeze_participant.v1`; `causationId` and `actorRef` ride the body as `TaxonomyEventPayload`'s
+  do.
+- **Row 48 — a `Doors` cell is per action and lists every route that consumes it.** Lint 3 counts
+  routes per action; `× read` at the export, the diff and the resolver is one cell, three routes.
+- **Row 34 — no further `06` DoD.** The archival half of `nfr-snapshot-archival-dr` is `10`'s (its
+  live DR item); the manifest DoDs discharge the version-binding half; the scale half is out of v1
+  by row 4.
+- **Rows 50 and 51 — two conventions, stated once.** §6 is a **selected set**: a DoD without a §6
+  criterion is complete when its own clauses are. `pN` is a **per-id importance**, not a delivery
+  wave; nothing is misassigned.
+- **Row 52 — the pin belongs to the subject.** `GateSubject` gains a per-kind pin — `InternalRevision`
+  for an entity, `mutation_seq` for a category, the approval store's own `pinned_revision` for a
+  catalog version, a participant set or a materiality policy — and `evaluate`'s `expected_revision`
+  parameter folds into it. **Strand B's seam build**, with `design/05`'s wording owed; P-D-105's
+  scheduled-flip predicate is unchanged.
+- **Propagated**: eleven rows struck; `design/05` §3.2's `× publish` row struck; `DECOMPOSITION`'s
+  slice-01 roster gains the lint's per-entity half. Left live on purpose: rows 3 (launch sequencing,
+  the product owner's), 4 and 5 (recorded risks with no question).
+
+
+#### P-D-126 — `08`'s projection mechanics and the design-set's conventions it was waiting on
+
+- **Date**: 2026-09-03 (owner call over `features/read-models.md` §7 rows 2, 8, 9, 10, 11, 12, 17, 18,
+  19, 22, 24 and 25, and `design/08` §6's matching items; rows 4, 5, 16 and 23 are P-D-124's and
+  P-D-125's)
+- **Row 8 — shadow-then-swap.** A rebuild projects into a shadow projection from the replay
+  contract's starting point, tails live events into the shadow until it is caught up, swaps
+  atomically, and installs the checkpoint at the last consumed `(topic, partition)` position;
+  the `StalenessStamp` is rebuilt with the rows. Live-tail-follow would serve a half-built
+  projection.
+- **Rows 9 and 12 — a poison message is parked with a bound and alarmed, never silent.** A
+  `*Published` whose frozen row has been collected, and a browse row whose join target never
+  projects, are the same posture: parked, bounded by a configured retry ceiling on the P-D-107
+  idiom, and surfaced through `products_read_delivery_state`. The invariant that prevents the first
+  case — event-log retention ≥ version-row retention — is `12`'s §15 number and is **routed there**.
+- **Row 10 — the pollers are ticks in `gear.rs`'s lifecycle loop** (P-D-113's precedent) at a
+  configured cadence; the dashboards are `08`'s read endpoints behind the limiter, each reading its
+  source table under that table's own `× read` grant (`04`'s for scheduled transitions).
+- **Row 11 — the single-entity read joins `products_metadata` live.** P-D-06 places the map beside
+  the entity, outside frozen content; nothing is projected and `MetadataUpdated` need not be
+  consumed.
+- **Row 19 — not a defect.** C6 projects the **published** version; a head edit is unpublished
+  content until published, and the wider scope a consumer sees is the published truth. Narrowing
+  takes effect at publish, which is the stale-but-safe property §1.2 asks for.
+- **Row 24 — a resume position per `(topic, partition)`**, the platform's shape; per-aggregate order
+  holds within the partition. Rows 8 and 15's *"per aggregate"* reads as *"per partition"*.
+- **Row 25 — answered by P-D-117**: only the compliance export resolves through the map; the
+  timeline renders pseudonyms.
+- **Row 2 — the active-locale set is a `ProductsConfig` field** on the P-D-107 idiom when `08`
+  builds, an empty set refused at boot.
+- **Rows 17, 18 and 22 — the design-set's answers.** `DECOMPOSITION` prices features and a
+  feature's items carry the feature's priority; the PRD prices requirements; under P-D-125's
+  importance reading nothing is misassigned. The limiter is **`ReadPathLimiter`**, added to
+  `design/08` §1.7. Facets are a browse **parameter** and the dashboards are **endpoints**: the read
+  doors are browse, the entity read, the history timeline and one per dashboard; `DECOMPOSITION`
+  §2.8's *"two"* is the projection pair and is owed the dashboards.
+- **The arguments against, stated.** Parking a poison message hides a defect behind an alarm —
+  accepted because failing the projector on one message halts every tenant's browse. A live join for
+  metadata costs the single-entity read one query — accepted; the map is small by construction
+  (P-D-107's caps). Reading row 19 as *not a defect* means a narrowed head is invisible to browse
+  until publish — that is the design, stated in C6.
+- **Propagated**: twelve rows and eight §6 items struck; `design/08` §1.7 gains the limiter; rows 1
+  and 3 stay live for the NFR workshop, now with an owner named.
+
+
+#### P-D-123 — `01`'s twelve open items: eight answered by the crate and the platform, two routed, two already struck
+
+- **Date**: 2026-09-03 (owner call over `design/01-foundation.md` §6's *"Open here — twelve"* and the five
+  `features/foundation.md` §7 restates, the lead's own slice; every answer below is a measurement
+  at `ad8c446af`)
+- **Item 2 — the audit row stores the refusal's own code, and the order of evaluation is the
+  precedence.** `refuse` writes `error_code = refusal.code()`: for a `Validation` report that is
+  `VALIDATION`, and each violation's own code rides the response body. Across phases the run stops
+  at the first failing phase, so two phases never compete. Inside `identity`, the SKU create judges
+  containment (`check_containment`, `ScopeNotContained`) **before** the insert whose unique index
+  answers `DuplicateCode` — a request violating both answers `SCOPE_NOT_CONTAINED`, by the door's
+  order and not by a table. No precedence beyond the four `state` codes is owed.
+- **Item 3 — an absent `If-Match` is `VALIDATION`, at the shape phase.** The doors' own `OpenAPI`
+  text already says so (*"requires `If-Match`: absent is `VALIDATION`"*); the precondition phase
+  judges a **mismatch**, absence is a shape defect. §2 and §3.1 were two readings of one door.
+- **Item 5 — the SQLite busy timeout is the platform's, bounded twice.** `toolkit-db` sets
+  `busy_timeout` from its `busy_timeout_ms` pragma and `acquire_timeout` (30 s default); exhaustion
+  is a driver error, which `transaction_with_retry` retries a bounded number of times for the acts
+  that use it and every door renders as a **500** with no registry code — a storage failure, not a
+  refusal. The *"unterminated retry"* the item feared does not exist.
+- **Item 6 — every mutating door already returns the new `ETag`.** Measured: the Product and SKU
+  create doors, the authoring `GET`, the save, and the head acts (`HEAD_ACT_RESPONSE_STATUS` /
+  `ACT_RESPONSE_STATUS`) all carry `ETAG` from `preconditions::etag(internal_revision)`. P-D-33's
+  premise holds; nothing is owed.
+- **Item 8 — the guard was installed in place once the referenced table existed.**
+  `m20260829_000007` carries P-D-40's predicate on both engines, edited on 2026-09-01 when
+  `m20260901_000013` landed `products_catalog_version_entry` — the chain's own convention, no
+  tightening chase; Postgres resolves the function body at execution and both tiers are green.
+- **Item 9 — `clonedFrom` is two columns.** `cloned_from` (uuid, nullable) and
+  `cloned_from_version` (nullable bigint; `NULL` under a non-null `cloned_from` means *read at the
+  head*) on both entity tables; the append-only whitelist admits neither.
+- **Item 10 — an `actor_ref` resolution failure is a 500 with no code and no audit row.**
+  `resolve_creator_actor_ref` renders `CanonicalError::internal`. The 503 set is closed at three
+  and `products_identity_ref` is this gear's own table, not a dependency: its failure is the
+  gear's storage failing, and a refusal record it cannot attribute is not written — the one act
+  the gear performs without an audit row, stated here so it is not discovered.
+- **Item 11 — the create door stays entity-only; the clone door is the second content writer.**
+  `CreateProductRequest` carries `id`, `brandId`, `name`, `productCode` and no content, and that
+  stands. `11`'s clone writes its content **inside its own transaction on the save door's terms**
+  — the same repository writers under `content_save_pipeline`, with no save act and no revision
+  bump — so `internal_revision = 1` holds and 11's C3 does not change. The admitted content
+  writers are two: the save door and the clone door. *Against*: a third writer of content is a
+  third place the pipeline must be registered; accepted, because the alternative is either a
+  create door that half-duplicates the save door or a clone that ships at revision 2 and lies
+  about its own history.
+- **Routed, not decided.** **Item 4** — the `brand_id` write validated against the caller's brand
+  claims — has **no operand**: `SecurityContext` carries no brand claim and every door builds a
+  tenant scope, so the create-flow clause of `inst-fd-mint-id` is inert too. **`05`'s**, beside its
+  row 25 (a principal's role is on no surface either). **Item 7** — the `internal:` lane's stored
+  response body — is defined by the activation runner's write, **strand C's build** (P-D-113).
+- **Already struck in the design and now in the feature**: item 1 (P-D-97, `PARENT_NOT_PUBLISHED`
+  declared by `01`, raised by `04`) and item 12 (P-D-51, the two subject types; the broker-side
+  registration stays owed in the register).
+- **Propagated**: `design/01` §6 items 2, 3, 5, 6, 8, 9, 10, 11 struck; 4 and 7 re-owned;
+  `features/foundation.md` §7's five bullets struck. `01`'s open set is two routed items and one
+  standing risk.
+
+
+#### P-D-122 — The taxonomy's eight events: one body, both sinks, in the transaction — and what "the op envelope id" turns out to be
+
+- **Date**: 2026-09-03 (owner call, closing `dod-taxonomy-events`' emission clause with strand A
+  stood down and the lead building its RELAY)
+- **Context**: six of `02`'s eight events were declared with no emitter twice over — first because
+  the doors had no route (P-D-106 gave them one), then because the broker arm had no typed struct
+  for them and strand A's `events.rs` doc argued *"emitting on the interim sink alone would be a
+  door that announces in one deployment shape and is silent in the other"*. That is wrong in one
+  word: the broker arm answers `NoTypedEvent`, a **refusal** that rolls the act back — and `04`'s
+  retirement events shipped on exactly that footing. Two strands, two policies on one plane, and
+  the RELAY listed the DoD as freed by row 15's decision alone when its first clause is *emission
+  in the mutating transaction*, which no taxonomy door did: every door wrote on a plain connection
+  with no transaction at all.
+- **Arm 1 — one body for eight tokens.** `TaxonomyEventBody { tenantId, entityKind, entityId, act,
+  state, mutationSeq?, operationKind? }` and a fifth entry point, `enqueue_taxonomy`; `enqueue`
+  refuses the eight the way it refuses the publish, deprecation, set, bulk and retirement bodies.
+  One shape because the eight announce one kind of thing — an act on a taxonomy entity — and
+  differ only in which act. `AttributeDefinitionUpdated` covers the create too: the roster has no
+  `Created`, and *"every applied change"* (`inst-ad-event`) includes the first.
+- **Arm 2 — both sinks, and the broker arm is completed rather than argued with.** Eight typed
+  structs in `infra::broker` (the lead's file), under a fifth macro; subject types derived by
+  **P-D-94**'s rule from the authz catalog's `category`, `attribute_definition` and `metadata`
+  types. `MetadataUpdated`'s subject type is the metadata resource with the **owner's id as
+  subject** and `entityKind` naming the table — a `TypedEvent`'s subject type is a constant and
+  cannot follow the owner's kind.
+- **Arm 3 — in the mutating transaction, everywhere.** The five infra acts and the three door acts
+  (definition create/operations, category display, metadata merge) each open one
+  `transaction_with_retry` for the write and its event. A refusal inside travels as an error so the
+  transaction **rolls back** — on Postgres a failed statement aborts the transaction and a later
+  `COMMIT` fails on its own — and the door audits it afterwards; `recognized_sets`' shape, the head
+  doors' shape. The closure owns every capture because the helper's bound is higher-ranked over the
+  transaction's lifetime.
+- **Arm 4 — `inst-tx-event`'s *"op envelope id rides the event"* has no operand.** `GovernedLiveOp`
+  carries `kind`, `target`, `payload`, `expected_state` and **no id**; nothing mints one. The event
+  carries the envelope's **kind** (`operationKind`), the request's `traceparent` is the correlation
+  channel, and an envelope id — if `05` wants one for approval traceability — is `05`'s to mint with
+  the approval subject, since that is the record it would be traced to. **Routed to B.**
+- **Arm 5 — the aggregate clause is amended in the DoD**, not read around: *"taxonomy events order
+  on `(tenant, category tree)`"* gains its P-D-116 row 15 exception for the two display events,
+  because the code now does what the decision said and the requirement should say what the code
+  does.
+- **The arguments against, stated.** A consumer of `MetadataUpdated` must read `entityKind` to
+  know which table — accepted, because the alternative is two events for one act. The taxonomy
+  events' `state` vocabulary is the slice's (`active`/`retired`/`deleted`;
+  `active`/`deprecated`/`removed`), not the head machine's — accepted and named in the body's doc.
+  And the policy asymmetry is now inverted: `04`'s retirement events remain `NoTypedEvent` on the
+  broker arm while `02`'s eight are typed — **routed to C** as the one remaining hole, with this
+  macro as the template.
+- **Propagated**: `design/02` §4.3's ordering sentence and `inst-tx-event`'s operand;
+  `dod-taxonomy-events`' clause, body and tick; `events.rs`, `broker.rs`, `infra/taxonomy.rs` and
+  the repo's display-write doc. `02` reaches 17 of 21.
+
+
+#### P-D-121 — `03`'s eight decidable rows, for a slice with no strand
+
+- **Date**: 2026-09-03 (owner call, answering `features/sku-classification.md` §7 **rows 8, 10, 13,
+  16, 17, 19 and 21**, and the number in **row 12**). `03` has no strand; these are recorded so
+  whoever takes it starts from answers.
+- **Row 10 — P-D-104's answer, one slice over.** *"Who writes the seed members for a tenant
+  created after the migration?"* is the question `02` registered and P-D-104 closed: **nobody seeds
+  by migration** — a per-tenant store has no tenant list to iterate and no migration in this
+  workspace inserts a row — and the seeds are written on the tenant's **first write that could need
+  one**, in that write's transaction, once. The mechanism is settled; **which members** the Finance
+  sets seed is `03` §2's roster to name, and the row's *"are the Finance sets seeded at all"* is
+  answered by whether that roster is non-empty.
+- **Row 16 — a `sellable` flip is material, and the PRD's enumeration is a floor.** `05` registers
+  `sellable` bucket-iii under **P-D-28** — a slice registers its bucket tags in code, and that
+  registry is what the head-door guard and the materiality judgement both read. The PRD's
+  material-change enumeration omits it; the design exceeds the PRD here on purpose, because a
+  `sellable` flip changes what a consumer may buy, which is what a material change to a published
+  SKU *is*. The divergence is registered; the PRD owner may narrow it and has not.
+- **Row 17 — a `PlanTier` display-label rename is non-material at `min(N, 1)`**, uniformly with
+  `02` (P-D-108 arm 2, P-D-116 row 15): a display label is a value on the thing, not the thing.
+  `05`'s registration of *"taxonomy ops"* as material is amended to **except display-label edits**
+  for both slices — one exception stated once, not two slices reading one sentence two ways.
+- **Row 13 — an absent `type` is `VALIDATION` at the shape phase; `SKU_TYPE_UNKNOWN` covers a
+  present, unrecognized value.** That is how the pipeline already runs — the shape phase refuses a
+  missing required field before any registered validator sees the row — so the code's *absent* arm
+  is unreachable by construction and the AC map reads the one way that matches the code.
+- **Row 19 — the registered-validators phase runs inside the publish transaction, and a validator
+  with a cross-gear input resolves it before.** The phase is inside as shipped — **P-D-97** landed
+  `parent_must_be_published` as its continuation — and `07`'s reading is right about *where the
+  phase runs* and wrong about *what it may do there*. The row's cost is real: a collector call with
+  a timeout inside a transaction holds the head-row lock and a pooled connection, and serializes
+  every publish on SQLite. The gear already has the shape that avoids it — `MaterialityEvaluator`
+  *"holds the two looked-up inputs as resolutions and nothing else: no resolver, no clock, no store
+  handle."* The usage-type resolver is resolved **before** the transaction and the phase is handed
+  a `Resolution`; `07`'s fix follows the same pattern.
+- **Row 8 — the recognized-and-active check judges a new or changed declaration; a carried-forward
+  value is judged by the state it had when declared.** Otherwise deprecating a tier or an
+  accounting code freezes every SKU carrying it against any further publish — a retroactive
+  lockout the design's own deprecate-then-remove path exists to avoid (`inst-ad-deprecate-then-remove`:
+  *"`deprecated` blocks new values"*, existing ones stand). The comparand for the two bucket-iii
+  fields is the previous published version's value; the unit is bucket ii and carried-forward by
+  construction, as the row itself notes.
+- **Row 21 — the census and the flip are one transaction, and the flip re-asserts the census.**
+  The `deprecated → removed` `UPDATE` carries `WHERE NOT EXISTS (a non-terminal published head
+  declaring the member)`, so a concurrent first publish either commits before — and the flip's
+  predicate finds it and refuses `UNIT_DELIST_BLOCKED` — or after, and the publish's own
+  recognized-and-active check (row 8, inside its transaction) refuses the now-removed member. Two
+  writers, each guarded by the other's fact in its own transaction; the write-skew window closes
+  because neither side judges on a read from a different transaction. **This is the fix for the
+  `dod-unit-delist` tick P-D-109's pass withdrew.**
+- **Row 12, the number — `usage_type_resolver_timeout_ms` at 2000, interim, in `ProductsConfig`.**
+  *"A short timeout"* had none. Two seconds because the resolve now happens **before** the
+  transaction (row 19) where it holds nothing, so the cost of the bound is latency on the publish
+  path and not a lock. **The unwired/unreachable split is not settled here**: it entangles the
+  bulk lane's once-consumed approval and belongs with consume-at-schedule in the lead's queue.
+- **Routed, not decided.** **Row 6** — whether the resolved-binding snapshot is inside the content
+  digest — changes `DIGEST_VERSION` and re-pins the golden vector, and is `01`/`06`'s to take with
+  the digest protocol in hand.
+- **The arguments against, stated.** Row 8 lets a SKU keep publishing a deprecated tier
+  indefinitely — accepted because that is what *deprecated* means everywhere else in this gear, and
+  removal is the act that stops it. Row 21 puts a correlated subquery in a hot `UPDATE` — accepted
+  because the alternative is a lock, and the row's own measurement was that SQLite's single writer
+  had been hiding a Postgres defect. Row 16 registers a deliberate divergence from the PRD, which
+  this register otherwise avoids — accepted because P-D-28 made the code the registry.
+- **Propagated**: rows 8, 10, 13, 16, 17, 19, 21 struck; 12 narrowed; the timeout field lands with
+  this entry. `03`'s taxonomy-ops registration gains its display-label exception. **All code here
+  is unassigned — slice 03 has no strand** — and is named in the lead's queue.
+
+
+#### P-D-119 — The gate's verdicts and codes: ten of `05`'s rows, most of them answered by what landed this week
+
+- **Date**: 2026-09-03 (owner call, answering `features/governance.md` §7 **rows 3, 8, 13, 26, 28,
+  30, 31, 34, 36 and 37**)
+- **Rows 8, 26 and 28 — answered by P-D-105 and strand B's arm.** Row 8 asked what `Gate` mode
+  requires of a gated transition; `01`'s `inst-fd-gate-mode-preauthorized` now states both arms
+  (P-D-105's propagation). Row 26 said the trait gives the host no act operand — **`GatedAct`**
+  (`Governed` / `Ungoverned` / `ScheduledFlip`) is exactly that operand, carried at construction so
+  a caller cannot build the host without saying which act it holds it for. Row 28 said a
+  store-backed host needs the candidates read first — `StoredApprovalGate::governed(candidates)`
+  takes the door's own read. All three struck against `24e7d15f2`.
+- **Row 34 — no code, and P-D-112 arm 2 removed the case.** An *absent* policy is now the default,
+  **resolved**; the only unresolved input is a **failed read**, which is a storage error and answers
+  a 500 as every driver failure does. Nothing about that is a refusal a code could classify.
+- **Row 36 — the claim set is not an input of the materiality verdict.** Measured:
+  `MaterialityEvaluator::verdict` requires `claims` to resolve and then **discards it** —
+  `let _claims = …; Self::judge(act, policy)`. C8 says why it never mattered: role predicates
+  narrow *who may approve*, which is decided at **decide** time against the approver's claims, not
+  at submission against the submitter's. The fail-closed clause on the claim set is vestigial and
+  goes; the evaluator takes the policy alone. B's build.
+- **Row 31 — at `N = 0` the record is satisfied at submission.** P-D-11: *"a tenant at `N = 0`
+  publishes approver-less by policy and the record says exactly that."* §4's human arm — *"met by
+  distinct principals"* — cannot fire on zero principals, so `required = 0` is met by construction
+  at submission, and the record moves `pending → satisfied` in the submit transaction with no
+  decision rows. The same shape `system_signal`'s auto-satisfaction already has (P-D-14).
+- **Row 30 — `APPROVER_ROLE_REQUIRED` is raised at the decide door, never by the gate.** The gate's
+  one refusal is *"no satisfied record"* → `APPROVAL_REQUIRED`; it never sees a principal's roles.
+  A principal without the base role attempting a **decision** is refused at that door — which is
+  where the role is checked and the only place the code has a raise path. Row 13 follows: it is a
+  **403** (`permission_denied`, the platform's standing refusal), because the principal lacks
+  standing, not because the record's state refuses the act.
+- **Row 3 — an authorization denial carries the platform's 403 and no gear code.** Deny-by-default
+  is the PEP's; the gear's doors open by authorizing and the refusal that comes back is the
+  platform's `permission_denied`. The gear mints codes for **its own** refusals (the gate's
+  `APPROVAL_REQUIRED`, the decide door's `APPROVER_ROLE_REQUIRED`), never for the platform's.
+- **Row 37 — one new code, `DECISION_ALREADY_RECORDED` (409), and the roster opens to seven on
+  purpose.** Two refusals the ceremony raises ship today as **500s** through `RepoError::Db` —
+  a second verdict from one principal (C2's `UNIQUE`, read back) and a decision on a record that
+  closed on no approver (P-D-68 arm 1). Both are the **record's state refusing the act**, which is
+  409's whole definition, and both are ordinary user actions (a double click, a stale queue). The
+  gear's own rule is that error class follows provenance: a request-borne condition rendered as a
+  server error is a defect. So one code covers both — *this record cannot take that decision* —
+  with the detail saying which. **The roster was closed at six deliberately; opening it for a
+  refusal that was reaching users as a 500 is the case a closed roster exists to be reopened for.**
+  Both counters and the third roster move; B's build.
+- **The arguments against, stated.** Row 37 opens a roster two decisions kept closed, and the
+  alternative — two codes, one per cause — was rejected as splitting one user-facing fact. Row 36
+  removes a fail-closed clause, which this gear treats as the safe direction; accepted because the
+  clause guarded an input nothing read, and a guard on nothing is not safety. Row 31 lets a record
+  reach `satisfied` with zero decision rows, which an auditor may find surprising; that is P-D-11's
+  policy, and the descriptor's `required = 0` is the record saying so.
+- **Propagated**: rows 3, 8, 13, 26, 28, 30, 31, 34, 36, 37 struck. `05` §3.3's roster gains its
+  seventh code. B's RELAY gains the four builds (rows 31, 36, 37 and the decide door's refusal).
+
+
+#### P-D-120 — The approval record's doors, its non-entity subjects, and what `quorumReduced` marks
+
+- **Date**: 2026-09-03 (owner call, answering `features/governance.md` §7 **rows 11, 12, 14, 15,
+  16, 35, 38 and 39**)
+- **Row 12 — the ceremony's three doors, on the corpus's shape.** Measured: **no approval door
+  exists** — no `/approvals` route, no break-glass door — while `approval × submit`,
+  `approval × decide` and `breakglass × elevate` are minted. P-D-106's situation, one slice over,
+  and the same answer: `POST /bss-products/v1/approvals` (submit), `POST
+  /bss-products/v1/approvals/{approvalId}/decisions` (decide), `POST /bss-products/v1/breakglass-sessions`
+  (elevate) — the collection-POST-plus-act-subresource shape P-D-67, P-D-87, P-D-90 and P-D-106
+  set. The grants were never the open half. **Doors land with their `Doors` cells in §3.2, per the
+  census rule**; B's build, one module, one seventh-plus `.merge(...)` in `gear.rs`.
+- **Row 38 — `materiality_policy` is a subject kind.** `subject_kind` is a **CHECK enumeration**
+  (`chk_products_approval_subject_kind`), so the kind is added by editing that migration in place,
+  landing with P-D-112's table. P-D-14's precedent: `system_signal` became a kind because
+  `subject_kind` names *what is approved*, and a policy mutation is a thing approved.
+- **Row 14 — the entity-shaped columns for non-entity subjects, from `05`'s own text.**
+  `inst-gv-materiality` already says the change set is *"for a `GovernedLiveOp`, the op payload"*,
+  so `content_snapshot` **is the op payload**; `internal_revision` is the op's own pin — the
+  envelope's revision where it has one, `0` where the subject has no counter — because the column
+  exists to detect a stale submission and an op with no counter cannot go stale; `diff_basis` is
+  `NULL`, there being no published version to diff against. For `system_signal`, *"the signal
+  reference as the authorizing principal"* is the **`submitter`** column: the record is
+  auto-satisfied and writes no decision row, so the decision key never needs to carry it.
+- **Row 11 — the decide door's transaction writes `state = satisfied`**, on the decision that meets
+  the descriptor; the evaluator only computes whether it is met. And per P-D-119 row 31, the
+  **submit** transaction writes it when `required = 0`. Two writers, each the transaction in which
+  the fact becomes true.
+- **Rows 15 and 39 — `quorumReduced` marks an effective count below the retained default of two,
+  whatever the cause.** That is P-D-13's own wording — *"quorumReduced recorded below the default of
+  2"* — and it answers row 15's worry directly: yes, it fires on every non-material change at
+  `N = 2`, because a non-material change **is** a reduced ceremony. The flag does not distinguish
+  reduced-by-configuration from reduced-by-non-materiality and is not asked to: the descriptor's
+  other fields (`configuredQuorum`, `required`) carry that distinction — `{2, 1}` is
+  non-material, `{1, 1}` is configured down. Reading the flag alone was the mistake.
+- **Row 16 — the base role set binds any approver, one or `N`.** C1 states the set for approvers
+  without a count; C8 says predicates narrow within it and nothing replaces it. A single approver
+  of a non-material change is an approver.
+- **Row 35 — `dod-pii-on-reasons` narrows to the two reasons this feature stores.** The submission
+  carries no operator free text in this design — its content is the snapshot — and `products_approval`
+  has no `reason` column because nothing would write it. A column for text nobody writes is the
+  wrong fix; the DoD names the decision reason and the break-glass reason, which exist and are in
+  the block.
+- **The arguments against, stated.** Row 12 puts three doors on B in one assignment on top of the
+  store and the host — a heavy brief, accepted because every one of `05`'s door DoDs is blocked
+  on them and the shape is settled. Row 14 lets `internal_revision = 0` mean "no pin", which
+  overloads a counter with a sentinel; accepted because a nullable revision would put `NULL` into
+  P-D-105's equality clause. Row 15/39 leaves a flag whose meaning needs a second field to read —
+  accepted because that is what a descriptor is for.
+- **Propagated**: rows 11, 12, 14, 15, 16, 35, 38, 39 struck; `dod-pii-on-reasons` narrowed in the
+  FEATURE; `05` §3.2 `Doors` cells and the `subject_kind` CHECK follow with B's build.
+
+
+#### P-D-117 — The identity map and the allow-list: seven of `10`'s rows, decided from the code and the design
+
+- **Date**: 2026-09-03 (owner call, answering `features/retention-erasure.md` §7 items **5, 8 (its
+  engineering half), 12 (its posture half), 14, 21, 22, 23 and 31**). That §7 is a **numbered**
+  list — thirty-four items, eight struck — which a bullet-shaped census had read as five.
+- **Item 5 — the unattended act's `actor_ref` is `gear::system_actor_ref()`.** Answered by
+  **P-D-113** arm 2 hours earlier: a stable UUID v5 from `bss-products:system`. The row's premise —
+  *"no document names a system ref"* — was true when written and is not now; the age-triggered
+  tombstone and every GC act write under it, and `01`'s non-nullable `actor_ref` is satisfied.
+- **Item 21 — one live `actor_ref` per principal per tenant, so the erasure is single-row.**
+  Answered by the crate: `uq_products_identity_ref_active` caps live rows at one and the shipped
+  resolve is `.one(…)`. The residue was `inst-er-erase`'s plural — *"its `actor_ref`s"* — which
+  named a population the index forbids; **corrected in `design/10`** with the index cited, so the
+  FEATURE no longer stands against a step it declares normative.
+- **Item 22 — `design/02`'s canonical enumeration governs a door-set fact, and `design/10` §3.1
+  follows it.** §1.4 pinned precedence for column-level facts only; door-set facts had none. The
+  bulk/promotion reason entry was struck in `02` by **P-D-50** and survived in `10` §3.1 because the
+  propagation reached three instructions and not `inst-im-map`. Precedence stated: the slice that
+  **owns the hook** (`02`, `content_pii_block`'s single-raiser rule) owns the enumeration of what
+  spends it. §3.1 loses the entry.
+- **Item 14 — "byte-identical in effect" means the map state, and the audit row differs by
+  construction.** The requested path is *"audited with a reason"* by a human; the age path has no
+  requester and no supplied reason, so its row is written under the system principal (item 5) with
+  the age rule's own name as the reason. What the two paths leave **identical** is the map entry:
+  tombstoned, payload destroyed, `principal_ref` standing. The design's sentence gains those words.
+- **Item 12 — `products_pii_allowlist` is a PII store by construction and takes the map's
+  posture**: excluded from every export except the compliance surface, encrypted at rest under the
+  platform posture, and its `justification` and `signed_off_by` fields join §3.1's content-PII
+  write block. That is the engineering half. **Whether a given entry may contain what it
+  contains is Legal's and stays open**, as the row records.
+- **Items 23 and 31 — the allow-list owes a column roster, and here it is.** No document named a
+  column of `products_pii_allowlist` and the table does not exist; measured. The roster:
+  `(tenant_id, entry_id, value_normalized, justification, signed_off_by, signed_off_at, state ∈
+  {active, revoked}, created_at, updated_at)`, with `UNIQUE (tenant_id, value_normalized) WHERE
+  state = 'active'` on P-D-47's terms — revocation is a state flip, never a `DELETE`, so a revoked
+  entry keeps its sign-off on record. **The match rule is exact match on the normalized value**
+  — C2's *"curated allow-list for legitimate person-named products"* is a list of names, not
+  patterns, and the narrowest rule is the one that cannot admit more than Legal signed off.
+  *What makes the detector uncertain* is the detector's own verdict and is `10`'s to build against
+  §6's four-arm matrix; this entry gives the list its shape, not the detector its policy.
+- **Item 8, engineering half — only the compliance export resolves an identity through the
+  map.** `08` states it renders *"actor pseudonyms"* and never names the map or a join, so the
+  two slices do not disagree about what `08` does: it does not resolve. `inst-im-render`'s mention
+  of queues and projections *"resolving at render time"* is corrected to *rendering the pseudonym*.
+  **Which principals may hold `compliance × export`** — item 11 — is Architecture's with Legal and
+  stays open.
+- **The arguments against, stated.** Item 22 grants `02` precedence over a fact `10` declares in
+  its own normative section, which is a real narrowing of `10`'s authority — accepted because a
+  hook with one raiser must have one enumeration of its spenders. Item 23's exact-match rule will
+  refuse a legitimate product name spelled two ways until both are listed, and Legal signs off
+  twice — accepted as the cost of a rule that cannot widen itself. Item 14 writes an audit row with
+  a reason no human supplied — accepted because a row with a system reason is honest about its
+  origin where a row without one would be a hole in the class this very slice retains.
+- **Propagated**: items 5, 14, 21, 22 struck; 8 and 12 **narrowed** to their Legal/Architecture
+  halves; 23 and 31 struck with the roster recorded here. `design/10`: `inst-er-erase` singular
+  (done), §3.1's bulk entry struck, `inst-im-render`'s render sentence, the "byte-identical"
+  sentence. **The table, its migration, the match rule and the posture are strand D's build.**
+
+
+#### P-D-118 — Retention's clock, its numbers, the GC's boundary, and the two events' aggregates
+
+- **Date**: 2026-09-03 (owner call, answering `features/retention-erasure.md` §7 items **16 (its
+  shape), 18, 25, 26, 27, 28 and 32**)
+- **Item 28 — the three configured operands get homes, interim, on the P-D-107 idiom.** The row's
+  premise — *"`ProductsConfig` ships exactly two fields"* — is stale by nine fields since P-D-107
+  and P-D-113, but its three operands still had none. **PRD §15 already states the interim
+  policy**: *"Interim set (financial/version/audit → statutory max). Final durations per
+  jurisdiction …"* owned by Legal and Finance. So the fields carry that policy as numbers:
+  `retention_days_financial`, `retention_days_version` and `retention_days_audit` at **3650** — the
+  longest common statutory maximum, chosen so no jurisdiction's record is deleted early before
+  Legal narrows it; `pseudonymization_age_days` at **730** — anchored to `inst-er-age`'s own
+  operand, *"the age of the principal's last activity"*, since two years without a stamped act is
+  not *"an active employee mid-employment"* (M2); and `drill_cadence_hours` at **24**, so a
+  corrupt backup is found within a day. Zero refused at boot; each says **interim** in its doc;
+  Legal and Finance override by configuration with no code change.
+- **Item 27 — the audit-class retention window is configuration, and the DDL guard admits any
+  authorised `DELETE`.** The row states the dilemma exactly: a trigger cannot read config, and a
+  DDL constant cannot be set per jurisdiction as PRD §15 says Legal will. Resolved by separating
+  two guards that the migration's comment had run together: `m20260829_000004`'s trigger guards
+  against **unauthorised** deletion — anything not the GC — and the **window** is the GC's own
+  predicate, read from `retention_days_audit`. A trigger arm of the form `OLD.written_at <
+  <cutoff>` is not written; the GC is the only authorised deleter and it carries the cutoff.
+  `01`'s migration comment follows.
+- **Item 25 — the GC's transaction boundary is one catalog version at a time, whole.** The
+  manifest row, its entry rows and the entity-version rows only it references delete in **one
+  transaction**, so the intermediate state the row describes — a surviving manifest with its
+  entries gone, admitting deletes it still names — cannot exist for a backup to capture. A pass is
+  per-version; a resumed pass re-judges every candidate from scratch and finds a half-deleted
+  version impossible rather than needing a rule for it.
+- **Item 26 — `ActorErased` partitions on `principal_ref`, `PiiAllowlistChanged` on its
+  `entry_id`.** P-D-116 row 15's reasoning, one slice over: the aggregate is the thing the act
+  serializes on. An erasure serializes on the principal's row; an allow-list change on its entry.
+  Neither is a Product or SKU aggregate and neither needs to be — P-D-22's partition is
+  `hash(tenant_id, aggregate_id)`, and both ids are stable within the tenant.
+- **Item 18 — an index for the tombstone-inclusive read-by-principal path**, `(tenant_id,
+  principal_ref, tombstoned_at)`, since the compliance export walks historical refs and the only
+  covering index is the partial `WHERE tombstoned_at IS NULL`. It lands with strand D's next
+  migration — the allow-list table — the same "index rides the change that makes the read live"
+  reasoning P-D-110 and P-D-111 used.
+- **Item 16, its shape — `correlation_id` is a W3C trace id, `text` not `uuid`, and NULL for
+  background acts by design.** Measured: `infra::events::correlation_id` reads the 32-hex trace id
+  off the ambient OTel layer *the host installs*, `None` outside a traced request, and its doc says
+  why it is rendered as hex — *"grep-equal to the one in the access log, the OTel span and the error
+  envelope; a `Uuid` rendering … would join to none of them."* So the `uuid` column was the wrong
+  type for the value from the start. The column becomes `text`; the GC's and the runner's rows
+  write NULL because a background act **has** no request — that is a fact about the act, not a
+  hole. **The migration edit is `01`'s and the lead's**, routed to the lead's own next batch; it
+  does not block `dod-retention-clock`, as the row itself says. **Landed 2026-09-04.**
+- **Item 32 — yes, §6 owes one criterion per DoD**, as `catalog-version` §7 row 50 asks generally.
+  A DoD whose *"unnamed obligations are ticked by inspection"* is a DoD nothing can fail. The five
+  missing criteria are **strand D's documentation work** and are named in its brief.
+- **The arguments against, stated.** Item 28's numbers are guesses bounded from one side — 3650
+  is *at least* the statutory maximum, not equal to any jurisdiction's — and say so. Item 27 makes
+  the GC the sole holder of the window, so a bug in the GC's cutoff deletes early with no DDL
+  backstop; accepted because a DDL backstop that cannot read config was the alternative and it
+  could never be right for two jurisdictions at once. Item 25 makes a large catalog version a large
+  transaction — accepted because the row's own incident (a partial manifest in a backup) is worse
+  than a long transaction.
+- **Propagated**: items 18, 25, 26, 27, 28, 32 struck; item 16 **narrowed** to its migration, owed
+  to the lead. The five config fields land with this entry. The GC, the two events' aggregates
+  and the index are **strand D's build**.
+
+
+#### P-D-116 — `02`'s five remaining lead calls: the global value's containment, the removal operand, one rule for two changes, the display events' aggregate, and what a category delete admits
+
+- **Date**: 2026-09-03 (owner call, answering `features/taxonomy-attributes.md` §7 **rows 1, 5, 11,
+  15 and 21** — the five of its seven remaining lead calls that are decidable from the design and
+  the code; 17 is a measurement and 22 a cross-slice seam, both routed)
+- **Row 1 — the global default-locale value is exempt from the containment check.** The row states
+  the contradiction exactly: under the gear's containment reading an unrestricted coordinate under
+  a restricted entity is *not* contained, so *"the write `dod-default-locale` demands is the write
+  `dod-value-validators` refuses, and a brand-scoped entity can never publish."* Containment is a
+  rule about **scoped** values — a value claiming a region or brand must sit inside its entity's.
+  **P-D-102** made the global coordinate `("", "", "")`, absent on all three axes: it claims
+  nothing and is therefore contained by everything, and it is the fallback of last resort that
+  step 3 of the resolver and the publish-time requirement both exist to reach. `AttributeScope`
+  treats the global coordinate as contained by construction. *Against*: a value that escapes a
+  check is a special case a reader must know; accepted because the alternative is a rule that
+  makes every brand-scoped entity unpublishable, which no requirement asks for.
+- **Row 5 — `02` keeps the wider operand, and the divergence with `03` is deliberate.** The row
+  supplies the reason itself: attribute values *"have no unit-style publish-time re-recognition to
+  fall back on."* A recognized-set member removed under a draft SKU is re-judged when that SKU
+  publishes (P-D-89's ground for excluding `draft`); a definition removed under a draft that
+  carries its value has **no later check** — the value would be stranded on a definition in
+  `removed`. So a `draft` head carrying a value **is** a blocking reference here. Registered on both
+  sides as a stated divergence, not a joint decision.
+- **Row 11 — one operand for both changes, and the crate already has one rule.**
+  `definition_in_use_verdict(holders, bound)` is the single judge; its doc names the two phrasings
+  — *"undefined 'live values' for a type change"* and *"the defined non-terminal head for
+  removal"* — and applies one operand to both. The design's *"live values"* **means** the
+  non-terminal head carrying a value, which is the removal operand. Struck with the citation; the
+  design's type-change sentence gains the two words that say so.
+- **Row 15 — `CategoryDisplayUpdated` and `AttributeDefinitionUpdated` order on their own entity's
+  id.** Not the taxonomy-tree key: display writes do not take the writer lock, so that key would
+  claim a serialization the door does not provide — the row's own argument. Not the metadata key:
+  they are not metadata. A display write serializes on **its own row** (`products_category.mutation_seq`
+  is the category door's precondition), so the entity id is the aggregate that matches what
+  actually orders the writes. Slice 12 pins the envelope; the aggregate choice is the emitter's.
+- **Row 21 — a category may be physically deleted only when no `products_product_category` row
+  names it, in any Product state.** The row is right that *"unreferenced"* read the Product's
+  lifecycle state and never the link row, leaving retired and discarded Products' rows in the
+  table the design calls the single source of truth. That claim becomes physically true: the
+  retire-delete guard's operand is **any link row**, and a category with history is **retired**,
+  never deleted — the same reasoning by which **P-D-47** made a definition's removal a state and
+  never a `DELETE`. *Against*: a category used once can never be deleted; accepted, because
+  `retired` is exactly the state for a category that must stay resolvable and must admit nothing
+  new.
+- **Routed, not decided.** **Row 17** — *"four refusals have no code"* — is a measurement, and the
+  lead's first attempt at it read the *next* struct's code literal through a two-line grep window;
+  it goes to strand A with the instruction to measure each of the four against the code.
+  **Row 22** — a category rename or delete against versions frozen on category **ids** — is a
+  `06`/`08` seam: the sibling case for definitions was answered by making frozen content a
+  self-contained copy (**P-D-47**), and the recommendation routed with it is the same — the
+  frozen assignment set carries name copies, not bare ids — but that changes `06`'s digest and is
+  not this slice's to decide alone.
+- **Propagated**: rows 1, 5, 11, 15 and 21 struck; row 22 re-owned to slices 06/08; row 17 stays
+  live as a measurement for A. `design/02`'s type-change sentence and the retire-delete guard's
+  operand follow. **The code changes — `AttributeScope`'s global exemption, the guard's operand,
+  the two events' aggregate — are strand A's build.**
+- **Filed 2026-09-03, by the lead, with strand A stood down — and the entry above had only
+  pointed.** `design/02` instruction 4 gains the delete operand and its three §6 items (rows 1, 15,
+  21) are struck with their answers; the entry's *"follow"* was a pointer, not a filing, for a day.
+  The code: the `AttributeScope` exemption **already stood** (taken *"as forced rather than chosen"*
+  and registered as open — now decided, docs re-worded, one door test added); the delete census is
+  new (`delete_census`, `delete_verdict`, `delete_under_lock` — the delete had run **no** census and
+  the FK answered as a 500); and two guards the door never called are wired (`seeded_edge`,
+  `definition_in_use_verdict`), which also gave `CATEGORY_REFERENCED`, `DEFINITION_IN_USE` and
+  `STALE_CATEGORY_TOKEN` their 409 variants — §3.3 files them there and `Validation` renders 400.
+  The two events' aggregate is the last piece and lands with their declaration.
+
+
+#### P-D-113 — The activation runner: hosted in the lifecycle loop, under a stable system principal, with a budget that can actually be spent
+
+- **Date**: 2026-09-03 (owner call, answering `features/lifecycle.md` §7 **rows 4, 8, 28, 29 and
+  37**, which together are everything that blocks `dod-activation-runner` and
+  `dod-runner-failure-posture` on the lead's side)
+- **Context**: row 29 says *"nothing names what hosts the activation runner, or the identity it
+  drives the doors under."* Measured at `98385049b`, both halves have an answer in the gear already
+  and one of them is a defect:
+  - **The host exists.** `gear.rs`'s lifecycle task runs one `tokio::time::interval` at
+    `COALESCER_TICK = 1s` under a `CancellationToken`, and each tick calls `coalescer_tick`,
+    `batch_tick(&worker_ctx, rt.system_actor_ref, &cancel)` and, every sixty ticks,
+    `report_overdue_freezes`. **The bulk worker is already hosted exactly this way.**
+  - **The identity is minted fresh every boot.** `ProductsRuntime { system_actor_ref:
+    uuid::Uuid::new_v4(), .. }` at `gear.rs:536`, in production construction. Every restart gives
+    the gear's own acts a new actor that resolves to nothing, so the audit trail cannot say two
+    sweeps were the same principal. Row 29 asked the question; the code had a wrong answer.
+  - **`attempt` never moves.** `repo/lifecycle.rs` writes `attempt: Set(0)` at insert and nothing
+    increments it — row 28's *"one increment rule"* was generous. The budget can never be spent,
+    so `dod-runner-failure-posture`'s bounded arm cannot exist.
+  - `ClaimLease { ttl }` and `AttemptBudget { max }` are declared with **no values** (row 8), the
+    same shape P-D-107 arm 1 corrected for the taxonomy and metadata caps.
+- **Arm 1 — the runner is a fourth call in that loop**: `activation_tick(&ctx, rt.system_actor_ref,
+  &cancel)` beside `batch_tick`, on the same interval and the same cancel token. Not a new task,
+  not a new capability: the gear implements `DatabaseCapability` and `RestApiCapability` and the
+  bulk worker showed that a poll loop needs neither. If the platform later offers a scheduler
+  capability, this is the one call site that moves.
+- **Arm 2 — the system principal is stable: a UUID v5 from a fixed namespace and the name
+  `bss-products:system`**, computed once and the same in every process on every host. Not a
+  config field: one more value to misconfigure, for a principal that has no reason to differ
+  between deployments. `seeded_by = 'registry'` is the precedent — a fixed system name for acts
+  the gear performs on its own behalf. The `new_v4()` at `gear.rs:536` is a defect and is replaced
+  here.
+- **Arm 3 — `attempt` increments on every claim**, persisted by the claim statement itself, so
+  each try — first claim, lease reclaim, or re-poll after a deferral — spends one. Row 28's two
+  populations then share one counter honestly: the budget is *"how many times has a worker picked
+  this row up"*, which is the only reading under which both the transient arm and the reclaim arm
+  can exhaust it.
+- **Arm 4 — the numbers, interim, in `ProductsConfig`** on the P-D-107 idiom: `activation_claim_lease_secs`
+  **60** and `activation_attempt_budget` **5**. Sixty because the loop ticks every second and a
+  flip is one transaction — a minute tolerates a slow flip and frees a crashed worker's row within
+  a minute, which is the trade the lease exists to make. Five because a pin mismatch is
+  **terminal on the first try** (C's `Failed`, not `Deferred`, with its stated reason), so the
+  budget bounds only the transient-dependency arm, and a dependency that has not returned in five
+  polls a second apart is not transient in any sense the runner can act on. Zero refused at boot.
+- **Arm 5 — the no-orphan flip is a deferral, not a wire refusal (row 37)**, and the code half
+  agrees with the runner already: `defer_flip_guard` finishes `Deferred` with
+  `RetentionHold::REASON = "retention_orphan_blocked"` as the `outcome_reason`. The runner is not
+  a wire door — nothing receives a code — so *"which declared code refuses it"* has no operand.
+  `no_orphan_at_flip` today returns `DomainError::ParentTerminal`, which is the **wrong code
+  pointing the wrong way** (a live child is not a terminal parent), and it is *"called from no door
+  yet"* by C's own account; it becomes the deferral's judge and stops minting a `DomainError`.
+- **Arm 6 — the reserved lane `internal:cascade-leg` (row 4)** is written by the runner when it
+  activates a cascade leg — the writer `01` names this feature as, and the only place a leg is
+  ever activated. Measured: nothing writes it today because nothing activates anything.
+- **The arguments against, stated.** A v5 principal shared by every process means the audit trail
+  cannot distinguish two hosts' workers — accepted, because *which host* is an operational fact for
+  logs and *which principal* is an audit fact for records, and the v4 conflated them into
+  neither. Sixty seconds and five tries are guesses bounded from one side each and say so. And
+  hosting a second worker in one loop couples their tick: a slow activation delays a batch sweep by
+  the same amount, which the bulk worker's own design already accepted for the coalescer.
+- **Not changed**: `dod-scheduled-publish-pin`, which stays blocked on consume-at-schedule (P-D-105
+  is inert until a row names a real record); `ACTIVATION_LANE`; P-D-105's predicate.
+- **Propagated**: rows 4, 8, 28, 29 and 37 struck; the two config fields and the stable principal
+  are the lead's and land with this entry. The runner itself is **strand C's build**.
+
+
+#### P-D-114 — The cascade's six open operands
+
+- **Date**: 2026-09-03 (owner call, answering `features/lifecycle.md` §7 **rows 2, 9, 11, 15, 31
+  and 32** — everything left on `dod-cascade-plan` and `dod-undeprecation` that is a decision)
+- **Row 9 — the trigger is keyed on non-terminal children, and the DoD's "non-`retired`" is
+  corrected.** A `discarded` child is terminal and non-retired: firing over it would try to retire
+  a row the state machine admits no edge from, and the plan's three arms — retire, leave-and-list,
+  auto-discard — give it no disposition because it needs none. The narrowing instruction already
+  read non-terminal; the plan instruction and the DoD follow it.
+- **Row 11 — the operator resumes, and the resume writes `resolution = children_cleared`.**
+  `inst-cp-deferred` says so — *"resumable by an operator once the listed children clear"*. The
+  failure instruction's *"deferred re-evaluates automatically"* is the **flip guard's re-check on
+  the next poll**, which decides whether the deferral still holds; it is not the resolution, which
+  is an act with an actor. Two sentences about two different things, read as one.
+- **Row 2 — answered by `inst-cp-plan`'s own two clauses**: the plan *"supersedes, for every child
+  in all three arms, that child's live `publish` intent"*, and *"plan application at confirmation
+  is one transaction."* So the ordering is **supersede, then schedule, atomically** — a pending
+  child publish cannot interleave because the confirmation is the only writer and it is one
+  transaction. Struck with the pointer.
+- **Row 31 — the auto-discard arm is not a second ceremony.** It runs *inside* the confirmed
+  cascade-retire act's transaction, as `apply_cascade_plan` already does for the legs' scheduling,
+  under the gate that act passed. The discard **door**'s `GateMode::Gate` literal is not this
+  caller — the door is the wire surface and the cascade never calls it. So no pre-authorized
+  discard is needed and P-D-105 was right not to reach for one. This is the row that held
+  `dod-cascade-plan` after P-D-105; it holds it no longer.
+- **Row 15 — the catalog-admin performs the governed cancel**, under the N-governed ceremony the
+  un-deprecation instruction already registers. The actor who initiates a retirement or a cascade
+  is the actor who may abort one; the roster gains that clause and the FEATURE's actor table
+  follows.
+- **Row 32 — the clause is corrected, and `dod-undeprecation` is re-ticked.** The DoD required the
+  cancel to clear `replaced_by_sku_id` *"for the parent and every child leg"*; the parent is a
+  Product and has no such column, which is why P-D-109's pass withdrew the tick. The clause now
+  reads *"for every child leg the reversal touches"*, matching `dod-lifecycle-columns`. Its other
+  clauses were verified at the original tick and nothing has moved them; re-ticked on the corrected
+  text, marker restored to `:p1`.
+- **The arguments against, stated.** Row 9 changes a `DoD`'s wording, and the discipline here is
+  that decisions do not rewrite requirements — accepted because the wording contradicted the
+  slice's own narrowing instruction and the state machine, so one of the three had to move and the
+  requirement was the one that was wrong. Row 31 relies on `apply_cascade_plan` having exactly one
+  caller inside a gated act, which is true today and is the same class of invariant P-D-105
+  guards for `insert_scheduled_transition` — **so the guard is widened** to count
+  `apply_cascade_plan`'s callers too.
+- **Propagated**: rows 2, 9, 11, 15, 31 and 32 struck; `dod-undeprecation` re-ticked with its
+  clause corrected; `inst-cp-plan`'s trigger wording and the actor roster follow in `design/04`
+  and the FEATURE.
+
+
+#### P-D-115 — Retirement's remaining edges: the Product flip's event, the replacement walk, the confirmation, and where narrowing runs
+
+- **Date**: 2026-09-03 (owner call, answering `features/lifecycle.md` §7 **rows 5, 12, 26, 27, 30
+  and 34**)
+- **Row 5 — the Product flip announces `ProductRetirementEffective`**, the analogue of the shipped
+  `SkuRetirementEffective`, whose doc reads *"No Product analogue (row 5)."* `01` §4.5 makes this
+  feature the announcer of all three floor edges, so the analogue is owed rather than optional. A
+  new event type: its own `SCHEMA_REFS` entry and its `events_tests` roster line, since an
+  exhaustive `match` constrains the arm list and not that array.
+- **Row 30 — the Product retirement payload is `RetiredEventBody` with `replacedBy` absent**, i.e.
+  `{productId, fromVersion, reason, effectiveAt}`. **Answered by the crate already**: `events.rs`
+  documents *"`replaced_by` is SKU-only. Product initiation leaves it `None`"*, and C's
+  re-announcement emits exactly that. The design owed the sentence; it has it now.
+- **Row 12 — two halves answered by the crate, one routed.** `domain::retirement::resolve_replacement_chain(start, next, bound)`
+  exists and answers both questions the row asked of the walk: a repeat visit returns
+  `ReplacementWalk::Cycle { seen }`, and exhausting `bound` returns `Bounded { seen }`, so a cycle
+  and an over-long chain are both **`replacement_chain_broken`** with the path in hand. *Which
+  surface walks it* is `08-read-models`' — the walk has no caller yet — and that half is routed
+  there with the answer to row 13 (where the broken fact is stored) as one question.
+- **Row 34 — the confirmation stays a boolean; the count is displayed, not pinned.** The crate's
+  own narrowest reading (`confirmed: bool`, *"the count pin is §6"*). A count-pinned token is a
+  TOCTOU guard the PRD does not ask for, and the guard the cascade actually needs is already
+  physical: the plan **supersedes every child's live intents at confirmation, in one
+  transaction**, so a reference that appears between display and confirmation is judged at
+  confirmation, not at display.
+- **Rows 26 and 27 — narrowing runs at publish and stays at save, and its refusal names the
+  falling-out children.** `inst-pc-narrowing` and this document's §2 both put the check on publish,
+  and publish is where a head becomes visible; the shipped save-door check is an **early refusal**
+  and stays, but it is not the obligation. And §5 obliges *"the validator MUST name the falling-out
+  children"*; the shipped door deliberately does not, and `scope_not_contained_domain_err` builds
+  its detail from dimension and scope sets alone. The children are named — the refusal's whole
+  operator value is knowing *which* SKUs fall out.
+- **The arguments against, stated.** Row 5 adds a ninth payload type to a roster row 25 already
+  finds inconsistent with the broker's seven — row 25 is a measurement and is routed, but this
+  entry makes its count worse before it is taken. Row 34 leaves a display-then-confirm gap a
+  distracted operator can fall into; accepted because the plan's supersession makes the gap
+  harmless to the data and only surprising to the operator. Rows 26/27 put the same rule at two
+  doors, which is the shape `content_save_pipeline` was created to avoid — accepted because the
+  save-door check is a courtesy and the publish check is the obligation, and one registration
+  list serves both.
+- **Propagated**: rows 5, 26, 27, 30 and 34 struck; row 12 narrowed to its read-models half. The event,
+  the naming and the publish placement are **strand C's build**.
+
+
+#### P-D-112 — The materiality policy is a fourth table, and an absent row is the default rather than an unresolved lookup
+
+- **Date**: 2026-09-03 (owner call, answering `features/governance.md` §7 **row 33**, whose owner
+  it records as *"this feature with the schema owner"*)
+- **Context**: the whole `05` gate seam is blocked here, and one link down from where I had it in
+  the queue. Measured at `2ca0e51c1`:
+  - `MaterialityEvaluator` **is registered at no door** — every one of the **fifteen** production
+    registrations in `products.rs`, `skus.rs` and `taxonomy.rs` is `NoMaterialityPolicyGate`.
+  - `MaterialityEvaluator::verdict` **requires the policy to resolve**, in its own words: *"an act
+    that would answer `Material` on its shape alone must still refuse when the policy is missing,
+    since the count the verdict feeds comes from the policy and a verdict without one cannot be
+    spent."*
+  - And **the policy has no store**: no entity, no repo read, and `DESIGN.md` §3.7 gives this
+    slice exactly `products_approval`, `products_approval_decision` and
+    `products_breakglass_session`. Row 33 states the consequence — *"the shipped
+    `MaterialityPolicy` is a value with a default and a floor that nothing can persist or mutate,
+    and the evaluator refuses every act until one is supplied."*
+  So the chain is **policy store → evaluator → gate host → doors**, and nothing above the first
+  link can be built. Registering `StoredApprovalGate` today would refuse every governed act.
+- **Decision, arm 1 — a fourth table, `products_materiality_policy`**, per tenant, mutated through
+  a `GovernedLiveOp` door on the **existing** `materiality_policy × write` pair, which `authz.rs`
+  already mints and `design/05` §3.2 records as having *"no route declared"*. The table and the
+  door land **together**, per `authz_tests`' census rule, and that §3.2 cell loses its "no route"
+  the way P-D-106's three did.
+- **Not `ProductsConfig`, and the reason is C4 rather than cost.** C4 reads: *"the policy's own
+  mutation is material (the two-person rule's foundation must not be single-person-editable — the
+  pricing D-10 lesson, adopted)."* **Configuration is single-person-editable by construction** —
+  whoever deploys it — so a config home would put the two-person rule's own foundation outside the
+  two-person rule. `inst-mt-once` compounds it: the evaluation runs *"against the policy in force
+  at the submission instant, never the reader's clock"*, and a process's configuration has no
+  historical value to re-read. Two independent clauses, same answer.
+- **Decision, arm 2 — an absent row resolves to the default; only a failed read is unresolved.**
+  This is the clause that makes the chain work, and it is the one a builder will get wrong.
+  **P-D-11** already says `N` is *"reachable only by explicit configuration, absent ⇒ default"*
+  with the §17.1 interim default of 2 and a floor of 0. So *"no row for this tenant"* is a
+  **resolved** policy carrying the default — not `Resolution::Unresolved`. Only a storage failure
+  is unresolved, and that still fails closed.
+  Without this the gate refuses every act in every tenant that has never configured anything,
+  which is every tenant at launch, and C4's *"enforceable at launch"* would be unmeetable. It is
+  also the distinction an `Option<Row>` invites getting backwards: a missing row is a **domain
+  value**, and a `None` from the read is not the same fact as a driver error.
+- **The arguments against, stated.**
+  1. **A whole table for one row per tenant** is heavy, and the alternative of hanging the value
+     off an existing row was considered — it fails because there is no per-tenant row in this
+     gear to hang it on: no schema here has a tenant registry, which **P-D-104** established when
+     it withdrew a migration that needed one.
+  2. **Arm 2 makes the shipped default silently authoritative.** A tenant that believes it
+     configured a policy and did not gets the default rather than a refusal, and the record's
+     stored `quorum_descriptor` is the only place that distinguishes them after the fact. Accepted
+     because the alternative is a gear that refuses everything until every tenant is provisioned,
+     and because the descriptor **does** record the count in force — which is exactly what
+     P-D-110 arm 2 ruled it carries.
+  3. **`DESIGN.md` §3.7's table list changes**, and that document is the lead's. Paid here.
+- **Not changed**: P-D-11's default and floor, C1's quorum shape, `inst-mt-once`'s submission-instant
+  reading, P-D-110 arm 2's `configuredQuorum`, and the gate host itself — B built it and this
+  decision gives its operand a source rather than altering the host.
+- **Propagated**: `features/governance.md` §7 row 33 **struck**; `DESIGN.md` §3.7 gains the fourth
+  table; `design/05` §3.2's `materiality_policy × write` cell keeps *"no route declared"* **until
+  the door lands**, because the census forbids doing otherwise and this entry does not build it.
+- **Owed, and routed to the same change**: the two indexes P-D-110 arm 3 and P-D-111 named — for
+  `gate_candidates` and for `products_breakglass_session.two_person_approval_ref` — ride this
+  migration, since it is the change that makes both reads live.
+
+
+#### P-D-111 — The elevation's authority is recorded on the session row, not in the quorum descriptor
+
+- **Date**: 2026-09-03 (owner call, on `O-B-04` — the sharpest of strand B's five entries, and the
+  one **P-D-110** arm 2 deliberately left standing)
+- **Context**: `describe_platform_quorum()` and `describe_quorum(Material, 2, false)` produce
+  **byte-identical** descriptors that compare `==` —
+  `{configuredQuorum: 2, required: 2, financeRequired: false, predicateUnsatisfiable: null,
+  quorumReduced: false}`. Every field is individually correct; the *set* records nothing about
+  **whose** authority ran the ceremony, which is the one fact **P-D-13** exists to record: a fixed
+  floor is right *"only where the acting principal is not the tenant's"*. So a later reader of
+  `products_approval.quorum_descriptor` cannot tell a cross-tenant break-glass elevation from a
+  routine tenant publish.
+  P-D-110 arm 2 ruled that `configuredQuorum` carries the floor and **must not** be overloaded to
+  carry this distinction, which left the question of where it does live.
+- **Decision: it is already recorded, on `products_breakglass_session`.** Measured rather than
+  assumed — the entry's own option 4 claimed the two ceremonies are *"distinguishable by their rows
+  today"*, and that claim is **true**: the session row carries
+  **`two_person_approval_ref: Option<Uuid>`**, which names the approval record. So an approval
+  named by some session's `two_person_approval_ref` **is** an elevation and one named by no session
+  is not, and the session row already holds `principal`, `target_tenant`, `reason`, the validity
+  window and the post-hoc review — every other fact about an elevation. The descriptor's
+  byte-identity is therefore **not a lost fact**; it is a fact recorded once, on the row whose
+  whole purpose is the elevation, and **nothing in `design/05` asks the descriptor to carry it**
+  (measured: no clause about the descriptor mentions authority, platform, cross-tenant or
+  break-glass).
+- **The residual, and it is real: the link is one-way and unindexed.** The reference lives on the
+  **session**, so the session-side question *"which approval backed this elevation?"* is a keyed
+  lookup, while the approval-side question *"was this act an elevation?"* is a **reverse** lookup —
+  `WHERE two_person_approval_ref = ?` — and there is **no index on that column** (measured against
+  the break-glass migration). That is the same class as `O-B-05`, and it lands in the same
+  migration: the seam-wiring change that gives `gate_candidates` its index (**P-D-110** arm 3).
+- **Rejected: a sixth descriptor name (option 1).** The column sits inside a canonical rendering
+  whose reader errors on a missing member, `inst-gv-queue`'s envelope would gain a field, and slice
+  12 must re-pin it — a wire-visible cost for a fact already recorded. If a consumer ever needs the
+  authority *in the descriptor*, that is the arm to take, and taking it after 12 pins the envelope
+  is exactly what B registered this to avoid.
+- **Rejected on the merits, not the cost: the subject kind (option 2).** **P-D-14** already fixes
+  what `subject_kind` is about — it made `system_signal` a **subject kind** for a publish whose
+  content is a system-owned flag, *"with the signal reference as the authorizing principal"*. So
+  the kind names **what is being approved** and the authorizing principal is recorded separately. A
+  break-glass elevation's subject is still an ordinary entity; the ceremony is a property of the
+  **authority**, not of the subject. Putting it in `subject_kind` would make one column mean two
+  things — the same mistake P-D-110 arm 2 refused for `configuredQuorum`, one column over.
+- **Ratified in passing**: B removed a `QuorumAuthority` enum it had declared for this and that
+  nothing read, on the grounds that *"an unread type is not a record."* That was right, and this
+  entry is why it stays removed rather than being revived.
+- **The argument against, stated.** The distinction now requires a **join a reader must know to
+  make**, and an auditor handed one `products_approval` row in isolation genuinely cannot answer
+  the question. That is a real loss of self-containment, accepted because the alternative writes a
+  wire-visible field for a fact the elevation's own row already holds, and because the reverse
+  lookup is being indexed anyway. **If a consumer contract ever needs the answer without the
+  join, this decision is the one to reopen** — and option 1 is where it goes.
+- **Not changed**: the descriptor's five names, `inst-gv-queue`'s envelope, P-D-13's floor,
+  P-D-110 arm 2's ruling on `configuredQuorum`, and §7 row 9's other halves — whether the
+  elevation's record is an `ApprovalRecord` at all, and which row holds it, stay open and are
+  untouched here.
+- **Propagated**: nothing normative — this records where an existing fact lives rather than moving
+  it. **Routed**: the index on `two_person_approval_ref`, to the seam-wiring migration beside
+  P-D-110 arm 3's.
+- **Owed**: nothing. `O-B-04` closes with this entry.
+
+
+#### P-D-110 — Strand B's three open register entries, ruled
+
+- **Date**: 2026-09-03 (owner call, on `O-B-01`, `O-B-03` and `O-B-05` in
+  `gears-rust-governance/logs/governance/OWED-REGISTER.md`). `O-B-02` was already answered by the
+  ownership table; **`O-B-04` stands and nothing here settles it** — see arm 2.
+
+- **Arm 1 — `O-B-01`: per-module repository tests are the convention, and `at()` is hoisted while
+  `harness()` is not.** The entry offered three options and recommended per-module files. That is
+  **already the convention**, not a proposal: measured, `repo/` carries **four** such modules —
+  `governance_tests.rs`, `lifecycle_tests.rs`, `read_models_tests.rs`, `taxonomy_tests.rs` — so all
+  four strands arrived at it independently, and the domain layer set the precedent
+  (`domain/approval.rs:1360`, `domain/materiality.rs:549`). `repo_tests.rs` really is **4336
+  lines**. Ratified.
+  The entry's own trigger for hoisting the copied helpers was *"if the copies multiply past two or
+  three"*, and there are five sites. **But a count is the wrong trigger**, and measuring the copies
+  says why:
+  - **`harness()` has two forms that differ only in an `.expect()` message** — *"run migrator"*
+    against *"boot the migration chain"*. Cosmetic. No test behaves differently, and hoisting it
+    would edit four strands' files to unify a panic string.
+  - **`at()` has three forms carrying two different epochs**: `repo_tests.rs` is
+    **2026-08-29** while `governance_tests.rs` and `taxonomy_tests.rs` are **2026-09-02**, and one
+    uses `.single().expect("a real instant")` where the others `.unwrap()`. So **`at(9)` means a
+    different instant depending on which module you are in.** That is the harm duplication causes,
+    and it has already happened.
+  So: **hoist `at()`, leave `harness()` copied.** The surviving body is `.single().expect(…)` on
+  **2026-09-02**, and the implementer **re-runs each module's tests rather than mechanically
+  re-pointing them** — an assertion comparing a stored instant to `at(9)` is safe under a change of
+  epoch and one computing an interval against a hardcoded date is not.
+  **The trigger for any future hoist is a behavioural divergence, never a count.**
+  *Timing*: after strand A's door build lands. The hoist touches four strands' test files and a
+  `mod` line in `repo.rs`, which is C's; starting it under an active strand is the sequencing error
+  this programme keeps paying for.
+
+- **Arm 2 — `O-B-03`: `configuredQuorum` carries the floor, and this deliberately does not fix
+  `O-B-04`.** For a cross-tenant break-glass elevation there is no tenant `N` in force (**P-D-13**:
+  *"no tenant's configured `N` has standing over an act whose subject is another tenant's data"*),
+  while §4 defines the field as *"the `N` in force at submission"*. **The floor is the `N` in
+  force**, so option 1 reads true, renders today, and asserts no tenant standing. Option 3 —
+  a sixth, absent state — is the most honest and the most expensive: the column is `NOT NULL`
+  inside a canonical rendering whose reader errors on a missing member, and `inst-gv-queue`'s
+  envelope has no optional arm, so slice 12 would re-pin it. Ratified as option 1.
+  **The argument against, and it is the entry's blind spot**: option 1 is *precisely* what makes
+  `describe_platform_quorum()` and `describe_quorum(Material, 2, false)` byte-identical, which is
+  `O-B-04`. Option 2 — the target tenant's `N` — would distinguish them as a **side effect**, and
+  is rejected anyway: a solo-tenant target rendering *2 required / 0 configured* invites exactly
+  the reading of raised tenant standing that P-D-13 denies. **`O-B-04` is not to be solved by
+  choosing a value for this field.** Overloading a field to carry a distinction it is not about is
+  how a record stops being readable; the authority dimension needs its own name or its own
+  `subject_kind`, and that remains open and B's to raise again.
+
+- **Arm 3 — `O-B-05`: the gate's read gets its index, and it lands with the seam wiring.**
+  Confirmed: `gate_candidates` ends `.order_by(SubmittedAt, Desc).all(runner)` with no `LIMIT` and
+  no cursor, and `products_approval` carries exactly the two indexes the entry names —
+  `uq_products_approval_open`, whose state predicate a stateless query cannot use, and
+  `idx_products_approval_queue`, which offers only the `tenant_id` prefix and cannot serve that
+  `ORDER BY`.
+  **Option 1**, the entry's recommendation: a partial index
+  `(tenant_id, subject_kind, subject_ref, submitted_at)` with **no** state predicate, which serves
+  both the stateless lookup and the ordering. **Not option 2** — bounding a read whose whole
+  purpose is to find an arbitrarily old `consumed` record for `PreAuthorized` trades a performance
+  cost for a correctness one, and any `k` makes some composite act unverifiable. Option 3, the
+  queue's pagination, is slice 12's envelope to shape and is not ruled here.
+  **Timing, and it is measured rather than assumed: neither read has a production caller today.**
+  Both are reached only from tests, because every door still registers `NoMaterialityPolicyGate`.
+  So this is latent, and it goes live at the exact moment `StoredApprovalGate` is registered. The
+  index therefore lands **in the same change as the seam wiring** — that is when the read starts
+  running, and a migration inserted into a 24-link chain is worth paying for once, alongside the
+  work that needs it.
+
+- **Not changed**: `O-B-04`, `O-B-02`'s answer, `inst-gv-queue`'s envelope, and the descriptor's
+  five names.
+- **Propagated**: nothing normative — all three are conventions and implementation rulings rather
+  than instruction changes. Arms 1 and 3 are **routed to the seam-wiring change**, and named in the
+  lead's queue so they are not rediscovered.
+- **Owed**: nothing. Arm 2's residue is `O-B-04`, which is a standing entry rather than a debt of
+  this one, and arm 1's `harness()` copies are an accepted cost with a stated trigger.
+
+
+#### P-D-109 — When a live §7 row blocks a tick, and when it does not
+
+- **Date**: 2026-09-03 (owner call, on strand C's finding in its `C+1` handback, and correcting a
+  rule this session had stated too crudely)
+- **Context**: withdrawing `dod-cascade-plan`'s tick (`27c785b87`) was justified partly as *"eight
+  live §7 rows name it in their `Blocks` column"*. Strand C then reported that **several
+  already-ticked `DoD`s sit in a live `Blocks` cell** and — correctly — declined to un-tick them,
+  naming them instead *"so the next tick is not taken the same way"*.
+  Measured gear-wide at `3d517696e`: **twelve of eighty-six ticks** sit in a live `Blocks` cell —
+  nine in `04-lifecycle`, two in `05-governance`, one in `03-sku-classification`. A count-based
+  rule would withdraw all twelve, and that is plainly wrong.
+- **Decision — the test is the question's bearing, not the row's existence.** A live §7 row
+  withdraws a tick only when **the open question defeats a clause the `DoD` itself requires**. It
+  does not when the row asks:
+  - **where** something is declared, or **whose** document owes it — a pointer, an owed
+    instruction row, an attribution;
+  - **who owns a door** whose obligations the code independently satisfies;
+  - how a correct behaviour is **surfaced** or observed;
+  - anything the row's own text already records as answered.
+  The corresponding positive obligation: a tick is taken **obligation by obligation against the
+  `DoD`'s clauses**, and the `Blocks` column is read as evidence rather than used as the test. The
+  model is already in this register's practice — `0b603dd19` ticked `dod-deprecation-provenance`
+  and `dod-deprecation-cascade` by naming a call site for each clause, and stated which sibling
+  `DoD`s stayed on the bare marker and why.
+- **`dod-cascade-plan`'s withdrawal stands, on the corrected test.** Row 31 asks for a
+  **pre-authorized discard** on a door whose mode was fixed shut *"because no such caller was
+  believed to exist"*, while `dod-cascade-plan` requires the whole plan — auto-discard included —
+  in one transaction. That is a clause defeated, not a pointer. **The count was the wrong
+  justification for a right conclusion**, and saying so is this entry's point.
+- **The twelve, classified.**
+  1. **Already answered, the row never struck** — `04` rows 20 and 33, `05` rows 20 and 23. Each
+     carries *"Closed"* or *"Answered (owner call …)"* in its own body while its number stands.
+     Struck here. The same propagation lag left six of `02`'s rows open a day past their answers.
+  2. **Live question, not a blocker** — `04` rows 1 (deferred flips are *"correct by constraint"*;
+     the row is about surfacing and is part-owned by `08`), 3 (an **owed instruction row**, not a
+     store clause), 7 (whether one further door also registers the validator — a coverage gap, not
+     a defect in the registration host), 18 (a **pointer** to which slice declares
+     `PARENT_NOT_PUBLISHED`), and 36 (whose two `DoD`s were verified clause by clause in
+     `0b603dd19`; its *"carry bare markers rather than ticks"* was true when written on 2026-09-01
+     and stale from the tick the next day). These rows keep their questions and lose these `DoD`s
+     from their `Blocks` columns.
+  3. **Bears on a required clause — six rows, and the ticks are not withdrawn here.** `04` rows 11
+     (`resolution = children_cleared` has no writer), 15 (the governed cancel's actor is
+     undecided), 23 (the slice says two things about superseding a `deferred` row), 24 (three of
+     four owned edges have no admitted writer), 32 (the cancel must clear a column the parent does
+     not have), and `03` row 21 (nothing closes the de-list window across two transactions). Each
+     is a candidate withdrawal against `dod-deferred-retirement-store`, `dod-undeprecation`,
+     `dod-scheduled-transition-store`, `dod-flip-guard`, `dod-lifecycle-columns` and
+     `dod-unit-delist`.
+     **They are routed, not adjudicated**, because this entry's own rule requires reading each
+     `DoD`'s clauses against each row, and doing that from a count is the error being corrected.
+     The first-order reading above is recorded so the next pass starts from evidence.
+- **The arguments against, stated.**
+  1. **The corrected test is a judgement where the count was mechanical**, so it can be applied
+     inconsistently in a way a count cannot. Accepted: the count's consistency was consistency
+     about the wrong thing, and the positive obligation — clause by clause, call site named — is
+     checkable after the fact.
+  2. **Six ticks are left standing that may be false.** That is a real cost, and the defence is
+     only that withdrawing them on the discredited rule would be the same error twice. They are a
+     queue item, not a residue to forget.
+  3. **No gate enforces any of this.** `cfs validate` passes on a false tick — measured: 0 errors
+     and 247/247 coverage with `dod-cascade-plan` ticked, because the marker was present and
+     paired. No cargo test reads the feature docs, and inventing a cross-tree one was rejected as
+     fragile. So the census stays a command a reader runs, kept in the handoff folder, and this
+     entry is the standard it is run against.
+- **Propagated**: `features/lifecycle.md` rows 1, 3, 7, 18, 20, 33 and 36;
+  `features/governance.md` rows 20 and 23.
+- **Owed**: the six class-3 pairs, adjudicated clause by clause. Named in the lead's queue.
+
+
+#### P-D-108 — The attribute-definition machine's three gaps: removal is material, the label is a value, and the kind set is closed
+
+- **Date**: 2026-09-03 (owner call, answering `features/taxonomy-attributes.md` §7 **rows 10, 13
+  and 20**). One entry because all three are the same machine and **row 13's answer needs row
+  20's operand**, so deciding them apart would decide 13 twice.
+
+- **Arm 1 — row 10: definition removal is material.** `inst-ad-governed` enumerates the material
+  changes as *"type change, visibility narrowing, deprecation"* and removal is absent, so §4's
+  `inst-de-edge-remove` carries no approval condition while the `removed → active` re-listing does:
+  **the destructive edge is cheaper than the restorative one.** That is an omission and not an
+  intent, on two pieces of the slice's own text. `inst-ad-deprecate-then-remove` routes removal
+  **and** the re-listing *"through the same `GovernedLiveOp`"* — one envelope cannot be material in
+  one direction only — and **P-D-47** makes removal *"the definition's `removed` state, never a
+  DELETE"*, so it is a state flip exactly as deprecation is, and `05 inst-mt-inputs` (d) registers
+  02's `GovernedLiveOp` kinds as material by that kind. Removal joins the enumeration.
+  *The argument against*: a stated list is being extended rather than read, and `inst-ad-governed`
+  is `p1`. Accepted, because the list as written prices the irreversible act below the reversible
+  one, and no requirement asks for that.
+
+- **Arm 2 — row 13: a definition's display label is an attribute value on the definition, keyed
+  `entity_kind = 'attribute_definition'`.** Measured: `products_attribute_definition` is
+  `(tenant_id, definition_id, key, value_type, localized, region_scope, brand_scope, state,
+  seeded_by, timestamps)` — **no label column at all**, so `inst-ad-governed`'s non-material
+  *"display-label edit"* has no target and the op is unspendable.
+  The label is **localized**, and this gear already owns a localized-value store, a resolver and a
+  fallback chain. `displayName` is one of `dod-well-known-seeds`' five, localized, and seeded
+  `registry` — so the label is written as that definition's value on the definition, and resolves
+  through the same chain every other display name uses. It is the **category branch's shape
+  applied one level up**: `inst-av-category-branch` already makes a category's display values
+  *"live-entity content"* because categories have no revisions or versions, and a definition has
+  neither either.
+  *The arguments against*: it is **self-referential** — a definition described by a definition —
+  and a reader looking for a label column will not find one. And it makes the removal guard
+  interesting: `displayName` is seeded, so it can never be removed while any definition carries a
+  label, which is a constraint arriving as a side effect rather than by decision. The alternative,
+  a `display_label` column, was rejected because a localized column needs either a second table or
+  a JSON map, and this gear refuses to invent a store it already has.
+
+- **Arm 3 — row 20: the admitted `entity_kind` set is closed at four, and the guard is tightened to
+  match.** Measured, and it is the opposite of what the design's wording implies:
+  `chk_products_attribute_value_entity_kind` reads **`CHECK (entity_kind <> '')`** on both engines —
+  an open complement admitting **any** non-empty string — while `products_metadata`'s own
+  constraint enumerates. So the set was never enumerated anywhere, and a typo'd kind writes
+  silently into the table `dod-attribute-value-table` calls authoritative.
+  The set is **`product`, `sku`, `category`, `attribute_definition`** — the first two from `02` C2,
+  the third because the table *"demonstrably admits `category`"* and `inst-av-category-branch`
+  requires it, the fourth by arm 2. And a **definition does not scope to entity kinds**: nothing in
+  the slice gives a definition a kind restriction, and inventing one would make arm 2 illegal by
+  construction on its first write.
+  *The argument against*: closing the set means every future slice that wants a fifth kind edits a
+  migration rather than adding a row, which is a real cost — paid because an open `<> ''` on this
+  table is a guard that cannot fail, and this gear's own lesson is that a whitelist worded in prose
+  with a complement in the constraint answers the wrong question.
+
+- **Not changed**: the five seeds, `seeded_by = 'registry'`, the deprecate-then-remove path,
+  P-D-47's tombstone reading, and the resolver's fallback chain. Arm 2 adds no store and arm 3 adds
+  no column.
+- **Propagated**: `features/taxonomy-attributes.md` §7 rows **10, 13 and 20**.
+- **Owed, and routed rather than left standing.** This entry decides; two pieces of implementation
+  ride with `02`'s door work and are named here so they are not rediscovered:
+  1. **`inst-ad-governed`'s enumeration** gains removal, and `05 inst-mt-inputs` (d) already covers
+     it by kind — a documentation edit in `design/02`.
+  2. **`chk_products_attribute_value_entity_kind` is tightened** to the four-value enumeration on
+     both engines. Migrations in this gear are **edited in place**, so this is one migration file
+     and its poison-row tests, not a repair migration. The `CorruptRow` case a closed set makes
+     testable is exactly what an open `<> ''` denied.
+
+
+#### P-D-107 — The three answers `02`'s new doors need before they can be built
+
+- **Date**: 2026-09-03 (owner call, answering `features/taxonomy-attributes.md` §7 **rows 2, 14 and
+  19**; follows **P-D-106**, which gave those doors their routes)
+- **Context**: P-D-106 doored the taxonomy-op, attribute-definition and category live-value doors,
+  and `dod-metadata-door`'s own body confirms the route *"is buildable now that the door files are
+  granted"*. Three rows then stand directly in the path of building them — not behind them — so
+  they are answered together rather than discovered one at a time by whoever writes the doors.
+
+- **Arm 1 — row 2: the caps get interim numbers, in config.** `design/02` C3 makes both taxonomy
+  limits *"configured policies whose values PRD §7 `nfr-scale-extensibility` defers"*, and
+  `dod-metadata-door` requires *"configured caps on key count, key byte length and value byte
+  length"* enforced with `METADATA_LIMIT`. Deferred is not the same as absent: a rule with no
+  number is not a rule, and **two `DoD`s could not be built at all**. So five fields land in
+  `ProductsConfig`, following `bulk_max_rows_per_batch`'s idiom exactly — a doc that justifies the
+  number, a `*_DEFAULT` const, and a `validate()` arm refusing zero:
+  `taxonomy_max_depth` **8**, `taxonomy_max_children_per_node` **1000**, `metadata_max_keys`
+  **50**, `metadata_max_key_bytes` **128**, `metadata_max_value_bytes` **2048**.
+  Each is anchored rather than picked: depth bounds the **hold on the per-tenant taxonomy writer
+  lock**, since `inst-tx-governed-op` step 3 runs the `TaxonomyWalk` inside the write transaction;
+  fan-out is anchored to PRD §7's *"≥ 10K SKUs per tenant"* the way `bulk_max_rows_per_batch` is
+  anchored to the ten-thousand-SKU onboarding fixture; and the three metadata caps share one
+  reason — **P-D-06** puts that map outside frozen version content, so the caps exist so it cannot
+  become a shadow content store escaping versioning, freezing and rendering. Zero is refused at
+  boot because a ceiling of zero is not a limit but a closure.
+  **These are interim and say so in their own docs**, exactly as `reference_freshness_minutes`
+  carries *"interim 15 — P-D-87 arm 1"*. The NFR workshop overrides them by configuration and
+  needs no code change.
+
+- **Arm 2 — row 19: the four *value* rules run at the live-value door, and the three assignment
+  rules do not.** The row is right that the pipeline is registered on the entity draft-save door
+  while the category branch writes through a different one. Measured: `content_save_pipeline`
+  registers seven rules, of which `CategoryResolvable`, `CategoryNotRetired` and
+  `CategoryRoleConflict` are about **assigning categories to a Product** and have no operand at
+  all when the subject *is* a category. The four that do apply are
+  `AttributeDefinitionKnown`, `AttributeDefinitionActive`, `AttributeValueType` and
+  `AttributeScope` — so the defect the row names is real: a category value against a `deprecated`
+  definition would be admitted while the removal guard counts it as live.
+  **Plus one the entity door does not run**: `inst-av-category-branch` requires *"the global
+  default-locale value ... at the first write of a definition for that category"*, which is the
+  write-time analogue of the publish-time check. So the live-value door runs **four registered
+  rules and one write-time requirement**, and it is a fifth caller of the one registration list
+  rather than a second list.
+
+- **Arm 3 — row 14: last-write-wins per key is what the `DoD` specifies, and no counter is
+  added.** The row observes that metadata rides the entity's `If-Match`, bumps no version by
+  **P-D-06**, so the token never moves and a second write silently overwrites the first.
+  **Measured against the requirement rather than answered from the observation**:
+  `dod-metadata-door` asks for a per-key merge with `null` removing a key, the three caps, an
+  `ENTITY_TERMINAL` refusal and a reduce-from-cap test. It asks for **no** optimistic concurrency
+  — no token, no lost-update guarantee. Adding a counter column would be adding a requirement no
+  `DoD` carries, which is the one thing this programme keeps refusing to let a strand do, and it
+  would cost a migration on two head tables.
+  And the merge narrows the exposure to almost nothing: concurrent writes to **different** keys do
+  not conflict at all, because an absent key is left untouched. What remains is a same-key lost
+  update on an annotation map.
+  **So it is accepted and recorded, not closed.** If it must be closed, the donor is already in
+  this gear: **P-D-50** gave the category live-value door `products_category.mutation_seq`, an act
+  counter on the owning row, for this exact property — *"mutable on a published entity"* — and
+  `design/02` §6 had already noticed the two cases are parallel. The cost is a `metadata_seq` on
+  `products_product` **and** `products_sku`, which is why it is not paid on an observation with no
+  requirement behind it.
+
+- **The arguments against, stated.**
+  1. **Arm 1 puts five numbers in the register that the NFR workshop may overturn.** Accepted: they
+     are configuration, the docs call them interim, and the alternative was two unbuildable `DoD`s.
+     The sharper objection is that `taxonomy_max_depth = 8` is a **guess about catalogues**, not a
+     measurement — the lock-hold argument bounds it from above but nothing establishes eight rather
+     than six or twelve.
+  2. **Arm 2 makes the live-value door a caller of a list built for entity saves**, so a rule added
+     for entities silently reaches categories. That is the same trade `content_save_pipeline` was
+     created to make — one list so two doors cannot drift — and the counter-argument is that a
+     third subject now rides a pipeline whose subject type was designed for two.
+  3. **Arm 3 leaves a known lost update in the gear.** It is a real defect and it stays open. The
+     defence is only that the requirement does not ask for it and the exposure is one key, and that
+     is a weaker defence than a measurement.
+
+- **Not changed**: the caps' enforcement point (`METADATA_LIMIT` and `TAXONOMY_LIMIT` at their
+  doors), the seven-rule registration list, `dod-metadata-door`'s `p2` priority, and P-D-06's
+  exclusion of the map from version content.
+- **Propagated**: `features/taxonomy-attributes.md` §7 rows **2, 14 and 19**, and
+  `ProductsConfig` with its two tests. Row 2's taxonomy half and metadata half are answered
+  together since one arm covers both.
+- **Owed**: nothing. Arm 3's residue is a **recorded acceptance**, not a debt — it is written into
+  row 14's own cell so a later reader finds the reasoning and the donor rather than re-deriving
+  both.
+
+
+#### P-D-106 — `02`'s three doorless doors get one route family each, and the grant arrives with the door
+
+- **Date**: 2026-09-03 (owner call, answering `features/taxonomy-attributes.md` §7 **row 16** and
+  the metadata half of **row 2**; `design/02` §6 carries the same note)
+- **Context**: three of this slice's doors name no REST path — the taxonomy-op door, the
+  attribute-definition door and the category live-value door — and `design/05` §3.2's grant
+  catalog carries their pairs with *"no route declared"*. Measured at `cccf18e67`, this is why
+  strand A had no code work at all: **the taxonomy has zero routes** — no `OperationBuilder`
+  registration in the crate names a category, attribute or metadata path — `resolve_localized`,
+  `write_category_display_value` and `upsert_metadata` all have no production caller, and thirteen
+  of A's sixteen unticked `DoD`s sit behind rows that need this one answered first.
+  **The grants are not in question.** `design/02` `inst-tx-governed-op` names `category × write`,
+  `inst-ad-governed` names `attribute_definition × write`, and `design/05` §3.2 carries
+  `metadata × write` with its path already declared. Only the routes are missing, and §3.2's own
+  §6 counts this as two of the **eight** rows still without one — a tracked programme with
+  precedents in **P-D-67**, **P-D-87** and **P-D-90**, not a fresh question.
+- **Decision**, one route family per door, following that corpus shape rather than inventing one:
+  1. **The taxonomy-op door**: `POST /bss-products/v1/categories` for the create, and
+     **`POST /bss-products/v1/categories/{categoryId}/operations`** for rename, re-parent, retire
+     and delete. One door for the four because the design already makes them one thing: they ride
+     **one** `GovernedLiveOp` envelope, queue through one gate, share one apply path — step 2
+     re-validates name uniqueness *"on rename **and** re-parent"* in one clause — and step 5 has
+     *"the op envelope id ride the event"*, so the envelope is the unit and the verb is its
+     payload.
+  2. **The attribute-definition door**: `POST /bss-products/v1/attribute-definitions` for the
+     create, and **`POST /bss-products/v1/attribute-definitions/{key}/operations`** for the
+     material changes and the state flips — deprecate, remove, and the `removed → active`
+     re-listing that `inst-ad-deprecate-then-remove` routes *"through the same `GovernedLiveOp`"*.
+     The **non-material display-label edit rides the same door**: `inst-ad-governed` makes it a
+     registered op kind at `min(N, 1)`, so materiality is judged by the envelope's kind through
+     `05 inst-mt-inputs` and never by which path was called.
+  3. **The category live-value door**: **`PATCH /bss-products/v1/categories/{categoryId}/attribute-values`**.
+     A `PATCH` and not an envelope, because `inst-av-category-branch` makes this door
+     **non-material** with its own precondition — `If-Match` on `products_category.mutation_seq`,
+     a mismatch raising `STALE_CATEGORY_TOKEN` (**P-D-50**) — so it is the metadata door's shape
+     (`PATCH /bss-products/v1/{products|skus}/{id}/metadata`) applied to the one entity whose
+     content is live rather than versioned, and not the governed-op shape of arms 1 and 2.
+- **The grant arrives with the door, and that is the code's own rule.** `authz_tests.rs` carries a
+  census with a **withheld list** naming `category`, `attribute_definition` and `metadata` as
+  absent on purpose, each annotated with the slice that owes it, under its own maintenance rule:
+  *"the rows rotate off the withheld list the day their door lands"*, and *"a grant declared here
+  with no owning door is a grant nobody can review"*. **P-D-90**'s pair did exactly that — measured:
+  `RECOGNIZED_SET` and `PLAN_TIER` entered `labels::ALL`, `resource_types`, `gts/permissions.rs`
+  and the census in the **same commit** as their doors (`a77d0f0d5`).
+  So this decision does **not** pre-declare the three grants. Declaring them ahead of their doors
+  would break the rule the census exists to state.
+- **Consequence for the ownership table, stated rather than left implicit**: the doors are strand
+  A's and the grant declarations are the lead's, and the census forbids splitting them across
+  commits. A therefore gets a **scoped, one-time grant** over `authz.rs`'s label /
+  `resource_types` block and `gts/permissions.rs`' three `02` rows, for this set only, in the same
+  commit as the doors. `catalog_resource_types_match_authz_labels_all` asserts the two sides equal,
+  so a half-landing cannot pass.
+- **The arguments against, stated.**
+  1. **Arms 1 and 2 put the act in the payload, not the path**, so a reader of the route table
+     cannot see which of four or five acts a call performs. This is the same objection **P-D-90**
+     accepted for its arm 2, and it is accepted here for the same reason: the alternative is four
+     or five act-named subresources — `…/{id}/renames`, `…/{id}/reparentings` — which would be
+     several spellings of one implementation, since the design states one envelope, one gate and
+     one apply path. It also departs from `…/retirements`' act-named shape, which is the strongest
+     argument the other way.
+  2. **Arm 3's `attribute-values` names the content, not the door's mode.** *"Live-value door"* is
+     the design's phrase and a path segment reading `live-values` would encode a mechanism a
+     consumer has no reason to know. The counter is that the design's own vocabulary is then not
+     findable from the route.
+  3. **The scoped ownership grant weakens the store-disjoint split** that has produced only two
+     conflicts in the whole programme. It is bounded to one set of rows in two files and expires
+     with the commit; the alternative — the lead declaring grants the census forbids declaring —
+     breaks a rule the code states about itself.
+- **Not changed**: the grants themselves, the materiality of each op, `GovernedLiveOp` as the
+  mechanism for arms 1 and 2, `STALE_CATEGORY_TOKEN` as arm 3's precondition code, and the eight
+  `DoD`s' own clauses. This gives existing grants a spender and existing doors a path.
+- **Propagated**: `features/taxonomy-attributes.md` §7 row 16 and the metadata half of row 2's
+  door question, `design/02-taxonomy-attributes.md` §6's matching note, and
+  `design/05-governance.md` §3.2's `Doors` column — three cells lose *"no route declared"* and its
+  §6 count of eight drops to five.
+- **Owed**: `design/05` §3.2's §6 paragraph states the count as **eight** and re-measures it after
+  each doring decision; that arithmetic is this entry's to update and is done in the same commit.
+  Row 2's **`METADATA_LIMIT` number** is *not* settled here — this entry gives the metadata door its
+  grant story, not its cap, and the cap remains the §17.1 policy owner's.
+
+
+#### P-D-105 — `PreAuthorized` verifies the pin the row carries, not the subject the record names
+
+- **Date**: 2026-09-02 (owner call, answering `features/lifecycle.md` §7 **row 22** and
+  `features/governance.md` §7 **row 27** together — they are one question, raised independently in
+  two features, and each names the other)
+- **Context**: `05 inst-gv-materiality` puts materiality on the **initiating human act** and sends
+  the mechanical stages after it — *"the `effectiveAt` flip, cascade legs"* — back through the gate
+  *"only in 01's `PreAuthorized(approvalId)` mode, consuming nothing further"*. So the design
+  requires a leg to re-enter the gate; "legs are ungoverned effects" is not available.
+  But the shipped predicate cannot admit one, and the reason is structural rather than a bug.
+  Measured at `b844b2632`:
+  1. `products_approval` stores **one** subject (`subject_kind` + `subject_ref`) and **one**
+     revision (`internal_revision`). One record names one subject.
+  2. `products_scheduled_transition` carries `approval_ref` — *"the pinned slice-05 approval
+     snapshot, consumed at scheduling"* — and **no plan, parent or provenance column at all**.
+  3. `domain::approval`'s host requires the record be `consumed` **and** have authorized *this*
+     subject at *this* revision (`inst-fd-gate-mode-preauthorized`).
+  A cascade leg's row names the **child** in `entity_id` while its `approval_ref` names the
+  **parent's** record. It therefore fails (3) by construction, for every leg, always. A bulk row
+  fails the same way on its own revision.
+- **The answer both rows forbid, in their own words**: weakening the predicate to *"names a
+  consumed record"* turns a terminal, unrevocable record into *"an unbounded bearer token for any
+  subject in the tenant"*. That is not this decision, and the difference is measurable rather than
+  rhetorical — see the next clause.
+- **Decision**: at activation the predicate is **"the named record is `consumed`, and the row being
+  flipped names that record in its own `approval_ref`"**. The subject/revision equality is dropped
+  for a scheduled flip and kept nowhere else; a wire caller still gets `GateMode::Gate` and reaches
+  `PreAuthorized` from no route.
+- **Why this is not the bearer token, measured**: the forbidden version admits a **caller** that
+  names a consumed record. Here the operand is not caller-supplied at all — it is the stored
+  `approval_ref` of a row the caller cannot write. Traced the writers rather than the
+  registrations: `insert_scheduled_transition` has exactly **three** call sites —
+  `api/rest/products.rs` and `api/rest/skus.rs` in `run_retire`, both of which run
+  `GovernanceGate` before the write, and `api/rest/products.rs`'s `apply_cascade_plan`, which has
+  exactly **one** caller and it is that same gated `run_retire`. A record therefore admits exactly
+  the rows its own gated transaction wrote, and no others. `inst-cp-plan` already makes that
+  transaction atomic — *"one transaction and any failure rejects the whole mutation"* — so a
+  half-written plan cannot leave an admitting row behind either.
+- **The arguments against, stated.**
+  1. **The record stops being self-describing.** An auditor reading `products_approval` alone
+     cannot enumerate what a record authorized; the enumeration lives in the transition rows and
+     needs a join on `approval_ref`. Accepted, but it is a real loss and it is the same poverty
+     **O-B-04** complains about from the other side — that register entry is not settled by this
+     one.
+  2. **The safety is a code invariant, not a constraint.** Nothing in either schema stops a fourth,
+     ungated writer of `products_scheduled_transition` from being added, and the day one is, this
+     predicate silently *becomes* the bearer token. **So this decision owes a guard**, and the debt
+     is discharged in the same commit rather than registered: a test that counts the writers of
+     that table and fails when the count moves, naming this entry. A decision whose safety rests on
+     "there are three call sites" must make that a measured three.
+  3. **The alternative was a `cascade_parent_id` column**, which would make membership structural
+     instead of invariant-based. Rejected on cost against benefit: it needs a migration on a table
+     already in the chain, and it buys no authorization the row's existence does not already carry
+     — the row is written by the gated act either way, so the parent link would be audit
+     convenience bought at schema cost. If the guard in (2) ever fails for a reason that cannot be
+     fixed by re-gating the new writer, that is the signal to take this arm instead.
+  4. **One approval per leg** was the third arm. Rejected: it contradicts `inst-gv-one-shot`'s
+     single consumption and turns a human ceremony into N of them for a cascade over N children.
+- **Propagated**: `features/lifecycle.md` §7 row 22 and `features/governance.md` §7 row 27, both
+  **struck** with this entry named — neither is an open question any more. The predicate change
+  lands in `domain::approval`'s host, which is **strand B's** to write, and the runner's call in
+  `domain::activation`, which is **strand C's**; both are told, and neither is asked to decide it.
+- **Scoped to one table, measured by strand B (2026-09-02).** This entry's predicate and its
+  writer-count guard are about **`products_scheduled_transition`** and nothing else.
+  `products_bulk_batch.approval_ref` carries the same shape and the same role
+  (`Option<Uuid>`, the pinned approval for a batch), but its writer is `repo::insert_bulk_batch`
+  from `api/rest/bulk.rs` — **not** one of the three gated `insert_scheduled_transition` call sites
+  the safety argument rests on. So the argument **does not transfer to bulk**, and
+  `dod-preauthorized-mode`'s third clause — which names three composite acts — is blocked on that
+  and not on this entry. Extending the arm to a bulk row needs its own writer census and its own
+  decision; a strand doing it unasked would be authoring, and B correctly refused to.
+- **Measured hours later, by strand C's first pass, and it makes this entry inert rather than
+  wrong.** No scheduling path writes a real record id. Both retire doors set
+  `approval_ref: Uuid::now_v7()` under an explicit comment — *"Host is NoRecord; mint a placeholder
+  so the `NOT NULL` column writes"* — and consume no approval in that transaction. So
+  `record_consumed && row_approval_ref == record_id` **cannot hold for any row that exists**, and
+  every scheduled flip refuses. That is the fail-closed direction and the predicate is safe, but it
+  authorizes nothing today, and **`dod-scheduled-publish-pin` cannot be ticked until a
+  consume-at-schedule act exists**. This entry does not decide who builds that; it records that
+  nothing in the seam works until someone does, so the DoD is not blocked on the strand that owns it.
+  The placeholder is also a hazard worth naming: a minted id sitting in a column a predicate reads
+  as authorization is one careless widening — `is_some()`, or "names any record" — away from being
+  the bearer token this entry exists to refuse. It should stop being a placeholder, not become a
+  trusted one.
+- **Owed**: the writer-count guard (discharged here, not registered). `inst-gv-one-shot` and
+  `inst-fd-gate-mode-preauthorized` keep their wording — both speak of verifying without
+  consuming, which is exactly what this predicate does — but `inst-fd-gate-mode-preauthorized`'s
+  *"this subject at this revision"* clause needed its scheduled-flip exception written in, and that
+  clause is `design/01-foundation.md`'s. **Discharged 2026-09-02**: `inst-fd-gate-mode-preauthorized`
+  now states what *"verifies"* means in two arms — the subject/revision one for an act whose subject
+  is the record's own, and the consumed-plus-row-pin one for a scheduled flip — with the
+  one-table scope written in beside it.
+
+
+#### P-D-104 — The well-known seeds are written on a tenant's **first write**, and P-D-100's migration arm is withdrawn
+
+- **Date**: 2026-09-02 (owner call, **amending P-D-100** the same day, on two measurements that
+  entry did not make)
+- **Context**: P-D-100 split the seeding into a migration for tenants present at deploy and a lazy
+  read-through for every tenant after. Both halves of that split were wrong.
+  1. **The migration arm is unbuildable.** The definition store is per-tenant, so seeding by
+     migration needs a list of tenants — and there is **no tenant registry in any gear's schema**.
+     Worse, measured across the workspace: **no migration in it inserts a row at all**; every one
+     creates tables, constraints and indexes and nothing else. The arm asked for a kind of migration
+     this codebase does not have.
+  2. **The migration arm is also redundant**, which is the part P-D-100 got backwards. The
+     read-through's condition is *"this tenant has no seed rows"*, **not** *"this tenant is new"*, so
+     it materialises them for a tenant that existed before deploy on that tenant's first read just
+     as readily. P-D-100 read the split as old-versus-new; the condition never distinguished them.
+  So one writer always sufficed — and the remaining question is which event it hangs off.
+- **The read path is the wrong event, and P-D-100 named the cost without following it.** A lazy
+  read-through means a `GET` of the definition roster **writes**. That breaks a read-only replica,
+  turns a read into a mutation for anything reasoning about transactions, and makes the first reader
+  of a tenant pay a write it did not ask for.
+- **Decision**: **the five seeds are written on the tenant's first write in this gear, inside that
+  write's own transaction**, and P-D-100's migration arm is withdrawn. Reads stay reads.
+  `domain::taxonomy::WELL_KNOWN_SEEDS` remains the only definition site.
+  **The exact trigger site is not fixed here** — the surfaces belong to the taxonomy strand, and
+  naming one from this register would author its interface. The rule is: the first write that could
+  need a well-known definition seeds them first, in one transaction, and a second such write finds
+  them present.
+- **This is what the DoD's own phrase asks for.** *"Per tenant bootstrap"* reads naturally as
+  *when a tenant starts using the gear*, not *when the database is migrated* — and the second
+  reading is the one that had no mechanism.
+- **The arguments against, stated**: a tenant that only ever reads now sees an empty roster.
+  Accepted, because a tenant that has written nothing has nothing to describe — the seeds exist to
+  carry a product's display name, and there is no product. And putting a conditional write on a
+  write path is not free either: the first write of a tenant's life carries five extra inserts, and
+  every such write pays one existence check. That check is one indexed read on a path that already
+  reads the roster, and it is on a write, where a write belongs.
+- **Propagated**: nothing normative — `dod-well-known-seeds`' own text already asks for per-tenant
+  bootstrap, and this settles how. Amends **P-D-100**, whose text is left as written per this
+  register's convention, with a pointer added to its entry. **Owed**, and no longer split: the whole
+  of it is the **taxonomy strand's**, since the trigger, the existence check and the insert all sit
+  on surfaces that strand owns. **The lead's migration half is withdrawn**, not deferred.
+
+#### P-D-103 — The frozen-content sort applies **P-D-80 arm 1** to P-D-29's two collections: the attribute-value set sorts by its whole coordinate
+
+- **Date**: 2026-09-02 (owner call, on strand A's `A-OWED-12`)
+- **Context**: `dod-version-content-rendering` carries two clauses that cannot both hold. It asks
+  for row collections *"sorted by the collection's own identifier"* (**P-D-29**, restated in
+  `01-foundation` §4.3 **in the same words** — verified) **and** for a golden vector proving the
+  rendering **byte-identical across both engines**. For the attribute-value set the identifier is
+  the definition id, which is **not unique per row**: one definition carries a value at every
+  locale, region and brand coordinate it is written at, so an identifier sort orders **groups, not
+  rows**, and the within-group order is the engine's. Two engines then hash one content two ways,
+  which is the byte-identity the second clause exists to establish — lost on the one collection
+  that most needs it. The category-assignment set is unaffected, its identifier being its row key.
+- **The register had already answered this, one collection over.** **P-D-80** arm 1 — titled, in
+  that entry's own heading, *"keyed collections sort by their key"* — generalized *"by the
+  collection's own identifier"* to **a keyed collection sorts by its own key rendering**, with the
+  manifest's entry rows by `(entity_kind, entity_id)` and its capture rows by `capture_kind` as its
+  examples, *"both being their stores' primary keys."* It never restated the rule for the two
+  collections P-D-29 had named.
+- **Decision**: **apply P-D-80 arm 1 to P-D-29's two collections.** The attribute-value set sorts by
+  its **whole coordinate** — definition, locale, region, brand — the table's own primary key, total
+  by construction; the category-assignment set is unchanged, since its key is its identifier.
+  This **amends P-D-29** and is a consistency fix rather than a new rule: strand A shipped it, and
+  its register recorded it as an excess over P-D-29's letter, which — measured against P-D-80 —
+  it is not.
+- **The arguments against, stated**: the amendment reaches a decision taken earlier and a slice that
+  is not the one that found it, which is the cost of every retroactive consistency fix; and a reader
+  of P-D-29 alone still sees "identifier" until they reach P-D-80 or this entry. Against that, the
+  alternative — sorting by the identifier as written and dropping the byte-identity claim — was
+  declined because it makes `10-retention-erasure`'s restore drill's digest comparison meaningless,
+  and that comparison is the whole reason the clause exists. Leaving both clauses standing was
+  declined because it leaves the set holding a requirement no implementation can satisfy.
+- **Propagated**: `design/01-foundation.md` §4.3 (the clause, with this id and P-D-80's). Amends
+  **P-D-29**; P-D-29's own text is left as written, per this register's convention that a later
+  entry amends rather than rewrites. **No code change**: `domain::taxonomy::value_collection` and
+  `assignment_collection` already sort this way. **Owed**: the feature's §7 **row 9**, whose
+  question this answers, is strand A's file and that strand's to strike; and
+  `design/02-taxonomy-attributes.md`'s own ordering sentence, which P-D-29 names as a propagation
+  target, should cite this entry when it is next opened.
+
+#### P-D-102 — The global coordinate is absent on **all three** axes; `inst-av-default-locale` loses both "default-locale value" and "(brand-less)"
+
+- **Date**: 2026-09-02 (owner call, on strand A's `A-OWED-10` — and **larger than that entry
+  asked**, for the reason below)
+- **Context**: `A-OWED-10` reported §7 row 8 as *a naming defect, not a live fork*: both readings of
+  `global` were said to be closed elsewhere, leaving only the self-contradictory phrase *"a
+  default-locale value at the global coordinate"*, which names a coordinate carrying no locale. Read
+  in full, `inst-av-default-locale` says more than the entry quoted — *"the **default-locale value
+  at the global (brand-less) coordinate**"* — and that parenthetical is a **second, different**
+  reading: `global` as absent on the brand axis alone, with the locale present and equal to the
+  tenant default. The fork is therefore live, and the two readings ask a tenant for different
+  things:
+  - **all three absent** — a definition must carry a value with **no locale**, a language-independent
+    fallback;
+  - **brand-less only** — a definition must carry a value **at the default locale** with no brand.
+  **Strand A's code took the first and its own doc was more careful than its register**:
+  `GLOBAL_COORDINATE`'s comment says *"P-D-88 arm 2 ships the three columns `NOT NULL` with `""` as
+  the stated absence, so the global coordinate is `("", "", "")` … **That is the *spelling*; §6's row
+  8 asks what it *means***"*, and `DefaultLocaleRequired::evaluate` demands a value at all three
+  absent. The register compressed that into P-D-88 having settled the meaning; the code did not.
+- **Decision**: **the global coordinate is `("", "", "")` — absent on all three axes** — and
+  `inst-av-default-locale` loses both the phrase *"default-locale value"* and the parenthetical
+  *"(brand-less)"*.
+- **The reason is this row's own step 5, applied to a stored value.** A brand-less value at the
+  tenant default locale carries the locale that was default **when it was written**. A later config
+  change leaves step 3 looking for a locale no stored value matches, so the requirement stops
+  guaranteeing what it exists to guarantee — the same un-totalling `inst-av-resolve` refuses when it
+  says anchoring on the config value *"would un-total the chain for every already-published entity
+  the moment it changed"*, and **P-D-101** applied to the value's source. A locale-less value cannot
+  go stale that way. So the two decisions are one argument used twice: totality may not rest on a
+  value the config can invalidate.
+- **The arguments against, stated**: requiring a *localized* definition to carry a value with **no**
+  locale reads oddly — the brand-less reading is the more natural sentence, which is presumably how
+  it came to be written — and a tenant must now author one language-neutral value per localized
+  definition, which for `description` or `marketingFeatures` may mean choosing a house language and
+  storing it twice. Accepted: the alternative makes a published entity's compliance depend on a
+  config value nobody re-validates, and the cost of one extra stored value is bounded and visible
+  where the cost of a silently un-totalled chain is neither.
+- **Propagated**: `design/02-taxonomy-attributes.md` `inst-av-default-locale` (both strikes, with
+  this id). **No code change**: `GLOBAL_COORDINATE`, `is_global` and `DefaultLocaleRequired` already
+  encode this reading, and `a_brand_less_global_value_survives_a_brand_scoped_entity` pins its
+  neighbour (`A-OWED-07`). **Owed**: the feature's §7 **row 8**, whose question this answers, is
+  strand A's file and that strand's to strike.
+
+#### P-D-101 — The locale chain's default is the **tenant** default only; "resolves per brand" is struck
+
+- **Date**: 2026-09-02 (owner call, on strand A's `A-OWED-09`)
+- **Context**: `inst-av-resolve`'s step 3 read *"default-locale resolves per brand, falling back to
+  the tenant default"* — two inputs, and measured at `HEAD` **neither exists**. The feature's §7
+  row 6 already recorded the first: *"the per-brand default locale has no store."* The second is in
+  no row — **`ProductsConfig` carries no default-locale field at all**, `grep -i locale
+  src/config.rs` is empty. So `resolve_localized` is correct for whatever arrives and nothing can
+  produce what arrives; every caller supplies the locale as an argument no component mints.
+- **Decision**: **the default-locale is the tenant default, and the per-brand half is struck.** One
+  config value, added to `ProductsConfig` and validated at boot the way `freeze_timeout_hours` is.
+  The chain's shape is unchanged — `(locale, region, brand) → (locale, brand) → (default-locale,
+  brand) → global`; step 3's *coordinate* still carries the brand, because a value may be stored at
+  the tenant-default locale under a brand. What changes is only where the default-locale **value**
+  comes from.
+- **The reason is the row's own next sentence**: *"Totality is anchored on the resolution path, not
+  on the config value … the tenant default locale is ungoverned config with no re-validation, so
+  anchoring on it would un-total the chain for every already-published entity the moment it
+  changed."* A per-brand default is a **second** ungoverned config value under a step that cannot
+  change whether resolution succeeds — it only shortens the path, since step 4's global fallback is
+  what makes the chain total. Doubling that exposure for a shortcut is what this decision refuses.
+- **The arguments against, stated**: a per-brand default is a real product capability — a tenant
+  selling under two brands in two markets may want each brand's fallback language to differ — and
+  striking it removes that without a replacement. Accepted: the capability can return as a
+  **governed** per-brand value (a fourth coordinate kind in `products_attribute_value`, which needs
+  no new table) if a requirement asks for it, and it would then be re-validated rather than
+  ungoverned config. Nothing in the PRD asks for it today. The alternative of adding both inputs was
+  declined for the reason above; the alternative of leaving the resolver a pure function for
+  `08-read-models` to supply both inputs to was declined because it moves an unanswered question
+  into another slice rather than closing it.
+- **Propagated**: `design/02-taxonomy-attributes.md` `inst-av-resolve` (the struck clause, with this
+  id). **Owed**: `ProductsConfig.default_locale` — `config.rs` is no strand's, so the lead's; and
+  the feature's §7 **row 6**, whose question this answers, is strand A's file and that strand's to
+  strike. `dod-default-locale` and `dod-locale-resolver` stay unticked until the config field lands.
+
+#### P-D-100 — The well-known attribute seeds get **two** writers: a migration for tenants that exist at deploy, and a lazy read-through for every tenant after
+
+> **Amended the same day by P-D-104.** Both halves of this entry's split were wrong: the migration
+> arm is unbuildable (no tenant registry in any gear's schema, and no migration in the workspace
+> inserts a row at all) and it was redundant besides — the read-through's condition is *"this tenant
+> has no seed rows"*, not *"this tenant is new"*, so it covers pre-deploy tenants too. P-D-104 keeps
+> one writer and moves it off the read path onto the tenant's first **write**. Read that entry
+> before acting on this one.
+
+- **Date**: 2026-09-02 (owner call, on strand A's `A-OWED-04`)
+- **Context**: `products_attribute_definition` is **per-tenant** — `tenant_id` is in its key — so
+  `dod-well-known-seeds`' five definitions (`displayName`, `description`, `imageUri`,
+  `unitDisplayLabel`, `marketingFeatures`) are five rows **per tenant**, not five rows in the
+  database. They are not tenant data: they are the vocabulary a tenant needs before any product can
+  carry so much as a display name. The DoD asks for them *"per tenant bootstrap, by migration"* —
+  two paths in one phrase — and measured at `HEAD` only one of the two can exist:
+  - a migration reaches the tenants that exist when it runs, and never runs again;
+  - **the gear has no tenant-bootstrap hook of any kind** — no tenant-created handler, no
+    provisioning callback, nothing a per-tenant seeder could hang off. Verified in `gear.rs`.
+  So a tenant created after deploy gets no seeds, and `WELL_KNOWN_SEEDS` — which strand A shipped as
+  the single roster — has **zero callers** outside its own tests.
+- **Decision**: both writers, one roster. A **migration** seeds the tenants present when it runs,
+  and a **lazy read-through** on the definition-roster read materialises the five rows for a tenant
+  that has none. `domain::taxonomy::WELL_KNOWN_SEEDS` stays the only definition site, so the two
+  writers cannot disagree about the roster's content.
+- **The arguments against, stated**: two writers for one roster is the cost, and it is a real one —
+  a reader of either path has to know the other exists, and the read-through puts a conditional
+  write on a read path. The alternative — migration only — was declined because it leaves every
+  tenant created after deploy without a display name, and because it would make the DoD's own
+  *"per tenant bootstrap"* untrue, so the cheaper code costs a requirement edit instead. The third
+  option, a `gear.rs` bootstrap hook, is the cleanest single-writer shape and was declined for now
+  because the hook does not exist and inventing a tenant-lifecycle surface for five rows is a larger
+  decision than this one; if such a hook ever lands, the read-through is what it replaces, and this
+  entry is where to look.
+- **Propagated**: nothing normative. `dod-well-known-seeds`' own text already asks for both paths,
+  so this decision resolves it rather than amending it. **Owed**, and split: the **migration** is
+  the lead's — `migrations/` is no strand's — and the **read-through** is strand A's, in
+  `repo/taxonomy.rs`'s roster read, which that strand already owns. Neither is written yet, and the
+  DoD stays unticked until both are.
+
+#### P-D-99 — `04-lifecycle`'s four door shapes, each from the set's nearest precedent
+
+- **Date**: 2026-09-02 (owner call, the interface **P-D-98** deliberately left owed)
+- **Context**: P-D-98 settled that the slice owns doors for its acts and named the acts; it left
+  the paths, verbs and success responses open because fixing them there would have authored the
+  interface inside a scoping decision. `design/04` carried no interfaces section at all. The set
+  already has a precedent for closing exactly this gap: **P-D-87** arm 3 fixed slice 07's three
+  door shapes *"each from the set's nearest precedent"*. Two precedents compete here — this gear's
+  own verb-suffixed act doors (`/publish`, `/discard`, `/deprecate`), and 07's sub-resource
+  retirement (`/reference-producers/{producer}/retirements`, **200**).
+- **Decision**, recorded normatively in `design/04` §3.3:
+  1. **Verb form, four routes**: `POST …/{products|skus}/{id}/undeprecate` (**200**, the head);
+     `POST …/skus/{id}/deprecate` (**200**, the head — the Product already has this door and the
+     SKU's absence is why `provenance = direct` had no operator path);
+     `POST …/{products|skus}/{id}/retire` (**200**, the head);
+     `POST …/{products|skus}/{id}/retire/cancel` (**202**, no body).
+  2. **The cancel is 202 because the ceremony is governed**, not for transport reasons:
+     `design/05` §3.2 `inst-mt-inputs` (d) registers 04's `ScheduledTransition` cancel ops material
+     and §3.3 makes the cancel a `GovernedLiveOp` subject kind, so the door accepts and the write
+     lands at approval — the shape and the status of 07's correction door.
+  3. **All four spend `product|sku × write`** (`crate::authz::actions::WRITE`), which is what the
+     shipped `/deprecate` and `/discard` spend; `/publish` keeps its own `actions::PUBLISH`. No
+     action is minted.
+  4. **`publishAt` gets no door**, per P-D-98.
+- **The arguments against, stated**: the sub-resource form would expose the minted
+  `ScheduledTransition` id, which the verb form does not — declined because the cancel addresses the
+  *entity*, whose one live retire intent per kind is already the §4 partial unique's guarantee, so
+  the id buys nothing the route needs, and a `/retirements` collection beside a `/deprecate` verb
+  would make the act set inconsistent. On arm 3: reusing `write` means a tenant's write grant now
+  also carries an irreversible act, and minting `actions::RETIRE` would let that grant be issued
+  narrowly — declined because irreversibility is guarded by the 05 gate's quorum, which is the
+  barrier the design set assigns to it, and because minting one action forces the same question of
+  `undeprecate` and of the cancel, so the decision multiplies where the reuse does not.
+- **Propagated**: `design/04-lifecycle.md` **new §3.3** with the table and both arguments.
+- **Owed**: each act's request shape — the retirement's `{reason, replacedBy?, effectiveAt,
+  confirmation}` against §2's own enumeration, and the cancel's, jointly with `02` whose
+  `GovernedLiveOp` envelope it rides; and the `API:` lines on the affected DoDs, which belong to
+  `features/lifecycle.md` and are that document's to write, not this register's.
+
+#### P-D-98 — `04-lifecycle` owns wire doors after all; `DECOMPOSITION` §2.4's "None of its own" is withdrawn
+
+- **Date**: 2026-09-02 (owner call, on the lead's measurement below)
+- **Context**: `DECOMPOSITION` §2.4 states the feature's API is *"None of its own — lifecycle edges
+  are driven through `01-foundation`'s publish and transition doors, which run this feature's
+  registered validators."* Measured at `HEAD`, that is not sufficient for the acts the slice
+  specifies. The shipped route set is `products`: create, read, patch, publish, discard, clone,
+  **deprecate**; `skus`: create, read, patch, publish, discard, clone. So:
+  - **`inst-lc-undeprecate`** (`deprecated → published`) has **no door on either kind**, though
+    `domain::transition`'s edge list admits the edge.
+  - **`inst-rt-initiate`** — retire a SKU, and retire a Product with its cascade — has **no door**,
+    while the act takes a payload the design enumerates (`reason` running 02's PII write block,
+    `replacedBy?`, `effectiveAt` against the lead-time policy) and requires *"explicit confirmation
+    with the active-reference count shown."* A payload-bearing, confirmed operator act is not a
+    validator on somebody else's door.
+  - **A direct SKU deprecation** has no door: `provenance = direct` is defined for an operator act,
+    and the only path to a deprecated SKU today is the cascade from the Product door.
+  - **The governed cancel** of a `ScheduledTransition` is *"its own explicit act"*; `design/05`
+    §3.2 already registers it — `inst-mt-inputs` (d) names *"04's `ScheduledTransition` cancel
+    ops"* as material, and §3.3 records that the cancel *"is a `GovernedLiveOp` subject kind on
+    `ApprovalRecord`."* The governance side is specified; the wire side is absent.
+  - **`publishAt` needs no door and is not in this decision.** §2's own words: it *"drives the
+    ordinary Foundation publish door in `PreAuthorized(approvalId)` mode"* — a field the activation
+    runner consumes, which is exactly the arrangement §2.4 describes and which does work.
+  Nineteen of the feature's twenty-six DoDs are open, and **ten of them wait on an act with no
+  wire surface**; the lead's sweep of 2026-09-02 found **zero** further door-side wiring available.
+- **Decision**: **`04-lifecycle` owns wire doors of its own, and §2.4's API field is withdrawn and
+  rewritten.** The four acts above each get a door on the kind that carries them; `publishAt`
+  keeps the arrangement it has. §2.4's *reasoning* survives in the narrower form it is actually
+  true of: an **edge** driven by a validator needs no door of its own, and that is why publish,
+  save and discard host this feature's rules rather than duplicating them — but an **act** with its
+  own payload, its own confirmation and its own grant is a door.
+- **The arguments against, stated**: the field was written deliberately, and this reverses it — the
+  decomposition's uniformity claim ("one feature per slice, twelve in total") is untouched, but its
+  API column is no longer "None" for the only feature that claimed it. The alternative considered
+  was folding the acts into `PATCH` as request modes, declined because a governed ceremony hidden
+  behind a payload field cannot carry its own authz action or its own OpenAPI response set, and
+  `design/05` already assigns the cancel its own grant. The second alternative — leaving the acts
+  without a wire surface in v1 and closing ten DoDs as out-of-scope — was declined because the PRD
+  enumerates retirement and un-deprecation as operator capabilities, not as internal mechanics.
+- **What this decision does NOT settle, and is owed**: the **exact paths, verbs and payload
+  shapes**. Naming them here would author the interface. They are owed to `design/04`, which
+  currently has no interfaces section at all, and each affected DoD's `Touches` then gains its
+  `API:` line in `features/lifecycle.md` — the feature's own file, so the lifecycle strand's edit
+  and not the lead's. The governed cancel's shape is owed **jointly with `02`**, since
+  `GovernedLiveOp` is that slice's envelope.
+- **Propagated**: `DECOMPOSITION.md` §2.4 (the API field, rewritten with this entry). **Not** the
+  three-site route census pricing has — products censuses differently, measured today:
+  `OperationBuilder` registers the route, `authz.rs` holds the action constants with doc lines
+  naming the routes that spend them, and `authz_tests.rs` asserts completeness over `labels::ALL`
+  rather than over routes, so doors added under the existing `product|sku` labels need no test
+  change.
+- **Owed**: `design/04`'s interfaces section; the `features/lifecycle.md` `Touches` lines;
+  and whichever `authz.rs` actions the four acts spend — `PUBLISH` and `WRITE` exist, and whether a
+  retirement spends one of them or mints its own is part of the owed interface work.
+
+#### P-D-97 — `RegisteredValidators` is a phase **slot** with two admissible fillings; the trait does not widen
+
+- **Date**: 2026-09-02 (owner call with `04-lifecycle`, closing `features/lifecycle.md` §7 row 20 —
+  the row the FEATURE marks *"the one item that cannot be deferred past the first line of code"*)
+- **Context**: `design/01-foundation.md` §2 and §3.1 describe *"registered validators keyed by kind
+  + transition/target-state/field-set"*. The trait carries no such operand: `ValidationRule<S>` is
+  `name()`, `phase()`, `evaluate(&self, subject, report)`, and `ValidationPipeline::run(&self,
+  subject: &S)` is synchronous with no runner and no database. Every parent-child, retire-intent and
+  flip-guard rule in `04-lifecycle` reads **other rows**. Foundation has already met this and
+  answered it twice, in its own words — `api/rest/products.rs:4924` (*"the pipeline is synchronous
+  and judges the subject row alone, and this rule's operand is a read of other rows. So it runs as
+  that phase's continuation, on this transaction"*) and `api/rest/skus.rs:2809`, which adds the
+  position: *"a continuation of the same identity phase, immediately after the pipeline and before
+  the edge and the gate — **the position §4.1 asks for**"*. Meanwhile
+  `publish_revalidation_pipeline` registers only `SkuCodeStillPresent` and
+  `SkuScopeColumnsStillParse`, which is the *"real gap, not a passing phase"* foundation records.
+- **Decision**, three arms:
+  1. **The trait does not widen.** No `async`, no database context, no keying operand.
+  2. **A feature fills the `RegisteredValidators` phase in either of two ways**: a registered
+     `ValidationRule` where the operand is subject-local **or a single fact the door can prefetch**
+     (the shipped `PrimaryCategoryRequired` + `has_primary_category` pattern), **or** a
+     **continuation of that phase on the same transaction**, positioned immediately after the
+     pipeline and before the edge and the gate. Both are "filling the phase"; neither is a parallel
+     vocabulary, so `dod-registered-validator-host`'s no-second-vocabulary clause is satisfied.
+  3. **The "keying" is not a trait property — it is the insertion site.** Which door, which
+     pipeline, which position *is* the kind, the transition and the target state. §2 and §3.1's
+     wording describes a mechanism this crate does not have and is a **document defect to correct**,
+     not a design to implement.
+- **The residue, stated rather than smoothed**: a continuation raises a `DomainError` directly —
+  `scope_not_contained_domain_err` returns `DomainError::ScopeNotContained` — and does **not** append
+  to a `ValidationReport`. So it cannot collect several findings within its phase the way a
+  registered rule can; it refuses on the first. Every `04` cross-row rule is a single-condition
+  refusal, so nothing is lost today, but the feature doc must say this rather than imply the two
+  fillings are interchangeable in every respect.
+- **The arguments against, stated**: widening the trait would break the property its own doc names —
+  a rule *"never reads another rule's verdict, which is what makes registration order an ordering of
+  output rather than of logic."* A rule that reads rows can observe the effects of an earlier rule's
+  writes, so registration order would become an ordering of logic. That objection stands
+  independently of the fact that the trait's file is not `04`'s to edit. Prefetching everything into
+  a rich subject (the third option considered) was declined because the scan-shaped operands —
+  a Product's children, the flip guard's producers, a live retire intent — turn the subject into a
+  query result and leave the I/O at the door anyway.
+- **Propagated**: `design/01-foundation.md` §2 and §3.1 (the keying sentence),
+  `features/lifecycle.md` (`dod-registered-validator-host`'s framing, and §7 row 20 closes).
+  **Owed**: the §3.1 correction is `01-foundation`'s to write; `04` may not edit it.
+
+#### P-D-96 — Row 19's two codes get opposite answers: `SCOPE_NARROWING_BLOCKED` is withdrawn, `PARENT_NOT_PUBLISHED` is admitted
+
+- **Date**: 2026-09-02 (owner call with `04-lifecycle`, closing `features/lifecycle.md` §7 row 19)
+- **Context**: the row asks one question about two codes, and measurement at `HEAD` separates them.
+  `SCOPE_NARROWING_BLOCKED` occurs **zero** times in the crate and **zero** times in this register;
+  the shipped narrowing check, `check_children_stay_contained`, refuses with `SCOPE_NOT_CONTAINED`
+  (53 occurrences, with a `DomainError` arm). `PARENT_NOT_PUBLISHED` has no `DomainError` arm either
+  — but it is **already owned and already priced**: **P-D-24** assigns it **409, not 422**;
+  `infra/error_mapping.rs` states that it *"and `RETIREMENT_PENDING` are raised by slice
+  `04-lifecycle`'s registered validators … `DomainError` has no variant for any of the three —
+  mapping a code this gear cannot raise would be a dead `match` arm"*; and a **shipped test** in
+  `domain/error_tests.rs` asserts *"PARENT_NOT_PUBLISHED is registered by the lifecycle feature"*.
+- **Decision**, two arms:
+  1. **`SCOPE_NARROWING_BLOCKED` is withdrawn.** Narrowing rides `SCOPE_NOT_CONTAINED`. The decisive
+     reason is in the shipped code, not in the cost table: `skus.rs:2839` records that the parent
+     and child directions reach one module for both halves of the verdict *"so the two directions
+     cannot word one refusal two ways."* A second code is exactly the divergence that arrangement
+     exists to prevent, and a caller already learns the direction from which door answered.
+     Withdrawing retracts nothing, since no decision in this register names the code.
+  2. **`PARENT_NOT_PUBLISHED` is admitted** as a `DomainError` arm and its mapping, raised by `04`'s
+     validator on the create door and the un-deprecation edge. This is **not** a widening of the
+     closed refusal taxonomy: the code is declared, priced at 409 by P-D-24, assigned to `04` by
+     foundation's own seam, and asserted to `04` by a green test. The arm is the **filling of an
+     owned slot**. The load-bearing fact is that `is_terminal()` is
+     `matches!(self, Retired | Discarded)`, so a **`draft` or `deprecated` parent is not terminal** —
+     refusing it `PARENT_TERMINAL` would be a false claim about the parent's state, which is why
+     overloading the shipped code was refused.
+- **The arguments against, stated**: withdrawal costs three documents that name
+  `SCOPE_NARROWING_BLOCKED` — `design/04-lifecycle.md`, `features/lifecycle.md` and
+  **`features/reference-signal.md`**, a third slice the row itself did not mention — plus the
+  seven-code list and an acceptance criterion; each becomes a document defect to fix, and `07`'s
+  copy is not `04`'s to edit. Against arm 2: the gear gains a refusal code, and the create door's
+  deliberate choice not to name the offending children (§7 row 27) must hold for the new code too,
+  or the two refusals will diverge in what they disclose.
+- **The radius, measured and handed on**: the same `error_mapping.rs` paragraph names two
+  neighbours on identical terms. **`RETIREMENT_PENDING`** (3 code occurrences, 8 documents) is
+  `04`'s to declare and raise — same seam, same missing arm, and it is **inside this strand's
+  scope**, so it is settled here by the same reasoning rather than left to be rediscovered.
+  **`CONTENT_PII_BLOCKED`** (2 code occurrences, 14 documents) is slice **`02`**'s content
+  write-block and belongs to the taxonomy strand — it is **not** settled here, and is registered
+  as owed to that strand's owner.
+- **Propagated**: `features/lifecycle.md` (§7 row 19 closes; `dod-scope-narrowing` and
+  `dod-lifecycle-errors` re-worded), `design/04-lifecycle.md` (the withdrawn code),
+  `domain/error.rs` and `infra/error_mapping.rs` (the new arm, applied by the lead from `04`'s D7
+  patch).
+- **Owed**: `features/reference-signal.md`'s copy of the withdrawn code, to `07`'s owner;
+  `CONTENT_PII_BLOCKED`, to `02`'s.
+
+#### P-D-95 — The by-key frozen-version reader is `01-foundation`'s, and waits for its first unblocked consumer
+
+- **Date**: 2026-09-02 (owner call, accepting the recommendation raised as strand C's `O-C-2`
+  while building `cpt-cf-bss-products-dod-staleness-stamp`)
+- **Context**: `infra::storage::repo` ships `latest_entity_version` — public, with three production
+  call sites in `api/rest/products.rs` and `api/rest/skus.rs` — and **no by-key read**. A by-key
+  read exists only as `find_frozen_version`, a test helper in `repo_tests.rs`. Two DoDs need
+  `(tenant, entity_kind, entity_id, published_version) → content`:
+  `cpt-cf-bss-products-dod-frozen-read-path` (`08`) and `cpt-cf-bss-products-dod-clone-read-surface`
+  (`11`). **Latest-only is the wrong coordinate for either**, because a `*Published` event carries a
+  specific `publishedVersion` and the projector must read *that* version, not whichever is newest.
+  **P-D-77** already settled the decoder half of this pair (`decode_rendering`, beside the
+  renderer); this is the reader half, which that decision did not reach.
+- **Decision**, two arms:
+  1. **The by-key reader is `01-foundation`'s**, named beside `latest_entity_version` in
+     `infra::storage::repo` — the same placement rule P-D-77 applied to the decoder, and for the
+     same reason: two consumers in different slices must not each grow their own read.
+  2. **It is promoted when its first consumer is unblocked, and not before.** Until then
+     `find_frozen_version` stays a test helper and neither DoD is ticked on the reader's account.
+     `dod-frozen-read-path` is open on `features/read-models.md` §7 **row 9** (projector posture
+     when a `*Published` event's frozen row has been collected) and §7 **row 19** (a published
+     entity rescoped without a version row); `dod-clone-read-surface` is open on clone's own rows.
+     A public reader landing first would make both DoDs *look* reachable while the questions that
+     actually block them stay open — a green reader papering over a design gap.
+- **The arguments against, stated**: the reader is a small and obviously-correct function, and
+  withholding it means the test helper and the eventual production function are written twice, with
+  a window in which they can disagree about the coordinate. That is accepted: the duplication is one
+  test-only helper against one future function, whereas the risk on the other side is a `p1` DoD
+  ticked on a reader whose consumers are still blocked. The alternative of promoting it now and
+  leaving both DoDs unticked was also declined — it would put a public repository function in the
+  crate's API with no caller, which is the shape this register has refused elsewhere.
+- **Propagated**: nothing normative. This decision constrains a code artifact and its timing; it
+  changes no design section and adds no instruction.
+- **Not amended**: the two registers that gate arm 2 —
+  `features/read-models.md` §7 rows 9 and 19, and `features/clone.md`'s own rows — are cited as
+  they stand, since neither row's question is what this decision answers.
+- **Owed**: when arm 2's condition is met, the promoting change updates
+  `design/01-foundation.md` §3.2's repository surface, and this entry is the site to check first.
+
+#### P-D-94 — The recognized-set events' broker identity: derived ids, the set kind as the subject
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  P-D-90's doors ship and `inst-rs-shape` requires every mutation to emit *"the set's event in the
+  same transaction"*, while `design/03` §4 declares only the event **names** and the ordering key)
+- **Context**: `design/03` §4 declares `RecognizedUnitUpdated`, `RecognizedCodeUpdated` and
+  `PlanTierUpdated` as *"broker-native, ordering key `(tenant, set_kind)`"* — and nothing more. A
+  broker-native event needs a type id and a subject type, and the gear's ten existing events derive
+  both from one naming rule (`gts.cf.core.events.event_type.v1~cf.bss.products.<snake>.v1`;
+  `gts.cf.core.events.subject.v1~cf.bss.products.<domain type>.v1`). The set events' domain type is
+  not among `DESIGN.md`'s six API-resource types, but `cf.bss.products.recognized_set.v1~` is
+  already a declared GTS type — `design/05` §3.2's authz catalog carries it, and P-D-90 doored it.
+- **Decision**, three arms:
+  1. **The type ids follow the gear's own derivation**:
+     `…~cf.bss.products.recognized_unit_updated.v1`, `…recognized_code_updated.v1`,
+     `…plan_tier_updated.v1` — the same rule every shipped event uses, applied rather than
+     re-invented.
+  2. **The subject type is `gts.cf.core.events.subject.v1~cf.bss.products.recognized_set.v1` and
+     the subject is the `set_kind`** — tenant plus subject is then exactly the declared ordering
+     key, with no second mechanism. All four kinds ride the one subject type, the tier set
+     included: its separateness is carried by its own event name and grant, not by a fourth
+     subject type.
+  3. **On the interim (non-broker) outbox the aggregate id is a v5 UUID of the set kind in the
+     tenant's namespace** — deterministic, one per `(tenant, set_kind)`, so the interim
+     partitioning reproduces the declared ordering rather than approximating it.
+- **The arguments against, stated**: arm 2 gives events about four *sets* one subject type, so a
+  consumer filtering by subject type alone cannot separate the tier stream from the unit stream —
+  it must read the subject value. The alternative (a subject type per kind) was rejected because
+  it mints three more GTS names no document declares, for a distinction the subject value already
+  carries. Arm 3 buries the ordering rule in a UUID derivation a reader cannot see on the wire;
+  the alternative — a synthetic per-set row id — would need a store to keep it stable, which is a
+  table for a partitioning detail.
+- **Not changed**: `design/03` §4's roster and ordering key; the events' payload fields (the body
+  carries `tenant_id`, `set_kind`, `member_code`, `state`, `actor_ref` — the mutation's own
+  operands and nothing invented); slice 12's completeness check, which gains three rows to count
+  when it lands.
+- **Propagated**: `design/03-sku-classification.md` §4 (the roster line now cites this entry);
+  the crate's `infra/broker.rs` (the subject-type constant's doc) and `infra/events.rs` (the
+  entry point) implement it.
+
+#### P-D-93 — Open item 3's premise is stale and its own remedy ships, so the envelope is buildable
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/taxonomy-attributes.md` §7 row 3, the first of that feature's two "seams")
+- **Context**: the row holds `dod-governed-live-op`, and its text gives the reason in full: the
+  envelope *"is consumed by `05-governance`. That slice's **design exists**; what does not exist is
+  its FEATURE artifact and its code. So this feature can define, submit and re-validate an
+  envelope, and no test can drive one through an approval — an **in-test approval double** is
+  therefore an obligation on `dod-governed-live-op`, without which every apply-path DoD and
+  acceptance criteria 1 and 31 go green on a gate that approves nothing."*
+- **Decision**: **the row stops holding the DoD**, on three measurements rather than on a
+  re-reading:
+  | What the row says | What is true at this commit |
+  |---|---|
+  | 05's **FEATURE artifact** does not exist | `features/governance.md` ships — 27 DoDs, a 23-row §7 |
+  | 05's **code** does not exist | `products_approval`, `products_approval_decision` and `products_breakglass_session` ship with their guards and both-engine oracles; `domain::governance::GovernanceGate` is the gate contract with a host |
+  | the remedy is an **in-test approval double**, and without it the apply-path DoDs go green on nothing | **four** doubles ship — `RefusingGate`, `FailingGate`, `RecordingGate` and `CountingRefusingGate` — and the door tests already turn on which one is passed |
+  The row's own conclusion is therefore satisfied: the obligation it placed on the DoD is met, and
+  what it warned against — a gate that approves nothing going green — is what those four doubles
+  exist to prevent.
+- **The arguments against, stated**: the doubles are the *door's* fakes, written for the publish
+  gate, and reusing them for a live-op apply is an assumption that one gate contract serves both —
+  true today because `GovernanceGate::evaluate` takes an `EntityRef` and a revision, which a live
+  op has to supply anyway, but a live op whose subject is **not** an entity would need a second
+  contract and this decision does not grant one. The second residue: **no test drives a live op
+  through a *real* approval record**, because the submit door has no route (05 §7 row 12) — so the
+  apply path is proven against a double and the record store is proven separately, and the join of
+  the two is owed to 05's own door.
+- **Not changed**: row 3's sibling (open item 4, the PII detector's stub) — a different slice, a
+  different absence, untouched; §7 row 12 of `governance`, which still holds the submit door; the
+  envelope's own obligations, which `dod-governed-live-op` states and this decision does not edit.
+- **Propagated**: `features/taxonomy-attributes.md` §7 row 3 and its seam prose.
+- **Unchanged**: `features/sku-classification.md` — 03 reuses the type per its own DoD, no redefinition.
+
+#### P-D-92 — `set_kind` pins no roster, so row 5 stops holding the recognized-set table
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction — a **scoping**
+  decision in **P-D-74**'s form, not an answer to `features/sku-classification.md` §7 row 5)
+- **Context**: row 5 asks whether `tax_category_ref` and `gl_code_ref` belong to this registry at
+  all, and its answer *"may delete this feature's validators, its two `set_kind` values and its
+  publish-blocking requirement together"*. Its owner is **the PRD owner** and it stays open. But it
+  names `dod-recognized-set-table` among its Blocks, and it is that table's **only** live blocker —
+  so a question about two of four row-value kinds is holding a table whose DDL need not know how
+  many kinds there are.
+- **Decision**: the hold on the table is released, exactly as P-D-74 released the capture table's.
+  **`products_recognized_set`'s DDL pins no `set_kind` roster** — a non-empty text column — and the
+  admitted set is the **membership door's** to enforce once row 5 resolves. This is the third
+  application of that form in this chain (`capture_kind`, `entity_kind`, `value_type`), and the
+  reason is the same each time: a `CHECK` enumerating the kinds would BE row 5's answer, written by
+  a migration instead of by its owner.
+- **The arguments against, stated**: a table that admits any kind admits a typo, and the first
+  reader of the DDL learns nothing about the four kinds from it. Both are true and both are the
+  price of not authoring; the door's roster and this feature's own §1.7 carry the four, and a later
+  pin is an in-place edit rather than a redesign.
+- **Not changed**: row 5 keeps its grip on `dod-classification-columns` (the two contingent
+  columns are two of its seven `MUST`s), on `dod-accounting-validators`, `dod-finance-materiality`,
+  `dod-sdk-read-shape`, `dod-recognized-set-events` and `dod-type-profile`. The question itself is
+  untouched and stays with the PRD owner.
+- **Propagated**: `features/sku-classification.md` §7 row 5 (its Blocks list loses the table),
+  `design/03-sku-classification.md` §4 (the column's shape).
+
+#### P-D-91 — None of the four code columns is a database foreign key, and two measurements say so
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/sku-classification.md` §7 row 7, `design/03` §4's own question)
+- **Context**: row 7 asks whether `plan_tier` is a real FK. `dod-classification-columns` already
+  carries the whole argument and applies it to four columns rather than one: `plan_tier`,
+  `tax_category_ref`, `gl_code_ref` and `metering_unit` are all **single code columns** into
+  `products_recognized_set`'s **three-column** primary key.
+- **Decision**: **no FK on any of the four.** The answer is not a preference between two workable
+  shapes — two independent measurements rule the FK out:
+  | Measurement | What it rules out |
+  |---|---|
+  | A referencing side cannot supply `set_kind` as a **literal**. Neither engine admits a constant in a foreign key's column list, so the only real FK is one over a redundant `set_kind` column added per reference — four columns whose only value is to satisfy a constraint | the FK as written |
+  | **Each of the four has a de-list code a raw violation would pre-empt**: `PLAN_TIER_RETIRE_BLOCKED`, `UNIT_DELIST_BLOCKED` and row 5's two. A real FK raises the driver's own error, and the design requires the coded refusal | the FK on any of them, even if the first were solved |
+  The referential guarantee is the **membership door's**, which is where the codes live.
+- **The arguments against, stated**: the columns can then hold a code no set member carries, and
+  nothing physical stops it — a real cost, accepted because the alternative buys the guarantee at
+  the price of the refusal the design specifies. The mitigation is the door plus the publish
+  validators, and `dod-unit-recognition` requires exactly that refusal for a unit *"unknown or
+  `removed`"*.
+- **Not changed**: the atomic-pair `CHECK` on `metering_unit`/`usage_type_ref` (both null or both
+  non-null) is a **shape** constraint, not referential, and stands; `dod-classification-columns`
+  keeps its other blocker (row 5's two contingent columns).
+- **Propagated**: `design/03-sku-classification.md` §4 and §6 (the question, struck),
+  `features/sku-classification.md` §7 row 7 and `dod-classification-columns`.
+
+#### P-D-90 — The recognized-set membership door: one route family, the grant chosen by set kind
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/sku-classification.md` §7 row 9)
+- **Context**: the only stated write mechanism is `GovernedLiveOp` and this feature names no route,
+  while `design/05` §3.2 already carries **`recognized_set × write`** and **`plan_tier × write`**
+  with *"no route declared"* — two grants with nothing to spend them.
+- **Decision**, three arms:
+  1. **`POST /bss-products/v1/recognized-sets/{setKind}/members`** for a membership add, and
+     **`POST /bss-products/v1/recognized-sets/{setKind}/members/{memberCode}/transitions`** for the
+     `active → deprecated → removed` flips and the re-listing. The shape is this corpus's own,
+     set twice by decision already: **P-D-67**'s `POST /bss-products/v1/freeze-participants` and
+     **P-D-87**'s `POST /bss-products/v1/reference-producers` plus
+     `…/reference-producers/{producer}/retirements`. A third application is uniformity rather than
+     invention.
+  2. **The grant is chosen by `setKind`, not by the route**: the tier set spends
+     `plan_tier × write` and the other three spend `recognized_set × write`. That is the only
+     reading under which **both** grants have a spender, and the design separates the tier set
+     everywhere else too — its own `DoD`, its own event (`PlanTierUpdated`), its own refusal code
+     (`PLAN_TIER_RETIRE_BLOCKED`).
+  3. **One door, four sets, one generic membership implementation** — `dod-recognized-set-mechanics`
+     requires *"one generic membership lookup"*, and a door per set kind would be four doors
+     spending two grants with one rule set behind them.
+- **The arguments against, stated**: arm 2 puts an authorization decision on a **path segment**,
+  so a reader of the route table cannot see which grant a call spends without reading `setKind`'s
+  roster — the alternative (two route families) was rejected because it duplicates one rule set
+  across two doors and leaves the generic lookup with two callers to keep aligned. Arm 1's second
+  route models a state flip as a subresource, which is `…/retirements`' shape rather than a `PATCH`
+  on the member.
+- **Not changed**: the mechanism (`GovernedLiveOp`), the removal operand (**P-D-89**), the four
+  events, `05`'s catalog rows — the grants exist and this decision gives them a spender rather than
+  minting anything.
+- **Propagated**: `design/03-sku-classification.md` §2 (the flow's route) and §6,
+  `features/sku-classification.md` §7 row 9, `design/05-governance.md` §3.2's `Doors` column (the
+  row loses *"no route declared"*).
+
+#### P-D-89 — The removal operand is the non-terminal published head, and the row's own DoDs say so three times
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/sku-classification.md` §7 row 15, `design/03` §6's own item)
+- **Context**: the row asks whether `02` and `03` admit a **`draft`** head as a blocking reference,
+  noting three texts that differ — `03` `inst-rs-removal-operand` says *"non-terminal **published**
+  heads"*, `02` `inst-ad-deprecate-then-remove` says *"non-terminal head
+  (`draft`/`published`/`deprecated` Product or SKU, active category)"*, and the PRD is narrower
+  than both.
+- **Decision**: **`03`'s operand is the non-terminal *published* head, uniform across its four
+  sets, and a `draft` head does NOT block.** This is a measurement, not a choice between readings:
+  the three `DoD`s the row itself blocks each state it independently and identically —
+  `dod-recognized-set-mechanics` (*"the non-terminal published head, uniform across all four
+  `set_kind` values"*), `dod-plantier-governance` (*"while a non-terminal published head carries the
+  value"*) and `dod-unit-delist` (*"while a non-terminal published head declares it"*). A fourth
+  document closes it: **`dod-unit-recognition` requires refusing a declaration on *"a draft whose
+  unit was deprecated before its first publish"*** — a case that is **unreachable** if a draft
+  blocks the deprecation, which would leave that `DoD` requiring a refusal no state could produce.
+  A draft's protection is therefore the **publish-time** refusal, never the de-listing guard.
+- **`02` keeps its own wider operand, and the divergence is already registered.** The row's premise
+  — that the two must agree — was retired when `02`'s uniformity claim was struck: `02` §6 records
+  the divergence in its own words, and the subjects differ (an attribute value on a draft head has
+  no unit-style publish-time re-recognition to fall back on). So this is not the joint decision the
+  row's Owner field expects; each slice's operand is stated in its own documents and both now say
+  so.
+- **The arguments against, stated**: an operator can remove a unit that a hundred drafts declare,
+  and every one of those drafts then fails at publish — noisy, and discovered late. The mitigation
+  is the design's own: the pre-publish lint (**P-D-02**, informational) *"surfaces `deprecated`-member
+  usage so operators see debt before refusal teaches them"*, and deprecation precedes removal in
+  the state machine.
+- **Not changed**: `02`'s operand; the PRD's narrower wording, which is a subset of this reading and
+  not in conflict with it; the tombstone mechanics (**P-D-47**).
+- **Propagated**: `design/03-sku-classification.md` §6 (the item, struck),
+  `features/sku-classification.md` §7 row 15, and a one-line pointer in
+  `features/taxonomy-attributes.md` §7's mirror row.
+
+#### P-D-88 — The nullable-UNIQUE gap: roots get a partial index, coordinates get P-D-39's stated absence
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction — `design/02` §6's
+  *"Both uniqueness guarantees are UNIQUE over nullable columns"*, decided at the moment its first
+  half became DDL)
+- **Context**: both engines treat NULLs as distinct in a UNIQUE, so §4.1's declared
+  `UNIQUE (tenant_id, parent_id, name_normalized)` does not constrain **root** categories, and the
+  attribute-value coordinate tuple does not constrain the **global** coordinate — the one
+  `inst-av-default-locale` makes mandatory. The item names three candidates: sentinels,
+  `NULLS NOT DISTINCT`, extra partial indexes.
+- **Decision**, two arms, one per half:
+  1. **Root categories: a partial unique index**,
+     `UNIQUE (tenant_id, name_normalized) WHERE parent_id IS NULL`, beside the declared UNIQUE —
+     because for THIS column the other two candidates are measurably impossible, not merely worse.
+     A sentinel cannot satisfy a **self-referencing FK** without minting a fake category row per
+     tenant, which every tree walk would then have to skip; and `NULLS NOT DISTINCT` is Postgres 15
+     syntax with **no `SQLite` equivalent**, so it cannot hold on both engines and cross-engine
+     parity is one of this chain's gates. Partial indexes hold identically on both.
+  2. **The attribute-value coordinates: P-D-39's own convention** — `locale`, `region` and `brand`
+     ship `NOT NULL` with the empty string as the **stated absence value**, making the declared
+     UNIQUE total with no index tricks. These are text columns with no FK, so the sentinel
+     objection from arm 1 does not arise, and the gear already answers absence this way elsewhere
+     (the item says so itself). The `global` coordinate is then spelled `('', '', '')` —
+     **which deliberately answers only the SPELLING**: what "global" means to the resolver, which
+     combinations a door admits, and where a brand-scoped default lives stay §6's open items,
+     untouched.
+- **The arguments against, stated**: arm 1 adds a second index whose predicate a reader must know
+  to understand the guarantee (the alternative — no root constraint — ships the defect the item
+  measured). Arm 2 makes `''` load-bearing in a UNIQUE, and a door that ever writes a real empty
+  string would collide with absence — accepted because the coordinate values are identifiers a
+  door validates non-empty anyway, and the third reader of a two-spelling absence is this gear's
+  own recorded lesson.
+- **Not changed**: §4.1's declared UNIQUE constraints (both ship as written); the resolver's
+  coordinate semantics (three §6 items stay open); `inst-av-default-locale`'s wording.
+- **Propagated**: `design/02-taxonomy-attributes.md` §4.1 (both table rows) and §6 (the item,
+  struck); `features/taxonomy-attributes.md` `dod-category-table` (the root index rides it);
+  the value-table arm lands with that table's migration.
+
+#### P-D-87 — Reference-signal's five: four config knobs at home, a retired producer's rows cleared, and the three doors' routes
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/reference-signal.md` §7 rows 7, 12, 16, 19 and 32)
+
+**1. The four knobs land on `ProductsConfig`, per-deployment and boot-time** (rows 7, 19, 32):
+`reference_freshness_minutes` (interim 15), `watermark_skew_tolerance_minutes` (interim 5),
+`tripwire_max_overrides_per_30_days` (interim 5) and `breakglass_correction_enabled: bool`
+(default `false`). The posture is **P-D-84 arm 5's, now precedent rather than invention**: the gear's
+config struct is where a per-deployment number lives, hours or minutes being the unit the knob's own
+design states. The freshness threshold is **exported through a getter**, the shape
+`resolved_idempotency_retention_hours` already has, because `04-lifecycle`'s `ActivationRunner`
+polls on it. Row 32 dissolves rather than needing a ruling: **P-D-71 arm 1 already named the flag
+enable-positive**, so "default OFF" and `false` are the same fact and the DoD pins what row 1
+deferred, not against it.
+
+**2. A retired producer's watermark and member rows are DELETED in the retirement transaction**
+(row 12), and a re-registering producer starts `never-received`. That is what makes the DoD's own
+*"a registering producer's first watermark MUST start `never-received`, so onboarding can only
+tighten"* true: surviving rows let retire-then-re-register inside the freshness window read
+**fresh** against a stale member set and free every SKU that has since gained a reference — the
+exact inversion the row names. The producer row itself stays, its `state` moving to `retired`, so
+the registration history is not lost.
+
+**3. The three doors' routes and success responses** (row 16), each from the set's nearest
+precedent rather than invented:
+
+| door | route | success |
+|---|---|---|
+| watermark post | `POST /bss-products/v1/reference-watermarks` (already bound) | **200** — state, not a minted resource; an idempotent replay answers the same |
+| producer registration | `POST /bss-products/v1/reference-producers` | **201** — a row is minted |
+| producer retirement | `POST /bss-products/v1/reference-producers/{producer}/retirements` | **200** |
+| correction | `POST /bss-products/v1/skus/{skuId}/corrections` | **202** — the door accepts, the write happens at approval |
+
+The correction route **adopts the shape the shipped crate already announces** (row 20's
+measurement): `correctable_after_publish` tells callers *"writable only through the correction door
+(POST .../corrections, slice 07)"*, and of the two ways to stop that message being a lie —
+adopt the shape, or change a shipped sentence — adopting costs nothing and changing costs the
+sentence. The two membership routes take the freeze-participant door's own shape (P-D-67): a plural
+collection for the act, a sub-collection for the act on one member.
+
+- **The arguments against, stated**: arm 1 puts four policy numbers in a per-deployment struct where
+  §17.1 may later want them per-tenant — the same argument P-D-84 arm 5 took and the same answer,
+  nothing per-tenant exists to range over; arm 2 discards what a retired producer last claimed —
+  accepted, a watermark is **state, not history** (the slice's own reason for it emitting no event),
+  and the retirement's audit row records the act; arm 3 fixes routes ahead of the doors that serve
+  them, which is exactly what `12-consumer-contracts`' lint needs to see them at all.
+- **Not changed**: the refusal codes and their statuses, P-D-71's flag polarity, P-D-59's gauge, the
+  correction door's own open rows (6, 10, 14, 20, 22, 23, 24) and producer registration's (2, 5) —
+  neither door is freed by this entry.
+- **Propagated**: `features/reference-signal.md` (rows 7, 12, 16, 19, 32 struck; §7 arithmetic;
+  `dod-reference-config`, `dod-producer-table` and `dod-watermark-door` freed),
+  `design/07-reference-signal.md` (§6 twins where the rows are carried), `ProductsConfig` and the
+  producer/watermark doors when they build.
+
+#### P-D-86 — The bulk row's staged payload is a column, appended to the ledger by an in-place edit
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/bulk-promotion.md` §7 row 30, raised by the group 13a build when it reached the wall)
+- **Context**: `design/09` §4's ledger row carries `governed_live_op`, glossed as *"the pending
+  payload a **live-entity** row stages"*, and nothing for a Product or SKU row's imported content —
+  while `dod-stage-phase` has those rows *"parse, then the same registered validators"* and P-D-69
+  arm 5 digests *"the bulk row's staged payload"*.
+
+**`products_bulk_row` gains `staged_payload`, nullable, holding the canonical serialization of the
+row's imported content**, written by the import door and read by the worker — appended by editing
+`m20260901_000014_create_products_bulk.rs` **in place**, this chain's own convention. A shape CHECK
+pairs it with the row class the way the table's other pairs are pinned: a `product` or `sku` row
+carries a payload, since a row the worker cannot stage is a row that should never have been
+recorded.
+
+**The synchronous-door alternative is measurably wrong, not merely less tidy.** It would put a whole
+batch's validation inside one HTTP call — against the 202 the import door answers, against the
+ten-thousand-row sizing fixture, and against `dod-stage-phase` and **P-D-54**, which both name the
+**worker** as the phase's executor. A design whose executor exists and whose payload does not is
+missing the column, not the worker.
+
+**`governed_live_op` keeps its stated meaning.** Folding both row classes onto one column would read
+tidier and would require rewriting a gloss the design set states; two nullable payload columns, one
+per row class, changes no existing sentence. A later slice may fold them, and that fold is then a
+decision with its own entry.
+
+- **The arguments against, stated**: two payload columns on one table is redundant shape, and the
+  canonical serialization means the door must render the row's content before it can record it —
+  which is what makes P-D-69 arm 5's digest rule computable at all, so the cost buys the answer that
+  row already relies on.
+- **Not changed**: P-D-69 arm 5 (this supplies its operand), P-D-54's executor, the ledger's
+  append-only-after-terminal guard, the row keys' batch scope.
+- **Propagated**: `features/bulk-promotion.md` (row 30 struck; `dod-stage-phase` freed),
+  `m20260901_000014` and the import door when the worker builds.
+
+#### P-D-85 — The revalidation guard's shipped shape: staged outside the transaction, committed under the fence's own retry loop
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction — recorded at the
+  tick of `cpt-cf-bss-products-dod-stage-commit-revalidation`, whose isolation clause the shipped
+  build does not match to the letter)
+- **Context**: the DoD mandates *"the transaction opens at the engine default"* and argues that
+  under `SERIALIZABLE` *"the transaction aborts rather than raising the code §6 requires"*, while
+  `dod-coalescer` mandates `LeaseGuard::with_ack_in_tx` — whose internal loop runs
+  `SERIALIZABLE` with transparent retries. Both clauses cannot hold in one build.
+
+**The shipped guard stages OUTSIDE the transaction and commits under the fence, and that shape
+delivers both of the DoD's arms.** The staged view predates the transaction, so the in-transaction
+re-read compares across the whole collect-to-commit window — a moved `published_version` and a
+moved `lifecycle_state` alike, appearance and disappearance included, which the suite asserts. A
+serialization abort inside the fence is absorbed by its retry loop, which re-runs the compare on a
+fresh snapshot and still surfaces the **refusal** — `Restaged` on the mechanical lanes, the
+operator arm's `STAGED_ENTITY_CHANGED` when that door lands — so the abort-instead-of-refusal
+failure the DoD's clause guarded against cannot reach a caller. The isolation clause was scoped to
+a build that collected and committed in one transaction; the DoD is restated to record the shipped
+shape rather than the hypothetical one.
+
+- **The arguments against, stated**: the serializable retries spend transaction attempts a
+  read-committed build would not — bounded by the fence's own retry policy, and the increment is a
+  background drain with no caller waiting on the attempt count.
+- **Not changed**: P-D-53 (its reason holds for a bare transaction: nothing here re-litigates the
+  isolation of any door's own writes), the compare's two arms, the lane split (P-D-09), the
+  request-never-lost posture.
+- **Propagated**: `features/catalog-version.md` (`dod-stage-commit-revalidation`'s opening
+  paragraph restated), `infra/increment.rs` (the module doc already records the reading).
+
+#### P-D-84 — The freeze protocol's seven: settled-not-acked, the seeded ledger, the strict flag, the resolver's shape, and the timeout's field
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/catalog-version.md` §7 rows 6, 7, 12, 18, 36, 44 and 45, the set holding the freeze
+  chain's doors)
+
+**1. `freezeComplete` ranges over SETTLED, not acked** (row 6): complete ⇔ the ledger holds no
+`pending` row and no `not_frozen(forced)` row — a release settles exactly as an ack does, so
+completeness is **monotone** and the regression the row names cannot be expressed. The predicate
+reads `state`, whose six admitted edges (P-D-60) leave `released` terminal; slice 10's
+version-liveness pair already reads a released registration as released, so nothing there moves.
+
+**2. The ledger's creation point is the increment transaction, and the empty-set vacuity is
+deliberate** (row 7): P-D-67's seeding is built — one `pending` row per snapshotted participant,
+written in the same transaction as the version row, so no resolution can see a version whose
+ledger does not yet exist. An **empty registered set** has nobody to wait for: `freeze_state` is
+seeded `complete` at insert (shipped), and C5's fail-closed default governs versions **with**
+participants — a tenant that registers none has declined the ceremony, not evaded it.
+
+**3. The exposed flag derives strictly** (row 18): wire `freezeComplete = (freeze_state =
+'complete')`. `complete(forced)` reads **false** on the flag — the flag's PRD purpose is
+posting-safety and a forced version is not posting-safe (`inst-rv-intent` refuses it
+`VERSION_FORCED_INCOMPLETE`, which carries the why) — the column stays the storage truth, and
+P-D-19's `freezeComplete = complete(forced)` phrasing stands under the state reading, unamended.
+
+**4. The resolver takes the request door's dual shape** (row 12): an SDK client surface beside the
+increment contract (P-D-15's rule for machine consumers) and
+`GET /bss-products/v1/catalog-versions/{id}` with a **required** `intent` query as the
+out-of-process binding, both passing `catalog_version x read`. The route is the slice's own
+prefix; 01's unqualified contract claim is untouched because the surface is this slice's door, not
+a new contract id.
+
+**5. The timeout's field is `freeze_timeout_hours: u32` on `ProductsConfig`** (row 36) — hours,
+the unit the retention resolution already speaks (*"retention **is** `max(24h,
+max_freeze_timeout)`"*), per-deployment like every field of that struct; so `max_freeze_timeout`
+IS the configured value — in v1 nothing per-tenant or per-lane exists to take a maximum over.
+
+**6. The ceiling is a boot refusal** (row 45): config validation refuses `freeze_timeout_hours`
+above the ten-year ceiling the clamp's upper bound encodes, so `u32::clamp`'s `min <= max`
+precondition holds by construction and the resolution stays total.
+
+**7. The export door resolves through the shared lookup** (row 44): when `09`'s export door
+builds, it takes the `IntentfulResolver` component like resolve and diff do, keeping *"the single
+raising door of `CATALOG_VERSION_UNKNOWN`"* true as written; raising its own refusal was declined
+as falsifying a shipped clause to save a function call.
+
+- **The arguments against, stated**: arm 1 lets a version report complete though every participant
+  released without consuming — accepted, release is the participant's own declaration; arm 3 makes
+  the flag blind to the forced-vs-open distinction — deliberate, the refusal codes carry it; arm 5
+  fixes the maximum to one deployment value, which a future per-tenant config would have to
+  revisit together with its own row.
+- **Not changed**: P-D-60's edge list, P-D-67's seeding and snapshot columns, P-D-19, C5, the
+  resolver's refusal codes, rows 13 and 48 (cv-authz's remaining holders).
+- **Propagated**: `features/catalog-version.md` (rows 6, 7, 12, 18, 36, 44, 45 struck; §7
+  arithmetic; `dod-ack-door`, `dod-intentful-resolver` and `dod-freeze-timeout` freed),
+  `ProductsConfig` when `dod-freeze-timeout` builds.
+
+#### P-D-83 — §4 governs the storage shape whole: columns and admitted row populations alike
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/catalog-version.md` §7 rows 40 and 49, the design-set owner's precedence pair)
+- **Context**: the set states §4-over-§5 precedence explicitly and `features/catalog-version.md`
+  applies §4 against a §2 step (`inst-fz-ack`'s key) and against a row-value set (the
+  `capture_kind` roster) without a stated rule covering either.
+
+**The precedence rule, stated once**: a slice's **§4 storage section governs every storage-shape
+fact** — column sets, key shapes, and the admitted value population of a roster column — while §2's
+instruction steps stay normative for **behavior**: who writes, when, in which transaction, refusing
+what. A §2 step that names a storage fact is a shorthand reading of §4, correct while it agrees and
+yielding where it does not. Consequences: `inst-fz-ack`'s `(version, participant)` needs no edit —
+it is §4's `(tenant_id, catalog_version_id, participant)` read as the shorthand it is (row 40); the
+capture-store roster is **§4's seven `capture_kind` values**, and the snapshot builder enforces
+seven — `inst-sn-collect`'s and `inst-df-diff`'s six-value lists are behavioral enumerations of the
+six whose source stores ship or are named today, not a competing roster (row 49). P-D-74's DDL
+posture is unchanged: the builder is the enforcement site, and a later in-place DDL pin stays open
+to whoever wants the CHECK.
+
+- **The arguments against, stated**: reading a §2/§4 disagreement as shorthand can hide a real
+  contradiction; the guard is that the shorthand ruling applies only where the §2 form is a
+  projection of §4's (fewer axes, same members), never where the two name different members.
+- **Not changed**: §2's normativity over behavior, P-D-74, the §5-versus-§4 precedence the siblings
+  state.
+- **Propagated**: `features/catalog-version.md` (rows 40 and 49 struck; §7 arithmetic — row 49's
+  "blocks nothing" preamble line was stale against the row's own `Blocks` field and is corrected).
+
+#### P-D-82 — Instants truncate to microseconds at every head-row write
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/catalog-version.md` §7 row 25, the fix `canonical::render_instant`'s own doc names,
+  owed to `01-foundation`'s create doors)
+- **Context**: `Utc::now()` carries nanoseconds; `SQLite` stores all nine digits while Postgres
+  `timestamptz` **rounds** to six, so the same logical entity can freeze under two `content`
+  strings and two digests across engines — under the byte-identity flagship.
+
+**Every instant a head row stores is truncated to microseconds at the write** — the five creating
+sites (`create_product`, `create_sku`, the product clone parent, the family child, the lone-SKU
+clone) and any later site that mints a stored instant — through one named helper beside
+`render_instant`, so neither engine holds a digit the other could round differently. Postgres's
+rounding (versus truncation) can still differ on the half-microsecond boundary for a *rounded*
+value; truncation at the write removes the digits before the engine sees them, which is why the
+helper truncates rather than rounds — after it, both engines store the identical six digits.
+
+- **The arguments against, stated**: sub-microsecond precision is lost — measured, nothing reads
+  it; existing rows keep their stored values (dev data, no migration owed).
+- **Not changed**: `render_instant`'s own truncation (defense in depth at the render), the golden
+  vector (its fixture instants are whole seconds and its bytes do not move).
+- **Propagated**: `features/catalog-version.md` (row 25 struck), the five write sites and the
+  helper in `domain/canonical.rs`; the second open clause of `dod-version-history-table` (the
+  cross-engine golden assertion) becomes buildable.
+
+#### P-D-81 — The port stays the consumer's: adapter-supplied operands, a self-describing pending ref, the poll as its own surface, and no new trait
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/catalog-version.md` §7 rows 19, 20, 21 and 28, the increment port cluster)
+- **Context**: `pricing-sdk` ships `CatalogVersionRegistryV1 { request_version(ctx, request_id) ->
+  PendingVersionRef, committed_version(ctx, pending_ref) -> Option<CatalogVersion> }` with one
+  consumer; this feature's request entity carries `(source, lane, request_key, operation_key?)`.
+
+**1. The adapter supplies the operands; the port does not widen in v1** (row 19): `source` is the
+port binding's registered producer name (`pricing`, the v1 set's one member — P-D-03), `lane` is
+`interactive` (the SDK port *is* the interactive surface; the bulk lane's requester is this gear's
+own bulk worker, in-crate, never crossing the SDK), `request_key = request_id`, `operation_key`
+absent. Widening a shipped consumer trait for operands only the provider's own internal caller
+needs would move the seam for nothing.
+
+**2. `pending_ref` is the request's own coordinates, rendered** (row 20): the adapter answers
+`pending_ref = "{source}/{request_key}"`. A consumer row keyed on the ref is thereby keyed on
+exactly what `CatalogVersionPublished.satisfiedRequests` carries, so the event closes it with no
+mapping table anywhere; and `request_version`'s stated idempotency — *"a retry after a crash
+returns the same pending ref"* — holds by construction, the same key rendering the same ref.
+
+**3. The poll's surface is the port method itself** (row 21): `committed_version` parses the ref
+and reads the request row under the caller's scope — `pending` answers `None`, `coalesced` answers
+the version `satisfied_by_version_id` names. No HTTP door is owed; the resolver door stays keyed on
+`catalogVersionId`, and *"one of its two methods with no surface"* dissolves — an in-process port
+method is a surface.
+
+**4. A second trait beside `ProductsClient`, in `bss-products-sdk`** (row 28 — corrected in the
+same session, before anything built on the first answer): the first draft of this arm reached for
+the `rate-provider` precedent (the provider implements the consumer's trait) and had products
+depend on `pricing-sdk`. **That measured the wrong donor**: the DoD's own normative text mandates
+the contract *"as a client trait in `bss-products-sdk`"*, and `pricing-sdk`'s port doc had already
+pre-agreed the opposite edge — *"when the registry publishes its own SDK this trait becomes an
+adapter over it"*, the contract living in pricing *"only so the registry gear can implement it
+without depending on `bss-pricing`"*. So: `bss-products-sdk` gains a **second trait** carrying the
+whole `IncrementRequest` (typed `(source, lane, request_key, operation_key?)`) plus the poll, with
+the not-wired / unreachable / unusable-answer error axis; `ProductsClient` is not widened (its own
+doc scopes it to reading); the products crate ships the in-process binding; and pricing's port
+becoming an adapter over it is **pricing's own pre-agreed work**, not this gear's — no dependency
+edge from products to pricing-sdk exists or arrives.
+
+- **The arguments against, stated**: arm 1 leaves the two-lane split unexpressed at the SDK seam —
+  deliberately, until a second external producer exists to need it (the products-sdk trait carries
+  the lane, so the seam is the pricing adapter's, not the contract's); arm 2 makes the ref
+  parseable and a consumer may come to depend on its shape — the shape is therefore declared as
+  the contract where the ref is minted; arm 4's first draft is kept struck-through in the register's
+  history as the lesson: a §7 row can re-ask a question the DoD's own body already answered, and
+  the row must be read against that body before a precedent is reached for.
+- **Not changed**: the port's shipped signature, P-D-52's refusal discriminator, the request
+  queue's key, `ProductsClient`.
+- **Propagated**: `features/catalog-version.md` (rows 19, 20, 21, 28 struck; §7 arithmetic),
+  the adapter when `dod-increment-request-port` builds.
+
+#### P-D-80 — The manifest renders complete-set against its own pinned roster, and keyed collections sort by their key
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/catalog-version.md` §7 rows 15 (carried; `design/06` §6 answered first) and 43, the
+  canonicalization pair, ours with 01's pin)
+- **Context**: P-D-28 orders fields, not rows; P-D-29 names a row rule for two content sets only;
+  `domain::canonical` requires the absence mode as an argument and a complete set requires a
+  declared roster. The manifest's entry and capture rows are neither of P-D-29's sets, and no
+  document said which `Absence` arm the manifest takes.
+
+**1. The sort rule extends to every keyed row collection**: *"by the collection's own identifier"*
+generalizes to **a keyed collection sorts by its own key rendering** — the manifest's entry rows by
+`(entity_kind, entity_id)`, its capture rows by `capture_kind`, both being their stores' primary
+keys under the fixed tenant and version. Two engines and two runs then hash one snapshot to one
+digest, which is the flagship's own requirement.
+
+**2. The manifest renders under `Absence::Null` against a pinned manifest roster** — the envelope's
+own field names, declared as a `const` beside the snapshot builder, `DIGEST_VERSION` governing any
+change. The parsed-request arm was declined: the checksum exists so slice 10's drill can re-verify
+a stored manifest years later, and a drill needs the roster pinned in code rather than inferred
+from the value — inference is a no-op exactly in the forgotten-field case the mode exists for,
+`canonical`'s own words.
+
+- **The arguments against, stated**: the builder constructs every field, so `Omit` could never
+  actually omit one today — but "today" is the premise that rots, and the complete-set arm costs
+  one const.
+- **Not changed**: P-D-28, P-D-29's two named sets, `render_instant`, the checksum's coverage
+  (both halves plus the participant snapshot — P-D-67).
+- **Propagated**: `design/06-catalog-version.md` (§6's sort-key item answered; `inst-sn-checksum`'s
+  parenthetical updated), `features/catalog-version.md` (rows 15 and 43 struck; §7 arithmetic),
+  the roster const when `dod-snapshot-builder` builds.
+
+#### P-D-79 — The product clone act is the family act, and the claim row carries its parent handle
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction — the three operands
+  `dod-clone-children`'s build needs that P-D-72 and P-D-75 presupposed without naming)
+- **Context**: no §7 row asks how a caller requests the product-with-SKUs act. P-D-75 closed the
+  body as *"the overrides and nothing else"* with no flag in it, no document in the set names a
+  lone-product clone, and the only two clone shapes named anywhere are the lone-SKU clone and the
+  product-with-SKUs clone.
+
+**1. Every product clone is the family act.** The closed body carries no selector, so there is
+nothing for a caller to choose with; a childless product degenerates to a family of zero, the
+per-child receipt present and empty. The remedy for an operator wanting the shell alone is
+discarding the unwanted child drafts — the set's own *"drafts are cheap"*.
+
+**2. The product door spends both grants unconditionally.** L4's *"a product-with-SKUs clone
+requires **both**"* becomes the door's own gate: authorization is a pre-pipeline gate (**P-D-30**)
+and cannot depend on a child count the door has not yet been authorized to read.
+
+**3. The claim row gains `entity_ref` — the composite act's parent handle.** P-D-72's resume
+*"scans the new parent's children"*, which presupposes the parent is findable; with several family
+acts over one source, `cloned_from = source` selects several parents, and the claim row stores
+nothing else. So `products_idempotency` gains one nullable id column, written in the parent's
+transaction (claim `INSERT`, parent row, `entity_ref` stamp — one transaction), `NULL` for every
+single-entity door; `IdempotencyClaim::InFlight` carries it out to the door, and the expired-claim
+takeover resets it beside the response pair. **The family act's answer is not stored in the
+parent's transaction**: the claim stays committed-and-unanswered — P-D-72's *"in progress"* —
+until the children phase completes and the receipt is stored, which is what makes the crash window
+resumable instead of replaying a parent-only answer.
+
+**4. The family's children are the source's non-discarded SKUs**, each in any of C1's four states.
+A `discarded` child is not attempted and not receipted — it is outside the family C1 admits —
+where the lone door refuses it by name because there the caller addressed it by name.
+
+**5. The concurrent same-key retry race is accepted and stated.** Two concurrent retries of one
+unanswered key can both read committed-and-unanswered and both clone a remainder child, leaving
+duplicate child drafts; the stored answer is the last completer's honest receipt. The fence was
+declined: a per-parent uniqueness over `cloned_from` would refuse the legitimate second clone of
+one source under one parent.
+
+- **The arguments against, stated**: arm 1 makes cloning a fifty-SKU product unavoidable at this
+  door; arm 2 demands `sku × write` of a caller cloning a childless product; arm 3 widens 01's
+  P-D-42 table for one door's semantics — taken because the claim already joins the parent's
+  transaction by P-D-72's own words, which made it the composite act's record.
+- **Not changed**: P-D-42's single-entity semantics at every other door (the column stays `NULL`
+  there), P-D-72's per-child transactions and receipt shape, the lone-SKU carve-out, P-D-75's body.
+- **Propagated**: `design/11-clone.md` (§2 rules 1 and 6), `features/clone.md`
+  (`dod-clone-door`, `dod-clone-children`, `dod-clone-authz`),
+  `m20260829_000006_create_products_idempotency.rs` edited in place per the chain's convention.
+
+#### P-D-78 — A frozen-state source reads its last frozen version; nothing bookmarks the version at deprecation
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/clone.md` §7 row 15)
+- **Context**: §4.3's exclusions make a `deprecated` entity's last frozen version content-identical
+  to a published one, but a `deprecated` head that moved *after* deprecation leaves two candidate
+  reads, and the row asked which one the clone takes.
+
+**The read is uniform — the last frozen version for `published`, `deprecated` and `retired`
+alike, including a `deprecated` source whose head has moved since deprecation.** Two measurements
+force it. First, the retirement design itself keeps the head open through the lead window and
+re-announces every move — `design/04` `inst-rt-initiate`: a publish that moves the version
+re-emits `SkuRetired` with the new `fromVersion` and *"consumers key on `(skuId, effectiveAt)` and
+take the latest"* — so the latest frozen bytes are what consumers see under deprecation, and a
+clone of the version current at deprecation would clone content consumers were already
+re-announced away from. Second, the alternative has no operand: no store records which version was
+current at deprecation — `deprecation_provenance` carries `direct|cascaded`, not a version, and
+no other column or table holds the bookmark — so the "version at deprecation" read is unbuildable
+without authoring a new column no document asks for.
+
+- **The arguments against, stated**: an operator deprecating at version N may have meant "N is the
+  last good one", and later frozen edits may be exactly what deprecation was meant to fence. But
+  `cloned_from_version` records exactly the version read, the clone is a draft an operator reviews
+  before publishing, and a version selector in the body was closed off by P-D-75's *"overrides and
+  nothing else"*.
+- **Not changed**: the head read for a `draft` source, §4.3's frozen-content exclusions, P-D-76's
+  lineage pair.
+- **Propagated**: `features/clone.md` (row 15 struck; one sentence in
+  `cpt-cf-bss-products-dod-clone-read-surface`).
+
+#### P-D-77 — The canonical decoder is `01-foundation`'s, beside the renderer
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction —
+  `features/clone.md` §7 row 23)
+- **Context**: `products_entity_version.content` is the canonical rendering as one string; the
+  clone read surface needs the inverse, and the row asked which slice owns it.
+
+**`domain::canonical` gains the decoder, beside `canonical_rendering`, owned by `01-foundation`.**
+The row's own measurement decides it: building the parse at the clone door *"would create the
+second serialization rule `domain/canonical.rs` exists to prevent"*, and
+`dod-clone-read-surface` already binds the mechanism — *"MUST be the inverse of
+`canonical_rendering` and live beside it"*. The decoder is 01's export like the renderer, the
+clone read surface is its first consumer, and the round-trip test lives beside the renderer's own
+tests. The interim parse the product clone door shipped with is replaced by the call.
+
+- **The arguments against, stated**: the clone is today the decoder's only consumer, so placing it
+  with the consumer would keep 01's surface one function smaller — declined for the row's own
+  reason, and because a second consumer (the family act's child reads) arrives with the same
+  build.
+- **Not changed**: `canonical_rendering`, `content_digest` and `render_instant`; `repo.rs`'s
+  "deliberately imports no canonicalizer" posture (the decoder's callers are the doors, not the
+  repo).
+- **Propagated**: `features/clone.md` (row 23 struck; the read-surface DoD's ownership sentence),
+  `domain/canonical.rs`, `api/rest/products.rs`.
+
+#### P-D-76 — `cloned_from` is two columns, immutable after create, and inside the content roster
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction — row 18 of
+  `features/clone.md` §7, plus the roster placement its build forces)
+- **Context**: `design/11` §4 says one nullable column while `inst-cn-lineage` records
+  `(entity id, published_version | 'draft')` — a pair — and the head tables ship neither.
+- **Decision**: **two columns**, the P-D-50 convention the set has now chosen three times —
+  `cloned_from` (nullable uuid, the immediate source; for a SKU child its own source SKU, P-D-72) and
+  `cloned_from_version` (nullable bigint; **NULL under a non-NULL `cloned_from` means the source was
+  read at its head — a draft**, the `'draft'` sentinel made representable without a sentinel), with
+  the shape CHECK `cloned_from IS NULL ⇒ cloned_from_version IS NULL`. Both join the head guards'
+  **immutable set** — writable only in the creating statement, exactly `inst-cn-lineage`'s create-only
+  rule — and both are added by editing `m20260829_000002`/`000003` **in place**. **They join the
+  content roster**, by the roster's own membership rule: excluded is exactly what the publish act
+  moves, and lineage is not moved by publish. No shipped data carries a digest, so the inclusion
+  costs nothing today and never again; `digest_version` stays 1.
+- **The argument against, stated**: content now differs between a clone and a hand-created twin — it
+  already did, `product_id` being a roster member, so no byte-identity anyone relies on changes; and
+  an encoded string was declined as the anti-pattern the set has struck twice.
+- **Propagated**: `design/11-clone.md` (§4's one-column sentence corrected, §6 twin), `features/clone.md`
+  (`dod-cloned-from-column`, §7 row 18 answered and its arithmetic).
+
+#### P-D-75 — The clone door's five: its body, its side-table write, its discarded answer, C4's scope, its key
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction — the five rows holding
+  `dod-clone-door`, taken together so the door can be built; rows 1, 2 and 5 carried, answered in
+  `design/11` §6 first)
+
+**1. The request body is the overrides and nothing else** (row 1):
+`{code?, name?, newParentId?, and optional replacement values for the five re-validated classes}` —
+anything absent copies or resets per the disposition table. The replacement slots exist because the
+alternative dead-ends: a retired source with a deprecated attribute definition is refused naming the
+field, the source is immutable, and without a re-select slot in the retry that lineage could never be
+cloned — C4's own words are that the refusal names the field and the verdict *"so the operator
+re-selects rather than guesses"*, and the only place a re-selection can land is the retry.
+
+**2. The clone door writes the side tables in its own creating transaction** (row 2) — **P-D-46's
+precedent extended to the second composite creator**: entity row, side rows, `internal_revision = 1`,
+no side-door events, no second grant. The side tables do not ship yet (`02`/`03`), so the buildable
+clone today copies the entity-row classes and this arm binds the side-table write the day they land.
+
+**3. A `discarded` source is refused `CLONE_SOURCE_DISCARDED`, 409** (row 5) — minted on **P-D-52**'s
+own test: the door owes a classified refusal and nothing existing fits. `ENTITY_TERMINAL` is
+measured-wrong (it means a head **write**, and the clone writes nothing to the source, while a
+`retired` source is explicitly admitted); the bare 404 is measured-wrong (the row is addressable and
+the 404 convention carries no code channel). Declared by `design/11` §3.2; 409 by the
+state-refuses-the-act mapping.
+
+**4. C4's "every field class that failed" is scoped to the re-validated classes** (row 12) — the
+row's own closing arm. Identity collisions are decided under the write (P-D-37) and surface per the
+ordinary phase rules; an operator can learn of a name collision on the retry, exactly as on every
+create. The pre-flight uniqueness probe was declined: it is a read racing the reservation it
+predicts.
+
+**5. The door is keyed, with the ordinary semantics** (row 14) — **P-D-72 already presupposed it**:
+the family clone's resume is *"the same-key retry"* finding a committed-but-unanswered claim. Two
+identical keyless clone requests are two legitimate clones (`Phase::Idempotency` is skipped, never
+failed, on a keyless request); a keyed retry replays the first clone, which is what a crash-retrying
+caller needs to not double-clone.
+
+- **The arguments against, stated**: arm 1 widens the body with replacement slots for classes whose
+  stores do not ship — declared now so the SDK shape (row 1's co-owner is `12`) is stable when they
+  do; arm 3 is the day's only code mint, taken on precedent rather than taste; arm 5 gives a
+  minted-id create replay semantics, which is unusual but exactly P-D-72's contract.
+- **Not changed**: the disposition table, P-D-62's suggestion mechanics, P-D-72's family resume, and
+  rows 3, 6, 8, 11, 18, 20, 25, 27 of `features/clone.md` §7 — the authz roster, lineage surface and
+  test-scope questions stay open.
+- **Propagated**: `design/11-clone.md` (§2 rule 1 the body and the key, §2 rule 2 the side-table
+  write, §3.2 the minted code, §6 twins for rows 1, 2, 5), `features/clone.md` (`dod-clone-door`,
+  `dod-disposition-rules`, §7's arithmetic and the five rows answered).
+
+#### P-D-74 — The capture DDL pins no `capture_kind` roster, so row 49 stops holding the entry table
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction — a **scoping**
+  decision, not an answer to row 49's question)
+- **Context**: `features/catalog-version.md` §7 row 49 asks whether a §2 instruction or a §4 storage
+  bullet governs a **row-value roster** — the capture-kind set, where §4 carries seven values and
+  `inst-sn-collect`/`inst-df-diff` list six, omitting `category values`. Its owner is the design-set
+  owner (row 40's), and it named `dod-version-entry-table` among its Blocks.
+- **Decision**: the hold on the entry table rested on an assumption the DDL need not make. **The
+  capture table's DDL pins no `capture_kind` roster** — `capture_kind` is a non-empty text column,
+  and the admitted set is the **snapshot builder's** to enforce once rows 49/40 resolve, which is
+  where the question actually lives. So row 49 keeps blocking `dod-snapshot-builder` and
+  `dod-diff-door` and stops blocking the table. The freeze ledger's state roster *is* CHECK-pinned
+  because its set is decided (P-D-60); this one is not, and pinning either count would author the
+  answer — a later pin is an in-place migration edit, this chain's own convention.
+- **The argument against, stated**: an unpinned roster admits a typo'd kind at the storage layer
+  until the builder lands — accepted because the builder is the only writer the design admits, and
+  the alternative authored a contested set into a CHECK.
+- **Propagated**: `features/catalog-version.md` (row 49's Blocks narrowed, `dod-version-entry-table`
+  noting the unpinned roster), `design/06-catalog-version.md` (the capture bullet's note).
+
+#### P-D-73 — The version row unblocked: a digest companion, three cache writers, and a header that never existed
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction — the three rows
+  holding `dod-catalog-version-table`, taken together so the table can be built)
+- **Context**: `features/catalog-version.md` §7 rows 24, 38 and 42.
+
+**1. `products_catalog_version` gains `digest_version`** (row 24) — written at publish beside the
+checksum, mirroring `products_entity_version`'s convention exactly; `domain::canonical`'s own doc
+states the reason and it applies identically to a manifest: without the column, corruption is
+invisible to every checksum because the drill cannot re-verify against the rule the digest was
+actually computed under.
+
+**2. `freeze_state`'s cache is refreshed by the three acts that change the ledger** (row 38): the
+ack door, the release door and the force-completion ceremony each recompute the P-D-49
+snapshot-driven summary **in their own transaction** and write it. `complete` therefore lands with
+the last snapshot member's ack, `complete(forced)` stays the ceremony's, and the
+all-acked-while-cache-reads-`open` window is eliminated by construction. Recompute-on-read was
+declined because the column's readers are the resolution refusals — C5 and `inst-rv-intent` branch
+on it — and resolution is the hot path; a per-read ledger aggregate would tax every posted-intent
+read for the benefit of avoiding one summary write on rare acts.
+
+**3. "The manifest header" is struck** (row 42): it appears in exactly three places — §4's roster
+item, the FEATURE's guard-enumeration mirror, and the row asking what it is — with **no field set,
+no writer and no reader anywhere in the tree**. The third strike of the `superseded`/`staged_at`
+class. The manifest's body is the two P-D-60 tables; the version row's summary columns are already
+named individually.
+
+- **The arguments against, stated**: arm 2 writes a derived value from three doors — three writers of
+  one cache, ordered by their own transactions, and the ledger stays the authority a drill checks
+  the cache against; arm 3 strikes a name a later reader might have wanted as an extension point —
+  an extension point with no stated content is exactly what the class strike exists for.
+- **Not changed**: rows 6, 7 and 18 (the formula's regression semantics, the naming, the predicate),
+  the append-only posture, and `freeze_state`'s roster.
+- **Propagated**: `design/06-catalog-version.md` (§4 the column roster), `features/catalog-version.md`
+  (`dod-catalog-version-table`, `dod-ack-door`, `dod-snapshot-builder`, the guard enumeration, §7's
+  arithmetic and rows 24, 38, 42 answered).
+
+#### P-D-72 — The family clone resumes from its own data, and the identity-map remainder is a widening
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction;
+  `features/retention-erasure.md` §7 row 8 — which surfaces may resolve an identity through the map —
+  is **parked with `features/read-models.md`'s row 25**, the same privacy fork seen from the other
+  side)
+- **Context**: `features/clone.md` §7 rows 7, 19 and 26, jointly holding `dod-clone-children` and
+  `dod-clone-lineage`, and `features/retention-erasure.md` §7 row 20.
+
+**1. A child's `cloned_from` names its own source SKU** (clone row 19) — the column is uniform:
+every clone's `cloned_from` names *its* source, same-kind, never the parent act. The batch stays
+walkable anyway: the new parent's `cloned_from` names the source product, and the family
+reconstructs from `parent_id` plus the children's own pointers — which arm 2 turns into the resume
+operand.
+
+**2. The durable ledger is the data itself, and the same-key retry resumes the family act**
+(clone row 7). The decided posture stands — per-child transactions, an honestly-reported partial —
+and no ledger table is built. A crash between children leaves the new parent's committed children
+carrying their `cloned_from` pointers, so **resumption is a re-entry**: the retry with the same
+idempotency key finds the claim committed and unanswered, scans the new parent's children, skips
+sources already cloned, clones the rest, and stores the answer at completion. **This extends
+P-D-42 for composite wire acts, and the extension is named**: the endpoint claim joins the
+*parent's* transaction (the composite's first), and a committed-but-unanswered claim means
+*in progress — resume*, never *replay* and never the refusal a conflicting concurrent claim gets.
+
+**3. The family act answers `201` with a per-child receipt** (clone row 26): the parent was created
+and *parent-plus-surviving-children is a valid, intended end state*, so the partial is not an error
+status — the response carries one entry per attempted child,
+`{source sku_id, disposition ∈ {created, failed}, new sku_id | code + violations}`, the codes being
+the owning doors' verbatim (no parallel taxonomy, `09`'s own rule). A **failing parent** stays the
+ordinary refusal of the whole act.
+
+**4. The identity-map remainder is a widening of the ticked foundation DoD, not a second DoD**
+(retention row 20): the tombstone-inclusive read belongs to `dod-actor-ref`, the function's owner —
+a second DoD over the same code has two owners and no recorded precedence, the row's own argument.
+`dod-identity-map` keeps the erasure-resolve and export halves, which their own DoDs already oblige.
+
+- **The arguments against, stated**: arm 2 makes the clone door's claim semantics composite-aware —
+  a committed unanswered claim is a third state P-D-42's single-entity reading did not have, and the
+  resume scan costs a read of the new parent's children per retry; arm 3 reports a partial success
+  as `201`, which a caller must read the receipt to see — the alternative (a 207-style multi-status)
+  imports a vocabulary this API nowhere else uses.
+- **Not changed**: per-child transactions and the honest partial (already decided), the lone-SKU
+  carve-out, `retention` row 8 and `read-models` row 25 (parked together), and P-D-42's single-entity
+  semantics everywhere else.
+- **Propagated**: `design/11-clone.md` (§2 rule 6 the resume re-entry and the receipt, §6 twin for
+  row 7 where carried), `features/clone.md` (`dod-clone-children`, `dod-clone-lineage`,
+  `dod-clone-door`, §7's arithmetic and rows 7, 19, 26 answered), `features/retention-erasure.md`
+  (`dod-identity-map`, §7's arithmetic and row 20 answered), `design/01-foundation.md` §3.2 —
+  **owed**: the composite-claim extension's one-sentence home, recorded here and filed at the next
+  01 edit.
+
+#### P-D-71 — Reference-signal's seven: the flag named, the hash stored, absence means never-received
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction)
+- **Context**: `features/reference-signal.md` §7 rows 1, 13, 25, 26, 28, 29 and 30, jointly holding
+  `dod-breakglass-unavailable`, `dod-reference-events` and `dod-watermark-tables` (rows 1 and 13
+  carried, answered in `design/07` §6 first).
+
+**1. The flag is `breakglass_correction_enabled: bool`, default `false`** (row 1) — enable-positive,
+so *"the flag is OFF"* and *"the arm is disabled"* stop being the same words for opposite polarities;
+the refusal code stays `BREAKGLASS_CORRECTION_DISABLED` (403).
+
+**2. It is per-deployment and boot-time** (row 29) — it lives in `ProductsConfig`, *"the gear's boot
+configuration"*, exactly where `dod-reference-config` already put it. **The flag is a policy gate,
+not an incident tool**: the emergency surface is `05`'s read elevation, which has no flag; this arm
+is a deliberate organisational enablement of a write mechanism, and requiring a deploy to turn it on
+is the point. A runtime or per-tenant toggle would need a reload mechanism or a store no slice
+declares.
+
+**3. The set hash is stored at ingestion** (row 13): a `set_hash` column on
+`products_reference_watermark`, computed over the member `sku_id`s **sorted bytewise**, one
+algorithm named (`SHA-256`) — the stored-checksum convention `06` already uses. Recomputing from 10K
+member rows at every idempotence comparison is the declined arm.
+
+**4. `ReferenceProducerSetChanged`'s aggregate is the tenant's producer set itself** (row 25):
+`aggregate_id = tenant_id` — the set is a per-tenant singleton, so per-`(tenant, aggregate)` ordering
+serializes set changes per tenant, which is exactly what a consumer of a *set* needs.
+`FreezeParticipantSetChanged` is the same class and its subject question stays `06`'s row, noted as
+parallel and not decided here.
+
+**5. `never-received` is the absence of the watermark row** (row 26): registration writes **no** row
+in `products_reference_watermark` — the registered set lives in `products_reference_producer`, and
+the watermark table gains a row on first post. A sentinel timestamp is the poison-value class, and
+row-absence is what P-D-59's *"deregistration removes the series"* already reads as.
+
+**6. The two unnamed alarms are named on the named one's convention** (row 28):
+**`reference_watermark_future`** (the future-watermark alert, aligned with `WATERMARK_FUTURE`) and
+**`reference_breakglass_tripwire`** (the tripwire escalation). Prefix and case follow
+`reference_watermark_stale`.
+
+**7. Ingestion accepts unknown member ids and alarms** (row 30): the set is the producer's
+authoritative claim, and an unknown `sku_id` can be **legitimate** — a producer's catalog lags
+erasure, so `10`'s erasure of a SKU leaves the producer naming it until its next full-set post
+replaces the set. Refusing a 10K post for one such id would wedge the producer on our lifecycle;
+silence would hide a typo that silently frees a real SKU. So: accepted, counted per post, and alarmed
+(**`reference_unknown_member`**, the fourth alarm, same convention) — visibility without refusal.
+Erasure leaves member rows untouched; the next post replaces the set, as `inst-wm-tables` already
+states.
+
+- **The arguments against, stated**: arm 2 makes enabling the correction arm a deploy, deliberate but
+  named; arm 4 fixes a partition key for a subject class whose `SUBJECT_TYPE` question (`06` row 47)
+  is still open — the key stands whatever that answer is, but a reader could over-read it; arm 7
+  accepts data that can be a typo, and the alarm is the only detector — a validation pass was
+  declined on the erasure-lag measurement, not on cost alone.
+- **Not changed**: the four watermark refusals, `inst-wm-tables`' set replacement, `10`'s erasure
+  scope, and `06` §7 row 47.
+- **Propagated**: `design/07-reference-signal.md` (§2/§4 the flag, the hash column, the absence rule,
+  the aggregate, the alarm names; §6 twins for rows 1 and 13), `features/reference-signal.md`
+  (`dod-reference-config`, `dod-breakglass-unavailable`, `dod-watermark-tables`,
+  `dod-watermark-door`, `dod-reference-events`, `dod-tripwire`, §7's arithmetic and the seven rows
+  answered).
+
+#### P-D-70 — Read-models' six: the timeline's nature, the retirement signal, the stamp's home and its feed
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction; rows 10 — the
+  dashboards' door and grant — and 25 — whether a timeline render may resolve an identity through
+  `10`'s map — are **deferred to the owner**, the first minting an operator surface with several
+  sub-choices, the second a privacy-adjacent three-way fork)
+- **Context**: `features/read-models.md` §7 rows 6, 7, 13, 14, 20 and 21.
+
+**1. The history timeline is a request-time read over frozen rows, and frozen rows are not
+write-path for C1's purpose** (row 6). C1 exists to keep browse and search off the **head** tables —
+contention and head-state dependence — and `products_entity_version` is append-only immutable
+history; a read on it contends with nothing. §3.1 declaring no history table is the design's choice
+already made: materializing would need a table the slice deliberately lacks.
+
+**2. What tells the projector a Product retired is the Product analogue of `SkuRetirementEffective`,
+and its mint is `04`'s already-registered item** (row 7). Nothing else can carry it: the effective
+flip may trail `effectiveAt` (the D-47 guard), so no clock and no head read can substitute. Until
+`04` mints it the projector has no signal and a retired Product stays browsable — the defect this row
+measured, now pinned on the owning slice's own §6 entry rather than floating.
+
+**3. `projectedAt` advances on every projector apply, version or none** (row 13) — the bootstrap of
+a zero-version tenant is an apply and stamps it, so the sole freshness signal always has a writer —
+**and every polled surface carries the stamp of its own table's last apply**, which is what C3's
+every-response rule means for `products_read_delivery_state`, whose content bears no relation to a
+catalog version.
+
+**4. `retired` is retrievable at `p1` through the by-id read under an explicit state opt-in**
+(row 14): the browse default stays exclusionary, the timeline stays `p2`, and the FR's `p1` promise
+is met by the smallest surface that can carry it — no new route, one explicit parameter, never the
+default.
+
+**5. The stamp-advance step reads `products_catalog_version_entry`** (row 20): the event's
+changed-entity list selects, the manifest supplies each entity's frozen version reference — the table
+P-D-60 made exactly this shape. The head's `published_version` is refused as the source: it may be
+ahead of the catalog version, and reading it breaches the three-column carve-out.
+
+**6. The `StalenessStamp` persists as one per-tenant stamp row** (row 21), carrying the last
+`catalog_version_id` and `projectedAt`. The alternatives fail a measured case: a column duplicated on
+every projection row cannot answer an **empty** projection — the anchorless rebuild's own arm — and
+derivation from the consumer checkpoint ties response metadata to broker internals.
+
+- **The arguments against, stated**: arm 1 reads C1's clause purposively rather than literally —
+  recorded so a stricter reading is a deliberate reopening; arm 2 names a mechanism whose event
+  another slice must mint, so `dod-visibility` is determinate but not buildable until `04` moves;
+  arm 4 widens the by-id read's parameter surface by one value.
+- **Not changed**: rows 10 and 25 stay open (parked for the owner with the reasons above); C2's
+  browse exclusion; the timeline's `p2` priority.
+- **Propagated**: `design/08-read-models.md` (§2/§3 the six answers at their rules, §6 twins where
+  carried), `features/read-models.md` (`dod-history-timeline`, `dod-projector`, `dod-visibility`,
+  `dod-staleness-stamp`, `dod-dashboards` untouched, §7's arithmetic and the six rows answered);
+  `design/04-lifecycle.md`'s §6 item on the missing Product analogue is now **load-bearing** and is
+  annotated as such rather than answered for its owner.
+
+#### P-D-69 — Bulk's remaining seven: the machine completed, the mode named, the lane's key and digest fixed
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction)
+- **Context**: the seven §7 rows of `features/bulk-promotion.md` that jointly held
+  `dod-resume-abandon`, `dod-import-door`, `dod-idempotency-lane` and `dod-bulk-lifecycle` (rows 5
+  and 15 carried, answered in `design/09` §6 first).
+
+**1. The machine gains `abandoned`, and `failed` gains its entry** (row 5). `reported → abandoned`
+fires when the batch approval is **rejected or explicitly withdrawn**, executes `inst-bm-resume`'s
+abandon procedure — created drafts discarded, update-drafts reverted, pending live-ops dropped — and
+releases the tenant slot; `abandoned` is terminal. **`failed`'s entry is the worker's attempt-budget
+exhaustion** — `staging → failed` or `committing → failed` when the P-D-54 claim's `attempt` budget
+runs out, exactly `inst-ar-failure`'s arm on the activation runner — while row failures stay
+row-local and never enter it. Rows 6 and 7 (the never-approved slot, edge 3's executor) are
+untouched.
+
+**2. Promotion mode is a batch-level request field** (row 15): `mode ∈ {import, promote}`, default
+`import`. Under `import` a bound `skuCode` with different content is `DUPLICATE_CODE`; only `promote`
+engages the `PromotionResolver`'s update-as-draft. Per-row mixing was declined — a mixed batch is two
+batches, and a silent auto-update on collision would convert typos into overwrites, which is what
+`DUPLICATE_CODE` exists to refuse.
+
+**3. `PreAuthorized` names the batch through the widened subject, and needs no revision operand**
+(row 19). **P-D-67 arm 4** made `(subject_kind = bulk_batch, subject_ref = batch_id)` expressible at
+the gate. The revision half is not the gate's: **P-D-54 edge 2** already pins the approval's stored
+snapshot as the report plus the ledger's per-row revisions, so each per-row publish is checked
+against **its own ledger pin**, row-locally, and the gate in this mode verifies only that the named
+record was consumed for this subject. `features/governance.md` §7 row 27's measured text stands —
+the mode carries no membership operand — because membership is the ledger's, not the gate's.
+
+**4. The `internal:bulk-row` outcome record is the ledger row's disposition** (row 20): the response
+columns store the synthetic `200` (P-D-42's shape) with `{disposition, code, reason, entity_id,
+published_version}` as the body — the same record the P-D-61 read door returns per row — so
+crash-resume replays the stored outcome instead of re-executing a published row.
+
+**5. One digest rule for all three internal lanes** (row 24): an internal lane's `payload_hash`
+digests the **canonical serialization of the act's own input record** — the bulk row's staged
+payload, the `ScheduledTransition` row for `internal:scheduled-activation`, the cascade leg for
+`internal:cascade-leg` — which is what makes a replayed key with different content detectable, the
+column's whole purpose, with no third shape for `chk_products_idempotency_response_group` to admit.
+
+**6. The lane's `client_key` is the ledger row's surrogate id** (row 25) — P-D-26's *"its own id in
+`client_key`"* read at its natural referent. A row re-listed in a **new** batch has a new ledger row
+and therefore a new key: the new-act rule holds with **no batch column added** to the shipped
+primary key.
+
+**7. `05-governance`'s catalog DoD mints all four grant instances** (row 27): the shipped roster is
+one closed set under a two-way set-equality assertion, and a closed set takes **one writer** — the
+lesson this corpus has already paid for at four sites. This feature's doors consume the grants; the
+catalog owns the roster.
+
+- **The arguments against, stated**: arm 1 extends a slice-declared machine (two edges, one state) —
+  the smallest completion that gives the rejection verdict somewhere to land; arm 2 adds a request
+  field, the first on the import door; arm 5 states one rule over three lanes of which only one is
+  this feature's — recorded here because the row asked for exactly that, with `01-foundation`'s
+  storage owner named as the rule's keeper.
+- **Not changed**: rows 6 and 7 stay open; the six-state roster keeps `failed`; `DUPLICATE_CODE`'s
+  meaning; the shipped idempotency PK.
+- **Propagated**: `design/09-bulk-promotion.md` (§1.7/§2 the machine and the mode, §4 the ledger
+  outcome columns, §6 rows 5 and 15 answered), `features/bulk-promotion.md` (§4 the machine,
+  `dod-resume-abandon`, `dod-import-door`, `dod-promotion-resolver`, `dod-idempotency-lane`,
+  `dod-bulk-lifecycle`, `dod-batch-state-machine`, §7's arithmetic and the seven rows answered),
+  `design/01-foundation.md` **owed**: the lane-digest rule's one-sentence home is 01 §3.2/§4.4, filed
+  there rather than edited in this round.
+
+#### P-D-68 — Governance's own queue: the override ack's column, the expiry event's one emitter, the review's discharger
+
+- **Date**: 2026-09-01 (owner call, autonomous under the standing instruction; row 18 — what an
+  elevation changes about the authorization decision — is **deferred to the owner**, its co-owner
+  being the ToolKit and both candidate mechanisms living outside this gear)
+- **Context**: `features/governance.md` §7 is a table the sole-blocker recipe never parsed, so its
+  queue surfaced only when a table-aware pass ran: rows 10, 19, 20 and 23 jointly held six DoDs.
+
+**1. The `N = 0` override acknowledgment gets its own nullable columns on `products_approval`**
+(row 10). The decision row already carries *"reason · override acknowledgments · instant"*, but at
+`N = 0` no decision row exists — the author is not an approver and has no verdict. So the approval
+record gains nullable **`author_override_ack`** (the named findings acknowledged) and
+**`author_override_ack_at`**, written by the **submit door** only when the effective quorum is zero —
+the P-D-50 convention again: a fact gets a column instead of parameterizing someone else's row.
+Decision rows keep theirs for `N ≥ 1`; audit carries both as already stated.
+
+**2. `BreakGlassExpired` is emitted exactly once, by the first post-expiry act, via a CAS stamp**
+(row 19). The measured defect: the only named producer is a refused call, so an untouched session
+emits nothing and a session called ten times emits ten. The mechanism is assembled from the set's own
+precedents: the session row gains **`expired_emitted`**, flipped by CAS in the same transaction as the
+first post-expiry refusal — **the winner emits, a replay emits nothing** (P-D-54's mechanism) — and a
+session never touched after expiry emits no event at all: its expiry is a stored fact (`until`
+passed), observable as a **gauge** with the alerting rule on top (P-D-59's mechanism), which is also
+what the post-hoc review alert keys on. **In-flight acts complete**: expiry gates **admission** — an
+elevated read admitted inside the window finishes; the gate judges at admission, as every
+claim-shaped mechanism in this set does.
+
+**3. The post-hoc obligation's state set is `{pending, reviewed}`, and the discharger is the second
+platform principal** (row 20). Rule 1 already says an elevation is *"two-person-approved **or**
+post-hoc-reviewed"* with a fixed floor of two distinct platform principals — one ceremony, two
+timings. So the review **is** the second principal's decision arriving after the fact: it writes
+`reviewed_by (actor_ref)` / `reviewed_at` and flips the state, and **no new door or grant is
+minted**. Whether that decision's record is an `ApprovalRecord` stays its own open §6 item,
+deliberately not presupposed here — this arm names the discharger and the state set, nothing about
+the record's shape.
+
+**4. Row 23 is a filing, not a decision**: the row itself closed on re-measurement (C3 already
+carries the widened exception), and the stale `design/05` §6 bullet it names is struck in the same
+change.
+
+- **The arguments against, stated**: arm 1 adds two columns for a ceremony variant (the alternative —
+  a synthetic decision row with the author as approver — would break C2's *"one principal, one
+  decision"* UNIQUE and the two-person invariant it enforces); arm 2's event is conditional on a
+  post-expiry touch, which is deliberate — an event nobody's act produced would need a sweeper, and
+  the quiet case is the gauge's; arm 3 leans on the one-ceremony reading of *"two-person-approved or
+  post-hoc-reviewed"*, and a later decision that the post-hoc review is a different ceremony would
+  reopen the discharger, not the state set.
+- **Not changed**: C5's read-only boundary, the fixed floor of two, `BREAKGLASS_EXPIRED`'s refusal
+  semantics, and row 18's question — the elevation-vs-authorization seam stays open with the ToolKit
+  co-owner, **parked for the owner** rather than decided.
+- **Propagated**: `design/05-governance.md` (§4 the approval columns and the session columns, §2's
+  expiry and override rules, §6 items answered for rows 10, 19, 20 and the row-23 bullet struck),
+  `features/governance.md` (`dod-override-ceremony`, `dod-approval-store`, `dod-breakglass-expiry`,
+  `dod-governance-events`, `dod-breakglass-store`, `dod-supersede`, the table rows and the section
+  arithmetic).
+
+#### P-D-67 — The catalog-version sweep: nine rows, every answer forced by a measurement already in the set
+
+- **Date**: 2026-08-31 (owner call, taken under the standing instruction to decide where the
+  measurement is dominant; rows 8 and 16 are carried and answered in `design/06` §6 first)
+- **Context**: the nine §7 rows of `features/catalog-version.md` that jointly held five DoDs —
+  `dod-version-counter`, `dod-coalescer`, `dod-participant-set`, `dod-force-completion`,
+  `dod-liveness-and-release` — plus `features/governance.md` row 29, which is the same seam defect as
+  row 26 seen from the other side.
+
+- **Decision, nine arms**:
+
+  | # | row | call |
+  |---|---|---|
+  | 1 | §7.8 | **The capture-store copy of `participant_set_snapshot` is authoritative and inside the checksum; the version-row copy is a derived cache**, annotated exactly as `freeze_state` on the same row already is. One byte-identity, one convention |
+  | 2 | §7.16 | **`staged_at` is struck.** It has no admitted writer — an insert at stage would burn gapless ids on every `STAGED_ENTITY_CHANGED` refusal — and **no reader**: the SLO measures from `requested_at`, and nothing else names it. A column with neither is the `superseded` pattern again |
+  | 3 | §7.23 | **The counter's initial value is pinned: `1`.** Gapless, monotonic, per tenant — every fixture already assumes a low start, and no other value has an argument. That makes the dev-space ordering hazard real, so the second half routes: **the sweep is pricing's**, whose table (`pricing_plan_revision.pending_version_ref`), dev module and doc (*"nothing here should outlive one"*) it is — recorded as pricing-owed, not authored here |
+  | 4 | §7.26 + governance §7.29 | **The gate's subject widens to the approval store's own pair, `(subject_kind, subject_ref)`**, with `EntityRef` remaining the constructor for the entity kinds. The store already fixed the vocabulary (`bulk_batch`, `governed_live_op`, `system_signal`, `sku_correction` beside the entities), so the seam expressing less than the store records was the defect — the store is the authority, the seam conforms |
+  | 5 | §7.29 | **The per-tenant increment lease's cardinality is accepted.** `bss-ledger` already runs finer keys in production — `recognition-run:{tenant}:{period_id}` and `period-close:{tenant_id}:{legal_entity_id}:{period_id}` — so the objection dissolves against the precedent |
+  | 6 | §7.31 | **The four routes are declared, on the increment door's own pattern** (a contract with an in-process default and an S2S/REST binding): `POST /bss-products/v1/catalog-versions/{catalogVersionId}/acks` and `…/releases` (S2S, participant identity — P-D-18's door), `…/force-completions` (the operator ceremony), and `POST /bss-products/v1/freeze-participants` (the governed set write). *"Admitting the grants are unspent"* was declined: it would retract P-D-18/P-D-19, closed records the lifting path rests on |
+  | 7 | §7.32 | **The five-minute maximum is the interactive lane's.** For the bulk lane the same p95/max applies **from window close**, because a batch whose window closes at the five-minute hard max cannot also publish within five minutes of its earliest request — the SLO as written was unsatisfiable for every bulk batch that ran to its bound |
+  | 8 | §7.33 | **The participant's own release door does not stamp `released_at`.** The column exists so the release fact *"cannot be read as … a release through the participant's own door"* — it is the force-completion ceremony's alone; a door-released row is `state = released`, `released_at` NULL, and the retention gate's two arms read exactly that |
+  | 9 | §7.46 | **The ledger rows are seeded by the increment transaction**: one row per `participant_set_snapshot` member, `state = pending`. So `pending` is live, P-D-60's machine has its entry point, the *"empty ledger satisfies all acked"* hazard dies, and **the ack door becomes an UPDATE whose row-existence is the membership check** — a non-member's ack has no row to flip. P-D-49's snapshot rule stays as the defensive belt |
+
+- **The arguments against, stated**: arm 4 widens a shipped seam type (code cost, deferred to the
+  build); arm 6 mints four routes in one decision — the largest surface addition of the day, taken on
+  the same forcing P-D-61 was (a contract with nothing to send to); arm 9 adds a seeding fan-out to
+  the increment transaction — one row per participant per version, which at the v1 set of one
+  participant is one row.
+- **Not changed**: `freeze_state`'s roster and its derived-cache annotation, the coalescing windows,
+  P-D-49, P-D-60's six edges, and pricing's dev module.
+- **Propagated**: `design/06-catalog-version.md` (§2 SLO scoping and door routes, §4 `staged_at`
+  struck / the derived-cache annotation / the seeding / the counter start, §6 items answered for the
+  two carried rows), `design/05-governance.md` (four roster cells gain their routes),
+  `features/catalog-version.md` (the five DoDs, §7's arithmetic and the nine rows answered),
+  `features/governance.md` (row 29 answered; its DoDs carry the widened seam).
+
+#### P-D-66 — The `status` pin entry: token `status`, spelled per side, vocabulary of two
+
+- **Date**: 2026-08-31 (owner call, taken under the standing instruction to decide where the
+  measurement is dominant — both halves were already answered by `inst-sdk-catalogsku` and the rows
+  had not connected the texts)
+- **Context**: `features/consumer-contracts.md` §7 rows 24 and 34, jointly the last blockers of
+  `dod-schema-pin` and `dod-status-vocabulary`. Row 24: the shipped registry `Sku` carries
+  `lifecycle_state` while the seam shape names the member `status`, and no document said which
+  spelling the pin file uses. Row 34: this document pins a two-member wire vocabulary while pricing's
+  shipped client doc reads *"`draft` | `published` | `deprecated`, verbatim. Not an enum:"* — three.
+
+- **Decision, both halves from the seam contract already in force**:
+
+  | Call | Propagation |
+  |---|---|
+  | **The pinned token is `status`** — the seam's name, fixed by `CatalogSku`-superset-compatibility, which `dod-catalogsku-shape` already decided and pricing's shipped `CatalogSku.status` already carries. **The entry records the registry-side source spelling as an annotation** (`registry-field = "lifecycle_state"`), so the job can resolve each side by its own name; pinning `lifecycle_state` instead would make the comparison against the consumer's shipped member impossible | `dod-schema-pin`; `dod-status-vocabulary` |
+  | **The vocabulary is two members, `published` and `deprecated`** — `inst-sdk-catalogsku` M4 is already normative on it: *"browse serves `published\|deprecated` only (draft never served, retired history-only — 08 C2)"*, with the SDK enum documenting all five states and the wire subset named. Pricing's `draft` is display-tolerance prose — its own doc keeps the field a string so *"a fifth state must not become a parse failure in the gear that merely displays it"* — and the pin **replaces** that tolerance rather than adopting its list | `dod-status-vocabulary` |
+
+- **The cost, recorded**: a registry-side `CatalogSku` read shape with a `status` member introduces a
+  second spelling of `lifecycle_state` inside this gear's own SDK, against that crate's stated
+  one-spelling rule. The seam contract wins because it is shipped on the consumer's side; the rule's
+  purpose — no third spelling invented ad hoc — survives, the second spelling being the seam's, not a
+  convenience.
+- **Not changed**: `LifecycleState`'s five variants and its `parse`, pricing's `CatalogSku` type, and
+  browse's visibility rules (08 C2).
+- **Propagated**: `features/consumer-contracts.md` (`dod-schema-pin`, `dod-status-vocabulary`, §7's
+  arithmetic and rows 24 and 34 answered).
+- **Unchanged**: `design/12` §2's `inst-sdk-catalogsku` already carries both halves.
+
+#### P-D-65 — `CatalogVersion` is a pin entry of kind `surface`, delegated to the port trait and compared by nothing
+
+- **Date**: 2026-08-31 (owner call — the last sole-blocking row of the 2026-08-31 queue)
+- **Context**: `features/consumer-contracts.md` §7 row 33 measured a conflict between two confirmed
+  texts. **P-D-12** says `CatalogVersion` is *"pinned as a **surface**, not a field"*; lint 9's
+  grammar makes a `(surface)` marker *"outside the pin by construction"*. Five of the register's
+  fourteen rows carry `` `CatalogVersion` (surface) ``, and the pin file's schema for a surface-level
+  member had to be settled before `dod-schema-pin` could be written.
+
+  **What the surface concretely is**: the `CatalogVersion` type the counterpart port carries —
+  `bss_pricing_sdk::CatalogVersionRegistryV1::committed_version` returns `Option<CatalogVersion>` —
+  and its drift protection already exists structurally: *"when the registry publishes its own SDK
+  this trait becomes an adapter over it"*, at which point the **compiler** checks the shape, which is
+  strictly stronger than a TOML comparison. Before the adapter lands, `bss-products-sdk` carries no
+  `CatalogVersion` type, so a pin comparison would have nothing to compare on this side either way.
+
+- **Decision**: both sentences become literally true. **The pin carries a `CatalogVersion` entry of
+  kind `surface`; the CI job neither compares it nor asserts its absence — its comparison is
+  delegated to the port trait**; and lint 9's formulation narrows from *"outside the pin"* to
+  *"outside the **field-comparison** population"*.
+
+  | Call | Propagation |
+  |---|---|
+  | **A third entry kind, `surface`**: `kind = "surface"`, a `delegated-to` naming the port trait, **no comparability flag** — P-D-57's flag governs what the job compares, and this entry is compared by nothing, so carrying the flag would claim a comparison that never runs | `dod-schema-pin` |
+  | **Lint 9 couples the five annotated markers to the surface entry**: a `` `CatalogVersion` (surface) `` token satisfies the operand→pin direction against the surface entry, and the surface entry's pin→operand direction is satisfied by those five rows. `payload` and `none in v1` couple to nothing, as before | `design/12` §3.2 lint 9; `dod-lint-pin-coupling` |
+  | **P-D-12's sentence stands unreinterpreted** — the entry exists, as a surface and not a field — which is the point: re-reading a confirmed decision that five register rows and C1 cite is a retraction with a radius, and the entry costs one TOML kind instead | `design/12` §1 C1 |
+
+- **The argument against, stated**: a third entry kind in a file that does not yet exist is schema
+  growth for one row, and a `delegated-to` field is a claim the job never exercises — if the adapter
+  promise is withdrawn, the entry silently protects nothing. That risk is accepted and recorded: the
+  entry's honesty rests on the adapter sentence in the pricing-side port doc, which P-D-65 now cites
+  from a second place.
+- **Scope**: nothing pricing-side changes — the trait, its `CatalogVersion` type and the adapter
+  promise stay as shipped. The five register cells stay exactly as P-D-63 normalized them. The event
+  surface stays outside the pin entirely: `payload` rows gain no entry.
+- **Not changed**: P-D-12's membership rule and its wording, P-D-57's comparability flag for field
+  members, and the coupling rule's field direction.
+- **Propagated**: `design/12-consumer-contracts.md` (§1 C1's pinned-as-a-surface clause, §3.2 lint
+  9's narrowed formulation), `features/consumer-contracts.md` (`dod-schema-pin`,
+  `dod-lint-pin-coupling`, §7's arithmetic and row 33 answered).
+
+#### P-D-64 — The missing-sign-off refusal rides `VALIDATION`, and the owned roster stays at one
+
+- **Date**: 2026-08-31 (owner call)
+- **Context**: `design/10` §6 asked what code `inst-pp-allowlist`'s refusal carries — an allow-list
+  entry *"offered without a mandatory Legal sign-off reference"* is refused, §5 asserts that refusal
+  with a positive control, and §3.2 declares no code for it. The item's own arms: ride 01's
+  `VALIDATION` or declare a slice code.
+- **Decision**: it **rides `VALIDATION`**. A missing mandatory member of the offered entry is a
+  shape-class refusal, and 01's convention for those is
+  `violate("VALIDATION", <field>, <detail>)` — the caller's discriminator is the violation's
+  **field**, exactly as for every other missing-field refusal in the gear, so the SDK error enum's
+  `VALIDATION` member is the member this refusal uses. **P-D-52's counter-precedent does not
+  transfer**: there the wire shape was forced by a consumer that discriminates on the specific code;
+  nothing discriminates on this one. And `dod-retention-error-taxonomy` holds *"One code is the whole
+  owned roster"* as a measurement — `ERASURE_UNKNOWN_ACTOR` — which a second minted code would break
+  for a refusal the ordinary machinery already classifies.
+- **The argument against, stated**: a caller automating allow-list submission cannot switch on a code
+  to detect specifically this refusal; it must read the violation's field. That is the same position
+  every shape refusal in the gear puts a caller in, and routine-ness does not create a taxonomy entry
+  when the discriminator already exists.
+- **Not changed**: `ERASURE_UNKNOWN_ACTOR`, its 422-architectural response, the alarms-not-errors
+  posture of the GC and the drill, and `inst-pp-allowlist`'s refusal condition itself.
+- **Propagated**: `design/10-retention-erasure.md` (§2 `inst-pp-allowlist`'s code, §6 answered),
+  `features/retention-erasure.md` (`dod-pii-allowlist`, `dod-retention-error-taxonomy`, §7's
+  arithmetic and row 13 answered).
+
+#### P-D-63 — The `Operand` grammar gains marker annotations, and `+` is normalized out of the cells
+
+- **Date**: 2026-08-31 (owner call — amends **P-D-43** arm 3)
+- **Context**: `design/12` §6 measured that lint 9's cell grammar — *"one token per pin member,
+  comma-separated, each either a catalog field name or one of three non-field markers"* — does not
+  describe the cells it reads. Measured at HEAD: the register has **fourteen** rows (the item said
+  thirteen, and the FEATURE's `dod-obligation-register` already says fourteen). Three cells fit the
+  grammar (`compositionPending`, `sellable`, `skuId`); **six** lead a non-field marker with a
+  backticked identifier (five `` `CatalogVersion` (surface) ``, one `` `SkuRetired` payload ``) —
+  and a backticked identifier is not prose under any form the grammar states; **four** join with
+  `+` rather than a comma (the item said three), and what `+` joins is a field with a **phrase**
+  (*"its value vocabulary"*, *"the metering-unit declaration"*), not two field names; one is
+  `none in v1` with a prose parenthetical, which the grammar already covers.
+- **Decision**: one production is added and one separator is refused.
+
+  | Call | Propagation |
+  |---|---|
+  | **A non-field marker may be preceded by exactly one backticked identifier, which the marker consumes as its annotation.** `` `CatalogVersion` (surface) `` and `` `SkuRetired` payload `` are each **one token**; the identifier names the surface or payload and the lint does not look it up in the pin | `design/12` §3.2 lint 9 (amends **P-D-43** arm 3) |
+  | **`+` is not admitted to the grammar — it is normalized out of the four cells**, each rewritten to comma-separated pin tokens: `` `status` + its value vocabulary `` → `` `status` `` (the vocabulary is part of that pin member's own definition); `` `PlanTier` + the metering-unit declaration `` → `` `PlanTier`, `unit`, `usageTypeRef` ``; `the metering-unit declaration + `usageTypeRef`` → `` `unit`, `usageTypeRef` `` (the second half was redundant, the declaration being the pair); `` `type` + the metering-unit declaration (07 C4's bucket-ii set) `` → `` `type`, `unit`, `usageTypeRef` `` with the parenthetical staying as ignorable prose | `design/12` §2.2, the four cells |
+  | **After both, all fourteen cells parse**: five surface-annotated, one payload-annotated, one `none in v1`, three already clean, four normalized | `dod-obligation-register`, `dod-lint-pin-coupling` |
+
+- **The argument against, stated**: fitting the grammar to the cells risks the opposite failure —
+  a grammar grown until everything parses checks nothing. That is why `+` was normalized out rather
+  than admitted: the annotation production encodes one real distinction (a marker's referent), while
+  admitting `+` would have encoded a typographic habit.
+- **Two sub-questions the carry recorded land with it.** (i) **A backticked catalog field name is a
+  token, not prose** — the cells' own convention writes every field token backticked, and the
+  conforming class of the FEATURE's census is exactly "one backticked field token and nothing else";
+  the amendment states it so *"prose beside the tokens is ignored"* can never be read as swallowing a
+  backticked identifier. (ii) **A cell whose only token is `none in v1` is outside lint 9's coupling
+  population by construction** — the rule the markers already carry: a marker token is outside the
+  pin, and a row with no operand couples nothing in either direction.
+- **Not changed**: the three markers, the comma, *"prose beside the tokens is ignored"*, lint 9's
+  coupling rule itself, and the pin's membership.
+- **Propagated**: `design/12-consumer-contracts.md` (§3.2 lint 9's grammar, §2.2's four cells, §6
+  answered), `features/consumer-contracts.md` (`dod-obligation-register`, `dod-lint-pin-coupling`,
+  §7's arithmetic and row 15 answered).
+
+#### P-D-62 — Clone suffixes: the first free integer, decided by the index under the reservation
+
+- **Date**: 2026-08-31 (owner call)
+- **Context**: `design/11` §6 measured that `N` in `{name}-copy-N` / `{source}-copy-N` is never
+  defined (per-source counter, global, first free integer), that `-revived` carries no counter while
+  the uniqueness index admits **one holder per name in every non-`discarded` state** — so a second
+  revival of one lineage produces a suggestion the registry must refuse — and that concurrent clones
+  computing `N` by a read race each other.
+
+  **The gear has already chosen this mechanism twice.** `inst-cn-identity` already says the suggested
+  code is *"reserved atomically"*; **P-D-37** established that the `identity` phase is *"decided by
+  the index under the write"*; and **P-D-42** adopted the donor's sentence that *"the gate is the
+  insert, not a lookup"*. A read-then-suggest is exactly the arrangement those two decisions
+  dismantled elsewhere.
+- **Decision**: three arms.
+
+  | Call | Propagation |
+  |---|---|
+  | **`N` is the first free integer for the suggested string, decided under the reservation.** The clone door reserves `{name}-copy-N` (name) and `{source}-copy-N` (code) starting at the lowest free integer; a reservation conflict moves to the next free one and retries. Two concurrent clones of one source get `-copy-2` and `-copy-3` — the index arbitrates, no lock and no counter column exists | `design/11` §2 `inst-cn-identity`, `inst-cn-rename` |
+  | **A second revival of one lineage suggests `{name}-revived-N`**, the same first-free rule over the `-revived` family, so the flavor survives and the suggestion path never produces a refusal. The alternative — falling back to `-copy-N` — was declined because it silently drops the one signal `-revived` exists to carry | `inst-cn-rename`; `dod-rename-rule` |
+  | **The operator path is untouched**: a collision on an operator-supplied name or code stays the ordinary `DUPLICATE_NAME`/`DUPLICATE_CODE`, exactly as both instructions already state | `dod-clone-identity` |
+
+- **The argument against, stated**: `-revived-N` is a small invention — the slice names only
+  `-revived` — and retry-under-reservation costs a loop at the door where a counter column would cost
+  one read. The column was declined because it is a value that can drift from the thing it counts
+  (**P-D-40** declined a reference counter on the same ground), and the loop's iterations are bounded
+  by the lineage's own clone count.
+- **Scope**: the suggestion for a clone of a clone (`X-copy-2-copy-1`) is left as the rule computes
+  it; nothing here shortens or rewrites base names. Whether the reverse lineage lookup gets a surface
+  stays its own §6 item.
+- **Not changed**: the disposition table's rows, the null-code arm (a source Product with no
+  `productCode` suggests none), and the index scopes.
+- **Propagated**: `design/11-clone.md` (§2 `inst-cn-identity` and `inst-cn-rename`, §6 answered),
+  `features/clone.md` (`dod-clone-identity`, `dod-rename-rule`, §7's arithmetic and row 4 answered).
+
+#### P-D-61 — Three carried rows of `09-bulk-promotion`: a read door, an authored §4, and eight `no event` markers
+
+- **Date**: 2026-08-31 (owner call — the second round over **carried** rows)
+- **Context**: `design/09` §6's three sole-blocking items. Each was decided by measuring what the set
+  already requires rather than by preference.
+
+**1. The `RowLedger` gets a read door, because a PRD-level MUST demands a reader.**
+
+C1 requires *"per-row success/failure reported — no hidden partial failure"* and `PRD.md` says the
+same twice (§ *"report per-row success/failure"*, and *"track per-row success/failure"*). Measured
+against the surface: the slice declares three routes — `POST bulk/imports`, `GET bulk/exports`,
+`POST bulk/lifecycle` — and **none reads a batch**. The export door is 06's manifest under
+`catalog_version × read`, deliberately decoupled. `05`'s RBAC roster mints only the two execute
+pairs. `08` projects no bulk read model, and §4 says export artifacts are *"streamed, not stored"*.
+So the door answers **202**, the caller holds a batch id, and nothing resolves it — the same shape
+`design/06` §6 records as the doorless `committed_version` poll.
+
+| Call | Propagation |
+|---|---|
+| **One read route**: `GET /bss-products/v1/bulk/batches/{batchId}` → the batch state (§4's six, P-D-54) plus its `RowLedger`, one entry per row with its disposition, code and reason. **One route for both lanes**, the key being the batch id and not the lane | `design/09` §2 new `inst-bk-read`; `dod-bulk-errors` |
+| **Its own grant, `bulk × read`.** Not `bulk × execute` — a reader is not an executor, and the finance reviewer who signs batches must read without gaining the right to start one. Not `catalog_version × read`, which is the export's, auditor-shaped over a manifest and decoupled on purpose | `design/05` §RBAC roster; `dod-bulk-errors` |
+| **The four per-row codes' statuses now have the surface their own clause was waiting for** — *"the status below applies only where a caller asks a single row's disposition"*. That caller exists | `design/09` §3.2 |
+
+**The argument against, stated**: minting a route and a grant is authoring API surface, and the row's
+co-owner is the contract owner. The price is 05's roster plus **three route censuses, not two**. The
+cheaper arm — declaring the statuses dormant — was declined because it leaves a PRD-level **MUST**
+unmet, which is worse than an owed census.
+
+**2. §4 is authored from the operands already stated, and from nothing else.**
+
+§4 is two sentences where every sibling slice carries a normative shape. Nothing needs inventing: the
+row enumerates the values with a stated writer and no column — the per-row pinned revision, the batch
+and row keys, the row disposition and `reason`, the pending `GovernedLiveOp` payload, the itemised
+override set, and `operation_key` — and P-D-54 adds the six states with the worker's claim and lease.
+Two constraints bound the authoring: **`reason` is a literal from a closed set, never operator text**
+(**P-D-50** — `batch-abandoned` is a constant), and the **`ChangeReport` is derived**, carrying
+*"the itemised override-carrying rows (`skuCode` per row)"*, so it needs no table.
+
+Nothing beyond that list is added: no counters that duplicate the ledger, no report table, no free
+text.
+
+**The argument against, stated**: a schema in a design document commits migrations, and this §4 was
+deliberately thin. But `cpt-cf-bss-products-dod-bulk-tables` cannot be met without it, and thinness
+here is the outlier across twelve slices rather than a convention.
+
+**3. The `no event` marker goes on eight instructions, and the row's premise was half wrong.**
+
+Row 18 says *"01 states the rule over every slice and 12 lints it"*. **Lint 12 reads only the
+`EventRegister` table** — *"The register is authored, never harvested"* (**P-D-45**), after five
+harvest passes returned 31, 24, 32 and 35 events — so it lints the register, never the instructions.
+What 01 supplies is the **convention**: an inline `**no event**` marker, in exactly that form on
+`inst-fd-actor-ref-mint`, `inst-fd-actor-ref-seen` and `inst-fd-gate-rejection`.
+
+Measured over `design/09`: **13 instructions, of which one names an event** — `inst-bk-complete` with
+`CatalogBulkOperationCompleted`, and none records "no event". The marker goes on the eight that change
+state: `inst-bk-keys`, `inst-bk-stage`, `inst-bk-report`, `inst-bk-commit`, `inst-bk-override`,
+`inst-pm-resolve`, `inst-bl-lifecycle`, `inst-bm-resume`. The remaining four need none —
+`inst-bk-export` is a read, `inst-bm-tables` and `inst-bm-limits` are declarative, and
+`inst-pm-review` states a review step rather than a write.
+
+**The reason is already written**, in `dod-coalesced-event`: row-level domain events are emitted by
+01's doors that the rows drive, so **the acts are announced — just not by this slice's
+instructions** — and the batch's own history is the ledger, which is audit-plane (**P-D-21**: the
+audit table holds only what emits no event).
+
+**The row's count is short by two, and the classification is named so it is checkable**: it says six,
+the measurement gives eight. The two the row's count omits are a judgement about what counts as
+state-changing, which is why all eight are enumerated rather than totalled.
+
+- **Scope**: this decision does not author `design/09`'s `EventRegister` rows — that is owed per slice
+  by `design/12` §6, and this slice's owing is exactly one row (`CatalogBulkOperationCompleted` →
+  `inst-bk-complete`). It does not decide the job home of anything, does not touch the `ChangeReport`'s
+  content, and does not answer §6's other items — the rejection edge, the abandon state, the `failed`
+  entry edge, or what ends a never-approved batch.
+- **A second grant was considered and declined**: a separate read grant for lifecycle batches, on the
+  argument that `bulk_lifecycle × execute` is its own grant because that door is the gear's most
+  destructive. Reading a ledger is not destructive and both lanes' rows carry the same shape, so one
+  `bulk × read` covers both; the alternative is recorded here rather than left to be rediscovered.
+- **Not changed**: the two execute grants, the export door's grant, `08`'s read models, and the
+  streamed-not-stored export.
+- **Propagated**: `design/09-bulk-promotion.md` (§2's new `inst-bk-read` and the eight markers, §3.2's
+  status note, §4 authored, §6's three items answered), `design/05-governance.md` (the RBAC roster row),
+  `features/bulk-promotion.md` (§2's read scenario, `dod-bulk-errors`, `dod-bulk-tables`,
+  `dod-coalesced-event`, the grant census, §7's arithmetic and rows 8, 9 and 18 answered).
+
+#### P-D-60 — Four carried rows of `06-catalog-version`: two events, two tables, a struck state value, and six edges
+
+- **Date**: 2026-08-31 (owner call — the first round over **carried** rows, answered in the slice and
+  then in the carry)
+- **Context**: `design/06` §6's four sole-blocking open items, taken together because they are one
+  document's and each turned out to be partly answered by text already in the set.
+
+**1. The composition-clear re-publish emits both events.**
+
+`inst-cc-clear` routes the clear through 01's publish door as a *"system save + re-publish of the head
+(version N+1)"*, `inst-fd-publish-emit` fires `ProductPublished`/`SkuPublished` unconditionally, and
+the crate's own event module says of the version field: *"`06` reads this as the content pointer and
+`08`'s projector keys on it"*. So suppressing `SkuPublished` would leave the read model one version
+behind on exactly the entity whose flag just changed. `SkuCompositionCleared` is **additive**, carrying
+the semantic fact a bare publish does not distinguish. **Both name the same entity and the same
+`publishedVersion`**, so a consumer keyed on version sees one version change — no consumer obligation
+is created. 09's additivity rule is *not* widened; it stays scoped to its coalesced summary and this
+act states its own.
+
+**2. The capture store is its own table.**
+
+§4's one bullet gave one name two disjoint keys — `(tenant_id, catalog_version_id, entity_kind,
+entity_id)` and `(tenant_id, catalog_version_id, capture_kind)` — and two disjoint column sets, one
+holding `published_version` as a reference into `products_entity_version`, the other a stored
+canonical copy. One PK cannot express both, and on the one-table reading every column of both halves
+becomes nullable, admitting a row that is neither a valid entry nor a valid capture — the class this
+gear's CHECK constraints exist to refuse. So `products_catalog_version_entry` keeps the entity half
+and **`products_catalog_version_capture`** takes the capture rows.
+
+**P-D-40 needs no re-aiming, and the row's own owner clause was inverted on this point.** Its
+predicate is written over `products_catalog_version_entry`, which the entity half keeps; two tables is
+the arm under which the predicate and its index
+`(tenant_id, entity_kind, entity_id, published_version)` are exactly right as written, with no
+capture rows scanned and no dead index entries. Capture rows hold copies and reference nothing, which
+is §4's own H3 fix — *"live content is copied, never referenced"* — so they never participated in that
+predicate on either reading.
+
+**3. `superseded` is struck; the increment transaction writes the other two.**
+
+No instruction writes any of the three, and the roster's third value has no candidate writer at all:
+`inst-sn-revalidate` says a failed mechanical run *"re-coalesces and retries fresh, the request never
+lost"*, the PRD echoes *"A request is never dropped"*, an unregistered source is refused
+`REQUEST_SOURCE_UNKNOWN` at the door before a row exists (**P-D-52**), and an idempotent replay is
+caught by the `(tenant_id, source, request_key)` UNIQUE. Nothing supersedes a request. The roster
+becomes **`(pending, coalesced)`**.
+
+`coalesced` and `satisfied_by_version_id` are written by the **increment transaction** — the one that
+allocates the id, builds the manifest, commits and emits `CatalogVersionPublished` carrying
+`satisfiedRequests`. That set *is* the requests it satisfied, so the same transaction marks them and
+stamps the FK; **P-D-50** gave the column its existence precisely so a replayed
+`CatalogVersionPublished` can have that set rebuilt, which fixes its writer as whoever produces it.
+`coalesced` is **terminal** — a satisfied request is history naming its satisfying version — which
+answers *"and what leaves them"*.
+
+**4. `products_freeze_ack.state`: six edges, and one of the three sub-questions was already answered.**
+
+`dod-force-completion` already states the third: *"a forced participant that later recovers and acks
+moves to `acked`, and `10-retention-erasure`'s gate reads the `(state, released_at)` **pair**, so the
+stale stamp frees nothing."* So a later ack does **not** clear `released_at`; the state moving is what
+makes the stamp inert, and `released_at` is write-once per registration. The other two follow from the
+doors' own wording: force-completion records *"each **missing** participant"*, so it never overwrites a
+row already `acked` or `released`; and the release door records that the participant *"holds no more
+live references to that version"*, a precondition about references rather than about having acked, so
+**`pending → released` is admitted** — a participant with nothing to freeze self-resolves without a
+two-person ceremony.
+
+| edge | door |
+|---|---|
+| `pending → acked` | the ack door |
+| `pending → released` | the participant's own `catalog_version × release` door |
+| `acked → released` | the same door (the `freezeComplete` regression this creates is §6's own separate item, unanswered here) |
+| `pending → not_frozen(forced)` | force-completion, missing participants only, stamping `released_at` in the same transaction |
+| `not_frozen(forced) → acked` | a recovered participant's ack; the stale stamp frees nothing |
+| `not_frozen(forced) → released` | a recovered participant's own door — the other arm `VERSION_FORCED_INCOMPLETE` names |
+
+**`released` is terminal**, and no transition other than the six is admitted. **The table has no entry
+point, deliberately**: who writes `pending` at all is `features/catalog-version.md` §7 row **46**'s,
+with §6's *"nothing creates the ledger rows"* item beside it, and both stay open.
+
+- **The arguments against, stated.** (1) Two events per act oblige a consumer to de-duplicate; the
+  shared `publishedVersion` is how, and that is a property of the payloads rather than a new duty.
+  (2) Two tables mean two append-only guards and two migrations; the checksum still covers both
+  halves, being computed over content rather than over a table. (3) Striking a roster value is a
+  closed-set edit — measured at three sites in two files, and the same word in `04`'s
+  `ScheduledTransition`, `05`'s `ApprovalRecord` and `01`'s approval rows is untouched. (4) A
+  transition table without an initial state is incomplete on purpose, and a reader who misses that
+  will look for the creation point in §4 rather than in row 46.
+- **A carry-fidelity finding, recorded because it changed the scope of arm 3.** `design/06` §6 asks
+  *"Who writes the request state `superseded`, and what leaves it?"* — one value. The FEATURE's
+  carried row 10 widened it to *"the request states `superseded` and `coalesced`, and
+  `satisfied_by_version_id`"* and added a P-D-50 sentence. The widening is correct on the measurement
+  and is what makes arm 3 answer all three, but it is a **departure from verbatim that §7's preamble
+  does not declare** — it lists three departures and question-widening is not among them.
+- **Not changed**: the `capture_kind` value roster and its own count question, `freezeComplete`'s
+  formula, `staged_at`'s missing writer, the resolution API's transport, and every other §6 item.
+- **Propagated**: `design/06-catalog-version.md` (§2 `inst-cc-clear` and the increment rule; §4's
+  entry/capture split, the request roster, the ack transition table; §6's four items answered),
+  `features/catalog-version.md` (§4 mirror, `dod-cv-events`, `dod-composition-clear`,
+  `dod-version-entry-table`, `dod-referential-delete-predicate`, `dod-request-queue`,
+  `dod-freeze-ledger-tables`, §7's arithmetic and rows 1, 9, 10, 11 answered),
+  `features/reference-signal.md` and `features/retention-erasure.md` — both cite row 9 as the
+  unresolved capture-store question and must now read as resolved.
+
+#### P-D-59 — `reference_watermark_stale` is an alerting rule over a gauge, so no fired-state is stored
+
+- **Date**: 2026-08-31 (owner call)
+- **Context**: `features/reference-signal.md` §7 row 27 measured that the alarm is described *"both as
+  an output of a read and as a property of the registered set"*, that no verdict is stored so there is
+  nowhere to record that it has already fired, and that `04-lifecycle`'s runner polls the predicate on
+  a cadence — so a read-time emission *"alarms once per call"*.
+
+  **The operand for a gauge already exists and is already stored.** `design/07` §4 declares
+  `products_reference_watermark` — `(tenant_id, producer)` → `watermark_at`, `posted_at` — and
+  `inst-wm-freshness` already says that *"the staleness alarm keys on the registered set so a retired
+  producer stops alarming"*. So per-producer watermark age is derivable from a committed store over a
+  set the gear maintains; nothing new is needed to observe it.
+
+  **And the threshold is the gear's own exported config value, not a number in someone else's
+  system.** `ProductsConfig` carries the freshness threshold (interim 15 min), and this feature
+  already requires it exported *"because another feature already depends on reading it"* —
+  `04-lifecycle`'s flip guard re-evaluating on the predicate's freshness cadence.
+
+- **Decision**: `reference_watermark_stale` is an **alerting rule over a gauge**, not an emission from
+  the predicate's evaluation.
+
+  | Call | Propagation |
+  |---|---|
+  | **The gear exposes a gauge**: `now − watermark_at` per `(tenant_id, producer)`, over the **registered** producer set only. Deregistration removes the series rather than silencing an alarm, which is what `inst-wm-freshness` already promises | `design/07` §2 `inst-wm-freshness`; `dod-reference-predicate` |
+  | **The alarm is the observability owner's rule over that gauge, and its condition references the gear's exported freshness threshold** rather than restating it. One number, one home | `dod-reference-events` |
+  | **Nothing is raised per call and no fired-state is stored.** Repetition, for-duration and grouping belong to the alerting side, which is what dissolves the second half of the question: there is no verdict to persist because there is no per-call emission to suppress | `design/07` §2 `inst-rp-eval` |
+  | **The predicate keeps its verdict unchanged.** `conservatively_referenced(stale, producer)` stays exactly as `inst-rp-eval` states, the per-producer detail already carrying `stale` — which is what `04`'s confirmation screen shows. What is corrected is only the reading of *"+ the `reference_watermark_stale` alarm"* as an emission the evaluation performs | `dod-reference-predicate`, and the §6 control that pairs `stale` with the alarm |
+
+- **The argument against, stated**: the threshold lands in two places the moment an alerting rule
+  restates it instead of reading it, and there is **no mechanical guard** against that — the
+  protection is the requirement to reference the exported value. It is a smaller exposure than the
+  alternative, which was to store a fired-state in this gear and own suppression, deduplication and
+  re-arming for one alarm.
+- **Scope — this does not answer §7 row 28.** Two of this feature's three alarms are unnamed (the
+  future-watermark alert and the tripwire escalation) and naming them is that row's, owned by the
+  observability owner with this feature. This entry decides the mechanism for the one alarm that
+  **is** named, and the mechanism transfers to the other two only once they have names.
+- **Not changed**: no store, column or config field is added; the freshness threshold's value and its
+  config home are untouched, and `posted_at` remains read by nothing.
+- **Propagated**: `design/07-reference-signal.md` (§2 `inst-rp-eval` and `inst-wm-freshness`),
+  `features/reference-signal.md` (`dod-reference-predicate`, `dod-reference-events`, the §6 control,
+  §7's arithmetic and row 27 answered).
+
+#### P-D-58 — The replay fixtures are authorable now, against the SDK's own broker double
+
+- **Date**: 2026-08-31 (owner call)
+- **Context**: `features/consumer-contracts.md` §7 row 26 asked whether the replay contract is
+  testable at all before `dyn EventBrokerApi` has a production registration, since every obligation of
+  `cpt-cf-bss-products-flow-replay` — versioning, dedup, ordering, bootstrap — rides an arm this
+  document's §1 calls *"inert in every real deployment"*. The unstated half was whether this feature's
+  fixtures are authorable against the test registration or wait for the real one.
+
+  **The double is not a local invention: it is public SDK API and this gear already depends on it.**
+  `event-broker-sdk` exposes `pub mod mock` behind its `test-util` feature, `MockBroker` implements the
+  trait (`src/mock/transport.rs:171`), and the module exports `MockBroker`, `MockBrokerHandle`,
+  `StoredEvent` and `CursorEntry` — so the stored log and the cursors are inspectable, which is
+  exactly the surface versioning, dedup, ordering and bootstrap assert over.
+  `products/Cargo.toml` already takes `event-broker-sdk` with
+  `features = ["outbox", "test-util"]` in its dev-dependencies.
+
+  **And it is not a registration bypass, which is the part that decides the question.**
+  `infra/broker_tests.rs` registers the topic and **all eight** event types through
+  `MockBrokerHandle`, then performs `hub.register::<dyn EventBrokerApi>(broker)` into
+  `toolkit::client_hub::ClientHub` — the same registration a production boot performs, with a
+  different transport behind it. The event types are registered *"from the transcribed literals, so
+  this is an agreement between two independent transcriptions rather than the gear agreeing with
+  itself"*.
+
+  **The boundary is already written by the gear, and this entry adopts it rather than drawing a new
+  one.** `broker_tests.rs`: *"Both ends are in-process — `MockBroker` accepts with no network, no disk
+  beyond the local `SQLite` outbox, and no ingest work"*, so what it bounds is *"enqueue, the
+  sequencer, the leased processor's pickup, and the SDK's publish call"*, and *"Anything a real broker
+  adds is on the other side of that boundary and belongs to whoever owns the `01/06` split."*
+
+- **Decision**: the replay fixtures are **authorable now**, against `MockBroker` registered into
+  `ClientHub` as `dyn EventBrokerApi`. They do not wait for a production registration.
+
+  | Call | Propagation |
+  |---|---|
+  | **The suite's transport is the SDK's own double, under `test-util`** — not a fixture-local stub, so a change to the broker contract reaches the fixtures through the same crate the gear compiles against | `design/12` §2.1 joint fixtures; `dod-event-versioning`, `dod-dedup-ordering`, `dod-bootstrap` |
+  | **The fixtures drive the gear's real registration path**, topic and all eight event types included, and the type registration is transcribed independently rather than read from the gear's constants. A fixture that injected a producer past `ClientHub` would assert the contract over wiring no boot performs | `dod-seam-suite-home` |
+  | **The claim the green suite licenses is stated, and it is narrower than the obligation**: the contract holds over this gear's own path with a conforming transport. *"Events reach consumers in production"* is a different claim, it depends on the missing registration, and **no DoD in this gear owns it** | `features/consumer-contracts.md` §1 boundary |
+
+- **A propagation item the round found**: `gears/bss/fixtures/bss-fixtures/Cargo.toml` declares **no
+  dependency on `event-broker-sdk` at all**, with or without `test-util`. That is a second missing
+  wire at the suite's home, beside the one `dod-seam-suite-home` already names — *"the dependency
+  declared, the fixtures placed, and a job that runs them"* — and it is recorded there rather than
+  filed as a new question, the DoD already owning the wiring.
+- **The argument against, stated**: a suite green against a double proves the contract, not the
+  deployment. The producer arm is inert in production, so every replay fixture can pass while no
+  deployment runs the path. That is not removed by using a better double, and it is why the licensed
+  claim above is written down: the suite's greenness is evidence about this gear's path, never about
+  delivery.
+- **Scope — `01-foundation`'s standing debt is untouched and is not closed by this.** Nothing in the
+  workspace registers `dyn EventBrokerApi` outside this gear's tests; `features/catalog-version.md`
+  records the same measurement independently. This entry decides only whether the fixtures wait for
+  that, and they do not. It also does not touch the **event-log retention window**, whose value is a
+  `PRD.md` §15 open and without which, as §1 says, the replay contract *"is words"*.
+- **Not changed**: no fixture is authored here, no dependency edited, and no feature flag added to any
+  manifest.
+- **Propagated**: `features/consumer-contracts.md` (§1's boundary paragraph, `dod-event-versioning`,
+  `dod-dedup-ordering`, `dod-bootstrap`, `dod-seam-suite-home`, §7's arithmetic and row 26 answered),
+  `design/12-consumer-contracts.md` (§2.1's joint-fixture rule).
+
+#### P-D-57 — The pin keeps every derived member and carries its comparability; the job is two-sided
+
+- **Date**: 2026-08-31 (owner call)
+- **Context**: `features/consumer-contracts.md` §7 row 25 asked which side of the schema pin moves
+  first, given that members of the pinned set have no shipped column, and named two arms that *"give
+  opposite CI colours for months"*: a job admitting a member as `owed`, or a pin listing only shipped
+  members.
+
+  **Half of it was already decided, and the row's own count came from conflating three sets.**
+  `dod-catalogsku-shape` states the call: *"the superset lands on `products-sdk`'s read shape as those
+  features land their columns, and until then the pin's membership is derived from the design set
+  rather than compared against the type."* So the SDK side moves, additively, and the pin never
+  shrinks to shipped-only. And the three sets are distinct, as this feature's own §1 says — *"The read
+  shape is ten members; the **pin** is a different and smaller set"*:
+
+  | set | size | measured against the crate |
+  |---|---|---|
+  | the catalog **read shape** | 10 members | 5 have no shipped column |
+  | the **pin** (C1, P-D-12) | 8 fields, `skuCode` and `name` deliberately out — *"pick-list display, drift cosmetic"* | **6 of 8** have no shipped operand, counting the metering pair as its two tokens |
+  | the SDK's `Sku` type | **7 members** — `sku_id`, `tenant_id`, `product_id`, `sku_code`, `lifecycle_state`, `internal_revision`, `published_version` | pin members present: `skuId`, and `status` under the name `lifecycle_state` |
+
+  So `name`, one of the row's seven, **is not a pin member at all**.
+
+  **And the SDK type calls its own absences deliberate**: *"The capability columns a SKU carries —
+  typing, `sellable`, `PlanTier`, the accounting codes, the metering unit — are not here. They belong
+  to the features that own their rules, and a consumer reads them from those."*
+
+  **What actually forces the row is that the normative text today is the months-of-red arm.** C1 says
+  the *"CI test **fails on divergence**"* and `inst-ss-home` that the job *"**fails on any
+  divergence** in the C1 fields"*. Against a pin authored from the register and an SDK that carries
+  two of its eight members, that is red from the day the pin lands until `02`, `03` and `06` finish.
+
+- **Decision**: the pin lists **every** derived member and carries each member's **comparability**;
+  the CI job is **two-sided**.
+
+  | Call | Propagation |
+  |---|---|
+  | **The pin keeps its derived membership and gains a per-member comparability flag.** Membership stays P-D-12's rule; the flag says only whether the member is comparable against the SDK surface *yet*. Nothing is removed from the pin and no member is dropped for being unshipped | `design/12` §1 C1, §2.1 `inst-ss-pin`; `dod-schema-pin` |
+  | **The job compares the comparable members and asserts the absence of the rest.** So a member that ships while still marked non-comparable **fails the job** — the flag cannot rot into a standing excuse, and the failure lands in the change that shipped the member | `design/12` §2.1 `inst-ss-home`; `dod-seam-suite-home` |
+  | **The flag is authored conservatively: `comparable` only once both the column and the SDK member ship.** That makes the job green the day the pin lands and turns each landing into a deliberate pin edit reviewed by both gears, which is the asymmetry `inst-ss-pin` already relies on | `dod-schema-pin`, `dod-catalogsku-shape` |
+
+- **The argument against, stated**: the two-sided check only catches the **late** direction. A flag
+  reading `comparable` for a member that never ships is a plain red — exactly the months-long red the
+  row wants to avoid — and nothing mechanical prevents it; the protection is conservative authoring,
+  not the mechanism. Recorded rather than engineered around, because the alternative is a third state
+  that means "expected soon", which is a schedule in a contract artifact.
+- **Scope**: this decision does not touch **lint 9's grammar** — the register's `Operand` cell keeps
+  P-D-43's one-token-per-member form and its three non-field markers, and the lint keeps reading only
+  that cell. It does not decide the job's **home** (still a §15 open), does not reopen which side
+  moves, and adds no member to the pin.
+- **Not changed**: P-D-12's membership rule, C1's v1 set, the `skuCode`/`name` exclusions, and the
+  runtime fail-closed on divergence (the dependent plan publish is rejected pricing-side), which is a
+  different mechanism from the CI comparison and is untouched.
+- **Propagated**: `design/12-consumer-contracts.md` (§1 C1 and §2.1 `inst-ss-home`),
+  `features/consumer-contracts.md` (`dod-schema-pin`, `dod-seam-suite-home`, `dod-catalogsku-shape`,
+  §7's arithmetic and row 25 answered).
+
+#### P-D-56 — Two budgets, not one number: the door's acknowledgement and the lane's batching SLO
+
+- **Date**: 2026-08-31 (owner call)
+- **Context**: `features/catalog-version.md` §7 row 30 asked whether the increment door's answer time
+  is this feature's to publish and whether five seconds is it, having measured that the only bound
+  stated anywhere lives in the caller's crate as `DEFAULT_REGISTRY_CALL_TIMEOUT_SECS = 5`.
+
+  **There are two independent fives in the picture and they never meet.** Pricing's is a
+  **client-side, per-deployment configurable** await budget: `config.rs`'s
+  `registry_call_timeout_secs` defaults to `DEFAULT_REGISTRY_CALL_TIMEOUT_SECS`, rejects `0`, and is
+  bounded above by `MAX_REGISTRY_CALL_TIMEOUT_SECS = 60`. So five is one deployment's default, and
+  adopting it as a published server promise would pin this gear's contract to a consumer's config
+  value. The design's own five — `dod-coalescer`'s *"within ≤ 5 s of the earliest pending"* — is the
+  **coalescing window**, which sits behind the acknowledgement rather than inside it.
+
+  **The shipped consumer contract already separates the two objects.**
+  `bss_pricing_sdk::CatalogVersionRegistryV1`'s `request_version` returns
+  `PendingVersionRef { request_id, pending_ref }` — an acknowledgement, not a version — and
+  `committed_version` returns `Option<CatalogVersion>`, `None` until commit, with the doc: *"A pending
+  ref that stays unresolved past the batching SLO is an alarm, not an error here — the caller decides
+  that, since only it knows how long the ref has been outstanding."* **That sentence presumes a
+  published batching SLO**, or *"past the batching SLO"* has no referent.
+
+  **And the caller's budget exists to protect the caller, not to describe us.**
+  `infra/registry_deadline.rs`: *"an unanswering peer pins a transaction, its row locks and a pool
+  connection on every mutating path at once"*, with ten of twelve awaits inside an open write
+  transaction.
+
+- **Decision**: this feature publishes **two** budgets, and neither is the number in the consumer's
+  crate.
+
+  | Call | Propagation |
+  |---|---|
+  | **The acknowledgement budget is a shape, not a copied number.** The door stamps `requested_at` at ingress, claims idempotently per `(tenant_id, source, request_key)`, enqueues and answers. It takes **no lease** and makes **no cross-gear call**, so it fits inside the *smallest* budget a consumer may configure — the config admits `1` and rejects `0` — rather than inside the default of five. The value stays the consumer's to set; what this gear owes is that the door's synchronous path has no unbounded step in it | `design/06` §2 rule 1; `dod-request-door`, `dod-increment-request-port` |
+  | **The batching SLO is already published and is C1's**: `requested_at → published_at` **p95 ≤ 60 s, max 5 min**, instrumented by `inst-cv-slo` and alarmed as `catalog_version_overdue`. This decision **mints nothing** — it names those numbers as the referent the shipped consumer's *"batching SLO"* means, so the consumer's alarm and this gear's meter key on one thing | `dod-posting-safe-observability` |
+  | **The ≤ 5 s interactive window and the five-minute bulk hard max are inputs to that SLO, not the SLO.** Reading either as the door's answer time is the conflation this entry exists to close | `dod-coalescer` |
+
+- **A defect the round found, and it was load-bearing.**
+  `features/catalog-version.md`'s `dod-increment-request-port` said the door *"MUST answer inside that
+  budget, and anything it does synchronously — taking the per-tenant lease
+  `cpt-cf-bss-products-dod-coalescer` obliges, or resolving a committed version — is inside it"*. The
+  lease is **not** the door's: `design/06` §2 rule 2 gives it to *"the **coalescer** (one worker per
+  tenant — C3 serialization)"* which *"drains the queue"*, and rule 3 puts the increment transaction
+  there too. A door that waited on a per-tenant lease could not fit inside a one-second budget under
+  contention, so the sentence and the budget could not both hold. Corrected: **the door enqueues, the
+  coalescer leases.** That also settles row 30's own conditional clause about `dod-coalescer`.
+- **The argument against, stated**: deriving the door's obligation from the *minimum* configurable
+  consumer budget is stricter than any real deployment needs, and it is a bound this gear cannot yet
+  measure — no door ships. The weaker alternative was to publish only the qualitative obligation and
+  defer any number; it was declined because the qualitative obligation is exactly what arm 1 states,
+  and naming the floor it must clear costs nothing while making the claim falsifiable the day the
+  door ships.
+- **Scope**: this decision does not answer §7 row 29, the cardinality cost of a per-tenant increment
+  lease, which stays open with its own owner. It sets no timeout for `committed_version` polling and
+  mints no code — a door that cannot answer is the consumer's `unreachable` arm, already distinct
+  from `REQUEST_SOURCE_UNKNOWN`'s refusal by **P-D-52**.
+- **Not changed**: pricing's constant, its config bounds, and C1's numbers. Nothing is edited in the
+  consumer's crate or its register.
+- **Propagated**: `design/06-catalog-version.md` (§2 rule 1's acknowledgement clause),
+  `features/catalog-version.md` (`dod-request-door`, `dod-increment-request-port` — the corrected
+  lease sentence, `dod-coalescer`, `dod-posting-safe-observability`, §7's arithmetic and row 30
+  answered).
+
+#### P-D-55 — The disposition rules register in the table's own row order, and the order is unobservable at this commit
+
+- **Date**: 2026-08-31 (owner call)
+- **Context**: `features/clone.md` §7 row 13 measured that within a phase rules run in **registration
+  order** (`design/01` §3.1, and `design/01-foundation.md`'s own §3 states *"execution order is
+  registration order within the phase"*), that `ValidationReport::audit_code` returns
+  `self.violations.first().map(|v| v.code)`, and that **no document fixes the order** for the
+  disposition set — while **P-D-37** fixed a precedence for the `state` phase's four codes for
+  exactly this reason.
+
+  **Collision is the expected case here, not a corner.** `design/11` §3.1 has five
+  `Copy + re-validate` rows and says of them *"Every re-validation row below refuses on failure and
+  the refusal collects across rows (C4); a clone either lands whole or lands not at all"*. A clone of
+  an old `retired` SKU can fail its attribute definition, its `PlanTier` and its accounting code in
+  one report. `ValidationRule`'s contract — it *"never short-circuits the run"* and *"never reads
+  another rule's verdict"* — is what makes the collection fall out of registration.
+
+  **But the question is a tie-break, not a correctness question, and P-D-37 already settled that
+  framing**: the caller's rejection carries every violation the failing phase collected and the audit
+  row records one code. What the one code buys is **attribution** — `design/12` §4.1's AC #38 map is
+  `AC #38 row → code → declaring slice`, asserted by a lint — so with several classes failing there
+  is no single slice to attribute to and no order can be *right*, only stable and recorded.
+
+  **And two of the five rows name no code at all**: *Category assignments* says only
+  *"retired category ⇒ re-select"*, and *Metering declaration* says *"fail per AC #38"*. A precedence
+  over codes would have to mint two; a precedence over **table rows** does not.
+
+- **Decision**: the disposition rules register in the **row order of `design/11` §3.1's table**, which
+  is therefore its execution order and fixes which violation `audit_code()` would answer with.
+
+  | Call | Propagation |
+  |---|---|
+  | **The table's row order is the registration order.** It is normative, already reviewed, and ordered; using it invents no code and changes no mechanism — `audit_code()` stays `violations.first()`, which `domain/rules_tests.rs:131` already pins as *"whichever runs first wins the audit row"* | `design/11` §3.1's caption; `features/clone.md`'s `dod-disposition-rules` |
+  | **The precedence ranks rows, not codes**, so the two rows whose code is unminted take their place when it is minted, and nothing is invented to fill them | `design/11` §3.1 |
+
+- **The order is unobservable at this commit, for two independent reasons, and neither is this
+  feature's to change.** Measured in `products/src`: `ValidationReport::audit_code` has **zero
+  production callers** (`domain/rules_tests.rs` and `domain/validation_tests.rs` only) — every door
+  writes `error_code: domain_err.code()`, and `domain/error.rs:114` maps `Self::Validation(_)` to
+  `"VALIDATION"`. **And every registered rule raises that same literal**: `domain/rules.rs:73` is
+  `pub const CODE: &'static str = "VALIDATION"`, every `report.violate(…)` call site passes
+  `"VALIDATION"`, and `domain/validation_tests.rs:70` asserts `audit_code()` answers `"VALIDATION"`
+  for a two-violation report. So even a routed `audit_code()` would not discriminate today.
+- **Scope — the observability half is already filed with its owner and this decision does not answer
+  it.** `design/01-foundation.md` §6 item 2 asks *"Which code does the audit row store when a phase
+  other than `state` collects two?"*, owned by that slice with the error-contract owner, and clone's
+  row 13 is a specific instance of it. **No new item is filed here** — a duplicate would leave the
+  specific one looking open after the general one closes. The consequence for this feature is
+  determinate meanwhile: **a refused clone stores `VALIDATION`, like every other shipped door**, and
+  the clone door does not diverge to route `audit_code()` on its own.
+- **The argument against, stated**: `design/11` §3.1's row order was authored for readability —
+  identity, codes, name, brand, `created_by`, structure, parent, then the re-validating rows — so
+  *Display/localized attributes* leads and every multi-class failure that also failed on attributes
+  will attribute to `02-taxonomy-attributes`. If attribution should ever prefer the class costliest
+  to remedy, this reopens. And the decision **adds** a meaning to that table: its caption spoke to
+  collection across rows, not to order.
+- **Not changed**: `audit_code()`'s definition, the single `error_code` column, and AC #38's map. No
+  code is minted and no door's behaviour changes.
+- **Propagated**: `design/11-clone.md` §3.1 (the caption's order clause), `features/clone.md`
+  (`dod-disposition-rules`, `dod-clone-audit`, §7's arithmetic and row 13 answered). Extends
+  **P-D-37**'s precedence convention to a second rule set without amending it.
+
+#### P-D-54 — The executor the batch machine never named: a gear-owned worker flips edges 1 and 4 inside its own claim
+
+- **Date**: 2026-08-31 (owner call)
+- **Context**: `features/bulk-promotion.md` §7 row 26 measured that edges 1 and 4 of the `BulkBatch`
+  machine fire on a condition over every row — a stage outcome, a terminal ledger state — and name no
+  door, actor or signal. The import door cannot be either: it answers **202**.
+
+  **The design already bought the actor and did not name it.** `design/09` §3.1 `inst-bm-resume`
+  states that a batch is resumable — *"a crash mid-commit resumes from the ledger (per-row publishes
+  idempotent by row key)"*. Something has to re-enter a batch and re-read its ledger, and a door that
+  answered 202 is gone.
+
+  **The gear specifies this executor shape once already, and it was reviewed.** `design/04` §3.1's
+  `algo-activation-runner`: due rows *"claimed atomically (state CAS `pending|deferred → running`
+  with `claimed_at`"*, a `running` row past its **lease** reclaimed *"`running → pending` with
+  `attempt += 1`"*, outcomes *"`applied|failed|deferred`"*, the runner *"its own raising door"*, and
+  gauges for *"due-but-unclaimed and deferred counts"*.
+
+  **The donor's mechanism does not transfer, though its conclusion is written down.**
+  `gears/bss/pricing`'s `infra/bulk.rs` runs a bulk batch **inline in the caller's request** —
+  *"Every row is its own transaction, and that is the whole shape"*, and the *"repository methods open
+  their own transactions and that is why they are used rather than their runner-taking forms"*. Its
+  module doc then records the price: *"`pricing_bulk_row_lock` has no sweeper, D-37's lease takeover
+  is unbuilt"*, so a panic or a dropped future leaves the run in `committing` holding every row's
+  lock — *"That run stays `committing`, which is where the remedy is"*. Pricing answers its caller
+  when the work is done; **this door answers before the work starts**, and `inst-bm-resume` promises
+  recovery, so neither half of the donor's posture is available here.
+
+  **The platform ships the machinery, which is what makes this a naming decision rather than a new
+  mechanism.** `toolkit_db::outbox::taskward` is framework-level and outbox-agnostic — its
+  `PacingConfig` says so in as many words, *"Framework-level — no outbox-specific knowledge"* — and
+  carries `WorkerBuilder`/`WorkerAction`/`Directive`, `PanicPolicy`, `WorkerListener` for
+  observability, `ConcurrencyLimit::{Fixed,Tiered}` with `BackoffConfig`, and a caller-supplied wake
+  source: *"Wake-up sources (notifiers, pokers) are the caller's responsibility via
+  `WorkerBuilder::notifier()`"*, so a door can start the work without waiting a poll interval. It has
+  four production consumers — `processor`, `sequencer`, `reconciler`, `vacuum` — **all inside the
+  outbox and none in a gear**. And a gear may own such a task: `RunnableCapability::start(cancel)`
+  (*"Start the gear's background task"*) with two-phase graceful shutdown, implemented by
+  `gears/file-storage/file-storage/src/gear.rs:280`.
+
+- **Decision**: edges 1 and 4 are flipped by a **gear-owned batch worker** that claims a batch the way
+  `inst-ar-claim` claims a transition. The flip is a **CAS on the batch state inside the same
+  transaction that finishes the last row**, so there is no separate detection pass to lag or race.
+
+  | Call | Propagation |
+  |---|---|
+  | **Edge 1's executor is the claim transaction that stages the last row.** The `ChangeReport` is generated and submitted to the governance gate in that same transaction, so the report exists exactly when the ledger says staging is done | `features/bulk-promotion.md` §4 `inst-bb-edge-report`, `dod-stage-phase` |
+  | **Edge 4's executor is the same worker at the other end** — the claim that lands the last row's terminal state — and `CatalogBulkOperationCompleted` is emitted **inside that CAS**. The winner emits; a re-claim after a lease expiry finds the state already flipped and emits nothing. That is where *"exactly one"* comes from | §4 `inst-bb-edge-complete`, `dod-coalesced-event` |
+  | **Crash recovery is the claim's lease, not a sweeper.** A worker lost between the last row and the flip leaves a batch whose rows are all terminal and whose state is not; the lease reclaims it and the CAS makes the flip idempotent | `design/09` §3.1 `inst-bm-resume` (owed) |
+  | **`inst-bm-limits`' per-tenant concurrent-batch ceiling is enforced at claim, not only at admission**, because a ceiling checked only by the door drifts as batches hang | `dod-stage-phase` |
+
+- **The normative text names no framework, and that is deliberate.** `design/04`'s runner names none
+  either. The platform measurement above is recorded as **evidence that a gear-owned worker with a
+  claim, a lease and a wake source is available rather than aspirational** — not as a pin on
+  `taskward`. **The argument against, stated**: products would be the first gear to run that
+  framework, so the gear-side wiring is unproven and a build may find the abstraction cost real; the
+  measurement is in this register so that finding arrives as a build note rather than a
+  re-litigation of the executor.
+- **Scope — this decision does NOT answer what performs edge 3.** `approved → committing` is §7 row
+  **7**'s, carried from `design/09` §6 and owned by this slice with `05`. It has two live candidates
+  — this worker, or `05`'s decide door flipping the state in the same transaction as the quorum
+  verdict, which is also where the one-shot consumption would be enforced — and the carried row
+  records that `05`'s decide door is itself unowned, so nothing here narrows it. Rows 5 and 6 are
+  equally untouched: the missing rejection edge, the absent abandon state, the unstated `failed`
+  entry edge, and the tenant slot a never-approved batch holds.
+- **Not changed**: `products/src` carries none of this. `ActivationRunner`, `claimed_at`,
+  `scheduled_transition`, `BulkBatch` and `bulk_batch` are **zero occurrences** across the crate, so
+  nothing shipped constrains or contradicts the call.
+- **Propagated**: `features/bulk-promotion.md` (§4 `inst-bb-edge-report`, `inst-bb-edge-complete` and
+  the executor paragraph; `dod-stage-phase`, `dod-batch-state-machine`, `dod-coalesced-event`; §7's
+  arithmetic and row 26 answered), `DECOMPOSITION.md` §2.9 (`BatchWorker`). **Owed and not edited
+  here**: `design/09` §3.1's `inst-bm-resume`, which should name the claim and the lease — that is
+  `design/09`'s edit.
+
+#### P-D-53 — The increment transaction runs at the engine default, because the guard is what closes the race
+
+- **Date**: 2026-08-31 (owner call)
+- **Context**: `features/catalog-version.md` §7 row 37 measured that **no isolation level is stated
+  anywhere in the design set or the crate**, while three levels give three different behaviours for
+  the same recorded design. `inst-sn-collect` collects the snapshot *"inside the serialized
+  transaction"* and `inst-sn-revalidate` re-reads the heads *"before commit"* in that same
+  transaction, and §6 requires the detected race to surface as a **refusal**,
+  `STAGED_ENTITY_CHANGED`.
+
+  **The design already carries the mechanism, which is what makes the level a consequence rather
+  than a choice.** `inst-sn-revalidate` records each collected entity's
+  `(id, published_version, lifecycle_state)` and compares at re-read — a **row-version guard**. Of
+  the three levels only one lets it work:
+
+  | level | what happens to the guard |
+  |---|---|
+  | snapshot-isolating (`REPEATABLE READ`, SI) | the re-read returns the **collect-time** snapshot, so the guard **cannot fire** and a version publishes content the design says must be refused |
+  | `SERIALIZABLE` | the transaction **aborts** with a serialization failure instead of raising the code, so §6's required refusal never reaches the caller |
+  | **engine default — `READ COMMITTED` on Postgres** | every statement takes a fresh snapshot, the re-read sees the concurrent change, the guard fires and the door refuses `STAGED_ENTITY_CHANGED` |
+
+  **The donor drew this distinction first, and it is cited for the distinction only.**
+  `gears/bss/pricing`'s publish path opens the engine default and states the reason in a contract
+  paragraph, separating two invariants an earlier revision had conflated — *"the conflation is what
+  hid a live defect"*. Its counter invariants *"need no SSI"* because unique keys make a fork
+  unrepresentable *"at any isolation level"*; its predicate invariant is *"a different thing, and no
+  key covers it"*, and the conclusion is the sentence that transfers: **"It is closed by the
+  row-version guard, not by isolation."**
+
+  **What does not transfer is the donor's cost argument against `SERIALIZABLE`** — *"it would hold
+  predicate locks across the registry round-trip"*. This increment holds **no** cross-gear call:
+  `inst-sn-collect` reads `products_entity_version` and the heads, both local. So `SERIALIZABLE` is
+  declined here for the refusal-versus-abort reason above, not for the donor's, and the borrowed
+  reason is named as not applying so a later reader does not inherit it.
+
+  **And it is a judgement rather than an impossibility.** `libs/toolkit-db`'s
+  `Db::transaction_ref_mapped_with_config` takes a transaction config, so raising the level is
+  available on the platform and is being declined deliberately.
+
+- **Decision**: the increment transaction opens at the **engine default**, `READ COMMITTED` on
+  Postgres, and the stage-vs-commit race is closed by `inst-sn-revalidate`'s **row-version guard**,
+  never by isolation.
+
+  | Call | Propagation |
+  |---|---|
+  | **The level is the engine default and is stated, not assumed.** The word *"serialized"* in `inst-sn-collect` describes the coalescer's **one-worker-per-tenant** serialization, not a database isolation level, and is not to be read as `SERIALIZABLE` | `design/06` §2; `features/catalog-version.md`'s `dod-snapshot-builder` |
+  | **The guard is the correctness mechanism and its comparison is normative**: the collected `(id, published_version, lifecycle_state)` triple, re-read before commit, refusing `STAGED_ENTITY_CHANGED` on any difference. A build that relies on the snapshot instead has no detector | `features/catalog-version.md`'s `dod-stage-commit-revalidation` |
+  | **`SERIALIZABLE` is refused for a stated reason**: it converts the design's refusal into an abort, and §6 requires the code | `design/06` §2 |
+
+- **Scope — this decision does NOT set a gear-wide isolation posture, and the radius sweep found the
+  one other site.** `features/sku-classification.md` §7 records *"The removal-vs-publish race is
+  unguarded… No isolation level, no lock and no re-check-inside-the-transaction clause is stated"*,
+  and that race is **not** of this shape: a publish adds the **first** reference between the holder
+  scan and the state flip, so there is no row to version — it is precisely the donor's *"predicate
+  invariant… no key covers it"*. It needs its own answer, and `02-taxonomy-attributes` registers the
+  analogous class as its own item. This entry settles the increment door and nothing else.
+- **Not changed**: `products/src` sets no isolation level anywhere and continues to take the engine
+  default everywhere; no transaction config is introduced by this decision.
+- **Propagated**: `features/catalog-version.md` (`dod-snapshot-builder`,
+  `dod-stage-commit-revalidation`, §7 row 37 answered).
+- **Owed**: `design/06-catalog-version.md` §2's `inst-sn-collect` and `inst-sn-revalidate`, which should carry
+  the level and the guard's normative comparison — that is `design/06`'s edit.
+
+#### P-D-52 — The increment-request door gains a refusal code, and the counterparty's discriminator fixes its shape
+
+- **Date**: 2026-08-31 (owner call)
+- **Context**: `features/catalog-version.md` §7 row 22 measured a live asymmetry. The shipped
+  `pricing-sdk` port `CatalogVersionRegistryError` carries a fourth arm, **`Rejected(String)`**,
+  discriminated by the wire constant `CATALOG_VERSION_REJECTED`, and argues for its own existence:
+  *"a refusal is a decision and will be made identically for as long as the request is unchanged; an
+  outage is a deployment state a retry may find changed."* But **none of this feature's six codes is
+  a refusal of an increment request.** `inst-cv-request` fixes the trigger set at exactly three —
+  registered downstream addressability requests, this gear's own slice-09 bulk commits as a
+  registered internal requester, and the operator catalog-publish act — and §3.2 declares no code for
+  a request from a source outside it. So either the door owed a code or the port's arm was
+  unreachable against this registry.
+
+  **The refusal is not authorization-shaped, which is what makes the ladder position forced rather
+  than chosen.** The door already gates on `catalog_version × request`, so a caller without the grant
+  is refused by authz. What was missing is the refusal for a caller that *holds* the grant and whose
+  `source` is not a registered requester — a precondition on the request's content, decided by the
+  registry, identical for as long as the request is unchanged.
+
+  **And the counterparty's discriminator fixes the wire shape, measured in its source.** The port
+  reaches `Rejected` only on `CanonicalError::FailedPrecondition` **and** a precondition violation
+  whose `type_` is `CATALOG_VERSION_REJECTED`, and it says why it matches on both: *"`FailedPrecondition`
+  is a shape the registry could raise for something other than a refusal, and folding those onto
+  `Rejected` would hand the gear a 400 for a fact it never decided."* It also takes its sentence from
+  the **violation**, not the envelope detail. A 403 — the position `PARTICIPANT_UNKNOWN` holds for an
+  analogous roster miss — would arrive as a different category and land on the port's `Other` arm,
+  leaving the arm as unreachable as before.
+
+- **Decision**: **`REQUEST_SOURCE_UNKNOWN` is minted**, declared by `06-catalog-version` in §3.2 and
+  raised by `inst-cv-request` alone, when a request's `source` is outside the trigger set that
+  instruction fixes.
+
+  | Call | Propagation |
+  |---|---|
+  | **The code is `REQUEST_SOURCE_UNKNOWN`**, following the set's `*_UNKNOWN` idiom for a roster miss (`CATALOG_VERSION_UNKNOWN`, `PARTICIPANT_UNKNOWN`) | `design/06` §3.2 |
+  | **Its class is `FailedPrecondition` — a 422 architecturally, reaching the wire as a 400 carrying its code** — and the refusal **MUST** carry a precondition violation of type `CATALOG_VERSION_REJECTED` with the registry's own sentence as the violation description. This is the first code in this gear whose wire shape is set by a consumer's discriminator rather than by the gear's own ladder, and it is recorded as such so a later status sweep does not "correct" it to 403 | `design/06` §3.2's problem-response block; `features/catalog-version.md`'s `dod-request-door` and `dod-cv-error-taxonomy` |
+  | **It is NOT authorization-shaped and MUST NOT be 403**: the grant check has already passed when it is raised | `design/06` §3.2 |
+  | **The code count moves from six to seven** wherever this feature states it — including §6's *"six codes, six lines"* positive-control criterion, which becomes seven | `features/catalog-version.md` §6, §5, §7 |
+  | **It does not join AC #38's map.** That map's rows are the PRD's fifteen enumerated failure cases and this is not one of them; `design/12` §4.1 is unchanged | recorded, no edit |
+
+- **Not changed**: the trigger set stays exactly three; the door's grant stays
+  `catalog_version × request`; the composition clear still raises no code by design.
+- **Propagated**: `design/06-catalog-version.md` (§3.2), `features/catalog-version.md` (§5's
+  `dod-request-door` and `dod-cv-error-taxonomy`, §6's positive-control block, §7 row 22 struck).
+- **Owed**: `design/12-consumer-contracts.md`'s `inst-sdk-surface`, whose SDK
+  error enum is built *"from every slice's registered codes"* and now has a seventh from this slice —
+  that is 12's edit, not this one's.
+
+#### P-D-51 — Where an envelope obligation lands when the transport has no slot, and the two subject types §6 asked for
+
+- **Date**: 2026-08-30 (owner call — raised by the three-lens review of the broker producer)
+- **Context**: P-D-47 put publishing on the broker SDK, and building it made two of the set's own
+  statements unbuildable as written. Both were found by an independent reviewer, not by the author,
+  and both had been shipped without being registered.
+- **Decision**, two arms:
+  1. **An envelope obligation binds to the envelope where the transport has a slot for it and to
+     the payload where it does not**, and each obligation's landing place is now stated rather than
+     implied. **P-D-01's own word is the authority**: it calls the five obligations
+     *"envelope-agnostic"*, and §4.4 and `dod-outbox-eventing` are its restatements — so where the
+     restatement says "envelope" and the transport has no field, the restatement moves, not the
+     decision. Measured against `event-broker-sdk`'s `models::Event`, which carries `id`,
+     `type_id`, `topic`, `tenant_id`, `source`, `subject`, `subject_type`, `partition_key`,
+     `occurred_at`, `trace_parent` and `data`:
+
+     | Obligation | Lands | Why |
+     |---|---|---|
+     | versioned schema reference | envelope, as `type_id` | the SDK's `TypedEvent::TYPE_ID` is that id |
+     | correlation | envelope, as `trace_parent` | a slot exists, and the value is the W3C `traceparent` |
+     | **causation** | **payload** | `Event` has no causation field |
+     | per-aggregate ordering key | envelope, as the broker's partition selection | P-D-47: the gear sets no `partition_key`, so ADR-0002's default applies |
+     | **pseudonymous actor** | **payload** | `Event` has no actor field |
+     | `vN`→`vN+1` compatibility | neither — a discipline over schema versions | §4.5 defers it to slice 12 |
+
+     The idempotency key stays the event `id`, which the SDK mints (P-D-47); the gear's interim
+     envelope carries an id of its own that reaches no consumer.
+  2. **`subject_type` is `gts.cf.core.events.subject.v1~cf.bss.products.product.v1` for a Product
+     and `…sku.v1` for a SKU**, closing `design/01-foundation.md` §6 item 12. The **namespace** is
+     the platform's — every other subject type in this workspace is a
+     `gts.cf.core.events.subject.v1~` id — and the **name** is this set's own declared domain type
+     (`DESIGN.md`: `gts.cf.bss.products.product.v1~`, `…sku.v1~`), so the broker-side id and the
+     domain type are traceable to each other by inspection.
+- **Measured, not argued**:
+  - Arm 1 at the platform: `event-broker-sdk/src/models.rs`'s `Event` has neither field, and
+    `producer/outbox.rs`'s `ProducerOutboxEnvelope` — which the SDK owns end to end — has neither
+    either. There is no third place to put them short of amending a shared platform type.
+  - Arm 2 at the platform: subject types in use are all
+    `gts.cf.core.events.subject.v1~<name>`, and the mock's `assert_gts` checks only the `gts.`
+    prefix and a `~`, so nothing but the registration itself constrains the name. The value is
+    validated at ingest against the `allowed_subject_types` list registered **with the event
+    type**, which is why it is one half of an agreement rather than a fact.
+- **The costs, stated**:
+  - Arm 1 amends a DoD to match what was built, which is the move that makes a DoD stop being a
+    contract. The safeguard taken is that the amendment **enumerates where each obligation lands
+    and why**, so the clause is more checkable after the change than before, not less. What is
+    given up is the single-sentence form.
+  - Arm 2 answers a question §6 assigned to *three* owners — this slice, slice 12 and the PRD
+    owner. The two ids are broker-side resources, so whoever administers the broker may hold a
+    naming convention neither party has seen; the answer is recorded as a derivation with its
+    reasoning so it can be overridden by measurement rather than re-derived.
+- **Propagated**: `design/01-foundation.md` (§4.4's Payloads bullet, §6 item 12);
+  `features/foundation.md` (`dod-outbox-eventing`'s envelope clause).
+- **Owed**: the event-type registrations at the broker under arm 2's ids and the eight
+  `event_type.v1~` ids `infra::broker` derives — one half of an agreement whose other half this
+  gear does not own.
+
+#### P-D-50 — Seven taken ahead of the build: two columns, a minted code, a grant deliberately not minted, and three cells that denied a route the set declares
+
+- **Date**: 2026-08-29 (owner call — the pre-implementation round)
+- **Context**: the review programme was stopped by the owner on a measurement rather than a
+  feeling. Across the set's twenty-four documented commits a lens pass adds **~13** open items and
+  an owner round retires **~3**, so "no open items" is not a reachable exit; and the set has
+  carried **zero** "cannot be built" statements in any slice since **P-D-47**, so the reachable
+  exit — a buildable set — was passed ten commits earlier. What was asked for instead was one round
+  over the questions that are cheap to answer in prose and expensive to discover in code: schema,
+  authorization surface, error contract, cross-gear obligation, state machine. The lint layer, the
+  register's own hygiene and every wording question were **deliberately excluded from the
+  selection** — the in-repo gate was retired knowingly in `21a149fda`, so a defect in a lint
+  grammar costs nothing today, while a missing column costs a migration.
+- **Decision**, seven arms:
+  1. **DSAR erasure is per-tenant in v1, and no platform-plane grant is minted.** A DSAR erasure
+     enumerates and tombstones the principal's rows **in the requesting tenant only**; a principal
+     appearing in several tenants needs one request per tenant. The alternative — a platform-plane
+     `compliance × erase` grant — would create a write path outside tenant elevation, which
+     `constraint-tenant-isolation` and 05 C5 (`any write under elevation is refused, full stop`)
+     both forbid, and the gear will not build one on an assumption about what Legal requires.
+     **The contingency is recorded rather than hidden**: should Legal rule per-tenant erasure
+     incomplete, the platform grant becomes mandatory and is a post-v1 change, not a gap in the
+     rule. This is the one arm whose recommendation was the engineering-cheapest and not
+     necessarily the legally safest, and it was taken knowing that.
+  2. **`products_category` gains `mutation_seq`, and `STALE_CATEGORY_TOKEN` is minted.**
+     `inst-av-category-branch` put the live-value door behind an `If-Match` on a "category
+     row-version token" that no column provided, and no code was declared for the mismatch. The
+     row now carries a `mutation_seq` and the door refuses a mismatch `STALE_CATEGORY_TOKEN` (409),
+     this slice's own — `STALE_REVISION` is 01's entity-head code and `STALE_LIVE_OP` the
+     `GovernedLiveOp` envelope's, and neither is this door's precondition. **C2 is amended** so the
+     counter is not read as a revision: categories still have no revisions and no versions, and
+     nothing freezes, snapshots or treats `mutation_seq` as version content.
+  3. **The satisfying version gets a column, and `coalesced-into(version)` becomes `coalesced`.**
+     `products_catalog_version_request` gains `satisfied_by_version_id`. A state value cannot
+     carry a parameter no column holds: after commit there was no queryable link from a version to
+     the requests it satisfied, so a replayed `CatalogVersionPublished` could not have its
+     `satisfiedRequests` rebuilt and pricing's stuck pending refs could not be reconciled.
+  4. **The content-PII write block is wired at five doors, and 09 leaves the enumeration.** 05's
+     `inst-gv-reject` and `inst-bg-open`, and 07's `inst-cr-door`, `inst-bc-ceremony` and
+     `inst-pr-retirement`, now pass their free-text reason through 02's `inst-av-pii-block` before
+     the row is written, a hit failing `CONTENT_PII_BLOCKED` — the form 01 already used at its
+     audit-row door. Both slices list the code in their response map as declared elsewhere.
+     **09 is struck from `inst-av-pii-reason`'s enumeration**: it has no free-text `reason` door of
+     its own — its batch reason lives on 05's `ApprovalRecord`, its mass-retire reason on 04's
+     `inst-rt-initiate`, both already enumerated, and its only other stored reason is the literal
+     `batch-abandoned` constant. The four-slice class was a three-slice class.
+  5. **The metadata PATCH is a per-key merge, a `null` value removes a key, and a write to a
+     terminal entity is refused `ENTITY_TERMINAL`.** `inst-md-write` capped key count without
+     stating remove semantics, so a map standing at the cap had no exit. The refusal code stays
+     01's and is raised here: **P-D-06** puts the map outside the head's *version content*, which
+     governs what a snapshot freezes and not what the terminal guard refuses, and **P-D-32**
+     already widened `ENTITY_TERMINAL` to any head write on a `retired`/`discarded` row.
+  6. **A `BucketRegistry` lookup miss is fail-closed, and §5's agreement test gains a third
+     assertion.** The registry is a compile-time map, so a miss is a real runtime case: a
+     published-state column carrying no tag means it was added without registering one, and the
+     head door refuses the write under the pipeline's own posture rather than routing to a default
+     bucket. The agreement test compared only columns *both* artifacts name; it now also asserts
+     that no published-state column is named by **neither**, which is the exact column the door's
+     miss would refuse.
+  7. **A `Doors` cell is per action, and the three contradicted cells take their routes.** Where a
+     row holds several actions and a declared route spends one, the cell names the route and the
+     action, and says which actions still have none — a bare route in a multi-action row would
+     otherwise read as if the whole row were doored. `approval × read` takes 05's own pending-queue
+     door, `category × read` takes 08's browse door, `catalog_version × read` takes 09's export
+     door.
+- **Measured, not argued**, arm by arm where a measurement decided it:
+  - Arm 2 at the donor: `pricing_price_window` hit exactly this problem and answered it with a
+    column — "D-191's `If-Match` needs something to compare an entity tag against", in
+    `gears/bss/pricing/pricing/src/infra/storage/migrations/m20260821_000039_create_pricing_price_window.rs`
+    — while `pricing_price` already carried `row_version`. The donor's counter counts **acts, not row
+    writes**, and its migration records why that is load-bearing: an approval subject is built from
+    an act identity, and a retry after a refusal must render the same subject or the approval loop
+    has no exit. The category door spends a `GovernedLiveOp`, so the same hazard is live here and
+    the column inherits the act semantics.
+  - Arm 3 inside this set: 06 §4 already spells the `FreezeLedger`'s `not_frozen(forced_at,
+    ceremony_ref)` out as columns. One parameterized state in the slice had columns and the other
+    did not; the precedent chose the arm.
+  - Arm 4 at the donor, which argued **against** the rule and lost on a stated reason: pricing has
+    no content-PII write block at all. All seventeen `pii` occurrences in its source are
+    field-level — pricing's audit-PII rule (its **D-61**: the audit log stores a pseudonymous
+    principal id, never a display name or an email; the donor's instruction id is not cited here,
+    **P-D-43** having struck those from this set). `CONTENT_PII_BLOCKED` on free text is this set's invention. It is
+    kept because slice 10 carries a DSAR erasure obligation pricing does not, and 02's stated
+    consequence for an unwired door is that personal data typed into it is unreachable by erasure
+    forever. Half-wired was the worst available state: it read as enforced and was not.
+  - Arm 7 by census: the set declares seventeen routes as code spans; the `Doors` column held
+    fourteen, and the three outside it named exactly the three grants whose cells read "no route
+    declared".
+- **Consequence, recorded rather than hidden**: **lint 3 is now green** — all seventeen declared
+  routes appear in the `Doors` column. That is a property of the artifact, not of a gate: no job
+  runs the lints, and 12 §6 still records that lint 3's population exists in two spellings, which
+  this arm does not fix.
+- **Not decided here**: the two duplicate open items the sweep left for an ownership call — the
+  `commit → durable-acceptance` meter filed identically in 06 and 08 and declared by neither, and
+  whether 02 owns the free-text class it enumerates. Both are cheap in code and were excluded on
+  that ground.
+- **Propagated**: `design/01-foundation.md` (§1.7's `BucketRegistry` row, §5's agreement test, §6 —
+  item 6 struck and the list renumbered to twelve); `design/02-taxonomy-attributes.md` (C2, §3.3's
+  two code lists, `inst-av-category-branch`, `inst-tc-etag`, `inst-md-write`, `inst-md-placement`,
+  `inst-av-pii-reason`, §4.1's `products_category`, §6 — two items struck);
+  `design/05-governance.md` (§3.2's column convention and three cells, §4's code declaration and
+  response map, `inst-gv-reject`, `inst-bg-open`, §6 — the PII item struck and the grant-gap item
+  re-measured); `design/06-catalog-version.md` (§4's request table, §6 — item struck);
+  `design/07-reference-signal.md` (`inst-cr-door`, `inst-bc-ceremony`, `inst-pr-retirement`, the
+  response map, §6 — item struck); `design/09-bulk-promotion.md` (§6 — item struck, the slice
+  owing nothing); `design/10-retention-erasure.md` (`inst-er-export`'s L5 clause, `inst-er-erase`,
+  §6 — item struck); `PRD.md` (§15's cross-tenant DSAR row, struck and answered).
+- **Owed**: nothing in this set. Arm 1's contingency sits with Legal and is not a design debt; arm
+  2's column and arm 3's column are implementation work, which is what the round exists to unblock.
+
+#### P-D-49 — Six live contradictions: the takeover race, the vacuous GC gate, one clone vocabulary, a clearable successor, a principal column, and an entity-kind column
+
+- **Date**: 2026-08-29 (owner call — the contradiction round)
+- **Context**: the 211 open items were measured by what would settle each. 74 are risks with no
+  question and ~125 need an owner call; the six below are the subset where the set **currently says
+  two things that cannot both be built**, so answering them repairs a document rather than filling a
+  gap. Every premise was opened at its source before the round, and one of mine did not survive that
+  check — see the correction under arm 1.
+- **Decision**, six arms:
+  1. **The expired-key takeover is a compare-and-swap**, and `IDEMPOTENCY_KEY_IN_FLIGHT` has two
+     documented paths. Nothing holds an expired row between a transaction's conflict check and its
+     takeover UPDATE, so two duplicates on one expired key both clear the check, both read the same
+     expired row, and — without a predicate on the row's own claim stamp — **both execute the
+     guarded mutation under one key**. The UPDATE now carries that predicate; the loser is refused
+     in-flight and executes nothing. The fresh-claim path stays unreachable and is recorded as such:
+     reaching it means the one-transaction contract was violated, and refusing is how that becomes
+     visible. **P-D-42's transaction contract and P-D-38's posture are untouched.**
+  2. **Slice 10's `RetentionGate` ranges over the version's `participant_set_snapshot`**, not over
+     the ledger rows that happen to exist. A snapshot member with no registration holds the version;
+     an empty snapshot — nobody ever owed an ack — is collectable. The universal quantification let
+     an empty ledger satisfy the gate vacuously and collect a version nobody had frozen, against C4.
+  3. **The clone has one outcome vocabulary: it refuses, and the refusal collects.** "Forces
+     re-selection" is the operator's next act on that answer, not a second wire outcome — the only
+     reading under which §5's one fixture yields three named failures.
+  4. **`replaced_by_sku_id` is write-once per retirement, not per row**: the governed cancel of a
+     retirement's `ScheduledTransition` clears it in the same statement. Without that arm a
+     cancelled, un-deprecated SKU stayed `published` naming a successor no admitted write could clear.
+  5. **The identity map gains `principal_ref`** (pseudonymous, NOT NULL, indexed), because three
+     rules read the map by principal and the key admitted no such read. A tombstone destroys the
+     payload and leaves the pseudonym, which is what the slice already means by "pseudonym retained".
+  6. **The clone disposition matrix gains an `Applies to` column.** One table served both entity
+     kinds while the rename rule it delegates to is Product-only and `products_sku` carries no name
+     column at all, so its "Canonical name" row was unbuildable for half its subjects. Every value
+     in the new column is a fact 01 §4.1/§4.2 already states.
+- **A premise of mine that did not survive its own check, recorded because the round was put to the
+  owner on it.** Arm 1 was first brought as "restore the claim's own transaction, because the donor
+  is built the other way". Opening `gears/bss/pricing/pricing/src/infra/storage/repo/idempotency_repo.rs`
+  showed the opposite: the donor holds claim and answer in **one** transaction exactly as this gear
+  does after P-D-42, and its own module doc says the fresh-claim refusal is *"Unreachable under the
+  one-transaction contract"*. What keeps the code live there is the takeover race — *"Reachable in
+  production, with no contract violation by anyone"* — and *"no tightening of the transaction
+  contract closes it"*. So the recommendation was withdrawn and re-put; the arm that landed is
+  cheaper, reverses nothing, and closes a **double-execution** defect the first framing would have
+  left standing. Both quotations byte-verified.
+- **The costs, stated**:
+  - Arm 2: a tenant with no registered participant has an empty snapshot, so its versions are
+    collectable with no ack at all — correct by the rule above, and worth knowing before the first
+    participant registers.
+  - Arm 5: the principal↔ref linkage survives erasure by construction. That is what makes a repeat
+    DSAR answerable, and it is a posture Legal may wish to rule on — the `PRD` §15 rows on the
+    allow-list and the cross-tenant DSAR reach are the place.
+  - Arm 4: one more admitted write in the append-only whitelist, on a column whose whole point was
+    that it never changed.
+- **Propagated**: `design/01-foundation.md` (§3.2's expiry and in-flight rows, §4.2's whitelist, §6);
+  `design/04-lifecycle.md` (§6); `design/06-catalog-version.md` (§6, and — added 2026-08-29 —
+  `inst-fz-liveness`'s liveness formula); `design/10-retention-erasure.md` (`inst-rt-gc`, §4's
+  identity map, §6); `design/11-clone.md` (C4, §3.1, §6); and — added 2026-08-29, the arm-2 domain
+  correction having reached only `inst-rt-gc` until then — `DECISIONS.md` **P-D-18** (the entry
+  that defines version liveness) and `PRD.md` (`fr-grandfathered-retention-coupling`, §9.2's
+  protocol line, AC #44's `And` clause, §15's closed liveness-source row).
+- **Owed**: nothing.
+
+#### P-D-48 — The six flagged decisions, put to the owner: two amended, one completed, three confirmed as recorded
+
+- **Date**: 2026-08-28 (owner call — the flagged-decision round)
+- **Context**: P-D-14…P-D-20 were registered FLAGGED by the branch review on 2026-08-26 and never
+  put to the owner; P-D-47 had confirmed P-D-19 as amended after measuring its premise against the
+  PRD's pre-decision text. The other six were measured the same way — every claim that the PRD, the donor or the
+  platform already said something was opened at its source, with the PRD read at `eb68b8515` — and put to the owner in one round. All six recommendations were taken as put.
+- **Decision**, six calls:
+  1. **P-D-14 confirmed as amended: on a dirty head the composition clear is deferred, never
+     refused.** The owning slice's reading (06 `inst-cc-clear`) wins over the entry's *refused*:
+     the caller is an inbound signal, not a request, so there is nobody to answer a refusal to; 06
+     §3.2 raises no code for it by design; a deferral cannot wedge a publish queue. The signal is
+     durable and idempotent, the flag stays set, `composition_clear_held` names the head, and the
+     clear re-evaluates when the head next goes clean. 05, the PRD and AC #26 stop being neutral.
+  2. **P-D-15 confirmed as recorded**: every §9.2 inbound machine contract is a `products-sdk`
+     client resolved from `ClientHub`.
+  3. **P-D-16 confirmed, and its open half closed: the unresolvable-target arm carries no flag of
+     its own.** Its admission predicate is a resolver fact (not-found), not operator discretion; the
+     arm already increments the break-glass `TripwireCounter`; a default-OFF flag would reinstate
+     the wedge the arm exists to exit.
+  4. **P-D-17 confirmed as recorded**: a same-identity promotion row with different content is
+     update-as-draft.
+  5. **P-D-18 confirmed, with the v1 registered freeze-participant set = {plan-price (pricing
+     gear)}** — the P-D-03 pattern for the sibling signal: the ack and release clients are built
+     jointly with this gear, and Contracts and Billing register at their own build time. No v1 duty
+     is booked on a gear that does not exist; the registry-side half of `PRD` §15's row on the
+     silent ack counterparts closes, and 12 §6's question whether the obligations are booked on
+     gears that exist closes with it. Whether pricing's design accepts the ack and the release is
+     the cross-gear half and stays open.
+  6. **P-D-20 confirmed, and completed with the door it lacked**: the lead-window re-announcement
+     of `SkuRetired`/`ProductRetired` is enqueued by 01's publish door in the publish's own
+     transaction — a new row, `inst-fd-publish-reannounce`, beside `inst-fd-publish-emit`. The
+     event, its payload and the retirement identity are 04's (`inst-rt-initiate`); the enqueue is
+     the door's. 04 §6 had recorded that the re-emitter had no door.
+- **Measured, not argued**:
+  - Call 1: 06 §3.2 raises no error code for the clear because its caller is an inbound signal,
+    not a request; 04's flip guard defers the same way; the producer's side of the signal is
+    unregistered (`PRD` §15), so a refusal code would be a wire fact for a contract pricing has not
+    adopted.
+  - Call 2: `docs/ARCHITECTURE_MANIFEST.md` — *"in-process gears register local adapters in
+    `ClientHub`"*; `docs/arch/toolkit-contract-binding/DESIGN.md` allows a remote-capable contract
+    to be satisfied locally; and pricing already takes a `ProductCatalogClientV1` from the
+    `ClientHub` (`gears/bss/pricing/pricing/src/module.rs`), consuming this gear in-process in the
+    other direction.
+  - Call 3: the amended FR says *MAY* under the same ceremony and names no flag; the donor has no
+    break-glass lane at all, so there is no precedent either way.
+  - Call 4: the parity citation (Stripe test/live, Zuora Deployment Manager) predates the decision
+    — it is in the PRD at `eb68b8515`; the donor's bulk import edits an existing draft under its
+    version and conflicts only on a concurrent edit (`BULK_ROW_CONFLICT`), so update is the donor's
+    shape and conflict is reserved for a version mismatch.
+  - Call 5: the PRD named three participants (the `freezeComplete` glossary row and §9.2's
+    `Direction` line); Billing has no gear, Contracts' PRD never cites `CatalogVersion`, and
+    pricing's design set contains no mention of producing an ack or a release. P-D-03 had already
+    narrowed the sibling producer set to {plan-price} on the same facts.
+  - Call 6: the pre-decision PRD named only adoption-block and browsable as initiation effects, so
+    P-D-20's premise holds; 04 §6 recorded the missing door; 01's publish door already carries
+    lane rows under the act unit (P-D-34). The donor is silent — pricing retires without a lead
+    window, and D-146's *terminal for revisioning* is post-flip.
+- **The costs, stated**:
+  - Call 1: a deferred clear can wait indefinitely on a head that never goes clean; the alert is the
+    only signal — and a refusal would not have cleaned the head either.
+  - Call 5: with pricing silent, every version stays posting-unsafe until its ack lands — already
+    the set's stated v1 posture, now on one participant instead of three. The §15 row's owner is
+    Architecture with the participants; this is a product call on the registry's own governed set,
+    taken as P-D-03 was.
+  - Call 6: an event declared by 04 is enqueued by a 01 door. The alternative — 04 reacting to
+    `SkuPublished` after commit — is a second transaction, at-least-once, with no ordering
+    guarantee against the publish event it answers.
+- **Propagated**: `design/01-foundation.md` (§1.4, the publish door's `inst-fd-publish-reannounce`
+  row, §4.5, §6); `design/04-lifecycle.md` (`inst-rt-initiate`, §4 events, §5);
+  `design/05-governance.md` (`inst-gv-one-shot`); `design/06-catalog-version.md` (`inst-cc-clear`,
+  `inst-fz-timeout`, `inst-fz-liveness`, §6); `design/12-consumer-contracts.md` (`ObligationRegister`,
+  §6); `PRD.md` (the branch-review note, `fr-materiality-gated-publish`, the `freezeComplete` glossary
+  row, §9.2's freeze-ack and composition-signal blocks, AC #26, the §15 row); `DESIGN.md` (the
+  status line, the cross-gear bullet, the flags paragraph).
+- **Owed**: nothing. No decision in this register is flagged.
+
+#### P-D-47 — The last four build-blockers: a tombstone state, a withdrawn opt-in, two codes, and the broker's own producer
+
+- **Date**: 2026-08-28 (owner call — the second build-blocker round)
+- **Context**: after P-D-46, four items across the set still said something could not be built:
+  03's `RecognizedSet` removal, 06's P-D-19 opt-in, 11's accounting-code refusal, and the heaviest
+  items behind 01 §6's `PRD` §15 pointer. Each was measured before it was put to the owner — three
+  at the donor or the platform, one in this set's own git history — and all four recommendations
+  were taken as put.
+- **Decision**, four arms:
+  1. **A `RecognizedSet` removal is a third state, never a DELETE.** The roster becomes
+     `active|deprecated|removed`; the set is its `active` and `deprecated` rows and a `removed` row
+     is a tombstone outside it, so a de-listed member fails `UNRECOGNIZED_UNIT` and the trigger
+     whitelist stays as it was — `state` and `display_label`, no DELETE arm. Transitions:
+     `active → deprecated → removed`, with `removed → active` (and `deprecated → active`) re-listing
+     the same identity through the same `GovernedLiveOp`. Seeded members are still not removable.
+     **The same arm closes 02's twin question** for `products_attribute_definition`: its roster gains
+     `removed`, and a value on a terminal head keeps resolving because nothing is ever deleted.
+  2. **P-D-19 is confirmed as amended: the per-version auto-fallback opt-in is withdrawn from v1.**
+     The resolver's refusal at `complete(forced)` has one exit — every forced participant freezes or
+     releases through its own door. A participant that never returns leaves the governed set
+     (`inst-fz-membership`) and the next increment snapshots the reduced set; the forced version
+     itself stays refused, which is the pinned default. The opt-in goes back to being what the PRD
+     called it before P-D-19: an off-by-default later enhancement, with no column, door or ceremony
+     in v1. P-D-19's status line records the amendment; its title keeps its historical wording.
+  3. **Two codes are minted for the Finance sets**: `ACCOUNTING_CODE_DEPRECATED` (422 architectural —
+     a `deprecated` code blocking new assignment) and `ACCOUNTING_CODE_DELIST_BLOCKED` (409 — removal
+     refused while a non-terminal published head carries the code), one code per refusal for
+     `taxCategory` and `glCode` alike, as `ACCOUNTING_CODE_UNKNOWN` already is. They are exactly as
+     contingent as the two columns (`PRD` §15's ownership question) and go with them if it goes.
+  4. **The gear publishes through the platform's `event-broker-sdk` outbox producer, and the
+     envelope carries nothing of the toolkit outbox's.** `partition_id`/`seq` leave the envelope —
+     the slot P-D-27 named is `readOnly` on the broker's schema and rejected on publish. The
+     `(tenant, aggregate, sequence)` operand is the broker's read-side `sequence`; the gear sets no
+     `partition_key`, so ADR-0002's default puts every event of one tenant on one partition in
+     publish order; the toolkit's `seq` rides the producer chain's `meta.sequence` in managed
+     monotonic mode, write-only, for ingest-side dedup. The envelope's idempotency key is the event
+     `id`, which the SDK mints once at enqueue and every delivery attempt repeats. P-D-27's third
+     row is re-taken; its other three stand. P-D-22 is refined, not reversed: the outbox is still
+     the toolkit's, and its processor is now the SDK's producer rather than a handler of this gear's.
+- **Measured, not argued**:
+  - Arm 1 at the donor: `gears/bss/pricing`'s `TaxonomyState` is `Active | Retired`, and
+    `pricing/src/infra/storage/repo/taxonomy_repo.rs` states why a value is never deleted — *"a
+    value a published row names has to keep existing, because the row keeps naming it"* — and that
+    *"a `PUT` re-adding an existing retired value re-activates it"*. Both byte-verified.
+  - Arm 2 in this set's own history: `PRD.md` at `692c57989` (2026-08-24, before P-D-19 existed)
+    read *"the default is **pinned fail-closed** for that participant's content (auto-fallback is an
+    off-by-default later enhancement)"*. P-D-19, recorded two days later, made that enhancement the
+    second disjunct of a v1 refusal predicate — the one disjunct no table, door or ceremony carried.
+    No other gear has a per-version operator opt-in that relaxes a fail-closed pin.
+  - Arm 3 at the donor: `TAXONOMY_VALUE_IN_USE` (409) is one code across every taxonomy class
+    pricing governs, which is the shape arm 3 takes.
+  - Arm 4 at the platform, the donor being silent (pricing runs a private `pricing_outbox` and
+    takes no dependency on the SDK): `gears/system/event-broker/event-broker-sdk/README.md` —
+    *"Outbox producers use toolkit-db `OutboxMessage.seq` as the durable local sequence and Event
+    Broker cursors as the authoritative accepted sequence"*; `src/producer/outbox.rs` builds
+    `meta.sequence` from that `seq` and re-uses the stored event `id` on every attempt;
+    `src/producer/event_factory.rs` mints the `id` (`Uuid::now_v7()`) when the event is prepared.
+    ADR-0002: the partition is MurmurHash3-32 over `partition_key`, else `tenant_id`, computed by
+    the SDK for outbox routing and re-computed authoritatively at ingest.
+- **The costs, stated**:
+  - Arm 1: the PRD's word is "full removal", which a literal reader takes for a DELETE; the design
+    now says in three places that it is a state.
+  - Arm 2: a wedged version cannot be rescued in place — the only exit is a set-wide governance act
+    and a new version. That is C3's roll-forward posture applied to the abnormal path, and P-D-19's
+    own cost line had argued the other way.
+  - Arm 4: one partition per tenant is a per-tenant throughput ceiling the bulk lane meets first;
+    the named amendment path is `partition_key = tenant_id:aggregate_id`, which buys per-aggregate
+    order back at the cost of cross-aggregate order. The publish path becomes the SDK's code, with a
+    broker-issued producer registration this set had not priced. One residue is registered rather
+    than decided: the `subject_type` the envelope requires (01 §6).
+- **Propagated**: `design/01-foundation.md` (§1.4, §1.8, §4.4's outbox bullets, §6);
+  `design/02-taxonomy-attributes.md` (`inst-ad-deprecate-then-remove`, §4.1, §6);
+  `design/03-sku-classification.md` (§1.7, `inst-mt-recognized`, `inst-us-delist`,
+  `inst-pt-governed`, `inst-ac-recognized`, §3.1, §3.2, §4, §5); `design/06-catalog-version.md`
+  (C5, `inst-rv-intent`, `inst-fz-force`, §3.2, §5); `design/11-clone.md` (§3.1, §4);
+  `design/12-consumer-contracts.md` (`inst-rc-dedup`, the §4.1 row-11 note); `design/README.md`;
+  `PRD.md` (`fr-freeze-recovery`, AC #22, the branch-review note, three §15 rows); `DESIGN.md`
+  (the flagged-decision status line).
+- **Owed**: nothing. The set's build-blocker count is zero; what remains open is registered as
+  questions, none of which says something cannot be built.
+
+#### P-D-46 — Four write-path blockers, three of them settled by opening the donor
+
+- **Date**: 2026-08-28 (owner call — the build-blocker round)
+- **Context**: after the slice-12 rounds, eight items across the set still said something could not
+  be built. Four are write-path questions — who writes what, where — and one of them held the
+  **first migration**. Three were settled by measurement rather than by choosing between readings.
+- **Decision**, four arms:
+  1. **The `REVOKE` arm is withdrawn.** The trigger whitelist becomes the whole append-only guard on
+     **both** engines. **P-D-35** had made `REVOKE` a Postgres-only arm; 01 §6 then measured that a
+     blanket `REVOKE UPDATE, DELETE` from the writing role forbids every write the gear legitimately
+     makes — head rows on save, the audit sealing UPDATE, the retention DELETE and §4.3's DELETE.
+  2. **`inst-fd-save-txn` writes the entity's content rows** in the slices' own tables, in the same
+     transaction. No third registration point: the door writes, the owning slice registers the
+     validators, which is the mechanism already in place.
+  3. **The retirement `reason` splits into two columns** — `retirement_reason` (the operator's,
+     written once at `inst-rt-initiate`) and `outcome_reason` (the runner's, written on
+     `applied|failed|deferred`).
+  4. **`closed_at` is struck.** The bulk batch closes on the timer.
+- **Measured at the donor, not argued** — three of the four:
+  - Arm 1: `gears/bss/pricing` issues **no `REVOKE` anywhere**, deliberately, and says so in both
+    engine tiers' tests: *"it names a deployment role the migration does not own and SQLite has no
+    GRANT at all. The trigger is the portable half, and it is the half that has to work."* 01
+    already names pricing "the pattern donor" **for append-only triggers with column whitelists** —
+    the very pattern this arm duplicated. Quotation byte-verified against
+    `pricing/tests/postgres_approval.rs`.
+  - Arm 2: no registration mechanism for content writers exists in the donor's source at all, which
+    priced the alternative — new machinery for two consumers, with a call-order decision attached.
+  - Arm 4: pricing **D-47** states the contract as "**bulk** … coalesces into one version, hard max delay **5
+    min**". Five minutes is the declared latency bound, not a fallback, so "every bulk batch
+    waits the full five minutes" is conformance rather than the defect 06 read it as. An early-close
+    signal would amend an inbound two-gear machine contract for an optimisation nobody requested.
+- **The cost of arm 1, stated because it was argued**: the trigger defends against an application
+  bug; `REVOKE` defended against someone at a psql prompt. That second ring is given up on the
+  engine that holds production financial records. It is given up knowingly, on the donor's reasoning
+  and because the arm as written was unimplementable in the first migration.
+- **Arm 3's counter-argument, and why it lost**: a column per writer multiplies as authors are
+  added, and `reason` + `reason_source` scales better. It lost because the protection would then be
+  an application rule rather than the schema — the same "convention instead of a guarantee" this set
+  had already recorded as lint 7's weakness one round earlier.
+- **Arm 4 re-examined and confirmed (2026-08-29, owner's call)**: the cf semantic review found
+  the timer call decided here but never carried into the operative rules — three of them still
+  described the struck early-close signal, and after the first two were corrected `design/06`
+  contradicted itself between its own rule 1 and rule 2. The owner was offered the alternative
+  (restore the close marker as a sanctioned amendment of the inbound two-gear contract) and
+  declined it. **The batch closes on the timer; there is no early-close signal.** The three rules
+  now say so.
+- **Propagated**: `design/01-foundation.md` (C5, §4.4's audit posture, `inst-fd-save-txn`);
+  `design/04-lifecycle.md` (§4's transition table); `design/05-governance.md` (C7);
+  `design/06-catalog-version.md` (§4's request table, and — added 2026-08-29 — `inst-cv-request`
+  and `inst-cv-coalesce`); `design/09-bulk-promotion.md` (§1.5's scope statement and
+  `inst-bk-commit`, never named until 2026-08-29); `PRD.md` (§15 and §16's interim control).
+- **Owed**: nothing. Four of the set's eight remaining build-blockers close here; the other four are
+  03's `RecognizedSet` removal, 06's P-D-19 opt-in, 11's accounting code, and 01's `PRD` §15 pointer.
+
+#### P-D-45 — The last four lint grammars, and an event register that cannot be harvested
+
+- **Date**: 2026-08-28 (owner call — the third slice-12 blocker round)
+- **Context**: lints 3, 4, 7 and 8 were prose predicates over prose. Each is settled below, and one
+  of them produced the sharpest measurement of the whole programme.
+- **Decision**, four arms:
+  1. **Lint 3 reads a `Doors` column** added to 05 §3.2, which becomes a table. The population is
+     the **fourteen declared routes** — `` `METHOD /bss-products/v1/…` `` code spans, one
+     machine-readable form. Doors named only in prose are outside it.
+  2. **Lint 4 reads an authored `EventRegister`**, never a harvest.
+  3. **Lint 7 reads column names**: an operator identity lives in a `*_actor_ref` column, the
+     convention 10's `products_identity_ref` already follows, recorded in `DESIGN.md` §3.7.
+  4. **Lint 8 needed a definition, not an artifact**: "registry schema surface" is the table and
+     column declarations of the slices' §4 sections. The six §17.2 words are already a literal
+     list, so the lint is executable as it stands.
+- **The measurement behind arm 2, recorded because it is the evidence and not an opinion**: five
+  harvest passes over one unchanged tree returned five different answers. Counting events by name
+  gave **31**; a numbered-row pattern attributed 25 of them and a sub-bullet pattern 22, each
+  finding rows the other missed; a literal `Emit \`X\`` pattern gave **24** and surfaced a
+  **32nd** event no name census had seen (`PiiAllowlistChanged`); a widened suffix census gave
+  **35**, two of them the donor gear's (`PlanPublished`, `BundleCompositionCompleted`) and two real
+  ones dropped by a name-length filter (`SkuCreated`, `SkuRetired`). The emitting-instruction
+  attribution disagreed in **28 of 31** rows. An emitting instruction is not recoverable from
+  prose, so the register is written by each rule's owner and the lint reads only the table.
+- **Two lints ship with their weakness stated rather than hidden**: lint 7's naming convention is
+  enforced by the same reading it replaced — a column named otherwise passes silently, green over
+  the defect it exists to catch. Lint 8 sees only §4, so a monetization marker arriving as an SDK
+  field or event payload is invisible to it. Both were argued and accepted; the alternatives
+  (an `identity:` field on all 34 tables; a surface spanning undeclared SDK shapes) cost more than
+  they buy today.
+- **Two gaps this round made countable for the first time**: fourteen of the twenty-three grant
+  rows carry no route in the `Doors` column (05 §6), and the `EventRegister` is declared and empty
+  (12 §6). Both are registered, neither is invented shut. *(This entry recorded the first gap as
+  "sixteen of twenty-four" until 2026-08-29; the audit of this round's own propagation re-measured
+  the table the round built — 23 grant rows, 9 of them routed — and found the figure wrong in the
+  same commit that created the table, `5977aec64`.)*
+- **Propagated**: `design/05-governance.md` (§3.2 as a table with `Doors`; §6's grant gap);
+  `design/12-consumer-contracts.md` (lints 3, 4, 7, 8; §6's register item); `DESIGN.md` (§3.7's
+  column convention).
+- **Owed**: the `EventRegister`'s rows, per slice — the only thing now standing between the nine
+  lints and a CI job that runs them.
+
+#### P-D-44 — The AC #38 map, and the artifacts that turned out to already exist
+
+- **Date**: 2026-08-28 (owner call — the second slice-12 blocker round)
+- **Context**: lint 2's input set existed in no artifact. The code → declaring-slice half was
+  settled by **P-D-35**; the row → code half lived as prose scattered across five slices, three of
+  which claimed rows without listing codes. Assembling it forced three rows that do not reduce.
+- **Decision**, four arms:
+  1. **The post-v1 EOL row stays outside lint 2's universe.** `EOL_DISABLED` refuses *the feature
+     being off in v1*, not "EOL without an acknowledged migration consumer" — a different condition,
+     and lint 2 requires the code to answer the named one. `design/04-lifecycle.md`'s claim to have
+     mapped the row is corrected.
+  2. **The "indeterminate parent-child region-containment" row is withdrawn as unreachable.**
+     **P-D-39** made both scope columns `NOT NULL` with the empty set meaning unrestricted, so every
+     pair of scopes is comparable and no input produces indeterminacy. The row predates that
+     decision, from the region-algebra gate that was answered a different way.
+  3. **The "de-listed/deprecated unit" row splits in two.** The two conditions have different
+     operands — recognition versus lifecycle — and the set already declares and raises a distinct
+     code for each. One code would make one condition answer under a name that misdescribes it,
+     which is arm 1's own objection.
+  4. **The artifacts are named**: the `SchemaPin` is `products-sdk/schema-pin.toml`, TOML so a gate
+     reads it without parsing prose. The fixture crate needed no naming — **it already exists**.
+- **Measured, not chosen**: `cf-gears-bss-fixtures` ("the BSS joint golden conformance fixture
+  corpus… the only fixture crate a gear may take as a production dependency") and
+  `cf-gears-bss-fixtures-conformance` (runners and traits, dev-dependency only) are built, sit at
+  `gears/bss/fixtures/`, and the donor gear already depends on both. Slice 12 wrote "a shared
+  fixture crate" while it stood two directories away. Half of that open item closed by reading the
+  tree rather than by deciding anything.
+- **The count is the trap this entry wants on record**: the enumeration held at **fifteen** rows
+  across arms 2 and 3 — one withdrawn, one split — while its membership changed. Every citation of
+  "fifteen" was re-checked against the table and all still hold, but the number would not have
+  revealed a mistake in either direction.
+- **Carried, not closed**: row 11's code rests on `design/03-sku-classification.md`'s open question
+  whether a `RecognizedSet` removal is a physical DELETE or a third state. Under the third-state
+  reading the row has no code. The map states the dependency in the cell's own note.
+- **Propagated**: `design/12-consumer-contracts.md` (§4.1, the map and the artifact table);
+  `design/04-lifecycle.md` (the corrected rows-mapped claim); `PRD.md` (the enumeration, in both
+  §6's FR and §12's AC #38).
+- **Owed**: the five lints still without a harvest grammar (2 now has its input set, so 3, 4, 7, 8),
+  and the CI job that runs any of them — both open in `design/12-consumer-contracts.md` §6.
+
+#### P-D-43 — The checking layer's four grammars: a lint reads tokens, not prose
+
+- **Date**: 2026-08-28 (owner call — the first of the slice-12 blocker rounds)
+- **Context**: seven of the set's twenty-eight "cannot be built" items sit in the slice whose job is
+  to check the other eleven, and four of those seven are the same defect wearing four faces: a lint
+  whose input is prose. Nothing could be wired until they were settled, because wiring a lint that
+  cannot be executed installs a red gate.
+- **Decision**, four arms:
+  1. **Donor-gear `inst-*` ids are struck from this set.** A citation of another gear's instruction
+     id becomes prose naming the rule (`pricing's meter-binding rule`). Twelve sites in five files.
+  2. **Lint 6's domain narrows to `inst-*`.** `cpt-*`/`flow` ids are declared on unnumbered bullets
+     and an actor id is an Actors-table cell, so under the stated declaration grammar both kinds had
+     **zero** declarations and the lint was red on a correct set by construction. An actor
+     legitimately appears in every slice it acts in, and the set has no notion of an actor's owning
+     slice that would make "exactly once" mean anything.
+  3. **Lint 9's `Operand` cell is tokens**: one token per pin member, each a catalog field name or
+     one of three non-field markers — `(surface)`, `none in v1`, `payload`. Prose beside the tokens
+     is ignored.
+  4. **The register carries one propagation field and one citation form**: `- **Propagated**`,
+     naming documents by repo-relative path. A document **restates** a decision exactly when it
+     **cites the decision id**.
+- **The cost, recorded because it was argued and accepted**: arm 4's definition is the mechanical
+  one, and a document can cite an id without carrying the claim — the blindness measured on
+  **P-D-35**, where slice 10 cites the decision elsewhere for a different clause while the claim it
+  was taken to settle never landed. The lint will not see that, and is not meant to; the claim-level
+  check remains unowned. Arm 1 was taken **against the recommendation on the table**, which was to
+  extend the existing scope-qualifier grammar to `inst-*` as it already runs for `AC #N`. Its stated
+  price stands: three sites in `design/05-governance.md`, `design/12-consumer-contracts.md` and
+  `PRD.md` no longer carry a checkable pointer into the donor gear, and the misattribution this
+  programme caught twice by following such a pointer would now have to be caught by reading.
+- **Propagated**: `design/12-consumer-contracts.md` (lints 5, 6 and 9, and the harvest-grammar count
+  6 → 5); `design/05-governance.md`, `design/03-sku-classification.md`, `PRD.md` and this register
+  (the struck donor ids); this register's own propagation fields (7 renamed, 46 citations reformed).
+- **Owed**: the five lints still without a harvest grammar (2, 3, 4, 7, 8), and the job that runs
+  any of them — both open in `design/12-consumer-contracts.md` §6.
+
+#### P-D-42 — The idempotency store's last three operands
+
+- **Date**: 2026-08-28 (owner call — the last of slice 01's own open items)
+- **Context**: three operands the store named and never pinned: `in_flight_until`'s value, what the
+  three `internal:` lanes write into the response columns, and what `endpoint` holds for a wire
+  caller. The first had been filed as needing input this set does not hold, because no door timeout
+  exists anywhere to derive a deadline from.
+
+  **It turned out not to need one.** `in_flight_until` exists only because the claim committed in
+  its own transaction, and that arrangement rests on **P-D-26**'s stated reason — that a claim
+  inside the mutation's transaction would be "invisible to the concurrent duplicate the row exists
+  to refuse". Measured against the donor, that reason does not hold: `gears/bss/pricing`'s
+  `idempotency_repo` states in as many words that **"the gate is the insert, not a lookup"**, and a
+  losing duplicate's own INSERT conflicts with the winner's *uncommitted* row and waits — then
+  either finds the committed answer and replays it, or finds nothing left to conflict with, the
+  winner having rolled back, and claims the key itself. Visibility is never the mechanism; the
+  unique index is.
+
+  | Call | Propagation |
+  |---|---|
+  | **The claim joins the mutation's transaction**, superseding P-D-26's arm. On SQLite the loser is answered `SQLITE_BUSY` rather than blocking, so the door carries a busy timeout and retries — the guarantee is identical, two are never admitted, and only the waiting differs | 01 §3.2 `inst-fd-idem-claim-txn` |
+  | **`in_flight_until` is removed**, column and deadline alike. An unanswered claim was rolled back with its mutation, so nothing committed survives to expire and no row is ever left needing release. P-D-38's explicit delete-on-refusal becomes automatic for the same reason | 01 §3.2, §4.4 |
+  | **An `internal:` lane stores a synthetic `200` and its own outcome record as the body.** One CHECK, one shape, no nullable-for-internal arm, and absence keeps a single meaning in these columns | 01 §4.4 |
+  | **A wire caller's `endpoint` is the concrete resource path**, not the route template. Under the template two publishes of different entities under one client key share the whole key and an identical empty body hash, and the second replays the first's 200 without running — the path id being in neither the body nor, since P-D-34, the hash | 01 §3.2 `inst-fd-idem-key-scope` |
+
+- **The arguments against, stated**: a synthetic status that never reached a wire is stored as
+  though it had, and only an internal replay ever reads it; and the two lanes now name their
+  subject in different components of the key — the wire lane in `endpoint`, the internal lanes in
+  `client_key` — which §3.2 says once rather than leaving to be discovered.
+- **Propagated**: `design/01-foundation.md` (§3.2, §4.4, §6). Amends **P-D-26** a second time (two
+  of its four boundaries now stand) and simplifies **P-D-38**'s release step.

@@ -1,0 +1,185 @@
+[package]
+name = "cf-gears-bss-products"
+edition.workspace = true
+license.workspace = true
+description = "BSS Product & SKU Registry gear: the catalog authoring and publish engine"
+
+[lib]
+name = "bss_products"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Shared BSS coordination primitive (`coord_leases` + `LeaseManager`). The
+# per-tenant increment coalescer is a singleton drain (design/06 sec 2 rule 2,
+# P-D-56), so this gear splices coord's migration into its own `Migrator`
+# exactly as the sibling pricing and ledger gears do for their sweeps.
+coord = { workspace = true }
+tokio-util = { workspace = true }
+tokio = { workspace = true }
+
+bss-products-sdk = { workspace = true }
+
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# `infra::events::correlation_id` reads the W3C trace id off the ambient span,
+# which is the one request-scoped identifier the platform actually propagates
+# and the only honest source for the event envelope's `correlationId`
+# (P-D-01). `OpenTelemetrySpanExt::context` is the read-back;
+# `opentelemetry::trace` supplies `TraceContextExt` and the `TraceId::INVALID`
+# sentinel that distinguishes "no active span" from a real id. The same pair
+# `gears/mini-chat` uses for `current_otel_trace_id`, taken rather than
+# invented.
+tracing-opentelemetry = { workspace = true }
+opentelemetry = { workspace = true }
+# `v4` on top of the workspace's `serde`/`v5`: minting an `actor_ref` needs a
+# random uuid, and a v5 derived from the principal would make the pseudonym
+# recomputable by anyone holding the principal id — the opposite of what the
+# identity-ref map is for. Declared here rather than inherited: it compiles
+# today only because `toolkit-db` happens to enable `v4` and Cargo unifies
+# features across the graph, which is a dependency this crate never stated.
+uuid = { workspace = true, features = ["v4"] }
+
+# `SHA-256` for the idempotency payload digest and, from slice 06 on, a frozen
+# version row's `content_digest` (`domain::canonical`). The platform's own
+# FIPS-validated provider and the primitive the sibling pricing gear already
+# uses; `sha2`/`sha1`/`md5` are refused outright by architecture lint DE0708.
+aws-lc-rs = { workspace = true }
+
+# `normalized(name)` is pinned to NFKC then full casefold then whitespace
+# collapse, and is computed application-side precisely so both engines store
+# identical bytes. `char::to_lowercase` is not full casefold and NFKC has no
+# std equivalent, so the normalization cannot be hand-rolled without becoming a
+# second, wrong answer to the uniqueness operand.
+unicode-normalization = { workspace = true }
+
+# `toolkit` itself carries no `rest` Cargo feature — the REST API layer is not
+# feature-gated, so declaring `rest` in `#[toolkit::gear(capabilities = [...])]`
+# needs no feature bump here, matching the sibling pricing gear's manifest.
+toolkit = { workspace = true, features = ["db"] }
+toolkit-db = { workspace = true, features = ["pg", "sqlite"] }
+# `#[derive(Scopable)]` on the storage entities: the SecureORM tenant binding
+# every Foundation table carries.
+toolkit-db-macros = { workspace = true }
+# The entity models and the raw-SQL `Statement` the migrations execute; both
+# drivers, matching `toolkit-db`.
+sea-orm = { workspace = true, features = ["sqlx-postgres", "sqlx-sqlite"] }
+sea-orm-migration = { workspace = true }
+# `#[domain_model]` marker on the domain types (enforced by dylint DE0309).
+toolkit-macros = { workspace = true }
+
+# The list surfaces' query contract, taken from the platform rather than
+# hand-rolled (P-D-165): `ODataQuery`/`Page`/`PageInfo`/`CursorV1` and the
+# typed `FilterField` vocabulary. `with-utoipa` because every paginated door
+# registers `Page<T>` as an `OpenAPI` schema, exactly as the sibling pricing
+# gear's manifest does.
+# The gear's one instant type (P-D-167): every column, domain field, DTO and
+# fixture is `time::OffsetDateTime`. It replaced `chrono` wholesale rather
+# than beside it, because two representations of one instant is what let a
+# keyset walk over a timestamp lose every tied row — the platform's cursor
+# codec decodes `FieldKind::DateTimeUtc` to this crate's type, and a column
+# of the other one did not compare equal to it on `SQLite`. The sibling
+# `account-management` and `chat-engine` gears are typed this way for the
+# same reason, and the ledger's own instant module says so in its first line.
+time = { workspace = true }
+toolkit-odata = { workspace = true, features = ["with-utoipa"] }
+# `#[derive(ODataFilterable)]` on the per-door filter declarations: one
+# struct per list surface whose fields ARE the filterable vocabulary, so the
+# wire contract, the `OpenAPI` `$filter` doc and the storage mapping cannot
+# drift apart. The account-management gear declares its own the same way.
+toolkit-odata-macros = { workspace = true }
+
+# REST surface: the axum router `api::rest::router` mounts under the gear's
+# reserved `/bss-products/v1` prefix.
+axum = { workspace = true }
+# `#[toolkit_macros::api_dto(...)]`'s expansion needs the crate as a direct
+# dependency wherever REST DTOs land; taken now, alongside `axum`, because the
+# `rest` capability is declared in this slice even though no DTO exists yet.
+utoipa = { workspace = true }
+# Required as a direct dep by the `#[resource_error(...)]` macro expansion
+# Phase 4's error mapping will use, matching the sibling pricing gear's
+# manifest comment.
+toolkit-canonical-errors = { workspace = true }
+# Holds the per-process runtime populated in `init()`.
+arc-swap = { workspace = true }
+
+# Declared in `#[toolkit::gear(deps = [authz_resolver])]`: the PEP the
+# authoring surfaces will gate through starting Phase 4. The gear
+# implementation is referenced through the macro expansion only; the SDK crate
+# is the contract `init()` resolves from `ClientHub`.
+authz-resolver = { workspace = true }
+# The two gears the registry orders this one after: their clients are read at init.
+types-registry = { workspace = true }
+usage-collector = { workspace = true }
+authz-resolver-sdk = { workspace = true }
+types-registry-sdk = { workspace = true }
+usage-collector-sdk = { workspace = true }
+# `SecurityContext`, `AccessScope` and `pep_properties` — `crate::authz::access_scope`'s
+# own signature, matching the sibling ledger and pricing gears' manifests.
+toolkit-security = { workspace = true }
+# `AuthzPermissionV1` + `gts_instance!` for the GTS permission catalog
+# (`crate::gts::permissions`).
+toolkit-gts = { workspace = true }
+# `gts_instance!`'s expansion references the `gts` crate directly.
+gts = { workspace = true }
+# P-D-47: the toolkit outbox's processor is the broker SDK's own producer, not a
+# handler of this gear's. `outbox` gates `ProducerOutboxQueue`/`ProducerOutbox`
+# and pulls `db` with it; `EventBrokerApi` and `TypedEvent` are unconditional.
+# The gear does not *require* a broker — `Gear::init` falls back to the holding
+# processor when `ClientHub` has none — so this is a plain dependency rather
+# than a `deps = [...]` entry on the gear macro.
+event-broker-sdk = { workspace = true, features = ["outbox"] }
+# `crate::authz::authz_label_type_schemas` returns the stub type-schemas as
+# `serde_json::Value`, matching the sibling pricing gear's equivalent — needed
+# as a normal (not dev-only) dependency because that function is production
+# code, not a test.
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# `ServiceExt::oneshot` drives one request through the composed router in
+# `gear.rs`'s mount test, so the prefix reservation is asserted at the
+# HTTP level rather than by constructing a `Router` and trusting it.
+tower = { workspace = true }
+# `#[tokio::test]` for the repository suite, which exercises the async
+# `DBRunner` calls against the executed `SQLite` mirror. `sync` on top of the
+# in-crate suite's needs: the Postgres race probe parks one transaction on a
+# `tokio::sync::Notify` while the other contends, which is what makes the race
+# an observed sequence rather than a coin toss.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
+# The Postgres testcontainers harness (`tests/pg_support/`), adopted from the
+# sibling pricing gear rather than invented. Tests reach `testcontainers` items
+# through the `testcontainers_modules::testcontainers` re-export, so the bare
+# `testcontainers` crate is not a direct dep. It carries what the `SQLite`
+# mirror cannot: the chain executed on the engine production runs, and two
+# writers genuinely in flight at once — `sqlite::memory:` is private to its
+# connection, so a second writer queues on the pool instead of contending.
+testcontainers-modules = { workspace = true }
+# `MockBroker` (an in-process `EventBrokerApi`) so the producer path is exercised
+# without a running event-broker. Feature-gated in the SDK as `test-util`, which
+# is why it is named again here rather than inherited from the entry above.
+event-broker-sdk = { workspace = true, features = ["outbox", "test-util"] }
+# The positive control on `infra::events::correlation_id`. The function reads
+# a layer it does not install, so without these two the only thing the suite
+# could observe is its `None` branch — which is what let the correlation
+# obligation go unmeasured until now. `opentelemetry_sdk` supplies a real
+# `SdkTracerProvider` (no exporter needed: the default sampler still mints a
+# valid trace id) and `tracing-subscriber` the registry the layer attaches to.
+# Both taken from `gears/system/account-management/plugins/keycloak-idp-plugin`,
+# whose traceparent test builds the same three pieces the same way.
+tracing-subscriber = { workspace = true, features = ["registry"] }
+opentelemetry_sdk = { workspace = true, features = ["trace"] }
+# `Stream::poll_next` on the SDK's `FrameStream`, so the dedup/ordering
+# fixture (`dod-dedup-ordering`) consumes a real delivery stream instead of
+# copying the stored log. Dev-only: production code never polls a stream —
+# the leased processor is the SDK's own.
+futures-core = { workspace = true }
+# The seam suite (`tests/seam_suite.rs`, `design/12` §2.1, P-D-130/P-D-151):
+# the SchemaPin's two-sided check reads the consumer side's `CatalogSku` from
+# pricing's SDK and the pin itself from `schema-pin.toml`. Dev-only — the
+# products gear takes no production dependency on pricing.
+bss-pricing-sdk = { workspace = true }
+toml = { workspace = true }
