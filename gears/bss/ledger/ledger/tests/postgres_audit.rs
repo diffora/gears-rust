@@ -15,6 +15,7 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::doc_markdown,
+    clippy::integer_division,
     clippy::panic
 )]
 
@@ -22,12 +23,13 @@ use bss_ledger::domain::audit_chain::{AuditHashInput, audit_genesis_prev_hash, a
 use bss_ledger::infra::audit::event_type::AuditEventType;
 use bss_ledger::infra::audit::store::SecuredAuditStore;
 use bss_ledger::infra::storage::migrations::Migrator;
-use chrono::{DateTime, Utc};
+
+use bss_ledger::domain::instant::from_unix_millis;
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, Statement};
 use sea_orm_migration::MigratorTrait;
 use serde_json::json;
-use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
+use time::OffsetDateTime;
 use toolkit_db::secure::{AccessScope, TxConfig};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
@@ -72,7 +74,7 @@ async fn append(
     reason_code: Option<String>,
     before_after: serde_json::Value,
     correlation_id: Option<Uuid>,
-    retain_until: Option<DateTime<Utc>>,
+    retain_until: Option<OffsetDateTime>,
 ) -> Uuid {
     let scope = AccessScope::for_tenant(tenant);
     provider
@@ -102,7 +104,7 @@ async fn append(
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn appends_first_record_sealed_with_genesis_prev() {
-    let container = Postgres::default().start().await.unwrap();
+    let container = test_containers::postgres().start().await.unwrap();
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
 
@@ -177,7 +179,7 @@ async fn appends_first_record_sealed_with_genesis_prev() {
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn links_second_record_to_first() {
-    let container = Postgres::default().start().await.unwrap();
+    let container = test_containers::postgres().start().await.unwrap();
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
 
@@ -242,7 +244,7 @@ async fn links_second_record_to_first() {
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn append_only_trigger_rejects_update_and_delete() {
-    let container = Postgres::default().start().await.unwrap();
+    let container = test_containers::postgres().start().await.unwrap();
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
 
@@ -310,7 +312,7 @@ async fn append_only_trigger_rejects_update_and_delete() {
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn rewalk_detects_tamper() {
-    let container = Postgres::default().start().await.unwrap();
+    let container = test_containers::postgres().start().await.unwrap();
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
 
@@ -448,7 +450,7 @@ async fn rewalk_record(
 
     let before_after: serde_json::Value = serde_json::from_str(&before_after_text).unwrap();
     let correlation_id = correlation_text.map(|s| Uuid::parse_str(&s).unwrap());
-    let at_utc = DateTime::<Utc>::from_timestamp_micros(at_micros).unwrap();
+    let at_utc = from_unix_millis((at_micros) / 1000).unwrap();
 
     let recomputed = audit_row_hash(
         &AuditHashInput {
@@ -503,7 +505,7 @@ async fn fetch_hex_set(conn: &DatabaseConnection, sql: &str) -> Vec<String> {
 #[ignore = "requires Docker (testcontainers)"]
 async fn concurrent_appends_form_linear_audit_chain() {
     const N: usize = 8;
-    let container = Postgres::default().start().await.unwrap();
+    let container = test_containers::postgres().start().await.unwrap();
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
 

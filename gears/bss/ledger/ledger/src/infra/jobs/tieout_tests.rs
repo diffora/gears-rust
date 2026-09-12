@@ -18,10 +18,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bss_ledger_sdk::{AccountClass, MappingStatus, Side, SourceDocType};
-use chrono::{NaiveDate, Utc};
+use chrono::NaiveDate;
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, Statement};
 use sea_orm_migration::MigratorTrait;
-use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use toolkit_db::secure::AccessScope;
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
@@ -46,6 +45,7 @@ use crate::infra::storage::entity::{
 };
 use crate::infra::storage::migrations::Migrator;
 use crate::infra::storage::repo::ReferenceRepo;
+use time::OffsetDateTime;
 
 fn bal(account_id: u128, class: &str, balance_minor: i64) -> account_balance::Model {
     account_balance::Model {
@@ -363,7 +363,7 @@ fn balanced_entry(f: &Fixture, business_id: &str, amount: i64) -> (NewEntry, Vec
         source_business_id: business_id.to_owned(),
         reverses_entry_id: None,
         reverses_period_id: None,
-        posted_at_utc: Utc::now(),
+        posted_at_utc: OffsetDateTime::now_utc(),
         effective_at: NaiveDate::from_ymd_opt(2026, 6, 1).unwrap(),
         origin: "SYSTEM".to_owned(),
         posted_by_actor_id: f.tenant,
@@ -442,7 +442,7 @@ async fn setup_with_one_balanced_post(
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn run_over_clean_tenant_completes() {
-    let container = Postgres::default().start().await.unwrap();
+    let container = test_containers::postgres().start().await.unwrap();
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
 
@@ -483,7 +483,7 @@ async fn run_over_clean_tenant_completes() {
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn run_over_drifted_tenant_emits_alarm() {
-    let container = Postgres::default().start().await.unwrap();
+    let container = test_containers::postgres().start().await.unwrap();
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
 
@@ -836,7 +836,7 @@ fn settle_entry(entry_id: Uuid, payment_id: &str) -> journal_entry::Model {
         source_business_id: payment_id.to_owned(),
         reverses_entry_id: None,
         reverses_period_id: None,
-        posted_at_utc: Utc::now(),
+        posted_at_utc: OffsetDateTime::now_utc(),
         effective_at: NaiveDate::from_ymd_opt(2026, 6, 1).unwrap(),
         origin: "SYSTEM".to_owned(),
         posted_by_actor_id: Uuid::from_u128(0xA1),
@@ -889,7 +889,7 @@ fn alloc_row(payment_id: &str, invoice_id: &str, amount_minor: i64) -> payment_a
         amount_minor,
         currency: "USD".to_owned(),
         precedence_policy_ref: "p".to_owned(),
-        allocated_at_utc: Utc::now(),
+        allocated_at_utc: OffsetDateTime::now_utc(),
     }
 }
 
@@ -1089,7 +1089,7 @@ fn cache_baseline_rows_roundtrip() {
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn incremental_tie_out_equals_full_across_periods() {
-    let container = Postgres::default().start().await.unwrap();
+    let container = test_containers::postgres().start().await.unwrap();
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
     let (raw, service, provider, f) = setup(&url).await;

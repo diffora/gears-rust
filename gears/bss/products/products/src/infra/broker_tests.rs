@@ -59,42 +59,42 @@ const TRANSCRIBED_SKU_SUBJECT: &str = "gts.cf.core.events.subject.v1~cf.bss.prod
 const THE_EIGHT: &[(&str, &str, &str)] = &[
     (
         "ProductCreated",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.product_created.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.product_created.v1~",
         TRANSCRIBED_PRODUCT_SUBJECT,
     ),
     (
         "SkuCreated",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.sku_created.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.sku_created.v1~",
         TRANSCRIBED_SKU_SUBJECT,
     ),
     (
         "ProductHeadSaved",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.product_head_saved.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.product_head_saved.v1~",
         TRANSCRIBED_PRODUCT_SUBJECT,
     ),
     (
         "SkuHeadSaved",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.sku_head_saved.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.sku_head_saved.v1~",
         TRANSCRIBED_SKU_SUBJECT,
     ),
     (
         "ProductPublished",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.product_published.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.product_published.v1~",
         TRANSCRIBED_PRODUCT_SUBJECT,
     ),
     (
         "SkuPublished",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.sku_published.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.sku_published.v1~",
         TRANSCRIBED_SKU_SUBJECT,
     ),
     (
         "ProductDiscarded",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.product_discarded.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.product_discarded.v1~",
         TRANSCRIBED_PRODUCT_SUBJECT,
     ),
     (
         "SkuDiscarded",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.sku_discarded.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.sku_discarded.v1~",
         TRANSCRIBED_SKU_SUBJECT,
     ),
 ];
@@ -111,12 +111,12 @@ const THE_EIGHT: &[(&str, &str, &str)] = &[
 const THE_LIFECYCLE_PAIR: &[(&str, &str, &str)] = &[
     (
         "ProductDeprecated",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.product_deprecated.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.product_deprecated.v1~",
         TRANSCRIBED_PRODUCT_SUBJECT,
     ),
     (
         "SkuDeprecated",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.sku_deprecated.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.sku_deprecated.v1~",
         TRANSCRIBED_SKU_SUBJECT,
     ),
 ];
@@ -125,32 +125,32 @@ const THE_LIFECYCLE_PAIR: &[(&str, &str, &str)] = &[
 const THE_LIFECYCLE_REST: &[(&str, &str, &str)] = &[
     (
         "ProductUndeprecated",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.product_undeprecated.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.product_undeprecated.v1~",
         TRANSCRIBED_PRODUCT_SUBJECT,
     ),
     (
         "SkuUndeprecated",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.sku_undeprecated.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.sku_undeprecated.v1~",
         TRANSCRIBED_SKU_SUBJECT,
     ),
     (
         "ProductRetired",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.product_retired.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.product_retired.v1~",
         TRANSCRIBED_PRODUCT_SUBJECT,
     ),
     (
         "SkuRetired",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.sku_retired.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.sku_retired.v1~",
         TRANSCRIBED_SKU_SUBJECT,
     ),
     (
         "SkuRetirementEffective",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.sku_retirement_effective.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.sku_retirement_effective.v1~",
         TRANSCRIBED_SKU_SUBJECT,
     ),
     (
         "ProductRetirementEffective",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.product_retirement_effective.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.product_retirement_effective.v1~",
         TRANSCRIBED_PRODUCT_SUBJECT,
     ),
 ];
@@ -425,17 +425,17 @@ const TRANSCRIBED_SET_SUBJECT: &str =
 const THE_SET_TRIO: &[(&str, &str, &str)] = &[
     (
         "RecognizedUnitUpdated",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.recognized_unit_updated.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.recognized_unit_updated.v1~",
         TRANSCRIBED_SET_SUBJECT,
     ),
     (
         "RecognizedCodeUpdated",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.recognized_code_updated.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.recognized_code_updated.v1~",
         TRANSCRIBED_SET_SUBJECT,
     ),
     (
         "PlanTierUpdated",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.plan_tier_updated.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.plan_tier_updated.v1~",
         TRANSCRIBED_SET_SUBJECT,
     ),
 ];
@@ -445,17 +445,17 @@ const THE_SET_TRIO: &[(&str, &str, &str)] = &[
 const THE_REFERENCE_TRIO: &[(&str, &str, &str)] = &[
     (
         "SkuImmutableFieldCorrected",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.sku_immutable_field_corrected.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.sku_immutable_field_corrected.v1~",
         TRANSCRIBED_SKU_SUBJECT,
     ),
     (
         "SkuCorrectionOverride",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.sku_correction_override.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.sku_correction_override.v1~",
         TRANSCRIBED_SKU_SUBJECT,
     ),
     (
         "ReferenceProducerSetChanged",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.reference_producer_set_changed.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.reference_producer_set_changed.v1~",
         "gts.cf.core.events.subject.v1~cf.bss.products.reference_producer.v1",
     ),
 ];
@@ -465,22 +465,22 @@ const THE_REFERENCE_TRIO: &[(&str, &str, &str)] = &[
 const THE_VERSION_FOUR: &[(&str, &str, &str)] = &[
     (
         "CatalogVersionPublished",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.catalog_version_published.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.catalog_version_published.v1~",
         "gts.cf.core.events.subject.v1~cf.bss.products.catalog_version.v1",
     ),
     (
         "FreezeForceCompleted",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.freeze_force_completed.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.freeze_force_completed.v1~",
         "gts.cf.core.events.subject.v1~cf.bss.products.catalog_version.v1",
     ),
     (
         "FreezeParticipantSetChanged",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.freeze_participant_set_changed.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.freeze_participant_set_changed.v1~",
         "gts.cf.core.events.subject.v1~cf.bss.products.freeze_participant.v1",
     ),
     (
         "SkuCompositionCleared",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.sku_composition_cleared.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.sku_composition_cleared.v1~",
         TRANSCRIBED_SKU_SUBJECT,
     ),
 ];
@@ -491,7 +491,7 @@ const TRANSCRIBED_BULK_SUBJECT: &str = "gts.cf.core.events.subject.v1~cf.bss.pro
 /// `09`'s single event — the fourth list, for the third's reason.
 const THE_BULK_SUMMARY: &[(&str, &str, &str)] = &[(
     "CatalogBulkOperationCompleted",
-    "gts.cf.core.events.event_type.v1~cf.bss.products.catalog_bulk_operation_completed.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.catalog_bulk_operation_completed.v1~",
     TRANSCRIBED_BULK_SUBJECT,
 )];
 
@@ -511,42 +511,42 @@ const TRANSCRIBED_METADATA_SUBJECT: &str =
 const THE_TAXONOMY_EIGHT: &[(&str, &str, &str)] = &[
     (
         "CategoryCreated",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.category_created.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.category_created.v1~",
         TRANSCRIBED_CATEGORY_SUBJECT,
     ),
     (
         "CategoryRenamed",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.category_renamed.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.category_renamed.v1~",
         TRANSCRIBED_CATEGORY_SUBJECT,
     ),
     (
         "CategoryReparented",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.category_reparented.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.category_reparented.v1~",
         TRANSCRIBED_CATEGORY_SUBJECT,
     ),
     (
         "CategoryRetired",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.category_retired.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.category_retired.v1~",
         TRANSCRIBED_CATEGORY_SUBJECT,
     ),
     (
         "CategoryDeleted",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.category_deleted.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.category_deleted.v1~",
         TRANSCRIBED_CATEGORY_SUBJECT,
     ),
     (
         "CategoryDisplayUpdated",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.category_display_updated.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.category_display_updated.v1~",
         TRANSCRIBED_CATEGORY_SUBJECT,
     ),
     (
         "AttributeDefinitionUpdated",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.attribute_definition_updated.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.attribute_definition_updated.v1~",
         TRANSCRIBED_DEFINITION_SUBJECT,
     ),
     (
         "MetadataUpdated",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.metadata_updated.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.metadata_updated.v1~",
         TRANSCRIBED_METADATA_SUBJECT,
     ),
 ];
@@ -566,12 +566,12 @@ const TRANSCRIBED_ALLOWLIST_SUBJECT: &str =
 const THE_RETENTION_PAIR: &[(&str, &str, &str)] = &[
     (
         "ActorErased",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.actor_erased.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.actor_erased.v1~",
         TRANSCRIBED_ERASURE_SUBJECT,
     ),
     (
         "PiiAllowlistChanged",
-        "gts.cf.core.events.event_type.v1~cf.bss.products.pii_allowlist_changed.v1",
+        "gts.cf.core.events.event.v1~cf.bss.products.pii_allowlist_changed.v1~",
         TRANSCRIBED_ALLOWLIST_SUBJECT,
     ),
 ];
@@ -594,192 +594,100 @@ fn every_declared_event() -> Vec<(&'static str, &'static str, &'static str)> {
 }
 
 /// The `TYPE_ID` each of the eight types actually declares, in the same order.
-fn declared() -> Vec<(&'static str, &'static str, &'static str)> {
+///
+/// The topic used to be the third member. `event-broker-sdk` 0.2.1 took `TOPIC`
+/// off `TypedEvent` — a type's topic is now the `topic` trait on its GTS
+/// registration, and *"a second declaration here could only disagree with
+/// it"* — so there is nothing in Rust left to read.
+fn declared() -> Vec<(&'static str, &'static str)> {
     vec![
-        (
-            ProductCreated::TYPE_ID,
-            ProductCreated::SUBJECT_TYPE,
-            ProductCreated::TOPIC,
-        ),
-        (
-            SkuCreated::TYPE_ID,
-            SkuCreated::SUBJECT_TYPE,
-            SkuCreated::TOPIC,
-        ),
-        (
-            ProductHeadSaved::TYPE_ID,
-            ProductHeadSaved::SUBJECT_TYPE,
-            ProductHeadSaved::TOPIC,
-        ),
-        (
-            SkuHeadSaved::TYPE_ID,
-            SkuHeadSaved::SUBJECT_TYPE,
-            SkuHeadSaved::TOPIC,
-        ),
-        (
-            ProductPublished::TYPE_ID,
-            ProductPublished::SUBJECT_TYPE,
-            ProductPublished::TOPIC,
-        ),
-        (
-            SkuPublished::TYPE_ID,
-            SkuPublished::SUBJECT_TYPE,
-            SkuPublished::TOPIC,
-        ),
-        (
-            ProductDiscarded::TYPE_ID,
-            ProductDiscarded::SUBJECT_TYPE,
-            ProductDiscarded::TOPIC,
-        ),
-        (
-            SkuDiscarded::TYPE_ID,
-            SkuDiscarded::SUBJECT_TYPE,
-            SkuDiscarded::TOPIC,
-        ),
-        (
-            ProductDeprecated::TYPE_ID,
-            ProductDeprecated::SUBJECT_TYPE,
-            ProductDeprecated::TOPIC,
-        ),
-        (
-            SkuDeprecated::TYPE_ID,
-            SkuDeprecated::SUBJECT_TYPE,
-            SkuDeprecated::TOPIC,
-        ),
+        (ProductCreated::TYPE_ID, ProductCreated::SUBJECT_TYPE),
+        (SkuCreated::TYPE_ID, SkuCreated::SUBJECT_TYPE),
+        (ProductHeadSaved::TYPE_ID, ProductHeadSaved::SUBJECT_TYPE),
+        (SkuHeadSaved::TYPE_ID, SkuHeadSaved::SUBJECT_TYPE),
+        (ProductPublished::TYPE_ID, ProductPublished::SUBJECT_TYPE),
+        (SkuPublished::TYPE_ID, SkuPublished::SUBJECT_TYPE),
+        (ProductDiscarded::TYPE_ID, ProductDiscarded::SUBJECT_TYPE),
+        (SkuDiscarded::TYPE_ID, SkuDiscarded::SUBJECT_TYPE),
+        (ProductDeprecated::TYPE_ID, ProductDeprecated::SUBJECT_TYPE),
+        (SkuDeprecated::TYPE_ID, SkuDeprecated::SUBJECT_TYPE),
         (
             ProductUndeprecated::TYPE_ID,
             ProductUndeprecated::SUBJECT_TYPE,
-            ProductUndeprecated::TOPIC,
         ),
-        (
-            SkuUndeprecated::TYPE_ID,
-            SkuUndeprecated::SUBJECT_TYPE,
-            SkuUndeprecated::TOPIC,
-        ),
-        (
-            ProductRetired::TYPE_ID,
-            ProductRetired::SUBJECT_TYPE,
-            ProductRetired::TOPIC,
-        ),
-        (
-            SkuRetired::TYPE_ID,
-            SkuRetired::SUBJECT_TYPE,
-            SkuRetired::TOPIC,
-        ),
+        (SkuUndeprecated::TYPE_ID, SkuUndeprecated::SUBJECT_TYPE),
+        (ProductRetired::TYPE_ID, ProductRetired::SUBJECT_TYPE),
+        (SkuRetired::TYPE_ID, SkuRetired::SUBJECT_TYPE),
         (
             SkuRetirementEffective::TYPE_ID,
             SkuRetirementEffective::SUBJECT_TYPE,
-            SkuRetirementEffective::TOPIC,
         ),
         (
             ProductRetirementEffective::TYPE_ID,
             ProductRetirementEffective::SUBJECT_TYPE,
-            ProductRetirementEffective::TOPIC,
         ),
         (
             RecognizedUnitUpdated::TYPE_ID,
             RecognizedUnitUpdated::SUBJECT_TYPE,
-            RecognizedUnitUpdated::TOPIC,
         ),
         (
             RecognizedCodeUpdated::TYPE_ID,
             RecognizedCodeUpdated::SUBJECT_TYPE,
-            RecognizedCodeUpdated::TOPIC,
         ),
-        (
-            PlanTierUpdated::TYPE_ID,
-            PlanTierUpdated::SUBJECT_TYPE,
-            PlanTierUpdated::TOPIC,
-        ),
+        (PlanTierUpdated::TYPE_ID, PlanTierUpdated::SUBJECT_TYPE),
         (
             CatalogBulkOperationCompleted::TYPE_ID,
             CatalogBulkOperationCompleted::SUBJECT_TYPE,
-            CatalogBulkOperationCompleted::TOPIC,
         ),
-        (
-            CategoryCreated::TYPE_ID,
-            CategoryCreated::SUBJECT_TYPE,
-            CategoryCreated::TOPIC,
-        ),
-        (
-            CategoryRenamed::TYPE_ID,
-            CategoryRenamed::SUBJECT_TYPE,
-            CategoryRenamed::TOPIC,
-        ),
+        (CategoryCreated::TYPE_ID, CategoryCreated::SUBJECT_TYPE),
+        (CategoryRenamed::TYPE_ID, CategoryRenamed::SUBJECT_TYPE),
         (
             CategoryReparented::TYPE_ID,
             CategoryReparented::SUBJECT_TYPE,
-            CategoryReparented::TOPIC,
         ),
-        (
-            CategoryRetired::TYPE_ID,
-            CategoryRetired::SUBJECT_TYPE,
-            CategoryRetired::TOPIC,
-        ),
-        (
-            CategoryDeleted::TYPE_ID,
-            CategoryDeleted::SUBJECT_TYPE,
-            CategoryDeleted::TOPIC,
-        ),
+        (CategoryRetired::TYPE_ID, CategoryRetired::SUBJECT_TYPE),
+        (CategoryDeleted::TYPE_ID, CategoryDeleted::SUBJECT_TYPE),
         (
             CategoryDisplayUpdated::TYPE_ID,
             CategoryDisplayUpdated::SUBJECT_TYPE,
-            CategoryDisplayUpdated::TOPIC,
         ),
         (
             AttributeDefinitionUpdated::TYPE_ID,
             AttributeDefinitionUpdated::SUBJECT_TYPE,
-            AttributeDefinitionUpdated::TOPIC,
         ),
-        (
-            MetadataUpdated::TYPE_ID,
-            MetadataUpdated::SUBJECT_TYPE,
-            MetadataUpdated::TOPIC,
-        ),
-        (
-            ActorErased::TYPE_ID,
-            ActorErased::SUBJECT_TYPE,
-            ActorErased::TOPIC,
-        ),
+        (MetadataUpdated::TYPE_ID, MetadataUpdated::SUBJECT_TYPE),
+        (ActorErased::TYPE_ID, ActorErased::SUBJECT_TYPE),
         (
             PiiAllowlistChanged::TYPE_ID,
             PiiAllowlistChanged::SUBJECT_TYPE,
-            PiiAllowlistChanged::TOPIC,
         ),
         (
             SkuImmutableFieldCorrected::TYPE_ID,
             SkuImmutableFieldCorrected::SUBJECT_TYPE,
-            SkuImmutableFieldCorrected::TOPIC,
         ),
         (
             SkuCorrectionOverride::TYPE_ID,
             SkuCorrectionOverride::SUBJECT_TYPE,
-            SkuCorrectionOverride::TOPIC,
         ),
         (
             ReferenceProducerSetChanged::TYPE_ID,
             ReferenceProducerSetChanged::SUBJECT_TYPE,
-            ReferenceProducerSetChanged::TOPIC,
         ),
         (
             CatalogVersionPublished::TYPE_ID,
             CatalogVersionPublished::SUBJECT_TYPE,
-            CatalogVersionPublished::TOPIC,
         ),
         (
             FreezeForceCompleted::TYPE_ID,
             FreezeForceCompleted::SUBJECT_TYPE,
-            FreezeForceCompleted::TOPIC,
         ),
         (
             FreezeParticipantSetChanged::TYPE_ID,
             FreezeParticipantSetChanged::SUBJECT_TYPE,
-            FreezeParticipantSetChanged::TOPIC,
         ),
         (
             SkuCompositionCleared::TYPE_ID,
             SkuCompositionCleared::SUBJECT_TYPE,
-            SkuCompositionCleared::TOPIC,
         ),
     ]
 }
@@ -858,33 +766,40 @@ fn each_event_declares_its_derived_type_id_and_subject_type() {
         "one row per declared event: 4.5's eight, 04's pair, 03's trio, 09's summary, 02's eight"
     );
 
-    for ((type_id, subject_type, _), (token, want_type, want_subject)) in
+    for ((type_id, subject_type), (token, want_type, want_subject)) in
         declared.iter().zip(&transcribed)
     {
         assert_eq!(type_id, want_type, "{token}'s type id moved");
         assert_eq!(subject_type, want_subject, "{token}'s subject type moved");
         assert!(
-            type_id.starts_with("gts.cf.core.events.event_type.v1~"),
-            "{type_id} must name an event **type**; `event.v1~` is the record namespace"
+            type_id.starts_with("gts.cf.core.events.event.v1~") && type_id.ends_with('~'),
+            "{type_id} must be a **derived type** of the event base: \
+             `cf.core.events.event_type.v1~` was deleted by event-broker 0.2.1 \
+             (*\"a type whose instances were types\"*), and a type id ends in `~`"
         );
     }
 }
 
-/// **All eight publish onto one topic, and it is the transcribed one.**
+/// **The topic this gear names is the transcribed one.**
 ///
 /// P-D-27's ordering key is `(tenant, aggregate)`, not
 /// `(tenant, aggregate, entity_kind)`: a topic per entity kind would change
 /// what a consumer subscribes to and nothing about the ordering.
+///
+/// **This test used to also assert that every event type names that same
+/// topic, and it no longer can.** `event-broker-sdk` 0.2.1 moved the topic off
+/// `TypedEvent` and onto the `topic` trait of each event type's GTS
+/// registration, so the per-type half is now a property of documents this gear
+/// does not yet ship — see P-D-168. What survives is the half that still has a
+/// subject: the constant the producer binds and the consumer subscribes with,
+/// against an independently transcribed literal.
 #[test]
-fn all_eight_share_one_topic() {
+fn the_topic_constant_is_the_transcribed_one() {
     assert_eq!(
         TOPIC, TRANSCRIBED_TOPIC,
         "the topic this gear publishes onto is broker-side state; a silent rename here is a \
          subscription nobody is serving"
     );
-    for (type_id, _, topic) in declared() {
-        assert_eq!(topic, TOPIC, "{type_id} publishes onto a second topic");
-    }
     assert_eq!(
         ProductCreated::SOURCE,
         SOURCE,
@@ -907,11 +822,11 @@ fn all_eight_share_one_topic() {
 fn the_subject_type_follows_the_entity_the_event_is_about() {
     let product_events = declared()
         .iter()
-        .filter(|(_, subject, _)| *subject == PRODUCT_SUBJECT_TYPE)
+        .filter(|(_, subject)| *subject == PRODUCT_SUBJECT_TYPE)
         .count();
     let sku_events = declared()
         .iter()
-        .filter(|(_, subject, _)| *subject == SKU_SUBJECT_TYPE)
+        .filter(|(_, subject)| *subject == SKU_SUBJECT_TYPE)
         .count();
     // Eight and eight: §4.5's four-and-four, plus 04's deprecation,
     // un-deprecation, retirement initiation and flip, one per entity kind.
@@ -926,7 +841,7 @@ fn the_subject_type_follows_the_entity_the_event_is_about() {
     );
     let set_events = declared()
         .iter()
-        .filter(|(_, subject, _)| *subject == TRANSCRIBED_SET_SUBJECT)
+        .filter(|(_, subject)| *subject == TRANSCRIBED_SET_SUBJECT)
         .count();
     assert_eq!(
         set_events, 3,
@@ -934,7 +849,7 @@ fn the_subject_type_follows_the_entity_the_event_is_about() {
     );
     let taxonomy_events = declared()
         .iter()
-        .filter(|(_, subject, _)| {
+        .filter(|(_, subject)| {
             *subject == CATEGORY_SUBJECT_TYPE
                 || *subject == ATTRIBUTE_DEFINITION_SUBJECT_TYPE
                 || *subject == METADATA_SUBJECT_TYPE
@@ -958,7 +873,7 @@ fn the_subject_type_follows_the_entity_the_event_is_about() {
         "the three taxonomy subject types are broker-side state and are frozen here"
     );
 
-    for (type_id, subject, _) in declared() {
+    for (type_id, subject) in declared() {
         let names_sku = type_id.contains("sku_");
         assert_eq!(
             subject == SKU_SUBJECT_TYPE,
@@ -968,18 +883,23 @@ fn the_subject_type_follows_the_entity_the_event_is_about() {
     }
 }
 
-/// **`tenant_id` is overridden to the body's tenant, and `partition_key` is
-/// not overridden at all.** Both halves are P-D-47's ordering.
+/// **`tenant_id` is overridden to the body's tenant.** This is the half of
+/// P-D-47's ordering the gear still states in Rust.
 ///
 /// The override is load-bearing: left `None`, the SDK partitions on the
 /// authenticated security-context tenant — this gear's own service identity —
 /// and every event of every tenant lands on one partition, which is the
 /// opposite of *"every event of one tenant lands on one partition in publish
-/// order"*. The absent `partition_key` is the other half: P-D-47 says the gear
-/// sets none, so ADR-0002's default applies, and an override here would be an
-/// amendment to the decision rather than a tuning knob.
+/// order"*.
+///
+/// P-D-47's other half — *"the gear sets no `partition_key`, so the broker's
+/// default applies"* — **has no assertable site left**: `event-broker-sdk`
+/// 0.2.1 removed `TypedEvent::partition_key`, making the default true by
+/// construction here and moving any override into the event type's GTS
+/// `partition_key` trait (a JSON Pointer, defaulting to the tenant). The
+/// decision is unchanged; its mechanism moved. See P-D-168.
 #[test]
-fn the_partition_inputs_are_the_bodys_tenant_and_no_partition_key() {
+fn the_partition_input_is_the_bodys_tenant() {
     let event = ProductCreated {
         core: core("product"),
     };
@@ -987,10 +907,6 @@ fn the_partition_inputs_are_the_bodys_tenant_and_no_partition_key() {
         event.tenant_id(),
         Some(TENANT),
         "the partition input must be the entity's tenant, not the producer's"
-    );
-    assert!(
-        event.partition_key().is_none(),
-        "P-D-47: the gear sets no partition_key"
     );
     assert_eq!(
         event.subject().as_ref(),
@@ -1003,10 +919,6 @@ fn the_partition_inputs_are_the_bodys_tenant_and_no_partition_key() {
         published_version: 7,
     };
     assert_eq!(published.tenant_id(), Some(TENANT));
-    assert!(
-        published.partition_key().is_none(),
-        "the publish twin must not have grown one either"
-    );
 }
 
 /// **§4.5's five fields are flat on the payload, beside P-D-01's two.**
@@ -1379,15 +1291,10 @@ async fn every_event_reaches_the_broker_under_its_own_type_id() {
             got.type_id, want_type_id,
             "the token that minted subject {subject} was dispatched to the wrong typed event"
         );
-        assert_eq!(got.topic, TRANSCRIBED_TOPIC);
         assert_eq!(got.source, SOURCE);
         assert_eq!(
             got.tenant_id, TENANT,
             "the partition input is the entity's tenant, not the producer's service identity"
-        );
-        assert!(
-            got.partition_key.is_none(),
-            "P-D-47: the gear sets no partition_key, so ADR-0002's default applies"
         );
         let data = got.data.as_ref().expect("the payload rides the event");
         assert_eq!(

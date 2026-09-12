@@ -26,11 +26,10 @@ use toolkit_canonical_errors::CanonicalError;
 
 use async_trait::async_trait;
 use authz_resolver_sdk::constraints::{Constraint, InPredicate, Predicate};
-use authz_resolver_sdk::error::AuthZResolverError;
 use authz_resolver_sdk::models::{
     DenyReason, EvaluationRequest, EvaluationResponse, EvaluationResponseContext,
 };
-use authz_resolver_sdk::{AuthZResolverClient, PolicyEnforcer};
+use authz_resolver_sdk::{AuthZResolverApi, PolicyEnforcer};
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, Response};
@@ -44,6 +43,7 @@ use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::contracts::{
     AnchorDay, BillingAnchorPolicy, ProrationBasis, ProrationContract,
 };
+use bss_pricing::domain::instant::utc_ymd_hms;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::CurrencyCode;
 use bss_pricing::domain::money::{MinorAmount, RateMinor};
@@ -78,7 +78,8 @@ use bss_pricing::infra::storage::repo::{
 use bss_pricing::infra::window::WindowService;
 use bss_pricing_sdk::catalog_version::CatalogVersion;
 use bss_pricing_sdk::catalog_version_registry::{CatalogVersionRegistryV1, PendingVersionRef};
-use chrono::{DateTime, TimeZone, Utc};
+use time::OffsetDateTime;
+
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
 use sea_orm_migration::MigratorTrait;
@@ -87,7 +88,7 @@ use toolkit_db::migration_runner::run_migrations_for_testing;
 use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureUpdateExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use toolkit_gts::gts_id;
-use toolkit_security::{SecurityContext, pep_properties};
+use toolkit_security::{PlatformSecurityContext, SecurityContext, pep_properties};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -147,10 +148,7 @@ const TEST_CORRELATION: uuid::Uuid = uuid::Uuid::from_u128(0x_c0_11_a7_10);
 /// doc), and `seed_stamp`'s `SEED_ACTOR` would make submitter and approver the same
 /// principal wherever the approver is a third identity — which `inst-tp-distinct`
 /// refuses on identity rather than on role.
-pub fn stamp_of(
-    actor: uuid::Uuid,
-    when: chrono::DateTime<chrono::Utc>,
-) -> bss_pricing::domain::audit::AuditStamp {
+pub fn stamp_of(actor: uuid::Uuid, when: OffsetDateTime) -> bss_pricing::domain::audit::AuditStamp {
     bss_pricing::domain::audit::AuditStamp {
         actor_principal_id: actor,
         recorded_at: when,
@@ -176,11 +174,12 @@ pub struct FlatInResolver {
 }
 
 #[async_trait]
-impl AuthZResolverClient for FlatInResolver {
+impl AuthZResolverApi for FlatInResolver {
     async fn evaluate(
         &self,
+        _ctx: PlatformSecurityContext,
         _req: EvaluationRequest,
-    ) -> Result<EvaluationResponse, AuthZResolverError> {
+    ) -> Result<EvaluationResponse, CanonicalError> {
         Ok(EvaluationResponse {
             decision: true,
             context: EvaluationResponseContext {
@@ -201,11 +200,12 @@ impl AuthZResolverClient for FlatInResolver {
 pub struct DenyingResolver;
 
 #[async_trait]
-impl AuthZResolverClient for DenyingResolver {
+impl AuthZResolverApi for DenyingResolver {
     async fn evaluate(
         &self,
+        _ctx: PlatformSecurityContext,
         _req: EvaluationRequest,
-    ) -> Result<EvaluationResponse, AuthZResolverError> {
+    ) -> Result<EvaluationResponse, CanonicalError> {
         Ok(EvaluationResponse {
             decision: false,
             context: EvaluationResponseContext {
@@ -224,14 +224,15 @@ impl AuthZResolverClient for DenyingResolver {
 pub struct UnavailableResolver;
 
 #[async_trait]
-impl AuthZResolverClient for UnavailableResolver {
+impl AuthZResolverApi for UnavailableResolver {
     async fn evaluate(
         &self,
+        _ctx: PlatformSecurityContext,
         _req: EvaluationRequest,
-    ) -> Result<EvaluationResponse, AuthZResolverError> {
-        Err(AuthZResolverError::Internal(
-            "the policy decision point is unreachable".to_owned(),
-        ))
+    ) -> Result<EvaluationResponse, CanonicalError> {
+        Err(CanonicalError::service_unavailable()
+            .with_detail("the policy decision point is unreachable")
+            .create())
     }
 }
 
@@ -241,11 +242,12 @@ impl AuthZResolverClient for UnavailableResolver {
 pub struct UnconstrainedResolver;
 
 #[async_trait]
-impl AuthZResolverClient for UnconstrainedResolver {
+impl AuthZResolverApi for UnconstrainedResolver {
     async fn evaluate(
         &self,
+        _ctx: PlatformSecurityContext,
         _req: EvaluationRequest,
-    ) -> Result<EvaluationResponse, AuthZResolverError> {
+    ) -> Result<EvaluationResponse, CanonicalError> {
         Ok(EvaluationResponse {
             decision: true,
             context: EvaluationResponseContext {
@@ -266,11 +268,12 @@ pub struct RecordingResolver {
 }
 
 #[async_trait]
-impl AuthZResolverClient for RecordingResolver {
+impl AuthZResolverApi for RecordingResolver {
     async fn evaluate(
         &self,
+        _ctx: PlatformSecurityContext,
         req: EvaluationRequest,
-    ) -> Result<EvaluationResponse, AuthZResolverError> {
+    ) -> Result<EvaluationResponse, CanonicalError> {
         self.seen.lock().expect("recorder").push(req);
         Ok(EvaluationResponse {
             decision: true,
@@ -310,11 +313,12 @@ pub struct SelectiveResolver {
 }
 
 #[async_trait]
-impl AuthZResolverClient for SelectiveResolver {
+impl AuthZResolverApi for SelectiveResolver {
     async fn evaluate(
         &self,
+        _ctx: PlatformSecurityContext,
         req: EvaluationRequest,
-    ) -> Result<EvaluationResponse, AuthZResolverError> {
+    ) -> Result<EvaluationResponse, CanonicalError> {
         let asked = (
             req.resource.resource_type.as_str(),
             req.action.name.as_str(),
@@ -576,6 +580,9 @@ impl Harness {
             compensation,
         );
         let governance = Arc::new(GovernanceState {
+            participants: bss_pricing::infra::approval_participants::ApprovalParticipants::new(
+                Arc::new(toolkit::ClientHub::new()),
+            ),
             apply_lane: apply_lane.clone(),
             db: db.clone(),
             plans: PlanRepo::new(db.clone()),
@@ -644,6 +651,7 @@ impl Harness {
         });
         let frontier = Arc::new(FrontierState {
             pin_frontier: PinFrontierRepo::new(db.clone()),
+            db: db.clone(),
         });
         let history = Arc::new(HistoryState {
             history: bss_pricing::infra::history::HistoryExporter::new(db.clone()),
@@ -728,7 +736,7 @@ impl Harness {
         AccessScope::for_tenant(self.other)
     }
 
-    fn client(&self, resolver: Arc<dyn AuthZResolverClient>, ctx: Option<Uuid>) -> Client {
+    fn client(&self, resolver: Arc<dyn AuthZResolverApi>, ctx: Option<Uuid>) -> Client {
         self.client_as(resolver, ctx.map(|tenant| (tenant, Uuid::now_v7())))
     }
 
@@ -739,9 +747,9 @@ impl Harness {
     /// which is right for the authoring suites and would make a submitter and
     /// an approver accidentally distinct here — a self-approval test that could
     /// never stage a self-approval.
-    fn client_as(
+    pub fn client_as(
         &self,
-        resolver: Arc<dyn AuthZResolverClient>,
+        resolver: Arc<dyn AuthZResolverApi>,
         ctx: Option<(Uuid, Uuid)>,
     ) -> Client {
         let openapi = OpenApiRegistryImpl::new();
@@ -819,6 +827,10 @@ impl Harness {
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::rounding_policies::router(
+                Arc::clone(&self.state),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::gl_codes::router(
                 Arc::clone(&self.state),
                 &openapi,
             ))
@@ -1255,6 +1267,7 @@ impl Harness {
                 vec![PlanPhase {
                     phase_id: seeded_phase(),
                     kind: PhaseKind::Evergreen,
+                    display_name: None,
                     ordinal: 0,
                     converts_to_phase_id: None,
                     phase_duration_days: None,
@@ -1584,8 +1597,8 @@ pub fn violation_for(body: &serde_json::Value, subject: &str) -> Option<String> 
 }
 
 /// A seeded instant, quantized to the millisecond the catalog compares at.
-pub fn at(hour: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 8, 3, hour, 0, 0).unwrap()
+pub fn at(hour: u32) -> OffsetDateTime {
+    utc_ymd_hms(2026, 8, 3, hour, 0, 0)
 }
 
 /// A draft plan carrying enough shape to be recognizable, seeded straight
@@ -1662,6 +1675,7 @@ pub async fn seed_current_plan_with_phase(harness: &Harness, plan_id: Uuid) {
             vec![PlanPhase {
                 phase_id: seeded_phase(),
                 kind: PhaseKind::Evergreen,
+                display_name: None,
                 ordinal: 0,
                 converts_to_phase_id: None,
                 phase_duration_days: None,
@@ -2015,7 +2029,7 @@ pub async fn seed_price_keyed_with_horizon(
     region: &str,
     price_eligibility: PriceEligibility,
     cohort: Cohort,
-    grandfather_until: Option<DateTime<Utc>>,
+    grandfather_until: Option<OffsetDateTime>,
 ) -> PriceRecord {
     let key = ScopeKey::new(
         PlanId::new(plan_id),
@@ -2289,12 +2303,9 @@ pub async fn retire_customer_group(harness: &Harness, value: &str) {
 /// ages past it.
 pub async fn seed_window(harness: &Harness, price_id: Uuid) -> Uuid {
     /// Far enough out that no wall clock reaches it and no sweep activates the
-    /// row mid-suite. A **fact**, not a date derived from `Utc::now()`.
+    /// row mid-suite. A **fact**, not a date derived from `OffsetDateTime::now_utc()`.
     const SEEDED_WINDOW_YEAR: i32 = 2099;
-    let effective_from =
-        chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, SEEDED_WINDOW_YEAR, 1, 1, 0, 0, 0)
-            .single()
-            .expect("a real instant");
+    let effective_from = utc_ymd_hms(SEEDED_WINDOW_YEAR, 1, 1, 0, 0, 0);
     let window_id = Uuid::now_v7();
     let conn = harness.db.conn().expect("conn");
     bss_pricing::infra::storage::repo::window_repo::schedule(
@@ -2361,7 +2372,7 @@ pub fn seed_stamp() -> bss_pricing::domain::audit::AuditStamp {
 
 /// **A fixed instant, not the wall clock.** Every other instant this file seeds is
 /// `at(hour)`, and the neighbouring `stamp_of` takes the instant explicitly; a
-/// `Utc::now()` here put a different value on every audit row and shape mutation
+/// `OffsetDateTime::now_utc()` here put a different value on every audit row and shape mutation
 /// the harness seeds, so no suite could assert the recorded instant by equality
 /// and every fixture computed from it asserted something different each day it
 /// ran.
@@ -2478,6 +2489,7 @@ pub async fn seed_publishable_shape(harness: &Harness, plan_id: Uuid) -> Publish
             vec![PlanPhase {
                 phase_id: phase,
                 kind: PhaseKind::Evergreen,
+                display_name: None,
                 ordinal: 0,
                 converts_to_phase_id: None,
                 phase_duration_days: None,
@@ -3118,6 +3130,7 @@ async fn planes_of_taxonomies_and_policy(harness: &Harness, out: &mut Planes) {
     plane!(out, &conn, harness, partner_taxonomy);
     plane!(out, &conn, harness, region_taxonomy);
     plane!(out, &conn, harness, rounding_policy_taxonomy);
+    plane!(out, &conn, harness, gl_code_taxonomy);
     plane!(out, &conn, harness, group_membership);
     plane!(out, &conn, harness, policy_object);
 }

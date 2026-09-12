@@ -80,6 +80,11 @@ jobs:
               # Input to `make check-release-config` in the test job: a config-only
               # edit must still get the release configuration validated.
               - 'release-plz.toml'
+              # Input to `e2e_sidecar_pins_the_same_timescaledb_image` in
+              # libs/test-containers: a Python-only edit to the E2E sidecar must
+              # still get the cross-lane TimescaleDB pin checked, or the guard
+              # silently never runs on exactly the diff it exists to catch.
+              - 'testing/e2e/lib/sidecars.py'
             fips:
               - 'libs/toolkit/**'
               - 'libs/toolkit-http/**'
@@ -166,6 +171,20 @@ jobs:
           else
             echo "sccache failed, falling back to plain rustc"
           fi
+
+      # Database image tags are pinned in libs/test-containers (docs/TESTING.md
+      # 4.4). A fixture that constructs a container any other way re-introduces
+      # the transitive pin through Cargo.lock that issue #4616 removed: a
+      # dependency bump then moves the database under every test with nothing in
+      # the diff to show it.
+      #
+      # This parses the workspace with `syn` rather than grepping it, so import
+      # renames, type aliases, non-literal image names and creative formatting
+      # cannot slip past. Placed here, after the cache and sccache setup, because
+      # it needs a toolchain -- but still ahead of clippy, which is the expensive
+      # step in this job.
+      - name: No unpinned database container images
+        run: cargo xtask check-test-container-pins
 
       - name: cargo clippy
         run: make clippy
@@ -384,11 +403,25 @@ jobs:
       - name: Test bss-products with Postgres (integration)
         run: make test-products-pg
 
+      - name: Test redis-cluster-plugin (redis integration)
+        run: make test-cluster-redis
+
       - name: Test toolkit-db (sqlite integration)
         run: make test-sqlite
 
       - name: Test toolkit-db (pg integration)
         run: make test-pg
+
+      - name: Test toolkit-db (pgq unit + PG19 integration)
+        # Compiles and runs everything behind the `pgq` feature — the secure
+        # graph builder, its unit suites and the trybuild guards — and the
+        # PostgreSQL 19 integration suite. Locally that suite skips itself while
+        # the pre-GA PG19 image is unavailable; here the skip is a failure, so
+        # the isolation suite cannot pass green and empty (see
+        # libs/test-containers::graph_lane_required).
+        env:
+          GEARS_TEST_PG_GRAPH_REQUIRED: "1"
+        run: make test-pgq
 
       - name: Test toolkit-db (mysql integration)
         run: make test-mysql
@@ -681,6 +714,21 @@ jobs:
           tool: cargo-llvm-cov, nextest
 
       # Generate lcov.info for upload. Customize flags/features as needed.
+      #
+      # Two instrumented passes are accumulated (`--no-report`) into one target
+      # dir and merged into a single lcov.info at the end (`report`):
+      #
+      #   1. `nextest --workspace` — the whole workspace at default features.
+      #   2. The redis-cluster-plugin integration suites. These live behind
+      #      `required-features = ["integration"]` and drive a real Redis via
+      #      testcontainers, so pass 1 never builds or runs them and the plugin's
+      #      actual logic (connection / lock / pub-sub / lifecycle) showed as
+      #      uncovered — the reason this crate's patch coverage understates it.
+      #      Running them here, instead of mocking the Redis connection (brittle,
+      #      tautological), credits that code with the coverage its integration
+      #      tests already exercise. Redis containers are lightweight and
+      #      unprivileged, so this mirrors `make test-cluster-redis` verbatim
+      #      (plain `nextest`, no per-binary loop) — keep the two in sync.
       - name: Coverage (lcov)
         env:
           RUSTFLAGS: "-C debuginfo=0 --cfg coverage_nightly"
@@ -688,7 +736,13 @@ jobs:
           CARGO_LLVM_COV_BUILD_DIR: llvm-cov-build
         run: |
           cargo llvm-cov clean --workspace
-          cargo llvm-cov nextest --workspace --lcov --output-path lcov.info
+          # Pass 1: whole workspace, default features. Accumulate, don't report.
+          cargo llvm-cov nextest --workspace --no-report
+          # Pass 2: redis-cluster-plugin integration suites (real Redis via
+          # testcontainers). Same instrumentation, still no report.
+          cargo llvm-cov nextest --no-report -p cf-redis-cluster-plugin --features integration --retries 1
+          # Merge both passes into the single report that gets uploaded.
+          cargo llvm-cov report --lcov --output-path lcov.info
 
       # Upload LCOV report as a GitHub Actions artifact so it is always
       # available, even when Codecov is unavailable or rejects the upload.

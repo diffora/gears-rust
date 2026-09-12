@@ -651,7 +651,7 @@ All inter-gear communication goes through versioned contracts or SDK clients res
 
 | Dependency gear | Interface used | Purpose |
 |-----------------|----------------|---------|
-| `authz-resolver` | `AuthZResolverClient` → `PolicyEnforcer` (PEP) | Every door's authorization decision against the PDP; a missing client fails `init()` rather than degrade to an unguarded router |
+| `authz-resolver` | `AuthZResolverApi` → `PolicyEnforcer` (PEP) | Every door's authorization decision against the PDP; a missing client fails `init()` rather than degrade to an unguarded router. The trait was `AuthZResolverClient` until the SDK's 0.4.0 contract migration (**P-D-168**) |
 | `types-registry` | `TypesRegistryClient` | Registers the gear's authz-label type schemas at init so custom catalog roles can target its labels (P-D-134) |
 | `usage-collector` | `UsageCollectorClientV1` behind `UsageTypeResolver` | Resolves a SKU's `usageTypeRef` at publish (P-D-05); absent client → `NoCollector`, unavailable → 503 (P-D-131, P-D-141) |
 | `event-broker` | `EventBrokerApi` as the outbox processor (`DbProducer`) | Drains the transactional outbox to the broker (P-D-47); absent → a holding processor that never reports success |

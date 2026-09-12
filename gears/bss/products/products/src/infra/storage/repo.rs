@@ -110,15 +110,23 @@ use crate::infra::storage::entity::{
 /// string on the way out of this module reaches the caller as a bare 500
 /// where the doors promise a retry.
 ///
-/// The other three variants are the scope layer refusing to build or run the
+/// **Every other variant** is the scope layer refusing to build or run the
 /// statement at all: no driver error exists, nothing about them is transient,
 /// and they stay [`RepoError::Db`].
+///
+/// That "every other" is a **rule over the enum, not a list of its members**,
+/// and it has to be: `toolkit-db` marked `ScopeError` `#[non_exhaustive]`,
+/// whose own doc asks downstream repositories for one wildcard arm rather than
+/// a dead arm per variant. The rule is safe under growth in the direction the
+/// enum actually grows — the variants added with the marker are graph-pattern
+/// refusals carrying no `DbErr` — and the failure mode if it ever stops being
+/// safe is the conservative one: a new *transient* variant would be answered
+/// as a flat 500 rather than retried, never the reverse. The reverse is what
+/// would matter, since `RepoError::Driver` is what the doors retry on.
 fn driver_failure(context: String, source: ScopeError) -> RepoError {
     match source {
         ScopeError::Db(source) => RepoError::Driver { context, source },
-        ScopeError::Invalid(_) | ScopeError::TenantNotInScope { .. } | ScopeError::Denied(_) => {
-            RepoError::Db(format!("{context}: {source}"))
-        }
+        other => RepoError::Db(format!("{context}: {other}")),
     }
 }
 

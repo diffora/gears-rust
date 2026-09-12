@@ -237,6 +237,7 @@ impl ResponseSchema {
 }
 
 /// Response specification for API operations
+#[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct ResponseSpec {
     pub status: u16,
@@ -244,15 +245,102 @@ pub struct ResponseSpec {
     pub description: String,
     /// Schema of the response body (if any).
     pub schema: Option<ResponseSchema>,
+    /// Headers that may be returned with this response.
+    pub headers: Vec<ResponseHeaderSpec>,
 }
 
 impl ResponseSpec {
+    /// Create a response specification without declared headers.
+    #[must_use]
+    pub fn new(
+        status: u16,
+        content_type: &'static str,
+        description: impl Into<String>,
+        schema: Option<ResponseSchema>,
+    ) -> Self {
+        Self {
+            status,
+            content_type,
+            description: description.into(),
+            schema,
+            headers: Vec::new(),
+        }
+    }
+
+    /// Add headers to this response specification.
+    ///
+    /// # Panics
+    /// Panics when the response already has, or the supplied headers contain,
+    /// a header with the same case-insensitive name.
+    #[must_use]
+    pub fn with_headers(mut self, headers: impl IntoIterator<Item = ResponseHeaderSpec>) -> Self {
+        let headers: Vec<_> = headers.into_iter().collect();
+        for (index, header) in headers.iter().enumerate() {
+            assert!(
+                !self
+                    .headers
+                    .iter()
+                    .chain(headers[..index].iter())
+                    .any(|existing| existing.name.eq_ignore_ascii_case(&header.name)),
+                "response {} already declares header '{}'",
+                self.status,
+                header.name
+            );
+        }
+        self.headers.extend(headers);
+        self
+    }
+
     /// Name of the component schema this response references, if any.
     ///
     /// For an array response this is the **item** component, not the array.
     #[must_use]
     pub fn schema_name(&self) -> Option<&str> {
         self.schema.as_ref().map(ResponseSchema::schema_name)
+    }
+}
+
+/// JSON Schema scalar type of a response header.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResponseHeaderType {
+    String,
+    Integer,
+    Boolean,
+}
+
+/// Header declared on one API response.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResponseHeaderSpec {
+    pub name: String,
+    pub description: Option<String>,
+    pub header_type: ResponseHeaderType,
+}
+
+impl ResponseHeaderSpec {
+    /// Create a response header with a description.
+    #[must_use]
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        header_type: ResponseHeaderType,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: Some(description.into()),
+            header_type,
+        }
+    }
+
+    /// Create a response header without a description.
+    #[must_use]
+    pub fn without_description(name: impl Into<String>, header_type: ResponseHeaderType) -> Self {
+        Self {
+            name: name.into(),
+            description: None,
+            header_type,
+        }
     }
 }
 
@@ -299,6 +387,28 @@ pub struct OperationSpec {
     /// `OpenAPI` vendor extensions (x-*)
     pub vendor_extensions: VendorExtensions,
     pub license_requirement: Option<LicenseReqSpec>,
+}
+
+impl OperationSpec {
+    /// Replace a response with the same status and content type while retaining
+    /// headers that were already declared for that response. The declared
+    /// response becomes the most recent response so subsequent headers attach
+    /// to it.
+    ///
+    /// Different content types for the same status are kept as separate specs;
+    /// the `OpenAPI` registry combines them into one response object.
+    fn upsert_response(&mut self, mut response: ResponseSpec) {
+        let Some(index) = self.responses.iter().position(|existing| {
+            existing.status == response.status && existing.content_type == response.content_type
+        }) else {
+            self.responses.push(response);
+            return;
+        };
+
+        let mut existing = self.responses.remove(index);
+        response.headers.append(&mut existing.headers);
+        self.responses.push(response);
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -363,7 +473,7 @@ where
         T: toolkit_odata::filter::FilterField,
     {
         use std::fmt::Write as _;
-        use toolkit_odata::filter::FieldKind;
+        use toolkit_odata::filter::FilterOp;
 
         let mut filter = self
             .spec
@@ -376,21 +486,24 @@ where
             let name = field.name().to_owned();
             let kind = field.kind();
 
-            let ops: Vec<String> = match kind {
-                FieldKind::String => vec!["eq", "ne", "contains", "startswith", "endswith", "in"],
-                FieldKind::Uuid => vec!["eq", "ne", "in"],
-                FieldKind::Bool => vec!["eq", "ne"],
-                FieldKind::I64
-                | FieldKind::F64
-                | FieldKind::Decimal
-                | FieldKind::DateTimeUtc
-                | FieldKind::Date
-                | FieldKind::Time => {
-                    vec!["eq", "ne", "gt", "ge", "lt", "le", "in"]
-                }
-            }
+            // Published straight from the parser's own table, so the contract
+            // cannot promise an operator the parser refuses, or hide one it
+            // accepts.
+            let ops: Vec<String> = [
+                FilterOp::Eq,
+                FilterOp::Ne,
+                FilterOp::Gt,
+                FilterOp::Ge,
+                FilterOp::Lt,
+                FilterOp::Le,
+                FilterOp::Contains,
+                FilterOp::StartsWith,
+                FilterOp::EndsWith,
+                FilterOp::In,
+            ]
             .into_iter()
-            .map(String::from)
+            .filter(|op| kind.allows(*op))
+            .map(|op| op.to_string())
             .collect();
 
             _ = write!(description, "\n- {}: {}", name, ops.join("|"));
@@ -1218,6 +1331,7 @@ where
             content_type: "application/json",
             description: description.into(),
             schema: None,
+            headers: Vec::new(),
         });
         OperationBuilder {
             spec: self.spec,
@@ -1247,6 +1361,7 @@ where
             content_type: "",
             description: description.into(),
             schema: None,
+            headers: Vec::new(),
         });
         OperationBuilder {
             spec: self.spec,
@@ -1275,6 +1390,7 @@ where
             content_type: "application/json",
             description: description.into(),
             schema: Some(ResponseSchema::Ref { schema_name: name }),
+            headers: Vec::new(),
         });
         OperationBuilder {
             spec: self.spec,
@@ -1313,6 +1429,7 @@ where
             content_type: "application/json",
             description: description.into(),
             schema: Some(ResponseSchema::Array { items_schema_name }),
+            headers: Vec::new(),
         });
         OperationBuilder {
             spec: self.spec,
@@ -1348,6 +1465,7 @@ where
             content_type,
             description: description.into(),
             schema: None,
+            headers: Vec::new(),
         });
         OperationBuilder {
             spec: self.spec,
@@ -1371,6 +1489,7 @@ where
             content_type: "text/html",
             description: description.into(),
             schema: None,
+            headers: Vec::new(),
         });
         OperationBuilder {
             spec: self.spec,
@@ -1399,6 +1518,7 @@ where
             schema: Some(ResponseSchema::Ref {
                 schema_name: problem_name,
             }),
+            headers: Vec::new(),
         });
         OperationBuilder {
             spec: self.spec,
@@ -1426,6 +1546,42 @@ where
             content_type: "text/event-stream",
             description: description.into(),
             schema: Some(ResponseSchema::Ref { schema_name: name }),
+            headers: Vec::new(),
+        });
+        OperationBuilder {
+            spec: self.spec,
+            method_router: self.method_router,
+            _has_handler: self._has_handler,
+            _has_response: PhantomData::<Present>,
+            _state: self._state,
+            _auth_state: self._auth_state,
+            _license_state: self._license_state,
+        }
+    }
+
+    /// First response: `multipart/mixed` stream of JSON items, one item per
+    /// body part — the server-to-server counterpart to [`Self::sse_json`].
+    ///
+    /// `T` is the *item* type, exactly as for SSE: the media-type key in the
+    /// spec is the bare `multipart/mixed`, with no `boundary=` parameter,
+    /// because the boundary is generated per response at runtime by
+    /// [`crate::http::multipart::MultipartJsonStream`] and is not a property of
+    /// the operation.
+    pub fn multipart_json<T>(
+        mut self,
+        openapi: &dyn OpenApiRegistry,
+        description: impl Into<String>,
+    ) -> OperationBuilder<H, Present, S, A, L>
+    where
+        T: utoipa::ToSchema + utoipa::PartialSchema + api_dto::ResponseApiDto + 'static,
+    {
+        let name = ensure_schema::<T>(openapi);
+        self.spec.responses.push(ResponseSpec {
+            status: http::StatusCode::OK.as_u16(),
+            content_type: "multipart/mixed",
+            description: description.into(),
+            schema: Some(ResponseSchema::Ref { schema_name: name }),
+            headers: Vec::new(),
         });
         OperationBuilder {
             spec: self.spec,
@@ -1448,17 +1604,49 @@ where
     A: AuthState,
     L: LicenseState,
 {
+    /// Declare a header on the most recently declared response.
+    ///
+    /// Call this immediately after the response declaration it describes.
+    /// Consecutive calls attach multiple headers to that same response.
+    ///
+    /// # Panics
+    /// Panics when the response status already has a header with the same
+    /// case-insensitive name.
+    pub fn response_header(mut self, header: ResponseHeaderSpec) -> Self {
+        let Some(response) = self.spec.responses.last() else {
+            unreachable!("Present response state guarantees a response");
+        };
+        let status = response.status;
+        assert!(
+            !self.spec.responses.iter().any(|response| {
+                response.status == status
+                    && response
+                        .headers
+                        .iter()
+                        .any(|existing| existing.name.eq_ignore_ascii_case(&header.name))
+            }),
+            "response {status} already declares header '{}'",
+            header.name
+        );
+        let Some(response) = self.spec.responses.last_mut() else {
+            unreachable!("Present response state guarantees a response");
+        };
+        response.headers.push(header);
+        self
+    }
+
     /// Add a JSON response (additional).
     pub fn json_response(
         mut self,
         status: http::StatusCode,
         description: impl Into<String>,
     ) -> Self {
-        self.spec.responses.push(ResponseSpec {
+        self.spec.upsert_response(ResponseSpec {
             status: status.as_u16(),
             content_type: "application/json",
             description: description.into(),
             schema: None,
+            headers: Vec::new(),
         });
         self
     }
@@ -1469,11 +1657,12 @@ where
         status: http::StatusCode,
         description: impl Into<String>,
     ) -> Self {
-        self.spec.responses.push(ResponseSpec {
+        self.spec.upsert_response(ResponseSpec {
             status: status.as_u16(),
             content_type: "",
             description: description.into(),
             schema: None,
+            headers: Vec::new(),
         });
         self
     }
@@ -1489,11 +1678,12 @@ where
         T: utoipa::ToSchema + utoipa::PartialSchema + api_dto::ResponseApiDto + 'static,
     {
         let name = ensure_schema::<T>(registry);
-        self.spec.responses.push(ResponseSpec {
+        self.spec.upsert_response(ResponseSpec {
             status: status.as_u16(),
             content_type: "application/json",
             description: description.into(),
             schema: Some(ResponseSchema::Ref { schema_name: name }),
+            headers: Vec::new(),
         });
         self
     }
@@ -1513,11 +1703,12 @@ where
         T: utoipa::ToSchema + utoipa::PartialSchema + api_dto::ResponseApiDto + 'static,
     {
         let items_schema_name = ensure_schema::<T>(registry);
-        self.spec.responses.push(ResponseSpec {
+        self.spec.upsert_response(ResponseSpec {
             status: status.as_u16(),
             content_type: "application/json",
             description: description.into(),
             schema: Some(ResponseSchema::Array { items_schema_name }),
+            headers: Vec::new(),
         });
         self
     }
@@ -1540,11 +1731,12 @@ where
         description: impl Into<String>,
         content_type: &'static str,
     ) -> Self {
-        self.spec.responses.push(ResponseSpec {
+        self.spec.upsert_response(ResponseSpec {
             status: status.as_u16(),
             content_type,
             description: description.into(),
             schema: None,
+            headers: Vec::new(),
         });
         self
     }
@@ -1555,11 +1747,12 @@ where
         status: http::StatusCode,
         description: impl Into<String>,
     ) -> Self {
-        self.spec.responses.push(ResponseSpec {
+        self.spec.upsert_response(ResponseSpec {
             status: status.as_u16(),
             content_type: "text/html",
             description: description.into(),
             schema: None,
+            headers: Vec::new(),
         });
         self
     }
@@ -1573,13 +1766,14 @@ where
     ) -> Self {
         // Canonical Problem schema (RFC 9457 + GTS-typed). Component name "Problem".
         let problem_name = ensure_schema::<toolkit_canonical_errors::Problem>(registry);
-        self.spec.responses.push(ResponseSpec {
+        self.spec.upsert_response(ResponseSpec {
             status: status.as_u16(),
             content_type: problem::APPLICATION_PROBLEM_JSON,
             description: description.into(),
             schema: Some(ResponseSchema::Ref {
                 schema_name: problem_name,
             }),
+            headers: Vec::new(),
         });
         self
     }
@@ -1594,11 +1788,34 @@ where
         T: utoipa::ToSchema + utoipa::PartialSchema + api_dto::ResponseApiDto + 'static,
     {
         let name = ensure_schema::<T>(openapi);
-        self.spec.responses.push(ResponseSpec {
+        self.spec.upsert_response(ResponseSpec {
             status: http::StatusCode::OK.as_u16(),
             content_type: "text/event-stream",
             description: description.into(),
             schema: Some(ResponseSchema::Ref { schema_name: name }),
+            headers: Vec::new(),
+        });
+        self
+    }
+
+    /// Additional `multipart/mixed` response (if the operation already has
+    /// one). See [`OperationBuilder::multipart_json`] on the first-response
+    /// builder for what `T` and the media-type key mean.
+    pub fn multipart_json<T>(
+        mut self,
+        openapi: &dyn OpenApiRegistry,
+        description: impl Into<String>,
+    ) -> Self
+    where
+        T: utoipa::ToSchema + utoipa::PartialSchema + api_dto::ResponseApiDto + 'static,
+    {
+        let name = ensure_schema::<T>(openapi);
+        self.spec.upsert_response(ResponseSpec {
+            status: http::StatusCode::OK.as_u16(),
+            content_type: "multipart/mixed",
+            description: description.into(),
+            schema: Some(ResponseSchema::Ref { schema_name: name }),
+            headers: Vec::new(),
         });
         self
     }
@@ -1663,13 +1880,14 @@ where
         ];
 
         for (status, description) in standard_errors {
-            self.spec.responses.push(ResponseSpec {
+            self.spec.upsert_response(ResponseSpec {
                 status: status.as_u16(),
                 content_type: problem::APPLICATION_PROBLEM_JSON,
                 description: description.to_owned(),
                 schema: Some(ResponseSchema::Ref {
                     schema_name: problem_name.clone(),
                 }),
+                headers: Vec::new(),
             });
         }
 
@@ -1715,13 +1933,14 @@ where
     pub fn with_400_validation_error(mut self, registry: &dyn OpenApiRegistry) -> Self {
         let problem_name = ensure_schema::<toolkit_canonical_errors::Problem>(registry);
 
-        self.spec.responses.push(ResponseSpec {
+        self.spec.upsert_response(ResponseSpec {
             status: http::StatusCode::BAD_REQUEST.as_u16(),
             content_type: problem::APPLICATION_PROBLEM_JSON,
             description: "Validation Error".to_owned(),
             schema: Some(ResponseSchema::Ref {
                 schema_name: problem_name,
             }),
+            headers: Vec::new(),
         });
 
         self

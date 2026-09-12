@@ -2712,36 +2712,41 @@ async fn a_re_publish_from_a_deprecated_head_leaves_it_deprecated() {
 
 // ── The retry classifier reads a variant, not a string ────────────────────
 
-/// The two lines the flattening defect consisted of: `DbErr::Custom` is never
-/// retryable, and the variant the driver actually raises is.
+/// **`RepoError::Driver` hands the driver's own variant on unchanged, and
+/// flattening to a string destroys it.** That is the property this gear owns
+/// and the one asserted here.
 ///
-/// This is the whole of the property the publish and discard doors document
-/// and, before `RepoError::Driver` existed, did not hold. `RepoError::Db`
-/// rendered a `sea_orm::DbErr` into a string at the moment it was raised, and
-/// each door re-wrapped that string as `DbErr::Custom`;
-/// `is_retryable_contention` matches `DbErr::Exec` and `DbErr::Query` and
-/// nothing else, so a genuine `SQLITE_BUSY` collision between two concurrent
-/// publishes classified as *not contention* and reached the caller as a bare
-/// 500 rather than being re-attempted. Both errors below carry the identical
-/// message text: what the classifier reads is the variant, so the text is
-/// exactly the thing that cannot carry the signal.
+/// # Why this test no longer asserts the flattened form is a 500
+///
+/// It did until 2026-09-12, and the platform closed the hole from its own
+/// side: `toolkit-db`'s `is_retryable_contention` gained a `DbErr::Custom`
+/// arm (RG-15) that matches the **message text**, precisely so *"a caller may
+/// re-wrap a `DbErr` … losing the `Exec`/`Query` shape but keeping the message
+/// text this function matches on"*. So the flattened form is rescued now, and
+/// the sentence this test used to make — *"the flattened form is what made a
+/// retryable collision a 500"* — is false at HEAD.
+///
+/// **The design it justified is unchanged, and for a reason the toolkit itself
+/// states**: that arm's message is *"anything calling code chose to put
+/// there"*, which is why the toolkit had to narrow its own SQLSTATE matching to
+/// avoid a UUID's hex digits reading as `40001`. A variant is a contract and a
+/// rendered message is not, so this repository keeps preserving the variant
+/// rather than relying on a rescue that reads prose. What the case below pins
+/// is exactly that: the two `to_db_err` shapes, and that the preserved one is
+/// classified retryable without the classifier having to parse anything.
 ///
 /// The `DbErr`s here are hand-built, which is why this is a unit assertion
 /// and not a claim about a real collision — see
 /// `a_real_driver_failure_is_preserved_as_the_variant_the_driver_raised` for
 /// the half that is measured against the database.
 #[test]
-fn a_stringified_contention_error_is_not_retryable_and_the_preserved_one_is() {
+fn the_driver_variant_survives_to_db_err_and_a_flattened_error_has_none_left() {
     let text = "error returned from database: (code: 5) database is locked";
 
     let flattened = RepoError::Db(format!("publish product {PRODUCT}: {text}")).to_db_err();
     assert!(
         matches!(flattened, DbErr::Custom(_)),
         "a string-carrying RepoError has no driver variant left to answer with: {flattened:?}"
-    );
-    assert!(
-        !is_retryable_contention(DbBackend::Sqlite, &flattened),
-        "the flattened form is what made a retryable collision a 500"
     );
 
     let preserved = RepoError::Driver {

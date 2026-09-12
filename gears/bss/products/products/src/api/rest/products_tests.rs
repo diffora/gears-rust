@@ -9,7 +9,7 @@
 //! direct call would not exercise at all.
 //!
 //! The read-door cases run against a real in-memory-shaped `SQLite` mirror
-//! and a real [`PolicyEnforcer`] built over a fake [`AuthZResolverClient`]
+//! and a real [`PolicyEnforcer`] built over a fake [`AuthZResolverApi`]
 //! (the same technique `crate::authz::authz_tests` uses) — nothing about
 //! either door needed a live database server or a live PDP deployment to
 //! prove.
@@ -5650,8 +5650,9 @@ mod family_clone_tests {
     use authz_resolver_sdk::models::{
         DenyReason, EvaluationRequest, EvaluationResponse, EvaluationResponseContext,
     };
-    use authz_resolver_sdk::{AuthZResolverClient, AuthZResolverError, PolicyEnforcer};
-    use toolkit_security::pep_properties;
+    use authz_resolver_sdk::{AuthZResolverApi, PolicyEnforcer};
+    use toolkit::api::canonical_prelude::CanonicalError;
+    use toolkit_security::{PlatformSecurityContext, pep_properties};
 
     use crate::infra::storage::repo::NewSku;
 
@@ -5795,11 +5796,12 @@ mod family_clone_tests {
     }
 
     #[async_trait]
-    impl AuthZResolverClient for SecondCallDenied {
+    impl AuthZResolverApi for SecondCallDenied {
         async fn evaluate(
             &self,
+            _ctx: PlatformSecurityContext,
             _req: EvaluationRequest,
-        ) -> Result<EvaluationResponse, AuthZResolverError> {
+        ) -> Result<EvaluationResponse, CanonicalError> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(EvaluationResponse {
                 decision: call == 0,

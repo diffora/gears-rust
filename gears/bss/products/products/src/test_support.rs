@@ -34,10 +34,11 @@ use authz_resolver_sdk::constraints::{Constraint, InPredicate, Predicate};
 use authz_resolver_sdk::models::{
     EvaluationRequest, EvaluationResponse, EvaluationResponseContext,
 };
-use authz_resolver_sdk::{AuthZResolverClient, AuthZResolverError, PolicyEnforcer};
+use authz_resolver_sdk::{AuthZResolverApi, PolicyEnforcer};
 use sea_orm::{ConnectionTrait, Database, DbBackend, FromQueryResult, Statement};
+use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit_gts::gts_id;
-use toolkit_security::{SecurityContext, pep_properties};
+use toolkit_security::{PlatformSecurityContext, SecurityContext, pep_properties};
 use uuid::Uuid;
 
 use crate::infra::events;
@@ -58,11 +59,12 @@ struct FlatInResolver {
 }
 
 #[async_trait]
-impl AuthZResolverClient for FlatInResolver {
+impl AuthZResolverApi for FlatInResolver {
     async fn evaluate(
         &self,
+        _ctx: PlatformSecurityContext,
         _req: EvaluationRequest,
-    ) -> Result<EvaluationResponse, AuthZResolverError> {
+    ) -> Result<EvaluationResponse, CanonicalError> {
         Ok(EvaluationResponse {
             decision: true,
             context: EvaluationResponseContext {

@@ -2,7 +2,7 @@
 //! [`access_scope`] PEP gate.
 //!
 //! The permit/deny/unavailable paths are exercised against a fake
-//! `AuthZResolverClient` rather than a live resolver — the same technique the
+//! `AuthZResolverApi` rather than a live resolver — the same technique the
 //! sibling ledger gear's own `authz_tests.rs` uses (see
 //! `gears/bss/ledger/ledger/src/authz_tests.rs`), so `access_scope`'s own
 //! logic (the `EnforcerError` → `AuthzError` split, and the write-path
@@ -17,9 +17,10 @@ use async_trait::async_trait;
 use authz_resolver_sdk::models::{
     EvaluationRequest, EvaluationResponse, EvaluationResponseContext,
 };
-use authz_resolver_sdk::{AuthZResolverClient, AuthZResolverError, PolicyEnforcer};
+use authz_resolver_sdk::{AuthZResolverApi, PolicyEnforcer};
+use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit_gts::gts_id;
-use toolkit_security::{SecurityContext, pep_properties};
+use toolkit_security::{PlatformSecurityContext, SecurityContext, pep_properties};
 use uuid::Uuid;
 
 use super::{AuthzError, access_scope, actions, authz_label_type_schemas, labels, resource_types};
@@ -248,12 +249,13 @@ async fn publish_gate_on_sku_matches_write_semantics() {
 struct FailingResolver;
 
 #[async_trait]
-impl AuthZResolverClient for FailingResolver {
+impl AuthZResolverApi for FailingResolver {
     async fn evaluate(
         &self,
+        _ctx: PlatformSecurityContext,
         _req: EvaluationRequest,
-    ) -> Result<EvaluationResponse, AuthZResolverError> {
-        Err(AuthZResolverError::Internal("pdp unreachable".to_owned()))
+    ) -> Result<EvaluationResponse, CanonicalError> {
+        Err(CanonicalError::internal("pdp unreachable".to_owned()).create())
     }
 }
 
@@ -261,11 +263,12 @@ impl AuthZResolverClient for FailingResolver {
 struct DenyingResolver;
 
 #[async_trait]
-impl AuthZResolverClient for DenyingResolver {
+impl AuthZResolverApi for DenyingResolver {
     async fn evaluate(
         &self,
+        _ctx: PlatformSecurityContext,
         _req: EvaluationRequest,
-    ) -> Result<EvaluationResponse, AuthZResolverError> {
+    ) -> Result<EvaluationResponse, CanonicalError> {
         Ok(EvaluationResponse {
             decision: false,
             context: EvaluationResponseContext {

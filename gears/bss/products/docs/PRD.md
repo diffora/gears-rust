@@ -14,7 +14,18 @@ refs:
   - bss/prd/PRD-tariffs-pricing-logic-202604011200
 ---
 
+Created:  2026-07-03 by Virtuozzo International GmbH
+Updated:  2026-08-24 by Virtuozzo International GmbH
+
 # PRD — Product & SKU Management
+
+> **Tax ownership amendment, 2026-09-10:** Product Catalog owns the tax-category
+> dictionary (stable code and display name; Finance owns its business meaning).
+> Category assignment belongs solely to Pricing's `price.tax_category_ref`,
+> not a SKU field or region default. Rates/rules belong to Tax Engine. This
+> branch adds only `ProductCatalogClientV1::list_tax_categories` and a read-only
+> Pricing projection with explicit demo-provider codes; no Products gear or
+> category CRUD is implemented. See [implementation and migration status](../../pricing/docs/design/ui-read-contracts.md).
 
 > **Provenance (2026-07-16):** vendored from `constructorfabric/gears-rust` PR **#4177**
 > (`add-product-sku-prd` @ `6d3aab4`, author Corw1n-of-Amber) — this branch is the canonical home
@@ -161,7 +172,7 @@ This PRD carves the **registry** scope out of the combined predecessor (`PRD-pro
 |----------|----------------|
 | **Catalog (registry)** | The authoritative registry of products/services/bundles/SKUs, categories, and localized attributes, and the catalog-wide version/publish mechanism (manifest §4.1). SoR: BSS. Defines *what can be sold and how it is described, classified, and published* — not how it is priced. |
 | **Product** | A sellable or describable offering record with a name, **one required primary category plus optional secondary categories**, lifecycle state, brand/region scope, and version. The top of the catalog hierarchy. Identified by a system-generated `productId`. |
-| **SKU (Stock Keeping Unit)** | A uniquely identifiable variant of a Product, typed as `product`, `service`, or `bundle`, optionally carrying a **metering-unit declaration** (for usage products) and stable accounting codes (`taxCategory`, `glCode`). A SKU has two identifiers: a system-generated immutable `skuId` and an operator-supplied human-readable `skuCode`. A SKU carries its own brand/region scope, **contained within its parent Product's scope**; the SKU→Product link is immutable after first publish. |
+| **SKU (Stock Keeping Unit)** | A uniquely identifiable variant of a Product, typed as `product`, `service`, or `bundle`, optionally carrying a **metering-unit declaration** (for usage products) and a stable accounting code (`glCode`); tax-category assignment is price-row-owned. A SKU has two identifiers: a system-generated immutable `skuId` and an operator-supplied human-readable `skuCode`. A SKU carries its own brand/region scope, **contained within its parent Product's scope**; the SKU→Product link is immutable after first publish. |
 | **Usage SKU** | Definition, not detection: a SKU that **carries a metering-unit declaration**. There is no separate "is-usage" flag — declaring a metering unit **is** what makes a SKU a usage SKU. "A usage SKU missing its declaration" is not a detectable registry state; usage-completeness is enforced at the plan-price seam, never at registry publish. |
 | **Sellable** | Per-SKU offering-eligibility flag (`sellable`, default `true`; D-46). `sellable = false` = **composition/metering-only**: the SKU publishes normally, MAY be referenced as a bundle/plan component and MAY carry a metering-unit declaration, but MUST NOT be offered **standalone** (pricing sellability-gate predicate 6). Distinct from lifecycle (`published` = *referenceable*) and from per-market GA gates (`not_sellable_ga`). The migration cover for technical/component SKUs of existing catalogs. |
 | **Identifier** | The registry distinguishes **system identity** from **human/business code**. `productId`/`skuId` are server-generated immutable UUIDs. `skuCode` is operator-supplied, fixed-format, tenant-unique, immutable after first publish. Products MAY carry an optional `productCode` under the same reservation rules. Downstream consumers bind to `skuId`; humans/external catalogs reference `skuCode`/`productCode`. |
@@ -239,7 +250,7 @@ The combined Catalog (§4.1) capability is split across complementary PRDs (regi
 
 **ID**: `cpt-cf-bss-products-actor-finance-reviewer`
 
-**Role**: Reviews and approves finance-material catalog changes (`taxCategory`, `glCode`, `PlanTier`); second approver under the two-person rule for finance-bearing changes.
+**Role**: Reviews and approves finance-material catalog changes (`glCode`, `PlanTier`) and tax-category dictionary definitions; second approver under the two-person rule for finance-bearing changes.
 **Needs**: Pending-approval queue with diffs, pre-publish lint report, separation-of-duties enforcement.
 
 #### Auditor
@@ -394,7 +405,7 @@ The combined Catalog (§4.1) capability is split across complementary PRDs (regi
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-fr-field-mutability-matrix`
 
-Mutability **MUST** be classified by lifecycle state: in `draft` all fields editable (incl. SKU→parent link and `skuCode`/`productCode`); after publish four buckets apply — **(i) structural identity** immutable and never correctable in place (remedied only by retire + clone); **(ii)** `type` and metering-unit declaration immutable but correctable via the governed fresh-zero path; **(iii) material-but-mutable** (`PlanTier`, `taxCategory`, `glCode`, `sellable`) change via a new published version under governance; **(iv)** other descriptive fields via a new published version. Illegal changes **MUST** be rejected fail-closed with an audited reason. The active-reference count **MUST** be sourced from `SkuReferenceCount` as the 3-state predicate; the registry **MUST NEVER** treat an entity as unreferenced absent a fresh watermark.
+Mutability **MUST** be classified by lifecycle state: in `draft` all fields editable (incl. SKU→parent link and `skuCode`/`productCode`); after publish four buckets apply — **(i) structural identity** immutable and never correctable in place (remedied only by retire + clone); **(ii)** `type` and metering-unit declaration immutable but correctable via the governed fresh-zero path; **(iii) material-but-mutable** (`PlanTier`, `glCode`, `sellable`) change via a new published version under governance; **(iv)** other descriptive fields via a new published version. Illegal changes **MUST** be rejected fail-closed with an audited reason. The active-reference count **MUST** be sourced from `SkuReferenceCount` as the 3-state predicate; the registry **MUST NEVER** treat an entity as unreferenced absent a fresh watermark.
 
 **Rationale**: Protecting identity/external caches while allowing governed evolution requires a per-state, per-field classification.
 
@@ -672,7 +683,7 @@ A `bundle` SKU published with the uncomposed override (exercised at its entity p
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-fr-materiality-gated-publish`
 
-A **material** change (touching `PlanTier`/metering-unit/`taxCategory`/`glCode`, a lifecycle transition to `published`/`deprecated`/`retired`, a Category create/rename/re-parent/retire/delete, a material attribute-definition change, or exceeding the configured affected-entity count) **MUST** require a **configured approver quorum**: `N` distinct approvers, each distinct from the author and holding CatalogAdmin or FinanceReviewer, where `N` is part of the typed materiality policy with **default 2** and **floor 0** (amended, **P-D-11** — the previous text fixed `N ≥ 2`, which made a two-person tenant unable to publish any material change and a one-person tenant unable to publish at all, while the sibling plan-price gear ships both `N = 1` and an approver-less path for below-threshold non-first publishes). Constraints on that quorum, none of them configurable: a **finance-material** field (`taxCategory`, `glCode`, `PlanTier`) **MUST** include ≥ 1 FinanceReviewer among the approvers — the predicate governs *who*, never *how many*. At `N = 0` the predicate has **no subject**: it **MUST NOT** be imposed on a descriptor no principal can satisfy (that would raise `APPROVAL_REQUIRED` with nothing able to clear it, re-blocking the one-person tenant this floor exists for, since `taxCategory` is required at publish for product/service types), and the record **MUST** instead carry an explicit unsatisfiable-predicate marker so the absent control is a stored fact rather than a silent pass; self-approval **MUST** remain refused at every `N ≥ 1` (a tenant wanting the author to decide alone configures `N = 0`, which the trail records as "no approval required by policy" — an author signing as their own approver is indistinguishable from a bypassed control and is never the mechanism for it); `N` **MUST** be reachable only by explicit configuration, an absent value falling back to the default so `0` is never reached by omission; the **initial** value is set at tenant provisioning while every later change to it is itself material under the *then-current* quorum. An approval **MUST** be **pinned to the internal revision**; any subsequent edit invalidates it and re-queues with the diff re-presented. The materiality rule **MUST** be a typed, configurable policy with an enforceable interim default (§17.1); a rejection returns the entity to `draft` with reason recorded.
+A **material** change (touching `PlanTier`/metering-unit/`glCode`, a lifecycle transition to `published`/`deprecated`/`retired`, a Category create/rename/re-parent/retire/delete, a material attribute-definition change, or exceeding the configured affected-entity count) **MUST** require a **configured approver quorum**: `N` distinct approvers, each distinct from the author and holding CatalogAdmin or FinanceReviewer, where `N` is part of the typed materiality policy with **default 2** and **floor 0** (amended, **P-D-11** — the previous text fixed `N ≥ 2`, which made a two-person tenant unable to publish any material change and a one-person tenant unable to publish at all, while the sibling plan-price gear ships both `N = 1` and an approver-less path for below-threshold non-first publishes). Constraints on that quorum, none of them configurable: a **finance-material** field (`glCode`, `PlanTier`) and tax-category dictionary definitions **MUST** include ≥ 1 FinanceReviewer among the approvers (the field list and the `PlanTier` operand below follow the 2026-09-10 tax-ownership amendment at the head of this document; the merge that carried it in is recorded as **P-D-168**, which also records that the amendment has not reached six other sentences of this PRD) — the predicate governs *who*, never *how many*. At `N = 0` the predicate has **no subject**: it **MUST NOT** be imposed on a descriptor no principal can satisfy (that would raise `APPROVAL_REQUIRED` with nothing able to clear it, re-blocking the one-person tenant this floor exists for, since `PlanTier` is mandatory on every SKU and enforced at publish, which makes *every* SKU publish finance-material), and the record **MUST** instead carry an explicit unsatisfiable-predicate marker so the absent control is a stored fact rather than a silent pass; self-approval **MUST** remain refused at every `N ≥ 1` (a tenant wanting the author to decide alone configures `N = 0`, which the trail records as "no approval required by policy" — an author signing as their own approver is indistinguishable from a bypassed control and is never the mechanism for it); `N` **MUST** be reachable only by explicit configuration, an absent value falling back to the default so `0` is never reached by omission; the **initial** value is set at tenant provisioning while every later change to it is itself material under the *then-current* quorum. An approval **MUST** be **pinned to the internal revision**; any subsequent edit invalidates it and re-queues with the diff re-presented. The materiality rule **MUST** be a typed, configurable policy with an enforceable interim default (§17.1); a rejection returns the entity to `draft` with reason recorded.
 
 **One subject kind carries no human approver (P-D-14).** A publish whose sole content is a
 system-owned flag cleared by an inbound governed signal — in v1 exactly the `compositionPending`
@@ -683,6 +694,7 @@ because its principal is not a tenant principal (slice 05 `inst-gv-one-shot`), s
 above and its `N = 0` clause do not apply to it. **On a dirty head the clear is deferred, never refused** (P-D-14 as confirmed by P-D-48): the
 signal is durable and idempotent, the flag stays set, `design/06-catalog-version.md` §3.2 raises no
 error code for it by design, and the clear re-evaluates when the head next goes clean.
+
 
 **Rationale**: Two-person control with separation of duties and revision-pinning prevents unauthorized or bypassed publishes.
 
@@ -1278,7 +1290,7 @@ until while the decision speaks for all of them.*
 **2. Product/SKU field-mutability matrix**
 - **Given** a published Product or SKU
 - **When** an operator edits it
-- **Then** mutability MUST be classified by lifecycle state: structural identity immutable (remedied only by retire + clone); `type`/metering-unit immutable-but-correctable via the fresh-zero path; material-but-mutable (`PlanTier`/`taxCategory`/`glCode`/`sellable`) via a new published version under governance; other fields via a new version
+- **Then** mutability MUST be classified by lifecycle state: structural identity immutable (remedied only by retire + clone); `type`/metering-unit immutable-but-correctable via the fresh-zero path; material-but-mutable (`PlanTier`/`glCode`/`sellable`) via a new published version under governance; other fields via a new version
 - **And** an illegal change MUST be rejected fail-closed with an audited reason
 - **And** the active-reference count MUST be sourced from `SkuReferenceCount` as the 3-state predicate; never treat an entity as unreferenced absent a fresh watermark
 
@@ -1463,9 +1475,10 @@ until while the decision speaks for all of them.*
 
 **26. Materiality-gated publish**
 - **Given** a Product/SKU change or a material Category/attribute-definition op
-- **When** the change is material (touches `PlanTier`/metering-unit/`taxCategory`/`glCode`, a lifecycle transition, a Category create/rename/re-parent/retire/delete, a material attribute-definition change, or exceeds the configured affected-entity count)
+- **When** the change is material (touches `PlanTier`/metering-unit/`glCode`, a lifecycle transition, a Category create/rename/re-parent/retire/delete, a material attribute-definition change, or exceeds the configured affected-entity count)
 - **Then** the system MUST enforce the tenant's configured approver quorum `N` (typed policy, default 2, floor 0 — P-D-11): `N` distinct approvers, each distinct from the author and holding CatalogAdmin or FinanceReviewer; a finance-material field MUST include ≥ 1 FinanceReviewer among them at every `N ≥ 1`; at `N = 0` the predicate MUST NOT be imposed (no principal could satisfy it, and the gate would then refuse forever) and the record MUST carry an explicit unsatisfiable-predicate marker instead
 - **And** self-approval MUST be refused at every `N ≥ 1`; `N = 0` MUST still write the approval record (author, pinned content snapshot, audit row, `quorum {required: 0, satisfied: 0}`) and MUST be reachable only by explicit configuration — an absent value falls back to the default; the initial value is set at tenant provisioning and every later change to it is itself material under the then-current quorum
+
 - **And** an approval MUST be pinned to the internal revision; any subsequent edit invalidates it and re-queues with the diff re-presented
 - **And** a publish whose sole content is a system-owned flag cleared by an inbound governed signal MUST be recorded under subject kind `system_signal` — auto-satisfied against the signal reference, outside the configured `N`, and never exempt from the record (P-D-14). On a dirty head the clear is deferred, never refused (P-D-48)
 - **And** the rule MUST be a typed configurable policy with an enforceable interim default (§17.1); a rejection MUST leave the head in its current state, record the reason on the decision row and void the approval record, a later publish queuing a new one; the quorum is the configured `N` above (**P-D-132**, 2026-09-03 — the former *"returns the entity to `draft`; v1 uses a single two-person step"* is superseded)
@@ -1801,4 +1814,5 @@ Absence of a monetization-model marker on a SKU is **intentional**, not a missin
 ---
 
 *Child artifacts: ADR(s) for versioning/snapshot strategy and lifecycle/deprecation modeling; the gear's DESIGN (`gears/bss/products/docs/DESIGN.md` — canonical index + `design/` slice set + `DECISIONS.md` P-D register, started) for entity schemas, APIs, events, and read-model design; STORY documents per scope item. The §4.1 registry↔commercial decomposition is recorded in the manifest §4.1 Decomposition (BSS realization) note, not a separate ADR.*
+
 

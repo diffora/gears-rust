@@ -26,6 +26,7 @@
 
 use std::sync::Arc;
 
+use bss_ledger::domain::instant::to_naive_date;
 use bss_ledger::domain::model::{AccountRow, CurrencyScaleRow, NewEntry, NewLine};
 use bss_ledger::domain::money::DEFAULT_PLAUSIBLE_MAX_MAJOR;
 use bss_ledger::domain::payment::settlement::SettlementInput;
@@ -38,11 +39,11 @@ use bss_ledger::infra::posting::service::PostingService;
 use bss_ledger::infra::storage::migrations::Migrator;
 use bss_ledger::infra::storage::repo::{PaymentRepo, ReferenceRepo};
 use bss_ledger_sdk::{AccountClass, MappingStatus, Side, SourceDocType};
-use chrono::{Datelike, NaiveDate, Utc};
+use chrono::NaiveDate;
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, Statement, TransactionTrait};
 use sea_orm_migration::MigratorTrait;
-use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
+use time::OffsetDateTime;
 use toolkit_db::secure::AccessScope;
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use toolkit_security::SecurityContext;
@@ -163,7 +164,7 @@ fn balanced_entry(f: &Fixture, business_id: &str, amount: i64) -> (NewEntry, Vec
         source_business_id: business_id.to_owned(),
         reverses_entry_id: None,
         reverses_period_id: None,
-        posted_at_utc: Utc::now(),
+        posted_at_utc: OffsetDateTime::now_utc(),
         effective_at: NaiveDate::from_ymd_opt(2026, 6, 1).unwrap(),
         origin: "SYSTEM".to_owned(),
         posted_by_actor_id: f.tenant,
@@ -240,7 +241,7 @@ fn noop_publisher() -> Arc<LedgerEventPublisher> {
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn clean_tenant_ties_out() {
-    let container = Postgres::default().start().await.unwrap();
+    let container = test_containers::postgres().start().await.unwrap();
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
 
@@ -265,7 +266,7 @@ async fn clean_tenant_ties_out() {
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn account_balance_drift_is_detected() {
-    let container = Postgres::default().start().await.unwrap();
+    let container = test_containers::postgres().start().await.unwrap();
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
 
@@ -302,7 +303,7 @@ async fn account_balance_drift_is_detected() {
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn ar_sub_grain_drift_is_detected() {
-    let container = Postgres::default().start().await.unwrap();
+    let container = test_containers::postgres().start().await.unwrap();
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
 
@@ -337,7 +338,7 @@ async fn ar_sub_grain_drift_is_detected() {
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn pending_mapping_is_flagged() {
-    let container = Postgres::default().start().await.unwrap();
+    let container = test_containers::postgres().start().await.unwrap();
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
 
@@ -373,7 +374,7 @@ async fn pending_mapping_is_flagged() {
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn entry_balance_backstop_catches_imbalanced_entry() {
-    let container = Postgres::default().start().await.unwrap();
+    let container = test_containers::postgres().start().await.unwrap();
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
 
@@ -465,7 +466,7 @@ async fn entry_balance_backstop_catches_imbalanced_entry() {
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn entry_backstop_catches_mixed_payer_entry() {
-    let container = Postgres::default().start().await.unwrap();
+    let container = test_containers::postgres().start().await.unwrap();
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
 
@@ -565,7 +566,7 @@ async fn entry_backstop_catches_mixed_payer_entry() {
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn run_emits_negative_grain_and_entry_imbalance_arms() {
-    let container = Postgres::default().start().await.unwrap();
+    let container = test_containers::postgres().start().await.unwrap();
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
 
@@ -706,7 +707,7 @@ async fn run_emits_negative_grain_and_entry_imbalance_arms() {
 // `tie_out_tenant` (which wires `recompute_payment_counter_variances` over those
 // real rows). A `setup_seller` mirrors `postgres_payments.rs`: USD@2, an OPEN
 // period for the CURRENT month (settle/allocate derive `period_id` from
-// `Utc::now()`), and the four payment-flow chart accounts.
+// `OffsetDateTime::now_utc()`), and the four payment-flow chart accounts.
 
 struct Seller {
     tenant: Uuid,
@@ -733,7 +734,7 @@ fn seller_account(tenant: Uuid, id: Uuid, class: AccountClass, normal: Side) -> 
 }
 
 async fn setup_seller(raw: &DatabaseConnection, provider: &DBProvider<DbError>) -> Seller {
-    let now = Utc::now();
+    let now = OffsetDateTime::now_utc();
     let s = Seller {
         tenant: Uuid::now_v7(),
         payer: Uuid::now_v7(),
@@ -741,7 +742,7 @@ async fn setup_seller(raw: &DatabaseConnection, provider: &DBProvider<DbError>) 
         unallocated: Uuid::now_v7(),
         psp_fee: Uuid::now_v7(),
         ar: Uuid::now_v7(),
-        period_id: format!("{:04}{:02}", now.year(), now.month()),
+        period_id: bss_ledger::domain::instant::yyyymm(now),
     };
     let reference = ReferenceRepo::new(provider.clone());
     reference
@@ -804,8 +805,8 @@ async fn seed_ar_invoice(
         source_business_id: invoice_id.to_owned(),
         reverses_entry_id: None,
         reverses_period_id: None,
-        posted_at_utc: Utc::now(),
-        effective_at: Utc::now().date_naive(),
+        posted_at_utc: OffsetDateTime::now_utc(),
+        effective_at: to_naive_date(OffsetDateTime::now_utc()),
         origin: "SYSTEM".to_owned(),
         posted_by_actor_id: s.tenant,
         correlation_id: Uuid::now_v7(),
@@ -866,7 +867,7 @@ async fn seed_ar_invoice(
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn payment_counter_reconcile_through_full_tie_out() {
-    let container = Postgres::default().start().await.unwrap();
+    let container = test_containers::postgres().start().await.unwrap();
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
 
@@ -988,7 +989,7 @@ async fn payment_counter_reconcile_through_full_tie_out() {
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn incremental_tie_out_covers_reusable_credit_grain() {
-    let container = Postgres::default().start().await.unwrap();
+    let container = test_containers::postgres().start().await.unwrap();
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
 
@@ -1029,7 +1030,7 @@ async fn incremental_tie_out_covers_reusable_credit_grain() {
             source_business_id: business_id.to_owned(),
             reverses_entry_id: None,
             reverses_period_id: None,
-            posted_at_utc: Utc::now(),
+            posted_at_utc: OffsetDateTime::now_utc(),
             effective_at: effective,
             origin: "SYSTEM".to_owned(),
             posted_by_actor_id: f.tenant,

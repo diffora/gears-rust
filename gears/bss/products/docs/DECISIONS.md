@@ -1569,6 +1569,115 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-168 — `origin/main` is merged in, and it brings three breaking platform changes and one reversal of this gear's own requirements
+
+- **Date**: 2026-09-12 (owner instruction: *"we merged the big pricing changes, a rebase and a
+  merge are needed, with the conflicts if there are any"*)
+- **Merge, not rebase.** The branch was 393 commits ahead of `origin/main` and 509 behind, over a
+  merge-base of `8e7a5d1f6`. A rebase replays 393 commits across a 1885-file delta and re-authors
+  every one of their hashes, which [[never-commit-to-a-shared-branch]]'s incident is about; a merge
+  keeps every commit's identity and confines the reconciliation to one commit. **The measured
+  conflict surface justified it**: of 330 files this branch changed and 1885 `main` changed, only
+  **51 were touched by both**, and only **six** conflicted.
+- **The six, and how each was resolved.** `.github/workflows/ci.yml`, `Makefile` and `Cargo.toml`
+  were union merges (both sides appended in one place); `gears/bss/pricing/docs/DECISIONS.md` was
+  ordered structurally — `main`'s D-353…D-359 are `####` entries belonging under its section `H`,
+  this branch's `## I. Asks from the products gear` is a new top-level section, and putting ours
+  first would have adopted their three entries into our section;
+  `gears/file-storage/docs/IMPLEMENTATION_PLAN_TEMP.txt` took `main`'s delete (our edit was a
+  home-directory-path fix *inside* a document its owner has since retired); `docs/PRD.md` is below.
+- **Three breaking platform changes, none of which this gear could see coming**, each found by the
+  build rather than by reading:
+
+  1. **`authz-resolver-sdk` 0.3.21 → 0.4.0** (`feat(authz-resolver)!: migrate to toolkit contract
+     with REST projection`). `AuthZResolverClient` is now `AuthZResolverApi`, `evaluate` gained a
+     platform-plane `ctx: PlatformSecurityContext`, and its error is `CanonicalError` rather than
+     `AuthZResolverError`. Four sites: the `ClientHub` lookup in `gear.rs` and three fake PDPs.
+     **`rustc`'s "a similar name exists" suggested `AuthZResolverApiRest`, which is the wrong
+     trait** — the REST projection, not the contract; the tree's own donors (`chat-engine`,
+     `usage-collector`, `oagw`) all name `AuthZResolverApi`, which is what settled it.
+  2. **`event-broker-sdk` 0.2.0 → 0.2.1** (`feat(event-broker)!: model topics and event types as
+     derived GTS types`) — the deep one, below.
+  3. **`toolkit-db`'s `ScopeError` became `#[non_exhaustive]`.** `driver_failure`'s match was
+     exhaustive over four variants. The replacement wildcard is written as a **rule over the enum**
+     (`Db` is the only variant carrying a driver error, so it is the only retryable one; everything
+     else is the scope layer refusing to build the statement) with the direction of its failure
+     stated: a future transient variant would be answered as a flat 500 rather than retried, never
+     the reverse — and the reverse is the one that would matter, since `RepoError::Driver` is what
+     the doors retry on.
+
+- **The broker change is a contract change, not a rename.** `TypedEvent` lost both `TOPIC` and
+  `partition_key`: *"both belong to the event type's traits, and the broker resolves them from
+  `TYPE_ID`. A second declaration here could only disagree with them."* And
+  **`gts.cf.core.events.event_type.v1~` was deleted outright** — the commit's own words are *"a
+  type whose instances were types"*. Consequences here, all applied:
+
+  | What | Before | After |
+  |------|--------|-------|
+  | The 37 event type ids | `…events.event_type.v1~cf.bss.products.<name>.v1` | `…events.event.v1~cf.bss.products.<name>.v1~` — a **derived type** of the event base, trailing `~` because a type is not an instance |
+  | The producer's selection pattern | `event_type.v1~cf.bss.products.*` | `event.v1~cf.bss.products.*` |
+  | The topic | `TypedEvent::TOPIC`, one Rust constant per type | the `topic` trait of each type's GTS registration |
+  | `partition_key` | a trait method this gear deliberately left unimplemented (P-D-47) | the type's `partition_key` GTS trait, a JSON Pointer defaulting to the tenant |
+
+  **This reverses, on the platform's authority, the argument `infra/broker.rs` made at length until
+  today** — that `event_type.v1~` was right and the SDK's own doc-example wrong. The module doc now
+  carries the reversal and its evidence rather than the old argument: the broker's committed worked
+  example (`…event.v1~fabrikam.shop.orders.order_placed.v1~.schema.json`) and `chat-engine`'s
+  webhook schemas, which carry the same shape. See [[a-module-doc-is-a-claim-not-a-measurement]] —
+  the claim was true when written and the authority it cited moved out from under it.
+- **What the broker change took away, stated rather than quietly dropped.** Two assertions lost
+  their subject and were narrowed, not deleted: `all_eight_share_one_topic` could assert that every
+  event type names one topic, and now can only assert that the constant the producer binds and the
+  consumer subscribes with equals its independently transcribed literal; the `partition_key` half
+  of P-D-47's ordering has no assertable site at all, because the absence it asserted is now true
+  by construction. **P-D-47 itself is unchanged — its mechanism moved.** Both tests say so at the
+  site.
+- **Owed, and not built here: a GTS schema document per event type.** The topic is now a trait on
+  each derived type's registration, and this gear ships none — so nothing registers the mapping
+  from its 37 types to its one topic. The producer's `prepare_all` already fails loudly when its
+  patterns match **zero** registered types, which is the guard this gap will trip. Building 37
+  schema documents is a slice-sized change with a design footprint (`design/01-foundation.md` §4.4,
+  `design/12-consumer-contracts.md` `inst-rc-dedup`), not a merge fix. *(Owner: this gear's owner,
+  with event-broker.)*
+- **What the merge imported as a requirements change, routed and not decided here.** `main` carries
+  a **Tax ownership amendment dated 2026-09-10** in this gear's own `PRD.md`: the tax-category
+  *dictionary* stays with Product Catalog, but *assignment* *"belongs solely to Pricing's
+  `price.tax_category_ref`, not a SKU field"*. That **reverses P-D-131 (2026-09-03), which is
+  recorded as the product owner's own decision** — *"`taxCategory` and `glCode` stay in the
+  registry"* — and which this gear built: **176 occurrences across 37 source files**, including the
+  `tax_category_ref` column in `m20260829_000003_create_products_sku`, the recognized-set table,
+  the materiality triggers, the events and the SDK models.
+
+  Two facts about the amendment, both measured, neither of them a judgement:
+
+  1. **It is partial.** It edits four places (the header block, the SKU glossary row, the
+     finance-reviewer role, and the two governance paragraphs) and leaves **six** stating the
+     reversed position: §2.1's parenthetical, §5's *"Catalog supplies only the tax-category/GL
+     **code** on the SKU"*, `fr-accounting-codes` (*"required at publish for product/service
+     types"*), the acceptance criterion at *"When a ProductManager sets tax-category and GL
+     codes"*, and both §17 interim-policy rows.
+  2. **The conflict resolution took the amendment's side in the two paragraphs that conflicted**,
+     because the four places it had already reached had merged cleanly — keeping `taxCategory` in
+     those two lists would have been *this* change introducing a contradiction with §5's own
+     glossary. The P-D-11 quorum structure is unchanged; only the field lists moved. **One
+     supporting clause had to be re-anchored**: the floor-0 argument read *"since `taxCategory` is
+     required at publish for product/service types"*, which the amendment makes false. `PlanTier`
+     carries the same weight and more — §5's glossary calls it *"Mandatory classification carried
+     on SKUs/Plans"* — so the clause now names it, and the argument is stronger than it was, since
+     *every* SKU publish is finance-material rather than only the product/service ones.
+
+  **Nothing about the code was changed on this question and nothing should be until the owner
+  rules.** The gear's implementation still follows P-D-131. *(Owner: PRD owner.)*
+- **Not measured here**: `toolkit-odata` also tightened in `main` (`b282d0d4e`, per-field operator
+  enforcement — ordering operators refused on `Bool`/`Uuid`, string functions only on `String`).
+  It is a behavioural change against the six vocabularies P-D-165 declared and no compile error can
+  find it; the suites are what answer it.
+- **Propagated**: `PRD` §`fr-materiality-gated-publish` and its acceptance criterion (the
+  finance-material field lists, and the floor-0 clause re-anchored from `taxCategory` to
+  `PlanTier`), `DESIGN.md` §"Platform dependencies" (the authz trait's new name). The broker and
+  authz migrations land in code, not in the design set: no slice document names a trait or an
+  event-type id namespace.
+
 #### P-D-167 — The gear moves off `chrono` onto `time` wholesale, which closes P-D-166 at the source
 
 - **Date**: 2026-09-08 (owner call: the branch is not in `main`, so there is no deployed data and

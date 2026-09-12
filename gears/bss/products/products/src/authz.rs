@@ -40,7 +40,7 @@
 //! `gears/bss/pricing/pricing/src/authz.rs` confirms the shape is house
 //! style, not one gear's quirk). No door calls it yet — there are no doors in
 //! this slice — but the function is exercised directly by
-//! `authz_tests.rs` against a fake `AuthZResolverClient`, the same technique
+//! `authz_tests.rs` against a fake `AuthZResolverApi`, the same technique
 //! the ledger gear's own test suite uses, so the permit/deny path is proven
 //! without a live resolver.
 

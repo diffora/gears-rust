@@ -104,6 +104,12 @@
 
 // Gear declarations
 mod cond;
+
+// SQL/PGQ support. Gated because `GRAPH_TABLE` exists only on PostgreSQL 19+,
+// and the feature implies `pg`.
+#[cfg(feature = "pgq")]
+pub mod pgq;
+
 mod cte;
 mod db;
 mod db_ops;
@@ -111,6 +117,10 @@ pub mod docs;
 #[allow(clippy::module_inception)]
 mod entity_traits;
 mod error;
+#[cfg(all(test, feature = "pgq"))]
+#[cfg_attr(coverage_nightly, coverage(off))]
+#[path = "pgq_tests.rs"]
+mod pgq_tests;
 pub mod provider;
 mod runner;
 mod secure_conn;
@@ -123,7 +133,7 @@ mod tx_error;
 
 // Core types
 pub use entity_traits::ScopableEntity;
-pub use error::{ScopeError, is_unique_violation};
+pub use error::{ScopeError, is_foreign_key_violation, is_unique_violation};
 
 // Security types from toolkit-security
 pub use toolkit_security::{
@@ -141,9 +151,11 @@ pub use runner::DBRunner;
 pub(crate) use runner::{DBRunnerInternal, SeaOrmRunner};
 
 // Primary database types (new secure API)
-#[cfg(feature = "test-support")]
-pub use db::in_transaction_for_testing;
 pub use db::{DEFAULT_TX_RETRY_ATTEMPTS, Db, DbConn, DbTx};
+#[cfg(feature = "test-support")]
+pub use db::{
+    in_transaction_for_testing, transaction_id_for_testing, transaction_isolation_for_testing,
+};
 
 // Transaction error types (no SeaORM types leaked)
 pub use tx_error::{InfraError, TxError};

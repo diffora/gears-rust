@@ -254,6 +254,186 @@ fn standard_errors() {
 }
 
 #[test]
+fn response_header_attaches_to_the_most_recent_response() {
+    let builder = OperationBuilder::<Missing, Missing, ()>::get("/tests/v1/test")
+        .anonymous()
+        .handler(test_handler)
+        .json_response(http::StatusCode::OK, "Success")
+        .json_response(http::StatusCode::ACCEPTED, "Accepted")
+        .response_header(ResponseHeaderSpec::new(
+            "Location",
+            "Resource URI",
+            ResponseHeaderType::String,
+        ));
+
+    let ok: Vec<_> = builder
+        .spec
+        .responses
+        .iter()
+        .filter(|response| response.status == 200)
+        .collect();
+    let accepted: Vec<_> = builder
+        .spec
+        .responses
+        .iter()
+        .filter(|response| response.status == 202)
+        .collect();
+    assert_eq!(ok.len(), 1);
+    assert_eq!(accepted.len(), 1);
+    assert!(ok[0].headers.is_empty());
+    assert_eq!(accepted[0].headers.len(), 1);
+    assert_eq!(accepted[0].headers[0].name, "Location");
+}
+
+#[test]
+#[should_panic(expected = "response 200 already declares header 'location'")]
+fn response_spec_with_headers_rejects_case_insensitive_duplicates_in_batch() {
+    let _response = ResponseSpec::new(200, "application/json", "Success", None).with_headers([
+        ResponseHeaderSpec::without_description("Location", ResponseHeaderType::String),
+        ResponseHeaderSpec::without_description("location", ResponseHeaderType::String),
+    ]);
+}
+
+#[test]
+#[should_panic(expected = "response 200 already declares header 'location'")]
+fn response_spec_with_headers_rejects_case_insensitive_existing_duplicate() {
+    let _response = ResponseSpec::new(200, "application/json", "Success", None)
+        .with_headers([ResponseHeaderSpec::without_description(
+            "Location",
+            ResponseHeaderType::String,
+        )])
+        .with_headers([ResponseHeaderSpec::without_description(
+            "location",
+            ResponseHeaderType::String,
+        )]);
+}
+
+#[test]
+fn redeclared_response_becomes_the_header_target() {
+    let builder = OperationBuilder::<Missing, Missing, ()>::get("/tests/v1/test")
+        .anonymous()
+        .handler(test_handler)
+        .json_response(http::StatusCode::OK, "Original")
+        .json_response(http::StatusCode::ACCEPTED, "Accepted")
+        .json_response(http::StatusCode::OK, "Replacement")
+        .response_header(ResponseHeaderSpec::new(
+            "Location",
+            "Resource URI",
+            ResponseHeaderType::String,
+        ));
+
+    assert_eq!(builder.spec.responses.len(), 2);
+    assert_eq!(builder.spec.responses.last().unwrap().status, 200);
+    assert_eq!(
+        builder.spec.responses.last().unwrap().description,
+        "Replacement"
+    );
+    assert_eq!(builder.spec.responses.last().unwrap().headers.len(), 1);
+}
+
+#[test]
+#[should_panic(expected = "response 200 already declares header 'location'")]
+fn response_header_rejects_case_insensitive_duplicates() {
+    let _builder = OperationBuilder::<Missing, Missing, ()>::get("/tests/v1/test")
+        .anonymous()
+        .handler(test_handler)
+        .json_response(http::StatusCode::OK, "Success")
+        .response_header(ResponseHeaderSpec::new(
+            "Location",
+            "Resource URI",
+            ResponseHeaderType::String,
+        ))
+        .response_header(ResponseHeaderSpec::new(
+            "location",
+            "Duplicate URI",
+            ResponseHeaderType::String,
+        ));
+}
+
+#[test]
+fn replacing_a_response_preserves_its_headers() {
+    let registry = MockRegistry::new();
+    let builder = OperationBuilder::<Missing, Missing, ()>::get("/tests/v1/test")
+        .anonymous()
+        .handler(test_handler)
+        .json_response(http::StatusCode::OK, "Success")
+        .problem_response(
+            &registry,
+            http::StatusCode::TOO_MANY_REQUESTS,
+            "Custom rate limit response",
+        )
+        .response_header(ResponseHeaderSpec::new(
+            "Retry-After",
+            "Delay before retrying",
+            ResponseHeaderType::Integer,
+        ))
+        .standard_errors(&registry);
+
+    let rate_limited: Vec<_> = builder
+        .spec
+        .responses
+        .iter()
+        .filter(|response| response.status == 429)
+        .collect();
+    assert_eq!(rate_limited.len(), 1);
+    assert_eq!(rate_limited[0].description, "Too Many Requests");
+    assert_eq!(rate_limited[0].headers.len(), 1);
+    assert_eq!(rate_limited[0].headers[0].name, "Retry-After");
+    assert_eq!(
+        rate_limited[0].headers[0].header_type,
+        ResponseHeaderType::Integer
+    );
+}
+
+/// The additional-response `multipart_json` overload (`upsert_response`) had no
+/// caller and no test. A first `json_response` then `.multipart_json::<Item>()`
+/// must leave the `200` advertising BOTH media types, with the item `$ref` under
+/// `multipart/mixed` (#4740).
+#[test]
+fn json_then_multipart_json_keeps_both_media_types_on_one_status() {
+    let registry = MockRegistry::new();
+    let builder = OperationBuilder::<Missing, Missing, ()>::get("/tests/v1/feed")
+        .anonymous()
+        .handler(test_handler)
+        // First response: application/json (the Missing -> Present overload).
+        .json_response(http::StatusCode::OK, "A JSON snapshot")
+        // Additional response on the SAME 200: the multipart/mixed overload
+        // under test (the `Present` `upsert_response` branch).
+        .multipart_json::<SampleDtoResponse>(&registry, "A live multipart feed");
+
+    // Two specs for the one status; the registry combines them into a single
+    // response object carrying both media-type keys.
+    let ok: Vec<_> = builder
+        .spec
+        .responses
+        .iter()
+        .filter(|r| r.status == 200)
+        .collect();
+    assert_eq!(ok.len(), 2, "both media types must be kept: {ok:?}");
+
+    let json = ok
+        .iter()
+        .find(|r| r.content_type == "application/json")
+        .expect("the application/json media type");
+    assert!(
+        json.schema_name().is_none(),
+        "a plain json_response carries no schema",
+    );
+
+    let multipart = ok
+        .iter()
+        .find(|r| r.content_type == "multipart/mixed")
+        .expect("the multipart/mixed media type");
+    let item = multipart
+        .schema_name()
+        .expect("multipart/mixed carries the item $ref");
+    assert!(
+        registry.schemas.lock().unwrap().contains(&item.to_owned()),
+        "the item schema `{item}` must be registered",
+    );
+}
+
+#[test]
 fn error_413_is_available_for_extractor_json_operations() {
     let registry = MockRegistry::new();
     let builder = OperationBuilder::<Missing, Missing, ()>::get("/tests/v1/test")

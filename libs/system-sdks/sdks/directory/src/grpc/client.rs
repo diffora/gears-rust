@@ -14,7 +14,7 @@ use crate::api::{
 };
 use std::collections::BTreeMap;
 use toolkit_transport_grpc::InternalAuthInterceptor;
-use toolkit_transport_grpc::client::{GrpcClientConfig, connect_with_retry};
+use toolkit_transport_grpc::client::{GrpcClientConfig, connect_lazy, connect_with_retry};
 
 use crate::{
     DeregisterInstanceRequest, DirectoryServiceClient, GetOpenApiSpecRequest, GrpcServiceEndpoint,
@@ -109,6 +109,51 @@ impl DirectoryGrpcClient {
     ) -> Result<Self> {
         let cfg = GrpcClientConfig::new("directory");
         let channel: Channel = connect_with_retry(uri, &cfg).await?;
+        Ok(Self::from_channel_with_interceptor(channel, interceptor))
+    }
+
+    /// Create a directory client with a **lazily-connecting** channel.
+    ///
+    /// Performs **no** eager connection: the channel connects on the first RPC
+    /// and transparently reconnects on failure. This is the eventual-readiness
+    /// entry point (`cpt-cf-adr-eventual-readiness`) for `OoP` bootstrap — the
+    /// process starts even when the `DirectoryService` is not yet reachable, and
+    /// the presence loop's backoff retry absorbs the startup window instead of
+    /// the process crashing (which would offload retries onto a k8s
+    /// `CrashLoopBackOff`).
+    ///
+    /// # Runtime context
+    /// Must be called from within a Tokio runtime context: building the lazy
+    /// channel initialises the hyper reactor. Calling it outside a runtime
+    /// returns an error rather than panicking (it still does not connect).
+    ///
+    /// # Errors
+    /// Returns an error if called outside a Tokio runtime context, or if `uri`
+    /// is malformed — never for an unreachable peer.
+    pub fn connect_lazy(uri: impl Into<String>) -> Result<Self> {
+        let cfg = GrpcClientConfig::new("directory");
+        let channel: Channel = connect_lazy(uri, &cfg)?;
+        Ok(Self::from_channel(channel))
+    }
+
+    /// Create a directory client with a **lazily-connecting** channel, attaching
+    /// `interceptor`'s platform-plane credential to every outbound call.
+    ///
+    /// The lazy counterpart of [`connect_with_interceptor`](Self::connect_with_interceptor);
+    /// see [`connect_lazy`](Self::connect_lazy) for the connection semantics.
+    /// The URI is validated before `interceptor` is consumed, so the credential
+    /// is only moved into the client on success.
+    ///
+    /// # Errors
+    /// Returns an error only if `uri` is malformed — never for an unreachable
+    /// peer.
+    pub fn connect_lazy_with_interceptor(
+        uri: impl Into<String>,
+        interceptor: InternalAuthInterceptor,
+    ) -> Result<Self> {
+        let cfg = GrpcClientConfig::new("directory");
+        // Validate the URI (build the channel) before consuming `interceptor`.
+        let channel: Channel = connect_lazy(uri, &cfg)?;
         Ok(Self::from_channel_with_interceptor(channel, interceptor))
     }
 
@@ -300,11 +345,7 @@ impl DirectoryClient for DirectoryGrpcClient {
             .into_inner()
             .instances
             .into_iter()
-            .map(|proto| {
-                let mut info = proto_instance_to_domain(proto).without_labels();
-                info.openapi_spec = None;
-                info
-            })
+            .map(|proto| proto_instance_to_domain(proto).without_labels())
             .collect();
 
         Ok(instances)
@@ -390,7 +431,6 @@ fn proto_instance_to_domain(proto: InstanceInfo) -> ServiceInstanceInfo {
             Some(proto.version)
         },
         rest_endpoint: proto.rest_endpoint_uri.map(ServiceEndpoint::new),
-        openapi_spec: proto.openapi_spec,
         openapi_spec_hash: proto.openapi_spec_hash,
         // The `InstanceInfo` proto message carries no per-service gRPC
         // breakdown, so nothing to reconstruct over the OoP directory transport;
@@ -470,6 +510,68 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn connect_lazy_succeeds_against_unreachable_peer() {
+        // The lazy constructor performs no eager connect, so an OoP gear can
+        // build its directory client before the `DirectoryService` is up
+        // (`cpt-cf-adr-eventual-readiness`). Nothing is listening on port 1, yet
+        // both the plain and interceptor-bearing constructors return `Ok`.
+        let plain = DirectoryGrpcClient::connect_lazy("http://127.0.0.1:1");
+        assert!(
+            plain.is_ok(),
+            "connect_lazy must not eagerly connect (unreachable peer -> Ok)"
+        );
+
+        let authed = DirectoryGrpcClient::connect_lazy_with_interceptor(
+            "http://127.0.0.1:1",
+            InternalAuthInterceptor::disabled(),
+        );
+        assert!(
+            authed.is_ok(),
+            "connect_lazy_with_interceptor must not eagerly connect (unreachable peer -> Ok)"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_lazy_rejects_malformed_uri() {
+        // A malformed endpoint is a static misconfiguration worth failing fast
+        // on — the only error path of the lazy constructors.
+        assert!(
+            DirectoryGrpcClient::connect_lazy(String::new()).is_err(),
+            "connect_lazy should fail on a malformed URI"
+        );
+        assert!(
+            DirectoryGrpcClient::connect_lazy_with_interceptor(
+                String::new(),
+                InternalAuthInterceptor::disabled(),
+            )
+            .is_err(),
+            "connect_lazy_with_interceptor should fail on a malformed URI"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_grpc_service_through_lazy_client_errors_not_hangs() {
+        // A lazy client builds against an unreachable directory; the first RPC
+        // returns a lookup/call error rather than hanging (outer timeout proves
+        // non-hang; nothing is listening on port 1).
+        let client =
+            DirectoryGrpcClient::connect_lazy("http://127.0.0.1:1").expect("lazy build ok");
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            client.resolve_grpc_service("cf.directory.v1.DirectoryService"),
+        )
+        .await;
+        assert!(
+            outcome.is_ok(),
+            "resolve_grpc_service through a lazy client must not hang against an unreachable peer"
+        );
+        assert!(
+            outcome.unwrap().is_err(),
+            "resolve_grpc_service against an unreachable directory must return Err"
+        );
+    }
+
     #[test]
     fn proto_instance_maps_all_fields_to_domain() {
         let proto = InstanceInfo {
@@ -478,8 +580,7 @@ mod tests {
             endpoint_uri: "http://calc:8080".to_owned(),
             version: "1.2.3".to_owned(),
             rest_endpoint_uri: Some("http://calc:8080".to_owned()),
-            openapi_spec: Some("{\"openapi\":\"3.1.0\"}".to_owned()),
-            openapi_spec_hash: None,
+            openapi_spec_hash: Some("1a2b3c4d5e6f7a8b".to_owned()),
             labels: [("shard".to_owned(), "7".to_owned())].into_iter().collect(),
             state: ProtoInstanceState::Healthy as i32,
         };
@@ -496,7 +597,11 @@ mod tests {
             domain.rest_endpoint.map(|e| e.uri),
             Some("http://calc:8080".to_owned())
         );
-        assert!(domain.openapi_spec.is_some());
+        // Enumeration is spec-free: only the hash crosses the wire.
+        assert_eq!(
+            domain.openapi_spec_hash.as_deref(),
+            Some("1a2b3c4d5e6f7a8b")
+        );
         // Labels cross the wire and land in a BTreeMap for deterministic matching.
         assert_eq!(domain.labels.get("shard"), Some(&"7".to_owned()));
     }
@@ -509,7 +614,6 @@ mod tests {
             endpoint_uri: "http://worker:7000".to_owned(),
             version: String::new(),
             rest_endpoint_uri: None,
-            openapi_spec: None,
             openapi_spec_hash: None,
             labels: std::collections::HashMap::new(),
             state: ProtoInstanceState::Unspecified as i32,
@@ -523,7 +627,7 @@ mod tests {
         // An empty proto version string maps to `None` rather than an empty string.
         assert!(domain.version.is_none());
         assert!(domain.rest_endpoint.is_none());
-        assert!(domain.openapi_spec.is_none());
+        assert!(domain.openapi_spec_hash.is_none());
         assert!(domain.labels.is_empty());
         // An unset proto state (`UNSPECIFIED`) maps to the non-serving Unknown
         // sentinel — distinct from the pre-serving Registered baseline.
@@ -542,7 +646,6 @@ mod tests {
             endpoint_uri: String::new(),
             version: String::new(),
             rest_endpoint_uri: None,
-            openapi_spec: None,
             openapi_spec_hash: None,
             labels: std::collections::HashMap::new(),
             state: ProtoInstanceState::Ready as i32,

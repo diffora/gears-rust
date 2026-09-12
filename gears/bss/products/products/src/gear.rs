@@ -25,7 +25,7 @@
 //! [`Gear::init`] were wired ahead of the routes that would gate through
 //! them, for the same reason the sibling pricing gear wires its own PEP at
 //! init: authorization is security-critical, so a missing
-//! `AuthZResolverClient` must fail the boot rather than be discovered the
+//! `AuthZResolverApi` must fail the boot rather than be discovered the
 //! first time a handler reaches for an enforcer that was never built. This
 //! slice is the first to read it, cloning it once per boot into its own
 //! `Extension` layer in `RestApiCapability::register_rest`.
@@ -724,13 +724,13 @@ impl Gear for BssProductsGear {
 
         // Platform PEP. Authz is security-critical — the catalog this gear
         // authors is what pricing and every downstream reader depend on — so a
-        // missing `AuthZResolverClient` fails init loudly rather than
+        // missing `AuthZResolverApi` fails init loudly rather than
         // degrading to an unguarded router.
         let authz_client = ctx
             .client_hub()
-            .get::<dyn authz_resolver_sdk::AuthZResolverClient>()
+            .get::<dyn authz_resolver_sdk::AuthZResolverApi>()
             .context(
-                "bss-products: AuthZResolverClient absent from ClientHub; \
+                "bss-products: AuthZResolverApi absent from ClientHub; \
                  authz-resolver module must be registered",
             )?;
         let enforcer = Arc::new(authz_resolver_sdk::PolicyEnforcer::new(authz_client));
@@ -768,7 +768,7 @@ impl Gear for BssProductsGear {
         // gear-authored `products_outbox` table — see this module's doc for
         // why. The gear's own database is required for the outbox exactly as
         // it is for the Foundation tables, so a missing configuration fails
-        // the boot the same way the missing `AuthZResolverClient` above does.
+        // the boot the same way the missing `AuthZResolverApi` above does.
         let db_provider = ctx
             .db_required()
             .context("bss-products: database not configured for the outbox pipeline")?;

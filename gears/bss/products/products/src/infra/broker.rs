@@ -33,7 +33,7 @@
 //!
 //! # Where the three GTS ids come from
 //!
-//! `TypedEvent` demands `TYPE_ID`, `TOPIC` and `SUBJECT_TYPE` as compile-time
+//! `TypedEvent` demands `TYPE_ID` and `SUBJECT_TYPE` as compile-time
 //! constants, and **no document in this gear's design set declares any of the
 //! three**. `design/01-foundation.md` §6 item 12 registers one of them as an
 //! open owner question in as many words: *"Which GTS type does the envelope's
@@ -43,19 +43,26 @@
 //!
 //! - the **shapes** are the platform's, not invented. The workspace's real ids
 //!   are `gts.cf.core.events.topic.v1~<name>`,
-//!   `gts.cf.core.events.event_type.v1~<name>` and
+//!   `gts.cf.core.events.event.v1~<name>~` and
 //!   `gts.cf.core.events.subject.v1~<name>`, and the `<name>` convention in
 //!   platform-owned ids is `cf.<domain>.<thing>.v1` (`cf.core.oagw.http.v1`).
 //!
-//!   **`event_type.v1~`, not `event.v1~`,** and the distinction is the broker's
-//!   own: `event-broker/src/domain/model.rs` documents
-//!   `gts.cf.core.events.event_type.v1~` as *"schema and constraints for one"*
-//!   event type and `gts.cf.core.events.event.v1~` as *"an immutable record in
-//!   a"* stream. [`TypedEvent::TYPE_ID`] names a **type**, so it takes the
-//!   former. The SDK's own `TypedEvent` doc-example uses the latter and is
-//!   misleading on this point; the broker's model is the authority, and the
-//!   SDK's `api_tests` matches event-type *patterns* against `event_type.v1~`
-//!   ids;
+//!   **An event type is a derived type of `event.v1~`, and its id ends in
+//!   `~`.** This reverses what this module argued until 2026-09-12, and the
+//!   reversal is the platform's: `event-broker` 0.2.1 (*"model topics and
+//!   event types as derived GTS types"*) deleted
+//!   `gts.cf.core.events.event_type.v1~` outright — *"a type whose instances
+//!   were types"* — leaving the event base as the only namespace a type id can
+//!   derive from. The committed evidence is the broker's own worked example,
+//!   `gts.cf.core.events.event.v1~fabrikam.shop.orders.order_placed.v1~`, and
+//!   `chat-engine`'s webhook schemas, which carry the same shape. The trailing
+//!   `~` is what separates a type from an instance;
+//!
+//!   **the topic is no longer one of these ids' siblings in Rust.** It is the
+//!   `topic` trait of each event type's GTS registration, which this gear does
+//!   not yet ship — see P-D-168. [`TOPIC`] below stays because the *producer's*
+//!   `topics([..])` bind and the *consumer's* subscription still name it
+//!   directly;
 //! - the **names** are this set's own. `DESIGN.md` declares six domain GTS
 //!   types, two of which are the entities these events are about —
 //!   `gts.cf.bss.products.product.v1~` and `gts.cf.bss.products.sku.v1~` — so
@@ -260,7 +267,6 @@ macro_rules! catalog_event {
 
         impl TypedEvent for $name {
             const TYPE_ID: &'static str = $type_id;
-            const TOPIC: &'static str = TOPIC;
             const SUBJECT_TYPE: &'static str = $subject_type;
             const SOURCE: &'static str = SOURCE;
 
@@ -312,7 +318,6 @@ macro_rules! catalog_publish_event {
 
         impl TypedEvent for $name {
             const TYPE_ID: &'static str = $type_id;
-            const TOPIC: &'static str = TOPIC;
             const SUBJECT_TYPE: &'static str = $subject_type;
             const SOURCE: &'static str = SOURCE;
 
@@ -358,7 +363,6 @@ macro_rules! catalog_deprecation_event {
 
         impl TypedEvent for $name {
             const TYPE_ID: &'static str = $type_id;
-            const TOPIC: &'static str = TOPIC;
             const SUBJECT_TYPE: &'static str = $subject_type;
             const SOURCE: &'static str = SOURCE;
 
@@ -407,7 +411,6 @@ macro_rules! set_event {
 
         impl TypedEvent for $name {
             const TYPE_ID: &'static str = $type_id;
-            const TOPIC: &'static str = TOPIC;
             const SUBJECT_TYPE: &'static str = RECOGNIZED_SET_SUBJECT_TYPE;
             const SOURCE: &'static str = SOURCE;
 
@@ -431,17 +434,17 @@ macro_rules! set_event {
 set_event! {
     /// The metering-unit set moved (`design/03` §4).
     RecognizedUnitUpdated,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.recognized_unit_updated.v1"
+    "gts.cf.core.events.event.v1~cf.bss.products.recognized_unit_updated.v1~"
 }
 set_event! {
     /// A tax-category or GL-code set moved.
     RecognizedCodeUpdated,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.recognized_code_updated.v1"
+    "gts.cf.core.events.event.v1~cf.bss.products.recognized_code_updated.v1~"
 }
 set_event! {
     /// The plan-tier taxonomy moved — PRD-named, its own event by design.
     PlanTierUpdated,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.plan_tier_updated.v1"
+    "gts.cf.core.events.event.v1~cf.bss.products.plan_tier_updated.v1~"
 }
 
 /// `07`'s correction, announced from the correcting transaction
@@ -461,8 +464,7 @@ pub(crate) struct SkuImmutableFieldCorrected {
 
 impl TypedEvent for SkuImmutableFieldCorrected {
     const TYPE_ID: &'static str =
-        "gts.cf.core.events.event_type.v1~cf.bss.products.sku_immutable_field_corrected.v1";
-    const TOPIC: &'static str = TOPIC;
+        "gts.cf.core.events.event.v1~cf.bss.products.sku_immutable_field_corrected.v1~";
     const SUBJECT_TYPE: &'static str = SKU_SUBJECT_TYPE;
     const SOURCE: &'static str = SOURCE;
 
@@ -492,8 +494,7 @@ pub(crate) struct SkuCorrectionOverride {
 
 impl TypedEvent for SkuCorrectionOverride {
     const TYPE_ID: &'static str =
-        "gts.cf.core.events.event_type.v1~cf.bss.products.sku_correction_override.v1";
-    const TOPIC: &'static str = TOPIC;
+        "gts.cf.core.events.event.v1~cf.bss.products.sku_correction_override.v1~";
     const SUBJECT_TYPE: &'static str = SKU_SUBJECT_TYPE;
     const SOURCE: &'static str = SOURCE;
 
@@ -550,7 +551,6 @@ macro_rules! catalog_version_event {
 
         impl TypedEvent for $name {
             const TYPE_ID: &'static str = $type_id;
-            const TOPIC: &'static str = TOPIC;
             const SUBJECT_TYPE: &'static str = $subject_type;
             const SOURCE: &'static str = SOURCE;
 
@@ -587,21 +587,21 @@ fn participant_subject(payload: &CatalogVersionPayload) -> String {
 catalog_version_event! {
     /// A catalog version was published: the freeze protocol's opening fact.
     CatalogVersionPublished,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.catalog_version_published.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.catalog_version_published.v1~",
     CATALOG_VERSION_SUBJECT_TYPE,
     version_subject
 }
 catalog_version_event! {
     /// A force-completion ceremony closed a timed-out freeze.
     FreezeForceCompleted,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.freeze_force_completed.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.freeze_force_completed.v1~",
     CATALOG_VERSION_SUBJECT_TYPE,
     version_subject
 }
 catalog_version_event! {
     /// The tenant's freeze-participant set moved.
     FreezeParticipantSetChanged,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.freeze_participant_set_changed.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.freeze_participant_set_changed.v1~",
     FREEZE_PARTICIPANT_SUBJECT_TYPE,
     participant_subject
 }
@@ -610,7 +610,7 @@ catalog_event! {
     /// The inbound composition signal cleared a bundle's `composition_pending`
     /// (`06`; rides beside the re-publish's own `SkuPublished`, P-D-60).
     SkuCompositionCleared,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.sku_composition_cleared.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.sku_composition_cleared.v1~",
     SKU_SUBJECT_TYPE
 }
 
@@ -627,8 +627,7 @@ pub(crate) struct ReferenceProducerSetChanged {
 
 impl TypedEvent for ReferenceProducerSetChanged {
     const TYPE_ID: &'static str =
-        "gts.cf.core.events.event_type.v1~cf.bss.products.reference_producer_set_changed.v1";
-    const TOPIC: &'static str = TOPIC;
+        "gts.cf.core.events.event.v1~cf.bss.products.reference_producer_set_changed.v1~";
     const SUBJECT_TYPE: &'static str = REFERENCE_PRODUCER_SUBJECT_TYPE;
     const SOURCE: &'static str = SOURCE;
 
@@ -715,7 +714,6 @@ macro_rules! taxonomy_event {
 
         impl TypedEvent for $name {
             const TYPE_ID: &'static str = $type_id;
-            const TOPIC: &'static str = TOPIC;
             const SUBJECT_TYPE: &'static str = $subject_type;
             const SOURCE: &'static str = SOURCE;
 
@@ -739,50 +737,50 @@ macro_rules! taxonomy_event {
 taxonomy_event! {
     /// A category row was created (`inst-tx-event`).
     CategoryCreated,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.category_created.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.category_created.v1~",
     CATEGORY_SUBJECT_TYPE
 }
 taxonomy_event! {
     /// A category was renamed.
     CategoryRenamed,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.category_renamed.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.category_renamed.v1~",
     CATEGORY_SUBJECT_TYPE
 }
 taxonomy_event! {
     /// A category was re-parented.
     CategoryReparented,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.category_reparented.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.category_reparented.v1~",
     CATEGORY_SUBJECT_TYPE
 }
 taxonomy_event! {
     /// A category was retired.
     CategoryRetired,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.category_retired.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.category_retired.v1~",
     CATEGORY_SUBJECT_TYPE
 }
 taxonomy_event! {
     /// A retired, empty, unreferenced category row was deleted.
     CategoryDeleted,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.category_deleted.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.category_deleted.v1~",
     CATEGORY_SUBJECT_TYPE
 }
 taxonomy_event! {
     /// A category's display values moved (`inst-av-category-branch`).
     CategoryDisplayUpdated,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.category_display_updated.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.category_display_updated.v1~",
     CATEGORY_SUBJECT_TYPE
 }
 taxonomy_event! {
     /// An attribute definition was created, flipped or re-labelled
     /// (`inst-ad-event`).
     AttributeDefinitionUpdated,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.attribute_definition_updated.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.attribute_definition_updated.v1~",
     ATTRIBUTE_DEFINITION_SUBJECT_TYPE
 }
 taxonomy_event! {
     /// An entity's metadata map was merged (`inst-md-*`).
     MetadataUpdated,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.metadata_updated.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.metadata_updated.v1~",
     METADATA_SUBJECT_TYPE
 }
 
@@ -865,7 +863,6 @@ macro_rules! retention_event {
 
         impl TypedEvent for $name {
             const TYPE_ID: &'static str = $type_id;
-            const TOPIC: &'static str = TOPIC;
             const SUBJECT_TYPE: &'static str = $subject_type;
             const SOURCE: &'static str = SOURCE;
 
@@ -892,14 +889,14 @@ retention_event! {
     /// pseudonym and no identity, and its consumer set is legitimately empty
     /// because no projection in the design set materializes identities.
     ActorErased,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.actor_erased.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.actor_erased.v1~",
     ERASURE_SUBJECT_TYPE
 }
 retention_event! {
     /// An allow-list entry was signed off or revoked (`inst-pp-allowlist`).
     /// Carries the entry's id and never its value.
     PiiAllowlistChanged,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.pii_allowlist_changed.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.pii_allowlist_changed.v1~",
     PII_ALLOWLIST_SUBJECT_TYPE
 }
 
@@ -936,8 +933,7 @@ pub(crate) struct CatalogBulkOperationCompleted {
 
 impl TypedEvent for CatalogBulkOperationCompleted {
     const TYPE_ID: &'static str =
-        "gts.cf.core.events.event_type.v1~cf.bss.products.catalog_bulk_operation_completed.v1";
-    const TOPIC: &'static str = TOPIC;
+        "gts.cf.core.events.event.v1~cf.bss.products.catalog_bulk_operation_completed.v1~";
     const SUBJECT_TYPE: &'static str = BULK_SUBJECT_TYPE;
     const SOURCE: &'static str = SOURCE;
 
@@ -959,49 +955,49 @@ impl TypedEvent for CatalogBulkOperationCompleted {
 catalog_event! {
     /// A Product row was created.
     ProductCreated,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.product_created.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.product_created.v1~",
     PRODUCT_SUBJECT_TYPE
 }
 catalog_event! {
     /// A SKU row was created.
     SkuCreated,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.sku_created.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.sku_created.v1~",
     SKU_SUBJECT_TYPE
 }
 catalog_event! {
     /// A Product head was saved.
     ProductHeadSaved,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.product_head_saved.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.product_head_saved.v1~",
     PRODUCT_SUBJECT_TYPE
 }
 catalog_event! {
     /// A SKU head was saved.
     SkuHeadSaved,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.sku_head_saved.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.sku_head_saved.v1~",
     SKU_SUBJECT_TYPE
 }
 catalog_event! {
     /// A Product was discarded.
     ProductDiscarded,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.product_discarded.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.product_discarded.v1~",
     PRODUCT_SUBJECT_TYPE
 }
 catalog_event! {
     /// A SKU was discarded.
     SkuDiscarded,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.sku_discarded.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.sku_discarded.v1~",
     SKU_SUBJECT_TYPE
 }
 catalog_deprecation_event! {
     /// A Product was deprecated, with [`Self::provenance`] naming the cause.
     ProductDeprecated,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.product_deprecated.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.product_deprecated.v1~",
     PRODUCT_SUBJECT_TYPE
 }
 catalog_deprecation_event! {
     /// A SKU was deprecated — the event pricing AC #82 keys on.
     SkuDeprecated,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.sku_deprecated.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.sku_deprecated.v1~",
     SKU_SUBJECT_TYPE
 }
 
@@ -1035,7 +1031,6 @@ macro_rules! catalog_retirement_event {
 
         impl TypedEvent for $name {
             const TYPE_ID: &'static str = $type_id;
-            const TOPIC: &'static str = TOPIC;
             const SUBJECT_TYPE: &'static str = $subject_type;
             const SOURCE: &'static str = SOURCE;
 
@@ -1057,49 +1052,49 @@ macro_rules! catalog_retirement_event {
 catalog_event! {
     /// A Product un-deprecation — the bare core.
     ProductUndeprecated,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.product_undeprecated.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.product_undeprecated.v1~",
     PRODUCT_SUBJECT_TYPE
 }
 catalog_event! {
     /// A SKU un-deprecation — the bare core.
     SkuUndeprecated,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.sku_undeprecated.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.sku_undeprecated.v1~",
     SKU_SUBJECT_TYPE
 }
 catalog_retirement_event! {
     /// Product retirement initiation.
     ProductRetired,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.product_retired.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.product_retired.v1~",
     PRODUCT_SUBJECT_TYPE
 }
 catalog_retirement_event! {
     /// SKU retirement initiation.
     SkuRetired,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.sku_retired.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.sku_retired.v1~",
     SKU_SUBJECT_TYPE
 }
 catalog_retirement_event! {
     /// The SKU flip.
     SkuRetirementEffective,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.sku_retirement_effective.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.sku_retirement_effective.v1~",
     SKU_SUBJECT_TYPE
 }
 catalog_retirement_event! {
     /// The Product flip (**P-D-115**).
     ProductRetirementEffective,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.product_retirement_effective.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.product_retirement_effective.v1~",
     PRODUCT_SUBJECT_TYPE
 }
 catalog_publish_event! {
     /// A Product was published at [`Self::published_version`].
     ProductPublished,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.product_published.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.product_published.v1~",
     PRODUCT_SUBJECT_TYPE
 }
 catalog_publish_event! {
     /// A SKU was published at [`Self::published_version`].
     SkuPublished,
-    "gts.cf.core.events.event_type.v1~cf.bss.products.sku_published.v1",
+    "gts.cf.core.events.event.v1~cf.bss.products.sku_published.v1~",
     SKU_SUBJECT_TYPE
 }
 
@@ -1290,7 +1285,7 @@ pub(crate) async fn bind_producer(
                 .build()?,
         )
         .topics([TOPIC])
-        .event_type_patterns(["gts.cf.core.events.event_type.v1~cf.bss.products.*"])
+        .event_type_patterns(["gts.cf.core.events.event.v1~cf.bss.products.*"])
         .prepare_all()
         .await?;
 

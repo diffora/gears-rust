@@ -117,6 +117,9 @@ gears:
 
   # --- Tenant Resolver example (gateway + plugins) ---
   types-registry:
+    database:
+      server: "sqlite_users"
+      file: "types_registry.db"
     config:
       # The AM envelope type schemas (`gts.cf.core.am.tenant_type.v1~`
       # and `gts.cf.core.am.tenant_metadata.v1~`) are auto-seeded at
@@ -133,6 +136,8 @@ gears:
           $schema: "http://json-schema.org/draft-07/schema#"
           description: "Platform-root tenant type (no parents)."
           type: "object"
+          allOf:
+            - $ref: "gts://gts.cf.core.am.tenant_type.v1~"
           x-gts-traits:
             allowed_parent_types: []
             idp_provisioning: false
@@ -149,6 +154,8 @@ gears:
           $schema: "http://json-schema.org/draft-07/schema#"
           description: "Customer tenant under the platform root (E2E)."
           type: "object"
+          allOf:
+            - $ref: "gts://gts.cf.core.am.tenant_type.v1~"
           x-gts-traits:
             allowed_parent_types:
               - "gts.cf.core.am.tenant_type.v1~cf.core.am.platform.v1~"
@@ -339,6 +346,21 @@ gears:
       vendor: "constructorfabric"
       priority: 100
 
+  license-resolver:
+    config:
+      vendor: "constructorfabric"
+
+  # Requires --features static-license.
+  static-license-plugin:
+    config:
+      vendor: "constructorfabric"
+      priority: 100
+      # Deny by default: no rule, no grant. Rules are left empty because no gear
+      # gates on a licence yet -- a rule must name registered Subject/Resource
+      # contract types, and the resolver rejects a check against an unregistered
+      # one. See the plugin README for a worked rule set.
+      grants: []
+
   mini-chat:
     # Gear-specific database configuration
     database:
@@ -470,6 +492,13 @@ gears:
       server: "sqlite_users"
       file: "settings.db"
     config: {}
+
+  github-mirror:
+    database:
+      server: "sqlite_users"
+      file: "github_mirror.db"
+    config:
+      api_base_url: "https://api.github.com"
 
   file-parser:
     config:
