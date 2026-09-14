@@ -184,7 +184,7 @@ pub fn member_edge(from: MemberState, to: MemberState) -> Result<(), DomainError
 /// exception a caller's to claim by spelling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemberOp {
-    /// `POST …/recognized-sets/{setKind}/members` — the governed add.
+    /// `POST …/config/vocabularies/{class}/values` — the governed add.
     Add,
     /// `POST …/members/{memberCode}/transitions` — one state-machine edge.
     Transition,

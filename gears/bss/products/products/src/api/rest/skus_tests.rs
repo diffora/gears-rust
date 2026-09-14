@@ -6666,7 +6666,7 @@ async fn add_set_member(harness: &TestHarness, kind: &str, code: &str) {
     seed_set_member_op(harness, kind, code).await;
     let response = post_set_json(
         harness,
-        &format!("/bss-products/v1/recognized-sets/{kind}/members"),
+        &format!("/bss-products/v1/config/vocabularies/{kind}/values"),
         &json!({ "member_code": code, "display_label": code }),
     )
     .await;
@@ -6685,7 +6685,7 @@ async fn set_member_tag(harness: &TestHarness, kind: &str, code: &str) -> String
             Request::builder()
                 .method("GET")
                 .uri(format!(
-                    "/bss-products/v1/recognized-sets/{kind}/members/{code}"
+                    "/bss-products/v1/config/vocabularies/{kind}/values/{code}"
                 ))
                 .extension(authed_ctx(TENANT))
                 .body(Body::empty())
@@ -6714,7 +6714,7 @@ async fn transition_set_member(
             Request::builder()
                 .method("POST")
                 .uri(format!(
-                    "/bss-products/v1/recognized-sets/{kind}/members/{code}/transitions"
+                    "/bss-products/v1/config/vocabularies/{kind}/values/{code}/transitions"
                 ))
                 .header(axum::http::header::CONTENT_TYPE, "application/json")
                 .header(axum::http::header::IF_MATCH, tag)

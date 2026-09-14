@@ -3,10 +3,10 @@
 //! `dod-recognized-set-mechanics`, `dod-unit-delist`,
 //! `dod-unit-immutable`).
 //!
-//! # One door family, two sets, the grant chosen by `setKind`
+//! # One door family, two vocabularies, the grant chosen by the `class` segment
 //!
-//! `POST /bss-products/v1/recognized-sets/{setKind}/members` adds a member;
-//! `POST …/members/{memberCode}/transitions` walks the state machine —
+//! `POST /bss-products/v1/config/vocabularies/{class}/values` adds a member;
+//! `POST …/values/{value}/transitions` walks the state machine —
 //! `active → deprecated → removed` and the two re-listing edges. The tier
 //! set spends `plan_tier × write` and the unit set `recognized_set ×
 //! write` (P-D-90 arm 2: the only reading under which both declared grants
@@ -16,7 +16,7 @@
 //! population the removal counts** — `SetKind::carrier_column`, one
 //! `products_sku` column per kind, uniform across both since 03's
 //! columns landed (P-D-145, P-D-146; it spanned four until P-D-169). A third route, `POST
-//! …/members/{memberCode}/label`, changes a member's display label and
+//! …/values/{value}/label`, changes a member's display label and
 //! nothing else — the rename `dod-plantier-governance` asks for, which by
 //! `dod-unit-immutable` can never be a rename of the code.
 //!
@@ -50,7 +50,7 @@
 //!
 //! # And the two per-member doors pin the whole row (**P-D-174**)
 //!
-//! `GET …/members/{memberCode}` answers an `ETag` — the `SHA-256` of the
+//! `GET …/values/{value}` answers an `ETag` — the `SHA-256` of the
 //! member's canonical rendering, a live row having no revision to name — and
 //! the transitions and label doors **require** it back as `If-Match`,
 //! compared under the write inside their own transaction. It is the stronger
@@ -66,6 +66,32 @@
 //! tag nobody can assert is a header with no reader. The membership
 //! write and the set's event commit in **one transaction** (`inst-rs-shape`),
 //! so a consumer never observes a set the events do not explain.
+//!
+//! # The route family is `config/vocabularies` (**P-D-175**)
+//!
+//! The doors moved from `/bss-products/v1/recognized-sets/{setKind}/members/…`
+//! to `/bss-products/v1/config/vocabularies/{class}/values/{value}[/label
+//! |/transitions]`, and pricing's four scope-value doors moved to the same
+//! shape one gear over (D-371). Two gears had built one thing twice under two
+//! names — *recognized set* here, *taxonomy* there — and neither word could be
+//! the shared one: `taxonomy` is spent inside **this** gear on slice 02's
+//! category-and-attribute plane and again on the error taxonomy, and
+//! `recognized set` appears nowhere in pricing. `vocabulary` was free in both.
+//!
+//! The path parameters moved with it: `{setKind}` is `{class}` and
+//! `members/{memberCode}` is `values/{value}`, because that is the shape the
+//! two gears now share. **The response and request bodies did not.** They still
+//! read `setKind`, `members` and `memberCode`, and the gear's types, its table
+//! `products_recognized_set`, its `recognized_set` grant and every design
+//! document still say *recognized set*. That is not an oversight and P-D-175
+//! carries the measurement: the concept word is load-bearing in five declared
+//! ids (`dod-recognized-set-mechanics`, `-events`, `-table`,
+//! `inst-ac-recognized`, `inst-mt-recognized`), in seven live headings, and in
+//! a GTS resource type whose consumers are policy documents outside this
+//! repository. A rename of the prose alone would leave both words in 47% of
+//! the sentences that carry it — measured, not estimated — which is the state
+//! D-241 calls *"neither is canonical"*. The wire moved first because it is the
+//! half that had a second gear to converge with.
 //!
 //! # What has no door at all, deliberately
 //!
@@ -203,7 +229,7 @@ pub struct RecognizedSetView {
     pub members: Vec<RecognizedMemberView>,
 }
 
-/// `POST /recognized-sets/{setKind}/members` request body.
+/// `POST /config/vocabularies/{class}/values` request body.
 #[toolkit_macros::api_dto(request)]
 pub struct AddMemberRequest {
     /// The member's code. Trimmed; must not be blank.
@@ -213,7 +239,7 @@ pub struct AddMemberRequest {
     pub display_label: Option<String>,
 }
 
-/// `POST …/members/{memberCode}/transitions` request body — the
+/// `POST …/values/{value}/transitions` request body — the
 /// `GovernedLiveOp` envelope's door shape: the target state and the state
 /// the caller read.
 #[toolkit_macros::api_dto(request)]
@@ -225,7 +251,7 @@ pub struct MemberTransitionRequest {
     pub expected_state: String,
 }
 
-/// The body of `POST …/members/{memberCode}/label` — the one rename a member
+/// The body of `POST …/values/{value}/label` — the one rename a member
 /// admits (`dod-plantier-governance`): the label, never the code.
 #[toolkit_macros::api_dto(request)]
 pub struct MemberRelabelRequest {
@@ -438,7 +464,7 @@ fn member_if_match(headers: &axum::http::HeaderMap) -> Result<String, DomainErro
         return Err(refuse(
             "If-Match is required on this verb: a member op asserts the member it was authored \
              against, and an unconditional write would overwrite a concurrent editor's. Read the \
-             `ETag` off `GET .../members/{memberCode}` and send it back verbatim",
+             `ETag` off `GET .../values/{value}` and send it back verbatim",
         ));
     };
     let raw = raw
@@ -914,15 +940,21 @@ const fn event_token_for(kind: SetKind) -> &'static str {
     }
 }
 
-/// Parse the path's `setKind`, refusing anything outside the two-kind
+/// Parse the path's `class`, refusing anything outside the two-class
 /// roster — fail-closed, like every roster parse in the gear.
+///
+/// The violated field is named for the **path parameter**, `class`, because
+/// that is what the caller wrote and what the `OpenAPI` document calls it
+/// (**P-D-175**). The body's own `setKind` member is a different name for the
+/// same token and deliberately unchanged here: it is read back out of a
+/// response, not written into a path.
 fn parse_kind(raw: &str) -> Result<SetKind, CanonicalError> {
     SetKind::parse(raw).ok_or_else(|| {
         let mut report = ValidationReport::new();
         report.violate(
             "VALIDATION",
-            "setKind",
-            "setKind must be one of metering_unit, plan_tier",
+            "class",
+            "class must be one of metering_unit, plan_tier",
         );
         CanonicalError::from(DomainError::Validation(report))
     })
@@ -1050,7 +1082,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     // `If-Match`; **the list does not**, and that is P-D-170's own rule kept
     // rather than dropped — no door takes a set-level precondition, so a list
     // tag would be the header with nobody to assert it that entry refused.
-    let router = OperationBuilder::get("/bss-products/v1/recognized-sets/{setKind}")
+    let router = OperationBuilder::get("/bss-products/v1/config/vocabularies/{class}")
         .operation_id("bss_products.list_recognized_members")
         .summary("List a recognized set's members")
         .description(
@@ -1069,7 +1101,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .tag(TAG)
         .authenticated()
         .no_license_required()
-        .path_param("setKind", "Which recognized set to list.")
+        .path_param("class", "Which vocabulary to list.")
         .handler(list_members)
         .json_response_with_schema::<RecognizedSetView>(
             openapi,
@@ -1084,12 +1116,12 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .register(router, openapi);
 
     let router = OperationBuilder::get(
-        "/bss-products/v1/recognized-sets/{setKind}/members/{memberCode}",
+        "/bss-products/v1/config/vocabularies/{class}/values/{value}",
     )
     .operation_id("bss_products.get_recognized_member")
     .summary("Read one member of a recognized set")
     .description(
-        "Returns the member named by `memberCode`: its state, its `seededBy` provenance and, \
+        "Returns the member named by the `value` segment: its state, its `seededBy` provenance and, \
          for the tier set, its display label, with the **`ETag`** its two per-member write \
          doors assert back as `If-Match` (P-D-174) - the `SHA-256` of the member's canonical \
          rendering, a live row having no revision to name. Gates on the kind's `read` grant. A member \
@@ -1099,8 +1131,8 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     .tag(TAG)
     .authenticated()
     .no_license_required()
-    .path_param("setKind", "Which recognized set the member belongs to.")
-    .path_param("memberCode", "The member to read.")
+    .path_param("class", "Which vocabulary the value belongs to.")
+    .path_param("value", "The value to read.")
     .handler(get_member)
     .json_response_with_schema::<RecognizedMemberView>(openapi, StatusCode::OK, "The member.")
     .error_400(openapi)
@@ -1111,7 +1143,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     .error_503(openapi)
     .register(router, openapi);
 
-    let router = OperationBuilder::post("/bss-products/v1/recognized-sets/{setKind}/members")
+    let router = OperationBuilder::post("/bss-products/v1/config/vocabularies/{class}/values")
         .operation_id("bss_products.add_recognized_member")
         .summary("Add a member to a recognized set")
         .description(
@@ -1120,7 +1152,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
              names no member to have read, and the wildcard is refused everywhere in this \
              gear; the add's concurrency guard is the `DUPLICATE_CODE` refusal under the \
              primary key, which is stronger than a tag (P-D-174). **The door has two arms** (P-D-173): with no approval unit standing for this exact change it opens one, answers `202` naming it, and writes nothing; the identical request re-sent once that unit is approved answers below. A unit already open for a *different* change on the member is named in a `403 APPROVAL_REQUIRED` rather than superseded - `design/05` admits one open unit per subject. At `N = 0` the unit is born satisfied and the first call writes. \
-             The grant is chosen by `setKind` \
+             The grant is chosen by the `class` segment \
              (P-D-90): the tier set spends `plan_tier x write`, the unit set \
              `recognized_set x write`. A code the set already carries \
              in any state is refused `DUPLICATE_CODE` - a removed member is a tombstone whose \
@@ -1131,7 +1163,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .tag(TAG)
         .authenticated()
         .no_license_required()
-        .path_param("setKind", "Which recognized set to add to.")
+        .path_param("class", "Which vocabulary to declare into.")
         .json_request::<AddMemberRequest>(openapi, "The member to add.")
         .handler(add_member)
         .json_response_with_schema::<RecognizedMemberView>(
@@ -1155,7 +1187,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .register(router, openapi);
 
     let router = OperationBuilder::post(
-        "/bss-products/v1/recognized-sets/{setKind}/members/{memberCode}/transitions",
+        "/bss-products/v1/config/vocabularies/{class}/values/{value}/transitions",
     )
     .operation_id("bss_products.transition_recognized_member")
     .summary("Walk a recognized-set member's state machine")
@@ -1165,7 +1197,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
          **The door has two arms** (P-D-173): with no approval unit standing for this exact change it opens one, answers `202` naming it, and writes nothing; the identical request re-sent once that unit is approved answers below. A unit already open for a *different* change on the member is named in a `403 APPROVAL_REQUIRED` rather than superseded - `design/05` admits one open unit per subject. At `N = 0` the unit is born satisfied and the first call writes. \
          `active -> removed` is refused: de-listing deprecates first, so new declarations \
          stop before the member can leave the set. **`If-Match` is required** and asserts \
-         the member's own tag from `GET .../members/{memberCode}`; a stale one is \
+         the member's own tag from `GET .../values/{value}`; a stale one is \
          `STALE_LIVE_OP`, the same code a stale `expected_state` earns, because a live row's \
          staleness has one voice (P-D-174). The tag pins the whole row where `expected_state` \
          pins one column, and both are kept: the state is what the approval unit was agreed \
@@ -1179,8 +1211,8 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     .tag(TAG)
     .authenticated()
     .no_license_required()
-    .path_param("setKind", "Which recognized set the member belongs to.")
-    .path_param("memberCode", "The member to transition.")
+    .path_param("class", "Which vocabulary the value belongs to.")
+    .path_param("value", "The value to transition.")
     .json_request::<MemberTransitionRequest>(
         openapi,
         "The edge to apply and the state the caller read.",
@@ -1207,14 +1239,14 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     .error_503(openapi)
     .register(router, openapi);
     let router = OperationBuilder::post(
-        "/bss-products/v1/recognized-sets/{setKind}/members/{memberCode}/label",
+        "/bss-products/v1/config/vocabularies/{class}/values/{value}/label",
     )
     .operation_id("bss_products.relabel_recognized_member")
     .summary("Change a recognized-set member's display label")
     .description(
         "Sets the member's `display_label` and nothing else - the rename a tier or unit \
          admits. **`If-Match` is required** and asserts the member's own tag from `GET \
-         .../members/{memberCode}` - this door had no staleness pin at all before P-D-174, so \
+         .../values/{value}` - this door had no staleness pin at all before P-D-174, so \
          two operators renaming one member raced and the later write won silently; a stale \
          tag is `STALE_LIVE_OP`. **The door has two arms** (P-D-173): with no approval unit standing for this exact change it opens one, answers `202` naming it, and writes nothing; the identical request re-sent once that unit is approved answers below. A unit already open for a *different* change on the member is named in a `403 APPROVAL_REQUIRED` rather than superseded - `design/05` admits one open unit per subject. At `N = 0` the unit is born satisfied and the first call writes. \
          The member's code is its identity and has no update path (the table's \
@@ -1225,8 +1257,8 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     .tag(TAG)
     .authenticated()
     .no_license_required()
-    .path_param("setKind", "Which recognized set the member belongs to.")
-    .path_param("memberCode", "The member to relabel.")
+    .path_param("class", "Which vocabulary the value belongs to.")
+    .path_param("value", "The value to relabel.")
     .json_request::<MemberRelabelRequest>(openapi, "The new display label, or null to clear it.")
     .handler(relabel_member)
     .json_response_with_schema::<RecognizedMemberView>(
@@ -1252,7 +1284,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     router.layer(Extension(state))
 }
 
-/// `GET /bss-products/v1/recognized-sets/{setKind}`.
+/// `GET /bss-products/v1/config/vocabularies/{class}`.
 ///
 /// The set an operator has to see before they can choose from it. Until this
 /// door landed the gear could be written to and never enumerated: the
@@ -1297,7 +1329,7 @@ async fn list_members(
     .into_response())
 }
 
-/// `GET /bss-products/v1/recognized-sets/{setKind}/members/{memberCode}`.
+/// `GET /bss-products/v1/config/vocabularies/{class}/values/{value}`.
 ///
 /// A miss is a bare `404` carrying no registry code, the shape every other
 /// read on this surface answers with: absent and out-of-scope must be
@@ -1338,7 +1370,7 @@ async fn get_member(
         .into_response())
 }
 
-/// `POST /recognized-sets/{setKind}/members/{memberCode}/label`.
+/// `POST /config/vocabularies/{class}/values/{value}/label`.
 ///
 /// @cpt-dod:cpt-cf-bss-products-dod-plantier-governance:p1
 async fn relabel_member(
@@ -1487,7 +1519,7 @@ async fn relabel_member(
     }
 }
 
-/// `POST /recognized-sets/{setKind}/members`.
+/// `POST /config/vocabularies/{class}/values`.
 async fn add_member(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
@@ -1639,7 +1671,7 @@ async fn add_member(
     }
 }
 
-/// `POST /recognized-sets/{setKind}/members/{memberCode}/transitions`.
+/// `POST /config/vocabularies/{class}/values/{value}/transitions`.
 async fn transition_member(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,

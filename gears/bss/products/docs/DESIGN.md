@@ -602,9 +602,9 @@ authz resources and refusal codes live in each slice's §3; the authz mapping in
 | `PATCH` | `/bss-products/v1/categories/{categoryId}/attribute-values` | set attribute values on a category | 02 | v1 |
 | `POST` | `/bss-products/v1/attribute-definitions` | define an attribute | 02 | v1 |
 | `POST` | `/bss-products/v1/attribute-definitions/{key}/operations` | operate on an attribute definition | 02 | v1 |
-| `POST` | `/bss-products/v1/recognized-sets/{setKind}/members` | add a member to a closed vocabulary | 03 | v1 |
-| `POST` | `/bss-products/v1/recognized-sets/{setKind}/members/{memberCode}/transitions` | walk a member's state machine (`active` / `deprecated` / `removed`, pinned at `expected_state`) | 03 | v1 |
-| `POST` | `/bss-products/v1/recognized-sets/{setKind}/members/{memberCode}/label` | change a member's display label and nothing else | 03 | v1 |
+| `POST` | `/bss-products/v1/config/vocabularies/{class}/values` | add a member to a closed vocabulary (**P-D-175** moved this family off `/recognized-sets/{setKind}/members`; pricing D-371 is its twin) | 03 | v1 |
+| `POST` | `/bss-products/v1/config/vocabularies/{class}/values/{value}/transitions` | walk a member's state machine (`active` / `deprecated` / `removed`, pinned at `expected_state`) | 03 | v1 |
+| `POST` | `/bss-products/v1/config/vocabularies/{class}/values/{value}/label` | change a member's display label and nothing else | 03 | v1 |
 | `GET` | `/bss-products/v1/scheduled-transitions` | list scheduled transitions | 04 | v1 |
 | `POST` | `/bss-products/v1/scheduled-transitions/{id}/operations` | operate on a scheduled transition | 04 | v1 |
 | `GET` | `/bss-products/v1/approvals` | list the tenant's pending approvals with their quorum progress (the inbox envelope) | 05 | v1 |

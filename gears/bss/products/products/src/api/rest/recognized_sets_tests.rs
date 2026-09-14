@@ -168,7 +168,7 @@ async fn post_json_tagged(
 async fn tag_of(harness: &TestHarness, kind: &str, code: &str) -> String {
     let response = get_json(
         app_for(harness, TENANT),
-        &format!("/bss-products/v1/recognized-sets/{kind}/members/{code}"),
+        &format!("/bss-products/v1/config/vocabularies/{kind}/values/{code}"),
     )
     .await;
     response
@@ -237,7 +237,7 @@ async fn add_member(
 async fn add_member_via(app: Router, kind: &str, code: &str) -> axum::http::Response<Body> {
     post_json(
         app,
-        &format!("/bss-products/v1/recognized-sets/{kind}/members"),
+        &format!("/bss-products/v1/config/vocabularies/{kind}/values"),
         &json!({ "member_code": code }),
     )
     .await
@@ -255,7 +255,7 @@ async fn transition(
     let tag = tag_of(harness, kind, code).await;
     post_json_tagged(
         app_for(harness, tenant),
-        &format!("/bss-products/v1/recognized-sets/{kind}/members/{code}/transitions"),
+        &format!("/bss-products/v1/config/vocabularies/{kind}/values/{code}/transitions"),
         &json!({ "to": to, "expected_state": expected }),
         &tag,
     )
@@ -273,7 +273,7 @@ async fn relabel(
     let tag = tag_of(harness, kind, code).await;
     post_json_tagged(
         app_for(harness, tenant),
-        &format!("/bss-products/v1/recognized-sets/{kind}/members/{code}/label"),
+        &format!("/bss-products/v1/config/vocabularies/{kind}/values/{code}/label"),
         &json!({ "display_label": label }),
         &tag,
     )
@@ -785,13 +785,44 @@ async fn a_seeded_member_deprecates_and_never_removes() {
     );
 }
 
-/// **The kind roster is closed at the path**: an unknown `setKind` is a
+/// **The class roster is closed at the path**: an unknown `class` is a
 /// validation refusal, never a default set.
+///
+/// The violated **subject** is asserted, not just the status, because
+/// **P-D-175** renamed the path parameter from `setKind` to `class` and a
+/// refusal that names a parameter the caller did not write is worse than a
+/// bare one — the operator goes looking for a field that is not in their
+/// request. The subject is the one place in the refusal where the two names
+/// could drift apart unnoticed: `OperationBuilder`'s `path_param` and
+/// `parse_kind`'s `violate` are edited in different files.
+///
+/// **The single production change that reddens it**: put `setKind` back as
+/// either argument of `parse_kind`'s `report.violate(…)` call.
 #[tokio::test]
 async fn an_unknown_set_kind_is_refused_closed() {
     let harness = harness().await;
     let response = add_member(&harness, TENANT, "units", "gib_month").await;
     assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    let body = body_json(response).await;
+    assert_eq!(
+        body["context"]["violations"][0]["subject"],
+        json!("class"),
+        "the refusal names the path parameter the caller wrote"
+    );
+    let detail = body["context"]["violations"][0]["description"]
+        .as_str()
+        .expect("description")
+        .to_owned();
+    assert!(
+        detail.starts_with("class must be one of"),
+        "the detail names the parameter too: {detail}"
+    );
+    for named in ["metering_unit", "plan_tier"] {
+        assert!(
+            detail.contains(named),
+            "the refusal must name `{named}`: {detail}"
+        );
+    }
 }
 
 /// A transition on a member the set never carried answers the bare 404.
@@ -850,7 +881,7 @@ async fn a_member_op_without_a_record_opens_the_unit_and_writes_nothing() {
     let listed = body_json(
         get_json(
             app_for(&harness, TENANT),
-            "/bss-products/v1/recognized-sets/metering_unit",
+            "/bss-products/v1/config/vocabularies/metering_unit",
         )
         .await,
     )
@@ -871,7 +902,7 @@ async fn a_member_op_without_a_record_opens_the_unit_and_writes_nothing() {
     let tag = tag_of(&harness, "metering_unit", "tib_month").await;
     let stranger = post_json_tagged(
         app_for(&harness, TENANT),
-        "/bss-products/v1/recognized-sets/metering_unit/members/tib_month/transitions",
+        "/bss-products/v1/config/vocabularies/metering_unit/values/tib_month/transitions",
         &json!({ "to": "deprecated", "expected_state": "active" }),
         &tag,
     )
@@ -887,7 +918,7 @@ async fn a_member_op_without_a_record_opens_the_unit_and_writes_nothing() {
     let tag = tag_of(&harness, "metering_unit", "tib_month").await;
     let relabel_refused = post_json_tagged(
         app_for(&harness, TENANT),
-        "/bss-products/v1/recognized-sets/metering_unit/members/tib_month/label",
+        "/bss-products/v1/config/vocabularies/metering_unit/values/tib_month/label",
         &json!({ "display_label": "TiB-month" }),
         &tag,
     )
@@ -917,7 +948,7 @@ async fn member_state(harness: &TestHarness, kind: &str, code: &str) -> String {
     let body = body_json(
         get_json(
             app_for(harness, TENANT),
-            &format!("/bss-products/v1/recognized-sets/{kind}/members/{code}"),
+            &format!("/bss-products/v1/config/vocabularies/{kind}/values/{code}"),
         )
         .await,
     )
@@ -1002,7 +1033,7 @@ async fn a_stale_member_tag_is_refused_and_a_current_one_writes() {
     .await;
     let refused = post_json_tagged(
         app_for(&harness, TENANT),
-        "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
+        "/bss-products/v1/config/vocabularies/plan_tier/values/gold/label",
         &json!({ "display_label": "Gold tier" }),
         &stale,
     )
@@ -1017,7 +1048,7 @@ async fn a_stale_member_tag_is_refused_and_a_current_one_writes() {
         body_json(
             get_json(
                 app_for(&harness, TENANT),
-                "/bss-products/v1/recognized-sets/plan_tier/members/gold",
+                "/bss-products/v1/config/vocabularies/plan_tier/values/gold",
             )
             .await,
         )
@@ -1028,7 +1059,7 @@ async fn a_stale_member_tag_is_refused_and_a_current_one_writes() {
 
     let landed = post_json_tagged(
         app_for(&harness, TENANT),
-        "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
+        "/bss-products/v1/config/vocabularies/plan_tier/values/gold/label",
         &json!({ "display_label": "Gold tier" }),
         &current,
     )
@@ -1057,7 +1088,7 @@ async fn a_member_tag_that_is_not_one_strong_digest_is_refused() {
 
     let absent = post_json(
         app_for(&harness, TENANT),
-        "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
+        "/bss-products/v1/config/vocabularies/plan_tier/values/gold/label",
         &json!({ "display_label": "Gold" }),
     )
     .await;
@@ -1078,7 +1109,7 @@ async fn a_member_tag_that_is_not_one_strong_digest_is_refused() {
     ] {
         let refused = post_json_tagged(
             app_for(&harness, TENANT),
-            "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
+            "/bss-products/v1/config/vocabularies/plan_tier/values/gold/label",
             &json!({ "display_label": "Gold" }),
             &tag,
         )
@@ -1097,7 +1128,7 @@ async fn a_member_tag_that_is_not_one_strong_digest_is_refused() {
     assert_eq!(
         post_json_tagged(
             app_for(&harness, TENANT),
-            "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
+            "/bss-products/v1/config/vocabularies/plan_tier/values/gold/label",
             &json!({ "display_label": "Gold" }),
             &good,
         )
@@ -1220,7 +1251,7 @@ async fn a_unit_open_for_another_change_is_named_not_superseded() {
     let opened = body_json(
         post_json_tagged(
             app_for(&harness, TENANT),
-            "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
+            "/bss-products/v1/config/vocabularies/plan_tier/values/gold/label",
             &json!({ "display_label": "Gold tier" }),
             &tag,
         )
@@ -1232,7 +1263,7 @@ async fn a_unit_open_for_another_change_is_named_not_superseded() {
     let tag = tag_of(&harness, "plan_tier", "gold").await;
     let other = post_json_tagged(
         app_for(&harness, TENANT),
-        "/bss-products/v1/recognized-sets/plan_tier/members/gold/transitions",
+        "/bss-products/v1/config/vocabularies/plan_tier/values/gold/transitions",
         &json!({ "to": "deprecated", "expected_state": "active" }),
         &tag,
     )
@@ -1252,7 +1283,7 @@ async fn a_unit_open_for_another_change_is_named_not_superseded() {
     let tag = tag_of(&harness, "plan_tier", "gold").await;
     let relabelled = post_json_tagged(
         app_for(&harness, TENANT),
-        "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
+        "/bss-products/v1/config/vocabularies/plan_tier/values/gold/label",
         &json!({ "display_label": "Gold tier" }),
         &tag,
     )
@@ -1355,7 +1386,7 @@ async fn an_approval_bound_to_one_op_does_not_authorize_another() {
     let tag = tag_of(&harness, "plan_tier", "gold").await;
     let deprecate = post_json_tagged(
         app_for(&harness, TENANT),
-        "/bss-products/v1/recognized-sets/plan_tier/members/gold/transitions",
+        "/bss-products/v1/config/vocabularies/plan_tier/values/gold/transitions",
         &json!({ "to": "deprecated", "expected_state": "active" }),
         &tag,
     )
@@ -1381,7 +1412,7 @@ async fn an_approval_bound_to_one_op_does_not_authorize_another() {
     let tag = tag_of(&harness, "metering_unit", "gib_month").await;
     let relabelled = post_json_tagged(
         app_for(&harness, TENANT),
-        "/bss-products/v1/recognized-sets/metering_unit/members/gib_month/label",
+        "/bss-products/v1/config/vocabularies/metering_unit/values/gib_month/label",
         &json!({ "display_label": "GiB-hours" }),
         &tag,
     )
@@ -1404,7 +1435,7 @@ async fn an_approval_bound_to_one_op_does_not_authorize_another() {
     let tag = tag_of(&harness, "plan_tier", "silver").await;
     let silver = post_json_tagged(
         app_for(&harness, TENANT),
-        "/bss-products/v1/recognized-sets/plan_tier/members/silver/transitions",
+        "/bss-products/v1/config/vocabularies/plan_tier/values/silver/transitions",
         &json!({ "to": "deprecated", "expected_state": "active" }),
         &tag,
     )
@@ -1448,7 +1479,7 @@ async fn an_approval_bound_to_one_label_does_not_authorize_a_different_one() {
     let tag = tag_of(&harness, "plan_tier", "gold").await;
     let other = post_json_tagged(
         app_for(&harness, TENANT),
-        "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
+        "/bss-products/v1/config/vocabularies/plan_tier/values/gold/label",
         &json!({ "display_label": "Platinum" }),
         &tag,
     )
@@ -1462,7 +1493,7 @@ async fn an_approval_bound_to_one_label_does_not_authorize_a_different_one() {
     let tag = tag_of(&harness, "plan_tier", "gold").await;
     let cleared = post_json_tagged(
         app_for(&harness, TENANT),
-        "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
+        "/bss-products/v1/config/vocabularies/plan_tier/values/gold/label",
         &json!({ "display_label": null }),
         &tag,
     )
@@ -1476,7 +1507,7 @@ async fn an_approval_bound_to_one_label_does_not_authorize_a_different_one() {
     let tag = tag_of(&harness, "plan_tier", "gold").await;
     let agreed = post_json_tagged(
         app_for(&harness, TENANT),
-        "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
+        "/bss-products/v1/config/vocabularies/plan_tier/values/gold/label",
         &json!({ "display_label": "Gold tier" }),
         &tag,
     )
@@ -1513,7 +1544,7 @@ async fn a_record_declaring_no_op_authorizes_every_door() {
     let tag = tag_of(&harness, "plan_tier", "gold").await;
     let relabelled = post_json_tagged(
         app_for(&harness, TENANT),
-        "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
+        "/bss-products/v1/config/vocabularies/plan_tier/values/gold/label",
         &json!({ "display_label": "Gold" }),
         &tag,
     )
@@ -1673,7 +1704,7 @@ async fn a_set_lists_its_members_and_seeds_the_baseline_on_the_first_read() {
     let units = body_json(
         get_json(
             app_for(&harness, TENANT),
-            "/bss-products/v1/recognized-sets/metering_unit",
+            "/bss-products/v1/config/vocabularies/metering_unit",
         )
         .await,
     )
@@ -1702,7 +1733,7 @@ async fn a_set_lists_its_members_and_seeds_the_baseline_on_the_first_read() {
     let tiers = body_json(
         get_json(
             app_for(&harness, TENANT),
-            "/bss-products/v1/recognized-sets/plan_tier",
+            "/bss-products/v1/config/vocabularies/plan_tier",
         )
         .await,
     )
@@ -1748,7 +1779,7 @@ async fn a_removed_member_is_listed_with_its_state_not_filtered_out() {
     let set = body_json(
         get_json(
             app_for(&harness, TENANT),
-            "/bss-products/v1/recognized-sets/plan_tier",
+            "/bss-products/v1/config/vocabularies/plan_tier",
         )
         .await,
     )
@@ -1780,7 +1811,7 @@ async fn one_member_reads_by_code_and_an_unknown_one_is_a_bare_miss() {
 
     let hit = get_json(
         app_for(&harness, TENANT),
-        "/bss-products/v1/recognized-sets/plan_tier/members/gold",
+        "/bss-products/v1/config/vocabularies/plan_tier/values/gold",
     )
     .await;
     assert_eq!(hit.status(), axum::http::StatusCode::OK);
@@ -1795,7 +1826,7 @@ async fn one_member_reads_by_code_and_an_unknown_one_is_a_bare_miss() {
 
     let miss = get_json(
         app_for(&harness, TENANT),
-        "/bss-products/v1/recognized-sets/plan_tier/members/platinum",
+        "/bss-products/v1/config/vocabularies/plan_tier/values/platinum",
     )
     .await;
     assert_eq!(miss.status(), axum::http::StatusCode::NOT_FOUND);
@@ -1809,9 +1840,9 @@ async fn one_member_reads_by_code_and_an_unknown_one_is_a_bare_miss() {
 async fn the_read_doors_refuse_a_kind_outside_the_roster() {
     let harness = harness().await;
     for uri in [
-        "/bss-products/v1/recognized-sets/tax_category",
-        "/bss-products/v1/recognized-sets/gl_code/members/GL-4000",
-        "/bss-products/v1/recognized-sets/units",
+        "/bss-products/v1/config/vocabularies/tax_category",
+        "/bss-products/v1/config/vocabularies/gl_code/values/GL-4000",
+        "/bss-products/v1/config/vocabularies/units",
     ] {
         let refused = get_json(app_for(&harness, TENANT), uri).await;
         assert_eq!(

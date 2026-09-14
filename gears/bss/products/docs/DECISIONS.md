@@ -1569,6 +1569,93 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-175 — The set doors become the vocabulary doors: five path templates move to `config/vocabularies/{class}/values/{value}`, and the word in the code does not move with them
+
+- **Date**: 2026-09-14 (the vocabulary-convergence plan, Phase N group E — the last group, and the
+  only one the owner had to give a separate go for, because a rename with a live consumer is not a
+  plan's to time). **Breaking on the wire.** Pricing's twin is **D-371** in that gear's register,
+  and the two entries cite each other.
+- **What this decides.** The five templates
+  `/bss-products/v1/recognized-sets/{setKind}`, `…/{setKind}/members`,
+  `…/members/{memberCode}`, `…/members/{memberCode}/label` and
+  `…/members/{memberCode}/transitions` become
+  `/bss-products/v1/config/vocabularies/{class}`, `…/{class}/values`,
+  `…/{class}/values/{value}`, `…/values/{value}/label` and
+  `…/values/{value}/transitions`. Pricing's nine templates move to the same family the same day
+  (D-371). The path **parameters** move with the paths — `{setKind}` is `{class}`, and the
+  `members` collection is `values` — because that is the shape the two gears now share; the
+  `OpenAPI` parameter names and `parse_kind`'s violated field follow, so the refusal names what the
+  caller actually wrote.
+- **Why `vocabulary` and not either gear's own word.** `taxonomy` is unavailable **inside this
+  gear**: `02` spends it on the category-and-attribute plane and `01` §7 spends it again on the
+  error taxonomy, so adopting pricing's word here would fuse three concepts under one. `recognized
+  set` is unavailable the other way — it appears nowhere in pricing, and `05-governance.md` §3.2's
+  own door column was already describing this surface as *"a closed vocabulary"* before this entry
+  was written. `vocabulary` was free on both sides, and pricing had already minted
+  `VocabularyClass` for two of its value sets under **D-368**.
+- **Why the paths gain a `config/` segment.** Pricing's family has always been under
+  `/config/`, and the target contract the two gears converge on is
+  `/{gear}/v1/config/vocabularies/{class}[/values/{value}]`. This gear has no other `/config/`
+  route, so the segment costs nothing here and buys the shared shape. It is a **path** segment
+  only: the grant is still chosen by the class token and is still `plan_tier × read/write` or
+  `recognized_set × read/write` (**P-D-90** arm 2), not a `config` grant — the two gears converge
+  on the door's address, not on who may open it.
+- **What deliberately did not move, and what it would cost.** The request and response bodies still
+  read `setKind`, `members` and `memberCode`; the types are still `RecognizedSetView` and
+  `RecognizedMemberView`; the table is still `products_recognized_set`; the grants are still
+  `cf.bss.products.recognized_set.v1~` and `cf.bss.products.plan_tier.v1~`; and every design
+  document still says *recognized set*. That is a deferral with a measurement, not an oversight.
+  The live design set carries **79** English occurrences of the phrase and **37 of them — 47% —
+  sit on a line that also carries a backticked `recognized*` identifier** this entry does not move.
+  Five **declared ids** embed the phrase — `dod-recognized-set-mechanics`, `dod-recognized-set-events`,
+  `dod-recognized-set-table`, `inst-ac-recognized` and `inst-mt-recognized` — each declarable
+  exactly once under lint 6 and cited across the set, and **seven live headings** carry it, so a
+  prose wave is an id-and-heading change under the TOC gate rather than a search and replace.
+  A further **27** occurrences sit in this register's historical entries, which are never edited.
+  Renaming the prose alone would leave both words in 37 sentences, which is the state **D-241**
+  names in the pricing register: two spellings that both stand, and neither canonical. The wire
+  moved first because it is the half that had a second gear to converge with.
+- **The approval subject stays `recognized_set/{set_kind}/{member_code}`.** It is a **stored**
+  reference — `api::rest::approvals::RECOGNIZED_SET_SUBJECT_PREFIX`, written into
+  `products_approval.subject_ref` and compared whole by the enforcer — so moving it would strand
+  every record already submitted under the old prefix and would make **P-D-172**'s
+  content-snapshot comparison disagree with the subject beside it. Pricing took the same position
+  in the same wave on its audit `subject_ref` (`taxonomy/{resource}`, D-371): a route rename is not
+  a licence to rewrite an append-only trail.
+- **The GTS grant tokens are a separate identity, not part of this.** `recognized_set` is a
+  registered resource type whose consumers are policy documents outside this repository; renaming
+  it is a platform-registry change with a migration, and nothing about the route family forces it.
+  It is named under *Owed* rather than done quietly.
+- **Owed**: (i) **`vhp-core` e2e, another repository** — the products helpers live in the unpushed
+  worktree `~/Projects/vhp/vhp-core/.claude/worktrees/bss-products-e2e/` (branch
+  `bss/products-e2e`), `tests/e2e/tests/lib/products.py`: `add_set_member` (line **527**),
+  `member_transition` (line **531**) and `member_relabel` (line **534**) each build
+  `f"/recognized-sets/{set_kind}/members…"` and must build `f"/config/vocabularies/{set_kind}/values…"`.
+  That suite is **already red** on P-D-174's `If-Match` requirement, so this compounds a known
+  break on the same three lines rather than opening a new one — one edit closes both.
+  (ii) The prose wave measured above, and with it the question of whether the body members
+  `setKind` / `members` / `memberCode` should become `class` / `values` / `value` to match the
+  path. They are the same tokens under two names today, and that is the one residue of this entry
+  a caller can see. `displayLabel` is **not** part of that question: it is the operand of
+  **P-D-121** row 17's registered exception and **P-D-171**'s `min(N, 1)` quorum, and pricing
+  spells the same column `displayName`, so converging it is a governance change and not a rename.
+  (iii) The GTS grant tokens above.
+- **Two closed records keep P-D-90's own wording**, and are named here so the omission is legible
+  rather than looking like a miss: the struck open item 9 in the FEATURE beside `03`, and its twin
+  in `design/03-sku-classification.md` §6, both quote the address **P-D-90** answered with on
+  2026-09-01. A struck item is evidence of what was decided then, not documentation of what is true
+  now. The FEATURE's is untouched. The design slice's needed **one** change and it is typographic
+  rather than substantive: `coverage_lints`' lint 3 harvests every `` `VERB /bss-products/v1/…` ``
+  span in a slice as a **declared route** and demands a grant pairing for it in `05` §3.2, so a
+  dead address inside a struck record reads to that gate as a live declaration — it was paired only
+  because `05` §3.2 happened to carry the same string. The verb is now written outside the span
+  (`` `POST` on `/bss-products/v1/recognized-sets/{setKind}/members` ``), which leaves the sentence
+  identical to a reader and takes the address out of the lint's population, and an italic note
+  beside it points at this entry. Neither document is a propagation target of this entry.
+- **Propagated**: `DESIGN.md` §3's door table (three rows), `design/03-sku-classification.md` §3.1
+  (`inst-rs-shape` and `inst-rs-read`'s route text), `design/05-governance.md` §3.2's door column
+  (both the write and the read rows).
+
 #### P-D-174 — The member tag: the by-code read hands one out, the two per-member doors assert it, and neither the list nor the add takes one
 
 - **Date**: 2026-09-14 (the vocabulary-convergence plan, Phase R group D task 4; pays **P-D-170**'s

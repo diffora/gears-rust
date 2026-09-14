@@ -124,7 +124,7 @@ pub mod labels {
     pub const AUDIT: &str = gts_id!("cf.bss.products.audit.v1~");
 
     /// The recognized sets — the three non-tier families behind
-    /// `POST /recognized-sets/{setKind}/members` (P-D-90 arm 2: the tier set
+    /// `POST /config/vocabularies/{class}/values` (P-D-90 arm 2: the tier set
     /// spends its own grant below).
     pub const RECOGNIZED_SET: &str = gts_id!("cf.bss.products.recognized_set.v1~");
 
