@@ -506,6 +506,97 @@ async fn a_live_op_payload_that_declares_no_known_op_keeps_the_full_quorum() {
     }
 }
 
+/// **The declaration buys the discount only on a subject whose doors speak
+/// it** (**P-D-171**, the hole the group's own review found).
+///
+/// `subjectRef` and `contentSnapshot` are both the caller's. Keyed on the
+/// token alone, a submission naming `10`'s `pii_allowlist` subject with a
+/// `recognized_set.label` payload closed on **one** approver — and `10`'s
+/// door has no binding of its own (P-D-172's scope is `03`'s three doors), so
+/// it would have spent that record on a PII-allow-list op. Three arms: the
+/// wrong subject with the right token, the right subject with another slice's
+/// token, and the pair that does buy it.
+#[tokio::test]
+async fn the_relabel_discount_needs_the_subject_as_well_as_the_token() {
+    let harness = harness().await;
+    let required_for = |subject: &'static str, snapshot: &'static str| {
+        let harness = &harness;
+        async move {
+            body_of(
+                post(
+                    app_for(harness, TENANT),
+                    "/bss-products/v1/approvals",
+                    ctx_without_roles(Uuid::from_u128(0x5a_a0)),
+                    json!({
+                        "subject_kind": "governed_live_op",
+                        "subject_ref": subject,
+                        "finance_material": false,
+                        "content_snapshot": snapshot,
+                    }),
+                )
+                .await,
+            )
+            .await["required"]
+                .clone()
+        }
+    };
+
+    assert_eq!(
+        required_for(
+            "pii_allowlist",
+            r#"{"op":"recognized_set.label","display_label":"Gold tier"}"#
+        )
+        .await,
+        2,
+        "another slice's subject cannot be discounted by borrowing 03's vocabulary"
+    );
+    assert_eq!(
+        required_for(
+            "recognized_set/plan_tier/gold",
+            r#"{"op":"attribute_definition.label","display_label":"Gold tier"}"#
+        )
+        .await,
+        2,
+        "and 03's subject is not discounted by 02's token: the two conditions are ANDed"
+    );
+    assert_eq!(
+        required_for(
+            "recognized_set/plan_tier/silver",
+            r#"{"op":"recognized_set.label","display_label":"Silver tier"}"#
+        )
+        .await,
+        1,
+        "the pair that does buy it: without this the two refusals above would pass against a \
+         door that had stopped discounting anything"
+    );
+}
+
+/// The prefix the discount is gated on **is** the one the set doors build
+/// their subject from, asserted against the constructor rather than against
+/// this file's memory of it (**P-D-171**).
+///
+/// A literal copied by eye is the class of defect this register keeps
+/// finding: change `member_op_subject`'s rendering and the gate silently
+/// stops matching anything, which fails **open** on materiality — every
+/// relabel would quietly go back to charging the full `N` and no probe above
+/// would notice, because they all assert through the same wrong prefix.
+#[test]
+fn the_recognized_set_subject_prefix_is_the_doors_own() {
+    for kind in [
+        crate::domain::recognized::SetKind::MeteringUnit,
+        crate::domain::recognized::SetKind::PlanTier,
+    ] {
+        let subject = crate::api::rest::recognized_sets::member_op_subject(TENANT, kind, "gold");
+        assert!(
+            subject
+                .reference
+                .starts_with(super::RECOGNIZED_SET_SUBJECT_PREFIX),
+            "{} does not begin with the prefix the submit door gates on",
+            subject.reference
+        );
+    }
+}
+
 /// **A subject kind outside the `CHECK`'s roster is refused at the door**,
 /// not at the constraint.
 #[tokio::test]

@@ -1269,6 +1269,35 @@ pub(crate) fn declared_member_op(snapshot: &str) -> Option<MemberOp> {
     MemberOp::parse(&op)
 }
 
+/// The op a submission declares **for a subject that can carry it**.
+///
+/// # The token alone is not the operand, and reading it alone was a hole
+///
+/// `subject_ref` and `content_snapshot` are both the caller's. A first
+/// revision of P-D-171 keyed the exception on the token alone, so a
+/// submission naming `10`'s `pii_allowlist` subject with a
+/// `recognized_set.label` payload was judged non-material and closed on one
+/// approver — and `10`'s door, which has no binding of its own
+/// (**P-D-172**'s scope is `03`'s three doors), would have spent that record
+/// on a PII-allow-list op. The subject has to be one this slice's doors
+/// address before its vocabulary means anything, and `03`'s subjects are
+/// `recognized_set/{set_kind}/{member_code}`
+/// (`recognized_sets::member_op_subject`, **P-D-146**).
+///
+/// A subject of the right shape whose payload names another slice's token
+/// still buys nothing: the two conditions are `AND`ed, not either.
+fn declared_for_subject(subject_ref: &str, snapshot: &str) -> Option<MemberOp> {
+    if !subject_ref.starts_with(RECOGNIZED_SET_SUBJECT_PREFIX) {
+        return None;
+    }
+    declared_member_op(snapshot)
+}
+
+/// What a recognized-set member's `GovernedLiveOp` subject begins with —
+/// `recognized_sets::member_op_subject`'s own rendering, asserted against it
+/// by `the_recognized_set_subject_prefix_is_the_doors_own`.
+pub(crate) const RECOGNIZED_SET_SUBJECT_PREFIX: &str = "recognized_set/";
+
 /// `POST /bss-products/v1/approvals`.
 #[allow(clippy::too_many_lines)] // the door's one sequence: authz, parse, resolve, gate, write
 async fn submit_approval(
@@ -1565,8 +1594,9 @@ async fn resolve_submission(
         )));
     };
     // Read before the snapshot moves into the submission: the payload is the
-    // act's operand and the record's stored bytes at once (**P-D-171**).
-    let declared = declared_member_op(&snapshot);
+    // act's operand and the record's stored bytes at once (**P-D-171**), and
+    // it counts only for a subject whose doors speak that vocabulary.
+    let declared = declared_for_subject(&body.subject_ref, &snapshot);
     Ok(Ok(Submission {
         subject: GateSubject {
             tenant_id,

@@ -342,9 +342,7 @@ async fn authorize_member_op(
             return Err(repo_error_to_canonical(&error));
         }
     };
-    if let Err(refusal) =
-        bound_to_the_change(state, scope, tenant_id, &authorization, presented).await?
-    {
+    if let Err(refusal) = bound_to_the_change(state, tenant_id, &authorization, presented).await? {
         return Err(refuse_set(
             state,
             scope,
@@ -357,6 +355,22 @@ async fn authorize_member_op(
         .await);
     }
     Ok(authorization)
+}
+
+/// The scope this gear consults **its own governance state** under.
+///
+/// **Not the door's.** `products_approval` declares `resource_col =
+/// "approval_id"`, and this door's scope is compiled for `plan_tier` /
+/// `recognized_set` — so a real PDP's scope filters that table by a column it
+/// never constrained and matches nothing. `repo::gate_candidates` records the
+/// measurement that found it (the benidorm stand, 2026-09-06: *"every
+/// governed act answered `APPROVAL_REQUIRED` while its satisfied record sat
+/// in the table"*) and takes exactly this posture, ignoring the door scope it
+/// is handed. The reads and the submission below are the same access — the
+/// caller has already passed this door's own authz, and what follows is the
+/// gear consulting its ceremony inside that tenant.
+fn governance_scope(tenant_id: Uuid) -> AccessScope {
+    AccessScope::for_tenant(tenant_id)
 }
 
 /// The refusal a stale member tag earns (**P-D-174**).
@@ -544,7 +558,7 @@ async fn gate_member_op(
     {
         Ok(authorization) => {
             if let Err(mismatch) =
-                bound_to_the_change(state, scope, tenant_id, &authorization, presented).await?
+                bound_to_the_change(state, tenant_id, &authorization, presented).await?
             {
                 // A record stands and is not for this change. It is open, so
                 // opening a second one would supersede it: report it.
@@ -610,7 +624,8 @@ async fn open_the_unit(
     let conn = state.db.conn().map_err(|e| {
         repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
     })?;
-    let candidates = repo::gate_candidates(&conn, scope, &subject)
+    let governance = governance_scope(tenant_id);
+    let candidates = repo::gate_candidates(&conn, &governance, &subject)
         .await
         .map_err(|e| repo_error_to_canonical(&e))?;
     if let Some(standing) = candidates.iter().find(|candidate| {
@@ -620,7 +635,7 @@ async fn open_the_unit(
                 | crate::domain::approval::ApprovalState::Satisfied
         )
     }) {
-        let record = repo::read_approval(&conn, scope, tenant_id, standing.approval_id)
+        let record = repo::read_approval(&conn, &governance, tenant_id, standing.approval_id)
             .await
             .map_err(|e| repo_error_to_canonical(&e))?
             .ok_or_else(|| {
@@ -654,7 +669,7 @@ async fn open_the_unit(
         .await);
     }
 
-    let policy = match repo::resolve_materiality_policy(&conn, scope, tenant_id)
+    let policy = match repo::resolve_materiality_policy(&conn, &governance, tenant_id)
         .await
         .map_err(|e| repo_error_to_canonical(&e))?
     {
@@ -684,15 +699,15 @@ async fn open_the_unit(
             crate::domain::materiality::LiveOpEdit::Registered
         },
     };
-    let scope_tx = scope.clone();
+    let scope_tx = governance.clone();
     let subject_tx = subject.clone();
     let snapshot_tx = snapshot.clone();
     let submitted = state
         .db
         .db()
-        .transaction_with_retry::<repo::Submitted, toolkit_db::DbError, _, _>(
+        .transaction_with_retry::<repo::Submitted, TxError, _, _>(
             toolkit_db::secure::TxConfig::default(),
-            crate::api::rest::contention_db_err,
+            member_contention_db_err,
             move |tx| {
                 let scope = scope_tx.clone();
                 let subject = subject_tx.clone();
@@ -729,23 +744,44 @@ async fn open_the_unit(
                         now,
                     )
                     .await
+                    // **A refusal is a refusal, not a `500`.** The one a
+                    // caller can actually provoke here is
+                    // `uq_products_approval_open`: two of their own retries
+                    // racing, which `classify_submit_insert` turns into a
+                    // refusal precisely so a caller can act on it. Flattened
+                    // into a driver failure it would answer `500` for a
+                    // double-click.
                     .map_err(|e| match e {
-                        repo::ApprovalStoreError::Refused(refusal) => {
-                            toolkit_db::DbError::Sea(sea_orm::DbErr::Custom(format!(
-                                "bss-products: the submission was refused: {refusal}"
-                            )))
-                        }
-                        repo::ApprovalStoreError::Repo(error) => {
-                            toolkit_db::DbError::Sea(sea_orm::DbErr::Custom(error.to_string()))
-                        }
+                        repo::ApprovalStoreError::Refused(refusal) => TxError::Refused(refusal),
+                        repo::ApprovalStoreError::Repo(error) => TxError::Repo(error),
                     })
                 })
             },
         )
-        .await
-        .map_err(|e| {
-            repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
-        })?;
+        .await;
+    let submitted = match submitted {
+        Ok(submitted) => submitted,
+        Err(TxError::Refused(refusal)) => {
+            return Err(refuse_set(
+                state,
+                scope,
+                tenant_id,
+                actor_ref,
+                kind,
+                member_code.to_owned(),
+                refusal,
+            )
+            .await);
+        }
+        Err(TxError::Repo(error)) => return Err(repo_error_to_canonical(&error)),
+        Err(TxError::NotFound) => {
+            return Err(repo_error_to_canonical(
+                &crate::infra::storage::RepoError::Db(
+                    "the submission raised NotFound, which no branch of it constructs".to_owned(),
+                ),
+            ));
+        }
+    };
 
     if matches!(
         submitted.state,
@@ -813,7 +849,6 @@ fn unit_view(
 /// took with it.
 async fn bound_to_the_change(
     state: &ApiState,
-    scope: &AccessScope,
     tenant_id: Uuid,
     authorization: &GateAuthorization,
     presented: &JsonValue,
@@ -827,9 +862,10 @@ async fn bound_to_the_change(
     let conn = state.db.conn().map_err(|e| {
         repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
     })?;
-    let Some(record) = repo::read_approval(&conn, scope, tenant_id, approval_id)
-        .await
-        .map_err(|e| repo_error_to_canonical(&e))?
+    let Some(record) =
+        repo::read_approval(&conn, &governance_scope(tenant_id), tenant_id, approval_id)
+            .await
+            .map_err(|e| repo_error_to_canonical(&e))?
     else {
         // The host matched it a moment ago; a record that has vanished since
         // is a store this gear wrote wrong, not a caller's refusal.
