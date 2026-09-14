@@ -4,7 +4,7 @@
 //!
 //! # Why this is not a fifth arm of `api::rest::taxonomies`
 //!
-//! `api::rest::taxonomies` mounts `GET/PUT /config/taxonomies/{class}` over
+//! `api::rest::taxonomies` mounts `GET/PUT /config/vocabularies/{class}` over
 //! `TaxonomyClass`'s four members and gates on `config × read/write`. A first
 //! attempt at this surface was briefed as a fifth arm of that enum on that same
 //! route, and it was the wrong shape: `design/09-price-overlays.md` §5 gives the
@@ -97,7 +97,7 @@ const TAG: &str = "BSS Pricing Customer Groups";
 /// The literal is repeated in both `OperationBuilder` calls below because
 /// DE0801 validates a **literal** argument and silently passes a `const` one;
 /// the two spellings are pinned together by `tests/module_test.rs`'s route
-/// census, exactly as `taxonomies::TAXONOMY`'s is.
+/// census, exactly as `taxonomies::VOCABULARY`'s is.
 pub const CUSTOMER_GROUP_TAXONOMY: &str = "/bss-pricing/v1/customer-groups/taxonomy";
 
 /// The membership collection of one group (`design/09-price-overlays.md` §5,
@@ -249,7 +249,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              re-activate. A tenant that has declared nothing is answered `200` with an empty list \
              - that is a state, not an absent resource. **The response carries the `ETag` the \
              `PUT` demands**, and this is the only place to obtain one. This is a **separate** \
-             resource from `GET /config/taxonomies/{class}` and gates on `customer_group` x \
+             resource from `GET /config/vocabularies/{class}` and gates on `customer_group` x \
              `read`, never `config` x `read` - per-payer commercial data is more sensitive than \
              plan/config authoring (`05-governance.md`).",
         )
@@ -278,7 +278,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         // (403/503) and `repo_failure` over a plain `SELECT`, whose 400-producing
         // arms are all state-machine edges a list read cannot reach. Its four config
         // `GET` peers declare none either. The one config `GET` that legitimately
-        // declares a 400 is `GET /config/taxonomies/{class}`, which earns it by
+        // declares a 400 is `GET /config/vocabularies/{class}`, which earns it by
         // parsing a path segment.
         .error_401(openapi)
         .error_403(openapi)
@@ -472,14 +472,37 @@ fn authored_entries(
                  once, and a repeated one leaves its state undecided"
             ))));
         }
+        // **`deprecated` is refused on this door, and that is a scope decision
+        // rather than an omission** (D-370). The middle state landed on six of
+        // the seven vocabularies; `pricing_customer_group_taxonomy` is the
+        // seventh and was deliberately held back, so its `CHECK` still admits
+        // two tokens. Refused **here**, at the door, because the alternative is
+        // a body that parses, reaches the store, violates
+        // `chk_pricing_customer_group_taxonomy_state` and is answered `500` for
+        // a request whose only fault is naming a state this table does not
+        // have. The `match` is exhaustive so a state added later meets this
+        // decision rather than inheriting it.
         let state = match value.state.as_deref() {
             None => TaxonomyState::Active,
-            Some(token) => TaxonomyState::parse(token).ok_or_else(|| {
-                CanonicalError::from(DomainError::InvalidRequest(format!(
-                    "value `{declared}` carries state `{token}`; a taxonomy value is `active` or \
-                     `retired`, and nothing else"
-                )))
-            })?,
+            Some(token) => match TaxonomyState::parse(token) {
+                Some(TaxonomyState::Active) => TaxonomyState::Active,
+                Some(TaxonomyState::Retired) => TaxonomyState::Retired,
+                Some(TaxonomyState::Deprecated) => {
+                    return Err(CanonicalError::from(DomainError::InvalidRequest(format!(
+                        "value `{declared}` carries state `deprecated`; the customer-group \
+                         taxonomy is the one vocabulary D-370 did not give the middle state, \
+                         so `active` and `retired` are what this set holds. Its values carry \
+                         payer members and its retire guard counts live memberships, which is \
+                         why the scope call was left to the owner rather than taken"
+                    ))));
+                }
+                None => {
+                    return Err(CanonicalError::from(DomainError::InvalidRequest(format!(
+                        "value `{declared}` carries state `{token}`; a customer-group taxonomy \
+                         value is `active` or `retired`, and nothing else"
+                    ))));
+                }
+            },
         };
         entries.push(TaxonomyEntry {
             value: declared,

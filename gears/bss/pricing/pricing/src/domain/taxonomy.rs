@@ -81,7 +81,7 @@ pub const REGION_UNKNOWN: &str = "REGION_UNKNOWN";
 /// (§5, 409; `inst-tx-mutation`).
 pub const TAXONOMY_VALUE_IN_USE: &str = "TAXONOMY_VALUE_IN_USE";
 
-/// `POST …/taxonomies/{class}/values` naming a value the tenant already declares
+/// `POST …/vocabularies/{class}/values` naming a value the tenant already declares
 /// with **different** content (or a retired one): 409. The value is the
 /// resource's natural key, so a second declaration of it is not a create — the
 /// remedy is `PATCH` on the value, and the detail says so. A body identical to
@@ -104,7 +104,7 @@ pub const ROUNDING_POLICY_UNKNOWN: &str = "ROUNDING_POLICY_UNKNOWN";
 /// vocabulary to go and fix, and the two are declared at two routes.
 pub const GL_CODE_UNKNOWN: &str = "GL_CODE_UNKNOWN";
 
-/// The four taxonomy classes `GET/PUT /config/taxonomies/{…}` addresses.
+/// The four taxonomy classes `GET/PUT /config/vocabularies/{…}` addresses.
 ///
 /// Ordered as §5 and §6 list them. The order carries no ranking — the ranking is
 /// [`ScopeClass`]'s derived `Ord` and there is exactly one of those.
@@ -210,29 +210,175 @@ impl fmt::Display for TaxonomyClass {
     }
 }
 
-/// `active | retired` — the whole state machine §6 gives these tables.
+/// The two **single-table** vocabularies: the tenant's declared rounding
+/// references (D-334) and GL codes (D-356).
+///
+/// # Why this is a second enum and not two more [`TaxonomyClass`] members
+///
+/// The obvious move — widen `TaxonomyClass::ALL` and let them ride
+/// `/config/vocabularies/{class}`'s generic door — is the one thing this enum
+/// exists to refuse. [`TaxonomyClass::scope_class`] is a **total** function
+/// into [`ScopeClass`]: every member of that enum asserts *an overlay may be
+/// scoped by this*. A `GlCode` member would assert it of a GL code, which is
+/// false, and the assertion is not merely documentary — it reaches
+/// `pricing_price_overlay.scope_class`'s `CHECK`, which has no such token.
+/// `taxonomy_repo`'s `list_rounding_policies` and `list_gl_codes` record the
+/// same reasoning at the storage layer, and `customer_group` is held out of
+/// that route by a sibling argument (D-223).
+///
+/// So the *door shape* is shared and the *class vocabulary* is not: these two
+/// get the per-value route family D-353 gave the four scope classes, over
+/// their own paths, keyed by this enum.
+///
+/// # What these two have in common, which is what makes one enum right
+///
+/// Identical columns (`tenant_id`, `value`, `display_name`, `state`), no
+/// `tax_*` markers, one retire guard each over its own reference plane, an
+/// opt-in empty set that constrains nothing, and — the governance half —
+/// **no approval unit on any edge** (D-334, D-356: *"it narrows what may be
+/// authored"*). `customer_group` shares the columns and none of the rest: it
+/// carries payer members, so its retire guard counts live memberships as well
+/// as published overlay scopes, and it is deliberately **not** a member here.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum VocabularyClass {
+    /// The rounding references a price row and the tenant default resolve
+    /// against (D-334).
+    RoundingPolicy,
+    /// The general-ledger codes a plan's billing descriptor names (D-356).
+    GlCode,
+}
+
+impl VocabularyClass {
+    /// Both vocabularies, in the order their tables were declared.
+    pub const ALL: &'static [Self] = &[Self::RoundingPolicy, Self::GlCode];
+
+    /// The resource's own name — the last segment of its route, the string
+    /// its entity tag is hashed under, and the `taxonomy/…` audit ref's
+    /// second segment.
+    ///
+    /// **One answer to "what is this vocabulary called"**, because three
+    /// representations are derived from it and a vocabulary spelled two ways
+    /// is a tag naming one resource and a trail naming another —
+    /// `taxonomy_repo::record_single_table_mutation` carries the measurement
+    /// of what that costs when the string is passed rather than derived.
+    #[must_use]
+    pub const fn resource(self) -> &'static str {
+        match self {
+            Self::RoundingPolicy => "rounding-policies",
+            Self::GlCode => "gl-codes",
+        }
+    }
+
+    /// The refusal a value outside the **active** set earns at publish — the
+    /// code the class's own rule raises, so a caller told a value is retired
+    /// can find the vocabulary to go and fix.
+    #[must_use]
+    pub const fn unknown_code(self) -> &'static str {
+        match self {
+            Self::RoundingPolicy => ROUNDING_POLICY_UNKNOWN,
+            Self::GlCode => GL_CODE_UNKNOWN,
+        }
+    }
+}
+
+impl fmt::Display for VocabularyClass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.resource())
+    }
+}
+
+/// `active | deprecated | retired` — the machine §6 gives these tables.
+///
+/// # Why there is a middle state (D-370)
+///
+/// The machine was `active | retired`, and `retired` is guarded **on entry**:
+/// a value a published price row or overlay scope still names cannot reach it
+/// ([`check_retirable`], `TAXONOMY_VALUE_IN_USE`). Only `active` validates
+/// anything. Put those two facts together and a value in published use is
+/// **permanently `active`**: there was no way at all to say *stop using this*
+/// while what already uses it keeps working. An operator withdrawing a brand,
+/// a region or a GL code had two options, and both were wrong — retire it and
+/// be refused, or leave it authorable and hope.
+///
+/// `Deprecated` is that missing statement, and it is deliberately the **only**
+/// thing it says: it is not in the active set, so nothing new may be assigned
+/// to it; it is not `retired`, so nothing about what already resolves through
+/// it changes; and the retirement guard is unmoved — a deprecated value still
+/// cannot be retired while something published names it, which is exactly
+/// `is_a_retirement`'s destination key (D-369) doing the work it was re-keyed
+/// for.
+///
+/// # The order is the machine's, and `Ord` is derived from it
+///
+/// `Active < Deprecated < Retired` reads as *"how far withdrawn"*, which is
+/// the only ordering any reader of this type has ever wanted. No rule depends
+/// on it; the variant order is what `ALL` iterates and what a sorted rendering
+/// would show.
 #[domain_model]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TaxonomyState {
     /// Declared and usable. The only state that validates anything.
     #[default]
     Active,
-    /// Withdrawn from new use. Existing references survive — retirement is
-    /// **guarded**, never cascading — but a retired value declares nothing, which
-    /// is `overlay_repo::declares`' `state = 'active'` predicate.
+    /// **Declared, and withdrawn from new use** (D-370). Everything already
+    /// published against it keeps resolving — a deprecation cascades nowhere
+    /// and freezes nothing — but the value is out of every `state = 'active'`
+    /// universe, so no new price row, overlay scope, descriptor or tenant
+    /// default may name it.
+    ///
+    /// The state a value in published use can actually reach: retirement is
+    /// refused while anything published names it, so before this there was no
+    /// move at all from *"in use"* to *"do not use this any more"*.
+    Deprecated,
+    /// Withdrawn from new use **and** from the vocabulary. Existing references
+    /// survive — retirement is **guarded**, never cascading — but a retired
+    /// value declares nothing, which is `overlay_repo::declares`'
+    /// `state = 'active'` predicate.
+    ///
+    /// `retired` keeps its meaning exactly: it is **not** renamed and it is not
+    /// what `deprecated` replaced. The difference between the two is what an
+    /// operator may still do — a deprecated value is an ordinary member of the
+    /// list that happens to be unassignable, a retired one is guarded out of
+    /// existence — and both leave published rows alone.
     Retired,
 }
 
 impl TaxonomyState {
-    /// Both states.
-    pub const ALL: &'static [Self] = &[Self::Active, Self::Retired];
+    /// Every state, in the machine's own order.
+    pub const ALL: &'static [Self] = &[Self::Active, Self::Deprecated, Self::Retired];
 
     /// The stored / wire token.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Active => "active",
+            Self::Deprecated => "deprecated",
             Self::Retired => "retired",
+        }
+    }
+
+    /// The tokens this machine admits, backticked and rendered for a refusal
+    /// that has to name them — `` `active`, `deprecated` or `retired` ``.
+    ///
+    /// Built from [`Self::ALL`] rather than written out, so a door's message
+    /// cannot come to name a smaller machine than the one it parses against.
+    /// That is not hypothetical: three doors said *"a taxonomy value is
+    /// `active` or `retired`, and nothing else"* in prose while parsing
+    /// against `ALL`, so widening the machine under them would have left three
+    /// refusals naming a machine that no longer existed. The backticks are
+    /// part of the rendering so a call site cannot add its own and produce
+    /// ``` ``active`` ```.
+    #[must_use]
+    pub fn tokens() -> String {
+        let rendered: Vec<String> = Self::ALL.iter().map(|s| format!("`{s}`")).collect();
+        match rendered.split_last() {
+            // Unreachable: the machine always has states. Written as a total
+            // function rather than an index, because a panic here would be a
+            // claim about `ALL` this type exists to guarantee.
+            None => String::new(),
+            Some((last, [])) => last.clone(),
+            Some((last, head)) => format!("{} or {last}", head.join(", ")),
         }
     }
 
@@ -306,7 +452,7 @@ pub fn tag_of(class: TaxonomyClass, entries: &[TaxonomyEntry]) -> PolicyTag {
 }
 
 /// The entity tag of **one** value's representation — what
-/// `GET/PATCH …/taxonomies/{class}/values/{value}` carry and assert.
+/// `GET/PATCH …/vocabularies/{class}/values/{value}` carry and assert.
 ///
 /// The set tag ([`tag_of`]) moves whenever *any* value moves, which is right for
 /// a whole-set `PUT` and wrong for an edit of one value: two admins re-labelling
@@ -351,7 +497,8 @@ pub enum TaxCategoryPatch {
 pub struct TaxonomyValuePatch {
     /// A new label.
     pub display_name: Option<String>,
-    /// `active` or `retired`; a retirement is guarded.
+    /// `active`, `deprecated` or `retired`; a **retirement** is guarded and a
+    /// **deprecation** is not (D-370).
     pub state: Option<TaxonomyState>,
     /// **Region only.**
     pub tax_category: TaxCategoryPatch,
@@ -522,6 +669,53 @@ impl ValueReferences {
 #[must_use]
 pub const fn edit_is_governed(references: ValueReferences) -> bool {
     references.any()
+}
+
+/// Is this edit the act [`check_retirable`] guards — a **retirement**?
+///
+/// # One predicate, because there are now two judges
+///
+/// `taxonomy_repo::judge_value_patch` judges an edit of one of the four scope
+/// classes and `taxonomy_repo::judge_vocabulary_value_patch` judges one of the
+/// two single-table vocabularies (D-334, D-356). They guard the same act on
+/// different tables, and two spellings of "is this a retirement" would be two
+/// answers the day the state machine gains a member — the shape
+/// `domain::taxonomy`'s own module doc calls the most expensive defect here.
+///
+/// Written over the two states rather than over the entries, because that is
+/// the whole of what it reads: an entry pair would invite a second condition
+/// to be folded in, and the tax-marker guard beside it is deliberately a
+/// different question with a different remedy.
+///
+/// # Keyed on the **destination**, and that is the point (D-369)
+///
+/// It read `held == Active && next == Retired` — an **edge**, and correct only
+/// because the machine has exactly two states, so `held != Retired` and
+/// `held == Active` are the same predicate. A third state walks straight past
+/// an edge key: the guard would ask *is this the `active -> retired` edge*,
+/// answer no for a value moving from the new state, and let a value a
+/// published price row still names reach `retired` — `check_retirable` never
+/// consulted, `TAXONOMY_VALUE_IN_USE` never raised.
+///
+/// What `inst-tx-mutation` actually says is about the **destination**: a value
+/// something published still names may not *be* retired. So the source is a
+/// **complement** — every state but `Retired` — rather than an enumeration,
+/// and a state added to the machine is guarded the day it is added rather than
+/// the day someone remembers this function.
+///
+/// The complement is right *here* and wrong one guard over: D-245's cleared-
+/// category check reads `next.state` to decide whether a marker is still load-
+/// bearing, and *that* one is enumerated exhaustively so a new state cannot
+/// join it silently. The two want opposite treatments because they ask
+/// opposite questions — "is this the guarded act" versus "is the value still
+/// resolving through". See `taxonomy_repo::judge_value_patch`.
+///
+/// `Retired -> Retired` is not a retirement: re-asserting a value's current
+/// state is a no-op, and guarding it would make a value with one guarded
+/// retirement permanently un-`PATCH`-able.
+#[must_use]
+pub const fn is_a_retirement(held: TaxonomyState, next: TaxonomyState) -> bool {
+    matches!(next, TaxonomyState::Retired) && !matches!(held, TaxonomyState::Retired)
 }
 
 /// `inst-tx-mutation`: refuse a retirement while the value is referenced.
@@ -712,8 +906,8 @@ impl RegionsDeclared {
             detail: format!(
                 "region `{region}` is not an active value of this tenant's region taxonomy; a \
                  price row's region is validated at save and at publish, and an unknown value \
-                 fails before publish (C2) — declare it at PUT \
-                 /bss-pricing/v1/config/taxonomies/region first"
+                 fails before publish (C2) — declare it at POST \
+                 /bss-pricing/v1/config/vocabularies/region/values first"
             ),
             // `Stage::Write` states what this arrangement already does — D-312.
             // The doc above says it: judged at save and again at publish, through
@@ -871,9 +1065,9 @@ impl RoundingPolicyDeclared {
             detail: format!(
                 "rounding policy `{reference}` is not an active value of this tenant's \
                  rounding-policy taxonomy; rounding decides the last minor unit of every charge, \
-                 so a reference to something nobody declared is refused - declare it at PUT \
-                 /bss-pricing/v1/config/rounding-policies first, or clear the taxonomy to stop \
-                 constraining references at all"
+                 so a reference to something nobody declared is refused - declare it at POST \
+                 /bss-pricing/v1/config/vocabularies/rounding-policies/values first, or retire every declared \
+                 value to stop constraining references at all"
             ),
             // `Stage::Publish`, which is where this fault is actually judged.
             // D-312's criterion is arguably met for `Stage::Write` — but a stage
@@ -911,8 +1105,8 @@ impl ValidationRule<PlanShape> for RoundingPolicyDeclared {
                 detail: format!(
                     "this tenant's default rounding policy `{default}` is not an active value \
                      of its own rounding-policy taxonomy, and rows in this plan carry no \
-                     policy of their own, so they resolve to it; declare it at PUT \
-                     /bss-pricing/v1/config/rounding-policies, change the default, or give \
+                     policy of their own, so they resolve to it; declare it at POST \
+                     /bss-pricing/v1/config/vocabularies/rounding-policies/values, change the default, or give \
                      those rows a policy of their own"
                 ),
                 stage: Stage::Publish,
@@ -965,7 +1159,7 @@ impl ValidationRule<PlanShape> for RoundingPolicyDeclared {
 ///
 /// `declared` is resolved by the caller from `taxonomy_repo::active_gl_codes`,
 /// and this rule never learns where the set came from. Today the provider is the
-/// tenant-declared set behind `PUT /bss-pricing/v1/config/gl-codes`; a future
+/// tenant-declared set behind `POST /bss-pricing/v1/config/vocabularies/gl-codes/values`; a future
 /// ERP gear (D-356 *Owed*) populates or reconciles that same table, and nothing
 /// on this side of the seam changes — exactly `RegionTaxReadiness`'s arrangement
 /// under D-01, tenant-declared today and reconciled against Tax Engine post-GA.
@@ -1004,9 +1198,9 @@ impl GlCodeDeclared {
             detail: format!(
                 "glCode `{code}` is not an active value of this tenant's declared GL-code \
                  vocabulary; the code freezes into the catalog version an ERP posts against, so \
-                 a reference to something nobody declared is refused - declare it at PUT \
-                 /bss-pricing/v1/config/gl-codes first, correct the descriptor, or clear the \
-                 vocabulary to stop constraining codes at all"
+                 a reference to something nobody declared is refused - declare it at POST \
+                 /bss-pricing/v1/config/vocabularies/gl-codes/values first, correct the descriptor, or retire \
+                 every declared code to stop constraining codes at all"
             ),
             stage: Stage::Publish,
         })

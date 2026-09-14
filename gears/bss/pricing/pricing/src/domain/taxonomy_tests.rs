@@ -9,7 +9,7 @@ use super::{
     GL_CODE_UNKNOWN, GlCodeDeclared, REGION_UNKNOWN, RegionTaxMarkers, RegionsDeclared,
     TAXONOMY_VALUE_IN_USE, TaxCategoryPatch, TaxonomyClass, TaxonomyEntry, TaxonomyState,
     TaxonomyValuePatch, ValueReferences, check_retirable, check_tax_category_removable,
-    edit_is_governed, tag_of, tag_of_value,
+    edit_is_governed, is_a_retirement, tag_of, tag_of_value,
 };
 use crate::domain::concurrency::RowVersion;
 use crate::domain::instant::utc_ymd_hms;
@@ -262,17 +262,43 @@ fn only_the_region_class_carries_the_tax_markers() {
     }
 }
 
-/// `active | retired`, both directions, and nothing else.
+/// Every state round-trips, an unknown token is refused, and the default is
+/// `active`.
+///
+/// # The third token this used to refuse is now a state
+///
+/// This was `the_state_pair_round_trips_and_admits_no_third_token` and its
+/// middle assertion was `parse("deprecated") == None`. **D-370 made that
+/// token a state**, so the old line is not a failing assertion to delete but a
+/// claim a decision retired. What it was really about survives and is kept:
+/// the parse is fail-closed, so a token outside the machine is `None` rather
+/// than silently defaulting — which is what makes `CorruptRow` reachable for a
+/// stored value the `CHECK` should never have admitted.
+///
+/// `"withdrawn"` is the stand-in, chosen because it is a word this design set
+/// deliberately does **not** use for any of the three.
 #[test]
-fn the_state_pair_round_trips_and_admits_no_third_token() {
+fn every_state_round_trips_and_an_unknown_token_is_refused() {
     for &state in TaxonomyState::ALL {
         assert_eq!(TaxonomyState::parse(state.as_str()), Some(state));
     }
-    assert_eq!(TaxonomyState::parse("deprecated"), None);
+    assert_eq!(
+        TaxonomyState::parse("deprecated"),
+        Some(TaxonomyState::Deprecated),
+        "D-370's middle state, by the token the CHECKs store"
+    );
+    assert_eq!(TaxonomyState::parse("withdrawn"), None);
+    assert_eq!(TaxonomyState::parse(""), None);
     assert_eq!(
         TaxonomyState::default(),
         TaxonomyState::Active,
         "a value an operator declares is declared, not withdrawn"
+    );
+    // The refusal messages three doors render are built from this, so a door
+    // cannot come to name a smaller machine than the one it parses against.
+    assert_eq!(
+        TaxonomyState::tokens(),
+        "`active`, `deprecated` or `retired`"
     );
 }
 
@@ -303,7 +329,7 @@ fn a_row_in_an_undeclared_region_fails_naming_the_value() {
         "the detail names the value too: {detail}"
     );
     assert!(
-        detail.contains("config/taxonomies/region"),
+        detail.contains("config/vocabularies/region"),
         "and tells the operator where to declare it: {detail}"
     );
 }
@@ -663,7 +689,7 @@ fn gl_code_membership_is_checked_only_once_a_vocabulary_is_declared() {
     assert_eq!(v.code, GL_CODE_UNKNOWN);
     assert_eq!(v.subject, "glCode");
     assert!(
-        v.detail.contains("9999-BAD") && v.detail.contains("/config/gl-codes"),
+        v.detail.contains("9999-BAD") && v.detail.contains("/config/vocabularies/gl-codes"),
         "the finding names the code and the door that declares it: {}",
         v.detail
     );
@@ -710,4 +736,48 @@ fn gl_code_rule_judges_the_descriptors_one_present_value_and_nothing_else() {
         .is_empty(),
         "and the empty set constrains nothing at the plan level too"
     );
+}
+
+// ---------------------------------------------------------------------------
+// `is_a_retirement` — the retire guard's key (D-369).
+// ---------------------------------------------------------------------------
+
+/// **Every edge into `retired` is a retirement, from every source but
+/// `retired` itself — and nothing else is.**
+///
+/// Written as a walk over `TaxonomyState::ALL` rather than as the two or three
+/// pairs the machine happens to have today, which is the whole point: the
+/// predicate was keyed on the `active -> retired` **edge** and a third state
+/// would have walked past it into `retired` with `check_retirable` never
+/// consulted. This case covers a state added to `ALL` the day it is added,
+/// with no edit here — if it did not, the next reader would have to remember
+/// to come back, which is exactly the memory the defect was waiting on.
+///
+/// The negative half is asserted too: a predicate that answered `true` for
+/// everything would satisfy the positive half alone, and would send every
+/// relabel through the reference count.
+#[test]
+fn every_edge_into_retired_is_a_retirement_and_no_other_edge_is() {
+    for &held in TaxonomyState::ALL {
+        for &next in TaxonomyState::ALL {
+            let expected = next == TaxonomyState::Retired && held != TaxonomyState::Retired;
+            assert_eq!(
+                is_a_retirement(held, next),
+                expected,
+                "`{held}` -> `{next}`: a retirement is any edge whose destination is `retired` \
+                 and whose source is not, and nothing else"
+            );
+        }
+    }
+    // The two the machine has today, named so a reader of this file does not
+    // have to run the loop in their head. `deprecated -> retired` joins them
+    // the day the state does, through the loop above and not through this pair.
+    assert!(is_a_retirement(
+        TaxonomyState::Active,
+        TaxonomyState::Retired
+    ));
+    assert!(!is_a_retirement(
+        TaxonomyState::Retired,
+        TaxonomyState::Retired
+    ));
 }

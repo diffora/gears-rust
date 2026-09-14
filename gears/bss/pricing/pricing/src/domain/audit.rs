@@ -540,7 +540,7 @@ pub enum AuditSubjectKind {
     /// is one segment to walk, which is what D-135 asks a chain key to be.
     Membership,
     /// One declared scope-value taxonomy entry — the subject of a governed edit
-    /// (`PATCH /config/taxonomies/{class}/values/{value}`, D-353) and of the
+    /// (`PATCH /config/vocabularies/{class}/values/{value}`, D-353) and of the
     /// per-value audit records. Its own kind rather than `policy`, because the
     /// approval store's *"one pending policy proposal per tenant"* index and
     /// `find_pending_policy_unit` both key on that token, and a taxonomy edit

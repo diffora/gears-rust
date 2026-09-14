@@ -1,0 +1,1417 @@
+//! Probes of `08`'s read surface (P-D-150): the browse door, the limiter,
+//! the timelines, the dashboards.
+
+use std::sync::Arc;
+
+use sea_orm_migration::MigratorTrait as _;
+use serde_json::json;
+use time::OffsetDateTime;
+use toolkit_db::outbox::{Outbox, OutboxHandle, Partitions, outbox_migrations_with_prefix};
+use toolkit_db::secure::AccessScope;
+use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
+use uuid::Uuid;
+
+use crate::api::rest::ApiState;
+use crate::config::ProductsConfig;
+use crate::domain::approval::StoredApprovalGate;
+use crate::domain::governance::GateMode;
+use crate::infra::events;
+use crate::infra::projector::{
+    PassOutcome, ProjectorContext, ReadKnobs, poll_dashboards, project_tenant,
+};
+use crate::infra::storage::migrations::Migrator;
+use crate::infra::storage::repo::{self, NewProduct};
+
+pub(super) const TENANT: Uuid = Uuid::from_u128(0x08_01);
+pub(super) const BRAND: Uuid = Uuid::from_u128(0x08_02);
+pub(super) const ACTOR: Uuid = Uuid::from_u128(0x08_03);
+pub(super) const CATEGORY: Uuid = Uuid::from_u128(0x08_0c);
+
+pub(super) struct Harness {
+    pub(super) dsn: String,
+    pub(super) state: Arc<ApiState>,
+    #[allow(dead_code)]
+    outbox_handle: OutboxHandle,
+}
+
+impl Drop for Harness {
+    fn drop(&mut self) {
+        if let Some(rest) = self.dsn.strip_prefix("sqlite://") {
+            let path = rest.split('?').next().unwrap_or(rest);
+            std::fs::remove_file(path).ok();
+        }
+    }
+}
+
+pub(super) async fn harness() -> Harness {
+    let path = std::env::temp_dir().join(format!("bss-products-read-{}.sqlite3", Uuid::new_v4()));
+    let dsn = format!("sqlite://{}?mode=rwc", path.display());
+    let db = connect_db(
+        &dsn,
+        ConnectOpts {
+            max_conns: Some(1),
+            min_conns: Some(1),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("connect");
+    toolkit_db::migration_runner::run_migrations_for_testing(&db, Migrator::migrations())
+        .await
+        .expect("migrate");
+    toolkit_db::migration_runner::run_migrations_for_testing(
+        &db,
+        outbox_migrations_with_prefix(events::OUTBOX_TABLE_PREFIX).expect("prefix"),
+    )
+    .await
+    .expect("outbox migrate");
+    let outbox_handle = Outbox::builder(db.clone())
+        .table_prefix(events::OUTBOX_TABLE_PREFIX)
+        .expect("prefix")
+        .queue(events::QUEUE_NAME, Partitions::of(events::PARTITIONS))
+        .leased(events::PendingBrokerProducer)
+        .start()
+        .await
+        .expect("start the outbox");
+    let defaults = ProductsConfig::default();
+    let state = Arc::new(ApiState {
+        db: DBProvider::<DbError>::new(db),
+        sink: crate::infra::broker::EventSink::Interim(Arc::clone(outbox_handle.outbox())),
+        taxonomy_caps: crate::api::rest::TaxonomyCaps::from(&ProductsConfig::default()),
+        idempotency_retention_hours: defaults.idempotency_retention_hours,
+        bulk_max_rows_per_batch: defaults.bulk_max_rows_per_batch,
+        bulk_max_concurrent_batches_per_tenant: defaults.bulk_max_concurrent_batches_per_tenant,
+        watermark_skew_tolerance: defaults.watermark_skew_tolerance(),
+        reference: crate::api::rest::ReferenceKnobs::from(&defaults),
+        breakglass_window_hours: crate::config::BREAKGLASS_WINDOW_HOURS_DEFAULT,
+        breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
+        eol_enabled: false,
+        usage_type_resolver: crate::test_support::resolved_usage_types(),
+    });
+    Harness {
+        dsn,
+        state,
+        outbox_handle,
+    }
+}
+
+pub(super) fn scope() -> AccessScope {
+    AccessScope::for_tenant(TENANT)
+}
+
+pub(super) fn ctx(harness: &Harness) -> ProjectorContext {
+    ProjectorContext {
+        db: harness.state.db.clone(),
+        knobs: ReadKnobs {
+            poison_retry_ceiling: 2,
+            ..ReadKnobs::from(&ProductsConfig::default())
+        },
+    }
+}
+
+#[allow(clippy::unnecessary_wraps)]
+fn render_nothing(_record: repo::ProductRecord) -> Result<serde_json::Value, serde_json::Error> {
+    Ok(serde_json::Value::Null)
+}
+
+/// A product created through the Foundation's own insert path (one inbox
+/// row: `ProductCreated`) and given its primary category.
+pub(super) async fn draft_product(harness: &Harness, name: &str, region: &str) -> Uuid {
+    let product_id = Uuid::new_v4();
+    let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
+    let new = NewProduct {
+        product_id,
+        tenant_id: TENANT,
+        brand_id: BRAND,
+        name: name.to_owned(),
+        name_normalized: crate::domain::name::normalize(name),
+        product_code: Some(format!("{}-CODE", name.replace(' ', "-").to_uppercase())),
+        region_scope: region.to_owned(),
+        brand_scope: String::new(),
+        created_by: ACTOR.to_string(),
+        created_at: now,
+        cloned_from: None,
+        cloned_from_version: None,
+    };
+    crate::infra::create::insert_product_with_event(
+        &harness.state.db,
+        &harness.state.sink,
+        scope(),
+        new,
+        crate::infra::create::JoinedRecords {
+            claim: None,
+            stamp: None,
+            content: None,
+        },
+        ACTOR,
+        render_nothing,
+    )
+    .await
+    .expect("insert the product");
+    let conn = harness.state.db.conn().expect("conn");
+    let _existing = repo::insert_category(
+        &conn,
+        &scope(),
+        repo::NewCategory {
+            tenant_id: TENANT,
+            category_id: CATEGORY,
+            parent_id: None,
+            name: "Fixture",
+            name_normalized: "fixture",
+        },
+        now,
+    )
+    .await
+    .expect("the category insert runs");
+    repo::replace_category_assignments(
+        &conn,
+        &scope(),
+        TENANT,
+        product_id,
+        &[(CATEGORY, crate::domain::taxonomy::AssignmentRole::Primary)],
+        now,
+    )
+    .await
+    .expect("assign the primary category");
+    product_id
+}
+
+/// Publish a product through the Foundation's own door (ungoverned host):
+/// one frozen version row and one `ProductPublished` inbox row.
+pub(super) async fn publish_product(harness: &Harness, product_id: Uuid) -> i64 {
+    use crate::api::rest::products;
+    let conn = harness.state.db.conn().expect("conn");
+    let head = repo::find_product(&conn, &scope(), TENANT, product_id)
+        .await
+        .expect("read")
+        .expect("the head exists");
+    let inputs = products::HeadActInputs {
+        scope: scope(),
+        tenant_id: TENANT,
+        product_id,
+        actor_ref: ACTOR,
+        expected: head.internal_revision,
+        now: crate::domain::canonical::write_instant(OffsetDateTime::now_utc()),
+        claim: None,
+    };
+    let outcome = products::run_publish(
+        &conn,
+        &inputs,
+        &StoredApprovalGate::ungoverned(),
+        GateMode::Gate,
+        &harness.state.sink,
+    )
+    .await;
+    assert!(
+        matches!(outcome, Ok(products::HeadActOutcome::Applied { .. })),
+        "the fixture publish lands"
+    );
+    repo::find_product(&conn, &scope(), TENANT, product_id)
+        .await
+        .expect("read")
+        .expect("the head exists")
+        .published_version
+}
+
+pub(super) async fn project(harness: &Harness) -> PassOutcome {
+    project_tenant(
+        &ctx(harness),
+        TENANT,
+        crate::domain::canonical::write_instant(OffsetDateTime::now_utc()),
+    )
+    .await
+    .expect("the pass runs")
+}
+
+use axum::Router;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use tower::ServiceExt as _;
+
+use super::{BROWSE_FACET_WINDOW, ReadPathLimiter};
+
+fn app(harness: &Harness, tenant: Uuid) -> Router {
+    super::router(
+        Arc::clone(&harness.state),
+        &toolkit::api::OpenApiRegistryImpl::new(),
+    )
+    .layer(axum::Extension(crate::test_support::flat_in_enforcer(
+        tenant,
+    )))
+}
+
+async fn get(harness: &Harness, uri: &str, tenant: Uuid) -> axum::http::Response<Body> {
+    app(harness, tenant)
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(uri)
+                .extension(crate::test_support::authed_ctx(tenant))
+                .body(Body::empty())
+                .expect("build the request"),
+        )
+        .await
+        .expect("the router answers")
+}
+
+async fn body_json(response: axum::http::Response<Body>) -> serde_json::Value {
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .expect("read the body");
+    serde_json::from_slice(&bytes).expect("json")
+}
+
+/// `dod-browse-door`, `inst-rb-stamp`: an empty projection answers with the
+/// anchorless stamp; a projected published row appears; a deprecated row
+/// carries its flag and `excludeDeprecated=true` drops it; a draft never
+/// shows; facets count every assigned category.
+#[tokio::test]
+async fn browse_serves_the_projection_under_the_visibility_contract_with_the_stamp() {
+    use crate::api::rest::products;
+    let harness = harness().await;
+    let empty = get(&harness, "/bss-products/v1/browse", TENANT).await;
+    assert_eq!(empty.status(), StatusCode::OK);
+    let view = body_json(empty).await;
+    assert_eq!(view["rows"], json!([]));
+    assert_eq!(
+        view["stamp"]["as_of_catalog_version"],
+        json!(null),
+        "the anchorless arm"
+    );
+    assert!(
+        view["stamp"]["projected_at"].is_string(),
+        "the stamp is never omitted"
+    );
+
+    let published = draft_product(&harness, "Alpha Line", "eu").await;
+    let deprecated = draft_product(&harness, "Beta Line", "eu").await;
+    let _draft = draft_product(&harness, "Draft Line", "eu").await;
+    publish_product(&harness, published).await;
+    publish_product(&harness, deprecated).await;
+    {
+        let conn = harness.state.db.conn().expect("conn");
+        let head = repo::find_product(&conn, &scope(), TENANT, deprecated)
+            .await
+            .expect("read")
+            .expect("head");
+        let inputs = products::HeadActInputs {
+            scope: scope(),
+            tenant_id: TENANT,
+            product_id: deprecated,
+            actor_ref: ACTOR,
+            expected: head.internal_revision,
+            now: crate::domain::canonical::write_instant(OffsetDateTime::now_utc()),
+            claim: None,
+        };
+        let outcome = products::run_deprecate(
+            &conn,
+            &inputs,
+            &scope(),
+            &StoredApprovalGate::ungoverned(),
+            GateMode::Gate,
+            &harness.state.sink,
+        )
+        .await;
+        assert!(matches!(
+            outcome,
+            Ok(products::HeadActOutcome::Applied { .. })
+        ));
+    }
+    project(&harness).await;
+
+    let all = body_json(
+        get(
+            &harness,
+            "/bss-products/v1/browse?includeFacets=true",
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+    let rows = all["rows"].as_array().expect("rows");
+    assert_eq!(
+        rows.len(),
+        2,
+        "published and deprecated, never the draft: {all}"
+    );
+    let flagged = rows
+        .iter()
+        .find(|r| r["entity_id"] == json!(deprecated))
+        .expect("the deprecated row");
+    assert_eq!(flagged["deprecated"], json!(true));
+    assert_eq!(
+        all["facets"]["categories"],
+        json!([{ "value": "Fixture", "count": 2 }])
+    );
+
+    let filtered = body_json(
+        get(
+            &harness,
+            "/bss-products/v1/browse?excludeDeprecated=true",
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+    let rows = filtered["rows"].as_array().expect("rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["entity_id"], json!(published));
+
+    // The prefix search the door used to spell `?q=`. `startswith` is the
+    // platform's own lowering, which escapes the LIKE metacharacters the
+    // hand-rolled prefix used to delete.
+    let by_prefix = body_json(
+        get(
+            &harness,
+            &browse_url(&[("$filter", "startswith(name,'Alp')")]),
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        by_prefix["rows"].as_array().expect("rows").len(),
+        1,
+        "{by_prefix}"
+    );
+    let bad_kind = get(&harness, "/bss-products/v1/browse?kind=widget", TENANT).await;
+    assert_eq!(bad_kind.status(), StatusCode::BAD_REQUEST);
+}
+
+/// The defect the query seam exists to stop (**P-D-165**): a parameter this
+/// door does not declare used to be **dropped**, so a caller asking for a
+/// filter received `200` and the whole unfiltered set. Every spelling the
+/// door retired is now a refusal that names the key.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-browse-door:p2
+#[tokio::test]
+async fn a_retired_or_invented_query_key_is_refused_and_not_dropped() {
+    let harness = harness().await;
+    let published = draft_product(&harness, "Alpha Line", "eu").await;
+    publish_product(&harness, published).await;
+    project(&harness).await;
+
+    // Every key the hand-rolled surface used to bind and no longer does,
+    // plus one a caller might invent from a generic-REST habit.
+    for (key, value) in [
+        ("q", "Alp"),
+        ("category", "Fixture"),
+        ("skuType", "plan"),
+        ("tier", "gold"),
+        ("sellable", "true"),
+        ("unit", "GB"),
+        ("status", "published"),
+        ("excludedeprecated", "true"),
+    ] {
+        let response = get(&harness, &browse_url(&[(key, value)]), TENANT).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "`?{key}=` must be refused, not silently ignored"
+        );
+        let body = body_json(response).await;
+        assert_eq!(
+            body["context"]["violations"][0]["subject"],
+            json!(key),
+            "the refusal must name `{key}`: {body}"
+        );
+    }
+
+    // The four the door still owns, and the OData family, are admitted.
+    for (key, value) in [
+        ("kind", "product"),
+        ("excludeDeprecated", "true"),
+        ("brand", "acme"),
+        ("region", "eu"),
+        ("includeFacets", "true"),
+        ("limit", "1"),
+        ("$filter", "deprecated eq false"),
+        ("$orderby", "name desc"),
+        ("$top", "1"),
+    ] {
+        let response = get(&harness, &browse_url(&[(key, value)]), TENANT).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "`?{key}={value}` is part of this door's contract"
+        );
+    }
+}
+
+/// `$filter` and `$orderby` are validated against the door's declared
+/// vocabulary, so an unknown field, an unorderable one and an operator the
+/// field's kind does not admit are each a `400` rather than a query that
+/// quietly matches everything.
+#[tokio::test]
+async fn the_filter_vocabulary_is_closed() {
+    let harness = harness().await;
+    for (key, value) in [
+        // Not a field this door exposes.
+        ("$filter", "tenant_id eq 'x'"),
+        ("$filter", "brand_scope eq 'acme'"),
+        ("$filter", "entity_kind eq 'sku'"),
+        ("$orderby", "region_scope asc"),
+        // A nullable column cannot be an order key: SQLite sorts NULLs
+        // first and Postgres sorts them last, so the keyset walk would not
+        // be the same walk on the two engines.
+        ("$orderby", "sku_type asc"),
+        ("$orderby", "category_paths desc"),
+        // Not a system query option this platform binds.
+        ("$skip", "10"),
+        ("$filtre", "name eq 'x'"),
+    ] {
+        let response = get(&harness, &browse_url(&[(key, value)]), TENANT).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "`?{key}={value}` must be refused"
+        );
+    }
+    // The orderable columns are the NOT NULL ones, and they work.
+    for (key, value) in [
+        ("$orderby", "name desc"),
+        ("$orderby", "published_version asc"),
+        ("$orderby", "lifecycle_state asc"),
+        ("$orderby", "entity_id asc"),
+        ("$filter", "published_version ge 1"),
+        ("$filter", "contains(category_paths,'Fix')"),
+    ] {
+        let response = get(&harness, &browse_url(&[(key, value)]), TENANT).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "`?{key}={value}` is in the declared vocabulary"
+        );
+    }
+}
+
+/// The page is a window on the set and the set is reachable through it: the
+/// walk visits every row exactly once and stops by saying so.
+///
+/// This is the capability the door did not have — `limit` was a ceiling with
+/// nothing past it, and a tenant with more matching rows than the ceiling
+/// could not read them at all.
+#[tokio::test]
+async fn the_walk_visits_every_row_once_and_then_says_it_is_done() {
+    let harness = harness().await;
+    let mut expected = Vec::new();
+    for name in ["Alpha", "Bravo", "Charlie", "Delta", "Echo"] {
+        let id = draft_product(&harness, name, "eu").await;
+        publish_product(&harness, id).await;
+        expected.push(id);
+    }
+    project(&harness).await;
+
+    let mut seen: Vec<serde_json::Value> = Vec::new();
+    let mut url = browse_url(&[("limit", "2")]);
+    let mut pages = 0_u32;
+    loop {
+        let body = body_json(get(&harness, &url, TENANT).await).await;
+        let rows = body["rows"].as_array().expect("rows").clone();
+        assert!(rows.len() <= 2, "the page honours `limit`: {body}");
+        seen.extend(rows.iter().map(|r| r["entity_id"].clone()));
+        assert_eq!(body["page_info"]["limit"], json!(2));
+        pages += 1;
+        assert!(pages <= 5, "a five-row set cannot need six pages of two");
+        match body["page_info"]["next_cursor"].as_str() {
+            Some(cursor) => url = browse_url(&[("limit", "2"), ("cursor", cursor)]),
+            None => break,
+        }
+    }
+    assert_eq!(pages, 3, "five rows at two per page: 2 + 2 + 1");
+    assert_eq!(seen.len(), 5, "every row once, no duplicates: {seen:?}");
+    let mut unique = seen.clone();
+    unique.sort_by_key(std::string::ToString::to_string);
+    unique.dedup();
+    assert_eq!(unique.len(), 5);
+    // Default order is `name ASC`, which is what the door always served.
+    let names: Vec<&str> = seen
+        .iter()
+        .map(|id| {
+            let idx = expected
+                .iter()
+                .position(|e| json!(e) == *id)
+                .expect("a known id");
+            ["Alpha", "Bravo", "Charlie", "Delta", "Echo"][idx]
+        })
+        .collect();
+    assert_eq!(names, ["Alpha", "Bravo", "Charlie", "Delta", "Echo"]);
+}
+
+/// The continuation token describes one walk, and changing the walk under it
+/// is refused rather than answered from the wrong set.
+#[tokio::test]
+async fn a_cursor_from_another_walk_is_refused() {
+    let harness = harness().await;
+    for name in ["Alpha", "Bravo", "Charlie"] {
+        let id = draft_product(&harness, name, "eu").await;
+        publish_product(&harness, id).await;
+    }
+    project(&harness).await;
+
+    let first = body_json(get(&harness, &browse_url(&[("limit", "1")]), TENANT).await).await;
+    let cursor = first["page_info"]["next_cursor"]
+        .as_str()
+        .expect("more rows remain")
+        .to_owned();
+
+    // Same token, a different `$orderby` — the walk it describes is not the
+    // walk being asked for.
+    let mismatched = get(
+        &harness,
+        &browse_url(&[
+            ("limit", "1"),
+            ("cursor", &cursor),
+            ("$orderby", "published_version desc"),
+        ]),
+        TENANT,
+    )
+    .await;
+    assert_eq!(mismatched.status(), StatusCode::BAD_REQUEST);
+
+    // Same token, a different `$filter` — the set has changed underneath it.
+    // The walk began unfiltered, which the platform stamps as *no* hash at
+    // all; without the door's own "no filter" stamp this request was served
+    // a keyset predicate over a different set, with a 200.
+    let refiltered = get(
+        &harness,
+        &browse_url(&[
+            ("limit", "1"),
+            ("cursor", &cursor),
+            ("$filter", "published_version ge 1"),
+        ]),
+        TENANT,
+    )
+    .await;
+    assert_eq!(refiltered.status(), StatusCode::BAD_REQUEST);
+
+    // And the other direction: a walk begun *with* a filter cannot drop it.
+    let filtered_first = body_json(
+        get(
+            &harness,
+            &browse_url(&[("limit", "1"), ("$filter", "published_version ge 1")]),
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+    let filtered_cursor = filtered_first["page_info"]["next_cursor"]
+        .as_str()
+        .expect("more rows remain")
+        .to_owned();
+    let unfiltered = get(
+        &harness,
+        &browse_url(&[("limit", "1"), ("cursor", &filtered_cursor)]),
+        TENANT,
+    )
+    .await;
+    assert_eq!(unfiltered.status(), StatusCode::BAD_REQUEST);
+
+    let garbage = get(
+        &harness,
+        &browse_url(&[("limit", "1"), ("cursor", "not-a-token")]),
+        TENANT,
+    )
+    .await;
+    assert_eq!(garbage.status(), StatusCode::BAD_REQUEST);
+}
+
+/// The walk is bidirectional: the platform's `page_info` carries a
+/// `prev_cursor` and it goes back to the page it came from.
+///
+/// Written because the door's own author assumed the opposite — the sibling
+/// pricing gear serves `prev_cursor: null` by its own decision (D-125), and
+/// reading that as the platform's behaviour would have shipped a documented
+/// `null` over a token that works.
+#[tokio::test]
+async fn the_walk_goes_back_the_way_it_came() {
+    let harness = harness().await;
+    for name in ["Alpha", "Bravo", "Charlie"] {
+        let id = draft_product(&harness, name, "eu").await;
+        publish_product(&harness, id).await;
+    }
+    project(&harness).await;
+
+    let first = body_json(get(&harness, &browse_url(&[("limit", "1")]), TENANT).await).await;
+    let first_row = first["rows"][0]["entity_id"].clone();
+    let forward = first["page_info"]["next_cursor"]
+        .as_str()
+        .expect("more rows remain")
+        .to_owned();
+
+    let second = body_json(
+        get(
+            &harness,
+            &browse_url(&[("limit", "1"), ("cursor", &forward)]),
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+    assert_ne!(second["rows"][0]["entity_id"], first_row);
+    let back = second["page_info"]["prev_cursor"]
+        .as_str()
+        .expect("the second page knows where it came from")
+        .to_owned();
+
+    let again = body_json(
+        get(
+            &harness,
+            &browse_url(&[("limit", "1"), ("cursor", &back)]),
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        again["rows"][0]["entity_id"], first_row,
+        "walking back lands on the page the forward token left: {again}"
+    );
+}
+
+/// Percent-encode one query-string **value**.
+///
+/// `$filter` and `$orderby` carry spaces, quotes and parentheses, and a
+/// cursor is base64url with `=` padding — none of which may travel raw in a
+/// URI. Encoding only the value, and only the characters that need it, keeps
+/// the test URLs readable: a helper that encoded the whole query string
+/// would also encode the `?`, `&` and `=` that give it its shape, and one
+/// that encoded nothing would be a test that fails on the encoder rather
+/// than on the door.
+fn qval(value: &str) -> String {
+    value
+        .bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b',' => {
+                (b as char).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect()
+}
+
+/// A browse URL from `(key, value)` pairs, each value encoded by [`qval`].
+fn browse_url(params: &[(&str, &str)]) -> String {
+    let query: Vec<String> = params
+        .iter()
+        .map(|(k, v)| format!("{}={}", qval(k), qval(v)))
+        .collect();
+    format!("/bss-products/v1/browse?{}", query.join("&"))
+}
+
+/// The timeline is paged, and a page that does not start at version one is
+/// still diffed against the version **before** it — not against the
+/// previous row the caller happened to be shown.
+///
+/// This is what the page costs and what pays for it: without the
+/// predecessor seed, page two's first entry would report every key as
+/// changed, which is the same wrongness as a fresh history.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-history-timeline:p2
+#[tokio::test]
+async fn a_timeline_page_is_diffed_against_the_version_before_it() {
+    let harness = harness().await;
+    let product = draft_product(&harness, "Zeta Line", "eu").await;
+    // A published head is publishable again as version N+1, so three
+    // publishes give a history whose middle page neither starts nor ends it.
+    for expected in 1..=3 {
+        assert_eq!(publish_product(&harness, product).await, expected);
+    }
+
+    let url = format!("/bss-products/v1/products/{product}/versions");
+    let whole = body_json(get(&harness, &url, TENANT).await).await;
+    let versions = whole["versions"].as_array().expect("versions");
+    assert_eq!(versions.len(), 3, "three publishes: {whole}");
+    assert_eq!(
+        whole["page_info"]["next_cursor"],
+        json!(null),
+        "three versions fit one page"
+    );
+
+    // Page two of one-per-page: version two, whose `changedKeys` must be
+    // the diff against version one and therefore name `name` and not every
+    // key.
+    let first = body_json(get(&harness, &format!("{url}?limit=1"), TENANT).await).await;
+    assert_eq!(first["versions"][0]["published_version"], json!(1));
+    let cursor = first["page_info"]["next_cursor"]
+        .as_str()
+        .expect("two more versions remain")
+        .to_owned();
+    let second = body_json(
+        get(
+            &harness,
+            &format!("{url}?limit=1&cursor={}", qval(&cursor)),
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(second["versions"][0]["published_version"], json!(2));
+    let changed = second["versions"][0]["changed_keys"]
+        .as_array()
+        .expect("changed keys")
+        .clone();
+    // Nothing changed between the two publishes, so nothing is reported.
+    // Without the predecessor seed this page would have no previous version
+    // in hand and would report **every** key — which is exactly the wrong
+    // answer this probe is armed against, and it is the assertion that
+    // fails if the seed is removed.
+    assert!(
+        changed.is_empty(),
+        "version two republished the same content: {second}"
+    );
+    assert!(
+        !versions[0]["changed_keys"]
+            .as_array()
+            .expect("the first version's keys")
+            .is_empty(),
+        "and version one, which has no predecessor, changed everything"
+    );
+
+    // Lineage and clones are the entity's, not the page's: every page
+    // carries them whole.
+    assert_eq!(second["entity_id"], json!(product));
+    assert_eq!(second["clones"], json!([]));
+
+    // The three options this door binds nothing to are refused, each naming
+    // itself, rather than accepted and ignored.
+    for (key, value) in [
+        ("$filter", "published_version eq 2"),
+        ("$orderby", "published_version desc"),
+        ("$select", "published_version"),
+    ] {
+        let response = get(
+            &harness,
+            &format!("{url}?{}={}", qval(key), qval(value)),
+            TENANT,
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "`?{key}=` must be refused on the timeline"
+        );
+        let body = body_json(response).await;
+        assert_eq!(
+            body["context"]["violations"][0]["subject"],
+            json!(key),
+            "the refusal must name the option: {body}"
+        );
+    }
+}
+
+/// The facet counts are over the **matching set** and say when the window
+/// did not cover it (**P-D-165**).
+///
+/// Written because the review found the fix unproven: the only facet
+/// assertion in the suite ran on a two-row fixture where the page, the
+/// matching set and the window coincide, so it could not tell a count over
+/// the page from a count over the set, and `facets.complete` was read
+/// nowhere. Inverting the window comparison, dropping the `+1` probe row, or
+/// handing the page's rows to the facet pass all left the suite green.
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-facets:p2
+#[tokio::test]
+async fn the_facet_counts_are_over_the_matching_set_and_say_when_they_are_not() {
+    let harness = harness().await;
+    let conn = harness.state.db.conn().expect("conn");
+    let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
+
+    // One row past the window, seeded straight into the projection: the
+    // door's own publish path would be 501 governed acts for a property of
+    // the read model.
+    let seeded = usize::try_from(BROWSE_FACET_WINDOW).expect("the window fits a usize") + 1;
+    for n in 0..seeded {
+        repo::upsert_read_entity(
+            &conn,
+            &scope(),
+            repo::ReadEntityRow {
+                tenant_id: TENANT,
+                entity_kind: "product".to_owned(),
+                entity_id: Uuid::from_u128(0xfa_ce_00 + n as u128),
+                entity_code: None,
+                // Zero-padded so `name ASC` is the insertion order and the
+                // window is the first 500 by name, deterministically.
+                name: format!("Facet {n:04}"),
+                lifecycle_state: "published".to_owned(),
+                deprecated: false,
+                composition_pending: false,
+                sellable: None,
+                deprecation_provenance: None,
+                replaced_by_sku_id: None,
+                region_scope: String::new(),
+                brand_scope: String::new(),
+                sku_type: None,
+                plan_tier_label: None,
+                metering_unit: None,
+                display_attributes: None,
+                // Every row in one category, so the category bucket's count
+                // is the number of rows the facet pass actually read.
+                category_paths: Some("[\"Facet\"]".to_owned()),
+                published_version: 1,
+                projected_at: now,
+                generation: 0,
+            },
+        )
+        .await
+        .expect("the projection row lands");
+    }
+
+    let body = body_json(
+        get(
+            &harness,
+            &browse_url(&[("includeFacets", "true"), ("limit", "10")]),
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        body["rows"].as_array().expect("rows").len(),
+        10,
+        "the page is the caller's limit"
+    );
+    let facets = &body["facets"];
+    assert_eq!(
+        facets["complete"],
+        json!(false),
+        "the matching set is one row past the window, so the counts are a lower bound: {facets}"
+    );
+    assert_eq!(
+        facets["categories"],
+        json!([{ "value": "Facet", "count": BROWSE_FACET_WINDOW }]),
+        "counted over the window, not over the ten rows served: {facets}"
+    );
+
+    // Narrowed to inside the window, the counts are exact and say so.
+    let narrowed = body_json(
+        get(
+            &harness,
+            &browse_url(&[
+                ("includeFacets", "true"),
+                ("limit", "10"),
+                ("$filter", "startswith(name,'Facet 000')"),
+            ]),
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(narrowed["facets"]["complete"], json!(true));
+    assert_eq!(
+        narrowed["facets"]["categories"],
+        json!([{ "value": "Facet", "count": 10 }]),
+        "ten names match `Facet 000*`, and the facet pass applies the caller's filter: {narrowed}"
+    );
+}
+
+/// The two dashboards and the allow-list export are paged like every other
+/// list door — and until this probe their mappers were never exercised on
+/// any surface, so a wrong column in one of the three would have shipped
+/// green (the review's finding).
+///
+/// @cpt-dod:cpt-cf-bss-products-dod-dashboards:p1
+#[tokio::test]
+async fn the_dashboards_are_paged_filtered_and_ordered() {
+    let harness = harness().await;
+    let conn = harness.state.db.conn().expect("conn");
+    let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
+
+    for n in 0..3_u128 {
+        repo::upsert_read_deferred_intent(
+            &conn,
+            &scope(),
+            crate::infra::storage::entity::read_deferred_intent::Model {
+                tenant_id: TENANT,
+                product_id: Uuid::from_u128(0xde_f0_00 + n),
+                cascade_ref: Uuid::from_u128(0xca_50_00 + n),
+                children_count: i32::try_from(n).expect("small") + 1,
+                created_at: now + time::Duration::seconds(i64::try_from(n).expect("small")),
+                age_secs: 60,
+                polled_at: now,
+            },
+        )
+        .await
+        .expect("the intent row lands");
+        repo::upsert_read_freeze_status(
+            &conn,
+            &scope(),
+            crate::infra::storage::entity::read_freeze_status::Model {
+                tenant_id: TENANT,
+                catalog_version_id: i64::try_from(n).expect("small") + 1,
+                freeze_state: if n == 0 { "open" } else { "complete" }.to_owned(),
+                pending: i32::try_from(n).expect("small"),
+                acked: 1,
+                released: 0,
+                forced: 0,
+                published_at: now,
+                polled_at: now,
+            },
+        )
+        .await
+        .expect("the freeze row lands");
+    }
+
+    // Deferred intents: oldest first, one per page, and `children_count gt 1`
+    // is the worklist the vocabulary's own doc names.
+    let first = body_json(
+        get(
+            &harness,
+            "/bss-products/v1/read/deferred-intents?limit=1",
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        first["items"][0]["product_id"],
+        json!(Uuid::from_u128(0xde_f0_00))
+    );
+    let cursor = first["page_info"]["next_cursor"]
+        .as_str()
+        .expect("two more intents remain")
+        .to_owned();
+    let second = body_json(
+        get(
+            &harness,
+            &format!(
+                "/bss-products/v1/read/deferred-intents?limit=1&cursor={}",
+                qval(&cursor)
+            ),
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        second["items"][0]["product_id"],
+        json!(Uuid::from_u128(0xde_f0_01)),
+        "the walk advances: {second}"
+    );
+    let worklist = body_json(
+        get(
+            &harness,
+            &format!(
+                "/bss-products/v1/read/deferred-intents?%24filter={}",
+                qval("children_count gt 1")
+            ),
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(worklist["items"].as_array().expect("items").len(), 2);
+
+    // Freeze statuses: newest version first, and the open-freeze worklist.
+    let freezes =
+        body_json(get(&harness, "/bss-products/v1/read/freeze-status", TENANT).await).await;
+    assert_eq!(
+        freezes["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .map(|row| row["catalog_version_id"].clone())
+            .collect::<Vec<_>>(),
+        vec![json!(3), json!(2), json!(1)],
+        "newest version first: {freezes}"
+    );
+    let open = body_json(
+        get(
+            &harness,
+            &format!(
+                "/bss-products/v1/read/freeze-status?%24filter={}",
+                qval("freeze_state eq 'open'")
+            ),
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(open["items"].as_array().expect("items").len(), 1);
+    assert_eq!(open["items"][0]["catalog_version_id"], json!(1));
+
+    // And an undeclared key on either is refused, not dropped.
+    for door in ["read/deferred-intents", "read/freeze-status"] {
+        let response = get(
+            &harness,
+            &format!("/bss-products/v1/{door}?state=open"),
+            TENANT,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{door}");
+    }
+}
+
+/// Walk the deferred-intent dashboard one row per page and return the ids in
+/// the order they were served.
+///
+/// `orderby` is sent on the first request only: the platform refuses
+/// `$orderby` beside a cursor (`ORDER_WITH_CURSOR`) and recovers the order
+/// from the token's own signed fields.
+async fn walk_deferred_intents(harness: &Harness, orderby: Option<&str>) -> Vec<String> {
+    let suffix = orderby.map_or_else(String::new, |o| format!("&%24orderby={}", qval(o)));
+    let mut seen = Vec::new();
+    let mut url = format!("/bss-products/v1/read/deferred-intents?limit=1{suffix}");
+    for _ in 0..6 {
+        let response = get(harness, &url, TENANT).await;
+        let status = response.status();
+        let body = body_json(response).await;
+        let items = body["items"]
+            .as_array()
+            .unwrap_or_else(|| panic!("a page must carry items, got {status}: {body}"));
+        for row in items {
+            seen.push(row["product_id"].as_str().expect("an id").to_owned());
+        }
+        match body["page_info"]["next_cursor"].as_str() {
+            Some(cursor) => {
+                url = format!(
+                    "/bss-products/v1/read/deferred-intents?limit=1&cursor={}",
+                    qval(cursor)
+                );
+            }
+            None => break,
+        }
+    }
+    seen
+}
+
+/// A walk ordered by a timestamp visits every row of a **tied** page.
+///
+/// **This is what the `chrono` -> `time` migration bought** (P-D-167), and it
+/// was `#[ignore]`d as a platform gap until that landed (P-D-166). The
+/// defect: `libs/toolkit-db`'s `parse_cursor_value` decodes
+/// `FieldKind::DateTimeUtc` by trying `time::OffsetDateTime` first, so the
+/// value a keyset seek binds is always the `time` variant. While this gear's
+/// columns were `ChronoDateTimeUtc`, on `SQLite` — where both are text — the
+/// two did not compare equal, the seek's `a = a0` conjunct was false for
+/// every row, and a page of rows sharing an instant had no successor. The
+/// walk reached **one** of three and reported itself finished while an
+/// unpaged read served all three. Measured then: `created_at = <chrono
+/// variant>` matched 3 of 3, `= <time variant>` 0 of 3, and no text
+/// rendering matched either — which is what ruled out
+/// `ODataFieldMapping::cursor_kind`, the one lever a gear had.
+///
+/// Three rows sharing an instant to the nanosecond is the case that makes
+/// the representation decide the answer rather than the timestamp: the
+/// unique tiebreaker is then the only thing separating them. The second
+/// assertion walks the same rows under a UUID order key, which passed even
+/// before the migration — that contrast is what isolated the cause to the
+/// representation rather than to the tie, and it stays so a regression in
+/// either half is told apart from the other.
+///
+/// Carries **no** `@cpt-dod` marker on purpose: it guards a property of the
+/// platform's cursor codec against this gear's column types, not a criterion
+/// of the gear, and the deferred-intent dashboard is only the fixture it
+/// happens to use. Marking it against `dod-dashboards` would count this as
+/// that criterion's coverage.
+#[tokio::test]
+async fn a_timestamp_walk_visits_every_row_of_a_tied_page() {
+    let harness = harness().await;
+    let conn = harness.state.db.conn().expect("conn");
+    // One instant, carried by all three rows.
+    let tied = crate::domain::canonical::write_instant(
+        OffsetDateTime::from_unix_timestamp_nanos(1_757_000_000_123_456_789)
+            .expect("a fixed instant"),
+    );
+    let ids: Vec<Uuid> = (0..3_u128)
+        .map(|n| Uuid::from_u128(0x71_ed_00 + n))
+        .collect();
+    for id in &ids {
+        repo::upsert_read_deferred_intent(
+            &conn,
+            &scope(),
+            crate::infra::storage::entity::read_deferred_intent::Model {
+                tenant_id: TENANT,
+                product_id: *id,
+                cascade_ref: Uuid::from_u128(0xca_11),
+                children_count: 1,
+                created_at: tied,
+                age_secs: 0,
+                polled_at: tied,
+            },
+        )
+        .await
+        .expect("the intent row lands");
+    }
+
+    // The unpaged read serves all three, so the rows are there and visible.
+    let whole =
+        body_json(get(&harness, "/bss-products/v1/read/deferred-intents", TENANT).await).await;
+    assert_eq!(
+        whole["items"].as_array().expect("items").len(),
+        3,
+        "{whole}"
+    );
+
+    let expected: Vec<String> = ids.iter().map(std::string::ToString::to_string).collect();
+    // Passes today — a UUID order key binds a variant the column compares
+    // equal to, so the tie is resolved by the tiebreaker as designed.
+    assert_eq!(
+        walk_deferred_intents(&harness, Some("product_id asc")).await,
+        expected,
+        "a non-timestamp order key walks the tie"
+    );
+    // Fails today: this is the platform gap.
+    assert_eq!(
+        walk_deferred_intents(&harness, None).await,
+        expected,
+        "three rows sharing one instant are walked once each, in tiebreaker order"
+    );
+}
+
+/// `dod-degradation`: above the tenant's ceiling the door answers `503
+/// READ_MODEL_OVERLOADED` with `Retry-After` and no rows; another tenant is
+/// unaffected (per-partition shedding).
+#[tokio::test]
+async fn the_limiter_sheds_one_tenant_with_retry_after_and_spares_another() {
+    let harness = harness().await;
+    let shed_tenant = Uuid::from_u128(0x08_5e);
+    ReadPathLimiter::global().set_ceiling_for(shed_tenant, 1);
+    let first = get(&harness, "/bss-products/v1/browse", shed_tenant).await;
+    assert_eq!(first.status(), StatusCode::OK, "the one token");
+    let second = get(&harness, "/bss-products/v1/browse", shed_tenant).await;
+    assert_eq!(second.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        second
+            .headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok()),
+        Some("1")
+    );
+    let body = body_json(second).await;
+    assert!(
+        body.get("rows").is_none(),
+        "a shed response leaks neither content nor counts: {body}"
+    );
+    let other = get(&harness, "/bss-products/v1/read/delivery-state", TENANT).await;
+    assert_eq!(
+        other.status(),
+        StatusCode::OK,
+        "another tenant's traffic is not shed"
+    );
+}
+
+/// `dod-history-timeline`: the frozen versions with their changed keys and
+/// pseudonyms, a retired head still reachable, an unknown id the miss.
+#[tokio::test]
+async fn the_timeline_renders_frozen_versions_and_their_diffs() {
+    let harness = harness().await;
+    let product = draft_product(&harness, "Zeta Line", "eu").await;
+    publish_product(&harness, product).await;
+    let response = get(
+        &harness,
+        &format!("/bss-products/v1/products/{product}/versions"),
+        TENANT,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let view = body_json(response).await;
+    assert_eq!(view["entity_id"], json!(product));
+    assert_eq!(view["lifecycle_state"], json!("published"));
+    let versions = view["versions"].as_array().expect("versions");
+    assert_eq!(versions.len(), 1);
+    assert_eq!(versions[0]["published_version"], json!(1));
+    assert_eq!(versions[0]["actor_pseudonym"], json!(ACTOR));
+    assert!(
+        versions[0]["changed_keys"]
+            .as_array()
+            .is_some_and(|keys| keys.iter().any(|k| k == "name")),
+        "the first version changes every key: {view}"
+    );
+    assert!(view["stamp"]["projected_at"].is_string());
+
+    let missing = get(
+        &harness,
+        &format!("/bss-products/v1/skus/{}/versions", Uuid::now_v7()),
+        TENANT,
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+}
+
+/// `dod-dashboards`: the three polled tables answer through their doors with
+/// the stamp, and refresh with the projector's consumer never involved.
+#[tokio::test]
+async fn the_three_dashboards_answer_from_their_polled_tables() {
+    let harness = harness().await;
+    let before =
+        body_json(get(&harness, "/bss-products/v1/read/delivery-state", TENANT).await).await;
+    assert_eq!(before["polled_at"], json!(null), "before the first poll");
+    let product = draft_product(&harness, "Theta Line", "eu").await;
+    publish_product(&harness, product).await;
+    poll_dashboards(
+        &ctx(&harness),
+        crate::domain::canonical::write_instant(OffsetDateTime::now_utc()),
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("poll");
+    let delivery =
+        body_json(get(&harness, "/bss-products/v1/read/delivery-state", TENANT).await).await;
+    assert_eq!(
+        delivery["inbox_pending"],
+        json!(2),
+        "two inbox rows above a checkpoint of zero"
+    );
+    assert!(delivery["polled_at"].is_string());
+    let freeze = get(&harness, "/bss-products/v1/read/freeze-status", TENANT).await;
+    assert_eq!(freeze.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(freeze).await["items"],
+        json!([]),
+        "no catalog version yet"
+    );
+    let deferred = get(&harness, "/bss-products/v1/read/deferred-intents", TENANT).await;
+    assert_eq!(deferred.status(), StatusCode::OK);
+    let view = body_json(deferred).await;
+    assert_eq!(view["items"], json!([]));
+    assert!(
+        view["stamp"]["projected_at"].is_string(),
+        "the stamp on a dashboard too"
+    );
+}
+
+/// **Lineage rides the timeline, both ways** (`dod-clone-lineage`, P-D-152).
+///
+/// A clone's `cloned_from` is a head column no read model exposed, which left
+/// `design/11`'s "queryable" justification for having no clone event unmet.
+/// The source's timeline now lists the entities cloned from it — a draft clone
+/// included, because a clone is born a draft — and the clone's own timeline,
+/// once it publishes, names its source and the version it read.
+#[tokio::test]
+async fn the_timeline_carries_lineage_forward_and_the_reverse_lookup() {
+    let harness = harness().await;
+    let source = draft_product(&harness, "Lineage Source", "eu").await;
+    let source_version = publish_product(&harness, source).await;
+    project(&harness).await;
+
+    // A clone: the create path with the lineage columns set, as the clone
+    // door writes them (`cloned_from` = the immediate source, the version read).
+    let clone_id = Uuid::new_v4();
+    let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
+    crate::infra::create::insert_product_with_event(
+        &harness.state.db,
+        &harness.state.sink,
+        scope(),
+        NewProduct {
+            product_id: clone_id,
+            tenant_id: TENANT,
+            brand_id: BRAND,
+            name: "Lineage Source (copy)".to_owned(),
+            name_normalized: crate::domain::name::normalize("Lineage Source (copy)"),
+            product_code: Some("LINEAGE-SOURCE-COPY".to_owned()),
+            region_scope: "eu".to_owned(),
+            brand_scope: String::new(),
+            created_by: ACTOR.to_string(),
+            created_at: now,
+            cloned_from: Some(source),
+            cloned_from_version: Some(source_version),
+        },
+        crate::infra::create::JoinedRecords {
+            claim: None,
+            stamp: None,
+            content: None,
+        },
+        ACTOR,
+        render_nothing,
+    )
+    .await
+    .expect("insert the clone");
+
+    let response = get(
+        &harness,
+        &format!("/bss-products/v1/products/{source}/versions"),
+        TENANT,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let view = body_json(response).await;
+    assert!(
+        view["lineage"].is_null(),
+        "the source was not itself cloned"
+    );
+    let clones = view["clones"].as_array().expect("clones");
+    assert_eq!(clones.len(), 1, "the reverse lookup lists the draft clone");
+    assert_eq!(clones[0]["entity_id"], json!(clone_id));
+    assert_eq!(clones[0]["cloned_from_version"], json!(source_version));
+
+    // The clone's own timeline exists once it publishes, and names its source.
+    {
+        let conn = harness.state.db.conn().expect("conn");
+        repo::replace_category_assignments(
+            &conn,
+            &scope(),
+            TENANT,
+            clone_id,
+            &[(CATEGORY, crate::domain::taxonomy::AssignmentRole::Primary)],
+            now,
+        )
+        .await
+        .expect("assign the primary category");
+    }
+    publish_product(&harness, clone_id).await;
+    let response = get(
+        &harness,
+        &format!("/bss-products/v1/products/{clone_id}/versions"),
+        TENANT,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let view = body_json(response).await;
+    assert_eq!(view["lineage"]["cloned_from"], json!(source));
+    assert_eq!(
+        view["lineage"]["cloned_from_version"],
+        json!(source_version)
+    );
+    assert!(
+        view["clones"].as_array().expect("clones").is_empty(),
+        "nothing was cloned from the clone"
+    );
+}
+
+/// **The limiter's bucket map is bounded** (P-D-163). Past the high-water
+/// mark an acquire drops every bucket idle for a full second, and the drop is
+/// lossless: an idle bucket is back at capacity, which is what an absent one
+/// means, so the evicted tenant's next acquire still succeeds.
+#[test]
+fn idle_limiter_buckets_are_evicted_past_the_high_water_mark() {
+    let limiter = ReadPathLimiter::new(200);
+    let mark = super::LIMITER_BUCKET_HIGH_WATER;
+    for i in 1..=(mark + 8) {
+        limiter
+            .try_acquire(Uuid::from_u128(u128::try_from(i).expect("small")))
+            .expect("a fresh tenant has a full bucket");
+    }
+    let len = || {
+        limiter
+            .buckets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    };
+    assert!(
+        len() > mark,
+        "nothing was idle, so nothing was evicted: {} buckets",
+        len()
+    );
+
+    // Age every bucket past the idle window, then one more acquire.
+    {
+        let mut buckets = limiter
+            .buckets
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for bucket in buckets.values_mut() {
+            bucket.refilled_at = bucket
+                .refilled_at
+                .checked_sub(std::time::Duration::from_secs(2))
+                .expect("the clock has been up for two seconds");
+        }
+    }
+    let newcomer = Uuid::from_u128(0xffff_ffff);
+    limiter.try_acquire(newcomer).expect("admitted");
+    assert_eq!(len(), 1, "only the newcomer's bucket survives the sweep");
+    limiter
+        .try_acquire(Uuid::from_u128(1))
+        .expect("an evicted tenant is back at capacity, exactly as if never seen");
+}

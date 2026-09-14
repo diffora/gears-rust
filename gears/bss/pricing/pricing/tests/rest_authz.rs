@@ -44,7 +44,7 @@ use bss_pricing::api::rest::customer_groups::{
 };
 use bss_pricing::api::rest::cutovers::{PLAN_CUTOVERS, PRICE_GRANDFATHER_UNTIL};
 use bss_pricing::api::rest::frontier::{CATALOG_VERSION_REF, FRONTIER};
-use bss_pricing::api::rest::gl_codes::GL_CODES;
+use bss_pricing::api::rest::gl_codes::{GL_CODE_VALUE, GL_CODE_VALUES, GL_CODES};
 use bss_pricing::api::rest::history::{HISTORY, HISTORY_EXPORT};
 use bss_pricing::api::rest::migrated_origin_snapshots::MIGRATED_ORIGIN_SNAPSHOT;
 use bss_pricing::api::rest::migrations::{MIGRATION_BY_ID, MIGRATIONS};
@@ -55,11 +55,13 @@ use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
 use bss_pricing::api::rest::publish::PLAN_PUBLISH;
 use bss_pricing::api::rest::repricing_runs::{REPRICING_RUN, REPRICING_RUN_ABORT, REPRICING_RUNS};
 use bss_pricing::api::rest::retirement::PLAN_RETIRE;
-use bss_pricing::api::rest::rounding_policies::ROUNDING_POLICIES;
+use bss_pricing::api::rest::rounding_policies::{
+    ROUNDING_POLICIES, ROUNDING_POLICY_VALUE, ROUNDING_POLICY_VALUES,
+};
 use bss_pricing::api::rest::rounding_policy::ROUNDING_POLICY;
 use bss_pricing::api::rest::supersessions::PLAN_SUPERSESSIONS;
 use bss_pricing::api::rest::tax_display_policy::TAX_DISPLAY_POLICY;
-use bss_pricing::api::rest::taxonomies::{TAXONOMY, TAXONOMY_VALUE, TAXONOMY_VALUES};
+use bss_pricing::api::rest::taxonomies::{VOCABULARY, VOCABULARY_VALUE, VOCABULARY_VALUES};
 use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
 use bss_pricing::api::rest::windows::{
     PLAN_COVERAGE, PLAN_SELLABILITY, PRICE_WINDOW, PRICE_WINDOWS, PRICE_WINDOWS_LIST,
@@ -585,7 +587,7 @@ fn config_routes() -> Vec<Route> {
         // No allow/deny fixture can see the difference, so it is asserted.
         Route {
             method: "GET",
-            path: TAXONOMY,
+            path: VOCABULARY,
             resource_type: labels::CONFIG,
             action: actions::READ,
             mutating: false,
@@ -595,21 +597,21 @@ fn config_routes() -> Vec<Route> {
         // `approval_policy`.
         Route {
             method: "POST",
-            path: TAXONOMY_VALUES,
+            path: VOCABULARY_VALUES,
             resource_type: labels::CONFIG,
             action: actions::WRITE,
             mutating: true,
         },
         Route {
             method: "GET",
-            path: TAXONOMY_VALUE,
+            path: VOCABULARY_VALUE,
             resource_type: labels::CONFIG,
             action: actions::READ,
             mutating: false,
         },
         Route {
             method: "PATCH",
-            path: TAXONOMY_VALUE,
+            path: VOCABULARY_VALUE,
             resource_type: labels::CONFIG,
             action: actions::WRITE,
             mutating: true,
@@ -723,9 +725,28 @@ fn config_routes() -> Vec<Route> {
             action: actions::READ,
             mutating: false,
         },
+        // The whole-set `PUT` is removed and the per-value routes stand in its
+        // place — `VOCABULARY_VALUES`' story on this table. Same pair: the
+        // vocabulary is the config plane's own subject one value wide, so the
+        // split changes which resource a call addresses and nothing about who
+        // may address it.
         Route {
-            method: "PUT",
-            path: ROUNDING_POLICIES,
+            method: "POST",
+            path: ROUNDING_POLICY_VALUES,
+            resource_type: labels::CONFIG,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        Route {
+            method: "GET",
+            path: ROUNDING_POLICY_VALUE,
+            resource_type: labels::CONFIG,
+            action: actions::READ,
+            mutating: false,
+        },
+        Route {
+            method: "PATCH",
+            path: ROUNDING_POLICY_VALUE,
             resource_type: labels::CONFIG,
             action: actions::WRITE,
             mutating: true,
@@ -740,9 +761,25 @@ fn config_routes() -> Vec<Route> {
             action: actions::READ,
             mutating: false,
         },
+        // Its whole-set `PUT` is removed too, for the rounding vocabulary's
+        // reason exactly.
         Route {
-            method: "PUT",
-            path: GL_CODES,
+            method: "POST",
+            path: GL_CODE_VALUES,
+            resource_type: labels::CONFIG,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        Route {
+            method: "GET",
+            path: GL_CODE_VALUE,
+            resource_type: labels::CONFIG,
+            action: actions::READ,
+            mutating: false,
+        },
+        Route {
+            method: "PATCH",
+            path: GL_CODE_VALUE,
             resource_type: labels::CONFIG,
             action: actions::WRITE,
             mutating: true,
@@ -939,6 +976,11 @@ struct Seeded {
     pending_ref: String,
     /// A brand value the tenant declares (`{value}` on the per-value taxonomy
     /// routes, D-353); `drive` fills `{class}` with `brand`, so this is its pair.
+    ///
+    /// **One token for every `{value}` the census carries.** `drive` performs a
+    /// single replacement, so the same string also names the seeded value of
+    /// each single-table vocabulary — see [`seed`], which declares it in all
+    /// three so the by-id read property has an owner-side control on each.
     brand_value: String,
 }
 
@@ -1051,6 +1093,33 @@ async fn seed(harness: &Harness) -> Seeded {
         )
         .await
         .expect("declare the seeded brand value");
+    // **The same token in the two single-table vocabularies**, because `drive`
+    // replaces one `{value}` placeholder for every route that carries it. Without
+    // these, the owner's own read of
+    // `GET /config/{gl-codes|rounding-policies}/values/acme` is a 404 and
+    // `a_foreign_tenants_object_reads_like_an_absent_one_on_every_by_id_read` has
+    // no control to compare the foreign answer against — it would have to be
+    // exempted, which is a debt where a two-line seed is a measurement.
+    for class in bss_pricing::domain::taxonomy::VocabularyClass::ALL {
+        harness
+            .state
+            .taxonomies
+            .declare_vocabulary_value(
+                &harness.scope(),
+                harness.tenant,
+                *class,
+                bss_pricing::domain::taxonomy::TaxonomyEntry {
+                    value: bss_pricing::domain::overlay::ScopeValue::new(brand_value)
+                        .expect("a non-blank value"),
+                    display_name: "Acme".to_owned(),
+                    state: bss_pricing::domain::taxonomy::TaxonomyState::Active,
+                    tax: None,
+                },
+                rest_support::seed_stamp(),
+            )
+            .await
+            .expect("declare the seeded vocabulary value");
+    }
     Seeded {
         plan: plan_id,
         price: price.price_id,
@@ -1372,7 +1441,7 @@ fn body_for(
                 "\"0000000000000000000000000000000000000000000000000000000000000000\"",
             )],
         ),
-        ("PUT", TAXONOMY) => (
+        ("PUT", VOCABULARY) => (
             Some(serde_json::json!({
                 "values": [{ "value": "acme", "display_name": "Acme" }]
             })),
@@ -1381,7 +1450,7 @@ fn body_for(
                 "\"0000000000000000000000000000000000000000000000000000000000000000\"",
             )],
         ),
-        // The customer-group taxonomy's `PUT`, on `TAXONOMY`'s own reasoning: a
+        // The customer-group taxonomy's `PUT`, on `VOCABULARY`'s own reasoning: a
         // well-formed whole-set replacement under a wrong-but-well-formed tag, so
         // a refusal here is the gate's and never a body or precondition
         // complaint.
@@ -3221,7 +3290,7 @@ fn absent_ids(seeded: &Seeded) -> Seeded {
 /// the `foreign` and the `absent` arm — byte for byte — so the loop below would
 /// compare a request with itself and both assertions would hold by construction.
 /// The filter was `route.path.contains('{')` until 2026-08-20, which admitted
-/// `GET /taxonomies/{class}` and `GET /customer-groups/{group}/members`, whose only
+/// `GET /vocabularies/{class}` and `GET /customer-groups/{group}/members`, whose only
 /// parameter `drive` fills with the fixed literals `brand` and `gold`: two routes
 /// read as cross-tenant coverage where none was measured.
 const VARIED_SEGMENTS: &[&str] = &[
@@ -3291,7 +3360,7 @@ const BY_ID_READS_THIS_FIXTURE_CANNOT_STAGE: &[(&str, &str)] = &[
     // 404, so "absent" is not a state these surfaces have — the cross-tenant claim
     // for them is the emptiness of the *body*, which is a different property and
     // belongs to their own suites.
-    ("GET", TAXONOMY),
+    ("GET", VOCABULARY),
     ("GET", CUSTOMER_GROUP_MEMBERS),
     // The preview read answers **400** to its owner here: §5 requires `currency`
     // and `region` and `drive` supplies query parameters only for the sellability
@@ -3431,8 +3500,17 @@ const BY_ID_WRITES_THIS_FIXTURE_CANNOT_STAGE: &[(&str, &str)] = &[
     // asserts the **value's own** tag, which only a read of that value hands out
     // and this fixture performs no read; its cross-tenant twin is
     // `rest_taxonomies::a_foreign_tenants_value_reads_and_patches_like_an_absent_one`.
-    ("POST", TAXONOMY_VALUES),
-    ("PATCH", TAXONOMY_VALUE),
+    ("POST", VOCABULARY_VALUES),
+    ("PATCH", VOCABULARY_VALUE),
+    // The two single-table vocabularies' per-value `PATCH`es, for the row
+    // above's reason: each asserts the value's **own** tag, which only a read
+    // of that value hands out and this fixture performs no read. Their
+    // collection `POST`s carry no path parameter at all, so they are not by-id
+    // writes and want no row here. Their cross-tenant twins are
+    // `rest_gl_codes::another_tenants_vocabulary_is_invisible` and the
+    // by-value cases in both suites.
+    ("PATCH", GL_CODE_VALUE),
+    ("PATCH", ROUNDING_POLICY_VALUE),
     ("POST", CUSTOMER_GROUP_MEMBERS),
     ("POST", CUSTOMER_GROUP_MEMBER_MOVE),
     ("POST", CUSTOMER_GROUP_MEMBERS_MOVE),

@@ -531,7 +531,7 @@ async fn read_vocabulary(harness: &Harness) -> (StatusCode, Option<String>, serd
         .allowed()
         .send(with_headers(
             "GET",
-            "/bss-pricing/v1/config/rounding-policies",
+            "/bss-pricing/v1/config/vocabularies/rounding-policies",
             None,
             &[],
         ))
@@ -541,20 +541,68 @@ async fn read_vocabulary(harness: &Harness) -> (StatusCode, Option<String>, serd
     (status, tag, body_json(response).await)
 }
 
-async fn write_vocabulary(
+/// `POST …/values` — declare **one** reference.
+async fn declare(
     harness: &Harness,
-    values: serde_json::Value,
+    body: serde_json::Value,
+) -> axum::http::Response<axum::body::Body> {
+    harness
+        .allowed()
+        .send(with_headers("POST", VALUES, Some(body), &[]))
+        .await
+}
+
+/// `GET …/values/{value}` — one reference and **its own** tag.
+async fn read_value(
+    harness: &Harness,
+    value: &str,
+) -> (StatusCode, Option<String>, serde_json::Value) {
+    let response = harness
+        .allowed()
+        .send(with_headers("GET", &value_path(value), None, &[]))
+        .await;
+    let status = response.status();
+    let tag = etag_of(&response);
+    (status, tag, body_json(response).await)
+}
+
+/// `PATCH …/values/{value}` under the value's own tag.
+async fn patch_value(
+    harness: &Harness,
+    value: &str,
+    body: serde_json::Value,
     tag: &str,
 ) -> axum::http::Response<axum::body::Body> {
     harness
         .allowed()
         .send(with_headers(
-            "PUT",
-            "/bss-pricing/v1/config/rounding-policies",
-            Some(serde_json::json!({ "values": values })),
+            "PATCH",
+            &value_path(value),
+            Some(body),
             &[("if-match", tag)],
         ))
         .await
+}
+
+const VALUES: &str = "/bss-pricing/v1/config/vocabularies/rounding-policies/values";
+
+fn value_path(value: &str) -> String {
+    format!("{VALUES}/{value}")
+}
+
+/// Declare one reference through the surface and assert it landed.
+async fn declare_one(harness: &Harness, value: &str) {
+    let response = declare(
+        harness,
+        serde_json::json!({ "value": value, "display_name": format!("Rounding {value}") }),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "{}",
+        body_json(response).await
+    );
 }
 
 /// A tenant that has declared nothing reads an empty set **with a tag**.
@@ -569,23 +617,64 @@ async fn an_undeclared_vocabulary_reads_empty_with_a_tag() {
     assert!(tag.is_some(), "the empty set is a state and carries a tag");
 }
 
-/// A `PUT` declares the set and the `GET` agrees; state defaults to `active`.
+/// **The whole-set `PUT` is gone**, and the route answers as a method the
+/// resource does not have rather than as an unknown path.
+///
+/// The singleton `PUT /config/rounding-policy` beside it is a **different**
+/// resource — the tenant default — and is deliberately untouched; this case
+/// asserts the plural one alone.
 #[tokio::test]
-async fn a_declared_set_round_trips_and_defaults_to_active() {
+async fn the_whole_set_put_is_gone() {
     let harness = Harness::new().await;
-    let (_, tag, _) = read_vocabulary(&harness).await;
 
-    let response = write_vocabulary(
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "PUT",
+            "/bss-pricing/v1/config/vocabularies/rounding-policies",
+            Some(serde_json::json!({ "values": [] })),
+            &[("if-match", "\"whatever\"")],
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    let (_, _, body) = read_vocabulary(&harness).await;
+    assert_eq!(body["values"], serde_json::json!([]));
+}
+
+/// A declare round-trips through both reads, carries its **own** tag and a
+/// `Location`, and defaults to `active`.
+#[tokio::test]
+async fn a_declared_value_round_trips_and_defaults_to_active() {
+    let harness = Harness::new().await;
+
+    let created = declare(
         &harness,
-        serde_json::json!([{ "value": "half_even", "display_name": "Half to even" }]),
-        &tag.expect("a tag"),
+        serde_json::json!({ "value": "half_even", "display_name": "Half to even" }),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(created.status(), StatusCode::CREATED);
+    assert_eq!(
+        created
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok()),
+        Some("/bss-pricing/v1/config/vocabularies/rounding-policies/values/half_even")
+    );
+    let value_tag = etag_of(&created).expect("the value's own tag");
 
     let (_, _, body) = read_vocabulary(&harness).await;
     assert_eq!(body["values"][0]["value"], serde_json::json!("half_even"));
     assert_eq!(body["values"][0]["state"], serde_json::json!("active"));
+
+    let (status, own_tag, one) = read_value(&harness, "half_even").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(one["display_name"], serde_json::json!("Half to even"));
+    assert_eq!(
+        own_tag.as_deref(),
+        Some(value_tag.as_str()),
+        "the create's tag and the by-value GET's come from one computation"
+    );
 }
 
 /// A value the tenant default names cannot be retired, and nothing is written.
@@ -596,14 +685,7 @@ async fn a_declared_set_round_trips_and_defaults_to_active() {
 #[tokio::test]
 async fn a_value_the_default_names_cannot_be_retired() {
     let harness = Harness::new().await;
-
-    let (_, vocab_tag, _) = read_vocabulary(&harness).await;
-    write_vocabulary(
-        &harness,
-        serde_json::json!([{ "value": "half_even", "display_name": "Half to even" }]),
-        &vocab_tag.expect("a tag"),
-    )
-    .await;
+    declare_one(&harness, "half_even").await;
 
     let (_, policy_tag, _) = read_policy(&harness).await;
     let set = write_policy(
@@ -614,10 +696,14 @@ async fn a_value_the_default_names_cannot_be_retired() {
     .await;
     assert_eq!(set.status(), StatusCode::OK);
 
-    // Now drop it from the set, which is a retirement.
-    let (_, vocab_tag, _) = read_vocabulary(&harness).await;
-    let refused =
-        write_vocabulary(&harness, serde_json::json!([]), &vocab_tag.expect("a tag")).await;
+    let (_, value_tag, _) = read_value(&harness, "half_even").await;
+    let refused = patch_value(
+        &harness,
+        "half_even",
+        serde_json::json!({ "state": "retired" }),
+        &value_tag.expect("the value's tag"),
+    )
+    .await;
 
     assert_eq!(refused.status(), StatusCode::CONFLICT);
     assert_eq!(problem_code(refused).await, "TAXONOMY_VALUE_IN_USE");
@@ -629,22 +715,59 @@ async fn a_value_the_default_names_cannot_be_retired() {
     );
 }
 
-/// A stale tag on the vocabulary is refused and writes nothing.
+/// **The set's tag does not satisfy the per-value precondition.**
+///
+/// The two digests are deliberately over different segments —
+/// `rounding-policies` and `rounding-policies/{value}` — so a client that read
+/// the collection and sent that tag back on a value's `PATCH` is refused
+/// rather than accidentally admitted. A tag built without the value segment
+/// collides with the set's whenever the tenant holds exactly one reference,
+/// which is every tenant's first day.
 #[tokio::test]
-async fn a_stale_vocabulary_tag_is_refused() {
+async fn the_sets_tag_does_not_satisfy_the_per_value_patch() {
     let harness = Harness::new().await;
-    let (_, first, _) = read_vocabulary(&harness).await;
-    let first = first.expect("a tag");
-    write_vocabulary(
+    declare_one(&harness, "bankers").await;
+
+    let (_, set_tag, _) = read_vocabulary(&harness).await;
+    let refused = patch_value(
         &harness,
-        serde_json::json!([{ "value": "bankers", "display_name": "Bankers" }]),
-        &first,
+        "bankers",
+        serde_json::json!({ "display_name": "Bankers" }),
+        &set_tag.expect("the set's tag"),
     )
     .await;
 
-    let response = write_vocabulary(
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(problem_code(refused).await, "STALE_VERSION");
+    let (_, _, body) = read_vocabulary(&harness).await;
+    assert_eq!(
+        body["values"][0]["display_name"],
+        serde_json::json!("Rounding bankers"),
+        "the refused write changed nothing"
+    );
+}
+
+/// A stale **value** tag is refused as a stale tag and writes nothing.
+#[tokio::test]
+async fn a_stale_value_tag_is_refused() {
+    let harness = Harness::new().await;
+    declare_one(&harness, "bankers").await;
+    let (_, first, _) = read_value(&harness, "bankers").await;
+    let first = first.expect("a tag");
+
+    let landed = patch_value(
         &harness,
-        serde_json::json!([{ "value": "half_even", "display_name": "Half even" }]),
+        "bankers",
+        serde_json::json!({ "display_name": "Bankers rounding" }),
+        &first,
+    )
+    .await;
+    assert_eq!(landed.status(), StatusCode::OK);
+
+    let response = patch_value(
+        &harness,
+        "bankers",
+        serde_json::json!({ "display_name": "Something else" }),
         &first,
     )
     .await;
@@ -656,42 +779,73 @@ async fn a_stale_vocabulary_tag_is_refused() {
     // firing while the other arm answered instead left this green.
     assert_eq!(problem_code(response).await, "STALE_VERSION");
     let (_, _, body) = read_vocabulary(&harness).await;
-    assert_eq!(body["values"][0]["value"], serde_json::json!("bankers"));
+    assert_eq!(
+        body["values"][0]["display_name"],
+        serde_json::json!("Bankers rounding"),
+        "the refused write changed nothing"
+    );
+}
+
+/// **Two admins editing two different references do not refuse each other.**
+///
+/// The reason the whole-set `PUT` went: under it the second author's tag was
+/// stale the moment the first committed, though the two never disagreed about
+/// anything.
+#[tokio::test]
+async fn two_values_edited_under_tags_read_together_both_land() {
+    let harness = Harness::new().await;
+    declare_one(&harness, "bankers").await;
+    declare_one(&harness, "half_even").await;
+
+    let (_, first, _) = read_value(&harness, "bankers").await;
+    let (_, second, _) = read_value(&harness, "half_even").await;
+
+    let one = patch_value(
+        &harness,
+        "bankers",
+        serde_json::json!({ "display_name": "Bankers" }),
+        &first.expect("a tag"),
+    )
+    .await;
+    assert_eq!(one.status(), StatusCode::OK);
+
+    let two = patch_value(
+        &harness,
+        "half_even",
+        serde_json::json!({ "display_name": "Half even" }),
+        &second.expect("a tag"),
+    )
+    .await;
+    assert_eq!(
+        two.status(),
+        StatusCode::OK,
+        "the second author's tag covers their own value only: {}",
+        body_json(two).await
+    );
 }
 
 /// A blank value is refused by the surface rather than by a constraint.
 #[tokio::test]
 async fn a_blank_vocabulary_value_is_refused() {
     let harness = Harness::new().await;
-    // **The refusal needs something to lose.** A tenant's vocabulary starts empty,
-    // so a readback taken against the default compares nothing with nothing and is
-    // satisfied by a refusal that wiped the set on its way out — the fixture-
-    // degenerate positive. One value is seeded first and asserted present.
-    let (_, tag, _) = read_vocabulary(&harness).await;
-    write_vocabulary(
-        &harness,
-        serde_json::json!([{ "value": "half_even", "display_name": "Half to even" }]),
-        &tag.expect("a tag"),
-    )
-    .await;
-    let (_, tag, before) = read_vocabulary(&harness).await;
+    // **The refusal needs something to lose.** A tenant's vocabulary starts
+    // empty, so a readback taken against the default compares nothing with
+    // nothing. One value is seeded first and asserted present.
+    declare_one(&harness, "half_even").await;
+    let (_, _, before) = read_vocabulary(&harness).await;
     assert_eq!(
         before["values"].as_array().map(Vec::len),
         Some(1),
         "the control this case is about losing: {before}"
     );
 
-    let response = write_vocabulary(
+    let response = declare(
         &harness,
-        serde_json::json!([{ "value": "", "display_name": "nothing" }]),
-        &tag.expect("a tag"),
+        serde_json::json!({ "value": "", "display_name": "nothing" }),
     )
     .await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    // The readback its policy sibling `a_blank_reference_is_refused` carries: a
-    // `PUT` replaces the set wholesale, so a refusal that had already written
-    // would have replaced the vocabulary with the one blank entry it rejected.
     let (_, _, after) = read_vocabulary(&harness).await;
     assert_eq!(
         after["values"], before["values"],
@@ -699,54 +853,116 @@ async fn a_blank_vocabulary_value_is_refused() {
     );
 }
 
-/// A value listed twice is refused by the surface rather than by the key.
+/// A repeat declare of the **same** content replays; one naming the same value
+/// with **other** content is `409` and points at the `PATCH`.
 ///
-/// Not left to the store's `(tenant_id, value)` key, which never sees the
-/// repetition: `apply_replace_rounding_policy` collects the submitted set into a
-/// `BTreeMap` keyed by value, so the alternative to this refusal is a 200 for a
-/// set the author did not send. `rest_taxonomies`' `a_repeated_value_is_refused`
-/// is the same case one surface over, and the same argument applies to it.
-
+/// This replaced `a_value_listed_twice_in_one_body_is_refused`: a body carrying
+/// one value cannot list it twice, so the question moved from the body to the
+/// sequence, and both answers are here.
 #[tokio::test]
-async fn a_value_listed_twice_in_one_body_is_refused() {
+async fn a_second_declare_replays_or_refuses_by_content() {
     let harness = Harness::new().await;
-    let (_, tag, _) = read_vocabulary(&harness).await;
-    write_vocabulary(
+    declare_one(&harness, "bankers").await;
+
+    let replay = declare(
         &harness,
-        serde_json::json!([{ "value": "half_even", "display_name": "Half to even" }]),
-        &tag.expect("a tag"),
+        serde_json::json!({ "value": "bankers", "display_name": "Rounding bankers" }),
     )
     .await;
-    let (_, tag, before) = read_vocabulary(&harness).await;
-    assert_eq!(
-        before["values"].as_array().map(Vec::len),
-        Some(1),
-        "the control this case is about losing: {before}"
-    );
+    assert_eq!(replay.status(), StatusCode::OK, "the create's replay");
 
-    let response = write_vocabulary(
+    let refused = declare(
         &harness,
-        serde_json::json!([
-            { "value": "bankers", "display_name": "B", "state": "active" },
-            { "value": "bankers", "display_name": "B", "state": "retired" }
-        ]),
-        &tag.expect("a tag"),
+        serde_json::json!({ "value": "bankers", "display_name": "Something else" }),
     )
     .await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(problem_code(refused).await, "TAXONOMY_VALUE_EXISTS");
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    // **Which** 400: this route renders several — a blank value, an unparsable
-    // state token, a body that will not deserialize — and a bare status cannot
-    // say which one answered.
-
-    let problem = body_json(response).await.to_string();
-    assert!(
-        problem.contains("appears twice in this body"),
-        "the refusal must name the repetition, not the state token beside it: {problem}"
-    );
-    let (_, _, after) = read_vocabulary(&harness).await;
+    let (_, _, body) = read_vocabulary(&harness).await;
     assert_eq!(
-        after["values"], before["values"],
-        "a refused write leaves the vocabulary exactly where it was"
+        body["values"][0]["display_name"],
+        serde_json::json!("Rounding bankers"),
+        "the refused declare wrote nothing"
     );
+}
+
+/// **A reference the tenant default names can be deprecated, and could not be
+/// retired** (D-370).
+///
+/// `a_value_the_default_names_cannot_be_retired`'s twin, and the pair is the
+/// claim: the same fixture, the same live reference, two destinations and two
+/// answers. The deprecation takes the value out of `active_rounding_policies`
+/// so no **new** row may name it, and leaves the tenant default resolving
+/// exactly as it was — which is why the retirement is still refused
+/// afterwards.
+#[tokio::test]
+async fn a_reference_the_default_names_can_be_deprecated_but_not_retired() {
+    let harness = Harness::new().await;
+    declare_one(&harness, "half_even").await;
+
+    let (_, policy_tag, _) = read_policy(&harness).await;
+    let set = write_policy(
+        &harness,
+        serde_json::json!("half_even"),
+        &policy_tag.expect("a tag"),
+    )
+    .await;
+    assert_eq!(set.status(), StatusCode::OK);
+
+    let (_, tag, _) = read_value(&harness, "half_even").await;
+    let refused = patch_value(
+        &harness,
+        "half_even",
+        serde_json::json!({ "state": "retired" }),
+        &tag.expect("the value's tag"),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(problem_code(refused).await, "TAXONOMY_VALUE_IN_USE");
+
+    let (_, tag, _) = read_value(&harness, "half_even").await;
+    let deprecated = patch_value(
+        &harness,
+        "half_even",
+        serde_json::json!({ "state": "deprecated" }),
+        &tag.expect("the value's tag"),
+    )
+    .await;
+    assert_eq!(
+        deprecated.status(),
+        StatusCode::OK,
+        "saying `stop using this` must always be possible: {}",
+        body_json(deprecated).await
+    );
+
+    let (_, _, body) = read_vocabulary(&harness).await;
+    assert_eq!(body["values"][0]["state"], serde_json::json!("deprecated"));
+
+    let (_, tag, _) = read_value(&harness, "half_even").await;
+    let still_refused = patch_value(
+        &harness,
+        "half_even",
+        serde_json::json!({ "state": "retired" }),
+        &tag.expect("the value's tag"),
+    )
+    .await;
+    assert_eq!(still_refused.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        problem_code(still_refused).await,
+        "TAXONOMY_VALUE_IN_USE",
+        "the default still resolves through it, so it is still guarded"
+    );
+}
+
+/// A reference the tenant never declared is `404` on its own route rather than
+/// an empty `200`.
+#[tokio::test]
+async fn an_undeclared_reference_is_not_found_on_its_own_route() {
+    let harness = Harness::new().await;
+    declare_one(&harness, "bankers").await;
+
+    let (status, _, _) = read_value(&harness, "nope").await;
+
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

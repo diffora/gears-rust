@@ -80,7 +80,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     };
     use bss_pricing::api::rest::cutovers::{PLAN_CUTOVERS, PRICE_GRANDFATHER_UNTIL};
     use bss_pricing::api::rest::frontier::{CATALOG_VERSION_REF, FRONTIER};
-    use bss_pricing::api::rest::gl_codes::GL_CODES;
+    use bss_pricing::api::rest::gl_codes::{GL_CODE_VALUE, GL_CODE_VALUES, GL_CODES};
     use bss_pricing::api::rest::history::{HISTORY, HISTORY_EXPORT};
     use bss_pricing::api::rest::migrated_origin_snapshots::MIGRATED_ORIGIN_SNAPSHOT;
     use bss_pricing::api::rest::migrations::{MIGRATION_BY_ID, MIGRATIONS};
@@ -95,11 +95,13 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         REPRICING_RUN, REPRICING_RUN_ABORT, REPRICING_RUNS,
     };
     use bss_pricing::api::rest::retirement::PLAN_RETIRE;
-    use bss_pricing::api::rest::rounding_policies::ROUNDING_POLICIES;
+    use bss_pricing::api::rest::rounding_policies::{
+        ROUNDING_POLICIES, ROUNDING_POLICY_VALUE, ROUNDING_POLICY_VALUES,
+    };
     use bss_pricing::api::rest::rounding_policy::ROUNDING_POLICY;
     use bss_pricing::api::rest::supersessions::PLAN_SUPERSESSIONS;
     use bss_pricing::api::rest::tax_display_policy::TAX_DISPLAY_POLICY;
-    use bss_pricing::api::rest::taxonomies::{TAXONOMY, TAXONOMY_VALUE, TAXONOMY_VALUES};
+    use bss_pricing::api::rest::taxonomies::{VOCABULARY, VOCABULARY_VALUE, VOCABULARY_VALUES};
     use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
     use bss_pricing::api::rest::windows::{
         PLAN_COVERAGE, PLAN_SELLABILITY, PRICE_WINDOW, PRICE_WINDOWS, PRICE_WINDOWS_LIST,
@@ -171,7 +173,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         // Slice 4's base-price preview (§2, `inst-pv-api`). A read, gated on
         // `plan × preview` — deliberately not `plan × read`.
         ("GET", PLAN_PREVIEW),
-        ("GET", TAXONOMY),
+        ("GET", VOCABULARY),
         // D-353: the whole-set `PUT` is gone — it could retire or re-label a value
         // without a second principal — and the per-value routes stand in its place.
         // The `POST` takes
@@ -180,12 +182,12 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         // `TAXONOMY_VALUE_EXISTS` — and is deliberately absent from
         // `idempotency_key_routes()` below, as `PLAN_SUPERSESSIONS` is. The `PATCH`
         // asserts the value's own tag and is in `if_match_routes()`.
-        ("POST", TAXONOMY_VALUES),
-        ("GET", TAXONOMY_VALUE),
-        ("PATCH", TAXONOMY_VALUE),
+        ("POST", VOCABULARY_VALUES),
+        ("GET", VOCABULARY_VALUE),
+        ("PATCH", VOCABULARY_VALUE),
         // Slice 9's own taxonomy (`inst-cg-taxonomy`), on its own route and its
         // own `customer_group` gate — see `api::rest::customer_groups`'s module
-        // doc for why this is not a fifth arm of `TAXONOMY` above.
+        // doc for why this is not a fifth arm of `VOCABULARY` above.
         ("GET", CUSTOMER_GROUP_TAXONOMY),
         ("PUT", CUSTOMER_GROUP_TAXONOMY),
         // Task 6: the membership routes, and the publish unit `dod-customer-group`'s
@@ -201,12 +203,22 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         ("PUT", TAX_DISPLAY_POLICY),
         ("GET", ROUNDING_POLICY),
         ("PUT", ROUNDING_POLICY),
+        // D-334 / D-356: the two single-table vocabularies. Their whole-set
+        // `PUT`s are **gone**, on D-353's own three reasons carried onto these
+        // tables — an audit record that could not say which value moved, two
+        // admins refusing each other on one set tag, and a client saving a
+        // filtered list retiring what it did not show. The per-value family
+        // stands in their place, with the collection `GET` kept as a read.
+        // `customer_group`'s `PUT` above is deliberately **not** in this wave:
+        // its table carries payer members and a lifecycle of its own.
         ("GET", ROUNDING_POLICIES),
-        ("PUT", ROUNDING_POLICIES),
-        // D-356: the GL-code vocabulary, the third single-table taxonomy on the
-        // `config` gate.
+        ("POST", ROUNDING_POLICY_VALUES),
+        ("GET", ROUNDING_POLICY_VALUE),
+        ("PATCH", ROUNDING_POLICY_VALUE),
         ("GET", GL_CODES),
-        ("PUT", GL_CODES),
+        ("POST", GL_CODE_VALUES),
+        ("GET", GL_CODE_VALUE),
+        ("PATCH", GL_CODE_VALUE),
         ("GET", CATALOG_SKUS),
         ("GET", CATALOG_TAX_CATEGORIES),
         ("POST", BUNDLES),
@@ -850,15 +862,15 @@ fn if_match_routes() -> Vec<(&'static str, &'static str)> {
         CUSTOMER_GROUP_MEMBERS_MOVE, CUSTOMER_GROUP_TAXONOMY,
     };
     use bss_pricing::api::rest::cutovers::PRICE_GRANDFATHER_UNTIL;
-    use bss_pricing::api::rest::gl_codes::GL_CODES;
+    use bss_pricing::api::rest::gl_codes::GL_CODE_VALUE;
     use bss_pricing::api::rest::overlays::{PRICE_OVERLAY_BY_ID, PRICE_OVERLAYS};
     use bss_pricing::api::rest::plans::{PLAN, PLAN_ABANDON, PLAN_CLONE, PLANS};
     use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
     use bss_pricing::api::rest::publish::PLAN_PUBLISH;
-    use bss_pricing::api::rest::rounding_policies::ROUNDING_POLICIES;
+    use bss_pricing::api::rest::rounding_policies::ROUNDING_POLICY_VALUE;
     use bss_pricing::api::rest::rounding_policy::ROUNDING_POLICY;
     use bss_pricing::api::rest::tax_display_policy::TAX_DISPLAY_POLICY;
-    use bss_pricing::api::rest::taxonomies::TAXONOMY_VALUE;
+    use bss_pricing::api::rest::taxonomies::VOCABULARY_VALUE;
     use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
     use bss_pricing::api::rest::windows::{PRICE_WINDOW, PRICE_WINDOWS};
     vec![
@@ -920,11 +932,15 @@ fn if_match_routes() -> Vec<(&'static str, &'static str)> {
         ("PUT", CUSTOMER_GROUP_TAXONOMY),
         // D-353: the per-value `PATCH` asserts the **value's own** tag (the set's
         // whole-set `PUT`, which asserted the set tag, is removed).
-        ("PATCH", TAXONOMY_VALUE),
+        ("PATCH", VOCABULARY_VALUE),
         ("PUT", TAX_DISPLAY_POLICY),
         ("PUT", ROUNDING_POLICY),
-        ("PUT", ROUNDING_POLICIES),
-        ("PUT", GL_CODES),
+        // The two single-table vocabularies' per-value `PATCH`es, each
+        // asserting the **value's own** tag. Their whole-set `PUT`s, which
+        // asserted the set tag, are removed — `VOCABULARY_VALUE`'s story one
+        // vocabulary over.
+        ("PATCH", ROUNDING_POLICY_VALUE),
+        ("PATCH", GL_CODE_VALUE),
         // The creates the derived census brought in, listed here for the same reason
         // the four above them are: they assert through the idempotency gate.
         ("POST", BUNDLES),
@@ -1986,12 +2002,14 @@ fn routes_asserting_no_precondition() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::approvals::{APPROVAL_APPROVE, APPROVAL_REJECT, APPROVAL_WITHDRAW};
     use bss_pricing::api::rest::bundles::BUNDLE_PUBLISH;
     use bss_pricing::api::rest::cutovers::PLAN_CUTOVERS;
+    use bss_pricing::api::rest::gl_codes::GL_CODE_VALUES;
     use bss_pricing::api::rest::migrations::{MIGRATION_BY_ID, MIGRATIONS};
     use bss_pricing::api::rest::overlays::PRICE_OVERLAY_SUBMIT;
     use bss_pricing::api::rest::repricing_runs::{REPRICING_RUN_ABORT, REPRICING_RUNS};
     use bss_pricing::api::rest::retirement::PLAN_RETIRE;
+    use bss_pricing::api::rest::rounding_policies::ROUNDING_POLICY_VALUES;
     use bss_pricing::api::rest::supersessions::PLAN_SUPERSESSIONS;
-    use bss_pricing::api::rest::taxonomies::TAXONOMY_VALUES;
+    use bss_pricing::api::rest::taxonomies::VOCABULARY_VALUES;
     use bss_pricing::api::rest::windows::PRICE_WINDOW;
     vec![
         // D-353: the per-value taxonomy `POST`. The value is the resource's natural
@@ -1999,7 +2017,15 @@ fn routes_asserting_no_precondition() -> Vec<(&'static str, &'static str)> {
         // the same body replays (200), other content is `409 TAXONOMY_VALUE_EXISTS`
         // — and asserting an `If-Match` would make a *create* assert the version of
         // a set it does not replace. `PLAN_SUPERSESSIONS`' reasoning, one value wide.
-        ("POST", TAXONOMY_VALUES),
+        ("POST", VOCABULARY_VALUES),
+        // The two single-table vocabularies' declares, for the row above's
+        // reason exactly: the value is the resource's natural key, the repeat
+        // replays and other content is `409 TAXONOMY_VALUE_EXISTS`. Their
+        // `PATCH` siblings **do** assert — the value's own tag — and are in
+        // `if_match_routes()`, so this is not the asymmetry the doc above
+        // records but the same argument twice.
+        ("POST", GL_CODE_VALUES),
+        ("POST", ROUNDING_POLICY_VALUES),
         // Argued and guarded: an approval carries no version column, and the
         // compare-and-swap carries `state = 'submitted'` in its own predicate, so a
         // retry is refused `APPROVAL_NOT_PENDING` whether or not a header was sent.

@@ -837,6 +837,26 @@ async fn a_published_revisions_amounts_cannot_be_re_pointed_onto_a_draft() {
 // ---------------------------------------------------------------------------
 
 /// Slice 4's four scope-value universes, on the engine they will ship on.
+///
+/// # The state arm's premise was retired by D-370
+///
+/// It asserted that `'deprecated'` is rejected by `chk_{table}_state`. That was
+/// true of the two-state machine and is false of the three-state one: D-370
+/// widened these `CHECK`s in place, and the token is now a state.
+///
+/// **This was the third copy of that claim, and the census that re-aimed the
+/// other two missed it** — `sqlite_taxonomy_store` and
+/// `postgres_schema_taxonomy` both carried it under a name that said so
+/// (`a_state_outside_the_declared_pair_is_refused`), while this one inlines the
+/// literal inside a closure in a file about overlays. Only the pg tier found
+/// it, which the main suite does not run. Recorded here because the lesson is
+/// the general one: a concept's every *spelling* has to be censused, not its
+/// every name.
+///
+/// The arm is re-aimed rather than dropped — the key assertions around it are
+/// this case's own subject and are untouched — and it is driven from
+/// `TaxonomyState::ALL`, so the next widening reaches it without anyone
+/// remembering that this file exists.
 #[tokio::test]
 #[ignore = "requires Docker"]
 async fn the_four_taxonomies_hold_their_key_and_their_state() {
@@ -861,9 +881,12 @@ async fn the_four_taxonomies_hold_their_key_and_their_state() {
             &format!("{table}_pkey"),
         )
         .await;
+        for state in bss_pricing::domain::taxonomy::TaxonomyState::ALL {
+            must_succeed(&conn, &insert(&format!("eu-{state}"), state.as_str())).await;
+        }
         must_be_rejected(
             &conn,
-            &insert("eu-north", "deprecated"),
+            &insert("eu-north", "withdrawn"),
             &format!("chk_{table}_state"),
         )
         .await;

@@ -1,5 +1,5 @@
 //! The four tenant taxonomies' read and write surface —
-//! `design/04-currency-tax.md` §5's `GET/PUT /config/taxonomies/{…}`, §6's table,
+//! `design/04-currency-tax.md` §5's `GET/PUT /config/vocabularies/{…}`, §6's table,
 //! and `inst-tx-mutation`'s retire guard.
 //!
 //! # This is the repository the four tables have been waiting for
@@ -87,8 +87,8 @@ use crate::domain::overlay::{OverlayLifecycle, ScopeClass, ScopeValue};
 use crate::domain::scope_key::Region;
 use crate::domain::taxonomy::{
     RegionTaxMarkers, SEEDED_REGION, TAXONOMY_VALUE_IN_USE, TaxonomyClass, TaxonomyEntry,
-    TaxonomyState, ValueReferences, check_retirable, check_tax_category_removable, seeded_region,
-    tag_of,
+    TaxonomyState, ValueReferences, VocabularyClass, check_retirable, check_tax_category_removable,
+    is_a_retirement, seeded_region, tag_of,
 };
 use crate::domain::validation::ValidationReport;
 use crate::infra::storage::entity::{
@@ -122,8 +122,8 @@ impl TaxonomyRepo {
         Self { db }
     }
 
-    /// Every declared value of one class, `active` and `retired` alike, ordered
-    /// by value.
+    /// Every declared value of one class — `active`, `deprecated` and
+    /// `retired` alike (D-370) — ordered by value.
     ///
     /// **Retired values are in the list**, which is what makes the `PUT`'s
     /// round trip honest: an operator who reads, edits and writes back must be
@@ -194,8 +194,8 @@ impl TaxonomyRepo {
             .map_err(|e| e.into_domain(|infra| RepoError::Db(format!("taxonomy replace: {infra}"))))
     }
 
-    /// One declared value of one class, `active` or `retired`; `None` when the
-    /// tenant has never declared it.
+    /// One declared value of one class, in whichever state it stands; `None`
+    /// when the tenant has never declared it.
     ///
     /// Read through [`list_on`] rather than by a keyed select, so the row is
     /// decoded by the one reader that owns the `CHECK`-to-enum translation; the
@@ -441,6 +441,76 @@ impl TaxonomyRepo {
             e.into_domain(|infra| RepoError::Db(format!("gl-code taxonomy replace: {infra}")))
         })
     }
+
+    /// Declare **one** value of one single-table vocabulary — the per-value
+    /// `POST …/values`, [`Self::declare_value`]'s counterpart (D-334, D-356).
+    ///
+    /// The value is the resource's natural key, so the create is idempotent on
+    /// it for [`Self::declare_value`]'s reasons, and for its reason the read
+    /// that decides and the insert it decides on are one transaction.
+    ///
+    /// # Errors
+    /// [`RepoError::Db`] on a scope or storage failure;
+    /// [`RepoError::CorruptRow`] on an unreadable stored row.
+    pub async fn declare_vocabulary_value(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        class: VocabularyClass,
+        entry: TaxonomyEntry,
+        stamp: AuditStamp,
+    ) -> Result<Declared, RepoError> {
+        let scope = scope.clone();
+        let (_, outcome) = self
+            .db
+            .db()
+            .in_transaction::<Declared, RepoError, _>(move |txn| {
+                Box::pin(async move {
+                    apply_declare_vocabulary_value(txn, &scope, tenant_id, class, entry, stamp)
+                        .await
+                })
+            })
+            .await;
+        outcome.map_err(|e| {
+            e.into_domain(|infra| RepoError::Db(format!("vocabulary declare: {infra}")))
+        })
+    }
+
+    /// Apply one value's patch — the per-value `PATCH …/values/{value}`.
+    ///
+    /// `held` is the value the caller's `If-Match` tag described and `next` is
+    /// it with the patch applied; both premises are re-tested inside the
+    /// transaction ([`apply_patch_vocabulary_value`] says why).
+    ///
+    /// # Errors
+    /// [`RepoError::Db`] on a scope or storage failure;
+    /// [`RepoError::CorruptRow`] on an unreadable stored row. A moved premise
+    /// and a refused retirement are **not** errors: they come back as
+    /// [`ValuePatched::Stale`] and [`ValuePatched::Refused`], for
+    /// [`Replaced`]'s reason.
+    pub async fn patch_vocabulary_value(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        class: VocabularyClass,
+        held: TaxonomyEntry,
+        next: TaxonomyEntry,
+        stamp: AuditStamp,
+    ) -> Result<ValuePatched, RepoError> {
+        let scope = scope.clone();
+        let (_, outcome) = self
+            .db
+            .db()
+            .in_transaction::<ValuePatched, RepoError, _>(move |txn| {
+                Box::pin(async move {
+                    apply_patch_vocabulary_value(txn, &scope, tenant_id, class, held, next, stamp)
+                        .await
+                })
+            })
+            .await;
+        outcome
+            .map_err(|e| e.into_domain(|infra| RepoError::Db(format!("vocabulary patch: {infra}"))))
+    }
 }
 
 /// What a `PUT` did, or refused to do.
@@ -494,7 +564,9 @@ pub enum Declared {
 ///
 /// `active` only, which is `overlay_repo::declares`' predicate one plane over: a
 /// value that reached `retired` anyway must not validate a new row against
-/// itself.
+/// itself, and a **deprecated** one must not either — D-370's middle state is
+/// nothing but its absence from this set, so widening this filter to
+/// `!= retired` would delete the state without touching its definition.
 ///
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure; [`RepoError::CorruptRow`]
@@ -579,7 +651,7 @@ pub async fn active_rounding_policies(
 ///
 /// **This read is the provider seam D-356 names.** The publish rule is handed
 /// the set and never learns where it came from; today the set is what the
-/// tenant declared through `PUT /bss-pricing/v1/config/gl-codes`, and a future
+/// tenant declared through `POST /bss-pricing/v1/config/vocabularies/gl-codes/values`, and a future
 /// ERP gear that populates or reconciles `pricing_gl_code_taxonomy` changes
 /// nothing on this side of the seam.
 ///
@@ -823,7 +895,7 @@ pub async fn references_to(
 /// **Two grouped reads, not one per value.** Folding [`references_to`] over the
 /// list was bounded by the declared taxonomy rather than by the price-row table,
 /// which is the bound that was checked — but not by the request: nothing caps how
-/// many values a tenant declares, `GET /config/taxonomies/{class}` lists the class
+/// many values a tenant declares, `GET /config/vocabularies/{class}` lists the class
 /// whole with no `limit`, and D-353 made declaring one at a time the only door, so
 /// the loop grew one or two sequential round trips per declared value with the
 /// tenant's own authoring as the only ceiling.
@@ -956,6 +1028,20 @@ pub async fn rows_resolving_category_through(
 // The write.
 // ---------------------------------------------------------------------------
 
+/// What a whole-set write leaves a held value in: the submitted state, or
+/// `retired` when the body omits it (**the "absence is retirement" rule**, and
+/// D-370 did not touch it — a *deprecation* must be said out loud, because
+/// absence has meant exactly one thing since these tables landed and giving it
+/// a second meaning would silently re-read every client's filtered list).
+fn whole_set_destination(
+    submitted: &BTreeMap<String, TaxonomyEntry>,
+    existing: &TaxonomyEntry,
+) -> TaxonomyState {
+    submitted
+        .get(existing.value.as_str())
+        .map_or(TaxonomyState::Retired, |entry| entry.state)
+}
+
 async fn apply_replace(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -1003,14 +1089,16 @@ async fn apply_replace(
     // able to slip past the guard by choosing the other spelling.
     let mut report = ValidationReport::default();
     for existing in &held {
-        let key = existing.value.as_str();
-        let retiring = submitted
-            .get(key)
-            .is_none_or(|entry| entry.state == TaxonomyState::Retired);
-        if !retiring || existing.state == TaxonomyState::Retired {
-            // Already retired is not a retirement: re-asserting a value's
-            // current state is a no-op, and guarding it would make a taxonomy
-            // with one guarded retirement permanently un-`PUT`-able.
+        if !is_a_retirement(existing.state, whole_set_destination(&submitted, existing)) {
+            // **One predicate, not four hand-written copies** (D-369, D-370).
+            // This read `state == Retired` twice — once for the destination and
+            // once to skip an already-retired value — which is the retire
+            // guard's key open-coded, and four copies of a key are four places
+            // for it to drift. `is_a_retirement` is the same function the
+            // per-value judges use, so a body that says `deprecated` is not a
+            // retirement, a body that omits the value is, and re-asserting
+            // `retired` is not — without this loop having an opinion about any
+            // of it.
             continue;
         }
         let references = references_to(runner, tenant_id, class, &existing.value).await?;
@@ -1142,11 +1230,54 @@ pub async fn judge_value_patch(
     next: &TaxonomyEntry,
 ) -> Result<ValidationReport, RepoError> {
     let mut report = ValidationReport::default();
-    if held.state == TaxonomyState::Active && next.state == TaxonomyState::Retired {
+    if is_a_retirement(held.state, next.state) {
         let references = references_to(runner, tenant_id, class, &held.value).await?;
         report.absorb(check_retirable(class, &held.value, references));
     }
-    if class.carries_tax_markers() && next.state != TaxonomyState::Retired {
+    // **The complement, written out (D-369).** This read `next.state !=
+    // Retired`, which is *"every state but retired"* — correct today only
+    // because the machine has two, and a silent admission of every state added
+    // later. What D-245 guards is a marker a published row still **resolves
+    // through**, so the question is whether `next` is a state the value is
+    // still resolving in; that is a property of each state and has to be
+    // decided per state, not by excluding one. An exhaustive `match` is the
+    // instrument: a variant added to `TaxonomyState` fails to compile here and
+    // the decision is taken rather than inherited.
+    //
+    // The retire guard above wants the **opposite** treatment — a complement,
+    // so a new state is guarded the day it is added — because it asks *is this
+    // the guarded act* rather than *is the value still resolving*. See
+    // `domain::taxonomy::is_a_retirement`.
+    #[allow(
+        clippy::match_same_arms,
+        reason = "the two `true` arms answer the same way for different reasons — `active` is \
+                  still authorable, `deprecated` is not but every row that already resolved \
+                  through the marker still does — and collapsing them to `Active | Deprecated` \
+                  would put one comment over two decisions. The exhaustiveness D-369 bought is \
+                  unaffected either way; what is kept here is that each state's answer is \
+                  argued where it is given"
+    )]
+    let still_resolving_through_the_marker = match next.state {
+        // A value that stays authorable is a value rows keep resolving
+        // through, so dropping its default category is the act D-245 refuses.
+        TaxonomyState::Active => true,
+        // **The arm D-369's exhaustive `match` was written to force, answered
+        // by D-370.** A deprecated value is withdrawn from *new* use and from
+        // nothing else: every published row that resolved its category through
+        // this region on the day it was published still resolves it, which is
+        // the whole of what `deprecated` means. So the marker is exactly as
+        // load-bearing as it is under `active`, and clearing it is exactly as
+        // guarded. Answering `false` here would have made "deprecate, then
+        // clear the marker" a two-step walk around D-245 — the shape that
+        // freezes a market out of publishing, which D-245's own doc records
+        // having been written against.
+        TaxonomyState::Deprecated => true,
+        // A retirement stops new use and leaves what already resolves alone;
+        // the retire guard above is what judges it, and judging the marker as
+        // well would refuse one act with two violations naming two remedies.
+        TaxonomyState::Retired => false,
+    };
+    if class.carries_tax_markers() && still_resolving_through_the_marker {
         let had = held.tax.as_ref().and_then(|t| t.tax_category.as_deref());
         let keeps = next.tax.as_ref().and_then(|t| t.tax_category.as_deref());
         if had.is_some() && keeps.is_none() {
@@ -1958,11 +2089,7 @@ async fn apply_replace_customer_group(
 
     let mut report = ValidationReport::default();
     for existing in &held {
-        let key = existing.value.as_str();
-        let retiring = submitted
-            .get(key)
-            .is_none_or(|entry| entry.state == TaxonomyState::Retired);
-        if !retiring || existing.state == TaxonomyState::Retired {
+        if !is_a_retirement(existing.state, whole_set_destination(&submitted, existing)) {
             continue;
         }
         let references = references_to_customer_group(
@@ -2017,7 +2144,7 @@ async fn apply_replace_rounding_policy(
 ) -> Result<Replaced, RepoError> {
     let held = list_rounding_policy_on(runner, scope, tenant_id).await?;
 
-    if rounding_policy_tag_of(&held) != *asserted {
+    if vocabulary_tag_of(VocabularyClass::RoundingPolicy, &held) != *asserted {
         return Ok(Replaced {
             entries: held,
             report: ValidationReport::default(),
@@ -2032,11 +2159,7 @@ async fn apply_replace_rounding_policy(
 
     let mut report = ValidationReport::default();
     for existing in &held {
-        let key = existing.value.as_str();
-        let retiring = submitted
-            .get(key)
-            .is_none_or(|entry| entry.state == TaxonomyState::Retired);
-        if !retiring || existing.state == TaxonomyState::Retired {
+        if !is_a_retirement(existing.state, whole_set_destination(&submitted, existing)) {
             continue;
         }
         let (rows, default_names_it) =
@@ -2058,7 +2181,14 @@ async fn apply_replace_rounding_policy(
 
     write_rounding_policy_set(runner, scope, tenant_id, &held, &submitted).await?;
     let now = list_rounding_policy_on(runner, scope, tenant_id).await?;
-    record_single_table_mutation(runner, scope, tenant_id, ROUNDING_POLICY_RESOURCE, stamp).await?;
+    record_single_table_mutation(
+        runner,
+        scope,
+        tenant_id,
+        VocabularyClass::RoundingPolicy.resource(),
+        stamp,
+    )
+    .await?;
     Ok(Replaced {
         entries: now,
         report,
@@ -2077,30 +2207,17 @@ async fn write_rounding_policy_set(
     let held_keys: BTreeSet<&str> = held.iter().map(|e| e.value.as_str()).collect();
 
     for entry in submitted.values() {
-        let row = rounding_policy_taxonomy::ActiveModel {
-            tenant_id: Set(tenant_id),
-            value: Set(entry.value.as_str().to_owned()),
-            display_name: Set(entry.display_name.clone()),
-            state: Set(entry.state.as_str().to_owned()),
-        };
         if held_keys.contains(entry.value.as_str()) {
             update_rounding_policy_entry(runner, scope, tenant_id, entry).await?;
         } else {
-            let inserted = row.clone();
-            rounding_policy_taxonomy::Entity::insert(inserted.clone())
-                .secure()
-                .scope_with_model(scope, &inserted)
-                .map_err(|e| RepoError::Db(format!("scope pricing_rounding_policy_taxonomy: {e}")))?
-                .exec(runner)
-                .await
-                .map(|_| ())
-                .map_err(|e| {
-                    contention_or_db(
-                        &e,
-                        "pricing_rounding_policy_taxonomy",
-                        "insert pricing_rounding_policy_taxonomy",
-                    )
-                })?;
+            insert_vocabulary_entry(
+                runner,
+                scope,
+                tenant_id,
+                VocabularyClass::RoundingPolicy,
+                entry,
+            )
+            .await?;
         }
     }
     // A value the caller omitted is **retired, never deleted** — the taxonomies'
@@ -2163,7 +2280,7 @@ async fn apply_replace_gl_code(
 ) -> Result<Replaced, RepoError> {
     let held = list_gl_code_on(runner, scope, tenant_id).await?;
 
-    if gl_code_tag_of(&held) != *asserted {
+    if vocabulary_tag_of(VocabularyClass::GlCode, &held) != *asserted {
         return Ok(Replaced {
             entries: held,
             report: ValidationReport::default(),
@@ -2178,11 +2295,7 @@ async fn apply_replace_gl_code(
 
     let mut report = ValidationReport::default();
     for existing in &held {
-        let key = existing.value.as_str();
-        let retiring = submitted
-            .get(key)
-            .is_none_or(|entry| entry.state == TaxonomyState::Retired);
-        if !retiring || existing.state == TaxonomyState::Retired {
+        if !is_a_retirement(existing.state, whole_set_destination(&submitted, existing)) {
             continue;
         }
         let revisions = references_to_gl_code(runner, tenant_id, &existing.value).await?;
@@ -2199,7 +2312,14 @@ async fn apply_replace_gl_code(
 
     write_gl_code_set(runner, scope, tenant_id, &held, &submitted).await?;
     let now = list_gl_code_on(runner, scope, tenant_id).await?;
-    record_single_table_mutation(runner, scope, tenant_id, GL_CODE_RESOURCE, stamp).await?;
+    record_single_table_mutation(
+        runner,
+        scope,
+        tenant_id,
+        VocabularyClass::GlCode.resource(),
+        stamp,
+    )
+    .await?;
     Ok(Replaced {
         entries: now,
         report,
@@ -2218,30 +2338,11 @@ async fn write_gl_code_set(
     let held_keys: BTreeSet<&str> = held.iter().map(|e| e.value.as_str()).collect();
 
     for entry in submitted.values() {
-        let row = gl_code_taxonomy::ActiveModel {
-            tenant_id: Set(tenant_id),
-            value: Set(entry.value.as_str().to_owned()),
-            display_name: Set(entry.display_name.clone()),
-            state: Set(entry.state.as_str().to_owned()),
-        };
         if held_keys.contains(entry.value.as_str()) {
             update_gl_code_entry(runner, scope, tenant_id, entry).await?;
         } else {
-            let inserted = row.clone();
-            gl_code_taxonomy::Entity::insert(inserted.clone())
-                .secure()
-                .scope_with_model(scope, &inserted)
-                .map_err(|e| RepoError::Db(format!("scope pricing_gl_code_taxonomy: {e}")))?
-                .exec(runner)
-                .await
-                .map(|_| ())
-                .map_err(|e| {
-                    contention_or_db(
-                        &e,
-                        "pricing_gl_code_taxonomy",
-                        "insert pricing_gl_code_taxonomy",
-                    )
-                })?;
+            insert_vocabulary_entry(runner, scope, tenant_id, VocabularyClass::GlCode, entry)
+                .await?;
         }
     }
     // A value the caller omitted is **retired, never deleted** — the taxonomies'
@@ -2538,25 +2639,45 @@ fn check_rounding_policy_retirable(
     report
 }
 
-/// The rounding vocabulary's resource name.
+/// One single-table vocabulary's set tag — [`customer_group_tag_of`]'s shape
+/// over [`VocabularyClass::resource`].
 ///
-/// `PUT /bss-pricing/v1/config/rounding-policies`' own last segment. Written once
-/// because **two** representations are derived from it — the entity tag
-/// [`rounding_policy_tag_of`] hashes and the `taxonomy/…` audit ref
-/// [`record_single_table_mutation`] writes — and a taxonomy spelled two ways in
-/// those two places is a tag that names one resource and a trail that names
-/// another. The customer-group vocabulary's name comes from
-/// [`ScopeClass::CustomerGroup`] for the same reason, which is why it has no
-/// constant of its own here.
-const ROUNDING_POLICY_RESOURCE: &str = "rounding-policies";
-
-/// The rounding vocabulary's tag — [`customer_group_tag_of`]'s shape over its
-/// own resource name.
+/// **One producer for both**, where there were two constants and two
+/// byte-identical functions. The resource name is the class's own
+/// ([`VocabularyClass::resource`]'s doc says why it has exactly one), so the
+/// tag a `GET` hands out, the tag a write compares inside its transaction and
+/// the `taxonomy/…` audit ref cannot come to spell one vocabulary two ways.
 #[must_use]
-pub fn rounding_policy_tag_of(entries: &[TaxonomyEntry]) -> PolicyTag {
+pub fn vocabulary_tag_of(class: VocabularyClass, entries: &[TaxonomyEntry]) -> PolicyTag {
     PolicyTag::of_taxonomy(
-        ROUNDING_POLICY_RESOURCE,
+        class.resource(),
         entries.iter().map(|entry| TaxonomyTagEntry {
+            value: entry.value.as_str(),
+            state: entry.state.as_str(),
+            display_name: entry.display_name.as_str(),
+            tax_category: None,
+            tax_rate_present: false,
+        }),
+    )
+}
+
+/// **One** declared value's tag — what `GET/PATCH …/values/{value}` carry and
+/// assert, [`crate::domain::taxonomy::tag_of_value`]'s counterpart on the two
+/// single-table vocabularies.
+///
+/// Digested under the segment `{resource}/{value}`, so it moves with that
+/// value alone and cannot collide with the set tag above, whose segment is the
+/// bare resource. That separation is the whole point of the per-value door:
+/// two admins re-labelling two different GL codes must not refuse each other
+/// on a set they never disagreed about.
+///
+/// The tax markers are `None`/`false` because neither table has the columns —
+/// [`VocabularyClass`]'s own doc — and not because they are being suppressed.
+#[must_use]
+pub fn vocabulary_value_tag_of(class: VocabularyClass, entry: &TaxonomyEntry) -> PolicyTag {
+    PolicyTag::of_taxonomy(
+        &format!("{}/{}", class.resource(), entry.value.as_str()),
+        std::iter::once(TaxonomyTagEntry {
             value: entry.value.as_str(),
             state: entry.state.as_str(),
             display_name: entry.display_name.as_str(),
@@ -2649,31 +2770,6 @@ fn check_gl_code_retirable(value: &ScopeValue, published_revisions: u64) -> Vali
     report
 }
 
-/// The GL-code vocabulary's resource name.
-///
-/// `PUT /bss-pricing/v1/config/gl-codes`' own last segment, written once for
-/// [`ROUNDING_POLICY_RESOURCE`]'s reason: the entity tag [`gl_code_tag_of`]
-/// hashes it and the `taxonomy/…` audit ref [`record_single_table_mutation`]
-/// writes it, and a taxonomy spelled two ways there is a tag that names one
-/// resource and a trail that names another.
-const GL_CODE_RESOURCE: &str = "gl-codes";
-
-/// The GL-code vocabulary's tag — [`rounding_policy_tag_of`]'s shape over its
-/// own resource name.
-#[must_use]
-pub fn gl_code_tag_of(entries: &[TaxonomyEntry]) -> PolicyTag {
-    PolicyTag::of_taxonomy(
-        GL_CODE_RESOURCE,
-        entries.iter().map(|entry| TaxonomyTagEntry {
-            value: entry.value.as_str(),
-            state: entry.state.as_str(),
-            display_name: entry.display_name.as_str(),
-            tax_category: None,
-            tax_rate_present: false,
-        }),
-    )
-}
-
 /// The entity tag of the customer-group taxonomy's representation —
 /// [`tag_of`]'s sibling, over one label rather than a [`TaxonomyClass`].
 ///
@@ -2695,6 +2791,346 @@ pub fn customer_group_tag_of(entries: &[TaxonomyEntry]) -> PolicyTag {
     )
 }
 
+// ---------------------------------------------------------------------------
+// The two single-table vocabularies' per-value doors (D-334, D-356).
+//
+// The four scope classes got them in D-353 and the argument was never about
+// those four tables: a whole-set `PUT` cannot say *which* value moved in its
+// audit record, refuses two admins editing two different values on one set
+// tag, and retires everything a filtered client did not show. All three hold
+// on `pricing_rounding_policy_taxonomy` and `pricing_gl_code_taxonomy`
+// unchanged, so the door family is the same one, keyed by `VocabularyClass`
+// rather than by `TaxonomyClass` — see that enum's doc for why the two
+// cannot be one.
+//
+// What is *not* the same is governance: neither vocabulary opens an approval
+// unit on any edge (D-334, D-356 — "it narrows what may be authored"), so
+// there is no `202` arm here, no content pin and no unit to re-derive. The
+// premise these transactions re-test is the `If-Match` one alone.
+// ---------------------------------------------------------------------------
+
+/// One vocabulary's declared values, in every state (D-370), ordered by value
+/// — the class dispatcher over the two per-table readers.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure; [`RepoError::CorruptRow`]
+/// when a stored `state` or `value` is outside what its `CHECK` admits.
+async fn list_vocabulary_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    class: VocabularyClass,
+) -> Result<Vec<TaxonomyEntry>, RepoError> {
+    match class {
+        VocabularyClass::RoundingPolicy => list_rounding_policy_on(runner, scope, tenant_id).await,
+        VocabularyClass::GlCode => list_gl_code_on(runner, scope, tenant_id).await,
+    }
+}
+
+/// One declared value of one vocabulary, on the caller's runner —
+/// [`find_value_on`]'s counterpart, and the read every arm of the per-value
+/// `PATCH` works from.
+///
+/// Read through the list for [`find_value_on`]'s reason: the row is decoded by
+/// the one reader that owns the `CHECK`-to-enum translation, and these sets are
+/// tens of values on the config plane.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure;
+/// [`RepoError::CorruptRow`] on an unreadable stored row.
+pub async fn find_vocabulary_value_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    class: VocabularyClass,
+    value: &ScopeValue,
+) -> Result<Option<TaxonomyEntry>, RepoError> {
+    Ok(list_vocabulary_on(runner, scope, tenant_id, class)
+        .await?
+        .into_iter()
+        .find(|held| held.value == *value))
+}
+
+/// The one guard a vocabulary value's edit must pass: the retire guard, over
+/// whichever reference plane the class has.
+///
+/// [`judge_value_patch`]'s counterpart with **one** guard rather than two —
+/// D-245's cleared-category guard is the region taxonomy's and neither of these
+/// tables has the columns it reads ([`VocabularyClass`]'s own doc). Run at the
+/// door and again inside the write transaction, because the world may move
+/// between them.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure.
+pub async fn judge_vocabulary_value_patch(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    class: VocabularyClass,
+    held: &TaxonomyEntry,
+    next: &TaxonomyEntry,
+) -> Result<ValidationReport, RepoError> {
+    let mut report = ValidationReport::default();
+    if !is_a_retirement(held.state, next.state) {
+        return Ok(report);
+    }
+    match class {
+        VocabularyClass::RoundingPolicy => {
+            let (rows, default_names_it) =
+                references_to_rounding_policy(runner, scope, tenant_id, &held.value).await?;
+            report.absorb(check_rounding_policy_retirable(
+                &held.value,
+                rows,
+                default_names_it,
+            ));
+        }
+        VocabularyClass::GlCode => {
+            let revisions = references_to_gl_code(runner, tenant_id, &held.value).await?;
+            report.absorb(check_gl_code_retirable(&held.value, revisions));
+        }
+    }
+    Ok(report)
+}
+
+/// The audited subject: one value of one vocabulary of one tenant —
+/// [`taxonomy_value_ref`]'s counterpart over [`VocabularyClass::resource`].
+///
+/// The same `taxonomy/{resource}/{value}` shape the four classes write, so an
+/// auditor filtering `AuditSubjectKind::TaxonomyValue` reads one trail across
+/// six vocabularies rather than two shapes.
+#[must_use]
+pub fn vocabulary_value_ref(class: VocabularyClass, value: &ScopeValue) -> String {
+    format!("taxonomy/{}/{}", class.resource(), value.as_str())
+}
+
+/// Insert one row into whichever of the two tables the class names.
+///
+/// The single writer for both the whole-set `PUT`'s remaining seeding path and
+/// the per-value `POST`, so the two cannot come to disagree about which columns
+/// a declared value carries.
+async fn insert_vocabulary_entry(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    class: VocabularyClass,
+    entry: &TaxonomyEntry,
+) -> Result<(), RepoError> {
+    let value = entry.value.as_str().to_owned();
+    let display_name = entry.display_name.clone();
+    let state = entry.state.as_str().to_owned();
+    match class {
+        VocabularyClass::RoundingPolicy => {
+            let row = rounding_policy_taxonomy::ActiveModel {
+                tenant_id: Set(tenant_id),
+                value: Set(value),
+                display_name: Set(display_name),
+                state: Set(state),
+            };
+            rounding_policy_taxonomy::Entity::insert(row.clone())
+                .secure()
+                .scope_with_model(scope, &row)
+                .map_err(|e| RepoError::Db(format!("scope pricing_rounding_policy_taxonomy: {e}")))?
+                .exec(runner)
+                .await
+                .map(|_| ())
+                .map_err(|e| {
+                    contention_or_db(
+                        &e,
+                        "pricing_rounding_policy_taxonomy",
+                        "insert pricing_rounding_policy_taxonomy",
+                    )
+                })
+        }
+        VocabularyClass::GlCode => {
+            let row = gl_code_taxonomy::ActiveModel {
+                tenant_id: Set(tenant_id),
+                value: Set(value),
+                display_name: Set(display_name),
+                state: Set(state),
+            };
+            gl_code_taxonomy::Entity::insert(row.clone())
+                .secure()
+                .scope_with_model(scope, &row)
+                .map_err(|e| RepoError::Db(format!("scope pricing_gl_code_taxonomy: {e}")))?
+                .exec(runner)
+                .await
+                .map(|_| ())
+                .map_err(|e| {
+                    contention_or_db(
+                        &e,
+                        "pricing_gl_code_taxonomy",
+                        "insert pricing_gl_code_taxonomy",
+                    )
+                })
+        }
+    }
+}
+
+/// Update one row of whichever of the two tables the class names.
+async fn update_vocabulary_entry(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    class: VocabularyClass,
+    entry: &TaxonomyEntry,
+) -> Result<(), RepoError> {
+    match class {
+        VocabularyClass::RoundingPolicy => {
+            update_rounding_policy_entry(runner, scope, tenant_id, entry).await
+        }
+        VocabularyClass::GlCode => update_gl_code_entry(runner, scope, tenant_id, entry).await,
+    }
+}
+
+/// The per-value audit record for a vocabulary — [`record_value_mutation`]'s
+/// counterpart, and the half the whole-set `PUT` could never write.
+///
+/// `record_single_table_mutation` recorded *"the GL-code vocabulary changed"*
+/// with no before and no after, because a whole list has no bounded diff to
+/// put on the hash chain. One value does: this writes `create` on a
+/// declaration and `update` on a patch, with the value's state before and
+/// after, which is what lets an auditor answer *who retired `4010-TAX`, and
+/// when* from the trail rather than by diffing two snapshots.
+///
+/// `approval_ref` is always `None` and that is the vocabularies' own rule
+/// rather than an omission: neither opens a unit on any edge (D-334, D-356).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "an audit record's fields, each a fact only the caller holds — \
+              `record_value_mutation`'s own allowance one vocabulary over"
+)]
+async fn record_vocabulary_value_mutation(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    class: VocabularyClass,
+    value: &ScopeValue,
+    action: AuditAction,
+    before: Option<&TaxonomyEntry>,
+    after: Option<&TaxonomyEntry>,
+    stamp: AuditStamp,
+) -> Result<(), RepoError> {
+    audit_repo::append(
+        runner,
+        scope,
+        NewAuditEntry {
+            tenant_id,
+            chain_id: audit_repo::policy_chain(),
+            recorded_at: stamp.recorded_at,
+            actor_principal_id: stamp.actor_principal_id,
+            action,
+            subject_kind: AuditSubjectKind::TaxonomyValue,
+            subject_ref: vocabulary_value_ref(class, value),
+            before_state: before.map(value_state),
+            after_state: after.map(value_state),
+            approval_ref: None,
+            correlation_id: stamp.correlation_id,
+        },
+    )
+    .await
+    .map(|_| ())
+}
+
+/// What a per-value `PATCH` on a vocabulary did, or refused to do.
+///
+/// Three answers rather than a `Result`, for [`Replaced`]'s reason: a refused
+/// retirement and a moved premise are **domain** answers the route renders as
+/// 409s with their own codes, not storage faults.
+#[derive(Clone, Debug)]
+pub enum ValuePatched {
+    /// Applied. The value as it now stands.
+    Committed(Box<TaxonomyEntry>),
+    /// The value moved between the caller's read and this transaction, so the
+    /// `If-Match` premise no longer holds and **nothing was written**.
+    Stale,
+    /// The retire guard refused; nothing was written.
+    Refused(ValidationReport),
+}
+
+/// [`TaxonomyRepo::declare_vocabulary_value`]'s transaction body —
+/// [`apply_declare`]'s shape over a vocabulary.
+async fn apply_declare_vocabulary_value(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    class: VocabularyClass,
+    entry: TaxonomyEntry,
+    stamp: AuditStamp,
+) -> Result<Declared, RepoError> {
+    let held = list_vocabulary_on(runner, scope, tenant_id, class).await?;
+    if let Some(existing) = held.into_iter().find(|h| h.value == entry.value) {
+        return Ok(if existing == entry {
+            Declared::Replayed(existing)
+        } else {
+            Declared::Exists(existing)
+        });
+    }
+    insert_vocabulary_entry(runner, scope, tenant_id, class, &entry).await?;
+    record_vocabulary_value_mutation(
+        runner,
+        scope,
+        tenant_id,
+        class,
+        &entry.value,
+        AuditAction::Create,
+        None,
+        Some(&entry),
+        stamp,
+    )
+    .await?;
+    Ok(Declared::Created(entry))
+}
+
+/// [`TaxonomyRepo::patch_vocabulary_value`]'s transaction body.
+///
+/// # Both premises are tested **here**, not at the door
+///
+/// `ApprovalService::commit_taxonomy_value_direct_in`'s arrangement, and its
+/// argument unchanged: the door compared `vocabulary_value_tag_of` against the
+/// header on a plain connection, and [`update_vocabulary_entry`] is an
+/// unconditional `UPDATE` filtered on `(tenant_id, value)` over tables that
+/// carry no row version. So a door-side comparison alone is the shape
+/// [`apply_replace`] refuses in writing — two callers whose reads both precede
+/// either commit each pass it, the second write overwrites the first, and both
+/// are answered `200`.
+///
+/// Compared against `held` — the value the caller's tag described — rather
+/// than against a freshly rendered tag, because `held` is what the patch was
+/// authored over and what the audit record names as `before`.
+async fn apply_patch_vocabulary_value(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    class: VocabularyClass,
+    held: TaxonomyEntry,
+    next: TaxonomyEntry,
+    stamp: AuditStamp,
+) -> Result<ValuePatched, RepoError> {
+    let standing = find_vocabulary_value_on(runner, scope, tenant_id, class, &held.value).await?;
+    if standing.as_ref() != Some(&held) {
+        return Ok(ValuePatched::Stale);
+    }
+    let report =
+        judge_vocabulary_value_patch(runner, scope, tenant_id, class, &held, &next).await?;
+    if !report.is_publishable() {
+        return Ok(ValuePatched::Refused(report));
+    }
+    update_vocabulary_entry(runner, scope, tenant_id, class, &next).await?;
+    record_vocabulary_value_mutation(
+        runner,
+        scope,
+        tenant_id,
+        class,
+        &held.value,
+        AuditAction::Update,
+        Some(&held),
+        Some(&next),
+        stamp,
+    )
+    .await?;
+    Ok(ValuePatched::Committed(Box::new(next)))
+}
+
 /// `inst-tx-mutation`'s audit half for the two **single-table** vocabularies —
 /// [`record_mutation`]'s sibling, over a resource name rather than a
 /// [`TaxonomyClass`].
@@ -2709,7 +3145,7 @@ pub fn customer_group_tag_of(entries: &[TaxonomyEntry]) -> PolicyTag {
 /// taxonomy. Nothing pinned the ref, so nothing caught it.
 ///
 /// The names passed in are the two routes' **own** resource names, which is also
-/// what [`customer_group_tag_of`] and [`rounding_policy_tag_of`] hash under, so
+/// what [`customer_group_tag_of`] and [`vocabulary_tag_of`] hash under, so
 /// the audit ref and the entity tag cannot come to spell one taxonomy two ways.
 async fn record_single_table_mutation(
     runner: &impl DBRunner,

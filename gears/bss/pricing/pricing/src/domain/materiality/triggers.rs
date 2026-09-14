@@ -321,7 +321,7 @@ pub enum Trigger {
     PlanShapeRevisionContent,
     /// An edit of one declared scope-value taxonomy entry — a relabel, a
     /// retirement or re-activation, a region's tax markers — through
-    /// `PATCH /config/taxonomies/{class}/values/{value}` (D-353). Always
+    /// `PATCH /config/vocabularies/{class}/values/{value}` (D-353). Always
     /// material: the value is a universe publish validates against, and the
     /// region universe is also C4's tax-readiness input, so one principal
     /// moving it alone is the shape dual control exists to refuse. Declaring a

@@ -51,7 +51,10 @@
 //! takes `0`/`1`, and the `bss.` qualification is dropped, as elsewhere in this
 //! chain. Every `CHECK` and the primary key are preserved on both sides. No
 //! append-only trigger: a taxonomy value is editable in place by design —
-//! `retired -> active` re-activation is an explicitly legal audited move (§6).
+//! `retired -> active` re-activation is an explicitly legal audited move (§6),
+//! and so is `deprecated -> active` (**D-370**, which widened this `CHECK` in
+//! place from two tokens to three on this table and five siblings; the
+//! customer-group table is deliberately not among them).
 //!
 //! # The value predicate is D-242's, and `length(value) > 0` is the wrong one
 //!
@@ -62,7 +65,7 @@
 //!
 //! What a whitespace value costs is one level up from the sentinel above.
 //! `TaxonomyRepo::list` maps a value `ScopeValue` refuses to `RepoError::CorruptRow`,
-//! so **one** such row makes `GET /config/taxonomies/{class}` fail for **every** value
+//! so **one** such row makes `GET /config/vocabularies/{class}` fail for **every** value
 //! in that class, and the only remedy is direct SQL — the `PUT` cannot round-trip a
 //! list it cannot read. The predicate stops the row existing rather than coping with
 //! it, which is what makes the store agree with the domain type.
@@ -122,7 +125,7 @@ const PG_UP_STATEMENTS: &[&str] = &["CREATE TABLE bss.pricing_region_taxonomy (
             state            text    NOT NULL DEFAULT 'active'::text,
             tax_category     text,
             tax_rate_present boolean NOT NULL DEFAULT false,
-            CONSTRAINT chk_pricing_region_taxonomy_state CHECK (state IN ('active', 'retired')),
+            CONSTRAINT chk_pricing_region_taxonomy_state CHECK (state IN ('active', 'deprecated', 'retired')),
             CONSTRAINT chk_pricing_region_taxonomy_value_present CHECK ((length(btrim(value, chr(9) || chr(10) || chr(11) || chr(12) || chr(13) || chr(32))) > 0)),
             CONSTRAINT pricing_region_taxonomy_pkey PRIMARY KEY (tenant_id, value)
         )"];
@@ -137,7 +140,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &["CREATE TABLE pricing_region_taxonomy (
             tax_category     text,
             tax_rate_present boolean NOT NULL DEFAULT 0,
             PRIMARY KEY (tenant_id, value),
-            CONSTRAINT chk_pricing_region_taxonomy_state CHECK (state IN ('active', 'retired')),
+            CONSTRAINT chk_pricing_region_taxonomy_state CHECK (state IN ('active', 'deprecated', 'retired')),
             CONSTRAINT chk_pricing_region_taxonomy_value_present CHECK (length(trim(value, char(9,10,11,12,13,32))) > 0)
         )"];
 

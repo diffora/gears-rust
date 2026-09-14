@@ -155,6 +155,8 @@ members = [
     "gears/bss/ledger/ledger-sdk",
     "gears/bss/pricing/pricing",
     "gears/bss/pricing/pricing-sdk",
+    "gears/bss/products/products",
+    "gears/bss/products/products-sdk",
     "gears/bss/rate-provider/rate-provider-sdk",
     "gears/bss/rate-provider/rate-provider",
     "gears/bss/rate-provider/plugins/ecb-plugin",
@@ -366,6 +368,7 @@ cluster-sdk = { package = "cf-gears-cluster-sdk", version = "0.2.3", path = "gea
 types-registry-sdk = { package = "cf-gears-types-registry-sdk", version = "0.3.7", path = "gears/system/types-registry/types-registry-sdk" }
 tenant-resolver-sdk = { package = "cf-gears-tenant-resolver-sdk", version = "0.4.0", path = "gears/system/tenant-resolver/tenant-resolver-sdk" }
 authz-resolver-sdk = { package = "cf-gears-authz-resolver-sdk", version = "0.4.0", path = "gears/system/authz-resolver/authz-resolver-sdk" }
+event-broker-sdk = { package = "cf-gears-event-broker-sdk", version = "0.2.1", path = "gears/system/event-broker/event-broker-sdk" }
 resource-group-sdk = { package = "cf-gears-resource-group-sdk", version = "0.3.1", path = "gears/system/resource-group/resource-group-sdk" }
 oagw-sdk = { package = "cf-gears-oagw-sdk", version = "0.5.11", path = "gears/system/oagw/oagw-sdk" }
 usage-collector-sdk = { package = "cf-gears-usage-collector-sdk", version = "0.3.9", path = "gears/system/usage-collector/usage-collector-sdk" }
@@ -384,6 +387,15 @@ bss-ledger-sdk = { package = "cf-gears-bss-ledger-sdk", version = "0.1.4", path 
 # must gain one in the same change or that gate turns red — which is the intended
 # coupling, not a latent trap.
 bss-pricing-sdk = { package = "cf-gears-bss-pricing-sdk", path = "gears/bss/pricing/pricing-sdk" }
+# The products registry SDK. Same posture as pricing-sdk above: no `version`,
+# because neither crate is a release artifact and the gear that consumes it is
+# not published either.
+bss-products-sdk = { package = "cf-gears-bss-products-sdk", path = "gears/bss/products/products-sdk" }
+# NFKC for the products registry's `normalized(name)`, the operand of its
+# uniqueness index. Already in the tree transitively; taken as a direct
+# dependency because the normalization must be identical on both engines and
+# std offers neither NFKC nor full casefold.
+unicode-normalization = "0.1"
 bss-rate-provider-sdk = { package = "cf-gears-bss-rate-provider-sdk", version = "0.1.5", path = "gears/bss/rate-provider/rate-provider-sdk" }
 coord = { package = "cf-gears-bss-coord", path = "gears/bss/libs/coord" }
 # The joint golden conformance fixture corpus. `bss-fixtures` carries no charge

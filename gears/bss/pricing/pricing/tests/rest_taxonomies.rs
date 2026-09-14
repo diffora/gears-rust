@@ -1,4 +1,4 @@
-//! `GET/PUT /config/taxonomies/{class}`, driven through the real router.
+//! `GET/PUT /config/vocabularies/{class}`, driven through the real router.
 //!
 //! # The positive control is the whole point of this file
 //!
@@ -29,7 +29,7 @@ mod common;
 mod rest_support;
 
 use axum::http::StatusCode;
-use bss_pricing::api::rest::taxonomies::{TAXONOMY, TAXONOMY_VALUE, TAXONOMY_VALUES};
+use bss_pricing::api::rest::taxonomies::{VOCABULARY, VOCABULARY_VALUE, VOCABULARY_VALUES};
 use bss_pricing::authz::{actions, labels};
 use rest_support::{
     Harness, approval_row, approval_rows, audit_rows, body_json, etag_of, location_of,
@@ -46,7 +46,7 @@ const ADMIN: uuid::Uuid = uuid::Uuid::from_u128(0xca_d0);
 const REVIEWER: uuid::Uuid = uuid::Uuid::from_u128(0xa_c0);
 
 fn path(class: &str) -> String {
-    TAXONOMY.replace("{class}", class)
+    VOCABULARY.replace("{class}", class)
 }
 
 /// Read one taxonomy, answering the body and the tag together.
@@ -66,11 +66,11 @@ async fn read(harness: &Harness, class: &str) -> (serde_json::Value, String) {
 }
 
 fn values_path(class: &str) -> String {
-    TAXONOMY_VALUES.replace("{class}", class)
+    VOCABULARY_VALUES.replace("{class}", class)
 }
 
 fn value_path(class: &str, value: &str) -> String {
-    TAXONOMY_VALUE
+    VOCABULARY_VALUE
         .replace("{class}", class)
         .replace("{value}", value)
 }
@@ -99,10 +99,21 @@ async fn declare(
 /// cased, normalised — would leave every suite green while no brand overlay
 /// could ever publish. Both halves go through HTTP here for that reason.
 ///
-/// `CREATED`, not merely "some code other than `SCOPE_VALUE_UNKNOWN`": the weaker
-/// assertion is satisfied by a malformed request, which is what this case did on
-/// its first run — answering 400 for a missing field while "proving" the scope
-/// rule accepted the brand.
+/// # The second half was asserted at the wrong door, and this is the record
+///
+/// It asserted `201` on `POST /price-overlays` and called that *"a brand
+/// declared through this surface must satisfy `inst-plv-scope`"*. **A save runs
+/// no world-dependent rule** — `rest_overlays::a_save_runs_no_world_dependent_rule`
+/// says exactly that, and `overlay_rules::validate` is reached from
+/// `submit_overlay`, which reads `world_for` — so the `201` was the create
+/// door's body parser answering, and the scope rule was never consulted. The
+/// case was green and measured nothing about the claim in its own name; found
+/// while D-370 was adding the negative twin, because the negative twin *also*
+/// answered `201` and that is only surprising if you believe this one.
+///
+/// It now drives the submit. The old paragraph above is kept because its
+/// argument still stands — it is *why* both halves must go through HTTP — and
+/// only its choice of door was wrong.
 #[tokio::test]
 async fn a_brand_declared_here_is_one_a_brand_scoped_overlay_can_name() {
     let harness = Harness::new().await;
@@ -120,34 +131,14 @@ async fn a_brand_declared_here_is_one_a_brand_scoped_overlay_can_name() {
         body_json(declared).await
     );
 
-    let overlay = harness
-        .allowed_as(ADMIN)
-        .send(with_headers(
-            "POST",
-            "/bss-pricing/v1/price-overlays",
-            Some(json!({
-                "scope_class": "brand",
-                "scope_value": "acme",
-                "precedence": 10,
-                "tax_basis": "delegated_tariffs",
-                "target_plan_ids": [],
-                "lines": [{
-                    "adjustment_kind": "discount",
-                    "magnitude_kind": "percent_bp",
-                    "adjustment_value": 500,
-                }]
-            })),
-            &[("idempotency-key", "brand-overlay-1")],
-        ))
-        .await;
-    let status = overlay.status();
-    assert_eq!(
-        status,
-        StatusCode::CREATED,
+    let submitted = submit_overlay_scoped_to(&harness, "acme", "brand-overlay-1").await;
+    let status = submitted.status();
+    let body = body_json(submitted).await;
+    assert!(
+        !body.to_string().contains("SCOPE_VALUE_UNKNOWN"),
         "a brand declared through this surface must satisfy inst-plv-scope: if this fails, the \
          write surface and the read the scope rule makes of it disagree about what `declared` \
-         means. Body: {}",
-        body_json(overlay).await
+         means. Got {status} {body}"
     );
 }
 
@@ -453,6 +444,44 @@ async fn an_unaddressable_class_is_refused_naming_the_four() {
                 "{segment}: the refusal must name `{named}`: {detail}"
             );
         }
+    }
+}
+
+/// The two single-table vocabularies are refused **by name, with the segment
+/// that serves them** (**D-371**).
+///
+/// `gl_code` and `rounding_policy` are vocabularies of this same config plane,
+/// and D-371 put them one segment over rather than inside this template. That
+/// makes them the only tokens a caller can guess *because they understood the
+/// surface correctly*: "vocabularies live at `/config/vocabularies/{class}`" is
+/// true, and `gl_code` is a vocabulary. A bare "unknown class" would send that
+/// caller looking for a typo, so the refusal has to carry the address.
+///
+/// **The single production change that reddens it**: drop the two
+/// `/config/vocabularies/…` addresses from `taxonomies::parse_class`'s message
+/// and the assertions below fail while every other case in this file still
+/// passes — which is the point, since nothing else reads that sentence.
+#[tokio::test]
+async fn the_single_table_vocabularies_are_refused_with_the_segment_that_serves_them() {
+    let harness = Harness::new().await;
+    // `gl-codes` itself is deliberately absent: that spelling is the literal
+    // segment `matchit` gives priority to, so it reaches its own door and never
+    // this template. Only the *class-token* spellings arrive here.
+    for (segment, address) in [
+        ("gl_code", "/config/vocabularies/gl-codes"),
+        ("glCode", "/config/vocabularies/gl-codes"),
+        ("rounding_policy", "/config/vocabularies/rounding-policies"),
+    ] {
+        let response = harness
+            .allowed_as(ADMIN)
+            .send(request("GET", &path(segment), None))
+            .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{segment}");
+        let detail = body_json(response).await.to_string();
+        assert!(
+            detail.contains(address),
+            "{segment}: the refusal must point at `{address}`: {detail}"
+        );
     }
 }
 
@@ -2227,4 +2256,241 @@ async fn taxonomy_preview_respects_resource_scopes_and_reports_pdp_outages() {
             assert!(!body.to_string().contains("Hidden label"));
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// D-370 — the middle state on the wire.
+// ---------------------------------------------------------------------------
+
+/// **A value a published overlay names can be deprecated, and could not be
+/// retired.** The whole reason the state exists, driven through the door.
+///
+/// One fixture, two destinations, two answers: the retirement is `409
+/// TAXONOMY_VALUE_IN_USE` and the deprecation lands. Asserted as a pair rather
+/// than as two cases, because what is claimed is the *difference* between them
+/// — a suite that only showed the deprecation landing would be satisfied by a
+/// guard that had stopped firing at all.
+///
+/// The edit is governed here (`seed_published_overlay` makes the value
+/// referenced, D-355), so the deprecation goes through the `202` arm and its
+/// approve applies it. That is deliberate: this is the case where the operator
+/// most needs the state, and it is the one where the ceremony applies.
+#[tokio::test]
+async fn a_referenced_value_can_be_deprecated_where_it_could_not_be_retired() {
+    let harness = Harness::new().await;
+    declare(
+        &harness,
+        "brand",
+        json!({ "value": "acme", "display_name": "Acme Corp" }),
+    )
+    .await;
+    seed_published_overlay(&harness, "brand", "acme").await;
+
+    let (_, tag) = read_value(&harness, "brand", "acme").await;
+    let refused = patch(
+        &harness,
+        "brand",
+        "acme",
+        &tag,
+        json!({ "state": "retired" }),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        problem_code(refused).await,
+        "TAXONOMY_VALUE_IN_USE",
+        "the refusal that left an operator with nothing to do"
+    );
+
+    let (_, tag) = read_value(&harness, "brand", "acme").await;
+    let committed = patch_governed(
+        &harness,
+        "brand",
+        "acme",
+        &tag,
+        json!({ "state": "deprecated" }),
+    )
+    .await;
+    assert_eq!(
+        body_json(committed).await["state"],
+        json!("deprecated"),
+        "and the move that replaces it"
+    );
+}
+
+/// A **deprecated** brand no longer satisfies `inst-plv-scope`, and its
+/// re-activation makes it satisfy the rule again.
+///
+/// The twin of `a_brand_declared_here_is_one_a_brand_scoped_overlay_can_name`,
+/// and it has to be driven through **both** surfaces for that case's stated
+/// reason: the scope rule reads a column, and a state the write door stores
+/// but the rule does not consult would leave this file green while the middle
+/// state did nothing at all.
+///
+/// The re-activation half is the anti-tautology control — without it a rule
+/// that had started refusing *every* brand would satisfy the first assertion.
+#[tokio::test]
+async fn a_deprecated_brand_stops_satisfying_the_overlay_scope_rule_until_it_is_re_activated() {
+    let harness = Harness::new().await;
+    declare(
+        &harness,
+        "brand",
+        json!({ "value": "acme", "display_name": "Acme Corp" }),
+    )
+    .await;
+
+    // Unreferenced, so the edit is the operator's own (D-355) and commits at
+    // once — which is also what makes this an honest probe of the *rule*
+    // rather than of the approval machinery.
+    let (_, tag) = read_value(&harness, "brand", "acme").await;
+    let deprecated = patch(
+        &harness,
+        "brand",
+        "acme",
+        &tag,
+        json!({ "state": "deprecated" }),
+    )
+    .await;
+    assert_eq!(deprecated.status(), StatusCode::OK);
+    assert_eq!(body_json(deprecated).await["state"], json!("deprecated"));
+
+    let refused = submit_overlay_scoped_to(&harness, "acme", "brand-overlay-dep").await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::BAD_REQUEST,
+        "a deprecated brand declares nothing a new overlay may name"
+    );
+    let body = body_json(refused).await;
+    assert!(
+        body.to_string().contains("SCOPE_VALUE_UNKNOWN"),
+        "and it is the scope rule that refuses it: {body}"
+    );
+
+    let (_, tag) = read_value(&harness, "brand", "acme").await;
+    let back = patch(
+        &harness,
+        "brand",
+        "acme",
+        &tag,
+        json!({ "state": "active" }),
+    )
+    .await;
+    assert_eq!(back.status(), StatusCode::OK);
+
+    let allowed = submit_overlay_scoped_to(&harness, "acme", "brand-overlay-back").await;
+    let status = allowed.status();
+    let body = body_json(allowed).await;
+    assert!(
+        !body.to_string().contains("SCOPE_VALUE_UNKNOWN"),
+        "re-activation puts it back in the universe; got {status} {body}"
+    );
+}
+
+/// `POST …/values` may declare a value **into** `deprecated` directly.
+///
+/// Odd-looking and deliberate: `state` on the declare body has always been the
+/// explicit spelling of the state the value starts in, and refusing one of the
+/// three here would make the declare door's machine narrower than the patch
+/// door's for no rule anyone could cite. It is also the shape an import wants —
+/// a vocabulary migrated from elsewhere arrives with values already withdrawn.
+#[tokio::test]
+async fn a_value_may_be_declared_straight_into_the_middle_state() {
+    let harness = Harness::new().await;
+
+    let declared = declare(
+        &harness,
+        "brand",
+        json!({ "value": "legacy", "display_name": "Legacy", "state": "deprecated" }),
+    )
+    .await;
+    assert_eq!(declared.status(), StatusCode::CREATED);
+    assert_eq!(body_json(declared).await["state"], json!("deprecated"));
+
+    let (body, _) = read_value(&harness, "brand", "legacy").await;
+    assert_eq!(body["state"], json!("deprecated"));
+}
+
+/// A state token outside the machine is refused, and the refusal **names the
+/// machine** — all three tokens, built from `TaxonomyState::ALL`.
+///
+/// The message used to say *"a taxonomy value is `active` or `retired`, and
+/// nothing else — … so a third state would be one no rule describes"*. D-370 is
+/// that rule, and a refusal still reciting the old pair would send an operator
+/// looking for a typo in a word the server accepts. Asserting the rendered list
+/// is what keeps the message and the parser one machine.
+#[tokio::test]
+async fn an_unknown_state_token_is_refused_naming_every_state_the_machine_has() {
+    let harness = Harness::new().await;
+
+    let refused = declare(
+        &harness,
+        "brand",
+        json!({ "value": "acme", "display_name": "Acme", "state": "withdrawn" }),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let detail = body_json(refused).await.to_string();
+    for token in ["active", "deprecated", "retired"] {
+        assert!(
+            detail.contains(token),
+            "the refusal must name `{token}`: {detail}"
+        );
+    }
+}
+
+/// One overlay scoped to a brand value, created **and submitted**.
+///
+/// **The submit is the half that asks `inst-plv-scope` anything.** A save runs
+/// no world-dependent rule — `rest_overlays`' own
+/// `a_save_runs_no_world_dependent_rule` says so in those words — so a case
+/// that stopped at `201` would be measuring the create door's body parser and
+/// reporting it as the scope rule's answer. `submit_overlay` is where
+/// `world_for` is read and `overlay_rules::validate` runs.
+///
+/// The create is asserted `201` on the way past, so a body this fixture got
+/// wrong fails here rather than surfacing as a scope verdict it never reached.
+async fn submit_overlay_scoped_to(
+    harness: &Harness,
+    value: &str,
+    key: &str,
+) -> axum::http::Response<axum::body::Body> {
+    let created = harness
+        .allowed_as(ADMIN)
+        .send(with_headers(
+            "POST",
+            "/bss-pricing/v1/price-overlays",
+            Some(json!({
+                "scope_class": "brand",
+                "scope_value": value,
+                "precedence": 10,
+                "tax_basis": "delegated_tariffs",
+                "target_plan_ids": [],
+                "lines": [{
+                    "adjustment_kind": "discount",
+                    "magnitude_kind": "percent_bp",
+                    "adjustment_value": 500,
+                }]
+            })),
+            &[("idempotency-key", key)],
+        ))
+        .await;
+    let status = created.status();
+    let body = body_json(created).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "the save must land before the submit can be about the scope rule: {body}"
+    );
+    let overlay_id = body["price_overlay_id"]
+        .as_str()
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .expect("the create answers the overlay's id");
+    harness
+        .allowed_as(ADMIN)
+        .send(request(
+            "POST",
+            &format!("/bss-pricing/v1/price-overlays/{overlay_id}/submit"),
+            Some(json!({ "revision": 0 })),
+        ))
+        .await
 }

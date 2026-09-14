@@ -668,7 +668,7 @@ impl Harness {
         //
         // Seeded through the entity rather than the route, because what these
         // suites are about is never the taxonomy — routing every one of them
-        // through a `PUT /config/taxonomies/region` would make an unrelated
+        // through a `PUT /config/vocabularies/region` would make an unrelated
         // failure there look like a failure in whatever they actually test.
         crate::common::declare_fixture_regions(&db, tenant).await;
         Self {

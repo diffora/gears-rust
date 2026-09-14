@@ -178,7 +178,7 @@ audit trail every other slice's mutations flow through; the preview grant.
 
 - **Struck 2026-08-16 by [D-330](../DECISIONS.md).** Historical import is **out of scope**: this
   gear serves the prices it authored, and a subscriber whose price predates the catalog is
-  re-papered onto a plan the catalog publishes. The flow `cpt-cf-bss-pricing-flow-backdating` and
+  re-papered onto a plan the catalog publishes. The flow cpt-cf-bss-pricing-flow-backdating and
   its seven steps — inst-bd-api, inst-bd-noeffect, inst-bd-pipeline, inst-bd-store,
   inst-bd-twoperson, inst-bd-audit, inst-bd-return — leave the design set, and everything built
   for them goes with them: the `BackdateGrant` and the `historical_import` resource label with its
@@ -307,7 +307,7 @@ shape.
 | `/bss-pricing/v1/customer-groups/*` (S9: taxonomy + membership) | `customer_group × write` / `read` |
 | `GET/POST /bss-pricing/v1/approvals*` (S5) | `approval × read` / `approve` |
 | `GET/PUT /bss-pricing/v1/config/approval-threshold-policy` (S5) | `approval_policy × read` / `write` |
-| `GET /bss-pricing/v1/config/taxonomies/{region\|brand\|partner\|org_tier}`, `POST …/taxonomies/{class}/values`, `GET/PATCH …/taxonomies/{class}/values/{value}` (D-120, D-353, D-355 — the `PATCH` opens a `taxonomy_value` approval unit **when a published price row or overlay scope names the value**; the gate stays `config`, the unit is what supplies the second principal, and an unreferenced value's edit commits under `config` alone), `GET/PUT /bss-pricing/v1/config/tax-display-policy` (S4), `GET/PUT /bss-pricing/v1/config/rounding-policy` (D-320 — the tenant default the §17.4 disjunction assumes), `GET/PUT /bss-pricing/v1/config/rounding-policies` (D-334 — the declared vocabulary both the default and every row's reference are checked against; `config` rather than `approval_policy` because it supplies a default publish would otherwise demand row by row and decides nothing about who approves what), `GET/PUT /bss-pricing/v1/config/gl-codes` (D-356 — the declared GL-code vocabulary a plan's billing-descriptor `glCode` is checked against at publish; `config` for the rounding vocabulary's reason) | `config × read` / `write` — the customer-group taxonomy is **not** here: it lives at `/bss-pricing/v1/customer-groups/taxonomy` under `customer_group` (more sensitive) |
+| `GET /bss-pricing/v1/config/vocabularies/{region\|brand\|partner\|org_tier}`, `POST …/vocabularies/{class}/values`, `GET/PATCH …/vocabularies/{class}/values/{value}` (D-120, D-353, D-355 — the `PATCH` opens a `taxonomy_value` approval unit **when a published price row or overlay scope names the value**; the gate stays `config`, the unit is what supplies the second principal, and an unreferenced value's edit commits under `config` alone), `GET/PUT /bss-pricing/v1/config/tax-display-policy` (S4), `GET/PUT /bss-pricing/v1/config/rounding-policy` (D-320 — the tenant default the §17.4 disjunction assumes), `GET /bss-pricing/v1/config/vocabularies/rounding-policies`, `POST …/rounding-policies/values`, `GET/PATCH …/rounding-policies/values/{value}` (D-334, D-368 — the declared vocabulary both the default and every row's reference are checked against; `config` rather than `approval_policy` because it supplies a default publish would otherwise demand row by row and decides nothing about who approves what; the whole-set `PUT` is removed by D-368 and the per-value routes gate on the same pair), `GET /bss-pricing/v1/config/vocabularies/gl-codes`, `POST …/gl-codes/values`, `GET/PATCH …/gl-codes/values/{value}` (D-356, D-368 — the declared GL-code vocabulary a plan's billing-descriptor `glCode` is checked against at publish; `config` for the rounding vocabulary's reason) | `config × read` / `write` — the customer-group taxonomy is **not** here: it lives at `/bss-pricing/v1/customer-groups/taxonomy` under `customer_group` (more sensitive), which is also why **D-371**'s `config/vocabularies` family — the segment every path in this row now sits under — could never name every vocabulary of the gear |
 | ~~`POST` / `GET /bss-pricing/v1/historical-imports`~~ (S5/S11) | **Struck by D-330** (2026-08-16) — neither route exists; the resource they enforced is struck above |
 | `GET /bss-pricing/v1/audit` (S5) | `audit × read` / `export` — **Auditor-only** (actor trails, before/after, approval decisions; D-12) |
 | `GET /bss-pricing/v1/history`, `POST /bss-pricing/v1/history/export` (S12) | `audit × read` / `audit × export` — **amended by D-328 (2026-08-17)**, and the amendment is what makes this table agree with the `audit` resource row above. D-12's original reading (price history is plan/price data, Finance-readable by construction) is withdrawn and kept as provenance: `/history` is the catalog audit trail, so `plan × read` handed the trail to every holder of catalog read while `audit` granted nothing. The export asks `export`, the bulk-disclosure action, not `read` |
@@ -735,12 +735,12 @@ normative per the AuthZ catalog.
 ### ~~Backdating Governance~~ — struck by D-330
 
 - **Struck 2026-08-16 by [D-330](../DECISIONS.md).** The DoD
-  `cpt-cf-bss-pricing-dod-backdating` and the flow it implemented
-  (`cpt-cf-bss-pricing-flow-backdating`, §2) both leave the design set: historical import is out
+  cpt-cf-bss-pricing-dod-backdating and the flow it implemented
+  (cpt-cf-bss-pricing-flow-backdating, §2) both leave the design set: historical import is out
   of scope. Nothing it required is owed — no grant, no reason, no row-shape subset, no
   always-material import unit (D-13), no disjoint store (D-76), no temporal bound (D-81) and no
   field-complete tiered reference row (D-87). Its PRD requirement,
-  `cpt-cf-bss-pricing-fr-historical-import-governance`, is struck in the same wave and is
+  cpt-cf-bss-pricing-fr-historical-import-governance, is struck in the same wave and is
   therefore claimed by no slice, which is what a struck requirement looks like here rather than an
   unclaimed one.
 

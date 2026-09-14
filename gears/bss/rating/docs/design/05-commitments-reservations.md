@@ -79,7 +79,7 @@ matrix). The slice owns two seams: **M8** (pool ≠ prepaid credit grant, §4.4)
 
 | ADR ID | Decision Summary |
 |--------|------------------|
-| `cpt-cf-bss-rating-adr-scope-key-adoption` | The rates step 6 composes over — base row, overlay stack, and the self-service `reservedRate` attribute riding the selected usage row — all resolve on the adopted 8-axis key; this slice adds no selection axis. |
+| `cpt-cf-bss-rating-adr-scope-key-adoption` | The rates step 6 composes over — base row, overlay stack, and the self-service `reservedRate` attribute riding the selected usage row — all resolve on the adopted ten-axis key; this slice adds no selection axis. |
 
 No slice-local ADR: step-6 semantics are PRD-normative (§6.6, §17.1) under **T-D-05** / **T-D-08**.
 
@@ -239,7 +239,7 @@ wrappers).
 
 ### 3.7 Database Schemas and Tables
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-rating-storage-none-cmt`
+- [ ] `p1` - **ID**: `cpt-cf-bss-rating-datastore-none-cmt`
 
 **None owned.** No table, no cache: pool balances and true-up clauses are Contracts'; the
 reservation entitlement inventory is OSS/Contracts'; reserved-rate attributes are the pricing

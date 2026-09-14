@@ -51,7 +51,7 @@ const LINE_B: Uuid = Uuid::from_u128(0xCCCC_0002);
 /// Written through the entity rather than the repository, and the reason has
 /// changed. The sentence that stood here said Slice 4's **authoring** surface
 /// "is not built"; it is, since that slice merged — `TaxonomyRepo` and
-/// `PUT /config/taxonomies/{class}`. This case still seeds through the entity
+/// `PUT /config/vocabularies/{class}`. This case still seeds through the entity
 /// deliberately: what it exercises is the overlay repository's *read* of the
 /// taxonomy, and seeding through the authoring surface would make it depend on
 /// that surface's own rules — the retire guard, the `If-Match` — none of which
@@ -1102,6 +1102,31 @@ async fn the_taxonomy_lookup_answers_for_a_declared_value() {
 async fn a_retired_taxonomy_value_declares_nothing() {
     let provider = provider().await;
     declare_brand(&provider, "retired").await;
+    let repo = OverlayRepo::new(provider);
+
+    assert!(
+        !repo
+            .taxonomy_declares(&AccessScope::allow_all(), TENANT, &brand_scope())
+            .await
+            .expect("the lookup succeeds")
+    );
+}
+
+/// A **deprecated** value declares nothing either (**D-370**).
+///
+/// `declares` filters `state = 'active'`, so this follows from the predicate
+/// rather than from a branch — which is exactly why it is asserted. The middle
+/// state's whole contract is *"no new use"*, and the only thing standing
+/// between it and a new overlay scoped to a withdrawn value is that one
+/// predicate saying `active` rather than `!= retired`. A reader widening this
+/// filter to be helpful would break the state and nothing else would object.
+///
+/// Its sibling above proves the same of `retired`; the pair is what makes this
+/// a statement about the **filter** rather than about one literal.
+#[tokio::test]
+async fn a_deprecated_taxonomy_value_declares_nothing() {
+    let provider = provider().await;
+    declare_brand(&provider, "deprecated").await;
     let repo = OverlayRepo::new(provider);
 
     assert!(
