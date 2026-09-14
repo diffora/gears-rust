@@ -9,7 +9,7 @@ use super::{
     GL_CODE_UNKNOWN, GlCodeDeclared, REGION_UNKNOWN, RegionTaxMarkers, RegionsDeclared,
     TAXONOMY_VALUE_IN_USE, TaxCategoryPatch, TaxonomyClass, TaxonomyEntry, TaxonomyState,
     TaxonomyValuePatch, ValueReferences, check_retirable, check_tax_category_removable,
-    edit_is_governed, tag_of, tag_of_value,
+    edit_is_governed, is_a_retirement, tag_of, tag_of_value,
 };
 use crate::domain::concurrency::RowVersion;
 use crate::domain::instant::utc_ymd_hms;
@@ -710,4 +710,48 @@ fn gl_code_rule_judges_the_descriptors_one_present_value_and_nothing_else() {
         .is_empty(),
         "and the empty set constrains nothing at the plan level too"
     );
+}
+
+// ---------------------------------------------------------------------------
+// `is_a_retirement` — the retire guard's key (D-369).
+// ---------------------------------------------------------------------------
+
+/// **Every edge into `retired` is a retirement, from every source but
+/// `retired` itself — and nothing else is.**
+///
+/// Written as a walk over `TaxonomyState::ALL` rather than as the two or three
+/// pairs the machine happens to have today, which is the whole point: the
+/// predicate was keyed on the `active -> retired` **edge** and a third state
+/// would have walked past it into `retired` with `check_retirable` never
+/// consulted. This case covers a state added to `ALL` the day it is added,
+/// with no edit here — if it did not, the next reader would have to remember
+/// to come back, which is exactly the memory the defect was waiting on.
+///
+/// The negative half is asserted too: a predicate that answered `true` for
+/// everything would satisfy the positive half alone, and would send every
+/// relabel through the reference count.
+#[test]
+fn every_edge_into_retired_is_a_retirement_and_no_other_edge_is() {
+    for &held in TaxonomyState::ALL {
+        for &next in TaxonomyState::ALL {
+            let expected = next == TaxonomyState::Retired && held != TaxonomyState::Retired;
+            assert_eq!(
+                is_a_retirement(held, next),
+                expected,
+                "`{held}` -> `{next}`: a retirement is any edge whose destination is `retired` \
+                 and whose source is not, and nothing else"
+            );
+        }
+    }
+    // The two the machine has today, named so a reader of this file does not
+    // have to run the loop in their head. `deprecated -> retired` joins them
+    // the day the state does, through the loop above and not through this pair.
+    assert!(is_a_retirement(
+        TaxonomyState::Active,
+        TaxonomyState::Retired
+    ));
+    assert!(!is_a_retirement(
+        TaxonomyState::Retired,
+        TaxonomyState::Retired
+    ));
 }

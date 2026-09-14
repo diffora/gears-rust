@@ -617,9 +617,36 @@ pub const fn edit_is_governed(references: ValueReferences) -> bool {
 /// the whole of what it reads: an entry pair would invite a second condition
 /// to be folded in, and the tax-marker guard beside it is deliberately a
 /// different question with a different remedy.
+///
+/// # Keyed on the **destination**, and that is the point (D-369)
+///
+/// It read `held == Active && next == Retired` — an **edge**, and correct only
+/// because the machine has exactly two states, so `held != Retired` and
+/// `held == Active` are the same predicate. A third state walks straight past
+/// an edge key: the guard would ask *is this the `active -> retired` edge*,
+/// answer no for a value moving from the new state, and let a value a
+/// published price row still names reach `retired` — `check_retirable` never
+/// consulted, `TAXONOMY_VALUE_IN_USE` never raised.
+///
+/// What `inst-tx-mutation` actually says is about the **destination**: a value
+/// something published still names may not *be* retired. So the source is a
+/// **complement** — every state but `Retired` — rather than an enumeration,
+/// and a state added to the machine is guarded the day it is added rather than
+/// the day someone remembers this function.
+///
+/// The complement is right *here* and wrong one guard over: D-245's cleared-
+/// category check reads `next.state` to decide whether a marker is still load-
+/// bearing, and *that* one is enumerated exhaustively so a new state cannot
+/// join it silently. The two want opposite treatments because they ask
+/// opposite questions — "is this the guarded act" versus "is the value still
+/// resolving through". See `taxonomy_repo::judge_value_patch`.
+///
+/// `Retired -> Retired` is not a retirement: re-asserting a value's current
+/// state is a no-op, and guarding it would make a value with one guarded
+/// retirement permanently un-`PATCH`-able.
 #[must_use]
 pub const fn is_a_retirement(held: TaxonomyState, next: TaxonomyState) -> bool {
-    matches!(held, TaxonomyState::Active) && matches!(next, TaxonomyState::Retired)
+    matches!(next, TaxonomyState::Retired) && !matches!(held, TaxonomyState::Retired)
 }
 
 /// `inst-tx-mutation`: refuse a retirement while the value is referenced.

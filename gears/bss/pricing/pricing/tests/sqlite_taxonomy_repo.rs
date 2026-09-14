@@ -701,6 +701,156 @@ async fn publish_overlay_scoped(
         .expect("seed a price overlay");
 }
 
+/// The violation codes a judged report carries, in order.
+fn codes(report: &bss_pricing::domain::validation::ValidationReport) -> Vec<&str> {
+    report.violations.iter().map(|v| v.code.as_str()).collect()
+}
+
+/// **A referenced value cannot reach `retired` from any state the machine has**
+/// (D-369).
+///
+/// The guard read `held == Active && next == Retired` — an **edge**, correct
+/// only because the machine has two states. Keyed on the edge, a third state
+/// reaches `retired` with `check_retirable` never consulted and
+/// `TAXONOMY_VALUE_IN_USE` never raised, while every existing case here stays
+/// green: they all start from `active`.
+///
+/// So the source is walked out of `TaxonomyState::ALL` rather than written
+/// down. Today that is one source; the day the machine gains a state this case
+/// covers it with no edit, which is the only way a probe outlives the memory of
+/// the person who wrote it.
+///
+/// `judge_value_patch` rather than the route, because the guard is what is
+/// under test and a route would make a failure ambiguous between the door and
+/// the judge — `publish_overlay_scoped`'s own reasoning.
+#[tokio::test]
+async fn a_referenced_value_cannot_reach_retired_from_any_source_state() {
+    for &source in TaxonomyState::ALL {
+        if source == TaxonomyState::Retired {
+            // Not an edge into retirement: re-asserting `retired` is a no-op,
+            // and guarding it would make a guarded value permanently
+            // un-`PATCH`-able. The negative arm below asserts that.
+            continue;
+        }
+        let (repo, scope, provider) = harness().await;
+        replace_now(
+            &repo,
+            &scope,
+            TaxonomyClass::Brand,
+            vec![entry("in-use", source)],
+        )
+        .await
+        .expect("seed");
+        publish_overlay_scoped(
+            &provider,
+            0x0e_1b,
+            TaxonomyClass::Brand,
+            "in-use",
+            "published",
+        )
+        .await;
+
+        let conn = provider.conn().expect("conn");
+        let report = bss_pricing::infra::storage::repo::taxonomy_repo::judge_value_patch(
+            &conn,
+            TENANT,
+            TaxonomyClass::Brand,
+            &entry("in-use", source),
+            &entry("in-use", TaxonomyState::Retired),
+        )
+        .await
+        .expect("judge");
+        assert_eq!(
+            codes(&report),
+            [TAXONOMY_VALUE_IN_USE],
+            "`{source}` -> `retired` on a referenced value must be refused; the guard is about \
+             the destination, not about which edge the value happens to be on"
+        );
+    }
+
+    // The anti-tautology control: a guard that refused everything would satisfy
+    // the loop. An edge that is **not** a retirement is admitted even while the
+    // value is referenced.
+    let (repo, scope, provider) = harness().await;
+    replace_now(
+        &repo,
+        &scope,
+        TaxonomyClass::Brand,
+        vec![entry("in-use", TaxonomyState::Active)],
+    )
+    .await
+    .expect("seed");
+    publish_overlay_scoped(
+        &provider,
+        0x0e_1c,
+        TaxonomyClass::Brand,
+        "in-use",
+        "published",
+    )
+    .await;
+    let conn = provider.conn().expect("conn");
+    let mut relabelled = entry("in-use", TaxonomyState::Active);
+    relabelled.display_name = "a new label".to_owned();
+    let report = bss_pricing::infra::storage::repo::taxonomy_repo::judge_value_patch(
+        &conn,
+        TENANT,
+        TaxonomyClass::Brand,
+        &entry("in-use", TaxonomyState::Active),
+        &relabelled,
+    )
+    .await
+    .expect("judge");
+    assert!(
+        codes(&report).is_empty(),
+        "a relabel is not a retirement, referenced or not: {:?}",
+        codes(&report)
+    );
+}
+
+/// The same walk on the two single-table vocabularies' judge (D-368, D-369).
+///
+/// One predicate keys both guards, so a source-state regression would redden
+/// either — but this suite is where the vocabularies' reference planes live,
+/// and a case that only exercised the four scope classes would leave the arm
+/// that counts a **published descriptor set** untouched.
+#[tokio::test]
+async fn a_referenced_vocabulary_value_cannot_reach_retired_from_any_source_state() {
+    for &source in TaxonomyState::ALL {
+        if source == TaxonomyState::Retired {
+            continue;
+        }
+        let (repo, scope, provider) = harness().await;
+        repo.declare_vocabulary_value(
+            &scope,
+            TENANT,
+            VocabularyClass::GlCode,
+            entry("4000-REV", source),
+            stamp(),
+        )
+        .await
+        .expect("declare");
+        seed_revision_naming_gl_code(&provider, Uuid::now_v7(), "4000-REV", "published").await;
+
+        let conn = provider.conn().expect("conn");
+        let report =
+            bss_pricing::infra::storage::repo::taxonomy_repo::judge_vocabulary_value_patch(
+                &conn,
+                &scope,
+                TENANT,
+                VocabularyClass::GlCode,
+                &entry("4000-REV", source),
+                &entry("4000-REV", TaxonomyState::Retired),
+            )
+            .await
+            .expect("judge");
+        assert_eq!(
+            codes(&report),
+            [TAXONOMY_VALUE_IN_USE],
+            "`{source}` -> `retired` on a referenced GL code must be refused"
+        );
+    }
+}
+
 /// A published overlay scope blocks its value's retirement — in every class.
 ///
 /// D-120's widening. Before it, *"a region value retired cleanly while

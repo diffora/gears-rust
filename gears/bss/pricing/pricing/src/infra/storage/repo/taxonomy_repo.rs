@@ -1216,7 +1216,30 @@ pub async fn judge_value_patch(
         let references = references_to(runner, tenant_id, class, &held.value).await?;
         report.absorb(check_retirable(class, &held.value, references));
     }
-    if class.carries_tax_markers() && next.state != TaxonomyState::Retired {
+    // **The complement, written out (D-369).** This read `next.state !=
+    // Retired`, which is *"every state but retired"* — correct today only
+    // because the machine has two, and a silent admission of every state added
+    // later. What D-245 guards is a marker a published row still **resolves
+    // through**, so the question is whether `next` is a state the value is
+    // still resolving in; that is a property of each state and has to be
+    // decided per state, not by excluding one. An exhaustive `match` is the
+    // instrument: a variant added to `TaxonomyState` fails to compile here and
+    // the decision is taken rather than inherited.
+    //
+    // The retire guard above wants the **opposite** treatment — a complement,
+    // so a new state is guarded the day it is added — because it asks *is this
+    // the guarded act* rather than *is the value still resolving*. See
+    // `domain::taxonomy::is_a_retirement`.
+    let still_resolving_through_the_marker = match next.state {
+        // A value that stays authorable is a value rows keep resolving
+        // through, so dropping its default category is the act D-245 refuses.
+        TaxonomyState::Active => true,
+        // A retirement stops new use and leaves what already resolves alone;
+        // the retire guard above is what judges it, and judging the marker as
+        // well would refuse one act with two violations naming two remedies.
+        TaxonomyState::Retired => false,
+    };
+    if class.carries_tax_markers() && still_resolving_through_the_marker {
         let had = held.tax.as_ref().and_then(|t| t.tax_category.as_deref());
         let keeps = next.tax.as_ref().and_then(|t| t.tax_category.as_deref());
         if had.is_some() && keeps.is_none() {
