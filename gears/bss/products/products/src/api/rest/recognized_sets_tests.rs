@@ -103,7 +103,22 @@ async fn harness() -> TestHarness {
 }
 
 fn app_for(harness: &TestHarness, tenant: Uuid) -> Router {
-    let state = Arc::new(ApiState {
+    let openapi = OpenApiRegistryImpl::new();
+    router(state_for(harness), &openapi).layer(axum::Extension(flat_in_enforcer(tenant)))
+}
+
+/// The **approvals** door over the same store — the decide route a
+/// two-arm-door case has to drive (**P-D-173**). `super::router` is this
+/// module's own, which carries the three member routes and nothing else, so
+/// a case that decides a unit has to mount slice 05's router beside it.
+fn approvals_app_for(harness: &TestHarness, tenant: Uuid) -> Router {
+    let openapi = OpenApiRegistryImpl::new();
+    crate::api::rest::approvals::router(state_for(harness), &openapi)
+        .layer(axum::Extension(flat_in_enforcer(tenant)))
+}
+
+fn state_for(harness: &TestHarness) -> Arc<ApiState> {
+    Arc::new(ApiState {
         db: harness.db.clone(),
         sink: crate::infra::broker::EventSink::Interim(Arc::clone(&harness.outbox)),
         taxonomy_caps: crate::api::rest::TaxonomyCaps::from(&ProductsConfig::default()),
@@ -117,9 +132,7 @@ fn app_for(harness: &TestHarness, tenant: Uuid) -> Router {
         breakglass_review_sla_hours: crate::config::BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
         eol_enabled: false,
         usage_type_resolver: crate::test_support::resolved_usage_types(),
-    });
-    let openapi = OpenApiRegistryImpl::new();
-    router(state, &openapi).layer(axum::Extension(flat_in_enforcer(tenant)))
+    })
 }
 
 async fn post_json(app: Router, uri: &str, body: &JsonValue) -> axum::http::Response<Body> {
@@ -750,41 +763,304 @@ async fn a_transition_on_an_unknown_member_is_not_found() {
     assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
 }
 
-/// **The door has a gate** (`dod-recognized-set-mechanics`, P-D-146): with no
-/// satisfied record for the member's `GovernedLiveOp` subject, every member
-/// op — add, transition, relabel — answers `APPROVAL_REQUIRED`, and nothing
-/// is written or announced.
+/// **The door has a gate, and the gate now opens the unit**
+/// (`dod-recognized-set-mechanics`, P-D-146; **P-D-173**): with no record for
+/// the member's `GovernedLiveOp` subject, every member op — add, transition,
+/// relabel — answers `202` naming the unit it opened, **and nothing is
+/// written or announced**.
+///
+/// # Why the old claim stopped holding, and what this case still proves
+///
+/// Until P-D-173 these three calls answered `403 APPROVAL_REQUIRED`, and this
+/// case asserted that code. The refusal was not wrong — it was
+/// *unusable*: the only way past it was to submit through `POST /approvals`
+/// first with a `content_snapshot` the caller hand-rendered to match what the
+/// door would present (P-D-172), which is a contract no client can hold. The
+/// door now opens that unit itself. **The half that mattered is unchanged and
+/// is still asserted here**: an unapproved member op writes no row and
+/// enqueues no event. `APPROVAL_REQUIRED` keeps its two other paths on this
+/// surface — a unit open for a *different* change
+/// ([`a_unit_open_for_another_change_is_named_not_superseded`]) and a record
+/// bound to another op ([`an_approval_bound_to_one_op_does_not_authorize_another`]).
 #[tokio::test]
-async fn a_member_op_without_a_satisfied_record_is_refused_approval_required() {
+async fn a_member_op_without_a_record_opens_the_unit_and_writes_nothing() {
     let harness = harness().await;
-    let refused = add_member_via(app_for(&harness, TENANT), "metering_unit", "gib_month").await;
-    assert_eq!(refused.status(), axum::http::StatusCode::FORBIDDEN);
-    assert_eq!(error_code(refused).await, "APPROVAL_REQUIRED");
+    let opened = add_member_via(app_for(&harness, TENANT), "metering_unit", "gib_month").await;
+    assert_eq!(opened.status(), axum::http::StatusCode::ACCEPTED);
+    let unit = body_json(opened).await;
+    assert_eq!(unit["state"], "pending");
+    assert_eq!(unit["required"], 2, "an add is material: the full N");
+    assert_eq!(unit["configured_quorum"], 2);
+    assert!(
+        unit["approval_id"].as_str().is_some(),
+        "the 202 names the unit the caller has to get decided: {unit}"
+    );
     assert_eq!(
         enqueued_event_count(&harness.dsn, "RecognizedUnitUpdated").await,
         0,
-        "a refused add announces nothing"
+        "an add that only opened a unit announces nothing"
+    );
+    let listed = body_json(
+        get_json(
+            app_for(&harness, TENANT),
+            "/bss-products/v1/recognized-sets/metering_unit",
+        )
+        .await,
+    )
+    .await;
+    assert!(
+        !listed["members"]
+            .as_array()
+            .expect("the set lists")
+            .iter()
+            .any(|m| m["member_code"] == "gib_month"),
+        "and writes no member: {listed}"
     );
 
-    add_member(&harness, TENANT, "metering_unit", "gib_month").await;
+    // A second member, whose add rode a seeded record: the add spent it, so
+    // the transitions door finds none and opens its own — over the edge it is
+    // about to walk, and without moving the member.
+    add_member(&harness, TENANT, "metering_unit", "tib_month").await;
     let stranger = post_json(
         app_for(&harness, TENANT),
-        "/bss-products/v1/recognized-sets/metering_unit/members/gib_month/transitions",
+        "/bss-products/v1/recognized-sets/metering_unit/members/tib_month/transitions",
         &json!({ "to": "deprecated", "expected_state": "active" }),
     )
     .await;
-    // The add's record was spent by the add: a second op on the same member
-    // needs a record of its own.
-    assert_eq!(stranger.status(), axum::http::StatusCode::FORBIDDEN);
-    assert_eq!(error_code(stranger).await, "APPROVAL_REQUIRED");
+    assert_eq!(stranger.status(), axum::http::StatusCode::ACCEPTED);
+    assert_eq!(
+        member_state(&harness, "metering_unit", "tib_month").await,
+        "active",
+        "the member did not move"
+    );
+    // One open unit per subject, so the label door meets the transition's and
+    // is told so rather than superseding it.
     let relabel_refused = post_json(
         app_for(&harness, TENANT),
-        "/bss-products/v1/recognized-sets/metering_unit/members/gib_month/label",
-        &json!({ "display_label": "GiB-month" }),
+        "/bss-products/v1/recognized-sets/metering_unit/members/tib_month/label",
+        &json!({ "display_label": "TiB-month" }),
     )
     .await;
     assert_eq!(relabel_refused.status(), axum::http::StatusCode::FORBIDDEN);
     assert_eq!(error_code(relabel_refused).await, "APPROVAL_REQUIRED");
+}
+
+/// Set the tenant's `N`, so a case can name the quorum it is asserting under.
+async fn set_quorum(harness: &TestHarness, n: u32) {
+    let conn = harness.db.conn().expect("scoped connection");
+    let scope = toolkit_db::secure::AccessScope::for_tenant(TENANT);
+    crate::infra::storage::repo::write_materiality_policy(
+        &conn,
+        &scope,
+        TENANT,
+        &crate::domain::materiality::MaterialityPolicy::new(Vec::new(), 10, n),
+        Uuid::from_u128(0x5a_ad),
+        crate::test_support::at(9),
+    )
+    .await
+    .expect("write the policy");
+}
+
+/// One member's stored state, read back through the by-code door.
+async fn member_state(harness: &TestHarness, kind: &str, code: &str) -> String {
+    let body = body_json(
+        get_json(
+            app_for(harness, TENANT),
+            &format!("/bss-products/v1/recognized-sets/{kind}/members/{code}"),
+        )
+        .await,
+    )
+    .await;
+    body["state"].as_str().unwrap_or_default().to_owned()
+}
+
+/// A context carrying a role claim, so a probe can drive the decide door.
+fn ctx_with_role(subject: Uuid) -> axum::http::Extensions {
+    let mut extensions = axum::http::Extensions::new();
+    extensions.insert(
+        toolkit_security::SecurityContext::builder()
+            .subject_id(subject)
+            .subject_tenant_id(TENANT)
+            .subject_type(toolkit_gts::gts_id!("cf.core.security.subject_user.v1~"))
+            .token_scopes(vec![
+                "*".to_owned(),
+                crate::domain::approval::ApproverRole::CatalogAdmin
+                    .as_str()
+                    .to_owned(),
+            ])
+            .build()
+            .expect("authed SecurityContext must build"),
+    );
+    extensions
+}
+
+/// Approve one unit as a `CatalogAdmin` who is not its submitter.
+async fn approve(harness: &TestHarness, approval_id: &str, approver: Uuid) -> u16 {
+    let mut request = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/bss-products/v1/approvals/{approval_id}/decisions"
+        ))
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(Body::from(json!({ "verdict": "approved" }).to_string()))
+        .expect("build the request");
+    *request.extensions_mut() = ctx_with_role(approver);
+    approvals_app_for(harness, TENANT)
+        .oneshot(request)
+        .await
+        .expect("the router answers")
+        .status()
+        .as_u16()
+}
+
+/// **The two arms are one door** (**P-D-173**): the first call opens the unit
+/// and answers `202`, and the **identical** request after two principals have
+/// approved it answers the door's ordinary `201` and writes the member.
+///
+/// This is the whole point of the entry, so it is driven end to end rather
+/// than by flipping a row: the unit is decided through
+/// `POST /approvals/{id}/decisions` by two `CatalogAdmin`s, neither of whom
+/// is the submitter — the door's own actor is (`decision_admitted` refuses a
+/// self-approval at `required >= 1`).
+#[tokio::test]
+async fn the_first_call_opens_the_unit_and_the_approved_re_send_applies_it() {
+    let harness = harness().await;
+    let opened = add_member_via(app_for(&harness, TENANT), "plan_tier", "gold").await;
+    assert_eq!(opened.status(), axum::http::StatusCode::ACCEPTED);
+    let unit = body_json(opened).await;
+    let approval_id = unit["approval_id"]
+        .as_str()
+        .expect("the 202 names the unit")
+        .to_owned();
+
+    assert_eq!(
+        approve(&harness, &approval_id, Uuid::from_u128(0xa9_01)).await,
+        200
+    );
+    assert_eq!(
+        approve(&harness, &approval_id, Uuid::from_u128(0xa9_02)).await,
+        200
+    );
+
+    let applied = add_member_via(app_for(&harness, TENANT), "plan_tier", "gold").await;
+    assert_eq!(
+        applied.status(),
+        axum::http::StatusCode::CREATED,
+        "the re-send of the approved change is the door's ordinary answer"
+    );
+    assert_eq!(body_json(applied).await["member_code"], "gold");
+    assert_eq!(
+        enqueued_event_count(&harness.dsn, "PlanTierUpdated").await,
+        1,
+        "the announcement rides the write, not the proposal"
+    );
+}
+
+/// **A re-send before approval answers the same unit and supersedes nothing**
+/// (**P-D-173**).
+///
+/// The hazard this guards is specific: `repo::submit_approval` supersedes
+/// whatever open record the subject held (L-4), so a door that submitted on
+/// every unauthorized call would discard the approvals already collected on
+/// the pending unit — on the caller's own retry. The second `202` must name
+/// the **same** `approval_id`, and the approval cast in between must still
+/// count.
+#[tokio::test]
+async fn a_re_send_before_approval_answers_the_same_unit() {
+    let harness = harness().await;
+    let first =
+        body_json(add_member_via(app_for(&harness, TENANT), "plan_tier", "gold").await).await;
+    let approval_id = first["approval_id"].as_str().expect("a unit").to_owned();
+    assert_eq!(
+        approve(&harness, &approval_id, Uuid::from_u128(0xa9_11)).await,
+        200,
+        "one of two principals decides"
+    );
+
+    let again = add_member_via(app_for(&harness, TENANT), "plan_tier", "gold").await;
+    assert_eq!(again.status(), axum::http::StatusCode::ACCEPTED);
+    let second = body_json(again).await;
+    assert_eq!(
+        second["approval_id"], first["approval_id"],
+        "the retry names the standing unit, not a fresh one"
+    );
+
+    // The decision cast against the first `202` still counts: the second
+    // principal closes it, and the third call applies.
+    assert_eq!(
+        approve(&harness, &approval_id, Uuid::from_u128(0xa9_12)).await,
+        200
+    );
+    assert_eq!(
+        add_member_via(app_for(&harness, TENANT), "plan_tier", "gold")
+            .await
+            .status(),
+        axum::http::StatusCode::CREATED,
+        "two principals decided one unit across two retries"
+    );
+}
+
+/// **A unit open for another change is named, never superseded**
+/// (**P-D-173**): `design/05` §4 admits one open record per subject, so the
+/// second proposal is refused `APPROVAL_REQUIRED` naming the standing unit
+/// rather than replacing it.
+#[tokio::test]
+async fn a_unit_open_for_another_change_is_named_not_superseded() {
+    let harness = harness().await;
+    add_member(&harness, TENANT, "plan_tier", "gold").await;
+    let opened = body_json(
+        post_json(
+            app_for(&harness, TENANT),
+            "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
+            &json!({ "display_label": "Gold tier" }),
+        )
+        .await,
+    )
+    .await;
+    let standing = opened["approval_id"].as_str().expect("a unit").to_owned();
+
+    let other = post_json(
+        app_for(&harness, TENANT),
+        "/bss-products/v1/recognized-sets/plan_tier/members/gold/transitions",
+        &json!({ "to": "deprecated", "expected_state": "active" }),
+    )
+    .await;
+    assert_eq!(other.status(), axum::http::StatusCode::FORBIDDEN);
+    assert_eq!(error_code(other).await, "APPROVAL_REQUIRED");
+
+    // The standing unit survived and still decides its own change.
+    assert_eq!(
+        approve(&harness, &standing, Uuid::from_u128(0xa9_21)).await,
+        200
+    );
+    assert_eq!(
+        approve(&harness, &standing, Uuid::from_u128(0xa9_22)).await,
+        200
+    );
+    let relabelled = post_json(
+        app_for(&harness, TENANT),
+        "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
+        &json!({ "display_label": "Gold tier" }),
+    )
+    .await;
+    assert_eq!(relabelled.status(), axum::http::StatusCode::OK);
+    assert_eq!(body_json(relabelled).await["display_label"], "Gold tier");
+}
+
+/// **At `N = 0` there is nobody to wait for, so the first call applies**
+/// (**P-D-173**): the unit is born `satisfied` (P-D-119 row 31) and `202
+/// Accepted` would be a lie about a record that waits on no principal.
+#[tokio::test]
+async fn at_quorum_zero_the_first_call_opens_and_applies_in_one_request() {
+    let harness = harness().await;
+    set_quorum(&harness, 0).await;
+    let landed = add_member_via(app_for(&harness, TENANT), "plan_tier", "gold").await;
+    assert_eq!(
+        landed.status(),
+        axum::http::StatusCode::CREATED,
+        "a tenant at N = 0 writes approver-less by policy, in one call"
+    );
+    assert_eq!(body_json(landed).await["member_code"], "gold");
 }
 
 /// **A rename touches the display label and nothing else**

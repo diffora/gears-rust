@@ -342,6 +342,347 @@ async fn authorize_member_op(
     Ok(authorization)
 }
 
+/// What the approval unit a member op rides looks like on the `202` arm
+/// (**P-D-173**) — `SubmitApprovalReceipt`'s fields, so an operator's inbox
+/// card renders a unit this door opened exactly as one the submit door did.
+#[toolkit_macros::api_dto(response)]
+pub struct MemberOpApprovalView {
+    /// The unit the decide door addresses.
+    pub approval_id: Uuid,
+    /// `pending` — a unit born `satisfied` never reaches this arm, because
+    /// the door proceeds with it in the same request.
+    pub state: String,
+    /// The **effective** count, never the raw configured `N`.
+    pub required: u32,
+    /// The raw `N` in force when the unit opened.
+    pub configured_quorum: u32,
+    /// Whether the finance lens is demanded of the approver set.
+    pub finance_required: bool,
+    /// Whether the effective count sits below the retained default of two.
+    pub quorum_reduced: bool,
+}
+
+/// What the gate answered for one member op (**P-D-173**).
+enum MemberOpGate {
+    /// A record stands for this exact change: the door proceeds and spends
+    /// it inside its own transaction.
+    Authorized(GateAuthorization),
+    /// No record stood, so the door opened one. Nothing was written to the
+    /// member; the caller re-sends the identical request once the unit is
+    /// approved.
+    Opened(MemberOpApprovalView),
+}
+
+/// Resolve — or open — the approval one member op rides (**P-D-173**).
+///
+/// # The door was the only one on this surface that could not be used
+///
+/// Before this entry the three write doors answered `APPROVAL_REQUIRED` and
+/// nothing else when no satisfied record stood, so **the only way to use
+/// them was to submit through `POST /approvals` first**, with a
+/// `content_snapshot` the caller hand-rendered to match what the door would
+/// present (**P-D-172**). That is a contract no client can hold: the bytes
+/// are the door's, and a caller who renders them differently is refused for
+/// a reason they cannot see. Pricing solved the same problem with a two-arm
+/// door (`api/rest/taxonomies.rs`' value `PATCH`, **D-355**), and this is
+/// that shape: the first call opens the unit and answers `202`, the re-send
+/// after approval answers the door's ordinary `200`/`201`.
+///
+/// # It never supersedes a unit somebody is already deciding
+///
+/// `design/05` §4's partial `UNIQUE` admits **one** open record per subject,
+/// and `repo::submit_approval` supersedes whatever open record the subject
+/// held (L-4). A door that submitted on every unauthorized call would
+/// therefore discard the approvals already collected on a pending unit — two
+/// principals' work, silently, on a caller's retry. So the unit is opened
+/// **only** when the subject holds no open record at all; a standing unit
+/// for this same change is answered `202` again (the idempotent re-send
+/// before approval), and a standing unit for a *different* change keeps
+/// P-D-172's refusal, which names it rather than replacing it.
+///
+/// # The pre-existing path is unchanged, which is why this is additive
+///
+/// A caller that submits through `POST /approvals` and then calls the door
+/// takes the `Authorized` arm exactly as it did — that is the path
+/// `vhp-core`'s e2e drives for all three doors, and no case of it reaches
+/// the new arm.
+#[allow(clippy::too_many_arguments)] // the gate's one sequence: subject, binding, unit
+async fn gate_member_op(
+    state: &ApiState,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    actor_ref: Uuid,
+    kind: SetKind,
+    member_code: &str,
+    op: MemberOp,
+    presented: &JsonValue,
+    now: OffsetDateTime,
+) -> Result<MemberOpGate, CanonicalError> {
+    match crate::api::rest::authorize_live_op(
+        state,
+        scope,
+        tenant_id,
+        member_op_subject(tenant_id, kind, member_code),
+    )
+    .await
+    {
+        Ok(authorization) => {
+            if let Err(mismatch) =
+                bound_to_the_change(state, scope, tenant_id, &authorization, presented).await?
+            {
+                // A record stands and is not for this change. It is open, so
+                // opening a second one would supersede it: report it.
+                return Err(refuse_set(
+                    state,
+                    scope,
+                    tenant_id,
+                    actor_ref,
+                    kind,
+                    member_code.to_owned(),
+                    mismatch,
+                )
+                .await);
+            }
+            Ok(MemberOpGate::Authorized(authorization))
+        }
+        // **Only** `APPROVAL_REQUIRED` opens a unit. The host's other
+        // refusals — a corrupt stored subject, a gate that judged and said no
+        // — are answers about the record that exists, and minting a second
+        // one over them would turn a refusal into a proposal.
+        Err(crate::api::rest::HostError::Refused(DomainError::ApprovalRequired(_))) => {
+            open_the_unit(
+                state,
+                scope,
+                tenant_id,
+                actor_ref,
+                kind,
+                member_code,
+                op,
+                presented,
+                now,
+            )
+            .await
+        }
+        Err(crate::api::rest::HostError::Refused(refusal)) => Err(refuse_set(
+            state,
+            scope,
+            tenant_id,
+            actor_ref,
+            kind,
+            member_code.to_owned(),
+            refusal,
+        )
+        .await),
+        Err(crate::api::rest::HostError::Repo(error)) => Err(repo_error_to_canonical(&error)),
+    }
+}
+
+/// The `202` arm's body: answer a standing unit, or open one (**P-D-173**).
+#[allow(clippy::too_many_arguments)] // the same sequence, continued
+async fn open_the_unit(
+    state: &ApiState,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    actor_ref: Uuid,
+    kind: SetKind,
+    member_code: &str,
+    op: MemberOp,
+    presented: &JsonValue,
+    now: OffsetDateTime,
+) -> Result<MemberOpGate, CanonicalError> {
+    let subject = member_op_subject(tenant_id, kind, member_code);
+    let conn = state.db.conn().map_err(|e| {
+        repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
+    })?;
+    let candidates = repo::gate_candidates(&conn, scope, &subject)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?;
+    if let Some(standing) = candidates.iter().find(|candidate| {
+        matches!(
+            candidate.state,
+            crate::domain::approval::ApprovalState::Pending
+                | crate::domain::approval::ApprovalState::Satisfied
+        )
+    }) {
+        let record = repo::read_approval(&conn, scope, tenant_id, standing.approval_id)
+            .await
+            .map_err(|e| repo_error_to_canonical(&e))?
+            .ok_or_else(|| {
+                repo_error_to_canonical(&crate::infra::storage::RepoError::Db(format!(
+                    "approval {} is a candidate and has no row",
+                    standing.approval_id
+                )))
+            })?;
+        let agreed = serde_json::from_str::<JsonValue>(&record.content_snapshot)
+            .map(|value| canonical::canonical_rendering(&value, canonical::Absence::Omit))
+            .unwrap_or_default();
+        if agreed == canonical::canonical_rendering(presented, canonical::Absence::Omit) {
+            // The caller's own unit, still waiting. Answering `202` again is
+            // what makes the re-send idempotent before approval as well as
+            // after it.
+            return Ok(MemberOpGate::Opened(unit_view(&record)?));
+        }
+        return Err(refuse_set(
+            state,
+            scope,
+            tenant_id,
+            actor_ref,
+            kind,
+            member_code.to_owned(),
+            DomainError::ApprovalRequired(format!(
+                "approval {} is open on this member for a different change; decide or reject it \
+                 before proposing another — one open unit per subject (design/05 §4)",
+                standing.approval_id
+            )),
+        )
+        .await);
+    }
+
+    let policy = match repo::resolve_materiality_policy(&conn, scope, tenant_id)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?
+    {
+        crate::domain::materiality::Resolution::Resolved(policy) => policy,
+        // The policy read is fail-closed: a submission whose count cannot be
+        // resolved is not one this door may mint at a guessed `N`.
+        crate::domain::materiality::Resolution::Unresolvable => {
+            return Err(repo_error_to_canonical(
+                &crate::infra::storage::RepoError::Db(
+                    "the tenant's materiality policy could not be resolved, so no approval unit \
+                     can carry a count"
+                        .to_owned(),
+                ),
+            ));
+        }
+    };
+    let approval_id = crate::domain::governance::ApprovalId::new(Uuid::now_v7());
+    let snapshot = canonical::canonical_rendering(presented, canonical::Absence::Omit);
+    // The act is the **door's own**, not a declaration read off a payload:
+    // this door knows which of its three routes it is, so P-D-171's exception
+    // applies here by construction rather than by the caller's spelling.
+    let act = crate::domain::materiality::MaterialAct::LiveOp {
+        kind: crate::domain::materiality::MaterialLiveOp::RecognizedSetOp,
+        edit: if op.is_display_label_rename() {
+            crate::domain::materiality::LiveOpEdit::DisplayLabelRename
+        } else {
+            crate::domain::materiality::LiveOpEdit::Registered
+        },
+    };
+    let scope_tx = scope.clone();
+    let subject_tx = subject.clone();
+    let snapshot_tx = snapshot.clone();
+    let submitted = state
+        .db
+        .db()
+        .transaction_with_retry::<repo::Submitted, toolkit_db::DbError, _, _>(
+            toolkit_db::secure::TxConfig::default(),
+            crate::api::rest::contention_db_err,
+            move |tx| {
+                let scope = scope_tx.clone();
+                let subject = subject_tx.clone();
+                let snapshot = snapshot_tx.clone();
+                let policy = policy.clone();
+                let act = act.clone();
+                Box::pin(async move {
+                    // `submit_approval` writes twice — the supersession and
+                    // the insert — and its own doc requires the door's
+                    // transaction so the pair is atomic.
+                    repo::submit_approval(
+                        tx,
+                        &scope,
+                        repo::NewApproval {
+                            approval_id,
+                            subject: &subject,
+                            internal_revision: subject.pin.stored_revision(),
+                            content_snapshot: &snapshot,
+                            diff_basis: None,
+                            act: &act,
+                            evaluator: crate::domain::materiality::MaterialityEvaluator::new(
+                                crate::domain::materiality::Resolution::Resolved(&policy),
+                            ),
+                            // The caller declares nothing here: this door
+                            // touches no column `inst-gv-finance-predicate`
+                            // names, and P-D-169 left the gear no computed
+                            // operand to OR in.
+                            finance_material: false,
+                            approver_count: policy.approver_count(),
+                            submitter: actor_ref,
+                            author_override_ack: None,
+                            override_conditions: Vec::new(),
+                        },
+                        now,
+                    )
+                    .await
+                    .map_err(|e| match e {
+                        repo::ApprovalStoreError::Refused(refusal) => {
+                            toolkit_db::DbError::Sea(sea_orm::DbErr::Custom(format!(
+                                "bss-products: the submission was refused: {refusal}"
+                            )))
+                        }
+                        repo::ApprovalStoreError::Repo(error) => {
+                            toolkit_db::DbError::Sea(sea_orm::DbErr::Custom(error.to_string()))
+                        }
+                    })
+                })
+            },
+        )
+        .await
+        .map_err(|e| {
+            repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
+        })?;
+
+    if matches!(
+        submitted.state,
+        crate::domain::approval::ApprovalState::Satisfied
+    ) {
+        // Born satisfied at `required = 0` (P-D-119 row 31). Nothing waits,
+        // so `202 Accepted` would be a lie: the door proceeds in this
+        // request, on the record it has just opened.
+        let authorization = authorize_member_op(
+            state,
+            scope,
+            tenant_id,
+            actor_ref,
+            kind,
+            member_code,
+            presented,
+        )
+        .await?;
+        return Ok(MemberOpGate::Authorized(authorization));
+    }
+    Ok(MemberOpGate::Opened(MemberOpApprovalView {
+        approval_id: approval_id.get(),
+        state: submitted.state.as_str().to_owned(),
+        required: submitted.descriptor.required(),
+        configured_quorum: submitted.descriptor.configured_quorum(),
+        finance_required: submitted.descriptor.finance_required(),
+        quorum_reduced: submitted.descriptor.quorum_reduced(),
+    }))
+}
+
+/// The `202` body for a unit that was already standing, read back off its
+/// stored descriptor rather than recomputed (`design/05` §4: the descriptor
+/// is stored at submission and never re-derived).
+fn unit_view(
+    record: &crate::infra::storage::entity::approval::Model,
+) -> Result<MemberOpApprovalView, CanonicalError> {
+    let descriptor = crate::domain::approval::descriptor_from_stored(&record.quorum_descriptor)
+        .map_err(|e| {
+            repo_error_to_canonical(&crate::infra::storage::RepoError::CorruptRow(format!(
+                "approval {}'s stored descriptor: {e}",
+                record.approval_id
+            )))
+        })?;
+    Ok(MemberOpApprovalView {
+        approval_id: record.approval_id,
+        state: record.state.clone(),
+        required: descriptor.required(),
+        configured_quorum: descriptor.configured_quorum(),
+        finance_required: descriptor.finance_required(),
+        quorum_reduced: descriptor.quorum_reduced(),
+    })
+}
+
 /// Whether the matched record was submitted for `presented` (**P-D-172**).
 ///
 /// The outer `Result` is the storage channel and the inner one the refusal
@@ -634,7 +975,8 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .summary("Add a member to a recognized set")
         .description(
             "Adds an `active` member to the named set - `metering_unit` or `plan_tier` - and \
-             enqueues the set's event in the same transaction. The grant is chosen by `setKind` \
+             enqueues the set's event in the same transaction. **The door has two arms** (P-D-173): with no approval unit standing for this exact change it opens one, answers `202` naming it, and writes nothing; the identical request re-sent once that unit is approved answers below. A unit already open for a *different* change on the member is named in a `403 APPROVAL_REQUIRED` rather than superseded - `design/05` admits one open unit per subject. At `N = 0` the unit is born satisfied and the first call writes. \
+             The grant is chosen by `setKind` \
              (P-D-90): the tier set spends `plan_tier x write`, the unit set \
              `recognized_set x write`. A code the set already carries \
              in any state is refused `DUPLICATE_CODE` - a removed member is a tombstone whose \
@@ -653,6 +995,13 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
             StatusCode::CREATED,
             "The member, active, as stored.",
         )
+        .json_response_with_schema::<MemberOpApprovalView>(
+            openapi,
+            StatusCode::ACCEPTED,
+            "No approval unit stood for this change, so one was opened: the body names it and \
+             its effective count. Nothing was written. Re-send the identical request once the \
+             unit is approved.",
+        )
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
@@ -669,6 +1018,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     .description(
         "Applies one admitted edge to the member - `active -> deprecated`, `deprecated -> \
          removed`, or the re-listing edges `deprecated -> active` and `removed -> active`. \
+         **The door has two arms** (P-D-173): with no approval unit standing for this exact change it opens one, answers `202` naming it, and writes nothing; the identical request re-sent once that unit is approved answers below. A unit already open for a *different* change on the member is named in a `403 APPROVAL_REQUIRED` rather than superseded - `design/05` admits one open unit per subject. At `N = 0` the unit is born satisfied and the first call writes. \
          `active -> removed` is refused: de-listing deprecates first, so new declarations \
          stop before the member can leave the set. The body pins the state the caller read \
          (`expected_state`); a peer's flip in between is refused `STALE_LIVE_OP`. A removal \
@@ -692,6 +1042,13 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         StatusCode::OK,
         "The member, in its new state.",
     )
+        .json_response_with_schema::<MemberOpApprovalView>(
+        openapi,
+        StatusCode::ACCEPTED,
+        "No approval unit stood for this change, so one was opened: the body names it and \
+         its effective count. Nothing was written. Re-send the identical request once the \
+         unit is approved.",
+        )
     .error_400(openapi)
     .error_401(openapi)
     .error_403(openapi)
@@ -707,7 +1064,8 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     .summary("Change a recognized-set member's display label")
     .description(
         "Sets the member's `display_label` and nothing else - the rename a tier or unit \
-         admits. The member's code is its identity and has no update path (the table's \
+         admits. **The door has two arms** (P-D-173): with no approval unit standing for this exact change it opens one, answers `202` naming it, and writes nothing; the identical request re-sent once that unit is approved answers below. A unit already open for a *different* change on the member is named in a `403 APPROVAL_REQUIRED` rather than superseded - `design/05` admits one open unit per subject. At `N = 0` the unit is born satisfied and the first call writes. \
+         The member's code is its identity and has no update path (the table's \
          trigger refuses one), so every SKU declaring the code is untouched. Rides \
          `GovernedLiveOp` under the stored approval host like the other two member ops, and \
          enqueues the set's event in the same transaction.",
@@ -724,6 +1082,13 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         StatusCode::OK,
         "The member, relabelled.",
     )
+        .json_response_with_schema::<MemberOpApprovalView>(
+        openapi,
+        StatusCode::ACCEPTED,
+        "No approval unit stood for this change, so one was opened: the body names it and \
+         its effective count. Nothing was written. Re-send the identical request once the \
+         unit is approved.",
+        )
     .error_400(openapi)
     .error_401(openapi)
     .error_403(openapi)
@@ -841,16 +1206,24 @@ async fn relabel_member(
         member_code.clone(),
     )
     .await?;
-    let authorization = authorize_member_op(
+    let authorization = match gate_member_op(
         &state,
         &scope,
         tenant_id,
         actor_ref,
         kind,
         &member_code,
+        MemberOp::Relabel,
         &relabel_declaration(body.display_label.as_deref()),
+        now,
     )
-    .await?;
+    .await?
+    {
+        MemberOpGate::Authorized(authorization) => authorization,
+        MemberOpGate::Opened(unit) => {
+            return Ok((StatusCode::ACCEPTED, Json(unit)).into_response());
+        }
+    };
 
     let outbox = state.sink.clone();
     let scope_tx = scope.clone();
@@ -978,16 +1351,24 @@ async fn add_member(
         .await);
     }
 
-    let authorization = authorize_member_op(
+    let authorization = match gate_member_op(
         &state,
         &scope,
         tenant_id,
         actor_ref,
         kind,
         &member_code,
+        MemberOp::Add,
         &add_declaration(&member_code, body.display_label.as_deref()),
+        now,
     )
-    .await?;
+    .await?
+    {
+        MemberOpGate::Authorized(authorization) => authorization,
+        MemberOpGate::Opened(unit) => {
+            return Ok((StatusCode::ACCEPTED, Json(unit)).into_response());
+        }
+    };
     let outbox = state.sink.clone();
     let scope_tx = scope.clone();
     let code_tx = member_code.clone();
@@ -1128,16 +1509,24 @@ async fn transition_member(
         .await);
     };
 
-    let authorization = authorize_member_op(
+    let authorization = match gate_member_op(
         &state,
         &scope,
         tenant_id,
         actor_ref,
         kind,
         &member_code,
+        MemberOp::Transition,
         &transition_declaration(to.as_str(), expected.as_str()),
+        now,
     )
-    .await?;
+    .await?
+    {
+        MemberOpGate::Authorized(authorization) => authorization,
+        MemberOpGate::Opened(unit) => {
+            return Ok((StatusCode::ACCEPTED, Json(unit)).into_response());
+        }
+    };
     let outbox = state.sink.clone();
     let scope_tx = scope.clone();
     let code_tx = member_code.clone();

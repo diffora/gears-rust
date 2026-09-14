@@ -1569,6 +1569,70 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-173 — The set doors open the approval unit they need: `202` on the first call, the door's ordinary answer on the approved re-send
+
+- **Date**: 2026-09-14 (the vocabulary-convergence plan, Phase R group D task 3)
+- **What this decides.** The three recognized-set write doors stop requiring a satisfied record to
+  pre-exist. With no unit standing for the change, the door opens one over its own rendering of
+  that change and answers **`202`** naming it, writing nothing; the **identical request re-sent**
+  once the unit is approved answers the door's ordinary `201`/`200`. At `N = 0` the unit is born
+  `satisfied` (P-D-119 row 31) and the first call writes, because `202 Accepted` would be a lie
+  about a record waiting on nobody.
+- **The refusal was correct and unusable.** Until now the only way past `APPROVAL_REQUIRED` was to
+  submit through `POST /bss-products/v1/approvals` first — and after **P-D-172** that submission
+  has to carry the door's own byte-exact rendering of the change as its `content_snapshot`. That
+  is a contract no client can hold: the bytes are the door's, and a caller who renders them
+  differently is refused for a reason no response tells them. The two-arm door makes the door the
+  author of the proposal, which is the only place the proposal can be authored correctly.
+- **It is pricing's shape, named.** `api/rest/taxonomies.rs`' value `PATCH` (**D-355**) judges the
+  edit, opens a unit over the proposal and the value as it stands, and answers `202`
+  `submitted_for_approval` with nothing written. The difference is deliberate and is the one the
+  plan chose: **pricing's approver applies the change with their decision; here the caller
+  re-sends.** Products' doors already spend a satisfied record inside their own transaction
+  (P-D-144), so a re-send costs one call and adds no second writer of the member; making the
+  decision apply it would put the set's write and its event on the decide door, which is `05`'s and
+  has no `03` transaction.
+- **It never supersedes a unit somebody is deciding, and that is the whole of the risk.**
+  `repo::submit_approval` supersedes whatever open record the subject held (L-4), and `design/05`
+  §4's partial `UNIQUE` admits one open record per subject. A door that submitted on every
+  unauthorized call would therefore **discard approvals already cast** — on the caller's own retry.
+  So the unit is opened only when the subject holds no open record; a standing unit **for this same
+  change** is answered `202` again, which is what makes the re-send idempotent before approval as
+  well as after it; and a standing unit for a **different** change keeps P-D-172's
+  `APPROVAL_REQUIRED`, naming it.
+- **The grant consequence, stated because the plan did not anticipate it.** The unit is opened
+  under the **write** grant the door already spent (`plan_tier × write` / `recognized_set × write`),
+  not under `approval × submit`. A writer can now open a unit without holding the submit grant.
+  That is pricing's posture at the same seam and it grants no authority — the record is born
+  `pending`, it is decided by other principals under `approval × decide`, and a writer can hold at
+  most one open unit per member — but it is a real change to what a grant buys and is recorded
+  rather than absorbed. `design/05` §3.2's door/grant pairing is unchanged: no route moved.
+- **The act is the door's, not a declaration.** The door knows which of its three routes it is, so
+  it builds `MaterialAct::LiveOp` with the edit by construction — **P-D-171**'s `min(N, 1)`
+  exception applies to a relabel opened here whatever the caller spells, and cannot be claimed for
+  a transition. The payload-read path P-D-171 built stays for the `POST /approvals` route, which
+  has no door to ask.
+- **What did not change.** The pre-existing path is untouched: a caller who submits first and then
+  calls the door takes the same arm it always did, which is what `vhp-core`'s e2e drives for all
+  three doors. Every guard runs on the re-send, not on the proposal — the duplicate-code refusal,
+  the delist census, `STALE_LIVE_OP`, the seeded-member rule — because the proposal writes nothing
+  and the re-send is the ordinary call.
+- **A test's claim was re-aimed, not deleted.**
+  `a_member_op_without_a_satisfied_record_is_refused_approval_required` asserted the code this
+  entry removes. Its load-bearing half — *an unapproved member op writes no row and enqueues no
+  event* — is still asserted, under the name
+  `a_member_op_without_a_record_opens_the_unit_and_writes_nothing`, with the reason the old claim
+  stopped holding in its own doc. `APPROVAL_REQUIRED` keeps two paths on this surface and both have
+  probes.
+- **Owed**: the `ETag`/`If-Match` pair P-D-170 deferred is **not** paid here — see the entry that
+  follows this one in the plan's order; `vhp-core`'s e2e should gain a case for the `202` arm,
+  which no case drives today (`tests/e2e/tests/lib/products.py` seeds a record before every set
+  call), and that is the only way the new arm is exercised against a real stand. `02`'s two live-op
+  doors and `04`'s cancel door take the same shape when their slices ask for it; none is this
+  branch's.
+- **Propagated**: `design/03-sku-classification.md` §3.1 (`inst-rs-shape`, the two arms),
+  `design/05-governance.md` §4 (one open unit per subject, and what opens it).
+
 #### P-D-172 — The approval binds the change, not the member: a record authorizes the op it was submitted for and no other
 
 - **Date**: 2026-09-14 (the vocabulary-convergence plan, Phase R group D task 2)

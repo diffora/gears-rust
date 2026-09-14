@@ -307,7 +307,7 @@ row and open to correction; the requirement is that every code carries one.
   finance predicate, **`predicateUnsatisfiable`**, override conditions, **`quorumReduced`** — P-D-13) · `state ∈ {pending, satisfied, consumed, rejected,
   superseded}` · `submitter` (pseudonymous) · timestamps. Partial `UNIQUE (tenant_id,
   subject_kind, subject_ref) WHERE state IN ('pending','satisfied')` — one open approval per
-  subject; a new submission explicitly supersedes the open one (L-4). Append-only after
+  subject; a new submission explicitly supersedes the open one (L-4). **A door that opens a unit on its caller's behalf therefore opens one only where the subject holds no open record** (**P-D-173**, `03`'s three set doors today, which answer `202` with the unit and write nothing): submitting on every unauthorized call would discard the approvals already cast on a pending unit. Such a door spends its own write grant, not `approval × submit`, and opens the unit under the act its route names rather than one read off a payload. Append-only after
   finalization.
 - **`products_approval_decision`** — `(approval_id, approver_principal)` UNIQUE — the principal **as `actor_ref`**, pseudonymous — · verdict ·
   reason · override acknowledgments · instant. The UNIQUE is C2's physical floor: one principal,
