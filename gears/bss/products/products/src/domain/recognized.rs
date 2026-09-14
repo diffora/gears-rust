@@ -35,18 +35,21 @@
 
 use super::error::DomainError;
 
-/// The four recognized sets (`design/03` §4's roster, pinned by no `CHECK` per
+/// The two recognized sets (`design/03` §4's roster, pinned by no `CHECK` per
 /// P-D-92 — the DDL pins non-emptiness only, so this enum is the roster's
 /// enforcement site).
+///
+/// **It was four until P-D-169.** The two accounting sets — tax categories and
+/// GL codes — left with the columns that carried them: `PRD` §2.1 says billing
+/// descriptors are *"owned elsewhere and **MUST NOT** be re-specified here"*,
+/// and the two overrides of that sentence were both withdrawn (the
+/// tax-ownership amendment of 2026-09-10, and the measurement that pricing's
+/// `pricing_gl_code_taxonomy` is the tenant's GL vocabulary).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SetKind {
     /// Metering units — `dod-unit-*`'s set.
     MeteringUnit,
-    /// Tax categories — an accounting-code set.
-    TaxCategory,
-    /// GL codes — the other accounting-code set.
-    GlCode,
-    /// Plan tiers — the one set with its own grant, event and refusal code.
+    /// Plan tiers — the set with its own grant, event and refusal code.
     PlanTier,
 }
 
@@ -56,8 +59,6 @@ impl SetKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::MeteringUnit => "metering_unit",
-            Self::TaxCategory => "tax_category",
-            Self::GlCode => "gl_code",
             Self::PlanTier => "plan_tier",
         }
     }
@@ -67,8 +68,6 @@ impl SetKind {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "metering_unit" => Some(Self::MeteringUnit),
-            "tax_category" => Some(Self::TaxCategory),
-            "gl_code" => Some(Self::GlCode),
             "plan_tier" => Some(Self::PlanTier),
             _ => None,
         }
@@ -76,53 +75,27 @@ impl SetKind {
 
     /// The refusal a blocked removal raises — the one place the generic
     /// machinery answers per kind, because the design gives each family its
-    /// own code (`UNIT_DELIST_BLOCKED`, `PLAN_TIER_RETIRE_BLOCKED`,
-    /// `ACCOUNTING_CODE_DELIST_BLOCKED`).
+    /// own code (`UNIT_DELIST_BLOCKED`, `PLAN_TIER_RETIRE_BLOCKED`).
     #[must_use]
     pub fn delist_blocked(self, detail: String) -> DomainError {
         match self {
             Self::MeteringUnit => DomainError::UnitDelistBlocked(detail),
             Self::PlanTier => DomainError::PlanTierRetireBlocked(detail),
-            Self::TaxCategory | Self::GlCode => DomainError::AccountingCodeDelistBlocked(detail),
         }
     }
 }
 
 impl SetKind {
     /// The `products_sku` column whose value names a member of this set —
-    /// the holder population a removal counts, **uniform across all four
-    /// kinds** (`dod-recognized-set-mechanics`; P-D-146). Until 03's columns
-    /// landed (P-D-145) only `metering_unit` had a carrier and the other
-    /// three guards were necessarily off.
+    /// the holder population a removal counts, **uniform across both kinds**
+    /// (`dod-recognized-set-mechanics`; P-D-146).
     #[must_use]
     pub const fn carrier_column(self) -> &'static str {
         match self {
             Self::MeteringUnit => "metering_unit",
             Self::PlanTier => "plan_tier",
-            Self::TaxCategory => "tax_category_ref",
-            Self::GlCode => "gl_code_ref",
         }
     }
-}
-
-/// The two columns whose change is **finance-material**
-/// (`dod-finance-materiality`; `design/03` §4 puts both accounting codes in
-/// bucket iii as Finance's). `plan_tier` is Product's, not Finance's, and is
-/// deliberately absent.
-pub const FINANCE_MATERIAL_COLUMNS: [&str; 2] = ["tax_category_ref", "gl_code_ref"];
-
-/// Whether a publish that touched `touched` is finance-material — the operand
-/// `dod-finance-predicate` was blocked on while the columns did not exist
-/// (**P-D-146**). The submit door ORs this with the caller's own flag, so a
-/// caller can still declare a change finance-material for a reason the
-/// registry cannot see, but can no longer declare a code change *not* to be.
-///
-/// @cpt-dod:cpt-cf-bss-products-dod-finance-materiality:p1
-#[must_use]
-pub fn is_finance_material(touched: &[String]) -> bool {
-    touched
-        .iter()
-        .any(|column| FINANCE_MATERIAL_COLUMNS.contains(&column.as_str()))
 }
 
 /// One member's stored state.
@@ -338,8 +311,8 @@ mod recognized_tests;
 pub enum SkuType {
     Product,
     Service,
-    /// Composition is pricing's; a bundle is commercially incomplete by design
-    /// and requires neither accounting code.
+    /// Composition is pricing's; a bundle is commercially incomplete by
+    /// design.
     Bundle,
 }
 
@@ -360,12 +333,6 @@ impl SkuType {
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|kind| kind.as_str() == value)
-    }
-
-    /// Whether the type profile demands both accounting codes at publish.
-    #[must_use]
-    pub const fn requires_accounting_codes(self) -> bool {
-        matches!(self, Self::Product | Self::Service)
     }
 }
 
@@ -389,38 +356,6 @@ pub fn type_profile(raw: Option<&str>) -> Result<SkuType, DomainError> {
                 .to_owned(),
         )),
     }
-}
-
-/// `ACCOUNTING_CODE_REQUIRED` at publish, naming the missing field: `product`
-/// and `service` require both codes, `bundle` neither (`inst-cl-type-profile`).
-///
-/// # Errors
-///
-/// [`DomainError::AccountingCodeRequired`].
-pub fn required_codes_present(
-    kind: SkuType,
-    tax_category_ref: Option<&str>,
-    gl_code_ref: Option<&str>,
-) -> Result<(), DomainError> {
-    if !kind.requires_accounting_codes() {
-        return Ok(());
-    }
-    let missing: Vec<&str> = [
-        ("tax_category_ref", tax_category_ref),
-        ("gl_code_ref", gl_code_ref),
-    ]
-    .into_iter()
-    .filter(|(_, value)| value.is_none_or(|code| code.trim().is_empty()))
-    .map(|(field, _)| field)
-    .collect();
-    if missing.is_empty() {
-        return Ok(());
-    }
-    Err(DomainError::AccountingCodeRequired(format!(
-        "a `{}` SKU publishes with both accounting codes; missing: {}",
-        kind.as_str(),
-        missing.join(", ")
-    )))
 }
 
 /// `inst-pt-assign`'s verdict on a tier the head carries: unknown or
@@ -450,32 +385,6 @@ pub fn tier_verdict(
     }
 }
 
-/// `inst-ac-codes`' verdict on one accounting code (`tax_category_ref` or
-/// `gl_code_ref`, named in `field`): one code per refusal serving both fields.
-///
-/// # Errors
-///
-/// [`DomainError::AccountingCodeUnknown`], [`DomainError::AccountingCodeDeprecated`].
-pub fn accounting_code_verdict(
-    field: &str,
-    code: &str,
-    member: Option<MemberState>,
-    new_assignment: bool,
-) -> Result<(), DomainError> {
-    match member {
-        Some(MemberState::Active) => Ok(()),
-        Some(MemberState::Deprecated) if !new_assignment => Ok(()),
-        Some(MemberState::Deprecated) => Err(DomainError::AccountingCodeDeprecated(format!(
-            "{field} `{code}` is deprecated: existing published carriers keep it, and a new \
-             assignment must name an active code"
-        ))),
-        Some(MemberState::Removed) | None => Err(DomainError::AccountingCodeUnknown(format!(
-            "{field} `{code}` is not in Finance's recognized set: the path to a new code is the \
-             recognized-set door's governed add"
-        ))),
-    }
-}
-
 /// The tier a create assigns when the caller names none: the seeded
 /// `standard` (P-D-131 row 11 — mandatory on every SKU, so an empty tier would
 /// make the first publish impossible).
@@ -483,8 +392,8 @@ pub const DEFAULT_PLAN_TIER: &str = "standard";
 
 /// The platform baseline each set is seeded with on a tenant's **first write
 /// that could need one** (P-D-104, P-D-121 row 10): the four units PRD §17.1
-/// names, the `standard` tier (P-D-131 row 11), and **nothing** for Finance's
-/// two sets — their roster is Finance's to fill through the governed door.
+/// names and the `standard` tier (P-D-131 row 11, the one half of that
+/// decision P-D-169 did not withdraw).
 #[must_use]
 pub const fn seed_roster(kind: SetKind) -> &'static [(&'static str, Option<&'static str>)] {
     match kind {
@@ -495,7 +404,6 @@ pub const fn seed_roster(kind: SetKind) -> &'static [(&'static str, Option<&'sta
             ("request-count", None),
         ],
         SetKind::PlanTier => &[(DEFAULT_PLAN_TIER, Some("Standard"))],
-        SetKind::TaxCategory | SetKind::GlCode => &[],
     }
 }
 

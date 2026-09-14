@@ -101,7 +101,6 @@ would be a product decision — it is §7's, routed to the PRD owner with `05-go
   [`../design/02-taxonomy-attributes.md`](../design/02-taxonomy-attributes.md) (attributes,
   categories, the metadata map, the PII hook),
   [`../design/03-sku-classification.md`](../design/03-sku-classification.md) (metering, `PlanTier`,
-  accounting codes, `inst-mt-resolve`),
   [`../design/04-lifecycle.md`](../design/04-lifecycle.md) (deprecation, retirement, `replacedBy`).
 
 **Requirements**: `cpt-cf-bss-products-fr-clone`
@@ -596,11 +595,11 @@ collector of its own.
 **Not one of the five `Copy + re-validate` rows has an operand at this commit**, and the DoD says so
 rather than specifying work over tables and columns that do not exist. `design/11` §3.1's
 re-validating rows are *Display/localized attributes + metadata map*, *Category assignments*,
-*`PlanTier`*, *Metering declaration* and *Accounting codes*. Measured:
+*`PlanTier`* and *Metering declaration* (*Accounting codes* went with P-D-169). Measured:
 
 - `products_product_category`, `products_attribute_value` and any metadata-map table occur **zero**
   times under `infra/`;
-- `plan_tier`, the accounting-code refs, the metering unit and `sellable` are on **no** shipped
+- `plan_tier`, the metering unit and `sellable` are on **no** shipped
   table — `products_sku`'s thirteen columns carry none of them, and `infra/storage/entity/sku.rs`
   says so itself: the capability columns *"arrive with those features"*.
 
@@ -633,7 +632,7 @@ which gives P-D-75's "the clone door itself" rule its writer; the SKU clone copi
 with the rest of `03`'s columns. **Re-validate**: `clone_content_report` runs `02`'s registered
 `content_save_pipeline` over the assembled content and the PII block over every copied value
 against **today's** allow-list; `clone_classification_report` judges the copied unit, tier and
-accounting codes against the live sets and the type profile; the two merge into **one**
+the type profile; the two merge into **one**
 `ValidationReport`, so a single refusal carries every code and writes nothing. **The re-validating
 rows are not a second registry**: the content rows *are* `02`'s registered rules in that pipeline's
 order, and the classification rows are `03`'s verdict functions called in §3.1's row order — the
@@ -665,7 +664,7 @@ carry four more — `PARENT_TERMINAL`, `RETIREMENT_PENDING`, `CONTENT_PII_BLOCKE
 and the other **twelve** have none:
 
 `UNRECOGNIZED_UNIT`, `UNIT_DEPRECATED`, `PLAN_TIER_UNKNOWN`, `PLAN_TIER_DEPRECATED`,
-`CATEGORY_RETIRED`, `ACCOUNTING_CODE_UNKNOWN`, `ACCOUNTING_CODE_DEPRECATED`,
+`CATEGORY_RETIRED`,
 `ATTRIBUTE_DEFINITION_UNKNOWN`, `ATTRIBUTE_DEFINITION_DEPRECATED`, `ATTRIBUTE_SCOPE_VIOLATION`,
 `RETIREMENT_PENDING`, `CONTENT_PII_BLOCKED`.
 
@@ -679,7 +678,7 @@ times in `design/11`; they are `design/03`'s, raised at publish, and the clone d
 `usageTypeRef` at all.
 
 **This feature declares none of them.** Each belongs to the slice that owns its vocabulary — `02`
-for the attribute and PII codes, `03` for unit, tier and accounting, `04` for `RETIREMENT_PENDING` —
+for the attribute and PII codes, `03` for unit and tier, `04` for `RETIREMENT_PENDING` —
 and declaring a second home for any of them would break the one-declaration rule. **The DoD is that
 the clone raises them, not that it mints them**, and it is blocked on their owners until then.
 
@@ -915,7 +914,7 @@ fixture likewise.
 the eleven door probes. **The sixteen pairs**: `CATEGORY_RETIRED`, `ATTRIBUTE_DEFINITION_UNKNOWN`,
 `ATTRIBUTE_DEFINITION_DEPRECATED`, `ATTRIBUTE_SCOPE_VIOLATION`, `CONTENT_PII_BLOCKED` (Products);
 `UNRECOGNIZED_UNIT`, `UNIT_DEPRECATED`, `PLAN_TIER_UNKNOWN`, `PLAN_TIER_DEPRECATED`,
-`ACCOUNTING_CODE_UNKNOWN`, `ACCOUNTING_CODE_DEPRECATED`, `PARENT_TERMINAL`, `RETIREMENT_PENDING`
+`PARENT_TERMINAL`, `RETIREMENT_PENDING`
 (SKUs) — each a refusal against the positive control that clones the same fixture whole — and
 `DUPLICATE_NAME`, `DUPLICATE_CODE` (the override collisions in the door suites) and
 `ILLEGAL_FIELD_MUTATION` (the lineage pair's create-only refusal). `ENTITY_TERMINAL` stays unpaired
@@ -1243,7 +1242,7 @@ duplicating it.
 
 17. ~~**Do the twelve variantless codes ship with their owning slices or with this feature, and as
     what?**~~ **Answered (P-D-128, 2026-09-03): as `Violation` codes inside one `DomainError::Validation` report, with their owning slices** — the shipped collector's form; no variants minted. *The item's text stood as:* `UNRECOGNIZED_UNIT`, `UNIT_DEPRECATED`, `PLAN_TIER_UNKNOWN`, `PLAN_TIER_DEPRECATED`,
-    `CATEGORY_RETIRED`, `ACCOUNTING_CODE_UNKNOWN`, `ACCOUNTING_CODE_DEPRECATED`,
+    `CATEGORY_RETIRED`,
     `ATTRIBUTE_DEFINITION_UNKNOWN`, `ATTRIBUTE_DEFINITION_DEPRECATED` and
     `ATTRIBUTE_SCOPE_VIOLATION` have no `DomainError` variant and are named nowhere in the crate.
     **Two of the twelve are already assigned** and need no ruling: `infra/error_mapping.rs` records

@@ -74,7 +74,6 @@ async fn harness() -> Harness {
     // The fixtures are `product` SKUs: they must carry both Finance codes to
     // publish (P-D-145), and a `bundle` would need P-D-02's acknowledgment
     // on its record instead (P-D-146).
-    crate::test_support::seed_finance_codes(&db, TENANT).await;
     Harness { db, outbox_handle }
 }
 
@@ -222,8 +221,6 @@ async fn seed_scheduled_publish(
             sku_type: "product".to_owned(),
             sellable: true,
             plan_tier: "standard".to_owned(),
-            tax_category_ref: Some("TC-STD".to_owned()),
-            gl_code_ref: Some("GL-4000".to_owned()),
             metering_unit: metering.map(|(unit, _)| unit.to_owned()),
             usage_type_ref: metering.map(|(_, usage_type_ref)| usage_type_ref.to_owned()),
         },
@@ -542,8 +539,6 @@ async fn a_seeded_consumed_approval_flips_deprecated_sku_to_retired() {
                 sku_type: "product".to_owned(),
                 sellable: true,
                 plan_tier: "standard".to_owned(),
-                tax_category_ref: Some("TC-STD".to_owned()),
-                gl_code_ref: Some("GL-4000".to_owned()),
                 metering_unit: None,
                 usage_type_ref: None,
             },
@@ -717,8 +712,6 @@ async fn a_product_retire_defers_when_a_published_child_would_orphan() {
                 sku_type: "product".to_owned(),
                 sellable: true,
                 plan_tier: "standard".to_owned(),
-                tax_category_ref: Some("TC-STD".to_owned()),
-                gl_code_ref: Some("GL-4000".to_owned()),
                 metering_unit: None,
                 usage_type_ref: None,
             },
@@ -887,8 +880,6 @@ async fn a_product_retire_defers_while_a_deprecated_child_is_non_terminal() {
                 sku_type: "product".to_owned(),
                 sellable: true,
                 plan_tier: "standard".to_owned(),
-                tax_category_ref: Some("TC-STD".to_owned()),
-                gl_code_ref: Some("GL-4000".to_owned()),
                 metering_unit: None,
                 usage_type_ref: None,
             },
@@ -1055,8 +1046,6 @@ async fn a_sku_retire_defers_when_a_live_pointer_names_it() {
                 sku_type: "product".to_owned(),
                 sellable: true,
                 plan_tier: "standard".to_owned(),
-                tax_category_ref: Some("TC-STD".to_owned()),
-                gl_code_ref: Some("GL-4000".to_owned()),
                 metering_unit: None,
                 usage_type_ref: None,
             },
@@ -1081,8 +1070,6 @@ async fn a_sku_retire_defers_when_a_live_pointer_names_it() {
                 sku_type: "product".to_owned(),
                 sellable: true,
                 plan_tier: "standard".to_owned(),
-                tax_category_ref: Some("TC-STD".to_owned()),
-                gl_code_ref: Some("GL-4000".to_owned()),
                 metering_unit: None,
                 usage_type_ref: None,
             },
@@ -1290,8 +1277,6 @@ async fn a_sku_retire_defers_when_no_producer_is_registered() {
                 sku_type: "product".to_owned(),
                 sellable: true,
                 plan_tier: "standard".to_owned(),
-                tax_category_ref: Some("TC-STD".to_owned()),
-                gl_code_ref: Some("GL-4000".to_owned()),
                 metering_unit: None,
                 usage_type_ref: None,
             },
@@ -1463,8 +1448,6 @@ async fn a_product_retire_skips_the_07_predicate_when_no_producer_is_registered(
                 sku_type: "product".to_owned(),
                 sellable: true,
                 plan_tier: "standard".to_owned(),
-                tax_category_ref: Some("TC-STD".to_owned()),
-                gl_code_ref: Some("GL-4000".to_owned()),
                 metering_unit: None,
                 usage_type_ref: None,
             },

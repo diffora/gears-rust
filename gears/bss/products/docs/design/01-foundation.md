@@ -820,9 +820,9 @@ Unicode NFKC → full casefold → trim + collapse internal whitespace to single
 `sku_id` (PK, uuid) · `tenant_id` · `product_id` (FK) · `sku_code` · `type`
 (`product|service|bundle`) · `lifecycle_state` · `deprecation_provenance`
 (nullable `direct|cascaded`, slice 04) · `sellable` (default `true`, pricing D-46) · `plan_tier` ·
-`tax_category_ref` · `gl_code_ref` (**both columns are contingent** — PRD §15 carries the
-open question of whether this registry owns them at all, §2.1 saying they are owned elsewhere
-while `fr-accounting-codes` requires the registry to persist and validate them) · `metering_unit` · `usage_type_ref` · `correction_ref` (nullable uuid — **P-D-129**, landed 2026-09-04: the door identity of 07's correction re-publish, written only in the same statement as the `published_version` bump and read by the bucket-ii predicate below) ·
+(~~`tax_category_ref` · `gl_code_ref` — **dropped by P-D-169**, 2026-09-14, which answered PRD
+§15's open question of whether this registry owned them at all: it does not, §2.1's *"owned
+elsewhere"* governs both, and `fr-accounting-codes` is withdrawn~~) · `metering_unit` · `usage_type_ref` · `correction_ref` (nullable uuid — **P-D-129**, landed 2026-09-04: the door identity of 07's correction re-publish, written only in the same statement as the `published_version` bump and read by the bucket-ii predicate below) ·
 `composition_pending` (bool, **NOT NULL, default `false`** — **P-D-35**: the create flow writes it nowhere and the publish door on a `bundle` is its only raiser, so the default is the unraised state; slice 06 semantics) · `replaced_by_sku_id` (slice 04) ·
 `internal_revision` · `published_version` · `region_scope`/`brand_scope` (same shape and default as §4.1's, **contained in the parent's** per §2's flow; **the create door copies the parent's when the payload omits them** — P-D-39) ·
 `created_by` · `cloned_from` (nullable; written only in the creating statement and immutable from then on —

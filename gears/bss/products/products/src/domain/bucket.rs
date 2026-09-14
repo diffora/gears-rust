@@ -404,7 +404,7 @@ const PRODUCT_COLUMNS: [ColumnTag; 19] = [
 /// it is the primary key; and the table carries **no `name`**, so a `name`
 /// field arriving for a SKU is a miss and is refused rather than routed to the
 /// Product's tag.
-pub(crate) const SKU_COLUMNS: [ColumnTag; 26] = [
+pub(crate) const SKU_COLUMNS: [ColumnTag; 24] = [
     // Row identity (§4.2, P-D-34).
     ColumnTag {
         column: "sku_id",
@@ -469,14 +469,6 @@ pub(crate) const SKU_COLUMNS: [ColumnTag; 26] = [
     },
     ColumnTag {
         column: "plan_tier",
-        class: FieldClass::Bucket(FieldBucket::MaterialMutable),
-    },
-    ColumnTag {
-        column: "tax_category_ref",
-        class: FieldClass::Bucket(FieldBucket::MaterialMutable),
-    },
-    ColumnTag {
-        column: "gl_code_ref",
         class: FieldClass::Bucket(FieldBucket::MaterialMutable),
     },
     // Mechanical (§5). `composition_pending` is named there explicitly and is

@@ -801,44 +801,69 @@ async fn a_relabel_changes_the_display_label_only_and_announces() {
     assert_eq!(missing.status(), axum::http::StatusCode::NOT_FOUND);
 }
 
-/// A published head carrying a **tier** or an **accounting code** blocks that
-/// member's removal exactly as a metering unit's does — the guard is uniform
-/// across the four kinds (`dod-recognized-set-mechanics`,
-/// `dod-plantier-governance`; P-D-146) — and the positive control removes a
-/// member nobody carries.
+/// A published head carrying a **tier** blocks that member's removal exactly
+/// as a metering unit's does — the guard is uniform across the kinds
+/// (`dod-recognized-set-mechanics`, `dod-plantier-governance`; P-D-146) — and
+/// the positive control removes a member nobody carries.
+///
+/// **The accounting half of this case went with P-D-169**: `tax_category` and
+/// `gl_code` are no longer set kinds, so `ACCOUNTING_CODE_DELIST_BLOCKED` has
+/// no reachable path and the uniformity claim now spans two kinds, not four.
+/// The refusal a retired path segment earns is
+/// [`the_kind_roster_and_its_refusal_codes`]'s to prove.
 #[tokio::test]
-async fn a_tier_retire_and_a_code_removal_are_blocked_by_a_published_carrier() {
+async fn a_tier_retire_is_blocked_by_a_published_carrier() {
     let harness = harness().await;
     add_member(&harness, TENANT, "plan_tier", "gold").await;
     add_member(&harness, TENANT, "plan_tier", "silver").await;
-    add_member(&harness, TENANT, "tax_category", "TC-VAT").await;
     seed_carrier(&harness, "SKU-GOLD", "plan_tier", "gold").await;
-    seed_carrier(&harness, "SKU-VAT", "tax_category_ref", "TC-VAT").await;
 
-    for (kind, code, expected_code) in [
-        ("plan_tier", "gold", "PLAN_TIER_RETIRE_BLOCKED"),
-        ("tax_category", "TC-VAT", "ACCOUNTING_CODE_DELIST_BLOCKED"),
-    ] {
-        let deprecated = transition(&harness, TENANT, kind, code, "active", "deprecated").await;
-        assert_eq!(deprecated.status(), axum::http::StatusCode::OK, "{kind}");
-        let blocked = transition(&harness, TENANT, kind, code, "deprecated", "removed").await;
-        assert_eq!(blocked.status(), axum::http::StatusCode::CONFLICT, "{kind}");
-        assert_eq!(error_code(blocked).await, expected_code);
-    }
+    let deprecated = transition(
+        &harness,
+        TENANT,
+        "plan_tier",
+        "gold",
+        "active",
+        "deprecated",
+    )
+    .await;
+    assert_eq!(deprecated.status(), axum::http::StatusCode::OK);
+    let blocked = transition(
+        &harness,
+        TENANT,
+        "plan_tier",
+        "gold",
+        "deprecated",
+        "removed",
+    )
+    .await;
+    assert_eq!(blocked.status(), axum::http::StatusCode::CONFLICT);
+    assert_eq!(error_code(blocked).await, "PLAN_TIER_RETIRE_BLOCKED");
 
-    for (kind, code) in [("plan_tier", "silver"), ("gl_code", "GL-9999")] {
-        if kind == "gl_code" {
-            add_member(&harness, TENANT, kind, code).await;
-        }
-        let deprecated = transition(&harness, TENANT, kind, code, "active", "deprecated").await;
-        assert_eq!(deprecated.status(), axum::http::StatusCode::OK, "{kind}");
-        let removed = transition(&harness, TENANT, kind, code, "deprecated", "removed").await;
-        assert_eq!(
-            removed.status(),
-            axum::http::StatusCode::OK,
-            "a {kind} member no published head carries removes - the positive control"
-        );
-    }
+    let deprecated = transition(
+        &harness,
+        TENANT,
+        "plan_tier",
+        "silver",
+        "active",
+        "deprecated",
+    )
+    .await;
+    assert_eq!(deprecated.status(), axum::http::StatusCode::OK);
+    let removed = transition(
+        &harness,
+        TENANT,
+        "plan_tier",
+        "silver",
+        "deprecated",
+        "removed",
+    )
+    .await;
+    assert_eq!(
+        removed.status(),
+        axum::http::StatusCode::OK,
+        "a member no published head carries removes - the positive control"
+    );
 }
 
 /// A published SKU carrying `value` in `column` — the fixture the tier and

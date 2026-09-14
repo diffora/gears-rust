@@ -6,8 +6,6 @@
 //!
 //! The `DoD` and §4 both name the domain — `metering_unit`, `tax_category`,
 //! `gl_code`, `plan_tier` — and **neither demands a `CHECK` over it**, which
-//! is what **P-D-92** turns on: §7 row 5 asks whether `tax_category_ref` and
-//! `gl_code_ref` belong to this registry at all, and its answer *"may delete
 //! ... its two `set_kind` values"*. A `CHECK` enumerating the four would be
 //! that row's answer written by a migration, so `set_kind` is pinned
 //! **non-empty only** and the admitted set is the membership door's to

@@ -255,8 +255,6 @@ impl Authoring for InProcessAuthoring {
                 sku_type: sku.sku_type,
                 sellable: sku.sellable,
                 plan_tier: sku.plan_tier,
-                tax_category_ref: sku.tax_category_ref,
-                gl_code_ref: sku.gl_code_ref,
             }),
         )
         .await?;
@@ -515,8 +513,6 @@ impl ProductsClient for InProcessProductsClient {
             plan_tier: record.plan_tier,
             metering_unit: record.metering_unit,
             usage_type_ref: record.usage_type_ref,
-            tax_category_ref: record.tax_category_ref,
-            gl_code_ref: record.gl_code_ref,
         })
     }
 }

@@ -128,11 +128,6 @@ async fn harness() -> TestHarness {
         .expect("start the outbox pipeline");
     let outbox = Arc::clone(outbox_handle.outbox());
 
-    // Finance's sets are empty by design; the suite's `product` SKUs need
-    // both codes to publish (P-D-145).
-    let provider = DBProvider::<DbError>::new(db.clone());
-    crate::test_support::seed_finance_codes(&provider, TENANT).await;
-    crate::test_support::seed_finance_codes(&provider, OTHER_TENANT).await;
     TestHarness {
         dsn,
         db: DBProvider::<DbError>::new(db),
@@ -481,7 +476,7 @@ async fn a_well_formed_create_under_a_live_parent_persists_a_draft_sku() {
     let response = post_create_sku(
         app,
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
     )
     .await;
 
@@ -529,7 +524,7 @@ async fn exactly_one_sku_created_row_is_enqueued_and_no_audit_row_is_written() {
     let response = post_create_sku(
         app,
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
     )
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
@@ -574,7 +569,7 @@ async fn an_unresolvable_parent_is_refused_validation() {
     let response = post_create_sku(
         app,
         TENANT,
-        &json!({ "product_id": nonexistent_parent, "sku_code": "SKU-500" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"}),
+        &json!({ "product_id": nonexistent_parent, "sku_code": "SKU-500" , "sku_type": "product"}),
     )
     .await;
 
@@ -614,7 +609,7 @@ async fn a_parent_belonging_to_another_tenant_is_not_resolvable() {
     let response = post_create_sku(
         app,
         TENANT,
-        &json!({ "product_id": foreign_parent, "sku_code": "SKU-500" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"}),
+        &json!({ "product_id": foreign_parent, "sku_code": "SKU-500" , "sku_type": "product"}),
     )
     .await;
 
@@ -654,7 +649,7 @@ async fn a_retired_parent_is_refused_parent_terminal() {
     let response = post_create_sku(
         app,
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
     )
     .await;
 
@@ -691,7 +686,7 @@ async fn a_discarded_parent_is_refused_parent_terminal() {
     let response = post_create_sku(
         app,
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
     )
     .await;
 
@@ -717,7 +712,7 @@ async fn a_scope_not_contained_in_a_restricted_parent_is_refused() {
     let response = post_create_sku(
         app,
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500", "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000", "region_scope": "eu,us" }),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500", "sku_type": "product", "region_scope": "eu,us" }),
     )
     .await;
 
@@ -758,7 +753,7 @@ async fn an_omitted_scope_inherits_the_parents_value() {
     let response = post_create_sku(
         app,
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
     )
     .await;
 
@@ -794,7 +789,7 @@ async fn an_explicit_unrestricted_scope_against_a_restricted_parent_is_refused()
     let response = post_create_sku(
         app,
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500", "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000", "region_scope": "" }),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500", "sku_type": "product", "region_scope": "" }),
     )
     .await;
 
@@ -828,7 +823,7 @@ async fn a_duplicate_sku_code_is_refused_and_audited() {
     let first = post_create_sku(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
     )
     .await;
     assert_eq!(
@@ -840,7 +835,7 @@ async fn a_duplicate_sku_code_is_refused_and_audited() {
     let second = post_create_sku(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
     )
     .await;
     assert_eq!(
@@ -883,7 +878,7 @@ async fn an_unwritable_refusal_audit_answers_audit_unavailable_not_the_domain_re
     let first = post_create_sku(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
     )
     .await;
     assert_eq!(
@@ -897,7 +892,7 @@ async fn an_unwritable_refusal_audit_answers_audit_unavailable_not_the_domain_re
     let second = post_create_sku(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
     )
     .await;
 
@@ -930,7 +925,7 @@ async fn a_caller_supplied_id_is_refused_validation() {
         &json!({
             "id": caller_supplied_id,
             "product_id": parent_id,
-            "sku_code": "SKU-500", "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000",
+            "sku_code": "SKU-500", "sku_type": "product",
         }),
     )
     .await;
@@ -970,7 +965,7 @@ async fn a_scope_with_an_empty_token_is_refused_validation() {
     let response = post_create_sku(
         app,
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500", "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000", "region_scope": "," }),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500", "sku_type": "product", "region_scope": "," }),
     )
     .await;
 
@@ -1010,7 +1005,7 @@ async fn a_keyed_create_persists_the_sku_and_an_answered_row_under_this_doors_en
     let response = post_create_sku_with_key(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
         "author-retry-1",
     )
     .await;
@@ -1061,7 +1056,7 @@ async fn a_keyless_sku_create_succeeds_and_claims_nothing() {
     let response = post_create_sku(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
     )
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
@@ -1099,7 +1094,7 @@ async fn a_rolled_back_sku_mutation_frees_the_key_for_a_later_create() {
     let setup = post_create_sku(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
     )
     .await;
     assert_eq!(setup.status(), StatusCode::CREATED);
@@ -1107,7 +1102,7 @@ async fn a_rolled_back_sku_mutation_frees_the_key_for_a_later_create() {
     let refused = post_create_sku_with_key(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
         "author-retry-2",
     )
     .await;
@@ -1125,7 +1120,7 @@ async fn a_rolled_back_sku_mutation_frees_the_key_for_a_later_create() {
     let retry = post_create_sku_with_key(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-900" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-900" , "sku_type": "product"}),
         "author-retry-2",
     )
     .await;
@@ -1170,7 +1165,7 @@ async fn a_rolled_back_sku_mutation_frees_the_key_for_a_later_create() {
 async fn a_second_keyed_sku_create_on_a_live_key_is_refused_in_flight_and_audited() {
     let harness = harness().await;
     let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
-    let body = json!({ "product_id": parent_id, "sku_code": "SKU-900" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"});
+    let body = json!({ "product_id": parent_id, "sku_code": "SKU-900" , "sku_type": "product"});
     seed_live_claim(&harness, "author-retry-3", &digest_of(&body)).await;
 
     let second =
@@ -1212,13 +1207,13 @@ async fn a_second_keyed_sku_create_on_a_live_key_is_refused_in_flight_and_audite
 async fn a_second_keyed_sku_create_on_a_live_key_under_a_different_payload_is_refused_conflict() {
     let harness = harness().await;
     let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
-    let held = json!({ "product_id": parent_id, "sku_code": "SKU-900" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"});
+    let held = json!({ "product_id": parent_id, "sku_code": "SKU-900" , "sku_type": "product"});
     seed_live_claim(&harness, "author-retry-3b", &digest_of(&held)).await;
 
     let second = post_create_sku_with_key(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-901" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-901" , "sku_type": "product"}),
         "author-retry-3b",
     )
     .await;
@@ -1256,7 +1251,7 @@ async fn a_second_keyed_sku_create_on_a_live_key_under_a_different_payload_is_re
 async fn a_retry_after_a_committed_sku_create_replays_the_original_response() {
     let harness = harness().await;
     let parent_id = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
-    let body = json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"});
+    let body = json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"});
 
     let first =
         post_create_sku_with_key(app_for(&harness, TENANT), TENANT, &body, "author-retry-4").await;
@@ -1367,7 +1362,7 @@ async fn seed_draft_sku(harness: &TestHarness, parent_id: Uuid, sku_code: &str) 
     let response = post_create_sku(
         app_for(harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": sku_code , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"}),
+        &json!({ "product_id": parent_id, "sku_code": sku_code , "sku_type": "product"}),
     )
     .await;
     assert_eq!(
@@ -2109,7 +2104,7 @@ async fn a_discarded_skus_code_is_free_for_the_next_holder() {
     let response = post_create_sku(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
     )
     .await;
 
@@ -2396,8 +2391,6 @@ fn the_sku_content_builder_writes_exactly_the_roster() {
         sku_type: Some("product".to_owned()),
         sellable: false,
         plan_tier: Some("standard".to_owned()),
-        tax_category_ref: Some("TC-STD".to_owned()),
-        gl_code_ref: Some("GL-4000".to_owned()),
     };
 
     let content = super::sku_version_content(&record, &[]);
@@ -4302,7 +4295,7 @@ async fn a_created_events_envelope_carries_the_four_obligations_from_the_door() 
     let response = post_create_sku(
         app,
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-500" , "sku_type": "product"}),
     )
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
@@ -5441,8 +5434,6 @@ async fn changing_a_drafts_sku_code_frees_the_old_code_for_a_new_create() {
             "product_id": parent,
             "sku_code": code,
             "sku_type": "product",
-            "tax_category_ref": "TC-STD",
-            "gl_code_ref": "GL-4000",
         })
     };
     let (first, etag) = created_sku(&harness, &body("SKU-MOVE-A")).await;
@@ -6340,7 +6331,7 @@ async fn creating_a_sku_under_a_retiring_parent_is_retirement_pending() {
     let refused = post_create_sku(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "SKU-RT-CREATE" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"}),
+        &json!({ "product_id": parent_id, "sku_code": "SKU-RT-CREATE" , "sku_type": "product"}),
     )
     .await;
     assert_eq!(refused.status(), StatusCode::CONFLICT);
@@ -6621,8 +6612,6 @@ fn typed_body(product_id: Uuid, code: &str) -> serde_json::Value {
         "product_id": product_id,
         "sku_code": code,
         "sku_type": "product",
-        "tax_category_ref": "TC-STD",
-        "gl_code_ref": "GL-4000",
     })
 }
 
@@ -6775,45 +6764,6 @@ async fn a_sku_type_outside_the_closed_set_is_refused_and_one_inside_is_admitted
         view["plan_tier"], "standard",
         "P-D-131 row 11's seed is the default tier"
     );
-    assert_eq!(view["tax_category_ref"], "TC-STD");
-    assert_eq!(view["gl_code_ref"], "GL-4000");
-}
-
-/// `dod-type-profile`: a `product` publishes only with both accounting codes
-/// - the refusal names the missing one - and a `bundle` needs neither (the
-/// exemption's own named probe).
-#[tokio::test]
-async fn a_product_missing_an_accounting_code_is_refused_at_publish_and_a_bundle_needs_none() {
-    let harness = harness().await;
-    let parent = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
-
-    let mut half = typed_body(parent, "SKU-HALF");
-    half.as_object_mut().expect("object").remove("gl_code_ref");
-    let (sku_id, etag) = created_sku(&harness, &half).await;
-    let refused = post_publish(&harness, TENANT, sku_id, Some(&etag)).await;
-    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(refused).await;
-    assert_eq!(violation_code(&body), json!("ACCOUNTING_CODE_REQUIRED"));
-    assert!(
-        body["context"]["violations"][0]["description"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("gl_code_ref"),
-        "the refusal names the missing field: {body}"
-    );
-
-    let (bundle_id, bundle_etag) = created_sku(
-        &harness,
-        &json!({ "product_id": parent, "sku_code": "SKU-BUNDLE", "sku_type": "bundle" }),
-    )
-    .await;
-    seed_acknowledged_publish(&harness, bundle_id, &bundle_etag).await;
-    let published = post_publish(&harness, TENANT, bundle_id, Some(&bundle_etag)).await;
-    assert_eq!(
-        published.status(),
-        StatusCode::OK,
-        "a bundle is commercially incomplete by design and requires neither code"
-    );
 }
 
 /// The double for P-D-02's ceremony: a satisfied record for this SKU's publish
@@ -6906,23 +6856,32 @@ async fn an_unacknowledged_bundle_publish_is_refused_and_the_acknowledged_one_ra
 }
 
 /// **A one-person tenant publishes their first `product` SKU**
-/// (`dod-finance-materiality`, `dod-finance-predicate`): at `N = 0` the
-/// finance predicate is recorded `predicateUnsatisfiable = finance_reviewer`
-/// on a record born satisfied, and the publish goes through under the real
-/// host with no double at all. At the default quorum the same submission —
-/// declared *not* finance-material by its caller — carries the predicate
-/// anyway, because the registry computes the operand from the touched codes.
+/// (`dod-finance-predicate`): at `N = 0` the finance predicate is recorded
+/// `predicateUnsatisfiable = finance_reviewer` on a record born satisfied, and
+/// the publish goes through under the real host with no double at all.
+///
+/// The first half measures **who supplies the operand**, which P-D-169
+/// changed: the registry computed it from the two accounting codes until they
+/// left the gear, and the submitter now declares it. Both answers are probed
+/// at the default quorum, because "the caller's word is taken" is only a claim
+/// if the other word produces the other answer.
 #[tokio::test]
 async fn a_one_person_tenant_publishes_its_first_product_sku_and_the_predicate_is_recorded() {
     let harness = harness().await;
     let parent = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
 
-    // The default quorum first: the operand is computed, not declared.
-    let (declared_id, _) = created_sku(&harness, &typed_body(parent, "SKU-FIN-N2")).await;
-    let receipt = body_json(post_approval(&harness, declared_id).await).await;
+    // The default quorum first: the operand is declared, never computed.
+    let (undeclared, _) = created_sku(&harness, &typed_body(parent, "SKU-FIN-N2")).await;
+    let receipt = body_json(post_approval(&harness, undeclared, false).await).await;
+    assert_eq!(
+        receipt["finance_required"], false,
+        "nothing on a SKU is finance-material to this registry since P-D-169: {receipt}"
+    );
+    let (declared_id, _) = created_sku(&harness, &typed_body(parent, "SKU-FIN-DECL")).await;
+    let receipt = body_json(post_approval(&harness, declared_id, true).await).await;
     assert_eq!(
         receipt["finance_required"], true,
-        "a first publish touches both codes, so the predicate binds whatever the caller said: {receipt}"
+        "a caller that declares the change finance-material binds the predicate: {receipt}"
     );
 
     // Now the one-person tenant.
@@ -6939,7 +6898,12 @@ async fn a_one_person_tenant_publishes_its_first_product_sku_and_the_predicate_i
     .await
     .expect("write the policy");
     let (sku_id, etag) = created_sku(&harness, &typed_body(parent, "SKU-FIN-N0")).await;
-    let response = post_approval(&harness, sku_id).await;
+    // Declared finance-material on purpose: at `N = 0` the arm under test is
+    // *"the predicate has no subject, so record it unsatisfiable rather than
+    // impose it"*, and a submission nobody called finance-material has no
+    // predicate to be unsatisfiable in the first place. Until P-D-169 the
+    // registry supplied this fact itself from the two accounting codes.
+    let response = post_approval(&harness, sku_id, true).await;
     assert_eq!(
         response.status(),
         StatusCode::CREATED,
@@ -6982,7 +6946,11 @@ async fn a_one_person_tenant_publishes_its_first_product_sku_and_the_predicate_i
 
 /// `POST /approvals` for one SKU's publish, through the SKU and approvals
 /// routers merged, with the caller declaring the change *not* finance-material.
-async fn post_approval(harness: &TestHarness, sku_id: Uuid) -> axum::http::Response<Body> {
+async fn post_approval(
+    harness: &TestHarness,
+    sku_id: Uuid,
+    finance_material: bool,
+) -> axum::http::Response<Body> {
     let state = Arc::new(api_state(harness));
     let openapi = OpenApiRegistryImpl::new();
     let app = router(Arc::clone(&state), &openapi)
@@ -6998,7 +6966,7 @@ async fn post_approval(harness: &TestHarness, sku_id: Uuid) -> axum::http::Respo
                 json!({
                     "subject_kind": "entity_publish",
                     "subject_ref": format!("sku/{sku_id}"),
-                    "finance_material": false,
+                    "finance_material": finance_material,
                 })
                 .to_string(),
             ))
@@ -7006,58 +6974,6 @@ async fn post_approval(harness: &TestHarness, sku_id: Uuid) -> axum::http::Respo
     )
     .await
     .expect("the router answers")
-}
-
-/// `dod-accounting-validators`: unknown codes are refused for both fields
-/// with the one code that serves them, a deprecated code refuses a new
-/// assignment, and a known active code is admitted.
-#[tokio::test]
-async fn an_unknown_or_deprecated_accounting_code_is_refused_and_a_known_one_is_admitted() {
-    let harness = harness().await;
-    let parent = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
-
-    for (field, code) in [("tax_category_ref", "TC-NOPE"), ("gl_code_ref", "GL-NOPE")] {
-        let mut body = typed_body(parent, &format!("SKU-{code}"));
-        body[field] = json!(code);
-        let refused = post_create_sku(app_for(&harness, TENANT), TENANT, &body).await;
-        assert_eq!(refused.status(), StatusCode::BAD_REQUEST, "{field}");
-        assert_eq!(
-            violation_code(&body_json(refused).await),
-            json!("ACCOUNTING_CODE_UNKNOWN"),
-            "one code serves both fields (P-D-47)"
-        );
-    }
-    let admitted = post_create_sku(
-        app_for(&harness, TENANT),
-        TENANT,
-        &typed_body(parent, "SKU-KNOWN"),
-    )
-    .await;
-    assert_eq!(
-        admitted.status(),
-        StatusCode::CREATED,
-        "the positive control"
-    );
-
-    let deprecated =
-        transition_set_member(&harness, "tax_category", "TC-STD", "active", "deprecated").await;
-    assert_eq!(
-        deprecated.status(),
-        StatusCode::OK,
-        "Finance deprecates the code"
-    );
-    let refused = post_create_sku(
-        app_for(&harness, TENANT),
-        TENANT,
-        &typed_body(parent, "SKU-DEPR"),
-    )
-    .await;
-    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(
-        violation_code(&body_json(refused).await),
-        json!("ACCOUNTING_CODE_DEPRECATED"),
-        "a new assignment of a deprecated code"
-    );
 }
 
 /// `dod-plantier-assign` / `dod-seeded-members`: an unknown tier is refused,
@@ -7623,7 +7539,7 @@ mod correction_door_tests {
         let published = post_publish(&harness, TENANT, sku_id, Some(&dirty_etag)).await;
         assert_eq!(published.status(), StatusCode::OK);
         let clean_etag = etag_of(&published);
-        let pending = post_approval(&harness, sku_id).await;
+        let pending = post_approval(&harness, sku_id, false).await;
         assert_eq!(pending.status(), StatusCode::CREATED);
         assert_eq!(
             body_json(pending).await["state"],
@@ -8210,7 +8126,7 @@ async fn a_composition_clear_is_held_behind_an_open_approval_and_applies_once_it
     seed_acknowledged_publish(&harness, bundle_id, &etag).await;
     let published = post_publish(&harness, TENANT, bundle_id, Some(&etag)).await;
     assert_eq!(published.status(), StatusCode::OK);
-    let submitted = post_approval(&harness, bundle_id).await;
+    let submitted = post_approval(&harness, bundle_id, false).await;
     assert!(submitted.status().is_success(), "{}", submitted.status());
     let approval_id: Uuid = body_json(submitted).await["approval_id"]
         .as_str()
@@ -8281,7 +8197,7 @@ async fn the_override_ceremony_names_the_bundle_condition_and_the_approver_ackno
     use toolkit_db::secure::SecureEntityExt as _;
     let harness = harness().await;
     let (bundle_id, etag) = bundle_under_live_parent(&harness, "SKU-CER-1").await;
-    let submitted = post_approval(&harness, bundle_id).await;
+    let submitted = post_approval(&harness, bundle_id, false).await;
     assert!(submitted.status().is_success(), "{}", submitted.status());
     let approval_id: Uuid = body_json(submitted).await["approval_id"]
         .as_str()
@@ -8400,15 +8316,14 @@ mod clone_revalidation_tests {
             .to_owned()
     }
 
-    /// A draft SKU carrying a live unit (`kwh`), a live tier (`gold`), a live
-    /// tax code (`TC-9`) and one attribute value, all written through the doors
-    /// while every member was active. The refusal cases then move one member.
+    /// A draft SKU carrying a live unit (`kwh`), a live tier (`gold`) and one
+    /// attribute value, all written through the doors while every member was
+    /// active. The refusal cases then move one member.
     async fn source_with_classification(harness: &TestHarness) -> Uuid {
         let parent_id = seed_parent(harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
         let (sku_id, etag) = seed_draft_sku(harness, parent_id, "CLASS-1").await;
         seed_unit(harness, "kwh", "active").await;
         add_set_member(harness, "plan_tier", "gold").await;
-        add_set_member(harness, "tax_category", "TC-9").await;
         seed_sku_definition(harness, "displayName", "localized_string", "active").await;
         let saved = save_sku_at(
             harness,
@@ -8418,7 +8333,6 @@ mod clone_revalidation_tests {
                 "metering_unit": "kwh",
                 "usage_type_ref": "usage:kwh",
                 "plan_tier": "gold",
-                "tax_category_ref": "TC-9",
             }),
         )
         .await;
@@ -8462,7 +8376,7 @@ mod clone_revalidation_tests {
     }
 
     /// **The positive control**: every member live — the clone lands carrying
-    /// the meter pair, the tier, the code and the value.
+    /// the meter pair, the tier and the value.
     #[tokio::test]
     async fn a_clone_copies_the_meter_pair_the_classification_and_the_values() {
         let harness = harness().await;
@@ -8478,7 +8392,6 @@ mod clone_revalidation_tests {
         assert_eq!(head.metering_unit.as_deref(), Some("kwh"));
         assert_eq!(head.usage_type_ref.as_deref(), Some("usage:kwh"));
         assert_eq!(head.plan_tier.as_deref(), Some("gold"));
-        assert_eq!(head.tax_category_ref.as_deref(), Some("TC-9"));
         let values = raw_i64(
             &harness.dsn,
             &format!(
@@ -8539,32 +8452,6 @@ mod clone_revalidation_tests {
         assert_eq!(
             violation_types(response).await,
             BTreeSet::from(["PLAN_TIER_UNKNOWN".to_owned()])
-        );
-    }
-
-    #[tokio::test]
-    async fn a_deprecated_accounting_code_is_re_validated_at_clone() {
-        let harness = harness().await;
-        let source = source_with_classification(&harness).await;
-        flip_member(&harness, "tax_category", "TC-9", "deprecated").await;
-        let response = clone_of(&harness, source).await;
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(
-            violation_types(response).await,
-            BTreeSet::from(["ACCOUNTING_CODE_DEPRECATED".to_owned()])
-        );
-    }
-
-    #[tokio::test]
-    async fn a_removed_accounting_code_is_unknown_at_clone() {
-        let harness = harness().await;
-        let source = source_with_classification(&harness).await;
-        flip_member(&harness, "tax_category", "TC-9", "removed").await;
-        let response = clone_of(&harness, source).await;
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(
-            violation_types(response).await,
-            BTreeSet::from(["ACCOUNTING_CODE_UNKNOWN".to_owned()])
         );
     }
 
@@ -8799,7 +8686,7 @@ async fn the_sku_code_ceiling_refuses_one_over_and_admits_the_cap() {
     let over = post_create_sku(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "c".repeat(cap + 1), "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000" }),
+        &json!({ "product_id": parent_id, "sku_code": "c".repeat(cap + 1), "sku_type": "product" }),
     )
     .await;
     assert_eq!(over.status(), StatusCode::BAD_REQUEST);
@@ -8819,7 +8706,7 @@ async fn the_sku_code_ceiling_refuses_one_over_and_admits_the_cap() {
     let at_cap = post_create_sku(
         app_for(&harness, TENANT),
         TENANT,
-        &json!({ "product_id": parent_id, "sku_code": "c".repeat(cap), "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000" }),
+        &json!({ "product_id": parent_id, "sku_code": "c".repeat(cap), "sku_type": "product" }),
     )
     .await;
     assert_eq!(at_cap.status(), StatusCode::CREATED, "the cap is admitted");

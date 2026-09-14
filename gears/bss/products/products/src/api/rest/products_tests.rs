@@ -200,11 +200,6 @@ async fn harness() -> TestHarness {
         .expect("start the outbox pipeline");
     let outbox = Arc::clone(outbox_handle.outbox());
 
-    // Finance's sets are empty by design; the suite's `product` SKUs need
-    // both codes to publish (P-D-145).
-    let provider = DBProvider::<DbError>::new(db.clone());
-    crate::test_support::seed_finance_codes(&provider, TENANT).await;
-    crate::test_support::seed_finance_codes(&provider, OTHER_TENANT).await;
     TestHarness {
         dsn,
         db: DBProvider::<DbError>::new(db),
@@ -4258,7 +4253,8 @@ async fn create_sku_scoped(
                 .body(Body::from(
                     json!({
                         "product_id": parent_id,
-                        "sku_code": sku_code, "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000",
+                        "sku_code": sku_code,
+                        "sku_type": "product",
                         "region_scope": region_scope,
                     })
                     .to_string(),
@@ -4767,7 +4763,8 @@ async fn a_poisoned_parent_scope_cannot_be_planted_through_the_create_door() {
                 .header(axum::http::header::CONTENT_TYPE, "application/json")
                 .extension(authed_ctx(TENANT))
                 .body(Body::from(
-                    json!({ "product_id": armed, "sku_code": "SKU-1" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"}).to_string(),
+                    json!({ "product_id": armed, "sku_code": "SKU-1", "sku_type": "product" })
+                        .to_string(),
                 ))
                 .expect("build the SKU create request"),
         )
@@ -4804,7 +4801,8 @@ async fn a_poisoned_parent_scope_cannot_be_planted_through_the_create_door() {
                 .header(axum::http::header::CONTENT_TYPE, "application/json")
                 .extension(authed_ctx(TENANT))
                 .body(Body::from(
-                    json!({ "product_id": parent, "sku_code": "SKU-2" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"}).to_string(),
+                    json!({ "product_id": parent, "sku_code": "SKU-2", "sku_type": "product" })
+                        .to_string(),
                 ))
                 .expect("build the SKU create request"),
         )
@@ -5686,8 +5684,6 @@ mod family_clone_tests {
                 sku_type: "product".to_owned(),
                 sellable: true,
                 plan_tier: "standard".to_owned(),
-                tax_category_ref: Some("TC-STD".to_owned()),
-                gl_code_ref: Some("GL-4000".to_owned()),
                 metering_unit: None,
                 usage_type_ref: None,
             },
@@ -5926,8 +5922,6 @@ mod family_clone_tests {
                 sku_type: "product".to_owned(),
                 sellable: true,
                 plan_tier: "standard".to_owned(),
-                tax_category_ref: Some("TC-STD".to_owned()),
-                gl_code_ref: Some("GL-4000".to_owned()),
                 metering_unit: None,
                 usage_type_ref: None,
             },
@@ -6458,8 +6452,6 @@ mod deprecate_door_tests {
                 sku_type: "product".to_owned(),
                 sellable: true,
                 plan_tier: "standard".to_owned(),
-                tax_category_ref: Some("TC-STD".to_owned()),
-                gl_code_ref: Some("GL-4000".to_owned()),
                 metering_unit: None,
                 usage_type_ref: None,
             },

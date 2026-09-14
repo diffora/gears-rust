@@ -197,7 +197,7 @@ and is unresolved; until it is, this flow does not.
 - The SKU's scope is not contained in the parent's — `SCOPE_NOT_CONTAINED`
 - The `skuCode` race is lost — `DUPLICATE_CODE`, with an audited reason
 
-**Boundary**: typing, `sellable`, `PlanTier`, accounting codes and the metering unit are
+**Boundary**: typing, `sellable`, `PlanTier` and the metering unit (the accounting codes were here until **P-D-169**) are
 `03-sku-classification`'s registered validators; this flow persists the Foundation columns and
 runs whatever is registered. Open item 11 applies here as it does to the Product create door.
 

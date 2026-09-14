@@ -146,7 +146,7 @@ what exists. The measurements below are the ones it rests on.
   `internal_revision`, `published_version` — so `sku_id`, `sku_code` and `status` (under the name
   `lifecycle_state`) are present, and `name`, `metering_unit`, `plan_tier`, `sellable`,
   `usage_type_ref`, `composition_pending` and `type` are absent. The struct's own doc says why:
-  *"The capability columns a SKU carries — typing, `sellable`, `PlanTier`, the accounting codes, the
+  *"The capability columns a SKU carries — typing, `sellable`, `PlanTier` (the accounting codes were among them until **P-D-169**), the
   metering unit — are not here. They belong to the features that own their rules, and a consumer
   reads them from those."*
 - **`LifecycleState` already ships all five states with a `parse`**, which is most of what the

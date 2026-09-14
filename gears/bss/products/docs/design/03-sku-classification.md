@@ -18,7 +18,7 @@
   - [Declare a metering unit](#declare-a-metering-unit)
   - [Govern the recognized-unit set](#govern-the-recognized-unit-set)
   - [Govern the PlanTier taxonomy & assign tiers](#govern-the-plantier-taxonomy--assign-tiers)
-  - [Set accounting codes](#set-accounting-codes)
+  - [~~Set accounting codes~~ — withdrawn (P-D-169)](#set-accounting-codes--withdrawn-p-d-169)
 - [3. Processes / Business Logic](#3-processes--business-logic)
   - [3.1 `RecognizedSet` mechanics (shared by units, codes, tiers)](#31-recognizedset-mechanics-shared-by-units-codes-tiers)
   - [3.2 Error taxonomy (slice-owned codes)](#32-error-taxonomy-slice-owned-codes)
@@ -36,7 +36,6 @@
 This slice owns everything that makes a SKU **classified and downstream-bindable**: the type
 (`product`/`service`/`bundle`) with per-type required-field sets, the `sellable`
 offering-eligibility flag (D-46), the `PlanTier` taxonomy and the SKU-level tier value, the
-stable accounting codes (`taxCategory`, `glCode`) against their Finance-owned recognized sets,
 and the **metering-unit declaration** — the one thing that makes a SKU a usage SKU — with its
 `usageTypeRef` binding (P-D-05) and the recognized-unit set's own governed lifecycle. The three
 vocabularies this slice governs (PlanTier taxonomy, recognized units, recognized codes) are
@@ -95,15 +94,14 @@ discovered weeks later at ERP export or rating time.
 | C1 | A usage SKU is **defined**, not detected: declaring a unit is what makes it one; no separate flag exists | PRD glossary "Usage SKU" |
 | C2 | Exactly one unit per declaration — the counted identity; dimension sets are plan-price's (P-D-05); a composite meter declares its **output** unit | PRD `fr-metering-unit-declaration` |
 | C3 | Unit identity/semantics immutable (no silent GB→GiB); correction = new unit + deprecate old | PRD `fr-metering-unit-delisting` |
-| C4 | Codes only, never computation: no tax math, no GL posting here | PRD `fr-accounting-codes` |
 | C5 | `PlanTier` ≠ OrgTier; tier identity is the stable code, rename is display-only | PRD `fr-plantier-classification` |
-| C6 | Bucket registration (PRD mutability matrix): `type`, metering-unit declaration (incl. `usageTypeRef`) → **bucket ii** (immutable-but-correctable, slice 07); `PlanTier`, `taxCategory`, `glCode`, `sellable` → **bucket iii** (material-mutable) | PRD `fr-field-mutability-matrix` |
+| C6 | Bucket registration (PRD mutability matrix): `type`, metering-unit declaration (incl. `usageTypeRef`) → **bucket ii** (immutable-but-correctable, slice 07); `PlanTier`, `sellable` → **bucket iii** (material-mutable) | PRD `fr-field-mutability-matrix` |
 
 ### 1.7 Naming & Design-Introduced Names
 
 | Name | Meaning |
 |------|---------|
-| `TypeProfile` | The per-type required-field set the define/publish validators run (`product`/`service`: accounting codes required at publish; `bundle`: exempt from codes, subject to the override gate) |
+| `TypeProfile` | The closed `type` set the define/publish validators run (`product`/`service`/`bundle`). It carried a per-type required-code set until **P-D-169**; with both accounting codes out of the registry the profile constrains the type alone, and `bundle`'s exemption from the override gate is its remaining per-type rule |
 | `MeterDeclaration` | The value object `(unit, usageTypeRef)` — always both or neither |
 | `RecognizedSet` | The generic governed vocabulary (units; tax categories; GL codes; the PlanTier taxonomy) with `active|deprecated|removed` states and reference-guarded removal — a removal is the `removed` state, never a DELETE (**P-D-47**) |
 | `UsageTypeResolver` | The publish-time port to the usage-collector's `get_usage_type` (P-D-05) |
@@ -115,7 +113,7 @@ of bucket-iii fields; elevated approval for new units; the bundle override); usa
 (`get_usage_type`). **Produced**: `PlanTierUpdated`, `RecognizedUnitUpdated`,
 `RecognizedCodeUpdated` events; the classification validators registered on SKU save/publish;
 the SDK read shape fields (`type`, `sellable`, `plan_tier`, `metering_unit`, `usage_type_ref`,
-`tax_category_ref`, `gl_code_ref`) — including **`sellable`, `usage_type_ref` and `type` — this slice's three of the four members
+) — including **`sellable`, `usage_type_ref` and `type` — this slice's three of the four members
 pricing's `CatalogSku` currently lacks** (12 `inst-sdk-catalogsku` holds the roster; consumer-side
 additions owed there).
 
@@ -127,7 +125,7 @@ Declared by [`../features/sku-classification.md`](../features/sku-classification
 The steps below are this slice's and are the normative ones; the FEATURE carries the
 actor, the scenarios and the boundary.
 
-1. [ ] - `p1` - `TypeProfile` validators register on SKU save and publish: `type` present and in the closed set (`SKU_TYPE_UNKNOWN`); per-type required fields at publish — `product`/`service` require both accounting codes (`ACCOUNTING_CODE_REQUIRED` naming the missing one), `bundle` requires neither (composition is pricing's; a bundle is commercially incomplete by design) - `inst-cl-type-profile`
+1. [ ] - `p1` - `TypeProfile` validators register on SKU save and publish: `type` present and in the closed set (`SKU_TYPE_UNKNOWN`). The per-type **required-code** arm was withdrawn with P-D-169 (`ACCOUNTING_CODE_REQUIRED` naming the missing one), `bundle` requires neither (composition is pricing's; a bundle is commercially incomplete by design) - `inst-cl-type-profile`
 2. [ ] - `p1` - Promotional/$0/"Free" offerings are ordinary SKUs — no separate entity, no special validator path (PRD `fr-define-sku`) - `inst-cl-no-promo-entity`
 3. [ ] - `p1` - `sellable` defaults `true`; flipping it is a bucket-iii edit — a head-row save re-published as version N+1 (01's head-row model) under slice-05 materiality; the SDK read shape exposes it per `CatalogVersion` so pricing's predicate 6 has its operand - `inst-cl-sellable`
 4. [ ] - `p1` - **Uncomposed-bundle publish override (P-D-02)**: publishing a `bundle` that plan-price has not composed requires the explicit two-person override at THIS entity publish — and **P-D-30** makes that override the operand 01's `PublishDoor` reads to set `composition_pending`, the door being unable to judge composition itself — `N`-governed with `quorumReduced` recorded, the author performing the acknowledgment at `N = 0` (P-D-13) — this slice registers the gate condition (an unacknowledged publish refused `BUNDLE_OVERRIDE_REQUIRED`), slice 05 executes the override ceremony (lint findings presented to approvers). **The condition is registered on the publish, not on the lane**: every lane that publishes a `bundle` carries it, bulk included (09 `inst-bk-override`), and the published SKU enters flagged `compositionPending = true` (cleared by slice 06's inbound signal) - `inst-cl-bundle-override`
@@ -164,15 +162,30 @@ actor, the scenarios and the boundary.
 2. [ ] - `p1` - Taxonomy ops (add/rename/deprecate/retire) are governed (`GovernedLiveOp`, elevated approval — the same shape the other sets take) and emit `PlanTierUpdated`; retiring a value is refused while a non-terminal published head (a `published`/`deprecated` SKU) carries it (`PLAN_TIER_RETIRE_BLOCKED`) — deprecate-then-retire, same shape as units (a retired tier is the set's `removed` state, §3.1), and a seeded value is deprecatable but never retired (§3.1 `inst-rs-seeded`) - `inst-pt-governed`
 3. [ ] - `p1` - The SKU-level value validates against the taxonomy at save **and at publish**: including a draft whose tier was deprecated before its first publish (treated as a new assignment and rejected); unknown fails `PLAN_TIER_UNKNOWN`, a **`deprecated` tier blocks NEW assignment** (`PLAN_TIER_DEPRECATED` — parity with `UNIT_DEPRECATED`; existing published carriers unaffected — added by the slice-11 review H1); it is bucket iii (material-mutable, finance-material per PRD — FinanceReviewer in the approval); presence enforcement at **plan** publish is pricing's, not re-checked here - `inst-pt-assign`
 
-### Set accounting codes
+### ~~Set accounting codes~~ — withdrawn (P-D-169)
 
-Declared by [`../features/sku-classification.md`](../features/sku-classification.md) §2 as `cpt-cf-bss-products-flow-accounting-codes`.
-The steps below are this slice's and are the normative ones; the FEATURE carries the
-actor, the scenarios and the boundary.
+Declared by [`../features/sku-classification.md`](../features/sku-classification.md) §2 as
+`cpt-cf-bss-products-flow-accounting-codes`, **withdrawn 2026-09-14 with `PRD`
+`fr-accounting-codes`**: neither `taxCategory` nor `glCode` is a SKU field and this registry holds
+neither vocabulary, so the flow has no subject. Its three instructions —
+`inst-ac-recognized`, `inst-ac-required` and `inst-ac-codes-only` — are withdrawn with it.
 
-1. [ ] - `p1` - `taxCategory` and `glCode` each validate against their `RecognizedSet` (owner Finance; unknown fails `ACCOUNTING_CODE_UNKNOWN`); the sets follow the same governed lifecycle (elevated add; a `deprecated` code blocks new assignment — `ACCOUNTING_CODE_DEPRECATED`; removal refused while a non-terminal published head carries it — `ACCOUNTING_CODE_DELIST_BLOCKED`; one code per refusal for `taxCategory` and `glCode` alike, as `ACCOUNTING_CODE_UNKNOWN` already is — **P-D-47**); the validators are registered on SKU save and publish (§1.8) - `inst-ac-recognized`
-2. [ ] - `p1` - Required at publish for `product`/`service` types (via `TypeProfile`, flow 1); both are bucket iii finance-material — ≥ 1 FinanceReviewer in the `N`-governed approval (slice 05 role predicate). **At `N = 0` the predicate is recorded `predicateUnsatisfiable` rather than blocking (P-D-11)**: this very rule is the operand P-D-11's amendment names — `taxCategory` being required at publish for `product`/`service` types is what would otherwise have left the one-person tenant unable to publish their first such SKU **forever**, which is the block that decision exists to remove - `inst-ac-required`
-3. [ ] - `p1` - No computation: the columns are opaque codes to this gear (C4) - `inst-ac-codes-only`
+The three declarations are kept here, struck, so the ids resolve to their own withdrawal rather
+than to nothing:
+
+1. [ ] - `p1` - ~~`taxCategory` and `glCode` each validate against their `RecognizedSet`~~ — withdrawn (P-D-169) - `inst-ac-recognized`
+2. [ ] - `p1` - ~~Required at publish for `product`/`service` types, both bucket iii finance-material~~ — withdrawn (P-D-169) - `inst-ac-required`
+3. [ ] - `p1` - ~~No computation: the columns are opaque codes to this gear (C4)~~ — withdrawn (P-D-169) - `inst-ac-codes-only`
+
+Two of them are worth naming as they leave, because their reach went further than this flow:
+
+- **`inst-ac-required` was the operand `inst-pt-assign`'s sibling argument leaned on.** P-D-11's
+  floor-of-zero clause cited *"`taxCategory` being required at publish for `product`/`service`
+  types"* as the reason a one-person tenant would otherwise be blocked **forever**. That reason is
+  gone; the amended `PRD` re-anchors the clause on `PlanTier`, which is mandatory on every SKU and
+  so makes the argument stronger rather than weaker.
+- **`inst-ac-codes-only` was C4's whole discharge.** With the columns gone, *"no tax math, no GL
+  posting here"* is true by construction rather than by a rule, and C4 leaves §1.2 with it.
 
 ## 3. Processes / Business Logic
 
@@ -194,7 +207,7 @@ registration obligation and the boundary.
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-products-contract-classification-errors`
 
-`SKU_TYPE_UNKNOWN` (raised by `inst-cl-type-profile` when `type` is absent or outside the closed set), `ACCOUNTING_CODE_REQUIRED`, `ACCOUNTING_CODE_UNKNOWN`, `ACCOUNTING_CODE_DEPRECATED`, `ACCOUNTING_CODE_DELIST_BLOCKED` (the two Finance-set refusals — one code each for `taxCategory` and `glCode` alike, **P-D-47**),
+`SKU_TYPE_UNKNOWN` (raised by `inst-cl-type-profile` when `type` is absent or outside the closed set),
 `METER_DECLARATION_INCOMPLETE`, `UNRECOGNIZED_UNIT`, `UNIT_DEPRECATED`, `USAGE_TYPE_UNRESOLVED`,
 `USAGE_TYPE_UNAVAILABLE` (retryable, fail-closed), `UNIT_DELIST_BLOCKED`, `PLAN_TIER_UNKNOWN`, `PLAN_TIER_DEPRECATED`,
 `PLAN_TIER_RETIRE_BLOCKED`, `BUNDLE_OVERRIDE_REQUIRED` (the interactive refusal of `inst-cl-bundle-override`, the P-D-02 gate's API behaviour; the bulk analogue is `BULK_OVERRIDE_UNACKNOWLEDGED`). Registered into 01 §3.3; the AC #38
@@ -203,7 +216,7 @@ unit" and "authoring/cloning against a **deprecated** unit" map here — the las
 **P-D-44** because recognition and lifecycle are different operands, and each already has its own
 code (12 §4.1 rows 4, 11 and 12).
 
-**Problem responses (RFC 9457):** `UNIT_DELIST_BLOCKED`, `PLAN_TIER_RETIRE_BLOCKED`, `ACCOUNTING_CODE_DELIST_BLOCKED`, `STALE_LIVE_OP` (409); `SKU_TYPE_UNKNOWN`, `ACCOUNTING_CODE_REQUIRED`, `ACCOUNTING_CODE_UNKNOWN`, `ACCOUNTING_CODE_DEPRECATED`, `METER_DECLARATION_INCOMPLETE`, `UNRECOGNIZED_UNIT`, `UNIT_DEPRECATED`, `USAGE_TYPE_UNRESOLVED`, `PLAN_TIER_UNKNOWN`, `PLAN_TIER_DEPRECATED`, `BUNDLE_OVERRIDE_REQUIRED`, `BULK_OVERRIDE_UNACKNOWLEDGED` (422 architectural — each reaches the wire as 400; see the note below); `USAGE_TYPE_UNAVAILABLE` (503).
+**Problem responses (RFC 9457):** `UNIT_DELIST_BLOCKED`, `PLAN_TIER_RETIRE_BLOCKED`, `STALE_LIVE_OP` (409); `SKU_TYPE_UNKNOWN`, `METER_DECLARATION_INCOMPLETE`, `UNRECOGNIZED_UNIT`, `UNIT_DEPRECATED`, `USAGE_TYPE_UNRESOLVED`, `PLAN_TIER_UNKNOWN`, `PLAN_TIER_DEPRECATED`, `BUNDLE_OVERRIDE_REQUIRED`, `BULK_OVERRIDE_UNACKNOWLEDGED` (422 architectural — each reaches the wire as 400; see the note below); `USAGE_TYPE_UNAVAILABLE` (503).
 
 *Statuses added, corrected the same day by the fix-wave review. The gear declared
 its codes with no HTTP status and no problem-response block in any slice, against
@@ -233,11 +246,11 @@ actor, the scenarios and the boundary.
 ## 4. Data / Storage (normative shape; DDL in migrations)
 
 - **Columns on `products_sku`** (carried by 01 §4.2, rules owned here): `type` (the column is `sku_type`, the donor's name — P-D-145), `sellable`,
-  `plan_tier` (a code validated by `inst-pt-assign`, like its three siblings; whether it is a real constraint is §6), `tax_category_ref`, `gl_code_ref` (**both contingent** — `PRD` §15 carries the open question of whether this registry owns them at all, 01 §4.2; §6),
+  `plan_tier` (a code validated by `inst-pt-assign`, like its sibling; whether it is a real constraint is §6) (~~`tax_category_ref`, `gl_code_ref` — dropped by **P-D-169**, which answered `PRD` §15's question of whether this registry owns them at all, 01 §4.2; §6),
   `metering_unit`, `usage_type_ref` — with a CHECK that `metering_unit` and `usage_type_ref`
   are both null or both non-null (`inst-mt-atomic-pair`'s physical floor).
 - **`products_recognized_set`** — the generic table of §3.1: PK `(tenant_id, set_kind,
-  member_code)` with `set_kind ∈ {metering_unit, tax_category, gl_code, plan_tier}` (the roster is the design's: the column pins none, **P-D-92**);
+  member_code)` with `set_kind ∈ {metering_unit, plan_tier}` (the roster is the design's: the column pins none, **P-D-92**; it held `tax_category` and `gl_code` until **P-D-169**);
   `display_label` used by `plan_tier` (and ignored elsewhere); `state ∈ {active, deprecated, removed}`
   (§3.1 — `removed` is the tombstone a removal leaves; no DELETE is admitted, **P-D-47**); `seeded_by`.
   Append-only discipline: no UPDATE of `member_code` ever and no DELETE (trigger whitelist admits `state`
@@ -254,7 +267,7 @@ actor, the scenarios and the boundary.
   named probe (the exemption is the easy thing to lose).
 - `UsageTypeResolver` probed against a stub collector: resolved / unknown / timeout — three
   distinct outcomes, the timeout one asserting the publish is retryable and idempotent.
-- Tier-retire, unit-delist and accounting-code-delist guards probed both ways: a **deprecated head** still blocks; a
+- Tier-retire and unit-delist guards probed both ways: a **deprecated head** still blocks; a
   value alive only in frozen `products_entity_version` content does **not** block (the
   M2-narrowed operand), the old snapshot still renders after removal, and the removed member's row
   survives as `removed` — a new declaration naming it fails `UNRECOGNIZED_UNIT` (**P-D-47**).
@@ -267,7 +280,7 @@ actor, the scenarios and the boundary.
 ## 6. Traces to / Risks & Open items
 
 **Traces to**: `cpt-cf-bss-products-fr-define-sku` (typing/classification half — identity carrier is slice 01's), `cpt-cf-bss-products-fr-sku-sellable`, `cpt-cf-bss-products-fr-metering-unit-declaration`,
-`cpt-cf-bss-products-fr-metering-unit-delisting`, `cpt-cf-bss-products-fr-plantier-classification`, `cpt-cf-bss-products-fr-accounting-codes`; AC #2a,
+`cpt-cf-bss-products-fr-metering-unit-delisting`, `cpt-cf-bss-products-fr-plantier-classification`; AC #2a,
 #7 (typing clauses; identity/link clauses = 01), #8–#11; AC #38 (unit rows); P-D-02 (override registration), P-D-05 (resolver semantics).
 
 **Risks & open items**:
@@ -282,7 +295,7 @@ actor, the scenarios and the boundary.
 - ~~**`sellable`, `usage_type_ref` and `type` missing in pricing's `CatalogSku`**~~ **Landed (P-D-133, 2026-09-04): the three members are in pricing's `CatalogSku` and on its wire as `type`, `sellable`, `usage_type_ref`.** *The item's text stood as:* *(P-D-133, 2026-09-04: accepted; the lead lands the three members in pricing.)* — this slice's three
   of the four members 12 `inst-sdk-catalogsku` names; owed consumer-side, and our SDK shape carries
   them from day one so the fix stays additive.
-- ~~**`tax_category_ref` and `gl_code_ref` may not belong to this registry at all.**~~ **Answered (P-D-131, 2026-09-03): they stay** — §2.1 forbids the descriptor, `fr-accounting-codes` requires the reference. *The item's text stood as:* 01 §4.2 marks both
+- ~~**`tax_category_ref` and `gl_code_ref` may not belong to this registry at all.**~~ **Re-answered (P-D-169, 2026-09-14): they do not** — both columns, both set kinds, `inst-ac-*` and the publish-blocking requirement are withdrawn, which is exactly the deletion this item said the answer might bring. *Previously answered (P-D-131, 2026-09-03): they stay* — §2.1 forbids the descriptor, `fr-accounting-codes` requires the reference. *The item's text stood as:* 01 §4.2 marks both
   columns **contingent** and `PRD` §15 carries the question — `PRD` §2.1 says they are owned elsewhere while
   `fr-accounting-codes` requires the registry to persist and validate them. This slice owns the
   validators, the two `set_kind` values, `inst-ac-required` and a publish-blocking requirement, all of
@@ -305,7 +318,7 @@ actor, the scenarios and the boundary.
   that this slice's own operand admits (a `draft` head still referencing it), raising a raw violation
   instead of `PLAN_TIER_RETIRE_BLOCKED`. This pass struck the FK claim. Owner: this slice with the
   schema owner. *(Raised by the slice-03 first lens pass.)*
-- ~~**At which publishes do the recognized-and-active unit, tier and accounting-code checks run, and
+- ~~**At which publishes do the recognized-and-active unit and tier checks run, and
   what tells a new declaration from a carried-forward one?**~~ **Answered (P-D-121 row 8, 2026-09-03): a new or changed declaration is judged; a carried-forward value is judged by the state it had when declared** — otherwise a deprecation is a retroactive lockout the deprecate-then-remove path exists to avoid; the comparand is the previous published version. *The item's text stood as:* The draft clause forces the check at
   publish over the stored value; the
   de-listing clause says existing publishes are unaffected. A bucket-iii re-publish re-runs every
@@ -358,7 +371,7 @@ actor, the scenarios and the boundary.
   *(Raised by the slice-03 second lens pass.)*
 - ~~**Is a `sellable` flip material?**~~ **Answered (P-D-121 row 16, 2026-09-03): yes** — `05` registers it bucket-iii under P-D-28 and the PRD's enumeration is a floor the design exceeds on purpose: a `sellable` flip changes what a consumer may buy. *The item's text stood as:* 05 `inst-mt-inputs` registers `sellable` among this slice's
   bucket-iii fields, which "make any touch material", while the PRD's material-change enumeration
-  (§6.7) names `PlanTier`, metering-unit, `taxCategory` and `glCode` and not `sellable`; `fr-sku-sellable`
+  (§6.7) names `PlanTier` and metering-unit and not `sellable`; `fr-sku-sellable`
   and AC #2a say only that the flip is governed. P-D-11 rewrote the count in that sentence and left the
   field list untouched. Owner: the PRD owner with 05 — either the enumeration is closed and the flip is a
   non-material `min(N, 1)` act, or `sellable` joins it. *(Raised by the slice-03 second lens pass.)*

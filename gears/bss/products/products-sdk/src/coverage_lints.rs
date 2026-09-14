@@ -263,7 +263,11 @@ fn unqualified_ac_citations(text: &str) -> Vec<usize> {
 fn lint_1_every_p1_p2_requirement_has_one_owner_per_clause() {
     let prd = prd();
     let universe = prd_requirement_ids(&prd);
-    assert_eq!(universe.len(), 71, "the PRD's requirement universe");
+    assert_eq!(
+        universe.len(),
+        70,
+        "the PRD's requirement universe (71 until P-D-169 withdrew `fr-accounting-codes`)"
+    );
     let mut claims = Vec::new();
     for (slice, _, text) in slices() {
         claims.extend(claims_of(&slice, &text));

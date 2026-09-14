@@ -93,10 +93,6 @@ pub struct Model {
     /// The `PlanTier` code (`inst-pt-assign`), bucket iii; validated against
     /// the recognized set at save and publish.
     pub plan_tier: Option<String>,
-    /// Finance's tax-category code (P-D-131 row 5), bucket iii, opaque here.
-    pub tax_category_ref: Option<String>,
-    /// Finance's GL code, bucket iii, opaque here.
-    pub gl_code_ref: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

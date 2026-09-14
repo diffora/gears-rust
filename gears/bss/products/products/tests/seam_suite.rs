@@ -77,8 +77,6 @@ const REGISTRY_FIELDS: &[&str] = &[
     "plan_tier",
     "metering_unit",
     "usage_type_ref",
-    "tax_category_ref",
-    "gl_code_ref",
 ];
 
 /// The consumer side's read shape (pricing's `CatalogSku`), field by field.
@@ -111,8 +109,6 @@ fn the_lists_are_exhaustive(registry: Sku, consumer: CatalogSku) {
         plan_tier,
         metering_unit,
         usage_type_ref,
-        tax_category_ref,
-        gl_code_ref,
     } = registry;
     let CatalogSku {
         sku_id,
@@ -129,8 +125,9 @@ fn the_lists_are_exhaustive(registry: Sku, consumer: CatalogSku) {
 
 #[test]
 fn the_field_lists_mirror_the_two_types() {
-    // Fifteen bindings above, fifteen names; nine and nine.
-    assert_eq!(REGISTRY_FIELDS.len(), 15);
+    // Thirteen bindings above, thirteen names; nine and nine. It was fifteen
+    // until P-D-169 took the two accounting codes off the registry's shape.
+    assert_eq!(REGISTRY_FIELDS.len(), 13);
     assert_eq!(CONSUMER_FIELDS.len(), 9);
     let _ = the_lists_are_exhaustive;
 }

@@ -216,7 +216,6 @@
 //! @cpt-dod:cpt-cf-bss-products-dod-one-shot-consumption:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-type-profile:p1
 //! @cpt-dod:cpt-cf-bss-products-dod-plantier-assign:p1
-//! @cpt-dod:cpt-cf-bss-products-dod-accounting-validators:p1
 //! @cpt-cf-bss-products-dod-save-door
 
 use std::sync::Arc;
@@ -357,8 +356,6 @@ pub struct SkuView {
     pub sku_type: Option<String>,
     pub sellable: bool,
     pub plan_tier: Option<String>,
-    pub tax_category_ref: Option<String>,
-    pub gl_code_ref: Option<String>,
 }
 
 impl From<SkuRecord> for SkuView {
@@ -381,8 +378,6 @@ impl From<SkuRecord> for SkuView {
             sku_type: record.sku_type,
             sellable: record.sellable,
             plan_tier: record.plan_tier,
-            tax_category_ref: record.tax_category_ref,
-            gl_code_ref: record.gl_code_ref,
         }
     }
 }
@@ -942,10 +937,6 @@ pub struct CreateSkuRequest {
     pub sellable: Option<bool>,
     /// The `PlanTier` code; `standard` when omitted (P-D-131 row 11).
     pub plan_tier: Option<String>,
-    /// Finance's tax-category code, validated against its recognized set.
-    pub tax_category_ref: Option<String>,
-    /// Finance's GL code, validated against its recognized set.
-    pub gl_code_ref: Option<String>,
 }
 
 /// Convert a create payload's raw scope field into the containment module's
@@ -1413,8 +1404,6 @@ pub(crate) async fn create_sku(
         sku_type: raw_sku_type,
         sellable,
         plan_tier,
-        tax_category_ref,
-        gl_code_ref,
         brand_scope,
     } = body;
     let trimmed_sku_code = raw_sku_code.trim().to_owned();
@@ -1576,8 +1565,6 @@ pub(crate) async fn create_sku(
             sku_type,
             sellable,
             plan_tier,
-            tax_category_ref,
-            gl_code_ref,
         },
         now,
     )
@@ -1830,24 +1817,6 @@ pub(crate) async fn clone_classification_report(
     {
         report.violate(refusal.code(), "plan_tier", refusal.to_string());
     }
-    for (field, kind, code) in [
-        (
-            "tax_category_ref",
-            SetKind::TaxCategory,
-            class.tax_category_ref.as_deref(),
-        ),
-        ("gl_code_ref", SetKind::GlCode, class.gl_code_ref.as_deref()),
-    ] {
-        let Some(code) = code else { continue };
-        let member = repo::recognized_member(&conn, scope, tenant_id, kind, code)
-            .await
-            .map_err(|e| repo_error_to_canonical(&e))?;
-        if let Err(refusal) =
-            classification::accounting_code_verdict(field, code, member.map(|m| m.state), true)
-        {
-            report.violate(refusal.code(), field, refusal.to_string());
-        }
-    }
     if let Some(unit) = source.metering_unit.as_deref() {
         let member = repo::recognized_member(&conn, scope, tenant_id, SetKind::MeteringUnit, unit)
             .await
@@ -1889,8 +1858,6 @@ async fn resolve_sku_clone_source(
             sku_type: head.sku_type.clone(),
             sellable: head.sellable,
             plan_tier: head.plan_tier.clone(),
-            tax_category_ref: head.tax_category_ref.clone(),
-            gl_code_ref: head.gl_code_ref.clone(),
             product_id: head.product_id,
             sku_code: head.sku_code,
             region_scope: head.region_scope,
@@ -1934,8 +1901,6 @@ async fn resolve_sku_clone_source(
             .and_then(JsonValue::as_bool)
             .unwrap_or(true),
         plan_tier: sku_frozen_str(&content, "plan_tier"),
-        tax_category_ref: sku_frozen_str(&content, "tax_category_ref"),
-        gl_code_ref: sku_frozen_str(&content, "gl_code_ref"),
         // The parent link is identity, not content: the head's column and
         // the frozen rendering agree by construction, and the head's is the
         // one the carve-out overrides.
@@ -2181,8 +2146,6 @@ async fn clone_sku(
             sku_type: class.sku_type,
             sellable: class.sellable,
             plan_tier: class.plan_tier,
-            tax_category_ref: class.tax_category_ref,
-            gl_code_ref: class.gl_code_ref,
             metering_unit: source.metering_unit.clone(),
             usage_type_ref: source.usage_type_ref.clone(),
         };
@@ -2418,7 +2381,7 @@ const ACT_RESPONSE_STATUS: StatusCode = StatusCode::OK;
 /// name `updated_at` and `published_version` beside `internal_revision` as
 /// columns the original enumeration missed. Until it does, this doc and its
 /// Product twin are where the reading is recorded.
-pub(crate) const SKU_VERSION_CONTENT_ROSTER: [&str; 19] = [
+pub(crate) const SKU_VERSION_CONTENT_ROSTER: [&str; 17] = [
     // The attribute-value collection (`design/01` §4.3, `design/02` §4,
     // P-D-29, P-D-153): a sorted array, `[]` when empty, never `null`.
     "attributes",
@@ -2428,7 +2391,6 @@ pub(crate) const SKU_VERSION_CONTENT_ROSTER: [&str; 19] = [
     "composition_pending",
     "created_at",
     "created_by",
-    "gl_code_ref",
     "metering_unit",
     "plan_tier",
     "product_id",
@@ -2437,7 +2399,6 @@ pub(crate) const SKU_VERSION_CONTENT_ROSTER: [&str; 19] = [
     "sku_code",
     "sku_id",
     "sku_type",
-    "tax_category_ref",
     "tenant_id",
     "usage_type_ref",
 ];
@@ -2949,28 +2910,17 @@ pub(crate) fn sku_version_content(
             JsonValue::String(usage.clone()),
         );
     }
-    // 03's classification (P-D-145): the flag is a JSON boolean like
-    // `composition_pending`; the codes and the type ride as strings when the
-    // head carries them and are omitted otherwise (`Absence::Omit`), the
-    // roster turning the omission into `null` on the frozen row.
+    // 03's classification (P-D-145, narrowed by P-D-169): the flag is a JSON
+    // boolean like `composition_pending`; the type and the tier ride as
+    // strings when the head carries them and are omitted otherwise
+    // (`Absence::Omit`), the roster turning the omission into `null` on the
+    // frozen row. The two accounting codes rode here too until P-D-169.
     fields.insert("sellable".to_owned(), JsonValue::Bool(image.sellable));
     if let Some(sku_type) = image.sku_type.as_ref() {
         fields.insert("sku_type".to_owned(), JsonValue::String(sku_type.clone()));
     }
     if let Some(plan_tier) = image.plan_tier.as_ref() {
         fields.insert("plan_tier".to_owned(), JsonValue::String(plan_tier.clone()));
-    }
-    if let Some(tax_category_ref) = image.tax_category_ref.as_ref() {
-        fields.insert(
-            "tax_category_ref".to_owned(),
-            JsonValue::String(tax_category_ref.clone()),
-        );
-    }
-    if let Some(gl_code_ref) = image.gl_code_ref.as_ref() {
-        fields.insert(
-            "gl_code_ref".to_owned(),
-            JsonValue::String(gl_code_ref.clone()),
-        );
     }
     JsonValue::Object(fields)
 }
@@ -7048,10 +6998,6 @@ pub(crate) enum SkuSaveField {
     Sellable,
     /// Bucket iii: the `PlanTier` code.
     PlanTier,
-    /// Bucket iii: Finance's tax-category code.
-    TaxCategoryRef,
-    /// Bucket iii: Finance's GL code.
-    GlCodeRef,
     /// Bucket ii: half of 03's atomic `MeterDeclaration`.
     MeteringUnit,
     /// Bucket ii: the declaration's other half.
@@ -7073,8 +7019,6 @@ impl SkuSaveField {
             "sku_type" => Some(Self::SkuType),
             "sellable" => Some(Self::Sellable),
             "plan_tier" => Some(Self::PlanTier),
-            "tax_category_ref" => Some(Self::TaxCategoryRef),
-            "gl_code_ref" => Some(Self::GlCodeRef),
             _ => None,
         }
     }
@@ -7092,8 +7036,6 @@ impl SkuSaveField {
             Self::SkuType => "sku_type",
             Self::Sellable => "sellable",
             Self::PlanTier => "plan_tier",
-            Self::TaxCategoryRef => "tax_category_ref",
-            Self::GlCodeRef => "gl_code_ref",
         }
     }
 }
@@ -7124,10 +7066,6 @@ enum SkuSaveValue {
     Sellable(bool),
     /// A non-blank tier code, membership judged at the door.
     PlanTier(String),
-    /// A non-blank tax-category code, membership judged at the door.
-    TaxCategoryRef(String),
-    /// A non-blank GL code, membership judged at the door.
-    GlCodeRef(String),
 }
 
 /// The `Shape` phase's output — `products::ProductSaveFields`'s twin, and a
@@ -7211,10 +7149,7 @@ fn parse_sku_value(
                 "sellable must be a JSON boolean on this door".to_owned(),
             )
         }),
-        SkuSaveField::SkuType
-        | SkuSaveField::PlanTier
-        | SkuSaveField::TaxCategoryRef
-        | SkuSaveField::GlCodeRef => {
+        SkuSaveField::SkuType | SkuSaveField::PlanTier => {
             let raw = expect_sku_string(wire, value)?;
             let trimmed = raw.trim();
             if trimmed.is_empty() {
@@ -7233,9 +7168,7 @@ fn parse_sku_value(
             }
             Ok(match field {
                 SkuSaveField::SkuType => SkuSaveValue::SkuType(trimmed.to_owned()),
-                SkuSaveField::PlanTier => SkuSaveValue::PlanTier(trimmed.to_owned()),
-                SkuSaveField::TaxCategoryRef => SkuSaveValue::TaxCategoryRef(trimmed.to_owned()),
-                _ => SkuSaveValue::GlCodeRef(trimmed.to_owned()),
+                _ => SkuSaveValue::PlanTier(trimmed.to_owned()),
             })
         }
         SkuSaveField::MeteringUnit | SkuSaveField::UsageTypeRef => {
@@ -7533,8 +7466,6 @@ fn route_sku_field(
         SkuSaveValue::SkuType(kind) => save.sku_type = Some(kind),
         SkuSaveValue::Sellable(flag) => save.sellable = Some(flag),
         SkuSaveValue::PlanTier(tier) => save.plan_tier = Some(tier),
-        SkuSaveValue::TaxCategoryRef(code) => save.tax_category_ref = Some(code),
-        SkuSaveValue::GlCodeRef(code) => save.gl_code_ref = Some(code),
     }
     Ok(())
 }
@@ -7687,24 +7618,16 @@ async fn recheck_classification(
 ) -> Result<(), HeadActError> {
     use crate::domain::recognized::{self as classification, SetKind};
     let first_publish = head.published_version == 0;
-    let kind = if publishing || image.sku_type != head.sku_type {
+    // The profile is judged for its own sake: it decided which accounting
+    // codes a publish required until P-D-169 took both out of the gear, and
+    // what remains is the closed-set refusal on `sku_type` itself.
+    if publishing || image.sku_type != head.sku_type {
         match classification::type_profile(image.sku_type.as_deref()) {
-            Ok(kind) => Some(kind),
             Err(refusal) if publishing || image.sku_type.is_some() => {
                 return Err(HeadActError::Refused(refusal));
             }
-            Err(_) => None,
+            Ok(_) | Err(_) => {}
         }
-    } else {
-        None
-    };
-    if publishing && let Some(kind) = kind {
-        classification::required_codes_present(
-            kind,
-            image.tax_category_ref.as_deref(),
-            image.gl_code_ref.as_deref(),
-        )
-        .map_err(HeadActError::Refused)?;
     }
 
     let tier_new = first_publish || image.plan_tier != head.plan_tier;
@@ -7742,31 +7665,6 @@ async fn recheck_classification(
         }
     }
 
-    for (field, kind, before, after) in [
-        (
-            "tax_category_ref",
-            SetKind::TaxCategory,
-            head.tax_category_ref.as_deref(),
-            image.tax_category_ref.as_deref(),
-        ),
-        (
-            "gl_code_ref",
-            SetKind::GlCode,
-            head.gl_code_ref.as_deref(),
-            image.gl_code_ref.as_deref(),
-        ),
-    ] {
-        let Some(code) = after else { continue };
-        let code_new = first_publish || before != after;
-        if !(publishing || code_new) {
-            continue;
-        }
-        let member = repo::recognized_member(runner, &inputs.scope, inputs.tenant_id, kind, code)
-            .await
-            .map_err(|e| HeadActError::from_repo(&e))?;
-        classification::accounting_code_verdict(field, code, member.map(|m| m.state), code_new)
-            .map_err(HeadActError::Refused)?;
-    }
     Ok(())
 }
 
@@ -7823,8 +7721,6 @@ struct CreateClassificationInput {
     sku_type: String,
     sellable: Option<bool>,
     plan_tier: Option<String>,
-    tax_category_ref: Option<String>,
-    gl_code_ref: Option<String>,
 }
 
 /// Trim, default and judge the create's classification (P-D-145): the tier
@@ -7849,14 +7745,6 @@ async fn classify_create(
         .filter(|tier| !tier.is_empty())
         .unwrap_or(crate::domain::recognized::DEFAULT_PLAN_TIER)
         .to_owned();
-    let tax_category_ref = input
-        .tax_category_ref
-        .map(|code| code.trim().to_owned())
-        .filter(|code| !code.is_empty());
-    let gl_code_ref = input
-        .gl_code_ref
-        .map(|code| code.trim().to_owned())
-        .filter(|code| !code.is_empty());
     validate_classification_on_create(
         state,
         scope,
@@ -7865,8 +7753,6 @@ async fn classify_create(
         attempted_code,
         &input.sku_type,
         &plan_tier,
-        tax_category_ref.as_deref(),
-        gl_code_ref.as_deref(),
         now,
     )
     .await?;
@@ -7874,8 +7760,6 @@ async fn classify_create(
         sku_type: input.sku_type,
         sellable: input.sellable.unwrap_or(true),
         plan_tier,
-        tax_category_ref,
-        gl_code_ref,
     })
 }
 
@@ -7907,8 +7791,6 @@ fn new_sku_for_create(
         sku_type: classification.sku_type,
         sellable: classification.sellable,
         plan_tier: classification.plan_tier,
-        tax_category_ref: classification.tax_category_ref,
-        gl_code_ref: classification.gl_code_ref,
         metering_unit: None,
         usage_type_ref: None,
     }
@@ -7927,22 +7809,9 @@ async fn validate_classification_on_create(
     attempted_code: &str,
     sku_type: &str,
     plan_tier: &str,
-    tax_category_ref: Option<&str>,
-    gl_code_ref: Option<&str>,
     now: OffsetDateTime,
 ) -> Result<(), CanonicalError> {
-    match classify_on_create(
-        state,
-        scope,
-        tenant_id,
-        sku_type,
-        plan_tier,
-        tax_category_ref,
-        gl_code_ref,
-        now,
-    )
-    .await
-    {
+    match classify_on_create(state, scope, tenant_id, sku_type, plan_tier, now).await {
         Ok(()) => Ok(()),
         Err(HeadActError::Refused(refusal)) => {
             Err(
@@ -7969,8 +7838,6 @@ async fn classify_on_create(
     tenant_id: Uuid,
     sku_type: &str,
     plan_tier: &str,
-    tax_category_ref: Option<&str>,
-    gl_code_ref: Option<&str>,
     now: OffsetDateTime,
 ) -> Result<(), HeadActError> {
     use crate::domain::recognized::{self as classification, SetKind};
@@ -7986,17 +7853,6 @@ async fn classify_on_create(
         .map_err(|e| HeadActError::from_repo(&e))?;
     classification::tier_verdict(plan_tier, tier.map(|m| m.state), true)
         .map_err(HeadActError::Refused)?;
-    for (field, kind, code) in [
-        ("tax_category_ref", SetKind::TaxCategory, tax_category_ref),
-        ("gl_code_ref", SetKind::GlCode, gl_code_ref),
-    ] {
-        let Some(code) = code else { continue };
-        let member = repo::recognized_member(&conn, scope, tenant_id, kind, code)
-            .await
-            .map_err(|e| HeadActError::from_repo(&e))?;
-        classification::accounting_code_verdict(field, code, member.map(|m| m.state), true)
-            .map_err(HeadActError::Refused)?;
-    }
     Ok(())
 }
 
@@ -8034,12 +7890,6 @@ fn post_save_image(head: &SkuRecord, save: &repo::SkuHeadSave, now: OffsetDateTi
     }
     if let Some(plan_tier) = save.plan_tier.clone() {
         image.plan_tier = Some(plan_tier);
-    }
-    if let Some(tax_category_ref) = save.tax_category_ref.clone() {
-        image.tax_category_ref = Some(tax_category_ref);
-    }
-    if let Some(gl_code_ref) = save.gl_code_ref.clone() {
-        image.gl_code_ref = Some(gl_code_ref);
     }
     if let Some(usage_type_ref) = save.usage_type_ref.clone() {
         image.usage_type_ref = Some(usage_type_ref);

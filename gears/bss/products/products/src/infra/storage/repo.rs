@@ -252,8 +252,6 @@ pub struct NewSku {
     pub sellable: bool,
     /// The tier the create assigns — `standard` when the caller names none.
     pub plan_tier: String,
-    pub tax_category_ref: Option<String>,
-    pub gl_code_ref: Option<String>,
     /// The meter pair, set at create only by the clone (`design/11` §3.1's
     /// *Metering declaration: Copy*, P-D-154); the create door leaves both
     /// `None` and the save door writes them.
@@ -342,8 +340,6 @@ pub struct SkuRecord {
     pub sku_type: Option<String>,
     pub sellable: bool,
     pub plan_tier: Option<String>,
-    pub tax_category_ref: Option<String>,
-    pub gl_code_ref: Option<String>,
 }
 
 /// Insert one `products_product` row and read it back as authored
@@ -598,8 +594,6 @@ pub async fn insert_sku(
         sku_type: Set(Some(new.sku_type)),
         sellable: Set(new.sellable),
         plan_tier: Set(Some(new.plan_tier)),
-        tax_category_ref: Set(new.tax_category_ref),
-        gl_code_ref: Set(new.gl_code_ref),
     };
 
     let row = sku::Entity::insert(model.clone())
@@ -765,8 +759,6 @@ fn into_sku_record(row: sku::Model) -> Result<SkuRecord, RepoError> {
         sku_type: row.sku_type,
         sellable: row.sellable,
         plan_tier: row.plan_tier,
-        tax_category_ref: row.tax_category_ref,
-        gl_code_ref: row.gl_code_ref,
     })
 }
 
@@ -2988,8 +2980,6 @@ pub struct SkuHeadSave {
     pub sku_type: Option<String>,
     pub sellable: Option<bool>,
     pub plan_tier: Option<String>,
-    pub tax_category_ref: Option<String>,
-    pub gl_code_ref: Option<String>,
     /// Whether the same act writes **`02`'s content rows** — a category
     /// assignment set or an attribute value — beside this head.
     ///
@@ -3040,8 +3030,6 @@ impl SkuHeadSave {
             && self.sku_type.is_none()
             && self.sellable.is_none()
             && self.plan_tier.is_none()
-            && self.tax_category_ref.is_none()
-            && self.gl_code_ref.is_none()
             && !self.content_moved
     }
 }
@@ -3262,15 +3250,6 @@ pub async fn save_sku_head(
     }
     if let Some(plan_tier) = save.plan_tier.as_ref() {
         statement = statement.col_expr(sku::Column::PlanTier, Expr::value(plan_tier.clone()));
-    }
-    if let Some(tax_category_ref) = save.tax_category_ref.as_ref() {
-        statement = statement.col_expr(
-            sku::Column::TaxCategoryRef,
-            Expr::value(tax_category_ref.clone()),
-        );
-    }
-    if let Some(gl_code_ref) = save.gl_code_ref.as_ref() {
-        statement = statement.col_expr(sku::Column::GlCodeRef, Expr::value(gl_code_ref.clone()));
     }
 
     let mut filter = Condition::all()

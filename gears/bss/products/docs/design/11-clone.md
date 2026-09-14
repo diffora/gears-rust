@@ -136,7 +136,6 @@ minted takes its place when it is.
 | Category assignments | **Product** | **Copy + re-validate** (retired category ⇒ re-select) |
 | `PlanTier` | **SKU** | **Copy + re-validate** (`deprecated`/retired tier ⇒ re-select — `PLAN_TIER_DEPRECATED`/`PLAN_TIER_UNKNOWN`, H1) |
 | Metering declaration (`unit`, `usageTypeRef`) | **SKU** | **Copy + re-validate** (deprecated/de-listed unit ⇒ fail per AC #38; `usageTypeRef` re-resolution stays 03 `inst-mt-resolve`'s, at publish) |
-| Accounting codes | **SKU** | **Copy + re-validate** against the live sets — a `deprecated` code ⇒ re-select (`ACCOUNTING_CODE_DEPRECATED`), a `removed` or unknown one likewise (`ACCOUNTING_CODE_UNKNOWN`); **P-D-47** |
 | `sellable` | **SKU** | **Copy** (bucket-iii value, judged again at publish) |
 | Lifecycle, versions, approvals, `compositionPending`, `replacedBy`, deprecation provenance | both — `compositionPending`/`replacedBy` SKU-only | **Reset** (C3 — state never copies; `compositionPending` to its `false` default, 01 P-D-35) |
 | `tenant_id` | both | **Copy** — the source is resolved in-tenant (`inst-cn-door`) |
@@ -157,7 +156,7 @@ classification rows `03`'s verdicts in this table's order.
 fails `ILLEGAL_FIELD_MUTATION` (M3)) on both entity tables; no new tables; no new events.
 Errors reuse the owning slices' codes — the per-field map (L6): unit → `UNRECOGNIZED_UNIT`/
 `UNIT_DEPRECATED`; tier → `PLAN_TIER_UNKNOWN`/`PLAN_TIER_DEPRECATED`; category →
-`CATEGORY_RETIRED`; accounting → `ACCOUNTING_CODE_UNKNOWN`/`ACCOUNTING_CODE_DEPRECATED` (**P-D-47** minted the second); definition →
+`CATEGORY_RETIRED` (the accounting codes were a row of this table until **P-D-169**, carrying the `ACCOUNTING_CODE_DEPRECATED` **P-D-47** minted); definition →
 `ATTRIBUTE_DEFINITION_UNKNOWN`/`ATTRIBUTE_DEFINITION_DEPRECATED`/`ATTRIBUTE_SCOPE_VIOLATION`; name → `DUPLICATE_NAME`;
 code → `DUPLICATE_CODE` (**P-D-25**: one code covers both the `skuCode` and `productCode`
 reservations).

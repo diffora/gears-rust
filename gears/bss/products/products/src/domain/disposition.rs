@@ -79,8 +79,6 @@ pub struct SkuCloneSource {
     pub sku_type: Option<String>,
     pub sellable: bool,
     pub plan_tier: Option<String>,
-    pub tax_category_ref: Option<String>,
-    pub gl_code_ref: Option<String>,
     /// The source's own parent. A lone-SKU clone **copies** this link
     /// unless the caller overrides it (§3.1's carve-out: the create door
     /// then refuses a terminal parent, so a lone clone of a retired
@@ -130,8 +128,6 @@ pub struct SourceClassification {
     pub sku_type: String,
     pub sellable: bool,
     pub plan_tier: String,
-    pub tax_category_ref: Option<String>,
-    pub gl_code_ref: Option<String>,
 }
 
 impl SkuCloneSource {
@@ -149,8 +145,6 @@ impl SkuCloneSource {
                 .plan_tier
                 .clone()
                 .unwrap_or_else(|| crate::domain::recognized::DEFAULT_PLAN_TIER.to_owned()),
-            tax_category_ref: self.tax_category_ref.clone(),
-            gl_code_ref: self.gl_code_ref.clone(),
         }
     }
 }

@@ -73,10 +73,6 @@ async fn harness() -> TestHarness {
         .await
         .expect("start the outbox pipeline");
     let outbox = Arc::clone(outbox_handle.outbox());
-    // Finance's sets are empty by design; the suite's `product` SKUs need
-    // both codes to publish (P-D-145).
-    let provider = DBProvider::<DbError>::new(db.clone());
-    crate::test_support::seed_finance_codes(&provider, TENANT).await;
     TestHarness {
         dsn,
         db: DBProvider::<DbError>::new(db),
@@ -158,7 +154,7 @@ fn two_rows() -> serde_json::Value {
         },
         {
             "row_key": "r-2", "entity_kind": "sku",
-            "content": { "product_id": Uuid::from_u128(0xb0_03), "sku_code": "IMP-1" , "sku_type": "product", "tax_category_ref": "TC-STD", "gl_code_ref": "GL-4000"},
+            "content": { "product_id": Uuid::from_u128(0xb0_03), "sku_code": "IMP-1", "sku_type": "product" },
         },
     ])
 }

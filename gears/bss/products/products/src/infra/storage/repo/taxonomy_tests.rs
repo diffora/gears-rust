@@ -204,12 +204,12 @@ async fn the_foundations_head_tables_carry_no_inline_category_column() {
                 && columns.contains(&"lifecycle_state".to_owned()),
             "the pragma reached {table} and read its real roster: {columns:?}"
         );
-        // `tax_category_ref` is Finance's code (03, P-D-145), not a taxonomy
-        // category: the one name the probe lets through by spelling it out.
+        // No inline category column: `products_product_category` is the single
+        // source of truth. `tax_category_ref` used to be the one name spelled
+        // out as an exemption here; P-D-169 took the column out of the gear,
+        // so the predicate needs no exception any more.
         assert!(
-            !columns
-                .iter()
-                .any(|c| c.contains("categor") && c != "tax_category_ref"),
+            !columns.iter().any(|c| c.contains("categor")),
             "{table} gained an inline category column ({columns:?}): \
              products_product_category is the single source of truth"
         );
@@ -1742,8 +1742,6 @@ async fn a_non_terminal_sku_carrying_a_value_blocks_the_removal() {
             sku_type: "bundle".to_owned(),
             sellable: true,
             plan_tier: "standard".to_owned(),
-            tax_category_ref: None,
-            gl_code_ref: None,
             metering_unit: None,
             usage_type_ref: None,
         },

@@ -142,12 +142,13 @@ fn the_skus_tagged_columns_answer_the_buckets_section_4_1_assigns() {
         class_of(kind, "brand_scope"),
         FieldClass::Bucket(FieldBucket::MaterialMutable),
     );
-    // 03's five (P-D-145): the type profile is bucket ii, the rest bucket iii.
+    // 03's three (P-D-145, narrowed by P-D-169): the type profile is bucket
+    // ii, the rest bucket iii.
     assert_eq!(
         class_of(kind, "sku_type"),
         FieldClass::Bucket(FieldBucket::Correctable),
     );
-    for column in ["sellable", "plan_tier", "tax_category_ref", "gl_code_ref"] {
+    for column in ["sellable", "plan_tier"] {
         assert_eq!(
             class_of(kind, column),
             FieldClass::Bucket(FieldBucket::MaterialMutable),
@@ -425,8 +426,9 @@ fn the_class_counts_are_pinned_per_entity() {
     let sku_counts = [
         (FieldClass::Bucket(FieldBucket::Structural), 2),
         (FieldClass::Bucket(FieldBucket::Correctable), 3),
-        // The six head columns and the `attributes` collection (P-D-153).
-        (FieldClass::Bucket(FieldBucket::MaterialMutable), 7),
+        // The four head columns and the `attributes` collection (P-D-153);
+        // two accounting codes were among them until P-D-169.
+        (FieldClass::Bucket(FieldBucket::MaterialMutable), 5),
         (FieldClass::CreateOnly, 2),
         (FieldClass::Outside(OutsideTheScheme::Mechanical), 8),
         (FieldClass::Outside(OutsideTheScheme::RowIdentity), 4),
@@ -434,7 +436,7 @@ fn the_class_counts_are_pinned_per_entity() {
     for (class, expected) in sku_counts {
         assert_eq!(count_of(EntityKind::Sku, class), expected);
     }
-    assert_eq!(columns(EntityKind::Sku).len(), 26);
+    assert_eq!(columns(EntityKind::Sku).len(), 24);
 }
 
 /// No column is named twice in one entity's registry.

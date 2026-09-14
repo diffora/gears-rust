@@ -748,7 +748,7 @@ designated no FinanceReviewer simply has an unapprovable change.
 every `N >= 1` and records `predicateUnsatisfiable = finance_reviewer` at `N = 0` instead, leaving
 the descriptor satisfiable (probed across `N = 0..4`). *Whether a change is finance-material* is
 now **computed**: 03's columns exist (P-D-145) and the submit door ORs the caller's flag with
-`domain::recognized::is_finance_material(touched)` — `tax_category_ref` or `gl_code_ref` in the
+`domain::recognized::is_finance_material(touched)` — which **P-D-169 removed**, the two columns it read having left the gear; the submitter's own flag is now the only operand. It read `tax_category_ref` or `gl_code_ref` in the
 touched set; `plan_tier` is Product's and deliberately not Finance's — so a caller can add a reason
 the registry cannot see and can no longer subtract one (`03`'s
 `a_one_person_tenant_publishes_its_first_product_sku_and_the_predicate_is_recorded`). *Whether a
@@ -1686,7 +1686,7 @@ says — immutability is the trigger whitelist on both engines and nothing crypt
 - [x] Editing the tenant's `N` does not change a pending record's `configuredQuorum`
 - [x] A finance-material change at `N ≥ 1` carries the FinanceReviewer predicate; at `N = 0` it
       carries `predicateUnsatisfiable` instead and stays satisfiable
-- [x] A one-person tenant publishes their first `product` SKU with a required `taxCategory`
+- [x] A one-person tenant publishes their first `product` SKU, declared finance-material by its submitter (a `taxCategory` was the operand until P-D-169)
 - [x] One human holding CatalogAdmin and FinanceReviewer counts once, and satisfies the finance
       predicate only as one of the two
 - [x] The author's own decision is refused `SELF_APPROVAL_FORBIDDEN` at `N ≥ 1`; a different

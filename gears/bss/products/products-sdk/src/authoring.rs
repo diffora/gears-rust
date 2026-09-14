@@ -113,10 +113,6 @@ pub struct NewSku {
     pub sellable: Option<bool>,
     /// The `PlanTier` member, by stable code.
     pub plan_tier: Option<String>,
-    /// The tax category code.
-    pub tax_category_ref: Option<String>,
-    /// The GL code.
-    pub gl_code_ref: Option<String>,
 }
 
 /// What a write answered.

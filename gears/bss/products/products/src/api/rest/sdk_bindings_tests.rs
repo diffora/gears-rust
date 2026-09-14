@@ -247,8 +247,6 @@ async fn the_authoring_binding_runs_the_doors_with_both_preconditions() {
                 sku_type: Some("product".to_owned()),
                 sellable: None,
                 plan_tier: None,
-                tax_category_ref: None,
-                gl_code_ref: None,
             },
             Precondition::default(),
         )

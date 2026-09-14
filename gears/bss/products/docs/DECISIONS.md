@@ -1569,6 +1569,93 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-169 — P-D-131's accounting carve-out is withdrawn whole: neither code is a SKU field, and §2.1 governs both again
+
+- **Date**: 2026-09-14 (**the product owner's decision**, taken as recommended after the
+  measurements below — *"rollback"*)
+- **What this decides.** `taxCategory` and `glCode` leave this registry entirely: both columns off
+  `products_sku`, both `set_kind` values off the roster, the validators, the four
+  `ACCOUNTING_CODE_*` refusals, the `RecognizedCodeUpdated` event and the computed finance-material
+  operand with them. `PRD` §2.1's *"billing descriptors … owned elsewhere and **MUST NOT** be
+  re-specified here"* governs both again, which is **the sentence P-D-131 overrode on 2026-09-03**.
+- **Why it is one decision and not two.** The two halves arrived from opposite directions within a
+  week, and each alone would have left the gear half-committed:
+
+  | | what settled it | where the fact now lives |
+  |---|---|---|
+  | `taxCategory` | the **tax-ownership amendment of 2026-09-10** in this gear's own `PRD`: assignment *"belongs solely to Pricing's `price.tax_category_ref`, not a SKU field or region default"* | a price row. The **dictionary** stays Product Catalog's — see *Owed* |
+  | `glCode` | pricing **D-356** (2026-09-09): a tenant-declared `pricing_gl_code_taxonomy`, checked against a plan revision's descriptor at plan publish | `pricing_gl_code_taxonomy`, `PUT /bss-pricing/v1/config/gl-codes` |
+
+  Splitting them was not available: the validator for each **assignment** is the only reader of the
+  corresponding **dictionary**, so dropping a dictionary and keeping its column leaves a free-form
+  code on a SKU that nobody reads and nothing checks — worse than either end state.
+- **Measured before deciding, not asserted.**
+  - **Nothing downstream ever read a GL code off a SKU.** `CatalogSku` — pricing's whole view of a
+    registry SKU — carries no `glCode` member, and the `SchemaPin` has **nine** members of which
+    neither code is one. So no consumer obligation rested on either column: they were written,
+    validated, required at publish and frozen into every version, and read by nobody outside this
+    gear.
+  - **D-356's stated problem was measurably false of this branch.** It opens *"BSS holds no
+    authoritative GL-code list to validate against"* and rejects options accordingly — but
+    `products_recognized_set` had held `set_kind = 'gl_code'` since **2026-09-01**, eight days
+    earlier. It was true of `main`, where **zero** files of this gear's code exist; the duplication
+    is a consequence of this branch never having been merged, not of anyone ignoring anything.
+    D-356's own text even says *"Catalog is therefore already the source of `glCode`"*. The option
+    "the list is Catalog's" was never on its ballot because it was not visible.
+  - **The granularities differ, and the owner accepted the consequence.**
+    `pricing_plan_descriptor_set` is keyed `(plan_id, plan_revision)`: **one GL code per plan
+    revision**, where this registry carried one per SKU. A tenant that must post two SKUs of one
+    plan to different revenue accounts cannot express that today. **The fix, if it is ever needed,
+    is a price-row field in pricing — never a return of this requirement**, which had no reader.
+- **What the code lost, enumerated.** `SetKind` 4 → 2 (`MeteringUnit`, `PlanTier`);
+  `products_sku` loses `tax_category_ref` and `gl_code_ref` (migration edited in place — this
+  branch has no deployed data, P-D-167's reasoning); `SKU_COLUMNS` 26 → 24 and the bucket-iii class
+  7 → 5; the SKU version-content roster 19 → 17; `SKU_CLASSIFICATION_EDITS_EMIT_NO_EVENT` 7 → 5;
+  the seam suite's `REGISTRY_FIELDS` 15 → 13; `required_codes_present`, `accounting_code_verdict`,
+  `is_finance_material`, `FINANCE_MATERIAL_COLUMNS`, `SkuType::requires_accounting_codes`,
+  `test_support::seed_finance_codes` and `RowFacts::finance_material` are gone. **Five tests were
+  deleted** because their subject left the gear, not because they stopped passing: two publish/
+  validator cases, two clone re-validation cases, and `finance_materiality_is_the_two_accounting_codes_and_nothing_else`.
+- **What the code kept, and why that is the interesting half.** `dod-finance-predicate` **keeps its
+  tick**. Its two arms — the predicate bound at `N >= 1`, `predicateUnsatisfiable` recorded at
+  `N = 0` — are about the quorum machinery and are untouched. What changed is only **who supplies
+  the operand**: the submit door's `finance_material` was `body.finance_material || computed`, and
+  the computed disjunct had exactly two columns behind it. With those gone the OR has one operand,
+  which is where this sat before P-D-145 shipped the columns. The probe now measures **both**
+  answers at the default quorum — a caller declaring `false` gets no predicate, one declaring
+  `true` gets it — because *"the caller's word is taken"* is only a claim if the other word
+  produces the other answer.
+- **Withdrawn, with their ticks removed**: `dod-accounting-validators` and
+  `dod-finance-materiality` (both `[x]` until today). A withdrawal is **not** a regression: nothing
+  that was proved has stopped being true — what it was proved *about* left the gear. Their evidence
+  paragraphs are kept in place for the trail. `flow-accounting-codes` and its three instructions
+  (`inst-ac-recognized`, `inst-ac-required`, `inst-ac-codes-only`) go with them, as does C4 (*"codes
+  only, never computation"*), which is now true by construction rather than by a rule.
+- **One argument had to be re-anchored rather than deleted.** P-D-11's floor-of-zero clause cited
+  *"`taxCategory` being required at publish for `product`/`service` types"* as what would otherwise
+  block a one-person tenant **forever**. That operand is gone. `PlanTier` carries the clause better:
+  `PRD` §5 calls it *"Mandatory classification carried on SKUs/Plans"*, so **every** SKU publish is
+  the finance-material case, not only the product/service ones. The argument is stronger than it
+  was. See [[verify-a-decisions-stated-reason]] — a decision's reason can outlive its operand.
+- **Owed, and named so it is not lost**: the tax-category **dictionary** is still Product Catalog's
+  by the 2026-09-10 amendment, and pricing already declares the read —
+  `ProductCatalogClientV1::list_tax_categories(ctx) -> Vec<CatalogTaxCategory>`, whose
+  `{code, display_name}` is exactly `products_recognized_set`'s `(member_code, display_label)`.
+  **This gear can serve none of it today**: the recognized-set door family is three `POST`s and
+  there is no read surface for any set — no route, no repository list, no SDK type. The same gap
+  blocks a `PlanTier` picker. One build closes both, and it is the next thing this register should
+  carry a decision about.
+- **Propagated**: `PRD` (§2.1, the SKU glossary row, the finance-reviewer role, the scope and
+  out-of-scope tables, the mutability matrix, `fr-accounting-codes` and AC #11 both struck, the
+  materiality requirement and its criterion, the operator flow, §15's owner list, two §17 rows, and
+  the open question re-answered), `DESIGN.md` (the slice index, the slice table, the `RecognizedSet`
+  glossary row), `DECOMPOSITION.md`, `design/01-foundation.md` §4.2, `design/03-sku-classification.md`
+  (§1.2 C4/C6, `TypeProfile`, the flow, §4's columns and roster, §5, §6's answered item),
+  `design/05-governance.md` (C1 and the bucket enumeration), `design/06-catalog-version.md`,
+  `design/11-clone.md`, `design/README.md`, `features/sku-classification.md` (the flow, both DoDs,
+  the criteria), `features/clone.md`, `features/governance.md`, `features/foundation.md`,
+  `features/catalog-version.md`, `features/consumer-contracts.md`.
+
 #### P-D-168 — `origin/main` is merged in, and it brings three breaking platform changes and one reversal of this gear's own requirements
 
 - **Date**: 2026-09-12 (owner instruction: *"we merged the big pricing changes, a rebase and a
@@ -3180,6 +3267,11 @@ per-decision anchors, and it was corrected by running the command it prescribed.
 
 #### P-D-146 — 03's second half: the sets door under the stored host with a label op, the bundle gate condition on the publish, a computed finance operand, and the binding snapshot beside the version row
 
+> **Amended by P-D-169 (2026-09-14): the computed finance operand is gone.** The two columns it
+> read left the gear with `fr-accounting-codes`, so the submit door's `finance_material` is the
+> submitter's declaration alone. Everything else in this entry stands, `dod-finance-predicate`'s
+> two arms included.
+
 - **Date**: 2026-09-05 (the lead, group 4 of the solo plan; `03` §7 rows 6, 14, 16, 20 as already
   answered by P-D-121, P-D-125 and P-D-134)
 - **The sets door has a gate.** Add, transition and the new relabel each resolve the stored
@@ -3263,6 +3355,11 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   `DESIGN.md` §Endpoints Overview.
 
 #### P-D-145 — 03's five columns land, the type profile and the tier and code validators run at three doors, and the platform seeds on the first write
+
+> **Amended by P-D-169 (2026-09-14): three columns, not five.** `tax_category_ref` and
+> `gl_code_ref` are off `products_sku`, their validators and the two accounting `set_kind` values
+> with them. The type profile survives as the closed `type` set alone — its per-type required-code
+> arm went with the columns.
 
 - **Date**: 2026-09-05 (the lead, group 3 of the solo plan; `03` §7 rows 5, 7, 10, 11, 13, 16, 18
   as already answered by P-D-91, P-D-121 and P-D-131)
@@ -4024,7 +4121,10 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   `APPROVER_ROLE_REQUIRED` (P-D-119) once roles reach `SecurityContext`** (`05` §7 row 25); until
   then any approver in the tenant's quorum. *Accepted risk*: a non-Finance approver can approve a
   Finance code until roles exist.
-- **`taxCategory` and `glCode` stay in the registry (`03` row 5).** `PRD` §2.1's *"owned elsewhere"*
+- **~~`taxCategory` and `glCode` stay in the registry (`03` row 5).~~ Withdrawn whole by P-D-169
+  (2026-09-14)** — the tax-ownership amendment moved assignment to a price row and pricing's D-356
+  put the GL vocabulary in `pricing_gl_code_taxonomy`, so §2.1 governs both again. The *accepted
+  risk* recorded below turned out to be the decisive fact rather than a risk. As taken: `PRD` §2.1's *"owned elsewhere"*
   is about the **descriptor** (line 367: *"Catalog supplies only the tax-category/GL **code** on the
   SKU"*); `fr-accounting-codes` requires the **reference** to Finance's recognized set. Both
   sentences hold; §2.1 gains the clarifying parenthetical. *Accepted risk*: Finance may consider the

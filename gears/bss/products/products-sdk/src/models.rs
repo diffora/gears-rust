@@ -241,8 +241,4 @@ pub struct Sku {
     pub metering_unit: Option<String>,
     /// The usage-collector type the meter binds to — the other half.
     pub usage_type_ref: Option<String>,
-    /// The tax category code; required at publish for `product`/`service`.
-    pub tax_category_ref: Option<String>,
-    /// The GL code; required at publish for `product`/`service`.
-    pub gl_code_ref: Option<String>,
 }

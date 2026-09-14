@@ -2,8 +2,8 @@
 //! ship the defect its instruction names.
 
 use super::{
-    FINANCE_MATERIAL_COLUMNS, MemberState, SetKind, UsageTypeAnswer, declaration_is_new,
-    declaration_verdict, is_finance_material, judge_usage_type, member_edge, meter_pair_complete,
+    MemberState, SetKind, UsageTypeAnswer, declaration_is_new, declaration_verdict,
+    judge_usage_type, member_edge, meter_pair_complete,
 };
 use crate::domain::error::DomainError;
 
@@ -121,15 +121,15 @@ fn the_meter_pair_travels_together_or_not_at_all() {
 /// kind's blocked-removal code is the design's own.
 #[test]
 fn the_kind_roster_and_its_refusal_codes() {
-    for kind in [
-        SetKind::MeteringUnit,
-        SetKind::TaxCategory,
-        SetKind::GlCode,
-        SetKind::PlanTier,
-    ] {
+    for kind in [SetKind::MeteringUnit, SetKind::PlanTier] {
         assert_eq!(SetKind::parse(kind.as_str()), Some(kind));
     }
     assert_eq!(SetKind::parse("units"), None, "no alias, no default");
+    // The two accounting kinds left the roster with P-D-169, and a stored row
+    // or a path segment naming one must now be refused like any other token
+    // outside it.
+    assert_eq!(SetKind::parse("tax_category"), None);
+    assert_eq!(SetKind::parse("gl_code"), None);
     assert_eq!(
         SetKind::MeteringUnit.delist_blocked(String::new()).code(),
         "UNIT_DELIST_BLOCKED"
@@ -137,14 +137,6 @@ fn the_kind_roster_and_its_refusal_codes() {
     assert_eq!(
         SetKind::PlanTier.delist_blocked(String::new()).code(),
         "PLAN_TIER_RETIRE_BLOCKED"
-    );
-    assert_eq!(
-        SetKind::TaxCategory.delist_blocked(String::new()).code(),
-        "ACCOUNTING_CODE_DELIST_BLOCKED"
-    );
-    assert_eq!(
-        SetKind::GlCode.delist_blocked(String::new()).code(),
-        "ACCOUNTING_CODE_DELIST_BLOCKED"
     );
 }
 
@@ -160,38 +152,13 @@ fn a_binding_snapshot_renders_sorted_and_flat() {
     );
 }
 
-/// `dod-finance-materiality`'s operand: the two accounting codes and only
-/// them — `plan_tier` is Product's — computed from the touched set the submit
-/// door already builds.
-#[test]
-fn finance_materiality_is_the_two_accounting_codes_and_nothing_else() {
-    let touched = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
-    assert!(is_finance_material(&touched(&["tax_category_ref"])));
-    assert!(is_finance_material(&touched(&["name", "gl_code_ref"])));
-    assert!(!is_finance_material(&touched(&[
-        "plan_tier",
-        "sellable",
-        "sku_type"
-    ])));
-    assert!(!is_finance_material(&touched(&[])));
-    assert_eq!(
-        FINANCE_MATERIAL_COLUMNS,
-        ["tax_category_ref", "gl_code_ref"]
-    );
-}
-
 /// Every set kind names the `products_sku` column its members are declared
-/// in — the removal guard's population, uniform across the four
+/// in — the removal guard's population, uniform across both
 /// (`dod-recognized-set-mechanics`), and each of those columns is registered
 /// in the bucket roster.
 #[test]
 fn every_set_kind_has_a_registered_carrier_column() {
-    for kind in [
-        SetKind::MeteringUnit,
-        SetKind::PlanTier,
-        SetKind::TaxCategory,
-        SetKind::GlCode,
-    ] {
+    for kind in [SetKind::MeteringUnit, SetKind::PlanTier] {
         let column = kind.carrier_column();
         assert!(
             crate::domain::bucket::SKU_COLUMNS

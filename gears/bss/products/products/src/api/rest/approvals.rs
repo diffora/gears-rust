@@ -1313,16 +1313,16 @@ async fn submit_approval(
     let override_conditions = submission.override_conditions.clone();
     let ack_tx = body.author_override_ack.clone();
     let conditions_tx = override_conditions.clone();
-    // The finance-material operand (`dod-finance-materiality`,
-    // `dod-finance-predicate`; P-D-146): a publish that touches either
-    // accounting code is Finance's whatever the caller said — the caller's
-    // flag can add a reason the registry cannot see, never subtract one.
-    let finance_material = body.finance_material
-        || matches!(
-            &submission.act,
-            ActSpec::EntityPublish { touched, .. }
-                if crate::domain::recognized::is_finance_material(touched)
-        );
+    // The finance-material operand is **the caller's alone** (P-D-169). It was
+    // OR-ed with a computed one until the two accounting codes left this
+    // were the only columns whose change the gear could itself call Finance's
+    // (`plan_tier` is Product's, and was deliberately never in that set), so
+    // there is no column left to compute from and the OR had one operand.
+    // `dod-finance-predicate`'s two arms are unaffected — `describe_quorum`
+    // still binds the predicate at `N >= 1` and records
+    // `predicateUnsatisfiable` at `N = 0`; what changed is only who supplies
+    // the fact, which is where it sat before P-D-145 shipped the columns.
+    let finance_material = body.finance_material;
     let act_tx = Arc::new(submission.act);
     let attempted = body.subject_ref.clone();
     let answered = state

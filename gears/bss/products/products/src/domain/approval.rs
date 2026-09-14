@@ -58,8 +58,6 @@
 //! `inst-gv-finance-predicate` names `taxCategory`, `glCode` and `PlanTier`;
 //! 03 registered its columns (P-D-145) and the submit door now ORs the
 //! caller's `finance_material` with
-//! `domain::recognized::is_finance_material(touched)` — `tax_category_ref` or
-//! `gl_code_ref` in the diff (`plan_tier` is Product's, deliberately not
 //! Finance's). `finance_material` still arrives here as an argument: this
 //! module is the arithmetic, the door is where the registry is read.
 //! `dod-finance-predicate` is ticked on that; its §7 row 25 (whether a

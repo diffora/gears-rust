@@ -77,8 +77,6 @@ fn the_sku_code_suggestion_has_no_flavored_arm() {
         sku_type: Some("product".to_owned()),
         sellable: true,
         plan_tier: Some("standard".to_owned()),
-        tax_category_ref: None,
-        gl_code_ref: None,
         product_id: Uuid::new_v4(),
         sku_code: "SKU-1".to_owned(),
         region_scope: "global".to_owned(),

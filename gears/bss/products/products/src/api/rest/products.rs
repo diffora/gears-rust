@@ -8331,8 +8331,6 @@ async fn resolve_child_source(
             sku_type: child.sku_type.clone(),
             sellable: child.sellable,
             plan_tier: child.plan_tier.clone(),
-            tax_category_ref: child.tax_category_ref.clone(),
-            gl_code_ref: child.gl_code_ref.clone(),
             product_id: parent_id,
             sku_code: child.sku_code.clone(),
             region_scope: child.region_scope.clone(),
@@ -8385,8 +8383,6 @@ async fn resolve_child_source(
             .and_then(JsonValue::as_bool)
             .unwrap_or(true),
         plan_tier: frozen_str(&content, "plan_tier"),
-        tax_category_ref: frozen_str(&content, "tax_category_ref"),
-        gl_code_ref: frozen_str(&content, "gl_code_ref"),
         product_id: parent_id,
         sku_code,
         // The same corruption class as the sku_code check above: the scope
@@ -8511,8 +8507,6 @@ async fn clone_family_child(
             sku_type: class.sku_type,
             sellable: class.sellable,
             plan_tier: class.plan_tier,
-            tax_category_ref: class.tax_category_ref,
-            gl_code_ref: class.gl_code_ref,
             metering_unit: source.metering_unit.clone(),
             usage_type_ref: source.usage_type_ref.clone(),
         };

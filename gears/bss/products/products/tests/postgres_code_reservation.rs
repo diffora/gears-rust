@@ -300,8 +300,6 @@ fn sku_contender(sku_id: Uuid) -> NewSku {
         sku_type: "bundle".to_owned(),
         sellable: true,
         plan_tier: "standard".to_owned(),
-        tax_category_ref: None,
-        gl_code_ref: None,
         metering_unit: None,
         usage_type_ref: None,
         sku_id,

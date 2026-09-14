@@ -346,7 +346,8 @@ authored downstream of this document, in the order §3 establishes.
   - [ ] `p1` - `cpt-cf-bss-products-fr-plantier-classification`
   - [ ] `p1` - `cpt-cf-bss-products-fr-metering-unit-declaration`
   - [ ] `p1` - `cpt-cf-bss-products-fr-metering-unit-delisting`
-  - [ ] `p1` - `cpt-cf-bss-products-fr-accounting-codes`
+  - *(the accounting-codes requirement was covered here until **P-D-169** withdrew it; its id is
+    deliberately not written as a reference, the definition being gone)*
 
 - **Design Principles Covered**:
 

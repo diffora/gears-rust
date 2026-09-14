@@ -333,8 +333,6 @@ async fn stage_sku(
             .unwrap_or(true),
         plan_tier: field(payload, "plan_tier")
             .unwrap_or_else(|| crate::domain::recognized::DEFAULT_PLAN_TIER.to_owned()),
-        tax_category_ref: field(payload, "tax_category_ref"),
-        gl_code_ref: field(payload, "gl_code_ref"),
         metering_unit: None,
         usage_type_ref: None,
     };
@@ -703,7 +701,6 @@ struct RowFacts {
     entity_id: Uuid,
     revision: i64,
     first_publish: bool,
-    finance_material: bool,
     /// The row's `skuCode` when its head is an uncomposed bundle: the
     /// itemised override set's entry (`inst-bk-override`).
     override_code: Option<String>,
@@ -732,7 +729,6 @@ async fn row_facts(
             entity_id,
             revision: row.pinned_revision.unwrap_or_default(),
             first_publish: true,
-            finance_material: false,
             override_code: None,
             lint: Vec::new(),
             region: String::new(),
@@ -760,7 +756,6 @@ async fn row_facts(
                 entity_id,
                 revision: head.internal_revision,
                 first_publish: head.published_version == 0,
-                finance_material: head.tax_category_ref.is_some() || head.gl_code_ref.is_some(),
                 override_code,
                 lint,
                 region: head.region_scope,
@@ -779,7 +774,6 @@ async fn row_facts(
                 entity_id,
                 revision: head.internal_revision,
                 first_publish: head.published_version == 0,
-                finance_material: false,
                 override_code: None,
                 lint: findings
                     .into_iter()
@@ -985,7 +979,13 @@ async fn report_and_submit(
             diff_basis: None,
             act: &act,
             evaluator,
-            finance_material: facts.iter().any(|f| f.finance_material),
+            // **The batch declares nothing finance-material, and cannot**
+            // (P-D-169). The registry's only computable operand was the two
+            // accounting codes, which left with P-D-131's withdrawal; the
+            // interactive submit door now takes the fact from its caller, and
+            // the bulk API has no per-row field to take it from. A row-level
+            // flag that no row could ever set would be an inert wire.
+            finance_material: false,
             approver_count: policy.approver_count(),
             submitter: actor_ref,
             author_override_ack: None,

@@ -289,13 +289,11 @@ pub async fn member_holders(
 /// A storage failure.
 /// The `products_sku` column a set's members are declared in — the SQL side
 /// of `SetKind::carrier_column`, one arm per kind so the removal guard is
-/// **uniform across all four** (`dod-recognized-set-mechanics`, P-D-146).
+/// **uniform across both** (`dod-recognized-set-mechanics`, P-D-146).
 fn carrier_sku_column(set_kind: SetKind) -> sku::Column {
     match set_kind {
         SetKind::MeteringUnit => sku::Column::MeteringUnit,
         SetKind::PlanTier => sku::Column::PlanTier,
-        SetKind::TaxCategory => sku::Column::TaxCategoryRef,
-        SetKind::GlCode => sku::Column::GlCodeRef,
     }
 }
 

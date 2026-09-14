@@ -259,7 +259,7 @@ fn gate_for(kind: SetKind) -> (&'static str, authz_resolver_sdk::ResourceType) {
             crate::authz::labels::PLAN_TIER,
             crate::authz::resource_types::PLAN_TIER,
         ),
-        SetKind::MeteringUnit | SetKind::TaxCategory | SetKind::GlCode => (
+        SetKind::MeteringUnit => (
             crate::authz::labels::RECOGNIZED_SET,
             crate::authz::resource_types::RECOGNIZED_SET,
         ),
@@ -270,12 +270,11 @@ fn gate_for(kind: SetKind) -> (&'static str, authz_resolver_sdk::ResourceType) {
 const fn event_token_for(kind: SetKind) -> &'static str {
     match kind {
         SetKind::MeteringUnit => events::RECOGNIZED_UNIT_UPDATED_PAYLOAD_TYPE,
-        SetKind::TaxCategory | SetKind::GlCode => events::RECOGNIZED_CODE_UPDATED_PAYLOAD_TYPE,
         SetKind::PlanTier => events::PLAN_TIER_UPDATED_PAYLOAD_TYPE,
     }
 }
 
-/// Parse the path's `setKind`, refusing anything outside the four-kind
+/// Parse the path's `setKind`, refusing anything outside the two-kind
 /// roster — fail-closed, like every roster parse in the gear.
 fn parse_kind(raw: &str) -> Result<SetKind, CanonicalError> {
     SetKind::parse(raw).ok_or_else(|| {

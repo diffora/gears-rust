@@ -706,7 +706,7 @@ fn partition_for_is_deterministic_for_the_same_pair() {
 /// not a violation.
 #[test]
 fn a_per_field_classification_edit_is_declared_to_emit_no_event() {
-    assert_eq!(SKU_CLASSIFICATION_EDITS_EMIT_NO_EVENT.len(), 7);
+    assert_eq!(SKU_CLASSIFICATION_EDITS_EMIT_NO_EVENT.len(), 5);
     for column in SKU_CLASSIFICATION_EDITS_EMIT_NO_EVENT {
         assert!(
             crate::domain::bucket::SKU_COLUMNS

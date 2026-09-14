@@ -109,15 +109,20 @@
 //! - **`tenant_id`, the primary key (`sku_id`) and `created_by`** are admitted
 //!   in **no** update at all (P-D-34); neither is `created_at`.
 //!
-//! # 03's five classification columns (P-D-145)
+//! # 03's three classification columns (P-D-145, narrowed by P-D-169)
 //!
-//! `sku_type`, `sellable`, `plan_tier`, `tax_category_ref` and `gl_code_ref` are
-//! slice 03's columns carried here (01 §4.2 / 03 §4), edited in place with the
-//! slice's first build. Nullable in the DDL — presence is the doors' rule
-//! (`sku_type` at create, `plan_tier` and the accounting codes at publish per
-//! the type profile) — except `sellable`, whose default is `true` by
+//! `sku_type`, `sellable` and `plan_tier` are slice 03's columns carried here
+//! (01 §4.2 / 03 §4), edited in place with the slice's first build. Nullable in
+//! the DDL — presence is the doors' rule (`sku_type` at create, `plan_tier` at
+//! publish) — except `sellable`, whose default is `true` by
 //! `inst-cl-sellable`. `sku_type` joins bucket ii (the type is the profile a
-//! correction may move after first publish); the other four join bucket iii.
+//! correction may move after first publish); the other two join bucket iii.
+//!
+//! **`tax_category_ref` and `gl_code_ref` were here until P-D-169** and left
+//! with the requirement: tax-category assignment is a price-row field
+//! (the 2026-09-10 amendment) and the tenant's GL vocabulary is pricing's
+//! (D-356), so `PRD` §2.1's *"owned elsewhere"* governs both again. Edited out
+//! in place, as this branch's migrations are (no deployed data).
 //! None is a database foreign key (P-D-91): each is a code into a
 //! three-column primary key and each has a de-list code a raw violation would
 //! pre-empt.
@@ -215,8 +220,6 @@ const PG_UP_STATEMENTS: &[&str] = &[
             sku_type            text,
             sellable            boolean     NOT NULL DEFAULT true,
             plan_tier           text,
-            tax_category_ref    text,
-            gl_code_ref         text,
             correction_ref      uuid,
             updated_at          timestamptz NOT NULL,
             CONSTRAINT products_sku_pkey PRIMARY KEY (sku_id),
@@ -295,9 +298,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
           IF (NEW.region_scope IS DISTINCT FROM OLD.region_scope
               OR NEW.brand_scope IS DISTINCT FROM OLD.brand_scope
               OR NEW.sellable IS DISTINCT FROM OLD.sellable
-              OR NEW.plan_tier IS DISTINCT FROM OLD.plan_tier
-              OR NEW.tax_category_ref IS DISTINCT FROM OLD.tax_category_ref
-              OR NEW.gl_code_ref IS DISTINCT FROM OLD.gl_code_ref)
+              OR NEW.plan_tier IS DISTINCT FROM OLD.plan_tier)
              AND OLD.lifecycle_state IN ('retired', 'discarded')
           THEN
             RAISE EXCEPTION 'products_sku: bucket-iii columns are admitted only while the head is non-terminal';
@@ -371,8 +372,6 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             sku_type            text,
             sellable            integer NOT NULL DEFAULT 1,
             plan_tier           text,
-            tax_category_ref    text,
-            gl_code_ref         text,
             correction_ref      text,
             updated_at          text    NOT NULL,
             PRIMARY KEY (sku_id),
@@ -436,8 +435,6 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             OR NEW.brand_scope IS NOT OLD.brand_scope
             OR NEW.sellable IS NOT OLD.sellable
             OR NEW.plan_tier IS NOT OLD.plan_tier
-            OR NEW.tax_category_ref IS NOT OLD.tax_category_ref
-            OR NEW.gl_code_ref IS NOT OLD.gl_code_ref
         ) AND OLD.lifecycle_state IN ('retired', 'discarded')
         BEGIN SELECT RAISE(ABORT, 'products_sku: bucket-iii columns are admitted only while the head is non-terminal'); END",
     "CREATE TRIGGER trg_products_sku_bucket_ii BEFORE UPDATE ON products_sku FOR EACH ROW WHEN (

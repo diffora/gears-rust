@@ -43,7 +43,8 @@ Requirements live in [`../PRD.md`](../PRD.md); decisions in [`../DECISIONS.md`](
   seeds incl. `imageUri`/`unitDisplayLabel`/`marketingFeatures[]`. (§6.2, §6.4)
 - [`03-sku-classification.md`](./03-sku-classification.md) — SKU typing with per-type
   `TypeProfile`s (`bundle` exempt from codes, override-gated per P-D-02), `sellable` (D-46),
-  `PlanTier` taxonomy + stable tier codes, accounting codes, the generic `RecognizedSet`
+  `PlanTier` taxonomy + stable tier codes, the generic `RecognizedSet` (the accounting codes were
+  among its kinds until **P-D-169**)
   (units/codes/tiers — governed via `GovernedLiveOp`, removal operand = published heads +
   frozen content), metering-unit declaration as an atomic `(unit, usageTypeRef)` pair with
   publish-time resolvability (P-D-05, fail-closed on collector outage), unit de-listing. (§6.3)

@@ -411,14 +411,12 @@ pub(crate) const SKU_COMPOSITION_CLEARED_PAYLOAD_TYPE: &str = "SkuCompositionCle
 ///
 /// @cpt-dod:cpt-cf-bss-products-dod-recognized-set-events:p1
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const SKU_CLASSIFICATION_EDITS_EMIT_NO_EVENT: [&str; 7] = [
+pub(crate) const SKU_CLASSIFICATION_EDITS_EMIT_NO_EVENT: [&str; 5] = [
     "sku_type",
     "sellable",
     "plan_tier",
     "metering_unit",
     "usage_type_ref",
-    "tax_category_ref",
-    "gl_code_ref",
 ];
 
 /// `CatalogBulkOperationCompleted`'s payload type token — **slice 09's only

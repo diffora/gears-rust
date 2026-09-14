@@ -429,7 +429,7 @@ principal)
 - The clear raises **no error code by design**. Its caller is a signal, not a request, so a
   blocked clear is an **alert plus a retained flag** rather than a refusal a producer would have to
   interpret.
-- On a **dirty head** — any unpublished local edit or open approval, `taxCategory` and `PlanTier`
+- On a **dirty head** — any unpublished local edit or open approval, `PlanTier` (`taxCategory` was named here until **P-D-169**)
   among them — the clear is **deferred, never refused** (**P-D-14** as confirmed by **P-D-48**).
   The signal is durable and idempotent, `composition_pending` stays `true`, a
   `composition_clear_held` alert names the entity and the blocking edit or approval, and the clear
