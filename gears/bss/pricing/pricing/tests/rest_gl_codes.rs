@@ -1,5 +1,6 @@
-//! `GET/PUT /bss-pricing/v1/config/gl-codes` — the general-ledger codes a tenant
-//! declares (D-356) — and what declaring them does to a plan's publish.
+//! `GET /bss-pricing/v1/config/gl-codes` and its per-value routes — the
+//! general-ledger codes a tenant declares (D-356) — and what declaring them
+//! does to a plan's publish.
 //!
 //! # What is under test, and why the publish trio comes first
 //!
@@ -19,7 +20,7 @@ mod common;
 mod rest_support;
 
 use axum::http::StatusCode;
-use bss_pricing::api::rest::gl_codes::GL_CODES;
+use bss_pricing::api::rest::gl_codes::{GL_CODE_VALUES, GL_CODES};
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::scope_key::PlanId;
 use bss_pricing::infra::storage::entity::{gl_code_taxonomy, plan, plan_descriptor_set};
@@ -196,42 +197,70 @@ async fn read_vocabulary(harness: &Harness) -> (StatusCode, Option<String>, serd
     (status, tag, body_json(response).await)
 }
 
-async fn write_vocabulary(
+/// `POST …/values` — declare **one** code.
+async fn declare(
     harness: &Harness,
-    values: serde_json::Value,
+    body: serde_json::Value,
+) -> axum::http::Response<axum::body::Body> {
+    harness
+        .allowed()
+        .send(with_headers("POST", GL_CODE_VALUES, Some(body), &[]))
+        .await
+}
+
+/// `GET …/values/{value}` — one code and **its own** tag.
+async fn read_value(
+    harness: &Harness,
+    value: &str,
+) -> (StatusCode, Option<String>, serde_json::Value) {
+    let response = harness
+        .allowed()
+        .send(with_headers("GET", &value_path(value), None, &[]))
+        .await;
+    let status = response.status();
+    let tag = etag_of(&response);
+    (status, tag, body_json(response).await)
+}
+
+/// `PATCH …/values/{value}` under the value's own tag.
+async fn patch_value(
+    harness: &Harness,
+    value: &str,
+    body: serde_json::Value,
     tag: &str,
 ) -> axum::http::Response<axum::body::Body> {
     harness
         .allowed()
         .send(with_headers(
-            "PUT",
-            GL_CODES,
-            Some(serde_json::json!({ "values": values })),
+            "PATCH",
+            &value_path(value),
+            Some(body),
             &[("if-match", tag)],
         ))
         .await
 }
 
-/// Declare one code through the surface, under the tag the store currently
-/// renders, and assert it landed.
+fn value_path(value: &str) -> String {
+    format!("{GL_CODE_VALUES}/{value}")
+}
+
+/// Declare one code through the surface and assert it landed.
 async fn put_one(harness: &Harness, value: &str) {
-    let (_, tag, _) = read_vocabulary(harness).await;
-    let response = write_vocabulary(
+    let response = declare(
         harness,
-        serde_json::json!([{ "value": value, "display_name": format!("GL {value}") }]),
-        &tag.expect("a tag"),
+        serde_json::json!({ "value": value, "display_name": format!("GL {value}") }),
     )
     .await;
     assert_eq!(
         response.status(),
-        StatusCode::OK,
+        StatusCode::CREATED,
         "{}",
         body_json(response).await
     );
 }
 
 /// A tenant that has declared nothing reads an empty set **with a tag** — the
-/// state every tenant starts in, and the one the bootstrap `PUT` asserts.
+/// state every tenant starts in, and the one that constrains nothing.
 #[tokio::test]
 async fn an_undeclared_vocabulary_reads_empty_with_a_tag() {
     let harness = Harness::new().await;
@@ -244,22 +273,64 @@ async fn an_undeclared_vocabulary_reads_empty_with_a_tag() {
     assert!(tag.is_some(), "the empty set is a state and carries a tag");
 }
 
-/// A `PUT` declares the set and the `GET` agrees; state defaults to `active`.
+/// **The whole-set `PUT` is gone**, and the route answers as a method the
+/// resource does not have rather than as an unknown path.
+///
+/// The case exists because the removal is the point of the change: a `PUT` left
+/// standing beside the per-value doors would be a gate with an open door next
+/// to it — it can retire any code the body omits, on one principal, with an
+/// audit record that cannot say which.
 #[tokio::test]
-async fn a_declared_set_round_trips_and_defaults_to_active() {
+async fn the_whole_set_put_is_gone() {
     let harness = Harness::new().await;
-    let (_, tag, _) = read_vocabulary(&harness).await;
 
-    let response = write_vocabulary(
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "PUT",
+            GL_CODES,
+            Some(serde_json::json!({ "values": [] })),
+            &[("if-match", "\"whatever\"")],
+        ))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    let (_, _, body) = read_vocabulary(&harness).await;
+    assert_eq!(body["values"], serde_json::json!([]));
+}
+
+/// A declare round-trips through both reads, carries its **own** tag and a
+/// `Location`, and defaults to `active`.
+#[tokio::test]
+async fn a_declared_value_round_trips_and_defaults_to_active() {
+    let harness = Harness::new().await;
+
+    let created = declare(
         &harness,
-        serde_json::json!([
-            { "value": "4010-TAX", "display_name": "Sales tax payable" },
-            { "value": "4000-REV", "display_name": "Revenue" }
-        ]),
-        &tag.expect("a tag"),
+        serde_json::json!({ "value": "4010-TAX", "display_name": "Sales tax payable" }),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(created.status(), StatusCode::CREATED);
+    assert_eq!(
+        created
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok()),
+        Some("/bss-pricing/v1/config/gl-codes/values/4010-TAX")
+    );
+    let value_tag = etag_of(&created).expect("the value's own tag");
+    assert_eq!(
+        body_json(created).await,
+        serde_json::json!({
+            "value": "4010-TAX", "display_name": "Sales tax payable", "state": "active"
+        })
+    );
+
+    declare(
+        &harness,
+        serde_json::json!({ "value": "4000-REV", "display_name": "Revenue" }),
+    )
+    .await;
 
     let (_, _, body) = read_vocabulary(&harness).await;
     assert_eq!(
@@ -268,36 +339,81 @@ async fn a_declared_set_round_trips_and_defaults_to_active() {
             { "value": "4000-REV", "display_name": "Revenue", "state": "active" },
             { "value": "4010-TAX", "display_name": "Sales tax payable", "state": "active" }
         ]),
-        "ordered by value, active unless said otherwise"
+        "ordered by value, active unless said otherwise, and the second declare did not \
+         retire the first - which is what the whole-set PUT could not promise"
+    );
+
+    let (status, own_tag, one) = read_value(&harness, "4010-TAX").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(one["display_name"], serde_json::json!("Sales tax payable"));
+    assert_eq!(
+        own_tag.as_deref(),
+        Some(value_tag.as_str()),
+        "the create's tag and the by-value GET's come from one computation"
     );
 }
 
-/// An omitted value is **retired, not deleted**, and the retirement is visible
-/// in the next read so an operator can re-activate it.
+/// A repeat declare of the **same** content replays; one naming the same code
+/// with **other** content is `409` and points at the `PATCH`.
+///
+/// This is what replaced `a_value_listed_twice_in_one_body_is_refused`: a body
+/// carrying one value cannot list it twice, so the question "what happens when
+/// a code is declared twice" moved from the body to the sequence, and both
+/// answers are here.
 #[tokio::test]
-async fn an_omitted_value_is_retired_and_stays_readable() {
+async fn a_second_declare_replays_or_refuses_by_content() {
     let harness = Harness::new().await;
-    let (_, tag, _) = read_vocabulary(&harness).await;
-    write_vocabulary(
-        &harness,
-        serde_json::json!([
-            { "value": "4000-REV", "display_name": "Revenue" },
-            { "value": "4010-TAX", "display_name": "Sales tax payable" }
-        ]),
-        &tag.expect("a tag"),
-    )
-    .await;
+    put_one(&harness, "4000-REV").await;
 
-    let (_, tag, _) = read_vocabulary(&harness).await;
-    let response = write_vocabulary(
+    let replay = declare(
         &harness,
-        serde_json::json!([{ "value": "4000-REV", "display_name": "Revenue" }]),
-        &tag.expect("a tag"),
+        serde_json::json!({ "value": "4000-REV", "display_name": "GL 4000-REV" }),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(replay.status(), StatusCode::OK, "the create's replay");
+
+    let refused = declare(
+        &harness,
+        serde_json::json!({ "value": "4000-REV", "display_name": "Something else" }),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    let code = problem_code(refused).await;
+    assert_eq!(code, "TAXONOMY_VALUE_EXISTS");
 
     let (_, _, body) = read_vocabulary(&harness).await;
+    assert_eq!(
+        body["values"][0]["display_name"],
+        serde_json::json!("GL 4000-REV"),
+        "the refused declare wrote nothing"
+    );
+}
+
+/// A `PATCH` to `retired` retires **one** code and leaves its sibling alone —
+/// the false conflict the per-value door exists to remove, asserted rather
+/// than argued.
+#[tokio::test]
+async fn a_retirement_touches_one_value_and_stays_readable() {
+    let harness = Harness::new().await;
+    put_one(&harness, "4000-REV").await;
+    put_one(&harness, "4010-TAX").await;
+
+    let (_, tag, _) = read_value(&harness, "4010-TAX").await;
+    let retired = patch_value(
+        &harness,
+        "4010-TAX",
+        serde_json::json!({ "state": "retired" }),
+        &tag.expect("the value's tag"),
+    )
+    .await;
+    assert_eq!(retired.status(), StatusCode::OK);
+
+    let (_, _, body) = read_vocabulary(&harness).await;
+    assert_eq!(
+        body["values"][0]["state"],
+        serde_json::json!("active"),
+        "the sibling is untouched: {body}"
+    );
     assert_eq!(body["values"][1]["value"], serde_json::json!("4010-TAX"));
     assert_eq!(
         body["values"][1]["state"],
@@ -306,22 +422,97 @@ async fn an_omitted_value_is_retired_and_stays_readable() {
     );
 }
 
-/// A stale tag on the vocabulary is refused **as a stale tag** and writes nothing.
+/// **Two admins editing two different codes do not refuse each other.**
+///
+/// The reason the whole-set `PUT` went: under it, the second author's tag was
+/// stale the moment the first committed, though the two never disagreed about
+/// anything. The tag is now the value's own, so the second write lands.
 #[tokio::test]
-async fn a_stale_vocabulary_tag_is_refused() {
+async fn two_values_edited_under_tags_read_together_both_land() {
     let harness = Harness::new().await;
-    let (_, first, _) = read_vocabulary(&harness).await;
-    let first = first.expect("a tag");
-    write_vocabulary(
+    put_one(&harness, "4000-REV").await;
+    put_one(&harness, "4010-TAX").await;
+
+    // Both authors read before either writes.
+    let (_, first, _) = read_value(&harness, "4000-REV").await;
+    let (_, second, _) = read_value(&harness, "4010-TAX").await;
+
+    let one = patch_value(
         &harness,
-        serde_json::json!([{ "value": "4000-REV", "display_name": "Revenue" }]),
-        &first,
+        "4000-REV",
+        serde_json::json!({ "display_name": "Revenue" }),
+        &first.expect("a tag"),
+    )
+    .await;
+    assert_eq!(one.status(), StatusCode::OK);
+
+    let two = patch_value(
+        &harness,
+        "4010-TAX",
+        serde_json::json!({ "display_name": "Tax payable" }),
+        &second.expect("a tag"),
+    )
+    .await;
+    assert_eq!(
+        two.status(),
+        StatusCode::OK,
+        "the second author's tag covers their own value only: {}",
+        body_json(two).await
+    );
+}
+
+/// **The set's tag does not satisfy the per-value precondition.**
+///
+/// The two digests are deliberately over different segments — `gl-codes` and
+/// `gl-codes/{value}` — so a client that read the collection and sent that tag
+/// back on a value's `PATCH` is refused rather than accidentally admitted. A
+/// tag built without the value segment collides with the set's whenever the
+/// tenant holds exactly one code, which is every tenant's first day.
+#[tokio::test]
+async fn the_sets_tag_does_not_satisfy_the_per_value_patch() {
+    let harness = Harness::new().await;
+    put_one(&harness, "4000-REV").await;
+
+    let (_, set_tag, _) = read_vocabulary(&harness).await;
+    let refused = patch_value(
+        &harness,
+        "4000-REV",
+        serde_json::json!({ "display_name": "Revenue" }),
+        &set_tag.expect("the set's tag"),
     )
     .await;
 
-    let response = write_vocabulary(
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(problem_code(refused).await, "STALE_VERSION");
+    let (_, _, body) = read_vocabulary(&harness).await;
+    assert_eq!(
+        body["values"][0]["display_name"],
+        serde_json::json!("GL 4000-REV"),
+        "the refused write changed nothing"
+    );
+}
+
+/// A stale **value** tag is refused as a stale tag and writes nothing.
+#[tokio::test]
+async fn a_stale_value_tag_is_refused() {
+    let harness = Harness::new().await;
+    put_one(&harness, "4000-REV").await;
+    let (_, first, _) = read_value(&harness, "4000-REV").await;
+    let first = first.expect("a tag");
+
+    let landed = patch_value(
         &harness,
-        serde_json::json!([{ "value": "4010-TAX", "display_name": "Sales tax payable" }]),
+        "4000-REV",
+        serde_json::json!({ "display_name": "Revenue" }),
+        &first,
+    )
+    .await;
+    assert_eq!(landed.status(), StatusCode::OK);
+
+    let response = patch_value(
+        &harness,
+        "4000-REV",
+        serde_json::json!({ "display_name": "Something else" }),
         &first,
     )
     .await;
@@ -330,57 +521,31 @@ async fn a_stale_vocabulary_tag_is_refused() {
     // Which 409: this route answers `TAXONOMY_VALUE_IN_USE` on the same status.
     assert_eq!(problem_code(response).await, "STALE_VERSION");
     let (_, _, body) = read_vocabulary(&harness).await;
-    assert_eq!(body["values"][0]["value"], serde_json::json!("4000-REV"));
-    assert_eq!(body["values"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        body["values"][0]["display_name"],
+        serde_json::json!("Revenue"),
+        "the refused write changed nothing"
+    );
 }
 
 /// A blank value is refused by the surface rather than by a constraint, and a
-/// refused write leaves the set exactly where it was.
+/// refused declare leaves the set exactly where it was.
 #[tokio::test]
 async fn a_blank_vocabulary_value_is_refused() {
     let harness = Harness::new().await;
     // The refusal needs something to lose: a readback against the empty default
     // is satisfied by a refusal that wiped the set on its way out.
     put_one(&harness, "4000-REV").await;
-    let (_, tag, before) = read_vocabulary(&harness).await;
+    let (_, _, before) = read_vocabulary(&harness).await;
     assert_eq!(before["values"].as_array().map(Vec::len), Some(1));
 
-    let response = write_vocabulary(
+    let response = declare(
         &harness,
-        serde_json::json!([{ "value": "   ", "display_name": "nothing" }]),
-        &tag.expect("a tag"),
+        serde_json::json!({ "value": "   ", "display_name": "nothing" }),
     )
     .await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let (_, _, after) = read_vocabulary(&harness).await;
-    assert_eq!(after["values"], before["values"]);
-}
-
-/// A value listed twice is refused by the surface rather than swallowed by the
-/// key — `rounding_policies`' argument, on the identical document shape.
-#[tokio::test]
-async fn a_value_listed_twice_in_one_body_is_refused() {
-    let harness = Harness::new().await;
-    put_one(&harness, "4000-REV").await;
-    let (_, tag, before) = read_vocabulary(&harness).await;
-
-    let response = write_vocabulary(
-        &harness,
-        serde_json::json!([
-            { "value": "4010-TAX", "display_name": "T", "state": "active" },
-            { "value": "4010-TAX", "display_name": "T", "state": "retired" }
-        ]),
-        &tag.expect("a tag"),
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let problem = body_json(response).await.to_string();
-    assert!(
-        problem.contains("appears twice in this body"),
-        "the refusal names the repetition: {problem}"
-    );
     let (_, _, after) = read_vocabulary(&harness).await;
     assert_eq!(after["values"], before["values"]);
 }
@@ -401,13 +566,33 @@ async fn a_code_a_published_descriptor_set_names_cannot_be_retired() {
     seed_published_revision_naming(&harness, Uuid::now_v7(), "4000-REV").await;
 
     let (_, tag, before) = read_vocabulary(&harness).await;
-    let refused = write_vocabulary(&harness, serde_json::json!([]), &tag.expect("a tag")).await;
+    assert!(tag.is_some());
+    let (_, value_tag, _) = read_value(&harness, "4000-REV").await;
+    let refused = patch_value(
+        &harness,
+        "4000-REV",
+        serde_json::json!({ "state": "retired" }),
+        &value_tag.expect("the value's tag"),
+    )
+    .await;
 
     assert_eq!(refused.status(), StatusCode::CONFLICT);
     assert_eq!(problem_code(refused).await, "TAXONOMY_VALUE_IN_USE");
     let (_, _, after) = read_vocabulary(&harness).await;
     assert_eq!(after["values"], before["values"]);
     assert_eq!(after["values"][0]["state"], serde_json::json!("active"));
+}
+
+/// A code the tenant never declared is `404` on its own route rather than an
+/// empty `200`.
+#[tokio::test]
+async fn an_undeclared_code_is_not_found_on_its_own_route() {
+    let harness = Harness::new().await;
+    put_one(&harness, "4000-REV").await;
+
+    let (status, _, _) = read_value(&harness, "9999-NOPE").await;
+
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 /// Another tenant's vocabulary is invisible, and reads as the empty — hence

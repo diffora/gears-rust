@@ -1,5 +1,5 @@
-//! `GET/PUT /bss-pricing/v1/config/gl-codes` — the general-ledger codes a tenant
-//! declares (D-356).
+//! `GET /bss-pricing/v1/config/gl-codes` and its per-value routes — the
+//! general-ledger codes a tenant declares (D-356).
 //!
 //! # Why this is not `/config/taxonomies/{class}`
 //!
@@ -29,13 +29,27 @@
 //! populates or reconciles the same table this route writes, and the publish
 //! rule never learns which of the two wrote it.
 //!
-//! # A `PUT` replaces the whole set, and an omitted value is retired
+//! # One value at a time, and the `PUT` that is gone
 //!
-//! The taxonomies' rule, and the reason is theirs: a published revision's
-//! descriptor set may still name a value, so it is retired rather than deleted —
-//! a retirement stops it being authorable and leaves what already resolves
-//! alone. A retirement is **refused** while a published revision's descriptor
-//! set still names it (`TAXONOMY_VALUE_IN_USE`, 409), and nothing is written.
+//! `POST …/values` declares one code; `GET/PATCH …/values/{value}` read and
+//! edit one. The whole-set `PUT` this module carried until then is
+//! **removed**, not kept beside them, on D-353's own three reasons over this
+//! table: the audit record of "the GL-code vocabulary changed" could not say
+//! *which* code moved; two admins re-labelling two different codes refused
+//! each other on a set they never disagreed about; and a client that saved a
+//! filtered list retired every code it did not show. Each per-value record
+//! now carries the code with its state before and after
+//! (`taxonomy_repo::record_vocabulary_value_mutation`).
+//!
+//! What the `PUT` was right about survives: a value is **retired, never
+//! deleted** — a published revision's descriptor set may still name it, and a
+//! deletion would make that reference dangle rather than merely stop being
+//! authorable — and the same guard judges the retirement
+//! (`TAXONOMY_VALUE_IN_USE`, 409; nothing is written).
+//!
+//! The collection `GET` keeps its set `ETag`, which is now a **read**
+//! validator alone: no write asserts it, and the per-value `PATCH` asserts the
+//! value's own tag, which is the false conflict the split exists to remove.
 //!
 //! # No approval unit
 //!
@@ -45,28 +59,25 @@
 
 use std::sync::Arc;
 
-use axum::extract::Extension;
+use axum::extract::{Extension, Path};
 use axum::http::HeaderMap;
-use axum::http::header::ETAG;
+use axum::http::header::{ETAG, LOCATION};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router, http::StatusCode};
 use toolkit::api::canonical_prelude::CanonicalError;
-use toolkit::api::operation_builder::{ParamLocation, ParamSpec};
 use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
-use toolkit_db::secure::AccessScope;
 use toolkit_security::SecurityContext;
 
-use crate::api::rest::auth_context::{audit_stamp, require_authenticated};
+use crate::api::rest::auth_context::require_authenticated;
 use crate::api::rest::correlation::{CorrelationId, require_correlation};
-use crate::api::rest::error::authz_error_to_canonical;
 use crate::api::rest::preconditions;
 use crate::api::rest::state::AuthoringState;
-use crate::domain::error::DomainError;
-use crate::domain::overlay::ScopeValue;
-use crate::domain::taxonomy::{TAXONOMY_VALUE_IN_USE, TaxonomyEntry, TaxonomyState};
+use crate::api::rest::vocabulary_values::{
+    self, DeclareVocabularyValueRequest, PatchVocabularyValueRequest,
+};
+use crate::domain::taxonomy::{TaxonomyEntry, VocabularyClass};
 use crate::infra::storage::repo::taxonomy_repo;
 use crate::infra::storage::repo_failure;
-use time::OffsetDateTime;
 
 /// `OpenAPI` tag (DE0205).
 const TAG: &str = "BSS Pricing Configuration";
@@ -112,36 +123,10 @@ pub struct GlCodesView {
     pub values: Vec<GlCodeValueView>,
 }
 
-/// The body of a `PUT`: the complete value set, not a patch.
-#[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(request, response)]
-pub struct PutGlCodesRequest {
-    /// The whole vocabulary. A value declared today and absent here is
-    /// **retired**, and the retirement is refused while anything names it.
-    pub values: Vec<GlCodeValueView>,
-}
-
-fn if_match_param() -> ParamSpec {
-    ParamSpec {
-        name: "If-Match".to_owned(),
-        location: ParamLocation::Header,
-        required: true,
-        description: Some(
-            "Mandatory precondition (RFC 9110). Send the opaque tag the `GET` returned, \
-             verbatim. A tenant that has declared nothing is answered `200` with an empty set \
-             and carries a tag, so a first `PUT` asserts it like any other. A tag that no longer \
-             describes the stored set is `409` `STALE_VERSION` and nothing is written - a `PUT` \
-             replaces the whole set, so applying yours over a moved one would retire whatever \
-             the other author added."
-                .to_owned(),
-        ),
-        param_type: "string".to_owned(),
-        // Scalar: every parameter this gear declares is single-valued.
-        // `array` arrived upstream for `?tag=a&tag=b` repeats, which no route
-        // here has.
-        array: false,
-    }
-}
+/// One declared value's collection — the per-value create.
+pub const GL_CODE_VALUES: &str = "/bss-pricing/v1/config/gl-codes/values";
+/// One declared code: read and edit.
+pub const GL_CODE_VALUE: &str = "/bss-pricing/v1/config/gl-codes/values/{value}";
 
 /// Build the Axum router for the two operations and register them.
 pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Router {
@@ -180,35 +165,99 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .error_503(openapi)
         .register(Router::new(), openapi);
 
-    let router = OperationBuilder::put("/bss-pricing/v1/config/gl-codes")
-        .operation_id("bss_pricing.put_gl_codes")
-        .summary("Replace the tenant's declared GL codes")
+    let router = OperationBuilder::post("/bss-pricing/v1/config/gl-codes/values")
+        .operation_id("bss_pricing.declare_gl_code")
+        .summary("Declare one GL code")
         .description(
-            "Replaces the **whole** set. A value declared today and absent from the body is \
-             retired, not deleted: a published plan revision's descriptor set may still name it, \
-             and a deletion would make that reference dangle rather than merely stop being \
-             authorable. A retirement is refused with `TAXONOMY_VALUE_IN_USE` (409) while a \
-             published revision's descriptor set still names the value, and **nothing at all is \
-             written** - re-point them first. \
-             Declaring the first value turns the publish check on: from then on a plan whose \
-             descriptor `glCode` is outside the active set fails publish with `GL_CODE_UNKNOWN`. \
-             Clearing the set turns it off again. It is audited, and opens no approval unit. \
-             **`If-Match` is required.** Gates on `config` x `write`.",
+            "Adds **one** code to the vocabulary without re-sending the set. `201` with the \
+             value as stored, its own `ETag`, and a `Location` naming it. The code is the \
+             resource's natural key, so there is no `Idempotency-Key`: a repeat carrying the \
+             **same** body is the create's replay and answers `200`; a body naming a code the \
+             tenant already declares with other content - or a retired one - is `409` \
+             `TAXONOMY_VALUE_EXISTS`, and the remedy is `PATCH` on that value. `state` defaults \
+             to `active`. Declaring the first code turns the publish check on: from then on a \
+             plan whose descriptor `glCode` is outside the active set fails publish with \
+             `GL_CODE_UNKNOWN`. One audited config mutation naming the code, and no approval \
+             unit. Gates on `config` x `write`.",
         )
         .tag(TAG)
         .authenticated()
         .no_license_required()
-        .param(if_match_param())
-        .json_request::<PutGlCodesRequest>(openapi, "The complete value set.")
-        .handler(put_values)
-        .json_response_with_schema::<GlCodesView>(
+        .json_request::<DeclareVocabularyValueRequest>(openapi, "The one code to declare.")
+        .handler(post_value)
+        .json_response_with_schema::<GlCodeValueView>(
+            openapi,
+            StatusCode::CREATED,
+            "The code as declared, with its own `ETag` and `Location`.",
+        )
+        .json_response_with_schema::<GlCodeValueView>(
             openapi,
             StatusCode::OK,
-            "The vocabulary as it now stands.",
+            "The code was already declared with exactly this content: the create's replay.",
         )
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+
+    let router = OperationBuilder::get("/bss-pricing/v1/config/gl-codes/values/{value}")
+        .operation_id("bss_pricing.get_gl_code")
+        .summary("Read one declared GL code")
+        .description(
+            "One code, `active` or `retired`, with **its own `ETag`** - the tag the per-value \
+             `PATCH` demands, and the only place to obtain it (the set's tag from `GET \
+             .../config/gl-codes` covers the whole list and does not satisfy the per-value \
+             precondition). A code the tenant has never declared is `404`. This GET always \
+             returns a fresh body with `Cache-Control: private, no-store`; it does not evaluate \
+             `If-None-Match` or return `304`. Gates on `config` x `read`.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .param(vocabulary_values::value_param())
+        .handler(get_value)
+        .json_response_with_schema::<GlCodeValueView>(openapi, StatusCode::OK, "The declared code.")
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+
+    let router = OperationBuilder::patch("/bss-pricing/v1/config/gl-codes/values/{value}")
+        .operation_id("bss_pricing.patch_gl_code")
+        .summary("Edit one declared GL code")
+        .description(
+            "Changes only the fields the body names: `displayName` and `state`. **Retirement \
+             is guarded**, at the door and again inside the write transaction: a code a \
+             published plan revision's descriptor set still names is `409` \
+             `TAXONOMY_VALUE_IN_USE` and nothing is written - re-point them first. `retired -> \
+             active` re-activates. A body that changes nothing answers `200` and writes \
+             nothing. **`If-Match` is required** and asserts the value's **own** tag from `GET \
+             .../values/{value}`; the set's tag does not satisfy it. The commit is one audited \
+             config mutation naming the code and its state before and after. This vocabulary \
+             opens no approval unit on any edge (D-356). Gates on `config` x `write`.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .param(vocabulary_values::value_param())
+        .param(vocabulary_values::if_match_value_param())
+        .json_request::<PatchVocabularyValueRequest>(openapi, "The fields to change.")
+        .handler(patch_value)
+        .json_response_with_schema::<GlCodeValueView>(
+            openapi,
+            StatusCode::OK,
+            "The code as it now stands, with its `ETag`.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
         .error_409(openapi)
         .error_500(openapi)
         .error_503(openapi)
@@ -228,7 +277,7 @@ async fn get_values(
     headers: HeaderMap,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    let scope = read_scope(&enforcer, &ctx).await?;
+    let scope = vocabulary_values::read_scope(&enforcer, &ctx).await?;
     let held = state
         .taxonomies
         .list_gl_codes(&scope, ctx.subject_tenant_id())
@@ -237,165 +286,138 @@ async fn get_values(
     Ok(render(&held, Some(&headers)))
 }
 
-async fn put_values(
+/// `POST /config/gl-codes/values`.
+async fn post_value(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
     extension_correlation: Option<Extension<CorrelationId>>,
+    body: axum::body::Bytes,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let correlation = require_correlation(extension_correlation)?;
+    // The gate at the door, not inside the shared body — `vocabulary_values::
+    // read_scope`'s doc says why the census depends on it being here.
+    let scope = vocabulary_values::write_scope(&enforcer, &ctx).await?;
+    let (entry, status) = vocabulary_values::declare_value(
+        &state,
+        &scope,
+        &ctx,
+        correlation,
+        VocabularyClass::GlCode,
+        &body,
+    )
+    .await?;
+    Ok(render_value(&entry, status))
+}
+
+/// `GET /config/gl-codes/values/{value}`.
+async fn get_value(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path(value): Path<String>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let scope = vocabulary_values::read_scope(&enforcer, &ctx).await?;
+    let entry = vocabulary_values::read_value(
+        &state,
+        &scope,
+        ctx.subject_tenant_id(),
+        VocabularyClass::GlCode,
+        &value,
+    )
+    .await?;
+    // Fresh on every read, `taxonomies::get_taxonomy_value`'s posture: the tag
+    // this hands back is the `PATCH`'s precondition, and a `304` would leave a
+    // caller holding one it could not have compared.
+    Ok(preconditions::fresh_read(render_value(
+        &entry,
+        StatusCode::OK,
+    )))
+}
+
+/// `PATCH /config/gl-codes/values/{value}`.
+async fn patch_value(
+    Extension(state): Extension<Arc<AuthoringState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    extension_correlation: Option<Extension<CorrelationId>>,
+    Path(value): Path<String>,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let correlation = require_correlation(extension_correlation)?;
-    let scope = write_scope(&enforcer, &ctx).await?;
-    let tenant = ctx.subject_tenant_id();
-
+    let scope = vocabulary_values::write_scope(&enforcer, &ctx).await?;
+    // **The precondition is read here and only here**, after the gate, for
+    // `taxonomies::patch_taxonomy_value`'s ordering — and at the door rather
+    // than in the shared body, which `vocabulary_values::read_scope`'s doc
+    // explains: `module_test`'s census reads this function's own text.
     let asserted = preconditions::if_match_policy(&headers).map_err(CanonicalError::from)?;
-    let request: PutGlCodesRequest = preconditions::parse_body(&body)?;
-    let entries = authored_entries(request.values)?;
-
-    // **The premise goes to the store, not tested here** — `taxonomies`' own
-    // reasoning: a whole-set `PUT` compared against a read on a plain connection
-    // lets two callers whose reads both precede either commit each pass, and the
-    // second one's write retires whatever the first added.
-    let result = state
-        .taxonomies
-        .replace_gl_codes(
-            &scope,
-            tenant,
-            entries,
-            &asserted,
-            audit_stamp(&ctx, OffsetDateTime::now_utc(), correlation),
-        )
-        .await
-        .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
-
-    if result.stale {
-        return Err(CanonicalError::from(DomainError::StaleVersion(
-            "the If-Match tag no longer describes this tenant's GL-code vocabulary: it changed \
-             after you read it. Re-read the GET and author against the tag it hands back - a PUT \
-             replaces the whole set, so applying yours over a moved one would retire whatever \
-             the other author added"
-                .to_owned(),
-        )));
-    }
-
-    if let Some(violation) = result.report.violations.first() {
-        // The first only, for `taxonomies`' reason: a pinned value is one fact
-        // about the world and an operator acts on it and re-reads.
-        debug_assert_eq!(violation.code, TAXONOMY_VALUE_IN_USE);
-        return Err(CanonicalError::from(DomainError::TaxonomyValueInUse(
-            violation.detail.clone(),
-        )));
-    }
-
-    Ok(render(&result.entries, None))
+    let entry = vocabulary_values::patch_value(
+        &state,
+        &scope,
+        &ctx,
+        correlation,
+        VocabularyClass::GlCode,
+        &value,
+        &asserted,
+        &body,
+    )
+    .await?;
+    Ok(render_value(&entry, StatusCode::OK))
 }
 
-/// The representation with the tag that covers it — one function for both verbs,
-/// so the `GET`'s tag and the `PUT`'s cannot come from two readings.
-/// `conditional` is `Some` on the `GET` and `None` on the `PUT`: the tag has one
-/// producer and a conditional read must compare against *that* value, so the
-/// comparison lives beside the rendering rather than in a second reading of the
-/// same resource. See [`preconditions::if_none_match`].
+/// One code's representation, with **its own** tag (and, on a create, where it
+/// now lives).
+///
+/// One renderer for the three per-value verbs, for [`render`]'s reason: the
+/// tag a `GET` hands out and the tag a `PATCH` answers with must come from one
+/// computation over one reading.
+fn render_value(entry: &TaxonomyEntry, status: StatusCode) -> Response {
+    let tag = vocabulary_values::value_tag(VocabularyClass::GlCode, entry);
+    let body = Json(view_of(entry));
+    if status == StatusCode::CREATED {
+        let location = vocabulary_values::value_location(VocabularyClass::GlCode, entry);
+        return (status, [(ETAG, tag), (LOCATION, location)], body).into_response();
+    }
+    (status, [(ETAG, tag)], body).into_response()
+}
+
+/// One entry as the wire renders it — the collection `GET` and the three
+/// per-value verbs share it, so a code cannot read one way in the list and
+/// another on its own route.
+fn view_of(entry: &TaxonomyEntry) -> GlCodeValueView {
+    GlCodeValueView {
+        value: entry.value.as_str().to_owned(),
+        display_name: entry.display_name.clone(),
+        state: Some(entry.state.as_str().to_owned()),
+    }
+}
+
+/// The whole vocabulary with the set tag that covers it.
+///
+/// **A read validator alone now.** It served the `GET` and the `PUT` until the
+/// per-value doors replaced the whole-set write, and no write asserts it any
+/// more: the `PATCH` asserts the value's own tag, which is the false conflict
+/// the split exists to remove. The conditional read still compares against
+/// *this* string rather than a second rendering, so the comparison and the
+/// header cannot disagree. See [`preconditions::if_none_match`].
 fn render(entries: &[TaxonomyEntry], conditional: Option<&HeaderMap>) -> Response {
-    let tag = preconditions::policy_etag(&taxonomy_repo::gl_code_tag_of(entries));
+    let tag = preconditions::policy_etag(&taxonomy_repo::vocabulary_tag_of(
+        VocabularyClass::GlCode,
+        entries,
+    ));
     if conditional.is_some_and(|headers| preconditions::if_none_match(headers, &tag)) {
         return preconditions::not_modified(&tag);
     }
     (
         [(ETAG, tag)],
         Json(GlCodesView {
-            resource: "gl-codes".to_owned(),
-            values: entries
-                .iter()
-                .map(|entry| GlCodeValueView {
-                    value: entry.value.as_str().to_owned(),
-                    display_name: entry.display_name.clone(),
-                    state: Some(entry.state.as_str().to_owned()),
-                })
-                .collect(),
+            resource: VocabularyClass::GlCode.resource().to_owned(),
+            values: entries.iter().map(view_of).collect(),
         }),
     )
         .into_response()
-}
-
-/// Parse the body's values, refusing what the store's `CHECK`s would.
-///
-/// Refused here rather than at the driver for `plans`' reason: a constraint
-/// violation arrives as an internal fault naming a constraint, while an author
-/// needs a message naming the field.
-fn authored_entries(values: Vec<GlCodeValueView>) -> Result<Vec<TaxonomyEntry>, CanonicalError> {
-    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut entries = Vec::with_capacity(values.len());
-    for view in values {
-        let value = ScopeValue::new(&view.value).ok_or_else(|| {
-            CanonicalError::from(DomainError::InvalidRequest(
-                "a GL code value is blank; a vocabulary entry names a code and the empty \
-                 string is not one"
-                    .to_owned(),
-            ))
-        })?;
-        if !seen.insert(value.as_str().to_owned()) {
-            // `taxonomies::authored_entries`' refusal on the identical document
-            // shape. A body naming one value twice has two states for it and no
-            // rule says which wins — and the second spelling never reaches the
-            // key that would refuse it, because `apply_replace_gl_code`
-            // collects the submitted set into a `BTreeMap` keyed by value. So
-            // de-duplicating here would answer 200 for a set the author did not
-            // send, with whichever line came last.
-
-            return Err(CanonicalError::from(DomainError::InvalidRequest(format!(
-                "value `{value}` appears twice in this body; a GL-code vocabulary declares \
-                 each value once, and a repeated one leaves its state undecided"
-            ))));
-        }
-        let state = match view.state.as_deref() {
-            None => TaxonomyState::Active,
-            Some(token) => TaxonomyState::parse(token).ok_or_else(|| {
-                CanonicalError::from(DomainError::InvalidRequest(format!(
-                    "GL code state `{token}` is not one of `active` or `retired`"
-                )))
-            })?,
-        };
-        entries.push(TaxonomyEntry {
-            value,
-            display_name: view.display_name,
-            state,
-            tax: None,
-        });
-    }
-    Ok(entries)
-}
-
-async fn read_scope(
-    enforcer: &authz_resolver_sdk::PolicyEnforcer,
-    ctx: &SecurityContext,
-) -> Result<AccessScope, CanonicalError> {
-    crate::authz::access_scope(
-        enforcer,
-        ctx,
-        &crate::authz::resource_types::CONFIG,
-        crate::authz::actions::READ,
-        /* owner_tenant_id */ None,
-        /* resource_id */ None,
-    )
-    .await
-    .map_err(authz_error_to_canonical)
-}
-
-async fn write_scope(
-    enforcer: &authz_resolver_sdk::PolicyEnforcer,
-    ctx: &SecurityContext,
-) -> Result<AccessScope, CanonicalError> {
-    crate::authz::access_scope(
-        enforcer,
-        ctx,
-        &crate::authz::resource_types::CONFIG,
-        crate::authz::actions::WRITE,
-        /* owner_tenant_id */ Some(crate::authz::OwnerTenant(ctx.subject_tenant_id())),
-        /* resource_id */ None,
-    )
-    .await
-    .map_err(authz_error_to_canonical)
 }

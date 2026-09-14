@@ -18,7 +18,8 @@
 //!
 //! The stored value names a policy this gear does not own, so the gear cannot
 //! invent a vocabulary for it — but the tenant declares one, through
-//! `GET/PUT /bss-pricing/v1/config/rounding-policies`, and D-348 makes that
+//! `GET /bss-pricing/v1/config/rounding-policies` and its per-value routes, and
+//! D-348 makes that
 //! declaration binding here: `put_policy` reads the active set and refuses a
 //! reference outside it with `DomainError::RoundingPolicyUnknown`. An empty set
 //! constrains nothing, which is `prices::require_declared_region`'s reading and

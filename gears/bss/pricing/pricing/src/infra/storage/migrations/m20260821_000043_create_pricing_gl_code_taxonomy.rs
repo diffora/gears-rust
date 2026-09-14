@@ -24,7 +24,7 @@
 //!
 //! The publish rule reads a set the caller resolves from this table, and the
 //! rule never learns where the set came from. Today the provider is the
-//! tenant-declared `PUT /bss-pricing/v1/config/gl-codes`; a future ERP gear
+//! tenant-declared `POST /bss-pricing/v1/config/gl-codes/values`; a future ERP gear
 //! (D-356 *Owed*) populates or reconciles **this same table** — a provider swap,
 //! not a rewrite — exactly as `RegionTaxReadiness` is tenant-declared today and
 //! reconciled against Tax Engine post-GA (D-01).

@@ -210,6 +210,84 @@ impl fmt::Display for TaxonomyClass {
     }
 }
 
+/// The two **single-table** vocabularies: the tenant's declared rounding
+/// references (D-334) and GL codes (D-356).
+///
+/// # Why this is a second enum and not two more [`TaxonomyClass`] members
+///
+/// The obvious move — widen `TaxonomyClass::ALL` and let them ride
+/// `/config/taxonomies/{class}`'s generic door — is the one thing this enum
+/// exists to refuse. [`TaxonomyClass::scope_class`] is a **total** function
+/// into [`ScopeClass`]: every member of that enum asserts *an overlay may be
+/// scoped by this*. A `GlCode` member would assert it of a GL code, which is
+/// false, and the assertion is not merely documentary — it reaches
+/// `pricing_price_overlay.scope_class`'s `CHECK`, which has no such token.
+/// `taxonomy_repo`'s `list_rounding_policies` and `list_gl_codes` record the
+/// same reasoning at the storage layer, and `customer_group` is held out of
+/// that route by a sibling argument (D-223).
+///
+/// So the *door shape* is shared and the *class vocabulary* is not: these two
+/// get the per-value route family D-353 gave the four scope classes, over
+/// their own paths, keyed by this enum.
+///
+/// # What these two have in common, which is what makes one enum right
+///
+/// Identical columns (`tenant_id`, `value`, `display_name`, `state`), no
+/// `tax_*` markers, one retire guard each over its own reference plane, an
+/// opt-in empty set that constrains nothing, and — the governance half —
+/// **no approval unit on any edge** (D-334, D-356: *"it narrows what may be
+/// authored"*). `customer_group` shares the columns and none of the rest: it
+/// carries payer members, so its retire guard counts live memberships as well
+/// as published overlay scopes, and it is deliberately **not** a member here.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum VocabularyClass {
+    /// The rounding references a price row and the tenant default resolve
+    /// against (D-334).
+    RoundingPolicy,
+    /// The general-ledger codes a plan's billing descriptor names (D-356).
+    GlCode,
+}
+
+impl VocabularyClass {
+    /// Both vocabularies, in the order their tables were declared.
+    pub const ALL: &'static [Self] = &[Self::RoundingPolicy, Self::GlCode];
+
+    /// The resource's own name — the last segment of its route, the string
+    /// its entity tag is hashed under, and the `taxonomy/…` audit ref's
+    /// second segment.
+    ///
+    /// **One answer to "what is this vocabulary called"**, because three
+    /// representations are derived from it and a vocabulary spelled two ways
+    /// is a tag naming one resource and a trail naming another —
+    /// `taxonomy_repo::record_single_table_mutation` carries the measurement
+    /// of what that costs when the string is passed rather than derived.
+    #[must_use]
+    pub const fn resource(self) -> &'static str {
+        match self {
+            Self::RoundingPolicy => "rounding-policies",
+            Self::GlCode => "gl-codes",
+        }
+    }
+
+    /// The refusal a value outside the **active** set earns at publish — the
+    /// code the class's own rule raises, so a caller told a value is retired
+    /// can find the vocabulary to go and fix.
+    #[must_use]
+    pub const fn unknown_code(self) -> &'static str {
+        match self {
+            Self::RoundingPolicy => ROUNDING_POLICY_UNKNOWN,
+            Self::GlCode => GL_CODE_UNKNOWN,
+        }
+    }
+}
+
+impl fmt::Display for VocabularyClass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.resource())
+    }
+}
+
 /// `active | retired` — the whole state machine §6 gives these tables.
 #[domain_model]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -524,6 +602,26 @@ pub const fn edit_is_governed(references: ValueReferences) -> bool {
     references.any()
 }
 
+/// Is this edit the act [`check_retirable`] guards — a **retirement**?
+///
+/// # One predicate, because there are now two judges
+///
+/// `taxonomy_repo::judge_value_patch` judges an edit of one of the four scope
+/// classes and `taxonomy_repo::judge_vocabulary_value_patch` judges one of the
+/// two single-table vocabularies (D-334, D-356). They guard the same act on
+/// different tables, and two spellings of "is this a retirement" would be two
+/// answers the day the state machine gains a member — the shape
+/// `domain::taxonomy`'s own module doc calls the most expensive defect here.
+///
+/// Written over the two states rather than over the entries, because that is
+/// the whole of what it reads: an entry pair would invite a second condition
+/// to be folded in, and the tax-marker guard beside it is deliberately a
+/// different question with a different remedy.
+#[must_use]
+pub const fn is_a_retirement(held: TaxonomyState, next: TaxonomyState) -> bool {
+    matches!(held, TaxonomyState::Active) && matches!(next, TaxonomyState::Retired)
+}
+
 /// `inst-tx-mutation`: refuse a retirement while the value is referenced.
 ///
 /// D-120 widened this guard and the widening is the whole of why it is written
@@ -712,8 +810,8 @@ impl RegionsDeclared {
             detail: format!(
                 "region `{region}` is not an active value of this tenant's region taxonomy; a \
                  price row's region is validated at save and at publish, and an unknown value \
-                 fails before publish (C2) — declare it at PUT \
-                 /bss-pricing/v1/config/taxonomies/region first"
+                 fails before publish (C2) — declare it at POST \
+                 /bss-pricing/v1/config/taxonomies/region/values first"
             ),
             // `Stage::Write` states what this arrangement already does — D-312.
             // The doc above says it: judged at save and again at publish, through
@@ -871,9 +969,9 @@ impl RoundingPolicyDeclared {
             detail: format!(
                 "rounding policy `{reference}` is not an active value of this tenant's \
                  rounding-policy taxonomy; rounding decides the last minor unit of every charge, \
-                 so a reference to something nobody declared is refused - declare it at PUT \
-                 /bss-pricing/v1/config/rounding-policies first, or clear the taxonomy to stop \
-                 constraining references at all"
+                 so a reference to something nobody declared is refused - declare it at POST \
+                 /bss-pricing/v1/config/rounding-policies/values first, or retire every declared \
+                 value to stop constraining references at all"
             ),
             // `Stage::Publish`, which is where this fault is actually judged.
             // D-312's criterion is arguably met for `Stage::Write` — but a stage
@@ -911,8 +1009,8 @@ impl ValidationRule<PlanShape> for RoundingPolicyDeclared {
                 detail: format!(
                     "this tenant's default rounding policy `{default}` is not an active value \
                      of its own rounding-policy taxonomy, and rows in this plan carry no \
-                     policy of their own, so they resolve to it; declare it at PUT \
-                     /bss-pricing/v1/config/rounding-policies, change the default, or give \
+                     policy of their own, so they resolve to it; declare it at POST \
+                     /bss-pricing/v1/config/rounding-policies/values, change the default, or give \
                      those rows a policy of their own"
                 ),
                 stage: Stage::Publish,
@@ -965,7 +1063,7 @@ impl ValidationRule<PlanShape> for RoundingPolicyDeclared {
 ///
 /// `declared` is resolved by the caller from `taxonomy_repo::active_gl_codes`,
 /// and this rule never learns where the set came from. Today the provider is the
-/// tenant-declared set behind `PUT /bss-pricing/v1/config/gl-codes`; a future
+/// tenant-declared set behind `POST /bss-pricing/v1/config/gl-codes/values`; a future
 /// ERP gear (D-356 *Owed*) populates or reconciles that same table, and nothing
 /// on this side of the seam changes — exactly `RegionTaxReadiness`'s arrangement
 /// under D-01, tenant-declared today and reconciled against Tax Engine post-GA.
@@ -1004,9 +1102,9 @@ impl GlCodeDeclared {
             detail: format!(
                 "glCode `{code}` is not an active value of this tenant's declared GL-code \
                  vocabulary; the code freezes into the catalog version an ERP posts against, so \
-                 a reference to something nobody declared is refused - declare it at PUT \
-                 /bss-pricing/v1/config/gl-codes first, correct the descriptor, or clear the \
-                 vocabulary to stop constraining codes at all"
+                 a reference to something nobody declared is refused - declare it at POST \
+                 /bss-pricing/v1/config/gl-codes/values first, correct the descriptor, or retire \
+                 every declared code to stop constraining codes at all"
             ),
             stage: Stage::Publish,
         })

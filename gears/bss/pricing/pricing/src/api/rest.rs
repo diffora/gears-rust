@@ -317,6 +317,7 @@ pub mod supersessions;
 pub mod tax_display_policy;
 pub mod taxonomies;
 pub mod threshold_policy;
+pub mod vocabulary_values;
 pub mod windows;
 
 #[cfg(test)]

@@ -37,14 +37,13 @@ use bss_pricing::domain::overlay::{ScopeClass, ScopeValue};
 use bss_pricing::domain::scope_key::Region;
 use bss_pricing::domain::taxonomy::{
     RegionTaxMarkers, SEEDED_REGION, TAXONOMY_VALUE_IN_USE, TaxonomyClass, TaxonomyEntry,
-    TaxonomyState, TaxonomyValueChange, TaxonomyValuePatch, TaxonomyValueProposal, seeded_region,
-    tag_of,
+    TaxonomyState, TaxonomyValueChange, TaxonomyValuePatch, TaxonomyValueProposal, VocabularyClass,
+    seeded_region, tag_of,
 };
 use bss_pricing::infra::approval::ApprovalService;
 use bss_pricing::infra::storage::repo::taxonomy_repo::{
-    Replaced, TaxonomyRepo, active_gl_codes, active_regions, customer_group_tag_of, gl_code_tag_of,
-    references_to, region_readiness, region_readiness_map, rounding_policy_tag_of,
-    write_value_patch,
+    Replaced, TaxonomyRepo, ValuePatched, active_gl_codes, active_regions, customer_group_tag_of,
+    references_to, region_readiness, region_readiness_map, vocabulary_tag_of, write_value_patch,
 };
 use time::OffsetDateTime;
 
@@ -1766,7 +1765,7 @@ async fn replace_rounding_policies_now(
         scope,
         TENANT,
         entries,
-        &rounding_policy_tag_of(&held),
+        &vocabulary_tag_of(VocabularyClass::RoundingPolicy, &held),
         stamp(),
     )
     .await
@@ -1968,8 +1967,14 @@ async fn replace_gl_codes_now(
     entries: Vec<TaxonomyEntry>,
 ) -> Result<Replaced, bss_pricing::infra::storage::RepoError> {
     let held = repo.list_gl_codes(scope, TENANT).await.expect("read back");
-    repo.replace_gl_codes(scope, TENANT, entries, &gl_code_tag_of(&held), stamp())
-        .await
+    repo.replace_gl_codes(
+        scope,
+        TENANT,
+        entries,
+        &vocabulary_tag_of(VocabularyClass::GlCode, &held),
+        stamp(),
+    )
+    .await
 }
 
 fn declared_gl_codes(values: &[&str]) -> std::collections::BTreeSet<String> {
@@ -2120,6 +2125,154 @@ async fn a_gl_code_put_is_recorded_under_its_own_taxonomy() {
             + audit_records_for(&provider, "taxonomy/customer_group").await,
         0,
         "and nothing is recorded against a taxonomy this call never touched"
+    );
+}
+
+/// The per-value doors record **which** value moved, with its state before and
+/// after — the half the whole-set `PUT` could not write.
+///
+/// The claim the per-value doors were built on is that
+/// *"the audit record of `the GL-code vocabulary changed` cannot say which code
+/// moved"*. A test that only counted records would be satisfied by a record
+/// under the old set-level subject, so this asserts the **subject ref** and
+/// both state columns: a declare with no `before`, a patch with the label it
+/// had and the label it now has.
+#[tokio::test]
+async fn a_vocabulary_value_write_is_recorded_against_that_value() {
+    let (repo, scope, provider) = harness().await;
+
+    repo.declare_vocabulary_value(
+        &scope,
+        TENANT,
+        VocabularyClass::GlCode,
+        entry("4000-REV", TaxonomyState::Active),
+        stamp(),
+    )
+    .await
+    .expect("declare");
+
+    assert_eq!(
+        audit_records_for(&provider, "taxonomy/gl-codes/4000-REV").await,
+        1,
+        "the record names the value, not merely the vocabulary"
+    );
+    assert_eq!(
+        audit_records_for(&provider, "taxonomy/gl-codes").await,
+        0,
+        "and the set-level subject is not written by a per-value act"
+    );
+
+    let held = entry("4000-REV", TaxonomyState::Active);
+    let next = TaxonomyEntry {
+        display_name: "Revenue".to_owned(),
+        ..held.clone()
+    };
+    let patched = repo
+        .patch_vocabulary_value(
+            &scope,
+            TENANT,
+            VocabularyClass::GlCode,
+            held.clone(),
+            next.clone(),
+            stamp(),
+        )
+        .await
+        .expect("patch");
+    assert!(matches!(patched, ValuePatched::Committed(_)), "{patched:?}");
+
+    let conn = provider.conn().expect("conn");
+    let records = audit_log::Entity::find()
+        .secure()
+        .scope_with(&AccessScope::allow_all())
+        .filter(
+            Condition::all()
+                .add(audit_log::Column::TenantId.eq(TENANT))
+                .add(audit_log::Column::SubjectRef.eq("taxonomy/gl-codes/4000-REV")),
+        )
+        .all(&conn)
+        .await
+        .expect("read the trail");
+    assert_eq!(records.len(), 2, "one declare and one patch");
+    let update = records
+        .iter()
+        .find(|row| row.action == "update")
+        .expect("the patch's record");
+    let before = update
+        .before_state
+        .as_ref()
+        .expect("a before state")
+        .to_string();
+    let after = update
+        .after_state
+        .as_ref()
+        .expect("an after state")
+        .to_string();
+    assert!(
+        before.contains("label for 4000-REV") && after.contains("Revenue"),
+        "the diff is in the record: before {before}, after {after}"
+    );
+}
+
+/// A patch whose `held` no longer describes the stored row is
+/// [`ValuePatched::Stale`], and nothing is written.
+///
+/// The premise is re-tested **inside** the transaction, which is the whole
+/// reason `patch_vocabulary_value` takes `held` rather than re-reading: a
+/// door-side comparison alone lets two callers whose reads both precede either
+/// commit each pass, and the second write overwrite the first.
+#[tokio::test]
+async fn a_vocabulary_patch_over_a_moved_value_is_stale_and_writes_nothing() {
+    let (repo, scope, provider) = harness().await;
+
+    repo.declare_vocabulary_value(
+        &scope,
+        TENANT,
+        VocabularyClass::GlCode,
+        entry("4000-REV", TaxonomyState::Active),
+        stamp(),
+    )
+    .await
+    .expect("declare");
+
+    // Someone else's relabel lands first.
+    let held = entry("4000-REV", TaxonomyState::Active);
+    repo.patch_vocabulary_value(
+        &scope,
+        TENANT,
+        VocabularyClass::GlCode,
+        held.clone(),
+        TaxonomyEntry {
+            display_name: "Revenue".to_owned(),
+            ..held.clone()
+        },
+        stamp(),
+    )
+    .await
+    .expect("the winner");
+
+    // Ours was authored against the value as it stood before that.
+    let outcome = repo
+        .patch_vocabulary_value(
+            &scope,
+            TENANT,
+            VocabularyClass::GlCode,
+            held.clone(),
+            TaxonomyEntry {
+                display_name: "Something else".to_owned(),
+                ..held
+            },
+            stamp(),
+        )
+        .await
+        .expect("the loser");
+
+    assert!(matches!(outcome, ValuePatched::Stale), "{outcome:?}");
+    let now = repo.list_gl_codes(&scope, TENANT).await.expect("read back");
+    assert_eq!(now[0].display_name, "Revenue", "the loser wrote nothing");
+    assert_eq!(
+        audit_records_for(&provider, "taxonomy/gl-codes/4000-REV").await,
+        2,
+        "and recorded nothing: one declare and one winning patch"
     );
 }
 
