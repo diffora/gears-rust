@@ -1,21 +1,21 @@
 //! The recognized-set membership doors — **P-D-90**'s one route family over
-//! all four sets (`design/03` §3.1 `inst-rs-shape`,
+//! both sets (`design/03` §3.1 `inst-rs-shape`,
 //! `dod-recognized-set-mechanics`, `dod-unit-delist`,
 //! `dod-unit-immutable`).
 //!
-//! # One door family, four sets, the grant chosen by `setKind`
+//! # One door family, two sets, the grant chosen by `setKind`
 //!
 //! `POST /bss-products/v1/recognized-sets/{setKind}/members` adds a member;
 //! `POST …/members/{memberCode}/transitions` walks the state machine —
 //! `active → deprecated → removed` and the two re-listing edges. The tier
-//! set spends `plan_tier × write` and the other three `recognized_set ×
+//! set spends `plan_tier × write` and the unit set `recognized_set ×
 //! write` (P-D-90 arm 2: the only reading under which both declared grants
 //! have a spender). Behind the routes sits **one generic membership
 //! implementation** (arm 3), and the kind decides exactly four things: the
 //! grant, the event token, the blocked-removal code, and **which holder
 //! population the removal counts** — `SetKind::carrier_column`, one
-//! `products_sku` column per kind, uniform across all four since 03's
-//! columns landed (P-D-145, P-D-146). A third route, `POST
+//! `products_sku` column per kind, uniform across both since 03's
+//! columns landed (P-D-145, P-D-146; it spanned four until P-D-169). A third route, `POST
 //! …/members/{memberCode}/label`, changes a member's display label and
 //! nothing else — the rename `dod-plantier-governance` asks for, which by
 //! `dod-unit-immutable` can never be a rename of the code.
@@ -54,10 +54,10 @@
 //! A removal is refused while a **non-terminal published head** references
 //! the member (`inst-us-delist`, M2: frozen version content never blocks),
 //! with the holders sampled into the refusal — `UNIT_DELIST_BLOCKED`,
-//! `PLAN_TIER_RETIRE_BLOCKED` or `ACCOUNTING_CODE_DELIST_BLOCKED` by kind —
+//! `PLAN_TIER_RETIRE_BLOCKED` by kind —
 //! and **never at all for a seeded member** (`inst-rs-seeded`). Today only
 //! the metering-unit set has a shipped carrier column to hold it
-//! (`products_sku.metering_unit`); the other three kinds' carriers arrive
+//! (`products_sku.metering_unit`); the tier's carrier arrives
 //! with their own columns, and until then their holder population is empty
 //! by construction rather than by an exemption.
 //!
@@ -282,7 +282,7 @@ fn parse_kind(raw: &str) -> Result<SetKind, CanonicalError> {
         report.violate(
             "VALIDATION",
             "setKind",
-            "setKind must be one of metering_unit, tax_category, gl_code, plan_tier",
+            "setKind must be one of metering_unit, plan_tier",
         );
         CanonicalError::from(DomainError::Validation(report))
     })
@@ -374,10 +374,10 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .operation_id("bss_products.add_recognized_member")
         .summary("Add a member to a recognized set")
         .description(
-            "Adds an `active` member to the named set - `metering_unit`, `tax_category`, \
-             `gl_code` or `plan_tier` - and enqueues the set's event in the same transaction. \
-             The grant is chosen by `setKind` (P-D-90): the tier set spends `plan_tier x \
-             write`, the other three `recognized_set x write`. A code the set already carries \
+            "Adds an `active` member to the named set - `metering_unit` or `plan_tier` - and \
+             enqueues the set's event in the same transaction. The grant is chosen by `setKind` \
+             (P-D-90): the tier set spends `plan_tier x write`, the unit set \
+             `recognized_set x write`. A code the set already carries \
              in any state is refused `DUPLICATE_CODE` - a removed member is a tombstone whose \
              primary key never frees, and the path back into the set is the transitions door's \
              re-listing, never a second add. There is no rename and no delete on any member, \
@@ -414,8 +414,8 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
          stop before the member can leave the set. The body pins the state the caller read \
          (`expected_state`); a peer's flip in between is refused `STALE_LIVE_OP`. A removal \
          is refused while any non-terminal published head still references the member \
-         (`UNIT_DELIST_BLOCKED` / `PLAN_TIER_RETIRE_BLOCKED` / \
-         `ACCOUNTING_CODE_DELIST_BLOCKED`, holders sampled), and never touches a seeded \
+         (`UNIT_DELIST_BLOCKED` / `PLAN_TIER_RETIRE_BLOCKED`, holders sampled), and never \
+         touches a seeded \
          member. The write and the set's event commit in one transaction.",
     )
     .tag(TAG)

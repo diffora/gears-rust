@@ -426,7 +426,7 @@ the answer replayed; (2) `ProductsClient`, now taking the caller's `SecurityCont
 traits, with its first binding; (3) and (4) as they shipped; (5) `freeze::FreezeAcks` with `ack`
 **and** `release`; (6) `composition::CompositionSignals`; (7) `events::SCHEMA_REFS`, the forty
 versioned schema references, the deserializable types staying in `infra::broker` (P-D-130); (8)
-`errors::ErrorCode`, seventy-eight variants held equal to `DomainError`'s roster in both directions
+`errors::ErrorCode`, seventy-four variants held equal to `DomainError`'s roster in both directions (seventy-eight until P-D-169 withdrew the four `ACCOUNTING_CODE_*` refusals with their subject)
 by `error_tests`. All four inbound contracts resolve from `ClientHub`
 (`api::rest::sdk_bindings`): every write binding **calls the door's own handler**, so the SDK write
 and the REST write are one door — one key, one `If-Match`, one gate, one audit row. Probes:

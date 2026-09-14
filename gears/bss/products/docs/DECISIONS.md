@@ -2914,6 +2914,10 @@ per-decision anchors, and it was corrected by running the command it prescribed.
 
 #### P-D-151 — 12's surface: the SDK's four remaining rows, the eight executable lints, the seam suite's home and the register's own hygiene
 
+> **Amended by P-D-169 (2026-09-14): `ErrorCode` carries seventy-four variants, not
+> seventy-eight.** The four `ACCOUNTING_CODE_*` refusals left with their subject. Row 8's shape —
+> a documented vocabulary held equal to `DomainError`'s roster in both directions — is unchanged.
+
 - **Date**: 2026-09-05 (the lead, group 9 of the solo plan; `12` §7 rows on the lints' grammars
   as P-D-130 stated them; two DoDs left unticked by P-D-132's refusal)
 - **The SDK carries §9 whole.** Row 1, the authoring/publish client, is `Authoring` — create, save

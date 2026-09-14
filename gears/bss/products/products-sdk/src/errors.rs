@@ -21,14 +21,6 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[non_exhaustive]
 pub enum ErrorCode {
-    /// `ACCOUNTING_CODE_DELIST_BLOCKED`.
-    AccountingCodeDelistBlocked,
-    /// `ACCOUNTING_CODE_DEPRECATED`.
-    AccountingCodeDeprecated,
-    /// `ACCOUNTING_CODE_REQUIRED`.
-    AccountingCodeRequired,
-    /// `ACCOUNTING_CODE_UNKNOWN`.
-    AccountingCodeUnknown,
     /// `APPROVAL_REQUIRED`.
     ApprovalRequired,
     /// `APPROVAL_SUPERSEDED`.
@@ -181,13 +173,10 @@ pub enum ErrorCode {
 
 impl ErrorCode {
     /// Every registered code, in the vocabulary's canonical (alphabetical)
-    /// order. **78** at this revision; the gear's roster test pins the
-    /// number too, so the two counts move together.
+    /// order. **74** at this revision; the gear's roster test pins the
+    /// number too, so the two counts move together. It was 78 until P-D-169
+    /// withdrew the four `ACCOUNTING_CODE_*` refusals with their subject.
     pub const ALL: &'static [ErrorCode] = &[
-        ErrorCode::AccountingCodeDelistBlocked,
-        ErrorCode::AccountingCodeDeprecated,
-        ErrorCode::AccountingCodeRequired,
-        ErrorCode::AccountingCodeUnknown,
         ErrorCode::ApprovalRequired,
         ErrorCode::ApprovalSuperseded,
         ErrorCode::ApproverRoleRequired,
@@ -268,10 +257,6 @@ impl ErrorCode {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::AccountingCodeDelistBlocked => "ACCOUNTING_CODE_DELIST_BLOCKED",
-            Self::AccountingCodeDeprecated => "ACCOUNTING_CODE_DEPRECATED",
-            Self::AccountingCodeRequired => "ACCOUNTING_CODE_REQUIRED",
-            Self::AccountingCodeUnknown => "ACCOUNTING_CODE_UNKNOWN",
             Self::ApprovalRequired => "APPROVAL_REQUIRED",
             Self::ApprovalSuperseded => "APPROVAL_SUPERSEDED",
             Self::ApproverRoleRequired => "APPROVER_ROLE_REQUIRED",
@@ -354,10 +339,6 @@ impl ErrorCode {
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "ACCOUNTING_CODE_DELIST_BLOCKED" => Some(Self::AccountingCodeDelistBlocked),
-            "ACCOUNTING_CODE_DEPRECATED" => Some(Self::AccountingCodeDeprecated),
-            "ACCOUNTING_CODE_REQUIRED" => Some(Self::AccountingCodeRequired),
-            "ACCOUNTING_CODE_UNKNOWN" => Some(Self::AccountingCodeUnknown),
             "APPROVAL_REQUIRED" => Some(Self::ApprovalRequired),
             "APPROVAL_SUPERSEDED" => Some(Self::ApprovalSuperseded),
             "APPROVER_ROLE_REQUIRED" => Some(Self::ApproverRoleRequired),
@@ -443,7 +424,7 @@ mod tests {
 
     #[test]
     fn the_roster_round_trips_and_is_sorted() {
-        assert_eq!(ErrorCode::ALL.len(), 78);
+        assert_eq!(ErrorCode::ALL.len(), 74);
         let mut seen = std::collections::BTreeSet::new();
         let mut previous: Option<&str> = None;
         for code in ErrorCode::ALL {

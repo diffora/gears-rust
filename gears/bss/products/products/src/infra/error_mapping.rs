@@ -221,15 +221,6 @@ impl From<DomainError> for CanonicalError {
             // 03's classification refusals (P-D-145): 422 architectural, 400 on
             // the wire, the same precondition shape as the meter's.
             D::SkuTypeUnknown(detail) => precondition("sku_type", &detail, "SKU_TYPE_UNKNOWN"),
-            D::AccountingCodeRequired(detail) => {
-                precondition("accounting_code", &detail, "ACCOUNTING_CODE_REQUIRED")
-            }
-            D::AccountingCodeUnknown(detail) => {
-                precondition("accounting_code", &detail, "ACCOUNTING_CODE_UNKNOWN")
-            }
-            D::AccountingCodeDeprecated(detail) => {
-                precondition("accounting_code", &detail, "ACCOUNTING_CODE_DEPRECATED")
-            }
             D::PlanTierUnknown(detail) => precondition("plan_tier", &detail, "PLAN_TIER_UNKNOWN"),
             D::PlanTierDeprecated(detail) => {
                 precondition("plan_tier", &detail, "PLAN_TIER_DEPRECATED")
@@ -250,9 +241,6 @@ impl From<DomainError> for CanonicalError {
             D::BreakglassCorrectionDisabled(_detail) => denied("BREAKGLASS_CORRECTION_DISABLED"),
             D::UnitDelistBlocked(detail) => aborted(detail, "UNIT_DELIST_BLOCKED"),
             D::PlanTierRetireBlocked(detail) => aborted(detail, "PLAN_TIER_RETIRE_BLOCKED"),
-            D::AccountingCodeDelistBlocked(detail) => {
-                aborted(detail, "ACCOUNTING_CODE_DELIST_BLOCKED")
-            }
             D::UsageTypeUnresolved(detail) => {
                 precondition("usage_type_ref", &detail, "USAGE_TYPE_UNRESOLVED")
             }

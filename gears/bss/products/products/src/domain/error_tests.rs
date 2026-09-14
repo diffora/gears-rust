@@ -8,7 +8,7 @@ use crate::domain::validation::ValidationReport;
 /// `infra::error_mapping_tests::declared_status_and_code` is one: the roster
 /// is long enough that holding it inline puts the test over
 /// `clippy::too_many_lines`, which this crate denies.
-#[allow(clippy::too_many_lines)] // one line per code; the roster passed 200 at 78 codes
+#[allow(clippy::too_many_lines)] // one line per code; the roster passed 200 at 74 codes
 fn wire_code_roster() -> Vec<(DomainError, &'static str)> {
     let mut roster = vec![
         (
@@ -179,10 +179,6 @@ fn wire_code_roster() -> Vec<(DomainError, &'static str)> {
             "PLAN_TIER_RETIRE_BLOCKED",
         ),
         (
-            DomainError::AccountingCodeDelistBlocked("a".into()),
-            "ACCOUNTING_CODE_DELIST_BLOCKED",
-        ),
-        (
             DomainError::SelfApprovalForbidden("s".into()),
             "SELF_APPROVAL_FORBIDDEN",
         ),
@@ -221,18 +217,6 @@ fn wire_code_roster() -> Vec<(DomainError, &'static str)> {
 fn classification_wire_codes() -> Vec<(DomainError, &'static str)> {
     vec![
         (DomainError::SkuTypeUnknown("t".into()), "SKU_TYPE_UNKNOWN"),
-        (
-            DomainError::AccountingCodeRequired("a".into()),
-            "ACCOUNTING_CODE_REQUIRED",
-        ),
-        (
-            DomainError::AccountingCodeUnknown("a".into()),
-            "ACCOUNTING_CODE_UNKNOWN",
-        ),
-        (
-            DomainError::AccountingCodeDeprecated("a".into()),
-            "ACCOUNTING_CODE_DEPRECATED",
-        ),
         (
             DomainError::PlanTierUnknown("p".into()),
             "PLAN_TIER_UNKNOWN",
@@ -355,7 +339,7 @@ fn every_variant_carries_its_design_set_wire_code() {
     // until today. Read that file's own note before changing either.
     assert_eq!(
         cases.len(),
-        78,
+        74,
         "the Foundation owns fourteen raiseable codes and hosts two guests \
          (retention-erasure's ERASURE_UNKNOWN_ACTOR, P-D-64 keeping that \
          roster at one, and the clone door's CLONE_SOURCE_DISCARDED, \
@@ -412,5 +396,5 @@ fn the_sdk_vocabulary_is_the_domain_roster_in_both_directions() {
         sdk_only.is_empty(),
         "SDK variants no DomainError carries: {sdk_only:?}"
     );
-    assert_eq!(sdk.len(), 78);
+    assert_eq!(sdk.len(), 74);
 }

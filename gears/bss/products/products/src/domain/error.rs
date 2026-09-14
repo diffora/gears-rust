@@ -164,10 +164,6 @@ pub enum DomainError {
     /// being the set's `removed` state.
     #[error("plan tier retire blocked: {0}")]
     PlanTierRetireBlocked(String),
-    /// [`Self::UnitDelistBlocked`]'s accounting-code sibling, covering the
-    /// `tax_category` and `gl_code` sets (`03` §3.2's taxonomy).
-    #[error("accounting code delist blocked: {0}")]
-    AccountingCodeDelistBlocked(String),
     /// A usage SKU's `usageTypeRef` did not resolve in the collector
     /// (`03 inst-mt-resolve`).
     #[error("usage type unresolved: {0}")]
@@ -180,18 +176,6 @@ pub enum DomainError {
     /// (`03 inst-cl-type-profile`, P-D-145).
     #[error("unknown sku type: {0}")]
     SkuTypeUnknown(String),
-    /// A `product` or `service` SKU published without both accounting codes;
-    /// the detail names the missing field (`03 inst-cl-type-profile`).
-    #[error("accounting code required: {0}")]
-    AccountingCodeRequired(String),
-    /// An accounting code Finance's recognized set does not carry — unknown or
-    /// `removed` (`03 inst-ac-codes`). One code for both fields (P-D-47).
-    #[error("unknown accounting code: {0}")]
-    AccountingCodeUnknown(String),
-    /// A **new** assignment of a `deprecated` accounting code; existing
-    /// published carriers keep resolving (`03 inst-ac-codes`).
-    #[error("deprecated accounting code: {0}")]
-    AccountingCodeDeprecated(String),
     /// A tier the tenant's `PlanTier` set does not carry — unknown or
     /// `removed` (`03 inst-pt-assign`).
     #[error("unknown plan tier: {0}")]
@@ -619,13 +603,9 @@ impl DomainError {
             Self::UnitDeprecated(_) => "UNIT_DEPRECATED",
             Self::UnitDelistBlocked(_) => "UNIT_DELIST_BLOCKED",
             Self::PlanTierRetireBlocked(_) => "PLAN_TIER_RETIRE_BLOCKED",
-            Self::AccountingCodeDelistBlocked(_) => "ACCOUNTING_CODE_DELIST_BLOCKED",
             Self::UsageTypeUnresolved(_) => "USAGE_TYPE_UNRESOLVED",
             Self::UsageTypeUnavailable(_) => "USAGE_TYPE_UNAVAILABLE",
             Self::SkuTypeUnknown(_) => "SKU_TYPE_UNKNOWN",
-            Self::AccountingCodeRequired(_) => "ACCOUNTING_CODE_REQUIRED",
-            Self::AccountingCodeUnknown(_) => "ACCOUNTING_CODE_UNKNOWN",
-            Self::AccountingCodeDeprecated(_) => "ACCOUNTING_CODE_DEPRECATED",
             Self::PlanTierUnknown(_) => "PLAN_TIER_UNKNOWN",
             Self::PlanTierDeprecated(_) => "PLAN_TIER_DEPRECATED",
             Self::BundleOverrideRequired(_) => "BUNDLE_OVERRIDE_REQUIRED",

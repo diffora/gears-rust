@@ -71,9 +71,6 @@ fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
         // 03's classification refusals (P-D-145): the same 422-architectural,
         // 400-on-the-wire shape.
         D::SkuTypeUnknown(_) => (400, Some("SKU_TYPE_UNKNOWN")),
-        D::AccountingCodeRequired(_) => (400, Some("ACCOUNTING_CODE_REQUIRED")),
-        D::AccountingCodeUnknown(_) => (400, Some("ACCOUNTING_CODE_UNKNOWN")),
-        D::AccountingCodeDeprecated(_) => (400, Some("ACCOUNTING_CODE_DEPRECATED")),
         D::PlanTierUnknown(_) => (400, Some("PLAN_TIER_UNKNOWN")),
         D::PlanTierDeprecated(_) => (400, Some("PLAN_TIER_DEPRECATED")),
         D::BundleOverrideRequired(_) => (400, Some("BUNDLE_OVERRIDE_REQUIRED")),
@@ -84,10 +81,9 @@ fn declared_status_and_code(err: &DomainError) -> (u16, Option<&'static str>) {
         D::CorrectionApprovalOpen(_) => (409, Some("CORRECTION_APPROVAL_OPEN")),
         D::CorrectionSignalAvailable(_) => (409, Some("CORRECTION_SIGNAL_AVAILABLE")),
         D::BreakglassCorrectionDisabled(_) => (403, Some("BREAKGLASS_CORRECTION_DISABLED")),
-        // The three delist blocks are 409s in the same note.
+        // Both delist blocks are 409s in the same note.
         D::UnitDelistBlocked(_) => (409, Some("UNIT_DELIST_BLOCKED")),
         D::PlanTierRetireBlocked(_) => (409, Some("PLAN_TIER_RETIRE_BLOCKED")),
-        D::AccountingCodeDelistBlocked(_) => (409, Some("ACCOUNTING_CODE_DELIST_BLOCKED")),
         D::UsageTypeUnresolved(_) => (400, Some("USAGE_TYPE_UNRESOLVED")),
         D::ApprovalRequired(_) => (403, Some("APPROVAL_REQUIRED")),
         D::SelfApprovalForbidden(_) => (403, Some("SELF_APPROVAL_FORBIDDEN")),
@@ -194,9 +190,6 @@ fn one_of_every_variant() -> Vec<DomainError> {
         D::UnrecognizedUnit(d()),
         D::UnitDeprecated(d()),
         D::SkuTypeUnknown(d()),
-        D::AccountingCodeRequired(d()),
-        D::AccountingCodeUnknown(d()),
-        D::AccountingCodeDeprecated(d()),
         D::PlanTierUnknown(d()),
         D::PlanTierDeprecated(d()),
         D::BundleOverrideRequired(d()),
@@ -209,7 +202,6 @@ fn one_of_every_variant() -> Vec<DomainError> {
         D::BreakglassCorrectionDisabled(d()),
         D::UnitDelistBlocked(d()),
         D::PlanTierRetireBlocked(d()),
-        D::AccountingCodeDelistBlocked(d()),
         D::UsageTypeUnresolved(d()),
         D::UsageTypeUnavailable(d()),
         D::ErasureUnknownActor(d()),
@@ -273,7 +265,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
 /// arithmetic is frozen history; this note exists so the miscount does not
 /// travel into the next brief, and so a strand that moves one number does not
 /// go looking for a third that is not there.
-const DOMAIN_ERROR_VARIANTS: usize = 78;
+const DOMAIN_ERROR_VARIANTS: usize = 74;
 
 /// Covers all 14 variants (§3.3's own count, `DomainError::code`'s own
 /// exhaustiveness note): every one lands on the status the design ladder
