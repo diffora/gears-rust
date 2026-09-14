@@ -143,7 +143,9 @@ use uuid::Uuid;
 
 use toolkit::api::canonical_prelude::resource_error;
 
-use crate::api::rest::{ApiState, repo_error_to_canonical, require_authenticated};
+use crate::api::rest::{
+    ApiState, governance_scope, repo_error_to_canonical, require_authenticated,
+};
 use crate::domain::canonical;
 use crate::domain::error::DomainError;
 use crate::domain::governance::{GateAuthorization, GateSubject, SubjectPin};
@@ -355,22 +357,6 @@ async fn authorize_member_op(
         .await);
     }
     Ok(authorization)
-}
-
-/// The scope this gear consults **its own governance state** under.
-///
-/// **Not the door's.** `products_approval` declares `resource_col =
-/// "approval_id"`, and this door's scope is compiled for `plan_tier` /
-/// `recognized_set` — so a real PDP's scope filters that table by a column it
-/// never constrained and matches nothing. `repo::gate_candidates` records the
-/// measurement that found it (the benidorm stand, 2026-09-06: *"every
-/// governed act answered `APPROVAL_REQUIRED` while its satisfied record sat
-/// in the table"*) and takes exactly this posture, ignoring the door scope it
-/// is handed. The reads and the submission below are the same access — the
-/// caller has already passed this door's own authz, and what follows is the
-/// gear consulting its ceremony inside that tenant.
-fn governance_scope(tenant_id: Uuid) -> AccessScope {
-    AccessScope::for_tenant(tenant_id)
 }
 
 /// The refusal a stale member tag earns (**P-D-174**).

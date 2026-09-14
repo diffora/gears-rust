@@ -413,6 +413,30 @@ pub(crate) fn repo_error_to_canonical(err: &RepoError) -> CanonicalError {
     CanonicalError::internal(format!("bss-products: {err}")).create()
 }
 
+/// The scope this gear consults **its own governance state** under.
+///
+/// **Not the door's.** `products_approval` declares `resource_col =
+/// "approval_id"`, so a scope a real PDP compiled for the *entity* a door
+/// gates — `plan_tier` / `recognized_set` on 03's member doors, `sku` on
+/// 07's correction lane — filters that table by a column it never
+/// constrained and matches nothing. `repo::gate_candidates` records the
+/// measurement that found it (the benidorm stand, 2026-09-06: *"every
+/// governed act answered `APPROVAL_REQUIRED` while its satisfied record sat
+/// in the table"*) and takes exactly this posture, ignoring the door scope it
+/// is handed. Every caller here is the same access — the caller has already
+/// passed its own door's authz, and what follows is the gear consulting its
+/// ceremony inside that tenant.
+///
+/// **Here rather than in one door's module** because it is not one door's
+/// rule: it is a property of `products_approval`'s own `resource_col`, and
+/// every door that reads a record it did not open needs it. It moved up from
+/// `api::rest::recognized_sets` when `skus::apply_correction` was found
+/// reading under the correction door's scope — the same class, on a lane
+/// three slices away.
+pub(crate) fn governance_scope(tenant_id: uuid::Uuid) -> AccessScope {
+    AccessScope::for_tenant(tenant_id)
+}
+
 /// Map an [`AuthzError`] from the PEP gate to a [`CanonicalError`], generic
 /// over which resource's builder renders the 403 — the one place `products`
 /// and `skus` still share a body, parameterised by the tiny closure each

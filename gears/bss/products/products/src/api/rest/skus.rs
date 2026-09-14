@@ -5411,10 +5411,24 @@ async fn apply_correction(
                 .to_owned(),
         ))
     })?;
-    let record = repo::read_approval(tx, &inputs.scope, inputs.tenant_id, approval_id)
-        .await
-        .map_err(|e| HeadActError::from_repo(&e))?
-        .ok_or(HeadActError::Vanished)?;
+    // **The governance store, under the tenant scope and not this door's.**
+    // `products_approval` declares `resource_col = "approval_id"`, and this
+    // lane's scope is compiled for the `sku` it corrects — so a real PDP's
+    // scope filters that table by a column it never constrained and the
+    // record the host just matched reads back as absent, i.e. as
+    // `Vanished`, a 500 for a legal correction. `governance_scope` carries
+    // the measurement; `repo::gate_candidates` and
+    // `repo::supersede_open_approval` already take this posture, and 03's
+    // member doors moved to it in `96e1f9179`.
+    let record = repo::read_approval(
+        tx,
+        &crate::api::rest::governance_scope(inputs.tenant_id),
+        inputs.tenant_id,
+        approval_id,
+    )
+    .await
+    .map_err(|e| HeadActError::from_repo(&e))?
+    .ok_or(HeadActError::Vanished)?;
     if !snapshot_matches(&record.content_snapshot, &run.payload) {
         return Err(HeadActError::Refused(DomainError::ApprovalRequired(
             format!(
