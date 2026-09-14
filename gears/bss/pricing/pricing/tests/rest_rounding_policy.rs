@@ -531,7 +531,7 @@ async fn read_vocabulary(harness: &Harness) -> (StatusCode, Option<String>, serd
         .allowed()
         .send(with_headers(
             "GET",
-            "/bss-pricing/v1/config/rounding-policies",
+            "/bss-pricing/v1/config/vocabularies/rounding-policies",
             None,
             &[],
         ))
@@ -584,7 +584,7 @@ async fn patch_value(
         .await
 }
 
-const VALUES: &str = "/bss-pricing/v1/config/rounding-policies/values";
+const VALUES: &str = "/bss-pricing/v1/config/vocabularies/rounding-policies/values";
 
 fn value_path(value: &str) -> String {
     format!("{VALUES}/{value}")
@@ -631,7 +631,7 @@ async fn the_whole_set_put_is_gone() {
         .allowed()
         .send(with_headers(
             "PUT",
-            "/bss-pricing/v1/config/rounding-policies",
+            "/bss-pricing/v1/config/vocabularies/rounding-policies",
             Some(serde_json::json!({ "values": [] })),
             &[("if-match", "\"whatever\"")],
         ))
@@ -659,7 +659,7 @@ async fn a_declared_value_round_trips_and_defaults_to_active() {
             .headers()
             .get("location")
             .and_then(|v| v.to_str().ok()),
-        Some("/bss-pricing/v1/config/rounding-policies/values/half_even")
+        Some("/bss-pricing/v1/config/vocabularies/rounding-policies/values/half_even")
     );
     let value_tag = etag_of(&created).expect("the value's own tag");
 

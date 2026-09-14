@@ -65,7 +65,7 @@
 //!
 //! What a whitespace value costs is one level up from the sentinel above.
 //! `TaxonomyRepo::list` maps a value `ScopeValue` refuses to `RepoError::CorruptRow`,
-//! so **one** such row makes `GET /config/taxonomies/{class}` fail for **every** value
+//! so **one** such row makes `GET /config/vocabularies/{class}` fail for **every** value
 //! in that class, and the only remedy is direct SQL — the `PUT` cannot round-trip a
 //! list it cannot read. The predicate stops the row existing rather than coping with
 //! it, which is what makes the store agree with the domain type.

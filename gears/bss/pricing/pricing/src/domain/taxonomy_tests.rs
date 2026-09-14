@@ -329,7 +329,7 @@ fn a_row_in_an_undeclared_region_fails_naming_the_value() {
         "the detail names the value too: {detail}"
     );
     assert!(
-        detail.contains("config/taxonomies/region"),
+        detail.contains("config/vocabularies/region"),
         "and tells the operator where to declare it: {detail}"
     );
 }
@@ -689,7 +689,7 @@ fn gl_code_membership_is_checked_only_once_a_vocabulary_is_declared() {
     assert_eq!(v.code, GL_CODE_UNKNOWN);
     assert_eq!(v.subject, "glCode");
     assert!(
-        v.detail.contains("9999-BAD") && v.detail.contains("/config/gl-codes"),
+        v.detail.contains("9999-BAD") && v.detail.contains("/config/vocabularies/gl-codes"),
         "the finding names the code and the door that declares it: {}",
         v.detail
     );

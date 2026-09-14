@@ -472,7 +472,7 @@ pub enum DomainError {
     /// a spelling rather than inventing one.
     #[error("taxonomy value in use: {0}")]
     TaxonomyValueInUse(String),
-    /// `POST …/taxonomies/{class}/values` named a value the tenant already
+    /// `POST …/vocabularies/{class}/values` named a value the tenant already
     /// declares — with other content, or retired (**409**).
     ///
     /// A conflict rather than a bad request: the body was well-formed, and what

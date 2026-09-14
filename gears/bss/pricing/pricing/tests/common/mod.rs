@@ -270,7 +270,7 @@ pub async fn schedule_coverage_window(
 /// C2 is fail-closed — a tenant whose region taxonomy declares nothing publishes
 /// nothing — so a fixture that publishes a plan has to declare the region its
 /// rows carry, exactly as a real operator would through
-/// `PUT /config/taxonomies/region`.
+/// `PUT /config/vocabularies/region`.
 ///
 /// Before the rule was registered these fixtures published rows in regions no
 /// tenant had ever declared, which is a world the system is not supposed to be
@@ -309,7 +309,7 @@ pub async fn declare_fixture_regions(provider: &DBProvider<DbError>, tenant_id: 
 /// Retire one declared fixture region, past the repository's guard.
 ///
 /// Direct because the guard is not what these cases are about: they need a value
-/// that *is* `retired`, and reaching it through `PUT /config/taxonomies/region`
+/// that *is* `retired`, and reaching it through `PUT /config/vocabularies/region`
 /// would make an unrelated refusal there look like the failure under test.
 pub async fn retire_fixture_region(provider: &DBProvider<DbError>, tenant_id: Uuid, value: &str) {
     let conn = provider.conn().expect("conn");

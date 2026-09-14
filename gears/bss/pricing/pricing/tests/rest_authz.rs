@@ -61,7 +61,7 @@ use bss_pricing::api::rest::rounding_policies::{
 use bss_pricing::api::rest::rounding_policy::ROUNDING_POLICY;
 use bss_pricing::api::rest::supersessions::PLAN_SUPERSESSIONS;
 use bss_pricing::api::rest::tax_display_policy::TAX_DISPLAY_POLICY;
-use bss_pricing::api::rest::taxonomies::{TAXONOMY, TAXONOMY_VALUE, TAXONOMY_VALUES};
+use bss_pricing::api::rest::taxonomies::{VOCABULARY, VOCABULARY_VALUE, VOCABULARY_VALUES};
 use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
 use bss_pricing::api::rest::windows::{
     PLAN_COVERAGE, PLAN_SELLABILITY, PRICE_WINDOW, PRICE_WINDOWS, PRICE_WINDOWS_LIST,
@@ -587,7 +587,7 @@ fn config_routes() -> Vec<Route> {
         // No allow/deny fixture can see the difference, so it is asserted.
         Route {
             method: "GET",
-            path: TAXONOMY,
+            path: VOCABULARY,
             resource_type: labels::CONFIG,
             action: actions::READ,
             mutating: false,
@@ -597,21 +597,21 @@ fn config_routes() -> Vec<Route> {
         // `approval_policy`.
         Route {
             method: "POST",
-            path: TAXONOMY_VALUES,
+            path: VOCABULARY_VALUES,
             resource_type: labels::CONFIG,
             action: actions::WRITE,
             mutating: true,
         },
         Route {
             method: "GET",
-            path: TAXONOMY_VALUE,
+            path: VOCABULARY_VALUE,
             resource_type: labels::CONFIG,
             action: actions::READ,
             mutating: false,
         },
         Route {
             method: "PATCH",
-            path: TAXONOMY_VALUE,
+            path: VOCABULARY_VALUE,
             resource_type: labels::CONFIG,
             action: actions::WRITE,
             mutating: true,
@@ -726,7 +726,7 @@ fn config_routes() -> Vec<Route> {
             mutating: false,
         },
         // The whole-set `PUT` is removed and the per-value routes stand in its
-        // place — `TAXONOMY_VALUES`' story on this table. Same pair: the
+        // place — `VOCABULARY_VALUES`' story on this table. Same pair: the
         // vocabulary is the config plane's own subject one value wide, so the
         // split changes which resource a call addresses and nothing about who
         // may address it.
@@ -1441,7 +1441,7 @@ fn body_for(
                 "\"0000000000000000000000000000000000000000000000000000000000000000\"",
             )],
         ),
-        ("PUT", TAXONOMY) => (
+        ("PUT", VOCABULARY) => (
             Some(serde_json::json!({
                 "values": [{ "value": "acme", "display_name": "Acme" }]
             })),
@@ -1450,7 +1450,7 @@ fn body_for(
                 "\"0000000000000000000000000000000000000000000000000000000000000000\"",
             )],
         ),
-        // The customer-group taxonomy's `PUT`, on `TAXONOMY`'s own reasoning: a
+        // The customer-group taxonomy's `PUT`, on `VOCABULARY`'s own reasoning: a
         // well-formed whole-set replacement under a wrong-but-well-formed tag, so
         // a refusal here is the gate's and never a body or precondition
         // complaint.
@@ -3290,7 +3290,7 @@ fn absent_ids(seeded: &Seeded) -> Seeded {
 /// the `foreign` and the `absent` arm — byte for byte — so the loop below would
 /// compare a request with itself and both assertions would hold by construction.
 /// The filter was `route.path.contains('{')` until 2026-08-20, which admitted
-/// `GET /taxonomies/{class}` and `GET /customer-groups/{group}/members`, whose only
+/// `GET /vocabularies/{class}` and `GET /customer-groups/{group}/members`, whose only
 /// parameter `drive` fills with the fixed literals `brand` and `gold`: two routes
 /// read as cross-tenant coverage where none was measured.
 const VARIED_SEGMENTS: &[&str] = &[
@@ -3360,7 +3360,7 @@ const BY_ID_READS_THIS_FIXTURE_CANNOT_STAGE: &[(&str, &str)] = &[
     // 404, so "absent" is not a state these surfaces have — the cross-tenant claim
     // for them is the emptiness of the *body*, which is a different property and
     // belongs to their own suites.
-    ("GET", TAXONOMY),
+    ("GET", VOCABULARY),
     ("GET", CUSTOMER_GROUP_MEMBERS),
     // The preview read answers **400** to its owner here: §5 requires `currency`
     // and `region` and `drive` supplies query parameters only for the sellability
@@ -3500,8 +3500,8 @@ const BY_ID_WRITES_THIS_FIXTURE_CANNOT_STAGE: &[(&str, &str)] = &[
     // asserts the **value's own** tag, which only a read of that value hands out
     // and this fixture performs no read; its cross-tenant twin is
     // `rest_taxonomies::a_foreign_tenants_value_reads_and_patches_like_an_absent_one`.
-    ("POST", TAXONOMY_VALUES),
-    ("PATCH", TAXONOMY_VALUE),
+    ("POST", VOCABULARY_VALUES),
+    ("PATCH", VOCABULARY_VALUE),
     // The two single-table vocabularies' per-value `PATCH`es, for the row
     // above's reason: each asserts the value's **own** tag, which only a read
     // of that value hands out and this fixture performs no read. Their

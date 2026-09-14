@@ -18,7 +18,7 @@
 //!
 //! The stored value names a policy this gear does not own, so the gear cannot
 //! invent a vocabulary for it — but the tenant declares one, through
-//! `GET /bss-pricing/v1/config/rounding-policies` and its per-value routes, and
+//! `GET /bss-pricing/v1/config/vocabularies/rounding-policies` and its per-value routes, and
 //! D-348 makes that
 //! declaration binding here: `put_policy` reads the active set and refuses a
 //! reference outside it with `DomainError::RoundingPolicyUnknown`. An empty set
@@ -160,7 +160,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              the rows only when there is no default. Send `null` to clear it, which puts the \
              tenant back to needing a reference on every published row - the empty string is \
              **refused** rather than stored, so that unset has one spelling. \
-             A value outside the active set of `GET /bss-pricing/v1/config/rounding-policies` \
+             A value outside the active set of `GET /bss-pricing/v1/config/vocabularies/rounding-policies` \
              is refused `ROUNDING_POLICY_UNKNOWN` (D-348); a tenant who has declared no \
              vocabulary constrains nothing, so an empty set accepts any reference. \
              Unlike the approval-threshold policy this \

@@ -1,5 +1,5 @@
 //! The four tenant taxonomies' read and write surface —
-//! `design/04-currency-tax.md` §5's `GET/PUT /config/taxonomies/{…}`, §6's table,
+//! `design/04-currency-tax.md` §5's `GET/PUT /config/vocabularies/{…}`, §6's table,
 //! and `inst-tx-mutation`'s retire guard.
 //!
 //! # This is the repository the four tables have been waiting for
@@ -651,7 +651,7 @@ pub async fn active_rounding_policies(
 ///
 /// **This read is the provider seam D-356 names.** The publish rule is handed
 /// the set and never learns where it came from; today the set is what the
-/// tenant declared through `POST /bss-pricing/v1/config/gl-codes/values`, and a future
+/// tenant declared through `POST /bss-pricing/v1/config/vocabularies/gl-codes/values`, and a future
 /// ERP gear that populates or reconciles `pricing_gl_code_taxonomy` changes
 /// nothing on this side of the seam.
 ///
@@ -895,7 +895,7 @@ pub async fn references_to(
 /// **Two grouped reads, not one per value.** Folding [`references_to`] over the
 /// list was bounded by the declared taxonomy rather than by the price-row table,
 /// which is the bound that was checked — but not by the request: nothing caps how
-/// many values a tenant declares, `GET /config/taxonomies/{class}` lists the class
+/// many values a tenant declares, `GET /config/vocabularies/{class}` lists the class
 /// whole with no `limit`, and D-353 made declaring one at a time the only door, so
 /// the loop grew one or two sequential round trips per declared value with the
 /// tenant's own authoring as the only ceiling.

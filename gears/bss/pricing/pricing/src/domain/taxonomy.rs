@@ -81,7 +81,7 @@ pub const REGION_UNKNOWN: &str = "REGION_UNKNOWN";
 /// (§5, 409; `inst-tx-mutation`).
 pub const TAXONOMY_VALUE_IN_USE: &str = "TAXONOMY_VALUE_IN_USE";
 
-/// `POST …/taxonomies/{class}/values` naming a value the tenant already declares
+/// `POST …/vocabularies/{class}/values` naming a value the tenant already declares
 /// with **different** content (or a retired one): 409. The value is the
 /// resource's natural key, so a second declaration of it is not a create — the
 /// remedy is `PATCH` on the value, and the detail says so. A body identical to
@@ -104,7 +104,7 @@ pub const ROUNDING_POLICY_UNKNOWN: &str = "ROUNDING_POLICY_UNKNOWN";
 /// vocabulary to go and fix, and the two are declared at two routes.
 pub const GL_CODE_UNKNOWN: &str = "GL_CODE_UNKNOWN";
 
-/// The four taxonomy classes `GET/PUT /config/taxonomies/{…}` addresses.
+/// The four taxonomy classes `GET/PUT /config/vocabularies/{…}` addresses.
 ///
 /// Ordered as §5 and §6 list them. The order carries no ranking — the ranking is
 /// [`ScopeClass`]'s derived `Ord` and there is exactly one of those.
@@ -216,7 +216,7 @@ impl fmt::Display for TaxonomyClass {
 /// # Why this is a second enum and not two more [`TaxonomyClass`] members
 ///
 /// The obvious move — widen `TaxonomyClass::ALL` and let them ride
-/// `/config/taxonomies/{class}`'s generic door — is the one thing this enum
+/// `/config/vocabularies/{class}`'s generic door — is the one thing this enum
 /// exists to refuse. [`TaxonomyClass::scope_class`] is a **total** function
 /// into [`ScopeClass`]: every member of that enum asserts *an overlay may be
 /// scoped by this*. A `GlCode` member would assert it of a GL code, which is
@@ -452,7 +452,7 @@ pub fn tag_of(class: TaxonomyClass, entries: &[TaxonomyEntry]) -> PolicyTag {
 }
 
 /// The entity tag of **one** value's representation — what
-/// `GET/PATCH …/taxonomies/{class}/values/{value}` carry and assert.
+/// `GET/PATCH …/vocabularies/{class}/values/{value}` carry and assert.
 ///
 /// The set tag ([`tag_of`]) moves whenever *any* value moves, which is right for
 /// a whole-set `PUT` and wrong for an edit of one value: two admins re-labelling
@@ -907,7 +907,7 @@ impl RegionsDeclared {
                 "region `{region}` is not an active value of this tenant's region taxonomy; a \
                  price row's region is validated at save and at publish, and an unknown value \
                  fails before publish (C2) — declare it at POST \
-                 /bss-pricing/v1/config/taxonomies/region/values first"
+                 /bss-pricing/v1/config/vocabularies/region/values first"
             ),
             // `Stage::Write` states what this arrangement already does — D-312.
             // The doc above says it: judged at save and again at publish, through
@@ -1066,7 +1066,7 @@ impl RoundingPolicyDeclared {
                 "rounding policy `{reference}` is not an active value of this tenant's \
                  rounding-policy taxonomy; rounding decides the last minor unit of every charge, \
                  so a reference to something nobody declared is refused - declare it at POST \
-                 /bss-pricing/v1/config/rounding-policies/values first, or retire every declared \
+                 /bss-pricing/v1/config/vocabularies/rounding-policies/values first, or retire every declared \
                  value to stop constraining references at all"
             ),
             // `Stage::Publish`, which is where this fault is actually judged.
@@ -1106,7 +1106,7 @@ impl ValidationRule<PlanShape> for RoundingPolicyDeclared {
                     "this tenant's default rounding policy `{default}` is not an active value \
                      of its own rounding-policy taxonomy, and rows in this plan carry no \
                      policy of their own, so they resolve to it; declare it at POST \
-                     /bss-pricing/v1/config/rounding-policies/values, change the default, or give \
+                     /bss-pricing/v1/config/vocabularies/rounding-policies/values, change the default, or give \
                      those rows a policy of their own"
                 ),
                 stage: Stage::Publish,
@@ -1159,7 +1159,7 @@ impl ValidationRule<PlanShape> for RoundingPolicyDeclared {
 ///
 /// `declared` is resolved by the caller from `taxonomy_repo::active_gl_codes`,
 /// and this rule never learns where the set came from. Today the provider is the
-/// tenant-declared set behind `POST /bss-pricing/v1/config/gl-codes/values`; a future
+/// tenant-declared set behind `POST /bss-pricing/v1/config/vocabularies/gl-codes/values`; a future
 /// ERP gear (D-356 *Owed*) populates or reconciles that same table, and nothing
 /// on this side of the seam changes — exactly `RegionTaxReadiness`'s arrangement
 /// under D-01, tenant-declared today and reconciled against Tax Engine post-GA.
@@ -1199,7 +1199,7 @@ impl GlCodeDeclared {
                 "glCode `{code}` is not an active value of this tenant's declared GL-code \
                  vocabulary; the code freezes into the catalog version an ERP posts against, so \
                  a reference to something nobody declared is refused - declare it at POST \
-                 /bss-pricing/v1/config/gl-codes/values first, correct the descriptor, or retire \
+                 /bss-pricing/v1/config/vocabularies/gl-codes/values first, correct the descriptor, or retire \
                  every declared code to stop constraining codes at all"
             ),
             stage: Stage::Publish,

@@ -1,7 +1,7 @@
-//! `GET /bss-pricing/v1/config/rounding-policies` and its per-value routes —
+//! `GET /bss-pricing/v1/config/vocabularies/rounding-policies` and its per-value routes —
 //! the rounding references a tenant declares (D-334).
 //!
-//! # Why this is not `/config/taxonomies/{class}`
+//! # Why this is not `/config/vocabularies/{class}`
 //!
 //! It is the same document shape, and it is deliberately not addressed through
 //! the same route. [`TaxonomyClass::scope_class`] is a **total** function into
@@ -10,6 +10,16 @@
 //! `pricing_price_overlay.scope_class` `CHECK`. `customer_group` is excluded
 //! from that route for the same family of reason and has its own parallel
 //! methods; this follows it.
+//!
+//! That argument is about the **enum**. D-371 measured that it does not by
+//! itself decide the **path** — a door may parse one segment onto two enums —
+//! and decided the path on the contract instead: no `202` arm on any edge
+//! (D-334), no tax markers in the request type, no `references` /
+//! `editGoverned` / `pendingApprovals` in the response, and an `operation_id`
+//! of its own. The route moved under the `vocabularies` prefix in D-371 and kept
+//! its own segment; see
+//! [`vocabulary_values`](crate::api::rest::vocabulary_values) for the full
+//! measurement.
 //!
 //! # What declaring a vocabulary does
 //!
@@ -83,7 +93,7 @@ const TAG: &str = "BSS Pricing Configuration";
 ///
 /// The literal is repeated in both `OperationBuilder` calls because DE0801
 /// validates a **literal** argument and silently passes a `const` one.
-pub const ROUNDING_POLICIES: &str = "/bss-pricing/v1/config/rounding-policies";
+pub const ROUNDING_POLICIES: &str = "/bss-pricing/v1/config/vocabularies/rounding-policies";
 
 /// One declared rounding reference.
 #[derive(Debug, Clone)]
@@ -122,13 +132,15 @@ pub struct RoundingPoliciesView {
 }
 
 /// One declared value's collection — the per-value create.
-pub const ROUNDING_POLICY_VALUES: &str = "/bss-pricing/v1/config/rounding-policies/values";
+pub const ROUNDING_POLICY_VALUES: &str =
+    "/bss-pricing/v1/config/vocabularies/rounding-policies/values";
 /// One declared reference: read and edit.
-pub const ROUNDING_POLICY_VALUE: &str = "/bss-pricing/v1/config/rounding-policies/values/{value}";
+pub const ROUNDING_POLICY_VALUE: &str =
+    "/bss-pricing/v1/config/vocabularies/rounding-policies/values/{value}";
 
 /// Build the Axum router for the two operations and register them.
 pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Router {
-    let router = OperationBuilder::get("/bss-pricing/v1/config/rounding-policies")
+    let router = OperationBuilder::get("/bss-pricing/v1/config/vocabularies/rounding-policies")
         .operation_id("bss_pricing.get_rounding_policies")
         .summary("Read the tenant's declared rounding references")
         .description(
@@ -163,11 +175,13 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .error_503(openapi)
         .register(Router::new(), openapi);
 
-    let router = OperationBuilder::post("/bss-pricing/v1/config/rounding-policies/values")
-        .operation_id("bss_pricing.declare_rounding_policy")
-        .summary("Declare one rounding reference")
-        .description(
-            "Adds **one** reference to the vocabulary without re-sending the set. `201` with \
+    let router = OperationBuilder::post(
+        "/bss-pricing/v1/config/vocabularies/rounding-policies/values",
+    )
+    .operation_id("bss_pricing.declare_rounding_policy")
+    .summary("Declare one rounding reference")
+    .description(
+        "Adds **one** reference to the vocabulary without re-sending the set. `201` with \
              the value as stored, its own `ETag`, and a `Location` naming it. The reference is \
              the resource's natural key, so there is no `Idempotency-Key`: a repeat carrying \
              the **same** body is the create's replay and answers `200`; a body naming a \
@@ -177,38 +191,38 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              from then on a row naming a reference outside the active set fails publish with \
              `ROUNDING_POLICY_UNKNOWN`. One audited config mutation naming the reference, and \
              no approval unit. Gates on `config` x `write`.",
-        )
-        .tag(TAG)
-        .authenticated()
-        .no_license_required()
-        .json_request::<DeclareVocabularyValueRequest>(openapi, "The one reference to declare.")
-        .handler(post_value)
-        .json_response_with_schema::<RoundingPolicyValueView>(
-            openapi,
-            StatusCode::CREATED,
-            "The reference as declared, with its own `ETag` and `Location`.",
-        )
-        .json_response_with_schema::<RoundingPolicyValueView>(
-            openapi,
-            StatusCode::OK,
-            "The reference was already declared with exactly this content: the create's replay.",
-        )
-        .error_400(openapi)
-        .error_401(openapi)
-        .error_403(openapi)
-        .error_409(openapi)
-        .error_500(openapi)
-        .error_503(openapi)
-        .register(router, openapi);
+    )
+    .tag(TAG)
+    .authenticated()
+    .no_license_required()
+    .json_request::<DeclareVocabularyValueRequest>(openapi, "The one reference to declare.")
+    .handler(post_value)
+    .json_response_with_schema::<RoundingPolicyValueView>(
+        openapi,
+        StatusCode::CREATED,
+        "The reference as declared, with its own `ETag` and `Location`.",
+    )
+    .json_response_with_schema::<RoundingPolicyValueView>(
+        openapi,
+        StatusCode::OK,
+        "The reference was already declared with exactly this content: the create's replay.",
+    )
+    .error_400(openapi)
+    .error_401(openapi)
+    .error_403(openapi)
+    .error_409(openapi)
+    .error_500(openapi)
+    .error_503(openapi)
+    .register(router, openapi);
 
-    let router = OperationBuilder::get("/bss-pricing/v1/config/rounding-policies/values/{value}")
+    let router = OperationBuilder::get("/bss-pricing/v1/config/vocabularies/rounding-policies/values/{value}")
         .operation_id("bss_pricing.get_rounding_policy_value")
         .summary("Read one declared rounding reference")
         .description(
             "One reference, `active`, `deprecated` or `retired`, with **its own `ETag`** - the \
              tag the \
              per-value `PATCH` demands, and the only place to obtain it (the set's tag from \
-             `GET .../config/rounding-policies` covers the whole list and does not satisfy the \
+             `GET .../config/vocabularies/rounding-policies` covers the whole list and does not satisfy the \
              per-value precondition). A reference the tenant has never declared is `404`. This \
              GET always returns a fresh body with `Cache-Control: private, no-store`; it does \
              not evaluate `If-None-Match` or return `304`. Gates on `config` x `read`.",
@@ -231,11 +245,13 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .error_503(openapi)
         .register(router, openapi);
 
-    let router = OperationBuilder::patch("/bss-pricing/v1/config/rounding-policies/values/{value}")
-        .operation_id("bss_pricing.patch_rounding_policy_value")
-        .summary("Edit one declared rounding reference")
-        .description(
-            "Changes only the fields the body names: `displayName` and `state`. **Retirement \
+    let router = OperationBuilder::patch(
+        "/bss-pricing/v1/config/vocabularies/rounding-policies/values/{value}",
+    )
+    .operation_id("bss_pricing.patch_rounding_policy_value")
+    .summary("Edit one declared rounding reference")
+    .description(
+        "Changes only the fields the body names: `displayName` and `state`. **Retirement \
              is guarded**, at the door and again inside the write transaction: a reference a \
              published price row or the tenant default still names is `409` \
              `TAXONOMY_VALUE_IN_USE` and nothing is written - re-point them first. `retired -> \
@@ -245,27 +261,27 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              config mutation naming the reference and its state before and after. This \
              vocabulary opens no approval unit on any edge (D-334). Gates on `config` x \
              `write`.",
-        )
-        .tag(TAG)
-        .authenticated()
-        .no_license_required()
-        .param(vocabulary_values::value_param())
-        .param(vocabulary_values::if_match_value_param())
-        .json_request::<PatchVocabularyValueRequest>(openapi, "The fields to change.")
-        .handler(patch_value)
-        .json_response_with_schema::<RoundingPolicyValueView>(
-            openapi,
-            StatusCode::OK,
-            "The reference as it now stands, with its `ETag`.",
-        )
-        .error_400(openapi)
-        .error_401(openapi)
-        .error_403(openapi)
-        .error_404(openapi)
-        .error_409(openapi)
-        .error_500(openapi)
-        .error_503(openapi)
-        .register(router, openapi);
+    )
+    .tag(TAG)
+    .authenticated()
+    .no_license_required()
+    .param(vocabulary_values::value_param())
+    .param(vocabulary_values::if_match_value_param())
+    .json_request::<PatchVocabularyValueRequest>(openapi, "The fields to change.")
+    .handler(patch_value)
+    .json_response_with_schema::<RoundingPolicyValueView>(
+        openapi,
+        StatusCode::OK,
+        "The reference as it now stands, with its `ETag`.",
+    )
+    .error_400(openapi)
+    .error_401(openapi)
+    .error_403(openapi)
+    .error_404(openapi)
+    .error_409(openapi)
+    .error_500(openapi)
+    .error_503(openapi)
+    .register(router, openapi);
 
     router
         .layer(Extension(state))
@@ -290,7 +306,7 @@ async fn get_values(
     Ok(render(&held, Some(&headers)))
 }
 
-/// `POST /config/rounding-policies/values`.
+/// `POST /config/vocabularies/rounding-policies/values`.
 async fn post_value(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
@@ -315,7 +331,7 @@ async fn post_value(
     Ok(render_value(&entry, status))
 }
 
-/// `GET /config/rounding-policies/values/{value}`.
+/// `GET /config/vocabularies/rounding-policies/values/{value}`.
 async fn get_value(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
@@ -341,7 +357,7 @@ async fn get_value(
     )))
 }
 
-/// `PATCH /config/rounding-policies/values/{value}`.
+/// `PATCH /config/vocabularies/rounding-policies/values/{value}`.
 async fn patch_value(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,

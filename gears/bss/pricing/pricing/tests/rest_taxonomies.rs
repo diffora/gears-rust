@@ -1,4 +1,4 @@
-//! `GET/PUT /config/taxonomies/{class}`, driven through the real router.
+//! `GET/PUT /config/vocabularies/{class}`, driven through the real router.
 //!
 //! # The positive control is the whole point of this file
 //!
@@ -29,7 +29,7 @@ mod common;
 mod rest_support;
 
 use axum::http::StatusCode;
-use bss_pricing::api::rest::taxonomies::{TAXONOMY, TAXONOMY_VALUE, TAXONOMY_VALUES};
+use bss_pricing::api::rest::taxonomies::{VOCABULARY, VOCABULARY_VALUE, VOCABULARY_VALUES};
 use bss_pricing::authz::{actions, labels};
 use rest_support::{
     Harness, approval_row, approval_rows, audit_rows, body_json, etag_of, location_of,
@@ -46,7 +46,7 @@ const ADMIN: uuid::Uuid = uuid::Uuid::from_u128(0xca_d0);
 const REVIEWER: uuid::Uuid = uuid::Uuid::from_u128(0xa_c0);
 
 fn path(class: &str) -> String {
-    TAXONOMY.replace("{class}", class)
+    VOCABULARY.replace("{class}", class)
 }
 
 /// Read one taxonomy, answering the body and the tag together.
@@ -66,11 +66,11 @@ async fn read(harness: &Harness, class: &str) -> (serde_json::Value, String) {
 }
 
 fn values_path(class: &str) -> String {
-    TAXONOMY_VALUES.replace("{class}", class)
+    VOCABULARY_VALUES.replace("{class}", class)
 }
 
 fn value_path(class: &str, value: &str) -> String {
-    TAXONOMY_VALUE
+    VOCABULARY_VALUE
         .replace("{class}", class)
         .replace("{value}", value)
 }
@@ -444,6 +444,44 @@ async fn an_unaddressable_class_is_refused_naming_the_four() {
                 "{segment}: the refusal must name `{named}`: {detail}"
             );
         }
+    }
+}
+
+/// The two single-table vocabularies are refused **by name, with the segment
+/// that serves them** (**D-371**).
+///
+/// `gl_code` and `rounding_policy` are vocabularies of this same config plane,
+/// and D-371 put them one segment over rather than inside this template. That
+/// makes them the only tokens a caller can guess *because they understood the
+/// surface correctly*: "vocabularies live at `/config/vocabularies/{class}`" is
+/// true, and `gl_code` is a vocabulary. A bare "unknown class" would send that
+/// caller looking for a typo, so the refusal has to carry the address.
+///
+/// **The single production change that reddens it**: drop the two
+/// `/config/vocabularies/…` addresses from `taxonomies::parse_class`'s message
+/// and the assertions below fail while every other case in this file still
+/// passes — which is the point, since nothing else reads that sentence.
+#[tokio::test]
+async fn the_single_table_vocabularies_are_refused_with_the_segment_that_serves_them() {
+    let harness = Harness::new().await;
+    // `gl-codes` itself is deliberately absent: that spelling is the literal
+    // segment `matchit` gives priority to, so it reaches its own door and never
+    // this template. Only the *class-token* spellings arrive here.
+    for (segment, address) in [
+        ("gl_code", "/config/vocabularies/gl-codes"),
+        ("glCode", "/config/vocabularies/gl-codes"),
+        ("rounding_policy", "/config/vocabularies/rounding-policies"),
+    ] {
+        let response = harness
+            .allowed_as(ADMIN)
+            .send(request("GET", &path(segment), None))
+            .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{segment}");
+        let detail = body_json(response).await.to_string();
+        assert!(
+            detail.contains(address),
+            "{segment}: the refusal must point at `{address}`: {detail}"
+        );
     }
 }
 

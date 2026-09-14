@@ -46,7 +46,7 @@
 //! ([`crate::api::rest::tax_display_policy`],
 //! [`crate::api::rest::rounding_policy`]). It names **none** for the columns
 //! listed above: `/config/approval-threshold-policy` writes
-//! `pricing_approval_threshold` and `/config/taxonomies` writes the
+//! `pricing_approval_threshold` and `/config/vocabularies` writes the
 //! taxonomy tables, and those, with `/config/artifacts`, are every `/config`
 //! path the set declares. D-152 is explicit that this carrier is *provisional*
 //! for the four caps and the descriptor extension — the product owner confirmed

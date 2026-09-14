@@ -885,7 +885,7 @@ fn unit_changeover() -> OffsetDateTime {
 ///
 /// Direct through the entity, for `common::retire_fixture_region`'s reason: what
 /// these cases need is a region that declares **no default category**, and
-/// reaching it through `PUT /config/taxonomies/region` would make an unrelated
+/// reaching it through `PUT /config/vocabularies/region` would make an unrelated
 /// refusal there look like the failure under test. `tax_rate_present` is left
 /// `true` so that `inst-td-policy`'s *rate* arm cannot be what answers.
 async fn clear_region_tax_category(harness: &Harness, region: &str) {

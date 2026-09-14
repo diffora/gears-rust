@@ -101,7 +101,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::rounding_policy::ROUNDING_POLICY;
     use bss_pricing::api::rest::supersessions::PLAN_SUPERSESSIONS;
     use bss_pricing::api::rest::tax_display_policy::TAX_DISPLAY_POLICY;
-    use bss_pricing::api::rest::taxonomies::{TAXONOMY, TAXONOMY_VALUE, TAXONOMY_VALUES};
+    use bss_pricing::api::rest::taxonomies::{VOCABULARY, VOCABULARY_VALUE, VOCABULARY_VALUES};
     use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
     use bss_pricing::api::rest::windows::{
         PLAN_COVERAGE, PLAN_SELLABILITY, PRICE_WINDOW, PRICE_WINDOWS, PRICE_WINDOWS_LIST,
@@ -173,7 +173,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         // Slice 4's base-price preview (§2, `inst-pv-api`). A read, gated on
         // `plan × preview` — deliberately not `plan × read`.
         ("GET", PLAN_PREVIEW),
-        ("GET", TAXONOMY),
+        ("GET", VOCABULARY),
         // D-353: the whole-set `PUT` is gone — it could retire or re-label a value
         // without a second principal — and the per-value routes stand in its place.
         // The `POST` takes
@@ -182,12 +182,12 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         // `TAXONOMY_VALUE_EXISTS` — and is deliberately absent from
         // `idempotency_key_routes()` below, as `PLAN_SUPERSESSIONS` is. The `PATCH`
         // asserts the value's own tag and is in `if_match_routes()`.
-        ("POST", TAXONOMY_VALUES),
-        ("GET", TAXONOMY_VALUE),
-        ("PATCH", TAXONOMY_VALUE),
+        ("POST", VOCABULARY_VALUES),
+        ("GET", VOCABULARY_VALUE),
+        ("PATCH", VOCABULARY_VALUE),
         // Slice 9's own taxonomy (`inst-cg-taxonomy`), on its own route and its
         // own `customer_group` gate — see `api::rest::customer_groups`'s module
-        // doc for why this is not a fifth arm of `TAXONOMY` above.
+        // doc for why this is not a fifth arm of `VOCABULARY` above.
         ("GET", CUSTOMER_GROUP_TAXONOMY),
         ("PUT", CUSTOMER_GROUP_TAXONOMY),
         // Task 6: the membership routes, and the publish unit `dod-customer-group`'s
@@ -870,7 +870,7 @@ fn if_match_routes() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::rounding_policies::ROUNDING_POLICY_VALUE;
     use bss_pricing::api::rest::rounding_policy::ROUNDING_POLICY;
     use bss_pricing::api::rest::tax_display_policy::TAX_DISPLAY_POLICY;
-    use bss_pricing::api::rest::taxonomies::TAXONOMY_VALUE;
+    use bss_pricing::api::rest::taxonomies::VOCABULARY_VALUE;
     use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
     use bss_pricing::api::rest::windows::{PRICE_WINDOW, PRICE_WINDOWS};
     vec![
@@ -932,12 +932,12 @@ fn if_match_routes() -> Vec<(&'static str, &'static str)> {
         ("PUT", CUSTOMER_GROUP_TAXONOMY),
         // D-353: the per-value `PATCH` asserts the **value's own** tag (the set's
         // whole-set `PUT`, which asserted the set tag, is removed).
-        ("PATCH", TAXONOMY_VALUE),
+        ("PATCH", VOCABULARY_VALUE),
         ("PUT", TAX_DISPLAY_POLICY),
         ("PUT", ROUNDING_POLICY),
         // The two single-table vocabularies' per-value `PATCH`es, each
         // asserting the **value's own** tag. Their whole-set `PUT`s, which
-        // asserted the set tag, are removed — `TAXONOMY_VALUE`'s story one
+        // asserted the set tag, are removed — `VOCABULARY_VALUE`'s story one
         // vocabulary over.
         ("PATCH", ROUNDING_POLICY_VALUE),
         ("PATCH", GL_CODE_VALUE),
@@ -2009,7 +2009,7 @@ fn routes_asserting_no_precondition() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::retirement::PLAN_RETIRE;
     use bss_pricing::api::rest::rounding_policies::ROUNDING_POLICY_VALUES;
     use bss_pricing::api::rest::supersessions::PLAN_SUPERSESSIONS;
-    use bss_pricing::api::rest::taxonomies::TAXONOMY_VALUES;
+    use bss_pricing::api::rest::taxonomies::VOCABULARY_VALUES;
     use bss_pricing::api::rest::windows::PRICE_WINDOW;
     vec![
         // D-353: the per-value taxonomy `POST`. The value is the resource's natural
@@ -2017,7 +2017,7 @@ fn routes_asserting_no_precondition() -> Vec<(&'static str, &'static str)> {
         // the same body replays (200), other content is `409 TAXONOMY_VALUE_EXISTS`
         // — and asserting an `If-Match` would make a *create* assert the version of
         // a set it does not replace. `PLAN_SUPERSESSIONS`' reasoning, one value wide.
-        ("POST", TAXONOMY_VALUES),
+        ("POST", VOCABULARY_VALUES),
         // The two single-table vocabularies' declares, for the row above's
         // reason exactly: the value is the resource's natural key, the repeat
         // replays and other content is `409 TAXONOMY_VALUE_EXISTS`. Their

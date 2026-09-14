@@ -1,4 +1,4 @@
-//! `GET /bss-pricing/v1/config/gl-codes` and its per-value routes — the
+//! `GET /bss-pricing/v1/config/vocabularies/gl-codes` and its per-value routes — the
 //! general-ledger codes a tenant declares (D-356) — and what declaring them
 //! does to a plan's publish.
 //!
@@ -316,7 +316,7 @@ async fn a_declared_value_round_trips_and_defaults_to_active() {
             .headers()
             .get("location")
             .and_then(|v| v.to_str().ok()),
-        Some("/bss-pricing/v1/config/gl-codes/values/4010-TAX")
+        Some("/bss-pricing/v1/config/vocabularies/gl-codes/values/4010-TAX")
     );
     let value_tag = etag_of(&created).expect("the value's own tag");
     assert_eq!(

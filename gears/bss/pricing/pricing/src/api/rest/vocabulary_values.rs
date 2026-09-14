@@ -1,5 +1,5 @@
 //! The per-value door family the two single-table vocabularies share —
-//! `GET/POST/PATCH …/config/{rounding-policies|gl-codes}[/values[/{value}]]`.
+//! `GET/POST/PATCH …/config/vocabularies/{rounding-policies|gl-codes}[/values[/{value}]]`.
 //!
 //! # Why this module exists rather than a fifth and sixth `TaxonomyClass`
 //!
@@ -22,16 +22,37 @@
 //! [`VocabularyClass`] is the parallel enum, and this module is the door
 //! shape over it.
 //!
-//! # The routes stay where they are
+//! # The routes move under the family prefix and keep their own segment (**D-371**)
 //!
-//! Each vocabulary keeps its own path — `/config/rounding-policies`,
-//! `/config/gl-codes` — and gains `/values` and `/values/{value}` under it.
-//! They are **not** folded onto `/config/taxonomies/{class}`: that segment is
-//! the overlay scope token the plane stores (D-241), and giving it two tokens
-//! that no overlay may carry would make the segment mean two things. The
-//! registrations therefore live in each vocabulary's own module, where
+//! Each vocabulary keeps its own last segment —
+//! `/config/vocabularies/rounding-policies`, `/config/vocabularies/gl-codes` —
+//! and gains `/values` and `/values/{value}` under it. What changed in D-371 is
+//! the segment above them: `config/gl-codes` became
+//! `config/vocabularies/gl-codes`, so every vocabulary of this plane now answers
+//! under one word.
+//!
+//! They are still **not** folded into `/config/vocabularies/{class}`, and the
+//! reason is no longer only the one D-368 recorded. That one still holds and is
+//! about the **enum**: `TaxonomyClass::scope_class` is total into `ScopeClass`,
+//! so a fifth and sixth member would assert *an overlay may be scoped by this*
+//! and reach `pricing_price_overlay.scope_class`'s `CHECK`. But a door may
+//! dispatch one segment onto two enums — `parse_class` runs before anything else
+//! reads the segment — so that constraint alone does not decide the **path**.
+//! What decides the path is that the two doors are different **contracts**, at
+//! four measured points: `taxonomies`' `PATCH` declares a `202` arm with an
+//! approval unit (D-355) that these two can never produce (D-334, D-356); its
+//! request type carries `taxCategory` / `taxRatePresent`, which
+//! [`PatchVocabularyValueRequest`] refuses by **parse** rather than by hand; its
+//! response carries `references`, `editGoverned` and `pendingApprovals`, which
+//! would be permanently null here; and each vocabulary keeps its own
+//! `operation_id`. One template over six classes would have had to advertise all
+//! of that for two classes that cannot reach any of it.
+//!
+//! The registrations therefore live in each vocabulary's own module, where
 //! `OperationBuilder` sees the literal path DE0801 requires; only the
-//! handlers' bodies are here.
+//! handlers' bodies are here. `matchit` gives a static segment priority over a
+//! parameter one, so the literal doors are reached and `{class}` never sees
+//! `gl-codes`.
 //!
 //! # No approval unit on any edge
 //!
@@ -165,7 +186,7 @@ pub fn value_tag(class: VocabularyClass, entry: &TaxonomyEntry) -> String {
 #[must_use]
 pub fn value_location(class: VocabularyClass, entry: &TaxonomyEntry) -> String {
     format!(
-        "/bss-pricing/v1/config/{}/values/{}",
+        "/bss-pricing/v1/config/vocabularies/{}/values/{}",
         class.resource(),
         entry.value.as_str()
     )
@@ -349,7 +370,7 @@ fn stale_value(class: VocabularyClass, value: &ScopeValue) -> CanonicalError {
         "the If-Match tag no longer describes `{value}` in the {class} vocabulary: it changed \
          after you read it. Re-read GET {} and author against the tag it hands back",
         format_args!(
-            "/bss-pricing/v1/config/{}/values/{}",
+            "/bss-pricing/v1/config/vocabularies/{}/values/{}",
             class.resource(),
             value.as_str()
         )

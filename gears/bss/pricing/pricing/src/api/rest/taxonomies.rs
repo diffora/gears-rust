@@ -1,4 +1,4 @@
-//! `GET /bss-pricing/v1/config/taxonomies/{region|brand|partner|org_tier}` and its
+//! `GET /bss-pricing/v1/config/vocabularies/{region|brand|partner|org_tier}` and its
 //! per-value routes — the tenant's four scope-value universes (`design/04-currency-tax.md` §5, §6,
 //! `inst-tx-mutation`).
 //!
@@ -23,8 +23,8 @@
 //! half) it would be a fifth copy rather than a fifth enum member.
 //!
 //! The class is a **path segment** and not a query parameter because it selects
-//! the resource rather than filtering it: `/config/taxonomies/brand` is a
-//! different document from `/config/taxonomies/partner`, with its own `ETag` and
+//! the resource rather than filtering it: `/config/vocabularies/brand` is a
+//! different document from `/config/vocabularies/partner`, with its own `ETag` and
 //! its own concurrent editors. A query parameter would make them one resource
 //! with four representations, and one tag would then have to cover all four.
 //!
@@ -37,6 +37,31 @@
 //! from the `OpenAPI` document carries two names for one class. `orgTier` is
 //! refused rather than aliased, because two spellings that both route is the
 //! state in which neither is canonical.
+//!
+//! # `vocabularies` is the family prefix; this template is four of its members (**D-371**)
+//!
+//! The segment used to read `taxonomies`, and the word had to go: products
+//! spends `taxonomy` on slice 02's category-and-attribute plane and again on its
+//! error taxonomy, so the two gears could not converge on it. What replaced it is
+//! a **prefix**, not a wider template. `/config/vocabularies/gl-codes` and
+//! `/config/vocabularies/rounding-policies` are this plane's other two
+//! vocabularies and sit **beside** `{class}`, not inside it, because folding them
+//! in would have been a contract change and not a naming one — measured at four
+//! points: this route's `PATCH` declares a `202` arm those two can never produce
+//! (D-334, D-356 give them no approval unit on any edge), its request type
+//! carries `taxCategory` / `taxRatePresent` that they have no columns for and
+//! refuse **by parse**, its response carries `references`, `editGoverned` and
+//! `pendingApprovals` that would be permanently null for them, and each keeps its
+//! own `operation_id`. The template also cannot be made total in any case:
+//! `customerGroup`'s vocabulary is segregated onto `customer_group × read/write`
+//! and must not be reachable under `config`, so a `{class}` that named every
+//! vocabulary was never available to buy.
+//!
+//! `matchit` gives a static segment priority over a parameter one, so
+//! `/config/vocabularies/gl-codes` reaches its own door and never this template;
+//! this module's own `parse_class` refuses `gl_code` and `rounding_policy` **by
+//! name and with a pointer**, so the one caller the arrangement can mislead is
+//! told where to go.
 //!
 //! # One value at a time, and the `PUT` that is gone
 //!
@@ -127,11 +152,11 @@ const TAG: &str = "BSS Pricing Configuration";
 /// The literal is repeated in both `OperationBuilder` calls below because DE0801
 /// validates a **literal** argument and silently passes a `const` one; the two
 /// spellings are pinned together by `tests/module_test.rs`'s route census.
-pub const TAXONOMY: &str = "/bss-pricing/v1/config/taxonomies/{class}";
+pub const VOCABULARY: &str = "/bss-pricing/v1/config/vocabularies/{class}";
 /// One taxonomy's value collection: the per-value create.
-pub const TAXONOMY_VALUES: &str = "/bss-pricing/v1/config/taxonomies/{class}/values";
+pub const VOCABULARY_VALUES: &str = "/bss-pricing/v1/config/vocabularies/{class}/values";
 /// One declared value: read and edit.
-pub const TAXONOMY_VALUE: &str = "/bss-pricing/v1/config/taxonomies/{class}/values/{value}";
+pub const VOCABULARY_VALUE: &str = "/bss-pricing/v1/config/vocabularies/{class}/values/{value}";
 
 /// D-355: how many published things resolve through a value — the read-side twin
 /// of the retire guard's counts, so a UI can show that an edit is governed before
@@ -371,7 +396,7 @@ fn if_match_value_param() -> ParamSpec {
              digests this one value's code, state, label and (region) tax markers, so it moves \
              when this value changes and **not** when a sibling does: two admins editing two \
              different values do not refuse each other, which is the reason this route exists \
-             beside the whole-set `PUT`. The set's tag from `GET .../taxonomies/{class}` does \
+             beside the whole-set `PUT`. The set's tag from `GET .../vocabularies/{class}` does \
              not satisfy it. A tag that no longer describes the value is `409` `STALE_VERSION`; \
              an absent or malformed one is `400`."
                 .to_owned(),
@@ -383,7 +408,7 @@ fn if_match_value_param() -> ParamSpec {
 
 /// Build the Axum router for the taxonomy operations and register them.
 pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Router {
-    let router = OperationBuilder::get("/bss-pricing/v1/config/taxonomies/{class}")
+    let router = OperationBuilder::get("/bss-pricing/v1/config/vocabularies/{class}")
         .operation_id("bss_pricing.get_taxonomy")
         .summary("Read one of the tenant's four scope-value taxonomies")
         .description(
@@ -431,7 +456,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .error_503(openapi)
         .register(Router::new(), openapi);
 
-    let router = OperationBuilder::post("/bss-pricing/v1/config/taxonomies/{class}/values")
+    let router = OperationBuilder::post("/bss-pricing/v1/config/vocabularies/{class}/values")
         .operation_id("bss_pricing.declare_taxonomy_value")
         .summary("Declare one value in a scope-value taxonomy")
         .description(
@@ -469,14 +494,15 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .error_503(openapi)
         .register(router, openapi);
 
-    let router = OperationBuilder::get("/bss-pricing/v1/config/taxonomies/{class}/values/{value}")
-        .operation_id("bss_pricing.get_taxonomy_value")
-        .summary("Read one declared value of a scope-value taxonomy")
-        .description(
-            "One value - `active`, `deprecated` or `retired` - with **its own `ETag`** - the \
+    let router =
+        OperationBuilder::get("/bss-pricing/v1/config/vocabularies/{class}/values/{value}")
+            .operation_id("bss_pricing.get_taxonomy_value")
+            .summary("Read one declared value of a scope-value taxonomy")
+            .description(
+                "One value - `active`, `deprecated` or `retired` - with **its own `ETag`** - the \
                  tag the \
                  per-value `PATCH` demands, and the only place to obtain it (the set's tag from \
-                 `GET .../taxonomies/{class}` covers the whole list and does not satisfy the \
+                 `GET .../vocabularies/{class}` covers the whole list and does not satisfy the \
                  per-value precondition). A value the tenant has never declared is `404`. \
                  Carries `edit_governed` and `references` (D-355): whether a published price row \
                  or overlay scope names this value - and so whether editing it needs a second \
@@ -490,28 +516,28 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
                  This GET always returns a fresh body with `Cache-Control: private, no-store`; \
                  it does not evaluate `If-None-Match` or return `304`. The tag remains the \
                  `PATCH` precondition. Gates on `config` x `read`.",
-        )
-        .tag(TAG)
-        .authenticated()
-        .no_license_required()
-        .param(class_param())
-        .param(value_param())
-        .handler(get_taxonomy_value)
-        .json_response_with_schema::<TaxonomyValueView>(
-            openapi,
-            StatusCode::OK,
-            "The declared value.",
-        )
-        .error_400(openapi)
-        .error_401(openapi)
-        .error_403(openapi)
-        .error_404(openapi)
-        .error_500(openapi)
-        .error_503(openapi)
-        .register(router, openapi);
+            )
+            .tag(TAG)
+            .authenticated()
+            .no_license_required()
+            .param(class_param())
+            .param(value_param())
+            .handler(get_taxonomy_value)
+            .json_response_with_schema::<TaxonomyValueView>(
+                openapi,
+                StatusCode::OK,
+                "The declared value.",
+            )
+            .error_400(openapi)
+            .error_401(openapi)
+            .error_403(openapi)
+            .error_404(openapi)
+            .error_500(openapi)
+            .error_503(openapi)
+            .register(router, openapi);
 
     let router =
-        OperationBuilder::patch("/bss-pricing/v1/config/taxonomies/{class}/values/{value}")
+        OperationBuilder::patch("/bss-pricing/v1/config/vocabularies/{class}/values/{value}")
             .operation_id("bss_pricing.patch_taxonomy_value")
             .summary("Edit one declared value of a scope-value taxonomy")
             .description(
@@ -575,7 +601,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         ))
 }
 
-/// `GET /config/taxonomies/{class}`.
+/// `GET /config/vocabularies/{class}`.
 ///
 /// Answers a [`Response`] rather than a [`Json`] because it carries the set's
 /// Authored-content tag only; derived data is always read afresh.
@@ -617,7 +643,7 @@ async fn get_taxonomy(
     )))
 }
 
-/// `GET /config/taxonomies/{class}/values/{value}`.
+/// `GET /config/vocabularies/{class}/values/{value}`.
 async fn get_taxonomy_value(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
@@ -662,7 +688,7 @@ async fn get_taxonomy_value(
     )))
 }
 
-/// `POST /config/taxonomies/{class}/values`.
+/// `POST /config/vocabularies/{class}/values`.
 async fn post_taxonomy_value(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
@@ -703,7 +729,7 @@ async fn post_taxonomy_value(
                  so declare it once and edit it with PATCH {}",
                 existing.value,
                 existing.state,
-                TAXONOMY_VALUE
+                VOCABULARY_VALUE
                     .replace("{class}", class.path_segment())
                     .replace("{value}", existing.value.as_str())
             ),
@@ -711,7 +737,7 @@ async fn post_taxonomy_value(
     }
 }
 
-/// `PATCH /config/taxonomies/{class}/values/{value}` — the governed door (D-353).
+/// `PATCH /config/vocabularies/{class}/values/{value}` — the governed door (D-353).
 ///
 /// `customer_groups::move_membership_set`'s two-arm shape, on a subject with no
 /// draft table. Governed only while a published price row or overlay scope names
@@ -758,7 +784,7 @@ async fn patch_taxonomy_value(
         return Err(CanonicalError::from(DomainError::StaleVersion(format!(
             "the If-Match tag no longer describes `{value}` in the {class} taxonomy: it changed \
              after you read it. Re-read GET {} and author against the tag it hands back",
-            TAXONOMY_VALUE
+            VOCABULARY_VALUE
                 .replace("{class}", class.path_segment())
                 .replace("{value}", value.as_str())
         ))));
@@ -1043,7 +1069,7 @@ fn render_value(
     }
     let body = Json(view);
     if status == StatusCode::CREATED {
-        let location = TAXONOMY_VALUE
+        let location = VOCABULARY_VALUE
             .replace("{class}", class.path_segment())
             .replace("{value}", entry.value.as_str());
         return (status, [(ETAG, tag), (LOCATION, location)], body).into_response();
@@ -1103,20 +1129,41 @@ pub(crate) fn view_of(entry: &TaxonomyEntry) -> TaxonomyValueView {
     }
 }
 
-/// Resolve the path segment, refusing the two classes that are not addressable.
+/// Resolve the path segment, refusing every token this template does not carry.
 ///
-/// The refusal names them rather than answering a bare 404, because `global` and
-/// `customerGroup` are real scope classes an operator has met in the overlay
-/// surface — being told the segment is unknown would send them looking for a typo
-/// in a word they spelled correctly.
+/// The refusal names them rather than answering a bare 404, because each is a
+/// real thing the operator has met somewhere in this API — being told the
+/// segment is unknown would send them looking for a typo in a word they spelled
+/// correctly. Three populations, and they are refused for three different
+/// reasons:
+///
+/// - `gl_code` and `rounding_policy` **are** vocabularies of this plane, and
+///   after D-371 they are reachable one segment over, at
+///   `/config/vocabularies/gl-codes` and `/config/vocabularies/rounding-policies`.
+///   They are not `{class}` values because their door is a different contract,
+///   not a different universe: no `202` arm on any edge (D-334, D-356), no tax
+///   markers in the request type, and no `references` / `editGoverned` /
+///   `pendingApprovals` in the response. The refusal **points at them** rather
+///   than saying "unknown", because an operator who reads *"vocabularies live at
+///   `/config/vocabularies/{class}`"* and tries `gl_code` has understood the
+///   surface correctly and guessed the spelling wrong.
+/// - `global` is a scope class with no value universe at all — the classless
+///   scope carries no value for a vocabulary to declare.
+/// - `customerGroup`'s vocabulary is deliberately **not** on this plane: it
+///   lives at `/bss-pricing/v1/customer-groups/taxonomy` under `customer_group ×
+///   read/write`, because per-payer membership is more sensitive than plan
+///   authoring (`design/05-governance.md`'s endpoint map, `authz.rs`).
 fn parse_class(segment: &str) -> Result<TaxonomyClass, CanonicalError> {
     TaxonomyClass::parse_segment(segment).ok_or_else(|| {
         CanonicalError::from(DomainError::InvalidRequest(format!(
-            "unknown taxonomy `{segment}`: the addressable universes are region, brand, partner \
-             and org_tier — each spelled as the class's own scope token (D-241; the camelCase \
-             `orgTier` this route used to answer to is refused, not aliased). `global` has no \
-             value universe — the classless scope carries no value — and `customerGroup`'s \
-             taxonomy belongs to the customer-group membership plane and does not exist yet"
+            "unknown vocabulary class `{segment}`: the classes this template carries are region, \
+             brand, partner and org_tier — each spelled as the class's own scope token (D-241; \
+             the camelCase `orgTier` this route used to answer to is refused, not aliased). The \
+             tenant's other two config vocabularies are one segment over, at \
+             `/config/vocabularies/gl-codes` and `/config/vocabularies/rounding-policies`, \
+             because their door opens no approval unit and carries no tax markers (D-371). \
+             `global` has no value universe — the classless scope carries no value — and \
+             `customerGroup`'s vocabulary belongs to the customer-group membership plane"
         )))
     })
 }

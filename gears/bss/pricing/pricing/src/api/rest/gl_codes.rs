@@ -1,7 +1,7 @@
-//! `GET /bss-pricing/v1/config/gl-codes` and its per-value routes — the
+//! `GET /bss-pricing/v1/config/vocabularies/gl-codes` and its per-value routes — the
 //! general-ledger codes a tenant declares (D-356).
 //!
-//! # Why this is not `/config/taxonomies/{class}`
+//! # Why this is not `/config/vocabularies/{class}`
 //!
 //! `rounding_policies`' reason, one vocabulary over:
 //! [`TaxonomyClass::scope_class`](crate::domain::taxonomy::TaxonomyClass::scope_class)
@@ -9,6 +9,17 @@
 //! so a fifth class would declare
 //! that an overlay may be scoped by GL code — a claim that is false and that
 //! would reach the `pricing_price_overlay.scope_class` `CHECK`.
+//!
+//! That argument is about the **enum**, and D-371 measured that it does not by
+//! itself decide the **path** — a door may parse one segment onto two enums.
+//! What decides the path is the contract: this `PATCH` has no `202` arm and can
+//! never have one (D-356), no tax markers in its request type, and no
+//! `references` / `editGoverned` / `pendingApprovals` in its response, so one
+//! template over six classes would advertise for this code a governance surface
+//! it does not have. The route moved under the `vocabularies` prefix in D-371
+//! and kept its own segment; see
+//! [`vocabulary_values`](crate::api::rest::vocabulary_values) for the full
+//! measurement.
 //!
 //! # What declaring a vocabulary does
 //!
@@ -86,7 +97,7 @@ const TAG: &str = "BSS Pricing Configuration";
 ///
 /// The literal is repeated in both `OperationBuilder` calls because DE0801
 /// validates a **literal** argument and silently passes a `const` one.
-pub const GL_CODES: &str = "/bss-pricing/v1/config/gl-codes";
+pub const GL_CODES: &str = "/bss-pricing/v1/config/vocabularies/gl-codes";
 
 /// One declared GL code.
 #[derive(Debug, Clone)]
@@ -124,13 +135,13 @@ pub struct GlCodesView {
 }
 
 /// One declared value's collection — the per-value create.
-pub const GL_CODE_VALUES: &str = "/bss-pricing/v1/config/gl-codes/values";
+pub const GL_CODE_VALUES: &str = "/bss-pricing/v1/config/vocabularies/gl-codes/values";
 /// One declared code: read and edit.
-pub const GL_CODE_VALUE: &str = "/bss-pricing/v1/config/gl-codes/values/{value}";
+pub const GL_CODE_VALUE: &str = "/bss-pricing/v1/config/vocabularies/gl-codes/values/{value}";
 
 /// Build the Axum router for the two operations and register them.
 pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Router {
-    let router = OperationBuilder::get("/bss-pricing/v1/config/gl-codes")
+    let router = OperationBuilder::get("/bss-pricing/v1/config/vocabularies/gl-codes")
         .operation_id("bss_pricing.get_gl_codes")
         .summary("Read the tenant's declared GL codes")
         .description(
@@ -165,7 +176,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .error_503(openapi)
         .register(Router::new(), openapi);
 
-    let router = OperationBuilder::post("/bss-pricing/v1/config/gl-codes/values")
+    let router = OperationBuilder::post("/bss-pricing/v1/config/vocabularies/gl-codes/values")
         .operation_id("bss_pricing.declare_gl_code")
         .summary("Declare one GL code")
         .description(
@@ -203,14 +214,14 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .error_503(openapi)
         .register(router, openapi);
 
-    let router = OperationBuilder::get("/bss-pricing/v1/config/gl-codes/values/{value}")
+    let router = OperationBuilder::get("/bss-pricing/v1/config/vocabularies/gl-codes/values/{value}")
         .operation_id("bss_pricing.get_gl_code")
         .summary("Read one declared GL code")
         .description(
             "One code, `active`, `deprecated` or `retired`, with **its own `ETag`** - the tag \
              the per-value \
              `PATCH` demands, and the only place to obtain it (the set's tag from `GET \
-             .../config/gl-codes` covers the whole list and does not satisfy the per-value \
+             .../config/vocabularies/gl-codes` covers the whole list and does not satisfy the per-value \
              precondition). A code the tenant has never declared is `404`. This GET always \
              returns a fresh body with `Cache-Control: private, no-store`; it does not evaluate \
              `If-None-Match` or return `304`. Gates on `config` x `read`.",
@@ -229,11 +240,12 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .error_503(openapi)
         .register(router, openapi);
 
-    let router = OperationBuilder::patch("/bss-pricing/v1/config/gl-codes/values/{value}")
-        .operation_id("bss_pricing.patch_gl_code")
-        .summary("Edit one declared GL code")
-        .description(
-            "Changes only the fields the body names: `displayName` and `state`. **Retirement \
+    let router =
+        OperationBuilder::patch("/bss-pricing/v1/config/vocabularies/gl-codes/values/{value}")
+            .operation_id("bss_pricing.patch_gl_code")
+            .summary("Edit one declared GL code")
+            .description(
+                "Changes only the fields the body names: `displayName` and `state`. **Retirement \
              is guarded**, at the door and again inside the write transaction: a code a \
              published plan revision's descriptor set still names is `409` \
              `TAXONOMY_VALUE_IN_USE` and nothing is written - re-point them first. `retired -> \
@@ -242,27 +254,27 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              .../values/{value}`; the set's tag does not satisfy it. The commit is one audited \
              config mutation naming the code and its state before and after. This vocabulary \
              opens no approval unit on any edge (D-356). Gates on `config` x `write`.",
-        )
-        .tag(TAG)
-        .authenticated()
-        .no_license_required()
-        .param(vocabulary_values::value_param())
-        .param(vocabulary_values::if_match_value_param())
-        .json_request::<PatchVocabularyValueRequest>(openapi, "The fields to change.")
-        .handler(patch_value)
-        .json_response_with_schema::<GlCodeValueView>(
-            openapi,
-            StatusCode::OK,
-            "The code as it now stands, with its `ETag`.",
-        )
-        .error_400(openapi)
-        .error_401(openapi)
-        .error_403(openapi)
-        .error_404(openapi)
-        .error_409(openapi)
-        .error_500(openapi)
-        .error_503(openapi)
-        .register(router, openapi);
+            )
+            .tag(TAG)
+            .authenticated()
+            .no_license_required()
+            .param(vocabulary_values::value_param())
+            .param(vocabulary_values::if_match_value_param())
+            .json_request::<PatchVocabularyValueRequest>(openapi, "The fields to change.")
+            .handler(patch_value)
+            .json_response_with_schema::<GlCodeValueView>(
+                openapi,
+                StatusCode::OK,
+                "The code as it now stands, with its `ETag`.",
+            )
+            .error_400(openapi)
+            .error_401(openapi)
+            .error_403(openapi)
+            .error_404(openapi)
+            .error_409(openapi)
+            .error_500(openapi)
+            .error_503(openapi)
+            .register(router, openapi);
 
     router
         .layer(Extension(state))
@@ -287,7 +299,7 @@ async fn get_values(
     Ok(render(&held, Some(&headers)))
 }
 
-/// `POST /config/gl-codes/values`.
+/// `POST /config/vocabularies/gl-codes/values`.
 async fn post_value(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
@@ -312,7 +324,7 @@ async fn post_value(
     Ok(render_value(&entry, status))
 }
 
-/// `GET /config/gl-codes/values/{value}`.
+/// `GET /config/vocabularies/gl-codes/values/{value}`.
 async fn get_value(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
@@ -338,7 +350,7 @@ async fn get_value(
     )))
 }
 
-/// `PATCH /config/gl-codes/values/{value}`.
+/// `PATCH /config/vocabularies/gl-codes/values/{value}`.
 async fn patch_value(
     Extension(state): Extension<Arc<AuthoringState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,

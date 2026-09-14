@@ -4,7 +4,7 @@
 //!
 //! # Why this is not a fifth arm of `api::rest::taxonomies`
 //!
-//! `api::rest::taxonomies` mounts `GET/PUT /config/taxonomies/{class}` over
+//! `api::rest::taxonomies` mounts `GET/PUT /config/vocabularies/{class}` over
 //! `TaxonomyClass`'s four members and gates on `config × read/write`. A first
 //! attempt at this surface was briefed as a fifth arm of that enum on that same
 //! route, and it was the wrong shape: `design/09-price-overlays.md` §5 gives the
@@ -97,7 +97,7 @@ const TAG: &str = "BSS Pricing Customer Groups";
 /// The literal is repeated in both `OperationBuilder` calls below because
 /// DE0801 validates a **literal** argument and silently passes a `const` one;
 /// the two spellings are pinned together by `tests/module_test.rs`'s route
-/// census, exactly as `taxonomies::TAXONOMY`'s is.
+/// census, exactly as `taxonomies::VOCABULARY`'s is.
 pub const CUSTOMER_GROUP_TAXONOMY: &str = "/bss-pricing/v1/customer-groups/taxonomy";
 
 /// The membership collection of one group (`design/09-price-overlays.md` §5,
@@ -249,7 +249,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
              re-activate. A tenant that has declared nothing is answered `200` with an empty list \
              - that is a state, not an absent resource. **The response carries the `ETag` the \
              `PUT` demands**, and this is the only place to obtain one. This is a **separate** \
-             resource from `GET /config/taxonomies/{class}` and gates on `customer_group` x \
+             resource from `GET /config/vocabularies/{class}` and gates on `customer_group` x \
              `read`, never `config` x `read` - per-payer commercial data is more sensitive than \
              plan/config authoring (`05-governance.md`).",
         )
@@ -278,7 +278,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         // (403/503) and `repo_failure` over a plain `SELECT`, whose 400-producing
         // arms are all state-machine edges a list read cannot reach. Its four config
         // `GET` peers declare none either. The one config `GET` that legitimately
-        // declares a 400 is `GET /config/taxonomies/{class}`, which earns it by
+        // declares a 400 is `GET /config/vocabularies/{class}`, which earns it by
         // parsing a path segment.
         .error_401(openapi)
         .error_403(openapi)

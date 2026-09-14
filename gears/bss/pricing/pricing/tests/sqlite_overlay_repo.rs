@@ -51,7 +51,7 @@ const LINE_B: Uuid = Uuid::from_u128(0xCCCC_0002);
 /// Written through the entity rather than the repository, and the reason has
 /// changed. The sentence that stood here said Slice 4's **authoring** surface
 /// "is not built"; it is, since that slice merged — `TaxonomyRepo` and
-/// `PUT /config/taxonomies/{class}`. This case still seeds through the entity
+/// `PUT /config/vocabularies/{class}`. This case still seeds through the entity
 /// deliberately: what it exercises is the overlay repository's *read* of the
 /// taxonomy, and seeding through the authoring surface would make it depend on
 /// that surface's own rules — the retire guard, the `If-Match` — none of which
