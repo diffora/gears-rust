@@ -176,7 +176,19 @@ pub enum IncrementRequestError {
 
 impl From<CanonicalError> for IncrementRequestError {
     fn from(err: CanonicalError) -> Self {
-        let detail = err.to_string();
+        // **`detail()`, not `to_string()`** (dylint `DE1302`). `Display` on a
+        // `CanonicalError` renders the whole envelope — category, code and
+        // detail — so a projection built from it hands the consumer a
+        // re-rendered error rather than the sentence the service wrote, and
+        // the two drift apart the day the envelope's rendering changes. The
+        // accessor is the structured field, which is what
+        // `account-management-sdk`'s own `From<CanonicalError>` takes.
+        //
+        // The lint is not cosmetic here: with `to_string()` this file is the
+        // one DE1302 in the tree that is not under an `allow`, and
+        // `make dylint` **aborts on it before it reaches any other crate** —
+        // so a gear-wide gate was reporting on this gear alone.
+        let detail = err.detail().to_owned();
         match &err {
             CanonicalError::Unimplemented { .. } => Self::NotWired(detail),
             CanonicalError::ServiceUnavailable { .. } => Self::Unreachable(detail),
