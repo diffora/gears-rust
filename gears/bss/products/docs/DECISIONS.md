@@ -1569,6 +1569,73 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-174 — The member tag: the by-code read hands one out, the two per-member doors assert it, and neither the list nor the add takes one
+
+- **Date**: 2026-09-14 (the vocabulary-convergence plan, Phase R group D task 4; pays **P-D-170**'s
+  second *Owed* item, in the narrow form the surface admits)
+- **What this decides.** `GET /bss-products/v1/recognized-sets/{setKind}/members/{memberCode}`
+  answers an **`ETag`**, and the transitions and label doors **require** it back as `If-Match`,
+  compared against the live row **inside their own transaction**. A stale tag is
+  `STALE_LIVE_OP`. The list read answers no tag and the add door demands none, each for a stated
+  reason below.
+- **The tag is a digest, because a member has no revision.** `01`'s heads tag their
+  `internal_revision` and `domain::concurrency::InternalRevision::from_etag` parses one back. A
+  recognized-set member is a **live row** — that is `domain::live_op`'s own reason for pinning a
+  *state* rather than a revision — so the tag is the `SHA-256` of the member's canonical
+  rendering, the gear's own rendering primitive (**P-D-34**), which makes two equal members tag
+  equally on both engines. `seeded_by` is inside the rendering as well as the three wire fields:
+  it decides whether a removal is admissible (`inst-rs-seeded`), so a caller who read a member
+  before the platform baseline adopted it has not read the member the write acts on.
+- **The syntactic rules are one function, not two.** The wildcard, a weak validator, a
+  comma-separated list and an unquoted body are refused identically for a revision tag and a
+  member tag, so they were lifted into `domain::concurrency::strong_tag_body` and
+  `InternalRevision::from_etag` now reads them from there. Written twice they would be two
+  contracts that can drift, and the one that drifts is the one nobody re-reads. What stays with
+  each caller is only what the quoted body must look like — a decimal there, 64 lowercase hex
+  digits here.
+- **`STALE_LIVE_OP`, not a sixteenth code.** `design/02` §3.5 draws this line already: a live
+  entity's staleness has its own code *because* a live row has no revision to be stale at, which is
+  what `STALE_REVISION` names. The roster is closed and pinned in two counters
+  (`ErrorCode::ALL`, `DOMAIN_ERROR_VARIANTS`); minting a third staleness code for a stronger
+  operand on the same subject would say the world moved in a new voice for no new reason.
+- **`expected_state` is kept, and this is where this entry departs from the plan that asked for
+  it.** The plan's step said the tag *replaces* `expected_state`. It cannot, and the reason is not
+  compatibility:
+  - `design/02` §3.4 `inst-gl-envelope` says a `GovernedLiveOp` pins *"the target's **expected
+    current state**"* precisely because a live entity has no revision. That is **02's**
+    instruction, and this slice does not amend it.
+  - After **P-D-173** the transition's `expected_state` is **part of what two principals agreed
+    to**: it is in the approval unit's own content. A tag asserted at apply time is the caller's
+    read-currency at that instant and cannot carry what an approver signed an hour earlier.
+  The two answer different obligations and both are checked, tag first — it pins the whole row
+  where the state pins one column, so a caller stale in the label alone is told so rather than
+  writing over it.
+- **The list answers no tag, which is P-D-170's rule kept rather than dropped.** That entry
+  refused an `ETag` because *"a tag nobody can send back is a header with no reader"*. No door on
+  this surface takes a set-level precondition, so a list tag would be exactly that header. The
+  by-code tag has a reader — two of them — which is the condition this entry satisfies and the
+  list still does not.
+- **The add door demands no tag, and that is a decision.** A create names no member to have read,
+  so the only tag a creating caller could send is the wildcard, which this gear refuses everywhere
+  — `domain::concurrency`'s own doc records products taking the opposite position from
+  `gears/file-storage` on it deliberately. The add's concurrency guard is the `DUPLICATE_CODE`
+  refusal under a primary key that never frees (`inst-rs-shape`), which is stronger than a tag and
+  already probed.
+- **Where the comparison runs.** Under the write, inside the transaction, which is the placement
+  `api::rest::preconditions`' own module doc gives for the entity heads: *"a second, weaker
+  comparison ahead of that one would buy nothing and could disagree with it"*. The label door had
+  **no** staleness pin of any kind before this entry, so two operators renaming one member raced
+  and the later write won silently.
+- **Owed**: `vhp-core`'s e2e is red until it sends the header —
+  `~/Projects/vhp/vhp-core/tests/e2e/tests/lib/products.py` `member_transition` (line 529) and
+  `member_relabel` (line 533) must read the `ETag` off `GET .../members/{memberCode}` and pass it,
+  the way `product_act` already threads `if_match`; `add_set_member` (line 521) needs no change.
+  That file is another repository's and is named here rather than edited. The tag is not yet on
+  any SDK type, for the reason P-D-170 gave about the member type itself: it waits on a consumer
+  asking for it.
+- **Propagated**: `design/03-sku-classification.md` §3.1 (`inst-rs-read` and `inst-rs-shape`),
+  `design/05-governance.md` §4 (the live-op staleness operand).
+
 #### P-D-173 — The set doors open the approval unit they need: `202` on the first call, the door's ordinary answer on the approved re-send
 
 - **Date**: 2026-09-14 (the vocabulary-convergence plan, Phase R group D task 3)

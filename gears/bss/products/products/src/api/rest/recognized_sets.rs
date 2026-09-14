@@ -46,7 +46,24 @@
 //!
 //! The transition body carries the op's **expected current state**, and the
 //! write is pinned at it: a peer's flip between the caller's read and this
-//! statement answers `STALE_LIVE_OP`, never a silent absorb. The membership
+//! statement answers `STALE_LIVE_OP`, never a silent absorb.
+//!
+//! # And the two per-member doors pin the whole row (**P-D-174**)
+//!
+//! `GET …/members/{memberCode}` answers an `ETag` — the `SHA-256` of the
+//! member's canonical rendering, a live row having no revision to name — and
+//! the transitions and label doors **require** it back as `If-Match`,
+//! compared under the write inside their own transaction. It is the stronger
+//! pin: `expected_state` covers one column, and the label door had **no** pin
+//! at all, so two operators renaming one member raced and the later write won
+//! silently. Both are kept on the transitions door because they answer
+//! different obligations — the tag is the caller's read-currency, and
+//! `expected_state` is what two principals agreed to in the approval unit,
+//! which cannot be re-derived at apply time. A stale tag is `STALE_LIVE_OP`:
+//! the code roster is closed and a live row's staleness has one voice. The
+//! **add** door takes no `If-Match` — a create names no member to have read —
+//! and the **list** read answers no `ETag`, for P-D-170's own reason that a
+//! tag nobody can assert is a header with no reader. The membership
 //! write and the set's event commit in **one transaction** (`inst-rs-shape`),
 //! so a consumer never observes a set the events do not explain.
 //!
@@ -340,6 +357,105 @@ async fn authorize_member_op(
         .await);
     }
     Ok(authorization)
+}
+
+/// The refusal a stale member tag earns (**P-D-174**).
+///
+/// **`STALE_LIVE_OP`, not a sixteenth code and not `01`'s
+/// `STALE_REVISION`.** `02` §3.5 draws the line this sits on: a live entity's
+/// staleness is its own code because a live row has no revision to be stale
+/// at, and `STALE_REVISION` names one. The roster is closed and pinned in two
+/// counters (`ErrorCode::ALL`, `DOMAIN_ERROR_VARIANTS`); minting a third
+/// staleness code for a stronger operand on the same subject would say the
+/// world moved in a new voice.
+fn stale_member_tag(kind: SetKind, member_code: &str) -> DomainError {
+    DomainError::StaleLiveOp(format!(
+        "the {} member `{member_code}` has changed since the `ETag` this call asserts; re-read \
+         `GET .../members/{member_code}` and send its tag",
+        kind.as_str()
+    ))
+}
+
+/// The entity tag one member's `GET` hands out and its two write doors assert
+/// (**P-D-174**).
+///
+/// # A digest, because a member has no revision
+///
+/// `01`'s heads tag their `internal_revision` and `domain::concurrency`
+/// parses the tag back into one. A recognized-set member is a **live row** —
+/// `domain::live_op`'s own words, the reason `GovernedLiveOp` pins a state
+/// rather than a revision — and has no counter to name. So the tag is the
+/// `SHA-256` of the member's canonical rendering, which is the gear's own
+/// rendering primitive (`inst-fd-canonical`, P-D-34) and is what makes two
+/// equal members tag equally on both engines. `seeded_by` is in the rendering
+/// as well as the three wire fields: it decides whether a removal is
+/// admissible (`inst-rs-seeded`), so a caller who read a member before it was
+/// adopted by the platform baseline has not read the member the write acts
+/// on.
+fn member_etag(member: &repo::RecognizedMember) -> String {
+    let rendering = canonical::canonical_rendering(
+        &serde_json::json!({
+            "member_code": member.member_code,
+            "display_label": member.display_label,
+            "state": member.state.as_str(),
+            "seeded_by": member.seeded_by,
+        }),
+        canonical::Absence::Omit,
+    );
+    let digest = canonical::content_digest(&rendering);
+    let mut hex = String::with_capacity(digest.len() * 2 + 2);
+    hex.push('"');
+    for byte in digest {
+        // Two lowercase hex digits per byte, built by hand rather than
+        // through `write!`: the formatter's `Result` on a `String` cannot
+        // fail, and discarding it is what `-D warnings` refuses.
+        hex.push(char::from_digit(u32::from(byte >> 4), 16).unwrap_or('0'));
+        hex.push(char::from_digit(u32::from(byte & 0x0f), 16).unwrap_or('0'));
+    }
+    hex.push('"');
+    hex
+}
+
+/// The member tag an `If-Match` on a per-member write door asserts
+/// (**P-D-174**).
+///
+/// The four syntactic refusals are `domain::concurrency::strong_tag_body`'s —
+/// one contract for every tagged subject in the gear — and what this adds is
+/// the body's own shape: 64 lowercase hex digits, because a tag this door
+/// cannot have minted names no member it could compare against.
+///
+/// # Errors
+///
+/// [`DomainError::Validation`] naming `If-Match` when the header is absent,
+/// is not valid UTF-8, or is not one strong tag quoting a `SHA-256` digest.
+fn member_if_match(headers: &axum::http::HeaderMap) -> Result<String, DomainError> {
+    let refuse = |detail: &str| {
+        let mut report = ValidationReport::new();
+        report.violate("VALIDATION", "If-Match", detail);
+        DomainError::Validation(report)
+    };
+    let Some(raw) = headers.get(axum::http::header::IF_MATCH) else {
+        return Err(refuse(
+            "If-Match is required on this verb: a member op asserts the member it was authored \
+             against, and an unconditional write would overwrite a concurrent editor's. Read the \
+             `ETag` off `GET .../members/{memberCode}` and send it back verbatim",
+        ));
+    };
+    let raw = raw
+        .to_str()
+        .map_err(|_| refuse("If-Match: the header value is not valid UTF-8"))?;
+    let body = crate::domain::concurrency::strong_tag_body(raw)?;
+    if body.len() == 64
+        && body
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Ok(format!("\"{body}\""));
+    }
+    Err(refuse(
+        "If-Match: a member's tag quotes the 64 lowercase hex digits of its canonical rendering's \
+         SHA-256; this is not one this gear could have minted",
+    ))
 }
 
 /// What the approval unit a member op rides looks like on the `202` arm
@@ -907,10 +1023,11 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
 
     // The reads first, because they are what a caller meets first: a set has
     // to be enumerable before a member can be chosen or judged. Both gate on
-    // the kind's `read` grant (P-D-170), and **neither answers an `ETag`** —
-    // no door on this surface accepts `If-Match`, staleness being pinned by
-    // the transition body's `expected_state`, so a tag would be a header with
-    // nobody to assert it. It arrives with the per-value `PATCH`, not before.
+    // the kind's `read` grant (P-D-170). **The by-code read answers an
+    // `ETag`** (P-D-174), which the two per-member write doors assert back as
+    // `If-Match`; **the list does not**, and that is P-D-170's own rule kept
+    // rather than dropped — no door takes a set-level precondition, so a list
+    // tag would be the header with nobody to assert it that entry refused.
     let router = OperationBuilder::get("/bss-products/v1/recognized-sets/{setKind}")
         .operation_id("bss_products.list_recognized_members")
         .summary("List a recognized set's members")
@@ -951,7 +1068,9 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     .summary("Read one member of a recognized set")
     .description(
         "Returns the member named by `memberCode`: its state, its `seededBy` provenance and, \
-         for the tier set, its display label. Gates on the kind's `read` grant. A member \
+         for the tier set, its display label, with the **`ETag`** its two per-member write \
+         doors assert back as `If-Match` (P-D-174) - the `SHA-256` of the member's canonical \
+         rendering, a live row having no revision to name. Gates on the kind's `read` grant. A member \
          outside the caller's authorized scope reads exactly like an absent one (`404`, no \
          existence leak) - the same discipline every other read on this gear keeps.",
     )
@@ -975,7 +1094,10 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .summary("Add a member to a recognized set")
         .description(
             "Adds an `active` member to the named set - `metering_unit` or `plan_tier` - and \
-             enqueues the set's event in the same transaction. **The door has two arms** (P-D-173): with no approval unit standing for this exact change it opens one, answers `202` naming it, and writes nothing; the identical request re-sent once that unit is approved answers below. A unit already open for a *different* change on the member is named in a `403 APPROVAL_REQUIRED` rather than superseded - `design/05` admits one open unit per subject. At `N = 0` the unit is born satisfied and the first call writes. \
+             enqueues the set's event in the same transaction. **No `If-Match`**: a create \
+             names no member to have read, and the wildcard is refused everywhere in this \
+             gear; the add's concurrency guard is the `DUPLICATE_CODE` refusal under the \
+             primary key, which is stronger than a tag (P-D-174). **The door has two arms** (P-D-173): with no approval unit standing for this exact change it opens one, answers `202` naming it, and writes nothing; the identical request re-sent once that unit is approved answers below. A unit already open for a *different* change on the member is named in a `403 APPROVAL_REQUIRED` rather than superseded - `design/05` admits one open unit per subject. At `N = 0` the unit is born satisfied and the first call writes. \
              The grant is chosen by `setKind` \
              (P-D-90): the tier set spends `plan_tier x write`, the unit set \
              `recognized_set x write`. A code the set already carries \
@@ -1020,8 +1142,13 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
          removed`, or the re-listing edges `deprecated -> active` and `removed -> active`. \
          **The door has two arms** (P-D-173): with no approval unit standing for this exact change it opens one, answers `202` naming it, and writes nothing; the identical request re-sent once that unit is approved answers below. A unit already open for a *different* change on the member is named in a `403 APPROVAL_REQUIRED` rather than superseded - `design/05` admits one open unit per subject. At `N = 0` the unit is born satisfied and the first call writes. \
          `active -> removed` is refused: de-listing deprecates first, so new declarations \
-         stop before the member can leave the set. The body pins the state the caller read \
-         (`expected_state`); a peer's flip in between is refused `STALE_LIVE_OP`. A removal \
+         stop before the member can leave the set. **`If-Match` is required** and asserts \
+         the member's own tag from `GET .../members/{memberCode}`; a stale one is \
+         `STALE_LIVE_OP`, the same code a stale `expected_state` earns, because a live row's \
+         staleness has one voice (P-D-174). The tag pins the whole row where `expected_state` \
+         pins one column, and both are kept: the state is what the approval unit was agreed \
+         against and cannot be re-derived at apply time. The body pins the state the caller \
+         read (`expected_state`); a peer's flip in between is refused `STALE_LIVE_OP`. A removal \
          is refused while any non-terminal published head still references the member \
          (`UNIT_DELIST_BLOCKED` / `PLAN_TIER_RETIRE_BLOCKED`, holders sampled), and never \
          touches a seeded \
@@ -1064,7 +1191,10 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     .summary("Change a recognized-set member's display label")
     .description(
         "Sets the member's `display_label` and nothing else - the rename a tier or unit \
-         admits. **The door has two arms** (P-D-173): with no approval unit standing for this exact change it opens one, answers `202` naming it, and writes nothing; the identical request re-sent once that unit is approved answers below. A unit already open for a *different* change on the member is named in a `403 APPROVAL_REQUIRED` rather than superseded - `design/05` admits one open unit per subject. At `N = 0` the unit is born satisfied and the first call writes. \
+         admits. **`If-Match` is required** and asserts the member's own tag from `GET \
+         .../members/{memberCode}` - this door had no staleness pin at all before P-D-174, so \
+         two operators renaming one member raced and the later write won silently; a stale \
+         tag is `STALE_LIVE_OP`. **The door has two arms** (P-D-173): with no approval unit standing for this exact change it opens one, answers `202` naming it, and writes nothing; the identical request re-sent once that unit is approved answers below. A unit already open for a *different* change on the member is named in a `403 APPROVAL_REQUIRED` rather than superseded - `design/05` admits one open unit per subject. At `N = 0` the unit is born satisfied and the first call writes. \
          The member's code is its identity and has no update path (the table's \
          trigger refuses one), so every SKU declaring the code is untouched. Rides \
          `GovernedLiveOp` under the stored approval host like the other two member ops, and \
@@ -1176,7 +1306,14 @@ async fn get_member(
                 .create()
         })?;
 
-    Ok(Json(RecognizedMemberView::from_member(kind, member)).into_response())
+    // The tag before the move: `from_member` consumes the record, and the
+    // header a caller sends back on the next verb has to be this read's.
+    let tag = member_etag(&member);
+    Ok((
+        [(axum::http::header::ETAG, tag)],
+        Json(RecognizedMemberView::from_member(kind, member)),
+    )
+        .into_response())
 }
 
 /// `POST /recognized-sets/{setKind}/members/{memberCode}/label`.
@@ -1187,10 +1324,12 @@ async fn relabel_member(
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
     Path((set_kind, member_code)): Path<(String, String)>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<MemberRelabelRequest>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let kind = parse_kind(&set_kind)?;
+    let asserted = member_if_match(&headers).map_err(CanonicalError::from)?;
     let tenant_id = ctx.subject_tenant_id();
     let now = canonical::write_instant(OffsetDateTime::now_utc());
     let actor_ref =
@@ -1230,6 +1369,7 @@ async fn relabel_member(
     let code_tx = member_code.clone();
     let label = body.display_label.clone();
     let authorization_tx = authorization.clone();
+    let asserted_tx = asserted.clone();
     let result = state
         .db
         .db()
@@ -1242,8 +1382,24 @@ async fn relabel_member(
                 let member_code = code_tx.clone();
                 let display_label = label.clone();
                 let authorization = authorization_tx.clone();
+                let asserted = asserted_tx.clone();
                 Box::pin(async move {
                     settle_member_op(tx, &scope, tenant_id, &authorization, now).await?;
+                    // The label door had **no** staleness pin at all before
+                    // P-D-174 — `expected_state` is the transitions body's —
+                    // so two operators renaming one member raced and the
+                    // later write won silently. The tag is read under the
+                    // write, inside the transaction.
+                    let Some(held) =
+                        repo::recognized_member(tx, &scope, tenant_id, kind, &member_code)
+                            .await
+                            .map_err(TxError::Repo)?
+                    else {
+                        return Err(TxError::NotFound);
+                    };
+                    if member_etag(&held) != asserted {
+                        return Err(TxError::Refused(stale_member_tag(kind, &member_code)));
+                    }
                     let relabelled = repo::relabel_recognized_member(
                         tx,
                         &scope,
@@ -1467,10 +1623,12 @@ async fn transition_member(
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
     Path((set_kind, member_code)): Path<(String, String)>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<MemberTransitionRequest>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let kind = parse_kind(&set_kind)?;
+    let asserted = member_if_match(&headers).map_err(CanonicalError::from)?;
     let tenant_id = ctx.subject_tenant_id();
     let now = canonical::write_instant(OffsetDateTime::now_utc());
     let actor_ref =
@@ -1531,6 +1689,7 @@ async fn transition_member(
     let scope_tx = scope.clone();
     let code_tx = member_code.clone();
     let authorization_tx = authorization.clone();
+    let asserted_tx = asserted.clone();
     let result = state
         .db
         .db()
@@ -1542,6 +1701,7 @@ async fn transition_member(
                 let scope = scope_tx.clone();
                 let member_code = code_tx.clone();
                 let authorization = authorization_tx.clone();
+                let asserted = asserted_tx.clone();
                 Box::pin(async move {
                     settle_member_op(tx, &scope, tenant_id, &authorization, now).await?;
                     let Some(stored) =
@@ -1551,6 +1711,16 @@ async fn transition_member(
                     else {
                         return Err(TxError::NotFound);
                     };
+
+                    // **The tag first** (P-D-174): it pins the whole row,
+                    // where `expected_state` pins one column, so a caller
+                    // whose read is stale in the label alone is told so here
+                    // rather than writing over it. Inside the transaction
+                    // that would otherwise race it, which is the placement
+                    // `preconditions`' own doc gives for the entity heads.
+                    if member_etag(&stored) != asserted {
+                        return Err(TxError::Refused(stale_member_tag(kind, &member_code)));
+                    }
 
                     // The live-op staleness pin, then the machine's own edge —
                     // in that order, so a stale caller is told the world moved

@@ -119,38 +119,7 @@ impl InternalRevision {
     /// draws no second bare-400 class, so both are refused the same way and
     /// differ only in their message.
     pub fn from_etag(raw: &str) -> Result<Self, DomainError> {
-        let tag = raw.trim();
-
-        if tag == "*" {
-            return Err(refuse_tag(
-                raw,
-                "the wildcard matches whichever revision is current and would let this write \
-                 overwrite a concurrent editor's; pin the `ETag` a `GET` on this head returned",
-            ));
-        }
-        if tag.starts_with("W/") {
-            return Err(refuse_tag(
-                raw,
-                "a weak validator (`W/\"...\"`) cannot decide whether this write is safe; a \
-                 strong entity tag is required",
-            ));
-        }
-        if tag.contains(',') {
-            return Err(refuse_tag(
-                raw,
-                "one entity tag is expected; a comma-separated list does not say which revision \
-                 was read",
-            ));
-        }
-        let Some(digits) = tag
-            .strip_prefix('"')
-            .and_then(|inner| inner.strip_suffix('"'))
-        else {
-            return Err(refuse_tag(
-                raw,
-                "a strong entity tag is wrapped in double quotes",
-            ));
-        };
+        let digits = strong_tag_body(raw)?;
         if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
             return Err(refuse_tag(
                 raw,
@@ -162,6 +131,52 @@ impl InternalRevision {
             .map(Self)
             .map_err(|_| refuse_tag(raw, "the revision is past the representable range"))
     }
+}
+
+/// The body of one **strong** entity tag, with every shape that is not one
+/// refused — the syntax half of `If-Match`, shared by every tagged subject.
+///
+/// # Why this is a function and not a rule each parser repeats
+///
+/// [`InternalRevision::from_etag`] and
+/// `api::rest::recognized_sets::member_if_match` (**P-D-174**) assert the
+/// same four refusals — the wildcard, a weak validator, a list, an unquoted
+/// body — over two different tag bodies: a decimal revision and a content
+/// digest. Written twice they are two contracts that can drift, and the one
+/// that drifts is the one nobody re-reads. What differs between the two is
+/// only what the quoted body has to look like, which stays with each caller.
+///
+/// # Errors
+///
+/// [`DomainError::Validation`] naming the `If-Match` subject for the
+/// wildcard, a weak validator, a comma-separated list, and a body not wrapped
+/// in double quotes.
+pub fn strong_tag_body(raw: &str) -> Result<&str, DomainError> {
+    let tag = raw.trim();
+    if tag == "*" {
+        return Err(refuse_tag(
+            raw,
+            "the wildcard matches whichever revision is current and would let this write \
+             overwrite a concurrent editor's; pin the `ETag` a `GET` on this head returned",
+        ));
+    }
+    if tag.starts_with("W/") {
+        return Err(refuse_tag(
+            raw,
+            "a weak validator (`W/\"...\"`) cannot decide whether this write is safe; a strong \
+             entity tag is required",
+        ));
+    }
+    if tag.contains(',') {
+        return Err(refuse_tag(
+            raw,
+            "one entity tag is expected; a comma-separated list does not say which revision was \
+             read",
+        ));
+    }
+    tag.strip_prefix('"')
+        .and_then(|inner| inner.strip_suffix('"'))
+        .ok_or_else(|| refuse_tag(raw, "a strong entity tag is wrapped in double quotes"))
 }
 
 /// Build the [`DomainError::Validation`] a malformed `If-Match` body is

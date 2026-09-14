@@ -6677,6 +6677,29 @@ async fn add_set_member(harness: &TestHarness, kind: &str, code: &str) {
     );
 }
 
+/// The member's current `ETag`, read off the by-code door (**P-D-174**) — the
+/// transitions door requires it back as `If-Match`.
+async fn set_member_tag(harness: &TestHarness, kind: &str, code: &str) -> String {
+    skus_and_sets_app_for(harness)
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/bss-products/v1/recognized-sets/{kind}/members/{code}"
+                ))
+                .extension(authed_ctx(TENANT))
+                .body(Body::empty())
+                .expect("build the request"),
+        )
+        .await
+        .expect("the router answers")
+        .headers()
+        .get(axum::http::header::ETAG)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned()
+}
+
 async fn transition_set_member(
     harness: &TestHarness,
     kind: &str,
@@ -6685,12 +6708,24 @@ async fn transition_set_member(
     to: &str,
 ) -> axum::http::Response<Body> {
     seed_set_member_op(harness, kind, code).await;
-    post_set_json(
-        harness,
-        &format!("/bss-products/v1/recognized-sets/{kind}/members/{code}/transitions"),
-        &json!({ "to": to, "expected_state": expected }),
-    )
-    .await
+    let tag = set_member_tag(harness, kind, code).await;
+    skus_and_sets_app_for(harness)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/bss-products/v1/recognized-sets/{kind}/members/{code}/transitions"
+                ))
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .header(axum::http::header::IF_MATCH, tag)
+                .extension(authed_ctx(TENANT))
+                .body(Body::from(
+                    json!({ "to": to, "expected_state": expected }).to_string(),
+                ))
+                .expect("build the request"),
+        )
+        .await
+        .expect("the router answers")
 }
 
 async fn created_sku(harness: &TestHarness, body: &serde_json::Value) -> (Uuid, String) {

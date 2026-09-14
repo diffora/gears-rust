@@ -135,6 +135,49 @@ fn state_for(harness: &TestHarness) -> Arc<ApiState> {
     })
 }
 
+/// [`post_json`] carrying the `If-Match` the two per-member write doors
+/// require (**P-D-174**).
+async fn post_json_tagged(
+    app: Router,
+    uri: &str,
+    body: &JsonValue,
+    tag: &str,
+) -> axum::http::Response<Body> {
+    app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .header(axum::http::header::IF_MATCH, tag)
+            .extension(authed_ctx(TENANT))
+            .body(Body::from(body.to_string()))
+            .expect("build the request"),
+    )
+    .await
+    .expect("the router answers")
+}
+
+/// The member's current `ETag`, read off the door that hands it out — never
+/// recomputed in the test, so a case asserts the round trip rather than this
+/// file's idea of the digest.
+///
+/// A member the read door does not answer has no tag, and the fallback is a
+/// **well-formed** one no member can carry: a case about an absent member is
+/// asking for its `404`, and a blank header would answer the `If-Match`
+/// validation instead and hide the question.
+async fn tag_of(harness: &TestHarness, kind: &str, code: &str) -> String {
+    let response = get_json(
+        app_for(harness, TENANT),
+        &format!("/bss-products/v1/recognized-sets/{kind}/members/{code}"),
+    )
+    .await;
+    response
+        .headers()
+        .get(axum::http::header::ETAG)
+        .and_then(|value| value.to_str().ok())
+        .map_or_else(|| format!("\"{}\"", "0".repeat(64)), str::to_owned)
+}
+
 async fn post_json(app: Router, uri: &str, body: &JsonValue) -> axum::http::Response<Body> {
     app.oneshot(
         Request::builder()
@@ -209,10 +252,12 @@ async fn transition(
     to: &str,
 ) -> axum::http::Response<Body> {
     seed_member_op(harness, tenant, kind, code).await;
-    post_json(
+    let tag = tag_of(harness, kind, code).await;
+    post_json_tagged(
         app_for(harness, tenant),
         &format!("/bss-products/v1/recognized-sets/{kind}/members/{code}/transitions"),
         &json!({ "to": to, "expected_state": expected }),
+        &tag,
     )
     .await
 }
@@ -225,10 +270,12 @@ async fn relabel(
     label: Option<&str>,
 ) -> axum::http::Response<Body> {
     seed_member_op(harness, tenant, kind, code).await;
-    post_json(
+    let tag = tag_of(harness, kind, code).await;
+    post_json_tagged(
         app_for(harness, tenant),
         &format!("/bss-products/v1/recognized-sets/{kind}/members/{code}/label"),
         &json!({ "display_label": label }),
+        &tag,
     )
     .await
 }
@@ -821,10 +868,12 @@ async fn a_member_op_without_a_record_opens_the_unit_and_writes_nothing() {
     // the transitions door finds none and opens its own — over the edge it is
     // about to walk, and without moving the member.
     add_member(&harness, TENANT, "metering_unit", "tib_month").await;
-    let stranger = post_json(
+    let tag = tag_of(&harness, "metering_unit", "tib_month").await;
+    let stranger = post_json_tagged(
         app_for(&harness, TENANT),
         "/bss-products/v1/recognized-sets/metering_unit/members/tib_month/transitions",
         &json!({ "to": "deprecated", "expected_state": "active" }),
+        &tag,
     )
     .await;
     assert_eq!(stranger.status(), axum::http::StatusCode::ACCEPTED);
@@ -835,10 +884,12 @@ async fn a_member_op_without_a_record_opens_the_unit_and_writes_nothing() {
     );
     // One open unit per subject, so the label door meets the transition's and
     // is told so rather than superseding it.
-    let relabel_refused = post_json(
+    let tag = tag_of(&harness, "metering_unit", "tib_month").await;
+    let relabel_refused = post_json_tagged(
         app_for(&harness, TENANT),
         "/bss-products/v1/recognized-sets/metering_unit/members/tib_month/label",
         &json!({ "display_label": "TiB-month" }),
+        &tag,
     )
     .await;
     assert_eq!(relabel_refused.status(), axum::http::StatusCode::FORBIDDEN);
@@ -911,6 +962,163 @@ async fn approve(harness: &TestHarness, approval_id: &str, approver: Uuid) -> u1
         .expect("the router answers")
         .status()
         .as_u16()
+}
+
+/// **The by-code read hands out a tag its write doors assert, and a stale one
+/// is refused** (**P-D-174**).
+///
+/// The tag is the member's whole row, not its state: the label arm is the one
+/// that matters, because a relabel had **no** staleness pin at all before
+/// this entry and `expected_state` — the transitions body's — would not have
+/// caught it. The sequence is one operator's read, another operator's
+/// relabel, and the first operator's write refused on the tag they read.
+#[tokio::test]
+async fn a_stale_member_tag_is_refused_and_a_current_one_writes() {
+    let harness = harness().await;
+    add_member(&harness, TENANT, "plan_tier", "gold").await;
+    let stale = tag_of(&harness, "plan_tier", "gold").await;
+    assert!(
+        stale.starts_with('"') && stale.len() == 66,
+        "the tag is one strong entity tag quoting a SHA-256: {stale}"
+    );
+
+    // A peer relabels, so the row — and its tag — move.
+    assert_eq!(
+        relabel(&harness, TENANT, "plan_tier", "gold", Some("Gold"))
+            .await
+            .status(),
+        axum::http::StatusCode::OK
+    );
+    let current = tag_of(&harness, "plan_tier", "gold").await;
+    assert_ne!(stale, current, "a changed label changes the tag");
+
+    seed_bound_op(
+        &harness,
+        TENANT,
+        "plan_tier",
+        "gold",
+        &json!({ "op": "recognized_set.label", "display_label": "Gold tier" }),
+    )
+    .await;
+    let refused = post_json_tagged(
+        app_for(&harness, TENANT),
+        "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
+        &json!({ "display_label": "Gold tier" }),
+        &stale,
+    )
+    .await;
+    assert_eq!(refused.status(), axum::http::StatusCode::CONFLICT);
+    assert_eq!(
+        error_code(refused).await,
+        "STALE_LIVE_OP",
+        "a live row's staleness has one voice, whatever operand caught it"
+    );
+    assert_eq!(
+        body_json(
+            get_json(
+                app_for(&harness, TENANT),
+                "/bss-products/v1/recognized-sets/plan_tier/members/gold",
+            )
+            .await,
+        )
+        .await["display_label"],
+        "Gold",
+        "the refused relabel wrote nothing"
+    );
+
+    let landed = post_json_tagged(
+        app_for(&harness, TENANT),
+        "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
+        &json!({ "display_label": "Gold tier" }),
+        &current,
+    )
+    .await;
+    assert_eq!(
+        landed.status(),
+        axum::http::StatusCode::OK,
+        "the current tag writes, which is what keeps the refusal above about staleness"
+    );
+}
+
+/// **Every shape that is not one strong member tag is refused `VALIDATION`,
+/// and an absent header is one of them** (**P-D-174**).
+///
+/// The wildcard is the case with a reason rather than a convention behind it:
+/// `If-Match: *` means *overwrite whichever row is current*, which is exactly
+/// the unconditional write the precondition exists to make unreachable —
+/// `domain::concurrency`'s own doc records the gear taking the opposite
+/// position from `gears/file-storage` on it, and this door reads that rule
+/// off the same function rather than restating it.
+#[tokio::test]
+async fn a_member_tag_that_is_not_one_strong_digest_is_refused() {
+    let harness = harness().await;
+    add_member(&harness, TENANT, "plan_tier", "gold").await;
+    let good = tag_of(&harness, "plan_tier", "gold").await;
+
+    let absent = post_json(
+        app_for(&harness, TENANT),
+        "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
+        &json!({ "display_label": "Gold" }),
+    )
+    .await;
+    assert_eq!(
+        absent.status(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "a member op without the header is the unconditional write the precondition forbids"
+    );
+
+    for (label, tag) in [
+        ("the wildcard", "*".to_owned()),
+        ("a weak validator", format!("W/{good}")),
+        ("a list", format!("{good}, {good}")),
+        ("an unquoted body", good.trim_matches('"').to_owned()),
+        ("a revision tag from an entity head", "\"7\"".to_owned()),
+        ("uppercase hex", format!("\"{}\"", "A".repeat(64))),
+        ("a short digest", format!("\"{}\"", "a".repeat(63))),
+    ] {
+        let refused = post_json_tagged(
+            app_for(&harness, TENANT),
+            "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
+            &json!({ "display_label": "Gold" }),
+            &tag,
+        )
+        .await;
+        assert_eq!(
+            refused.status(),
+            axum::http::StatusCode::BAD_REQUEST,
+            "{label} was admitted"
+        );
+    }
+    // The positive control: the same door, the same body, the tag this gear
+    // minted — without it every refusal above would pass against a door that
+    // rejected every header. The record is seeded, so the answer is the
+    // door's write rather than P-D-173's `202`.
+    seed_member_op(&harness, TENANT, "plan_tier", "gold").await;
+    assert_eq!(
+        post_json_tagged(
+            app_for(&harness, TENANT),
+            "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
+            &json!({ "display_label": "Gold" }),
+            &good,
+        )
+        .await
+        .status(),
+        axum::http::StatusCode::OK
+    );
+}
+
+/// **The add door takes no `If-Match`, and that is a decision rather than an
+/// omission** (**P-D-174**): a create names no member to have read, and the
+/// wildcard — the only tag a creating caller could send — is refused
+/// everywhere in this gear. Its concurrency guard is the primary key, which
+/// the duplicate refusal already proves; this asserts the header is not
+/// demanded.
+#[tokio::test]
+async fn the_add_door_demands_no_tag() {
+    let harness = harness().await;
+    seed_member_op(&harness, TENANT, "plan_tier", "gold").await;
+    let created = add_member_via(app_for(&harness, TENANT), "plan_tier", "gold").await;
+    assert_eq!(created.status(), axum::http::StatusCode::CREATED);
 }
 
 /// **The two arms are one door** (**P-D-173**): the first call opens the unit
@@ -1008,21 +1216,25 @@ async fn a_re_send_before_approval_answers_the_same_unit() {
 async fn a_unit_open_for_another_change_is_named_not_superseded() {
     let harness = harness().await;
     add_member(&harness, TENANT, "plan_tier", "gold").await;
+    let tag = tag_of(&harness, "plan_tier", "gold").await;
     let opened = body_json(
-        post_json(
+        post_json_tagged(
             app_for(&harness, TENANT),
             "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
             &json!({ "display_label": "Gold tier" }),
+            &tag,
         )
         .await,
     )
     .await;
     let standing = opened["approval_id"].as_str().expect("a unit").to_owned();
 
-    let other = post_json(
+    let tag = tag_of(&harness, "plan_tier", "gold").await;
+    let other = post_json_tagged(
         app_for(&harness, TENANT),
         "/bss-products/v1/recognized-sets/plan_tier/members/gold/transitions",
         &json!({ "to": "deprecated", "expected_state": "active" }),
+        &tag,
     )
     .await;
     assert_eq!(other.status(), axum::http::StatusCode::FORBIDDEN);
@@ -1037,10 +1249,12 @@ async fn a_unit_open_for_another_change_is_named_not_superseded() {
         approve(&harness, &standing, Uuid::from_u128(0xa9_22)).await,
         200
     );
-    let relabelled = post_json(
+    let tag = tag_of(&harness, "plan_tier", "gold").await;
+    let relabelled = post_json_tagged(
         app_for(&harness, TENANT),
         "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
         &json!({ "display_label": "Gold tier" }),
+        &tag,
     )
     .await;
     assert_eq!(relabelled.status(), axum::http::StatusCode::OK);
@@ -1138,10 +1352,12 @@ async fn an_approval_bound_to_one_op_does_not_authorize_another() {
         &json!({ "op": "recognized_set.label", "display_label": "Gold tier" }),
     )
     .await;
-    let deprecate = post_json(
+    let tag = tag_of(&harness, "plan_tier", "gold").await;
+    let deprecate = post_json_tagged(
         app_for(&harness, TENANT),
         "/bss-products/v1/recognized-sets/plan_tier/members/gold/transitions",
         &json!({ "to": "deprecated", "expected_state": "active" }),
+        &tag,
     )
     .await;
     assert_eq!(
@@ -1150,19 +1366,24 @@ async fn an_approval_bound_to_one_op_does_not_authorize_another() {
         "an agreed relabel is not an agreed deprecation"
     );
 
-    // A transition's record, spent at the label door.
+    // A transition's record, spent at the label door. The member has to
+    // exist for the label door to have a tag to assert, so it is added first
+    // — on its own record, which its add spends.
+    add_member(&harness, TENANT, "metering_unit", "gib_month").await;
     seed_bound_op(
         &harness,
         TENANT,
         "metering_unit",
-        "gib_hours",
+        "gib_month",
         &json!({ "op": "recognized_set.transition", "to": "deprecated", "expected_state": "active" }),
     )
     .await;
-    let relabelled = post_json(
+    let tag = tag_of(&harness, "metering_unit", "gib_month").await;
+    let relabelled = post_json_tagged(
         app_for(&harness, TENANT),
-        "/bss-products/v1/recognized-sets/metering_unit/members/gib_hours/label",
+        "/bss-products/v1/recognized-sets/metering_unit/members/gib_month/label",
         &json!({ "display_label": "GiB-hours" }),
+        &tag,
     )
     .await;
     assert_eq!(
@@ -1180,10 +1401,12 @@ async fn an_approval_bound_to_one_op_does_not_authorize_another() {
         &json!({ "op": "recognized_set.add", "member_code": "silver", "display_label": null }),
     )
     .await;
-    let silver = post_json(
+    let tag = tag_of(&harness, "plan_tier", "silver").await;
+    let silver = post_json_tagged(
         app_for(&harness, TENANT),
         "/bss-products/v1/recognized-sets/plan_tier/members/silver/transitions",
         &json!({ "to": "deprecated", "expected_state": "active" }),
+        &tag,
     )
     .await;
     assert_eq!(
@@ -1222,10 +1445,12 @@ async fn an_approval_bound_to_one_label_does_not_authorize_a_different_one() {
     )
     .await;
 
-    let other = post_json(
+    let tag = tag_of(&harness, "plan_tier", "gold").await;
+    let other = post_json_tagged(
         app_for(&harness, TENANT),
         "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
         &json!({ "display_label": "Platinum" }),
+        &tag,
     )
     .await;
     assert_eq!(
@@ -1234,10 +1459,12 @@ async fn an_approval_bound_to_one_label_does_not_authorize_a_different_one() {
         "the approved label is part of what was agreed"
     );
 
-    let cleared = post_json(
+    let tag = tag_of(&harness, "plan_tier", "gold").await;
+    let cleared = post_json_tagged(
         app_for(&harness, TENANT),
         "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
         &json!({ "display_label": null }),
+        &tag,
     )
     .await;
     assert_eq!(
@@ -1246,10 +1473,12 @@ async fn an_approval_bound_to_one_label_does_not_authorize_a_different_one() {
         "clearing a label is not the relabel that was agreed"
     );
 
-    let agreed = post_json(
+    let tag = tag_of(&harness, "plan_tier", "gold").await;
+    let agreed = post_json_tagged(
         app_for(&harness, TENANT),
         "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
         &json!({ "display_label": "Gold tier" }),
+        &tag,
     )
     .await;
     assert_eq!(
@@ -1281,10 +1510,12 @@ async fn a_record_declaring_no_op_authorizes_every_door() {
         &json!({ "subject": "recognized_set/plan_tier/gold" }),
     )
     .await;
-    let relabelled = post_json(
+    let tag = tag_of(&harness, "plan_tier", "gold").await;
+    let relabelled = post_json_tagged(
         app_for(&harness, TENANT),
         "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
         &json!({ "display_label": "Gold" }),
+        &tag,
     )
     .await;
     assert_eq!(
