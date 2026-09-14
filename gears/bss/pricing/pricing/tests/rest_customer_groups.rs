@@ -83,6 +83,68 @@ async fn put(
         .await
 }
 
+/// **`deprecated` is refused by this door, and the refusal is the deferral**
+/// (D-370).
+///
+/// The middle state landed on six of the seven vocabularies. This one was held
+/// back: its values carry payer members and its retire guard counts live
+/// `pricing_group_membership` rows, so widening it is a change to a plane the
+/// other six do not have, and the scope call was left to the owner.
+///
+/// The case exists because of *where* the refusal has to happen. The enum
+/// parses `"deprecated"` — it is one enum for all seven tables — so without a
+/// door-side arm the body would parse, reach the store, violate
+/// `chk_pricing_customer_group_taxonomy_state` and come back as a **500** for a
+/// request whose only fault is naming a state this table does not have. Error
+/// class follows provenance: this is request-borne and it is a 400.
+///
+/// It is deliberately a refusal rather than an absence: the day the owner says
+/// yes, this case fails and has to be read, which is what keeps a deferral from
+/// quietly becoming a gap.
+#[tokio::test]
+async fn the_middle_state_is_refused_on_this_door_and_names_the_deferral() {
+    let harness = Harness::new().await;
+    let (_, tag) = read(&harness).await;
+
+    let refused = put(
+        &harness,
+        &tag,
+        json!([{ "value": "gold", "display_name": "Gold", "state": "deprecated" }]),
+    )
+    .await;
+
+    assert_eq!(
+        refused.status(),
+        StatusCode::BAD_REQUEST,
+        "at the door, not at the CHECK: a constraint violation here would be a 500"
+    );
+    let detail = body_json(refused).await.to_string();
+    assert!(
+        detail.contains("deprecated"),
+        "the refusal must name the state the caller sent: {detail}"
+    );
+    assert!(
+        detail.contains("payer members"),
+        "and say why this vocabulary is the exception, so the operator is not \
+         hunting for a typo in a word the sibling doors accept: {detail}"
+    );
+
+    // Nothing was written, and the two states this set does hold still work.
+    let (body, tag) = read(&harness).await;
+    assert_eq!(body["values"], json!([]), "a refused PUT writes nothing");
+    let landed = put(
+        &harness,
+        &tag,
+        json!([{ "value": "gold", "display_name": "Gold", "state": "retired" }]),
+    )
+    .await;
+    assert_eq!(
+        landed.status(),
+        StatusCode::OK,
+        "the control: `retired` is still accepted here"
+    );
+}
+
 /// One **published** overlay scoped to `(customerGroup, value)`, written
 /// through the entity — `rest_taxonomies.rs::seed_published_overlay`'s sibling.
 /// The authoring route cannot produce this state in one call (a submit opens

@@ -38,7 +38,7 @@ pub struct TaxonomyProposedChangesView {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(nullable = false)]
     pub display_name: Option<String>,
-    /// Proposed `active` or `retired` state.
+    /// Proposed state: `active`, `deprecated` or `retired` (D-370).
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(nullable = false)]
     pub state: Option<String>,

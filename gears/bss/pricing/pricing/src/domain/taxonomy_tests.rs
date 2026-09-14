@@ -262,17 +262,43 @@ fn only_the_region_class_carries_the_tax_markers() {
     }
 }
 
-/// `active | retired`, both directions, and nothing else.
+/// Every state round-trips, an unknown token is refused, and the default is
+/// `active`.
+///
+/// # The third token this used to refuse is now a state
+///
+/// This was `the_state_pair_round_trips_and_admits_no_third_token` and its
+/// middle assertion was `parse("deprecated") == None`. **D-370 made that
+/// token a state**, so the old line is not a failing assertion to delete but a
+/// claim a decision retired. What it was really about survives and is kept:
+/// the parse is fail-closed, so a token outside the machine is `None` rather
+/// than silently defaulting — which is what makes `CorruptRow` reachable for a
+/// stored value the `CHECK` should never have admitted.
+///
+/// `"withdrawn"` is the stand-in, chosen because it is a word this design set
+/// deliberately does **not** use for any of the three.
 #[test]
-fn the_state_pair_round_trips_and_admits_no_third_token() {
+fn every_state_round_trips_and_an_unknown_token_is_refused() {
     for &state in TaxonomyState::ALL {
         assert_eq!(TaxonomyState::parse(state.as_str()), Some(state));
     }
-    assert_eq!(TaxonomyState::parse("deprecated"), None);
+    assert_eq!(
+        TaxonomyState::parse("deprecated"),
+        Some(TaxonomyState::Deprecated),
+        "D-370's middle state, by the token the CHECKs store"
+    );
+    assert_eq!(TaxonomyState::parse("withdrawn"), None);
+    assert_eq!(TaxonomyState::parse(""), None);
     assert_eq!(
         TaxonomyState::default(),
         TaxonomyState::Active,
         "a value an operator declares is declared, not withdrawn"
+    );
+    // The refusal messages three doors render are built from this, so a door
+    // cannot come to name a smaller machine than the one it parses against.
+    assert_eq!(
+        TaxonomyState::tokens(),
+        "`active`, `deprecated` or `retired`"
     );
 }
 

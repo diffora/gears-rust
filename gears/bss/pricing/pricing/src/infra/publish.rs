@@ -1030,7 +1030,10 @@ pub(crate) async fn rule_params(
     //
     // It is the `active` set, which is `overlay_repo::declares`' predicate one
     // plane over: a value that reached `retired` must not validate a new row
-    // against itself. An empty answer is C2's fail-closed reading and not an
+    // against itself, and neither must one an operator has **deprecated**
+    // (D-370) — a positive filter on `active` is what gives the middle state
+    // its only meaning, so this predicate must never be relaxed to
+    // `!= retired`. An empty answer is C2's fail-closed reading and not an
     // error — a tenant who has declared no region publishes no row.
     let declared_regions = taxonomy_repo::active_regions(runner, scope, tenant_id)
         .await

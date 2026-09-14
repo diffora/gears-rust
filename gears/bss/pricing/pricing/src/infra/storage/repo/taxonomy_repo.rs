@@ -122,8 +122,8 @@ impl TaxonomyRepo {
         Self { db }
     }
 
-    /// Every declared value of one class, `active` and `retired` alike, ordered
-    /// by value.
+    /// Every declared value of one class — `active`, `deprecated` and
+    /// `retired` alike (D-370) — ordered by value.
     ///
     /// **Retired values are in the list**, which is what makes the `PUT`'s
     /// round trip honest: an operator who reads, edits and writes back must be
@@ -194,8 +194,8 @@ impl TaxonomyRepo {
             .map_err(|e| e.into_domain(|infra| RepoError::Db(format!("taxonomy replace: {infra}"))))
     }
 
-    /// One declared value of one class, `active` or `retired`; `None` when the
-    /// tenant has never declared it.
+    /// One declared value of one class, in whichever state it stands; `None`
+    /// when the tenant has never declared it.
     ///
     /// Read through [`list_on`] rather than by a keyed select, so the row is
     /// decoded by the one reader that owns the `CHECK`-to-enum translation; the
@@ -564,7 +564,9 @@ pub enum Declared {
 ///
 /// `active` only, which is `overlay_repo::declares`' predicate one plane over: a
 /// value that reached `retired` anyway must not validate a new row against
-/// itself.
+/// itself, and a **deprecated** one must not either — D-370's middle state is
+/// nothing but its absence from this set, so widening this filter to
+/// `!= retired` would delete the state without touching its definition.
 ///
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure; [`RepoError::CorruptRow`]
@@ -1026,6 +1028,20 @@ pub async fn rows_resolving_category_through(
 // The write.
 // ---------------------------------------------------------------------------
 
+/// What a whole-set write leaves a held value in: the submitted state, or
+/// `retired` when the body omits it (**the "absence is retirement" rule**, and
+/// D-370 did not touch it — a *deprecation* must be said out loud, because
+/// absence has meant exactly one thing since these tables landed and giving it
+/// a second meaning would silently re-read every client's filtered list).
+fn whole_set_destination(
+    submitted: &BTreeMap<String, TaxonomyEntry>,
+    existing: &TaxonomyEntry,
+) -> TaxonomyState {
+    submitted
+        .get(existing.value.as_str())
+        .map_or(TaxonomyState::Retired, |entry| entry.state)
+}
+
 async fn apply_replace(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -1073,14 +1089,16 @@ async fn apply_replace(
     // able to slip past the guard by choosing the other spelling.
     let mut report = ValidationReport::default();
     for existing in &held {
-        let key = existing.value.as_str();
-        let retiring = submitted
-            .get(key)
-            .is_none_or(|entry| entry.state == TaxonomyState::Retired);
-        if !retiring || existing.state == TaxonomyState::Retired {
-            // Already retired is not a retirement: re-asserting a value's
-            // current state is a no-op, and guarding it would make a taxonomy
-            // with one guarded retirement permanently un-`PUT`-able.
+        if !is_a_retirement(existing.state, whole_set_destination(&submitted, existing)) {
+            // **One predicate, not four hand-written copies** (D-369, D-370).
+            // This read `state == Retired` twice — once for the destination and
+            // once to skip an already-retired value — which is the retire
+            // guard's key open-coded, and four copies of a key are four places
+            // for it to drift. `is_a_retirement` is the same function the
+            // per-value judges use, so a body that says `deprecated` is not a
+            // retirement, a body that omits the value is, and re-asserting
+            // `retired` is not — without this loop having an opinion about any
+            // of it.
             continue;
         }
         let references = references_to(runner, tenant_id, class, &existing.value).await?;
@@ -1230,10 +1248,30 @@ pub async fn judge_value_patch(
     // so a new state is guarded the day it is added — because it asks *is this
     // the guarded act* rather than *is the value still resolving*. See
     // `domain::taxonomy::is_a_retirement`.
+    #[allow(
+        clippy::match_same_arms,
+        reason = "the two `true` arms answer the same way for different reasons — `active` is \
+                  still authorable, `deprecated` is not but every row that already resolved \
+                  through the marker still does — and collapsing them to `Active | Deprecated` \
+                  would put one comment over two decisions. The exhaustiveness D-369 bought is \
+                  unaffected either way; what is kept here is that each state's answer is \
+                  argued where it is given"
+    )]
     let still_resolving_through_the_marker = match next.state {
         // A value that stays authorable is a value rows keep resolving
         // through, so dropping its default category is the act D-245 refuses.
         TaxonomyState::Active => true,
+        // **The arm D-369's exhaustive `match` was written to force, answered
+        // by D-370.** A deprecated value is withdrawn from *new* use and from
+        // nothing else: every published row that resolved its category through
+        // this region on the day it was published still resolves it, which is
+        // the whole of what `deprecated` means. So the marker is exactly as
+        // load-bearing as it is under `active`, and clearing it is exactly as
+        // guarded. Answering `false` here would have made "deprecate, then
+        // clear the marker" a two-step walk around D-245 — the shape that
+        // freezes a market out of publishing, which D-245's own doc records
+        // having been written against.
+        TaxonomyState::Deprecated => true,
         // A retirement stops new use and leaves what already resolves alone;
         // the retire guard above is what judges it, and judging the marker as
         // well would refuse one act with two violations naming two remedies.
@@ -2051,11 +2089,7 @@ async fn apply_replace_customer_group(
 
     let mut report = ValidationReport::default();
     for existing in &held {
-        let key = existing.value.as_str();
-        let retiring = submitted
-            .get(key)
-            .is_none_or(|entry| entry.state == TaxonomyState::Retired);
-        if !retiring || existing.state == TaxonomyState::Retired {
+        if !is_a_retirement(existing.state, whole_set_destination(&submitted, existing)) {
             continue;
         }
         let references = references_to_customer_group(
@@ -2125,11 +2159,7 @@ async fn apply_replace_rounding_policy(
 
     let mut report = ValidationReport::default();
     for existing in &held {
-        let key = existing.value.as_str();
-        let retiring = submitted
-            .get(key)
-            .is_none_or(|entry| entry.state == TaxonomyState::Retired);
-        if !retiring || existing.state == TaxonomyState::Retired {
+        if !is_a_retirement(existing.state, whole_set_destination(&submitted, existing)) {
             continue;
         }
         let (rows, default_names_it) =
@@ -2265,11 +2295,7 @@ async fn apply_replace_gl_code(
 
     let mut report = ValidationReport::default();
     for existing in &held {
-        let key = existing.value.as_str();
-        let retiring = submitted
-            .get(key)
-            .is_none_or(|entry| entry.state == TaxonomyState::Retired);
-        if !retiring || existing.state == TaxonomyState::Retired {
+        if !is_a_retirement(existing.state, whole_set_destination(&submitted, existing)) {
             continue;
         }
         let revisions = references_to_gl_code(runner, tenant_id, &existing.value).await?;
@@ -2783,8 +2809,8 @@ pub fn customer_group_tag_of(entries: &[TaxonomyEntry]) -> PolicyTag {
 // premise these transactions re-test is the `If-Match` one alone.
 // ---------------------------------------------------------------------------
 
-/// One vocabulary's declared values, `active` and `retired` alike, ordered by
-/// value — the class dispatcher over the two per-table readers.
+/// One vocabulary's declared values, in every state (D-370), ordered by value
+/// — the class dispatcher over the two per-table readers.
 ///
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure; [`RepoError::CorruptRow`]

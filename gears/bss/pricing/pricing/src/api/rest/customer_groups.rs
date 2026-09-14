@@ -472,14 +472,37 @@ fn authored_entries(
                  once, and a repeated one leaves its state undecided"
             ))));
         }
+        // **`deprecated` is refused on this door, and that is a scope decision
+        // rather than an omission** (D-370). The middle state landed on six of
+        // the seven vocabularies; `pricing_customer_group_taxonomy` is the
+        // seventh and was deliberately held back, so its `CHECK` still admits
+        // two tokens. Refused **here**, at the door, because the alternative is
+        // a body that parses, reaches the store, violates
+        // `chk_pricing_customer_group_taxonomy_state` and is answered `500` for
+        // a request whose only fault is naming a state this table does not
+        // have. The `match` is exhaustive so a state added later meets this
+        // decision rather than inheriting it.
         let state = match value.state.as_deref() {
             None => TaxonomyState::Active,
-            Some(token) => TaxonomyState::parse(token).ok_or_else(|| {
-                CanonicalError::from(DomainError::InvalidRequest(format!(
-                    "value `{declared}` carries state `{token}`; a taxonomy value is `active` or \
-                     `retired`, and nothing else"
-                )))
-            })?,
+            Some(token) => match TaxonomyState::parse(token) {
+                Some(TaxonomyState::Active) => TaxonomyState::Active,
+                Some(TaxonomyState::Retired) => TaxonomyState::Retired,
+                Some(TaxonomyState::Deprecated) => {
+                    return Err(CanonicalError::from(DomainError::InvalidRequest(format!(
+                        "value `{declared}` carries state `deprecated`; the customer-group \
+                         taxonomy is the one vocabulary D-370 did not give the middle state, \
+                         so `active` and `retired` are what this set holds. Its values carry \
+                         payer members and its retire guard counts live memberships, which is \
+                         why the scope call was left to the owner rather than taken"
+                    ))));
+                }
+                None => {
+                    return Err(CanonicalError::from(DomainError::InvalidRequest(format!(
+                        "value `{declared}` carries state `{token}`; a customer-group taxonomy \
+                         value is `active` or `retired`, and nothing else"
+                    ))));
+                }
+            },
         };
         entries.push(TaxonomyEntry {
             value: declared,

@@ -192,23 +192,65 @@ async fn a_value_is_declared_at_most_once_per_tenant() {
     }
 }
 
-/// `state` is `active | retired` and nothing else.
+/// The `state` `CHECK` admits **exactly** the machine's tokens, and nothing
+/// else — the Postgres half of the same oracle.
 ///
-/// The pair is the whole state machine §6 gives these tables — retirement is
-/// guarded rather than cascading, and re-activation is a legal audited move — so
-/// a third token would be a state no rule in the design set describes.
+/// # What this used to claim, and why that stopped holding
+///
+/// It was `a_state_outside_the_declared_pair_is_refused` and it proved that
+/// `'deprecated'` is rejected, on the evidence that *"the pair is the whole
+/// state machine §6 gives these tables … so a third token would be a state no
+/// rule in the design set describes"*. **D-370 is that rule.** The premise was
+/// retired by a decision rather than by a bug, so the case is re-aimed rather
+/// than deleted — deleting it would have taken this engine's only guard on the
+/// column with it, and *"a measurement on one engine is not a fact about the
+/// other"* is this file's own reason for existing.
+///
+/// The positive half is driven from `TaxonomyState::ALL`, so a `CHECK` that
+/// drifted **narrower** on this engine alone — the exact asymmetry this file
+/// exists to catch — fails here where the old one-literal form stayed green.
 #[tokio::test]
 #[ignore = "needs Docker"]
-async fn a_state_outside_the_declared_pair_is_refused() {
+async fn the_state_check_admits_exactly_the_machines_tokens() {
     let conn = applied().await;
     for table in TAXONOMIES {
+        for state in bss_pricing::domain::taxonomy::TaxonomyState::ALL {
+            must_succeed(
+                &conn,
+                &insert(table, TENANT, &format!("v-{state}"), state.as_str()),
+            )
+            .await;
+        }
         must_be_rejected(
             &conn,
-            &insert(table, TENANT, "eu-west", "deprecated"),
+            &insert(table, TENANT, "eu-west", "withdrawn"),
             &format!("chk_{table}_state"),
         )
         .await;
     }
+}
+
+/// **The customer-group taxonomy still refuses `'deprecated'` on this engine
+/// too** — D-370's deferral, measured rather than assumed.
+///
+/// Its `SQLite` twin is
+/// `sqlite_taxonomy_store::the_customer_group_taxonomy_does_not_admit_the_middle_state`.
+/// Both engines are asserted for this file's own stated reason: the widening
+/// touched twelve `CHECK`s across two engines, and skipping one table on one
+/// engine is precisely the mistake a per-engine oracle is for.
+#[tokio::test]
+#[ignore = "needs Docker"]
+async fn the_customer_group_taxonomy_does_not_admit_the_middle_state() {
+    let conn = applied().await;
+    let table = "pricing_customer_group_taxonomy";
+    must_succeed(&conn, &insert(table, TENANT, "gold", "active")).await;
+    must_succeed(&conn, &insert(table, TENANT, "silver", "retired")).await;
+    must_be_rejected(
+        &conn,
+        &insert(table, TENANT, "bronze", "deprecated"),
+        &format!("chk_{table}_state"),
+    )
+    .await;
 }
 
 /// A blank value is refused in each of the four.

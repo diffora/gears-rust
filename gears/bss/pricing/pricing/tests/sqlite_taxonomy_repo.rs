@@ -42,8 +42,9 @@ use bss_pricing::domain::taxonomy::{
 };
 use bss_pricing::infra::approval::ApprovalService;
 use bss_pricing::infra::storage::repo::taxonomy_repo::{
-    Replaced, TaxonomyRepo, ValuePatched, active_gl_codes, active_regions, customer_group_tag_of,
-    references_to, region_readiness, region_readiness_map, vocabulary_tag_of, write_value_patch,
+    Replaced, TaxonomyRepo, ValuePatched, active_gl_codes, active_regions,
+    active_rounding_policies, customer_group_tag_of, references_to, region_readiness,
+    region_readiness_map, vocabulary_tag_of, write_value_patch,
 };
 use time::OffsetDateTime;
 
@@ -1102,6 +1103,82 @@ async fn dropping_a_region_tax_category_a_published_row_leans_on_is_refused() {
             (SEEDED_REGION, TaxonomyState::Retired)
         ],
         "one transaction, one verdict: the taxonomy is unchanged"
+    );
+}
+
+/// **Deprecating a region does not buy a way around D-245** (D-370).
+///
+/// The hazard the middle state creates, and the arm
+/// `judge_value_patch`'s exhaustive `match` was written to force an answer to.
+/// `deprecated` withdraws a value from *new* use and changes nothing about what
+/// already resolves through it — every published row that took its category
+/// from this region on the day it was published still takes it. So the marker
+/// is exactly as load-bearing under `deprecated` as under `active`, and
+/// clearing it must be exactly as guarded.
+///
+/// Answering the other way would have made **deprecate, then clear** a
+/// two-step walk around the guard, landing on the state D-245's own doc records
+/// being written against: a `TAX_BASIS_INCOMPLETE` on an immutable
+/// grandfathered row that MUST NOT be superseded and cannot be `PATCH`ed — a
+/// market frozen out of publishing by a config edit.
+///
+/// The first half is the control: the deprecation itself is admitted, so this
+/// is about the *marker* rather than about the state being refused outright.
+#[tokio::test]
+async fn deprecating_a_region_does_not_unguard_its_tax_category() {
+    let (repo, scope, provider) = harness().await;
+    replace_now(
+        &repo,
+        &scope,
+        TaxonomyClass::Region,
+        vec![region_entry("eu", Some("standard"), true)],
+    )
+    .await
+    .expect("seed");
+    publish_price_row_in(&provider, "eu").await;
+    let conn = provider.conn().expect("conn");
+
+    let held = region_entry("eu", Some("standard"), true);
+    let deprecated = TaxonomyEntry {
+        state: TaxonomyState::Deprecated,
+        ..held.clone()
+    };
+
+    // The control: withdrawing it from new use is admitted on its own.
+    let step_one = bss_pricing::infra::storage::repo::taxonomy_repo::judge_value_patch(
+        &conn,
+        TENANT,
+        TaxonomyClass::Region,
+        &held,
+        &deprecated,
+    )
+    .await
+    .expect("judge");
+    assert!(
+        codes(&step_one).is_empty(),
+        "a deprecation is not a retirement and carries no marker change: {:?}",
+        codes(&step_one)
+    );
+
+    // The step that must still be refused: same edit D-245 guards, from the
+    // middle state.
+    let cleared = TaxonomyEntry {
+        state: TaxonomyState::Deprecated,
+        ..region_entry("eu", None, true)
+    };
+    let step_two = bss_pricing::infra::storage::repo::taxonomy_repo::judge_value_patch(
+        &conn,
+        TENANT,
+        TaxonomyClass::Region,
+        &deprecated,
+        &cleared,
+    )
+    .await
+    .expect("judge");
+    assert_eq!(
+        codes(&step_two),
+        [TAXONOMY_VALUE_IN_USE],
+        "deprecating first must not unguard the marker a published row resolves through"
     );
 }
 
@@ -2424,6 +2501,364 @@ async fn a_vocabulary_patch_over_a_moved_value_is_stale_and_writes_nothing() {
         2,
         "and recorded nothing: one declare and one winning patch"
     );
+}
+
+// ---------------------------------------------------------------------------
+// D-370 — the middle state, against every read that validates.
+//
+// The claim `deprecated` is built on has two halves and a test that checked
+// one of them would be satisfied by a state that did nothing, or by a state
+// that cascaded. Each case below asserts both: the value is **out of the
+// validating universe**, so nothing new may be assigned to it; and what
+// already resolves through it is **untouched**, which on these planes means
+// the published row still counts as a reference — the retire guard therefore
+// still protects it, which is the difference between deprecating and
+// retiring.
+// ---------------------------------------------------------------------------
+
+/// `active_regions` — `inst-tx-region`'s universe.
+#[tokio::test]
+async fn a_deprecated_region_leaves_the_validating_universe_and_keeps_its_references() {
+    let (repo, scope, provider) = harness().await;
+    replace_now(
+        &repo,
+        &scope,
+        TaxonomyClass::Region,
+        vec![
+            region_entry("eu", None, false),
+            region_entry("us", None, false),
+        ],
+    )
+    .await
+    .expect("seed");
+    publish_price_row_in(&provider, "eu").await;
+    let conn = provider.conn().expect("conn");
+
+    let before = active_regions(&conn, &scope, TENANT).await.expect("before");
+    assert!(before.contains(&Region::new("eu").expect("ok")));
+
+    write_value_patch(
+        &conn,
+        &scope,
+        TENANT,
+        TaxonomyClass::Region,
+        &region_entry("eu", None, false),
+        &TaxonomyEntry {
+            state: TaxonomyState::Deprecated,
+            ..region_entry("eu", None, false)
+        },
+        None,
+        stamp(),
+    )
+    .await
+    .expect("deprecate");
+
+    let after = active_regions(&conn, &scope, TENANT).await.expect("after");
+    assert!(
+        !after.contains(&Region::new("eu").expect("ok")),
+        "a deprecated region validates no new row: {after:?}"
+    );
+    assert!(
+        after.contains(&Region::new("us").expect("ok")),
+        "and its sibling is untouched: {after:?}"
+    );
+
+    // The other half: nothing cascaded. The published row still names it, so
+    // the retire guard still refuses to take the value out of the vocabulary.
+    let refs = references_to(&conn, TENANT, TaxonomyClass::Region, &value("eu"))
+        .await
+        .expect("references");
+    assert_eq!(
+        refs.published_price_rows, 1,
+        "deprecation moves nothing on the row plane"
+    );
+    let report = bss_pricing::infra::storage::repo::taxonomy_repo::judge_value_patch(
+        &conn,
+        TENANT,
+        TaxonomyClass::Region,
+        &TaxonomyEntry {
+            state: TaxonomyState::Deprecated,
+            ..region_entry("eu", None, false)
+        },
+        &TaxonomyEntry {
+            state: TaxonomyState::Retired,
+            ..region_entry("eu", None, false)
+        },
+    )
+    .await
+    .expect("judge");
+    assert_eq!(
+        codes(&report),
+        [TAXONOMY_VALUE_IN_USE],
+        "and `deprecated -> retired` is still the guarded edge"
+    );
+}
+
+/// `region_readiness` and `region_readiness_map` — C4's fail-closed input.
+///
+/// A deprecated region has no readiness claim to make about a **new** row, so
+/// it leaves the map exactly as a retired one does. Published rows froze their
+/// tax basis at publish and are not read through this.
+#[tokio::test]
+async fn a_deprecated_region_is_not_readiness_declared() {
+    let (repo, scope, provider) = harness().await;
+    replace_now(
+        &repo,
+        &scope,
+        TaxonomyClass::Region,
+        vec![region_entry("eu", Some("standard"), true)],
+    )
+    .await
+    .expect("seed");
+    let conn = provider.conn().expect("conn");
+    assert!(
+        region_readiness(&conn, &scope, TENANT, &Region::new("eu").expect("ok"))
+            .await
+            .expect("read")
+            .is_some(),
+        "the control: declared and active is readiness-declared"
+    );
+
+    write_value_patch(
+        &conn,
+        &scope,
+        TENANT,
+        TaxonomyClass::Region,
+        &region_entry("eu", Some("standard"), true),
+        &TaxonomyEntry {
+            state: TaxonomyState::Deprecated,
+            ..region_entry("eu", Some("standard"), true)
+        },
+        None,
+        stamp(),
+    )
+    .await
+    .expect("deprecate");
+
+    assert_eq!(
+        region_readiness(&conn, &scope, TENANT, &Region::new("eu").expect("ok"))
+            .await
+            .expect("read"),
+        None,
+        "a region withdrawn from new use asserts no readiness for a new row"
+    );
+    assert!(
+        region_readiness_map(&conn, &scope, TENANT)
+            .await
+            .expect("map")
+            .is_empty(),
+        "and it is out of the map the publish pipeline resolves from"
+    );
+}
+
+/// `active_rounding_policies` — D-334's universe.
+#[tokio::test]
+async fn a_deprecated_rounding_reference_leaves_the_validating_universe() {
+    let (repo, scope, provider) = harness().await;
+    replace_rounding_policies_now(
+        &repo,
+        &scope,
+        vec![
+            entry("half_up", TaxonomyState::Active),
+            entry("bankers", TaxonomyState::Active),
+        ],
+    )
+    .await
+    .expect("seed");
+    publish_price_row_resolving(&provider, "half_up").await;
+    let conn = provider.conn().expect("conn");
+
+    repo.patch_vocabulary_value(
+        &scope,
+        TENANT,
+        VocabularyClass::RoundingPolicy,
+        entry("half_up", TaxonomyState::Active),
+        entry("half_up", TaxonomyState::Deprecated),
+        stamp(),
+    )
+    .await
+    .expect("deprecate");
+
+    let universe = active_rounding_policies(&conn, &scope, TENANT)
+        .await
+        .expect("universe");
+    assert!(
+        !universe.contains("half_up"),
+        "a deprecated reference validates no new row: {universe:?}"
+    );
+    assert!(universe.contains("bankers"), "the sibling is untouched");
+
+    // Nothing cascaded: the published row still resolves against it, which is
+    // what the retire guard reads.
+    let report = bss_pricing::infra::storage::repo::taxonomy_repo::judge_vocabulary_value_patch(
+        &conn,
+        &scope,
+        TENANT,
+        VocabularyClass::RoundingPolicy,
+        &entry("half_up", TaxonomyState::Deprecated),
+        &entry("half_up", TaxonomyState::Retired),
+    )
+    .await
+    .expect("judge");
+    assert_eq!(codes(&report), [TAXONOMY_VALUE_IN_USE]);
+}
+
+/// `active_gl_codes` — D-356's universe.
+#[tokio::test]
+async fn a_deprecated_gl_code_leaves_the_validating_universe() {
+    let (repo, scope, provider) = harness().await;
+    replace_gl_codes_now(
+        &repo,
+        &scope,
+        vec![
+            entry("4000-REV", TaxonomyState::Active),
+            entry("4010-TAX", TaxonomyState::Active),
+        ],
+    )
+    .await
+    .expect("seed");
+    seed_revision_naming_gl_code(&provider, Uuid::now_v7(), "4000-REV", "published").await;
+    let conn = provider.conn().expect("conn");
+
+    repo.patch_vocabulary_value(
+        &scope,
+        TENANT,
+        VocabularyClass::GlCode,
+        entry("4000-REV", TaxonomyState::Active),
+        entry("4000-REV", TaxonomyState::Deprecated),
+        stamp(),
+    )
+    .await
+    .expect("deprecate");
+
+    let universe = active_gl_codes(&conn, &scope, TENANT)
+        .await
+        .expect("universe");
+    assert_eq!(
+        universe,
+        declared_gl_codes(&["4010-TAX"]),
+        "a deprecated code validates no new descriptor, and its sibling is untouched"
+    );
+
+    let report = bss_pricing::infra::storage::repo::taxonomy_repo::judge_vocabulary_value_patch(
+        &conn,
+        &scope,
+        TENANT,
+        VocabularyClass::GlCode,
+        &entry("4000-REV", TaxonomyState::Deprecated),
+        &entry("4000-REV", TaxonomyState::Retired),
+    )
+    .await
+    .expect("judge");
+    assert_eq!(
+        codes(&report),
+        [TAXONOMY_VALUE_IN_USE],
+        "the published descriptor set still names it"
+    );
+}
+
+/// **`active -> deprecated` is unguarded, and that is the point of the state.**
+///
+/// The retire guard refuses a referenced value, so before D-370 a value in
+/// published use had no move at all. This asserts the new one is available on
+/// exactly the value the old one refuses — the same fixture, the same
+/// reference, two different destinations and two different answers.
+#[tokio::test]
+async fn a_referenced_value_may_be_deprecated_though_it_may_not_be_retired() {
+    let (repo, scope, provider) = harness().await;
+    replace_now(
+        &repo,
+        &scope,
+        TaxonomyClass::Brand,
+        vec![entry("in-use", TaxonomyState::Active)],
+    )
+    .await
+    .expect("seed");
+    publish_overlay_scoped(
+        &provider,
+        0x0e_2a,
+        TaxonomyClass::Brand,
+        "in-use",
+        "published",
+    )
+    .await;
+    let conn = provider.conn().expect("conn");
+
+    let retirement = bss_pricing::infra::storage::repo::taxonomy_repo::judge_value_patch(
+        &conn,
+        TENANT,
+        TaxonomyClass::Brand,
+        &entry("in-use", TaxonomyState::Active),
+        &entry("in-use", TaxonomyState::Retired),
+    )
+    .await
+    .expect("judge");
+    assert_eq!(
+        codes(&retirement),
+        [TAXONOMY_VALUE_IN_USE],
+        "the refusal that left the operator with nothing to do"
+    );
+
+    let deprecation = bss_pricing::infra::storage::repo::taxonomy_repo::judge_value_patch(
+        &conn,
+        TENANT,
+        TaxonomyClass::Brand,
+        &entry("in-use", TaxonomyState::Active),
+        &entry("in-use", TaxonomyState::Deprecated),
+    )
+    .await
+    .expect("judge");
+    assert!(
+        codes(&deprecation).is_empty(),
+        "saying `stop using this` must always be possible: {:?}",
+        codes(&deprecation)
+    );
+}
+
+/// **A deprecated value goes back to `active` without a guard**, from either
+/// withdrawn state.
+///
+/// Re-activation is `retired -> active`'s twin and is judged by nothing: the
+/// guards are about leaving the vocabulary, never about coming back. Whether
+/// that edge is *governed* is a different question and is D-355's, not this
+/// judge's — see D-370's open item.
+#[tokio::test]
+async fn re_activation_is_unguarded_from_either_withdrawn_state() {
+    for withdrawn in [TaxonomyState::Deprecated, TaxonomyState::Retired] {
+        let (repo, scope, provider) = harness().await;
+        replace_now(
+            &repo,
+            &scope,
+            TaxonomyClass::Brand,
+            vec![entry("in-use", withdrawn)],
+        )
+        .await
+        .expect("seed");
+        publish_overlay_scoped(
+            &provider,
+            0x0e_2b,
+            TaxonomyClass::Brand,
+            "in-use",
+            "published",
+        )
+        .await;
+        let conn = provider.conn().expect("conn");
+
+        let report = bss_pricing::infra::storage::repo::taxonomy_repo::judge_value_patch(
+            &conn,
+            TENANT,
+            TaxonomyClass::Brand,
+            &entry("in-use", withdrawn),
+            &entry("in-use", TaxonomyState::Active),
+        )
+        .await
+        .expect("judge");
+        assert!(
+            codes(&report).is_empty(),
+            "`{withdrawn}` -> `active` is guarded by nothing: {:?}",
+            codes(&report)
+        );
+    }
 }
 
 /// Seed one plan revision whose billing descriptor set names `gl_code`, and

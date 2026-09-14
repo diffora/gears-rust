@@ -583,6 +583,93 @@ async fn a_code_a_published_descriptor_set_names_cannot_be_retired() {
     assert_eq!(after["values"][0]["state"], serde_json::json!("active"));
 }
 
+/// **A code a published descriptor set names can be deprecated, and could not
+/// be retired** (D-370).
+///
+/// The middle state's reason, on the descriptor plane. One fixture, two
+/// destinations, two answers — asserted as a pair, because a case showing only
+/// the deprecation landing would be satisfied by a retire guard that had
+/// stopped firing.
+///
+/// The second half is the one that makes `deprecated` different from
+/// `retired`: after the deprecation the code is out of `active_gl_codes`, so a
+/// **new** descriptor naming it fails publish — and the published revision
+/// that already names it still blocks the retirement, which is the same guard
+/// reading the same reference it read before.
+#[tokio::test]
+async fn a_referenced_code_can_be_deprecated_where_it_could_not_be_retired() {
+    let harness = Harness::new().await;
+    put_one(&harness, "4000-REV").await;
+    seed_published_revision_naming(&harness, Uuid::now_v7(), "4000-REV").await;
+
+    let (_, tag, _) = read_value(&harness, "4000-REV").await;
+    let refused = patch_value(
+        &harness,
+        "4000-REV",
+        serde_json::json!({ "state": "retired" }),
+        &tag.expect("the value's tag"),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(problem_code(refused).await, "TAXONOMY_VALUE_IN_USE");
+
+    let (_, tag, _) = read_value(&harness, "4000-REV").await;
+    let deprecated = patch_value(
+        &harness,
+        "4000-REV",
+        serde_json::json!({ "state": "deprecated" }),
+        &tag.expect("the value's tag"),
+    )
+    .await;
+    assert_eq!(
+        deprecated.status(),
+        StatusCode::OK,
+        "saying `stop using this` must always be possible: {}",
+        body_json(deprecated).await
+    );
+
+    let (_, _, body) = read_vocabulary(&harness).await;
+    assert_eq!(body["values"][0]["state"], serde_json::json!("deprecated"));
+
+    // And it is still guarded out of retirement, which is the difference
+    // between deprecating and retiring stated as an assertion.
+    let (_, tag, _) = read_value(&harness, "4000-REV").await;
+    let still_refused = patch_value(
+        &harness,
+        "4000-REV",
+        serde_json::json!({ "state": "retired" }),
+        &tag.expect("the value's tag"),
+    )
+    .await;
+    assert_eq!(still_refused.status(), StatusCode::CONFLICT);
+    assert_eq!(problem_code(still_refused).await, "TAXONOMY_VALUE_IN_USE");
+}
+
+/// A state token outside the machine is refused, and the refusal names every
+/// state the machine has.
+///
+/// This door builds its message from `TaxonomyState::ALL`, so it was correct
+/// across D-370 without an edit — which is the property worth pinning, not the
+/// message's current wording.
+#[tokio::test]
+async fn an_unknown_state_token_is_refused_naming_every_state() {
+    let harness = Harness::new().await;
+
+    let refused = declare(
+        &harness,
+        serde_json::json!({ "value": "4000-REV", "display_name": "R", "state": "withdrawn" }),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let detail = body_json(refused).await.to_string();
+    for token in ["active", "deprecated", "retired"] {
+        assert!(
+            detail.contains(token),
+            "the refusal must name `{token}`: {detail}"
+        );
+    }
+}
+
 /// A code the tenant never declared is `404` on its own route rather than an
 /// empty `200`.
 #[tokio::test]

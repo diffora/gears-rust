@@ -1112,6 +1112,31 @@ async fn a_retired_taxonomy_value_declares_nothing() {
     );
 }
 
+/// A **deprecated** value declares nothing either (**D-370**).
+///
+/// `declares` filters `state = 'active'`, so this follows from the predicate
+/// rather than from a branch — which is exactly why it is asserted. The middle
+/// state's whole contract is *"no new use"*, and the only thing standing
+/// between it and a new overlay scoped to a withdrawn value is that one
+/// predicate saying `active` rather than `!= retired`. A reader widening this
+/// filter to be helpful would break the state and nothing else would object.
+///
+/// Its sibling above proves the same of `retired`; the pair is what makes this
+/// a statement about the **filter** rather than about one literal.
+#[tokio::test]
+async fn a_deprecated_taxonomy_value_declares_nothing() {
+    let provider = provider().await;
+    declare_brand(&provider, "deprecated").await;
+    let repo = OverlayRepo::new(provider);
+
+    assert!(
+        !repo
+            .taxonomy_declares(&AccessScope::allow_all(), TENANT, &brand_scope())
+            .await
+            .expect("the lookup succeeds")
+    );
+}
+
 /// The classless scope consults nothing and always answers `true` — it has no
 /// value, so there is nothing to be undeclared.
 #[tokio::test]

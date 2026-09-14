@@ -32,7 +32,8 @@
 //! # The shape is the taxonomies', deliberately
 //!
 //! `(tenant_id, value)` primary key, a `display_name`, and `state IN ('active',
-//! 'retired')` — `pricing_rounding_policy_taxonomy` with its name changed. A
+//! 'deprecated', 'retired')` — `pricing_rounding_policy_taxonomy` with its name
+//! changed (**D-370** widened this `CHECK` in place). A
 //! retired value keeps resolving for the published descriptor sets that already
 //! name it and cannot be newly authored, which is what retirement means on every
 //! other taxonomy here. It is **not** a fifth `TaxonomyClass`: a GL code scopes
@@ -68,7 +69,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
             value        text NOT NULL,
             display_name text NOT NULL,
             state        text NOT NULL DEFAULT 'active'::text,
-            CONSTRAINT chk_pricing_gl_code_taxonomy_state CHECK (state IN ('active', 'retired')),
+            CONSTRAINT chk_pricing_gl_code_taxonomy_state CHECK (state IN ('active', 'deprecated', 'retired')),
             CONSTRAINT chk_pricing_gl_code_taxonomy_value_present CHECK ((length(btrim(value, chr(9) || chr(10) || chr(11) || chr(12) || chr(13) || chr(32))) > 0)),
             CONSTRAINT pricing_gl_code_taxonomy_pkey PRIMARY KEY (tenant_id, value)
         )",
@@ -83,7 +84,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             display_name text NOT NULL,
             state        text NOT NULL DEFAULT 'active',
             PRIMARY KEY (tenant_id, value),
-            CONSTRAINT chk_pricing_gl_code_taxonomy_state CHECK (state IN ('active', 'retired')),
+            CONSTRAINT chk_pricing_gl_code_taxonomy_state CHECK (state IN ('active', 'deprecated', 'retired')),
             CONSTRAINT chk_pricing_gl_code_taxonomy_value_present CHECK (length(trim(value, char(9,10,11,12,13,32))) > 0)
         )",
 ];

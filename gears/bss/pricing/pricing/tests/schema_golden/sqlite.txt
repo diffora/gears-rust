@@ -238,7 +238,7 @@ TABLE pricing_brand_taxonomy
   COLUMN state TEXT NOT NULL DEFAULT 'active' PK 0
   COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 1
   COLUMN value TEXT NOT NULL DEFAULT - PK 2
-  CONSTRAINT chk_pricing_brand_taxonomy_state CHECK (state IN ('active', 'retired'))
+  CONSTRAINT chk_pricing_brand_taxonomy_state CHECK (state IN ('active', 'deprecated', 'retired'))
   CONSTRAINT chk_pricing_brand_taxonomy_value_present CHECK (length(trim(value, char(9,10,11,12,13,32))) > 0)
 TABLE pricing_bulk_operation
   COLUMN client_key TEXT NOT NULL DEFAULT - PK 0
@@ -351,7 +351,7 @@ TABLE pricing_gl_code_taxonomy
   COLUMN state TEXT NOT NULL DEFAULT 'active' PK 0
   COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 1
   COLUMN value TEXT NOT NULL DEFAULT - PK 2
-  CONSTRAINT chk_pricing_gl_code_taxonomy_state CHECK (state IN ('active', 'retired'))
+  CONSTRAINT chk_pricing_gl_code_taxonomy_state CHECK (state IN ('active', 'deprecated', 'retired'))
   CONSTRAINT chk_pricing_gl_code_taxonomy_value_present CHECK (length(trim(value, char(9,10,11,12,13,32))) > 0)
 TABLE pricing_group_membership
   COLUMN created_at_utc TEXT NOT NULL DEFAULT strftime('%Y-%m-%dT%H:%M:%S', 'now') || '+00:00' PK 0
@@ -419,7 +419,7 @@ TABLE pricing_org_tier_taxonomy
   COLUMN state TEXT NOT NULL DEFAULT 'active' PK 0
   COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 1
   COLUMN value TEXT NOT NULL DEFAULT - PK 2
-  CONSTRAINT chk_pricing_org_tier_taxonomy_state CHECK (state IN ('active', 'retired'))
+  CONSTRAINT chk_pricing_org_tier_taxonomy_state CHECK (state IN ('active', 'deprecated', 'retired'))
   CONSTRAINT chk_pricing_org_tier_taxonomy_value_present CHECK (length(trim(value, char(9,10,11,12,13,32))) > 0)
 TABLE pricing_outbox
   COLUMN aggregate_id TEXT NOT NULL DEFAULT - PK 0
@@ -439,7 +439,7 @@ TABLE pricing_partner_taxonomy
   COLUMN state TEXT NOT NULL DEFAULT 'active' PK 0
   COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 1
   COLUMN value TEXT NOT NULL DEFAULT - PK 2
-  CONSTRAINT chk_pricing_partner_taxonomy_state CHECK (state IN ('active', 'retired'))
+  CONSTRAINT chk_pricing_partner_taxonomy_state CHECK (state IN ('active', 'deprecated', 'retired'))
   CONSTRAINT chk_pricing_partner_taxonomy_value_present CHECK (length(trim(value, char(9,10,11,12,13,32))) > 0)
 TABLE pricing_pin_frontier
   COLUMN advanced_at TEXT NOT NULL DEFAULT - PK 0
@@ -759,7 +759,7 @@ TABLE pricing_region_taxonomy
   COLUMN tax_rate_present boolean NOT NULL DEFAULT 0 PK 0
   COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 1
   COLUMN value TEXT NOT NULL DEFAULT - PK 2
-  CONSTRAINT chk_pricing_region_taxonomy_state CHECK (state IN ('active', 'retired'))
+  CONSTRAINT chk_pricing_region_taxonomy_state CHECK (state IN ('active', 'deprecated', 'retired'))
   CONSTRAINT chk_pricing_region_taxonomy_value_present CHECK (length(trim(value, char(9,10,11,12,13,32))) > 0)
 TABLE pricing_repricing_journal
   COLUMN applied_at TEXT NULL DEFAULT - PK 0
@@ -784,7 +784,7 @@ TABLE pricing_rounding_policy_taxonomy
   COLUMN state TEXT NOT NULL DEFAULT 'active' PK 0
   COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 1
   COLUMN value TEXT NOT NULL DEFAULT - PK 2
-  CONSTRAINT chk_pricing_rounding_policy_taxonomy_state CHECK (state IN ('active', 'retired'))
+  CONSTRAINT chk_pricing_rounding_policy_taxonomy_state CHECK (state IN ('active', 'deprecated', 'retired'))
   CONSTRAINT chk_pricing_rounding_policy_taxonomy_value_present CHECK (length(trim(value, char(9,10,11,12,13,32))) > 0)
 TABLE pricing_snapshot_provenance
   COLUMN acting_principal TEXT NOT NULL DEFAULT - PK 0

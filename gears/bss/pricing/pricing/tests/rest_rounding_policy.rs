@@ -887,6 +887,74 @@ async fn a_second_declare_replays_or_refuses_by_content() {
     );
 }
 
+/// **A reference the tenant default names can be deprecated, and could not be
+/// retired** (D-370).
+///
+/// `a_value_the_default_names_cannot_be_retired`'s twin, and the pair is the
+/// claim: the same fixture, the same live reference, two destinations and two
+/// answers. The deprecation takes the value out of `active_rounding_policies`
+/// so no **new** row may name it, and leaves the tenant default resolving
+/// exactly as it was — which is why the retirement is still refused
+/// afterwards.
+#[tokio::test]
+async fn a_reference_the_default_names_can_be_deprecated_but_not_retired() {
+    let harness = Harness::new().await;
+    declare_one(&harness, "half_even").await;
+
+    let (_, policy_tag, _) = read_policy(&harness).await;
+    let set = write_policy(
+        &harness,
+        serde_json::json!("half_even"),
+        &policy_tag.expect("a tag"),
+    )
+    .await;
+    assert_eq!(set.status(), StatusCode::OK);
+
+    let (_, tag, _) = read_value(&harness, "half_even").await;
+    let refused = patch_value(
+        &harness,
+        "half_even",
+        serde_json::json!({ "state": "retired" }),
+        &tag.expect("the value's tag"),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(problem_code(refused).await, "TAXONOMY_VALUE_IN_USE");
+
+    let (_, tag, _) = read_value(&harness, "half_even").await;
+    let deprecated = patch_value(
+        &harness,
+        "half_even",
+        serde_json::json!({ "state": "deprecated" }),
+        &tag.expect("the value's tag"),
+    )
+    .await;
+    assert_eq!(
+        deprecated.status(),
+        StatusCode::OK,
+        "saying `stop using this` must always be possible: {}",
+        body_json(deprecated).await
+    );
+
+    let (_, _, body) = read_vocabulary(&harness).await;
+    assert_eq!(body["values"][0]["state"], serde_json::json!("deprecated"));
+
+    let (_, tag, _) = read_value(&harness, "half_even").await;
+    let still_refused = patch_value(
+        &harness,
+        "half_even",
+        serde_json::json!({ "state": "retired" }),
+        &tag.expect("the value's tag"),
+    )
+    .await;
+    assert_eq!(still_refused.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        problem_code(still_refused).await,
+        "TAXONOMY_VALUE_IN_USE",
+        "the default still resolves through it, so it is still guarded"
+    );
+}
+
 /// A reference the tenant never declared is `404` on its own route rather than
 /// an empty `200`.
 #[tokio::test]

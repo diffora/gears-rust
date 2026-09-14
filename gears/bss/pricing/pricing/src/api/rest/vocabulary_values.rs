@@ -85,7 +85,7 @@ pub struct DeclareVocabularyValueRequest {
     pub value: String,
     /// The operator's label for it.
     pub display_name: String,
-    /// `active` or `retired`, defaulting to `active`.
+    /// `active`, `deprecated` or `retired` (D-370), defaulting to `active`.
     pub state: Option<String>,
 }
 
@@ -103,8 +103,10 @@ pub struct DeclareVocabularyValueRequest {
 pub struct PatchVocabularyValueRequest {
     /// A new label. Absent leaves the held one.
     pub display_name: Option<String>,
-    /// `active` or `retired`. A retirement is guarded
-    /// (`TAXONOMY_VALUE_IN_USE`); `retired -> active` re-activates.
+    /// `active`, `deprecated` or `retired`. A **retirement** is guarded
+    /// (`TAXONOMY_VALUE_IN_USE`); a **deprecation** never is — saying *stop
+    /// using this* must always be possible (D-370) — and `deprecated -> active`
+    /// / `retired -> active` both re-activate.
     pub state: Option<String>,
 }
 
@@ -434,13 +436,8 @@ fn parse_state_token(
     };
     TaxonomyState::parse(token).map(Some).ok_or_else(|| {
         CanonicalError::from(DomainError::InvalidRequest(format!(
-            "value `{value}` carries state `{token}`; a vocabulary value is `{}`, and nothing \
-             else",
-            TaxonomyState::ALL
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>()
-                .join("` or `")
+            "value `{value}` carries state `{token}`; a vocabulary value is {}, and nothing else",
+            TaxonomyState::tokens()
         )))
     })
 }

@@ -114,22 +114,74 @@ async fn a_value_is_declared_at_most_once_per_tenant() {
     }
 }
 
-/// `state` is `active | retired` and nothing else.
+/// The `state` `CHECK` admits **exactly** the machine's tokens, and nothing
+/// else.
 ///
-/// The pair is the whole state machine §6 gives these tables — retirement is
-/// guarded rather than cascading, and re-activation is a legal audited move —
-/// so a third token would be a state no rule in the design set describes.
+/// # What this case used to claim, and why that stopped holding
+///
+/// It was `a_state_outside_the_declared_pair_is_refused`, and it proved one
+/// thing: `'deprecated'` is rejected. The evidence paragraph behind it read
+/// *"the pair is the whole state machine §6 gives these tables … so a third
+/// token would be a state no rule in the design set describes"*, and that was
+/// true when it was written. **D-370 is the rule that describes it**: the
+/// machine gains a middle state, `deprecated`, and these `CHECK`s were widened
+/// in place to admit it. So the old assertion is not merely failing — its
+/// premise was retired by a decision, and deleting it would have taken the
+/// schema's only guard on this column with it.
+///
+/// # What replaced it is stronger in both directions
+///
+/// The old form pinned **one** rejected literal, so a `CHECK` that had
+/// drifted *narrower* — admitting only `'active'`, say — would have stayed
+/// green. This drives the positive half out of `TaxonomyState::ALL`, so every
+/// state the enum has must be storable, and pairs it with a token the enum
+/// does not have. Both halves cover a state added later with no edit here,
+/// which is what the widening itself needed and did not have: C4 could have
+/// widened five tables and missed the sixth with nothing to notice.
 #[tokio::test]
-async fn a_state_outside_the_declared_pair_is_refused() {
+async fn the_state_check_admits_exactly_the_machines_tokens() {
     let conn = migrated_db().await;
     for table in TAXONOMIES {
+        for state in bss_pricing::domain::taxonomy::TaxonomyState::ALL {
+            must_succeed(
+                &conn,
+                &insert(table, TENANT, &format!("v-{state}"), state.as_str()),
+            )
+            .await;
+        }
         must_be_rejected(
             &conn,
-            &insert(table, TENANT, "eu-west", "deprecated"),
+            &insert(table, TENANT, "eu-west", "withdrawn"),
             &format!("chk_{table}_state"),
         )
         .await;
     }
+}
+
+/// **The customer-group taxonomy is the one table that still refuses
+/// `'deprecated'`** — the scope decision, asserted at the schema.
+///
+/// D-370 gave the middle state to six of the seven vocabularies and held this
+/// one back: its values carry payer members and its retire guard counts live
+/// `pricing_group_membership` rows, so widening it is a change to a plane the
+/// other six do not have. That call was left to the owner.
+///
+/// Without this case the deferral lives only in prose, and the next person to
+/// run a widening loop over `*taxonomy*.rs` would catch this table by accident
+/// and nothing would object. It is deliberately a **refusal**: the day the
+/// owner says yes, this case fails and has to be read.
+#[tokio::test]
+async fn the_customer_group_taxonomy_does_not_admit_the_middle_state() {
+    let conn = migrated_db().await;
+    let table = "pricing_customer_group_taxonomy";
+    must_succeed(&conn, &insert(table, TENANT, "gold", "active")).await;
+    must_succeed(&conn, &insert(table, TENANT, "silver", "retired")).await;
+    must_be_rejected(
+        &conn,
+        &insert(table, TENANT, "bronze", "deprecated"),
+        &format!("chk_{table}_state"),
+    )
+    .await;
 }
 
 /// A blank value is refused in each of the four.

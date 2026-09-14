@@ -96,7 +96,7 @@ pub struct GlCodeValueView {
     pub value: String,
     /// The operator's label for it.
     pub display_name: String,
-    /// `active` or `retired`. Absent reads as `active`, because a body listing a
+    /// `active`, `deprecated` or `retired` (D-370). Absent reads as `active`, because a body listing a
     /// value is a body declaring it.
     pub state: Option<String>,
 }
@@ -115,7 +115,7 @@ pub struct GlCodesView {
     /// config documents concurrently could pair one's tag with the other's body,
     /// which is a wrong precondition rather than a failed one.
     pub resource: String,
-    /// Every declared value, `active` and `retired` alike, ordered by value.
+    /// Every declared value, in every state (D-370), ordered by value.
     ///
     /// Retirements are **included** so the round trip is honest: an operator who
     /// reads, edits and writes back can see the value they are about to
@@ -207,7 +207,8 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.get_gl_code")
         .summary("Read one declared GL code")
         .description(
-            "One code, `active` or `retired`, with **its own `ETag`** - the tag the per-value \
+            "One code, `active`, `deprecated` or `retired`, with **its own `ETag`** - the tag \
+             the per-value \
              `PATCH` demands, and the only place to obtain it (the set's tag from `GET \
              .../config/gl-codes` covers the whole list and does not satisfy the per-value \
              precondition). A code the tenant has never declared is `404`. This GET always \

@@ -169,7 +169,7 @@ pub struct DeclareTaxonomyValueRequest {
     pub value: String,
     /// The operator's label for it.
     pub display_name: String,
-    /// `active` or `retired`, defaulting to `active`.
+    /// `active`, `deprecated` or `retired` (D-370), defaulting to `active`.
     pub state: Option<String>,
     /// The region's default tax category (D-01). **Region taxonomy only.**
     pub tax_category: Option<String>,
@@ -187,10 +187,12 @@ pub struct TaxonomyValueView {
     pub value: String,
     /// The operator's label for it.
     pub display_name: String,
-    /// `active` or `retired`. Optional on the way in and defaulting to `active`,
-    /// because a body listing a value is a body declaring it; sending
-    /// `"retired"` is the explicit spelling of the same act as leaving it out,
-    /// and both are guarded identically.
+    /// `active`, `deprecated` or `retired` (D-370). Optional on the way in and
+    /// defaulting to `active`, because a body listing a value is a body
+    /// declaring it; sending `"retired"` is the explicit spelling of the same
+    /// act as leaving it out, and both are guarded identically. **`deprecated`
+    /// has no such second spelling** — absence still means retirement, so a
+    /// deprecation is only ever said out loud.
     pub state: Option<String>,
     /// The region's default tax category (D-01). **Region taxonomy only** — the
     /// other three carry no such column, and a body setting it on them is
@@ -241,7 +243,7 @@ pub struct TaxonomyValueView {
 pub struct TaxonomyView {
     /// Which universe this is — the path segment, echoed.
     pub class: String,
-    /// Every declared value, `active` and `retired` alike, ordered by value.
+    /// Every declared value, in every state (D-370), ordered by value.
     ///
     /// Retirements are **included**, which is what makes the round trip honest:
     /// an operator who reads, edits and writes back has to be able to see the
@@ -261,8 +263,10 @@ pub struct TaxonomyView {
 pub struct PatchTaxonomyValueRequest {
     /// A new label.
     pub display_name: Option<String>,
-    /// `active` or `retired`. A retirement is guarded (`TAXONOMY_VALUE_IN_USE`);
-    /// `retired -> active` re-activates.
+    /// `active`, `deprecated` or `retired`. A **retirement** is guarded
+    /// (`TAXONOMY_VALUE_IN_USE`); a **deprecation** never is, because saying
+    /// *stop using this* must always be possible (D-370). `deprecated ->
+    /// active` and `retired -> active` both re-activate.
     pub state: Option<String>,
     /// **Region only.** A string sets the default category; `null` clears it;
     /// absent leaves it.
@@ -383,9 +387,11 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.get_taxonomy")
         .summary("Read one of the tenant's four scope-value taxonomies")
         .description(
-            "Every value the tenant has declared in this universe, `active` and `retired` \
-             alike, ordered by value. Retirements are included deliberately: retirement is \
-             guarded rather than cascading and `retired -> active` is a legal audited move, so \
+            "Every value the tenant has declared in this universe - `active`, `deprecated` \
+             and `retired` alike - ordered by value. Withdrawn values are included \
+             deliberately: retirement is guarded rather than cascading, a deprecation \
+             withdraws a value from new use while everything already published against it \
+             keeps resolving, and both ways back to `active` are legal audited moves, so \
              an operator editing this list has to be able to see the value they are about to \
              re-activate. A tenant that has declared nothing is answered `200` with an empty \
              list on the brand, partner and org_tier universes - a state, not an absent \
@@ -467,7 +473,8 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .operation_id("bss_pricing.get_taxonomy_value")
         .summary("Read one declared value of a scope-value taxonomy")
         .description(
-            "One value, `active` or `retired`, with **its own `ETag`** - the tag the \
+            "One value - `active`, `deprecated` or `retired` - with **its own `ETag`** - the \
+                 tag the \
                  per-value `PATCH` demands, and the only place to obtain it (the set's tag from \
                  `GET .../taxonomies/{class}` covers the whole list and does not satisfy the \
                  per-value precondition). A value the tenant has never declared is `404`. \
@@ -968,8 +975,9 @@ fn authored_patch(
         None => None,
         Some(token) => Some(TaxonomyState::parse(token).ok_or_else(|| {
             CanonicalError::from(DomainError::InvalidRequest(format!(
-                "value `{value}` carries state `{token}`; a taxonomy value is `active` or \
-                 `retired`, and nothing else"
+                "value `{value}` carries state `{token}`; a taxonomy value is {}, and nothing \
+                 else",
+                TaxonomyState::tokens()
             )))
         })?),
     };
@@ -1163,9 +1171,11 @@ fn authored_entry(
         None => TaxonomyState::Active,
         Some(token) => TaxonomyState::parse(token).ok_or_else(|| {
             CanonicalError::from(DomainError::InvalidRequest(format!(
-                "value `{declared}` carries state `{token}`; a taxonomy value is `active` or \
-                 `retired`, and nothing else — retirement is guarded and re-activation is a \
-                 legal audited move, so a third state would be one no rule describes"
+                "value `{declared}` carries state `{token}`; a taxonomy value is {}, and \
+                 nothing else — `deprecated` withdraws it from new use while everything \
+                 already published against it keeps resolving (D-370), retirement is guarded, \
+                 and both ways back to `active` are legal audited moves",
+                TaxonomyState::tokens()
             )))
         })?,
     };

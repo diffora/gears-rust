@@ -288,29 +288,97 @@ impl fmt::Display for VocabularyClass {
     }
 }
 
-/// `active | retired` — the whole state machine §6 gives these tables.
+/// `active | deprecated | retired` — the machine §6 gives these tables.
+///
+/// # Why there is a middle state (D-370)
+///
+/// The machine was `active | retired`, and `retired` is guarded **on entry**:
+/// a value a published price row or overlay scope still names cannot reach it
+/// ([`check_retirable`], `TAXONOMY_VALUE_IN_USE`). Only `active` validates
+/// anything. Put those two facts together and a value in published use is
+/// **permanently `active`**: there was no way at all to say *stop using this*
+/// while what already uses it keeps working. An operator withdrawing a brand,
+/// a region or a GL code had two options, and both were wrong — retire it and
+/// be refused, or leave it authorable and hope.
+///
+/// `Deprecated` is that missing statement, and it is deliberately the **only**
+/// thing it says: it is not in the active set, so nothing new may be assigned
+/// to it; it is not `retired`, so nothing about what already resolves through
+/// it changes; and the retirement guard is unmoved — a deprecated value still
+/// cannot be retired while something published names it, which is exactly
+/// `is_a_retirement`'s destination key (D-369) doing the work it was re-keyed
+/// for.
+///
+/// # The order is the machine's, and `Ord` is derived from it
+///
+/// `Active < Deprecated < Retired` reads as *"how far withdrawn"*, which is
+/// the only ordering any reader of this type has ever wanted. No rule depends
+/// on it; the variant order is what `ALL` iterates and what a sorted rendering
+/// would show.
 #[domain_model]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TaxonomyState {
     /// Declared and usable. The only state that validates anything.
     #[default]
     Active,
-    /// Withdrawn from new use. Existing references survive — retirement is
-    /// **guarded**, never cascading — but a retired value declares nothing, which
-    /// is `overlay_repo::declares`' `state = 'active'` predicate.
+    /// **Declared, and withdrawn from new use** (D-370). Everything already
+    /// published against it keeps resolving — a deprecation cascades nowhere
+    /// and freezes nothing — but the value is out of every `state = 'active'`
+    /// universe, so no new price row, overlay scope, descriptor or tenant
+    /// default may name it.
+    ///
+    /// The state a value in published use can actually reach: retirement is
+    /// refused while anything published names it, so before this there was no
+    /// move at all from *"in use"* to *"do not use this any more"*.
+    Deprecated,
+    /// Withdrawn from new use **and** from the vocabulary. Existing references
+    /// survive — retirement is **guarded**, never cascading — but a retired
+    /// value declares nothing, which is `overlay_repo::declares`'
+    /// `state = 'active'` predicate.
+    ///
+    /// `retired` keeps its meaning exactly: it is **not** renamed and it is not
+    /// what `deprecated` replaced. The difference between the two is what an
+    /// operator may still do — a deprecated value is an ordinary member of the
+    /// list that happens to be unassignable, a retired one is guarded out of
+    /// existence — and both leave published rows alone.
     Retired,
 }
 
 impl TaxonomyState {
-    /// Both states.
-    pub const ALL: &'static [Self] = &[Self::Active, Self::Retired];
+    /// Every state, in the machine's own order.
+    pub const ALL: &'static [Self] = &[Self::Active, Self::Deprecated, Self::Retired];
 
     /// The stored / wire token.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Active => "active",
+            Self::Deprecated => "deprecated",
             Self::Retired => "retired",
+        }
+    }
+
+    /// The tokens this machine admits, backticked and rendered for a refusal
+    /// that has to name them — `` `active`, `deprecated` or `retired` ``.
+    ///
+    /// Built from [`Self::ALL`] rather than written out, so a door's message
+    /// cannot come to name a smaller machine than the one it parses against.
+    /// That is not hypothetical: three doors said *"a taxonomy value is
+    /// `active` or `retired`, and nothing else"* in prose while parsing
+    /// against `ALL`, so widening the machine under them would have left three
+    /// refusals naming a machine that no longer existed. The backticks are
+    /// part of the rendering so a call site cannot add its own and produce
+    /// ``` ``active`` ```.
+    #[must_use]
+    pub fn tokens() -> String {
+        let rendered: Vec<String> = Self::ALL.iter().map(|s| format!("`{s}`")).collect();
+        match rendered.split_last() {
+            // Unreachable: the machine always has states. Written as a total
+            // function rather than an index, because a panic here would be a
+            // claim about `ALL` this type exists to guarantee.
+            None => String::new(),
+            Some((last, [])) => last.clone(),
+            Some((last, head)) => format!("{} or {last}", head.join(", ")),
         }
     }
 
@@ -429,7 +497,8 @@ pub enum TaxCategoryPatch {
 pub struct TaxonomyValuePatch {
     /// A new label.
     pub display_name: Option<String>,
-    /// `active` or `retired`; a retirement is guarded.
+    /// `active`, `deprecated` or `retired`; a **retirement** is guarded and a
+    /// **deprecation** is not (D-370).
     pub state: Option<TaxonomyState>,
     /// **Region only.**
     pub tax_category: TaxCategoryPatch,

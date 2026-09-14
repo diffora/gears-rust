@@ -944,7 +944,10 @@ impl OverlayRepo {
 ///
 /// A **retired** value does not declare anything: §6 guards retirement while a
 /// value is referenced, and a value that reached `retired` anyway must not
-/// validate a new overlay against itself.
+/// validate a new overlay against itself. A **deprecated** one declares
+/// nothing either, and for a sharper reason — that absence is the entirety of
+/// what D-370's middle state means, so this filter saying `active` rather than
+/// `!= retired` is the state's only enforcement point.
 async fn declares(
     runner: &impl DBRunner,
     scope: &AccessScope,
