@@ -1764,6 +1764,16 @@ per-decision anchors, and it was corrected by running the command it prescribed.
 
 #### P-D-171 — The display-label exception gets the operand it never had: the op token the submission already stores
 
+> **Corrected by this group's own four-lens review (2026-09-14, `96e1f9179`): the operand is the
+> token **and** the subject, not the token alone.** `subject_ref` and `content_snapshot` are both
+> the caller's, so keyed on the token alone a submission naming `10`'s `pii_allowlist` subject with
+> a `recognized_set.label` payload closed on one approver — and `10`'s door has no binding of its
+> own, **P-D-172**'s scope being `03`'s three doors, so it would have spent that record on a
+> PII-allow-list op. The declaration is now read only for a subject beginning
+> `recognized_set/`, which is `member_op_subject`'s own rendering; the two conditions are
+> `AND`ed, so `03`'s subject carrying `02`'s `attribute_definition.label` buys nothing either.
+> Everything else in this entry stands.
+
 - **Date**: 2026-09-14 (the vocabulary-convergence plan, Phase R group D task 1; pays **P-D-170**'s
   first *Owed* item)
 - **What this decides.** A `governed_live_op` submission whose `content_snapshot` declares
