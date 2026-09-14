@@ -160,6 +160,81 @@ pub fn member_edge(from: MemberState, to: MemberState) -> Result<(), DomainError
     }
 }
 
+/// The three acts the set's write doors perform, as a `GovernedLiveOp`
+/// submission may declare them (**P-D-171**).
+///
+/// # Why a declared token and not a route census
+///
+/// A `governed_live_op` approval names its subject (`recognized_set/{set_kind}/
+/// {member_code}`) and **not** the act, so the submit door cannot tell a
+/// relabel from a removal by looking at the subject alone — which is exactly
+/// why the `min(N, 1)` exception `design/05` §4 registers for a
+/// `display_label` change had no operand to read and went unenforced from
+/// 2026-09-03 (P-D-121 row 17) to P-D-170's *Owed* item. The op payload is
+/// the operand: **P-D-120 row 14** already makes `content_snapshot` *"the op
+/// payload"* for every non-entity subject, and `api::rest::bulk`'s lifecycle
+/// rows already render one as `{"op": …}`. This type names the tokens that
+/// rendering may carry for this slice.
+///
+/// # The roster is closed, and an unknown token is not one of them
+///
+/// [`Self::parse`] answers `None` outside the three, and the submit door
+/// treats `None` as *"declares no op"* — today's judgement, which is
+/// material. A token that could be invented into the discount would make the
+/// exception a caller's to claim by spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemberOp {
+    /// `POST …/recognized-sets/{setKind}/members` — the governed add.
+    Add,
+    /// `POST …/members/{memberCode}/transitions` — one state-machine edge.
+    Transition,
+    /// `POST …/members/{memberCode}/label` — the `display_label` rename, and
+    /// the only one of the three the exception reaches.
+    Relabel,
+}
+
+impl MemberOp {
+    /// The whole roster, in door order.
+    ///
+    /// A fourth op cannot land silently: [`Self::token`] and
+    /// [`Self::is_display_label_rename`] are exhaustive matches, and
+    /// `every_member_op_is_in_the_roster` matches every variant and asserts
+    /// `ALL` carries it.
+    pub const ALL: [Self; 3] = [Self::Add, Self::Transition, Self::Relabel];
+
+    /// The token a submission declares, in the owning slice's own vocabulary
+    /// — `02` spells its two `category.{op}` and `attribute_definition.{op}`,
+    /// and this is `03`'s half of the same convention
+    /// (`domain::live_op`'s own module doc names the shape).
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Add => "recognized_set.add",
+            Self::Transition => "recognized_set.transition",
+            Self::Relabel => "recognized_set.label",
+        }
+    }
+
+    /// Parse a declared token, `None` outside the roster.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|op| op.token() == value)
+    }
+
+    /// Whether this op is the `display_label` change `design/05` §4 excepts
+    /// from input (d)'s registration (**P-D-121** row 17).
+    ///
+    /// Exhaustive rather than a one-name `matches!`, so a fourth op has to
+    /// say which side of the exception it is on.
+    #[must_use]
+    pub const fn is_display_label_rename(self) -> bool {
+        match self {
+            Self::Relabel => true,
+            Self::Add | Self::Transition => false,
+        }
+    }
+}
+
 /// Whether the recognized-and-active check runs (**P-D-121** row 8).
 ///
 /// A carried-forward value is judged by the state it had when declared;

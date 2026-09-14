@@ -39,6 +39,20 @@
 //! counter, and `diff_basis` is `NULL` there being no published version to
 //! diff against.
 //!
+//! # The payload is read, not only stored (**P-D-171**)
+//!
+//! Because it *is* the op payload, it is also the only operand this door has
+//! for **which** op a live-op submission is for: the subject names the member
+//! and not the act. [`declared_member_op`] reads the `{"op": …}` token
+//! `api::rest::bulk` already renders for a lifecycle row, and
+//! [`live_op_act`] turns it into input (d)'s act — which is how
+//! `design/05` §4's `min(N, 1)` exception for a `display_label` change
+//! (**P-D-121** row 17) finally gets an operand. An earlier revision of this
+//! module said the door *"has no field naming which edit a live op carries"*
+//! and judged every live op `Registered`; the field it needed was the one it
+//! was already storing. A payload that names no op this gear recognises is
+//! judged exactly as it was.
+//!
 //! # Roles are claims, and their absence is reported as absence
 //!
 //! **P-D-134** row 25: a principal's role is on no surface today; when the
@@ -76,6 +90,7 @@ use axum::Router;
 use axum::extract::{Extension, Path};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use serde_json::Value as JsonValue;
 use time::OffsetDateTime;
 use toolkit::api::OpenApiRegistry;
 use toolkit::api::canonical_prelude::{CanonicalError, resource_error};
@@ -98,6 +113,7 @@ use crate::domain::governance::{ApprovalId, EntityRef, GateSubject, SubjectKind,
 use crate::domain::materiality::{
     EnumeratedOp, LiveOpEdit, MaterialAct, MaterialLiveOp, MaterialityEvaluator,
 };
+use crate::domain::recognized::MemberOp;
 use crate::domain::taxonomy::{PiiDetector, content_pii_block};
 use crate::domain::validation::ValidationReport;
 use crate::infra::events::{self, GovernanceEventBody};
@@ -1159,16 +1175,14 @@ pub(crate) async fn resolve_entity_subject(
 /// Each kind maps to the input `inst-mt-inputs` declares for it, and the map
 /// is exhaustive so a seventh kind cannot arrive without saying which input
 /// judges it.
-const fn non_entity_act(kind: SubjectKind) -> MaterialAct<'static> {
+///
+/// `declared` is the op the submission's payload names, where it names one
+/// this gear recognises ([`declared_member_op`]) — the operand input (d)'s
+/// exception needs and had none of until **P-D-171**.
+const fn non_entity_act(kind: SubjectKind, declared: Option<MemberOp>) -> MaterialAct<'static> {
     match kind {
-        // `02`/`03`'s envelope. `Registered` rather than the display-label
-        // exception: a rename arrives through the taxonomy doors' own
-        // envelope, and this door has no field naming which edit a live op
-        // carries — see the module doc's note on P-D-121 row 17.
-        SubjectKind::GovernedLiveOp => MaterialAct::LiveOp {
-            kind: MaterialLiveOp::TaxonomyOp,
-            edit: LiveOpEdit::Registered,
-        },
+        // `02`/`03`'s envelope, judged by what the payload declares.
+        SubjectKind::GovernedLiveOp => live_op_act(declared),
         // The policy's own mutation is material in either direction (C4).
         SubjectKind::MaterialityPolicy => MaterialAct::PolicyMutation,
         // `06`'s inbound composition clear and `07`'s immutable-field
@@ -1195,6 +1209,64 @@ const fn non_entity_act(kind: SubjectKind) -> MaterialAct<'static> {
         // knows the count says otherwise, and no caller can lower it here.
         SubjectKind::BulkBatch => MaterialAct::BatchAct { affected: u32::MAX },
     }
+}
+
+/// Input (d)'s act, from the op the submission declared (**P-D-171**).
+///
+/// # The exception is read off the payload, not off the subject
+///
+/// `design/05` §4 registers `GovernedLiveOp` kinds material *"except a
+/// `display_label` change, on either slice's vocabulary, which is
+/// non-material and therefore `min(N, 1)`"* (**P-D-121** row 17). That
+/// exception had no operand here: a live-op subject is
+/// `recognized_set/{set_kind}/{member_code}`, which names the member and not
+/// the act, so every submission was judged `Registered` and charged the full
+/// `N` — which **P-D-170** recorded as *"registered and not yet enforced"*.
+/// The payload is the operand P-D-120 row 14 already gave the door:
+/// `content_snapshot` *is* the op payload for a non-entity subject.
+///
+/// # A declaration this door does not recognise buys nothing
+///
+/// The `None` arm is the pre-P-D-171 act, byte for byte — `TaxonomyOp` with
+/// `Registered`, hence material whatever the kind, so the kind named in it
+/// moves no verdict. Every subject whose payload declares no op of this
+/// gear's — slice `08`'s `catalog_version/{id}/force_complete`, `10`'s
+/// `pii_allowlist`, the e2e's generic `{"subject": …}` — is judged exactly as
+/// it was before this function existed. The discount is reachable only by
+/// naming an op, and naming one is what binds the record to it
+/// (**P-D-172**).
+const fn live_op_act(declared: Option<MemberOp>) -> MaterialAct<'static> {
+    match declared {
+        Some(op) if op.is_display_label_rename() => MaterialAct::LiveOp {
+            // `03`'s members, whose `bears_display_label` is the half of
+            // P-D-121 row 17 this slice owns; `02`'s definitions are the
+            // other half and are owed (P-D-171's *Owed*).
+            kind: MaterialLiveOp::RecognizedSetOp,
+            edit: LiveOpEdit::DisplayLabelRename,
+        },
+        Some(_) | None => MaterialAct::LiveOp {
+            kind: MaterialLiveOp::TaxonomyOp,
+            edit: LiveOpEdit::Registered,
+        },
+    }
+}
+
+/// The op a non-entity submission's payload declares, `None` where it
+/// declares none this gear recognises.
+///
+/// **A payload that is not JSON declares nothing** rather than being
+/// refused: `content_snapshot` is free text by design (`design/05` §4 stores
+/// it, never re-derives it) and carries a `<> ''` CHECK and nothing more, so
+/// refusing a non-JSON payload here would close a door that has been open
+/// since the store was built. It reads as the `None` arm, which is the
+/// unchanged judgement.
+fn declared_member_op(snapshot: &str) -> Option<MemberOp> {
+    let op = serde_json::from_str::<JsonValue>(snapshot)
+        .ok()?
+        .get("op")?
+        .as_str()?
+        .to_owned();
+    MemberOp::parse(&op)
 }
 
 /// `POST /bss-products/v1/approvals`.
@@ -1492,6 +1564,9 @@ async fn resolve_submission(
             "a non-entity subject carries the op payload as its snapshot (P-D-120 row 14)",
         )));
     };
+    // Read before the snapshot moves into the submission: the payload is the
+    // act's operand and the record's stored bytes at once (**P-D-171**).
+    let declared = declared_member_op(&snapshot);
     Ok(Ok(Submission {
         subject: GateSubject {
             tenant_id,
@@ -1513,7 +1588,7 @@ async fn resolve_submission(
         content_snapshot: snapshot,
         // NULL: there is no published version to diff against.
         diff_basis: None,
-        act: ActSpec::Owned(non_entity_act(kind)),
+        act: ActSpec::Owned(non_entity_act(kind, declared)),
         override_conditions: Vec::new(),
     }))
 }

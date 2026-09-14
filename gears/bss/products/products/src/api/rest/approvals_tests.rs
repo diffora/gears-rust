@@ -361,6 +361,151 @@ async fn the_born_state_follows_the_tenants_configured_quorum() {
     );
 }
 
+/// **A declared `display_label` relabel closes on one approver at `N = 2`,
+/// and a state transition on the same member still needs two** — `design/05`
+/// §4's registered exception, enforced (**P-D-171**, paying **P-D-170**'s
+/// first *Owed* item; the exception itself is **P-D-121** row 17).
+///
+/// The two submissions differ in **one operand**: the `op` token in the
+/// payload. Same subject, same tenant, same configured `N` — so nothing but
+/// the declaration can explain the two counts, and the transition arm is the
+/// control that keeps the relabel arm from passing against a door that had
+/// simply stopped charging `N`.
+///
+/// The decide step is what makes `required` more than a printed number: at
+/// `required = 1` one `CatalogAdmin` moves the record to `satisfied`, and at
+/// `required = 2` the same single decision leaves it `pending`.
+#[tokio::test]
+async fn a_declared_relabel_closes_on_one_approver_and_a_transition_still_needs_two() {
+    let harness = harness().await;
+
+    let relabel = body_of(
+        post(
+            app_for(&harness, TENANT),
+            "/bss-products/v1/approvals",
+            ctx_without_roles(Uuid::from_u128(0x5a_a0)),
+            json!({
+                "subject_kind": "governed_live_op",
+                "subject_ref": "recognized_set/plan_tier/gold",
+                "finance_material": false,
+                "content_snapshot": r#"{"op":"recognized_set.label","display_label":"Gold tier"}"#,
+            }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        relabel["required"], 1,
+        "a display_label change is non-material, so the effective count is min(N, 1)"
+    );
+    assert_eq!(
+        relabel["configured_quorum"], 2,
+        "the tenant's N is untouched: only the effective count moves"
+    );
+    assert_eq!(relabel["quorum_reduced"], true);
+    let relabel_id: Uuid = relabel["approval_id"]
+        .as_str()
+        .expect("the receipt names the record")
+        .parse()
+        .expect("a uuid");
+    let decided = body_of(
+        decide_as(
+            &harness,
+            relabel_id,
+            ctx_with_roles(Uuid::from_u128(0x5a_a1), &[ApproverRole::CatalogAdmin]),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        decided["state"], "satisfied",
+        "one eligible approver meets a min(N, 1) descriptor"
+    );
+
+    let transition = body_of(
+        post(
+            app_for(&harness, TENANT),
+            "/bss-products/v1/approvals",
+            ctx_without_roles(Uuid::from_u128(0x5a_a0)),
+            json!({
+                "subject_kind": "governed_live_op",
+                "subject_ref": "recognized_set/metering_unit/gib_hours",
+                "finance_material": false,
+                "content_snapshot":
+                    r#"{"op":"recognized_set.transition","to":"deprecated","expected_state":"active"}"#,
+            }),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        transition["required"], 2,
+        "a state transition is the registration, not the exception: full N"
+    );
+    let transition_id: Uuid = transition["approval_id"]
+        .as_str()
+        .expect("the receipt names the record")
+        .parse()
+        .expect("a uuid");
+    let half = body_of(
+        decide_as(
+            &harness,
+            transition_id,
+            ctx_with_roles(Uuid::from_u128(0x5a_a1), &[ApproverRole::CatalogAdmin]),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(
+        half["state"], "pending",
+        "one approver of two leaves the material record open"
+    );
+    assert_eq!(half["counted"], 1);
+    assert_eq!(half["required"], 2);
+}
+
+/// **A live-op payload that declares no op this gear recognises is judged
+/// exactly as it was before P-D-171** — the compatibility clause the
+/// registration rests on.
+///
+/// Three payloads, one count. `{"subject": …}` is what `vhp-core`'s e2e
+/// library sends for every `governed_live_op`; `{"op":"category.rename"}` is
+/// a token from `02`'s vocabulary, which this slice's roster does not carry;
+/// and `not json at all` is the free-text case `content_snapshot`'s column
+/// permits. None of them may buy the discount, and none of them may be
+/// refused — a submission door that started rejecting payloads would break
+/// every caller at once.
+#[tokio::test]
+async fn a_live_op_payload_that_declares_no_known_op_keeps_the_full_quorum() {
+    let harness = harness().await;
+
+    for (label, snapshot) in [
+        (
+            "the e2e's generic payload",
+            r#"{"subject":"recognized_set/plan_tier/gold"}"#,
+        ),
+        ("another slice's op token", r#"{"op":"category.rename"}"#),
+        ("free text that is not JSON", "not json at all"),
+    ] {
+        let response = post(
+            app_for(&harness, TENANT),
+            "/bss-products/v1/approvals",
+            ctx_without_roles(Uuid::from_u128(0x5a_a0)),
+            json!({
+                "subject_kind": "governed_live_op",
+                "subject_ref": format!("recognized_set/plan_tier/{}", label.len()),
+                "finance_material": false,
+                "content_snapshot": snapshot,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), 201, "{label} is admitted, not refused");
+        let body = body_of(response).await;
+        assert_eq!(body["required"], 2, "{label} is judged material");
+        assert_eq!(body["quorum_reduced"], false, "{label} spends the full N");
+    }
+}
+
 /// **A subject kind outside the `CHECK`'s roster is refused at the door**,
 /// not at the constraint.
 #[tokio::test]

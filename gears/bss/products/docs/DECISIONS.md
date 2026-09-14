@@ -1569,6 +1569,64 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-171 — The display-label exception gets the operand it never had: the op token the submission already stores
+
+- **Date**: 2026-09-14 (the vocabulary-convergence plan, Phase R group D task 1; pays **P-D-170**'s
+  first *Owed* item)
+- **What this decides.** A `governed_live_op` submission whose `content_snapshot` declares
+  `{"op": "recognized_set.label"}` is judged **non-material**, so its effective quorum is
+  `min(N, 1)` — one approver at the retained default of two. Every other declaration, and every
+  payload declaring no token this gear recognises, is judged exactly as it was: `Registered`, hence
+  material, hence the full `N`.
+- **The registration had no operand, and that is why it had no effect.** `design/05` §4 has
+  registered the exception since P-D-170 wrote it there — *"except a `display_label` change, on
+  either slice's vocabulary, which is non-material and therefore `min(N, 1)`"* (**P-D-121** row 17,
+  owed from 2026-09-03). The evaluator has carried it since P-D-121's own build:
+  `domain::materiality::live_op_verdict` answers `NonMaterial` for
+  `LiveOpEdit::DisplayLabelRename` on a kind whose `bears_display_label` holds, and
+  `domain::approval::describe_quorum` turns `NonMaterial` into `min(N, 1)`. **Both halves shipped
+  and never met**: `api::rest::approvals::non_entity_act` built every live-op act as
+  `{ kind: TaxonomyOp, edit: Registered }`, and its own comment said why — *"this door has no field
+  naming which edit a live op carries"*. So the exception was registered, evaluable, and
+  unreachable, and a relabel has been charged the full `N` since the relabel door landed
+  (**P-D-146**, 2026-09-05).
+- **The operand is the payload, not a new wire field.** **P-D-120** row 14 already decided that
+  `content_snapshot` *is* the op payload for every non-entity subject, and `api::rest::bulk`
+  already renders a lifecycle row's as `{"op": …}`. So the field the door "has no" was the field it
+  was already storing. `domain::recognized::MemberOp` names this slice's three tokens
+  (`recognized_set.add`, `recognized_set.transition`, `recognized_set.label`) as `02` names its own
+  `category.{op}` and `attribute_definition.{op}`, and `declared_member_op` reads one off the
+  submitted payload.
+- **What could have gone the other way, and why it did not.**
+  - **A new request field** (`liveOpEdit`) was the obvious shape and is worse twice over: it adds a
+    wire field for a fact the wire already carries, and it puts the materiality operand somewhere
+    **P-D-172**'s binding cannot reach — the record is bound to its payload, so an operand outside
+    the payload would be a discount nothing later holds the caller to.
+  - **Deriving the kind from `subject_ref`'s prefix** would have let the exception apply without any
+    declaration. It was rejected because the prefix names the *member*, and the whole finding here
+    is that the member does not determine the act.
+  - **Refusing a payload that declares no op** would make the discount's mechanism compulsory for
+    every live-op caller of six slices at once. `content_snapshot` is free text under a `<> ''`
+    CHECK and nothing more; the `None` arm is the pre-existing judgement byte for byte, which is
+    what keeps `08`'s `catalog_version/{id}/force_complete`, `10`'s `pii_allowlist` and the
+    `vhp-core` e2e's generic `{"subject": …}` payload unchanged.
+- **Non-material is not ungated, and the entry says so because the word invites the error.** The
+  record is still an `ApprovalRecord`, still a ceremony, still one approver from the C1 base role
+  set who is **not** the submitter (`decision_admitted` refuses a self-approval at
+  `required >= 1`). What moves is the count, from two to one.
+- **The window this opens, stated rather than discovered.** Between this entry and **P-D-172** a
+  submitter can declare `recognized_set.label`, pay one approver, and spend the record on a
+  *deprecate* — because until P-D-172 an approval for a member authorizes any op on that member
+  (**P-D-146**'s *"unpinned"*). The two land in the same push and no release carries this one
+  alone; P-D-172 is what makes the declaration binding, and that is the reason the operand is the
+  payload rather than a field beside it.
+- **Owed**: `02`'s half of the same exception. `MaterialLiveOp::TaxonomyOp::bears_display_label`
+  is `true` for attribute definitions and `attribute_definition.label` is `02`'s own token, but
+  granting it the discount without P-D-172's binding on `02`'s two doors would open the window
+  above and leave it open. It is one roster entry and one door pass, and it waits on the binding.
+- **Propagated**: `design/05-governance.md` §4 (`inst-mt-inputs`, the exception's operand),
+  `design/03-sku-classification.md` §3.1 (`inst-rs-shape`, the three op tokens).
+
 #### P-D-170 — The recognized sets become readable, and the read grant is split by kind exactly as the write grant is
 
 - **Date**: 2026-09-14 (owner instruction: begin the vocabulary-convergence plan's first step)

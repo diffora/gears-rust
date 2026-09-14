@@ -2,7 +2,7 @@
 //! ship the defect its instruction names.
 
 use super::{
-    MemberState, SetKind, UsageTypeAnswer, declaration_is_new, declaration_verdict,
+    MemberOp, MemberState, SetKind, UsageTypeAnswer, declaration_is_new, declaration_verdict,
     judge_usage_type, member_edge, meter_pair_complete,
 };
 use crate::domain::error::DomainError;
@@ -167,5 +167,49 @@ fn every_set_kind_has_a_registered_carrier_column() {
             "{}'s carrier `{column}` is not a registered SKU column",
             kind.as_str()
         );
+    }
+}
+
+/// **Every member op is in the roster, round-trips its token, and exactly one
+/// of them is the exception** (**P-D-171**).
+///
+/// The `match` is what makes it total: a fourth variant will not compile
+/// until it is named here, and a bare `ALL.len()` assertion would prove
+/// nothing because the array's type carries its own length. The
+/// exactly-one clause is the guard that matters — `is_display_label_rename`
+/// answering `true` for a second op would hand `min(N, 1)` to an act
+/// `design/05` §4 registers material.
+#[test]
+fn every_member_op_is_in_the_roster_and_exactly_one_is_the_exception() {
+    for op in [MemberOp::Add, MemberOp::Transition, MemberOp::Relabel] {
+        assert!(MemberOp::ALL.contains(&op), "{} is outside ALL", op.token());
+        assert_eq!(
+            MemberOp::parse(op.token()),
+            Some(op),
+            "{} does not round-trip",
+            op.token()
+        );
+    }
+    let exceptions: Vec<&str> = MemberOp::ALL
+        .into_iter()
+        .filter(|op| op.is_display_label_rename())
+        .map(MemberOp::token)
+        .collect();
+    assert_eq!(exceptions, vec!["recognized_set.label"]);
+}
+
+/// A token outside the roster parses to nothing, including `02`'s own
+/// spelling of the same edit — the slices share the exception, not the
+/// vocabulary.
+#[test]
+fn a_token_outside_the_roster_declares_no_op() {
+    for outside in [
+        "attribute_definition.label",
+        "category.rename",
+        "recognized_set",
+        "recognized_set.remove",
+        "",
+    ] {
+        assert_eq!(MemberOp::parse(outside), None, "`{outside}` parsed");
     }
 }
