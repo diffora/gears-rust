@@ -1260,7 +1260,7 @@ const fn live_op_act(declared: Option<MemberOp>) -> MaterialAct<'static> {
 /// refusing a non-JSON payload here would close a door that has been open
 /// since the store was built. It reads as the `None` arm, which is the
 /// unchanged judgement.
-fn declared_member_op(snapshot: &str) -> Option<MemberOp> {
+pub(crate) fn declared_member_op(snapshot: &str) -> Option<MemberOp> {
     let op = serde_json::from_str::<JsonValue>(snapshot)
         .ok()?
         .get("op")?

@@ -29,6 +29,19 @@
 //! answers `APPROVAL_REQUIRED`, and the probes seed the record through the
 //! same double the other live-op doors use.
 //!
+//! # And the record must have been submitted for *this* change (**P-D-172**)
+//!
+//! The subject names the member and not the act, so a matched record used to
+//! answer *"there is a satisfied record for `gold`"* — which authorized a
+//! **deprecate** on the strength of two principals agreeing to a **relabel**.
+//! [`authorize_member_op`] now compares the record's `content_snapshot` with
+//! the door's own declaration ([`add_declaration`],
+//! [`transition_declaration`], [`relabel_declaration`]) under `07`'s
+//! correction-door rendering, and refuses `APPROVAL_REQUIRED` on a mismatch.
+//! A record declaring no op of this slice's — every record written before
+//! P-D-172 — authorizes every op as it did, which is the compatibility arm
+//! that entry names and owes.
+//!
 //! # Every mutation rides `GovernedLiveOp` and emits in the same transaction
 //!
 //! The transition body carries the op's **expected current state**, and the
@@ -102,6 +115,7 @@ use axum::Router;
 use axum::extract::{Extension, Path};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use serde_json::Value as JsonValue;
 use time::OffsetDateTime;
 use toolkit::api::OpenApiRegistry;
 use toolkit::api::canonical_prelude::CanonicalError;
@@ -116,7 +130,7 @@ use crate::api::rest::{ApiState, repo_error_to_canonical, require_authenticated}
 use crate::domain::canonical;
 use crate::domain::error::DomainError;
 use crate::domain::governance::{GateAuthorization, GateSubject, SubjectPin};
-use crate::domain::recognized::{MemberState, SetKind, member_edge};
+use crate::domain::recognized::{MemberOp, MemberState, SetKind, member_edge};
 use crate::domain::validation::ValidationReport;
 use crate::infra::events;
 use crate::infra::storage::repo::{self, RefusalSubject};
@@ -217,9 +231,66 @@ pub(crate) fn member_op_subject(tenant_id: Uuid, kind: SetKind, member_code: &st
     )
 }
 
+/// The op declaration a door presents to the binding check (**P-D-172**), and
+/// what a record must have been submitted for to authorize it.
+///
+/// # Explicit `null` is part of the proposal
+///
+/// The rendering runs under [`canonical::Absence::Omit`], which carries an
+/// explicit `null` as `null` and drops nothing else — so *clear the label*
+/// (`"display_label": null`) and *set it to "Gold tier"* are two different
+/// declarations, and an approval for one does not authorize the other. That
+/// is the mode's own reason for existing (**P-D-34**): an omitted field and
+/// a cleared one are two different acts.
+fn add_declaration(member_code: &str, display_label: Option<&str>) -> JsonValue {
+    serde_json::json!({
+        "op": MemberOp::Add.token(),
+        "member_code": member_code,
+        "display_label": display_label,
+    })
+}
+
+/// [`add_declaration`] for the transitions door — the edge **and** the state
+/// the submitter held, which is what makes the approval a proposal rather
+/// than a standing permission.
+fn transition_declaration(to: &str, expected_state: &str) -> JsonValue {
+    serde_json::json!({
+        "op": MemberOp::Transition.token(),
+        "to": to,
+        "expected_state": expected_state,
+    })
+}
+
+/// [`add_declaration`] for the label door.
+fn relabel_declaration(display_label: Option<&str>) -> JsonValue {
+    serde_json::json!({
+        "op": MemberOp::Relabel.token(),
+        "display_label": display_label,
+    })
+}
+
 /// Resolve the stored host for one member op before its transaction — the
 /// taxonomy door's shape. A refusal is audited under the set's gate label
 /// and answered `APPROVAL_REQUIRED`.
+///
+/// # The record must have been submitted for *this* change (**P-D-172**)
+///
+/// The subject is the member (`recognized_set/{set_kind}/{member_code}`,
+/// **P-D-146**), so host matching alone answers *"is there a satisfied record
+/// for `gold`"* and not *"did two principals agree to this change to
+/// `gold`"*. Once matched, the record's `content_snapshot` — the op payload,
+/// P-D-120 row 14 — is compared with `presented` under the same canonical
+/// rendering `07`'s correction door uses (`skus::snapshot_matches`), and a
+/// mismatch is `APPROVAL_REQUIRED`.
+///
+/// **A record whose snapshot declares no op of this slice's authorizes every
+/// op, as it did before P-D-172.** That is the compatibility arm, not an
+/// oversight: every live-op record written before this entry — `vhp-core`'s
+/// e2e library sends `{"subject": …}` for all eight of its live-op subjects —
+/// carries no declaration to compare against, and refusing them would break
+/// every existing caller at the moment the binding landed. The arm closes
+/// when the callers declare; it is named in P-D-172's *Owed* with the lines
+/// that close it.
 async fn authorize_member_op(
     state: &ApiState,
     scope: &AccessScope,
@@ -227,8 +298,9 @@ async fn authorize_member_op(
     actor_ref: Uuid,
     kind: SetKind,
     member_code: &str,
+    presented: &JsonValue,
 ) -> Result<GateAuthorization, CanonicalError> {
-    match crate::api::rest::authorize_live_op(
+    let authorization = match crate::api::rest::authorize_live_op(
         state,
         scope,
         tenant_id,
@@ -236,8 +308,27 @@ async fn authorize_member_op(
     )
     .await
     {
-        Ok(authorization) => Ok(authorization),
-        Err(crate::api::rest::HostError::Refused(refusal)) => Err(refuse_set(
+        Ok(authorization) => authorization,
+        Err(crate::api::rest::HostError::Refused(refusal)) => {
+            return Err(refuse_set(
+                state,
+                scope,
+                tenant_id,
+                actor_ref,
+                kind,
+                member_code.to_owned(),
+                refusal,
+            )
+            .await);
+        }
+        Err(crate::api::rest::HostError::Repo(error)) => {
+            return Err(repo_error_to_canonical(&error));
+        }
+    };
+    if let Err(refusal) =
+        bound_to_the_change(state, scope, tenant_id, &authorization, presented).await?
+    {
+        return Err(refuse_set(
             state,
             scope,
             tenant_id,
@@ -246,9 +337,64 @@ async fn authorize_member_op(
             member_code.to_owned(),
             refusal,
         )
-        .await),
-        Err(crate::api::rest::HostError::Repo(error)) => Err(repo_error_to_canonical(&error)),
+        .await);
     }
+    Ok(authorization)
+}
+
+/// Whether the matched record was submitted for `presented` (**P-D-172**).
+///
+/// The outer `Result` is the storage channel and the inner one the refusal
+/// channel, `resolve_submission`'s shape: a driver failure is not a refusal.
+///
+/// The record is read **outside** the door's transaction, which is safe
+/// because `content_snapshot` is written at submission and never re-derived
+/// (`design/05` §4) — there is no window in which the bytes compared here
+/// differ from the bytes the settle spends. The read has to happen before the
+/// transaction anyway: the host itself runs there (P-D-144), and a refusal
+/// that had to roll a transaction back would write an audit row the rollback
+/// took with it.
+async fn bound_to_the_change(
+    state: &ApiState,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    authorization: &GateAuthorization,
+    presented: &JsonValue,
+) -> Result<Result<(), DomainError>, CanonicalError> {
+    let Some(approval_id) = authorization.approval_ref() else {
+        // No record authorized the act at all — `NoRecord` is the
+        // quorum-zero and pre-authorized arm, and there is nothing whose
+        // content two principals agreed to.
+        return Ok(Ok(()));
+    };
+    let conn = state.db.conn().map_err(|e| {
+        repo_error_to_canonical(&crate::infra::storage::RepoError::Db(e.to_string()))
+    })?;
+    let Some(record) = repo::read_approval(&conn, scope, tenant_id, approval_id)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?
+    else {
+        // The host matched it a moment ago; a record that has vanished since
+        // is a store this gear wrote wrong, not a caller's refusal.
+        return Err(repo_error_to_canonical(
+            &crate::infra::storage::RepoError::Db(format!(
+                "approval {approval_id} matched the host and then vanished"
+            )),
+        ));
+    };
+    if crate::api::rest::approvals::declared_member_op(&record.content_snapshot).is_none() {
+        return Ok(Ok(()));
+    }
+    let agreed = serde_json::from_str::<JsonValue>(&record.content_snapshot)
+        .map(|value| canonical::canonical_rendering(&value, canonical::Absence::Omit))
+        .unwrap_or_default();
+    if agreed == canonical::canonical_rendering(presented, canonical::Absence::Omit) {
+        return Ok(Ok(()));
+    }
+    Ok(Err(DomainError::ApprovalRequired(format!(
+        "approval {approval_id} was submitted for a different change to this member than the \
+         one presented; submit this change for approval"
+    ))))
 }
 
 /// Spend the authorization where the write commits (`inst-gv-one-shot`).
@@ -695,8 +841,16 @@ async fn relabel_member(
         member_code.clone(),
     )
     .await?;
-    let authorization =
-        authorize_member_op(&state, &scope, tenant_id, actor_ref, kind, &member_code).await?;
+    let authorization = authorize_member_op(
+        &state,
+        &scope,
+        tenant_id,
+        actor_ref,
+        kind,
+        &member_code,
+        &relabel_declaration(body.display_label.as_deref()),
+    )
+    .await?;
 
     let outbox = state.sink.clone();
     let scope_tx = scope.clone();
@@ -824,8 +978,16 @@ async fn add_member(
         .await);
     }
 
-    let authorization =
-        authorize_member_op(&state, &scope, tenant_id, actor_ref, kind, &member_code).await?;
+    let authorization = authorize_member_op(
+        &state,
+        &scope,
+        tenant_id,
+        actor_ref,
+        kind,
+        &member_code,
+        &add_declaration(&member_code, body.display_label.as_deref()),
+    )
+    .await?;
     let outbox = state.sink.clone();
     let scope_tx = scope.clone();
     let code_tx = member_code.clone();
@@ -966,8 +1128,16 @@ async fn transition_member(
         .await);
     };
 
-    let authorization =
-        authorize_member_op(&state, &scope, tenant_id, actor_ref, kind, &member_code).await?;
+    let authorization = authorize_member_op(
+        &state,
+        &scope,
+        tenant_id,
+        actor_ref,
+        kind,
+        &member_code,
+        &transition_declaration(to.as_str(), expected.as_str()),
+    )
+    .await?;
     let outbox = state.sink.clone();
     let scope_tx = scope.clone();
     let code_tx = member_code.clone();

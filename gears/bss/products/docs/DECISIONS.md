@@ -1569,6 +1569,68 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-172 — The approval binds the change, not the member: a record authorizes the op it was submitted for and no other
+
+- **Date**: 2026-09-14 (the vocabulary-convergence plan, Phase R group D task 2)
+- **What this decides.** The three recognized-set write doors compare the matched record's
+  `content_snapshot` with the change they are about to make, and refuse `APPROVAL_REQUIRED` when
+  the two differ. A record whose snapshot declares no op of this slice's authorizes every op, as
+  every record written before this entry does.
+- **The hole, stated as the question the gate was answering.** **P-D-146** made the subject
+  `recognized_set/{set_kind}/{member_code}`, **unpinned**, and the staleness pin the transitions
+  body's `expected_state`. That is a coherent answer to *staleness* and not an answer to *scope*:
+  host matching asks *"is there a satisfied record for `gold`"*, so two principals who agreed to
+  rename `gold` to *"Gold tier"* had thereby authorized any of the three doors on `gold` —
+  including its **deprecation**, which takes members out of the set a published SKU's validator
+  reads. The two-person control was real and pointed at the wrong object.
+- **The mechanism is `07`'s, not a new one.** `skus::apply_correction` already reads the record it
+  was authorized on and compares `content_snapshot` with the payload the door presents, refusing a
+  mismatch (P-D-129 rows 10 and 11). This is the same comparison under the same canonical
+  rendering, at `authorize_member_op` — **one helper, not three doors**, so a fourth door on this
+  surface cannot forget it.
+- **The whole proposal binds, not the op token.** The doors render `member_code` and
+  `display_label` (add), `to` and `expected_state` (transitions), `display_label` (label), and the
+  rendering runs under `canonical::Absence::Omit`, which carries an explicit `null` as `null`
+  (**P-D-34**). So an approval for the label *"Gold tier"* does not authorize a relabel to
+  *"Platinum"*, and **neither authorizes a clear** — *set the label to nothing* is a different act
+  from *set it to a value*, which is the distinction that mode exists to keep. The transitions
+  declaration carries the **held state** as well as the edge, so a record agreed against
+  `active → deprecated` cannot be spent on `deprecated → removed`.
+- **Where the check runs, and why it is not inside the transaction.** `content_snapshot` is written
+  at submission and never re-derived (`design/05` §4), so there is no window in which the bytes
+  compared before the transaction differ from the bytes the settle spends. The host itself already
+  resolves before the transaction (**P-D-144**), and a refusal that had to roll a transaction back
+  would take its own audit row with it.
+- **What is deliberately NOT decided here.** The pin stays `SubjectPin::Unpinned` and the
+  `subject_ref` keeps P-D-146's shape. Both were available and both were rejected: the partial
+  `UNIQUE (tenant_id, subject_kind, subject_ref)` in `design/05` §4 makes one open record per
+  subject, so folding the op into `subject_ref` would let three records stand open on one member
+  and change what a supersession means (L-4); and a pin on `GovernedLiveOp` is read by
+  `pin_for_kind` for **six** slices' doors at once, so a new pin shape there refuses every live op
+  whose door still presents `Unpinned` — the failure this register already recorded once, when a
+  stored `0` read back as `MutationSeq(0)`.
+- **The compatibility arm, and what closes it.** A record declaring no recognised op authorizes
+  every op, which is the pre-P-D-172 rule kept verbatim. It is not a residue nobody noticed: it is
+  what keeps `vhp-core`'s e2e green, since `tests/e2e/tests/lib/products.py` sends
+  `{"subject": <ref>}` as the snapshot for all eight of its `governed_live_op` subjects
+  (`Products.submit`, the `subject_kind != "entity_publish"` branch). Until those callers declare,
+  a record that says nothing about the change still authorizes any change — for the full `N`,
+  since **P-D-171**'s discount is reachable only by declaring.
+- **This is what pays for P-D-171.** A declaration buys the `min(N, 1)` discount and pays with the
+  binding, so the window P-D-171 named — declare a relabel, pay one approver, spend it on a
+  deprecate — is closed by the same operand that opened it. The two entries are one mechanism read
+  from two sides.
+- **Owed**: the e2e's three call sites —
+  `~/Projects/vhp/vhp-core/tests/e2e/tests/lib/products.py` `add_set_member` (line 521),
+  `member_transition` (line 529) and `member_relabel` (line 533, which seeds no record at all) —
+  should pass the door's own declaration as `payload=` so the suite exercises the bound path
+  rather than the compatibility arm; `member_relabel` has no test caller today and would be
+  refused `APPROVAL_REQUIRED` the moment one arrived, which is a defect this entry did not
+  introduce. `02`'s two live-op doors owe the same binding, which is what **P-D-171**'s *Owed*
+  waits on. Neither is this branch's to land: both files are other repositories' or other slices'.
+- **Propagated**: `design/05-governance.md` §4 (the `products_approval` shape — what a live-op
+  record's snapshot binds), `design/03-sku-classification.md` §3.1 (`inst-rs-shape`).
+
 #### P-D-171 — The display-label exception gets the operand it never had: the op token the submission already stores
 
 - **Date**: 2026-09-14 (the vocabulary-convergence plan, Phase R group D task 1; pays **P-D-170**'s
@@ -3393,6 +3455,13 @@ per-decision anchors, and it was corrected by running the command it prescribed.
 > read left the gear with `fr-accounting-codes`, so the submit door's `finance_material` is the
 > submitter's declaration alone. Everything else in this entry stands, `dod-finance-predicate`'s
 > two arms included.
+
+> **Amended by P-D-172 (2026-09-14): the subject is still unpinned, and it no longer decides
+> scope alone.** *"The subject is `GovernedLiveOp` on `recognized_set/{set_kind}/{member_code}`,
+> **unpinned**"* stands as written — the pin is unchanged and `expected_state` is still the
+> staleness operand. What P-D-172 adds beside it is a comparison of the record's
+> `content_snapshot` with the change the door presents, because an unpinned subject answers *which
+> member* and never answered *which change to it*.
 
 - **Date**: 2026-09-05 (the lead, group 4 of the solo plan; `03` §7 rows 6, 14, 16, 20 as already
   answered by P-D-121, P-D-125 and P-D-134)

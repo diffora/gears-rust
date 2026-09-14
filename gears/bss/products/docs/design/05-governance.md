@@ -299,7 +299,7 @@ row and open to correction; the requirement is that every code carries one.
 ## 4. Data / Storage (normative shape; DDL in migrations)
 
 - **`products_approval`** — `approval_id` (PK) · `tenant_id` · subject `(kind, ref)` — `kind ∈ {entity_publish, governed_live_op, system_signal (P-D-14), sku_correction (07), bulk_batch (09)}` · pinned
-  `internal_revision` · **`content_snapshot`** (stored at submission — never re-derived) ·
+  `internal_revision` · **`content_snapshot`** (stored at submission — never re-derived; for a `governed_live_op` subject it **is** the op payload (P-D-120 row 14), and a live-op door whose slice declares op tokens compares it with the change it is about to make, refusing `APPROVAL_REQUIRED` on a mismatch — **P-D-172**, `03`'s three set doors today; a record declaring no such token authorizes every op on its subject, as every record written before that entry does) ·
   `diff_basis` (the published version id diffed against) · `quorum_descriptor` (**stored at submission, never re-derived** — (`predicateUnsatisfiable`
   and `configuredQuorum` were required by §2's `inst-gv-finance-predicate`, `inst-gv-quorum` and `inst-gv-queue`, and named in neither shape, and
   deriving `configuredQuorum` from current policy would change a **pending** record when the

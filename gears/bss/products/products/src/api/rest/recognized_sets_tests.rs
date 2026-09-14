@@ -814,6 +814,225 @@ async fn a_relabel_changes_the_display_label_only_and_announces() {
     assert_eq!(missing.status(), axum::http::StatusCode::NOT_FOUND);
 }
 
+/// Seed a satisfied record whose snapshot **is** the op declaration the door
+/// will present — the double a binding case needs (**P-D-172**).
+async fn seed_bound_op(
+    harness: &TestHarness,
+    tenant: Uuid,
+    kind: &str,
+    code: &str,
+    op: &JsonValue,
+) {
+    let kind = crate::domain::recognized::SetKind::parse(kind).expect("a roster kind");
+    crate::test_support::seed_satisfied_approval_with_snapshot(
+        &harness.db,
+        tenant,
+        crate::api::rest::recognized_sets::member_op_subject(tenant, kind, code),
+        0,
+        op,
+    )
+    .await;
+}
+
+/// **An approval submitted for one op does not authorize another on the same
+/// member** (**P-D-172**).
+///
+/// The subject is the member, so before this entry a satisfied record for
+/// `recognized_set/plan_tier/gold` authorized *any* of the three doors on
+/// `gold` — two principals agreed to a relabel and a deprecate went through
+/// on it. Each arm here seeds exactly one record, declaring one op, and
+/// drives a **different** door: the refusal is `APPROVAL_REQUIRED`, the same
+/// code an absent record earns, because from the door's side there is no
+/// record for this change.
+///
+/// The positive control is the fourth arm — the same record, the door it was
+/// submitted for, `200` — without which every assertion above would pass
+/// against a door that had simply stopped authorizing anything.
+#[tokio::test]
+async fn an_approval_bound_to_one_op_does_not_authorize_another() {
+    let harness = harness().await;
+    add_member(&harness, TENANT, "plan_tier", "gold").await;
+
+    // A relabel's record, spent at the transitions door.
+    seed_bound_op(
+        &harness,
+        TENANT,
+        "plan_tier",
+        "gold",
+        &json!({ "op": "recognized_set.label", "display_label": "Gold tier" }),
+    )
+    .await;
+    let deprecate = post_json(
+        app_for(&harness, TENANT),
+        "/bss-products/v1/recognized-sets/plan_tier/members/gold/transitions",
+        &json!({ "to": "deprecated", "expected_state": "active" }),
+    )
+    .await;
+    assert_eq!(
+        error_code(deprecate).await,
+        "APPROVAL_REQUIRED",
+        "an agreed relabel is not an agreed deprecation"
+    );
+
+    // A transition's record, spent at the label door.
+    seed_bound_op(
+        &harness,
+        TENANT,
+        "metering_unit",
+        "gib_hours",
+        &json!({ "op": "recognized_set.transition", "to": "deprecated", "expected_state": "active" }),
+    )
+    .await;
+    let relabelled = post_json(
+        app_for(&harness, TENANT),
+        "/bss-products/v1/recognized-sets/metering_unit/members/gib_hours/label",
+        &json!({ "display_label": "GiB-hours" }),
+    )
+    .await;
+    assert_eq!(
+        error_code(relabelled).await,
+        "APPROVAL_REQUIRED",
+        "an agreed deprecation is not an agreed relabel"
+    );
+
+    // An add's record, spent at the transitions door.
+    seed_bound_op(
+        &harness,
+        TENANT,
+        "plan_tier",
+        "silver",
+        &json!({ "op": "recognized_set.add", "member_code": "silver", "display_label": null }),
+    )
+    .await;
+    let silver = post_json(
+        app_for(&harness, TENANT),
+        "/bss-products/v1/recognized-sets/plan_tier/members/silver/transitions",
+        &json!({ "to": "deprecated", "expected_state": "active" }),
+    )
+    .await;
+    assert_eq!(
+        error_code(silver).await,
+        "APPROVAL_REQUIRED",
+        "an agreed add is not an agreed deprecation"
+    );
+
+    // The positive control: the add's own door, on the record it names.
+    let added = add_member_via(app_for(&harness, TENANT), "plan_tier", "silver").await;
+    assert_eq!(
+        added.status(),
+        axum::http::StatusCode::CREATED,
+        "the record authorizes the change it was submitted for"
+    );
+}
+
+/// **The binding is the whole proposal, not the op token** (**P-D-172**): an
+/// approval for the label `Gold tier` does not authorize a relabel to
+/// `Platinum`, and neither authorizes a **clear**.
+///
+/// The clear arm is what makes `canonical::Absence::Omit` the right mode
+/// rather than an arbitrary one: it carries an explicit `null` as `null`, so
+/// *set the label to nothing* and *set it to a value* render differently and
+/// cannot satisfy one another's record (P-D-34).
+#[tokio::test]
+async fn an_approval_bound_to_one_label_does_not_authorize_a_different_one() {
+    let harness = harness().await;
+    add_member(&harness, TENANT, "plan_tier", "gold").await;
+    seed_bound_op(
+        &harness,
+        TENANT,
+        "plan_tier",
+        "gold",
+        &json!({ "op": "recognized_set.label", "display_label": "Gold tier" }),
+    )
+    .await;
+
+    let other = post_json(
+        app_for(&harness, TENANT),
+        "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
+        &json!({ "display_label": "Platinum" }),
+    )
+    .await;
+    assert_eq!(
+        error_code(other).await,
+        "APPROVAL_REQUIRED",
+        "the approved label is part of what was agreed"
+    );
+
+    let cleared = post_json(
+        app_for(&harness, TENANT),
+        "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
+        &json!({ "display_label": null }),
+    )
+    .await;
+    assert_eq!(
+        error_code(cleared).await,
+        "APPROVAL_REQUIRED",
+        "clearing a label is not the relabel that was agreed"
+    );
+
+    let agreed = post_json(
+        app_for(&harness, TENANT),
+        "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
+        &json!({ "display_label": "Gold tier" }),
+    )
+    .await;
+    assert_eq!(
+        agreed.status(),
+        axum::http::StatusCode::OK,
+        "the agreed label lands"
+    );
+}
+
+/// **A record whose snapshot declares no op of this slice's authorizes every
+/// op, exactly as before P-D-172** — the compatibility arm, asserted rather
+/// than left to be inferred from the other probes passing.
+///
+/// `{}` is what `test_support::seed_satisfied_approval` writes and what every
+/// other case here rides; `{"subject": …}` is what `vhp-core`'s e2e library
+/// sends for all eight of its live-op subjects. Both must keep authorizing
+/// all three doors, and the day they stop is the day that e2e goes red — which
+/// is why P-D-172 owes those lines rather than leaving the arm undocumented.
+#[tokio::test]
+async fn a_record_declaring_no_op_authorizes_every_door() {
+    let harness = harness().await;
+    add_member(&harness, TENANT, "plan_tier", "gold").await;
+
+    seed_bound_op(
+        &harness,
+        TENANT,
+        "plan_tier",
+        "gold",
+        &json!({ "subject": "recognized_set/plan_tier/gold" }),
+    )
+    .await;
+    let relabelled = post_json(
+        app_for(&harness, TENANT),
+        "/bss-products/v1/recognized-sets/plan_tier/members/gold/label",
+        &json!({ "display_label": "Gold" }),
+    )
+    .await;
+    assert_eq!(
+        relabelled.status(),
+        axum::http::StatusCode::OK,
+        "an undeclared record authorizes the label door as it always did"
+    );
+
+    let deprecated = transition(
+        &harness,
+        TENANT,
+        "plan_tier",
+        "gold",
+        "active",
+        "deprecated",
+    )
+    .await;
+    assert_eq!(
+        deprecated.status(),
+        axum::http::StatusCode::OK,
+        "and the transitions door, on the empty-object snapshot the shared double writes"
+    );
+}
+
 /// A published head carrying a **tier** blocks that member's removal exactly
 /// as a metering unit's does — the guard is uniform across the kinds
 /// (`dod-recognized-set-mechanics`, `dod-plantier-governance`; P-D-146) — and

@@ -435,6 +435,32 @@ pub async fn seed_satisfied_approval_with_ack(
     seed_satisfied_record(db, tenant_id, subject, revision, override_ack, "{}").await
 }
 
+/// [`seed_satisfied_approval`] whose record carries a **declared op payload**
+/// — the double for `03`'s change binding (**P-D-172**).
+///
+/// The plain [`seed_satisfied_approval`] stores `{}`, which declares no op
+/// and therefore authorizes every op on the subject; that is the
+/// compatibility arm and it is what the set doors' other probes exercise. A
+/// case measuring the binding has to seed the bytes the door will compare
+/// against, the way `07`'s correction double does.
+pub async fn seed_satisfied_approval_with_snapshot(
+    db: &toolkit_db::DBProvider<toolkit_db::DbError>,
+    tenant_id: Uuid,
+    subject: crate::domain::governance::GateSubject,
+    revision: i64,
+    snapshot: &serde_json::Value,
+) -> crate::domain::governance::ApprovalId {
+    seed_satisfied_record(
+        db,
+        tenant_id,
+        subject,
+        revision,
+        None,
+        &snapshot.to_string(),
+    )
+    .await
+}
+
 /// The double for `07`'s correction ceremony (`dod-correction-door`): a
 /// satisfied `sku_correction` record for this SKU at `revision` whose
 /// snapshot **is the payload** the door will present — the door compares the
