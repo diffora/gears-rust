@@ -155,6 +155,21 @@ impl RecognizedMemberView {
     }
 }
 
+/// One whole set as the list door answers it.
+///
+/// A wrapper object rather than a bare array, which is this corpus's shape for
+/// a list that carries anything of its own (`bulk`'s manifest, the freeze
+/// participants) — and here it carries `set_kind`, so a client that fanned out
+/// over both kinds can tell the answers apart without keeping the request.
+#[toolkit_macros::api_dto(response)]
+pub struct RecognizedSetView {
+    /// The set these members belong to.
+    pub set_kind: String,
+    /// Every member, `member_code`-ordered — tombstones included, carrying
+    /// their state (see [`repo::recognized_members`] for why).
+    pub members: Vec<RecognizedMemberView>,
+}
+
 /// `POST /recognized-sets/{setKind}/members` request body.
 #[toolkit_macros::api_dto(request)]
 pub struct AddMemberRequest {
@@ -316,6 +331,38 @@ async fn refuse_set(
     .await
 }
 
+/// Compile the scope the kind's **read** grant demands.
+///
+/// Unlike [`set_scope`] this audits nothing on a denial: a refused read wrote
+/// nothing and attempted nothing, and the gear's audit trail is a record of
+/// acts. The write helper audits because a refused write is an attempt on a
+/// member, which an operator reviewing the trail has to be able to see.
+async fn read_scope(
+    enforcer: &authz_resolver_sdk::PolicyEnforcer,
+    ctx: &SecurityContext,
+    tenant_id: Uuid,
+    kind: SetKind,
+) -> Result<AccessScope, CanonicalError> {
+    let (_, resource) = gate_for(kind);
+    crate::authz::access_scope(
+        enforcer,
+        ctx,
+        &resource,
+        crate::authz::actions::READ,
+        Some(tenant_id),
+        None,
+        true,
+    )
+    .await
+    .map_err(|e| {
+        crate::api::rest::authz_error_to_canonical(e, |reason| {
+            RecognizedSetResource::permission_denied()
+                .with_reason(reason)
+                .create()
+        })
+    })
+}
+
 /// Compile the scope the kind's grant demands, auditing a denial.
 async fn set_scope(
     state: &ApiState,
@@ -367,9 +414,75 @@ async fn set_scope(
     }
 }
 
-/// Both doors' registration.
+/// Every door's registration.
 pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
     let router = Router::new();
+
+    // The reads first, because they are what a caller meets first: a set has
+    // to be enumerable before a member can be chosen or judged. Both gate on
+    // the kind's `read` grant (P-D-170), and **neither answers an `ETag`** —
+    // no door on this surface accepts `If-Match`, staleness being pinned by
+    // the transition body's `expected_state`, so a tag would be a header with
+    // nobody to assert it. It arrives with the per-value `PATCH`, not before.
+    let router = OperationBuilder::get("/bss-products/v1/recognized-sets/{setKind}")
+        .operation_id("bss_products.list_recognized_members")
+        .summary("List a recognized set's members")
+        .description(
+            "Returns every member of the named set - `metering_unit` or `plan_tier` - in \
+             `memberCode` order, each with its state and, for the tier set, its display \
+             label. Gates on the kind's `read` grant: `plan_tier x read` for the tier set, \
+             `recognized_set x read` for the unit set (P-D-90 arm 2's split, applied to the \
+             read half). **Tombstones are included**, carrying `state: removed` - the add \
+             door refuses a removed code `DUPLICATE_CODE` because its primary key never \
+             frees, so a list that hid them would contradict the door a caller meets next; a \
+             picker renders `active` and nothing else. The tenant's platform baseline is \
+             seeded on this read if the set is still empty (P-D-104), so a set is never \
+             answered emptier than the next write would find it. No paging: these are closed \
+             vocabularies of tens.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("setKind", "Which recognized set to list.")
+        .handler(list_members)
+        .json_response_with_schema::<RecognizedSetView>(
+            openapi,
+            StatusCode::OK,
+            "The set's members.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi);
+
+    let router = OperationBuilder::get(
+        "/bss-products/v1/recognized-sets/{setKind}/members/{memberCode}",
+    )
+    .operation_id("bss_products.get_recognized_member")
+    .summary("Read one member of a recognized set")
+    .description(
+        "Returns the member named by `memberCode`: its state, its `seededBy` provenance and, \
+         for the tier set, its display label. Gates on the kind's `read` grant. A member \
+         outside the caller's authorized scope reads exactly like an absent one (`404`, no \
+         existence leak) - the same discipline every other read on this gear keeps.",
+    )
+    .tag(TAG)
+    .authenticated()
+    .no_license_required()
+    .path_param("setKind", "Which recognized set the member belongs to.")
+    .path_param("memberCode", "The member to read.")
+    .handler(get_member)
+    .json_response_with_schema::<RecognizedMemberView>(openapi, StatusCode::OK, "The member.")
+    .error_400(openapi)
+    .error_401(openapi)
+    .error_403(openapi)
+    .error_404(openapi)
+    .error_500(openapi)
+    .error_503(openapi)
+    .register(router, openapi);
+
     let router = OperationBuilder::post("/bss-products/v1/recognized-sets/{setKind}/members")
         .operation_id("bss_products.add_recognized_member")
         .summary("Add a member to a recognized set")
@@ -474,6 +587,85 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
     .register(router, openapi);
 
     router.layer(Extension(state))
+}
+
+/// `GET /bss-products/v1/recognized-sets/{setKind}`.
+///
+/// The set an operator has to see before they can choose from it. Until this
+/// door landed the gear could be written to and never enumerated: the
+/// repository's only read was a single-member lookup the validators used, so
+/// neither a picker nor a consumer could learn which codes exist (P-D-170).
+async fn list_members(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path(set_kind): Path<String>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let kind = parse_kind(&set_kind)?;
+    let tenant_id = ctx.subject_tenant_id();
+    let scope = read_scope(&enforcer, &ctx, tenant_id, kind).await?;
+
+    let conn = state
+        .db
+        .conn()
+        .map_err(|e| CanonicalError::internal(format!("bss-products: db conn: {e}")).create())?;
+
+    // Seed before reading, exactly as the write doors do (P-D-104): a tenant
+    // that has never written to this set still holds the platform baseline,
+    // and a picker opened before the first write must not show an empty ladder
+    // that the create door would then fill behind it.
+    let now = canonical::write_instant(OffsetDateTime::now_utc());
+    repo::ensure_recognized_seeds(&conn, &scope, tenant_id, kind, now)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?;
+
+    let members = repo::recognized_members(&conn, &scope, tenant_id, kind)
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?;
+
+    Ok(Json(RecognizedSetView {
+        set_kind: kind.as_str().to_owned(),
+        members: members
+            .into_iter()
+            .map(|m| RecognizedMemberView::from_member(kind, m))
+            .collect(),
+    })
+    .into_response())
+}
+
+/// `GET /bss-products/v1/recognized-sets/{setKind}/members/{memberCode}`.
+///
+/// A miss is a bare `404` carrying no registry code, the shape every other
+/// read on this surface answers with: absent and out-of-scope must be
+/// indistinguishable, or the door tells a caller the PDP did not grant which
+/// codes the tenant holds.
+async fn get_member(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    Path((set_kind, member_code)): Path<(String, String)>,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let kind = parse_kind(&set_kind)?;
+    let tenant_id = ctx.subject_tenant_id();
+    let scope = read_scope(&enforcer, &ctx, tenant_id, kind).await?;
+
+    let conn = state
+        .db
+        .conn()
+        .map_err(|e| CanonicalError::internal(format!("bss-products: db conn: {e}")).create())?;
+
+    let member = repo::recognized_member(&conn, &scope, tenant_id, kind, member_code.trim())
+        .await
+        .map_err(|e| repo_error_to_canonical(&e))?
+        .ok_or_else(|| {
+            RecognizedSetResource::not_found("no member matches this code in the caller's scope")
+                .with_resource(format!("{}/{member_code}", kind.as_str()))
+                .create()
+        })?;
+
+    Ok(Json(RecognizedMemberView::from_member(kind, member)).into_response())
 }
 
 /// `POST /recognized-sets/{setKind}/members/{memberCode}/label`.

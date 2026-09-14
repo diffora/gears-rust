@@ -104,6 +104,51 @@ pub async fn recognized_member(
     row.map(into_member).transpose()
 }
 
+/// Every member of one set, in `member_code` order — the list door's read.
+///
+/// # The tombstone is returned, not filtered
+///
+/// A `removed` member is **in the answer**, carrying its state. Filtering it
+/// out would make the list disagree with the add door, which refuses a
+/// `removed` code `DUPLICATE_CODE` because its primary key never frees
+/// (`inst-rs-shape`): a caller shown a set without `X` and then refused for
+/// declaring `X` has been told two different things by one gear. A picker
+/// renders `active` and nothing else; the state column is what lets it.
+///
+/// # Ordered in SQL, not by the caller
+///
+/// `member_code` is the identity and is immutable, so ordering on it is
+/// stable across calls in a way `updated_at` is not — a relabel would
+/// otherwise reshuffle a list nothing else changed in. There is no paging:
+/// the sets are closed vocabularies of tens, the `metering_unit` seed is four
+/// and the tier seed is one, and a `$top` on a set an operator is reading to
+/// choose from would hide the choice.
+///
+/// # Errors
+///
+/// [`RepoError::Driver`] on a storage failure, [`RepoError::CorruptRow`] on
+/// a state outside the roster.
+pub async fn recognized_members(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    set_kind: SetKind,
+) -> Result<Vec<RecognizedMember>, RepoError> {
+    let rows = recognized_set::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(recognized_set::Column::TenantId.eq(tenant_id))
+                .add(recognized_set::Column::SetKind.eq(set_kind.as_str())),
+        )
+        .order_by(recognized_set::Column::MemberCode, sea_orm::Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| driver_failure(format!("read {} set", set_kind.as_str()), e))?;
+    rows.into_iter().map(into_member).collect()
+}
+
 /// Insert one `active` member — the add door's write.
 ///
 /// The PK `(tenant_id, set_kind, member_code)` is the arbiter: a duplicate

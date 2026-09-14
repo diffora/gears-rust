@@ -1569,6 +1569,66 @@ per-decision anchors, and it was corrected by running the command it prescribed.
   (the re-publish step).
 
 
+#### P-D-170 — The recognized sets become readable, and the read grant is split by kind exactly as the write grant is
+
+- **Date**: 2026-09-14 (owner instruction: begin the vocabulary-convergence plan's first step)
+- **What this decides.** Two doors — `GET /bss-products/v1/recognized-sets/{setKind}` and
+  `GET …/members/{memberCode}` — plus the two `read` grants they gate on and the repository query
+  behind them. **This gear could be written to and never enumerated**: `repo::recognized.rs` held
+  six functions of which the only read was a single-member lookup the validators used, the SDK had
+  no type for a member, and `gts/permissions.rs` declared write grants alone. No route, no query,
+  no grant, no type — the set was invisible from every side at once.
+- **Why this first.** It is the only step of the convergence plan that **pays for itself alone**:
+  it is the only thing that can answer pricing's already-declared
+  `ProductCatalogClientV1::list_tax_categories`, whose `{code, display_name}` is exactly this
+  table's `(member_code, display_label)`, and the same build gives a `PlanTier` picker its list.
+  `PRD` §7's ProductManager already names *"metering-unit and `PlanTier` **selection**"* among the
+  actor's needs, and selection presupposes enumeration.
+- **The read grant is split by kind** (`plan_tier × read`, `recognized_set × read`) rather than
+  folded into one. A tenant that lets an operator see the tier ladder has not thereby let them see
+  the metering-unit set, and a roster readable at a finer grain than it is written at would make
+  the write grant the weaker of the two. This is P-D-90 arm 2's split applied to the read half, so
+  the surface has one rule rather than two.
+- **Four shape decisions, each with the reason it could have gone the other way.**
+  - **Tombstones are listed, carrying `state: removed`.** Filtering them would put the list at odds
+    with the add door one call later, which refuses a `removed` code `DUPLICATE_CODE` because its
+    primary key never frees (`inst-rs-shape`). A caller shown a set without `X` and then refused
+    for declaring `X` has been told two different things by one gear. A picker renders `active` and
+    nothing else; the `state` column is what lets it.
+  - **The baseline is seeded on the read**, as it is on every write (P-D-104). Otherwise a picker
+    opened before a tenant's first write shows an empty ladder that the next create door fills
+    behind it — the list would be answering emptier than the gear's own next act.
+  - **Ordered by `member_code` in SQL.** The code is the immutable identity, so the order is stable
+    across calls in a way `updated_at` is not: a relabel would otherwise reshuffle a list nothing
+    else changed in.
+  - **No paging.** These are closed vocabularies of tens — the unit seed is four, the tier seed is
+    one — and a `$top` on a set an operator is reading *in order to choose from* would hide the
+    choice. This is the deliberate exception to P-D-165's list contract, which governs the
+    open-ended surfaces.
+- **No `ETag`, deliberately, and this is the decision most likely to be re-opened.** Pricing's
+  per-value `GET` hands out a tag its `PATCH` asserts through `If-Match`. **No door on this
+  surface accepts `If-Match` at all**: staleness is pinned by the transition body's
+  `expected_state` (P-D-146). A tag nobody can send back is a header with no reader — the inert
+  wire this register keeps catching elsewhere. It arrives with the per-value `PATCH`, which is step
+  5 of the convergence plan, and not before.
+- **A debt paid on the way past.** **P-D-121 row 17** decided a `display_label` rename is
+  non-material at `min(N, 1)` and stated that *"`05`'s taxonomy-ops registration gains one
+  display-label exception for both slices"*. `design/05` §4's materiality inputs carried no such
+  exception — the promise never landed, and the code has been charging the full `N` for a relabel
+  since. The registration is written here; **the code still charges full `N`** and is listed as
+  owed below, because changing the quorum is a change to what the door demands and belongs in its
+  own commit with its own probe.
+- **Measured, not assumed**: the gear has **no code-side route census**. `coverage_lints`' lint 3
+  pairs routes *declared in the design set* against `design/05` §3.2's door column, so a route that
+  exists only in code is invisible to it. These two are declared in `design/03` `inst-rs-read` and
+  paired in §3.2 for that reason, not as decoration.
+- **Owed**: the `min(N, 1)` quorum for a relabel, now registered and not yet enforced; an `ETag`
+  and `If-Match` when the per-value `PATCH` lands; the SDK type for a member, which waits on a
+  consumer asking for it rather than being minted against no caller.
+- **Propagated**: `design/03-sku-classification.md` §3.1 (`inst-rs-read`, and the write-grant
+  sentence narrowed to two kinds), `design/05-governance.md` §3.2 (the grant/door row) and §4 (the
+  display-label exception).
+
 #### P-D-169 — P-D-131's accounting carve-out is withdrawn whole: neither code is a SKU field, and §2.1 governs both again
 
 - **Date**: 2026-09-14 (**the product owner's decision**, taken as recommended after the

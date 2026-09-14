@@ -300,6 +300,31 @@ gts_instance! {
         display_name: "Change the plan-tier taxonomy".to_owned(),
     }
 }
+// The read halves of the pair above. They arrive with the two `GET` doors and
+// not before (P-D-106's rule, which this slice's own write grants already
+// obeyed): a grant whose door does not ship is a grant with no spender.
+//
+// **Read is split by kind exactly as write is** (P-D-90 arm 2) rather than
+// folded into one `recognized_set x read`. A tenant that lets an operator see
+// the tier ladder has not thereby let them see the metering-unit set, and a
+// roster that can be read at a finer grain than it is written at would make
+// the write grant the weaker of the two.
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.recognized_set_read.v1"),
+        resource_type: labels::RECOGNIZED_SET.to_owned(),
+        action: actions::READ.to_owned(),
+        display_name: "Read a recognized set's membership".to_owned(),
+    }
+}
+gts_instance! {
+    AuthzPermissionV1 {
+        id: gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.plan_tier_read.v1"),
+        resource_type: labels::PLAN_TIER.to_owned(),
+        action: actions::READ.to_owned(),
+        display_name: "Read the plan-tier taxonomy".to_owned(),
+    }
+}
 // -- taxonomy & attributes -- `02`'s three grants, arriving with their doors
 // (P-D-106: `authz_tests`' census forbids declaring a grant whose door does
 // not ship, so these land in the same commit as the four routes).
@@ -400,6 +425,8 @@ mod tests {
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.pii_allowlist_write.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.recognized_set_write.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.plan_tier_write.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.recognized_set_read.v1"),
+        gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.plan_tier_read.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.category_write.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.attribute_definition_write.v1"),
         gts_id!("cf.toolkit.authz.permission.v1~cf.bss.products.metadata_write.v1"),

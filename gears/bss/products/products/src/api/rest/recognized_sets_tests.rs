@@ -136,6 +136,19 @@ async fn post_json(app: Router, uri: &str, body: &JsonValue) -> axum::http::Resp
     .expect("the router answers")
 }
 
+async fn get_json(app: Router, uri: &str) -> axum::http::Response<Body> {
+    app.oneshot(
+        Request::builder()
+            .method("GET")
+            .uri(uri)
+            .extension(authed_ctx(TENANT))
+            .body(Body::empty())
+            .expect("build the request"),
+    )
+    .await
+    .expect("the router answers")
+}
+
 /// The in-test approval double every member op needs under the stored host
 /// (`dod-recognized-set-mechanics`, P-D-146): one satisfied record for the
 /// exact subject the door presents. A case that seeded its own keeps it.
@@ -917,4 +930,168 @@ async fn seed_carrier(harness: &TestHarness, sku_code: &str, column: &str, value
             .expect("the head guard admits this fixture write");
     }
     sku_id
+}
+
+// ── The read surface (P-D-170) ───────────────────────────────────────────────
+
+/// **The set can be enumerated, and the platform baseline is there before the
+/// first write.** This is the whole of what the gear could not do until this
+/// door: the repository's only read was a single-member lookup, so no caller
+/// could learn which codes exist. The seed assertion is the half that would
+/// rot silently — a list that answered `[]` on a fresh tenant and a create
+/// door that then found four units would be two answers from one gear.
+#[tokio::test]
+async fn a_set_lists_its_members_and_seeds_the_baseline_on_the_first_read() {
+    let harness = harness().await;
+
+    let units = body_json(
+        get_json(
+            app_for(&harness, TENANT),
+            "/bss-products/v1/recognized-sets/metering_unit",
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(units["set_kind"], json!("metering_unit"));
+    let codes: Vec<&str> = units["members"]
+        .as_array()
+        .expect("members is an array")
+        .iter()
+        .map(|m| m["member_code"].as_str().expect("a code"))
+        .collect();
+    assert_eq!(
+        codes,
+        vec!["GB-egress", "GB-storage", "request-count", "vCPU-hours"],
+        "the four seeded units, `member_code`-ordered and seeded by this read"
+    );
+    assert!(
+        units["members"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .all(|m| m["state"] == json!("active") && m["seeded_by"] == json!("platform")),
+        "the baseline arrives `active` and marked platform-seeded: {units}"
+    );
+
+    let tiers = body_json(
+        get_json(
+            app_for(&harness, TENANT),
+            "/bss-products/v1/recognized-sets/plan_tier",
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(tiers["set_kind"], json!("plan_tier"));
+    assert_eq!(tiers["members"][0]["member_code"], json!("standard"));
+    assert_eq!(
+        tiers["members"][0]["display_label"],
+        json!("Standard"),
+        "the tier set is the one that carries a label"
+    );
+}
+
+/// **A tombstone stays in the list, carrying its state.** Hiding it would put
+/// the list at odds with the add door one call later, which refuses a
+/// `removed` code `DUPLICATE_CODE` because its primary key never frees. The
+/// probe walks a member all the way to `removed` through the doors, so the
+/// claim rests on the real edge rather than on a hand-written row.
+#[tokio::test]
+async fn a_removed_member_is_listed_with_its_state_not_filtered_out() {
+    let harness = harness().await;
+    add_member(&harness, TENANT, "plan_tier", "bronze").await;
+    transition(
+        &harness,
+        TENANT,
+        "plan_tier",
+        "bronze",
+        "active",
+        "deprecated",
+    )
+    .await;
+    let removed = transition(
+        &harness,
+        TENANT,
+        "plan_tier",
+        "bronze",
+        "deprecated",
+        "removed",
+    )
+    .await;
+    assert_eq!(removed.status(), axum::http::StatusCode::OK);
+
+    let set = body_json(
+        get_json(
+            app_for(&harness, TENANT),
+            "/bss-products/v1/recognized-sets/plan_tier",
+        )
+        .await,
+    )
+    .await;
+    let bronze = set["members"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .find(|m| m["member_code"] == json!("bronze"))
+        .expect("the tombstone is listed, not filtered");
+    assert_eq!(bronze["state"], json!("removed"));
+
+    // The claim this case exists for: the door the caller meets next agrees.
+    // The record is seeded again because each member op spends its own
+    // (P-D-144's one-shot), and a `403` here would prove the gate, not the
+    // tombstone.
+    seed_member_op(&harness, TENANT, "plan_tier", "bronze").await;
+    let refused = add_member_via(app_for(&harness, TENANT), "plan_tier", "bronze").await;
+    assert_eq!(refused.status(), axum::http::StatusCode::CONFLICT);
+}
+
+/// One member reads back by code, and a code the set does not carry is a bare
+/// `404` — the same miss shape every other read on this gear answers with, so
+/// absent and out-of-scope stay indistinguishable.
+#[tokio::test]
+async fn one_member_reads_by_code_and_an_unknown_one_is_a_bare_miss() {
+    let harness = harness().await;
+    add_member(&harness, TENANT, "plan_tier", "gold").await;
+
+    let hit = get_json(
+        app_for(&harness, TENANT),
+        "/bss-products/v1/recognized-sets/plan_tier/members/gold",
+    )
+    .await;
+    assert_eq!(hit.status(), axum::http::StatusCode::OK);
+    let member = body_json(hit).await;
+    assert_eq!(member["member_code"], json!("gold"));
+    assert_eq!(member["state"], json!("active"));
+    assert_eq!(
+        member["seeded_by"],
+        JsonValue::Null,
+        "an operator-added member carries no seed provenance"
+    );
+
+    let miss = get_json(
+        app_for(&harness, TENANT),
+        "/bss-products/v1/recognized-sets/plan_tier/members/platinum",
+    )
+    .await;
+    assert_eq!(miss.status(), axum::http::StatusCode::NOT_FOUND);
+}
+
+/// A retired path segment is refused on the **read** doors too. Without this
+/// the roster's fail-closed parse would be proved only on the write half, and
+/// a read admitting `tax_category` would answer an empty set rather than a
+/// refusal — telling a caller the vocabulary exists and is empty.
+#[tokio::test]
+async fn the_read_doors_refuse_a_kind_outside_the_roster() {
+    let harness = harness().await;
+    for uri in [
+        "/bss-products/v1/recognized-sets/tax_category",
+        "/bss-products/v1/recognized-sets/gl_code/members/GL-4000",
+        "/bss-products/v1/recognized-sets/units",
+    ] {
+        let refused = get_json(app_for(&harness, TENANT), uri).await;
+        assert_eq!(
+            refused.status(),
+            axum::http::StatusCode::BAD_REQUEST,
+            "{uri} must be refused, never answered empty"
+        );
+    }
 }
