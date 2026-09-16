@@ -118,9 +118,8 @@ pub struct PlanRevision {
     pub purchase_min_qty: Option<u64>,
     /// Maximum purchasable quantity (one-time plans).
     pub purchase_max_qty: Option<u64>,
-    /// The Billing invoice-layout hint (D-96). `None` or empty means no
-    /// grouping; it never overrides the single-currency-per-invoice invariant.
-    pub invoice_grouping_key: Option<String>,
+    /// Tenant-authored billing extensions, checked against D-152 required keys.
+    pub descriptor_ext: std::collections::BTreeMap<String, String>,
     /// Start of the plan's availability window, UTC.
     pub available_from: Option<OffsetDateTime>,
     /// End of the plan's availability window, UTC.
@@ -193,7 +192,7 @@ pub struct PlanRevision {
 /// designed around**, and it is now owed by whichever wave next changes the
 /// draft patch shape — not by a surface group. Slice 2 widens what it costs
 /// rather than quietly inheriting it: a `sku_id`, `plan_tier`, `billing_cycle`,
-/// `frequency`, `purchase_min_qty`, `purchase_max_qty`, `invoice_grouping_key`,
+/// `frequency`, `purchase_min_qty`, `purchase_max_qty`, `descriptor_ext`,
 /// `available_from` or `available_to` that has been set cannot be cleared
 /// through a patch — only replaced, or discarded by abandoning the draft
 /// revision, which keeps the revision number it consumed (D-145).
@@ -237,8 +236,8 @@ pub struct PlanShapePatch {
     pub purchase_min_qty: Option<u64>,
     /// Move the maximum purchasable quantity.
     pub purchase_max_qty: Option<u64>,
-    /// Move the Billing invoice-layout hint (D-96).
-    pub invoice_grouping_key: Option<String>,
+    /// Replace the tenant billing extensions; an empty map clears them.
+    pub descriptor_ext: Option<std::collections::BTreeMap<String, String>>,
     /// Move the start of the availability window, UTC.
     pub available_from: Option<OffsetDateTime>,
     /// Move the end of the availability window, UTC.

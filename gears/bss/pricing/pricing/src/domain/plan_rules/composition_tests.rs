@@ -132,6 +132,8 @@ impl Line {
         row.dimension_key = self.dimension_key.to_owned();
 
         PriceRecord {
+            resolved_invoice_line_template: None,
+            resolved_gl_code: None,
             price_id: Uuid::from_u128(self.price_id),
             scope_key,
             row,

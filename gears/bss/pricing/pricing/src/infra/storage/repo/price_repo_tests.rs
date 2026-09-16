@@ -95,6 +95,10 @@ fn row_of(key: &ScopeKey) -> price::Model {
         tenant_id: uuid::Uuid::from_u128(0x_7e),
         plan_id: key.plan_id().get(),
         sku_id: key.sku_id().as_uuid(),
+        invoice_line_template: None,
+        gl_code_ref: None,
+        resolved_invoice_line_template: None,
+        resolved_gl_code: None,
         currency: key.currency().as_str().to_owned(),
         region: key.region().as_str().to_owned(),
         price_overlay: key.price_overlay().as_str().to_owned(),
@@ -467,22 +471,15 @@ fn the_update_guard_still_refuses_a_line_that_actually_moves() {
     let key = base_key();
     let submitted = submitted_line(&key);
 
-    let moved: [StoredLineEdit; 3] = [
-        ("meter", |row| row.meter = Some("api_bytes".to_owned())),
-        ("dimensionKey", |row| {
-            "region=us".clone_into(&mut row.dimension_key);
-        }),
-        // The `None`/`Some` edge, which no trim can reach: an unmetered line is a
-        // different line from a metered one, not a blanker spelling of it.
-        ("meter absent", |row| row.meter = None),
-    ];
+    let moved: [StoredLineEdit; 1] = [("dimensionKey", |row| {
+        "region=us".clone_into(&mut row.dimension_key);
+    })];
 
     for (column, move_it) in moved {
         let mut row = row_of(&key);
         move_it(&mut row);
         let err = check_update_keeps_the_line(&row, &submitted).expect_err(
-            "an update that moves the row's usage line must be refused: the pair are two axes \
-             of the key the row is filed under",
+            "an update that moves the dimension must be refused: it is an axis of the canonical key",
         );
         assert!(
             matches!(err, RepoError::UsageLineDisagrees { .. }),

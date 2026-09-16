@@ -42,6 +42,8 @@ fn the_content_carries_every_editable_column_and_no_identity() {
     // compiling, so the widening is a decision somebody made rather than a
     // field that appeared.
     let record = PriceRecord {
+        resolved_invoice_line_template: None,
+        resolved_gl_code: None,
         price_id: Uuid::from_u128(0xb_10),
         scope_key: key,
         row: PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat)),

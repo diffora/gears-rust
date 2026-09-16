@@ -277,7 +277,11 @@ fn usage_key(plan_id: PlanId, phase: PhaseId, meter: &str) -> ScopeKey {
 /// row's money **is** the ladder: `inst-mk-required`'s placement matrix leaves no
 /// scalar column for it here. The three callers use it only to tell rows apart.
 fn usage_content(meter: &str, amount: i64) -> PriceContent {
-    let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.meter = Some(meter.to_owned());
     row.billing_granularity = Some(BillingGranularity::WholeUnit);
     row.tier_aggregation_window = Some(TierAggregationWindow::CalendarMonth);
@@ -320,7 +324,7 @@ async fn published_usage_line(h: &Harness, key: &ScopeKey, meter: &str) -> Uuid 
     let conn = h.db.conn().expect("conn");
     common::schedule_coverage_window(&conn, &h.scope(), h.tenant, price_id, stamp_of(SUBMITTER))
         .await;
-    common::publish_row_directly(&h.db, &h.scope(), price_id).await;
+    h.publish_price(key.plan_id().get(), price_id).await;
     price_id
 }
 
@@ -973,6 +977,103 @@ fn receipt(outcome: &CutoverOutcome) -> &bss_pricing::infra::cutover::CutoverRec
         CutoverOutcome::Committed(receipt) => receipt,
         CutoverOutcome::SubmittedForApproval(_) => panic!("this act must have committed"),
     }
+}
+
+#[tokio::test]
+async fn retained_copy_keeps_predecessor_descriptors_after_tenant_defaults_change() {
+    use axum::http::StatusCode;
+    use bss_pricing::api::rest::billing_descriptors::BILLING_DESCRIPTORS;
+    use rest_support::{body_json, etag_of, with_headers};
+
+    async fn set_defaults(h: &Harness, gl_code: &str, template: &str) {
+        let response = h
+            .allowed()
+            .send(with_headers("GET", BILLING_DESCRIPTORS, None, &[]))
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let tag = etag_of(&response).expect("descriptor policy ETag");
+        let mut body = body_json(response).await;
+        body["default_gl_code_ref"] = serde_json::json!(gl_code);
+        body["default_line_templates"]["recurring"] = serde_json::json!(template);
+        let response = h
+            .allowed()
+            .send(with_headers(
+                "PUT",
+                BILLING_DESCRIPTORS,
+                Some(body),
+                &[("if-match", &tag)],
+            ))
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    async fn row(h: &Harness, id: Uuid) -> bss_pricing::domain::price_record::PriceRecord {
+        h.state
+            .prices
+            .find(&h.scope(), h.tenant, id)
+            .await
+            .expect("read price")
+            .expect("price exists")
+    }
+
+    let h = Harness::new().await;
+    set_defaults(&h, "4000", "Original {sku} - {period}").await;
+    let plan_uuid = Uuid::now_v7();
+    let mut inherited = rest_support::publishable_row();
+    inherited.row.gl_code_ref = None;
+    inherited.row.invoice_line_template = None;
+    let seeded = rest_support::seed_publishable_plan_with(
+        &h,
+        plan_uuid,
+        |plan, phase| rest_support::publishable_scope_key(plan, phase, "eu"),
+        inherited,
+    )
+    .await;
+    h.publish(plan_uuid, seeded.revision).await;
+    h.publish_price(plan_uuid, seeded.price_id).await;
+    let predecessor = row(&h, seeded.price_id).await;
+    assert!(predecessor.row.gl_code_ref.is_none());
+    assert!(predecessor.row.invoice_line_template.is_none());
+    assert_eq!(predecessor.resolved_gl_code.as_deref(), Some("4000"));
+    assert_eq!(
+        predecessor.resolved_invoice_line_template.as_deref(),
+        Some("Original {sku} - {period}")
+    );
+
+    set_defaults(&h, "4100", "Current {sku} - {period}").await;
+    let mut request = request_of(&key_of(PlanId::new(plan_uuid), &seeded), 12_000);
+    request.successor.row.gl_code_ref = None;
+    request.successor.row.invoice_line_template = Some("Successor {sku_code}".to_owned());
+    let opened = cut_over(&h, request.clone(), SUBMITTER)
+        .await
+        .expect("stage the cutover under changed defaults");
+    let staged_copy = row(&h, pending(&opened).copy_price_id).await;
+    assert_eq!(staged_copy.row.gl_code_ref, predecessor.resolved_gl_code);
+    assert_eq!(
+        staged_copy.row.invoice_line_template, predecessor.resolved_invoice_line_template,
+        "the retained values must already be part of the approved content"
+    );
+    approve(&h, pending(&opened).approval.approval_id).await;
+
+    let committed = cut_over(&h, request, SUBMITTER)
+        .await
+        .expect("the staged content replays and commits after approval");
+    let receipt = receipt(&committed);
+    let copy = row(&h, receipt.copy_price_id).await;
+    assert_eq!(copy.lifecycle_state, LifecycleState::Published);
+    assert_eq!(copy.resolved_gl_code, predecessor.resolved_gl_code);
+    assert_eq!(
+        copy.resolved_invoice_line_template, predecessor.resolved_invoice_line_template,
+        "retained subscribers keep the predecessor's frozen billing descriptors"
+    );
+    let successor = row(&h, receipt.successor_price_id).await;
+    assert_eq!(successor.lifecycle_state, LifecycleState::Published);
+    assert_eq!(successor.resolved_gl_code.as_deref(), Some("4100"));
+    assert_eq!(
+        successor.resolved_invoice_line_template.as_deref(),
+        Some("Successor {sku_code}"),
+        "the new row resolves its authored template and the current GL default"
+    );
 }
 
 #[tokio::test]

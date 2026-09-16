@@ -14,7 +14,7 @@
 //! reasons: a domain-separation prefix so this gear's pins cannot collide with
 //! any other digest the platform computes, and **length-prefixed, NULL-safe**
 //! fields so two different field *boundaries* cannot collide. Without the
-//! prefixes a shape whose `plan_tier` is `ab` and `invoice_grouping_key` is `c`
+//! prefixes a shape whose `plan_tier` is `ab` and `plan_name` is `c`
 //! hashes identically to one whose fields are `a` and `bc` — and a pin that
 //! cannot distinguish those is a pin an author can move a character across and
 //! still have verify.
@@ -172,7 +172,7 @@
 //! No field of any struct this encoder frames is reached through a dot. Each
 //! encoder binds its struct with an exhaustive pattern and no `..`, so a field
 //! added to `PlanShape`, `PriceRecord`, `PriceRow`, `PlanPhase`, `AddonRule`,
-//! `DescriptorSet`, `TierBand`, `IncludedAllowance`, `KeyWindows`,
+//! `TierBand`, `IncludedAllowance`, `KeyWindows`,
 //! `WindowInterval`, `OverlayRevision`, `OverlayLine`, `OverlayInterval`,
 //! `TargetRef`, `MembershipMoveProposal`,
 //! `ThresholdEntry`, `GrantSet`, `EntitlementGrants`, `CompositeMeter`,
@@ -272,11 +272,10 @@ use crate::domain::membership_change::MembershipMoveSet;
 use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::overlay::{
     Adjustment, AmountSet, LineKeyParts, Magnitude, OverlayInterval, OverlayLine, OverlayRevision,
-    ScopeSelectorParts, ScopeValue, TargetRef, TargetSku,
+    ScopeSelectorParts, ScopeValue, TargetRef,
 };
 use crate::domain::plan_shape::{
-    AddonRule, BillingCycle, CompositeMeter, DescriptorSet, Frequency, PeriodFloorCap, PlanPhase,
-    PlanShape,
+    AddonRule, BillingCycle, CompositeMeter, Frequency, PeriodFloorCap, PlanPhase, PlanShape,
 };
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
@@ -591,7 +590,13 @@ use time::OffsetDateTime;
 /// market identically, so an approve could be satisfied by a re-derivation over
 /// the other SKU's coverage. Every unit pending at rollout answers
 /// `APPROVAL_CONTENT_MISMATCH` and is re-submitted.
-pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v17\x1f";
+///
+/// # `v18`: descriptors follow their row grain (D-373)
+///
+/// v18 replaces plan descriptors/grouping with plan extensions and row
+/// descriptor overrides. Pending v17 units fail stale-pin verification and must
+/// be submitted again; no existing approval is reinterpreted under this frame.
+pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v18\x1f";
 
 /// Versioned domain-separation tag for the **threshold-policy** content pin.
 ///
@@ -1048,7 +1053,7 @@ fn put_grant_set(buf: &mut Vec<u8>, set: &GrantSet) {
 /// and a commit that publishes one capped at 20 000, with every digest equal, is
 /// `sku_id`'s re-verification hole with an entitlement consequence.
 ///
-/// Every map is framed with its **count** first, per [`put_descriptor_set`]'s
+/// Every map is framed with its **count** first, per the descriptor extension frame's
 /// rule: without one, two adjacent collections can be re-split, and a plan with
 /// two feature flags and no quota would pin identically to one with one of each.
 /// `BTreeMap` is what makes the order deterministic across replicas.
@@ -1154,10 +1159,9 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
         available_to,
         purchase_min_qty,
         purchase_max_qty,
-        invoice_grouping_key,
         phases,
         addon_rules,
-        descriptor_set,
+        descriptor_ext,
         period_floor_caps,
         rows,
         entitlement_grants,
@@ -1183,7 +1187,6 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
     put_opt_instant(buf, *available_to);
     put_opt_u64(buf, *purchase_min_qty);
     put_opt_u64(buf, *purchase_max_qty);
-    put_opt_str(buf, invoice_grouping_key.as_deref());
 
     put_entitlement_grants(buf, entitlement_grants);
 
@@ -1229,12 +1232,10 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
         put_addon_rule(buf, rule);
     }
 
-    match descriptor_set {
-        None => put_bool(buf, false),
-        Some(set) => {
-            put_bool(buf, true);
-            put_descriptor_set(buf, set);
-        }
+    put_u64(buf, count_of(descriptor_ext.len()));
+    for (key, value) in descriptor_ext {
+        put_str(buf, key);
+        put_str(buf, value);
     }
 
     let mut ordered_rows: Vec<&PriceRecord> = rows.iter().collect();
@@ -1399,30 +1400,11 @@ fn put_uuid_set(buf: &mut Vec<u8>, ids: &[Uuid]) {
     }
 }
 
-fn put_descriptor_set(buf: &mut Vec<u8>, set: &DescriptorSet) {
-    let DescriptorSet {
-        invoice_line_template,
-        gl_code,
-        itemization_rule,
-        additional,
-    } = set;
-    put_opt_str(buf, invoice_line_template.as_deref());
-    put_opt_str(buf, gl_code.as_deref());
-    put_opt_str(buf, itemization_rule.as_deref());
-    // A `BTreeMap` and never a `HashMap`, for the reason
-    // `preconditions::request_digest` gives: a `HashMap`'s iteration order is
-    // seeded per process, so the same descriptor set would pin differently in
-    // two replicas and an approve served by the other one would answer
-    // `APPROVAL_CONTENT_MISMATCH` about nothing.
-    put_u64(buf, count_of(additional.len()));
-    for (key, value) in additional {
-        put_str(buf, key);
-        put_str(buf, value);
-    }
-}
-
 fn put_price_record(buf: &mut Vec<u8>, record: &PriceRecord) {
     let PriceRecord {
+        // Publish outputs are excluded: freezing must not alter an authored pin.
+        resolved_invoice_line_template: _,
+        resolved_gl_code: _,
         price_id,
         scope_key,
         row,
@@ -1548,6 +1530,8 @@ fn put_scope_key(buf: &mut Vec<u8>, key: &ScopeKey) {
 
 fn put_price_row(buf: &mut Vec<u8>, row: &PriceRow) {
     let PriceRow {
+        invoice_line_template,
+        gl_code_ref,
         charge_kind,
         model_kind,
         amount_minor,
@@ -1574,6 +1558,8 @@ fn put_price_row(buf: &mut Vec<u8>, row: &PriceRow) {
         min_qty_usage_fallback,
         discount_ref,
     } = row;
+    put_opt_str(buf, invoice_line_template.as_deref());
+    put_opt_str(buf, gl_code_ref.as_deref());
     put_str(buf, charge_kind.as_str());
     put_opt_str(buf, model_kind.map(model_kind_wire));
     put_opt_i64(buf, amount_minor.map(MinorAmount::get));

@@ -94,7 +94,7 @@ pub struct RoundingPolicyView {
     pub default_rounding_policy_ref: Option<String>,
 }
 
-fn if_match_param() -> ParamSpec {
+pub(crate) fn if_match_param() -> ParamSpec {
     ParamSpec {
         name: "If-Match".to_owned(),
         location: ParamLocation::Header,

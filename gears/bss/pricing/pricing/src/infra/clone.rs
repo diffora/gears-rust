@@ -347,7 +347,7 @@ pub async fn clone_plan_on(
         plan_tier_override,
         purchase_min_qty,
         purchase_max_qty,
-        invoice_grouping_key,
+        descriptor_ext,
         available_from,
         available_to,
         entitlement_grants,
@@ -403,7 +403,7 @@ pub async fn clone_plan_on(
             plan_tier_override,
             purchase_min_qty,
             purchase_max_qty,
-            invoice_grouping_key,
+            descriptor_ext,
             available_from,
             available_to,
             cloned_from: Some(source),
@@ -438,26 +438,6 @@ pub async fn clone_plan_on(
     if !rules.is_empty() {
         version = plan_shape_repo::replace_addon_rules_on(
             runner, scope, tenant_id, target, revision, version, rules, stamp,
-        )
-        .await
-        .map_err(|e| repo_failure(&e))?
-        .row_version;
-    }
-
-    if let Some(descriptors) =
-        plan_shape_repo::load_descriptor(runner, scope, tenant_id, source, source_revision)
-            .await
-            .map_err(|e| repo_failure(&e))?
-    {
-        version = plan_shape_repo::set_descriptor_set_on(
-            runner,
-            scope,
-            tenant_id,
-            target,
-            revision,
-            version,
-            descriptors,
-            stamp,
         )
         .await
         .map_err(|e| repo_failure(&e))?
@@ -876,6 +856,15 @@ async fn copy_bundle_on(
     )
     .await
     .map_err(|e| repo_failure(&e))?;
+    // Header creation claims and advances the target draft. The composition
+    // must use that version, still inside the clone's atomic transaction.
+    let version = plan_repo::load_open_draft(runner, scope, tenant_id, target)
+        .await
+        .map_err(|e| repo_failure(&e))?
+        .ok_or_else(|| {
+            DomainError::Internal("clone target draft disappeared after bundle creation".to_owned())
+        })?
+        .row_version;
     Ok(bundle_repo::replace_composition_on(
         runner,
         scope,

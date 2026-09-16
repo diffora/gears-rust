@@ -202,7 +202,11 @@ fn key_in(
 }
 
 fn flat_row() -> PriceContent {
-    let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.amount_minor = Some(MinorAmount::new(9_900).expect("a non-negative amount"));
     PriceContent {
         row,
@@ -305,7 +309,10 @@ async fn seed_phaseless_source(h: &Harness, row_phases: &[PhaseId]) {
                 plan_tier_override: false,
                 purchase_min_qty: None,
                 purchase_max_qty: None,
-                invoice_grouping_key: Some("group/source".to_owned()),
+                descriptor_ext: std::collections::BTreeMap::from([(
+                    "costCentre".to_owned(),
+                    "group/source".to_owned(),
+                )]),
                 available_from: None,
                 available_to: None,
                 cloned_from: None,
@@ -417,7 +424,7 @@ async fn seed_published_rows(h: &Harness) {
 async fn seed_composition(
     h: &Harness,
     revision: u64,
-    expected: RowVersion,
+    _expected: RowVersion,
     draft: CompositionDraft,
 ) {
     h.bundles
@@ -436,6 +443,13 @@ async fn seed_composition(
         )
         .await
         .expect("make the source a bundle");
+    let expected = h
+        .plans
+        .find_revision(&h.scope, TENANT, source_plan(), revision)
+        .await
+        .expect("current revision")
+        .expect("source exists")
+        .row_version;
     h.bundles
         .replace_composition(
             &h.scope,
@@ -472,7 +486,10 @@ async fn seed(h: &Harness, composition: Option<CompositionDraft>) {
                 plan_tier_override: false,
                 purchase_min_qty: None,
                 purchase_max_qty: None,
-                invoice_grouping_key: Some("group/source".to_owned()),
+                descriptor_ext: std::collections::BTreeMap::from([(
+                    "costCentre".to_owned(),
+                    "group/source".to_owned(),
+                )]),
                 available_from: None,
                 available_to: None,
                 cloned_from: None,
@@ -548,18 +565,19 @@ async fn seed(h: &Harness, composition: Option<CompositionDraft>) {
         .expect("attach the add-on rule");
 
     let after_descriptors = h
-        .shapes
-        .set_descriptor_set(
+        .plans
+        .update_draft(
             &h.scope,
             TENANT,
             source_plan(),
             created.revision,
             after_rules.row_version,
-            bss_pricing::domain::plan_shape::DescriptorSet {
-                invoice_line_template: Some("{plan}".to_owned()),
-                gl_code: Some("4000".to_owned()),
-                itemization_rule: Some("per_charge".to_owned()),
-                additional: BTreeMap::new(),
+            bss_pricing::domain::plan::PlanShapePatch {
+                descriptor_ext: Some(BTreeMap::from([(
+                    "costCentre".to_owned(),
+                    "group/source".to_owned(),
+                )])),
+                ..Default::default()
             },
             stamp(),
         )
@@ -1109,7 +1127,10 @@ async fn the_clone_is_a_draft_that_names_its_source() {
         "the source really does carry a display name for the clone to have dropped"
     );
     assert_eq!(
-        revision.invoice_grouping_key.as_deref(),
+        revision
+            .descriptor_ext
+            .get("costCentre")
+            .map(String::as_str),
         Some("group/source"),
         "authored configuration comes across"
     );
@@ -1686,12 +1707,17 @@ async fn the_whole_copy_set_comes_across_contract_descriptors_and_composites() {
          plan change; its default is the opposite of this value"
     );
 
-    // The descriptor set.
-    let descriptors = plan_shape_repo::load_descriptor(&conn, &h.scope, TENANT, target_plan(), 0)
+    // D-373: authored row descriptors travel with the cloned price rows.
+    let rows = h
+        .prices
+        .list_for_plan(&h.scope, TENANT, target_plan(), &[LifecycleState::Draft])
         .await
-        .expect("read the descriptor set")
-        .expect("it came across");
-    assert_eq!(descriptors.gl_code.as_deref(), Some("4000"));
+        .expect("cloned rows");
+    assert!(!rows.is_empty());
+    assert!(
+        rows.iter()
+            .all(|row| row.row.gl_code_ref.as_deref() == Some("4000"))
+    );
 
     // The add-on rule travels whole and is **not** remapped: `AddonRule` carries
     // no phase, so the rule set is a copy rather than a remap — asserted rather

@@ -133,7 +133,7 @@ async fn draft_at(plans: &PlanRepo, id: Uuid, created: OffsetDateTime) {
                 plan_tier_override: false,
                 purchase_min_qty: None,
                 purchase_max_qty: None,
-                invoice_grouping_key: None,
+                descriptor_ext: std::collections::BTreeMap::new(),
                 available_from: None,
                 available_to: None,
                 cloned_from: None,

@@ -62,6 +62,8 @@ fn any_plan_contract() -> PlanChangeContract {
 
 fn any_row() -> PriceRow {
     PriceRow {
+        invoice_line_template: None,
+        gl_code_ref: None,
         charge_kind: ChargeKind::Recurring,
         model_kind: None,
         amount_minor: None,

@@ -1216,174 +1216,30 @@ async fn a_frozen_revision_acquires_no_add_on_rules() {
 }
 
 // ---------------------------------------------------------------------------
-// `pricing_plan_descriptor_set`
-// ---------------------------------------------------------------------------
-
-fn insert_descriptor(plan: &str, overrides: &[(&str, &str)]) -> String {
-    let base = [
-        ("plan_id", format!("'{plan}'")),
-        ("plan_revision", "0".to_owned()),
-        ("tenant_id", format!("'{TENANT}'")),
-    ]
-    .into_iter()
-    .map(|(column, value)| (column.to_owned(), value))
-    .collect();
-    render(
-        "pricing_plan_descriptor_set",
-        &with_overrides(base, overrides),
-    )
-}
-
-/// Every column is nullable, and that is what makes `DESCRIPTOR_INCOMPLETE`
-/// reachable at all.
-///
-/// `flow-plan-author` step 4 attaches descriptors **incrementally in `draft`**, so
-/// a `NOT NULL` here would refuse the ordinary authoring path — and would make
-/// `inst-ds-required` unreachable, because a column that cannot be missing is an
-/// element that can never be named as missing. The row with no descriptor at all
-/// is the state the pipeline exists to judge, so the schema has to hold it.
+// D-373 descriptors occupy row and plan grain; the old entity is gone.
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
-async fn a_descriptor_set_stores_with_nothing_authored_yet() {
+async fn descriptor_grain_replaces_the_descriptor_table_and_grouping_column() {
     let conn = applied().await;
+    let row = conn
+        .query_one_raw(Statement::from_string(
+            sea_orm::DbBackend::Postgres,
+            "SELECT to_regclass('bss.pricing_plan_descriptor_set') IS NULL AS absent".to_owned(),
+        ))
+        .await
+        .expect("inspect retired table")
+        .expect("row");
+    assert!(row.try_get::<bool>("", "absent").expect("absent"));
     seed_draft(&conn, PLAN_A).await;
-    must_succeed(&conn, &insert_descriptor(PLAN_A, &[])).await;
-    // And the fully authored one, including P5's extension object.
-    seed_draft(&conn, PLAN_B).await;
-    must_succeed(
-        &conn,
-        &insert_descriptor(
-            PLAN_B,
-            &[
-                ("invoice_line_template", "'{planName} / {phase}'"),
-                ("gl_code", "'4000-01'"),
-                ("itemization_rule", "'per_line'"),
-                ("additional_fields", "'{\"costCentre\":\"CC-7\"}'"),
-            ],
-        ),
-    )
-    .await;
-    // A draft revision's copy is mutable and deletable.
-    must_succeed(
-        &conn,
-        &format!(
-            "UPDATE bss.pricing_plan_descriptor_set SET gl_code = '4000-02' \
-             WHERE plan_id = '{PLAN_B}' AND plan_revision = 0"
-        ),
-    )
-    .await;
-    must_succeed(
-        &conn,
-        &format!("DELETE FROM bss.pricing_plan_descriptor_set WHERE plan_id = '{PLAN_B}'"),
-    )
-    .await;
-}
-
-/// A revision has **one** descriptor set, and the key is what says so.
-///
-/// This table is genuinely 1:1 where its two siblings are not, so the primary key
-/// is the only object carrying that fact. A second set for one revision would
-/// give Billing two disagreeing answers for the invoice line an ERP posts.
-#[tokio::test]
-#[ignore = "requires Docker (testcontainers)"]
-async fn a_revision_holds_exactly_one_descriptor_set() {
-    let conn = applied().await;
-    seed_draft(&conn, PLAN_A).await;
-    must_succeed(&conn, &insert_descriptor(PLAN_A, &[])).await;
-    must_be_rejected(
-        &conn,
-        &insert_descriptor(PLAN_A, &[("gl_code", "'4000-09'")]),
-        "pricing_plan_descriptor_set_pkey",
-    )
-    .await;
-    // Another revision of the same plan has its own, which is the copy-forward.
-    freeze(&conn, PLAN_A, "published").await;
-    must_succeed(
-        &conn,
-        &format!(
-            "INSERT INTO bss.pricing_plan \
-             (sku_id, plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc) \
-             VALUES ('55555555-5555-5555-5555-555555555555', '{PLAN_A}', 1, '{TENANT}', 'draft', '{ACTOR}', '2026-08-03 09:00:00+00')"
-        ),
-    )
-    .await;
-    must_succeed(&conn, &insert_descriptor(PLAN_A, &[("plan_revision", "1")])).await;
-}
-
-/// The parent move, for the same reason as the two sibling tables'.
-#[tokio::test]
-#[ignore = "requires Docker (testcontainers)"]
-async fn a_descriptor_set_may_not_be_orphaned_by_renumbering_its_revision() {
-    let conn = applied().await;
-    seed_draft(&conn, PLAN_A).await;
-    must_succeed(&conn, &insert_descriptor(PLAN_A, &[])).await;
-    must_be_rejected(
-        &conn,
-        &format!(
-            "UPDATE bss.pricing_plan SET revision = 5 \
-             WHERE plan_id = '{PLAN_A}' AND revision = 0"
-        ),
-        "fk_pricing_plan_descriptor_set_revision",
-    )
-    .await;
-}
-
-/// Arm 1's unshared statement: the DELETE.
-#[tokio::test]
-#[ignore = "requires Docker (testcontainers)"]
-async fn a_descriptor_set_of_a_frozen_revision_cannot_be_deleted() {
-    let conn = applied().await;
-    seed_draft(&conn, PLAN_A).await;
-    must_succeed(&conn, &insert_descriptor(PLAN_A, &[])).await;
-    freeze(&conn, PLAN_A, "published").await;
-    must_be_rejected(
-        &conn,
-        &format!("DELETE FROM bss.pricing_plan_descriptor_set WHERE plan_id = '{PLAN_A}'"),
-        "pricing_plan_descriptor_set: DELETE of a descriptor set under a published plan revision is not permitted",
-    )
-    .await;
-
-    seed_draft(&conn, PLAN_B).await;
-    must_succeed(&conn, &insert_descriptor(PLAN_B, &[])).await;
-    freeze(&conn, PLAN_B, "abandoned").await;
-    must_be_rejected(
-        &conn,
-        &format!("DELETE FROM bss.pricing_plan_descriptor_set WHERE plan_id = '{PLAN_B}'"),
-        "pricing_plan_descriptor_set: DELETE of a descriptor set under a abandoned plan revision is not permitted",
-    )
-    .await;
-}
-
-/// Arm 2's unshared statements: the INSERT and the re-point.
-///
-/// The INSERT is the sharper of the two on a 1:1 table — it is how a revision
-/// that published **without** a descriptor set (the publish having been refused
-/// by `DESCRIPTOR_INCOMPLETE`, or an operator now wanting to "fix" a frozen one)
-/// would acquire one afterwards.
-#[tokio::test]
-#[ignore = "requires Docker (testcontainers)"]
-async fn a_frozen_revision_acquires_no_descriptor_set() {
-    let conn = applied().await;
-    seed_draft(&conn, PLAN_A).await;
-    freeze(&conn, PLAN_A, "published").await;
-    must_be_rejected(
-        &conn,
-        &insert_descriptor(PLAN_A, &[]),
-        "pricing_plan_descriptor_set: INSERT of a descriptor set under a published plan revision is not permitted",
-    )
-    .await;
-
-    seed_draft(&conn, PLAN_B).await;
-    must_succeed(&conn, &insert_descriptor(PLAN_B, &[])).await;
-    must_be_rejected(
-        &conn,
-        &format!(
-            "UPDATE bss.pricing_plan_descriptor_set SET plan_id = '{PLAN_A}' \
-             WHERE plan_id = '{PLAN_B}' AND plan_revision = 0"
-        ),
-        "pricing_plan_descriptor_set: UPDATE of a descriptor set under a published plan revision is not permitted",
-    )
-    .await;
+    must_succeed(&conn, &format!("UPDATE bss.pricing_plan SET descriptor_ext = '{{\"costCentre\":\"ops\"}}'::jsonb WHERE plan_id = '{PLAN_A}'")).await;
+    let missing = conn
+        .execute_raw(Statement::from_string(
+            sea_orm::DbBackend::Postgres,
+            "SELECT invoice_grouping_key FROM bss.pricing_plan".to_owned(),
+        ))
+        .await
+        .expect_err("removed grouping column");
+    assert!(missing.to_string().contains("invoice_grouping_key"));
 }
 
 // ---------------------------------------------------------------------------

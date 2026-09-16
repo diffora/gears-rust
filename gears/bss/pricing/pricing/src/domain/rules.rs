@@ -190,6 +190,7 @@ pub fn row_local_rules() -> ValidationPipeline<PriceRow> {
 /// the one they could not see.
 fn register_row_local(pipeline: ValidationPipeline<PriceRow>) -> ValidationPipeline<PriceRow> {
     pipeline
+        .with_rule(Box::new(crate::domain::line_template::LineTemplateValid))
         .with_rule(Box::new(model_kind::ExplicitModelKind))
         .with_rule(Box::new(model_kind::KindRequiredFields))
         .with_rule(Box::new(model_kind::KindForbiddenFields))

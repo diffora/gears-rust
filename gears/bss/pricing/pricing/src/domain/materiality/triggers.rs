@@ -300,7 +300,7 @@ pub enum Trigger {
     /// fields. [`super::delta`] decides which, and names it.
     NoComputableRowDelta,
     /// A plan revision that moves **no price row at all** (D-115): its content is
-    /// the plan's shape — the descriptor set, the phase graph and durations, the
+    /// the plan's shape — billing extensions, the phase graph and durations, the
     /// add-on rule set, the cycle, the availability dates, the tier override, the
     /// plan-change contract, the composite meter definitions, and the plan-level
     /// **period floor/cap** (D-319) — none of which carries a price delta. A
@@ -618,6 +618,8 @@ pub fn triggered_by_content(
 /// comparison is standing on. A separate pass would be a second walk that could
 /// disagree with the first about which rows the change set holds.
 #[must_use]
+// D-373 authored invoice templates and GL references are contract changes in
+// row_delta, so either edit routes through NoComputableRowDelta here.
 pub fn triggered_by_row(current: &PriceRecord, published: &PriceRecord) -> Option<Trigger> {
     if tightens_horizon(current.grandfather_until, published.grandfather_until) {
         return Some(Trigger::GrandfatherHorizonTightening);

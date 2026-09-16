@@ -8,7 +8,7 @@
 //! site. A code spelled twice is a code that can be spelled two ways.
 //!
 //! The four validators of this slice — `CycleShapeValidator`,
-//! `CompositionValidator`, the `PhaseGraph` rules and the `DescriptorSet` rules
+//! `CompositionValidator`, the `PhaseGraph` rules and the billing extension rules
 //! — each register their own
 //! [`ValidationRule`](crate::domain::validation::ValidationRule)s over a
 //! [`PlanShape`](crate::domain::plan_shape::PlanShape) into the Foundation's

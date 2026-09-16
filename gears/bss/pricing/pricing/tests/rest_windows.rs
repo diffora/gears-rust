@@ -415,7 +415,11 @@ async fn seed_foreign_priced_plan(h: &Harness, plan_id: Uuid) -> String {
     .expect("scope key");
     let rendered = key.to_string();
 
-    let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.amount_minor = Some(MinorAmount::new(1_500).expect("a non-negative amount"));
     let record = h
         .state
@@ -2895,7 +2899,11 @@ fn delta_of(
     use bss_pricing::domain::window::KeyWindows;
 
     let key = sellability_key(plan_id, ChargeKind::Recurring);
-    let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.amount_minor = Some(MinorAmount::new(1_200).expect("a non-negative amount"));
     PlanSubjectDelta {
         entitlement_grants: EntitlementGrants::default(),
@@ -2915,12 +2923,14 @@ fn delta_of(
         available_to: None,
         purchase_min_qty: None,
         purchase_max_qty: None,
-        invoice_grouping_key: None,
+        descriptor_ext: std::collections::BTreeMap::new(),
         phases: Vec::new(),
         addon_rules: Vec::new(),
-        descriptor_set: None,
+        itemization_rule: bss_pricing::domain::bundle::InvoiceItemization::Itemize,
         period_floor_caps: Vec::new(),
         prices: vec![PriceRecord {
+            resolved_invoice_line_template: Some("{sku}".to_owned()),
+            resolved_gl_code: Some("4000".to_owned()),
             price_id: Uuid::from_u128(0xb_0001),
             scope_key: key.clone(),
             row,

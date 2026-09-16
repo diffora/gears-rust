@@ -39,9 +39,7 @@ use bss_pricing::domain::overlay::{
     ScopeSelector, ScopeValue, TargetRef, TaxBasis,
 };
 use bss_pricing::domain::plan::PlanShapePatch;
-use bss_pricing::domain::plan_shape::{
-    BillingCycle, DescriptorSet, Frequency, PhaseKind, PlanPhase,
-};
+use bss_pricing::domain::plan_shape::{BillingCycle, Frequency, PhaseKind, PlanPhase};
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::publish::{OverlayPublishUnit, PlanPublishUnit, PublishAuthorization};
@@ -371,7 +369,7 @@ fn plan_draft_of(tenant: Uuid, plan_id: PlanId, tier: &str) -> NewPlanDraft {
         plan_tier_override: false,
         purchase_min_qty: None,
         purchase_max_qty: None,
-        invoice_grouping_key: None,
+        descriptor_ext: std::collections::BTreeMap::new(),
         available_from: None,
         available_to: None,
         cloned_from: None,
@@ -380,7 +378,11 @@ fn plan_draft_of(tenant: Uuid, plan_id: PlanId, tier: &str) -> NewPlanDraft {
 }
 
 fn flat_row() -> PriceContent {
-    let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.amount_minor = Some(MinorAmount::new(9_900).expect("a non-negative amount"));
     PriceContent {
         row,
@@ -491,18 +493,16 @@ async fn seed_publishable_of(
         .await
         .expect("attach the phase chain");
     let after_descriptors = h
-        .shapes
-        .set_descriptor_set(
+        .plans
+        .update_draft(
             &scope,
             tenant,
             plan_id,
             created.revision,
             after_phases.row_version,
-            DescriptorSet {
-                invoice_line_template: Some("{plan}".to_owned()),
-                gl_code: Some("4000".to_owned()),
-                itemization_rule: Some("per_charge".to_owned()),
-                additional: std::collections::BTreeMap::new(),
+            bss_pricing::domain::plan::PlanShapePatch {
+                descriptor_ext: Some(std::collections::BTreeMap::new()),
+                ..Default::default()
             },
             stamp(),
         )
@@ -4635,4 +4635,156 @@ async fn a_frontier_scan_that_cannot_read_reports_it_rather_than_disappearing() 
          — so no other member of it was ever a proxy an operator or a case could have watched \
          instead: healthy={healthy:?}"
     );
+}
+
+/// D-373 positive probe: one plan publishes three labels and two revenue codes.
+/// Changing defaults before the registry commits cannot rewrite that snapshot.
+#[tokio::test]
+async fn three_charge_kinds_freeze_distinct_descriptors_before_default_drift() {
+    use bss_pricing::domain::line_template::DefaultLineTemplates;
+    use bss_pricing::domain::money::RateMinor;
+    use bss_pricing::domain::price_row::BillingGranularity;
+    use bss_pricing::domain::scope_key::{DimensionKey, Meter};
+    use bss_pricing::infra::storage::repo::policy_repo;
+    let h = harness().await;
+    let plan_id = PlanId::new(Uuid::now_v7());
+    let (revision, version) = seed_publishable(&h, plan_id, "gold").await;
+    let seeded = h
+        .prices
+        .list_for_plan(&h.scope, TENANT, plan_id, &[LifecycleState::Draft])
+        .await
+        .expect("draft rows");
+    let recurring = &seeded[0];
+    let phase = recurring.scope_key.phase();
+    let mut content = recurring.content();
+    content.row.gl_code_ref = None;
+    h.prices
+        .update_draft(
+            &h.scope,
+            TENANT,
+            recurring.price_id,
+            recurring.row_version,
+            content,
+            stamp(),
+            None,
+        )
+        .await
+        .expect("inherit GL");
+    let conn = h.provider.conn().expect("conn");
+    let initial = (None, DefaultLineTemplates::default());
+    let defaults = (Some("4000".to_owned()), DefaultLineTemplates::default());
+    assert!(
+        policy_repo::set_descriptor_defaults(
+            &conn,
+            &h.scope,
+            TENANT,
+            &defaults,
+            &initial,
+            &stamp()
+        )
+        .await
+        .expect("defaults")
+    );
+    for (kind, gl, template) in [
+        (ChargeKind::OneTimeSetup, "4100", "Setup {sku}"),
+        (ChargeKind::Usage, "4000", "{sku}, {unit}"),
+    ] {
+        let mut content = flat_row();
+        content.row.charge_kind = kind;
+        content.row.gl_code_ref = Some(gl.to_owned());
+        content.row.invoice_line_template = Some(template.to_owned());
+        content.proration_contract = None;
+        content.billing_timing = None;
+        let sku = if kind == ChargeKind::Usage {
+            Uuid::new_v5(&Uuid::NAMESPACE_OID, b"api_calls")
+        } else {
+            Uuid::from_u128(0x5_c1)
+        };
+        let mut key = ScopeKey::new(
+            plan_id,
+            CurrencyCode::new("EUR").expect("currency"),
+            Region::new("eu").expect("region"),
+            phase,
+            PriceEligibility::AllSubscriptions,
+            kind,
+            Cohort::None,
+            SkuId::new(sku),
+        )
+        .expect("scope");
+        if kind == ChargeKind::Usage {
+            content.row.model_kind = Some(ModelKind::PerUnit);
+            content.row.amount_minor = None;
+            content.row.unit_rate = Some(RateMinor::from_nano_minor(1_000_000_000).expect("rate"));
+            content.row.meter = Some("api_calls".to_owned());
+            content.row.billing_granularity = Some(BillingGranularity::WholeUnit);
+            key = key
+                .with_usage_line(
+                    Some(&Meter::new("api_calls").expect("meter")),
+                    DimensionKey::none(),
+                )
+                .expect("usage key");
+        }
+        let price_id = Uuid::now_v7();
+        h.prices
+            .create_draft(
+                &h.scope,
+                TENANT,
+                NewPriceDraft {
+                    price_id,
+                    scope_key: key,
+                    content,
+                    created_by: ACTOR,
+                    created_at_utc: at(10),
+                    correlation_id: CORRELATION,
+                },
+            )
+            .await
+            .expect("descriptor row");
+        common::schedule_coverage_window(&conn, &h.scope, TENANT, price_id, stamp()).await;
+    }
+    let pending = publish(&h, plan_id, revision, version, at(12)).await;
+    let drifted = (
+        Some("4999".to_owned()),
+        DefaultLineTemplates::from_map(
+            DefaultLineTemplates::default()
+                .to_map()
+                .into_keys()
+                .map(|kind| (kind, "Changed {plan}".to_owned()))
+                .collect(),
+        )
+        .expect("valid defaults"),
+    );
+    assert!(
+        policy_repo::set_descriptor_defaults(
+            &conn,
+            &h.scope,
+            TENANT,
+            &drifted,
+            &defaults,
+            &stamp()
+        )
+        .await
+        .expect("change defaults after commit")
+    );
+    h.registry.commit(&pending, 1);
+    sweep(&h, at(13)).await;
+    let deltas = deltas(&h).await;
+    let payload = &deltas[0].payload;
+    assert_eq!(payload["billing"]["itemizationRule"], "itemize");
+    assert!(payload.get("descriptorSet").is_none());
+    assert!(payload.get("invoiceGroupingKey").is_none());
+    let rows = payload["prices"].as_array().expect("frozen rows");
+    assert_eq!(rows.len(), 3);
+    for (kind, code, label) in [
+        ("recurring", "4000", "{sku} - {period}"),
+        ("one_time_setup", "4100", "Setup {sku}"),
+        ("usage", "4000", "{sku}, {unit}"),
+    ] {
+        let row = rows
+            .iter()
+            .find(|row| row["chargeKind"] == kind)
+            .expect("charge kind");
+        assert_eq!(row["glCode"], code);
+        assert_eq!(row["invoiceLineTemplate"], label);
+    }
 }

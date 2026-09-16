@@ -49,9 +49,7 @@ use bss_pricing::domain::money::CurrencyCode;
 use bss_pricing::domain::money::{MinorAmount, RateMinor};
 use bss_pricing::domain::plan::PlanRevision;
 use bss_pricing::domain::plan_shape::Frequency;
-use bss_pricing::domain::plan_shape::{
-    AddonRule, BillingCycle, DescriptorSet, PhaseKind, PlanPhase,
-};
+use bss_pricing::domain::plan_shape::{AddonRule, BillingCycle, PhaseKind, PlanPhase};
 use bss_pricing::domain::ports::metrics::PricingMetricsPort;
 use bss_pricing::domain::price_record::PriceContent as PriceContentAlias;
 use bss_pricing::domain::price_record::{PriceContent, PriceRecord};
@@ -838,6 +836,10 @@ impl Harness {
                 Arc::clone(&self.state),
                 &openapi,
             ))
+            .merge(bss_pricing::api::rest::billing_descriptors::router(
+                Arc::clone(&self.state),
+                &openapi,
+            ))
             .merge(bss_pricing::api::rest::rounding_policies::router(
                 Arc::clone(&self.state),
                 &openapi,
@@ -1315,18 +1317,16 @@ impl Harness {
             .row_version;
 
         self.state
-            .shapes
-            .set_descriptor_set(
+            .plans
+            .update_draft(
                 &scope,
                 self.tenant,
                 plan_id,
                 revision,
                 version,
-                DescriptorSet {
-                    invoice_line_template: Some("{plan} subscription".to_owned()),
-                    gl_code: Some("4000".to_owned()),
-                    itemization_rule: Some("per_line".to_owned()),
-                    additional: std::collections::BTreeMap::new(),
+                bss_pricing::domain::plan::PlanShapePatch {
+                    descriptor_ext: Some(std::collections::BTreeMap::new()),
+                    ..Default::default()
                 },
                 stamp(),
             )
@@ -1664,7 +1664,7 @@ pub async fn seed_current_plan_with_phase(harness: &Harness, plan_id: Uuid) {
                 plan_tier_override: false,
                 purchase_min_qty: None,
                 purchase_max_qty: None,
-                invoice_grouping_key: None,
+                descriptor_ext: std::collections::BTreeMap::new(),
                 available_from: None,
                 available_to: None,
                 cloned_from: None,
@@ -1697,18 +1697,16 @@ pub async fn seed_current_plan_with_phase(harness: &Harness, plan_id: Uuid) {
         .expect("attach the phase chain");
     harness
         .state
-        .shapes
-        .set_descriptor_set(
+        .plans
+        .update_draft(
             &scope,
             harness.tenant,
             plan,
             created.revision,
             after_phases.row_version,
-            DescriptorSet {
-                invoice_line_template: Some("{plan}".to_owned()),
-                gl_code: Some("4000".to_owned()),
-                itemization_rule: Some("per_charge".to_owned()),
-                additional: std::collections::BTreeMap::new(),
+            bss_pricing::domain::plan::PlanShapePatch {
+                descriptor_ext: Some(std::collections::BTreeMap::new()),
+                ..Default::default()
             },
             stamp(),
         )
@@ -1833,7 +1831,7 @@ pub fn new_draft(plan_id: Uuid, tenant_id: Uuid) -> NewPlanDraft {
         plan_tier_override: false,
         purchase_min_qty: None,
         purchase_max_qty: None,
-        invoice_grouping_key: None,
+        descriptor_ext: std::collections::BTreeMap::new(),
         available_from: None,
         available_to: None,
         cloned_from: None,
@@ -2066,7 +2064,12 @@ pub async fn seed_price_keyed_with_horizon(
                 price_id: Uuid::now_v7(),
                 scope_key: key,
                 content: PriceContent {
-                    row: PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat)),
+                    row: {
+                        let mut descriptor_row =
+                            PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+                        descriptor_row.gl_code_ref = Some("4000".to_owned());
+                        descriptor_row
+                    },
                     tax_inclusive: false,
                     tax_category_ref: None,
                     billing_timing: None,
@@ -2136,7 +2139,11 @@ pub async fn seed_priced_row_on_phase(
         SkuId::new(OFFER_SKU),
     )
     .expect("scope key");
-    let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.amount_minor = Some(MinorAmount::new(amount_minor).expect("a non-negative amount"));
     harness
         .state
@@ -2214,7 +2221,11 @@ pub async fn seed_per_unit_rate_row(
         SkuId::new(OFFER_SKU),
     )
     .expect("scope key");
-    let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::PerUnit));
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::PerUnit));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.unit_rate = Some(RateMinor::from_nano_minor(rate_nano_minor).expect("a non-negative rate"));
     row.quantity_source = Some(QuantitySource::SubscriptionSeatCount);
     harness
@@ -2484,7 +2495,7 @@ pub async fn seed_publishable_shape(harness: &Harness, plan_id: Uuid) -> Publish
                 plan_tier_override: false,
                 purchase_min_qty: None,
                 purchase_max_qty: None,
-                invoice_grouping_key: None,
+                descriptor_ext: std::collections::BTreeMap::new(),
                 available_from: None,
                 available_to: None,
                 cloned_from: None,
@@ -2519,18 +2530,16 @@ pub async fn seed_publishable_shape(harness: &Harness, plan_id: Uuid) -> Publish
 
     let after_descriptors = harness
         .state
-        .shapes
-        .set_descriptor_set(
+        .plans
+        .update_draft(
             &scope,
             harness.tenant,
             plan,
             created.revision,
             after_phases.row_version,
-            DescriptorSet {
-                invoice_line_template: Some("{plan}".to_owned()),
-                gl_code: Some("4000".to_owned()),
-                itemization_rule: Some("per_charge".to_owned()),
-                additional: std::collections::BTreeMap::new(),
+            bss_pricing::domain::plan::PlanShapePatch {
+                descriptor_ext: Some(std::collections::BTreeMap::new()),
+                ..Default::default()
             },
             stamp(),
         )
@@ -2726,7 +2735,11 @@ pub async fn seed_publishable_manual_quantity_plan(
 /// A flat recurring row that passes the Slice-3 rule set.
 #[must_use]
 pub fn publishable_row() -> PriceContentAlias {
-    let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.amount_minor = Some(MinorAmount::new(9_900).expect("a non-negative amount"));
     PriceContentAlias {
         row,
@@ -2760,7 +2773,11 @@ pub fn publishable_row() -> PriceContentAlias {
 /// the one answer that needs no second field beside it.
 #[must_use]
 pub fn publishable_per_unit_row(rate_nano_minor: i64) -> PriceContentAlias {
-    let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::PerUnit));
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::PerUnit));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.unit_rate = Some(RateMinor::from_nano_minor(rate_nano_minor).expect("a non-negative rate"));
     row.quantity_source = Some(QuantitySource::SubscriptionSeatCount);
     // Everything but the row is [`publishable_row`]'s, taken from it rather than
@@ -2787,7 +2804,11 @@ pub fn publishable_per_unit_row(rate_nano_minor: i64) -> PriceContentAlias {
 /// `reservationFlavor = capacity` the only legal flavor here (D-53).
 #[must_use]
 pub fn publishable_tiered_usage_row(bands: Vec<TierBand>) -> PriceContentAlias {
-    let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.bands = bands;
     row.meter = Some(USAGE_METER.to_owned());
     row.billing_granularity = Some(BillingGranularity::PerHour);
@@ -3115,7 +3136,6 @@ async fn planes_of_the_plan_aggregate(harness: &Harness, out: &mut Planes) {
     plane!(out, &conn, harness, plan);
     plane!(out, &conn, harness, plan_phase);
     plane!(out, &conn, harness, plan_addon_rule);
-    plane!(out, &conn, harness, plan_descriptor_set);
     plane!(out, &conn, harness, plan_period_floor_cap);
     plane!(out, &conn, harness, composite_meter);
 }

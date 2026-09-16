@@ -69,8 +69,8 @@ use crate::domain::plan_rules::composition::AddonQtyRange;
 use crate::domain::plan_rules::cycle_shape::PurchaseQtyRange;
 use crate::domain::plan_rules::period_floor_cap::PeriodFloorCapAmounts;
 use crate::domain::plan_shape::{
-    AddonRule, BillingCycle, CompositeMeter, CustomIntervalUnit, DescriptorSet, Frequency,
-    PeriodFloorCap, PhaseKind, PlanPhase, PlanShape,
+    AddonRule, BillingCycle, CompositeMeter, CustomIntervalUnit, Frequency, PeriodFloorCap,
+    PhaseKind, PlanPhase, PlanShape,
 };
 use crate::domain::scope_key::{PhaseId, PlanId, Region};
 use crate::domain::validation::ValidationPipeline;
@@ -344,41 +344,12 @@ impl From<PeriodFloorCap> for PeriodFloorCapView {
     }
 }
 
-/// The revision's billing descriptor set.
-///
-/// Its **absence** is `null` on [`PlanView::descriptor_set`], and an attached
-/// set whose three named members are all empty is an object with three nulls.
-/// The distinction is kept on the wire because the store keeps it - an
-/// unattached set has no row at all - and because `DESCRIPTOR_INCOMPLETE` is
-/// asked of an attached set: collapsing the two would make "nobody attached one"
-/// and "somebody attached an empty one" the same publish input.
+/// The plan-level part of the billing contract (D-373).
 #[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(request, response)]
-pub struct DescriptorSetView {
-    /// The invoice line template Billing renders from.
-    pub invoice_line_template: Option<String>,
-    /// The general-ledger code the posting lands on.
-    pub gl_code: Option<String>,
-    /// How the plan's charges are composed into invoice lines.
-    pub itemization_rule: Option<String>,
-    /// Extra descriptor keys a deployment's required-set names (P5).
-    ///
-    /// A `BTreeMap` rather than a `HashMap`, and the reason is the idempotency
-    /// digest: `serde_json` renders a `BTreeMap` in key order and a `HashMap` in
-    /// whatever order the process happens to hash to, so a retry would digest
-    /// differently from its own first attempt (see `api::rest::preconditions`).
-    pub additional: std::collections::BTreeMap<String, String>,
-}
-
-impl From<DescriptorSet> for DescriptorSetView {
-    fn from(set: DescriptorSet) -> Self {
-        Self {
-            invoice_line_template: set.invoice_line_template,
-            gl_code: set.gl_code,
-            itemization_rule: set.itemization_rule,
-            additional: set.additional,
-        }
-    }
+#[toolkit_macros::api_dto(response)]
+pub struct BillingView {
+    pub itemization_rule: String,
+    pub ext: BTreeMap<String, String>,
 }
 
 /// One derived (composite) meter, as an **author** states it (Slice 10 §6, A4,
@@ -393,7 +364,7 @@ impl From<DescriptorSet> for DescriptorSetView {
 /// in increasing order of what it costs to get wrong.
 ///
 /// 1. **Direction.** `approvals.rs` imports [`PlanPhaseView`], [`AddonRuleView`],
-///    [`DescriptorSetView`] and [`FrequencyView`] *from here*: the authoring plane
+///    [`FrequencyView`] *from here*: the authoring plane
 ///    owns the shapes an author writes, and the reviewer's document borrows them.
 ///    Making [`PatchPlanRequest`] depend on a type in `approvals.rs` inverts that
 ///    for one facet, and a reader would then have to know which of the six is the
@@ -510,7 +481,6 @@ pub struct PlanView {
     /// Maximum purchasable quantity (one-time plans).
     pub purchase_max_qty: Option<u64>,
     /// The Billing invoice-layout hint (D-96).
-    pub invoice_grouping_key: Option<String>,
     /// Start of the availability window, UTC.
     #[serde(default, with = "rfc3339::option")]
     pub available_from: Option<OffsetDateTime>,
@@ -534,7 +504,7 @@ pub struct PlanView {
     /// The revision's add-on composition rules.
     pub addon_rules: Vec<AddonRuleView>,
     /// The revision's descriptor set, or `null` when none is attached.
-    pub descriptor_set: Option<DescriptorSetView>,
+    pub billing: BillingView,
     /// The revision's derived (composite) meter set, in the store's order.
     ///
     /// **A write surface whose read surface does not show the value is half a
@@ -546,7 +516,7 @@ pub struct PlanView {
     /// copy-forward and break for every edit.
     ///
     /// An empty list is a revision that defines no composite, which is the ordinary
-    /// case: unlike [`PlanView::descriptor_set`] there is no attached-but-empty
+    /// case: there is no attached-but-empty
     /// state to keep apart from absence, because the set is rows and not a row.
     pub composites: Vec<CompositeMeterRequest>,
     /// The revision's period floor/cap set, in `(currency, region)` order
@@ -635,7 +605,7 @@ impl PlanView {
         created_at: OffsetDateTime,
         phases: Vec<PlanPhase>,
         addon_rules: Vec<AddonRule>,
-        descriptor_set: Option<DescriptorSet>,
+        itemization_rule: crate::domain::bundle::InvoiceItemization,
         composites: Vec<CompositeMeter>,
         period_floor_caps: Vec<PeriodFloorCap>,
     ) -> Self {
@@ -653,7 +623,7 @@ impl PlanView {
             plan_tier_override: revision.plan_tier_override,
             purchase_min_qty: revision.purchase_min_qty,
             purchase_max_qty: revision.purchase_max_qty,
-            invoice_grouping_key: revision.invoice_grouping_key,
+
             available_from: revision.available_from,
             available_to: revision.available_to,
             created_by: revision.created_by,
@@ -662,7 +632,10 @@ impl PlanView {
             row_version: revision.row_version.get(),
             phases: phases.into_iter().map(PlanPhaseView::from).collect(),
             addon_rules: addon_rules.into_iter().map(AddonRuleView::from).collect(),
-            descriptor_set: descriptor_set.map(DescriptorSetView::from),
+            billing: BillingView {
+                itemization_rule: itemization_rule.as_str().to_owned(),
+                ext: revision.descriptor_ext,
+            },
             composites: composites
                 .into_iter()
                 .map(CompositeMeterRequest::from)
@@ -796,6 +769,7 @@ impl From<&plan_repo::PlanListEntry> for PlanSummaryView {
 /// legal draft (§4.2 step 2).
 #[derive(Debug, Clone, Default)]
 #[toolkit_macros::api_dto(request, response)]
+#[serde(deny_unknown_fields)]
 pub struct PlanShapeRequest {
     /// Bind the plan to a catalog SKU.
     pub sku_id: Option<Uuid>,
@@ -818,7 +792,7 @@ pub struct PlanShapeRequest {
     /// Maximum purchasable quantity (one-time plans).
     pub purchase_max_qty: Option<u64>,
     /// The Billing invoice-layout hint (D-96).
-    pub invoice_grouping_key: Option<String>,
+    pub descriptor_ext: Option<BTreeMap<String, String>>,
     /// Start of the availability window, UTC.
     #[serde(default, with = "rfc3339::option")]
     pub available_from: Option<OffsetDateTime>,
@@ -845,6 +819,7 @@ pub struct PlanShapeRequest {
 /// Initial plan shape. D-372 requires the sold offer SKU at creation.
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(request)]
+#[serde(deny_unknown_fields)]
 pub struct CreatePlanRequest {
     /// Bind the plan to a catalog SKU.
     pub sku_id: Uuid,
@@ -867,7 +842,7 @@ pub struct CreatePlanRequest {
     /// Maximum purchasable quantity (one-time plans).
     pub purchase_max_qty: Option<u64>,
     /// The Billing invoice-layout hint (D-96).
-    pub invoice_grouping_key: Option<String>,
+    pub descriptor_ext: Option<BTreeMap<String, String>>,
     /// Start of the availability window, UTC.
     #[serde(default, with = "rfc3339::option")]
     pub available_from: Option<OffsetDateTime>,
@@ -901,7 +876,7 @@ impl From<CreatePlanRequest> for PlanShapeRequest {
             plan_tier_override: value.plan_tier_override,
             purchase_min_qty: value.purchase_min_qty,
             purchase_max_qty: value.purchase_max_qty,
-            invoice_grouping_key: value.invoice_grouping_key,
+            descriptor_ext: value.descriptor_ext,
             available_from: value.available_from,
             available_to: value.available_to,
             entitlement_grants: value.entitlement_grants,
@@ -1013,7 +988,7 @@ impl From<PlanChangeContract> for PlanChangeContractRequest {
 ///
 /// The reason is structural rather than stylistic.
 /// [`PlanShapeRepo::replace_phases`](crate::infra::storage::repo::PlanShapeRepo::replace_phases),
-/// `replace_addon_rules`, `set_descriptor_set` and `replace_composites` each
+/// `replace_addon_rules` and `replace_composites` each
 /// compare-and-swap on the **revision's** row version and each bump it - the child
 /// sets carry no tag of their own, deliberately, so two authors editing different
 /// facets of one draft cannot both satisfy one precondition. A two-facet patch
@@ -1032,7 +1007,7 @@ impl From<PlanChangeContract> for PlanChangeContractRequest {
 /// `composites` mounts Slice 10's derived-meter set on **this** verb. The set is
 /// revision-scoped child rows of a plan revision, versioned by that revision's
 /// row version, copied forward by `open_revision` and dropped by `abandon_draft` -
-/// which is the description of `phases`, `addon_rules` and `descriptor_set`
+/// which is the description of `phases` and `addon_rules`
 /// exactly, and those are facets. A route of its own would owe a second
 /// precondition discipline over the same tag, a second idempotency story and a
 /// second census, to say what one more arm says here.
@@ -1046,6 +1021,7 @@ impl From<PlanChangeContract> for PlanChangeContractRequest {
 /// defect class D-254 named and D-257 found one field deeper in the same slice.
 #[derive(Debug, Clone, Default)]
 #[toolkit_macros::api_dto(request, response)]
+#[serde(deny_unknown_fields)]
 pub struct PatchPlanRequest {
     /// The plan's own columns.
     pub shape: Option<PlanShapeRequest>,
@@ -1053,8 +1029,6 @@ pub struct PatchPlanRequest {
     pub phases: Option<Vec<PlanPhaseView>>,
     /// The whole add-on rule set, replaced wholesale.
     pub addon_rules: Option<Vec<AddonRuleView>>,
-    /// The billing descriptor set, attached or replaced.
-    pub descriptor_set: Option<DescriptorSetView>,
     /// The whole derived-meter set, replaced wholesale (Slice 10 §6).
     ///
     /// Wholesale like its siblings, and an empty list is the way to withdraw every
@@ -2000,10 +1974,13 @@ async fn read_shape(
         .shapes
         .list_addon_rules(scope, tenant, plan_id, revision)
         .await?;
-    let descriptor_set = state
-        .shapes
-        .find_descriptor_set(scope, tenant, plan_id, revision)
-        .await?;
+    let conn = state
+        .db
+        .conn()
+        .map_err(|e| RepoError::Db(format!("billing view: {e}")))?;
+    let itemization_rule =
+        crate::infra::storage::repo::bundle_repo::itemization_on(&conn, scope, tenant, plan_id)
+            .await?;
     // The fourth read, and the one the `composites` facet's `composite_id`
     // round trip depends on: a `PATCH` replaces the set wholesale, so an author
     // who cannot read the ids back cannot preserve a definition's identity
@@ -2024,7 +2001,7 @@ async fn read_shape(
         state.plans.created_at(scope, tenant, plan_id).await?,
         phases,
         addon_rules,
-        descriptor_set,
+        itemization_rule,
         composites,
         period_floor_caps,
     ))
@@ -2170,7 +2147,7 @@ async fn create_plan(
                 revision.created_at_utc,
                 vec![phase.clone()],
                 Vec::new(),
-                None,
+                crate::domain::bundle::InvoiceItemization::Itemize,
                 Vec::new(),
                 Vec::new(),
             );
@@ -2294,12 +2271,6 @@ async fn patch_plan(
             state
                 .shapes
                 .replace_addon_rules(&scope, tenant, plan_id, revision, expected, rules, stamp)
-                .await
-        }
-        Facet::DescriptorSet(set) => {
-            state
-                .shapes
-                .set_descriptor_set(&scope, tenant, plan_id, revision, expected, set, stamp)
                 .await
         }
         // Slice 10's derived meters. `CompositeArity` and
@@ -2458,8 +2429,6 @@ enum Facet {
     Phases(Vec<PlanPhase>),
     /// The whole add-on rule set.
     AddonRules(Vec<AddonRule>),
-    /// The descriptor set.
-    DescriptorSet(DescriptorSet),
     /// The whole derived-meter set (Slice 10 §6).
     Composites(Vec<CompositeMeter>),
     /// The whole period floor/cap set (S2 §6, D-319).
@@ -2472,14 +2441,13 @@ impl Facet {
         let named = usize::from(body.shape.is_some())
             + usize::from(body.phases.is_some())
             + usize::from(body.addon_rules.is_some())
-            + usize::from(body.descriptor_set.is_some())
             + usize::from(body.composites.is_some())
             + usize::from(body.period_floor_caps.is_some());
         if named != 1 {
             return Err(DomainError::InvalidRequest(format!(
                 "a PATCH carries exactly one of `shape`, `phases`, `addon_rules`, \
-                 `descriptor_set`, `composites` or `period_floor_caps`; this one carries \
-                 {named}. Each of the six compare-and-swaps on the revision's own row version \
+                 `composites` or `period_floor_caps`; this one carries \
+                 {named}. Each facet compare-and-swaps on the revision's own row version \
                  and advances it, so two in one request could not both satisfy one `If-Match`"
             )));
         }
@@ -2534,10 +2502,7 @@ impl Facet {
             require_distinct_period_markets(&bounds)?;
             return Ok(Self::PeriodFloorCaps(bounds));
         }
-        let set = body
-            .descriptor_set
-            .ok_or_else(|| DomainError::InvalidRequest("no facet named".to_owned()))?;
-        Ok(Self::DescriptorSet(descriptor_of(set)))
+        Err(DomainError::InvalidRequest("no facet named".to_owned()))
     }
 }
 
@@ -2780,7 +2745,7 @@ fn created(revision: &PlanRevision, phase: &PlanPhase) -> Response {
         revision.created_at_utc,
         vec![phase.clone()],
         Vec::new(),
-        None,
+        crate::domain::bundle::InvoiceItemization::Itemize,
         Vec::new(),
         Vec::new(),
     );
@@ -3072,7 +3037,7 @@ struct DraftShape {
     /// Maximum purchasable quantity.
     purchase_max_qty: Option<u64>,
     /// The Billing invoice-layout hint.
-    invoice_grouping_key: Option<String>,
+    descriptor_ext: BTreeMap<String, String>,
     /// Start of the availability window.
     available_from: Option<OffsetDateTime>,
     /// End of the availability window.
@@ -3122,7 +3087,7 @@ impl DraftShape {
             plan_tier_override: self.plan_tier_override,
             purchase_min_qty: self.purchase_min_qty,
             purchase_max_qty: self.purchase_max_qty,
-            invoice_grouping_key: self.invoice_grouping_key,
+            descriptor_ext: self.descriptor_ext,
             available_from: self.available_from,
             available_to: self.available_to,
             // The authoring surface never sets lineage: `POST /plans` creates an
@@ -3328,7 +3293,7 @@ fn shape_of(body: &PlanShapeRequest) -> Result<DraftShape, DomainError> {
         plan_tier_override: body.plan_tier_override.unwrap_or(false),
         purchase_min_qty: body.purchase_min_qty,
         purchase_max_qty: body.purchase_max_qty,
-        invoice_grouping_key: body.invoice_grouping_key.clone(),
+        descriptor_ext: body.descriptor_ext.clone().unwrap_or_default(),
         available_from: body.available_from,
         available_to: body.available_to,
         // The two members this parse used to skip. Read through the same two
@@ -3374,7 +3339,7 @@ fn shape_patch(body: &PlanShapeRequest) -> Result<PlanShapePatch, DomainError> {
         plan_tier_override: body.plan_tier_override,
         purchase_min_qty: body.purchase_min_qty,
         purchase_max_qty: body.purchase_max_qty,
-        invoice_grouping_key: body.invoice_grouping_key.clone(),
+        descriptor_ext: body.descriptor_ext.clone(),
         available_from: body.available_from,
         available_to: body.available_to,
         entitlement_grants: body.entitlement_grants.as_ref().map(read_grants),
@@ -3633,16 +3598,6 @@ fn period_floor_cap_of(view: &PeriodFloorCapView) -> Result<PeriodFloorCap, Doma
         floor_minor: view.floor_minor.map(MinorAmount::new).transpose()?,
         cap_minor: view.cap_minor.map(MinorAmount::new).transpose()?,
     })
-}
-
-/// Parse a descriptor set.
-fn descriptor_of(view: DescriptorSetView) -> DescriptorSet {
-    DescriptorSet {
-        invoice_line_template: view.invoice_line_template,
-        gl_code: view.gl_code,
-        itemization_rule: view.itemization_rule,
-        additional: view.additional,
-    }
 }
 
 /// Read a wire token back into the domain value that renders it.

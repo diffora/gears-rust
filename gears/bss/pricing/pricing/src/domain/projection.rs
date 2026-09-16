@@ -164,7 +164,7 @@
 //! quantity-derivation fields are the row's own `billing_granularity` and
 //! `aggregation_*`, already rostered; `plan_tier` and `plan_tier_override` are
 //! the registry taxonomy and its audited divergence; the purchase bounds gate a
-//! purchase, not a rate; `invoice_grouping_key` is a Billing layout hint (D-96);
+//! purchase, not a rate; `descriptor_ext` carries Billing extensions;
 //! the phase set, the add-on rules and the descriptor set are composition and
 //! presentation. **None of them is rostered**, so the boundary analysis moves the
 //! roster not at all — [`EVALUATION_POLICY_GENERATION`]'s generation turns for
@@ -258,8 +258,7 @@ use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::MinorAmount;
 use crate::domain::overlay::{OverlayInterval, OverlayLine, OverlayRevision, TargetSku};
 use crate::domain::plan_shape::{
-    AddonRule, BillingCycle, CompositeMeter, DescriptorSet, Frequency, PeriodFloorCap, PhaseKind,
-    PlanPhase,
+    AddonRule, BillingCycle, CompositeMeter, Frequency, PeriodFloorCap, PhaseKind, PlanPhase,
 };
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
@@ -625,15 +624,15 @@ pub struct PlanSubjectDelta {
     pub purchase_min_qty: Option<u64>,
     /// Maximum purchasable quantity (one-time plans).
     pub purchase_max_qty: Option<u64>,
-    /// The Billing invoice-layout hint (D-96).
-    pub invoice_grouping_key: Option<String>,
     /// The revision's phase chain (D-83 — child rows version with the revision
     /// and are the projection source).
     pub phases: Vec<PlanPhase>,
     /// The revision's add-on composition rules (D-83).
     pub addon_rules: Vec<AddonRule>,
-    /// The revision's billing descriptor set (D-83).
-    pub descriptor_set: Option<DescriptorSet>,
+    /// The revision's tenant-authored billing extensions (D-152).
+    pub descriptor_ext: std::collections::BTreeMap<String, String>,
+    /// Derived from the bundle, or itemize for ordinary plans.
+    pub itemization_rule: crate::domain::bundle::InvoiceItemization,
     /// The revision's plan-level period floor/cap set, one entry per market it
     /// is authored for (S2 §6, **D-319**).
     ///
@@ -808,10 +807,10 @@ impl PlanSubjectDelta {
             available_to,
             purchase_min_qty,
             purchase_max_qty,
-            invoice_grouping_key,
             phases,
             addon_rules,
-            descriptor_set,
+            descriptor_ext,
+            itemization_rule,
             period_floor_caps,
             composites,
             entitlement_grants,
@@ -834,10 +833,9 @@ impl PlanSubjectDelta {
             "availableTo": available_to.map(format_rfc3339),
             "purchaseMinQty": purchase_min_qty,
             "purchaseMaxQty": purchase_max_qty,
-            "invoiceGroupingKey": invoice_grouping_key,
             "phases": phases.iter().map(phase_value).collect::<Vec<_>>(),
             "addonRules": addon_rules.iter().map(addon_rule_value).collect::<Vec<_>>(),
-            "descriptorSet": descriptor_set.as_ref().map(descriptor_set_value),
+            "billing": {"itemizationRule": itemization_rule.as_str(), "ext": descriptor_ext},
                     // D-319's period floor/cap (PRD §17.8). Rendered as a list of
                     // market-keyed objects rather than an object keyed by a joined
                     // `"USD/us"` string: the market is a **pair** everywhere else in
@@ -1019,22 +1017,6 @@ fn composite_value(composite: &CompositeMeter) -> JsonValue {
     })
 }
 
-/// The revision's billing descriptor set.
-fn descriptor_set_value(set: &DescriptorSet) -> JsonValue {
-    let DescriptorSet {
-        invoice_line_template,
-        gl_code,
-        itemization_rule,
-        additional,
-    } = set;
-    json!({
-        "invoiceLineTemplate": invoice_line_template,
-        "glCode": gl_code,
-        "itemizationRule": itemization_rule,
-        "additional": additional,
-    })
-}
-
 /// One market's period floor and cap (**D-319**).
 ///
 /// The currency is rendered once, as the market axis, and the two amounts carry
@@ -1104,6 +1086,8 @@ pub struct RowResolutionProjection {
 /// D-162 classification, which is the pair of questions a new row field owes.
 fn price_value(record: &PriceRecord, tax: Option<&RowResolutionProjection>) -> JsonValue {
     let PriceRecord {
+        resolved_invoice_line_template,
+        resolved_gl_code,
         price_id,
         scope_key,
         row,
@@ -1121,6 +1105,8 @@ fn price_value(record: &PriceRecord, tax: Option<&RowResolutionProjection>) -> J
     } = record;
 
     let mut value = json!({
+        "invoiceLineTemplate": resolved_invoice_line_template,
+        "glCode": resolved_gl_code,
         "priceId": price_id,
         "scopeKey": scope_key_value(scope_key),
         "lifecycleState": lifecycle_state.as_str(),
@@ -1199,6 +1185,8 @@ fn price_value(record: &PriceRecord, tax: Option<&RowResolutionProjection>) -> J
 /// marker is for display and the included-vs-billed reporting split only.
 fn row_value(row: &PriceRow) -> JsonValue {
     let PriceRow {
+        invoice_line_template: _,
+        gl_code_ref: _,
         charge_kind,
         model_kind,
         amount_minor,
@@ -1515,10 +1503,10 @@ pub fn partition_delta_members(delta: &PlanSubjectDelta) -> (Vec<&'static str>, 
         available_to,
         purchase_min_qty,
         purchase_max_qty,
-        invoice_grouping_key,
         phases,
         addon_rules,
-        descriptor_set,
+        descriptor_ext,
+        itemization_rule,
         period_floor_caps,
         composites,
         entitlement_grants,
@@ -1537,8 +1525,8 @@ pub fn partition_delta_members(delta: &PlanSubjectDelta) -> (Vec<&'static str>, 
 
     // Everything else, and each for a stated reason. `plan_tier` and its override
     // are the registry taxonomy and its audited divergence; the purchase bounds
-    // gate a purchase rather than a rate; `invoice_grouping_key` is a Billing
-    // layout hint (D-96); the phase set, the add-on rules and the descriptor set
+    // gate a purchase rather than a rate; extensions and itemization are Billing
+    // presentation; the phase set and the add-on rules
     // are composition and presentation; `windows` and `tax_projection` answer
     // sellability and display, not derivation.
     //
@@ -1564,10 +1552,10 @@ pub fn partition_delta_members(delta: &PlanSubjectDelta) -> (Vec<&'static str>, 
         named("available_to", available_to),
         named("purchase_min_qty", purchase_min_qty),
         named("purchase_max_qty", purchase_max_qty),
-        named("invoice_grouping_key", invoice_grouping_key),
         named("phases", phases),
         named("addon_rules", addon_rules),
-        named("descriptor_set", descriptor_set),
+        named("descriptor_ext", descriptor_ext),
+        named("itemization_rule", itemization_rule),
         // A period bound is money compared against a **period total** by
         // Billing after step 9; it selects no rate and derives no quantity, so
         // it is outside the D-162 roster on the boundary test rather than on

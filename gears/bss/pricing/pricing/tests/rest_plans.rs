@@ -211,7 +211,7 @@ async fn the_read_carries_the_revisions_child_sets_and_its_etag() {
         Some(1),
         "{body}"
     );
-    assert!(body["descriptor_set"].is_object(), "{body}");
+    assert!(body["billing"]["ext"].is_object(), "{body}");
     // The fourth child set, present as an empty list on a revision that defines
     // none. Asserted rather than assumed because the `composites` facet's whole
     // round trip depends on the member existing on every read: an author cannot
@@ -1244,33 +1244,21 @@ async fn a_composites_facet_lands_and_the_read_echoes_what_it_stored() {
     );
 }
 
-/// **A `descriptor_set` facet lands from a client, and the read echoes it.**
-///
-/// The sixth facet, and the only one whose write path no request in this crate
-/// drove: `descriptor_set` appeared here as a read assertion alone, so
-/// `Facet::DescriptorSet` → `PlanShapeRepo::set_descriptor_set` had no
-/// client-driven coverage — no write, no round trip, no audit record. That is the
-/// D-254 class the composites and period-floor-cap cases were written to close,
-/// and the audit siblings below argue each shape-repo facet owes its own record.
+/// D-152 extensions are plan shape; the Billing view derives itemization.
 #[tokio::test]
-async fn a_descriptor_set_facet_lands_and_the_read_echoes_what_it_stored() {
+async fn descriptor_extensions_round_trip_through_shape_and_billing() {
     let harness = Harness::new().await;
     let plan_id = Uuid::now_v7();
     seed_draft_plan(&harness, plan_id).await;
 
-    let set = serde_json::json!({
-        "invoice_line_template": "{plan} - {period}",
-        "gl_code": "4000-SAAS",
-        "itemization_rule": "per_charge",
-        "additional": { "cost_centre": "emea-01" }
-    });
+    let set = serde_json::json!({ "cost_centre": "emea-01" });
 
     let response = harness
         .allowed()
         .send(with_headers(
             "PATCH",
             &plan_path(plan_id),
-            Some(serde_json::json!({ "descriptor_set": set })),
+            Some(serde_json::json!({ "shape": { "descriptor_ext": set } })),
             &[("if-match", "\"0-0\"")],
         ))
         .await;
@@ -1278,7 +1266,7 @@ async fn a_descriptor_set_facet_lands_and_the_read_echoes_what_it_stored() {
     assert_eq!(response.status(), StatusCode::OK);
     let patched = body_json(response).await;
     assert_eq!(
-        patched["descriptor_set"], set,
+        patched["billing"]["ext"], set,
         "the patch answers the descriptor set it wrote: {patched}"
     );
 
@@ -1290,7 +1278,7 @@ async fn a_descriptor_set_facet_lands_and_the_read_echoes_what_it_stored() {
     )
     .await;
     assert_eq!(
-        read["descriptor_set"], set,
+        read["billing"]["ext"], set,
         "a GET answers the set the PATCH stored, not a per-response value: {read}"
     );
 
@@ -5466,5 +5454,27 @@ async fn a_plan_without_a_sku_is_refused() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = body_json(response).await;
     assert!(body.to_string().contains("sku_id"), "{body}");
-    assert!(body.to_string().contains("VALIDATION"), "{body}");
+    assert!(body.to_string().contains("missing field"), "{body}");
+}
+
+#[tokio::test]
+async fn retired_descriptor_facet_and_grouping_field_are_refused() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    seed_draft_plan(&harness, plan_id).await;
+    for body in [
+        serde_json::json!({"descriptor_set": {"gl_code": "4000"}}),
+        serde_json::json!({"shape": {"invoice_grouping_key": "removed"}}),
+    ] {
+        let response = harness
+            .allowed()
+            .send(with_headers(
+                "PATCH",
+                &plan_path(plan_id),
+                Some(body),
+                &[("if-match", "\"0-0\"")],
+            ))
+            .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
 }

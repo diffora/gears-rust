@@ -280,6 +280,10 @@ fn every_write_stamping_site_is_accounted_for() {
         // deliver through `api::rest::prices`'s `require_no_key_contradiction`.
         // The module's own doc carries the argument in full.
         "row_sku_rules",
+        "line_template",
+        // Descriptor-policy grammar and rejection of authored derived meters.
+        "billing_descriptors",
+        "prices",
     ]
     .into_iter()
     .map(str::to_owned)

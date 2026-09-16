@@ -561,6 +561,10 @@ impl fmt::Display for TierBand {
 #[domain_model]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PriceRow {
+    /// Optional authored invoice label template (D-373).
+    pub invoice_line_template: Option<String>,
+    /// Optional authored general-ledger code; absent inherits the tenant default.
+    pub gl_code_ref: Option<String>,
     /// Scope-key axis 7. Not authored on the row itself — it comes from the key
     /// — but it is carried here because the kind matrix, the evaluation-policy
     /// placement rules and the supersession guard are all functions of it.
@@ -719,11 +723,13 @@ impl PriceRow {
     /// filled in yet — not a publishable one.
     ///
     /// [`PriceRow::sku_id`] is **not** optional and starts at the nil uuid, which
-    /// is a D-372 shim and not a value: the SKU arrives with the DTO and the
-    /// stored column, neither of which carries it yet.
+    /// is an incomplete authoring placeholder: callers must bind the row
+    /// to the SKU supplied by its canonical scope key before validation.
     #[must_use]
     pub fn new(charge_kind: ChargeKind, model_kind: Option<ModelKind>) -> Self {
         Self {
+            invoice_line_template: None,
+            gl_code_ref: None,
             charge_kind,
             model_kind,
             amount_minor: None,
@@ -733,7 +739,7 @@ impl PriceRow {
             package_price_minor: None,
             quantity_source: None,
             manual_quantity: None,
-            // D-372 shim: Task 6a (storage) / Task 7 (DTO) supply the real value
+            // Bound by authored_content from the canonical scope key.
             sku_id: SkuId::new(Uuid::nil()),
             meter: None,
             dimension_key: String::new(),

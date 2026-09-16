@@ -14,7 +14,7 @@ use crate::domain::contracts::{EntitlementGrants, PlanChangeContract};
 use crate::domain::instant::utc_ymd_hms;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::plan::PlanRevision;
-use crate::domain::plan_shape::{BillingCycle, CustomIntervalUnit, DescriptorSet, Frequency};
+use crate::domain::plan_shape::{BillingCycle, CustomIntervalUnit, Frequency};
 use crate::domain::scope_key::PlanId;
 
 fn revision(plan_id: PlanId) -> PlanRevision {
@@ -32,7 +32,7 @@ fn revision(plan_id: PlanId) -> PlanRevision {
         plan_tier_override: false,
         purchase_min_qty: None,
         purchase_max_qty: None,
-        invoice_grouping_key: None,
+        descriptor_ext: std::collections::BTreeMap::new(),
         available_from: None,
         available_to: None,
         entitlement_grants: EntitlementGrants::default(),
@@ -50,47 +50,24 @@ fn body(view: &PlanView) -> serde_json::Value {
 }
 
 #[test]
-fn an_unattached_descriptor_set_is_null_and_an_empty_one_is_an_object() {
-    // The store keeps the distinction — an unattached set has no row — and
-    // `DESCRIPTOR_INCOMPLETE` is asked of an ATTACHED set, so collapsing the two
-    // would make "nobody attached one" and "somebody attached an empty one" the
-    // same publish input.
-    let plan_id = PlanId::new(Uuid::now_v7());
-
-    let unattached = PlanView::new(
-        revision(plan_id),
+fn billing_has_derived_itemization_and_plan_extensions_without_retired_fields() {
+    let mut revision = revision(PlanId::new(Uuid::now_v7()));
+    revision
+        .descriptor_ext
+        .insert("costCentre".to_owned(), "ops".to_owned());
+    let rendered = body(&PlanView::new(
+        revision,
         utc_ymd_hms(2026, 8, 1, 0, 0, 0),
         Vec::new(),
         Vec::new(),
-        None,
+        crate::domain::bundle::InvoiceItemization::Aggregate,
         Vec::new(),
         Vec::new(),
-    );
-    assert!(
-        body(&unattached)["descriptor_set"].is_null(),
-        "{}",
-        body(&unattached)
-    );
-
-    let attached = PlanView::new(
-        revision(plan_id),
-        utc_ymd_hms(2026, 8, 1, 0, 0, 0),
-        Vec::new(),
-        Vec::new(),
-        Some(DescriptorSet::default()),
-        Vec::new(),
-        Vec::new(),
-    );
-    let rendered = body(&attached);
-    assert!(rendered["descriptor_set"].is_object(), "{rendered}");
-    assert!(
-        rendered["descriptor_set"]["gl_code"].is_null(),
-        "{rendered}"
-    );
-    assert!(
-        rendered["descriptor_set"]["additional"].is_object(),
-        "{rendered}"
-    );
+    ));
+    assert_eq!(rendered["billing"]["itemization_rule"], "aggregate");
+    assert_eq!(rendered["billing"]["ext"]["costCentre"], "ops");
+    assert!(rendered.get("descriptor_set").is_none());
+    assert!(rendered.get("invoice_grouping_key").is_none());
 }
 
 #[test]
@@ -102,7 +79,7 @@ fn the_view_names_which_revision_it_answered() {
         utc_ymd_hms(2026, 8, 1, 0, 0, 0),
         Vec::new(),
         Vec::new(),
-        None,
+        crate::domain::bundle::InvoiceItemization::Itemize,
         Vec::new(),
         Vec::new(),
     ));
@@ -123,7 +100,7 @@ fn a_custom_frequency_carries_its_interval_and_a_fixed_one_carries_none() {
         utc_ymd_hms(2026, 8, 1, 0, 0, 0),
         Vec::new(),
         Vec::new(),
-        None,
+        crate::domain::bundle::InvoiceItemization::Itemize,
         Vec::new(),
         Vec::new(),
     ));
@@ -135,7 +112,7 @@ fn a_custom_frequency_carries_its_interval_and_a_fixed_one_carries_none() {
         utc_ymd_hms(2026, 8, 1, 0, 0, 0),
         Vec::new(),
         Vec::new(),
-        None,
+        crate::domain::bundle::InvoiceItemization::Itemize,
         Vec::new(),
         Vec::new(),
     ));

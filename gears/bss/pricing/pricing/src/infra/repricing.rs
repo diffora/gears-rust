@@ -446,6 +446,10 @@ pub async fn begin_committing_in(
               without it, confirmed by review rather than assumed. Bundling the rest around it \
               would name a struct with exactly one reader"
 )]
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "run-state gates and journal compensation remain together so terminal replay precedes external catalog resolution"
+)]
 pub async fn apply_run_in(
     db: &DBProvider<DbError>,
     policies: &PolicyObjectRepo,
@@ -2745,7 +2749,7 @@ mod ordinary_failure_release {
                     plan_tier_override: false,
                     purchase_min_qty: None,
                     purchase_max_qty: None,
-                    invoice_grouping_key: None,
+                    descriptor_ext: std::collections::BTreeMap::default(),
                     available_from: None,
                     available_to: None,
                     cloned_from: None,
@@ -3045,7 +3049,7 @@ mod step0_probe {
                     plan_tier_override: false,
                     purchase_min_qty: None,
                     purchase_max_qty: None,
-                    invoice_grouping_key: None,
+                    descriptor_ext: std::collections::BTreeMap::default(),
                     available_from: None,
                     available_to: None,
                     cloned_from: None,

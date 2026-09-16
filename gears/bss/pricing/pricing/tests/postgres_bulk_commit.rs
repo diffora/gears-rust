@@ -115,7 +115,11 @@ fn content(amount: i64) -> PriceContent {
 /// is what lets a case here reach a **storage** refusal without inventing a fault
 /// no caller could produce.
 fn content_timed(amount: i64, timing: Option<&str>) -> PriceContent {
-    let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.amount_minor = Some(MinorAmount::new(amount).expect("a non-negative amount"));
     PriceContent {
         row,

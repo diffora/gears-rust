@@ -422,9 +422,15 @@ fn quantity_change(current: &PriceRow, baseline: &PriceRow) -> Option<&'static s
 
 /// The row **contract** fields this crate carries, from D-115 clause (3)'s set.
 ///
-/// Four of the seven have no column here; the module doc names them and says why
-/// an arm for each would be a rule with no operand.
+/// D-373 adds the authored template and GL override: both alter Billing
+/// output independently of the amount, including moves back to tenant defaults.
 fn contract_change(current: &PriceRecord, baseline: &PriceRecord) -> Option<&'static str> {
+    if current.row.invoice_line_template != baseline.row.invoice_line_template {
+        return Some("invoiceLineTemplate");
+    }
+    if current.row.gl_code_ref != baseline.row.gl_code_ref {
+        return Some("glCodeRef");
+    }
     if current.billing_timing != baseline.billing_timing {
         return Some("billingTiming");
     }

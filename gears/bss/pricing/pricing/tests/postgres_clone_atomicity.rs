@@ -52,9 +52,7 @@ use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::instant::utc_ymd_hms;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
-use bss_pricing::domain::plan_shape::{
-    AddonRule, CompositeMeter, DescriptorSet, PhaseKind, PlanPhase,
-};
+use bss_pricing::domain::plan_shape::{AddonRule, CompositeMeter, PhaseKind, PlanPhase};
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
@@ -126,7 +124,11 @@ fn source_key() -> ScopeKey {
 }
 
 fn flat_row() -> PriceContent {
-    let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.amount_minor = Some(MinorAmount::new(9_900).expect("a non-negative amount"));
     PriceContent {
         row,
@@ -169,7 +171,10 @@ async fn seed(provider: &DBProvider<DbError>) {
                 plan_tier_override: false,
                 purchase_min_qty: None,
                 purchase_max_qty: None,
-                invoice_grouping_key: Some("group/pg-source".to_owned()),
+                descriptor_ext: std::collections::BTreeMap::from([(
+                    "costCentre".to_owned(),
+                    "group/pg-source".to_owned(),
+                )]),
                 available_from: None,
                 available_to: None,
                 cloned_from: None,
@@ -234,25 +239,23 @@ async fn seed(provider: &DBProvider<DbError>) {
         .await
         .expect("attach the add-on rule");
 
-    let after_descriptors = shapes
-        .set_descriptor_set(
+    let after_descriptors = PlanRepo::new(provider.clone())
+        .update_draft(
             &scope(),
             TENANT,
             source_plan(),
             created.revision,
             after_rules.row_version,
-            DescriptorSet {
-                invoice_line_template: Some("{plan}".to_owned()),
-                gl_code: Some("4000".to_owned()),
-                itemization_rule: Some("per_charge".to_owned()),
-                additional: BTreeMap::new(),
+            bss_pricing::domain::plan::PlanShapePatch {
+                descriptor_ext: Some(BTreeMap::new()),
+                ..Default::default()
             },
             stamp(),
         )
         .await
         .expect("attach the descriptor set");
 
-    let after_composites = shapes
+    let _after_composites = shapes
         .replace_composites(
             &scope(),
             TENANT,
@@ -291,7 +294,12 @@ async fn seed(provider: &DBProvider<DbError>) {
             TENANT,
             source_plan(),
             created.revision,
-            after_composites.row_version,
+            PlanRepo::new(provider.clone())
+                .find_revision(&scope(), TENANT, source_plan(), created.revision)
+                .await
+                .expect("current bundle revision")
+                .expect("exists")
+                .row_version,
             CompositionDraft {
                 components: vec![
                     BundleComponentDraft {
@@ -430,9 +438,9 @@ async fn a_clone_its_caller_rolls_back_leaves_no_row_behind() {
         "nor the composite meters it re-minted"
     );
     assert!(
-        plan_shape_repo::load_descriptor(&conn, &scope(), TENANT, target_plan(), 0)
+        plan_repo::load_revision(&conn, &scope(), TENANT, target_plan(), 0)
             .await
-            .expect("read the descriptor set")
+            .expect("read the plan revision carrying descriptor extensions")
             .is_none(),
         "nor the descriptor set it copied"
     );
@@ -559,9 +567,9 @@ async fn the_same_clone_committed_writes_every_class_the_rollback_removed() {
         "the composite meter came across"
     );
     assert!(
-        plan_shape_repo::load_descriptor(&conn, &scope(), TENANT, target_plan(), 0)
+        plan_repo::load_revision(&conn, &scope(), TENANT, target_plan(), 0)
             .await
-            .expect("read the descriptor set")
+            .expect("read the plan revision carrying descriptor extensions")
             .is_some(),
         "the descriptor set came across"
     );

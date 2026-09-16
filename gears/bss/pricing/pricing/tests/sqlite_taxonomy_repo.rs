@@ -25,9 +25,7 @@ use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
 
-use bss_pricing::infra::storage::entity::{
-    audit_log, plan, plan_descriptor_set, price, price_overlay,
-};
+use bss_pricing::infra::storage::entity::{audit_log, plan, price, price_overlay};
 use bss_pricing::infra::storage::migrations::Migrator;
 
 use bss_pricing::domain::audit::AuditStamp;
@@ -2906,22 +2904,35 @@ async fn seed_revision_naming_gl_code(
         .await
         .expect("seed the plan revision");
 
-    let descriptors = plan_descriptor_set::ActiveModel {
+    let descriptors = price::ActiveModel {
+        price_id: Set(Uuid::now_v7()),
         plan_id: Set(plan_id),
-        plan_revision: Set(1),
         tenant_id: Set(TENANT),
-        invoice_line_template: Set(Some("{plan}".to_owned())),
-        gl_code: Set(Some(gl_code.to_owned())),
-        itemization_rule: Set(Some("per_charge".to_owned())),
-        additional_fields: Set(serde_json::json!({})),
+        sku_id: Set(Uuid::from_u128(5)),
+        phase: Set(Uuid::from_u128(0xface)),
+        currency: Set("USD".to_owned()),
+        region: Set("eu".to_owned()),
+        charge_kind: Set("recurring".to_owned()),
+        price_eligibility: Set("all_subscriptions".to_owned()),
+        lifecycle_state: Set(state.to_owned()),
+        gl_code_ref: Set(Some(gl_code.to_owned())),
+        resolved_gl_code: Set(if state == "published" {
+            Some(gl_code.to_owned())
+        } else {
+            None
+        }),
+        resolved_invoice_line_template: Set(Some("{plan}".to_owned())),
+        created_by: Set(Uuid::from_u128(0x4444)),
+        created_at_utc: Set(now()),
+        ..Default::default()
     };
-    plan_descriptor_set::Entity::insert(descriptors.clone())
+    price::Entity::insert(descriptors.clone())
         .secure()
         .scope_with_model(&AccessScope::allow_all(), &descriptors)
         .expect("scope")
         .exec(&conn)
         .await
-        .expect("seed the descriptor set");
+        .expect("seed the price row");
 
     if state != "draft" {
         let moved = plan::Entity::update_many()
@@ -2952,7 +2963,7 @@ async fn seed_revision_naming_gl_code(
 /// reason - a draft's author can still change the code, while a published
 /// revision's is frozen into a `CatalogVersion` an ERP posts against.
 #[tokio::test]
-async fn a_gl_code_a_published_descriptor_set_names_cannot_be_retired_while_a_drafts_can() {
+async fn a_gl_code_a_published_price_row_names_cannot_be_retired_while_a_drafts_can() {
     let (repo, scope, provider) = harness().await;
     replace_gl_codes_now(
         &repo,

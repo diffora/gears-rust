@@ -640,7 +640,7 @@ async fn a_published_revision_freezes_every_column_the_whitelist_names() {
         ("plan_tier_override", "1"),
         ("purchase_min_qty", "5"),
         ("purchase_max_qty", "9"),
-        ("invoice_grouping_key", "'q3-bundle'"),
+        ("descriptor_ext", "'{\"costCentre\":\"q3-bundle\"}'"),
         ("available_from", "'2027-01-01 00:00:00 +00:00'"),
         ("available_to", "'2028-01-01 00:00:00 +00:00'"),
         ("created_by", "'66666666-6666-6666-6666-666666666666'"),

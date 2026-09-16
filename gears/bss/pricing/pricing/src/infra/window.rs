@@ -111,7 +111,7 @@
 //! revision *number* and the lifecycle *state* on the ref row and deliberately pins no
 //! content, on the stated premise that "a published revision row and its
 //! revision-scoped children are physically immutable". A draft's are not:
-//! `plan_shape_repo::set_descriptor_set` rewrites a draft revision's descriptor set
+//! `plan_repo::update_draft` rewrites a draft revision's descriptor extensions
 //! after the ref naming it exists, and `plan_repo::load_revision` — the projector's
 //! content read — carries no state filter and hands the draft back. The sweep arrives
 //! up to D-47's five-minute batching maximum later and writes an INSERT-only row on the

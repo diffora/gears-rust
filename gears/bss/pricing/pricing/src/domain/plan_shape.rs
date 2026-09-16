@@ -7,7 +7,7 @@
 //! rules, the billing descriptor set, and the availability and
 //! purchase-quantity window the plan sells in. Nothing here judges anything —
 //! the four validators (`CycleShapeValidator`, `CompositionValidator`,
-//! `PhaseGraph` rules, `DescriptorSet` rules) register into
+//! `PhaseGraph` rules, billing extension rules) register into
 //! [`crate::domain::validation`] the way the Slice-3 rules do, and every code
 //! they report is declared once in [`crate::domain::plan_rules`].
 //!
@@ -618,34 +618,6 @@ pub struct AddonRule {
     pub conflicts_with: Vec<Uuid>,
 }
 
-/// The per-plan billing descriptor aggregate (`pricing_plan_descriptor_set`).
-///
-/// **Three named fields, not five.** D-48 pinned a five-element v1 contract and
-/// D-110 revised its composition: `billingTiming` and `taxCategory` **ride the
-/// price row** — the first because Slice 6 owns the rule, the second because
-/// `tax_category_ref` is per row and a per-plan column cannot mirror a per-row
-/// source of truth (the promised consistency check was undefined the moment two
-/// rows of one plan carried different categories). Adding either back as a
-/// column here would be a second, disagreeing home for a value that already has
-/// one.
-///
-/// [`DescriptorSet::additional`] is what makes P5's "config-extensible
-/// required-set without a schema change" reachable: a deployment that must
-/// require a fourth descriptor names it in configuration and carries its value
-/// here, instead of waiting for a migration.
-#[domain_model]
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct DescriptorSet {
-    /// The invoice line template Billing renders from.
-    pub invoice_line_template: Option<String>,
-    /// The general-ledger code the posting lands on.
-    pub gl_code: Option<String>,
-    /// How the plan's charges are composed into invoice lines.
-    pub itemization_rule: Option<String>,
-    /// Extra descriptor keys a deployment's required-set names (P5).
-    pub additional: BTreeMap<String, String>,
-}
-
 /// The plan-level **period floor and cap** in one market (S2 §6,
 /// `inst-pfc-*`, **D-319**).
 ///
@@ -802,17 +774,12 @@ pub struct PlanShape {
     pub purchase_min_qty: Option<u64>,
     /// Maximum purchasable quantity (one-time plans).
     pub purchase_max_qty: Option<u64>,
-    /// The Billing invoice-layout hint (D-96). Shape-checked only; it never
-    /// overrides the single-currency-per-invoice invariant.
-    pub invoice_grouping_key: Option<String>,
     /// The phase chain.
     pub phases: PhaseGraph,
     /// The plan's add-on composition rules.
     pub addon_rules: Vec<AddonRule>,
-    /// The billing descriptor set. `None` is an unauthored set, which
-    /// `DESCRIPTOR_INCOMPLETE` reports the same way an incomplete one is
-    /// reported.
-    pub descriptor_set: Option<DescriptorSet>,
+    /// Tenant-authored billing extensions (D-152); row descriptors live on rows.
+    pub descriptor_ext: BTreeMap<String, String>,
     /// The plan-level period floor/cap this revision publishes, one entry per
     /// market it is authored for (**D-319**).
     ///
@@ -890,10 +857,9 @@ impl PlanShape {
             available_to: None,
             purchase_min_qty: None,
             purchase_max_qty: None,
-            invoice_grouping_key: None,
             phases: PhaseGraph::default(),
             addon_rules: Vec::new(),
-            descriptor_set: None,
+            descriptor_ext: BTreeMap::new(),
             period_floor_caps: Vec::new(),
             rows: Vec::new(),
             entitlement_grants: EntitlementGrants::default(),

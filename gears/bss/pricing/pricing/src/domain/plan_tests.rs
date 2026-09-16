@@ -41,7 +41,7 @@ fn the_patch_names_its_columns_and_cannot_mean_clear_any_of_them() {
         plan_tier_override: Some(true),
         purchase_min_qty: Some(2),
         purchase_max_qty: Some(10),
-        invoice_grouping_key: Some("emea-bundle".to_owned()),
+        descriptor_ext: Some(std::collections::BTreeMap::new()),
         available_from: Some(utc_ymd_hms(2027, 1, 1, 0, 0, 0)),
         available_to: Some(utc_ymd_hms(2028, 1, 1, 0, 0, 0)),
         entitlement_grants: Option::default(),
@@ -73,7 +73,7 @@ fn the_patch_names_its_columns_and_cannot_mean_clear_any_of_them() {
     assert!(empty.plan_tier_override.is_none());
     assert!(empty.purchase_min_qty.is_none());
     assert!(empty.purchase_max_qty.is_none());
-    assert!(empty.invoice_grouping_key.is_none());
+    assert!(empty.descriptor_ext.is_none());
     assert!(empty.available_from.is_none());
     assert!(empty.available_to.is_none());
     assert!(empty.entitlement_grants.is_none());

@@ -196,6 +196,8 @@ pub fn partition_row_fields(row: &PriceRow) -> (Vec<&'static str>, Vec<&'static 
             min_qty_usage_fallback,
         ],
         outside: [
+            invoice_line_template,
+            gl_code_ref,
             charge_kind,
             amount_minor,
             // The `per_unit` rate (D-311). Outside for `amount_minor`'s reason and

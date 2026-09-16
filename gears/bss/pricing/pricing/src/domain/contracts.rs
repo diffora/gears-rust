@@ -958,7 +958,7 @@ pub const GRANT_SET_PHASE_UNKNOWN: &str = "GRANT_SET_PHASE_UNKNOWN";
 /// a number. A single map keyed by name would let `"seats": true` and
 /// `"sso": 40` past the type, and neither has a reading downstream.
 ///
-/// `BTreeMap` rather than `HashMap` throughout, for the reason `put_descriptor_set`
+/// `BTreeMap` rather than `HashMap` throughout, for the reason the descriptor extension frame
 /// gives: the projection and the content pin both render this, and a
 /// randomly-seeded iteration order would make one plan pin two different ways in
 /// two replicas.

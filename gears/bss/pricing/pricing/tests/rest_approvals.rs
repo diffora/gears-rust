@@ -866,7 +866,7 @@ async fn the_record_carries_the_content_its_pin_covers() {
     assert_eq!(pinned["rows"][0]["content"]["amount_minor"], 9_900);
     assert_eq!(pinned["rows"][0]["scope_key"]["region"], "eu");
     assert_eq!(pinned["phases"][0]["kind"], "evergreen");
-    assert_eq!(pinned["descriptor_set"]["gl_code"], "4000");
+    assert_eq!(pinned["rows"][0]["content"]["gl_code_ref"], "4000");
     // The window plane, over the wire. The pin frames it, so D-61 says the
     // document has to carry it — and the interval rendering is `GET …/coverage`'s
     // own `WindowIntervalView`, so an operator and a reviewer read one spelling.

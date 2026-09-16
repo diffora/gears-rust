@@ -876,6 +876,11 @@ pub async fn create_on(
             plan_id: new.plan_id.get().to_string(),
         });
     }
+    // The header is unversioned and supplies frozen billing itemization. It
+    // must exist before the first publish; a later attachment would change the
+    // delayed projection of an already committed version. Bumping the draft's
+    // tag serializes this change with publication in the same transaction.
+    claim_initial_draft(runner, scope, new.tenant_id, new.plan_id).await?;
     let row = bundle::ActiveModel {
         bundle_id: Set(new.bundle_id),
         tenant_id: Set(new.tenant_id),
@@ -1282,3 +1287,83 @@ async fn read_composition(
 #[cfg(test)]
 #[path = "bundle_repo_tests.rs"]
 mod bundle_repo_tests;
+
+/// Billing itemization is authored once on the bundle; ordinary plans itemize.
+pub async fn itemization_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+) -> Result<InvoiceItemization, RepoError> {
+    let row = bundle::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(bundle::Column::TenantId.eq(tenant_id))
+                .add(bundle::Column::PlanId.eq(plan_id.get())),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read bundle itemization: {e}")))?;
+    match row {
+        Some(row) => InvoiceItemization::parse(&row.invoice_itemization)
+            .ok_or_else(|| RepoError::CorruptRow("invalid bundle itemization".into())),
+        None => Ok(InvoiceItemization::Itemize),
+    }
+}
+
+async fn claim_initial_draft(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+) -> Result<(), RepoError> {
+    if let Some(current) = plan_repo::load_current(runner, scope, tenant_id, plan_id).await? {
+        return Err(RepoError::NotDraft {
+            subject: "bundle plan".to_owned(),
+            id: plan_id.to_string(),
+            state: current.lifecycle_state.as_str().to_owned(),
+        });
+    }
+    let draft = plan_repo::load_open_draft(runner, scope, tenant_id, plan_id)
+        .await?
+        .ok_or_else(|| RepoError::NotDraft {
+            subject: "bundle plan".to_owned(),
+            id: plan_id.to_string(),
+            state: "no initial draft".to_owned(),
+        })?;
+    let Some(guard) = swap_guard(tenant_id, plan_id, draft.revision, draft.row_version) else {
+        return Err(refuse(
+            runner,
+            scope,
+            tenant_id,
+            plan_id,
+            draft.revision,
+            draft.row_version,
+        )
+        .await);
+    };
+    if plan_revision_bump(runner, scope, guard).await? == 0 {
+        return Err(refuse(
+            runner,
+            scope,
+            tenant_id,
+            plan_id,
+            draft.revision,
+            draft.row_version,
+        )
+        .await);
+    }
+    // READ COMMITTED may observe a newly opened successor between the first
+    // current read and the draft lookup. Recheck after locking that draft: its
+    // publication cannot race this check, and any earlier publication is visible.
+    if let Some(current) = plan_repo::load_current(runner, scope, tenant_id, plan_id).await? {
+        return Err(RepoError::NotDraft {
+            subject: "bundle plan".to_owned(),
+            id: plan_id.to_string(),
+            state: current.lifecycle_state.as_str().to_owned(),
+        });
+    }
+    Ok(())
+}

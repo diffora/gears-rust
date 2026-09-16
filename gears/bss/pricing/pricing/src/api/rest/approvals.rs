@@ -24,7 +24,7 @@
 //! needs a content column §6 does not declare.
 //!
 //! The rendering is the **authoring plane's own** — [`PlanPhaseView`],
-//! [`AddonRuleView`], [`DescriptorSetView`], [`FrequencyView`],
+//! [`AddonRuleView`], [`FrequencyView`],
 //! [`PriceRowView`], [`ScopeKeyView`] — plus [`WindowIntervalView`], which is
 //! `GET …/coverage`'s, so a reviewer reads the change set in the same shape the
 //! author wrote it and the operator inspects it. A second rendering of one fact is
@@ -87,9 +87,7 @@ use crate::api::rest::auth_context::{audit_stamp, require_authenticated};
 use crate::api::rest::correlation::{CorrelationId, require_correlation};
 use crate::api::rest::error::authz_error_to_canonical;
 use crate::api::rest::odata_list::{map_odata_page_err, reject_non_odata_list_params};
-use crate::api::rest::plans::{
-    AddonRuleView, DescriptorSetView, FrequencyView, PeriodFloorCapView, PlanPhaseView,
-};
+use crate::api::rest::plans::{AddonRuleView, FrequencyView, PeriodFloorCapView, PlanPhaseView};
 use crate::api::rest::preconditions;
 use crate::api::rest::prices::{PriceRowView, ScopeKeyView};
 use crate::api::rest::state::GovernanceState;
@@ -611,13 +609,12 @@ pub struct PinnedContentView {
     /// Maximum purchasable quantity.
     pub purchase_max_qty: Option<u64>,
     /// The Billing invoice-layout hint (D-96).
-    pub invoice_grouping_key: Option<String>,
+    pub descriptor_ext: std::collections::BTreeMap<String, String>,
     /// The phase chain.
     pub phases: Vec<PlanPhaseView>,
     /// The add-on composition rules.
     pub addon_rules: Vec<AddonRuleView>,
     /// The billing descriptor set.
-    pub descriptor_set: Option<DescriptorSetView>,
     /// The candidate row set this publish would produce.
     pub rows: Vec<PriceRowView>,
     /// The plan-change contract this revision would publish (Slice 6, §6).
@@ -728,10 +725,9 @@ impl From<&PlanShape> for PinnedContentView {
             available_to,
             purchase_min_qty,
             purchase_max_qty,
-            invoice_grouping_key,
+            descriptor_ext,
             phases,
             addon_rules,
-            descriptor_set,
             period_floor_caps,
             rows,
             entitlement_grants,
@@ -757,7 +753,7 @@ impl From<&PlanShape> for PinnedContentView {
             available_to: *available_to,
             purchase_min_qty: *purchase_min_qty,
             purchase_max_qty: *purchase_max_qty,
-            invoice_grouping_key: invoice_grouping_key.clone(),
+            descriptor_ext: descriptor_ext.clone(),
             phases: phases
                 .phases()
                 .iter()
@@ -769,7 +765,6 @@ impl From<&PlanShape> for PinnedContentView {
                 .cloned()
                 .map(AddonRuleView::from)
                 .collect(),
-            descriptor_set: descriptor_set.clone().map(DescriptorSetView::from),
             rows: rows.iter().map(PriceRowView::from).collect(),
             change_contract: PlanChangeContractView::from(change_contract),
             entitlement_grants: EntitlementGrantsView::from(entitlement_grants),

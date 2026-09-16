@@ -105,9 +105,8 @@ use crate::infra::storage::repo::outbox_repo::{
     NewOutboxEvent, PlanCreatedPayload, PlanUpdatedPayload,
 };
 use crate::infra::storage::repo::plan_shape_repo::{
-    copy_addon_rules, copy_composites, copy_descriptor_set, copy_period_floor_caps, copy_phases,
-    delete_addon_rules, delete_composites, delete_descriptor_set, delete_period_floor_caps,
-    delete_phases,
+    copy_addon_rules, copy_composites, copy_period_floor_caps, copy_phases, delete_addon_rules,
+    delete_composites, delete_period_floor_caps, delete_phases,
 };
 use crate::infra::storage::repo::{NewAuditEntry, audit_repo, outbox_repo};
 use toolkit_odata::{ODataQuery, Page};
@@ -175,7 +174,7 @@ pub struct NewPlanDraft {
     /// Maximum purchasable quantity (one-time plans).
     pub purchase_max_qty: Option<u64>,
     /// The Billing invoice-layout hint (D-96).
-    pub invoice_grouping_key: Option<String>,
+    pub descriptor_ext: std::collections::BTreeMap<String, String>,
     /// Start of the availability window, UTC.
     pub available_from: Option<OffsetDateTime>,
     /// End of the availability window, UTC.
@@ -561,7 +560,6 @@ impl PlanRepo {
                     }
                     delete_phases(txn, &scope, tenant_id, plan_id, revision).await?;
                     delete_addon_rules(txn, &scope, tenant_id, plan_id, revision).await?;
-                    delete_descriptor_set(txn, &scope, tenant_id, plan_id, revision).await?;
                     // Slice 10's composite meters, on the same terms: `abandoned`
                     // is not `draft` and the table's DELETE trigger refuses
                     // everything after the flip.
@@ -659,12 +657,9 @@ impl PlanRepo {
     /// its predecessor is a plan whose buyers lose an entitlement nobody
     /// removed.
     ///
-    /// `pricing_plan_descriptor_set` is copied last, and only when the source
-    /// revision has one: the successor of an unattached set is an unattached
-    /// set, and writing an empty row would tell an authoring surface somebody
-    /// had attached something.
+    /// Descriptor extensions copy with the plan revision itself (D-373).
     ///
-    /// **That completes D-83 for Slice 2** — three child tables, all copied
+    /// **That completes D-83 for Slice 2** — the child tables, all copied
     /// inside this transaction, beside the revision insert and the **audit
     /// record** of the identity this transaction mints (D-135). Five writes, and
     /// the record is one of them for the reason D-145 gives: a revision number is
@@ -796,7 +791,7 @@ impl PlanRepo {
             plan_tier_override: current.plan_tier_override,
             purchase_min_qty: current.purchase_min_qty,
             purchase_max_qty: current.purchase_max_qty,
-            invoice_grouping_key: current.invoice_grouping_key,
+            descriptor_ext: current.descriptor_ext,
             available_from: current.available_from,
             available_to: current.available_to,
             // Carried forward with the rest of the content: a new revision opens
@@ -827,7 +822,6 @@ impl PlanRepo {
                     insert_revision(txn, &scope, row).await?;
                     copy_phases(txn, &scope, tenant_id, plan_id, source, next).await?;
                     copy_addon_rules(txn, &scope, tenant_id, plan_id, source, next).await?;
-                    copy_descriptor_set(txn, &scope, tenant_id, plan_id, source, next).await?;
                     // Slice 10's composites, with `composite_id` preserved
                     // (D-106) so a formula edit on the draft leaves the published
                     // revision byte-identical.
@@ -1218,7 +1212,7 @@ pub async fn create_granted_draft_on(
         plan_tier_override: draft.plan_tier_override,
         purchase_min_qty: draft.purchase_min_qty,
         purchase_max_qty: draft.purchase_max_qty,
-        invoice_grouping_key: draft.invoice_grouping_key,
+        descriptor_ext: draft.descriptor_ext,
         available_from: draft.available_from,
         available_to: draft.available_to,
         // **What the caller authored, never `default()`.** `NewPlanDraft` carries no
@@ -2131,7 +2125,7 @@ fn revision_model(
         plan_tier_override: Set(revision.plan_tier_override),
         purchase_min_qty: Set(stored_qty("purchaseMinQty", revision.purchase_min_qty)?),
         purchase_max_qty: Set(stored_qty("purchaseMaxQty", revision.purchase_max_qty)?),
-        invoice_grouping_key: Set(revision.invoice_grouping_key.clone()),
+        descriptor_ext: Set(serde_json::json!(revision.descriptor_ext)),
         entitlement_grants: Set(entitlement_grants_json(&revision.entitlement_grants)),
         allowed_change_targets: Set(change_targets_json(
             revision.change_contract.allowed_change_targets.as_deref(),
@@ -2235,7 +2229,7 @@ fn patched_columns(patch: PlanShapePatch) -> Result<Vec<(plan::Column, SimpleExp
         plan_tier_override,
         purchase_min_qty,
         purchase_max_qty,
-        invoice_grouping_key,
+        descriptor_ext,
         available_from,
         available_to,
         entitlement_grants,
@@ -2281,8 +2275,11 @@ fn patched_columns(patch: PlanShapePatch) -> Result<Vec<(plan::Column, SimpleExp
     if let Some(max_qty) = stored_qty("purchaseMaxQty", purchase_max_qty)? {
         columns.push((plan::Column::PurchaseMaxQty, Expr::value(max_qty)));
     }
-    if let Some(grouping_key) = invoice_grouping_key {
-        columns.push((plan::Column::InvoiceGroupingKey, Expr::value(grouping_key)));
+    if let Some(ext) = descriptor_ext {
+        columns.push((
+            plan::Column::DescriptorExt,
+            Expr::value(serde_json::json!(ext)),
+        ));
     }
     if let Some(available_from) = available_from {
         columns.push((plan::Column::AvailableFrom, Expr::value(available_from)));
@@ -2646,7 +2643,8 @@ fn to_domain(row: plan::Model) -> Result<PlanRevision, RepoError> {
         plan_tier_override: row.plan_tier_override,
         purchase_min_qty,
         purchase_max_qty,
-        invoice_grouping_key: row.invoice_grouping_key,
+        descriptor_ext: serde_json::from_value(row.descriptor_ext)
+            .map_err(|e| RepoError::CorruptRow(format!("plan descriptor_ext: {e}")))?,
         available_from: row.available_from,
         available_to: row.available_to,
         entitlement_grants,

@@ -101,8 +101,9 @@
 
 use std::collections::BTreeSet;
 
+use crate::domain::line_template::DefaultLineTemplates;
 use sea_orm::ActiveValue::Set;
-use sea_orm::sea_query::Expr;
+use sea_orm::sea_query::{Expr, ExprTrait};
 use sea_orm::{ColumnTrait, Condition, EntityTrait, JsonValue};
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
@@ -139,11 +140,22 @@ pub struct AuthoringPolicy {
     max_custom_interval_months: u32,
     additional_required_descriptors: Vec<String>,
     default_rounding_policy_ref: Option<String>,
+    default_gl_code_ref: Option<String>,
+    default_line_templates: crate::domain::line_template::DefaultLineTemplates,
     tax_display_policy_mode: String,
     enforced_migration_notice_days: i64,
 }
 
 impl AuthoringPolicy {
+    #[must_use]
+    pub fn default_gl_code_ref(&self) -> Option<&str> {
+        self.default_gl_code_ref.as_deref()
+    }
+    #[must_use]
+    pub fn default_line_templates(&self) -> &crate::domain::line_template::DefaultLineTemplates {
+        &self.default_line_templates
+    }
+
     /// The deployment's ratified launch values, which is what a tenant with no
     /// policy row is governed by.
     ///
@@ -166,6 +178,8 @@ impl AuthoringPolicy {
             // implicit rounding PRD §17.4 refuses. A tenant without an entry
             // simply requires every published row to carry its own.
             default_rounding_policy_ref: None,
+            default_gl_code_ref: None,
+            default_line_templates: crate::domain::line_template::DefaultLineTemplates::default(),
             // C4 is fail-closed "for **all** tenants", so a tenant with no
             // policy row is governed by it exactly as one with a row that says
             // so. There is no deployment knob here for the same reason there is
@@ -290,14 +304,15 @@ impl PolicyObjectRepo {
     #[must_use]
     pub fn new(db: DBProvider<DbError>, limits: &LimitsConfig) -> Self {
         Self {
-            db,
-            defaults: AuthoringPolicy::from_deployment_defaults(limits),
             catalog: std::sync::Arc::new(crate::domain::ports::UnconfiguredProductCatalogClientV1),
             sku_index: None,
+            db,
+            defaults: AuthoringPolicy::from_deployment_defaults(limits),
         }
     }
 
     /// Attach the registry shared by all catalog write paths.
+    #[must_use]
     pub fn with_product_catalog(
         mut self,
         catalog: std::sync::Arc<dyn crate::domain::ports::ProductCatalogClientV1>,
@@ -421,6 +436,8 @@ impl PolicyObjectRepo {
             // Taken as stored, with no deployment fallback: see
             // `AuthoringPolicy::default_rounding_policy_ref`.
             default_rounding_policy_ref: row.default_rounding_policy_ref,
+            default_gl_code_ref: row.default_gl_code_ref,
+            default_line_templates: read_line_templates(row.default_line_templates)?,
             tax_display_policy_mode: row.tax_display_policy_mode,
             enforced_migration_notice_days: i64::from(row.enforced_migration_notice_days),
         })
@@ -712,3 +729,140 @@ fn read_required_keys(stored: &JsonValue) -> Result<Vec<String>, RepoError> {
 #[cfg(test)]
 #[path = "policy_repo_tests.rs"]
 mod policy_repo_tests;
+
+fn read_line_templates(
+    value: serde_json::Value,
+) -> Result<crate::domain::line_template::DefaultLineTemplates, RepoError> {
+    let values = serde_json::from_value(value)
+        .map_err(|e| RepoError::CorruptRow(format!("default_line_templates: {e}")))?;
+    crate::domain::line_template::DefaultLineTemplates::from_map(values)
+        .map_err(RepoError::CorruptRow)
+}
+
+/// Resolve descriptor defaults within the same transaction that freezes rows.
+pub async fn descriptor_defaults_on(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+) -> Result<
+    (
+        Option<String>,
+        crate::domain::line_template::DefaultLineTemplates,
+    ),
+    RepoError,
+> {
+    let row = policy_object::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(policy_object::Column::TenantId.eq(tenant_id)))
+        .one(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("descriptor defaults: {e}")))?;
+    match row {
+        Some(row) => Ok((
+            row.default_gl_code_ref,
+            read_line_templates(row.default_line_templates)?,
+        )),
+        None => Ok((
+            None,
+            crate::domain::line_template::DefaultLineTemplates::default(),
+        )),
+    }
+}
+
+/// Compare-and-swap both descriptor defaults, including bootstrap.
+///
+/// # Errors
+/// Returns scoped storage and contention failures.
+pub async fn set_descriptor_defaults(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    requested: &(Option<String>, DefaultLineTemplates),
+    expected: &(Option<String>, DefaultLineTemplates),
+    stamp: &AuditStamp,
+) -> Result<bool, RepoError> {
+    let mut premise = Condition::all().add(match expected.0.as_deref() {
+        Some(value) => policy_object::Column::DefaultGlCodeRef.eq(value),
+        None => policy_object::Column::DefaultGlCodeRef.is_null(),
+    });
+    for (kind, template) in expected.1.to_map() {
+        premise = premise.add(
+            Expr::expr(
+                Expr::col(policy_object::Column::DefaultLineTemplates).binary(
+                    sea_orm::sea_query::BinOper::Custom("->>"),
+                    Expr::value(kind),
+                ),
+            )
+            .eq(template),
+        );
+    }
+    let updated = policy_object::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            policy_object::Column::DefaultGlCodeRef,
+            Expr::value(requested.0.clone()),
+        )
+        .col_expr(
+            policy_object::Column::DefaultLineTemplates,
+            Expr::value(serde_json::json!(requested.1.to_map())),
+        )
+        .col_expr(
+            policy_object::Column::UpdatedAtUtc,
+            Expr::value(stamp.recorded_at),
+        )
+        .col_expr(
+            policy_object::Column::UpdatedBy,
+            Expr::value(stamp.actor_principal_id),
+        )
+        .filter(
+            Condition::all()
+                .add(policy_object::Column::TenantId.eq(tenant_id))
+                .add(premise),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("update billing descriptor defaults: {e}")))?;
+    if updated.rows_affected > 0 {
+        return Ok(true);
+    }
+
+    // No row matched: either the tenant has no policy object at all — the
+    // ordinary bootstrap — or one exists and its ref has moved. Read rather than
+    // assume, exactly as the tax-display writer does: the difference between a
+    // first write and a lost update is the whole point of the precondition.
+    let exists = policy_object::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(policy_object::Column::TenantId.eq(tenant_id)))
+        .one(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read policy object: {e}")))?
+        .is_some();
+    if exists {
+        return Ok(false);
+    }
+    // A tenant with no row holds no default, so that is the only premise a first
+    // write may assert.
+    if expected.0.is_some() || expected.1 != DefaultLineTemplates::default() {
+        return Ok(false);
+    }
+
+    let row = policy_object::ActiveModel {
+        tenant_id: Set(tenant_id),
+        default_gl_code_ref: Set(requested.0.clone()),
+        default_line_templates: Set(serde_json::json!(requested.1.to_map())),
+        updated_at_utc: Set(stamp.recorded_at),
+        updated_by: Set(stamp.actor_principal_id),
+        ..Default::default()
+    };
+    policy_object::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(scope, &row)
+        .map_err(|e| RepoError::Db(format!("scope pricing_policy_object: {e}")))?
+        .exec(runner)
+        .await
+        .map(|_| true)
+        .map_err(|e| contention_or_db(&e, "pricing_policy_object", "insert policy object"))
+}

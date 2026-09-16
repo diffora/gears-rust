@@ -58,6 +58,10 @@ pub struct Model {
     /// the two scope-key indexes name `sku_id` directly and no sentinel stands
     /// between a value and its key.
     pub sku_id: Uuid,
+    pub invoice_line_template: Option<String>,
+    pub gl_code_ref: Option<String>,
+    pub resolved_invoice_line_template: Option<String>,
+    pub resolved_gl_code: Option<String>,
     pub currency: String,
     pub region: String,
     /// Always `base` on a row this gear authors; partner / orgTier / brand

@@ -93,8 +93,8 @@ use crate::domain::taxonomy::{
 use crate::domain::validation::ValidationReport;
 use crate::infra::storage::entity::{
     brand_taxonomy, customer_group_taxonomy, gl_code_taxonomy, group_membership, org_tier_taxonomy,
-    partner_taxonomy, plan, plan_descriptor_set, policy_object, price, price_overlay,
-    region_taxonomy, rounding_policy_taxonomy,
+    partner_taxonomy, policy_object, price, price_overlay, region_taxonomy,
+    rounding_policy_taxonomy,
 };
 use crate::infra::storage::{RepoError, contention_or_db};
 
@@ -2690,63 +2690,29 @@ pub fn vocabulary_value_tag_of(class: VocabularyClass, entry: &TaxonomyEntry) ->
 /// How many **published** plan revisions name this GL code in their billing
 /// descriptor set (D-356).
 ///
-/// The retirement guard's operand, [`references_to_rounding_policy`]'s
-/// arrangement on the descriptor plane. Draft revisions are deliberately **not**
-/// counted, for the same reason: a draft is being authored and its author can
-/// change the code, while a published revision's descriptor set is frozen into a
-/// `CatalogVersion` an ERP posts against — the dangling reference
-/// [`check_gl_code_retirable`]'s message exists to prevent.
-///
-/// `pricing_plan_descriptor_set` carries no lifecycle of its own (its entity doc
-/// says why), so the revisions that name the code are read first and the
-/// **parent** `pricing_plan` rows decide which of them are published. Two reads
-/// rather than a join because the scoping wrapper exposes no join, and the first
-/// read is bounded by how many revisions name one code — not by the tenant's
-/// catalog.
+/// Counts only published rows whose frozen GL code names this value (D-373).
+/// Draft overrides may still change and never prevent retirement.
 async fn references_to_gl_code(
     runner: &impl DBRunner,
     tenant_id: Uuid,
     value: &ScopeValue,
 ) -> Result<u64, RepoError> {
     let scope = &AccessScope::for_tenant(tenant_id);
-    let naming = plan_descriptor_set::Entity::find()
+    price::Entity::find()
         .secure()
         .scope_with(scope)
         .filter(
             Condition::all()
-                .add(plan_descriptor_set::Column::TenantId.eq(tenant_id))
-                .add(plan_descriptor_set::Column::GlCode.eq(value.as_str())),
-        )
-        .all(runner)
-        .await
-        .map_err(|e| RepoError::Db(format!("read pricing_plan_descriptor_set: {e}")))?;
-    if naming.is_empty() {
-        return Ok(0);
-    }
-
-    let mut any_named = Condition::any();
-    for row in &naming {
-        any_named = any_named.add(
-            Condition::all()
-                .add(plan::Column::PlanId.eq(row.plan_id))
-                .add(plan::Column::Revision.eq(row.plan_revision)),
-        );
-    }
-    plan::Entity::find()
-        .secure()
-        .scope_with(scope)
-        .filter(
-            Condition::all()
-                .add(plan::Column::TenantId.eq(tenant_id))
-                .add(plan::Column::LifecycleState.eq(LifecycleState::Published.as_str()))
-                .add(any_named),
+                .add(price::Column::TenantId.eq(tenant_id))
+                .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str()))
+                .add(price::Column::ResolvedGlCode.eq(value.as_str())),
         )
         .count(runner)
         .await
-        .map_err(|e| RepoError::Db(format!("count pricing_plan: {e}")))
+        .map_err(|e| RepoError::Db(format!("count published GL references: {e}")))
 }
 
-/// `TAXONOMY_VALUE_IN_USE`, when a published descriptor set still names the code.
+/// `TAXONOMY_VALUE_IN_USE`, when a published row still names the code.
 ///
 /// [`check_rounding_policy_retirable`]'s message on the descriptor plane, with
 /// one reference kind rather than two: a GL code has no tenant default to fall
@@ -2761,7 +2727,7 @@ fn check_gl_code_retirable(value: &ScopeValue, published_revisions: u64) -> Vali
         value.as_str().to_owned(),
         format!(
             "GL code `{}` cannot be retired: {published_revisions} published plan revision(s) \
-             name it in their billing descriptor set. Re-point them first - a retired value \
+             name it in their frozen row descriptors. Re-point them first - a retired value \
              stops being authorable and what already resolves against it would have no declared \
              vocabulary entry",
             value.as_str(),

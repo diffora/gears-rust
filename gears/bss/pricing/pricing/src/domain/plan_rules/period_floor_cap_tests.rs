@@ -64,6 +64,8 @@ fn recurring(seed: u128, code: &str, market: &str) -> PriceRecord {
     let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
     row.amount_minor = Some(minor(2_500));
     PriceRecord {
+        resolved_invoice_line_template: None,
+        resolved_gl_code: None,
         price_id: Uuid::from_u128(seed),
         scope_key,
         row,

@@ -324,6 +324,9 @@ fn key(class: PriceEligibility) -> ScopeKey {
 /// A minimal candidate row: identity, key and state are all this set reads.
 fn row(id: u128, scope_key: &ScopeKey, state: LifecycleState) -> PriceRecord {
     PriceRecord {
+        resolved_invoice_line_template: None,
+
+        resolved_gl_code: None,
         price_id: Uuid::from_u128(id),
         scope_key: scope_key.clone(),
         row: PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat)),

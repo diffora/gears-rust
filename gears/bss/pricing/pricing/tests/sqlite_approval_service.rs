@@ -66,9 +66,7 @@ use bss_pricing::domain::instant::utc_ymd_hms;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::plan::PlanShapePatch;
-use bss_pricing::domain::plan_shape::{
-    AddonRule, BillingCycle, DescriptorSet, Frequency, PhaseKind, PlanPhase,
-};
+use bss_pricing::domain::plan_shape::{AddonRule, BillingCycle, Frequency, PhaseKind, PlanPhase};
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
@@ -184,7 +182,7 @@ fn new_plan_draft(id: PlanId) -> NewPlanDraft {
         plan_tier_override: false,
         purchase_min_qty: None,
         purchase_max_qty: None,
-        invoice_grouping_key: None,
+        descriptor_ext: std::collections::BTreeMap::new(),
         available_from: None,
         available_to: None,
         cloned_from: None,
@@ -193,7 +191,11 @@ fn new_plan_draft(id: PlanId) -> NewPlanDraft {
 }
 
 fn flat_row() -> PriceContent {
-    let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.amount_minor = Some(MinorAmount::new(9_900).expect("a non-negative amount"));
     PriceContent {
         row,
@@ -262,18 +264,16 @@ async fn seed(h: &Harness) -> Seeded {
         .await
         .expect("attach the phase chain");
     let after_descriptors = h
-        .shapes
-        .set_descriptor_set(
+        .plans
+        .update_draft(
             &h.scope,
             TENANT,
             plan_id(),
             created.revision,
             after_phases.row_version,
-            DescriptorSet {
-                invoice_line_template: Some("{plan}".to_owned()),
-                gl_code: Some("4000".to_owned()),
-                itemization_rule: Some("per_charge".to_owned()),
-                additional: BTreeMap::new(),
+            bss_pricing::domain::plan::PlanShapePatch {
+                descriptor_ext: Some(BTreeMap::new()),
+                ..Default::default()
             },
             stamp(),
         )
@@ -1123,24 +1123,25 @@ async fn replacing_the_addon_rules_voids_the_pending_unit() {
 }
 
 #[tokio::test]
-async fn setting_the_descriptor_set_voids_the_pending_unit() {
+async fn setting_descriptor_extensions_voids_the_pending_unit() {
     let h = harness().await;
     let seeded = seed(&h).await;
     let id = Uuid::from_u128(0xb4);
     submit(&h, id).await;
 
-    h.shapes
-        .set_descriptor_set(
+    h.plans
+        .update_draft(
             &h.scope,
             TENANT,
             plan_id(),
             seeded.revision,
             seeded.revision_version,
-            DescriptorSet {
-                invoice_line_template: Some("{plan}".to_owned()),
-                gl_code: Some("4001".to_owned()),
-                itemization_rule: Some("per_charge".to_owned()),
-                additional: BTreeMap::new(),
+            bss_pricing::domain::plan::PlanShapePatch {
+                descriptor_ext: Some(BTreeMap::from([(
+                    "costCentre".to_owned(),
+                    "changed".to_owned(),
+                )])),
+                ..Default::default()
             },
             stamp(),
         )

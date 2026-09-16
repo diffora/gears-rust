@@ -54,7 +54,7 @@ pub struct Model {
     /// [`Model::purchase_min_qty`] where both are set.
     pub purchase_max_qty: Option<i64>,
     /// The Billing invoice-layout hint (D-96). NULL or empty means no grouping.
-    pub invoice_grouping_key: Option<String>,
+    pub descriptor_ext: Json,
     /// The §17.6 grant set as authored (D-41, `pricing_plan`): the
     /// plan-level flags and quotas, the `PlanTier` it resolved from when it did,
     /// and any per-phase sets. **Not** `pricing_plan_grant`, which is Slice 10's

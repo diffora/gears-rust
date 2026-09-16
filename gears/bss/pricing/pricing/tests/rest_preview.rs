@@ -83,7 +83,11 @@ fn delta_of(
     )
     .expect("the class pairs with its cohort");
 
-    let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.amount_minor = Some(MinorAmount::new(1_200).expect("a non-negative amount"));
     let price_id = Uuid::from_u128(0xb_0001);
 
@@ -105,16 +109,18 @@ fn delta_of(
         available_to: None,
         purchase_min_qty: None,
         purchase_max_qty: None,
-        invoice_grouping_key: None,
+        descriptor_ext: std::collections::BTreeMap::new(),
         phases: Vec::new(),
         addon_rules: Vec::new(),
-        descriptor_set: None,
+        itemization_rule: bss_pricing::domain::bundle::InvoiceItemization::Itemize,
         period_floor_caps: Vec::new(),
         prices: Vec::new(),
         tax_projection: BTreeMap::new(),
         windows: Vec::new(),
     };
     delta.prices = vec![PriceRecord {
+        resolved_invoice_line_template: Some("{sku}".to_owned()),
+        resolved_gl_code: Some("4000".to_owned()),
         price_id,
         scope_key: key,
         row,
@@ -446,12 +452,18 @@ fn hybrid_delta(plan_id: Uuid) -> bss_pricing::domain::projection::PlanSubjectDe
     )
     .expect("a usage line names its meter");
 
-    let mut usage_row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
+    let mut usage_row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     usage_row.meter = Some("api_calls".to_owned());
     // A usage row's money is in its bands; `amount_minor` is NULL by rule.
     usage_row.amount_minor = None;
 
     let usage = PriceRecord {
+        resolved_invoice_line_template: Some("{sku}".to_owned()),
+        resolved_gl_code: Some("4000".to_owned()),
         price_id: Uuid::from_u128(0xb_0002),
         scope_key: usage_key,
         row: usage_row,
@@ -577,12 +589,18 @@ fn trial_and_steady_delta(plan_id: Uuid) -> bss_pricing::domain::projection::Pla
     )
     .expect("the class pairs with cohort none");
 
-    let mut trial_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+    let mut trial_row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     trial_row.amount_minor = Some(MinorAmount::new(100).expect("a non-negative amount"));
 
     delta.prices.insert(
         0,
         PriceRecord {
+            resolved_invoice_line_template: Some("{sku}".to_owned()),
+            resolved_gl_code: Some("4000".to_owned()),
             // Sorts **before** the steady-state row's `0xb_0001`, which is the
             // whole point of the fixture.
             price_id: Uuid::from_u128(0xa_0001),

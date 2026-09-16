@@ -125,6 +125,9 @@ fn row(market: &str) -> PriceRecord {
     )
     .expect("all_subscriptions pairs with cohort none");
     PriceRecord {
+        resolved_invoice_line_template: None,
+
+        resolved_gl_code: None,
         price_id: Uuid::new_v4(),
         scope_key,
         row: PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat)),

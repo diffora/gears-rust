@@ -148,6 +148,7 @@ pub struct PublishService {
 
 impl PublishService {
     /// Share the product catalog client with every write plane.
+    #[must_use]
     pub fn with_product_catalog(
         mut self,
         catalog: Arc<dyn crate::domain::ports::ProductCatalogClientV1>,
@@ -1127,6 +1128,10 @@ pub(crate) async fn rule_params(
             policy.max_price_rows_per_plan(),
         ),
     )
+    .with_descriptor_defaults(
+        policy.default_gl_code_ref().map(ToOwned::to_owned),
+        policy.default_line_templates().clone(),
+    )
     .with_sku_index(policies.sku_index()?)
     .with_referencing_markets(referencing)
     .with_declared_regions(declared_regions)
@@ -1256,7 +1261,7 @@ pub(crate) async fn assemble_from(
         plan_tier_override,
         purchase_min_qty,
         purchase_max_qty,
-        invoice_grouping_key,
+        descriptor_ext,
         available_from,
         available_to,
         entitlement_grants,
@@ -1284,7 +1289,7 @@ pub(crate) async fn assemble_from(
     shape.available_to = available_to;
     shape.purchase_min_qty = purchase_min_qty;
     shape.purchase_max_qty = purchase_max_qty;
-    shape.invoice_grouping_key = invoice_grouping_key;
+    shape.descriptor_ext = descriptor_ext;
     shape.change_contract = change_contract;
     shape.entitlement_grants = entitlement_grants;
     shape.phases = PhaseGraph::new(
@@ -1294,10 +1299,6 @@ pub(crate) async fn assemble_from(
     );
     shape.addon_rules =
         plan_shape_repo::load_addon_rule_set(runner, scope, tenant_id, plan_id, revision)
-            .await
-            .map_err(|e| repo_failure(&e))?;
-    shape.descriptor_set =
-        plan_shape_repo::load_descriptor(runner, scope, tenant_id, plan_id, revision)
             .await
             .map_err(|e| repo_failure(&e))?;
     // Slice 10's composite definitions. **Without this line the two composite

@@ -879,7 +879,9 @@ fn declared_class(err: &RepoError) -> DomainError {
         // unresolved tax category is reported the way publish rules are — a
         // report naming the row.
         R::RoundingPolicyUnresolved { .. } => D::RoundingPolicyUnresolved(d()),
-        R::TaxCategoryUnresolved { .. } => D::ValidationFailed(ValidationReport::default()),
+        R::DescriptorInvalid { .. } | R::TaxCategoryUnresolved { .. } => {
+            D::ValidationFailed(ValidationReport::default())
+        }
 
         R::IdempotencyPayloadMismatch { .. } => D::IdempotencyPayloadMismatch(d()),
         R::IdempotencyKeyInFlight { .. } => D::IdempotencyKeyInFlight(d()),
@@ -1029,6 +1031,7 @@ repo_error_roster! {
     OverlayPrecedenceHeld {},
     RoundingPolicyUnresolved { price_id: detail() },
     TaxCategoryUnresolved { price_id: detail() },
+    DescriptorInvalid { price_id: detail(), code: "GL_CODE_UNRESOLVED" },
     IdempotencyPayloadMismatch {
         operation: detail(),
         client_key: detail(),

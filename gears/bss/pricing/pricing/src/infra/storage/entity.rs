@@ -55,7 +55,6 @@ entities! {
     pin_frontier,
     plan,
     plan_addon_rule,
-    plan_descriptor_set,
     plan_period_floor_cap,
     plan_phase,
     policy_object,

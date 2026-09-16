@@ -23,7 +23,7 @@ use bss_pricing::domain::instant::utc_ymd_hms;
 use bss_pricing::domain::plan_rules::{
     DESCRIPTOR_INCOMPLETE, INVALID_CUSTOM_INTERVAL, plan_shape_rules,
 };
-use bss_pricing::domain::plan_shape::{CustomIntervalUnit, DescriptorSet, Frequency, PlanShape};
+use bss_pricing::domain::plan_shape::{CustomIntervalUnit, Frequency, PlanShape};
 use bss_pricing::domain::scope_key::PlanId;
 use bss_pricing::infra::storage::entity::policy_object;
 use bss_pricing::infra::storage::migrations::Migrator;
@@ -107,12 +107,7 @@ fn draft_every(
 ) -> PlanShape {
     let mut shape = PlanShape::new(PlanId::new(Uuid::from_u128(0x91a4)), 3, at());
     shape.frequency = Some(Frequency::CustomEveryN { n, unit });
-    shape.descriptor_set = Some(DescriptorSet {
-        invoice_line_template: Some("Subscription: {plan}".to_owned()),
-        gl_code: Some("4000".to_owned()),
-        itemization_rule: Some("per_plan".to_owned()),
-        additional,
-    });
+    shape.descriptor_ext = additional;
     shape
 }
 

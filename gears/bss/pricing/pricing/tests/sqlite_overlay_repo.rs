@@ -1971,7 +1971,7 @@ async fn overlay_sku_targets_come_from_published_resource_rows() {
     let resource = Uuid::from_u128(0x372);
     let conn = provider.conn().expect("connection");
     let row = price::ActiveModel {
-        price_id: Set(Uuid::from_u128(0x372_1)),
+        price_id: Set(Uuid::from_u128(0x3721)),
         tenant_id: Set(TENANT),
         plan_id: Set(plan(1).get()),
         sku_id: Set(resource),

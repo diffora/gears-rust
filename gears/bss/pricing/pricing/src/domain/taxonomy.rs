@@ -1139,13 +1139,11 @@ impl ValidationRule<PlanShape> for RoundingPolicyDeclared {
 /// to defer to — but it can say that a code names nothing the tenant ever
 /// declared.
 ///
-/// # One value per revision, not a row walk
+/// # One effective value per candidate row (D-373)
 ///
-/// `glCode` is a single field on the plan's descriptor set, so this rule reads
-/// `descriptor_set.gl_code` once and reports at most once. It judges a
-/// **present** value only: an absent or blank code is `inst-ds-required`'s
-/// finding, and a second report of the same absence would send the author to a
-/// vocabulary for a field they have not filled in.
+/// Each authored GL override falls back to the tenant default only when absent.
+/// Every unknown effective code names its price row; blank values are owned by
+/// `GlCodeResolved`, so incompleteness does not produce a vocabulary duplicate.
 ///
 /// # An empty set means **unconstrained** — the opt-in reading
 ///
@@ -1166,8 +1164,8 @@ impl ValidationRule<PlanShape> for RoundingPolicyDeclared {
 ///
 /// # One door
 ///
-/// Only the publish path consults this rule. The descriptor **write**
-/// (`PUT …/descriptors`) does not, which is the asymmetry
+/// Only the publish path consults this rule. The price row write does not,
+/// which is the asymmetry
 /// [`RoundingPolicyDeclared::violation_for`] records for the price write: a
 /// `glCode` is first judged at publish, and a write-door check is a behaviour
 /// change for a decision. The violation is stamped [`Stage::Publish`] for the
@@ -1175,6 +1173,8 @@ impl ValidationRule<PlanShape> for RoundingPolicyDeclared {
 #[domain_model]
 #[derive(Clone, Debug, Default)]
 pub struct GlCodeDeclared {
+    /// Tenant fallback used when the row authors no GL override.
+    pub tenant_default: Option<String>,
     /// The tenant's `active` GL codes, resolved by the caller. Empty means the
     /// tenant declared no vocabulary — see the type doc.
     pub declared: BTreeSet<String>,
@@ -1216,18 +1216,16 @@ impl ValidationRule<PlanShape> for GlCodeDeclared {
         if self.declared.is_empty() {
             return;
         }
-        // A blank is an absence wearing a value's shape — `inst-ds-required`'s
-        // reading, and its finding.
-        let Some(code) = subject
-            .descriptor_set
-            .as_ref()
-            .and_then(|set| set.gl_code.as_deref())
-            .filter(|code| !code.trim().is_empty())
-        else {
-            return;
-        };
-        if let Some(violation) = self.violation_for(&subject.subject(), code) {
-            report.violations.push(violation);
+        for record in &subject.rows {
+            let Some(code) = record
+                .effective_gl_code(self.tenant_default.as_deref())
+                .filter(|code| !code.trim().is_empty())
+            else {
+                continue;
+            };
+            if let Some(violation) = self.violation_for(&record.price_id.to_string(), code) {
+                report.violations.push(violation);
+            }
         }
     }
 }

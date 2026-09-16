@@ -61,8 +61,8 @@ use crate::domain::overlay::{
     TaxBasis,
 };
 use crate::domain::plan_shape::{
-    AddonRule, BillingCycle, CustomIntervalUnit, DescriptorSet, Frequency, PeriodFloorCap,
-    PhaseGraph, PhaseKind, PlanPhase, PlanShape, PublishedBaseline,
+    AddonRule, BillingCycle, CustomIntervalUnit, Frequency, PeriodFloorCap, PhaseGraph, PhaseKind,
+    PlanPhase, PlanShape, PublishedBaseline,
 };
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
@@ -138,6 +138,8 @@ fn sku_key(
 /// them changes a value rather than filling in a hole.
 fn maximal_row() -> PriceRow {
     PriceRow {
+        invoice_line_template: Some("{plan} - {phase}".to_owned()),
+        gl_code_ref: Some("4000".to_owned()),
         charge_kind: ChargeKind::Usage,
         model_kind: Some(ModelKind::Graduated),
         amount_minor: Some(money(500)),
@@ -181,6 +183,8 @@ fn maximal_row() -> PriceRow {
 
 fn maximal_record(seed: u128) -> PriceRecord {
     PriceRecord {
+        resolved_invoice_line_template: None,
+        resolved_gl_code: None,
         price_id: Uuid::from_u128(seed),
         scope_key: key(ChargeKind::Usage, "USD", "EU", phase_id(0x11)),
         row: maximal_row(),
@@ -330,21 +334,15 @@ fn base() -> PlanShape {
     shape.available_to = Some(at(23));
     shape.purchase_min_qty = Some(1);
     shape.purchase_max_qty = Some(10);
-    shape.invoice_grouping_key = Some("emea".to_owned());
     shape.phases = PhaseGraph::new(vec![
         maximal_phase(0x11, 0, Some(phase_id(0x12))),
         maximal_phase(0x12, 1, None),
     ]);
     shape.addon_rules = vec![maximal_rule(0x21), maximal_rule(0x22)];
-    shape.descriptor_set = Some(DescriptorSet {
-        invoice_line_template: Some("{plan} - {phase}".to_owned()),
-        gl_code: Some("4000".to_owned()),
-        itemization_rule: Some("per_charge".to_owned()),
-        additional: BTreeMap::from([
-            ("costCentre".to_owned(), "cc-1".to_owned()),
-            ("segment".to_owned(), "smb".to_owned()),
-        ]),
-    });
+    shape.descriptor_ext = BTreeMap::from([
+        ("costCentre".to_owned(), "cc-1".to_owned()),
+        ("segment".to_owned(), "smb".to_owned()),
+    ]);
     shape.rows = vec![maximal_record(0xb001), maximal_record(0xb002)];
     shape.windows = vec![
         maximal_window_group(phase_id(0x11), "EU"),
@@ -505,9 +503,6 @@ fn plan_level_mutators() -> Vec<Mutator> {
         ("available_to", |s| s.available_to = Some(at(22))),
         ("purchase_min_qty", |s| s.purchase_min_qty = Some(2)),
         ("purchase_max_qty", |s| s.purchase_max_qty = Some(11)),
-        ("invoice_grouping_key", |s| {
-            s.invoice_grouping_key = Some("apac".to_owned());
-        }),
     ]
 }
 
@@ -586,34 +581,26 @@ fn child_mutators() -> Vec<Mutator> {
         ("rule.conflicts_with", |s| {
             s.addon_rules[0].conflicts_with = vec![Uuid::from_u128(0x0d)];
         }),
-        // DescriptorSet
-        ("descriptor_set -> None", |s| s.descriptor_set = None),
-        ("descriptor.invoice_line_template", |s| {
-            if let Some(set) = s.descriptor_set.as_mut() {
-                set.invoice_line_template = Some("{plan}".to_owned());
-            }
+        ("descriptor_ext -> empty", |s| s.descriptor_ext.clear()),
+        ("row.invoice_line_template", |s| {
+            s.rows[0].row.invoice_line_template = Some("{sku}".to_owned());
         }),
-        ("descriptor.gl_code", |s| {
-            if let Some(set) = s.descriptor_set.as_mut() {
-                set.gl_code = Some("4001".to_owned());
-            }
+        ("row.invoice_line_template absent", |s| {
+            s.rows[0].row.invoice_line_template = None;
         }),
-        ("descriptor.itemization_rule", |s| {
-            if let Some(set) = s.descriptor_set.as_mut() {
-                set.itemization_rule = Some("rolled_up".to_owned());
-            }
+        ("row.gl_code_ref absent", |s| {
+            s.rows[0].row.gl_code_ref = None;
         }),
-        ("descriptor.additional value", |s| {
-            if let Some(set) = s.descriptor_set.as_mut() {
-                set.additional
-                    .insert("segment".to_owned(), "ent".to_owned());
-            }
+        ("row.gl_code_ref", |s| {
+            s.rows[0].row.gl_code_ref = Some("4001".to_owned());
         }),
-        ("descriptor.additional key", |s| {
-            if let Some(set) = s.descriptor_set.as_mut() {
-                set.additional.remove("segment");
-                set.additional.insert("tier".to_owned(), "smb".to_owned());
-            }
+        ("descriptor_ext value", |s| {
+            s.descriptor_ext
+                .insert("segment".to_owned(), "ent".to_owned());
+        }),
+        ("descriptor_ext key", |s| {
+            s.descriptor_ext.remove("segment");
+            s.descriptor_ext.insert("tier".to_owned(), "smb".to_owned());
         }),
     ]
 }
@@ -1122,11 +1109,11 @@ fn an_absent_field_and_an_empty_one_pin_differently() {
 fn a_character_cannot_be_moved_across_a_field_boundary() {
     let mut left = base();
     left.plan_tier = Some("ab".to_owned());
-    left.invoice_grouping_key = Some("c".to_owned());
+    left.plan_name = Some("c".to_owned());
 
     let mut right = base();
     right.plan_tier = Some("a".to_owned());
-    right.invoice_grouping_key = Some("bc".to_owned());
+    right.plan_name = Some("bc".to_owned());
 
     assert_ne!(content_hash(&left), content_hash(&right));
 }
@@ -1465,10 +1452,12 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 /// `group.scope_key.sku_id` and `row.sku_id` hold the key frame and the row frame
 /// apart. The overlay and threshold vectors are again unchanged.
 #[test]
+// D-373 v18 freezes row-authored template/GL overrides and plan extension data.
+// Resolved descriptors remain outside the pin; field mutators cover that boundary.
 fn the_encoding_is_frozen() {
     assert_eq!(
         hex32(&content_hash(&base())),
-        "829d2ba02d2d48ebd9472afcd8556dc637219ffacbcc184a2d36f94b69d08ba1"
+        "5cc854c67decc9f212fd532b2c76f5536b6299027d4463c763b28245873b808d"
     );
 }
 
@@ -1628,7 +1617,7 @@ fn the_two_pin_domains_are_disjoint_and_each_names_its_own_generation() {
     );
     assert_eq!(
         super::CONTENT_PIN_DOMAIN_SEP,
-        b"VHP-BSS-PRICING-APPROVAL-PIN-v17\x1f"
+        b"VHP-BSS-PRICING-APPROVAL-PIN-v18\x1f"
     );
     assert_eq!(
         super::THRESHOLD_PIN_DOMAIN_SEP,
@@ -1912,9 +1901,11 @@ fn the_line_sets_query_order_is_not_content() {
 /// not a new constant pasted in from a failing run.
 #[test]
 fn the_overlay_encoding_is_frozen() {
+    // D-372 replaces the fixture's free-form SKU token with a UUID. The v1
+    // optional-string framing is unchanged; this vector records the new value.
     assert_eq!(
         hex32(&overlay_content_hash(&overlay_base())),
-        "25b3500c67d0df351c87064d0dbe29331b65659cfb61b03d1e809625c3289b9d"
+        "d68f43b0bec9655d2beb4dc29db7c0f3713f4967a988de71083f45717c380485"
     );
 }
 
@@ -1933,4 +1924,13 @@ fn the_overlay_pin_domain_is_its_own() {
         OVERLAY_PIN_DOMAIN_SEP,
         b"VHP-BSS-PRICING-OVERLAY-PIN-v1\x1f"
     );
+}
+
+#[test]
+fn freezing_resolved_descriptors_does_not_change_an_authored_approval_pin() {
+    let before = base();
+    let mut after = before.clone();
+    after.rows[0].resolved_invoice_line_template = Some("{sku} - {period}".to_owned());
+    after.rows[0].resolved_gl_code = Some("4000".to_owned());
+    assert_eq!(content_hash(&before), content_hash(&after));
 }

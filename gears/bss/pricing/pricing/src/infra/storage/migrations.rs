@@ -101,6 +101,7 @@ pub mod m20260821_000041_create_pricing_bundle_revshare;
 pub mod m20260821_000042_create_pricing_price_overlay_line_amount;
 pub mod m20260821_000043_create_pricing_gl_code_taxonomy;
 pub mod m20260916_000044_price_row_sku;
+pub mod m20260916_000045_descriptor_grain;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -224,6 +225,7 @@ impl MigratorTrait for Migrator {
             // arrives as a migration an operator can see refuse, not as a rewrite of
             // a file their database has already applied.
             Box::new(m20260916_000044_price_row_sku::Migration),
+            Box::new(m20260916_000045_descriptor_grain::Migration),
         ]
     }
 }

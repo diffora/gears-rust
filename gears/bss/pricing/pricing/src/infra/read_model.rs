@@ -1122,7 +1122,6 @@ async fn project_plan_subject(
         available_to: current.available_to,
         purchase_min_qty: current.purchase_min_qty,
         purchase_max_qty: current.purchase_max_qty,
-        invoice_grouping_key: current.invoice_grouping_key,
         phases: plan_shape_repo::load_phase_set(runner, scope, tenant_id, plan_id, revision)
             .await
             .map_err(|e| repo_failure(&e))?,
@@ -1131,8 +1130,9 @@ async fn project_plan_subject(
         )
         .await
         .map_err(|e| repo_failure(&e))?,
-        descriptor_set: plan_shape_repo::load_descriptor(
-            runner, scope, tenant_id, plan_id, revision,
+        descriptor_ext: current.descriptor_ext,
+        itemization_rule: crate::infra::storage::repo::bundle_repo::itemization_on(
+            runner, scope, tenant_id, plan_id,
         )
         .await
         .map_err(|e| repo_failure(&e))?,

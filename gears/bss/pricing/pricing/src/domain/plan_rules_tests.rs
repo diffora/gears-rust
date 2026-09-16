@@ -343,9 +343,6 @@ fn one_awful_plan_produces_every_finding_in_one_report() {
             ADDON_CYCLE,
             ADDON_INCOMPATIBLE,
             PHASE_GRAPH_INVALID,
-            DESCRIPTOR_INCOMPLETE,
-            DESCRIPTOR_INCOMPLETE,
-            DESCRIPTOR_INCOMPLETE,
         ]
     );
 }

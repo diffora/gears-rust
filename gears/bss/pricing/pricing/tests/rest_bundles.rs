@@ -2097,3 +2097,34 @@ async fn a_foreign_tenant_cannot_publish_this_tenants_bundle() {
          composition rather than about the tenant: {body}"
     );
 }
+
+/// D-373 itemization is part of the frozen plan; a late bundle cannot rewrite it.
+#[tokio::test]
+async fn a_published_plain_plan_cannot_acquire_a_bundle_header() {
+    let harness = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    seed_current_plan(&harness, plan_id).await;
+    let response = harness.allowed().send(with_headers(
+        "POST", BUNDLES,
+        Some(serde_json::json!({"plan_id": plan_id, "price_basis": "sum_of_parts", "invoice_itemization": "aggregate"})),
+        &[("idempotency-key", "late-bundle-header")],
+    )).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(problem_code(response).await, "LIFECYCLE_FORBIDDEN");
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "GET",
+            &format!("{BUNDLES}?$filter=plan_id%20eq%20{plan_id}"),
+            None,
+            &[],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        body_json(response).await["items"]
+            .as_array()
+            .expect("bundle page")
+            .is_empty()
+    );
+}

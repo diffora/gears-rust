@@ -76,7 +76,11 @@ fn key(region: &str) -> ScopeKey {
 }
 
 fn content(amount: i64) -> PriceContent {
-    let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.amount_minor = Some(MinorAmount::new(amount).expect("a non-negative amount"));
     PriceContent {
         row,
@@ -157,7 +161,11 @@ async fn publish_for(h: &Harness, tenant: Uuid, scope_key: ScopeKey, amount: i64
 /// That report was right — a row hears every violation found against it — and the
 /// fixture was wrong.
 fn usage_content(meter: &str, amount: i64) -> PriceContent {
-    let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.amount_minor = Some(MinorAmount::new(amount).expect("a non-negative amount"));
     row.meter = Some(meter.to_owned());
     "region=eu".clone_into(&mut row.dimension_key);

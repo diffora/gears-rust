@@ -56,6 +56,7 @@ impl Default for FixtureCatalog {
             "unit",
             "cloudlets",
             "egress_gb",
+            "egress.gb",
             "storage.gb",
             "addon_dr",
             "CPU-hour",

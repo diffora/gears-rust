@@ -23,7 +23,7 @@ use axum::http::StatusCode;
 use bss_pricing::api::rest::gl_codes::{GL_CODE_VALUES, GL_CODES};
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::scope_key::PlanId;
-use bss_pricing::infra::storage::entity::{gl_code_taxonomy, plan, plan_descriptor_set};
+use bss_pricing::infra::storage::entity::{gl_code_taxonomy, plan, price};
 use bss_pricing::infra::storage::repo::NewPriceDraft;
 use rest_support::{
     Harness, body_json, etag_of, problem_code, publishable_row, publishable_scope_key,
@@ -560,7 +560,7 @@ async fn a_blank_vocabulary_value_is_refused() {
 /// append-only trigger admits, and the revision then flipped as `publish_revision`
 /// flips it.
 #[tokio::test]
-async fn a_code_a_published_descriptor_set_names_cannot_be_retired() {
+async fn a_code_a_published_price_row_names_cannot_be_retired() {
     let harness = Harness::new().await;
     put_one(&harness, "4000-REV").await;
     seed_published_revision_naming(&harness, Uuid::now_v7(), "4000-REV").await;
@@ -724,22 +724,31 @@ async fn seed_published_revision_naming(harness: &Harness, plan_id: Uuid, gl_cod
         .await
         .expect("seed the plan revision");
 
-    let descriptors = plan_descriptor_set::ActiveModel {
+    let descriptors = price::ActiveModel {
+        price_id: Set(Uuid::now_v7()),
         plan_id: Set(plan_id),
-        plan_revision: Set(1),
         tenant_id: Set(harness.tenant),
-        invoice_line_template: Set(Some("{plan}".to_owned())),
-        gl_code: Set(Some(gl_code.to_owned())),
-        itemization_rule: Set(Some("per_charge".to_owned())),
-        additional_fields: Set(serde_json::json!({})),
+        sku_id: Set(Uuid::from_u128(5)),
+        phase: Set(Uuid::from_u128(0xface)),
+        currency: Set("USD".to_owned()),
+        region: Set("eu".to_owned()),
+        charge_kind: Set("recurring".to_owned()),
+        price_eligibility: Set("all_subscriptions".to_owned()),
+        lifecycle_state: Set("published".to_owned()),
+        gl_code_ref: Set(Some(gl_code.to_owned())),
+        resolved_gl_code: Set(Some(gl_code.to_owned())),
+        resolved_invoice_line_template: Set(Some("{plan}".to_owned())),
+        created_by: Set(rest_support::SEED_ACTOR),
+        created_at_utc: Set(rest_support::at(9)),
+        ..Default::default()
     };
-    plan_descriptor_set::Entity::insert(descriptors.clone())
+    price::Entity::insert(descriptors.clone())
         .secure()
         .scope_with_model(&AccessScope::allow_all(), &descriptors)
         .expect("scope")
         .exec(&conn)
         .await
-        .expect("seed the descriptor set");
+        .expect("seed the price row");
 
     let moved = plan::Entity::update_many()
         .secure()

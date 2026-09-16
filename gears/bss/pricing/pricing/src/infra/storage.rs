@@ -389,6 +389,13 @@ pub enum RepoError {
         /// The first row of the set whose category is absent.
         price_id: String,
     },
+    /// A descriptor cannot be frozen on a published row.
+    #[error("pricing repo: price row {price_id}: {code}")]
+    DescriptorInvalid {
+        price_id: String,
+        code: &'static str,
+    },
+
     /// The overlay already holds an open draft revision, named by the refusal
     /// (`uq_pricing_price_overlay_open_draft`, D-92).
     ///
@@ -1178,6 +1185,11 @@ pub fn repo_failure(err: &RepoError) -> DomainError {
         // ordinary publish reads. `infra::supersession::refuse_unresolved_tax_category`
         // builds the identical report on the door that asks ahead of its registry
         // request.
+        RepoError::DescriptorInvalid { price_id, code } => {
+            let mut report = crate::domain::validation::ValidationReport::default();
+            report.violate(*code, price_id.clone(), err.to_string());
+            DomainError::ValidationFailed(report)
+        }
         RepoError::TaxCategoryUnresolved { price_id } => {
             let mut report = crate::domain::validation::ValidationReport::default();
             report.violate(

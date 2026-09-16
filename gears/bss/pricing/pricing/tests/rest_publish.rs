@@ -1271,21 +1271,22 @@ async fn a_plan_with_a_staged_successor(h: &Harness, plan_id: Uuid) -> (String, 
                 "POST",
                 &format!("/bss-pricing/v1/plans/{plan_id}/supersessions"),
                 Some(serde_json::json!({
-                    "predecessor_price_id": seeded.price_id.to_string(),
-                    "changeover": "2099-08-20T00:00:00Z",
-                    "successor": {
-                        "model_kind": "flat",
-                        // 9 900 published, so a 200-minor move — under every bar
-                        // these cases configure.
-                        "amount_minor": 10_100,
-                        "billing_timing": "advance",
-                        "billing_anchor_policy": "calendar_month",
-                        "proration_basis": "calendar_days_actual",
-                        "credit_on_downgrade": false,
-                        "rounding_policy_ref": "half_up"
-                    },
-                    "reason_code": "repricing"
-                })),
+                        "predecessor_price_id": seeded.price_id.to_string(),
+                        "changeover": "2099-08-20T00:00:00Z",
+                        "successor": {
+                            "model_kind": "flat",
+                            // 9 900 published, so a 200-minor move — under every bar
+                            // these cases configure.
+                            "amount_minor": 10_100,
+                            "billing_timing": "advance",
+                            "billing_anchor_policy": "calendar_month",
+                            "proration_basis": "calendar_days_actual",
+                            "credit_on_downgrade": false,
+                            "gl_code_ref": "4000",
+                "rounding_policy_ref": "half_up"
+                        },
+                        "reason_code": "repricing"
+                    })),
             ))
             .await,
     )

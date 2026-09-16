@@ -193,7 +193,7 @@ fn resolution_picks_the_most_specific_line_for_the_priced_row() {
     let lines = vec![
         line(LineKey::list_default(), 500),
         line(LineKey::for_plan(plan(1)), 1000),
-        line(LineKey::for_sku(plan(1), sku.clone()), 1500),
+        line(LineKey::for_sku(plan(1), sku), 1500),
     ];
 
     let resolved = resolve_line(
@@ -253,7 +253,7 @@ fn the_eligibility_filter_runs_before_the_specificity_ranking() {
         .for_cohort(at(2099))
         .expect("plan is named");
     let lines = vec![
-        line(LineKey::for_sku(plan(1), sku.clone()), 1500),
+        line(LineKey::for_sku(plan(1), sku), 1500),
         line(cohort_key, 200),
     ];
 

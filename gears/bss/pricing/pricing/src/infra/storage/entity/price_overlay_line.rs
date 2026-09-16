@@ -87,10 +87,8 @@ pub struct Model {
     ///
     /// A `uuid` since `m20260916_000044_price_row_sku` (D-372): a SKU is a handle
     /// into the registry on the price plane, and an overlay line that narrows to
-    /// one names the same thing. The domain's `TargetSku` is still a string until
-    /// Task 9 re-types it, so the repository parses on the way in and renders on
-    /// the way out; on `SQLite` the column stays `text`, which is how uuids are
-    /// stored there anyway.
+    /// one names the same thing. `PostgreSQL` stores a UUID; `SQLite` stores the
+    /// driver's canonical 16-byte blob, normalized by the migration.
     pub target_sku: Option<Uuid>,
     /// The grandfathered generation's cutover instant. See the module doc — this
     /// is a filter, not a level.

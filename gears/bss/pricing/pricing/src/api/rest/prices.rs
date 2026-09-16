@@ -319,6 +319,9 @@ pub struct IncludedAllowanceView {
 
 /// Everything about a row an open draft may still change.
 ///
+/// D-373 descriptor overrides follow whole-content replacement: both explicit
+/// null and omission clear the override, returning the draft to tenant defaults.
+///
 /// It is a whole-content submission and not a patch, for the reason
 /// [`PriceContent`]'s own doc gives: a price row's fields are not independent of
 /// each other — moving `model_kind` from `graduated` to `flat` has to drop the
@@ -327,6 +330,10 @@ pub struct IncludedAllowanceView {
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(request, response)]
 pub struct PriceContentView {
+    /// Invoice template override. Null or omitted uses the tenant default.
+    pub invoice_line_template: Option<String>,
+    /// General-ledger code override. Null or omitted uses the tenant default.
+    pub gl_code_ref: Option<String>,
     /// `flat` | `per_unit` | `graduated` | `volume` | `package`. Authored, never
     /// inferred — there is no implicit default at rating time.
     pub model_kind: Option<String>,
@@ -431,6 +438,8 @@ impl From<&PriceRecord> for PriceContentView {
     fn from(record: &PriceRecord) -> Self {
         let row = &record.row;
         Self {
+            invoice_line_template: row.invoice_line_template.clone(),
+            gl_code_ref: row.gl_code_ref.clone(),
             model_kind: row.model_kind.map(model_kind_wire).map(str::to_owned),
             amount_minor: row.amount_minor.map(MinorAmount::get),
             unit_rate_nano_minor: row.unit_rate.map(RateMinor::nano_minor),
@@ -490,6 +499,10 @@ impl From<&PriceRecord> for PriceContentView {
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(response)]
 pub struct PriceRowView {
+    /// Template frozen at publication; absent for drafts.
+    pub resolved_invoice_line_template: Option<String>,
+    /// General-ledger code frozen at publication; absent for drafts.
+    pub resolved_gl_code: Option<String>,
     /// The row's identity, minted by the surface at creation.
     pub price_id: Uuid,
     /// The ten axes it is filed under.
@@ -511,6 +524,8 @@ pub struct PriceRowView {
 impl From<&PriceRecord> for PriceRowView {
     fn from(record: &PriceRecord) -> Self {
         Self {
+            resolved_invoice_line_template: record.resolved_invoice_line_template.clone(),
+            resolved_gl_code: record.resolved_gl_code.clone(),
             price_id: record.price_id,
             scope_key: ScopeKeyView::of(&record.scope_key, record.row.meter.as_deref()),
             content: PriceContentView::from(record),
@@ -1324,6 +1339,8 @@ pub(crate) fn content_of(view: &PriceContentView) -> Result<PriceContent, Domain
         .map(band_of)
         .collect::<Result<Vec<_>, _>>()?;
     let row = PriceRow {
+        invoice_line_template: view.invoice_line_template.clone(),
+        gl_code_ref: view.gl_code_ref.clone(),
         charge_kind: ChargeKind::Recurring,
         model_kind: view
             .model_kind
@@ -1352,7 +1369,7 @@ pub(crate) fn content_of(view: &PriceContentView) -> Result<PriceContent, Domain
             QuantitySource::as_str,
         )?,
         manual_quantity: view.manual_quantity,
-        // D-372 shim: Task 6a (storage) / Task 7 (DTO) supply the real value
+        // The caller binds the SKU from the immutable scope key before validation.
         sku_id: SkuId::new(Uuid::nil()),
         meter: None,
         dimension_key: view.dimension_key.clone().unwrap_or_default(),

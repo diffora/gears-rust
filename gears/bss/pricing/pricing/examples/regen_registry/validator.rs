@@ -189,6 +189,8 @@ fn corpus_sku(meter: Option<&str>) -> Uuid {
 /// vocabulary, or a negative amount the money type refuses.
 pub fn slice3_row(snapshot: &Snapshot) -> Result<PriceRow, EvalError> {
     Ok(PriceRow {
+        invoice_line_template: None,
+        gl_code_ref: None,
         charge_kind: charge_kind(snapshot.charge_kind),
         // **The SKU the corpus does not state, derived from the meter it does**
         // (D-372). See [`corpus_sku`] for why that is a translation and not an

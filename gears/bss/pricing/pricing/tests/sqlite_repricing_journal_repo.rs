@@ -63,7 +63,11 @@ async fn provider() -> DBProvider<DbError> {
 /// never be satisfiable.
 async fn a_price_row(p: &DBProvider<DbError>, region: &str) -> Uuid {
     let price_id = Uuid::now_v7();
-    let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.amount_minor = Some(MinorAmount::new(9_900).expect("a non-negative amount"));
     PriceRepo::new(p.clone())
         .create_draft(

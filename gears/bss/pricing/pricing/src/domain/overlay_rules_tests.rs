@@ -260,7 +260,7 @@ fn a_line_naming_an_unpublished_sku_fails() {
 
     let report = validate(&candidate);
     assert_eq!(codes(&report), vec![OVERLAY_LINE_TARGET_UNKNOWN]);
-    assert!(detail_for(&report, OVERLAY_LINE_TARGET_UNKNOWN).contains("sku-z"));
+    assert!(detail_for(&report, OVERLAY_LINE_TARGET_UNKNOWN).contains(&sku("sku-z").to_string()));
 }
 
 // ---------------------------------------------------------------------------

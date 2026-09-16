@@ -88,6 +88,10 @@ pub struct PriceContent {
 #[domain_model]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PriceRecord {
+    /// Effective invoice template frozen at publish, never rendered by Pricing.
+    pub resolved_invoice_line_template: Option<String>,
+    /// Effective general-ledger code frozen at publish.
+    pub resolved_gl_code: Option<String>,
     /// The row's identity. Caller-supplied at creation, for the reason
     /// `NewPlanDraft` gives: an authoring surface has to be able to return the
     /// id before the row is durable, and a store that minted ids would make an
@@ -142,6 +146,34 @@ pub struct PriceRecord {
 }
 
 impl PriceRecord {
+    /// A draft resolves against policy; immutable rows retain their published template.
+    #[must_use]
+    pub fn effective_invoice_line_template<'a>(
+        &'a self,
+        defaults: &'a crate::domain::line_template::DefaultLineTemplates,
+    ) -> Option<&'a str> {
+        if self.lifecycle_state == LifecycleState::Draft {
+            Some(
+                self.row
+                    .invoice_line_template
+                    .as_deref()
+                    .unwrap_or_else(|| defaults.get(self.row.charge_kind)),
+            )
+        } else {
+            self.resolved_invoice_line_template.as_deref()
+        }
+    }
+
+    /// A draft resolves against policy; immutable rows retain their published GL code.
+    #[must_use]
+    pub fn effective_gl_code<'a>(&'a self, default: Option<&'a str>) -> Option<&'a str> {
+        if self.lifecycle_state == LifecycleState::Draft {
+            self.row.gl_code_ref.as_deref().or(default)
+        } else {
+            self.resolved_gl_code.as_deref()
+        }
+    }
+
     /// The mutable half of this record, ready to be edited and submitted back
     /// under [`PriceRecord::row_version`].
     ///

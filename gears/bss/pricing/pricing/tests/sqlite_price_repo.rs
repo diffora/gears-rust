@@ -226,7 +226,11 @@ fn grandfathered_key(charge_kind: ChargeKind, cutover: OffsetDateTime) -> ScopeK
 
 /// The simplest publishable-looking shape: a flat recurring amount.
 fn flat_content() -> PriceContent {
-    let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.amount_minor = Some(money(1_000));
     PriceContent {
         row,
@@ -244,7 +248,11 @@ fn flat_content() -> PriceContent {
 /// admits, plus the D-45 allowance declaration and the grandfathering horizon —
 /// so a mapping that dropped one column fails here rather than at publish.
 fn graduated_content() -> PriceContent {
-    let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.bands = vec![
         TierBand::closed(0, 100, rate(0)),
         TierBand::closed(100, 1_000, rate(25)),
@@ -553,7 +561,11 @@ async fn the_per_kind_money_columns_round_trip_on_the_kinds_that_carry_them() {
 
     // `package`: the money lives in the block columns, which
     // `chk_pricing_price_package_fields_kind` permits on this kind alone.
-    let mut package = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Package));
+    let mut package = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Package));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     package.package_size = Some(1_000);
     package.package_price_minor = Some(money(4_999));
     package.meter = Some("gb_egress".to_owned());
@@ -593,7 +605,11 @@ async fn the_per_kind_money_columns_round_trip_on_the_kinds_that_carry_them() {
     // therefore certifying as canonical the one shape the publish rule rejects.
     // `an_update_reaches_the_per_kind_money_columns_too` was corrected on
     // 2026-08-14 and this one was not.
-    let mut per_unit = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::PerUnit));
+    let mut per_unit = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::PerUnit));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     per_unit.unit_rate = Some(nano_rate(1_500_000_000));
     per_unit.quantity_source = Some(QuantitySource::Manual);
     per_unit.manual_quantity = Some(12);
@@ -733,7 +749,11 @@ async fn a_different_charge_kind_or_cohort_is_a_different_key() {
     // row on one plan, currency, region and phase. Without `chargeKind` in the
     // key the second would be rejected as a duplicate of the first.
     let mut usage = flat_content();
-    usage.row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
+    usage.row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     usage.row.amount_minor = Some(money(5));
     usage.row.meter = Some("api_calls".to_owned());
     usage.row.billing_granularity = Some(BillingGranularity::WholeUnit);
@@ -1813,7 +1833,11 @@ async fn an_update_reaches_the_per_kind_money_columns_too() {
     // reach the UPDATE through the same assignment list, so they need the same
     // proof that the list actually names them.
     let package_id = Uuid::from_u128(0xb_82);
-    let mut package = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Package));
+    let mut package = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Package));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     package.package_size = Some(1_000);
     package.package_price_minor = Some(money(4_999));
     package.billing_granularity = Some(BillingGranularity::WholeUnit);
@@ -1864,7 +1888,11 @@ async fn an_update_reaches_the_per_kind_money_columns_too() {
     assert_eq!(read.row.package_price_minor, Some(money(2_999)));
 
     let per_unit_id = Uuid::from_u128(0xb_83);
-    let mut per_unit = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::PerUnit));
+    let mut per_unit = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::PerUnit));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     // **A `per_unit` row's money is its rate, and `amount_minor` is NULL on it**
     // (D-311). This row carried `amount_minor` and no rate until 2026-08-14, which
     // is both the pre-D-311 shape and the reason the gap below survived: the case
@@ -2137,7 +2165,11 @@ async fn list_for_plan_filters_by_state_and_orders_stably() {
         (recurring, ChargeKind::Recurring),
     ] {
         let mut content = flat_content();
-        content.row = PriceRow::new(charge_kind, Some(ModelKind::Flat));
+        content.row = {
+            let mut descriptor_row = PriceRow::new(charge_kind, Some(ModelKind::Flat));
+            descriptor_row.gl_code_ref = Some("4000".to_owned());
+            descriptor_row
+        };
         content.row.amount_minor = Some(money(1_000));
         repo.create_draft(
             &scope,
@@ -3731,7 +3763,11 @@ async fn the_keyset_page_walks_the_same_total_order_the_list_declares() {
         (ids[0], ChargeKind::Recurring),
     ] {
         let mut content = flat_content();
-        content.row = PriceRow::new(charge_kind, Some(ModelKind::Flat));
+        content.row = {
+            let mut descriptor_row = PriceRow::new(charge_kind, Some(ModelKind::Flat));
+            descriptor_row.gl_code_ref = Some("4000".to_owned());
+            descriptor_row
+        };
         content.row.amount_minor = Some(money(1_000));
         repo.create_draft(
             &scope,
@@ -3751,7 +3787,11 @@ async fn the_keyset_page_walks_the_same_total_order_the_list_declares() {
     // `load_bands` that `find` uses), could have answered an empty set for every
     // row with the only case naming that guarantee still green.
     let mut banded_content = flat_content();
-    banded_content.row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
+    banded_content.row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     banded_content.row.bands = graduated_content().row.bands;
     banded_content.row.meter = Some("api_calls".to_owned());
     "region:eu".clone_into(&mut banded_content.row.dimension_key);
@@ -4038,7 +4078,7 @@ fn usage_key(meter: Option<&str>, dimension: &str) -> ScopeKey {
         Cohort::None,
         SkuId::new(Uuid::new_v5(
             &Uuid::NAMESPACE_OID,
-            meter.unwrap_or("unresolved").as_bytes(),
+            meter.unwrap_or("unresolved").trim().as_bytes(),
         )),
     )
     .expect("usage scope")
@@ -4065,7 +4105,11 @@ fn usage_line_content(meter: Option<&str>, dimension: &str) -> PriceContent {
     // 2026-08-19), and the **real** door reads the readiness from this tenant's
     // taxonomy rather than from `fixture_readiness`, which declares no region here.
     content.tax_category_ref = Some("standard".to_owned());
-    content.row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
+    content.row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     // The **rate** column, not `amount_minor`: `check_amount_placement` refuses a
     // `per_unit` row that keeps its money in the amount column, and these rows
     // publish through real doors.
@@ -4182,15 +4226,8 @@ async fn a_loaded_key_carries_the_line_it_was_filed_under() {
 }
 
 #[tokio::test]
-async fn a_content_naming_a_line_its_key_does_not_is_refused() {
-    // **A refusal, deliberately, where `charge_kind` gets a rewrite.**
-    // `authored_content` rewrites `charge_kind` from the key because the wire
-    // cannot express it — a placeholder is forced. The wire *can* express a
-    // meter, so a disagreement is a caller's mistake worth naming rather than
-    // one to paper over. And a silent rewrite here would be worse than untidy:
-    // it would make the D-82 unit guard's `meter` and `dimensionKey` clauses
-    // unreachable, which is exactly how `charge_kind`'s placeholder cost three
-    // Criticals on 2026-08-06.
+async fn a_content_naming_a_different_dimension_than_its_key_is_refused() {
+    // D-372: dimension remains a key axis; the registry supplies the meter.
     let (repo, _provider) = harness().await;
     let scope = AccessScope::for_tenant(tenant());
 
@@ -4200,31 +4237,24 @@ async fn a_content_naming_a_line_its_key_does_not_is_refused() {
             tenant(),
             draft(
                 Uuid::from_u128(0xd1_96_08),
-                usage_key(Some("cloudlets"), ""),
-                usage_line_content(Some("egress_gb"), ""),
+                usage_key(Some("cloudlets"), "region=eu"),
+                usage_line_content(Some("cloudlets"), "region=other"),
             ),
         )
         .await
-        .expect_err("a row whose meter is not its key's must not be stored under either");
+        .expect_err("a row whose dimension differs from its key must not be stored");
 
     let message = format!("{err:?}");
     assert!(
-        message.contains("cloudlets") && message.contains("egress_gb"),
+        message.contains("region=other"),
         "the refusal names both lines so the author can see which is wrong: {message}"
     );
 }
 
 #[tokio::test]
-async fn an_update_may_not_move_the_row_to_another_line() {
-    // **The defect D-196 clause (3) exposed, pinned.** `update_draft` rewrote
-    // `meter` and `dimension_key` as ordinary content columns. Once the pair
-    // became key axes, that meant a `PATCH` could move a draft onto a *different*
-    // canonical scope key with no occupancy check anywhere on the path — the key
-    // another row might already hold — and the only thing that would notice is
-    // the partial `UNIQUE`, arriving as a driver error rather than as a refusal.
-    //
-    // The remedy this door names is the one its own doc already named for every
-    // other axis: delete the draft and author another one.
+async fn an_update_may_not_move_the_row_to_another_dimension() {
+    // The editable content cannot move an existing SKU row onto another
+    // dimension key. That requires authoring a new row and checking occupancy.
     let (repo, _provider) = harness().await;
     let scope = AccessScope::for_tenant(tenant());
     let price_id = Uuid::from_u128(0xd1_96_09);
@@ -4248,7 +4278,7 @@ async fn an_update_may_not_move_the_row_to_another_line() {
             tenant(),
             price_id,
             created.row_version,
-            usage_line_content(Some("egress_gb"), ""),
+            usage_line_content(Some("cloudlets"), "region=other"),
             stamp(),
             /* on_behalf_of */ None,
         )
@@ -4257,7 +4287,7 @@ async fn an_update_may_not_move_the_row_to_another_line() {
 
     let message = format!("{err:?}");
     assert!(
-        message.contains("cloudlets") && message.contains("egress_gb"),
+        message.contains("region=other"),
         "the refusal names the stored line and the submitted one: {message}"
     );
 
@@ -5864,7 +5894,11 @@ fn key_on(plan: PlanId, currency: &str, phase: u128, charge_kind: ChargeKind) ->
 /// A recurring row that names **no** model kind - the "tiered (unspecified)"
 /// row the Studio counts and does not list as a model.
 fn kindless_content() -> PriceContent {
-    let mut row = PriceRow::new(ChargeKind::Recurring, None);
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, None);
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.amount_minor = Some(money(500));
     PriceContent {
         row,

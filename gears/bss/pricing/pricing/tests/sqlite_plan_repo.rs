@@ -24,8 +24,8 @@ use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::plan::{PlanRevision, PlanShapePatch};
 use bss_pricing::domain::plan_shape::{
-    AddonRule, BillingCycle, CompositeMeter, CustomIntervalUnit, DescriptorSet, Frequency,
-    PeriodFloorCap, PhaseKind, PlanPhase,
+    AddonRule, BillingCycle, CompositeMeter, CustomIntervalUnit, Frequency, PeriodFloorCap,
+    PhaseKind, PlanPhase,
 };
 use bss_pricing::domain::scope_key::{PhaseId, PlanId, Region};
 use bss_pricing::infra::storage::entity::{
@@ -112,7 +112,10 @@ fn new_draft(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
         plan_tier_override: true,
         purchase_min_qty: Some(2),
         purchase_max_qty: Some(10),
-        invoice_grouping_key: Some("emea-bundle".to_owned()),
+        descriptor_ext: std::collections::BTreeMap::from([(
+            "costCentre".to_owned(),
+            "emea-bundle".to_owned(),
+        )]),
         available_from: Some(at(11)),
         available_to: Some(at(23)),
         cloned_from: None,
@@ -212,7 +215,10 @@ async fn a_created_draft_reads_back_whole() {
     assert!(read.plan_tier_override);
     assert_eq!(read.purchase_min_qty, Some(2));
     assert_eq!(read.purchase_max_qty, Some(10));
-    assert_eq!(read.invoice_grouping_key.as_deref(), Some("emea-bundle"));
+    assert_eq!(
+        read.descriptor_ext.get("costCentre").map(String::as_str),
+        Some("emea-bundle")
+    );
 }
 
 #[tokio::test]
@@ -536,7 +542,10 @@ async fn every_patched_column_reaches_the_row_it_names() {
                 plan_tier_override: Some(false),
                 purchase_min_qty: Some(3),
                 purchase_max_qty: Some(4),
-                invoice_grouping_key: Some("apac-bundle".to_owned()),
+                descriptor_ext: Some(std::collections::BTreeMap::from([(
+                    "costCentre".to_owned(),
+                    "apac-bundle".to_owned(),
+                )])),
                 available_from: Some(at(14)),
                 available_to: Some(at(20)),
             },
@@ -556,7 +565,10 @@ async fn every_patched_column_reaches_the_row_it_names() {
     assert_eq!(updated.available_to, Some(at(20)));
     assert_eq!(updated.purchase_min_qty, Some(3));
     assert_eq!(updated.purchase_max_qty, Some(4));
-    assert_eq!(updated.invoice_grouping_key.as_deref(), Some("apac-bundle"));
+    assert_eq!(
+        updated.descriptor_ext.get("costCentre").map(String::as_str),
+        Some("apac-bundle")
+    );
     assert_eq!(updated.row_version, RowVersion::new(1));
 
     // `plan_tier_override` is the one `Option` here over a `NOT NULL` column, so
@@ -865,7 +877,7 @@ async fn a_new_revision_copies_the_current_shape_forward() {
     assert_eq!(opened.plan_tier_override, published.plan_tier_override);
     assert_eq!(opened.purchase_min_qty, published.purchase_min_qty);
     assert_eq!(opened.purchase_max_qty, published.purchase_max_qty);
-    assert_eq!(opened.invoice_grouping_key, published.invoice_grouping_key);
+    assert_eq!(opened.descriptor_ext, published.descriptor_ext);
     assert_eq!(opened.available_from, published.available_from);
     assert_eq!(opened.available_to, published.available_to);
 
@@ -1787,18 +1799,17 @@ async fn published_plan_with_shape(
         )
         .await
         .expect("author the add-on set on the open draft");
-    shapes
-        .set_descriptor_set(
-            scope,
-            tenant,
-            plan_id,
-            0,
-            RowVersion::new(2),
-            descriptors(),
-            stamp(),
-        )
-        .await
-        .expect("attach the descriptor set on the open draft");
+    repo.update_draft(
+        scope,
+        tenant,
+        plan_id,
+        0,
+        RowVersion::new(2),
+        descriptors(),
+        stamp(),
+    )
+    .await
+    .expect("attach the descriptor set on the open draft");
     shapes
         .replace_composites(
             scope,
@@ -2079,12 +2090,13 @@ fn seeded_change_contract() -> PlanChangeContract {
 }
 
 /// A complete v1 descriptor set plus one P5 extra field.
-fn descriptors() -> DescriptorSet {
-    DescriptorSet {
-        invoice_line_template: Some("Subscription: {plan}".to_owned()),
-        gl_code: Some("4000".to_owned()),
-        itemization_rule: Some("per_plan".to_owned()),
-        additional: BTreeMap::from([("costCentre".to_owned(), "emea-ops".to_owned())]),
+fn descriptors() -> PlanShapePatch {
+    bss_pricing::domain::plan::PlanShapePatch {
+        descriptor_ext: Some(BTreeMap::from([(
+            "costCentre".to_owned(),
+            "emea-ops".to_owned(),
+        )])),
+        ..Default::default()
     }
 }
 
@@ -2382,11 +2394,11 @@ async fn a_new_revision_carries_the_whole_shape_forward_with_stable_ids_d83() {
         "the add-on set travels, every rule of it (D-105)"
     );
     assert_eq!(
-        shapes
-            .find_descriptor_set(&scope, tenant, plan_id, 1)
+        repo.find_revision(&scope, tenant, plan_id, 1)
             .await
-            .expect("read the successor's descriptor set"),
-        Some(descriptors()),
+            .expect("read revision")
+            .map(|revision| revision.descriptor_ext),
+        descriptors().descriptor_ext,
         "the descriptor set travels, the P5 extra fields included"
     );
     // D-319's bounds. A successor that lost them republishes a plan with no
@@ -2505,11 +2517,11 @@ async fn a_new_revision_carries_the_whole_shape_forward_with_stable_ids_d83() {
         3
     );
     assert_eq!(
-        shapes
-            .find_descriptor_set(&scope, tenant, plan_id, 0)
+        repo.find_revision(&scope, tenant, plan_id, 0)
             .await
-            .expect("read"),
-        Some(descriptors())
+            .expect("read revision")
+            .map(|revision| revision.descriptor_ext),
+        descriptors().descriptor_ext
     );
 }
 
@@ -2570,12 +2582,12 @@ async fn an_abandoned_revision_keeps_none_of_the_whole_shape_d145() {
         "no add-on rules survive the tombstone"
     );
     assert_eq!(
-        shapes
-            .find_descriptor_set(&scope, tenant, plan_id, 1)
+        repo.find_revision(&scope, tenant, plan_id, 1)
             .await
-            .expect("read"),
-        None,
-        "no descriptor set survives the tombstone"
+            .expect("read revision")
+            .map(|revision| revision.descriptor_ext),
+        descriptors().descriptor_ext,
+        "plan-level extensions remain part of the abandoned revision"
     );
     assert!(
         shapes
@@ -2623,11 +2635,11 @@ async fn an_abandoned_revision_keeps_none_of_the_whole_shape_d145() {
         3
     );
     assert_eq!(
-        shapes
-            .find_descriptor_set(&scope, tenant, plan_id, 0)
+        repo.find_revision(&scope, tenant, plan_id, 0)
             .await
-            .expect("read"),
-        Some(descriptors())
+            .expect("read revision")
+            .map(|revision| revision.descriptor_ext),
+        descriptors().descriptor_ext
     );
 }
 
@@ -2668,7 +2680,7 @@ async fn the_revision_scoped_tables_are_a_closed_set_and_each_one_is_copied_and_
     /// themselves, so their statements need that indirection and Slice 2's do
     /// not. `PlanRepo` calls both unconditionally; a plan that is not a bundle is
     /// a no-op.
-    const REVISION_SCOPED: [&str; 8] = [
+    const REVISION_SCOPED: [&str; 7] = [
         "pricing_bundle_component",
         "pricing_bundle_revshare",
         "pricing_bundle_revshare_group",
@@ -2679,7 +2691,6 @@ async fn the_revision_scoped_tables_are_a_closed_set_and_each_one_is_copied_and_
         // the two shape cases below assert both.
         "pricing_composite_meter",
         "pricing_plan_addon_rule",
-        "pricing_plan_descriptor_set",
         // D-319's period floor/cap (2026-08-15). Added after the obligation was
         // met, like `pricing_composite_meter` above: `copy_period_floor_caps`
         // and `delete_period_floor_caps` live in `plan_shape_repo` beside the
@@ -3039,7 +3050,7 @@ async fn a_retired_plan_takes_no_publish_and_says_so_in_its_own_words() {
         plan_tier_override: sea_orm::ActiveValue::Set(false),
         purchase_min_qty: sea_orm::ActiveValue::Set(None),
         purchase_max_qty: sea_orm::ActiveValue::Set(None),
-        invoice_grouping_key: sea_orm::ActiveValue::Set(None),
+        descriptor_ext: sea_orm::ActiveValue::Set(serde_json::json!({})),
         lifecycle_state: sea_orm::ActiveValue::Set(LifecycleState::Draft.as_str().to_owned()),
         available_from: sea_orm::ActiveValue::Set(None),
         available_to: sea_orm::ActiveValue::Set(None),

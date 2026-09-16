@@ -2663,3 +2663,65 @@ async fn a_successful_create_replays_without_reading_a_changed_or_unavailable_re
     }
     assert_eq!(price_rows(&h, plan).await.len(), 1);
 }
+
+/// D-373 parser is a save-time contract; clearing restores default inheritance.
+#[tokio::test]
+async fn row_descriptor_overrides_validate_and_null_clears_them() {
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+    let mut authored = create_body("EU");
+    authored["content"]["invoice_line_template"] = serde_json::json!("{sku_typo}");
+    let refused = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(authored.clone()),
+            &keyed("descriptor-invalid"),
+        ))
+        .await;
+    assert!(refused.status().is_client_error());
+    assert!(
+        body_json(refused)
+            .await
+            .to_string()
+            .contains("LINE_TEMPLATE_INVALID")
+    );
+    assert!(price_rows(&harness, plan_id).await.is_empty());
+    authored["content"]["invoice_line_template"] = serde_json::json!("{{SKU}} {sku} - {period}");
+    authored["content"]["gl_code_ref"] = serde_json::json!("4100");
+    let created = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(authored.clone()),
+            &keyed("descriptor-valid"),
+        ))
+        .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let tag = etag_of(&created).expect("price tag");
+    let body = body_json(created).await;
+    assert_eq!(body["content"]["gl_code_ref"], "4100");
+    assert!(body["resolved_gl_code"].is_null());
+    let price_id = Uuid::parse_str(body["price_id"].as_str().expect("id")).expect("UUID");
+    authored["content"]["invoice_line_template"] = serde_json::Value::Null;
+    authored["content"]["gl_code_ref"] = serde_json::Value::Null;
+    let cleared = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &price_path(plan_id, price_id),
+            Some(serde_json::json!({"content": authored["content"]})),
+            &[("if-match", &tag)],
+        ))
+        .await;
+    assert_eq!(cleared.status(), StatusCode::OK);
+    let body = body_json(cleared).await;
+    assert!(body["content"]["invoice_line_template"].is_null());
+    assert!(body["content"]["gl_code_ref"].is_null());
+    let stored = price_rows(&harness, plan_id).await;
+    assert_eq!(stored.len(), 1);
+    assert!(stored[0].row.invoice_line_template.is_none());
+    assert!(stored[0].row.gl_code_ref.is_none());
+}

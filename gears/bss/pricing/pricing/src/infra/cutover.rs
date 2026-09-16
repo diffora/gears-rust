@@ -613,6 +613,7 @@ pub struct CutoverService {
 
 impl CutoverService {
     /// Bind the same product catalog as authoring and publishing.
+    #[must_use]
     pub fn with_product_catalog(
         mut self,
         catalog: Arc<dyn crate::domain::ports::ProductCatalogClientV1>,
@@ -731,6 +732,10 @@ impl CutoverService {
               renderer and the stamp. Every one is a different authority and none is derivable \
               from the others"
 )]
+#[allow(
+    clippy::too_many_lines,
+    reason = "cutover keeps approval, registry handoff, and its two row mutations in one ordered transactional procedure"
+)]
 pub async fn cutover_in(
     txn: &DbTx<'_>,
     policies: &PolicyObjectRepo,
@@ -766,43 +771,8 @@ pub async fn cutover_in(
 
     // Replays use the staged derived meter, never a fresh registry answer.
     // Authored changes still conflict; only the response-only field is restored.
-    let replay_subject = cutover_unit_ref(
-        context.plan_id,
-        &[request.predecessor_key.clone()],
-        request.cutover_at,
-    );
-    if let (Some(staged), Some(copy)) = (&context.staged_successor, &context.staged_copy) {
-        let authorized = crate::infra::approval::authorizing_unit(
-            txn,
-            scope,
-            tenant_id,
-            &context.shape,
-            &replay_subject,
-        )
-        .await?;
-        if authorized.is_none() {
-            if let Some(held) =
-                approval_repo::find_pending_for_subject(txn, tenant_id, &replay_subject)
-                    .await
-                    .map_err(|e| repo_failure(&e))?
-            {
-                let mut replay_request = request.clone();
-                replay_request.successor.row.meter = staged.row.meter.clone();
-                let (_, copy_key) =
-                    compose_and_judge(&context, &replay_request, now, ChangeoverMoment::Submit)?;
-                refuse_divergent_staged(&context, &replay_request, &copy_key)?;
-                return Ok(CutoverOutcome::SubmittedForApproval(Box::new(
-                    CutoverPending {
-                        plan_id: context.plan_id,
-                        revision: context.revision,
-                        successor_price_id: staged.price_id,
-                        copy_price_id: copy.price_id,
-                        copy_key,
-                        approval: held,
-                    },
-                )));
-            }
-        }
+    if let Some(outcome) = pending_replay(txn, scope, tenant_id, &context, request, now).await? {
+        return Ok(outcome);
     }
     let resolved_policies = if policies.sku_index().is_ok() {
         policies.clone()
@@ -1470,7 +1440,7 @@ fn refuse_divergent_staged(
     if let Some(staged) = context.staged_copy.as_ref() {
         crate::infra::supersession::refuse_divergent_successor(
             staged,
-            &price_repo::authored_content(copy_key, context.predecessor.content()),
+            &price_repo::authored_content(copy_key, retained_content(&context.predecessor)?),
         )?;
     }
     Ok(())
@@ -1744,6 +1714,31 @@ async fn stage_and_gate(
     Ok(staged)
 }
 
+/// Retained subscribers keep the predecessor's frozen descriptors even when
+/// tenant defaults have changed. Explicit overrides make the staged copy and its
+/// approval pin independent of those mutable defaults.
+fn retained_content(predecessor: &PriceRecord) -> Result<PriceContent, DomainError> {
+    let mut content = predecessor.content();
+    content.row.invoice_line_template = Some(
+        predecessor
+            .resolved_invoice_line_template
+            .clone()
+            .ok_or_else(|| {
+                DomainError::Internal(format!(
+                    "published predecessor {} lacks frozen template",
+                    predecessor.price_id
+                ))
+            })?,
+    );
+    content.row.gl_code_ref = Some(predecessor.resolved_gl_code.clone().ok_or_else(|| {
+        DomainError::Internal(format!(
+            "published predecessor {} lacks frozen GL code",
+            predecessor.price_id
+        ))
+    })?);
+    Ok(content)
+}
+
 /// Stage the successor and the grandfathered copy, reusing whatever an earlier
 /// attempt staged.
 ///
@@ -1795,7 +1790,7 @@ async fn stage_both(
                 // retained subscribers keep paying, so it is the row being closed,
                 // carried onto a generation of its own key — a copy of the *new* price
                 // would grandfather nobody.
-                content: context.predecessor.content(),
+                content: retained_content(&context.predecessor)?,
                 created_by: stamp.actor_principal_id,
                 created_at_utc: stamp.recorded_at,
                 correlation_id: stamp.correlation_id,
@@ -1933,6 +1928,58 @@ async fn read_cutover_context(
         stored_plane,
         existing_generations,
     })
+}
+
+async fn pending_replay(
+    txn: &DbTx<'_>,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    context: &CutoverContext,
+    request: &CutoverRequest,
+    now: OffsetDateTime,
+) -> Result<Option<CutoverOutcome>, DomainError> {
+    let replay_subject = cutover_unit_ref(
+        context.plan_id,
+        std::slice::from_ref(&request.predecessor_key),
+        request.cutover_at,
+    );
+    if let (Some(staged), Some(copy)) = (&context.staged_successor, &context.staged_copy) {
+        let authorized = crate::infra::approval::authorizing_unit(
+            txn,
+            scope,
+            tenant_id,
+            &context.shape,
+            &replay_subject,
+        )
+        .await?;
+        if authorized.is_none()
+            && let Some(held) =
+                approval_repo::find_pending_for_subject(txn, tenant_id, &replay_subject)
+                    .await
+                    .map_err(|e| repo_failure(&e))?
+        {
+            let mut replay_request = request.clone();
+            replay_request
+                .successor
+                .row
+                .meter
+                .clone_from(&staged.row.meter);
+            let (_, copy_key) =
+                compose_and_judge(context, &replay_request, now, ChangeoverMoment::Submit)?;
+            refuse_divergent_staged(context, &replay_request, &copy_key)?;
+            return Ok(Some(CutoverOutcome::SubmittedForApproval(Box::new(
+                CutoverPending {
+                    plan_id: context.plan_id,
+                    revision: context.revision,
+                    successor_price_id: staged.price_id,
+                    copy_price_id: copy.price_id,
+                    copy_key,
+                    approval: held,
+                },
+            ))));
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]

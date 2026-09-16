@@ -36,11 +36,17 @@ fn record(bands: Vec<TierBand>) -> PriceRecord {
     )
     .expect("key");
     PriceRecord {
+        resolved_invoice_line_template: Some("{sku}".to_owned()),
+        resolved_gl_code: Some("4000".to_owned()),
         price_id: Uuid::from_u128(0x9_71ce),
         scope_key: key,
         row: PriceRow {
             bands,
-            ..PriceRow::new(ChargeKind::Usage, None)
+            ..{
+                let mut descriptor_row = PriceRow::new(ChargeKind::Usage, None);
+                descriptor_row.gl_code_ref = Some("4000".to_owned());
+                descriptor_row
+            }
         },
         tax_inclusive: false,
         tax_category_ref: None,
@@ -115,6 +121,8 @@ fn a_negative_unit_price_is_refused_rather_than_stored() {
 /// A view with everything a well-formed `flat` row needs and nothing more.
 fn clean_view() -> PriceContentView {
     PriceContentView {
+        invoice_line_template: None,
+        gl_code_ref: None,
         model_kind: Some("flat".to_owned()),
         amount_minor: Some(1_500),
         unit_rate_nano_minor: None,
@@ -305,6 +313,8 @@ fn the_view_names_the_rows_own_version_and_its_whole_key() {
 /// A whole contract on the view.
 fn with_contract(policy: &str, day: Option<u8>, basis: &str, credit: bool) -> PriceContentView {
     PriceContentView {
+        invoice_line_template: None,
+        gl_code_ref: None,
         billing_anchor_policy: Some(policy.to_owned()),
         anchor_day: day,
         proration_basis: Some(basis.to_owned()),
@@ -459,11 +469,11 @@ mod key_contradictions {
                 sku,
             ]));
         super::super::derive_meter(&mut content, &key, &index);
-        let context = crate::domain::row_sku_rules::RowSkuContext {
+        let sku_context = crate::domain::row_sku_rules::RowSkuContext {
             plan_sku: key.sku_id(),
             index,
         };
-        super::super::require_no_key_contradiction(&key, &content, context)
+        super::super::require_no_key_contradiction(&key, &content, sku_context)
             .map_err(|e| format!("{e:?}"))
     }
 

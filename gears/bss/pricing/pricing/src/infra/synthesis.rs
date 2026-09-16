@@ -81,9 +81,7 @@ use crate::domain::synthesis::{
     LiveCandidate, SelectedRow, SynthesisOutcome, UnresolvedKey, select_rows,
 };
 use crate::domain::window::WindowState;
-use crate::infra::storage::entity::{
-    plan_descriptor_set, plan_period_floor_cap, price, price_tier_band,
-};
+use crate::infra::storage::entity::{plan_period_floor_cap, price, price_tier_band};
 use crate::infra::storage::repo::{plan_repo, price_repo, window_repo};
 use crate::infra::storage::{RepoError, repo_failure};
 use time::OffsetDateTime;
@@ -350,8 +348,9 @@ fn row_value(
     stored: &price::Model,
     bands: &[price_tier_band::Model],
 ) -> JsonValue {
-    json!({
+    let mut value = json!({
         "rowId": row.row_id,
+        "skuId": stored.sku_id,
         "source": row.tier.as_str(),
         "currency": stored.currency,
         "region": stored.region,
@@ -545,7 +544,12 @@ fn row_value(
         "resolvedTaxCategory": stored.resolved_tax_category,
         "roundingPolicyRef": stored.rounding_policy_ref,
         "resolvedRoundingPolicy": stored.resolved_rounding_policy,
-    })
+    });
+    value["invoiceLineTemplate"] = json!(stored.resolved_invoice_line_template);
+    value["glCode"] = json!(stored.resolved_gl_code);
+    value["descriptorSetUnavailable"] =
+        json!(stored.resolved_invoice_line_template.is_none() || stored.resolved_gl_code.is_none());
+    value
 }
 
 /// C-5's plan-level half of the payload: the descriptor set and the grant set.
@@ -602,31 +606,15 @@ async fn plan_level(
             )))
         })?;
 
-    let descriptors = plan_descriptor_set::Entity::find()
-        .secure()
-        .scope_with(scope)
-        .filter(
-            Condition::all()
-                .add(plan_descriptor_set::Column::TenantId.eq(tenant_id))
-                .add(plan_descriptor_set::Column::PlanId.eq(plan_id.get()))
-                .add(plan_descriptor_set::Column::PlanRevision.eq(revision)),
-        )
-        .one(runner)
-        .await
-        .map_err(|e| {
-            repo_failure(&RepoError::Db(format!(
-                "read the descriptor set of plan {plan_id}: {e}"
-            )))
-        })?;
+    let itemization =
+        crate::infra::storage::repo::bundle_repo::itemization_on(runner, scope, tenant_id, plan_id)
+            .await
+            .map_err(|e| repo_failure(&e))?;
 
     Ok(json!({
         "planRevision": current.revision,
-            // D-48's three v1 descriptor-set fields. Billing posts the line from
-            // these, having no `CatalogVersion` to fetch them from.
-        "invoiceLineTemplate": descriptors.as_ref().and_then(|d| d.invoice_line_template.clone()),
-        "glCode": descriptors.as_ref().and_then(|d| d.gl_code.clone()),
-        "itemizationRule": descriptors.as_ref().and_then(|d| d.itemization_rule.clone()),
-        "descriptorSetUnavailable": descriptors.is_none(),
+        "billing": { "itemizationRule": itemization.as_str(), "ext": current.descriptor_ext },
+        "descriptorSetUnavailable": false,
             // **There is no entitlement grant store in this gear.** Reported rather
             // than rendered as an empty set, because a consumer must not read the
             // absence as "this plan grants nothing".

@@ -373,7 +373,9 @@ impl PriceRepo {
             .db
             .db()
             .in_transaction::<PriceRecord, RepoError, _>(move |txn| {
-                Box::pin(async move { insert_prepared(txn, &scope, tenant_id, prepared).await })
+                Box::pin(async move {
+                    Box::pin(insert_prepared(txn, &scope, tenant_id, prepared)).await
+                })
             })
             .await;
         outcome.map_err(tx_failure)
@@ -1060,7 +1062,7 @@ fn tx_failure(err: TxError<RepoError>) -> RepoError {
 /// A named type because the tuple is a map key in one place and its shape is the
 /// thing a reader has to hold: `Option` on both halves is "the resolution is
 /// genuinely absent", not "not computed yet".
-type ResolutionKey = (Option<String>, Option<String>);
+type ResolutionKey = (Option<String>, Option<String>, String, String);
 
 /// Publish **exactly the validated price rows**, inside the caller's
 /// transaction, returning the ids that moved.
@@ -1274,6 +1276,9 @@ pub async fn publish_rows(
     // from the pinned version needs the rounding mode, **and** the tenant must not be
     // able to flip the default and silently re-round every already-frozen version.
     // `resolved_tax_category` beside it is frozen the same way, for the same reason.
+    let (default_gl, default_templates) =
+        super::policy_repo::descriptor_defaults_on(txn, scope, tenant_id).await?;
+    let declared_gl = super::taxonomy_repo::active_gl_codes(txn, scope, tenant_id).await?;
     let mut by_resolution: BTreeMap<ResolutionKey, Vec<Uuid>> = BTreeMap::new();
     for (price_id, _) in validated {
         let row = held.get(price_id);
@@ -1289,8 +1294,43 @@ pub async fn publish_rows(
                 .clone()
                 .or_else(|| default_rounding_policy.map(ToOwned::to_owned))
         });
+        let stored =
+            row.ok_or_else(|| RepoError::CorruptRow(format!("missing validated row {price_id}")))?;
+        let kind = ChargeKind::parse(&stored.charge_kind)
+            .ok_or_else(|| RepoError::CorruptRow("invalid charge kind".into()))?;
+        let template = stored
+            .invoice_line_template
+            .clone()
+            .unwrap_or_else(|| default_templates.get(kind).to_owned());
+        let gl = stored
+            .gl_code_ref
+            .clone()
+            .or_else(|| default_gl.clone())
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| RepoError::DescriptorInvalid {
+                price_id: price_id.to_string(),
+                code: "GL_CODE_UNRESOLVED",
+            })?;
+        if template.trim().is_empty() {
+            return Err(RepoError::DescriptorInvalid {
+                price_id: price_id.to_string(),
+                code: "DESCRIPTOR_INCOMPLETE",
+            });
+        }
+        if crate::domain::line_template::parse(&template).is_err() {
+            return Err(RepoError::DescriptorInvalid {
+                price_id: price_id.to_string(),
+                code: "LINE_TEMPLATE_INVALID",
+            });
+        }
+        if !declared_gl.is_empty() && !declared_gl.contains(&gl) {
+            return Err(RepoError::DescriptorInvalid {
+                price_id: price_id.to_string(),
+                code: "GL_CODE_UNKNOWN",
+            });
+        }
         by_resolution
-            .entry((category, rounding))
+            .entry((category, rounding, template, gl))
             .or_default()
             .push(*price_id);
     }
@@ -1315,7 +1355,7 @@ pub async fn publish_rows(
     // the first.
     if let Some(price_id) = by_resolution
         .iter()
-        .find(|((category, _), _)| category.is_none())
+        .find(|((category, _, _, _), _)| category.is_none())
         .and_then(|(_, price_ids)| price_ids.first())
     {
         return Err(RepoError::TaxCategoryUnresolved {
@@ -1324,7 +1364,7 @@ pub async fn publish_rows(
     }
     if let Some(price_id) = by_resolution
         .iter()
-        .find(|((_, rounding), _)| rounding.is_none())
+        .find(|((_, rounding, _, _), _)| rounding.is_none())
         .and_then(|(_, price_ids)| price_ids.first())
     {
         return Err(RepoError::RoundingPolicyUnresolved {
@@ -1333,7 +1373,7 @@ pub async fn publish_rows(
     }
 
     let mut result_rows = 0_u64;
-    for ((resolved, rounding), price_ids) in by_resolution {
+    for ((resolved, rounding, template, gl), price_ids) in by_resolution {
         let mut group = Condition::any();
         for price_id in &price_ids {
             group = group.add(price::Column::PriceId.eq(*price_id));
@@ -1359,6 +1399,11 @@ pub async fn publish_rows(
                 price::Column::ResolvedRoundingPolicy,
                 Expr::value(rounding.clone()),
             )
+            .col_expr(
+                price::Column::ResolvedInvoiceLineTemplate,
+                Expr::value(template),
+            )
+            .col_expr(price::Column::ResolvedGlCode, Expr::value(gl))
             .filter(
                 plan_rows_in_state(tenant_id, plan_id, LifecycleState::Draft)
                     .add(identities.clone())
@@ -3678,6 +3723,8 @@ fn content_model(content: &PriceContent) -> Result<price::ActiveModel, RepoError
     let row = &content.row;
     let (meter, dimension_key) = canonical_usage_line(row);
     Ok(price::ActiveModel {
+        invoice_line_template: Set(row.invoice_line_template.clone()),
+        gl_code_ref: Set(row.gl_code_ref.clone()),
         amount_minor: Set(row.amount_minor.map(MinorAmount::get)),
         unit_rate_nano: Set(row.unit_rate.map(RateMinor::nano_minor)),
         model_kind: Set(row.model_kind.map(model_kind_wire).map(str::to_owned)),
@@ -3766,6 +3813,8 @@ fn prepare_draft(tenant_id: Uuid, draft: NewPriceDraft) -> Result<PreparedDraft,
     // `authored_content` rather than a disagreement with it).
     let scope_key = resolve_authored_usage_line(&draft.scope_key, &draft.content.row)?;
     let record = PriceRecord {
+        resolved_invoice_line_template: None,
+        resolved_gl_code: None,
         price_id: draft.price_id,
         scope_key: scope_key.clone(),
         // The two rewrites this door performs, applied through their **one**
@@ -4000,7 +4049,13 @@ pub async fn create_draft_on(
     tenant_id: Uuid,
     draft: NewPriceDraft,
 ) -> Result<PriceRecord, RepoError> {
-    insert_prepared(runner, scope, tenant_id, prepare_draft(tenant_id, draft)?).await
+    Box::pin(insert_prepared(
+        runner,
+        scope,
+        tenant_id,
+        prepare_draft(tenant_id, draft)?,
+    ))
+    .await
 }
 
 /// The whole insert: content, plus the columns only a creation writes.
@@ -4057,6 +4112,10 @@ fn insert_model(tenant_id: Uuid, record: &PriceRecord) -> Result<price::ActiveMo
         // The rounding resolution, frozen by the same statement for the same
         // reason (`pricing_price`). A creation says nothing about it either.
         resolved_rounding_policy: _,
+        resolved_invoice_line_template: _,
+        resolved_gl_code: _,
+        invoice_line_template,
+        gl_code_ref,
         // --- content, carried through exactly as `content_model` rendered it ---
         amount_minor,
         unit_rate_nano,
@@ -4096,15 +4155,19 @@ fn insert_model(tenant_id: Uuid, record: &PriceRecord) -> Result<price::ActiveMo
         tenant_id: Set(tenant_id),
         plan_id: Set(key.plan_id().get()),
         sku_id: Set(key.sku_id().as_uuid()),
+        invoice_line_template,
+        gl_code_ref,
+        resolved_invoice_line_template: NotSet,
+        resolved_gl_code: NotSet,
         currency: Set(key.currency().as_str().to_owned()),
         region: Set(key.region().as_str().to_owned()),
+        // The axis is a `NOT NULL` text token — `none`, or the cutover instant
+        // — rather than a nullable timestamp, because distinct `NULL`s do not
+        // collide in the partial `UNIQUE` that decides row uniqueness.
         price_overlay: Set(key.price_overlay().as_str().to_owned()),
         phase: Set(key.phase().get()),
         price_eligibility: Set(key.price_eligibility().as_str().to_owned()),
         charge_kind: Set(key.charge_kind().as_str().to_owned()),
-        // The axis is a `NOT NULL` text token — `none`, or the cutover instant
-        // — rather than a nullable timestamp, because distinct `NULL`s do not
-        // collide in the partial `UNIQUE` that decides row uniqueness.
         cohort: Set(key.cohort().to_string()),
         amount_minor,
         unit_rate_nano,
@@ -4224,6 +4287,10 @@ fn content_assignments(model: price::ActiveModel) -> Vec<(price::Column, Value)>
         // which a draft edit *can* reach - so a `PATCH` could overwrite what a
         // publish had frozen.
         resolved_rounding_policy: _,
+        resolved_invoice_line_template: _,
+        resolved_gl_code: _,
+        invoice_line_template,
+        gl_code_ref,
         billing_timing,
         billing_anchor_policy,
         anchor_day,
@@ -4265,6 +4332,11 @@ fn content_assignments(model: price::ActiveModel) -> Vec<(price::Column, Value)>
     } = model;
 
     [
+        (
+            price::Column::InvoiceLineTemplate,
+            invoice_line_template.into_value(),
+        ),
+        (price::Column::GlCodeRef, gl_code_ref.into_value()),
         (price::Column::AmountMinor, amount_minor.into_value()),
         // `content_model` sets it (D-311) and `to_record` reads it back, so
         // omitting it here discards a draft edit that re-rates a metered row — the
@@ -4479,6 +4551,8 @@ fn to_record(
     let scope_key = to_scope_key(row)?;
     let shape = to_price_row(row, scope_key.charge_kind(), bands)?;
     Ok(PriceRecord {
+        resolved_invoice_line_template: row.resolved_invoice_line_template.clone(),
+        resolved_gl_code: row.resolved_gl_code.clone(),
         price_id: row.price_id,
         scope_key,
         row: shape,
@@ -4603,6 +4677,8 @@ fn to_price_row(
     bands: &[price_tier_band::Model],
 ) -> Result<PriceRow, RepoError> {
     Ok(PriceRow {
+        invoice_line_template: row.invoice_line_template.clone(),
+        gl_code_ref: row.gl_code_ref.clone(),
         charge_kind,
         model_kind: read_optional(
             "pricing_price.model_kind",

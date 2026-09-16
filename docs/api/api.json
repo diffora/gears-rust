@@ -1416,6 +1416,54 @@
         ],
         "type": "object"
       },
+      "BillingDescriptorPolicyView": {
+        "description": "Whole replacement of the tenant's descriptor defaults.",
+        "properties": {
+          "default_gl_code_ref": {
+            "description": "Null clears the fallback and requires GL overrides on published rows.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "default_line_templates": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Exactly `recurring`, `usage`, `one_time` and `one_time_setup` template sources.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          }
+        },
+        "required": [
+          "default_line_templates"
+        ],
+        "type": "object"
+      },
+      "BillingView": {
+        "description": "The plan-level part of the billing contract (D-373).",
+        "properties": {
+          "ext": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "itemization_rule": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "itemization_rule",
+          "ext"
+        ],
+        "type": "object"
+      },
       "BindReq": {
         "description": "Request body for `POST /files/{id}/bind`.",
         "properties": {
@@ -1776,6 +1824,10 @@
               "null"
             ]
           },
+          "sellable": {
+            "description": "`false` is a composition- or metering-only member.",
+            "type": "boolean"
+          },
           "sku_code": {
             "type": "string"
           },
@@ -1787,13 +1839,26 @@
           "status": {
             "description": "The registry's own word, passed through unparsed.",
             "type": "string"
+          },
+          "type": {
+            "description": "`product` | `service` | `bundle`, the registry's word — `type` on the\nwire, as the registry's consumer contract (`dod-sdk-read-shape`) spells\nit; the raw identifier is only Rust's spelling of the same name.",
+            "type": "string"
+          },
+          "usage_type_ref": {
+            "description": "The usage collector's `UsageType` id; present on usage SKUs only.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
           "sku_id",
           "sku_code",
           "name",
-          "status"
+          "status",
+          "type",
+          "sellable"
         ],
         "type": "object"
       },
@@ -2870,7 +2935,7 @@
         "type": "object"
       },
       "CompositeMeterRequest": {
-        "description": "One derived (composite) meter, as an **author** states it (Slice 10 §6, A4,\nD-32, D-106).\n\n# Why this is a twin of `approvals::CompositeMeterView` and not that type\n\nA composite meter already has a wire shape:\n[`CompositeMeterView`](crate::api::rest::approvals::CompositeMeterView), minted\nwhen the reviewer's pinned document was the **only** surface that had ever\nshown one. Sharing it was considered and rejected, and the reasons are three,\nin increasing order of what it costs to get wrong.\n\n1. **Direction.** `approvals.rs` imports [`PlanPhaseView`], [`AddonRuleView`],\n   [`DescriptorSetView`] and [`FrequencyView`] *from here*: the authoring plane\n   owns the shapes an author writes, and the reviewer's document borrows them.\n   Making [`PatchPlanRequest`] depend on a type in `approvals.rs` inverts that\n   for one facet, and a reader would then have to know which of the six is the\n   exception.\n2. **The two shapes are already answers to different questions.** This module's\n   own Slice-6 pairs are the precedent: [`PlanChangeContractRequest`] beside\n   `approvals::PlanChangeContractView`, [`EntitlementGrantsRequest`] beside\n   `approvals::EntitlementGrantsView` - twins rather than one type, because a\n   request's members carry an *omitted-means-something* reading while a view\n   renders the resolved value (`EntitlementGrantsView::per_phase` says so in as\n   many words: \"the **authored** ones, not the materialized map\").\n   `PinnedContentView`'s stated invariant is \"exactly the fields the pin hashes\n   and no others\", which is a rule about the digest and not about what an author\n   may set.\n3. **That invariant is live, and it has already moved once.**\n   `PinnedContentView` gained `windows` when the pin started framing them, and a\n   window is not authored on this route at all. Under a shared type that\n   widening would have made a derived, publish-owned fact settable by a `PATCH`,\n   with nothing to notice it: no DTO in this gear sets `deny_unknown_fields`, so\n   the compiler would have had no complaint and the surface no refusal.\n\nWhat the twin costs is one field that differs and three that do not, joined in\nexactly one place ([`composite_of`]).",
+        "description": "One derived (composite) meter, as an **author** states it (Slice 10 §6, A4,\nD-32, D-106).\n\n# Why this is a twin of `approvals::CompositeMeterView` and not that type\n\nA composite meter already has a wire shape:\n[`CompositeMeterView`](crate::api::rest::approvals::CompositeMeterView), minted\nwhen the reviewer's pinned document was the **only** surface that had ever\nshown one. Sharing it was considered and rejected, and the reasons are three,\nin increasing order of what it costs to get wrong.\n\n1. **Direction.** `approvals.rs` imports [`PlanPhaseView`], [`AddonRuleView`],\n   [`FrequencyView`] *from here*: the authoring plane\n   owns the shapes an author writes, and the reviewer's document borrows them.\n   Making [`PatchPlanRequest`] depend on a type in `approvals.rs` inverts that\n   for one facet, and a reader would then have to know which of the six is the\n   exception.\n2. **The two shapes are already answers to different questions.** This module's\n   own Slice-6 pairs are the precedent: [`PlanChangeContractRequest`] beside\n   `approvals::PlanChangeContractView`, [`EntitlementGrantsRequest`] beside\n   `approvals::EntitlementGrantsView` - twins rather than one type, because a\n   request's members carry an *omitted-means-something* reading while a view\n   renders the resolved value (`EntitlementGrantsView::per_phase` says so in as\n   many words: \"the **authored** ones, not the materialized map\").\n   `PinnedContentView`'s stated invariant is \"exactly the fields the pin hashes\n   and no others\", which is a rule about the digest and not about what an author\n   may set.\n3. **That invariant is live, and it has already moved once.**\n   `PinnedContentView` gained `windows` when the pin started framing them, and a\n   window is not authored on this route at all. Under a shared type that\n   widening would have made a derived, publish-owned fact settable by a `PATCH`,\n   with nothing to notice it: no DTO in this gear sets `deny_unknown_fields`, so\n   the compiler would have had no complaint and the surface no refusal.\n\nWhat the twin costs is one field that differs and three that do not, joined in\nexactly one place ([`composite_of`]).",
         "properties": {
           "composite_id": {
             "description": "The definition's identity, **stable across revisions** (D-106).\n\nOptional, which is the one member that diverges from the reviewer's view\n(where it is a plain `Uuid`, because a reviewer is only ever shown a\npersisted row). Two readings, and both are needed:\n\n- **Omitted: author a new definition.** The surface mints the id, as\n  `POST /plans` mints a `planId` and for a sharper version of the same\n  reason. Until `pricing_composite_meter`, `pricing_composite_meter`'s\n  `PRIMARY KEY (composite_id, plan_revision)` carried neither `plan_id` nor\n  `tenant_id`, so it was `pricing_plan_phase`'s collision one table over -\n  two plans of one tenant standing at revision `0` could not share a child\n  id, and `rest_plans.rs` pinned that as a client-reachable `500`. The key\n  now carries both, so the collision is gone in **both** directions the\n  optionality exposed; a **required** id would still have been the wrong\n  call, for the reading below rather than for a defect.\n- **Supplied: keep this definition.** A `GET` echoes the ids, so a\n  read-modify-write round trip preserves identity through a facet that\n  replaces wholesale - which is what makes D-106's \"a draft's formula edit\n  leaves the published revision byte-identical\" true of an *edit* and not\n  only of the copy-forward. That echo is why [`PlanView`] gains this facet in\n  the same change the `PATCH` does.",
@@ -3473,6 +3538,129 @@
           "precedence",
           "target_plan_ids",
           "lines"
+        ],
+        "type": "object"
+      },
+      "CreatePlanRequest": {
+        "additionalProperties": false,
+        "description": "Initial plan shape. D-372 requires the sold offer SKU at creation.",
+        "properties": {
+          "available_from": {
+            "description": "Start of the availability window, UTC.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "available_to": {
+            "description": "End of the availability window, UTC.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "billing_cycle": {
+            "description": "`one_time` | `recurring` | `usage` | `hybrid`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "change_contract": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PlanChangeContractRequest",
+                "description": "The plan-change contract (Slice 6, §6): the published `planId`s a\nself-service change may travel to, the comparability rank that\nclassifies one, and D-113's tier-`Q` continuity flag.\n\nSent **whole or not at all**, which is the shape\n[`PlanShapePatch::change_contract`] gives it: K4 ties the rank to whether\nthe edge list names anyone, so a caller able to move one member alone\ncould express a state no publish accepts."
+              }
+            ]
+          },
+          "descriptor_ext": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The Billing invoice-layout hint (D-96).",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "entitlement_grants": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/EntitlementGrantsRequest",
+                "description": "The entitlement grant set (Slice 6, §6, D-41): the plan-level feature\nflags and quotas, the `PlanTier` they resolved from when they did, and\nany per-phase sets keyed by `phaseId`.\n\nSent **whole or not at all**, for the change contract's reason below."
+              }
+            ]
+          },
+          "frequency": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/FrequencyView",
+                "description": "The recurring frequency, interval and all."
+              }
+            ]
+          },
+          "plan_name": {
+            "description": "The plan's human label (D-318). Free text an operator chose, distinct\nfrom the tier, which is a classification the catalog reasons about.\n\nAbsent leaves it alone; the empty string is **refused**, not stored, so\n`NULL` stays the only spelling of \"unnamed\".",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_tier": {
+            "description": "The plan's tier (a registry-owned taxonomy, so a free string).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "plan_tier_override": {
+            "description": "Declare or withdraw the audited tier override (P3).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "purchase_max_qty": {
+            "description": "Maximum purchasable quantity (one-time plans).",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "purchase_min_qty": {
+            "description": "Minimum purchasable quantity (one-time plans).",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sku_id": {
+            "description": "Bind the plan to a catalog SKU.",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sku_id"
         ],
         "type": "object"
       },
@@ -4609,7 +4797,7 @@
             "type": "string"
           },
           "state": {
-            "description": "`active` or `retired`, defaulting to `active`.",
+            "description": "`active`, `deprecated` or `retired` (D-370), defaulting to `active`.",
             "type": [
               "string",
               "null"
@@ -4631,6 +4819,32 @@
           },
           "value": {
             "description": "The declared code — the string a price row's `region` or an overlay's\n`scopeValue` must match. Never blank.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "display_name"
+        ],
+        "type": "object"
+      },
+      "DeclareVocabularyValueRequest": {
+        "additionalProperties": false,
+        "description": "The one value a `POST …/values` declares — the authored fields and nothing\nelse.\n\nIts own type rather than the class's set-`GET` view, for\n`taxonomies::DeclareTaxonomyValueRequest`'s reason: a request type that\ncarries read-only members advertises settable properties the server\ndiscards, and *\"a field that vanishes silently reads to the operator\nexactly like one that failed to save\"*. One type for both vocabularies\nbecause the authored columns are the same three — see [`VocabularyClass`],\nwhose whole premise is that these two tables have one shape.",
+        "properties": {
+          "display_name": {
+            "description": "The operator's label for it.",
+            "type": "string"
+          },
+          "state": {
+            "description": "`active`, `deprecated` or `retired` (D-370), defaulting to `active`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "description": "The declared code. Never blank.",
             "type": "string"
           }
         },
@@ -4736,46 +4950,6 @@
           "out_of_process"
         ],
         "type": "string"
-      },
-      "DescriptorSetView": {
-        "description": "The revision's billing descriptor set.\n\nIts **absence** is `null` on [`PlanView::descriptor_set`], and an attached\nset whose three named members are all empty is an object with three nulls.\nThe distinction is kept on the wire because the store keeps it - an\nunattached set has no row at all - and because `DESCRIPTOR_INCOMPLETE` is\nasked of an attached set: collapsing the two would make \"nobody attached one\"\nand \"somebody attached an empty one\" the same publish input.",
-        "properties": {
-          "additional": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "description": "Extra descriptor keys a deployment's required-set names (P5).\n\nA `BTreeMap` rather than a `HashMap`, and the reason is the idempotency\ndigest: `serde_json` renders a `BTreeMap` in key order and a `HashMap` in\nwhatever order the process happens to hash to, so a retry would digest\ndifferently from its own first attempt (see `api::rest::preconditions`).",
-            "propertyNames": {
-              "type": "string"
-            },
-            "type": "object"
-          },
-          "gl_code": {
-            "description": "The general-ledger code the posting lands on.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "invoice_line_template": {
-            "description": "The invoice line template Billing renders from.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "itemization_rule": {
-            "description": "How the plan's charges are composed into invoice lines.",
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "additional"
-        ],
-        "type": "object"
       },
       "DisputePhaseQueuedResponse": {
         "description": "The `POST /disputes/{dispute_id}/phases` response when the phase was an\nout-of-order `won`/`lost` whose `opened` has not landed: the request was\ndurably QUEUED for a later drain (HTTP 202 Accepted), not posted. `status` is\nthe fixed `dispute-phase-queued` token; `flow` + `business_id` are the queue\nkey and `queued_at` the intake instant. No posting handle — nothing has posted\nyet. Mirrors `AllocationQueuedResponse`.",
@@ -6268,7 +6442,7 @@
             "type": "string"
           },
           "state": {
-            "description": "`active` or `retired`. Absent reads as `active`, because a body listing a\nvalue is a body declaring it.",
+            "description": "`active`, `deprecated` or `retired` (D-370). Absent reads as `active`, because a body listing a\nvalue is a body declaring it.",
             "type": [
               "string",
               "null"
@@ -6293,7 +6467,7 @@
             "type": "string"
           },
           "values": {
-            "description": "Every declared value, `active` and `retired` alike, ordered by value.\n\nRetirements are **included** so the round trip is honest: an operator who\nreads, edits and writes back can see the value they are about to\nre-activate.",
+            "description": "Every declared value, in every state (D-370), ordered by value.\n\nRetirements are **included** so the round trip is honest: an operator who\nreads, edits and writes back can see the value they are about to\nre-activate.",
             "items": {
               "$ref": "#/components/schemas/GlCodeValueView"
             },
@@ -9363,6 +9537,7 @@
           },
           "target_sku": {
             "description": "Optional narrowing. Requires `plan_id`.",
+            "format": "uuid",
             "type": [
               "string",
               "null"
@@ -9424,6 +9599,7 @@
           },
           "target_sku": {
             "description": "Its SKU narrowing.",
+            "format": "uuid",
             "type": [
               "string",
               "null"
@@ -10695,7 +10871,8 @@
         "type": "string"
       },
       "PatchPlanRequest": {
-        "description": "A `PATCH` body: **exactly one** facet.\n\n# Why one and not several\n\nThe reason is structural rather than stylistic.\n[`PlanShapeRepo::replace_phases`](crate::infra::storage::repo::PlanShapeRepo::replace_phases),\n`replace_addon_rules`, `set_descriptor_set` and `replace_composites` each\ncompare-and-swap on the **revision's** row version and each bump it - the child\nsets carry no tag of their own, deliberately, so two authors editing different\nfacets of one draft cannot both satisfy one precondition. A two-facet patch\nwould therefore match the caller's tag on the first mutation and could not\nmatch it on the second, and the two are separate transactions with a visible\nhalf-applied state in between.\n\nSo more than one facet is [`DomainError::InvalidRequest`] (400, no new code),\nand **this is a divergence from S2 §5**, whose `PATCH` purpose names several\nfacets in one verb while the storage layer versions them against one tag each\nof them advances. A coherent multi-facet patch needs a composite operation\nnobody has designed; it is reported rather than approximated.\n\n# The fifth facet, and why it is a facet here rather than a route of its own\n\n`composites` mounts Slice 10's derived-meter set on **this** verb. The set is\nrevision-scoped child rows of a plan revision, versioned by that revision's\nrow version, copied forward by `open_revision` and dropped by `abandon_draft` -\nwhich is the description of `phases`, `addon_rules` and `descriptor_set`\nexactly, and those are facets. A route of its own would owe a second\nprecondition discipline over the same tag, a second idempotency story and a\nsecond census, to say what one more arm says here.\n\n**What it changes is not the surface, it is reachability.** Before it,\n`replace_composites` had no caller in `src/` at all: the `_on` form was reached\nonly by the clone and `copy_composites` only by `open_revision`, so every\nproduction path was a copy of a set nothing could originate. The two registered\nrules `CompositeArity` and `CompositeSelfReference` therefore ran on every\npublish over a permanently empty vector - a rule with no operand, which is the\ndefect class D-254 named and D-257 found one field deeper in the same slice.",
+        "additionalProperties": false,
+        "description": "A `PATCH` body: **exactly one** facet.\n\n# Why one and not several\n\nThe reason is structural rather than stylistic.\n[`PlanShapeRepo::replace_phases`](crate::infra::storage::repo::PlanShapeRepo::replace_phases),\n`replace_addon_rules` and `replace_composites` each\ncompare-and-swap on the **revision's** row version and each bump it - the child\nsets carry no tag of their own, deliberately, so two authors editing different\nfacets of one draft cannot both satisfy one precondition. A two-facet patch\nwould therefore match the caller's tag on the first mutation and could not\nmatch it on the second, and the two are separate transactions with a visible\nhalf-applied state in between.\n\nSo more than one facet is [`DomainError::InvalidRequest`] (400, no new code),\nand **this is a divergence from S2 §5**, whose `PATCH` purpose names several\nfacets in one verb while the storage layer versions them against one tag each\nof them advances. A coherent multi-facet patch needs a composite operation\nnobody has designed; it is reported rather than approximated.\n\n# The fifth facet, and why it is a facet here rather than a route of its own\n\n`composites` mounts Slice 10's derived-meter set on **this** verb. The set is\nrevision-scoped child rows of a plan revision, versioned by that revision's\nrow version, copied forward by `open_revision` and dropped by `abandon_draft` -\nwhich is the description of `phases` and `addon_rules`\nexactly, and those are facets. A route of its own would owe a second\nprecondition discipline over the same tag, a second idempotency story and a\nsecond census, to say what one more arm says here.\n\n**What it changes is not the surface, it is reachability.** Before it,\n`replace_composites` had no caller in `src/` at all: the `_on` form was reached\nonly by the clone and `copy_composites` only by `open_revision`, so every\nproduction path was a copy of a set nothing could originate. The two registered\nrules `CompositeArity` and `CompositeSelfReference` therefore ran on every\npublish over a permanently empty vector - a rule with no operand, which is the\ndefect class D-254 named and D-257 found one field deeper in the same slice.",
         "properties": {
           "addon_rules": {
             "description": "The whole add-on rule set, replaced wholesale.",
@@ -10715,17 +10892,6 @@
             "type": [
               "array",
               "null"
-            ]
-          },
-          "descriptor_set": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/DescriptorSetView",
-                "description": "The billing descriptor set, attached or replaced."
-              }
             ]
           },
           "period_floor_caps": {
@@ -10815,7 +10981,7 @@
             ]
           },
           "state": {
-            "description": "`active` or `retired`. A retirement is guarded (`TAXONOMY_VALUE_IN_USE`);\n`retired -> active` re-activates.",
+            "description": "`active`, `deprecated` or `retired`. A **retirement** is guarded\n(`TAXONOMY_VALUE_IN_USE`); a **deprecation** never is, because saying\n*stop using this* must always be possible (D-370). `deprecated ->\nactive` and `retired -> active` both re-activate.",
             "type": [
               "string",
               "null"
@@ -10832,6 +10998,27 @@
             "description": "**Region only.**",
             "type": [
               "boolean",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "PatchVocabularyValueRequest": {
+        "additionalProperties": false,
+        "description": "The body of a `PATCH …/values/{value}`: only the fields to change.\n\n**No tax markers, and they are unsayable rather than refused.** D-01 gives\n`taxCategory` and `taxRatePresent` to the region taxonomy alone and neither\nof these tables has the columns; a member absent from the request type is\nrefused by the parse, which is the strongest form of the refusal\n`taxonomies::authored_patch` has to write by hand for the three non-region\nclasses.",
+        "properties": {
+          "display_name": {
+            "description": "A new label. Absent leaves the held one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "description": "`active`, `deprecated` or `retired`. A **retirement** is guarded\n(`TAXONOMY_VALUE_IN_USE`); a **deprecation** never is — saying *stop\nusing this* must always be possible (D-370) — and `deprecated -> active`\n/ `retired -> active` both re-activate.",
+            "type": [
+              "string",
               "null"
             ]
           }
@@ -11186,16 +11373,15 @@
             },
             "type": "array"
           },
-          "descriptor_set": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/DescriptorSetView",
-                "description": "The billing descriptor set."
-              }
-            ]
+          "descriptor_ext": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The Billing invoice-layout hint (D-96).",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
           },
           "entitlement_grants": {
             "$ref": "#/components/schemas/EntitlementGrantsView",
@@ -11210,13 +11396,6 @@
                 "$ref": "#/components/schemas/FrequencyView",
                 "description": "The recurring frequency, interval and all."
               }
-            ]
-          },
-          "invoice_grouping_key": {
-            "description": "The Billing invoice-layout hint (D-96).",
-            "type": [
-              "string",
-              "null"
             ]
           },
           "period_floor_caps": {
@@ -11281,7 +11460,7 @@
             "type": "integer"
           },
           "rows": {
-            "description": "The candidate row set this publish would produce.",
+            "description": "The billing descriptor set.\nThe candidate row set this publish would produce.",
             "items": {
               "$ref": "#/components/schemas/PriceRowView"
             },
@@ -11290,10 +11469,7 @@
           "sku_id": {
             "description": "The catalog SKU this revision binds. Hashed, because a\nrebind inside the approve→commit window would otherwise re-derive to the\nsame digest.",
             "format": "uuid",
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "windows": {
             "description": "The window plane the pin covers, one entry per canonical scope key.\n\nHashed here, for the reason\n`sku_id` is: a field inside the digest and outside this document is a field\na reviewer is told `content_matches_pin: false` about while looking at a\npage that does not contain it. Two plans differing **only** in their window\nintervals rendered byte-identical here and hashed differently.",
@@ -11306,7 +11482,9 @@
         "required": [
           "plan_id",
           "revision",
+          "sku_id",
           "plan_tier_override",
+          "descriptor_ext",
           "phases",
           "addon_rules",
           "rows",
@@ -11689,7 +11867,8 @@
         "type": "object"
       },
       "PlanShapeRequest": {
-        "description": "The plan shape a create authors, and the one facet a `PATCH` may move.\n\nEvery member is optional because a plan is assembled over several calls: the\nshape rules run at **publish**, not at save, so an unfinished draft is a\nlegal draft (§4.2 step 2).",
+        "additionalProperties": false,
+        "description": "The plan shape a create authors, and the one facet a `PATCH` may move.\n\nPATCH members are optional because a plan is assembled over several calls.\nCreation uses [`CreatePlanRequest`], whose SKU is mandatory. The\nshape rules run at **publish**, not at save, so an unfinished draft is a\nlegal draft (§4.2 step 2).",
         "properties": {
           "available_from": {
             "description": "Start of the availability window, UTC.",
@@ -11725,6 +11904,19 @@
               }
             ]
           },
+          "descriptor_ext": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The Billing invoice-layout hint (D-96).",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "entitlement_grants": {
             "oneOf": [
               {
@@ -11745,13 +11937,6 @@
                 "$ref": "#/components/schemas/FrequencyView",
                 "description": "The recurring frequency, interval and all."
               }
-            ]
-          },
-          "invoice_grouping_key": {
-            "description": "The Billing invoice-layout hint (D-96).",
-            "type": [
-              "string",
-              "null"
             ]
           },
           "plan_name": {
@@ -11903,18 +12088,16 @@
             "type": "integer"
           },
           "sku_id": {
-            "description": "The catalog SKU this plan realizes, when one is bound.",
+            "description": "The required catalog SKU this plan realizes (D-372).",
             "format": "uuid",
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           }
         },
         "required": [
           "plan_id",
           "revision",
           "lifecycle_state",
+          "sku_id",
           "created_at",
           "revision_created_at",
           "row_version",
@@ -11936,7 +12119,7 @@
             "type": "array"
           },
           "available_from": {
-            "description": "Start of the availability window, UTC.",
+            "description": "The Billing invoice-layout hint (D-96).\nStart of the availability window, UTC.",
             "format": "date-time",
             "type": [
               "string",
@@ -11951,6 +12134,10 @@
               "null"
             ]
           },
+          "billing": {
+            "$ref": "#/components/schemas/BillingView",
+            "description": "The revision's descriptor set, or `null` when none is attached."
+          },
           "billing_cycle": {
             "description": "`one_time` | `recurring` | `usage` | `hybrid`.",
             "type": [
@@ -11963,7 +12150,7 @@
             "description": "The revision's plan-change contract (Slice 6, §6).\n\nHere for [`PlanView::entitlement_grants`]' reason, and it carries one\ndistinction the round trip depends on: `allowed_change_targets` is `null`\nfor the fail-safe and `[]` for an author who cleared their edges, and the\ntwo are different states of the same plan."
           },
           "composites": {
-            "description": "The revision's derived (composite) meter set, in the store's order.\n\n**A write surface whose read surface does not show the value is half a\nfeature**, and here it is load-bearing rather than symmetric-for-tidiness:\nthe `composites` facet replaces the set wholesale, and\n[`CompositeMeterRequest::composite_id`] is what preserves a definition's\nidentity across such a replace. An author with no way to read the ids back\ncould only ever re-mint them, and D-106's stable id would hold for the\ncopy-forward and break for every edit.\n\nAn empty list is a revision that defines no composite, which is the ordinary\ncase: unlike [`PlanView::descriptor_set`] there is no attached-but-empty\nstate to keep apart from absence, because the set is rows and not a row.",
+            "description": "The revision's derived (composite) meter set, in the store's order.\n\n**A write surface whose read surface does not show the value is half a\nfeature**, and here it is load-bearing rather than symmetric-for-tidiness:\nthe `composites` facet replaces the set wholesale, and\n[`CompositeMeterRequest::composite_id`] is what preserves a definition's\nidentity across such a replace. An author with no way to read the ids back\ncould only ever re-mint them, and D-106's stable id would hold for the\ncopy-forward and break for every edit.\n\nAn empty list is a revision that defines no composite, which is the ordinary\ncase: there is no attached-but-empty\nstate to keep apart from absence, because the set is rows and not a row.",
             "items": {
               "$ref": "#/components/schemas/CompositeMeterRequest"
             },
@@ -11979,17 +12166,6 @@
             "format": "uuid",
             "type": "string"
           },
-          "descriptor_set": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/DescriptorSetView",
-                "description": "The revision's descriptor set, or `null` when none is attached."
-              }
-            ]
-          },
           "entitlement_grants": {
             "$ref": "#/components/schemas/EntitlementGrantsRequest",
             "description": "The revision's entitlement grant set (Slice 6, §6, D-41).\n\nA write surface whose read surface does not show the value is half a\nfeature, for the third time on this view and with the sharpest version of\nthe argument: the `shape` facet's `entitlement_grants` member is **sent\nwhole or not at all**, so an author adding one quota has to resubmit the\nflags, the tier reference and every per-phase set beside it. Without a\nsurface that answers them the\n`PATCH` accepted the set, the create stored it, the pin hashed it and\n`approvals::PinnedContentView` showed it to a *reviewer*, and the author\nwho wrote it could not read it back.\n\nIt is the [`EntitlementGrantsRequest`] twin and not\n`approvals::EntitlementGrantsView`, which is the split the module doc\nstates: the reviewer's view renders the **resolved** per-phase map, and\nthis is the authoring plane, where what an author needs answered is what\nthey may send back."
@@ -12003,13 +12179,6 @@
                 "$ref": "#/components/schemas/FrequencyView",
                 "description": "The recurring frequency, interval and all."
               }
-            ]
-          },
-          "invoice_grouping_key": {
-            "description": "The Billing invoice-layout hint (D-96).",
-            "type": [
-              "string",
-              "null"
             ]
           },
           "lifecycle_state": {
@@ -12096,18 +12265,16 @@
             "type": "integer"
           },
           "sku_id": {
-            "description": "The catalog SKU this plan realizes, when one is bound.",
+            "description": "The required catalog SKU this plan realizes (D-372).",
             "format": "uuid",
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           }
         },
         "required": [
           "plan_id",
           "revision",
           "lifecycle_state",
+          "sku_id",
           "plan_tier_override",
           "created_by",
           "created_at",
@@ -12115,6 +12282,7 @@
           "row_version",
           "phases",
           "addon_rules",
+          "billing",
           "composites",
           "period_floor_caps",
           "entitlement_grants",
@@ -12670,7 +12838,7 @@
         "type": "object"
       },
       "PriceContentView": {
-        "description": "Everything about a row an open draft may still change.\n\nIt is a whole-content submission and not a patch, for the reason\n[`PriceContent`]'s own doc gives: a price row's fields are not independent of\neach other — moving `model_kind` from `graduated` to `flat` has to drop the\nband set and set `amount_minor` in the *same* write, because every\nintermediate state is one no Slice-3 rule can pass.",
+        "description": "Everything about a row an open draft may still change.\n\nD-373 descriptor overrides follow whole-content replacement: both explicit\nnull and omission clear the override, returning the draft to tenant defaults.\n\nIt is a whole-content submission and not a patch, for the reason\n[`PriceContent`]'s own doc gives: a price row's fields are not independent of\neach other — moving `model_kind` from `graduated` to `flat` has to drop the\nband set and set `amount_minor` in the *same* write, because every\nintermediate state is one no Slice-3 rule can pass.",
         "properties": {
           "aggregation_function": {
             "description": "How the in-window quantity is derived (D-44).",
@@ -12755,6 +12923,13 @@
               "null"
             ]
           },
+          "gl_code_ref": {
+            "description": "General-ledger code override. Null or omitted uses the tenant default.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "grandfather_until": {
             "description": "The grandfathering horizon. Only an `existing_grandfathered` row may\ncarry one.",
             "format": "date-time",
@@ -12772,6 +12947,13 @@
                 "$ref": "#/components/schemas/IncludedAllowanceView",
                 "description": "The plan-scoped included allowance (D-45)."
               }
+            ]
+          },
+          "invoice_line_template": {
+            "description": "Invoice template override. Null or omitted uses the tenant default.",
+            "type": [
+              "string",
+              "null"
             ]
           },
           "manual_quantity": {
@@ -12956,6 +13138,20 @@
             "description": "The row's identity, minted by the surface at creation.",
             "format": "uuid",
             "type": "string"
+          },
+          "resolved_gl_code": {
+            "description": "General-ledger code frozen at publication; absent for drafts.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resolved_invoice_line_template": {
+            "description": "Template frozen at publication; absent for drafts.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "row_version": {
             "description": "The row's own optimistic-concurrency version — never the plan's (D-141),\nand the same number the `ETag` quotes.",
@@ -16235,7 +16431,7 @@
             "type": "string"
           },
           "values": {
-            "description": "Every declared value, `active` and `retired` alike, ordered by value.\n\nRetirements are **included** so the round trip is honest: an operator who\nreads, edits and writes back can see the value they are about to\nre-activate.",
+            "description": "Every declared value, in every state (D-370), ordered by value.\n\nRetirements are **included** so the round trip is honest: an operator who\nreads, edits and writes back can see the value they are about to\nre-activate.",
             "items": {
               "$ref": "#/components/schemas/RoundingPolicyValueView"
             },
@@ -16256,7 +16452,7 @@
             "type": "string"
           },
           "state": {
-            "description": "`active` or `retired`. Absent reads as `active`, because a body listing a\nvalue is a body declaring it.",
+            "description": "`active`, `deprecated` or `retired` (D-370). Absent reads as `active`, because a body listing a\nvalue is a body declaring it.",
             "type": [
               "string",
               "null"
@@ -16483,9 +16679,15 @@
           "region": {
             "description": "The pricing region.",
             "type": "string"
+          },
+          "sku_id": {
+            "description": "Registry identity of the priced resource or offer.",
+            "format": "uuid",
+            "type": "string"
           }
         },
         "required": [
+          "sku_id",
           "currency",
           "region",
           "phase",
@@ -16495,7 +16697,7 @@
         "type": "object"
       },
       "ScopeKeyView": {
-        "description": "The ten axes as the store holds them.\n\n**Two more members than [`ScopeKeyRequest`], and the asymmetry is D-196's.**\nThe usage line is authored on the *content* view — a request naming it on the\nkey would be a second place to state one fact — so `ScopeKeyRequest` has no\n`meter` and no `dimension_key`, while the key a row is **filed under** carries\nboth. This view is the store's rendering, not an echo of the request, and\nrendering eight answers two rows on two meters of one market with\nbyte-identical `scope_key` objects — a reviewer reading the approval surface\nsees one key twice and no way to tell which line they are approving.",
+        "description": "The frozen canonical key. SKU identifies the resource; the registry-derived\nmetering unit is rendered only in the row content.",
         "properties": {
           "charge_kind": {
             "description": "Axis 7.",
@@ -16515,13 +16717,6 @@
           },
           "dimension_key": {
             "description": "Axis 10 — the dimension discriminator on the line, `null` for the\nundimensioned one (D-196).\n\n`null` rather than the store's `''` sentinel, for [`Self::cohort`]'s\nreason: an empty string on the wire is a value a caller can read as one,\nand \"no dimension\" is an absence. The sentinel is the column's business.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "meter": {
-            "description": "Axis 9 — the metering unit, `null` on a row that is not metered (D-196).",
             "type": [
               "string",
               "null"
@@ -16548,10 +16743,16 @@
           "region": {
             "description": "Axis 3.",
             "type": "string"
+          },
+          "sku_id": {
+            "description": "Registry identity of the priced resource or offer.",
+            "format": "uuid",
+            "type": "string"
           }
         },
         "required": [
           "plan_id",
+          "sku_id",
           "currency",
           "region",
           "price_overlay",
@@ -17910,7 +18111,7 @@
             "type": "string"
           },
           "state": {
-            "description": "Proposed `active` or `retired` state.",
+            "description": "Proposed state: `active`, `deprecated` or `retired` (D-370).",
             "type": "string"
           },
           "tax_category": {
@@ -17996,7 +18197,7 @@
             "description": "The counts behind [`Self::edit_governed`], on both list and by-value\n`GET`s, including explicit zero counts. Absent from write responses and\napproval pins. Outside the entity tag for [`Self::edit_governed`]'s reason."
           },
           "state": {
-            "description": "`active` or `retired`. Optional on the way in and defaulting to `active`,\nbecause a body listing a value is a body declaring it; sending\n`\"retired\"` is the explicit spelling of the same act as leaving it out,\nand both are guarded identically.",
+            "description": "`active`, `deprecated` or `retired` (D-370). Optional on the way in and\ndefaulting to `active`, because a body listing a value is a body\ndeclaring it; sending `\"retired\"` is the explicit spelling of the same\nact as leaving it out, and both are guarded identically. **`deprecated`\nhas no such second spelling** — absence still means retirement, so a\ndeprecation is only ever said out loud.",
             "type": [
               "string",
               "null"
@@ -18035,7 +18236,7 @@
             "type": "string"
           },
           "values": {
-            "description": "Every declared value, `active` and `retired` alike, ordered by value.\n\nRetirements are **included**, which is what makes the round trip honest:\nan operator who reads, edits and writes back has to be able to see the\nvalue they are about to re-activate.",
+            "description": "Every declared value, in every state (D-370), ordered by value.\n\nRetirements are **included**, which is what makes the round trip honest:\nan operator who reads, edits and writes back has to be able to see the\nvalue they are about to re-activate.",
             "items": {
               "$ref": "#/components/schemas/TaxonomyValueView"
             },
@@ -35923,10 +36124,9 @@
         ]
       }
     },
-    "/bss-pricing/v1/config/gl-codes": {
+    "/bss-pricing/v1/config/billing-descriptors": {
       "get": {
-        "description": "The vocabulary a plan's billing-descriptor `glCode` is validated against at publish (D-356). **An empty set constrains nothing** - that is where every tenant starts, and declaring the first value is how a tenant opts in. Retired values are included, because an operator editing the set has to see what they may re-activate. Gates on `config` x `read`.",
-        "operationId": "bss_pricing.get_gl_codes",
+        "operationId": "bss_pricing.get_billing_descriptors",
         "parameters": [
           {
             "description": "Optional conditional-read precondition (RFC 9110). Send the `ETag` this route last answered; if it still names the current representation the answer is `304` with the tag and no body. The wildcard `*` and a comma-separated list are both accepted, and comparison is weak, per RFC 9110 section 13.1.2 - deliberately laxer than this gear's `If-Match`, where a wildcard would be an unconditional write.",
@@ -35943,14 +36143,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/GlCodesView"
+                  "$ref": "#/components/schemas/BillingDescriptorPolicyView"
                 }
               }
             },
-            "description": "The declared vocabulary."
+            "description": "Current defaults."
           },
           "304": {
-            "description": "The caller's `If-None-Match` matches the current representation, so the body is not re-sent."
+            "description": "The representation is unchanged."
           },
           "401": {
             "content": {
@@ -35998,17 +36198,17 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Read the tenant's declared GL codes",
+        "summary": "Read tenant billing descriptor defaults",
         "tags": [
           "BSS Pricing Configuration"
         ]
       },
       "put": {
-        "description": "Replaces the **whole** set. A value declared today and absent from the body is retired, not deleted: a published plan revision's descriptor set may still name it, and a deletion would make that reference dangle rather than merely stop being authorable. A retirement is refused with `TAXONOMY_VALUE_IN_USE` (409) while a published revision's descriptor set still names the value, and **nothing at all is written** - re-point them first. Declaring the first value turns the publish check on: from then on a plan whose descriptor `glCode` is outside the active set fails publish with `GL_CODE_UNKNOWN`. Clearing the set turns it off again. It is audited, and opens no approval unit. **`If-Match` is required.** Gates on `config` x `write`.",
-        "operationId": "bss_pricing.put_gl_codes",
+        "description": "Requires If-Match. Validates seven template placeholders and four charge-kind keys. Null clears the GL default. Existing published rows retain their frozen values.",
+        "operationId": "bss_pricing.put_billing_descriptors",
         "parameters": [
           {
-            "description": "Mandatory precondition (RFC 9110). Send the opaque tag the `GET` returned, verbatim. A tenant that has declared nothing is answered `200` with an empty set and carries a tag, so a first `PUT` asserts it like any other. A tag that no longer describes the stored set is `409` `STALE_VERSION` and nothing is written - a `PUT` replaces the whole set, so applying yours over a moved one would retire whatever the other author added.",
+            "description": "Mandatory precondition (RFC 9110). Send the opaque tag the `GET` returned, verbatim. A tenant that has never set a default is answered `200` with `null` and carries a tag, so a first `PUT` asserts it like any other. A tag that no longer describes the stored default is `409` `STALE_VERSION`; an absent or malformed one is `400`.",
             "in": "header",
             "name": "If-Match",
             "required": true,
@@ -36021,11 +36221,11 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PutGlCodesRequest"
+                "$ref": "#/components/schemas/BillingDescriptorPolicyView"
               }
             }
           },
-          "description": "The complete value set.",
+          "description": "Complete replacement defaults.",
           "required": true
         },
         "responses": {
@@ -36033,11 +36233,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/GlCodesView"
+                  "$ref": "#/components/schemas/BillingDescriptorPolicyView"
                 }
               }
             },
-            "description": "The vocabulary as it now stands."
+            "description": "Stored defaults."
           },
           "400": {
             "content": {
@@ -36105,195 +36305,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Replace the tenant's declared GL codes",
-        "tags": [
-          "BSS Pricing Configuration"
-        ]
-      }
-    },
-    "/bss-pricing/v1/config/rounding-policies": {
-      "get": {
-        "description": "The vocabulary a price row's `roundingPolicyRef` and the tenant default are validated against. **An empty set constrains nothing** - that is where every tenant starts, and declaring the first value is how a tenant opts in. Retired values are included, because an operator editing the set has to see what they may re-activate. Gates on `config` x `read`.",
-        "operationId": "bss_pricing.get_rounding_policies",
-        "parameters": [
-          {
-            "description": "Optional conditional-read precondition (RFC 9110). Send the `ETag` this route last answered; if it still names the current representation the answer is `304` with the tag and no body. The wildcard `*` and a comma-separated list are both accepted, and comparison is weak, per RFC 9110 section 13.1.2 - deliberately laxer than this gear's `If-Match`, where a wildcard would be an unconditional write.",
-            "in": "header",
-            "name": "If-None-Match",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RoundingPoliciesView"
-                }
-              }
-            },
-            "description": "The declared vocabulary."
-          },
-          "304": {
-            "description": "The caller's `If-None-Match` matches the current representation, so the body is not re-sent."
-          },
-          "401": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unauthorized"
-          },
-          "403": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
-          "500": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Internal Server Error"
-          },
-          "503": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Service Unavailable"
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Read the tenant's declared rounding references",
-        "tags": [
-          "BSS Pricing Configuration"
-        ]
-      },
-      "put": {
-        "description": "Replaces the **whole** set. A value declared today and absent from the body is retired, not deleted: something published may still resolve against it, and a deletion would make that reference dangle rather than merely stop being authorable. A retirement is refused with `TAXONOMY_VALUE_IN_USE` (409) while a published price row or the tenant default still names the value, and **nothing at all is written** - re-point them first. Declaring the first value turns the publish check on: from then on a row naming a reference outside the active set fails publish with `ROUNDING_POLICY_UNKNOWN`. Clearing the set turns it off again. It is audited, and opens no approval unit. **`If-Match` is required.** Gates on `config` x `write`.",
-        "operationId": "bss_pricing.put_rounding_policies",
-        "parameters": [
-          {
-            "description": "Mandatory precondition (RFC 9110). Send the opaque tag the `GET` returned, verbatim. A tenant that has declared nothing is answered `200` with an empty set and carries a tag, so a first `PUT` asserts it like any other. A tag that no longer describes the stored set is `409` `STALE_VERSION` and nothing is written - a `PUT` replaces the whole set, so applying yours over a moved one would retire whatever the other author added.",
-            "in": "header",
-            "name": "If-Match",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PutRoundingPoliciesRequest"
-              }
-            }
-          },
-          "description": "The complete value set.",
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RoundingPoliciesView"
-                }
-              }
-            },
-            "description": "The vocabulary as it now stands."
-          },
-          "400": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Bad Request"
-          },
-          "401": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Unauthorized"
-          },
-          "403": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Forbidden"
-          },
-          "409": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Conflict"
-          },
-          "500": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Internal Server Error"
-          },
-          "503": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Problem"
-                }
-              }
-            },
-            "description": "Service Unavailable"
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ],
-        "summary": "Replace the tenant's declared rounding references",
+        "summary": "Replace tenant billing descriptor defaults",
         "tags": [
           "BSS Pricing Configuration"
         ]
@@ -36380,7 +36392,7 @@
         ]
       },
       "put": {
-        "description": "Sets the reference every price row without its own falls back to. Setting it makes `ROUNDING_POLICY_UNRESOLVED` unreachable for this tenant: the publish rule checks the rows only when there is no default. Send `null` to clear it, which puts the tenant back to needing a reference on every published row - the empty string is **refused** rather than stored, so that unset has one spelling. A value outside the active set of `GET /bss-pricing/v1/config/rounding-policies` is refused `ROUNDING_POLICY_UNKNOWN` (D-348); a tenant who has declared no vocabulary constrains nothing, so an empty set accepts any reference. Unlike the approval-threshold policy this opens **no approval unit**: that one decides whether changes need a second principal, while this one supplies a default publish would otherwise demand row by row, changes no price, and can only make publishing easier. It is audited. **`If-Match` is required.** Gates on `config` x `write`.",
+        "description": "Sets the reference every price row without its own falls back to. Setting it makes `ROUNDING_POLICY_UNRESOLVED` unreachable for this tenant: the publish rule checks the rows only when there is no default. Send `null` to clear it, which puts the tenant back to needing a reference on every published row - the empty string is **refused** rather than stored, so that unset has one spelling. A value outside the active set of `GET /bss-pricing/v1/config/vocabularies/rounding-policies` is refused `ROUNDING_POLICY_UNKNOWN` (D-348); a tenant who has declared no vocabulary constrains nothing, so an empty set accepts any reference. Unlike the approval-threshold policy this opens **no approval unit**: that one decides whether changes need a second principal, while this one supplies a default publish would otherwise demand row by row, changes no price, and can only make publishing easier. It is audited. **`If-Match` is required.** Gates on `config` x `write`.",
         "operationId": "bss_pricing.put_rounding_policy",
         "parameters": [
           {
@@ -36675,9 +36687,835 @@
         ]
       }
     },
-    "/bss-pricing/v1/config/taxonomies/{class}": {
+    "/bss-pricing/v1/config/vocabularies/gl-codes": {
       "get": {
-        "description": "Every value the tenant has declared in this universe, `active` and `retired` alike, ordered by value. Retirements are included deliberately: retirement is guarded rather than cascading and `retired -> active` is a legal audited move, so an operator editing this list has to be able to see the value they are about to re-activate. A tenant that has declared nothing is answered `200` with an empty list on the brand, partner and org_tier universes - a state, not an absent resource. The **region** universe is never empty: until the tenant declares a region row it reads as the seeded `global` (D-354), so a fresh tenant publishes `global` rows at once; `inst-tx-region` validates every price row's region against the **active** values here. The response carries the set's authored-content `ETag`; the per-value routes carry their own write token. On the `region` universe each value also carries D-01's two markers, `taxCategory` and `taxRatePresent`, which are the MVP source for the tax-display readiness check; the other three universes carry no such columns. Each value also carries `edit_governed` and `references` (published price-row and overlay-scope counts), including explicit zeroes, matching the by-value GET without extra queries. `pending_approvals` lists every submitted proposal for each value, or []. Each unit exposes pending metadata and `content_access`; `proposed_changes` and `content_matches_pin` appear only when the full `approval` x `read` scope grants that unit. Restricted content does not hide the pending unit. Tags cover authored content only, preserving write preconditions independently of references and pending units. This GET always returns a fresh body with `Cache-Control: private, no-store`; it does not evaluate `If-None-Match` or return `304`. Gates on `config` x `read`.",
+        "description": "The vocabulary a plan's billing-descriptor `glCode` is validated against at publish (D-356). **An empty set constrains nothing** - that is where every tenant starts, and declaring the first value is how a tenant opts in. Retired values are included, because an operator editing the set has to see what they may re-activate. Gates on `config` x `read`.",
+        "operationId": "bss_pricing.get_gl_codes",
+        "parameters": [
+          {
+            "description": "Optional conditional-read precondition (RFC 9110). Send the `ETag` this route last answered; if it still names the current representation the answer is `304` with the tag and no body. The wildcard `*` and a comma-separated list are both accepted, and comparison is weak, per RFC 9110 section 13.1.2 - deliberately laxer than this gear's `If-Match`, where a wildcard would be an unconditional write.",
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GlCodesView"
+                }
+              }
+            },
+            "description": "The declared vocabulary."
+          },
+          "304": {
+            "description": "The caller's `If-None-Match` matches the current representation, so the body is not re-sent."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Read the tenant's declared GL codes",
+        "tags": [
+          "BSS Pricing Configuration"
+        ]
+      }
+    },
+    "/bss-pricing/v1/config/vocabularies/gl-codes/values": {
+      "post": {
+        "description": "Adds **one** code to the vocabulary without re-sending the set. `201` with the value as stored, its own `ETag`, and a `Location` naming it. The code is the resource's natural key, so there is no `Idempotency-Key`: a repeat carrying the **same** body is the create's replay and answers `200`; a body naming a code the tenant already declares with other content - or a retired one - is `409` `TAXONOMY_VALUE_EXISTS`, and the remedy is `PATCH` on that value. `state` defaults to `active`. Declaring the first code turns the publish check on: from then on a plan whose descriptor `glCode` is outside the active set fails publish with `GL_CODE_UNKNOWN`. One audited config mutation naming the code, and no approval unit. Gates on `config` x `write`.",
+        "operationId": "bss_pricing.declare_gl_code",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeclareVocabularyValueRequest"
+              }
+            }
+          },
+          "description": "The one code to declare.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GlCodeValueView"
+                }
+              }
+            },
+            "description": "The code was already declared with exactly this content: the create's replay."
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GlCodeValueView"
+                }
+              }
+            },
+            "description": "The code as declared, with its own `ETag` and `Location`."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Declare one GL code",
+        "tags": [
+          "BSS Pricing Configuration"
+        ]
+      }
+    },
+    "/bss-pricing/v1/config/vocabularies/gl-codes/values/{value}": {
+      "get": {
+        "description": "One code, `active`, `deprecated` or `retired`, with **its own `ETag`** - the tag the per-value `PATCH` demands, and the only place to obtain it (the set's tag from `GET .../config/vocabularies/gl-codes` covers the whole list and does not satisfy the per-value precondition). A code the tenant has never declared is `404`. This GET always returns a fresh body with `Cache-Control: private, no-store`; it does not evaluate `If-None-Match` or return `304`. Gates on `config` x `read`.",
+        "operationId": "bss_pricing.get_gl_code",
+        "parameters": [
+          {
+            "description": "The declared code, exactly as the vocabulary lists it. Retired values are still addressable: retirement is a state, not a deletion, and `PATCH` with `state: active` is the way back.",
+            "in": "path",
+            "name": "value",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GlCodeValueView"
+                }
+              }
+            },
+            "description": "The declared code."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Read one declared GL code",
+        "tags": [
+          "BSS Pricing Configuration"
+        ]
+      },
+      "patch": {
+        "description": "Changes only the fields the body names: `displayName` and `state`. **Retirement is guarded**, at the door and again inside the write transaction: a code a published plan revision's descriptor set still names is `409` `TAXONOMY_VALUE_IN_USE` and nothing is written - re-point them first. `retired -> active` re-activates. A body that changes nothing answers `200` and writes nothing. **`If-Match` is required** and asserts the value's **own** tag from `GET .../values/{value}`; the set's tag does not satisfy it. The commit is one audited config mutation naming the code and its state before and after. This vocabulary opens no approval unit on any edge (D-356). Gates on `config` x `write`.",
+        "operationId": "bss_pricing.patch_gl_code",
+        "parameters": [
+          {
+            "description": "The declared code, exactly as the vocabulary lists it. Retired values are still addressable: retirement is a state, not a deletion, and `PATCH` with `state: active` is the way back.",
+            "in": "path",
+            "name": "value",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Mandatory precondition (RFC 9110). The value is the **opaque** tag `GET .../values/{value}` returns in its `ETag` header - copy it back verbatim. It digests this one value's code, state and label, so it moves when this value changes and **not** when a sibling does: two admins editing two different values do not refuse each other, which is the reason this route exists. The set's tag from the collection `GET` does not satisfy it. A tag that no longer describes the value is `409` `STALE_VERSION`; an absent or malformed one is `400`.",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchVocabularyValueRequest"
+              }
+            }
+          },
+          "description": "The fields to change.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GlCodeValueView"
+                }
+              }
+            },
+            "description": "The code as it now stands, with its `ETag`."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Edit one declared GL code",
+        "tags": [
+          "BSS Pricing Configuration"
+        ]
+      }
+    },
+    "/bss-pricing/v1/config/vocabularies/rounding-policies": {
+      "get": {
+        "description": "The vocabulary a price row's `roundingPolicyRef` and the tenant default are validated against. **An empty set constrains nothing** - that is where every tenant starts, and declaring the first value is how a tenant opts in. Retired values are included, because an operator editing the set has to see what they may re-activate. Gates on `config` x `read`.",
+        "operationId": "bss_pricing.get_rounding_policies",
+        "parameters": [
+          {
+            "description": "Optional conditional-read precondition (RFC 9110). Send the `ETag` this route last answered; if it still names the current representation the answer is `304` with the tag and no body. The wildcard `*` and a comma-separated list are both accepted, and comparison is weak, per RFC 9110 section 13.1.2 - deliberately laxer than this gear's `If-Match`, where a wildcard would be an unconditional write.",
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoundingPoliciesView"
+                }
+              }
+            },
+            "description": "The declared vocabulary."
+          },
+          "304": {
+            "description": "The caller's `If-None-Match` matches the current representation, so the body is not re-sent."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Read the tenant's declared rounding references",
+        "tags": [
+          "BSS Pricing Configuration"
+        ]
+      }
+    },
+    "/bss-pricing/v1/config/vocabularies/rounding-policies/values": {
+      "post": {
+        "description": "Adds **one** reference to the vocabulary without re-sending the set. `201` with the value as stored, its own `ETag`, and a `Location` naming it. The reference is the resource's natural key, so there is no `Idempotency-Key`: a repeat carrying the **same** body is the create's replay and answers `200`; a body naming a reference the tenant already declares with other content - or a retired one - is `409` `TAXONOMY_VALUE_EXISTS`, and the remedy is `PATCH` on that value. `state` defaults to `active`. Declaring the first reference turns the publish check on: from then on a row naming a reference outside the active set fails publish with `ROUNDING_POLICY_UNKNOWN`. One audited config mutation naming the reference, and no approval unit. Gates on `config` x `write`.",
+        "operationId": "bss_pricing.declare_rounding_policy",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeclareVocabularyValueRequest"
+              }
+            }
+          },
+          "description": "The one reference to declare.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoundingPolicyValueView"
+                }
+              }
+            },
+            "description": "The reference was already declared with exactly this content: the create's replay."
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoundingPolicyValueView"
+                }
+              }
+            },
+            "description": "The reference as declared, with its own `ETag` and `Location`."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Declare one rounding reference",
+        "tags": [
+          "BSS Pricing Configuration"
+        ]
+      }
+    },
+    "/bss-pricing/v1/config/vocabularies/rounding-policies/values/{value}": {
+      "get": {
+        "description": "One reference, `active`, `deprecated` or `retired`, with **its own `ETag`** - the tag the per-value `PATCH` demands, and the only place to obtain it (the set's tag from `GET .../config/vocabularies/rounding-policies` covers the whole list and does not satisfy the per-value precondition). A reference the tenant has never declared is `404`. This GET always returns a fresh body with `Cache-Control: private, no-store`; it does not evaluate `If-None-Match` or return `304`. Gates on `config` x `read`.",
+        "operationId": "bss_pricing.get_rounding_policy_value",
+        "parameters": [
+          {
+            "description": "The declared code, exactly as the vocabulary lists it. Retired values are still addressable: retirement is a state, not a deletion, and `PATCH` with `state: active` is the way back.",
+            "in": "path",
+            "name": "value",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoundingPolicyValueView"
+                }
+              }
+            },
+            "description": "The declared reference."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Read one declared rounding reference",
+        "tags": [
+          "BSS Pricing Configuration"
+        ]
+      },
+      "patch": {
+        "description": "Changes only the fields the body names: `displayName` and `state`. **Retirement is guarded**, at the door and again inside the write transaction: a reference a published price row or the tenant default still names is `409` `TAXONOMY_VALUE_IN_USE` and nothing is written - re-point them first. `retired -> active` re-activates. A body that changes nothing answers `200` and writes nothing. **`If-Match` is required** and asserts the value's **own** tag from `GET .../values/{value}`; the set's tag does not satisfy it. The commit is one audited config mutation naming the reference and its state before and after. This vocabulary opens no approval unit on any edge (D-334). Gates on `config` x `write`.",
+        "operationId": "bss_pricing.patch_rounding_policy_value",
+        "parameters": [
+          {
+            "description": "The declared code, exactly as the vocabulary lists it. Retired values are still addressable: retirement is a state, not a deletion, and `PATCH` with `state: active` is the way back.",
+            "in": "path",
+            "name": "value",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Mandatory precondition (RFC 9110). The value is the **opaque** tag `GET .../values/{value}` returns in its `ETag` header - copy it back verbatim. It digests this one value's code, state and label, so it moves when this value changes and **not** when a sibling does: two admins editing two different values do not refuse each other, which is the reason this route exists. The set's tag from the collection `GET` does not satisfy it. A tag that no longer describes the value is `409` `STALE_VERSION`; an absent or malformed one is `400`.",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchVocabularyValueRequest"
+              }
+            }
+          },
+          "description": "The fields to change.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoundingPolicyValueView"
+                }
+              }
+            },
+            "description": "The reference as it now stands, with its `ETag`."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Edit one declared rounding reference",
+        "tags": [
+          "BSS Pricing Configuration"
+        ]
+      }
+    },
+    "/bss-pricing/v1/config/vocabularies/{class}": {
+      "get": {
+        "description": "Every value the tenant has declared in this universe - `active`, `deprecated` and `retired` alike - ordered by value. Withdrawn values are included deliberately: retirement is guarded rather than cascading, a deprecation withdraws a value from new use while everything already published against it keeps resolving, and both ways back to `active` are legal audited moves, so an operator editing this list has to be able to see the value they are about to re-activate. A tenant that has declared nothing is answered `200` with an empty list on the brand, partner and org_tier universes - a state, not an absent resource. The **region** universe is never empty: until the tenant declares a region row it reads as the seeded `global` (D-354), so a fresh tenant publishes `global` rows at once; `inst-tx-region` validates every price row's region against the **active** values here. The response carries the set's authored-content `ETag`; the per-value routes carry their own write token. On the `region` universe each value also carries D-01's two markers, `taxCategory` and `taxRatePresent`, which are the MVP source for the tax-display readiness check; the other three universes carry no such columns. Each value also carries `edit_governed` and `references` (published price-row and overlay-scope counts), including explicit zeroes, matching the by-value GET without extra queries. `pending_approvals` lists every submitted proposal for each value, or []. Each unit exposes pending metadata and `content_access`; `proposed_changes` and `content_matches_pin` appear only when the full `approval` x `read` scope grants that unit. Restricted content does not hide the pending unit. Tags cover authored content only, preserving write preconditions independently of references and pending units. This GET always returns a fresh body with `Cache-Control: private, no-store`; it does not evaluate `If-None-Match` or return `304`. Gates on `config` x `read`.",
         "operationId": "bss_pricing.get_taxonomy",
         "parameters": [
           {
@@ -36763,7 +37601,7 @@
         ]
       }
     },
-    "/bss-pricing/v1/config/taxonomies/{class}/values": {
+    "/bss-pricing/v1/config/vocabularies/{class}/values": {
       "post": {
         "description": "Adds **one** value to the class without re-sending the set (D-353). `201` with the value as stored, its own `ETag`, and a `Location` naming it. The value is the resource's natural key, so there is no `Idempotency-Key`: a repeat carrying the **same** body is the create's replay and answers `200`; a body naming a value the tenant already declares with other content - or a retired one - is `409` `TAXONOMY_VALUE_EXISTS`, and the remedy is `PATCH` on that value. `state` defaults to `active`; `taxCategory` and `taxRatePresent` are accepted on the `region` universe only and refused elsewhere. One audited config mutation naming the value. Gates on `config` x `write`.",
         "operationId": "bss_pricing.declare_taxonomy_value",
@@ -36882,9 +37720,9 @@
         ]
       }
     },
-    "/bss-pricing/v1/config/taxonomies/{class}/values/{value}": {
+    "/bss-pricing/v1/config/vocabularies/{class}/values/{value}": {
       "get": {
-        "description": "One value, `active` or `retired`, with **its own `ETag`** - the tag the per-value `PATCH` demands, and the only place to obtain it (the set's tag from `GET .../taxonomies/{class}` covers the whole list and does not satisfy the per-value precondition). A value the tenant has never declared is `404`. Carries `edit_governed` and `references` (D-355): whether a published price row or overlay scope names this value - and so whether editing it needs a second principal - with the count on each plane behind that answer. Also carries `pending_approvals` with the same metadata, per-unit `content_access` and approval-read-gated preview as the collection GET; current fields are not replaced by proposed ones. **These derived fields are outside the `ETag`**, which covers the declared value alone because it is also the `PATCH` precondition; moving it when an unrelated publish flips the flag would refuse every in-flight editor of a value they are not changing. This GET always returns a fresh body with `Cache-Control: private, no-store`; it does not evaluate `If-None-Match` or return `304`. The tag remains the `PATCH` precondition. Gates on `config` x `read`.",
+        "description": "One value - `active`, `deprecated` or `retired` - with **its own `ETag`** - the tag the per-value `PATCH` demands, and the only place to obtain it (the set's tag from `GET .../vocabularies/{class}` covers the whole list and does not satisfy the per-value precondition). A value the tenant has never declared is `404`. Carries `edit_governed` and `references` (D-355): whether a published price row or overlay scope names this value - and so whether editing it needs a second principal - with the count on each plane behind that answer. Also carries `pending_approvals` with the same metadata, per-unit `content_access` and approval-read-gated preview as the collection GET; current fields are not replaced by proposed ones. **These derived fields are outside the `ETag`**, which covers the declared value alone because it is also the `PATCH` precondition; moving it when an unrelated publish flips the flag would refuse every in-flight editor of a value they are not changing. This GET always returns a fresh body with `Cache-Control: private, no-store`; it does not evaluate `If-None-Match` or return `304`. The tag remains the `PATCH` precondition. Gates on `config` x `read`.",
         "operationId": "bss_pricing.get_taxonomy_value",
         "parameters": [
           {
@@ -37011,7 +37849,7 @@
             }
           },
           {
-            "description": "Mandatory precondition (RFC 9110). The value is the **opaque** tag `GET .../values/{value}` returns in its `ETag` header - copy it back verbatim. It digests this one value's code, state, label and (region) tax markers, so it moves when this value changes and **not** when a sibling does: two admins editing two different values do not refuse each other, which is the reason this route exists beside the whole-set `PUT`. The set's tag from `GET .../taxonomies/{class}` does not satisfy it. A tag that no longer describes the value is `409` `STALE_VERSION`; an absent or malformed one is `400`.",
+            "description": "Mandatory precondition (RFC 9110). The value is the **opaque** tag `GET .../values/{value}` returns in its `ETag` header - copy it back verbatim. It digests this one value's code, state, label and (region) tax markers, so it moves when this value changes and **not** when a sibling does: two admins editing two different values do not refuse each other, which is the reason this route exists beside the whole-set `PUT`. The set's tag from `GET .../vocabularies/{class}` does not satisfy it. A tag that no longer describes the value is `409` `STALE_VERSION`; an absent or malformed one is `400`.",
             "in": "header",
             "name": "If-Match",
             "required": true,
@@ -37136,7 +37974,7 @@
     },
     "/bss-pricing/v1/customer-groups/taxonomy": {
       "get": {
-        "description": "Every customer-group value the tenant has declared, `active` and `retired` alike, ordered by value. Retirements are included deliberately: retirement is guarded rather than cascading and `retired -> active` is a legal audited move, so an operator editing this list has to be able to see the value they are about to re-activate. A tenant that has declared nothing is answered `200` with an empty list - that is a state, not an absent resource. **The response carries the `ETag` the `PUT` demands**, and this is the only place to obtain one. This is a **separate** resource from `GET /config/taxonomies/{class}` and gates on `customer_group` x `read`, never `config` x `read` - per-payer commercial data is more sensitive than plan/config authoring (`05-governance.md`).",
+        "description": "Every customer-group value the tenant has declared, `active` and `retired` alike, ordered by value. Retirements are included deliberately: retirement is guarded rather than cascading and `retired -> active` is a legal audited move, so an operator editing this list has to be able to see the value they are about to re-activate. A tenant that has declared nothing is answered `200` with an empty list - that is a state, not an absent resource. **The response carries the `ETag` the `PUT` demands**, and this is the only place to obtain one. This is a **separate** resource from `GET /config/vocabularies/{class}` and gates on `customer_group` x `read`, never `config` x `read` - per-payer commercial data is more sensitive than plan/config authoring (`05-governance.md`).",
         "operationId": "bss_pricing.get_customer_group_taxonomy",
         "parameters": [
           {
@@ -39040,11 +39878,11 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PlanShapeRequest"
+                "$ref": "#/components/schemas/CreatePlanRequest"
               }
             }
           },
-          "description": "The plan's initial shape.",
+          "description": "The plan's initial shape; SKU is required.",
           "required": true
         },
         "responses": {

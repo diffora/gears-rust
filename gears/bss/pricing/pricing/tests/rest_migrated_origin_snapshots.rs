@@ -560,6 +560,7 @@ async fn the_frozen_payload_is_self_contained_and_says_it_has_no_catalog_version
     // The row half: evaluable content, not just ids.
     let rows = payload["rows"].as_array().expect("rows");
     assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["skuId"], Uuid::from_u128(0x5_c1).to_string());
     assert_eq!(rows[0]["currency"], "EUR");
     assert_eq!(rows[0]["region"], "eu");
     assert_eq!(rows[0]["source"], "live_history");
@@ -610,7 +611,13 @@ async fn the_frozen_payload_is_self_contained_and_says_it_has_no_catalog_version
     // read the empty set as "this plan grants nothing".
     assert_eq!(payload["planLevel"]["grantSetUnavailable"], true);
     assert!(payload["planLevel"]["grantSet"].is_null());
-    assert!(payload["planLevel"].get("invoiceLineTemplate").is_some());
+    assert_eq!(
+        payload["planLevel"]["billing"]["itemizationRule"],
+        "itemize"
+    );
+    assert!(payload["planLevel"].get("invoiceLineTemplate").is_none());
+    assert_eq!(rows[0]["invoiceLineTemplate"], "{sku} - {period}");
+    assert_eq!(rows[0]["glCode"], "4000");
     // D-319, and the marker beside it is the point: this plan authored no
     // minimum, so the empty list **means** "no minimum" — which is only readable
     // because the payload also says the set was available to be read. Without

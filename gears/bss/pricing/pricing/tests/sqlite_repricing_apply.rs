@@ -54,9 +54,7 @@ use bss_pricing::domain::contracts::{BillingAnchorPolicy, ProrationBasis, Prorat
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::instant::utc_ymd_hms;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount, RateMinor};
-use bss_pricing::domain::plan_shape::{
-    BillingCycle, DescriptorSet, Frequency, PhaseKind, PlanPhase,
-};
+use bss_pricing::domain::plan_shape::{BillingCycle, Frequency, PhaseKind, PlanPhase};
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{
     BillingGranularity, ModelKind, PriceRow, TierAggregationWindow, TierBand,
@@ -217,7 +215,11 @@ async fn harness() -> Harness {
 /// policy for the identical reason one column over — nothing this suite proves
 /// about repricing atomicity depends on either.
 fn publishable_row(amount_minor: i64) -> PriceContent {
-    let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.amount_minor = Some(MinorAmount::new(amount_minor).expect("a non-negative amount"));
     PriceContent {
         row,
@@ -242,7 +244,11 @@ fn publishable_row(amount_minor: i64) -> PriceContent {
 /// uses — one that survives a fat-fingered markup and one that does not — because
 /// the defect only exists where the two disagree.
 fn publishable_graduated_row() -> PriceContent {
-    let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.meter = Some("cloudlets".to_owned());
     // `EVAL_POLICY_MISSING`'s two operands for a tiered usage row: the unit the
     // bands are counted in, and the window the tier counter resets on.
@@ -315,7 +321,7 @@ async fn seed_plan(h: &Harness, plan_id: Uuid, phase_id: Uuid) {
                 plan_tier_override: false,
                 purchase_min_qty: None,
                 purchase_max_qty: None,
-                invoice_grouping_key: None,
+                descriptor_ext: std::collections::BTreeMap::new(),
                 available_from: None,
                 available_to: None,
                 cloned_from: None,
@@ -345,18 +351,16 @@ async fn seed_plan(h: &Harness, plan_id: Uuid, phase_id: Uuid) {
         )
         .await
         .expect("attach the phase chain");
-    h.shapes
-        .set_descriptor_set(
+    h.plans
+        .update_draft(
             &h.scope,
             TENANT,
             plan,
             created.revision,
             after_phases.row_version,
-            DescriptorSet {
-                invoice_line_template: Some("{plan}".to_owned()),
-                gl_code: Some("4000".to_owned()),
-                itemization_rule: Some("per_charge".to_owned()),
-                additional: std::collections::BTreeMap::new(),
+            bss_pricing::domain::plan::PlanShapePatch {
+                descriptor_ext: Some(std::collections::BTreeMap::new()),
+                ..Default::default()
             },
             stamp(),
         )

@@ -118,6 +118,8 @@ fn a_per_unit_record(rate: RateMinor, currency: CurrencyCode) -> PriceRecord {
 /// The record wrapper both fixtures above share — everything but the row.
 fn a_record(row: PriceRow, currency: CurrencyCode) -> PriceRecord {
     PriceRecord {
+        resolved_invoice_line_template: None,
+        resolved_gl_code: None,
         price_id: Uuid::from_u128(0xb_10),
         scope_key: ScopeKey::new(
             PlanId::new(Uuid::from_u128(0x9_1a4)),

@@ -36,6 +36,8 @@ fn minor(units: i64) -> MinorAmount {
 
 fn record(row: PriceRow) -> PriceRecord {
     PriceRecord {
+        resolved_invoice_line_template: None,
+        resolved_gl_code: None,
         price_id: Uuid::from_u128(0xd_10),
         scope_key: ScopeKey::new(
             PlanId::new(Uuid::from_u128(1)),
@@ -1038,4 +1040,29 @@ fn every_quantity_determining_field_is_material_at_zero_amount_delta() {
              old shape - a Rating fact, not a catalog one"
         );
     }
+}
+
+#[test]
+fn authored_row_descriptors_have_no_computable_delta_even_at_unchanged_price() {
+    let baseline = flat(1000);
+    let mut label = baseline.clone();
+    label.row.invoice_line_template = Some("{sku} - {period}".to_owned());
+    assert_eq!(
+        row_delta(&label, &baseline),
+        RowDelta::NotComputable("invoiceLineTemplate")
+    );
+    assert_eq!(
+        row_delta(&baseline, &label),
+        RowDelta::NotComputable("invoiceLineTemplate")
+    );
+    let mut account = baseline.clone();
+    account.row.gl_code_ref = Some("4000".to_owned());
+    assert_eq!(
+        row_delta(&account, &baseline),
+        RowDelta::NotComputable("glCodeRef")
+    );
+    assert_eq!(
+        row_delta(&baseline, &account),
+        RowDelta::NotComputable("glCodeRef")
+    );
 }

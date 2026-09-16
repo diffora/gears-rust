@@ -419,4 +419,8 @@ pub async fn publish_plan_directly(
 }
 
 mod catalog;
+#[allow(
+    unused_imports,
+    reason = "each integration binary uses a different part of common"
+)]
 pub use catalog::FixtureCatalog;

@@ -32,7 +32,7 @@
 //! what makes `Migrator::up` -- the path the in-crate `SQLite` suites take -- agree
 //! with it.
 //!
-//! SQLite physically rebuilds both tables and their foreign-key descendants,
+//! `SQLite` physically rebuilds both tables and their foreign-key descendants,
 //! preserving their data, indexes and triggers without disabling foreign keys.
 use sea_orm::{ConnectionTrait, DbBackend, Statement};
 use sea_orm_migration::prelude::*;
@@ -183,8 +183,8 @@ const PG_TIGHTEN: &[&str] = &[
 /// Physical NOT NULL constraints are installed by the rebuild before these
 /// indexes and the SKU-aware frozen-column guard replace their shipped forms.
 ///
-/// `target_sku` stays `text` here: uuids are text on this engine, and the `''`
-/// sentinel in `uq_pricing_price_overlay_line_key` stays with it.
+/// The UUID driver binds `target_sku` as a 16-byte blob on `SQLite`; the
+/// rebuild normalizes legacy UUID text to that representation before restore.
 const SQLITE_TIGHTEN: &[&str] = &[
     "DROP INDEX uq_pricing_price_meter_line_current",
     "DROP INDEX uq_pricing_price_scope_key_current",
@@ -399,10 +399,14 @@ async fn refuse_unless_backfilled(manager: &SchemaManager<'_>) -> Result<(), DbE
 }
 
 /// Rebuild parents together with their complete inbound foreign-key closure.
-/// Child-first drops and parent-first restores keep foreign_keys enabled even
+/// Child-first drops and parent-first restores keep `foreign_keys` enabled even
 /// inside the platform runner's transaction. Temporary copies have no foreign
 /// keys or triggers, so neither CASCADE nor append-only guards can erase data.
 /// All original DDL is replayed; only the two SKU declarations change.
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "ordered FK closure rebuild preserves each dependent table in one transaction"
+)]
 async fn rebuild_sqlite_sku_tables(
     manager: &SchemaManager<'_>,
     required: bool,
@@ -431,7 +435,11 @@ async fn rebuild_sqlite_sku_tables(
         parents.insert(name.clone(), refs);
         schemas.insert(name, sql);
     }
-    let mut selected = BTreeSet::from(["pricing_plan".to_owned(), "pricing_price".to_owned()]);
+    let mut selected = BTreeSet::from([
+        "pricing_plan".to_owned(),
+        "pricing_price".to_owned(),
+        "pricing_price_overlay_line".to_owned(),
+    ]);
     loop {
         let before = selected.len();
         for (table, refs) in &parents {
@@ -481,6 +489,7 @@ async fn rebuild_sqlite_sku_tables(
         ))
         .await?;
     }
+    normalize_overlay_targets(manager, required).await?;
     for table in ordered.iter().rev() {
         db.execute_unprepared(&format!("DROP TABLE {}", quote(table)))
             .await?;
@@ -502,6 +511,16 @@ async fn rebuild_sqlite_sku_tables(
             };
             sql = sql.replacen(&declaration, &replacement, 1);
         }
+        if table == "pricing_price_overlay_line" {
+            let legacy =
+                "target_sku IS NULL OR length(trim(target_sku, char(9,10,11,12,13,32))) > 0";
+            let uuid_aware = "target_sku IS NULL OR (typeof(target_sku) = 'blob' AND length(target_sku) = 16 AND target_sku <> zeroblob(16))";
+            sql = if required {
+                sql.replace(legacy, uuid_aware)
+            } else {
+                sql.replace(uuid_aware, legacy)
+            };
+        }
         db.execute_unprepared(&sql).await?;
     }
     for sql in indexes {
@@ -522,6 +541,41 @@ async fn rebuild_sqlite_sku_tables(
         db.execute_unprepared(&format!(
             "DROP TABLE {}",
             quote(&format!("d372_backup_{table}"))
+        ))
+        .await?;
+    }
+    Ok(())
+}
+
+/// Normalize UUIDs before the guarded tables are restored. Both representations
+/// cannot coexist: `SQLite` compares text and blob keys as different values.
+async fn normalize_overlay_targets(
+    manager: &SchemaManager<'_>,
+    required: bool,
+) -> Result<(), DbErr> {
+    let db = manager.get_connection();
+    let rows = db.query_all_raw(Statement::from_string(DbBackend::Sqlite,
+        "SELECT rowid AS rid, CASE typeof(target_sku) WHEN 'blob' THEN hex(target_sku) ELSE target_sku END AS sku FROM d372_backup_pricing_price_overlay_line WHERE target_sku IS NOT NULL")).await?;
+    for row in rows {
+        let rid: i64 = row.try_get("", "rid")?;
+        let text: String = row.try_get("", "sku")?;
+        let sku = uuid::Uuid::parse_str(&text)
+            .ok()
+            .filter(|sku| !sku.is_nil())
+            .ok_or_else(|| {
+                DbErr::Custom(format!(
+                    "D-372: overlay target_sku {text:?} is not a non-nil UUID"
+                ))
+            })?;
+        let value: sea_orm::Value = if required {
+            sku.into()
+        } else {
+            sku.to_string().into()
+        };
+        db.execute_raw(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "UPDATE d372_backup_pricing_price_overlay_line SET target_sku = ? WHERE rowid = ?",
+            [value, rid.into()],
         ))
         .await?;
     }

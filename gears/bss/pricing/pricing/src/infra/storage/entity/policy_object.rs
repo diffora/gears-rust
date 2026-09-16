@@ -59,6 +59,8 @@ pub struct Model {
     pub tax_display_policy_mode: String,
     /// The tenant default named rounding-policy id; optional by design.
     pub default_rounding_policy_ref: Option<String>,
+    pub default_gl_code_ref: Option<String>,
+    pub default_line_templates: Json,
     /// Enforced-migration notice period in days; floor 60 (D-49).
     pub enforced_migration_notice_days: i32,
     /// Soft cap on tier bands per price row (D-152). `None` => the ratified
@@ -75,7 +77,7 @@ pub struct Model {
     pub max_custom_interval_months: Option<i32>,
     /// The descriptor keys this tenant requires **in addition** to D-48 v1's
     /// pinned three: a JSON array of names matched against
-    /// `pricing_plan_descriptor_set.additional_fields` (`jsonb` on Postgres,
+    /// `pricing_plan.descriptor_ext` (`jsonb` on Postgres,
     /// `text` on `SQLite`). Additive-only — there is no column here that can
     /// drop a v1 element, because a tenant policy may not publish past a pinned
     /// element of the contract Billing countersigns.

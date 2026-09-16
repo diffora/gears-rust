@@ -159,7 +159,11 @@ fn market_key(region: &str, eligibility: PriceEligibility) -> ScopeKey {
 
 /// A flat recurring row, tax-inclusive — the predicate `gated_markets` counts.
 fn tax_inclusive_flat() -> PriceContent {
-    let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.amount_minor = Some(MinorAmount::new(1_000).expect("a non-negative amount"));
     PriceContent {
         row,

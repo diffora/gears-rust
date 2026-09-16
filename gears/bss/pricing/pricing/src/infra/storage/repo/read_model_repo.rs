@@ -507,7 +507,6 @@ fn read_scope_key(value: &JsonValue) -> Result<ScopeKey, RepoError> {
     // Axis 9 (D-372). A payload frozen before the SKU joined the key has no such
     // member, and the horizon is INSERT-only, so an absent member is the shim
     // rather than a corrupt row.
-    // D-372 shim: Task 6a (storage) / Task 7 (DTO) supply the real value
     let sku_id = match value.get("skuId").filter(|v| !v.is_null()) {
         None => SkuId::new(Uuid::nil()),
         Some(_) => SkuId::new(uuid(value, "skuId")?),

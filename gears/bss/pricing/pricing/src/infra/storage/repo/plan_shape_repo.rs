@@ -2,7 +2,7 @@
 //! version with the revision (`design/02-plan-definition.md` §6, D-83).
 //!
 //! `pricing_plan_phase`, `pricing_plan_addon_rule`,
-//! `pricing_plan_descriptor_set`, `pricing_composite_meter` and
+//! `pricing_composite_meter` and
 //! `pricing_plan_period_floor_cap` are all five of them. It is separate from
 //! [`PlanRepo`](super::PlanRepo) because the two answer different questions:
 //! that repository owns the revision **chain** — which revision is current,
@@ -67,10 +67,10 @@
 //! **Ten functions here are not part of the repository's surface** — a
 //! `copy_` and a `delete_` per table — and they exist because D-83 and D-145 are
 //! `PlanRepo`'s obligations discharged against these tables: [`copy_phases`] /
-//! [`copy_addon_rules`] / [`copy_descriptor_set`] / [`copy_composites`] /
+//! [`copy_addon_rules`] / [`copy_composites`] /
 //! [`copy_period_floor_caps`] write the current revision's rows again under a
 //! newly opened one with their ids unchanged, and [`delete_phases`] /
-//! [`delete_addon_rules`] / [`delete_descriptor_set`] / [`delete_composites`] /
+//! [`delete_addon_rules`] / [`delete_composites`] /
 //! [`delete_period_floor_caps`] drop a discarded revision's copies before its row
 //! is flipped `abandoned`. **This paragraph is the statement of that obligation**,
 //! so a table added without extending it leaves the next author reading a roster
@@ -97,13 +97,11 @@ use crate::domain::audit::{AuditAction, AuditStamp};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::plan::PlanRevision;
-use crate::domain::plan_shape::{
-    AddonRule, CompositeMeter, DescriptorSet, PeriodFloorCap, PhaseKind, PlanPhase,
-};
+use crate::domain::plan_shape::{AddonRule, CompositeMeter, PeriodFloorCap, PhaseKind, PlanPhase};
 use crate::domain::scope_key::{PhaseId, PlanId, Region};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{
-    composite_meter, plan, plan_addon_rule, plan_descriptor_set, plan_period_floor_cap, plan_phase,
+    composite_meter, plan, plan_addon_rule, plan_period_floor_cap, plan_phase,
 };
 use crate::infra::storage::repo::plan_repo::{
     load_revision, mutable_draft, not_found, read_token, record_revision_mutation, refuse,
@@ -473,101 +471,6 @@ impl PlanShapeRepo {
             .map_err(|e| RepoError::Db(format!("conn: {e}")))?;
         load_addon_rule_set(&conn, scope, tenant_id, plan_id, revision).await
     }
-
-    /// Attach an open draft revision's billing descriptor set, under the
-    /// caller's row version, in one transaction.
-    ///
-    /// **Upsert, and the two words mean the same call here.** The table is 1:1
-    /// per revision, so there is no difference between attaching a set and
-    /// replacing one: the row is deleted and written again, which is the same
-    /// shape the two sibling child sets use and which keeps
-    /// [`delete_descriptor_set`] the single spelling of "this revision's set is
-    /// gone" — the one D-145 needs. It is deliberately **not** a column-wise
-    /// UPDATE: a partial update makes clearing a descriptor indistinguishable
-    /// from not mentioning it, and `flow-plan-author` step 4 attaches
-    /// descriptors incrementally, so both operations are real.
-    ///
-    /// An **empty set is a valid request**, and it writes a row: a draft may be
-    /// incomplete (`DESCRIPTOR_INCOMPLETE` reports the missing elements at
-    /// publish, by name), and refusing to store what an author has typed so far
-    /// would make the incremental path unusable.
-    ///
-    /// # Errors
-    /// [`RepoError::NotFound`] when no such revision is visible to `scope`;
-    /// [`RepoError::NotDraft`] when it is visible but frozen;
-    /// [`RepoError::StaleRowVersion`] carrying both versions when the submitted
-    /// one is not current; [`RepoError::Db`] on a scope or storage failure;
-    /// [`RepoError::CorruptRow`] when the revision reads back unusable.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "every argument is a fact only the caller holds: the scope, the (tenant, plan, \
-                  revision, expected-version) the compare-and-swap addresses, the payload, and \
-                  the D-135 audit stamp. `swap_guard` already takes those four together, so a \
-                  `RevisionTarget` bundling them is the right shape and is owed - it is a \
-                  signature change across every storage suite that pins these paths, and it \
-                  changes no behaviour"
-    )]
-    pub async fn set_descriptor_set(
-        &self,
-        scope: &AccessScope,
-        tenant_id: Uuid,
-        plan_id: PlanId,
-        revision: u64,
-        expected: RowVersion,
-        descriptors: DescriptorSet,
-        stamp: AuditStamp,
-    ) -> Result<PlanRevision, RepoError> {
-        let scope = scope.clone();
-        let (_, outcome) = self
-            .db
-            .db()
-            .in_transaction::<PlanRevision, RepoError, _>(move |txn| {
-                Box::pin(async move {
-                    set_descriptor_set_on(
-                        txn,
-                        &scope,
-                        tenant_id,
-                        plan_id,
-                        revision,
-                        expected,
-                        descriptors,
-                        stamp,
-                    )
-                    .await
-                })
-            })
-            .await;
-        outcome.map_err(tx_failure)
-    }
-
-    /// Read one revision's descriptor set, when it has one.
-    ///
-    /// `None` is an **unattached** set, which is a different fact from an
-    /// attached-but-empty one and is kept distinct all the way to the rule:
-    /// `inst-ds-required` reports all three required fields in both cases, so
-    /// the distinction changes no verdict — but collapsing it here would mean an
-    /// authoring surface could not tell an author who has attached nothing from
-    /// one who attached a set and cleared every field.
-    ///
-    /// SQL-level BOLA: a foreign tenant's revision yields `None`.
-    ///
-    /// # Errors
-    /// [`RepoError::Db`] on a scope or storage failure;
-    /// [`RepoError::CorruptRow`] when `additional_fields` is not a JSON object
-    /// of strings.
-    pub async fn find_descriptor_set(
-        &self,
-        scope: &AccessScope,
-        tenant_id: Uuid,
-        plan_id: PlanId,
-        revision: u64,
-    ) -> Result<Option<DescriptorSet>, RepoError> {
-        let conn = self
-            .db
-            .conn()
-            .map_err(|e| RepoError::Db(format!("conn: {e}")))?;
-        load_descriptor(&conn, scope, tenant_id, plan_id, revision).await
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -634,26 +537,6 @@ pub async fn load_addon_rule_set(
         .iter()
         .map(to_addon_rule)
         .collect()
-}
-
-/// A revision's billing descriptor set; see [`load_phase_set`].
-///
-/// # Errors
-/// [`RepoError::Db`] on a scope or storage failure;
-/// [`RepoError::CorruptRow`] when `additional_fields` is not a JSON object of
-/// strings.
-pub async fn load_descriptor(
-    runner: &impl DBRunner,
-    scope: &AccessScope,
-    tenant_id: Uuid,
-    plan_id: PlanId,
-    revision: u64,
-) -> Result<Option<DescriptorSet>, RepoError> {
-    load_descriptor_set(runner, scope, tenant_id, plan_id, revision)
-        .await?
-        .as_ref()
-        .map(to_descriptor_set)
-        .transpose()
 }
 
 /// A revision's period floor/cap set; see [`load_phase_set`] for why this shape
@@ -1476,142 +1359,6 @@ pub(super) async fn copy_addon_rules(
     insert_addon_rules(runner, scope, copies).await
 }
 
-// ---------------------------------------------------------------------------
-// Statements - `pricing_plan_descriptor_set`.
-// ---------------------------------------------------------------------------
-
-/// Read one revision's stored descriptor row, when it has one.
-async fn load_descriptor_set(
-    runner: &impl DBRunner,
-    scope: &AccessScope,
-    tenant_id: Uuid,
-    plan_id: PlanId,
-    revision: u64,
-) -> Result<Option<plan_descriptor_set::Model>, RepoError> {
-    let Some(number) = stored_revision(revision) else {
-        return Ok(None);
-    };
-    plan_descriptor_set::Entity::find()
-        .secure()
-        .scope_with(scope)
-        .filter(
-            Condition::all()
-                .add(plan_descriptor_set::Column::TenantId.eq(tenant_id))
-                .add(plan_descriptor_set::Column::PlanId.eq(plan_id.get()))
-                .add(plan_descriptor_set::Column::PlanRevision.eq(number)),
-        )
-        .one(runner)
-        .await
-        .map_err(|e| RepoError::Db(format!("read plan descriptor set: {e}")))
-}
-
-/// Write one revision's descriptor row.
-///
-/// `scope_with_model` validates the tenant of the `ActiveModel` it is given,
-/// which is the second half of the tenant rule the module doc states: the value
-/// is copied from the parent revision, and then checked against the caller's
-/// scope.
-async fn insert_descriptor_set(
-    runner: &impl DBRunner,
-    scope: &AccessScope,
-    row: plan_descriptor_set::ActiveModel,
-) -> Result<(), RepoError> {
-    plan_descriptor_set::Entity::insert(row.clone())
-        .secure()
-        .scope_with_model(scope, &row)
-        .map_err(|e| RepoError::Db(format!("pricing_plan_descriptor_set scope: {e}")))?
-        .exec(runner)
-        .await
-        .map_err(|e| RepoError::Db(format!("insert pricing_plan_descriptor_set: {e}")))?;
-    Ok(())
-}
-
-/// Drop one revision's descriptor set.
-///
-/// `pub(super)` because it is half of D-145's discharge as well as half of an
-/// upsert: [`PlanRepo::abandon_draft`](super::PlanRepo::abandon_draft) calls it
-/// **before** it flips the revision row, since `abandoned` is not `draft` and
-/// the table's DELETE trigger refuses everything afterwards.
-///
-/// # Errors
-/// [`RepoError::Db`] on a scope or storage failure — which includes the
-/// append-only trigger's refusal when the revision is not a `draft`.
-pub(super) async fn delete_descriptor_set(
-    runner: &impl DBRunner,
-    scope: &AccessScope,
-    tenant_id: Uuid,
-    plan_id: PlanId,
-    revision: u64,
-) -> Result<(), RepoError> {
-    let Some(number) = stored_revision(revision) else {
-        return Ok(());
-    };
-    plan_descriptor_set::Entity::delete_many()
-        .secure()
-        .scope_with(scope)
-        .filter(
-            Condition::all()
-                .add(plan_descriptor_set::Column::TenantId.eq(tenant_id))
-                .add(plan_descriptor_set::Column::PlanId.eq(plan_id.get()))
-                .add(plan_descriptor_set::Column::PlanRevision.eq(number)),
-        )
-        .exec(runner)
-        .await
-        .map_err(|e| RepoError::Db(format!("delete plan descriptor set: {e}")))?;
-    Ok(())
-}
-
-/// Copy `from`'s descriptor set onto revision `to`.
-///
-/// D-83's copy-on-new-revision, discharged against the last of the three child
-/// tables. [`PlanRepo::open_revision`](super::PlanRepo::open_revision) calls it
-/// inside the transaction that inserted the new revision row, and after that
-/// insert, because the table's INSERT trigger reads the *new* parent and
-/// requires it to be `draft`.
-///
-/// A revision with no set copies nothing rather than writing an empty row: the
-/// successor of an unattached set is an unattached set, and materializing an
-/// empty one would tell an authoring surface that somebody had attached
-/// something.
-///
-/// The row is re-written from the stored model rather than round-tripped
-/// through the domain, as the two sibling copies are: a copy is the one
-/// operation that must reproduce what is there, and a value the domain cannot
-/// currently read — a P5 extra field a later deployment adds — is still a value
-/// the successor revision has to inherit rather than silently lose.
-///
-/// # Errors
-/// [`RepoError::Db`] on a scope or storage failure — which includes the
-/// append-only trigger's refusal when the destination revision is not a
-/// `draft`, and the destination revision not existing at all.
-pub(super) async fn copy_descriptor_set(
-    runner: &impl DBRunner,
-    scope: &AccessScope,
-    tenant_id: Uuid,
-    plan_id: PlanId,
-    from: u64,
-    to: u64,
-) -> Result<(), RepoError> {
-    let Some(number) = stored_revision(to) else {
-        return Err(RepoError::CorruptRow(format!(
-            "plan {plan_id} revision {to} exceeds the storable range"
-        )));
-    };
-    let Some(source) = load_descriptor_set(runner, scope, tenant_id, plan_id, from).await? else {
-        return Ok(());
-    };
-    let copy = plan_descriptor_set::ActiveModel {
-        plan_id: Set(source.plan_id),
-        plan_revision: Set(number),
-        tenant_id: Set(source.tenant_id),
-        invoice_line_template: Set(source.invoice_line_template),
-        gl_code: Set(source.gl_code),
-        itemization_rule: Set(source.itemization_rule),
-        additional_fields: Set(source.additional_fields),
-    };
-    insert_descriptor_set(runner, scope, copy).await
-}
-
 /// Bump the revision's `row_version` under `guard`, and say how many rows moved.
 ///
 /// The bump is `row_version + 1` **inside** the statement that matches on the
@@ -1975,72 +1722,6 @@ fn to_addon_rule(row: &plan_addon_rule::Model) -> Result<AddonRule, RepoError> {
     })
 }
 
-/// Render a submitted descriptor set into the row that holds it.
-///
-/// `tenant_id`, `plan_id` and `plan_revision` are taken from `parent` — the
-/// revision row this repository resolved — and none of them from the submitted
-/// value, which is why [`DescriptorSet`] carries no such field.
-///
-/// Infallible: every column is nullable text, and the extra fields are a JSON
-/// object of the strings the caller handed over. There is nothing here a column
-/// can refuse, which is the shape D-48's contract has once `billingTiming` and
-/// `taxCategory` ride the price row instead (D-110).
-fn descriptor_model(
-    parent: &plan::Model,
-    descriptors: &DescriptorSet,
-) -> plan_descriptor_set::ActiveModel {
-    plan_descriptor_set::ActiveModel {
-        plan_id: Set(parent.plan_id),
-        plan_revision: Set(parent.revision),
-        tenant_id: Set(parent.tenant_id),
-        invoice_line_template: Set(descriptors.invoice_line_template.clone()),
-        gl_code: Set(descriptors.gl_code.clone()),
-        itemization_rule: Set(descriptors.itemization_rule.clone()),
-        additional_fields: Set(json!(descriptors.additional)),
-    }
-}
-
-/// Map a stored descriptor row to the domain value, at this boundary and nowhere
-/// else.
-///
-/// The one reading that can fail is an **invariant breach, not a caller
-/// mistake**: `additional_fields` is `NOT NULL DEFAULT '{}'`, this repository is
-/// its only writer, and what it writes is a JSON object of strings.
-fn to_descriptor_set(row: &plan_descriptor_set::Model) -> Result<DescriptorSet, RepoError> {
-    Ok(DescriptorSet {
-        invoice_line_template: row.invoice_line_template.clone(),
-        gl_code: row.gl_code.clone(),
-        itemization_rule: row.itemization_rule.clone(),
-        additional: read_additional_fields(&row.additional_fields)?,
-    })
-}
-
-/// Read P5's extra descriptor fields back out of their JSON column.
-///
-/// A `BTreeMap` rather than the insertion order the JSON document happens to
-/// carry: `DESCRIPTOR_INCOMPLETE` names every missing field, and a report whose
-/// order depended on how a document was serialized would be unreproducible
-/// between two runs of the same pipeline over the same plan.
-fn read_additional_fields(stored: &JsonValue) -> Result<BTreeMap<String, String>, RepoError> {
-    let malformed = || {
-        RepoError::CorruptRow(format!(
-            "pricing_plan_descriptor_set.additional_fields is not a JSON object of strings: \
-             {stored}"
-        ))
-    };
-    stored
-        .as_object()
-        .ok_or_else(malformed)?
-        .iter()
-        .map(|(name, value)| {
-            value
-                .as_str()
-                .map(|text| (name.clone(), text.to_owned()))
-                .ok_or_else(malformed)
-        })
-        .collect()
-}
-
 /// Render an authored count for its `int` column — a phase duration, a trial
 /// projection, an add-on quantity bound.
 ///
@@ -2233,67 +1914,6 @@ pub async fn replace_addon_rules_on(
     // The read above is not the guard - a concurrent publish can
     // land between it and this statement - so a swap that
     // matched nothing is still resolved, and the set it has
-    // already replaced is restored by the rollback.
-    if result == 0 {
-        return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
-    }
-    let updated = load_revision(runner, scope, tenant_id, plan_id, revision)
-        .await?
-        .ok_or_else(|| not_found(plan_id, revision))?;
-    record_revision_mutation(
-        runner,
-        scope,
-        tenant_id,
-        &updated,
-        AuditAction::Update,
-        expected,
-        stamp,
-    )
-    .await?;
-    Ok(updated)
-}
-
-/// [`PlanShapeRepo::set_descriptor_set`]'s body, on a runner the caller owns.
-///
-/// **The runner must be a transaction.** This writes the child rows *and*
-/// the revision's D-135 audit record, so on a bare connection they would be
-/// separate autocommit statements and a failure part way would leave a
-/// committed edit nobody recorded making — the property `create_draft_on`
-/// states as the house rule. Every current caller supplies one.
-///
-/// # Errors
-/// Whatever the method's own documentation states — this is that method,
-/// minus the transaction it opens for itself.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "every argument is a fact only the caller holds: the scope, the (tenant, plan, revision, expected-version) the compare-and-swap addresses, the payload and the D-135 audit stamp. The method above carries the same set; this form exists so a caller that already owns a transaction can join it rather than open a second (D-272)."
-)]
-pub async fn set_descriptor_set_on(
-    runner: &DbTx<'_>,
-    scope: &AccessScope,
-    tenant_id: Uuid,
-    plan_id: PlanId,
-    revision: u64,
-    expected: RowVersion,
-    descriptors: DescriptorSet,
-    stamp: AuditStamp,
-) -> Result<PlanRevision, RepoError> {
-    let Some(guard) = swap_guard(tenant_id, plan_id, revision, expected) else {
-        return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
-    };
-    let Some(parent) = mutable_draft(runner, scope, tenant_id, plan_id, revision, expected).await?
-    else {
-        return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);
-    };
-    // The tenant the row carries is the parent revision's, taken
-    // off the row just read.
-    let row = descriptor_model(&parent, &descriptors);
-    delete_descriptor_set(runner, scope, tenant_id, plan_id, revision).await?;
-    insert_descriptor_set(runner, scope, row).await?;
-    let result = plan_revision_bump(runner, scope, guard).await?;
-    // The read above is not the guard - a concurrent publish can
-    // land between it and this statement - so a swap that
-    // matched nothing is still resolved, and the row it has
     // already replaced is restored by the rollback.
     if result == 0 {
         return Err(refuse(runner, scope, tenant_id, plan_id, revision, expected).await);

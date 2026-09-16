@@ -73,6 +73,8 @@ fn key(charge_kind: ChargeKind, currency: &str, region: &str) -> ScopeKey {
 ///
 fn row_on(price_id: u128, scope_key: ScopeKey) -> PriceRecord {
     PriceRecord {
+        resolved_invoice_line_template: None,
+        resolved_gl_code: None,
         price_id: Uuid::from_u128(price_id),
         scope_key,
         row: {

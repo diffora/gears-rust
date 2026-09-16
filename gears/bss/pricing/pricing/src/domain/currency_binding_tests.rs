@@ -66,6 +66,8 @@ fn row(price_id: u128, currency: &str, region: &str, eligibility: PriceEligibili
     shape.amount_minor = Some(MinorAmount::new(1000).expect("non-negative"));
 
     PriceRecord {
+        resolved_invoice_line_template: None,
+        resolved_gl_code: None,
         price_id: Uuid::from_u128(price_id),
         scope_key,
         row: shape,

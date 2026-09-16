@@ -44,6 +44,8 @@ fn row(currency: &str, amount: i64) -> PriceRecord {
     let mut shape = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
     shape.amount_minor = Some(MinorAmount::new(amount).expect("a non-negative amount"));
     PriceRecord {
+        resolved_invoice_line_template: None,
+        resolved_gl_code: None,
         price_id: Uuid::from_u128(0xd0_11),
         scope_key: key(currency),
         row: shape,

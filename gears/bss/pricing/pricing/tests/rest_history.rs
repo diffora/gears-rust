@@ -300,7 +300,11 @@ async fn body_json(response: axum::http::Response<Body>) -> serde_json::Value {
 /// collides on the canonical scope key.
 async fn seed_row(db: &DBProvider<DbError>, tenant: Uuid, actor: Uuid, region: &str, hour: u32) {
     let prices = PriceRepo::new(db.clone());
-    let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.amount_minor = Some(MinorAmount::new(9_900).expect("a non-negative amount"));
     let at = utc_ymd_hms(2026, 8, 8, hour, 0, 0);
     prices

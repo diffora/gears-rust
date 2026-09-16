@@ -102,6 +102,8 @@ fn record(
     on_phase: PhaseId,
 ) -> PriceRecord {
     PriceRecord {
+        resolved_invoice_line_template: None,
+        resolved_gl_code: None,
         price_id: Uuid::from_u128(seed),
         scope_key: scope_key(charge_kind, code, market, on_phase),
         row: PriceRow::new(charge_kind, Some(ModelKind::Flat)),

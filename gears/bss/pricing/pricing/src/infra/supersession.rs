@@ -638,6 +638,7 @@ pub struct SupersessionService {
 
 impl SupersessionService {
     /// Use the shared product catalog on every supersession request.
+    #[must_use]
     pub fn with_product_catalog(
         mut self,
         catalog: Arc<dyn crate::domain::ports::ProductCatalogClientV1>,
@@ -654,9 +655,9 @@ impl SupersessionService {
     #[must_use]
     pub fn new(db: DBProvider<DbError>, registry: Arc<dyn CatalogVersionRegistryV1>) -> Self {
         Self {
+            catalog: Arc::new(crate::domain::ports::UnconfiguredProductCatalogClientV1),
             db,
             registry,
-            catalog: Arc::new(crate::domain::ports::UnconfiguredProductCatalogClientV1),
         }
     }
 
@@ -894,6 +895,11 @@ fn refuse_from_the_request_alone(request: &SupersessionRequest) -> Result<(), Do
               already bundled - see `SupersessionRequest` for why that one is a struct and these \
               are not"
 )]
+#[allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    reason = "supersession keeps terminal replay, approval, registry handoff and row mutation ordering visible in one transactional procedure"
+)]
 pub async fn supersede_in(
     txn: &DbTx<'_>,
     catalog: &dyn crate::domain::ports::ProductCatalogClientV1,
@@ -916,37 +922,8 @@ pub async fn supersede_in(
     // A pending replay confirms authored content against the staged snapshot.
     // Meter is derived content, so registry drift cannot change the request being
     // replayed. New staging and approved commits still resolve fresh facts below.
-    let replay_subject = supersession_unit_ref(context.plan_id, &request.key, request.changeover);
-    if let Some(staged) = &context.staged {
-        let authorized = crate::infra::approval::authorizing_unit(
-            txn,
-            scope,
-            tenant_id,
-            &context.shape,
-            &replay_subject,
-        )
-        .await?;
-        if authorized.is_none() {
-            if let Some(held) =
-                approval_repo::find_pending_for_subject(txn, tenant_id, &replay_subject)
-                    .await
-                    .map_err(|e| repo_failure(&e))?
-            {
-                let mut replay_request = request.clone();
-                replay_request.successor.row.meter = staged.row.meter.clone();
-                let replay_content = requested_content(&replay_request, &context);
-                refuse_divergent_successor(staged, &replay_content)?;
-                let composed = plan_supersession(
-                    &context.predecessor.row,
-                    &replay_content.row,
-                    &context.plane,
-                    request.changeover,
-                    now,
-                    ChangeoverMoment::Submit,
-                )?;
-                return Ok(pending_answer(&context, request, &composed, None, held));
-            }
-        }
+    if let Some(outcome) = pending_replay(txn, scope, tenant_id, &context, request, now).await? {
+        return Ok(outcome);
     }
     let index = crate::infra::row_sku::sku_index(catalog, ctx).await?;
     if let Some(staged) = &context.staged {
@@ -1495,6 +1472,8 @@ fn successor_candidate(
 ) -> PriceRecord {
     let authored = successor_content.clone();
     PriceRecord {
+        resolved_invoice_line_template: None,
+        resolved_gl_code: None,
         price_id: successor_price_id,
         scope_key: request.key.clone(),
         row: authored.row,
@@ -1718,3 +1697,51 @@ async fn read_unit_context(
 #[cfg(test)]
 #[path = "supersession_tests.rs"]
 mod supersession_tests;
+
+async fn pending_replay(
+    txn: &DbTx<'_>,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    context: &UnitContext,
+    request: &SupersessionRequest,
+    now: OffsetDateTime,
+) -> Result<Option<SupersessionOutcome>, DomainError> {
+    let replay_subject = supersession_unit_ref(context.plan_id, &request.key, request.changeover);
+    if let Some(staged) = &context.staged {
+        let authorized = crate::infra::approval::authorizing_unit(
+            txn,
+            scope,
+            tenant_id,
+            &context.shape,
+            &replay_subject,
+        )
+        .await?;
+        if authorized.is_none()
+            && let Some(held) =
+                approval_repo::find_pending_for_subject(txn, tenant_id, &replay_subject)
+                    .await
+                    .map_err(|e| repo_failure(&e))?
+        {
+            let mut replay_request = request.clone();
+            replay_request
+                .successor
+                .row
+                .meter
+                .clone_from(&staged.row.meter);
+            let replay_content = requested_content(&replay_request, context);
+            refuse_divergent_successor(staged, &replay_content)?;
+            let composed = plan_supersession(
+                &context.predecessor.row,
+                &replay_content.row,
+                &context.plane,
+                request.changeover,
+                now,
+                ChangeoverMoment::Submit,
+            )?;
+            return Ok(Some(pending_answer(
+                context, request, &composed, None, held,
+            )));
+        }
+    }
+    Ok(None)
+}

@@ -71,6 +71,7 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         APPROVAL, APPROVAL_APPROVE, APPROVAL_COUNTS, APPROVAL_REJECT, APPROVAL_WITHDRAW, APPROVALS,
     };
     use bss_pricing::api::rest::audit::AUDIT;
+    use bss_pricing::api::rest::billing_descriptors::BILLING_DESCRIPTORS;
     use bss_pricing::api::rest::bulk_imports::{BULK_IMPORT, BULK_IMPORT_ABORT, BULK_IMPORTS};
     use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
     use bss_pricing::api::rest::catalog_skus::{CATALOG_SKUS, CATALOG_TAX_CATEGORIES};
@@ -202,7 +203,9 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         ("GET", TAX_DISPLAY_POLICY),
         ("PUT", TAX_DISPLAY_POLICY),
         ("GET", ROUNDING_POLICY),
+        ("GET", BILLING_DESCRIPTORS),
         ("PUT", ROUNDING_POLICY),
+        ("PUT", BILLING_DESCRIPTORS),
         // D-334 / D-356: the two single-table vocabularies. Their whole-set
         // `PUT`s are **gone**, on D-353's own three reasons carried onto these
         // tables — an audit record that could not say which value moved, two
@@ -318,6 +321,10 @@ fn config_routers(
 ) -> axum::Router {
     bss_pricing::api::rest::tax_display_policy::router(Arc::clone(authoring), openapi)
         .merge(bss_pricing::api::rest::rounding_policy::router(
+            Arc::clone(authoring),
+            openapi,
+        ))
+        .merge(bss_pricing::api::rest::billing_descriptors::router(
             Arc::clone(authoring),
             openapi,
         ))
@@ -856,6 +863,7 @@ async fn an_unconfigured_gear_reserves_its_prefix_and_answers_404_under_it() {
 /// call sites out of `src/api/rest/**` and refuses a row this list is missing. The
 /// list survives for what a scan cannot say: *which* header, and why.
 fn if_match_routes() -> Vec<(&'static str, &'static str)> {
+    use bss_pricing::api::rest::billing_descriptors::BILLING_DESCRIPTORS;
     use bss_pricing::api::rest::bulk_imports::{BULK_IMPORT_ABORT, BULK_IMPORTS};
     use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLES};
     use bss_pricing::api::rest::customer_groups::{
@@ -936,6 +944,7 @@ fn if_match_routes() -> Vec<(&'static str, &'static str)> {
         ("PATCH", VOCABULARY_VALUE),
         ("PUT", TAX_DISPLAY_POLICY),
         ("PUT", ROUNDING_POLICY),
+        ("PUT", BILLING_DESCRIPTORS),
         // The two single-table vocabularies' per-value `PATCH`es, each
         // asserting the **value's own** tag. Their whole-set `PUT`s, which
         // asserted the set tag, are removed — `VOCABULARY_VALUE`'s story one

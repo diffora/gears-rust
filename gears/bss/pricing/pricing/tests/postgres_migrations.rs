@@ -300,8 +300,6 @@ const EXPECTED_RELATIONAL_CONSTRAINTS: &[&str] = &[
      REFERENCES bss.pricing_plan(plan_id, revision)",
     "fk_pricing_plan_addon_rule_revision: FOREIGN KEY (plan_id, plan_revision) \
      REFERENCES bss.pricing_plan(plan_id, revision)",
-    "fk_pricing_plan_descriptor_set_revision: FOREIGN KEY (plan_id, plan_revision) \
-     REFERENCES bss.pricing_plan(plan_id, revision)",
     "fk_pricing_plan_period_floor_cap_revision: FOREIGN KEY (plan_id, plan_revision) \
      REFERENCES bss.pricing_plan(plan_id, revision)",
     "fk_pricing_plan_phase_revision: FOREIGN KEY (plan_id, plan_revision) \
@@ -375,7 +373,6 @@ const EXPECTED_FUNCTIONS: &[&str] = &[
     "pricing_migration_append_only",
     "pricing_plan_addon_rule_append_only",
     "pricing_plan_append_only",
-    "pricing_plan_descriptor_set_append_only",
     "pricing_plan_period_floor_cap_append_only",
     "pricing_plan_phase_append_only",
     "pricing_price_append_only",
@@ -412,7 +409,6 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_migration_append_only",
     "trg_pricing_plan_addon_rule_append_only",
     "trg_pricing_plan_append_only",
-    "trg_pricing_plan_descriptor_set_append_only",
     "trg_pricing_plan_period_floor_cap_append_only",
     "trg_pricing_plan_phase_append_only",
     "trg_pricing_price_append_only",
@@ -454,7 +450,6 @@ const EXPECTED_REVISION_COLUMNS: &[&str] = &[
     "pricing_migration.source_revision bigint",
     "pricing_plan.revision bigint",
     "pricing_plan_addon_rule.plan_revision bigint",
-    "pricing_plan_descriptor_set.plan_revision bigint",
     "pricing_plan_period_floor_cap.plan_revision bigint",
     "pricing_plan_phase.plan_revision bigint",
     "pricing_price_overlay.revision bigint",
@@ -529,7 +524,6 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_operator_flag_by_flag",
     "idx_pricing_outbox_undrained",
     "idx_pricing_plan_addon_rule_revision",
-    "idx_pricing_plan_descriptor_set_revision",
     "idx_pricing_plan_period_floor_cap_revision",
     "idx_pricing_plan_phase_revision",
     "idx_pricing_plan_tenant",
@@ -625,7 +619,6 @@ const EXPECTED_PRIMARY_KEYS: &[&str] = &[
     "pricing_pin_frontier: tenant_id",
     "pricing_plan: plan_id, revision",
     "pricing_plan_addon_rule: plan_id, plan_revision, addon_sku_id",
-    "pricing_plan_descriptor_set: plan_id, plan_revision",
     "pricing_plan_period_floor_cap: plan_id, plan_revision, currency, region",
     // **Widened by `pricing_plan_phase` (D-340)**: it was `phase_id, plan_revision`
     // until 2026-08-17, which gave one phase id to one plan per revision *number*
@@ -768,6 +761,7 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_plan_purchase_qty",
     "chk_pricing_plan_revision",
     "chk_pricing_plan_row_version",
+    "chk_pricing_policy_line_templates",
     "chk_pricing_policy_object_interval_days_cap",
     "chk_pricing_policy_object_interval_months_cap",
     "chk_pricing_policy_object_notice_floor",
@@ -1508,7 +1502,6 @@ const REQUIRED_DEREFERENCES: &[&str] = &[
     "pricing_plan_phase_append_only.tenant_id",
     "pricing_plan_addon_rule_append_only.tenant_id",
     "pricing_composite_meter_append_only.tenant_id",
-    "pricing_plan_descriptor_set_append_only.tenant_id",
     "pricing_plan_period_floor_cap_append_only.tenant_id",
     "pricing_price_overlay_line_append_only.tenant_id",
 ];

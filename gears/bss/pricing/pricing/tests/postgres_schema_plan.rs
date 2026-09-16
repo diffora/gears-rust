@@ -885,7 +885,7 @@ async fn every_frozen_column_of_a_frozen_revision_refuses_to_move() {
         "plan_tier_override = true".to_owned(),
         "purchase_min_qty = 1".to_owned(),
         "purchase_max_qty = 9".to_owned(),
-        "invoice_grouping_key = 'group/1'".to_owned(),
+        "descriptor_ext = '{\"costCentre\":\"group/1\"}'::jsonb".to_owned(),
         "available_from = '2026-01-01 00:00:00+00'".to_owned(),
         "available_to = '2026-12-01 00:00:00+00'".to_owned(),
         "created_by = '99999999-9999-9999-9999-999999999999'".to_owned(),

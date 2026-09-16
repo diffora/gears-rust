@@ -80,7 +80,7 @@ fn new_draft(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
         plan_tier_override: false,
         purchase_min_qty: None,
         purchase_max_qty: None,
-        invoice_grouping_key: None,
+        descriptor_ext: std::collections::BTreeMap::new(),
         available_from: None,
         available_to: None,
         cloned_from: None,
@@ -386,7 +386,7 @@ async fn a_composition_is_written_whole_and_read_back() {
             tenant,
             plan_id,
             0,
-            RowVersion::new(0),
+            RowVersion::new(1),
             CompositionDraft {
                 components: vec![component(1), component(2)],
                 rev_share_groups: vec![group(&[("a", 4500), ("b", 4500)], 1000)],
@@ -397,7 +397,7 @@ async fn a_composition_is_written_whole_and_read_back() {
         .expect("write the composition");
 
     // The revision's tag advanced: the composition rides it (see the module doc).
-    assert_eq!(revision.row_version, RowVersion::new(1));
+    assert_eq!(revision.row_version, RowVersion::new(2));
 
     let stored = bundles
         .load_composition(&scope, tenant, plan_id, 0)
@@ -429,7 +429,7 @@ async fn a_second_write_replaces_the_composition_rather_than_merging_it() {
             tenant,
             plan_id,
             0,
-            RowVersion::new(0),
+            RowVersion::new(1),
             CompositionDraft {
                 components: vec![component(1), component(2)],
                 rev_share_groups: vec![group(&[("a", 9000)], 1000)],
@@ -444,7 +444,7 @@ async fn a_second_write_replaces_the_composition_rather_than_merging_it() {
             tenant,
             plan_id,
             0,
-            RowVersion::new(1),
+            RowVersion::new(2),
             CompositionDraft {
                 components: vec![component(3)],
                 rev_share_groups: Vec::new(),
@@ -478,7 +478,7 @@ async fn a_stale_row_version_is_refused_and_writes_nothing() {
             tenant,
             plan_id,
             0,
-            RowVersion::new(0),
+            RowVersion::new(1),
             CompositionDraft {
                 components: vec![component(1)],
                 rev_share_groups: Vec::new(),
@@ -495,7 +495,7 @@ async fn a_stale_row_version_is_refused_and_writes_nothing() {
             plan_id,
             0,
             // The version the first write consumed.
-            RowVersion::new(0),
+            RowVersion::new(1),
             CompositionDraft {
                 components: vec![component(9)],
                 rev_share_groups: Vec::new(),
@@ -537,7 +537,7 @@ async fn a_published_revisions_composition_cannot_be_replaced() {
             tenant,
             plan_id,
             0,
-            RowVersion::new(0),
+            RowVersion::new(1),
             CompositionDraft {
                 components: vec![component(1)],
                 rev_share_groups: Vec::new(),

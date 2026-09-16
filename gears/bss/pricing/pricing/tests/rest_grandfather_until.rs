@@ -140,6 +140,7 @@ async fn cut_over(h: &Harness) -> Generation {
             "billing_anchor_policy": "calendar_month",
             "proration_basis": "calendar_days_actual",
             "credit_on_downgrade": false,
+            "gl_code_ref": "4000",
             "rounding_policy_ref": "half_up"
         },
         "reason_code": "grandfatheringCutover"

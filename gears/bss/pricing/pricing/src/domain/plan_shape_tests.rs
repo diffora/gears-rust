@@ -77,6 +77,8 @@ fn record(charge_kind: ChargeKind, code: &str, market: &str, on_phase: PhaseId) 
     .expect("all_subscriptions pairs with cohort none");
 
     PriceRecord {
+        resolved_invoice_line_template: None,
+        resolved_gl_code: None,
         price_id: Uuid::from_u128(0xb_1000),
         scope_key,
         row: PriceRow::new(charge_kind, Some(ModelKind::Flat)),
@@ -456,8 +458,7 @@ fn a_fresh_shape_carries_nothing_but_its_name_and_its_clock() {
     assert!(subject.available_to.is_none());
     assert!(subject.purchase_min_qty.is_none());
     assert!(subject.purchase_max_qty.is_none());
-    assert!(subject.invoice_grouping_key.is_none());
-    assert!(subject.descriptor_set.is_none());
+    assert!(subject.descriptor_ext.is_empty());
     assert!(subject.baseline.is_none());
     assert!(subject.addon_rules.is_empty());
     assert!(subject.rows.is_empty());

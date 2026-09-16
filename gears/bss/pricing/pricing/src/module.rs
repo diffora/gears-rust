@@ -1171,6 +1171,10 @@ impl Gear for BssPricingGear {
     /// no-op (compiled in but unconfigured); present-but-invalid config aborts
     /// init loudly rather than booting a catalog whose caps or cadences are
     /// nonsense.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "module initialization wires interdependent runtime services and must fail atomically"
+    )]
     async fn init(&self, ctx: &GearCtx) -> Result<()> {
         match ctx.config::<BssPricingConfig>() {
             // Configured, or present with no `config:` section (defaults only).
@@ -1724,6 +1728,10 @@ impl RestApiCapability for BssPricingGear {
                 openapi,
             ))
             .merge(crate::api::rest::tax_display_policy::router(
+                Arc::clone(&rt.authoring_api),
+                openapi,
+            ))
+            .merge(crate::api::rest::billing_descriptors::router(
                 Arc::clone(&rt.authoring_api),
                 openapi,
             ))

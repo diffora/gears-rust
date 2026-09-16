@@ -44,9 +44,9 @@ use bss_pricing::infra::storage::entity::{
     bundle_revshare_group, catalog_version_ref, composite_meter, customer_group_taxonomy,
     gl_code_taxonomy, group_membership, idempotency_dedup, migration, operator_flag,
     org_tier_taxonomy, outbox, partner_taxonomy, pin_frontier, plan, plan_addon_rule,
-    plan_descriptor_set, plan_period_floor_cap, plan_phase, policy_object, price, price_overlay,
-    price_overlay_line, price_overlay_line_amount, price_tier_band, price_window, read_model,
-    region_taxonomy, repricing_journal, rounding_policy_taxonomy, snapshot_provenance,
+    plan_period_floor_cap, plan_phase, policy_object, price, price_overlay, price_overlay_line,
+    price_overlay_line_amount, price_tier_band, price_window, read_model, region_taxonomy,
+    repricing_journal, rounding_policy_taxonomy, snapshot_provenance,
 };
 use bss_pricing::infra::storage::migrations::Migrator;
 use sea_orm::{ConnectionTrait, Database, EntityName, EntityTrait, Statement};
@@ -61,7 +61,6 @@ const EXPECTED_TABLES: &[&str] = &[
     "pricing_plan",
     "pricing_plan_phase",
     "pricing_plan_addon_rule",
-    "pricing_plan_descriptor_set",
     "pricing_plan_period_floor_cap",
     "pricing_price",
     "pricing_price_tier_band",
@@ -195,11 +194,6 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_plan_addon_rule_no_update",
     "trg_pricing_plan_addon_rule_same_tenant_as_its_revision_on_insert",
     "trg_pricing_plan_addon_rule_same_tenant_as_its_revision_on_update",
-    "trg_pricing_plan_descriptor_set_no_delete",
-    "trg_pricing_plan_descriptor_set_no_insert",
-    "trg_pricing_plan_descriptor_set_no_update",
-    "trg_pricing_plan_descriptor_set_same_tenant_as_its_revision_on_insert",
-    "trg_pricing_plan_descriptor_set_same_tenant_as_its_revision_on_update",
     "trg_pricing_plan_draft_flip_whitelist",
     "trg_pricing_plan_flip_whitelist",
     "trg_pricing_plan_frozen_columns",
@@ -301,7 +295,6 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_operator_flag_by_flag",
     "idx_pricing_outbox_undrained",
     "idx_pricing_plan_addon_rule_revision",
-    "idx_pricing_plan_descriptor_set_revision",
     "idx_pricing_plan_period_floor_cap_revision",
     "idx_pricing_plan_phase_revision",
     "idx_pricing_plan_tenant",
@@ -469,6 +462,7 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_plan_purchase_qty",
     "chk_pricing_plan_revision",
     "chk_pricing_plan_row_version",
+    "chk_pricing_policy_line_templates",
     "chk_pricing_policy_object_interval_days_cap",
     "chk_pricing_policy_object_interval_months_cap",
     "chk_pricing_policy_object_notice_floor",
@@ -673,7 +667,6 @@ const EXPECTED_PRIMARY_KEYS: &[(&str, &str)] = &[
         "pricing_plan_addon_rule",
         "plan_id, plan_revision, addon_sku_id",
     ),
-    ("pricing_plan_descriptor_set", "plan_id, plan_revision"),
     (
         "pricing_plan_period_floor_cap",
         "plan_id, plan_revision, currency, region",
@@ -936,26 +929,6 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
         5_814_866_044_157_723_696_u64,
     ),
     (
-        "trg_pricing_plan_descriptor_set_no_delete",
-        16_652_343_744_580_170_347_u64,
-    ),
-    (
-        "trg_pricing_plan_descriptor_set_no_insert",
-        15_250_228_291_084_614_111_u64,
-    ),
-    (
-        "trg_pricing_plan_descriptor_set_no_update",
-        13_026_743_661_363_952_284_u64,
-    ),
-    (
-        "trg_pricing_plan_descriptor_set_same_tenant_as_its_revision_on_insert",
-        2_198_825_988_851_607_917_u64,
-    ),
-    (
-        "trg_pricing_plan_descriptor_set_same_tenant_as_its_revision_on_update",
-        10_030_716_169_952_795_981_u64,
-    ),
-    (
         "trg_pricing_plan_draft_flip_whitelist",
         1_063_197_060_918_151_682_u64,
     ),
@@ -965,7 +938,7 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     ),
     (
         "trg_pricing_plan_frozen_columns",
-        16_522_338_372_357_234_734_u64,
+        16_086_879_142_628_523_546_u64,
     ),
     ("trg_pricing_plan_no_delete", 11_619_837_810_759_772_588_u64),
     (
@@ -1022,7 +995,7 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     // the `plan_id` beside it. Was `9_876_821_329_598_270_805`.
     (
         "trg_pricing_price_frozen_columns",
-        2_507_730_080_879_983_974_u64,
+        7_201_717_262_620_712_042_u64,
     ),
     (
         "trg_pricing_price_grandfather_monotonic",
@@ -1438,7 +1411,6 @@ async fn the_chain_creates_every_table_and_re_runs_cleanly() {
         plan::Entity,
         plan_phase::Entity,
         plan_addon_rule::Entity,
-        plan_descriptor_set::Entity,
         // D-319's fourth revision-scoped child.
         plan_period_floor_cap::Entity,
         price::Entity,
@@ -1798,7 +1770,13 @@ async fn the_sku_backfill_fills_fee_rows_and_refuses_usage_rows() {
         .await
     };
 
-    let all_but_last = u32::try_from(Migrator::migrations().len() - 1).expect("chain length");
+    let all_but_last = u32::try_from(
+        Migrator::migrations()
+            .iter()
+            .position(|m| m.name() == "m20260916_000044_price_row_sku")
+            .expect("SKU migration"),
+    )
+    .expect("chain length");
     Migrator::up(&db, Some(all_but_last))
         .await
         .expect("the shipped chain");
@@ -1840,7 +1818,7 @@ async fn the_sku_backfill_fills_fee_rows_and_refuses_usage_rows() {
         .await
         .expect("seed the usage row, draft, so the repair below can delete it");
 
-    let err = Migrator::up(&db, None)
+    let err = Migrator::up(&db, Some(1))
         .await
         .expect_err("a usage row cannot be backfilled");
     let text = err.to_string();
@@ -1860,7 +1838,7 @@ async fn the_sku_backfill_fills_fee_rows_and_refuses_usage_rows() {
     .await
     .expect("the operator clears the row they cannot repair");
 
-    Migrator::up(&db, None)
+    Migrator::up(&db, Some(1))
         .await
         .expect("tightens once every row has a SKU");
 
@@ -1923,7 +1901,7 @@ async fn the_sku_backfill_fills_fee_rows_and_refuses_usage_rows() {
     Migrator::down(&db, Some(1))
         .await
         .expect("populated down preserves children");
-    Migrator::up(&db, None)
+    Migrator::up(&db, Some(1))
         .await
         .expect("populated up round trip");
 }
@@ -3031,7 +3009,7 @@ async fn the_target_sku_predicate_refuses_a_blank_and_keeps_its_null_arm() {
     // The `NULL` arm, which is the whole reason this predicate is a disjunction, and a
     // named SKU beside it.
     must_apply(&conn, &line(98, "NULL")).await;
-    must_apply(&conn, &line(99, "' vm-small '")).await;
+    must_apply(&conn, &line(99, "X'00000000000000000000000000000372'")).await;
 }
 
 /// **A negative `min_qty` or `max_qty` is refused by the store.**
@@ -3282,7 +3260,13 @@ async fn a_journal_row_may_not_name_another_tenants_run() {
 async fn sku_backfill_refuses_wrong_tenant_and_ambiguous_revisions() {
     for ambiguous in [false, true] {
         let db = Database::connect("sqlite::memory:").await.unwrap();
-        let n = u32::try_from(Migrator::migrations().len() - 1).unwrap();
+        let n = u32::try_from(
+            Migrator::migrations()
+                .iter()
+                .position(|m| m.name() == "m20260916_000044_price_row_sku")
+                .expect("SKU migration"),
+        )
+        .unwrap();
         Migrator::up(&db, Some(n)).await.unwrap();
         db.execute_unprepared("INSERT INTO pricing_plan (tenant_id, plan_id, revision, lifecycle_state, created_by, sku_id) VALUES ('tenant-a', 'plan', 1, 'superseded', 'actor', 'sku-a')").await.unwrap();
         if ambiguous {
@@ -3316,7 +3300,13 @@ async fn sku_backfill_refuses_wrong_tenant_and_ambiguous_revisions() {
 #[tokio::test]
 async fn sku_scope_collision_rolls_back_the_physical_rebuild() {
     let db = Database::connect("sqlite::memory:").await.unwrap();
-    let n = u32::try_from(Migrator::migrations().len() - 1).unwrap();
+    let n = u32::try_from(
+        Migrator::migrations()
+            .iter()
+            .position(|m| m.name() == "m20260916_000044_price_row_sku")
+            .expect("SKU migration"),
+    )
+    .unwrap();
     Migrator::up(&db, Some(n)).await.unwrap();
     db.execute_unprepared("INSERT INTO pricing_plan (tenant_id, plan_id, revision, lifecycle_state, created_by, sku_id) VALUES ('tenant', 'plan', 1, 'published', 'actor', 'sku')").await.unwrap();
     for meter in ["unit-a", "unit-b"] {
@@ -3357,4 +3347,227 @@ async fn sku_scope_collision_rolls_back_the_physical_rebuild() {
         .find(|r| r.try_get::<String>("", "name").unwrap() == "sku_id")
         .unwrap();
     assert_eq!(sku_column.try_get::<i64>("", "notnull").unwrap(), 0);
+}
+
+// D-372: historical overlay targets were text, while the UUID driver binds blobs.
+const OVERLAY_UUID_MIGRATION: &str = "m20260916_000044_price_row_sku";
+const OVERLAY_UUID_TENANT: &str = "11111111-1111-1111-1111-111111111111";
+const OVERLAY_UUID_ID: &str = "22222222-2222-2222-2222-222222222222";
+const OVERLAY_UUID_PLAN: &str = "33333333-3333-3333-3333-333333333333";
+const OVERLAY_UUID_LINE: &str = "44444444-4444-4444-4444-444444444444";
+const OVERLAY_UUID_TARGET: &str = "abcdef01-2345-6789-abcd-ef0123456789";
+
+async fn before_overlay_uuid_migration() -> sea_orm::DatabaseConnection {
+    let db = Database::connect("sqlite::memory:").await.expect("SQLite");
+    let boundary = Migrator::migrations()
+        .iter()
+        .position(|migration| migration.name() == OVERLAY_UUID_MIGRATION)
+        .expect("D-372 migration registered");
+    Migrator::up(&db, Some(u32::try_from(boundary).expect("migration count")))
+        .await
+        .expect("run the actual predecessor chain");
+    must_apply(&db, &format!(
+        "INSERT INTO pricing_price_overlay (price_overlay_id, revision, tenant_id, lifecycle_state, scope_class, scope_value, precedence, tax_basis, disclosure, target_ref) \
+         VALUES ('{OVERLAY_UUID_ID}', 0, '{OVERLAY_UUID_TENANT}', 'draft', 'brand', 'acme', 10, 'delegated_tariffs', 'restricted', '{{}}')"
+    )).await;
+    db
+}
+
+async fn seed_legacy_overlay_uuid_line(db: &sea_orm::DatabaseConnection, target: &str) {
+    must_apply(db, &format!(
+        "INSERT INTO pricing_price_overlay_line (line_id, price_overlay_id, overlay_revision, tenant_id, plan_id, target_sku, adjustment_kind, magnitude_kind, adjustment_value) \
+         VALUES ('{OVERLAY_UUID_LINE}', '{OVERLAY_UUID_ID}', 0, '{OVERLAY_UUID_TENANT}', '{OVERLAY_UUID_PLAN}', '{target}', 'discount', 'amount', NULL)"
+    )).await;
+    must_apply(db, &format!(
+        "INSERT INTO pricing_price_overlay_line_amount (line_id, overlay_revision, currency, tenant_id, value_minor) \
+         VALUES ('{OVERLAY_UUID_LINE}', 0, 'EUR', '{OVERLAY_UUID_TENANT}', 1000)"
+    )).await;
+    must_apply(db, &format!(
+        "INSERT INTO pricing_price_overlay_line (line_id, price_overlay_id, overlay_revision, tenant_id, adjustment_kind, magnitude_kind, adjustment_value) \
+         VALUES ('55555555-5555-5555-5555-555555555555', '{OVERLAY_UUID_ID}', 0, '{OVERLAY_UUID_TENANT}', 'discount', 'percent_bp', 100)"
+    )).await;
+}
+
+async fn assert_overlay_uuid_children_survive(db: &sea_orm::DatabaseConnection) {
+    assert_eq!(
+        count(db, "SELECT count(*) AS n FROM pricing_price_overlay").await,
+        1
+    );
+    assert_eq!(count(db, "SELECT count(*) AS n FROM pricing_price_overlay_line_amount WHERE currency = 'EUR' AND value_minor = 1000").await, 1);
+    assert_eq!(
+        count(
+            db,
+            "SELECT count(*) AS n FROM pricing_price_overlay_line WHERE target_sku IS NULL"
+        )
+        .await,
+        1,
+        "the list-default line stays NULL"
+    );
+    assert!(
+        db.query_all_raw(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "PRAGMA foreign_key_check"
+        ))
+        .await
+        .expect("FK census")
+        .is_empty()
+    );
+}
+
+async fn assert_overlay_uuid_blob(db: &sea_orm::DatabaseConnection) {
+    let row = db.query_one_raw(Statement::from_string(sea_orm::DatabaseBackend::Sqlite,
+        format!("SELECT target_sku, typeof(target_sku) AS storage_type, length(target_sku) AS bytes FROM pricing_price_overlay_line WHERE line_id = '{OVERLAY_UUID_LINE}'")))
+        .await.expect("read migrated target").expect("line retained");
+    assert_eq!(
+        row.try_get::<String>("", "storage_type").expect("type"),
+        "blob"
+    );
+    assert_eq!(row.try_get::<i64>("", "bytes").expect("length"), 16);
+    assert_eq!(
+        row.try_get::<Uuid>("", "target_sku")
+            .expect("driver reads UUID"),
+        Uuid::parse_str(OVERLAY_UUID_TARGET).expect("target UUID")
+    );
+}
+
+#[tokio::test]
+async fn overlay_target_uuid_text_normalizes_and_round_trips_with_its_children() {
+    let db = before_overlay_uuid_migration().await;
+    seed_legacy_overlay_uuid_line(&db, &OVERLAY_UUID_TARGET.to_uppercase()).await;
+    Migrator::up(&db, Some(1))
+        .await
+        .expect("normalize legacy UUID text");
+    assert_overlay_uuid_blob(&db).await;
+    assert_overlay_uuid_children_survive(&db).await;
+
+    // Direct writers cannot reintroduce text, a short blob or the nil sentinel.
+    for target in [
+        format!("'{OVERLAY_UUID_TARGET}'"),
+        "zeroblob(15)".to_owned(),
+        "zeroblob(16)".to_owned(),
+    ] {
+        let refusal = try_exec(&db, &format!(
+            "INSERT INTO pricing_price_overlay_line (line_id, price_overlay_id, overlay_revision, tenant_id, plan_id, target_sku, adjustment_kind, magnitude_kind, adjustment_value) \
+             VALUES ('77777777-7777-7777-7777-777777777777', '{OVERLAY_UUID_ID}', 0, '{OVERLAY_UUID_TENANT}', '{OVERLAY_UUID_PLAN}', {target}, 'discount', 'percent_bp', 100)"
+        )).await.expect_err("only non-nil 16-byte UUID blobs are storable");
+        assert!(
+            refusal.contains("chk_pricing_price_overlay_line_target_sku_present"),
+            "{refusal}"
+        );
+    }
+
+    // The API's UUID binding must collide with the normalized historical text.
+    let target = Uuid::parse_str(OVERLAY_UUID_TARGET).expect("target UUID");
+    let duplicate = db.execute_raw(Statement::from_sql_and_values(sea_orm::DatabaseBackend::Sqlite,
+        format!("INSERT INTO pricing_price_overlay_line (line_id, price_overlay_id, overlay_revision, tenant_id, plan_id, target_sku, adjustment_kind, magnitude_kind, adjustment_value) \
+                 VALUES ('66666666-6666-6666-6666-666666666666', '{OVERLAY_UUID_ID}', 0, '{OVERLAY_UUID_TENANT}', '{OVERLAY_UUID_PLAN}', ?, 'discount', 'percent_bp', 100)"),
+        [target.into()])).await.expect_err("one SKU has one overlay line key");
+    assert!(
+        duplicate.to_string().contains("UNIQUE constraint failed"),
+        "{duplicate}"
+    );
+    assert_eq!(
+        count(&db, "SELECT count(*) AS n FROM pricing_price_overlay_line").await,
+        2
+    );
+
+    Migrator::down(&db, Some(1))
+        .await
+        .expect("restore legacy text representation");
+    let row = db.query_one_raw(Statement::from_string(sea_orm::DatabaseBackend::Sqlite,
+        format!("SELECT target_sku, typeof(target_sku) AS storage_type FROM pricing_price_overlay_line WHERE line_id = '{OVERLAY_UUID_LINE}'")))
+        .await.expect("read restored target").expect("line retained");
+    assert_eq!(
+        row.try_get::<String>("", "storage_type").expect("type"),
+        "text"
+    );
+    assert_eq!(
+        row.try_get::<String>("", "target_sku")
+            .expect("canonical text"),
+        OVERLAY_UUID_TARGET
+    );
+    assert_overlay_uuid_children_survive(&db).await;
+    Migrator::up(&db, Some(1))
+        .await
+        .expect("reapply UUID normalization");
+    assert_overlay_uuid_blob(&db).await;
+    assert_overlay_uuid_children_survive(&db).await;
+}
+
+async fn assert_overlay_uuid_refusal_rolls_back(
+    db: &sea_orm::DatabaseConnection,
+    original: &str,
+    rows: i64,
+) {
+    let row = db.query_one_raw(Statement::from_string(sea_orm::DatabaseBackend::Sqlite,
+        format!("SELECT target_sku, typeof(target_sku) AS storage_type FROM pricing_price_overlay_line WHERE line_id = '{OVERLAY_UUID_LINE}'")))
+        .await.expect("read original target").expect("line retained");
+    assert_eq!(
+        row.try_get::<String>("", "target_sku").expect("text"),
+        original
+    );
+    assert_eq!(
+        row.try_get::<String>("", "storage_type").expect("type"),
+        "text"
+    );
+    assert_eq!(
+        count(db, "SELECT count(*) AS n FROM pricing_price_overlay_line").await,
+        rows
+    );
+    assert_overlay_uuid_children_survive(db).await;
+    assert_eq!(
+        count(
+            db,
+            "SELECT count(*) AS n FROM pragma_table_info('pricing_price') WHERE name = 'sku_id'"
+        )
+        .await,
+        0,
+        "the earlier SKU ADD COLUMN rolls back too"
+    );
+    assert_eq!(count(db, "SELECT count(*) AS n FROM seaql_migrations WHERE version = 'm20260916_000044_price_row_sku'").await, 0, "a failed migration is not marked applied");
+}
+
+#[tokio::test]
+async fn invalid_and_nil_legacy_overlay_targets_refuse_without_partial_conversion() {
+    for target in ["not-a-uuid", "00000000-0000-0000-0000-000000000000"] {
+        let db = before_overlay_uuid_migration().await;
+        seed_legacy_overlay_uuid_line(&db, target).await;
+        let error = Migrator::up(&db, Some(1))
+            .await
+            .expect_err("invalid target must refuse");
+        let message = error.to_string();
+        assert!(
+            message.contains("target_sku") && message.contains(target),
+            "{message}"
+        );
+        assert_overlay_uuid_refusal_rolls_back(&db, target, 2).await;
+    }
+}
+
+#[tokio::test]
+async fn semantically_duplicate_legacy_uuid_targets_refuse_and_preserve_both_texts() {
+    let db = before_overlay_uuid_migration().await;
+    let uppercase = OVERLAY_UUID_TARGET.to_uppercase();
+    seed_legacy_overlay_uuid_line(&db, &uppercase).await;
+    let compact = OVERLAY_UUID_TARGET.replace('-', "");
+    must_apply(&db, &format!(
+        "INSERT INTO pricing_price_overlay_line (line_id, price_overlay_id, overlay_revision, tenant_id, plan_id, target_sku, adjustment_kind, magnitude_kind, adjustment_value) \
+         VALUES ('66666666-6666-6666-6666-666666666666', '{OVERLAY_UUID_ID}', 0, '{OVERLAY_UUID_TENANT}', '{OVERLAY_UUID_PLAN}', '{compact}', 'discount', 'percent_bp', 100)"
+    )).await;
+    let error = Migrator::up(&db, Some(1))
+        .await
+        .expect_err("two text spellings cannot become two keys for one UUID");
+    assert!(
+        error.to_string().contains("UNIQUE constraint failed"),
+        "{error}"
+    );
+    assert_overlay_uuid_refusal_rolls_back(&db, &uppercase, 3).await;
+    let row = db.query_one_raw(Statement::from_string(sea_orm::DatabaseBackend::Sqlite,
+        "SELECT target_sku FROM pricing_price_overlay_line WHERE line_id = '66666666-6666-6666-6666-666666666666'"))
+        .await.expect("read second original target").expect("duplicate retained");
+    assert_eq!(
+        row.try_get::<String>("", "target_sku")
+            .expect("original compact text"),
+        compact
+    );
 }

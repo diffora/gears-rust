@@ -1200,6 +1200,10 @@ async fn every_frozen_column_of_a_published_row_refuses_to_move() {
         "tax_inclusive = true".to_owned(),
         "tax_category_ref = 'reduced'".to_owned(),
         "resolved_tax_category = 'standard'".to_owned(),
+        "invoice_line_template = '{sku}'".to_owned(),
+        "gl_code_ref = '4000'".to_owned(),
+        "resolved_invoice_line_template = '{sku}'".to_owned(),
+        "resolved_gl_code = '4000'".to_owned(),
         // Its twin (`pricing_price`), and it is here because this case's own
         // sibling census made it red the moment the column existed - which is the
         // whole point of the pair. The guard freezes it for the same reason: a

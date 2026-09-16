@@ -20,8 +20,8 @@ use crate::domain::instant::utc_ymd_hms;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::plan_shape::{
-    BillingCycle, CompositeMeter, CustomIntervalUnit, DescriptorSet, Frequency, PeriodFloorCap,
-    PhaseKind, PlanPhase,
+    BillingCycle, CompositeMeter, CustomIntervalUnit, Frequency, PeriodFloorCap, PhaseKind,
+    PlanPhase,
 };
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow};
@@ -66,6 +66,9 @@ fn row_on(scope_key: ScopeKey) -> PriceRecord {
     let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
     row.amount_minor = Some(MinorAmount::new(1_200).expect("a non-negative amount"));
     PriceRecord {
+        resolved_invoice_line_template: None,
+
+        resolved_gl_code: None,
         price_id: Uuid::from_u128(0xb_0001),
         scope_key,
         row,
@@ -131,7 +134,6 @@ fn populated() -> PlanSubjectDelta {
         available_to: Some(at(400)),
         purchase_min_qty: Some(1),
         purchase_max_qty: Some(9),
-        invoice_grouping_key: Some("bundle-a".to_owned()),
         phases: vec![PlanPhase {
             phase_id: phase(),
             kind: PhaseKind::Evergreen,
@@ -142,12 +144,8 @@ fn populated() -> PlanSubjectDelta {
             display_trial_days: None,
         }],
         addon_rules: Vec::new(),
-        descriptor_set: Some(DescriptorSet {
-            invoice_line_template: Some("{plan}".to_owned()),
-            gl_code: Some("4000".to_owned()),
-            itemization_rule: Some("per_charge".to_owned()),
-            additional: std::collections::BTreeMap::new(),
-        }),
+        descriptor_ext: BTreeMap::default(),
+        itemization_rule: crate::domain::bundle::InvoiceItemization::Itemize,
         // Populated for the same reason as the composite set below: an empty
         // list would let `period_floor_cap_value` render nothing and still pass
         // the key census, so the market pair, the floor and the absent cap are
@@ -303,7 +301,7 @@ fn the_payloads_members_partition_into_the_read_and_the_ignored() {
         // get, three members down.
         "composites",
         "crossBoundaryChangePolicy",
-        "descriptorSet",
+        "billing",
         // Slice 6's entitlement grant set and its materialized map. **Ignored
         // deliberately**, for the change contract's reason one line up: the six
         // predicates ask whether a thing may be *sold*, and these say what a
@@ -311,7 +309,6 @@ fn the_payloads_members_partition_into_the_read_and_the_ignored() {
         // sellable.
         "entitlementGrants",
         "evaluationPolicyVersion",
-        "invoiceGroupingKey",
         // D-319's plan-level period floor/cap. **Ignored deliberately**: a
         // period bound is what a thing costs at minimum once sold, and the six
         // predicates ask whether it may be sold at all. A plan carrying no

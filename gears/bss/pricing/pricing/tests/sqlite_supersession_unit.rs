@@ -1161,10 +1161,14 @@ fn graduated_usage(unit_price: i64) -> PriceContent {
     use bss_pricing::domain::price_row::{
         BillingGranularity, ModelKind, PriceRow, TierAggregationWindow, TierBand,
     };
-    let mut row = PriceRow::new(
-        bss_pricing::domain::scope_key::ChargeKind::Usage,
-        Some(ModelKind::Graduated),
-    );
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(
+            bss_pricing::domain::scope_key::ChargeKind::Usage,
+            Some(ModelKind::Graduated),
+        );
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.meter = Some("api_calls".to_owned());
     row.billing_granularity = Some(BillingGranularity::WholeUnit);
     row.tier_aggregation_window = Some(TierAggregationWindow::CalendarMonth);

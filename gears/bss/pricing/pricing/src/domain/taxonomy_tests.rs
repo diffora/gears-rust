@@ -60,6 +60,8 @@ fn row_in(price_id: u128, in_region: &str) -> PriceRecord {
     row.amount_minor = Some(MinorAmount::new(1000).expect("non-negative"));
 
     PriceRecord {
+        resolved_invoice_line_template: None,
+        resolved_gl_code: None,
         price_id: Uuid::from_u128(price_id),
         scope_key,
         row,
@@ -643,6 +645,7 @@ fn a_values_tag_moves_with_each_rendered_field_and_is_not_the_sets() {
 
 fn gl_codes(values: &[&str]) -> GlCodeDeclared {
     GlCodeDeclared {
+        tenant_default: None,
         declared: values.iter().map(|v| (*v).to_owned()).collect(),
     }
 }
@@ -650,14 +653,10 @@ fn gl_codes(values: &[&str]) -> GlCodeDeclared {
 /// A plan whose descriptor set carries `gl_code`, and nothing else the rule
 /// reads.
 fn plan_with_gl_code(gl_code: Option<&str>) -> PlanShape {
-    use crate::domain::plan_shape::DescriptorSet;
     let mut shape = PlanShape::new(plan(), 1, now());
-    shape.descriptor_set = Some(DescriptorSet {
-        invoice_line_template: Some("{plan}".to_owned()),
-        gl_code: gl_code.map(ToOwned::to_owned),
-        itemization_rule: Some("per_charge".to_owned()),
-        additional: std::collections::BTreeMap::new(),
-    });
+    let mut row = row_in(42, "eu");
+    row.row.gl_code_ref = gl_code.map(ToOwned::to_owned);
+    shape.rows.push(row);
     shape
 }
 
@@ -673,6 +672,7 @@ fn run_gl(rule: &GlCodeDeclared, shape: &PlanShape) -> ValidationReport {
 #[test]
 fn gl_code_membership_is_checked_only_once_a_vocabulary_is_declared() {
     let unconstrained = GlCodeDeclared {
+        tenant_default: None,
         declared: BTreeSet::new(),
     };
     assert!(unconstrained.violation_for("glCode", "4000-REV").is_none());
@@ -710,8 +710,8 @@ fn gl_code_rule_judges_the_descriptors_one_present_value_and_nothing_else() {
     assert_eq!(codes(&refused), [GL_CODE_UNKNOWN]);
     assert_eq!(
         subjects(&refused),
-        [plan_with_gl_code(Some("4000")).subject()],
-        "the subject is the plan, as `inst-ds-required`'s is"
+        [plan_with_gl_code(Some("4000")).rows[0].price_id.to_string()],
+        "the subject names the offending price row"
     );
 
     assert!(codes(&run_gl(&rule, &plan_with_gl_code(Some("4000-REV")))).is_empty());
@@ -724,12 +724,13 @@ fn gl_code_rule_judges_the_descriptors_one_present_value_and_nothing_else() {
         "a blank is an absence wearing a value's shape, and is likewise not this rule's"
     );
     let mut without_set = plan_with_gl_code(Some("4000"));
-    without_set.descriptor_set = None;
+    without_set.rows.clear();
     assert!(codes(&run_gl(&rule, &without_set)).is_empty());
 
     assert!(
         codes(&run_gl(
             &GlCodeDeclared {
+                tenant_default: None,
                 declared: BTreeSet::new()
             },
             &plan_with_gl_code(Some("4000"))

@@ -317,6 +317,10 @@ pub fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
 }
 
 /// `POST /bulk-imports`.
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "the two-phase batch handler preserves replay, validation-report sealing and commit ordering, including compensation on each failed stage"
+)]
 async fn submit_bulk_import(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
@@ -354,94 +358,12 @@ async fn submit_bulk_import(
             .await
             .map_err(|e| CanonicalError::from(repo_failure(&e)))?
     {
-        // **A replay answers what the first call answered** (D-295). A batch
-        // refused in Phase 1 was answered `400`, so a retry that answered `202`
-        // would tell a client the resubmit succeeded where the original failed —
-        // the one conclusion idempotency exists to prevent, and precisely the
-        // client that retried on a timeout and cannot otherwise tell. The report
-        // is replayed either way: the run holds it and the `GET` serves it.
-        //
-        // The message also states what the key now costs, because this is where
-        // an operator meets it: the key is **spent on the run**, so a corrected
-        // batch resubmitted under it would import nothing and be told nothing.
-        //
-        // The state covers two ways to get there — the rule path below, and a
-        // Phase-1 *store* fault landed on the same edge. Both are "this key's batch
-        // did not import", which is the fact the refusal is about; the run's report
-        // is where the difference is written, and the `GET` serves it.
-        if existing.state == BulkState::ValidationFailed {
-            return Err(CanonicalError::from(DomainError::BulkValidationFailed {
-                operation_id: existing.operation_id.to_string(),
-                detail: "this key opened a batch that did not pass validation; the run holds \
-                         what refused it, and a corrected batch is a new batch that needs its \
-                         own idempotency key"
-                    .to_owned(),
-            }));
-        }
-        // **The payload guard, and it stands *after* the state one on purpose**. The replay
-        // above was `find_by_client_key` and nothing else, so the body was never compared with
-        // what the key first carried: a corrected batch resubmitted under a spent key was
-        // answered `202` over the first batch's report, having imported nothing, with no member
-        // of `BulkImportView` that could reveal the substitution. That is the inversion D-295
-        // closed on the state axis and D-307 on the kind axis, on the third one.
-        //
-        // The order is what partitions the two refusals rather than stacking them.
-        // `validation_failed` already answers a changed body with the remedy —
-        // "a corrected batch is a new batch and needs its own idempotency key",
-        // the sentence directly above — and answering that caller a payload
-        // mismatch instead would replace a refusal naming their batch's fault with
-        // one naming their key's. Every other state reaches here, and for those a
-        // changed body has no refusal at all without this one: the run **did**
-        // import, so `202` over its report is precisely the "your resubmit
-        // succeeded" the guard exists to prevent.
-        //
-        // Empty is the one stored value no writer produces: `pricing_bulk_operation`
-        // backfilled the runs that predate the column with it, and their bodies
-        // are not recoverable from anywhere. Those replay as they did before this
-        // guard existed — the alternative is refusing a legitimate retry of a run
-        // whose payload nobody can verify, which spends the harm on the caller who
-        // did nothing wrong.
-        if !existing.request_hash.is_empty() && existing.request_hash != request_hash {
-            return Err(CanonicalError::from(
-                DomainError::IdempotencyPayloadMismatch(format!(
-                    "idempotency key `{}` opened bulk import run {} over a different batch. A \
-                     corrected or otherwise changed batch is a new batch and needs its own key; \
-                     the run this key holds is at `GET {BULK_IMPORTS}/{}` and nothing of the \
-                     batch just sent was imported",
-                    existing.client_key, existing.operation_id, existing.operation_id
-                )),
-            ));
-        }
-        return Ok((StatusCode::ACCEPTED, Json(run_view(&existing))).into_response());
+        return replay_answer(&existing, &request_hash);
     }
 
     let sku_index =
         crate::infra::row_sku::sku_index(state.authoring.catalog.as_ref(), &ctx).await?;
-    let mut plan_skus = std::collections::HashMap::new();
-    for row in &body.rows {
-        if plan_skus.contains_key(&row.plan_id) {
-            continue;
-        }
-        let plan_id = PlanId::new(row.plan_id);
-        let plan = match state
-            .authoring
-            .plans
-            .find_open_draft(&scope, tenant, plan_id)
-            .await
-            .map_err(|e| repo_failure(&e))?
-        {
-            Some(plan) => Some(plan),
-            None => state
-                .authoring
-                .plans
-                .find_current(&scope, tenant, plan_id)
-                .await
-                .map_err(|e| repo_failure(&e))?,
-        };
-        // Cache absence as well, so repeated rows on an inaccessible plan do
-        // not repeat the lookup or acquire different validation context.
-        plan_skus.insert(row.plan_id, plan.map(|plan| plan.sku_id));
-    }
+    let plan_skus = import_plan_skus(&state.authoring, &scope, tenant, &body).await?;
     let now = OffsetDateTime::now_utc();
     let stamp = audit_stamp(&ctx, now, correlation);
     let run = bulk_repo::open(
@@ -517,40 +439,7 @@ async fn submit_bulk_import(
 
     // Phase 1: both halves, into one report.
     let mut report = classify(&rows);
-    for (position, row) in rows.iter().enumerate() {
-        let Some(Some(plan_sku)) = plan_skus.get(&row.scope_key.plan_id().get()) else {
-            report.add(
-                position,
-                crate::domain::import::RowViolation {
-                    code: crate::domain::import::IMPORT_PLAN_NOT_FOUND.into(),
-                    detail:
-                        "the row's parent plan has no accessible open draft or current revision"
-                            .into(),
-                },
-            );
-            continue;
-        };
-        let subject = crate::infra::storage::repo::price_repo::authored_content(
-            &row.scope_key,
-            row.content.clone(),
-        );
-        let rules =
-            crate::domain::rules::registry_row_rules(crate::domain::row_sku_rules::RowSkuContext {
-                plan_sku: crate::domain::scope_key::SkuId::new(*plan_sku),
-                index: Arc::clone(&sku_index),
-            });
-        if let Some(faults) = rules.run(&subject.row).write_stage_only() {
-            for fault in faults.violations {
-                report.add(
-                    position,
-                    crate::domain::import::RowViolation {
-                        code: fault.code,
-                        detail: fault.detail,
-                    },
-                );
-            }
-        }
-    }
+    classify_registry_rows(&rows, &plan_skus, &sku_index, &mut report);
     // **Not a bare `?`, and Z11-4 is why.** The run above is born `validating`, and
     // `validating` is a state nothing can leave except this handler: `abort` refuses
     // anything that is not `committing`, the lock table has no sweeper, and the only
@@ -1159,4 +1048,143 @@ async fn refuse_unreadable_rows(
             unreadable.len()
         ),
     })
+}
+
+fn classify_registry_rows(
+    rows: &[ImportRow],
+    plan_skus: &std::collections::HashMap<Uuid, Option<Uuid>>,
+    sku_index: &Arc<crate::domain::registry_view::SkuIndex>,
+    report: &mut crate::domain::import::BatchReport,
+) {
+    for (position, row) in rows.iter().enumerate() {
+        let Some(Some(plan_sku)) = plan_skus.get(&row.scope_key.plan_id().get()) else {
+            report.add(
+                position,
+                crate::domain::import::RowViolation {
+                    code: crate::domain::import::IMPORT_PLAN_NOT_FOUND.into(),
+                    detail:
+                        "the row's parent plan has no accessible open draft or current revision"
+                            .into(),
+                },
+            );
+            continue;
+        };
+        let subject = crate::infra::storage::repo::price_repo::authored_content(
+            &row.scope_key,
+            row.content.clone(),
+        );
+        let rules =
+            crate::domain::rules::registry_row_rules(crate::domain::row_sku_rules::RowSkuContext {
+                plan_sku: crate::domain::scope_key::SkuId::new(*plan_sku),
+                index: Arc::clone(sku_index),
+            });
+        if let Some(faults) = rules.run(&subject.row).write_stage_only() {
+            for fault in faults.violations {
+                report.add(
+                    position,
+                    crate::domain::import::RowViolation {
+                        code: fault.code,
+                        detail: fault.detail,
+                    },
+                );
+            }
+        }
+    }
+}
+
+async fn import_plan_skus(
+    state: &crate::api::rest::state::AuthoringState,
+    scope: &toolkit_db::secure::AccessScope,
+    tenant: Uuid,
+    body: &BulkImportRequest,
+) -> Result<std::collections::HashMap<Uuid, Option<Uuid>>, DomainError> {
+    let mut plan_skus = std::collections::HashMap::new();
+    for row in &body.rows {
+        if plan_skus.contains_key(&row.plan_id) {
+            continue;
+        }
+        let plan_id = PlanId::new(row.plan_id);
+        let plan = match state
+            .plans
+            .find_open_draft(scope, tenant, plan_id)
+            .await
+            .map_err(|e| repo_failure(&e))?
+        {
+            Some(plan) => Some(plan),
+            None => state
+                .plans
+                .find_current(scope, tenant, plan_id)
+                .await
+                .map_err(|e| repo_failure(&e))?,
+        };
+        // Cache absence as well, so repeated rows on an inaccessible plan do
+        // not repeat the lookup or acquire different validation context.
+        plan_skus.insert(row.plan_id, plan.map(|plan| plan.sku_id));
+    }
+    Ok(plan_skus)
+}
+
+fn replay_answer(
+    existing: &bulk_repo::BulkOperationRecord,
+    request_hash: &[u8],
+) -> Result<Response, CanonicalError> {
+    // **A replay answers what the first call answered** (D-295). A batch
+    // refused in Phase 1 was answered `400`, so a retry that answered `202`
+    // would tell a client the resubmit succeeded where the original failed —
+    // the one conclusion idempotency exists to prevent, and precisely the
+    // client that retried on a timeout and cannot otherwise tell. The report
+    // is replayed either way: the run holds it and the `GET` serves it.
+    //
+    // The message also states what the key now costs, because this is where
+    // an operator meets it: the key is **spent on the run**, so a corrected
+    // batch resubmitted under it would import nothing and be told nothing.
+    //
+    // The state covers two ways to get there — the rule path below, and a
+    // Phase-1 *store* fault landed on the same edge. Both are "this key's batch
+    // did not import", which is the fact the refusal is about; the run's report
+    // is where the difference is written, and the `GET` serves it.
+    if existing.state == BulkState::ValidationFailed {
+        return Err(CanonicalError::from(DomainError::BulkValidationFailed {
+            operation_id: existing.operation_id.to_string(),
+            detail: "this key opened a batch that did not pass validation; the run holds \
+                         what refused it, and a corrected batch is a new batch that needs its \
+                         own idempotency key"
+                .to_owned(),
+        }));
+    }
+    // **The payload guard, and it stands *after* the state one on purpose**. The replay
+    // above was `find_by_client_key` and nothing else, so the body was never compared with
+    // what the key first carried: a corrected batch resubmitted under a spent key was
+    // answered `202` over the first batch's report, having imported nothing, with no member
+    // of `BulkImportView` that could reveal the substitution. That is the inversion D-295
+    // closed on the state axis and D-307 on the kind axis, on the third one.
+    //
+    // The order is what partitions the two refusals rather than stacking them.
+    // `validation_failed` already answers a changed body with the remedy —
+    // "a corrected batch is a new batch and needs its own idempotency key",
+    // the sentence directly above — and answering that caller a payload
+    // mismatch instead would replace a refusal naming their batch's fault with
+    // one naming their key's. Every other state reaches here, and for those a
+    // changed body has no refusal at all without this one: the run **did**
+    // import, so `202` over its report is precisely the "your resubmit
+    // succeeded" the guard exists to prevent.
+    //
+    // Empty is the one stored value no writer produces: `pricing_bulk_operation`
+    // backfilled the runs that predate the column with it, and their bodies
+    // are not recoverable from anywhere. Those replay as they did before this
+    // guard existed — the alternative is refusing a legitimate retry of a run
+    // whose payload nobody can verify, which spends the harm on the caller who
+    // did nothing wrong.
+    if !existing.request_hash.is_empty() && existing.request_hash != request_hash {
+        return Err(CanonicalError::from(
+            DomainError::IdempotencyPayloadMismatch(format!(
+                "idempotency key `{}` opened bulk import run {} over a different batch. A \
+                     corrected or otherwise changed batch is a new batch and needs its own key; \
+                     the run this key holds is at `GET {BULK_IMPORTS}/{}` and nothing of the \
+                     batch just sent was imported",
+                existing.client_key, existing.operation_id, existing.operation_id
+            )),
+        ));
+    }
+    Ok((StatusCode::ACCEPTED, Json(run_view(existing))).into_response())
 }

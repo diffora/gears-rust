@@ -87,7 +87,7 @@ fn new_draft(plan_id: PlanId) -> NewPlanDraft {
         plan_tier_override: false,
         purchase_min_qty: None,
         purchase_max_qty: None,
-        invoice_grouping_key: None,
+        descriptor_ext: std::collections::BTreeMap::new(),
         available_from: None,
         available_to: None,
         cloned_from: None,
@@ -318,7 +318,12 @@ async fn published_bundle_on(
             TENANT,
             bundle_plan,
             created.revision,
-            created.row_version,
+            plans
+                .find_revision(&scope(), TENANT, bundle_plan, created.revision)
+                .await
+                .expect("current bundle revision")
+                .expect("exists")
+                .row_version,
             bss_pricing::infra::storage::repo::CompositionDraft {
                 components: vec![bss_pricing::infra::storage::repo::BundleComponentDraft {
                     component_plan_id: component.get(),
@@ -633,7 +638,11 @@ async fn a_rule_on_the_retiring_plans_own_row_is_not_a_referrer() {
 /// the row is in, and a draft is the cheapest state to reach.
 async fn price_row_on(prices: &PriceRepo, plan_id: PlanId) -> Uuid {
     let price_id = Uuid::now_v7();
-    let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
     row.amount_minor = Some(MinorAmount::new(9_900).expect("a non-negative amount"));
     prices
         .create_draft(

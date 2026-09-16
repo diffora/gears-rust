@@ -98,6 +98,10 @@ fn base_params(default_rounding_policy: Option<&str>) -> PublishRuleParams {
         // than zeros, which would advise on every plan in this file.
         SoftSizeCaps::new(100, 500),
     )
+    .with_descriptor_defaults(
+        Some("4000".to_owned()),
+        crate::domain::line_template::DefaultLineTemplates::default(),
+    )
     .with_sku_index(fixture_sku_index())
 }
 
@@ -115,10 +119,13 @@ fn record(price_id: u128, model_kind: Option<ModelKind>, rounding: Option<&str>)
     .expect("all_subscriptions pairs with cohort none");
 
     let mut row = PriceRow::new(ChargeKind::Recurring, model_kind);
+    row.gl_code_ref = Some("4000".to_owned());
     row.sku_id = SkuId::new(Uuid::from_u128(5));
     row.amount_minor = Some(MinorAmount::new(1000).expect("non-negative"));
 
     PriceRecord {
+        resolved_invoice_line_template: None,
+        resolved_gl_code: None,
         price_id: Uuid::from_u128(price_id),
         scope_key,
         row,
@@ -420,10 +427,7 @@ fn a_gl_code_outside_the_declared_vocabulary_is_refused_at_publish_and_only_then
     let shape = clean_plan();
     // `clean_plan` authors `4000`.
     assert_eq!(
-        shape
-            .descriptor_set
-            .as_ref()
-            .and_then(|set| set.gl_code.as_deref()),
+        shape.rows[0].row.gl_code_ref.as_deref(),
         Some("4000"),
         "the fixture premise this case reads"
     );
@@ -625,7 +629,7 @@ fn params_declaring(regions: &[&str]) -> PublishRuleParams {
 // ---------------------------------------------------------------------------
 
 fn clean_plan() -> PlanShape {
-    use crate::domain::plan_shape::{DescriptorSet, PhaseGraph, PhaseKind, PlanPhase};
+    use crate::domain::plan_shape::{PhaseGraph, PhaseKind, PlanPhase};
 
     let terminal = PhaseId::new(Uuid::from_u128(0xf1));
     let mut shape = PlanShape::new(plan(), 1, now());
@@ -644,12 +648,6 @@ fn clean_plan() -> PlanShape {
         phase_duration_days: None,
         display_trial_days: None,
     }]);
-    shape.descriptor_set = Some(DescriptorSet {
-        invoice_line_template: Some("{plan}".to_owned()),
-        gl_code: Some("4000".to_owned()),
-        itemization_rule: Some("per_charge".to_owned()),
-        additional: std::collections::BTreeMap::new(),
-    });
     shape.rows = vec![record(0xb001, Some(ModelKind::Flat), Some("half_up"))];
     // `inst-wc-required`: a billable row whose canonical scope key holds no
     // active or scheduled window fails publish, so a plan the whole set passes
@@ -682,6 +680,10 @@ fn params_capped(bands: u32, rows: u32) -> PublishRuleParams {
         DescriptorSetComplete::default(),
         Some("half_up".to_owned()),
         SoftSizeCaps::new(bands, rows),
+    )
+    .with_descriptor_defaults(
+        Some("4000".to_owned()),
+        crate::domain::line_template::DefaultLineTemplates::default(),
     )
     .with_sku_index(fixture_sku_index())
     .with_declared_regions(declared(&["eu"]))
@@ -1341,6 +1343,8 @@ const FOUNDATION_REGISTERED: &[&str] = &[
     // Slice 4's tax-display pair: `TAX_BASIS_INCOMPLETE` and
     // `TAX_BASIS_MIXED_MARKET`.
     "inst-td-policy",
+    "inst-ds-template",
+    "inst-ds-glresolve",
     "inst-td-basis-uniform",
     // `inst-cb-addon` case (i): `CURRENCY_NOT_COVERED`.
     "inst-cb-addon",

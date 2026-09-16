@@ -29,8 +29,8 @@ use crate::domain::overlay::{
     OverlayRevision, ScopeClass, ScopeSelector, ScopeValue, TargetRef, TaxBasis,
 };
 use crate::domain::plan_shape::{
-    AddonRule, BillingCycle, CompositeMeter, CustomIntervalUnit, DescriptorSet, Frequency,
-    PeriodFloorCap, PhaseKind, PlanPhase,
+    AddonRule, BillingCycle, CompositeMeter, CustomIntervalUnit, Frequency, PeriodFloorCap,
+    PhaseKind, PlanPhase,
 };
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
@@ -103,7 +103,6 @@ fn shape_only() -> PlanSubjectDelta {
         available_to: None,
         purchase_min_qty: None,
         purchase_max_qty: None,
-        invoice_grouping_key: Some("bundle-a".to_owned()),
         phases: vec![PlanPhase {
             phase_id: terminal_phase(),
             kind: PhaseKind::Evergreen,
@@ -121,12 +120,8 @@ fn shape_only() -> PlanSubjectDelta {
         // `minQty`/`maxQty` swap or a dropped `required` flag was invisible to
         // every gate, on a payload that is INSERT-only for seven years.
         addon_rules: vec![addon_rule()],
-        descriptor_set: Some(DescriptorSet {
-            invoice_line_template: Some("{plan}".to_owned()),
-            gl_code: Some("4000".to_owned()),
-            itemization_rule: Some("per_charge".to_owned()),
-            additional: std::collections::BTreeMap::new(),
-        }),
+        descriptor_ext: std::collections::BTreeMap::new(),
+        itemization_rule: crate::domain::bundle::InvoiceItemization::Itemize,
         // Two markets, and the second carries a cap the first does not: a
         // fixture with one entry cannot tell a renderer that emits the first
         // bound from one that emits the whole set, and a fixture with no cap
@@ -156,6 +151,7 @@ fn shape_only() -> PlanSubjectDelta {
 
 fn graduated_row() -> PriceRecord {
     let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
+    row.sku_id = SkuId::new(Uuid::from_u128(5));
     row.meter = Some("api_calls".to_owned());
     row.bands = vec![
         TierBand::closed(
@@ -169,6 +165,8 @@ fn graduated_row() -> PriceRecord {
         ),
     ];
     PriceRecord {
+        resolved_invoice_line_template: None,
+        resolved_gl_code: None,
         price_id: uuid::Uuid::from_u128(0xb_0001),
         scope_key: ScopeKey::new(
             plan_id(),
@@ -216,7 +214,8 @@ fn the_plan_level_wire_keys_are_what_a_consumer_reads() {
         "a fixed frequency carries its token and no interval"
     );
     assert_eq!(value.get("availableTo"), Some(&json!(null)));
-    assert_eq!(value.get("invoiceGroupingKey"), Some(&json!("bundle-a")));
+    assert!(value.get("invoiceGroupingKey").is_none());
+    assert!(value.get("descriptorSet").is_none());
     assert_eq!(
         value.get("phases"),
         Some(&json!([{
@@ -266,13 +265,8 @@ fn the_plan_level_wire_keys_are_what_a_consumer_reads() {
         "no phase renders the pre-D-358 token: {phases}"
     );
     assert_eq!(
-        value.get("descriptorSet"),
-        Some(&json!({
-            "invoiceLineTemplate": "{plan}",
-            "glCode": "4000",
-            "itemizationRule": "per_charge",
-            "additional": {},
-        }))
+        value.get("billing"),
+        Some(&json!({"itemizationRule": "itemize", "ext": {}}))
     );
 }
 
@@ -1611,4 +1605,31 @@ fn every_member_of_the_frozen_payload_is_classified_exactly_once() {
         not_reached.contains(&"composites"),
         "the composite set is classified rather than unstated: {not_reached:?}"
     );
+}
+
+#[test]
+fn billing_projects_derived_itemization_and_frozen_row_descriptors() {
+    let mut subject = shape_only();
+    subject.itemization_rule = crate::domain::bundle::InvoiceItemization::Aggregate;
+    subject
+        .descriptor_ext
+        .insert("costCentre".to_owned(), "42".to_owned());
+    let mut row = graduated_row();
+    row.row.invoice_line_template = Some("authored".to_owned());
+    row.row.gl_code_ref = Some("authored-code".to_owned());
+    row.resolved_invoice_line_template = Some("{sku}, {unit}".to_owned());
+    row.resolved_gl_code = Some("4000".to_owned());
+    subject.prices = vec![row];
+    let value = subject.to_value();
+    assert_eq!(
+        value["billing"],
+        json!({"itemizationRule":"aggregate", "ext":{"costCentre":"42"}})
+    );
+    assert!(value.get("descriptorSet").is_none());
+    assert!(value.get("invoiceGroupingKey").is_none());
+    assert_eq!(
+        value["prices"][0]["invoiceLineTemplate"],
+        json!("{sku}, {unit}")
+    );
+    assert_eq!(value["prices"][0]["glCode"], json!("4000"));
 }

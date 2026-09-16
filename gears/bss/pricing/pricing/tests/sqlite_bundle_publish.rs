@@ -127,7 +127,7 @@ async fn seeded(h: &Harness) {
                 plan_tier_override: false,
                 purchase_min_qty: None,
                 purchase_max_qty: None,
-                invoice_grouping_key: None,
+                descriptor_ext: std::collections::BTreeMap::new(),
                 available_from: None,
                 available_to: None,
                 cloned_from: None,
@@ -241,7 +241,7 @@ async fn the_reconciled_shares_are_written_to_the_effective_column_on_publish() 
             TENANT,
             plan(),
             0,
-            RowVersion::new(0),
+            RowVersion::new(1),
             CompositionDraft {
                 components: vec![component(1)],
                 rev_share_groups: vec![RevShareGroup {
@@ -280,7 +280,7 @@ async fn the_reconciled_shares_are_written_to_the_effective_column_on_publish() 
             TENANT,
             plan(),
             0,
-            RowVersion::new(1),
+            RowVersion::new(2),
             stamp_at(CORRELATION, at(11)),
         )
         .await
@@ -339,7 +339,7 @@ async fn publishing_a_revshare_composition_writes_exactly_one_audit_record() {
             TENANT,
             plan(),
             0,
-            RowVersion::new(0),
+            RowVersion::new(1),
             CompositionDraft {
                 components: vec![component(1)],
                 rev_share_groups: vec![RevShareGroup {
@@ -378,7 +378,7 @@ async fn publishing_a_revshare_composition_writes_exactly_one_audit_record() {
             TENANT,
             plan(),
             0,
-            RowVersion::new(1),
+            RowVersion::new(2),
             stamp_at(CORRELATION_2, at(11)),
         )
         .await
@@ -448,7 +448,7 @@ async fn a_publish_refused_by_the_version_compare_writes_no_audit_record() {
             TENANT,
             plan(),
             0,
-            RowVersion::new(7),
+            RowVersion::new(8),
             stamp_at(CORRELATION_2, at(11)),
         )
         .await
@@ -503,7 +503,7 @@ async fn a_reconciled_share_the_write_cannot_address_is_refused_rather_than_anno
             TENANT,
             plan(),
             0,
-            RowVersion::new(0),
+            RowVersion::new(1),
             CompositionDraft {
                 components: vec![component(1)],
                 rev_share_groups: vec![RevShareGroup {
@@ -574,7 +574,7 @@ async fn a_reconciled_share_the_write_cannot_address_is_refused_rather_than_anno
             TENANT,
             plan(),
             0,
-            RowVersion::new(1),
+            RowVersion::new(2),
             stamp_at(CORRELATION, at(11)),
         )
         .await
@@ -644,7 +644,7 @@ async fn a_second_publish_of_one_revision_makes_progress_rather_than_answering_r
             TENANT,
             plan(),
             0,
-            RowVersion::new(0),
+            RowVersion::new(1),
             CompositionDraft {
                 components: vec![component(1)],
                 rev_share_groups: vec![RevShareGroup {
@@ -668,7 +668,7 @@ async fn a_second_publish_of_one_revision_makes_progress_rather_than_answering_r
             TENANT,
             plan(),
             0,
-            RowVersion::new(1),
+            RowVersion::new(2),
             stamp_at(CORRELATION, at(11)),
         )
         .await
@@ -683,7 +683,7 @@ async fn a_second_publish_of_one_revision_makes_progress_rather_than_answering_r
             TENANT,
             plan(),
             0,
-            RowVersion::new(1),
+            RowVersion::new(2),
             stamp_at(CORRELATION_2, at(12)),
         )
         .await;
@@ -721,7 +721,7 @@ async fn a_second_publish_of_one_revision_makes_progress_rather_than_answering_r
             TENANT,
             plan(),
             0,
-            RowVersion::new(1),
+            RowVersion::new(2),
             stamp_at(CORRELATION_2, at(13)),
         )
         .await;
@@ -793,13 +793,13 @@ async fn a_composition_that_moved_after_the_pin_is_refused_rather_than_paid_out(
             TENANT,
             plan(),
             0,
-            RowVersion::new(0),
+            RowVersion::new(1),
             reviewed(4_500, 4_500),
             stamp(),
         )
         .await
         .expect("author the reviewed composition");
-    let pinned = RowVersion::new(1);
+    let pinned = RowVersion::new(2);
 
     // The edit nobody reviewed, landing between the approve and the publish:
     // 9 000 of 10 000 bp moves from one party to the other, 1 -> 2.
@@ -832,8 +832,8 @@ async fn a_composition_that_moved_after_the_pin_is_refused_rather_than_paid_out(
         matches!(
             refused,
             RepoError::StaleRowVersion {
-                current: 2,
-                submitted: 1,
+                current: 3,
+                submitted: 2,
                 ..
             }
         ),
@@ -865,7 +865,7 @@ async fn a_composition_that_moved_after_the_pin_is_refused_rather_than_paid_out(
             TENANT,
             plan(),
             0,
-            RowVersion::new(2),
+            RowVersion::new(3),
             stamp_at(CORRELATION_2, at(12)),
         )
         .await

@@ -57,6 +57,7 @@ fn the_pipeline_registers_every_row_local_instruction() {
     assert_eq!(
         row_local_rules().rule_names(),
         vec![
+            "inst-ds-template-syntax",
             "inst-mk-explicit",
             "inst-mk-required",
             "inst-mk-forbidden",

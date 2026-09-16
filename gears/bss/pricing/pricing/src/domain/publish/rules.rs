@@ -262,6 +262,8 @@ pub struct PublishRuleParams {
     interval_bounds: CustomIntervalBounds,
     descriptors: DescriptorSetComplete,
     default_rounding_policy: Option<String>,
+    default_gl_code: Option<String>,
+    default_line_templates: crate::domain::line_template::DefaultLineTemplates,
     size_caps: SoftSizeCaps,
     referencing_markets: Vec<ReferencingMarket>,
     declared_regions: BTreeSet<Region>,
@@ -332,8 +334,24 @@ impl ReferencingMarket {
     }
 }
 
+/// Required effective row GL code is absent (D-373 R3).
+pub const GL_CODE_UNRESOLVED: &str = "GL_CODE_UNRESOLVED";
+
 impl PublishRuleParams {
+    /// Bind tenant defaults for the two row-borne billing descriptor elements.
+    #[must_use]
+    pub fn with_descriptor_defaults(
+        mut self,
+        default_gl_code: Option<String>,
+        default_line_templates: crate::domain::line_template::DefaultLineTemplates,
+    ) -> Self {
+        self.default_gl_code = default_gl_code;
+        self.default_line_templates = default_line_templates;
+        self
+    }
+
     /// Use the registry snapshot resolved for this publish request.
+    #[must_use]
     pub fn with_sku_index(
         mut self,
         index: std::sync::Arc<crate::domain::registry_view::SkuIndex>,
@@ -343,7 +361,7 @@ impl PublishRuleParams {
     }
     /// Bind the rule set to one tenant's configuration.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         interval_bounds: CustomIntervalBounds,
         descriptors: DescriptorSetComplete,
         default_rounding_policy: Option<String>,
@@ -354,6 +372,8 @@ impl PublishRuleParams {
             interval_bounds,
             descriptors,
             default_rounding_policy,
+            default_gl_code: None,
+            default_line_templates: crate::domain::line_template::DefaultLineTemplates::default(),
             size_caps,
             referencing_markets: Vec::new(),
             declared_regions: BTreeSet::new(),
@@ -656,10 +676,11 @@ fn foundation_plan_rules(params: &PublishRuleParams) -> ValidationPipeline<PlanS
         // and for `RegionsDeclared`'s reason: it reads a tenant-declared set the
         // Foundation resolves, so registering it inside the Slice-2 descriptor
         // set would be a rule bolted on at a call site. It judges the
-        // descriptor's one `glCode` — a present value only; absence is
-        // `inst-ds-required`'s finding — and a tenant who declared no vocabulary
+        // effective `glCode` of every row; absence is `inst-ds-glresolve`'s
+        // finding, and a tenant who declared no vocabulary
         // is not constrained by it.
         .with_rule(Box::new(GlCodeDeclared {
+            tenant_default: params.default_gl_code.clone(),
             declared: params.declared_gl_codes.clone(),
         }))
         // Slice 4's tax-display pair. In the Foundation set for
@@ -669,6 +690,16 @@ fn foundation_plan_rules(params: &PublishRuleParams) -> ValidationPipeline<PlanS
             policy: params.tax_display_policy,
             readiness: params.region_readiness.clone(),
         }))
+        .with_rule(Box::new(
+            crate::domain::row_descriptor_rules::LineTemplateResolved {
+                tenant_defaults: params.default_line_templates.clone(),
+            },
+        ))
+        .with_rule(Box::new(
+            crate::domain::row_descriptor_rules::GlCodeResolved {
+                tenant_default: params.default_gl_code.clone(),
+            },
+        ))
         .with_rule(Box::new(MarketBasisUniform))
         // `inst-cb-addon` — case (i) of the single-currency-per-invoice binding.
         // Cases (ii)/(iii) are the bundle plane's and are enforced by
