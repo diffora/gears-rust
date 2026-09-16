@@ -2449,3 +2449,95 @@ async fn a_foreign_tenant_cannot_delete_this_tenants_price_row() {
     );
     assert!(price_rows(&harness, plan_id).await.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// D-372 — the SKU axis the key does not carry yet.
+// ---------------------------------------------------------------------------
+
+/// **D-372's red-before probe: today the *unit* is the identity.**
+///
+/// A usage row is filed under a key whose ninth axis is `meter` — the unit the
+/// line is measured in — and no axis names the **resource** being measured. Two
+/// SKUs that both bill in `GB-hour` therefore render one key, and the request
+/// body has no member that could tell them apart: the two bodies below are
+/// identical because today they *cannot* differ, so the second save is refused
+/// `DUPLICATE_SCOPE_KEY` and the second SKU has no price at all.
+///
+/// It passes today, which is the whole point — it pins the collision where the
+/// change that removes it has to walk past it. Task 12 of the D-372 plan renames
+/// this case and flips the second half: once `sku_id` is the key axis, two rows
+/// for two SKUs sharing `GB-hour` must both save, and the row count with them.
+///
+/// The complement — that two *different* units are two keys, so the unit is the
+/// only discriminator a usage row has today — is
+/// `two_lines_of_one_market_render_two_distinct_keys`; read together they say
+/// the unit is doing the SKU's job.
+#[tokio::test]
+async fn two_usage_rows_sharing_a_unit_collide_on_the_meter_axis() {
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+
+    // One plan, one currency, one region, one phase, one eligibility, no cohort
+    // and no dimension key — every axis but the meter is held still, so the
+    // refusal below is the meter axis and nothing else. The **idempotency keys**
+    // are the one thing that differs, and they have to: two equal keys would be
+    // answered as a replay of the first save and never reach the duplicate-key
+    // guard at all.
+    let post = async |key: &str| {
+        harness
+            .allowed()
+            .send(with_headers(
+                "POST",
+                &prices_path(plan_id),
+                Some(usage_create_body("EU", "GB-hour")),
+                &keyed(key),
+            ))
+            .await
+    };
+
+    let first = post("d372-shared-unit-1").await;
+    assert_eq!(
+        first.status(),
+        StatusCode::CREATED,
+        "the first GB-hour row saves"
+    );
+
+    let second = post("d372-shared-unit-2").await;
+    assert_eq!(
+        second.status(),
+        StatusCode::CONFLICT,
+        "the second GB-hour row collides"
+    );
+    let body = body_json(second).await;
+    assert_eq!(
+        body["context"]["reason"],
+        serde_json::json!("DUPLICATE_SCOPE_KEY"),
+        "and it is the canonical key it collides on, not some other 409: {body}"
+    );
+    assert_eq!(
+        price_rows(&harness, plan_id).await.len(),
+        1,
+        "one key, one row: the second SKU's line was never stored"
+    );
+
+    // **The control, and it is what makes the refusal above mean anything.** Two
+    // identical bodies would collide on any key at all, so a case that stopped
+    // at the 409 would stay green with the meter axis deleted outright. A row
+    // that differs *only* in its unit lands, which is the axis being live: the
+    // unit is the sole discriminator two usage rows of one market have today,
+    // and that is precisely the job D-372 says belongs to the SKU.
+    let other_unit = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(usage_create_body("EU", "TB-hour")),
+            &keyed("d372-other-unit-1"),
+        ))
+        .await;
+    assert_eq!(
+        other_unit.status(),
+        StatusCode::CREATED,
+        "a second unit is a second key, so the meter is a live axis"
+    );
+}
