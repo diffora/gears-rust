@@ -1302,6 +1302,7 @@ fn body_for(
                     "phase": rest_support::seeded_phase().get().to_string(),
                     "price_eligibility": "all_subscriptions",
                     "charge_kind": "recurring",
+                    "sku_id": rest_support::OFFER_SKU,
                     "cohort": serde_json::Value::Null
                 },
                 "content": { "model_kind": "flat", "amount_minor": 100 }

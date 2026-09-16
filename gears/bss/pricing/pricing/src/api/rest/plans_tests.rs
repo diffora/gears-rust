@@ -21,7 +21,7 @@ fn revision(plan_id: PlanId) -> PlanRevision {
     PlanRevision {
         plan_id,
         revision: 3,
-        sku_id: None,
+        sku_id: Uuid::nil(),
         plan_tier: Some("gold".to_owned()),
         plan_name: None,
         billing_cycle: Some(BillingCycle::Recurring),

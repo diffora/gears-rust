@@ -210,6 +210,7 @@ async fn cut_over(
         FixtureGate::load(&rest_support::committed_registry_path()),
         Arc::clone(&h.registry) as Arc<_>,
     )
+    .with_product_catalog(std::sync::Arc::new(rest_support::FixtureCatalog::default()))
     .cut_over(
         &rest_support::security_context(actor, h.tenant),
         &h.scope(),

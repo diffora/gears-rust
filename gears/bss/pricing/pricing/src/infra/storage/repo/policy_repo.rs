@@ -276,6 +276,8 @@ impl AuthoringPolicy {
 /// `SeaORM`-backed reader of the per-tenant policy object.
 #[derive(Clone)]
 pub struct PolicyObjectRepo {
+    catalog: std::sync::Arc<dyn crate::domain::ports::ProductCatalogClientV1>,
+    sku_index: Option<std::sync::Arc<crate::domain::registry_view::SkuIndex>>,
     db: DBProvider<DbError>,
     /// What a tenant with no policy row is governed by. Held here rather than
     /// taken per call so that no caller can read a cap without the default
@@ -290,7 +292,43 @@ impl PolicyObjectRepo {
         Self {
             db,
             defaults: AuthoringPolicy::from_deployment_defaults(limits),
+            catalog: std::sync::Arc::new(crate::domain::ports::UnconfiguredProductCatalogClientV1),
+            sku_index: None,
         }
+    }
+
+    /// Attach the registry shared by all catalog write paths.
+    pub fn with_product_catalog(
+        mut self,
+        catalog: std::sync::Arc<dyn crate::domain::ports::ProductCatalogClientV1>,
+    ) -> Self {
+        self.catalog = catalog;
+        self
+    }
+
+    /// Bind the policy inputs to one fresh immutable product registry listing.
+    pub async fn resolve_skus(
+        &self,
+        ctx: &toolkit_security::SecurityContext,
+    ) -> Result<Self, crate::domain::error::DomainError> {
+        let mut resolved = self.clone();
+        resolved.sku_index =
+            Some(crate::infra::row_sku::sku_index(self.catalog.as_ref(), ctx).await?);
+        Ok(resolved)
+    }
+
+    /// An unresolved write context fails closed rather than skipping SKU rules.
+    pub fn sku_index(
+        &self,
+    ) -> Result<
+        std::sync::Arc<crate::domain::registry_view::SkuIndex>,
+        crate::domain::error::DomainError,
+    > {
+        self.sku_index.clone().ok_or_else(|| {
+            crate::domain::error::DomainError::CatalogVersionUnavailable(
+                "product catalog snapshot not resolved".into(),
+            )
+        })
     }
 
     /// Resolve `tenant_id`'s authoring-time caps and descriptor required-set.

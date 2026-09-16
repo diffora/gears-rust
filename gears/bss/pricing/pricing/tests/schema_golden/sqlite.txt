@@ -139,9 +139,6 @@ INDEX uq_pricing_plan_open_draft
 INDEX uq_pricing_plan_phase_terminal
   ON pricing_plan_phase
   DDL CREATE UNIQUE INDEX uq_pricing_plan_phase_terminal ON pricing_plan_phase (plan_id, plan_revision) WHERE converts_to_phase_id IS NULL
-INDEX uq_pricing_price_meter_line_current
-  ON pricing_price
-  DDL CREATE UNIQUE INDEX uq_pricing_price_meter_line_current ON pricing_price (tenant_id, plan_id, currency, region, price_overlay, phase, price_eligibility, cohort, meter, dimension_key) WHERE lifecycle_state = 'published' AND meter IS NOT NULL
 INDEX uq_pricing_price_overlay_line_key
   ON pricing_price_overlay_line
   DDL CREATE UNIQUE INDEX uq_pricing_price_overlay_line_key ON pricing_price_overlay_line (price_overlay_id, overlay_revision, COALESCE(plan_id, '00000000-0000-0000-0000-000000000000'), COALESCE(target_sku, ''), COALESCE(cohort, ''))
@@ -153,10 +150,10 @@ INDEX uq_pricing_price_overlay_precedence
   DDL CREATE UNIQUE INDEX uq_pricing_price_overlay_precedence ON pricing_price_overlay (tenant_id, scope_class, precedence) WHERE lifecycle_state = 'published'
 INDEX uq_pricing_price_scope_key_current
   ON pricing_price
-  DDL CREATE UNIQUE INDEX uq_pricing_price_scope_key_current ON pricing_price (tenant_id, plan_id, currency, region, price_overlay, phase, price_eligibility, charge_kind, cohort, COALESCE(meter, ''), dimension_key) WHERE lifecycle_state = 'published'
+  DDL CREATE UNIQUE INDEX uq_pricing_price_scope_key_current ON pricing_price (tenant_id, plan_id, sku_id, currency, region, price_overlay, phase, price_eligibility, charge_kind, cohort, dimension_key) WHERE lifecycle_state = 'published'
 INDEX uq_pricing_price_scope_key_draft
   ON pricing_price
-  DDL CREATE UNIQUE INDEX uq_pricing_price_scope_key_draft ON pricing_price (tenant_id, plan_id, currency, region, price_overlay, phase, price_eligibility, charge_kind, cohort, COALESCE(meter, ''), dimension_key) WHERE lifecycle_state = 'draft'
+  DDL CREATE UNIQUE INDEX uq_pricing_price_scope_key_draft ON pricing_price (tenant_id, plan_id, sku_id, currency, region, price_overlay, phase, price_eligibility, charge_kind, cohort, dimension_key) WHERE lifecycle_state = 'draft'
 INDEX uq_pricing_snapshot_provenance_subscription
   ON pricing_snapshot_provenance
   DDL CREATE UNIQUE INDEX uq_pricing_snapshot_provenance_subscription ON pricing_snapshot_provenance (tenant_id, subscription_ref)
@@ -469,7 +466,7 @@ TABLE pricing_plan
   COLUMN purchase_min_qty bigint NULL DEFAULT - PK 0
   COLUMN revision bigint NOT NULL DEFAULT - PK 2
   COLUMN row_version bigint NOT NULL DEFAULT 0 PK 0
-  COLUMN sku_id TEXT NULL DEFAULT - PK 0
+  COLUMN sku_id TEXT NOT NULL DEFAULT - PK 0
   COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 0
   COLUMN usage_counter_on_plan_change TEXT NULL DEFAULT - PK 0
   CONSTRAINT chk_pricing_plan_availability CHECK (available_from IS NULL OR available_to IS NULL OR available_to > available_from)
@@ -609,6 +606,7 @@ TABLE pricing_price
   COLUMN resolved_tax_category TEXT NULL DEFAULT - PK 0
   COLUMN rounding_policy_ref TEXT NULL DEFAULT - PK 0
   COLUMN row_version bigint NOT NULL DEFAULT 0 PK 0
+  COLUMN sku_id TEXT NOT NULL DEFAULT - PK 0
   COLUMN supersedes_price_id TEXT NULL DEFAULT - PK 0
   COLUMN tax_category_ref TEXT NULL DEFAULT - PK 0
   COLUMN tax_inclusive boolean NOT NULL DEFAULT false PK 0
@@ -1020,7 +1018,7 @@ TRIGGER trg_pricing_price_flip_whitelist
   DDL CREATE TRIGGER trg_pricing_price_flip_whitelist BEFORE UPDATE ON pricing_price FOR EACH ROW WHEN OLD.lifecycle_state <> 'draft' AND NEW.lifecycle_state IS NOT OLD.lifecycle_state AND NOT (OLD.lifecycle_state = 'published' AND NEW.lifecycle_state = 'superseded') BEGIN SELECT RAISE(ABORT, 'pricing_price: lifecycle_state transition is not sanctioned'); END
 TRIGGER trg_pricing_price_frozen_columns
   ON pricing_price
-  DDL CREATE TRIGGER trg_pricing_price_frozen_columns BEFORE UPDATE ON pricing_price FOR EACH ROW WHEN OLD.lifecycle_state <> 'draft' AND (NEW.price_id IS NOT OLD.price_id OR NEW.tenant_id IS NOT OLD.tenant_id OR NEW.plan_id IS NOT OLD.plan_id OR NEW.currency IS NOT OLD.currency OR NEW.region IS NOT OLD.region OR NEW.price_overlay IS NOT OLD.price_overlay OR NEW.phase IS NOT OLD.phase OR NEW.price_eligibility IS NOT OLD.price_eligibility OR NEW.charge_kind IS NOT OLD.charge_kind OR NEW.cohort IS NOT OLD.cohort OR NEW.amount_minor IS NOT OLD.amount_minor OR NEW.unit_rate_nano IS NOT OLD.unit_rate_nano OR NEW.model_kind IS NOT OLD.model_kind OR NEW.tax_inclusive IS NOT OLD.tax_inclusive OR NEW.tax_category_ref IS NOT OLD.tax_category_ref OR NEW.resolved_tax_category IS NOT OLD.resolved_tax_category OR NEW.resolved_rounding_policy IS NOT OLD.resolved_rounding_policy OR NEW.billing_timing IS NOT OLD.billing_timing OR NEW.billing_anchor_policy IS NOT OLD.billing_anchor_policy OR NEW.anchor_day IS NOT OLD.anchor_day OR NEW.proration_basis IS NOT OLD.proration_basis OR NEW.credit_on_downgrade IS NOT OLD.credit_on_downgrade OR NEW.quantity_source IS NOT OLD.quantity_source OR NEW.manual_quantity IS NOT OLD.manual_quantity OR NEW.package_size IS NOT OLD.package_size OR NEW.package_price_minor IS NOT OLD.package_price_minor OR NEW.meter IS NOT OLD.meter OR NEW.dimension_key IS NOT OLD.dimension_key OR NEW.billing_granularity IS NOT OLD.billing_granularity OR NEW.aggregation_function IS NOT OLD.aggregation_function OR NEW.aggregation_granularity IS NOT OLD.aggregation_granularity OR NEW.tier_aggregation_window IS NOT OLD.tier_aggregation_window OR NEW.tier_qualification_window IS NOT OLD.tier_qualification_window OR NEW.max_hold_granules IS NOT OLD.max_hold_granules OR NEW.included_allowance IS NOT OLD.included_allowance OR NEW.reserved_rate_nano IS NOT OLD.reserved_rate_nano OR NEW.reservation_flavor IS NOT OLD.reservation_flavor OR NEW.min_qty_purchase IS NOT OLD.min_qty_purchase OR NEW.min_qty_usage IS NOT OLD.min_qty_usage OR NEW.min_qty_usage_fallback IS NOT OLD.min_qty_usage_fallback OR NEW.discount_ref IS NOT OLD.discount_ref OR NEW.rounding_policy_ref IS NOT OLD.rounding_policy_ref OR NEW.supersedes_price_id IS NOT OLD.supersedes_price_id OR NEW.created_by IS NOT OLD.created_by OR NEW.created_at_utc IS NOT OLD.created_at_utc OR NEW.row_version IS NOT OLD.row_version) BEGIN SELECT RAISE(ABORT, 'pricing_price: row is published; price, scope, model and entity-tag columns are immutable'); END
+  DDL CREATE TRIGGER trg_pricing_price_frozen_columns BEFORE UPDATE ON pricing_price FOR EACH ROW WHEN OLD.lifecycle_state <> 'draft' AND (NEW.price_id IS NOT OLD.price_id OR NEW.tenant_id IS NOT OLD.tenant_id OR NEW.plan_id IS NOT OLD.plan_id OR NEW.sku_id IS NOT OLD.sku_id OR NEW.currency IS NOT OLD.currency OR NEW.region IS NOT OLD.region OR NEW.price_overlay IS NOT OLD.price_overlay OR NEW.phase IS NOT OLD.phase OR NEW.price_eligibility IS NOT OLD.price_eligibility OR NEW.charge_kind IS NOT OLD.charge_kind OR NEW.cohort IS NOT OLD.cohort OR NEW.amount_minor IS NOT OLD.amount_minor OR NEW.unit_rate_nano IS NOT OLD.unit_rate_nano OR NEW.model_kind IS NOT OLD.model_kind OR NEW.tax_inclusive IS NOT OLD.tax_inclusive OR NEW.tax_category_ref IS NOT OLD.tax_category_ref OR NEW.resolved_tax_category IS NOT OLD.resolved_tax_category OR NEW.resolved_rounding_policy IS NOT OLD.resolved_rounding_policy OR NEW.billing_timing IS NOT OLD.billing_timing OR NEW.billing_anchor_policy IS NOT OLD.billing_anchor_policy OR NEW.anchor_day IS NOT OLD.anchor_day OR NEW.proration_basis IS NOT OLD.proration_basis OR NEW.credit_on_downgrade IS NOT OLD.credit_on_downgrade OR NEW.quantity_source IS NOT OLD.quantity_source OR NEW.manual_quantity IS NOT OLD.manual_quantity OR NEW.package_size IS NOT OLD.package_size OR NEW.package_price_minor IS NOT OLD.package_price_minor OR NEW.meter IS NOT OLD.meter OR NEW.dimension_key IS NOT OLD.dimension_key OR NEW.billing_granularity IS NOT OLD.billing_granularity OR NEW.aggregation_function IS NOT OLD.aggregation_function OR NEW.aggregation_granularity IS NOT OLD.aggregation_granularity OR NEW.tier_aggregation_window IS NOT OLD.tier_aggregation_window OR NEW.tier_qualification_window IS NOT OLD.tier_qualification_window OR NEW.max_hold_granules IS NOT OLD.max_hold_granules OR NEW.included_allowance IS NOT OLD.included_allowance OR NEW.reserved_rate_nano IS NOT OLD.reserved_rate_nano OR NEW.reservation_flavor IS NOT OLD.reservation_flavor OR NEW.min_qty_purchase IS NOT OLD.min_qty_purchase OR NEW.min_qty_usage IS NOT OLD.min_qty_usage OR NEW.min_qty_usage_fallback IS NOT OLD.min_qty_usage_fallback OR NEW.discount_ref IS NOT OLD.discount_ref OR NEW.rounding_policy_ref IS NOT OLD.rounding_policy_ref OR NEW.supersedes_price_id IS NOT OLD.supersedes_price_id OR NEW.created_by IS NOT OLD.created_by OR NEW.created_at_utc IS NOT OLD.created_at_utc OR NEW.row_version IS NOT OLD.row_version) BEGIN SELECT RAISE(ABORT, 'pricing_price: row is published; price, scope, model and entity-tag columns are immutable'); END
 TRIGGER trg_pricing_price_grandfather_monotonic
   ON pricing_price
   DDL CREATE TRIGGER trg_pricing_price_grandfather_monotonic BEFORE UPDATE ON pricing_price FOR EACH ROW WHEN OLD.lifecycle_state <> 'draft' AND NEW.grandfather_until IS NOT OLD.grandfather_until AND (NEW.grandfather_until IS NULL OR (OLD.grandfather_until IS NOT NULL AND NEW.grandfather_until > OLD.grandfather_until)) BEGIN SELECT RAISE(ABORT, 'pricing_price: grandfather_until may only be tightened, never loosened'); END

@@ -236,21 +236,20 @@ fn register_row_local(pipeline: ValidationPipeline<PriceRow>) -> ValidationPipel
 /// (see [`crate::domain::registry_view`]). Building this pipeline costs four
 /// `Arc` clones and no I/O.
 ///
-/// **Not yet the pipeline the doors run.** D-372's Task 7 threads a real
-/// [`RowSkuContext`] through the price write door, the publish path and
-/// `plan_supersession`; until then those callers run [`row_local_rules`] and this
-/// function's only callers are its tests. The alternative -- handing the doors a
-/// context built from an empty listing -- would refuse every price row in the
-/// gear, and one built from a *listing of everything* would be a registry read
-/// this task does not make.
+/// Authoring and publish callers supply a fresh request-scoped registry snapshot.
 #[must_use]
 pub fn price_row_rules(ctx: RowSkuContext) -> ValidationPipeline<PriceRow> {
-    let pipeline = ValidationPipeline::new()
+    register_row_local(registry_row_rules(ctx))
+}
+
+/// Registry-only pass for a batch already judged by the local import classifier.
+#[must_use]
+pub fn registry_row_rules(ctx: RowSkuContext) -> ValidationPipeline<PriceRow> {
+    ValidationPipeline::new()
         .with_rule(Box::new(row_sku_rules::RowSkuPublished(ctx.clone())))
         .with_rule(Box::new(row_sku_rules::RowSkuSellability(ctx.clone())))
         .with_rule(Box::new(row_sku_rules::UsageRowSkuMetered(ctx.clone())))
-        .with_rule(Box::new(row_sku_rules::MeterMatchesSku(ctx)));
-    register_row_local(pipeline)
+        .with_rule(Box::new(row_sku_rules::MeterMatchesSku(ctx)))
 }
 
 /// The supersession unit guard, as a pipeline over a predecessor/successor pair.

@@ -436,30 +436,29 @@ impl OverlayLifecycle {
     }
 }
 
-/// A SKU reference on a line. Never blank, for [`ScopeValue`]'s reason: the
-/// store's line key coalesces an absent SKU to the empty string.
+/// A non-nil registry SKU handle narrowing an overlay line (D-372).
+/// The nil UUID is reserved by the storage index for an absent target.
 #[domain_model]
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct TargetSku(String);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TargetSku(Uuid);
 
 impl TargetSku {
-    /// Wrap an authored SKU, refusing a blank one.
+    /// Wrap a registry SKU handle, refusing the storage sentinel.
     #[must_use]
-    pub fn new(raw: &str) -> Option<Self> {
-        let trimmed = raw.trim();
-        (!trimmed.is_empty()).then(|| Self(trimmed.to_owned()))
+    pub fn new(id: Uuid) -> Option<Self> {
+        (!id.is_nil()).then_some(Self(id))
     }
 
-    /// The SKU as stored.
+    /// The registry handle stored on the price row.
     #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
+    pub const fn as_uuid(&self) -> Uuid {
+        self.0
     }
 }
 
 impl fmt::Display for TargetSku {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        self.0.fmt(f)
     }
 }
 

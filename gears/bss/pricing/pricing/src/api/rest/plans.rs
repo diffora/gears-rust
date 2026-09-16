@@ -492,8 +492,8 @@ pub struct PlanView {
     /// `draft` | `abandoned` | `published` | `superseded` | `retired`. Named on
     /// the wire so a caller never has to infer which revision it was given.
     pub lifecycle_state: String,
-    /// The catalog SKU this plan realizes, when one is bound.
-    pub sku_id: Option<Uuid>,
+    /// The required catalog SKU this plan realizes (D-372).
+    pub sku_id: Uuid,
     /// The plan's tier (a registry-owned taxonomy, so a string).
     pub plan_tier: Option<String>,
     /// The plan's human label (D-318), absent until an operator names it.
@@ -701,8 +701,8 @@ pub struct PlanSummaryView {
     pub revision: u64,
     /// `draft` | `abandoned` | `published` | `superseded` | `retired`.
     pub lifecycle_state: String,
-    /// The catalog SKU this plan realizes, when one is bound.
-    pub sku_id: Option<Uuid>,
+    /// The required catalog SKU this plan realizes (D-372).
+    pub sku_id: Uuid,
     /// The plan's tier (a registry-owned taxonomy, so a string).
     pub plan_tier: Option<String>,
     /// The plan's human label (D-318), absent until an operator names it.
@@ -790,7 +790,8 @@ impl From<&plan_repo::PlanListEntry> for PlanSummaryView {
 
 /// The plan shape a create authors, and the one facet a `PATCH` may move.
 ///
-/// Every member is optional because a plan is assembled over several calls: the
+/// PATCH members are optional because a plan is assembled over several calls.
+/// Creation uses [`CreatePlanRequest`], whose SKU is mandatory. The
 /// shape rules run at **publish**, not at save, so an unfinished draft is a
 /// legal draft (§4.2 step 2).
 #[derive(Debug, Clone, Default)]
@@ -839,6 +840,74 @@ pub struct PlanShapeRequest {
     /// the edge list names anyone, so a caller able to move one member alone
     /// could express a state no publish accepts.
     pub change_contract: Option<PlanChangeContractRequest>,
+}
+
+/// Initial plan shape. D-372 requires the sold offer SKU at creation.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request)]
+pub struct CreatePlanRequest {
+    /// Bind the plan to a catalog SKU.
+    pub sku_id: Uuid,
+    /// The plan's tier (a registry-owned taxonomy, so a free string).
+    pub plan_tier: Option<String>,
+    /// The plan's human label (D-318). Free text an operator chose, distinct
+    /// from the tier, which is a classification the catalog reasons about.
+    ///
+    /// Absent leaves it alone; the empty string is **refused**, not stored, so
+    /// `NULL` stays the only spelling of "unnamed".
+    pub plan_name: Option<String>,
+    /// `one_time` | `recurring` | `usage` | `hybrid`.
+    pub billing_cycle: Option<String>,
+    /// The recurring frequency, interval and all.
+    pub frequency: Option<FrequencyView>,
+    /// Declare or withdraw the audited tier override (P3).
+    pub plan_tier_override: Option<bool>,
+    /// Minimum purchasable quantity (one-time plans).
+    pub purchase_min_qty: Option<u64>,
+    /// Maximum purchasable quantity (one-time plans).
+    pub purchase_max_qty: Option<u64>,
+    /// The Billing invoice-layout hint (D-96).
+    pub invoice_grouping_key: Option<String>,
+    /// Start of the availability window, UTC.
+    #[serde(default, with = "rfc3339::option")]
+    pub available_from: Option<OffsetDateTime>,
+    /// End of the availability window, UTC.
+    #[serde(default, with = "rfc3339::option")]
+    pub available_to: Option<OffsetDateTime>,
+    /// The entitlement grant set (Slice 6, §6, D-41): the plan-level feature
+    /// flags and quotas, the `PlanTier` they resolved from when they did, and
+    /// any per-phase sets keyed by `phaseId`.
+    ///
+    /// Sent **whole or not at all**, for the change contract's reason below.
+    pub entitlement_grants: Option<EntitlementGrantsRequest>,
+    /// The plan-change contract (Slice 6, §6): the published `planId`s a
+    /// self-service change may travel to, the comparability rank that
+    /// classifies one, and D-113's tier-`Q` continuity flag.
+    ///
+    /// Sent **whole or not at all**, which is the shape
+    /// [`PlanShapePatch::change_contract`] gives it: K4 ties the rank to whether
+    /// the edge list names anyone, so a caller able to move one member alone
+    /// could express a state no publish accepts.
+    pub change_contract: Option<PlanChangeContractRequest>,
+}
+impl From<CreatePlanRequest> for PlanShapeRequest {
+    fn from(value: CreatePlanRequest) -> Self {
+        Self {
+            sku_id: Some(value.sku_id),
+            plan_tier: value.plan_tier,
+            plan_name: value.plan_name,
+            billing_cycle: value.billing_cycle,
+            frequency: value.frequency,
+            plan_tier_override: value.plan_tier_override,
+            purchase_min_qty: value.purchase_min_qty,
+            purchase_max_qty: value.purchase_max_qty,
+            invoice_grouping_key: value.invoice_grouping_key,
+            available_from: value.available_from,
+            available_to: value.available_to,
+            entitlement_grants: value.entitlement_grants,
+            change_contract: value.change_contract,
+        }
+    }
 }
 
 /// The entitlement grant set on the wire.
@@ -1495,7 +1564,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
         .authenticated()
         .no_license_required()
         .param(idempotency_key_param())
-        .json_request::<PlanShapeRequest>(openapi, "The plan's initial shape.")
+        .json_request::<CreatePlanRequest>(openapi, "The plan's initial shape; SKU is required.")
         .handler(create_plan)
         .json_response_with_schema::<PlanView>(
             openapi,
@@ -2020,7 +2089,7 @@ async fn create_plan(
     // Parsed after the gate, not before it: `prices.rs` orders it this way and a
     // module doc asserting "the gate before the repository" reads as two
     // disciplines if the two modules differ on where the body is read.
-    let body: PlanShapeRequest = preconditions::parse_body(&body)?;
+    let body = PlanShapeRequest::from(preconditions::parse_body::<CreatePlanRequest>(&body)?);
     let client_key = preconditions::idempotency_key(&headers)?;
     let request_hash = preconditions::request_digest(&body)?;
     let draft_shape = shape_of(&body)?;
@@ -2986,7 +3055,7 @@ fn replayed(
 /// request's correlation.
 struct DraftShape {
     /// The catalog SKU this plan realizes.
-    sku_id: Option<Uuid>,
+    sku_id: Uuid,
     /// The plan's tier.
     plan_tier: Option<String>,
     plan_name: Option<String>,
@@ -3247,7 +3316,11 @@ fn shape_of(body: &PlanShapeRequest) -> Result<DraftShape, DomainError> {
     require_authorable_purchase_window(body.purchase_min_qty, body.purchase_max_qty)?;
     require_ordered_availability_window(body.available_from, body.available_to)?;
     Ok(DraftShape {
-        sku_id: body.sku_id,
+        sku_id: body.sku_id.ok_or_else(|| {
+            let mut report = crate::domain::validation::ValidationReport::default();
+            report.violate_at_write("VALIDATION", "sku_id", "a plan must name its own SKU");
+            DomainError::ValidationFailed(report)
+        })?,
         plan_tier: body.plan_tier.clone(),
         plan_name: body.plan_name.clone(),
         billing_cycle: billing_cycle_of(body.billing_cycle.as_deref())?,

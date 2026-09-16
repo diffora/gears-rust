@@ -326,7 +326,10 @@ const EXPECTED_INDEXES: &[&str] = &[
     "uq_pricing_plan_current",
     "uq_pricing_plan_open_draft",
     "uq_pricing_plan_phase_terminal",
-    "uq_pricing_price_meter_line_current",
+    // `uq_pricing_price_meter_line_current` stood here until D-372. It keyed the
+    // usage line as a market of its own, which is the statement D-372 reverses:
+    // two units of one SKU are one key, so the index that made them two was
+    // dropped rather than re-keyed (`m20260916_000044_price_row_sku`).
     // D-42's null-safe line key — an **expression** index over three COALESCEd
     // sentinels, because a plain UNIQUE over three nullable columns admits the
     // very rows section 6 spells as "one default line, one line per plan".
@@ -1013,9 +1016,13 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
         "trg_pricing_price_flip_whitelist",
         6_864_967_922_611_899_704_u64,
     ),
+    // Re-pinned by `m20260916_000044_price_row_sku`: the trigger is the
+    // `m20260821_000023:585` body with one clause added,
+    // `OR NEW.sku_id IS NOT OLD.sku_id`, so a published row's SKU is as frozen as
+    // the `plan_id` beside it. Was `9_876_821_329_598_270_805`.
     (
         "trg_pricing_price_frozen_columns",
-        9_876_821_329_598_270_805_u64,
+        2_507_730_080_879_983_974_u64,
     ),
     (
         "trg_pricing_price_grandfather_monotonic",
@@ -1630,24 +1637,27 @@ async fn the_pending_key_register_is_unique_and_partial_on_submitted() {
     );
 }
 
-/// D-196 clause (2): both scope-key indexes carry the usage line, **through the
-/// sentinel** — and the behaviour, not only the DDL.
+/// D-372 replaces D-196 clause (2): both scope-key indexes carry the **SKU**, and
+/// the sentinel is gone with the axis it stood for.
 ///
 /// The DDL half is the cheap half. The behavioural half is the one that matters,
-/// because the naive widening — listing `meter` itself — produces DDL that reads
-/// correct and silently stops constraining every non-usage key, `meter` being
-/// nullable and NULLs being distinct inside a `UNIQUE`. So this asserts both
-/// directions on the engine the fast gate runs:
+/// and it is the exact inverse of what this case asserted until D-372:
 ///
-///   - two usage lines differing only in `meter` are two keys (D-103's example,
-///     which the eight-axis key refused);
-///   - two rows with **no** meter on one key still collide (the hole).
+///   - two usage lines differing only in `meter` are now **one** key, so the
+///     second is refused (D-103's example, read the other way round);
+///   - two rows on two SKUs are two keys, on both planes;
+///   - a row with no meter at all still has a key, because the ninth axis is a
+///     column that cannot be absent rather than a `COALESCE(meter, '')` sentinel.
+///
+/// The last point is why the sentinel could go rather than move: `meter` was
+/// nullable and NULLs do not collide inside a `UNIQUE`, so the axis had to be
+/// indexed through a coalesce; `sku_id` is `NOT NULL` (a trigger pair here, a real
+/// constraint on Postgres), so it is indexed as itself.
 ///
 /// The rows go in as raw SQL rather than through the repository on purpose: the
-/// repository is the layer that cannot see a guard stop refusing, and until
-/// clause (3) it does not carry the pair from the key onto the columns anyway.
+/// repository is the layer that cannot see a guard stop refusing.
 #[tokio::test]
-async fn both_scope_key_indexes_carry_the_usage_line_through_the_sentinel() {
+async fn both_scope_key_indexes_carry_the_sku_and_two_units_of_one_sku_are_one_key() {
     let conn = Database::connect("sqlite::memory:")
         .await
         .expect("connect in-memory sqlite");
@@ -1665,9 +1675,12 @@ async fn both_scope_key_indexes_carry_the_usage_line_through_the_sentinel() {
     ] {
         let ddl = index_sql(&conn, index).await.expect("the scope-key index");
         assert!(
-            ddl.contains("COALESCE(meter, '')"),
-            "the meter axis must be indexed through the sentinel, not as the nullable \
-             column: {ddl}"
+            ddl.contains("sku_id"),
+            "the ninth axis must be indexed as itself: {ddl}"
+        );
+        assert!(
+            !ddl.contains("COALESCE(meter"),
+            "the meter sentinel left the key with the meter (D-372): {ddl}"
         );
         assert!(
             ddl.contains("dimension_key"),
@@ -1675,14 +1688,17 @@ async fn both_scope_key_indexes_carry_the_usage_line_through_the_sentinel() {
         );
     }
 
-    let row = |id: u32, state: &str, meter: &str| {
+    let sku_a = "aaaaaaaa-0000-0000-0000-000000000001";
+    let sku_b = "bbbbbbbb-0000-0000-0000-000000000002";
+    let row = |id: u32, state: &str, meter: &str, sku: &str| {
         format!(
             "INSERT INTO pricing_price (price_id, tenant_id, plan_id, currency, region, phase, \
              charge_kind, model_kind, amount_minor, lifecycle_state, created_by, created_at_utc, \
-             meter) VALUES ('{id:0>8}-0000-0000-0000-000000000000', \
+             meter, sku_id) VALUES ('{id:0>8}-0000-0000-0000-000000000000', \
              '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', \
              'USD', 'EU', '33333333-3333-3333-3333-333333333333', 'usage', 'per_unit', 1000, \
-             '{state}', '44444444-4444-4444-4444-000000000000', '2026-08-03 09:00:00+00', {meter})"
+             '{state}', '44444444-4444-4444-4444-000000000000', '2026-08-03 09:00:00+00', \
+             {meter}, '{sku}')"
         )
     };
     let exec = async |sql: String| {
@@ -1693,33 +1709,223 @@ async fn both_scope_key_indexes_carry_the_usage_line_through_the_sentinel() {
         .await
     };
 
-    // D-103's example: two meters, one market, two keys — on both planes.
-    exec(row(1, "published", "'cloudlets'"))
+    // D-103's example, reversed: two meters of one SKU are one key now.
+    exec(row(1, "published", "'cloudlets'", sku_a))
         .await
         .expect("the first usage line takes its key");
-    exec(row(2, "published", "'egress_gb'"))
+    let collision = exec(row(2, "published", "'egress_gb'", sku_a))
         .await
-        .expect("a second meter is a second key, which is the whole of D-196");
-    exec(row(3, "draft", "'cloudlets'"))
-        .await
-        .expect("the draft plane admits the same pair");
-    exec(row(4, "draft", "'egress_gb'"))
-        .await
-        .expect("a second meter is a second draft key too");
-
-    // And the hole stays closed: no meter is one key, not one key per row.
-    exec(row(5, "published", "NULL"))
-        .await
-        .expect("a meterless usage row takes the sentinel key");
-    let collision = exec(row(6, "published", "NULL"))
-        .await
-        .expect_err("two meterless usage rows share one key and the second must be refused");
+        .expect_err("a second unit of one SKU is the same key and must be refused");
+    // `SQLite` names the **index** in a uniqueness failure only while the index
+    // carries an expression; a plain-column index is reported by its column list.
+    // Dropping `COALESCE(meter, '')` moved this refusal from the first shape to
+    // the second, so the assertion follows it rather than the other way round.
+    let text = collision.to_string();
     assert!(
-        collision
-            .to_string()
-            .contains("uq_pricing_price_scope_key_current"),
-        "the refusal must come from the scope-key index: {collision}"
+        text.contains("UNIQUE constraint failed") && text.contains("pricing_price.sku_id"),
+        "the refusal must come from the scope-key index, over an axis list that \
+         carries the SKU: {text}"
     );
+
+    // And the positive statement of D-372: a second SKU is a second key.
+    exec(row(3, "published", "'egress_gb'", sku_b))
+        .await
+        .expect("a second SKU is a second key, which is the whole of D-372");
+
+    // The draft plane answers the same way, both directions.
+    exec(row(4, "draft", "'cloudlets'", sku_a))
+        .await
+        .expect("the draft plane holds the key once");
+    let draft_collision = exec(row(5, "draft", "'egress_gb'", sku_a))
+        .await
+        .expect_err("two units of one SKU collide on the draft plane too");
+    let draft_text = draft_collision.to_string();
+    assert!(
+        draft_text.contains("UNIQUE constraint failed")
+            && draft_text.contains("pricing_price.sku_id"),
+        "the draft plane must refuse on the same axis list: {draft_text}"
+    );
+
+    // A meterless row is not a special case any more: the ninth axis is a column
+    // that is always there, so there is no NULL for the index to lose.
+    exec(row(
+        6,
+        "published",
+        "NULL",
+        "cccccccc-0000-0000-0000-000000000003",
+    ))
+    .await
+    .expect("a meterless usage row keys on its SKU like any other");
+}
+
+/// D-372: the migration derives a fee row's SKU from its plan and refuses to guess
+/// a usage row's.
+///
+/// Seeded **before** the last migration so the backfill has something to do: an
+/// empty table proves nothing about a backfill, and every other case in this file
+/// runs the chain over a database with no rows in it.
+///
+/// Three properties, and the third is the one the statement order exists for:
+///
+///   1. a usage row cannot be backfilled and the refusal **names it**, because a
+///      usage row's SKU is a registry fact (which SKU declares `GB-hour`) and the
+///      migration never guesses;
+///   2. the fee row is not named, because it was backfilled;
+///   3. the fee row is **published**, and the backfill still reaches it: the
+///      append-only guard is restated with `sku_id` in its frozen list *after* the
+///      `UPDATE`, and restated first it would have refused exactly this row.
+///
+/// The refusal also has to leave nothing behind, or the re-run it tells the
+/// operator to make would fail on `ADD COLUMN` instead of succeeding. That is what
+/// the migration's `use_transaction` override buys, and the second `up` below is
+/// what measures it.
+#[tokio::test]
+async fn the_sku_backfill_fills_fee_rows_and_refuses_usage_rows() {
+    const TENANT: &str = "11111111-1111-1111-1111-111111111111";
+    const PLAN: &str = "22222222-2222-2222-2222-222222222222";
+    const PLAN_SKU: &str = "55555555-5555-5555-5555-000000000005";
+    const FEE_ROW: &str = "f0000000-0000-0000-0000-00000000000f";
+    const USAGE_ROW: &str = "0a5a9e00-0000-0000-0000-00000000000a";
+
+    let db = Database::connect("sqlite::memory:")
+        .await
+        .expect("connect in-memory sqlite");
+    let exec = async |sql: String| {
+        db.execute_raw(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            sql,
+        ))
+        .await
+    };
+
+    let all_but_last = u32::try_from(Migrator::migrations().len() - 1).expect("chain length");
+    Migrator::up(&db, Some(all_but_last))
+        .await
+        .expect("the shipped chain");
+
+    // Raw INSERTs, with every `NOT NULL` column given a literal: the columns come
+    // from `m20260821_000021` and `m20260821_000023`, and `pricing_price.sku_id`
+    // does not exist yet, which is the whole point of seeding here.
+    exec(format!(
+        "INSERT INTO pricing_plan (tenant_id, plan_id, revision, lifecycle_state, created_by, \
+         sku_id) VALUES ('{TENANT}', '{PLAN}', 1, 'draft', \
+         '44444444-4444-4444-4444-000000000000', '{PLAN_SKU}')"
+    ))
+    .await
+    .expect("seed the plan that holds the one SKU fact the database has");
+
+    exec(format!("INSERT INTO pricing_plan_period_floor_cap (tenant_id, plan_id, plan_revision, currency, region, floor_minor) VALUES ('{TENANT}', '{PLAN}', 1, 'USD', 'EU', 1)"))
+        .await.expect("seed plan child");
+    exec(format!(
+        "UPDATE pricing_plan SET lifecycle_state = 'published' WHERE plan_id = '{PLAN}'"
+    ))
+    .await
+    .expect("freeze parent with its child");
+
+    let price = |id: &str, kind: &str, state: &str, meter: &str| {
+        format!(
+            "INSERT INTO pricing_price (price_id, tenant_id, plan_id, currency, region, phase, \
+             charge_kind, model_kind, amount_minor, lifecycle_state, created_by, created_at_utc, \
+             meter) VALUES ('{id}', '{TENANT}', '{PLAN}', 'USD', 'EU', \
+             '33333333-3333-3333-3333-333333333333', '{kind}', 'per_unit', 1000, '{state}', \
+             '44444444-4444-4444-4444-000000000000', '2026-08-03 09:00:00+00', {meter})"
+        )
+    };
+    exec(price(FEE_ROW, "recurring", "published", "NULL"))
+        .await
+        .expect("seed the fee row, published, so the guard ordering is under test");
+    exec(format!("INSERT INTO pricing_price_window (window_id, tenant_id, price_id, effective_from, state, reason_code, created_by) VALUES ('77777777-7777-7777-7777-777777777777', '{TENANT}', '{FEE_ROW}', '2026-09-01T00:00:00+00:00', 'scheduled', 'test', '{TENANT}')"))
+        .await.expect("seed a child of the published price");
+    exec(price(USAGE_ROW, "usage", "draft", "'GB-hour'"))
+        .await
+        .expect("seed the usage row, draft, so the repair below can delete it");
+
+    let err = Migrator::up(&db, None)
+        .await
+        .expect_err("a usage row cannot be backfilled");
+    let text = err.to_string();
+    assert!(text.contains("D-372 backfill incomplete"), "{text}");
+    assert!(
+        text.contains(USAGE_ROW),
+        "the refusal names the row: {text}"
+    );
+    assert!(
+        !text.contains(FEE_ROW),
+        "the fee row was backfilled and is not named: {text}"
+    );
+
+    exec(format!(
+        "DELETE FROM pricing_price WHERE price_id = '{USAGE_ROW}'"
+    ))
+    .await
+    .expect("the operator clears the row they cannot repair");
+
+    Migrator::up(&db, None)
+        .await
+        .expect("tightens once every row has a SKU");
+
+    let sku: String = db
+        .query_one_raw(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            format!("SELECT sku_id FROM pricing_price WHERE price_id = '{FEE_ROW}'"),
+        ))
+        .await
+        .expect("read the backfilled row")
+        .expect("the fee row is still there")
+        .try_get("", "sku_id")
+        .expect("the column the migration added");
+    assert_eq!(sku, PLAN_SKU, "the fee row took its plan's SKU");
+    for table in ["pricing_price", "pricing_plan"] {
+        let columns = db
+            .query_all_raw(Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                format!("PRAGMA table_info({table})"),
+            ))
+            .await
+            .unwrap();
+        let sku_column = columns
+            .iter()
+            .find(|r| r.try_get::<String>("", "name").unwrap() == "sku_id")
+            .unwrap();
+        assert_eq!(
+            sku_column.try_get::<i64>("", "notnull").unwrap(),
+            1,
+            "{table} physically requires SKU"
+        );
+    }
+    let children = db
+        .query_one_raw(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "SELECT count(*) AS n FROM pricing_price_window",
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(children.try_get::<i64>("", "n").unwrap(), 1);
+    assert!(
+        db.query_all_raw(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "PRAGMA foreign_key_check"
+        ))
+        .await
+        .unwrap()
+        .is_empty()
+    );
+    let plan_children = db
+        .query_one_raw(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "SELECT count(*) AS n FROM pricing_plan_period_floor_cap",
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(plan_children.try_get::<i64>("", "n").unwrap(), 1);
+    Migrator::down(&db, Some(1))
+        .await
+        .expect("populated down preserves children");
+    Migrator::up(&db, None)
+        .await
+        .expect("populated up round trip");
 }
 
 /// D-09's cross-group non-overlap invariant, the `SQLite` arm
@@ -2485,9 +2691,12 @@ async fn the_composite_output_unit_refuses_ascii_whitespace_alone() {
     must_apply(
         &conn,
         &format!(
+            // `sku_id` since D-372: `pricing_plan.sku_id` is `NOT NULL` on Postgres
+            // and trigger-enforced here, so a seed without one no longer lands.
             "INSERT INTO pricing_plan (plan_id, revision, tenant_id, lifecycle_state, \
-             created_by, created_at_utc) \
-             VALUES ('{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-03 09:00:00+00')"
+             created_by, created_at_utc, sku_id) \
+             VALUES ('{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-03 09:00:00+00', \
+             '00000000-0000-0000-0000-000000000005')"
         ),
     )
     .await;
@@ -2607,9 +2816,12 @@ async fn the_revshare_party_predicate_refuses_a_blank_and_a_padded_sentinel() {
     must_apply(
         &conn,
         &format!(
+            // `sku_id` since D-372: `pricing_plan.sku_id` is `NOT NULL` on Postgres
+            // and trigger-enforced here, so a seed without one no longer lands.
             "INSERT INTO pricing_plan (plan_id, revision, tenant_id, lifecycle_state, \
-             created_by, created_at_utc) \
-             VALUES ('{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-03 09:00:00+00')"
+             created_by, created_at_utc, sku_id) \
+             VALUES ('{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-03 09:00:00+00', \
+             '00000000-0000-0000-0000-000000000005')"
         ),
     )
     .await;
@@ -2698,9 +2910,12 @@ async fn the_absorber_predicate_refuses_a_blank_and_a_padded_sentinel() {
     must_apply(
         &conn,
         &format!(
+            // `sku_id` since D-372: `pricing_plan.sku_id` is `NOT NULL` on Postgres
+            // and trigger-enforced here, so a seed without one no longer lands.
             "INSERT INTO pricing_plan (plan_id, revision, tenant_id, lifecycle_state, \
-             created_by, created_at_utc) \
-             VALUES ('{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-03 09:00:00+00')"
+             created_by, created_at_utc, sku_id) \
+             VALUES ('{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-03 09:00:00+00', \
+             '00000000-0000-0000-0000-000000000005')"
         ),
     )
     .await;
@@ -2846,9 +3061,12 @@ async fn a_negative_add_on_quantity_bound_is_refused() {
     must_apply(
         &conn,
         &format!(
+            // `sku_id` since D-372: `pricing_plan.sku_id` is `NOT NULL` on Postgres
+            // and trigger-enforced here, so a seed without one no longer lands.
             "INSERT INTO pricing_plan (plan_id, revision, tenant_id, lifecycle_state, \
-             created_by, created_at_utc) \
-             VALUES ('{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-03 09:00:00+00')"
+             created_by, created_at_utc, sku_id) \
+             VALUES ('{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-03 09:00:00+00', \
+             '00000000-0000-0000-0000-000000000005')"
         ),
     )
     .await;
@@ -2954,6 +3172,23 @@ async fn a_journal_row_may_not_name_another_tenants_run() {
     let manager = SchemaManager::new(&conn);
     let remainder = staged_to(&manager, "create_pricing_repricing_journal").await;
 
+    // The plan the row prices, and its SKU. Seeded since D-372 rather than left
+    // implicit: the remainder of the chain now carries
+    // `m20260916_000044_price_row_sku`, whose backfill reads a fee row's SKU off
+    // its plan and refuses to guess a usage row's -- so a row staged here has to
+    // be one the backfill can reach, which is a **non-usage** row under a plan
+    // that names a SKU. `charge_kind` is incidental to this case (the journal's
+    // key is `(run_id, price_id)`), and being reachable by the backfill is not.
+    must_apply(
+        &conn,
+        &format!(
+            "INSERT INTO pricing_plan (plan_id, revision, tenant_id, lifecycle_state, \
+             created_by, created_at_utc, sku_id) \
+             VALUES ('{PLAN}', 0, '{TENANT_A}', 'draft', '{ACTOR}', '2026-08-03 09:00:00+00', \
+             '00000000-0000-0000-0000-000000000005')"
+        ),
+    )
+    .await;
     // One price row: a second under the same tenant would need a different scope
     // key, and the journal's own key is `(run_id, price_id)`, so both journal rows
     // below can name this one.
@@ -2962,7 +3197,7 @@ async fn a_journal_row_may_not_name_another_tenants_run() {
         &format!(
             "INSERT INTO pricing_price (price_id, tenant_id, plan_id, currency, region, \
              phase, charge_kind, model_kind, lifecycle_state, created_by, created_at_utc) \
-             VALUES ('{PRICE}', '{TENANT_A}', '{PLAN}', 'USD', 'EU', '{PHASE}', 'usage', \
+             VALUES ('{PRICE}', '{TENANT_A}', '{PLAN}', 'USD', 'EU', '{PHASE}', 'recurring', \
              'per_unit', 'draft', '{ACTOR}', '2026-08-03 09:00:00+00')"
         ),
     )
@@ -3039,4 +3274,87 @@ async fn a_journal_row_may_not_name_another_tenants_run() {
         message.contains("belongs to another tenant"),
         "by the same arm: {message}"
     );
+}
+
+/// A price does not record a plan revision: neither another tenant's plan nor
+/// an arbitrary latest revision is evidence of its SKU.
+#[tokio::test]
+async fn sku_backfill_refuses_wrong_tenant_and_ambiguous_revisions() {
+    for ambiguous in [false, true] {
+        let db = Database::connect("sqlite::memory:").await.unwrap();
+        let n = u32::try_from(Migrator::migrations().len() - 1).unwrap();
+        Migrator::up(&db, Some(n)).await.unwrap();
+        db.execute_unprepared("INSERT INTO pricing_plan (tenant_id, plan_id, revision, lifecycle_state, created_by, sku_id) VALUES ('tenant-a', 'plan', 1, 'superseded', 'actor', 'sku-a')").await.unwrap();
+        if ambiguous {
+            db.execute_unprepared("INSERT INTO pricing_plan (tenant_id, plan_id, revision, lifecycle_state, created_by, sku_id) VALUES ('tenant-a', 'plan', 2, 'published', 'actor', 'sku-b')").await.unwrap();
+        }
+        let tenant = if ambiguous { "tenant-a" } else { "tenant-b" };
+        db.execute_unprepared(&format!("INSERT INTO pricing_price (price_id, tenant_id, plan_id, currency, region, phase, charge_kind, lifecycle_state, created_by) VALUES ('unresolved-fee', '{tenant}', 'plan', 'USD', 'EU', 'phase', 'recurring', 'draft', 'actor')")).await.unwrap();
+        let err = Migrator::up(&db, None)
+            .await
+            .expect_err("must not guess a SKU")
+            .to_string();
+        assert!(err.contains("unresolved-fee"), "{err}");
+        let columns = db
+            .query_all_raw(Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                "PRAGMA table_info(pricing_price)",
+            ))
+            .await
+            .unwrap();
+        assert!(
+            !columns
+                .iter()
+                .any(|r| r.try_get::<String>("", "name").unwrap() == "sku_id"),
+            "refusal rolls back ADD COLUMN"
+        );
+    }
+}
+
+/// A collision can be discovered only after the physical rebuild, when the new
+/// scope index is created. The runner must undo the rebuild as well as backfill.
+#[tokio::test]
+async fn sku_scope_collision_rolls_back_the_physical_rebuild() {
+    let db = Database::connect("sqlite::memory:").await.unwrap();
+    let n = u32::try_from(Migrator::migrations().len() - 1).unwrap();
+    Migrator::up(&db, Some(n)).await.unwrap();
+    db.execute_unprepared("INSERT INTO pricing_plan (tenant_id, plan_id, revision, lifecycle_state, created_by, sku_id) VALUES ('tenant', 'plan', 1, 'published', 'actor', 'sku')").await.unwrap();
+    for meter in ["unit-a", "unit-b"] {
+        db.execute_unprepared(&format!("INSERT INTO pricing_price (price_id, tenant_id, plan_id, currency, region, phase, charge_kind, lifecycle_state, created_by, meter) VALUES ('{meter}', 'tenant', 'plan', 'USD', 'EU', 'phase', 'recurring', 'draft', 'actor', '{meter}')")).await.unwrap();
+    }
+    Migrator::up(&db, None)
+        .await
+        .expect_err("two old meter keys collapse into one SKU key");
+    let columns = db
+        .query_all_raw(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "PRAGMA table_info(pricing_price)",
+        ))
+        .await
+        .unwrap();
+    assert!(
+        !columns
+            .iter()
+            .any(|r| r.try_get::<String>("", "name").unwrap() == "sku_id")
+    );
+    let rows = db
+        .query_all_raw(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "SELECT price_id FROM pricing_price",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 2, "failed rebuild preserves both original rows");
+    let plan_columns = db
+        .query_all_raw(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "PRAGMA table_info(pricing_plan)",
+        ))
+        .await
+        .unwrap();
+    let sku_column = plan_columns
+        .iter()
+        .find(|r| r.try_get::<String>("", "name").unwrap() == "sku_id")
+        .unwrap();
+    assert_eq!(sku_column.try_get::<i64>("", "notnull").unwrap(), 0);
 }

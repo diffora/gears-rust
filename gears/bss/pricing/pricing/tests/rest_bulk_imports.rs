@@ -44,6 +44,7 @@ fn row(plan_id: Uuid, region: &str, amount: i64) -> serde_json::Value {
     serde_json::json!({
         "plan_id": plan_id,
         "scope_key": {
+            "sku_id": rest_support::OFFER_SKU,
             "currency": "USD",
             "region": region,
             "phase": rest_support::seeded_phase().get().to_string(),
@@ -905,6 +906,7 @@ fn usage_row(plan_id: Uuid, meter: &str, amount: i64) -> serde_json::Value {
     serde_json::json!({
         "plan_id": plan_id,
         "scope_key": {
+            "sku_id": rest_support::resource_sku(meter.trim()),
             "currency": "USD",
             "region": "eu",
             "phase": rest_support::seeded_phase().get().to_string(),
@@ -916,7 +918,6 @@ fn usage_row(plan_id: Uuid, meter: &str, amount: i64) -> serde_json::Value {
             "model_kind": "per_unit",
             "amount_minor": amount,
             "tax_inclusive": false,
-            "meter": meter,
             "billing_timing": "arrears",
             "rounding_policy_ref": "half_up"
         }
@@ -1135,6 +1136,9 @@ async fn poison_the_published_read(harness: &Harness, plan_id: Uuid) {
         price_id: Set(Uuid::now_v7()),
         tenant_id: Set(harness.tenant),
         plan_id: Set(plan_id),
+        // A SKU of its own (D-372), so the doc's "a row of its **own** key" stays
+        // true on the axis that now decides the key.
+        sku_id: Set(Uuid::from_u128(0x5c_09)),
         currency: Set("US".to_owned()),
         region: Set("EU".to_owned()),
         phase: Set(rest_support::seeded_phase().get()),
@@ -1266,6 +1270,7 @@ fn doubly_bad_row(plan_id: Uuid) -> serde_json::Value {
     serde_json::json!({
         "plan_id": plan_id,
         "scope_key": {
+            "sku_id": rest_support::OFFER_SKU,
             "currency": "US",
             "region": "eu",
             "phase": rest_support::seeded_phase().get().to_string(),
@@ -1874,5 +1879,119 @@ async fn a_foreign_tenants_run_reads_like_an_unknown_one() {
     assert_eq!(
         body_json(owner).await["operation_id"],
         serde_json::json!(operation_id)
+    );
+}
+
+#[tokio::test]
+async fn two_resource_skus_sharing_a_unit_import_as_distinct_rows() {
+    let first = Uuid::from_u128(0x3721);
+    let second = Uuid::from_u128(0x3722);
+    let harness =
+        Harness::new_with_catalog(std::sync::Arc::new(rest_support::FixtureCatalog(vec![
+            rest_support::catalog_sku(rest_support::OFFER_SKU, None, true),
+            rest_support::catalog_sku(first, Some("GB-hour"), false),
+            rest_support::catalog_sku(second, Some("GB-hour"), false),
+        ])))
+        .await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+    let rows: Vec<_> = [first, second]
+        .into_iter()
+        .map(|sku| {
+            let mut row = usage_row(plan, "GB-hour", 700);
+            row["scope_key"]["sku_id"] = serde_json::json!(sku);
+            row
+        })
+        .collect();
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BULK_IMPORTS,
+            Some(batch(&rows)),
+            &keyed("same-unit-skus"),
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let stored = rest_support::price_rows(&harness, plan).await;
+    assert_eq!(stored.len(), 2);
+    assert!(
+        stored
+            .iter()
+            .all(|row| row.row.meter.as_deref() == Some("GB-hour"))
+    );
+    assert_ne!(stored[0].scope_key.sku_id(), stored[1].scope_key.sku_id());
+}
+
+#[tokio::test]
+async fn an_authored_meter_aborts_the_entire_import() {
+    let harness = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_current_plan(&harness, plan).await;
+    let mut invalid = usage_row(plan, "GB-hour", 700);
+    invalid["content"]["meter"] = serde_json::Value::Null;
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            BULK_IMPORTS,
+            Some(batch(&[invalid, usage_row(plan, "TB-hour", 800)])),
+            &keyed("authored-meter"),
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(rest_support::price_rows(&harness, plan).await.is_empty());
+}
+
+#[tokio::test]
+async fn missing_and_foreign_parent_plans_block_every_row_without_leaking_existence() {
+    let h = Harness::new().await;
+    let owned = Uuid::now_v7();
+    seed_current_plan(&h, owned).await;
+    let foreign = Uuid::now_v7();
+    h.state
+        .plans
+        .create_draft(&h.other_scope(), rest_support::new_draft(foreign, h.other))
+        .await
+        .expect("foreign fixture");
+    let mut findings = Vec::new();
+    for (plan, key) in [
+        (Uuid::now_v7(), "missing-parent"),
+        (foreign, "foreign-parent"),
+    ] {
+        let response = h
+            .allowed()
+            .send(with_headers(
+                "POST",
+                BULK_IMPORTS,
+                Some(batch(&[row(owned, "eu", 700), row(plan, "eu", 800)])),
+                &keyed(key),
+            ))
+            .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let problem = body_json(response).await;
+        assert_eq!(rest_support::code_in(&problem), "BULK_VALIDATION_FAILED");
+        let operation =
+            rest_support::violation_for(&problem, "operation_id").expect("operation reference");
+        let run = body_json(
+            h.allowed()
+                .send(with_headers("GET", &import_path(&operation), None, &[]))
+                .await,
+        )
+        .await;
+        assert_eq!(run["state"], "validation_failed");
+        let outcomes = run["report"]["rows"].as_array().expect("row outcomes");
+        let fault = outcomes
+            .iter()
+            .find(|row| row["row"] == 1)
+            .expect("second row finding");
+        assert_eq!(fault["violations"][0]["code"], "IMPORT_PLAN_NOT_FOUND");
+        findings.push(fault["violations"].clone());
+        assert!(rest_support::price_rows(&h, owned).await.is_empty());
+        assert!(rest_support::price_rows(&h, plan).await.is_empty());
+    }
+    assert_eq!(
+        findings[0], findings[1],
+        "missing and inaccessible parents are indistinguishable"
     );
 }

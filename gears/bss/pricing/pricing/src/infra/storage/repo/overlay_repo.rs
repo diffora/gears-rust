@@ -1615,7 +1615,7 @@ async fn write_lines(
             price_overlay_id: Set(price_overlay_id),
             tenant_id: Set(tenant_id),
             plan_id: Set(line.key.plan_id().map(PlanId::get)),
-            target_sku: Set(line.key.target_sku().map(|s| s.as_str().to_owned())),
+            target_sku: Set(line.key.target_sku().map(TargetSku::as_uuid)),
             cohort: Set(line.key.cohort()),
             adjustment_kind: Set(line.adjustment.kind().as_str().to_owned()),
             magnitude_kind: Set(line.adjustment.magnitude_kind().as_str().to_owned()),
@@ -1956,7 +1956,7 @@ fn line_of(
         ))
     };
 
-    let key = match (row.plan_id, row.target_sku.as_deref(), row.cohort) {
+    let key = match (row.plan_id, row.target_sku, row.cohort) {
         (None, None, None) => LineKey::list_default(),
         (Some(plan), None, None) => LineKey::for_plan(PlanId::new(plan)),
         (Some(plan), Some(sku), None) => LineKey::for_sku(
@@ -2137,13 +2137,9 @@ impl OverlayRepo {
     /// # Two facts have no source in this crate, and they are named rather than
     /// # guessed
     ///
-    /// * **`published_skus`** is derived from `pricing_plan.sku_id` — the SKU a
-    ///   published plan revision publishes under — rendered as a string, because
-    ///   §6 types the line's `target_sku` as one. There is no SKU *registry* in
-    ///   this repository, so "a SKU this plan publishes" is exactly "the id on
-    ///   the plan row" and nothing richer. A line naming any other SKU is
-    ///   refused `OVERLAY_LINE_TARGET_UNKNOWN`, which is the fail-closed
-    ///   direction; when the registry lands, this is the read that widens.
+    /// * **`published_skus`** contains the UUIDs of published price rows for
+    ///   each target plan. D-372 permits resource SKUs different from the plan's
+    ///   offer; a plan-level SKU alone does not establish a priced target.
     /// * **`layers_beneath`** is D-138's warning domain, and it is
     ///   computed under the reading D-138's own words state — *"the
     ///   lowest-precedence layer able to match its target"*, i.e. numerically
@@ -2195,7 +2191,7 @@ pub(crate) async fn world_on(
     Ok(OverlayWorld {
         scope_value_declared,
         published_plans: plans.published,
-        published_skus: plans.skus,
+        published_skus: markets.skus,
         retired_plans: plans.retired,
         sold_currencies: markets.currencies,
         published_cohorts: markets.cohorts,
@@ -2210,7 +2206,6 @@ pub(crate) async fn world_on(
 struct PlanFacts {
     published: BTreeSet<PlanId>,
     retired: BTreeSet<PlanId>,
-    skus: BTreeMap<PlanId, BTreeSet<TargetSku>>,
 }
 
 /// Which targets are published, which are retired, and under which SKU.
@@ -2223,7 +2218,6 @@ async fn plan_facts(
     let mut facts = PlanFacts {
         published: BTreeSet::new(),
         retired: BTreeSet::new(),
-        skus: BTreeMap::new(),
     };
     if targets.is_empty() {
         return Ok(facts);
@@ -2273,11 +2267,6 @@ async fn plan_facts(
             continue;
         }
         facts.published.insert(plan_id);
-        if let Some(sku) = revision.sku_id
-            && let Some(named) = TargetSku::new(&sku.to_string())
-        {
-            facts.skus.entry(plan_id).or_default().insert(named);
-        }
         if state == LifecycleState::Retired {
             facts.retired.insert(plan_id);
         }
@@ -2287,6 +2276,7 @@ async fn plan_facts(
 
 /// What the **price** plane says about an overlay's targets.
 struct MarketFacts {
+    skus: BTreeMap<PlanId, BTreeSet<TargetSku>>,
     currencies: BTreeMap<PlanId, BTreeSet<CurrencyCode>>,
     cohorts: BTreeMap<PlanId, BTreeSet<OffsetDateTime>>,
 }
@@ -2300,6 +2290,7 @@ async fn price_facts(
     targets: &[PlanId],
 ) -> Result<MarketFacts, RepoError> {
     let mut facts = MarketFacts {
+        skus: BTreeMap::new(),
         currencies: BTreeMap::new(),
         cohorts: BTreeMap::new(),
     };
@@ -2322,6 +2313,10 @@ async fn price_facts(
         .map_err(|e| RepoError::Db(format!("read pricing_price for overlay world: {e}")))?;
     for row in rows {
         let plan_id = PlanId::new(row.plan_id);
+        let sku = TargetSku::new(row.sku_id).ok_or_else(|| {
+            RepoError::CorruptRow(format!("pricing_price {} has a nil SKU", row.price_id))
+        })?;
+        facts.skus.entry(plan_id).or_default().insert(sku);
         let currency = sold_currency(row.price_id, &row.currency)?;
         facts
             .currencies

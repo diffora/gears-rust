@@ -64,8 +64,8 @@ pub struct PlanRevision {
     /// precisely so it is never a max-scan convention that two readers could
     /// implement differently.
     pub revision: u64,
-    /// The catalog SKU this plan realizes, when one is bound.
-    pub sku_id: Option<Uuid>,
+    /// The required catalog SKU this plan realizes (D-372).
+    pub sku_id: Uuid,
     /// The plan's tier.
     ///
     /// A `String` on purpose, and it stays one now that Slice 2 has landed

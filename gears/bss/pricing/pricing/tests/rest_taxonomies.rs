@@ -255,6 +255,9 @@ async fn seed_published_price_row_n(harness: &Harness, region: &str, nth: u128) 
         revision: Set(1),
         tenant_id: Set(harness.tenant),
         lifecycle_state: Set("published".to_owned()),
+        // D-372: `pricing_plan.sku_id` is `NOT NULL` since
+        // `m20260916_000044_price_row_sku`.
+        sku_id: Set(uuid::Uuid::from_u128(5)),
         created_by: Set(uuid::Uuid::from_u128(0x4444)),
         created_at_utc: Set(stamped),
         ..Default::default()
@@ -293,6 +296,9 @@ async fn seed_published_price_row_n(harness: &Harness, region: &str, nth: u128) 
         }),
         tax_inclusive: Set(false),
         lifecycle_state: Set("published".to_owned()),
+        // D-372: `pricing_price.sku_id` is `NOT NULL` since
+        // `m20260916_000044_price_row_sku`.
+        sku_id: Set(uuid::Uuid::from_u128(5)),
         created_by: Set(uuid::Uuid::from_u128(0x4444)),
         created_at_utc: Set(stamped),
         row_version: Set(0),

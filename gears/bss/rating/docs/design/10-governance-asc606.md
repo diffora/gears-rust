@@ -204,7 +204,7 @@ and pass-through clauses) are owned by [`11-consumer-contracts.md`](./11-consume
 
 [`01-foundation.md`](./01-foundation.md) owns the emission envelope the ASC refs and lineage
 ride on, and the catalog-guarantee posture the validators underwrite.
-[`03-metering-models.md`](./03-metering-models.md) defines the injective `(meter, dimensionKey)`
+[`03-metering-models.md`](./03-metering-models.md) defines the injective `(skuId, dimensionKey)`
 mapping that validator 2 enforces at publish;
 [`04-overlays-precedence.md`](./04-overlays-precedence.md) defines the precedence and
 anti-drift-cap semantics behind validators 1 and 3. Bundle component lines are ordinary
@@ -285,7 +285,7 @@ Identities per [`../PRD.md`](../PRD.md) §6.12; check content per the underlying
 | # | Validator (id) | Failure code | Checks (fail-closed at publish) | PRD anchor |
 |---|-----------|--------------|--------------------------------|------------|
 | 1 | Ambiguous precedence (`rating-val-01`) | `RATING_OVERLAY_PRECEDENCE_AMBIGUOUS` | Equal `precedence` among `PriceOverlay`s with overlapping scope within one class is rejected; the runtime class-order + `priceOverlayId` tie-break stays a safety net, never a license to publish ambiguity | §6.12; §17.1 step 4 |
-| 2 | Ambiguous meter mapping (`rating-val-02`) | `RATING_METER_MAPPING_AMBIGUOUS` | The `(meter, dimensionKey)` → charge-line mapping MUST be injective per plan revision; a non-injective mapping is a configuration error | §6.12; §17.1 step 3 |
+| 2 | Ambiguous meter mapping (`rating-val-02`) | `RATING_METER_MAPPING_AMBIGUOUS` | The `(skuId, dimensionKey)` → charge-line mapping MUST be injective per plan revision; a non-injective mapping is a configuration error | §6.12; §17.1 step 3 |
 | 3 | Chain-depth cap presence (`rating-val-03`) | `RATING_CHAIN_CAP_MISSING` | An **overlay composition chain** — computed from the submitted publish unit as the set of stackable overlay layers reaching one priced row across the partner → reseller → customer scope classes — of **depth ≥ 2** without a configured `maxCumulativeMarkup` (and no Finance-set default in force) fails publish; a single-layer, sub-threshold overlay MAY warn. *(Renamed from "material multi-link chain" — review #30: "material" was defined nowhere and collided with pricing's unrelated change-materiality; the predicate is structural: chain depth over the submitted unit.)* | §6.12; §17.1 step 4; §15 |
 | 4 | Undeclared-dimension overlay (`rating-val-04`) | `RATING_OVERLAY_DIMENSION_UNDECLARED` | A contract overlay MUST NOT introduce metering dimensions absent from the published Plan/SKU revision | §6.12; §17.1 step 5 |
 
@@ -296,7 +296,7 @@ Identities per [`../PRD.md`](../PRD.md) §6.12; check content per the underlying
 pipeline's validation report envelope** (422, enumerating `violations[]` — pricing design/01
 §3.3; this gear still exposes no synchronous API of its own):
 `RATING_OVERLAY_PRECEDENCE_AMBIGUOUS` (equal precedence, overlapping scope, one class),
-`RATING_METER_MAPPING_AMBIGUOUS` (non-injective `(meter, dimensionKey)` mapping per plan
+`RATING_METER_MAPPING_AMBIGUOUS` (non-injective `(skuId, dimensionKey)` mapping per plan
 revision), `RATING_CHAIN_CAP_MISSING` (an overlay composition chain of depth ≥ 2 with no
 configured `maxCumulativeMarkup` and no Finance default), `RATING_OVERLAY_DIMENSION_UNDECLARED`
 (a contract overlay introducing undeclared metering dimensions).

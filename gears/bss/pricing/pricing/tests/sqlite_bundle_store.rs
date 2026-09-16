@@ -31,6 +31,10 @@ const TENANT: &str = "11111111-1111-1111-1111-111111111111";
 const PLAN: &str = "22222222-2222-2222-2222-222222222222";
 const BUNDLE: &str = "55555555-5555-5555-5555-555555555555";
 const ACTOR: &str = "44444444-4444-4444-4444-444444444444";
+/// The SKU every seeded row prices (D-372). `pricing_price.sku_id` and
+/// `pricing_plan.sku_id` are `NOT NULL` since `m20260916_000044_price_row_sku`,
+/// so a seed names one; the value itself is incidental to these cases.
+const SKU: &str = "00000000-0000-0000-0000-000000000005";
 const AUTHORED: &str = "2026-08-06 10:00:00 +00:00";
 
 /// Reject, **and** for the stated reason.
@@ -73,8 +77,9 @@ async fn insert_revision(conn: &DatabaseConnection, revision: i64) {
         conn,
         &format!(
             "INSERT INTO pricing_plan (
-                plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc)
-             VALUES ('{PLAN}', {revision}, '{TENANT}', 'draft', '{ACTOR}', '{AUTHORED}')"
+                plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc,
+                sku_id)
+             VALUES ('{PLAN}', {revision}, '{TENANT}', 'draft', '{ACTOR}', '{AUTHORED}', '{SKU}')"
         ),
     )
     .await;

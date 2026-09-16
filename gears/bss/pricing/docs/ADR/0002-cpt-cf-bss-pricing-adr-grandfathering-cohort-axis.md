@@ -4,6 +4,9 @@ date: 2026-07-10
 decision-makers: "BSS Product Catalog team"
 ---
 
+> D-372 amendment (2026-09-16): the current ten-axis key requires `skuId` for every row; `dimensionKey` is the usage discriminator and `meter` is derived content. The D-196 meter-axis statements below record the earlier decision. The current normative definition is Foundation §4.1.
+
+
 Created:  2026-08-24 by Virtuozzo International GmbH
 Updated:  2026-08-24 by Virtuozzo International GmbH
 

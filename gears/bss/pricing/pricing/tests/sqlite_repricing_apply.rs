@@ -195,7 +195,8 @@ async fn harness() -> Harness {
         policies: PolicyObjectRepo::new(
             provider.clone(),
             &bss_pricing::config::LimitsConfig::default(),
-        ),
+        )
+        .with_product_catalog(std::sync::Arc::new(common::FixtureCatalog::default())),
         registry: Arc::new(RegistryDouble::default()),
         scope: AccessScope::for_tenant(TENANT),
     }
@@ -307,7 +308,7 @@ async fn seed_plan(h: &Harness, plan_id: Uuid, phase_id: Uuid) {
                 tenant_id: TENANT,
                 created_by: ACTOR,
                 created_at_utc: at(10),
-                sku_id: Some(Uuid::from_u128(0x5_c1)),
+                sku_id: Uuid::from_u128(0x5_c1),
                 plan_tier: Some("gold".to_owned()),
                 billing_cycle: Some(BillingCycle::Recurring),
                 frequency: Some(Frequency::Monthly),
@@ -417,7 +418,7 @@ fn usage_scope_key(plan: PlanId, phase: Uuid, region: &str) -> ScopeKey {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Usage,
         Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
+        SkuId::new(Uuid::new_v5(&Uuid::NAMESPACE_OID, b"cloudlets")),
     )
     .expect("scope key")
 }

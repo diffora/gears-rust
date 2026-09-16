@@ -40,7 +40,7 @@ Updated:  2026-08-24 by Virtuozzo International GmbH
 ### 1.1 Architectural Vision
 
 Metering & Pricing Models is the **step 3 evaluator** plus the **model-formula library**: it
-maps the evaluation unit to a charge line keyed `(meter, dimensionKey)` (injective per plan
+maps the evaluation unit to a charge line keyed `(skuId, dimensionKey)` (injective per plan
 revision, fail-closed otherwise), normalizes the measure (`billingGranularity` round-up on the
 **merged** aggregate, never per raw record), resolves the tier-counter window, and computes the
 model math for the catalog `modelKind` set `{flat, per_unit, graduated, volume, package}` —
@@ -50,7 +50,7 @@ under one `planId`; committed usage is a commitment pool over a base model, eval
 ([`05-commitments-reservations.md`](./05-commitments-reservations.md)).
 
 The slice also owns the two cloud-defining launch capabilities riding step 3: **dimensional
-lines** — each distinct `(meter, dimensionKey)` prices as its own line, with the declared
+lines** — each distinct `(skuId, dimensionKey)` prices as its own line, with the declared
 dimension set frozen in `pricingSnapshotRef` and no silent collapsing of partial values — and
 **composite (derived) meter evaluation** — a catalog-declared frozen formula-as-data over ≥ 2
 input units producing one output quantity that is then priced by its own `modelKind`
@@ -66,7 +66,7 @@ guarantee — capping is a period-level obligation).
 
 | Requirement | Design Response |
 |-------------|-----------------|
-| `cpt-cf-bss-rating-fr-meter-mapping-granularity` | `MeterMapper` maps the unit to `(meter, dimensionKey)` injectively per plan revision (configuration error ⇒ fail closed); `GranularityNormalizer` rounds up the merged measure exactly once (§4.4). |
+| `cpt-cf-bss-rating-fr-meter-mapping-granularity` | `MeterMapper` maps the unit to `(skuId, dimensionKey)` injectively per plan revision (configuration error ⇒ fail closed); `GranularityNormalizer` rounds up the merged measure exactly once (§4.4). |
 | `cpt-cf-bss-rating-fr-flat-pricing` | `ModelFormulaEvaluator`: `unitPrice × Q` (or fixed amount per period for recurring); no thresholds evaluated (§4.1). |
 | `cpt-cf-bss-rating-fr-per-unit-pricing` | `per_unit` = `unitPrice × quantity` where quantity comes from the frozen `quantitySource` (`subscription_seat_count` from Subscriptions, or `manual`) — **never** metered `Q`; pricing **p1 launch**, joint fixture (SEAMS M2). |
 | `cpt-cf-bss-rating-fr-tiered-graduated` | Marginal band math per band; a single-band graduated is numerically Variant A — distinguished by configured kind, not by math; counter per the resolved window (§4.3). |
@@ -74,7 +74,7 @@ guarantee — capping is a period-level obligation).
 | `cpt-cf-bss-rating-fr-package-pricing` | `ceil(usedQ / packageSize) × packagePrice` over the window; partial block rounds up to one block; parity with pricing p2 launch, joint fixture (SEAMS M3). |
 | `cpt-cf-bss-rating-fr-hybrid-pricing` | Composition, not a kind: two lines under one `planId`, independently evaluated; min-commit expressed as committed-usage, never conflated with a period floor; attachment configuration frozen in `pricingSnapshotRef` (§4.1). |
 | `cpt-cf-bss-rating-fr-committed-usage` | Composition over a base model: in-commitment vs overage rates and `TrueUpObligation` are step 6 ([`05`](./05-commitments-reservations.md)); reversal/refill under slice [`08`](./08-retroactivity-corrections.md) keys. This slice contributes only the base-model math the pool wraps. |
-| `cpt-cf-bss-rating-fr-dimensional-pricing` | `MeterMapper` prices each distinct `(meter, dimensionKey)` as its own line; empty/partial values on a dimension-declaring plan route to a **published** default/catch-all line or fail closed — never guessed (§4.2). |
+| `cpt-cf-bss-rating-fr-dimensional-pricing` | `MeterMapper` prices each distinct `(skuId, dimensionKey)` as its own line; empty/partial values on a dimension-declaring plan route to a **published** default/catch-all line or fail closed — never guessed (§4.2). |
 | `cpt-cf-bss-rating-fr-dimension-population-contract` | Declaration = catalog; **freeze = this slice** (declared set into `pricingSnapshotRef`); value emission = OSS metering (external critical path); until then `dimensionKey` is the empty tuple (§4.2). |
 | `cpt-cf-bss-rating-fr-composite-meter-eval` | `CompositeMeterEvaluator` evaluates the frozen formula-as-data to the output quantity, then prices the output unit by its `modelKind` — **composite inputs are window-`sum` only at launch** (D-44's no-co-occurrence rule: non-`sum` aggregation and composite meters never meet on one row); the pipeline never authors or mutates the derivation (§4.1). |
 
@@ -90,7 +90,7 @@ guarantee — capping is a period-level obligation).
 
 | ADR ID | Decision Summary |
 |--------|------------------|
-| `cpt-cf-bss-rating-adr-scope-key-adoption` | The window key is the pricing **ten-axis** key (T-D-35, resolving SEAMS K6): a usage line's `(meter, dimensionKey)` are **selection axes** — each priced usage line resolves its own row/window (pricing D-196 stores one price row per usage line); the pre-D-196 "line within the selected row" reading is retired. |
+| `cpt-cf-bss-rating-adr-scope-key-adoption` | The window key is the pricing **ten-axis** key (T-D-35, resolving SEAMS K6): a usage line's `(skuId, dimensionKey)` are **selection axes** — each priced usage line resolves its own row/window (pricing D-196 stores one price row per usage line); the pre-D-196 "line within the selected row" reading is retired. |
 | `cpt-cf-bss-pricing-adr-canonical-scope-key` (adopted) | Key definition SoR; the usage-only restriction for tier models rides the key's `chargeKind` axis (pricing D-18). |
 
 ### 1.3 Architecture Layers
@@ -187,7 +187,7 @@ tuple. Cross-doc wording of the launch posture is the **open seam M6**
 
 All value objects; model parameters are frozen snapshot content, never authored here.
 
-- **`ChargeLineKey`** — `(meter, dimensionKey)`; injective per plan revision; the empty tuple for plans declaring no dimensions.
+- **`ChargeLineKey`** — `(skuId, dimensionKey)`; injective per plan revision; the empty tuple for plans declaring no dimensions.
 - **`NormalizedMeasure`** — the merged, granularity-rounded quantity of the evaluation unit (01 §4.2); carries the pre-round raw aggregate for lineage.
 - **`ModelParams`** — the frozen per-kind parameter set: `unitPrice` (flat/per_unit), open-top marginal bands (graduated/volume A), `packageSize`/`packagePrice` (package), `quantitySource` (per_unit), and the **level-aggregation triple** `aggregationFunction`/`aggregationGranularity`/`maxHold` (non-`sum` usage rows — D-44/T-D-17, §4.3; 2026-07-28 review fix: §4.3 consumed them but this list omitted them).
 - **`TierWindowSpec`** — the resolved `tierAggregationWindow` value + concrete UTC boundaries (anchor policy applied); recorded in metadata and frozen in the snapshot.
@@ -312,14 +312,14 @@ The catalog `modelKind` enum and formulas — the pricing §17.2 mapping, shared
 - `hybrid` and `committed` are **compositions**, not kinds: hybrid = two lines (recurring + usage) under one `planId`, independently evaluated per their period boundaries; a hybrid "minimum commitment" is committed-usage (pool + overage, step 6) — **never** conflated with a period floor (slice [`09`](./09-period-plan-change.md)). Attachment points (commitment/floor to the usage line unless plan-level; coupon per `applyScope`, `line_total` split back pro-rata deterministically — executed by slice [`06`](./06-coupons.md)) are **frozen in `pricingSnapshotRef`**.
 - `graduated`/`volume`/`package` are usage-only (D-18); bands are open-top (D-17); launch aggregation is `aggregationFunction ∈ {sum, peak, time_weighted}` per the SEAMS M10 re-scope (T-D-17; §4.3) — *the pre-re-scope "sum only" limit is void, and this line had kept it after §2.2 and §4.3 were fixed (2026-07-31 billing-domain review, #1)*.
 - **Band boundary rule** (money-affecting, adopted): thresholds are half-open `[lower, upper)` — a quantity exactly at a boundary falls in the **upper** band, identically for graduated marginal placement and volume-A band selection ([`../PRD.md`](../PRD.md) §1.4 Tier aggregation window).
-- A free-tier allowance in current scope is expressed as a per-`(meter, dimensionKey)` **$0 band** ([`../PRD.md`](../PRD.md) §15); a cross-account allowance is a Follow-on aggregate.
+- A free-tier allowance in current scope is expressed as a per-`(skuId, dimensionKey)` **$0 band** ([`../PRD.md`](../PRD.md) §15); a cross-account allowance is a Follow-on aggregate.
 
 ### 4.2 Meter Mapping and Dimensional Lines (normative)
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-normative-dimensional-mapping-mm`
 
-- The mapping unit → `(meter, dimensionKey)` MUST be **injective per plan revision**; violation is a fail-closed configuration error, never a merged line.
-- Each distinct `(meter, dimensionKey)` resolves to **its own** charge line and price; a plan declaring no dimensions prices as the single empty-tuple line.
+- The mapping unit → `(skuId, dimensionKey)` MUST be **injective per plan revision**; violation is a fail-closed configuration error, never a merged line.
+- Each distinct `(skuId, dimensionKey)` resolves to **its own** charge line and price; a plan declaring no dimensions prices as the single empty-tuple line.
 - Empty/partial dimension values on a dimension-declaring plan route to an explicitly **published** default/catch-all line, else fail closed (reject/quarantine) — never guess.
 - Ownership split (SEAMS M6, PRD §6.7): catalog **declares** (persists `dimension_key` structurally now); this slice **freezes** the declared set in `pricingSnapshotRef`; Rating passes values through; OSS metering **emits** values — the external critical path (§17.3). Until emission lands, `dimensionKey` is the empty tuple and per-combination meters are the only workaround (cardinality risk, §16). **Closed 2026-07-28:** the cross-doc launch-posture wording (seam M6) is now stated identically on both sides — *declaration + freeze are in scope now (the catalog persists `dimension_key` structurally, this gear freezes the declared set in the snapshot); pricing dimension **values** are OSS-emission-gated* (pricing design/03 §6 carries the same sentence).
 

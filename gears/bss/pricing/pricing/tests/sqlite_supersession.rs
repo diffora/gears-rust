@@ -963,6 +963,7 @@ async fn supersede(
     actor: Uuid,
 ) -> Result<SupersessionOutcome, DomainError> {
     SupersessionService::new(harness.db.clone(), Arc::clone(&harness.registry) as Arc<_>)
+        .with_product_catalog(std::sync::Arc::new(rest_support::FixtureCatalog::default()))
         .supersede(
             &rest_support::security_context(actor, harness.tenant),
             &harness.scope(),

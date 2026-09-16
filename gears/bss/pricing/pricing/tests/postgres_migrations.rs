@@ -479,7 +479,6 @@ const EXPECTED_PARTIAL_INDEXES: &[&str] = &[
     "uq_pricing_plan_current",
     "uq_pricing_plan_open_draft",
     "uq_pricing_plan_phase_terminal",
-    "uq_pricing_price_meter_line_current",
     // D-107. Without the predicate a draft revision of a published overlay
     // collides with itself and an overlay is authorable exactly once.
     "uq_pricing_price_overlay_open_draft",
@@ -559,7 +558,6 @@ const EXPECTED_INDEXES: &[&str] = &[
     "uq_pricing_plan_current",
     "uq_pricing_plan_open_draft",
     "uq_pricing_plan_phase_terminal",
-    "uq_pricing_price_meter_line_current",
     "uq_pricing_price_overlay_line_key",
     "uq_pricing_price_overlay_open_draft",
     "uq_pricing_price_overlay_precedence",
@@ -820,7 +818,7 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_price_overlay_line_magnitude_positive",
     "chk_pricing_price_overlay_line_plan_id_not_nil",
     "chk_pricing_price_overlay_line_sku_needs_plan",
-    "chk_pricing_price_overlay_line_target_sku_present",
+    "chk_pricing_price_overlay_line_target_sku_not_nil",
     "chk_pricing_price_overlay_revision",
     "chk_pricing_price_overlay_row_version",
     "chk_pricing_price_overlay_scope_class",
@@ -1606,8 +1604,8 @@ async fn a_negative_add_on_quantity_bound_is_refused() {
         &conn,
         &format!(
             "INSERT INTO bss.pricing_plan \
-             (plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc) \
-             VALUES ('{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-17 09:00:00+00')"
+             (sku_id, plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc) \
+             VALUES ('55555555-5555-5555-5555-555555555555', '{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-17 09:00:00+00')"
         ),
     )
     .await;
@@ -1678,9 +1676,9 @@ async fn a_journal_row_may_not_name_another_tenants_run() {
     must_succeed(
         &conn,
         &format!(
-            "INSERT INTO bss.pricing_price (price_id, tenant_id, plan_id, currency, region, \
+            "INSERT INTO bss.pricing_price (sku_id, price_id, tenant_id, plan_id, currency, region, \
              phase, charge_kind, model_kind, lifecycle_state, created_by, created_at_utc) \
-             VALUES ('{PRICE}', '{TENANT_A}', '{PLAN}', 'USD', 'EU', '{PHASE}', 'usage', \
+             VALUES ('55555555-5555-5555-5555-555555555555', '{PRICE}', '{TENANT_A}', '{PLAN}', 'USD', 'EU', '{PHASE}', 'usage', \
              'per_unit', 'draft', '{ACTOR}', '2026-08-17 09:00:00+00')"
         ),
     )
@@ -1821,8 +1819,8 @@ async fn the_composite_output_unit_refuses_ascii_whitespace_alone() {
         &conn,
         &format!(
             "INSERT INTO bss.pricing_plan \
-             (plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc) \
-             VALUES ('{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-17 09:00:00+00')"
+             (sku_id, plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc) \
+             VALUES ('55555555-5555-5555-5555-555555555555', '{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-17 09:00:00+00')"
         ),
     )
     .await;
@@ -1969,8 +1967,8 @@ async fn the_absorber_predicate_refuses_a_blank_and_a_padded_sentinel() {
         &conn,
         &format!(
             "INSERT INTO bss.pricing_plan \
-             (plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc) \
-             VALUES ('{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-17 09:00:00+00')"
+             (sku_id, plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc) \
+             VALUES ('55555555-5555-5555-5555-555555555555', '{PLAN}', 0, '{TENANT}', 'draft', '{ACTOR}', '2026-08-17 09:00:00+00')"
         ),
     )
     .await;
@@ -2015,64 +2013,6 @@ async fn the_absorber_predicate_refuses_a_blank_and_a_padded_sentinel() {
     must_succeed(&conn, &group(93, "'acme'")).await;
 }
 
-/// **An overlay line's `target_sku` is absent or names something, on this engine
-/// too** — `chk_pricing_price_overlay_line_target_sku_present`.
-///
-/// `NULL` and a blank string are not the same state and only one of them is a line:
-/// the list-default and per-plan lines carry no SKU at all, while `TargetSku::new`
-/// trims and `overlay_repo` folds its refusal to `RepoError::CorruptRow` over the
-/// revision the row sits in. The `NULL` arm is asserted as its own control — a
-/// tightening that turned an absent SKU into a refusal would break every line
-/// `LineKey::list_default` and `LineKey::for_plan` build.
-///
-/// The plan is named on every row because `chk_..._sku_needs_plan` answers first
-/// otherwise, and a mis-arranged fixture would prove that neighbouring rule twice and
-/// leave this one untouched.
-#[tokio::test]
-#[ignore = "requires Docker (testcontainers)"]
-async fn the_target_sku_predicate_refuses_a_blank_and_keeps_its_null_arm() {
-    const TENANT: &str = "11111111-1111-1111-1111-111111111111";
-    const PLAN: &str = "22222222-0000-0000-0000-0000000000e3";
-    const OVERLAY: &str = "66666666-0000-0000-0000-0000000000e3";
-
-    let (conn, _guard) = applied().await;
-    // A `draft` overlay revision of this tenant, or the line table's append-only and
-    // same-tenant arms answer ahead of the CHECK.
-    must_succeed(
-        &conn,
-        &format!(
-            "INSERT INTO bss.pricing_price_overlay (tenant_id, price_overlay_id, revision, \
-             lifecycle_state, precedence, scope_class, scope_value, tax_basis) \
-             VALUES ('{TENANT}', '{OVERLAY}', 0, 'draft', 10, 'brand', 'acme', 'exclusive')"
-        ),
-    )
-    .await;
-
-    let line = |id: u32, sku: &str| {
-        format!(
-            "INSERT INTO bss.pricing_price_overlay_line (line_id, price_overlay_id, \
-             overlay_revision, tenant_id, plan_id, target_sku, cohort, adjustment_kind, \
-             magnitude_kind, adjustment_value) \
-             VALUES ('{id:0>8}-0000-0000-0000-0000000000e3', '{OVERLAY}', 0, '{TENANT}', \
-             '{PLAN}', {sku}, NULL, 'discount', 'percent_bp', 1500)"
-        )
-    };
-
-    for code in STRIPPED_WHITESPACE {
-        must_be_refused(
-            &conn,
-            &line(*code, &format!("chr({code})")),
-            "chk_pricing_price_overlay_line_target_sku_present",
-        )
-        .await;
-    }
-
-    // The `NULL` arm, which is the whole reason this predicate is a disjunction, and a
-    // named SKU beside it.
-    must_succeed(&conn, &line(98, "NULL")).await;
-    must_succeed(&conn, &line(99, "' vm-small '")).await;
-}
-
 /// A draft plan revision, its bundle and one rev-share group, for a party row to hang
 /// off: the party table's foreign key and its append-only arm both resolve through
 /// them and either would answer ahead of the CHECK under test.
@@ -2088,8 +2028,8 @@ async fn seed_revshare_group(
         conn,
         &format!(
             "INSERT INTO bss.pricing_plan \
-             (plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc) \
-             VALUES ('{plan}', 0, '{tenant}', 'draft', '{actor}', '2026-08-17 09:00:00+00')"
+             (sku_id, plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc) \
+             VALUES ('55555555-5555-5555-5555-555555555555', '{plan}', 0, '{tenant}', 'draft', '{actor}', '2026-08-17 09:00:00+00')"
         ),
     )
     .await;

@@ -76,6 +76,10 @@ use crate::domain::scope_key::ScopeKey;
 /// different fault.
 pub const DUPLICATE_SCOPE_KEY: &str = "DUPLICATE_SCOPE_KEY";
 
+/// A row must name an active draft or current plan visible in its tenant.
+/// Missing and foreign plans share the same finding to avoid existence leaks.
+pub const IMPORT_PLAN_NOT_FOUND: &str = "IMPORT_PLAN_NOT_FOUND";
+
 /// The wire code for a row aimed at a **published** row's scope key.
 ///
 /// D-118 pins the import to the draft plane: an import row lands as a draft, on
@@ -277,11 +281,8 @@ pub fn classify(rows: &[ImportRow]) -> BatchReport {
 fn key_contradictions(rows: &[ImportRow]) -> Vec<(usize, RowViolation)> {
     // Once, not per row: the pipeline is a fresh allocation of every registered
     // rule and a batch is the case where that multiplies.
-    // D-372: the row-local roster only. The four registry rules **are**
-    // write-stage, so they would reach this subset -- what they have no operand
-    // for here is the registry listing: a batch door that judged rows against a
-    // read it never made would refuse every row in the batch. Task 7 decides
-    // whether this door makes that read.
+    // The transport augments this pure local classifier with registry_row_rules
+    // using one listing and each row's parent-plan SKU context.
     let rules = row_local_rules();
     let mut found = Vec::new();
     for (index, row) in rows.iter().enumerate() {

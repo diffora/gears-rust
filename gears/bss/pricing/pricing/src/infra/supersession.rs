@@ -631,11 +631,20 @@ pub struct SupersessionPending {
 /// The supersession unit's workflow over one database provider.
 #[derive(Clone)]
 pub struct SupersessionService {
+    catalog: Arc<dyn crate::domain::ports::ProductCatalogClientV1>,
     db: DBProvider<DbError>,
     registry: Arc<dyn CatalogVersionRegistryV1>,
 }
 
 impl SupersessionService {
+    /// Use the shared product catalog on every supersession request.
+    pub fn with_product_catalog(
+        mut self,
+        catalog: Arc<dyn crate::domain::ports::ProductCatalogClientV1>,
+    ) -> Self {
+        self.catalog = catalog;
+        self
+    }
     /// Build the workflow over one provider and the resolved registry.
     ///
     /// The **same** registry `Arc` the publish engine and the window service hold —
@@ -643,8 +652,12 @@ impl SupersessionService {
     /// requesters of one registry is still one incrementer; what keeps their handles
     /// apart is [`unit_request_id`]'s distinct first segment.
     #[must_use]
-    pub const fn new(db: DBProvider<DbError>, registry: Arc<dyn CatalogVersionRegistryV1>) -> Self {
-        Self { db, registry }
+    pub fn new(db: DBProvider<DbError>, registry: Arc<dyn CatalogVersionRegistryV1>) -> Self {
+        Self {
+            db,
+            registry,
+            catalog: Arc::new(crate::domain::ports::UnconfiguredProductCatalogClientV1),
+        }
     }
 
     /// Compose and, if it may, commit one supersession
@@ -664,6 +677,7 @@ impl SupersessionService {
         verdict_json: VerdictJson,
         stamp: AuditStamp,
     ) -> Result<SupersessionOutcome, DomainError> {
+        let catalog = Arc::clone(&self.catalog);
         let ctx = ctx.clone();
         let scope = scope.clone();
         let registry = Arc::clone(&self.registry);
@@ -684,6 +698,7 @@ impl SupersessionService {
                     // act, against that size on every task's stack.
                     Box::pin(supersede_in(
                         txn,
+                        catalog.as_ref(),
                         &registry,
                         &ctx,
                         &scope,
@@ -881,6 +896,7 @@ fn refuse_from_the_request_alone(request: &SupersessionRequest) -> Result<(), Do
 )]
 pub async fn supersede_in(
     txn: &DbTx<'_>,
+    catalog: &dyn crate::domain::ports::ProductCatalogClientV1,
     registry: &Arc<dyn CatalogVersionRegistryV1>,
     ctx: &SecurityContext,
     scope: &AccessScope,
@@ -896,6 +912,57 @@ pub async fn supersede_in(
 
     // 1. Every fact the judgement needs, read inside the transaction that writes.
     let context = read_unit_context(txn, scope, tenant_id, &request.key, now).await?;
+
+    // A pending replay confirms authored content against the staged snapshot.
+    // Meter is derived content, so registry drift cannot change the request being
+    // replayed. New staging and approved commits still resolve fresh facts below.
+    let replay_subject = supersession_unit_ref(context.plan_id, &request.key, request.changeover);
+    if let Some(staged) = &context.staged {
+        let authorized = crate::infra::approval::authorizing_unit(
+            txn,
+            scope,
+            tenant_id,
+            &context.shape,
+            &replay_subject,
+        )
+        .await?;
+        if authorized.is_none() {
+            if let Some(held) =
+                approval_repo::find_pending_for_subject(txn, tenant_id, &replay_subject)
+                    .await
+                    .map_err(|e| repo_failure(&e))?
+            {
+                let mut replay_request = request.clone();
+                replay_request.successor.row.meter = staged.row.meter.clone();
+                let replay_content = requested_content(&replay_request, &context);
+                refuse_divergent_successor(staged, &replay_content)?;
+                let composed = plan_supersession(
+                    &context.predecessor.row,
+                    &replay_content.row,
+                    &context.plane,
+                    request.changeover,
+                    now,
+                    ChangeoverMoment::Submit,
+                )?;
+                return Ok(pending_answer(&context, request, &composed, None, held));
+            }
+        }
+    }
+    let index = crate::infra::row_sku::sku_index(catalog, ctx).await?;
+    if let Some(staged) = &context.staged {
+        crate::infra::row_sku::validate(
+            &staged.content(),
+            context.shape.sku_id,
+            Arc::clone(&index),
+        )?;
+    }
+    let mut resolved_request = request.clone();
+    crate::infra::row_sku::derive_meter(
+        &mut resolved_request.successor,
+        &resolved_request.key,
+        &index,
+    );
+    let request = &resolved_request;
 
     // 1a. A plan whose current revision can never be superseded takes no successor row
     //     either — `PublishService::commit`'s own hoisted refusal, for the same reason
@@ -913,6 +980,7 @@ pub async fn supersede_in(
     // (Critical). `price_repo::authored_content` is the one spelling
     // of those two rewrites and the door applies it too.
     let successor_content = requested_content(request, &context);
+    crate::infra::row_sku::validate(&successor_content, context.shape.sku_id, Arc::clone(&index))?;
 
     // The id the act is really about: the **staged** draft's when one stands, and the
     // one the surface minted only when this call is what stages it. See

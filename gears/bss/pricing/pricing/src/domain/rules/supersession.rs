@@ -1,3 +1,6 @@
+//! The SKU-identity guard is defense in depth for direct domain callers.
+//! Interactive supersession and cutover inherit the predecessor key, so their
+//! successor SKU cannot change; adopting a different resource requires a new key.
 //! The **supersession unit guard** (`inst-tb-supersession-units`; D-82, D-98,
 //! D-122, D-127, D-129, D-372).
 //!

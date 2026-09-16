@@ -190,6 +190,9 @@ const TENANT: Uuid = Uuid::from_u128(0x_7e_11);
 const ACTOR: Uuid = Uuid::from_u128(0x_ac_01);
 const PLAN: Uuid = Uuid::from_u128(0x_91_a1);
 const PHASE: Uuid = Uuid::from_u128(0x_40_a5);
+/// The SKU the seeded row prices (D-372). The value is incidental here and the
+/// column is not: it is `NOT NULL`, so the seed cannot leave it out.
+const SKU: Uuid = Uuid::from_u128(0x_5c_01);
 /// The one price row every window below hangs off. Both triggers are scoped by
 /// `(tenant_id, price_id)`, so one row is the whole world either of them can see.
 const ROW: Uuid = Uuid::from_u128(0x_a0_01);
@@ -241,6 +244,8 @@ async fn mirror() -> (DBProvider<DbError>, ScopeKey) {
         price_id: Set(ROW),
         tenant_id: Set(TENANT),
         plan_id: Set(PLAN),
+        // D-372's ninth axis, `NOT NULL` since `m20260916_000044_price_row_sku`.
+        sku_id: Set(SKU),
         currency: Set("USD".to_owned()),
         region: Set("EU".to_owned()),
         phase: Set(PHASE),

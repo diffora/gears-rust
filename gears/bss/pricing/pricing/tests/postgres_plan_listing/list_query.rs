@@ -123,7 +123,10 @@ async fn draft_at(plans: &PlanRepo, id: Uuid, created: OffsetDateTime) {
                 tenant_id: TENANT,
                 created_by: ACTOR,
                 created_at_utc: created,
-                sku_id: None,
+                // D-372: `pricing_plan.sku_id` is `NOT NULL` since
+                // `m20260916_000044_price_row_sku`, so a draft with no SKU is refused
+                // by the store. `PlanShape.sku_id` stays `Option` until Task 8.
+                sku_id: Uuid::from_u128(5),
                 plan_tier: None,
                 billing_cycle: None,
                 frequency: None,

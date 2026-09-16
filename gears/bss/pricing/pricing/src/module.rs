@@ -1370,6 +1370,7 @@ impl Gear for BssPricingGear {
         // services over one provider would be two transaction owners for one table.
         let approvals = ApprovalService::new(db.clone());
         let authoring_api = Arc::new(AuthoringState {
+            catalog: Arc::clone(&product_catalog),
             db: db.clone(),
             plans: PlanRepo::new(db.clone()),
             shapes: PlanShapeRepo::new(db.clone()),
@@ -1404,6 +1405,7 @@ impl Gear for BssPricingGear {
             fixture_gate.clone(),
             Arc::clone(&catalog_version_registry),
         )
+        .with_product_catalog(Arc::clone(&product_catalog))
         .with_metrics(Arc::clone(&metrics));
 
         // The lane a cancelled repricing apply hands its bulk-lock release to. Built
@@ -1466,7 +1468,8 @@ impl Gear for BssPricingGear {
             supersessions: crate::infra::supersession::SupersessionService::new(
                 db.clone(),
                 Arc::clone(&catalog_version_registry),
-            ),
+            )
+            .with_product_catalog(Arc::clone(&product_catalog)),
             // The **fourth**, on the same argument (D-100). It takes the limits and
             // the fixture gate as well, because D-344 makes a cutover run the plan
             // aggregate and the joint-conformance gate over the two rows it
@@ -1477,7 +1480,8 @@ impl Gear for BssPricingGear {
                 &config.limits,
                 fixture_gate,
                 Arc::clone(&catalog_version_registry),
-            ),
+            )
+            .with_product_catalog(Arc::clone(&product_catalog)),
             // The **seventh** (S7 §4's `inst-gs-bound`/`inst-gs-tighten`): the
             // horizon door writes a published row's `grandfatherUntil`, which
             // `domain::projection` renders, so it re-projects the plan subject and

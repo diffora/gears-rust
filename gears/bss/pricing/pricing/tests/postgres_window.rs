@@ -141,11 +141,11 @@ async fn applied_pg() -> (Pg, DatabaseConnection) {
         must_succeed(
             &conn,
             &format!(
-                "INSERT INTO bss.pricing_price (
+                "INSERT INTO bss.pricing_price (sku_id,
                      price_id, tenant_id, plan_id, currency, region, phase,
                      charge_kind, amount_minor, model_kind, lifecycle_state,
                      created_by, created_at_utc)
-                 VALUES ('{id}', '{TENANT}', '{PLAN}', 'USD', 'EU', '{PHASE}',
+                 VALUES ('55555555-5555-5555-5555-555555555555', '{id}', '{TENANT}', '{PLAN}', 'USD', 'EU', '{PHASE}',
                      '{charge_kind}', 1000, 'flat', 'published', '{ACTOR}',
                      '2026-08-04 09:00:00+00')"
             ),

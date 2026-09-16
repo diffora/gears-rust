@@ -147,6 +147,21 @@ pub struct PublishService {
 }
 
 impl PublishService {
+    /// Share the product catalog client with every write plane.
+    pub fn with_product_catalog(
+        mut self,
+        catalog: Arc<dyn crate::domain::ports::ProductCatalogClientV1>,
+    ) -> Self {
+        self.policies = self.policies.with_product_catalog(catalog);
+        self
+    }
+
+    /// Read one listing for the entire request, including its precheck and commit.
+    pub async fn resolve_skus(&self, ctx: &SecurityContext) -> Result<Self, DomainError> {
+        let mut resolved = self.clone();
+        resolved.policies = self.policies.resolve_skus(ctx).await?;
+        Ok(resolved)
+    }
     /// Build the engine over one database provider and the loaded gate.
     #[must_use]
     pub fn new(
@@ -527,7 +542,11 @@ impl PublishService {
     ) -> Result<PublishReceipt, DomainError> {
         let ctx = ctx.clone();
         let scope = scope.clone();
-        let policies = self.policies.clone();
+        let policies = if self.policies.sku_index().is_ok() {
+            self.policies.clone()
+        } else {
+            self.policies.resolve_skus(&ctx).await?
+        };
         let gate = self.fixture_gate.clone();
         // Cloned beside the gate and for its reason: the transaction closure
         // outlives the borrow of `self`.
@@ -1108,6 +1127,7 @@ pub(crate) async fn rule_params(
             policy.max_price_rows_per_plan(),
         ),
     )
+    .with_sku_index(policies.sku_index()?)
     .with_referencing_markets(referencing)
     .with_declared_regions(declared_regions)
     .with_declared_rounding_policies(declared_rounding_policies)

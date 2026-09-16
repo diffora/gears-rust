@@ -513,6 +513,12 @@ pub struct Harness {
 impl Harness {
     /// A fresh database with the whole migration chain applied.
     pub async fn new() -> Self {
+        Self::new_with_catalog(Arc::new(FixtureCatalog::default())).await
+    }
+
+    pub async fn new_with_catalog(
+        catalog: Arc<dyn bss_pricing::domain::ports::ProductCatalogClientV1>,
+    ) -> Self {
         let db = connect_db("sqlite::memory:", ConnectOpts::default())
             .await
             .expect("connect in-memory sqlite");
@@ -536,6 +542,7 @@ impl Harness {
         let metrics_harness = MetricsHarness::new();
         let metrics: Arc<dyn PricingMetricsPort> = Arc::new(metrics_harness.metrics());
         let state = Arc::new(AuthoringState {
+            catalog: Arc::clone(&catalog),
             approvals: approvals.clone(),
             db: db.clone(),
             plans: PlanRepo::new(db.clone()),
@@ -576,7 +583,8 @@ impl Harness {
             bss_pricing::infra::storage::repo::PolicyObjectRepo::new(
                 db.clone(),
                 &LimitsConfig::default(),
-            ),
+            )
+            .with_product_catalog(Arc::clone(&catalog)),
             Arc::clone(&registry) as Arc<_>,
             compensation,
         );
@@ -598,7 +606,8 @@ impl Harness {
             supersessions: bss_pricing::infra::supersession::SupersessionService::new(
                 db.clone(),
                 Arc::clone(&registry) as Arc<_>,
-            ),
+            )
+            .with_product_catalog(Arc::clone(&catalog)),
             // D-344: the cutover runs the plan aggregate and the joint gate over
             // the rows it publishes, so it takes the same limits and the **same**
             // committed corpus the publish door takes here.
@@ -607,7 +616,8 @@ impl Harness {
                 &LimitsConfig::default(),
                 FixtureGate::load(&committed_registry_path()),
                 Arc::clone(&registry) as Arc<_>,
-            ),
+            )
+            .with_product_catalog(Arc::clone(&catalog)),
             grandfather: bss_pricing::infra::grandfather::GrandfatherService::new(
                 db.clone(),
                 Arc::clone(&registry) as Arc<_>,
@@ -631,6 +641,7 @@ impl Harness {
                 FixtureGate::load(&committed_registry_path()),
                 Arc::clone(&registry) as Arc<_>,
             )
+            .with_product_catalog(Arc::clone(&catalog))
             .with_metrics(Arc::clone(&metrics)),
             thresholds: bss_pricing::infra::threshold::ThresholdService::new(db.clone()),
             // The window `POST`'s gate (D-191), under the production default TTL: a
@@ -837,9 +848,7 @@ impl Harness {
             ))
             .merge(bss_pricing::api::rest::catalog_skus::router(
                 Arc::new(bss_pricing::api::rest::catalog_skus::ApiState {
-                    catalog: Arc::new(
-                        bss_pricing::domain::ports::UnconfiguredProductCatalogClientV1,
-                    ),
+                    catalog: Arc::clone(&self.state.catalog),
                     source: "unconfigured",
                 }),
                 &openapi,
@@ -1648,7 +1657,7 @@ pub async fn seed_current_plan_with_phase(harness: &Harness, plan_id: Uuid) {
                 tenant_id: harness.tenant,
                 created_by: SEED_ACTOR,
                 created_at_utc: at(10),
-                sku_id: Some(Uuid::from_u128(0x5_c1)),
+                sku_id: Uuid::from_u128(0x5_c1),
                 plan_tier: Some("gold".to_owned()),
                 billing_cycle: Some(BillingCycle::Recurring),
                 frequency: Some(Frequency::Monthly),
@@ -1806,14 +1815,18 @@ pub async fn plan_state(harness: &Harness, plan_id: Uuid, revision: u64) -> Opti
         .map(|row| row.lifecycle_state.to_string())
 }
 
-fn new_draft(plan_id: Uuid, tenant_id: Uuid) -> NewPlanDraft {
+pub fn new_draft(plan_id: Uuid, tenant_id: Uuid) -> NewPlanDraft {
     NewPlanDraft {
         plan_name: None,
         plan_id: PlanId::new(plan_id),
         tenant_id,
         created_by: SEED_ACTOR,
         created_at_utc: at(10),
-        sku_id: None,
+        // D-372: `pricing_plan.sku_id` is `NOT NULL` since
+        // `m20260916_000044_price_row_sku`, so a seeded draft names one. The value
+        // is this harness's own, the one `seed_published_plan` twenty lines up
+        // already used.
+        sku_id: Uuid::from_u128(0x5_c1),
         plan_tier: Some("gold".to_owned()),
         billing_cycle: Some(BillingCycle::Recurring),
         frequency: None,
@@ -2040,7 +2053,7 @@ pub async fn seed_price_keyed_with_horizon(
         price_eligibility,
         ChargeKind::Recurring,
         cohort,
-        SkuId::new(Uuid::from_u128(5)),
+        SkuId::new(OFFER_SKU),
     )
     .expect("scope key");
     harness
@@ -2120,7 +2133,7 @@ pub async fn seed_priced_row_on_phase(
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
+        SkuId::new(OFFER_SKU),
     )
     .expect("scope key");
     let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
@@ -2198,7 +2211,7 @@ pub async fn seed_per_unit_rate_row(
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
+        SkuId::new(OFFER_SKU),
     )
     .expect("scope key");
     let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::PerUnit));
@@ -2464,7 +2477,7 @@ pub async fn seed_publishable_shape(harness: &Harness, plan_id: Uuid) -> Publish
                 tenant_id: harness.tenant,
                 created_by: SEED_ACTOR,
                 created_at_utc: at(10),
-                sku_id: Some(Uuid::from_u128(0x5_c1)),
+                sku_id: Uuid::from_u128(0x5_c1),
                 plan_tier: Some("gold".to_owned()),
                 billing_cycle: Some(BillingCycle::Recurring),
                 frequency: Some(Frequency::Monthly),
@@ -2850,7 +2863,7 @@ pub fn publishable_usage_scope_key(plan_id: PlanId, phase: PhaseId, region: &str
         PriceEligibility::AllSubscriptions,
         ChargeKind::Usage,
         Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
+        SkuId::new(resource_sku(USAGE_METER)),
     )
     .expect("the class pairs with cohort none")
     .with_usage_line(
@@ -2871,7 +2884,7 @@ pub fn publishable_scope_key(plan_id: PlanId, phase: PhaseId, region: &str) -> S
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
+        SkuId::new(OFFER_SKU),
     )
     .expect("the class pairs with cohort none")
 }
@@ -3312,4 +3325,111 @@ pub async fn foreign_is_indistinguishable(
             "a refused foreign caller wrote the {plane} plane"
         );
     }
+}
+
+/// Stable offer identity shared by authored plan fixtures.
+pub const OFFER_SKU: Uuid = Uuid::from_u128(0x5_c1);
+
+pub fn resource_sku(meter: &str) -> Uuid {
+    Uuid::new_v5(&Uuid::NAMESPACE_OID, meter.as_bytes())
+}
+
+pub fn catalog_sku(
+    id: Uuid,
+    meter: Option<&str>,
+    sellable: bool,
+) -> bss_pricing::domain::ports::CatalogSku {
+    bss_pricing::domain::ports::CatalogSku {
+        sku_id: id,
+        sku_code: id.to_string(),
+        name: id.to_string(),
+        metering_unit: meter.map(str::to_owned),
+        status: "published".into(),
+        plan_tier: None,
+        sku_type: "service".into(),
+        sellable,
+        usage_type_ref: None,
+    }
+}
+
+pub use crate::common::FixtureCatalog;
+
+pub struct MutableCatalog {
+    pub listing: std::sync::Mutex<Vec<bss_pricing::domain::ports::CatalogSku>>,
+    pub reads: std::sync::atomic::AtomicUsize,
+    pub unavailable: std::sync::atomic::AtomicBool,
+}
+
+impl MutableCatalog {
+    pub fn new() -> Self {
+        Self {
+            listing: std::sync::Mutex::new(FixtureCatalog::default().0),
+            reads: std::sync::atomic::AtomicUsize::new(0),
+            unavailable: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl bss_pricing::domain::ports::ProductCatalogClientV1 for MutableCatalog {
+    async fn list_skus(
+        &self,
+        _ctx: &toolkit_security::SecurityContext,
+    ) -> Result<
+        Vec<bss_pricing::domain::ports::CatalogSku>,
+        toolkit::api::canonical_prelude::CanonicalError,
+    > {
+        use std::sync::atomic::Ordering;
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        if self.unavailable.load(Ordering::SeqCst) {
+            return Err(toolkit::api::canonical_prelude::CanonicalError::internal(
+                "fixture catalog unavailable",
+            )
+            .create());
+        }
+        Ok(self.listing.lock().expect("fixture mutex").clone())
+    }
+    async fn list_tax_categories(
+        &self,
+        _ctx: &toolkit_security::SecurityContext,
+    ) -> Result<
+        Vec<bss_pricing::domain::ports::CatalogTaxCategory>,
+        toolkit::api::canonical_prelude::CanonicalError,
+    > {
+        Ok(vec![])
+    }
+}
+
+/// Published usage row plus its editable response content, for registry replay probes.
+pub async fn published_usage_for_registry_replay(
+    h: &Harness,
+) -> (Uuid, Publishable, serde_json::Value) {
+    let plan = Uuid::now_v7();
+    let seeded = seed_publishable_tiered_usage_plan(
+        h,
+        plan,
+        vec![TierBand {
+            from_qty: 0,
+            to_qty: bss_pricing::domain::price_row::BandTop::Open,
+            unit_price_rate: RateMinor::from_nano_minor(1_000_000_000).expect("rate"),
+        }],
+    )
+    .await;
+    h.publish(plan, seeded.revision).await;
+    h.publish_price(plan, seeded.price_id).await;
+    let record = price_rows(h, plan)
+        .await
+        .into_iter()
+        .find(|row| row.price_id == seeded.price_id)
+        .expect("published usage row");
+    let mut content = serde_json::to_value(bss_pricing::api::rest::prices::PriceContentView::from(
+        &record,
+    ))
+    .expect("content DTO");
+    content
+        .as_object_mut()
+        .expect("content object")
+        .remove("meter");
+    content["bands"][0]["unit_price_nano_minor"] = serde_json::json!(12_000_000_000_i64);
+    (plan, seeded, content)
 }

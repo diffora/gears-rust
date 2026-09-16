@@ -99,9 +99,7 @@ pub async fn addon_coverage(
 
     let mut plan_to_sku: BTreeMap<Uuid, Uuid> = BTreeMap::new();
     for row in &plans {
-        if let Some(sku) = row.sku_id {
-            plan_to_sku.insert(row.plan_id, sku);
-        }
+        plan_to_sku.insert(row.plan_id, row.sku_id);
     }
     if plan_to_sku.is_empty() {
         // Every add-on resolves to nothing, which blocks any that are required.

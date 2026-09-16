@@ -227,7 +227,7 @@ async fn seed(pg: &Pg) {
                 tenant_id: TENANT,
                 created_by: SUBMITTER,
                 created_at_utc: at(10),
-                sku_id: Some(Uuid::from_u128(0x5_c1)),
+                sku_id: Uuid::from_u128(0x5_c1),
                 plan_tier: Some("gold".to_owned()),
                 billing_cycle: Some(BillingCycle::Recurring),
                 frequency: Some(Frequency::Monthly),

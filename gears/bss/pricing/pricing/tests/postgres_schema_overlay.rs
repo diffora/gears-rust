@@ -423,7 +423,7 @@ async fn the_line_key_is_null_safe_on_all_three_nullable_columns() {
     .await;
 
     // Two lines on one `(plan, sku)`: cohort NULL. This is the third of §6's
-    // three, and the `COALESCE(target_sku, '')` component is exercised in the
+    // three, and the `COALESCE(target_sku, nil_uuid)` component is exercised in the
     // **collision** direction only here.
     let sku_line = |line: &str| {
         format!(
@@ -431,7 +431,7 @@ async fn the_line_key_is_null_safe_on_all_three_nullable_columns() {
                 line_id, price_overlay_id, overlay_revision, tenant_id,
                 plan_id, target_sku, adjustment_kind, magnitude_kind, adjustment_value)
              VALUES ('{line}', '{OVERLAY_A}', 0, '{TENANT}',
-                     '{PLAN_1}', 'sku-a', 'discount', 'percent_bp', 1500)"
+                     '{PLAN_1}', '55555555-5555-5555-5555-555555555555', 'discount', 'percent_bp', 1500)"
         )
     };
     must_succeed(&conn, &sku_line(LINE_3)).await;
@@ -487,7 +487,14 @@ async fn the_lines_check_constraints_refuse_their_own_violations() {
             "chk_pricing_price_overlay_line_cohort_needs_plan",
         ),
         (
-            line("NULL", "'sku-a'", "NULL", "discount", "percent_bp", "1500"),
+            line(
+                "NULL",
+                "'55555555-5555-5555-5555-555555555555'",
+                "NULL",
+                "discount",
+                "percent_bp",
+                "1500",
+            ),
             "chk_pricing_price_overlay_line_sku_needs_plan",
         ),
         (
@@ -543,19 +550,19 @@ async fn the_lines_check_constraints_refuse_their_own_violations() {
             "chk_pricing_price_overlay_line_plan_id_not_nil",
         ),
         // The same argument on the second forgeable sentinel: `COALESCE(target_sku,
-        // '')` means a blank SKU keys as "no SKU". The plan is named because
+        // nil_uuid)` means a nil SKU keys as "no SKU". The plan is named because
         // `chk_..._sku_needs_plan` would otherwise answer first and this case
         // would prove that rule twice instead of this one.
         (
             line(
                 &format!("'{PLAN_1}'"),
-                "''",
+                "'00000000-0000-0000-0000-000000000000'",
                 "NULL",
                 "discount",
                 "percent_bp",
                 "1500",
             ),
-            "chk_pricing_price_overlay_line_target_sku_present",
+            "chk_pricing_price_overlay_line_target_sku_not_nil",
         ),
     ] {
         must_be_rejected(&conn, &sql, constraint).await;

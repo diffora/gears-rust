@@ -131,6 +131,7 @@ fn request_of(key: &ScopeKey, amount: i64) -> SupersessionRequest {
 
 fn service(h: &Harness) -> SupersessionService {
     SupersessionService::new(h.db.clone(), Arc::clone(&h.registry) as Arc<_>)
+        .with_product_catalog(std::sync::Arc::new(rest_support::FixtureCatalog::default()))
 }
 
 async fn supersede(
@@ -1115,7 +1116,7 @@ async fn usage_key_with_published_row(
         PriceEligibility::NewSubscriptionsOnly,
         bss_pricing::domain::scope_key::ChargeKind::Usage,
         Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
+        SkuId::new(rest_support::resource_sku("api_calls")),
     )
     .expect("new_subscriptions_only pairs with cohort none");
 
@@ -1200,21 +1201,15 @@ fn usage_request(key: &ScopeKey, amount: i64) -> SupersessionRequest {
 
 #[tokio::test]
 async fn a_usage_successor_that_moves_a_unit_field_is_refused_by_the_guard() {
-    // **The Critical.** `SupersessionUnitGuard` gates on `successor.is_usage()`, and the
-    // successor it was handed came off the wire with `charge_kind = Recurring` — the
-    // placeholder `content_of` fills because `PriceContentView` has no such field. So on
-    // a usage key the D-82/D-98/D-122/D-127/D-129 guard returned without evaluating, and
-    // a successor could move `meter` under a continued tier counter: an hours-denominated
-    // `Q` accumulated against one meter, re-read off another, mid-window. The guard was
-    // live, correct, and unreachable through the one surface that has it.
-    //
-    // Every fixture in this file was `recurring`, which is why the suite was green.
+    // The successor is normalized from its immutable key before the unit guard.
+    // D-372 makes meter derived and SKU immutable at this door. Changing the
+    // pricing model still changes the continued tier counter's unit contract.
     let h = Harness::new().await;
     let (plan_id, seeded) = published_plan(&h).await;
     let key = usage_key_with_published_row(&h, plan_id, &seeded).await;
 
     let mut request = usage_request(&key, 600);
-    request.successor.row.meter = Some("api_bytes".to_owned());
+    request.successor.row.model_kind = Some(bss_pricing::domain::price_row::ModelKind::Volume);
 
     let refused = supersede(&h, request, SUBMITTER)
         .await

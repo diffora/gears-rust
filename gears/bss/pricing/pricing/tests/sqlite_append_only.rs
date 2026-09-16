@@ -27,6 +27,10 @@ const TENANT: &str = "11111111-1111-1111-1111-111111111111";
 const PLAN: &str = "22222222-2222-2222-2222-222222222222";
 const PHASE: &str = "33333333-3333-3333-3333-333333333333";
 const ACTOR: &str = "44444444-4444-4444-4444-444444444444";
+/// The SKU every seeded row prices (D-372). `pricing_price.sku_id` and
+/// `pricing_plan.sku_id` are `NOT NULL` since `m20260916_000044_price_row_sku`,
+/// so a seed names one; the value itself is incidental to these cases.
+const SKU: &str = "00000000-0000-0000-0000-000000000005";
 const PUBLISHED: &str = "55555555-5555-5555-5555-555555555555";
 const DRAFT: &str = "66666666-6666-6666-6666-666666666666";
 
@@ -64,9 +68,10 @@ async fn seed(conn: &DatabaseConnection) {
             "INSERT INTO pricing_price (
                 price_id, tenant_id, plan_id, currency, region, phase,
                 charge_kind, amount_minor, model_kind, lifecycle_state,
-                created_by, created_at_utc)
+                created_by, created_at_utc, sku_id)
              VALUES ('{PUBLISHED}', '{TENANT}', '{PLAN}', 'USD', 'EU', '{PHASE}',
-                'recurring', 1000, 'flat', 'published', '{ACTOR}', '2026-08-02 10:00:00 +00:00')"
+                'recurring', 1000, 'flat', 'published', '{ACTOR}', '2026-08-02 10:00:00 +00:00', \
+                '{SKU}')"
         ),
     )
     .await;
@@ -76,9 +81,10 @@ async fn seed(conn: &DatabaseConnection) {
             "INSERT INTO pricing_price (
                 price_id, tenant_id, plan_id, currency, region, phase,
                 charge_kind, amount_minor, model_kind, lifecycle_state,
-                created_by, created_at_utc)
+                created_by, created_at_utc, sku_id)
              VALUES ('{DRAFT}', '{TENANT}', '{PLAN}', 'USD', 'EU', '{PHASE}',
-                'one_time', 500, 'flat', 'draft', '{ACTOR}', '2026-08-02 10:00:00 +00:00')"
+                'one_time', 500, 'flat', 'draft', '{ACTOR}', '2026-08-02 10:00:00 +00:00', \
+                '{SKU}')"
         ),
     )
     .await;
@@ -328,10 +334,10 @@ async fn grandfather_until_may_only_be_tightened() {
             "INSERT INTO pricing_price (
                 price_id, tenant_id, plan_id, currency, region, phase,
                 price_eligibility, charge_kind, cohort, amount_minor, model_kind,
-                lifecycle_state, created_by, created_at_utc)
+                lifecycle_state, created_by, created_at_utc, sku_id)
              VALUES ('{row}', '{TENANT}', '{PLAN}', 'USD', 'EU', '{PHASE}',
                 'existing_grandfathered', 'recurring', '1780000000000', 900, 'flat',
-                'published', '{ACTOR}', '2026-08-02 10:00:00 +00:00')"
+                'published', '{ACTOR}', '2026-08-02 10:00:00 +00:00', '{SKU}')"
         ),
     )
     .await;
@@ -453,10 +459,10 @@ async fn a_published_rows_package_block_size_is_frozen() {
             "INSERT INTO pricing_price (
                 price_id, tenant_id, plan_id, currency, region, phase,
                 charge_kind, model_kind, package_size, package_price_minor,
-                lifecycle_state, created_by, created_at_utc)
+                lifecycle_state, created_by, created_at_utc, sku_id)
              VALUES ('{row}', '{TENANT}', '{PLAN}', 'USD', 'EU', '{PHASE}',
                 'usage', 'package', 100, 5000, 'published', '{ACTOR}',
-                '2026-08-02 10:00:00 +00:00')"
+                '2026-08-02 10:00:00 +00:00', '{SKU}')"
         ),
     )
     .await;

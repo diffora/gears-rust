@@ -105,6 +105,7 @@ fn service(h: &Harness) -> CutoverService {
         FixtureGate::load(&rest_support::committed_registry_path()),
         Arc::clone(&h.registry) as Arc<_>,
     )
+    .with_product_catalog(std::sync::Arc::new(rest_support::FixtureCatalog::default()))
 }
 
 async fn cut_over(
@@ -246,7 +247,7 @@ fn usage_key(plan_id: PlanId, phase: PhaseId, meter: &str) -> ScopeKey {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Usage,
         Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
+        SkuId::new(Uuid::new_v5(&Uuid::NAMESPACE_OID, meter.as_bytes())),
     )
     .expect("the class pairs with cohort none")
     .with_usage_line(
@@ -472,6 +473,7 @@ async fn a_cutover_is_refused_while_the_joint_corpus_is_not_green_for_its_shape(
         FixtureGate::closed(),
         Arc::clone(&h.registry) as Arc<_>,
     )
+    .with_product_catalog(std::sync::Arc::new(rest_support::FixtureCatalog::default()))
     .cut_over(
         &rest_support::security_context(SUBMITTER, h.tenant),
         &h.scope(),
@@ -620,7 +622,7 @@ async fn row_exists(h: &Harness, price_id: Uuid) -> bool {
 }
 
 #[tokio::test]
-async fn a_generation_on_a_neighbouring_meter_does_not_occupy_this_line_s_instant() {
+async fn a_generation_on_a_neighbouring_sku_does_not_occupy_this_line_s_instant() {
     // **The fail-closed half of D-296**, and its twin above is the fail-open one.
     // `existing_generations` compared six of the ten axes, omitting `meter` and
     // `dimension_key`, so on D-103's plan every usage line's generations counted

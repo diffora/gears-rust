@@ -478,6 +478,9 @@ pub async fn apply_run_in(
             run.state.as_str()
         )));
     }
+    // A terminal run replays its tally without consulting mutable registry facts.
+    let resolved_policies = policies.resolve_skus(ctx).await?;
+    let policies = &resolved_policies;
     // **Both parses run before the edge is spent**. Neither reads the
     // store, and both are `DomainError::Internal` on a report that cannot be
     // decoded — so with them below the `advance`, a run whose report is
@@ -2729,7 +2732,12 @@ mod ordinary_failure_release {
                     tenant_id,
                     created_by: Uuid::from_u128(0x1),
                     created_at_utc: now,
-                    sku_id: None,
+                    // D-372: `pricing_plan.sku_id` is `NOT NULL` since
+                    // `m20260916_000044_price_row_sku`, so a draft with no SKU is
+                    // refused by the store. `PlanShape.sku_id` stays `Option`
+                    // until Task 8 makes the DTO require one; this fixture names
+                    // the value the suite's other seeds do.
+                    sku_id: Uuid::from_u128(5),
                     plan_tier: None,
                     plan_name: None,
                     billing_cycle: None,
@@ -3024,7 +3032,12 @@ mod step0_probe {
                     tenant_id,
                     created_by: Uuid::from_u128(0x1),
                     created_at_utc: now,
-                    sku_id: None,
+                    // D-372: `pricing_plan.sku_id` is `NOT NULL` since
+                    // `m20260916_000044_price_row_sku`, so a draft with no SKU is
+                    // refused by the store. `PlanShape.sku_id` stays `Option`
+                    // until Task 8 makes the DTO require one; this fixture names
+                    // the value the suite's other seeds do.
+                    sku_id: Uuid::from_u128(5),
                     plan_tier: None,
                     plan_name: None,
                     billing_cycle: None,

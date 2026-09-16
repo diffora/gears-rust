@@ -425,7 +425,7 @@ fn overlay_line_value(line: &OverlayLine) -> JsonValue {
     json!({
         "lineId": line.line_id,
         "planId": line.key.plan_id().map(PlanId::get),
-        "targetSku": line.key.target_sku().map(TargetSku::as_str),
+        "targetSku": line.key.target_sku().map(TargetSku::as_uuid),
         "cohort": line.key.cohort().map(format_rfc3339),
         "kind": line.adjustment.kind().as_str(),
         "magnitudeKind": line.adjustment.magnitude_kind().as_str(),

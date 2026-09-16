@@ -90,7 +90,7 @@ fn the_set_carries_all_three_statuses_and_both_unit_cases() {
 /// **The three members the registry's consumer contract names ride every
 /// fabricated row consistently** (registry P-D-133): a usage SKU carries a
 /// `usage_type_ref` and a per-period one does not, the type is one of the
-/// registry's three words, and every row is sellable — the mode exists so a
+/// registry's three words, and only unmetered offers are sellable — the mode exists so a
 /// row can be picked.
 #[test]
 fn the_contract_members_are_consistent_with_the_unit() {
@@ -113,6 +113,11 @@ fn the_contract_members_are_consistent_with_the_unit() {
             sku.sku_code,
             sku.sku_type
         );
-        assert!(sku.sellable, "{} is not sellable", sku.sku_code);
+        assert_eq!(
+            sku.sellable,
+            sku.metering_unit.is_none(),
+            "{} sellability follows its role",
+            sku.sku_code
+        );
     }
 }

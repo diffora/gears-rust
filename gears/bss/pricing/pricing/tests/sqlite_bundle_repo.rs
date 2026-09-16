@@ -73,7 +73,7 @@ fn new_draft(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
         tenant_id,
         created_by: Uuid::from_u128(0xac_11),
         created_at_utc: at(9),
-        sku_id: Some(Uuid::from_u128(0x5_c1)),
+        sku_id: Uuid::from_u128(0x5_c1),
         plan_tier: Some("gold".to_owned()),
         billing_cycle: None,
         frequency: None,

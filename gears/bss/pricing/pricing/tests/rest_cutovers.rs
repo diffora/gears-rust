@@ -410,3 +410,100 @@ async fn a_foreign_tenant_cannot_cut_over_this_tenants_plan() {
          request rather than about the tenant"
     );
 }
+
+#[tokio::test]
+async fn a_pending_usage_unit_replays_without_catalog_reads_but_approved_commit_revalidates() {
+    use std::sync::atomic::Ordering;
+    let catalog = std::sync::Arc::new(rest_support::MutableCatalog::new());
+    let h = Harness::new_with_catalog(catalog.clone()).await;
+    let (plan, seeded, content) = rest_support::published_usage_for_registry_replay(&h).await;
+    let mut body = cutover_body(seeded.price_id, 12_000);
+    body["successor"] = content;
+    let first = h
+        .allowed_as(SUBMITTER)
+        .send(request("POST", &path(plan), Some(body.clone())))
+        .await;
+    let status = first.status();
+    let first = body_json(first).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{first}");
+    assert_eq!(catalog.reads.load(Ordering::SeqCst), 1);
+    let sku_id = rest_support::resource_sku(rest_support::USAGE_METER);
+    for drift in ["deprecated", "meter", "outage"] {
+        {
+            let mut listing = catalog.listing.lock().expect("listing");
+            let sku = listing
+                .iter_mut()
+                .find(|sku| sku.sku_id == sku_id)
+                .expect("usage SKU");
+            sku.status = if drift == "deprecated" {
+                "deprecated"
+            } else {
+                "published"
+            }
+            .into();
+            sku.metering_unit = Some(
+                if drift == "meter" {
+                    "changed-unit"
+                } else {
+                    rest_support::USAGE_METER
+                }
+                .into(),
+            );
+        }
+        catalog
+            .unavailable
+            .store(drift == "outage", Ordering::SeqCst);
+        let replay = h
+            .allowed_as(SUBMITTER)
+            .send(request("POST", &path(plan), Some(body.clone())))
+            .await;
+        let status = replay.status();
+        let replay = body_json(replay).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{drift}: {replay}");
+        assert_eq!(
+            replay["approval"]["approval_id"],
+            first["approval"]["approval_id"]
+        );
+        assert_eq!(replay["successor_price_id"], first["successor_price_id"]);
+        assert_eq!(catalog.reads.load(Ordering::SeqCst), 1);
+    }
+    let mut changed = body.clone();
+    changed["successor"]["bands"][0]["unit_price_nano_minor"] =
+        serde_json::json!(13_000_000_000_i64);
+    let refused = h
+        .allowed_as(SUBMITTER)
+        .send(request("POST", &path(plan), Some(changed)))
+        .await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        catalog.reads.load(Ordering::SeqCst),
+        1,
+        "an authored change is not a replay"
+    );
+    let approval = Uuid::parse_str(
+        first["approval"]["approval_id"]
+            .as_str()
+            .expect("approval id"),
+    )
+    .expect("UUID");
+    approve(&h, approval).await;
+    catalog.unavailable.store(false, Ordering::SeqCst);
+    catalog
+        .listing
+        .lock()
+        .expect("listing")
+        .iter_mut()
+        .find(|sku| sku.sku_id == sku_id)
+        .expect("SKU")
+        .status = "deprecated".into();
+    let commit = h
+        .allowed_as(SUBMITTER)
+        .send(request("POST", &path(plan), Some(body)))
+        .await;
+    assert_eq!(commit.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        rest_support::problem_code(commit).await,
+        "SKU_NOT_PUBLISHED"
+    );
+    assert_eq!(catalog.reads.load(Ordering::SeqCst), 2);
+}

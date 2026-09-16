@@ -141,7 +141,7 @@ fn check_usage_only_package_fields(row: &PriceRow, report: &mut ValidationReport
     // D-312: the misplaced field and the frozen `chargeKind` are both in the
     // request, and `ModelKind::Package` — the only kind that legalises either —
     // is itself illegal on this key. The two sibling faults this rule holds,
-    // `package_size = 0` and bands beside blocks, are content against content and
+    // Bands beside blocks are content against content and
     // stay publish-stage.
     report.violate_at_write(
         PACKAGE_FIELDS_INVALID,

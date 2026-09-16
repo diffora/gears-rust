@@ -120,7 +120,7 @@ async fn seeded(h: &Harness) {
                 tenant_id: TENANT,
                 created_by: ACTOR,
                 created_at_utc: at(9),
-                sku_id: Some(Uuid::from_u128(0x5_c1)),
+                sku_id: Uuid::from_u128(0x5_c1),
                 plan_tier: Some("gold".to_owned()),
                 billing_cycle: None,
                 frequency: None,

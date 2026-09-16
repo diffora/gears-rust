@@ -64,7 +64,7 @@
 //!   is "sold but unrateable" through the override door.
 //! - **Its denomination must match** (`PhaseOverrideUnits`, D-89 extended by
 //!   D-122). The tier counter `Q` is keyed
-//!   `(subscription, meter, dimensionKey, window)` and is **phase-blind**, so a
+//!   `(subscription, skuId, dimensionKey, window)` and is **phase-blind**, so a
 //!   conversion never resets it: a `per_hour` trial row converting into a
 //!   `per_day` evergreen row mid-window applies an hours-denominated counter to
 //!   day-denominated bands — the D-77/D-82 factor-of-24 class through the phase
@@ -105,7 +105,7 @@
 //!   unreachable phase the design names is reported through the edge that
 //!   strands it.
 //! - **The per-market half of the override base is D-84's.**
-//!   `PhaseOverrideBase` asks whether the `(meter, dimensionKey)` line has a
+//!   `PhaseOverrideBase` asks whether the `(skuId, dimensionKey)` line has a
 //!   phase-invariant home at all — the question `inst-ph-usage-invariant` asks,
 //!   which is why the design has it name the line and the phase and not a
 //!   market. Whether that home exists in **every** sold market is
@@ -539,7 +539,7 @@ impl ValidationRule<PlanShape> for PhaseCoverage {
 /// phase-invariant base.
 ///
 /// The base is the terminal-phase row of the override's own
-/// `(meter, dimensionKey)` line. See the module doc for the three-part defect an
+/// `(skuId, dimensionKey)` line. See the module doc for the three-part defect an
 /// orphan opens, and for why the per-market half belongs to `USAGE_MARKET_INCOMPLETE`.
 ///
 /// Says nothing when the graph does not have exactly one terminal phase: "the
@@ -754,17 +754,10 @@ fn phases_on_a_cycle(graph: &PhaseGraph) -> BTreeSet<PhaseId> {
     on_cycle
 }
 
-/// The `(meter, dimensionKey)` line a usage row prices.
-///
-/// The line is what `inst-cmp-injective` keys on and what the counter is keyed
-/// by, so it is what decides whether one row overrides another. An absent meter
-/// is its own line rather than a wildcard: two rows that name no meter are the
-/// same line, and neither is the base of a row that names one.
-fn line_of(record: &PriceRecord) -> (Option<&str>, &str) {
-    (
-        record.row.meter.as_deref(),
-        record.row.dimension_key.as_str(),
-    )
+/// The SKU and dimension identify the usage line across phases (D-372).
+/// Two SKUs sharing a metering unit cannot override each other's rows.
+fn line_of(record: &PriceRecord) -> (crate::domain::scope_key::SkuId, &str) {
+    (record.row.sku_id, record.row.dimension_key.as_str())
 }
 
 /// How a phase-level finding locates its subject for the author.
@@ -781,11 +774,11 @@ fn phase_subject(shape: &PlanShape, phase_id: PhaseId) -> String {
 /// A trailing empty dimension is the empty-tuple sentinel - the row prices the
 /// whole meter and declares no dimension.
 fn override_subject(shape: &PlanShape, record: &PriceRecord) -> String {
-    let (meter, dimension) = line_of(record);
+    let (sku, dimension) = line_of(record);
     format!(
         "{}/{}#{dimension}",
         phase_subject(shape, record.scope_key.phase()),
-        meter.unwrap_or("(no meter)")
+        sku
     )
 }
 

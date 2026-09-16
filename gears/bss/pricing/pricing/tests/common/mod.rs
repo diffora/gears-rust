@@ -417,3 +417,6 @@ pub async fn publish_plan_directly(
         .expect("publish the seeded plan revision");
     assert_eq!(result.rows_affected, 1, "the seed must have moved one row");
 }
+
+mod catalog;
+pub use catalog::FixtureCatalog;

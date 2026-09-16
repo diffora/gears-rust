@@ -34,6 +34,9 @@ mod common;
 use common::{exec, migrated_db, must_succeed, scalar};
 
 const TENANT: &str = "11111111-1111-1111-1111-111111111111";
+/// The SKU every seeded plan revision names (D-372). `pricing_plan.sku_id` is
+/// `NOT NULL` since `m20260916_000044_price_row_sku`.
+const SKU: &str = "00000000-0000-0000-0000-000000000005";
 const PLAN: &str = "22222222-2222-2222-2222-222222222222";
 const ACTOR: &str = "44444444-4444-4444-4444-444444444444";
 const AUTHORED: &str = "2026-08-02 10:00:00 +00:00";
@@ -96,11 +99,17 @@ fn insert(plan: &str, revision: u32, state: &str) -> String {
 /// frequency. A helper that took domain values could not express the subjects
 /// these CHECKs are for.
 fn insert_with(plan: &str, revision: u32, state: &str, extra: &[(&str, &str)]) -> String {
+    // `sku_id` since D-372: `pricing_plan.sku_id` is `NOT NULL` on Postgres and
+    // trigger-enforced here, so every seeded revision names one. A case that is
+    // *about* the SKU column overrides it through `extra`, which is last-wins in
+    // neither direction -- `pricing_plan` has no such case today.
     let mut columns = String::from(
-        "plan_id, revision, tenant_id, plan_tier, lifecycle_state, created_by, created_at_utc",
+        "plan_id, revision, tenant_id, plan_tier, lifecycle_state, created_by, created_at_utc, \
+         sku_id",
     );
-    let mut values =
-        format!("'{plan}', {revision}, '{TENANT}', 'gold', '{state}', '{ACTOR}', '{AUTHORED}'");
+    let mut values = format!(
+        "'{plan}', {revision}, '{TENANT}', 'gold', '{state}', '{ACTOR}', '{AUTHORED}', '{SKU}'"
+    );
     for &(column, value) in extra {
         columns.push_str(", ");
         columns.push_str(column);
@@ -588,8 +597,9 @@ async fn every_counter_column_refuses_a_negative() {
         &conn,
         &format!(
             "INSERT INTO pricing_plan \
-             (plan_id, revision, tenant_id, plan_tier, lifecycle_state, created_by, created_at_utc) \
-             VALUES ('{}', -1, '{TENANT}', 'gold', 'draft', '{ACTOR}', '{AUTHORED}')",
+             (plan_id, revision, tenant_id, plan_tier, lifecycle_state, created_by, \
+              created_at_utc, sku_id) \
+             VALUES ('{}', -1, '{TENANT}', 'gold', 'draft', '{ACTOR}', '{AUTHORED}', '{SKU}')",
             plan_of(9)
         ),
         "chk_pricing_plan_revision",
