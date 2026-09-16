@@ -160,6 +160,38 @@ fn the_supersession_pipeline_judges_a_pair_without_asking_which_mechanism_made_i
     assert_eq!(report.violations[0].code, SUPERSESSION_UNIT_MISMATCH);
 }
 
+#[test]
+fn a_successor_on_another_sku_is_a_unit_mismatch_even_with_the_same_meter() {
+    // D-372: the counter's identity axis is the SKU, and the meter is derived
+    // from the SKU's registry declaration (I4) rather than authored. Two SKUs
+    // sold by the same unit are two counters, so a successor landing on another
+    // SKU inherits a continued `Q` that was never its own -- and an equal
+    // `meter`, which before D-372 was the axis this guard compared, is not the
+    // defence it reads as.
+    //
+    // The equal meters are asserted rather than assumed: a probe whose meters
+    // had drifted apart would pass against the pre-D-372 guard too, and would
+    // prove nothing about which field is compared.
+    let predecessor = graduated_usage();
+    let mut successor = graduated_usage();
+    successor.sku_id = SkuId::new(Uuid::from_u128(0xBEEF));
+
+    assert_eq!(
+        successor.meter, predecessor.meter,
+        "this probe is armed only while the two rows agree on the meter"
+    );
+
+    let report = supersession_rules().run(&SupersessionPair::new(predecessor, successor));
+
+    assert_eq!(report.violations.len(), 1);
+    assert_eq!(report.violations[0].code, SUPERSESSION_UNIT_MISMATCH);
+    assert!(
+        report.violations[0].detail.contains("sku_id"),
+        "the violation must name the offending field: {}",
+        report.violations[0].detail
+    );
+}
+
 /// D-312's group probe: over the **whole** registered set, which violations the
 /// authoring write may judge.
 ///

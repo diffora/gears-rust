@@ -1,10 +1,17 @@
 //! The **supersession unit guard** (`inst-tb-supersession-units`; D-82, D-98,
-//! D-122, D-127, D-129).
+//! D-122, D-127, D-129, D-372).
 //!
-//! The tier counter `Q` is derived per `(subscription, meter, dimensionKey,
+//! The tier counter `Q` is derived per `(subscription, sku, dimensionKey,
 //! window)` and belongs to the subscription's usage history, not to a price-row
 //! version. Superseding a row therefore does **not** reset an in-window counter:
 //! the successor's bands are simply applied to the continued `Q`.
+//!
+//! **The second component is the SKU since D-372**, where it was the `meter`
+//! before. The unit was the only discriminator a usage row had, so two SKUs sold
+//! by the same unit shared one counter's key; what a row prices is the SKU, so
+//! the SKU is what the counter is keyed on, and the meter — which the SKU's
+//! registry declaration derives (`inst-pr-meter-derived`, I4) — **follows from
+//! it** rather than standing beside it.
 //!
 //! That continuity is what this guard protects. A successor landing on an
 //! occupied published canonical scope key MUST NOT change the fields the
@@ -16,7 +23,8 @@
 //! - `per_hour -> per_day` applies an hours-denominated `Q` to day-denominated
 //!   bands: the D-77 factor-of-24 band-edge class, reintroduced through
 //!   supersession.
-//! - a changed `meter` or `dimensionKey` silently reads a different counter.
+//! - a changed `sku_id` or `dimensionKey` silently reads a different counter.
+//!   The meter moves with the SKU and is not compared a second time.
 //! - a `graduated -> volume` / `package` flip re-prices the **already
 //!   accumulated** window total under new math — `volume` applies the selected
 //!   band's single rate to the whole window `Q`, including units already rated
@@ -29,8 +37,9 @@
 //!   touch (D-129).
 //!
 //! Supersession is a **price** change on one key: new amounts, new bands. What
-//! or how the key meters, and which formula prices it, is **structural** and
-//! routes through plan revisioning and migration.
+//! the key sells — its SKU, and with it what or how the key meters — and which
+//! formula prices it, is **structural** and routes through plan revisioning and
+//! migration.
 //!
 //! ## The guard binds the key, not the mechanism (D-127)
 //!
@@ -59,7 +68,7 @@
 //!
 //! Supersession is not the only handover that leaves `Q` running. A **phase
 //! conversion** does too — the counter is phase-blind, so the row serving the
-//! meter after conversion inherits the continued counter — and
+//! SKU after conversion inherits the continued counter — and
 //! `inst-ph-override-units` (D-89, extended by D-122) states the same
 //! requirement over the same seven axes for a phase-scoped usage override.
 //!
@@ -116,9 +125,11 @@ impl SupersessionPair {
     /// [`unit_determining_mismatch`] — the same list `inst-ph-override-units`
     /// binds a phase-scoped override to, written once for the reason the module
     /// doc gives. The **five** this guard adds are its own because they are
-    /// supersession-specific: `meter` and `dimensionKey` are two of the four
+    /// supersession-specific: `sku_id` and `dimensionKey` are two of the four
     /// components of the counter's own key, so a successor that moved either
-    /// would not inherit the counter at all but silently read a different one;
+    /// would not inherit the counter at all but silently read a different one
+    /// (the first of the two was `meter` until D-372 moved the counter's
+    /// identity axis onto the SKU and made the meter derive from it);
     /// `reservationFlavor` decides whether the reserved quantity leaves the
     /// on-demand counter (see the comment at its comparison, and D-254);
     /// `maxHoldGranules` decides what a gap in the hold is worth;
@@ -153,8 +164,18 @@ impl SupersessionPair {
     pub fn mismatched_unit_fields(&self) -> Vec<&'static str> {
         let (before, after) = (&self.predecessor, &self.successor);
         let mut changed = Vec::new();
-        if before.meter != after.meter {
-            changed.push("meter");
+        // **The SKU, not the meter (D-372).** The counter's identity axis moved
+        // to the SKU when the ninth scope-key axis did, and the meter is now
+        // *derived* from the SKU's registry declaration at save (I4,
+        // `inst-pr-meter-derived`) rather than authored. So comparing `sku_id`
+        // subsumes comparing `meter`: a successor that kept the SKU cannot have
+        // moved the meter without I4 refusing it at save under
+        // `METER_SKU_MISMATCH`, and one that moved the SKU is refused here
+        // whether or not the two SKUs happen to be sold by the same unit --
+        // which the meter comparison this replaces could not see at all, being
+        // the one pair D-372 was decided over.
+        if before.sku_id != after.sku_id {
+            changed.push("sku_id");
         }
         if before.dimension_key != after.dimension_key {
             changed.push("dimensionKey");

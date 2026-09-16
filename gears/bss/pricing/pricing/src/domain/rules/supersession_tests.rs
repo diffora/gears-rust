@@ -1,6 +1,7 @@
 //! Tests for the supersession unit guard.
 
 use bss_fixtures::ModelKind;
+use uuid::Uuid;
 
 use super::{SupersessionPair, SupersessionUnitGuard};
 use crate::domain::money::{MinorAmount, RateMinor};
@@ -10,7 +11,7 @@ use crate::domain::price_row::{
     unit_determining_mismatch,
 };
 use crate::domain::rules::SUPERSESSION_UNIT_MISMATCH;
-use crate::domain::scope_key::ChargeKind;
+use crate::domain::scope_key::{ChargeKind, SkuId};
 use crate::domain::validation::{ValidationReport, ValidationRule};
 
 fn minor(units: i64) -> MinorAmount {
@@ -30,8 +31,14 @@ fn judge(pair: &SupersessionPair) -> ValidationReport {
 }
 
 /// The published predecessor: a graduated usage row on a metered stream.
+///
+/// It carries a **real** SKU rather than `PriceRow::new`'s nil D-372 shim, so
+/// that the axis this guard compares is never `nil == nil` in the cases that
+/// publish: a rule that had stopped comparing the SKU at all would still pass
+/// those against the shim, and only the mismatch cases would be red.
 fn predecessor() -> PriceRow {
     let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
+    row.sku_id = SkuId::new(Uuid::from_u128(5));
     row.meter = Some("egress_bytes".to_owned());
     row.dimension_key = String::new();
     row.billing_granularity = Some(BillingGranularity::PerHour);
@@ -80,14 +87,64 @@ fn a_billing_granularity_change_fails_and_names_the_field() {
     );
 }
 
+/// The axis this probe names moved from `meter` to `sku_id` at D-372.
+///
+/// It is re-aimed rather than deleted, and the aim is the whole of the change:
+/// the field the guard compares is the SKU, and the meter it used to compare is
+/// **derived** from that SKU at save (`inst-pr-meter-derived`, I4). A successor
+/// that kept the SKU therefore cannot have moved the meter, and one that moved
+/// the SKU is refused here whether or not the two SKUs are sold by the same
+/// unit — which is the pair the old comparison could not see, and the pair
+/// D-372 was decided over.
 #[test]
-fn a_meter_change_fails_publish() {
+fn a_sku_change_fails_publish() {
     let mut successor = predecessor();
-    successor.meter = Some("ingress_bytes".to_owned());
+    successor.sku_id = SkuId::new(Uuid::from_u128(0xBEEF));
 
     assert_eq!(
         SupersessionPair::new(predecessor(), successor).mismatched_unit_fields(),
-        vec!["meter"]
+        vec!["sku_id"]
+    );
+}
+
+/// The half the assertion above cannot make: an equal meter is **not** a defence.
+///
+/// Set explicitly on both sides rather than inherited from the fixture, so the
+/// probe stays armed against the claim if the fixture's meter ever changes: the
+/// two rows agree on the unit and disagree only on the SKU, which is exactly the
+/// pair the pre-D-372 guard let through.
+#[test]
+fn a_sku_change_fails_publish_even_when_the_meter_is_identical() {
+    let mut before = predecessor();
+    before.meter = Some("egress_bytes".to_owned());
+    let mut successor = before.clone();
+    successor.sku_id = SkuId::new(Uuid::from_u128(0xBEEF));
+
+    assert_eq!(before.meter, successor.meter);
+    assert_eq!(
+        SupersessionPair::new(before, successor).mismatched_unit_fields(),
+        vec!["sku_id"]
+    );
+}
+
+/// And the converse the move makes true: the meter alone is no longer compared.
+///
+/// Not a gap. `inst-pr-meter-derived` (I4) refuses at save, under
+/// `METER_SKU_MISMATCH`, a row whose meter is not the one its SKU declares — so
+/// once the SKU resolves, at most one of the two rows below can be stored at
+/// all, and the pair this case builds is a shape the write door rejects before
+/// this guard is ever reached. Pinning it here is what stops a later reader from
+/// "restoring" a second comparison of a derived field, which is the
+/// duplicate-copy class the module doc is about.
+#[test]
+fn a_meter_change_under_one_sku_is_no_longer_this_guards_question() {
+    let mut successor = predecessor();
+    successor.meter = Some("ingress_bytes".to_owned());
+
+    assert!(
+        SupersessionPair::new(predecessor(), successor)
+            .mismatched_unit_fields()
+            .is_empty()
     );
 }
 
@@ -343,7 +400,7 @@ fn the_violation_names_every_offending_field() {
     // A publish that failed without saying which field moved is not remediable,
     // and a report that named only the first would take N round trips.
     let mut successor = predecessor();
-    successor.meter = Some("ingress_bytes".to_owned());
+    successor.sku_id = SkuId::new(Uuid::from_u128(0xBEEF));
     successor.billing_granularity = Some(BillingGranularity::PerDay);
     successor.model_kind = Some(ModelKind::Volume);
 
@@ -352,7 +409,7 @@ fn the_violation_names_every_offending_field() {
 
     assert_eq!(report.violations.len(), 1);
     let detail = &report.violations[0].detail;
-    for field in ["meter", "model_kind", "billingGranularity"] {
+    for field in ["sku_id", "model_kind", "billingGranularity"] {
         assert!(detail.contains(field), "{field} missing from: {detail}");
     }
 }
@@ -390,10 +447,16 @@ fn authoring_the_default_qualification_window_is_not_a_unit_change() {
 #[test]
 fn the_twelve_field_list_is_the_shared_seven_axes_between_this_guards_own_five() {
     // The regression the factoring had to not cause. `mismatched_unit_fields`
-    // is `unit_determining_mismatch` with `meter` and `dimensionKey` in front
+    // is `unit_determining_mismatch` with `sku_id` and `dimensionKey` in front
     // and `reservationFlavor` plus the carry-conditioned allowance behind, in
     // that order - a refactor that reordered the report, dropped a field, or
     // quietly grew a second copy of the seven would still compile.
+    //
+    // The first of the twelve was `meter` until D-372 moved the counter's
+    // identity axis onto the SKU. The count did not move with it: the meter is
+    // derived from the SKU at save (I4), so the axis was *replaced* here rather
+    // than joined, and a thirteenth label would mean somebody compared a derived
+    // field a second time.
     //
     // `reservation_flavor` was NOT set here until 2026-08-18, so this test named
     // ten labels and could not have caught its removal - the one field D-254
@@ -409,7 +472,7 @@ fn the_twelve_field_list_is_the_shared_seven_axes_between_this_guards_own_five()
     // the shared seven. Set every field this guard names, or the guard against
     // dropping a field has a blind one to hide in (review F5).
     let mut successor = predecessor();
-    successor.meter = Some("ingress_bytes".to_owned());
+    successor.sku_id = SkuId::new(Uuid::from_u128(0xBEEF));
     successor.dimension_key = "region".to_owned();
     successor.model_kind = Some(ModelKind::Package);
     successor.bands = Vec::new();
@@ -433,7 +496,7 @@ fn the_twelve_field_list_is_the_shared_seven_axes_between_this_guards_own_five()
     assert_eq!(
         changed,
         vec![
-            "meter",
+            "sku_id",
             "dimensionKey",
             "model_kind",
             "billingGranularity",
