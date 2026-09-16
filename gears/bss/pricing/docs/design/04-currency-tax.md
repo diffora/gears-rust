@@ -228,7 +228,7 @@ and bundles (Slice 8) build on.
 1. [ ] - `p1` - **(i)** A **required** add-on or price-override target lacking a covering published row for a **`(currency, region)` pair** the base plan sells → reject (the subscription could not resolve all lines on its bound market). **Per pair, not per currency (D-95, 2026-07-31 review fix):** the currency-only reading left the region axis unchecked — a required add-on covering EUR only in `US` while the base sells EUR in `EU` passed publish and died at order assembly (the D-84 asymmetry one level up); the override-target half now states one rule with S2 `inst-cmp-override-home`. An **optional** add-on's coverage gap does NOT block the base plan's publish — it is enforced at attachment time (the add-on is not attachable on a market it does not cover; Subscriptions checks via the sellability read) (2026-07-28 review fix, confirmed 2026-07-31). **Over the dependency closure, not the flat required set (2026-08-01 review fix, C-3):** case (i) evaluates the **`depends_on` closure** of the plan's required add-ons (S2 `inst-cmp-addons`), because a required add-on may declare `depends_on` on an *optional* one — which is then transitively mandatory at order time while, under the flat reading, its coverage was never checked. That is the D-95 asymmetry through the dependency door, ending at the same order-assembly failure on a plan that published clean - `inst-cb-addon`
 2. [ ] - `p1` - **(ii)** A `sum_of_parts` bundle whose component rows do not cover **every** currency the bundle sells → reject (Slice 8 invokes this rule with bundle context) - `inst-cb-bundle-sum`
 3. [ ] - `p1` - **(iii)** An `own_price` bundle whose components do not **each** have a row in **every** currency the bundle sells → reject - `inst-cb-bundle-own`
-4. [ ] - `p1` - Currency **selection** at activation is Subscriptions-owned; this slice guarantees only that every sellable currency is fully covered. `invoiceGroupingKey` is a layout hint and MUST NOT override this invariant (Billing splits currencies regardless) - `inst-cb-boundary`
+4. [ ] - `p1` - Currency **selection** at activation is Subscriptions-owned; this slice guarantees only that every sellable currency is fully covered. Billing splits currencies regardless of invoice layout; this invariant is unchanged by **D-373** - `inst-cb-boundary`
 5. [ ] - `p1` - **Region binding (normative, joint with Subscriptions):** like currency, the pricing `region` binds **once at activation** — Subscriptions resolves it from the payer's commercial profile (never from a client-supplied parameter) and the bound `(currency, region)` pair freezes into `pricingSnapshotRef`; every subsequent resolution (windows, renewals, overlays) uses the frozen pair. A region re-bind is a plan change, not a drift - `inst-cb-region-binding`
 
 ## 4. States (CDSL)
@@ -257,9 +257,9 @@ and bundles (Slice 8) build on.
 | `GET` | `/bss-pricing/v1/config/vocabularies/rounding-policies` | The **declared rounding vocabulary** — the set a row's `roundingPolicyRef` and the tenant default are membership-checked against; an empty set constrains nothing (D-334). The `PUT` that shared this row is **removed by D-368**; the set `ETag` stays a read validator and no write asserts it | ETag (conditional read) |
 | `POST` | `/bss-pricing/v1/config/vocabularies/rounding-policies/values` | **Declare one reference** (D-368): `201` with the value's own `ETag` and `Location`; the value is its own key — a repeat with the same body replays (`200`), other content for a held value is `409 TAXONOMY_VALUE_EXISTS`. Commits at once — this vocabulary opens no approval unit on any edge (D-334) | natural key (the value) |
 | `GET/PATCH` | `/bss-pricing/v1/config/vocabularies/rounding-policies/values/{value}` | **Read / edit one reference** (D-368). The `GET` hands out the value's **own** `ETag`; the `PATCH` asserts it and commits at once. `409 TAXONOMY_VALUE_IN_USE` when a published price row or the tenant default still names a value being retired; `409 STALE_VERSION` on a moved tag; `404` on an undeclared value | ETag (per value) |
-| `GET` | `/bss-pricing/v1/config/vocabularies/gl-codes` | The **declared GL-code vocabulary** — the set a plan's billing-descriptor `glCode` is membership-checked against at publish (`inst-ds-glcode`, S2 §3); an empty set constrains nothing. Not this slice's subject either — listed here because this table is where every config vocabulary is, and it is the rounding vocabulary's shape on the descriptor plane (D-356). Its `PUT` is **removed by D-368** too | ETag (conditional read) |
-| `POST` | `/bss-pricing/v1/config/vocabularies/gl-codes/values` | **Declare one code** (D-368): the rounding vocabulary's row on the descriptor plane | natural key (the value) |
-| `GET/PATCH` | `/bss-pricing/v1/config/vocabularies/gl-codes/values/{value}` | **Read / edit one code** (D-368). `409 TAXONOMY_VALUE_IN_USE` when a **published** plan revision's descriptor set still names a code being retired | ETag (per value) |
+| `GET` | `/bss-pricing/v1/config/vocabularies/gl-codes` | The **declared GL-code vocabulary** — the set each row's effective `glCode` is membership-checked against at publish (**D-373**) (`inst-ds-glcode`, S2 §3); an empty set constrains nothing. Not this slice's subject either — listed here because this table is where every config vocabulary is, and it is the rounding vocabulary's shape on the descriptor plane (D-356). Its `PUT` is **removed by D-368** too | ETag (conditional read) |
+| `POST` | `/bss-pricing/v1/config/vocabularies/gl-codes/values` | **Declare one code** (D-368): the rounding vocabulary's row on the descriptor plane; codes supply the per-row membership check (**D-373**) | natural key (the value) |
+| `GET/PATCH` | `/bss-pricing/v1/config/vocabularies/gl-codes/values/{value}` | **Read / edit one code** (D-368). `409 TAXONOMY_VALUE_IN_USE` when any **published** price row's `resolved_gl_code` names a code being retired; draft-only references do not block retirement (**D-373 R5**) | ETag (per value) |
 
 **D-371 (2026-09-14):** every path in this table above moved under one family
 segment — `config/vocabularies` — when the two gears converged on the word
@@ -329,7 +329,13 @@ which the per-row column exists to avoid. The descriptor **contract** is unchang
 `taxCategory` remains one of D-48's v1 five elements, now **riding the price row** — exactly the
 treatment `billingTiming` already received in the same decision (D-48's 2026-07-28 amendment), so
 the v1 five stay five: **three** descriptor-set fields plus two row-borne elements. Billing's pending
-countersign covers the shape.
+countersign covers the shape. **D-373 (2026-09-16)** continues this dated D-110 finding:
+the descriptor-set table is removed, and the unchanged five-element contract now has
+**four row-borne** elements (`invoiceLineTemplate`, `glCode`, `taxCategory`, `billingTiming`)
+and **one derived** element (`itemizationRule`). The row template and GL code resolve and
+freeze like tax; the plan snapshot carries `billing { itemizationRule, ext }`, with `ext`
+from `pricing_plan.descriptor_ext`. Slice 2 §3 declares the rules and template vocabulary;
+Slice 3 §6 owns the four new row columns. Billing's countersign remains pending.
 
 Key constraints: FK-like validation (application-level, at save + publish) from
 `pricing_price.region` to `pricing_region_taxonomy(active)`; the ≥ 20-currency floor is a
@@ -408,7 +414,8 @@ Publish/preview **MUST** reject the three enumerated mixed-currency configuratio
 (required-add-on/override gap — evaluated per `(currency, region)` pair the base plan sells,
 D-95; optional add-on gaps enforce at attachment, not publish;
 `sum_of_parts` coverage gap; `own_price` coverage gap),
-naming the component and market; `invoiceGroupingKey` never overrides the invariant.
+naming the component and market; Billing always preserves the single-currency-per-invoice
+invariant (**D-373**).
 
 **Implements**: `cpt-cf-bss-pricing-algo-currency-binding`
 

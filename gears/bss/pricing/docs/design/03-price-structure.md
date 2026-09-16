@@ -407,6 +407,10 @@ re-enters (a list that can drift is a guard that differs):
 
 | Column | Type | Notes |
 |--------|------|-------|
+| `invoice_line_template` | `text` | Nullable authored row override; effective template is `coalesce(row.invoice_line_template, tenant.default_line_templates[charge_kind])`; missing result fails `DESCRIPTOR_INCOMPLETE` naming `priceId` (**D-373**, Slice 2 `inst-ds-template`) |
+| `resolved_invoice_line_template` | `text` | Effective template string frozen at publish, never the rendered label; Billing renders with its locale/period and pinned registry data (**D-373**, Slice 2 `inst-ds-sufficient`) |
+| `gl_code_ref` | `text` | Nullable authored row reference; effective code is `coalesce(row.gl_code_ref, tenant.default_gl_code_ref)`; missing result fails `GL_CODE_UNRESOLVED`, each non-member of a declared active vocabulary fails `GL_CODE_UNKNOWN`, naming the row (**D-373**, Slice 2 `inst-ds-glresolve` / `inst-ds-glcode`) |
+| `resolved_gl_code` | `text` | Effective GL code frozen at publish; the published row is the operand of the GL vocabulary retirement guard (**D-373 R5**); draft-only references do not block retirement |
 | `model_kind` | `enum` | `flat \| per_unit \| graduated \| volume \| package`; NOT NULL on publish |
 | `amount_minor` | `bigint` | Foundation-declared, **per-kind semantics owned here** (2026-07-28 review fix, confirmed 2026-07-31; **amended D-311, 2026-08-11**): REQUIRED (`≥ 0`, at the currency's ISO 4217 precision) on `flat` — the single amount — and **MUST be NULL on every other kind**, whose money lives in `unit_rate_nano` (`per_unit`), `pricing_price_tier_band.unit_price_nano` (`graduated`/`volume`) or `package_price_minor` (`package`), so no row carries two competing prices. **`per_unit` left this column under D-311**: it held an amount on `flat` and a multiplier on `per_unit`, and one column meaning two things by `model_kind` is the defect that decision names |
 | `unit_rate_nano` | `bigint` | **D-311**, 2026-08-11. The `per_unit` **rate**, in 10⁻⁹ minor units. REQUIRED on `per_unit`, MUST be NULL on every other kind. `CHECK (unit_rate_nano >= 0)` on Postgres; on `SQLite` the domain type holds the rule (`pricing_customer_group_taxonomy`'s migration records why). Frozen on a published row by `pricing_price`'s migration, which the split had to carry over from `amount_minor` and did not, for the length of one commit |
@@ -421,6 +425,17 @@ re-enters (a list that can drift is a guard that differs):
 | `max_hold_granules` | `bigint` | `≥ 1`; REQUIRED on non-`sum` rows, forbidden otherwise (D-44 `hold_last` bound — beyond it the level reads 0 + operator signal, rating-side); frozen in snapshot. `bigint` like every other count on this row (2026-08-02 type fix — the earlier `int` was the only narrow count here, and the bound that matters is `LEVEL_FIELDS_INVALID`'s, so the width must never be the thing that refuses a value) |
 | `meter` | `ref` | the published `meteringUnit` a usage row prices; feeds the Slice-2 injectivity rule |
 | `dimension_key` | `text` | dimension discriminator on the `(meter, dimensionKey)` line (Slice-2 injectivity); **`NOT NULL DEFAULT ''`** — the empty string is the "empty tuple" sentinel, so the Slice-2 injectivity partial `UNIQUE` collides undimensioned rows instead of treating them as distinct NULLs (2026-07-28 review fix, confirmed 2026-07-31). Launch posture (SEAMS M6 joint wording, closed 2026-07-28): *declaration + freeze are in scope now (the catalog persists `dimension_key` structurally, Rating freezes the declared set in the snapshot); pricing dimension **values** are OSS-emission-gated* — rating design/03 §4.2 carries the same sentence |
+
+**Row descriptor DTO and freeze (D-373):** `PriceRow` / `PriceContent` and row requests
+(`PriceContentView`) gain optional `invoice_line_template` and `gl_code_ref`; `PriceRecord`
+and row responses also expose `resolved_invoice_line_template` and `resolved_gl_code`.
+All four columns join the published-row frozen-column guard on both engines. The owners are
+this table and Foundation §3.7; Slice 2 §6 references these same names. Defaults come from
+Foundation's `pricing_policy_object`; the seven allowed placeholders are declared only in
+Slice 2 §3. Either write door refuses an unknown placeholder with `LINE_TEMPLATE_INVALID`.
+The snapshot row carries `invoiceLineTemplate` and `glCode` from the resolved columns beside
+`taxCategory` and `billingTiming`: four row-borne descriptor elements; the fifth,
+`itemizationRule`, is derived in the plan's `billing` section (Slice 6).
 
 **`pricing_price_tier_band`** (FK `price_id`; `graduated`/`volume` rows only). **Authored bands
 only (D-130, 2026-08-01 review fix):** the D-45 allowance compile is a **projection** — it never

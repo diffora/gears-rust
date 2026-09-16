@@ -238,7 +238,7 @@ Tariffs/Rating compute from.
 
 **Steps**:
 1. [ ] - `p1` - Stable `{skuId, planId, priceId}` exposed on all downstream artifacts; ids never re-used across revisions (append-only rows guarantee this structurally, Foundation §4.3) - `inst-rc-ids`
-2. [ ] - `p1` - Completeness cross-check (delegating to the owning slices' rules; this bundle asserts the **union**): `modelKind` + `quantitySource` + `packageSize`/`packagePrice` (Slice 3), `tierAggregationWindow`/`billingGranularity` on usage rows (Slice 3), `tierQualificationWindow` (Slice 10, D-40), `aggregationFunction`/`aggregationGranularity`/`max_hold_granules` on non-`sum` rows (Slice 3, D-44), meter injectivity (Slice 2), descriptors (Slice 2) — the enumeration is illustrative; exhaustiveness delegates to the owning slices' registered rules - `inst-rc-union`
+2. [ ] - `p1` - Completeness cross-check (delegating to the owning slices' rules; this bundle asserts the **union**): `modelKind` + `quantitySource` + `packageSize`/`packagePrice` (Slice 3), `tierAggregationWindow`/`billingGranularity` on usage rows (Slice 3), `tierQualificationWindow` (Slice 10, D-40), `aggregationFunction`/`aggregationGranularity`/`max_hold_granules` on non-`sum` rows (Slice 3, D-44), meter injectivity (Slice 2), the row template/GL resolution and GL membership plus plan extension completeness (Slice 2 `inst-ds-template`, `inst-ds-glresolve`, `inst-ds-glcode`, `inst-ds-required`; **D-373**), row tax and recurring timing (Slices 4/6) - the enumeration is illustrative; exhaustiveness delegates to the owning slices' registered rules - `inst-rc-union`
 3. [ ] - `p1` - No monetary charge computed here — the contract is inputs-only (Foundation principle) - `inst-rc-nocompute`
 
 ## 4. States (CDSL)
@@ -329,6 +329,22 @@ there is no half to publish — and its ban on freezing a value no document decl
 argument that decided the fork. The full option set and what (a) and (b) cost is in
 [`../DECISIONS.md`](../DECISIONS.md) D-169.
 
+**Snapshot billing contract (D-373; Slice 2 `inst-ds-sufficient`):** the plan-level
+`descriptorSet` is replaced by exactly `billing { itemizationRule, ext }`.
+`itemizationRule` is the bundle's `pricing_bundle.invoice_itemization` (`aggregate | itemize`)
+for a bundle plan and `itemize` otherwise; it is derived, never authored on the plan, and
+has no completeness gate. `ext` carries `pricing_plan.descriptor_ext`, checked against
+D-152's additive `additional_required_descriptors` at publish.
+
+**Each snapshot row (D-373)** carries the four descriptor keys `invoiceLineTemplate`,
+`glCode`, `taxCategory`, `billingTiming`; the first two are the publish-frozen resolved
+values from Slice 3's `resolved_invoice_line_template` and `resolved_gl_code`.
+Tax keeps its effective-category rule (D-154), and timing keeps its recurring-row requirement.
+The five-element content is unchanged: four row-borne and one derived. Billing renders the
+frozen template using its own locale/period and registry display data at the pinned
+`CatalogVersion`, per Slice 2 §3's vocabulary; consumers never re-resolve tenant defaults or
+read mutable catalog rows. No grouping key is projected.
+
 ## 7. Events & Alarms
 
 No new event names — contract fields ride `PlanPublished`/`PriceCreated`/`PriceUpdated` into
@@ -414,7 +430,9 @@ shared `(meter, dimensionKey)` line (mismatch ⇒ reset, never a cross-denominat
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-rating-compat`
 
 The publish **MUST** assert the §17.6 union — stable ids, model-kind completeness,
-evaluation-policy presence on usage rows, meter mapping, descriptors — as one registered rule
+evaluation-policy presence on usage rows, meter mapping, and the descriptor contract
+(**D-373**: Slice 2's registered row template/GL resolution and membership rules plus plan
+extension completeness, with tax/timing delegated to Slices 4/6) - as one registered rule
 bundle over the owning slices' rules; no charge computation.
 
 **Implements**: `cpt-cf-bss-pricing-algo-rating-compat`
