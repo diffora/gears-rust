@@ -321,15 +321,17 @@ registered into the same base set for its sibling's reason — the column is on 
 A tenant that has declared no vocabulary is unconstrained, which is the opposite of
 `REGION_UNKNOWN`'s one-member universe — the seeded `global` a tenant may retire (**D-354**; the
 set was empty before) — and is stated on both),
-`GL_CODE_UNKNOWN` (422 - each row's **effective** `glCode` names no **active** value of the
-tenant's declared GL-code vocabulary; **D-356**, 2026-09-09, **D-373**, 2026-09-16.
-One finding per row, naming `priceId`; a present value only - absence is
-`GL_CODE_UNRESOLVED`'s. An empty vocabulary constrains nothing. Slice 2 §3
+`GL_CODE_UNKNOWN` (422 — each row's **effective** `glCode` names no **active** value of the
+tenant's declared GL-code vocabulary; **D-356**, 2026-09-09, **D-373**, 2026-09-16,
+registered into the same base set beside the two other vocabulary rules.
+One finding per row, naming `priceId`; a present value only — absence is
+`GL_CODE_UNRESOLVED`'s. An empty vocabulary constrains nothing,
+`ROUNDING_POLICY_UNKNOWN`'s reading rather than `REGION_UNKNOWN`'s. Slice 2 §3
 `inst-ds-glcode` raises it in the Foundation pipeline),
-`GL_CODE_UNRESOLVED` (422 - a row resolves neither its `gl_code_ref` nor the tenant's
+`GL_CODE_UNRESOLVED` (422 — a row resolves neither its `gl_code_ref` nor the tenant's
 `default_gl_code_ref`; names `priceId`, with no tenant-policy escape; **D-373**,
 Slice 2 §3 `inst-ds-glresolve`),
-`LINE_TEMPLATE_INVALID` (422 - an unknown placeholder in an authored row template or a
+`LINE_TEMPLATE_INVALID` (422 — an unknown placeholder in an authored row template or a
 policy default; refused at either write door, using Slice 2 §3's exhaustive vocabulary;
 **D-373**, `inst-ds-template`),
 `PRIMITIVE_RULES_UNBUILT` (422 — a row carries a value in a field that is **declared and not
@@ -876,12 +878,12 @@ plan opens a **new** revision row in `draft` (at most one open draft per plan �
 `UNIQUE (plan_id) WHERE lifecycle_state = 'draft'`) that publishes through the standard §4.2
 path and becomes the current revision, flipping its predecessor `superseded` in the same commit. The plan's identity, the scope-key axes, and the
 `pricing_price` attachment stay on `plan_id` (unchanged), and the child shape tables — phases,
-add-on rules - **version with the revision, copy-on-new-revision** (D-83,
+add-on rules — **version with the revision, copy-on-new-revision** (D-83,
 2026-07-30 review fix): the new revision copies them with stable `phase_id`s (so the `phase`
 scope-key axis and same-key supersession are untouched), the open draft edits **its own
 copies**, and a published revision's child rows are immutable with it
 ([`02-plan-definition.md`](./02-plan-definition.md) §6). **D-373** copies `descriptor_ext`
-with the plan revision; descriptor elements travel with price rows, with no separate set to copy -
+with the plan revision; descriptor elements travel with price rows, with no separate set to copy —
 so "published plans never return to draft" means the published revision row and its child rows
 never mutate; change is always a new revision row.
 

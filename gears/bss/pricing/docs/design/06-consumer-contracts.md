@@ -238,7 +238,7 @@ Tariffs/Rating compute from.
 
 **Steps**:
 1. [ ] - `p1` - Stable `{skuId, planId, priceId}` exposed on all downstream artifacts; ids never re-used across revisions (append-only rows guarantee this structurally, Foundation §4.3) - `inst-rc-ids`
-2. [ ] - `p1` - Completeness cross-check (delegating to the owning slices' rules; this bundle asserts the **union**): `modelKind` + `quantitySource` + `packageSize`/`packagePrice` (Slice 3), `tierAggregationWindow`/`billingGranularity` on usage rows (Slice 3), `tierQualificationWindow` (Slice 10, D-40), `aggregationFunction`/`aggregationGranularity`/`max_hold_granules` on non-`sum` rows (Slice 3, D-44), meter injectivity (Slice 2), the row template/GL resolution and GL membership plus plan extension completeness (Slice 2 `inst-ds-template`, `inst-ds-glresolve`, `inst-ds-glcode`, `inst-ds-required`; **D-373**), row tax and recurring timing (Slices 4/6) - the enumeration is illustrative; exhaustiveness delegates to the owning slices' registered rules - `inst-rc-union`
+2. [ ] - `p1` - Completeness cross-check (delegating to the owning slices' rules; this bundle asserts the **union**): `modelKind` + `quantitySource` + `packageSize`/`packagePrice` (Slice 3), `tierAggregationWindow`/`billingGranularity` on usage rows (Slice 3), `tierQualificationWindow` (Slice 10, D-40), `aggregationFunction`/`aggregationGranularity`/`max_hold_granules` on non-`sum` rows (Slice 3, D-44), meter injectivity (Slice 2), the row template/GL resolution and GL membership plus plan extension completeness (Slice 2 `inst-ds-template`, `inst-ds-glresolve`, `inst-ds-glcode`, `inst-ds-required`; **D-373**), row tax and recurring timing (Slices 4/6) — the enumeration is illustrative; exhaustiveness delegates to the owning slices' registered rules - `inst-rc-union`
 3. [ ] - `p1` - No monetary charge computed here — the contract is inputs-only (Foundation principle) - `inst-rc-nocompute`
 
 ## 4. States (CDSL)
@@ -432,7 +432,7 @@ shared `(meter, dimensionKey)` line (mismatch ⇒ reset, never a cross-denominat
 The publish **MUST** assert the §17.6 union — stable ids, model-kind completeness,
 evaluation-policy presence on usage rows, meter mapping, and the descriptor contract
 (**D-373**: Slice 2's registered row template/GL resolution and membership rules plus plan
-extension completeness, with tax/timing delegated to Slices 4/6) - as one registered rule
+extension completeness, with tax/timing delegated to Slices 4/6) — as one registered rule
 bundle over the owning slices' rules; no charge computation.
 
 **Implements**: `cpt-cf-bss-pricing-algo-rating-compat`

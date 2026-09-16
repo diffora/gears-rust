@@ -340,7 +340,7 @@ synchronous; accrual mismatches are Marketplace-side reconciliation.
 A bundle **MUST** declare its basis, reference published SKUs and (for `sum_of_parts`)
 component `planId`s covering every sold `(currency, region)` with matching `frequency`; a
 **row-less `sum_of_parts` bundle plan** is out of scope of the row-quantified plan rules (cycle
-matrix, phase coverage, the four row-borne descriptor elements (**D-373**), window coverage - `inst-bb-rowless`,
+matrix, phase coverage, the four row-borne descriptor elements (**D-373**), window coverage — `inst-bb-rowless`,
 C-1) while `own_price` bundles answer to all of them;
 a missing/ambiguous component fails publish naming it; component rows (and own rows) of one
 sold market **MUST** share one `tax_inclusive` basis (`BUNDLE_TAX_BASIS_MIXED`, D-119 — with
