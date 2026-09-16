@@ -2464,9 +2464,28 @@ async fn a_foreign_tenant_cannot_delete_this_tenants_price_row() {
 /// `DUPLICATE_SCOPE_KEY` and the second SKU has no price at all.
 ///
 /// It passes today, which is the whole point — it pins the collision where the
-/// change that removes it has to walk past it. Task 12 of the D-372 plan renames
-/// this case and flips the second half: once `sku_id` is the key axis, two rows
-/// for two SKUs sharing `GB-hour` must both save, and the row count with them.
+/// change that removes it has to walk past it.
+///
+/// **D-372 does not add `sku_id` beside the meter; it puts it in the meter's
+/// place.** `scope_key.sku_id` *replaces* the meter axis, and `meter` becomes
+/// response-only and derived from the SKU's own registry declaration — an
+/// authored `content.meter` is refused. So three of the five assertions below
+/// move, and Task 12 of the plan is where they move:
+///
+/// * posts A and B become two *different* `sellable = false` SKUs that both
+///   declare `GB-hour`, with no `content.meter` in either body — both answer
+///   201, and the `DUPLICATE_SCOPE_KEY` reason stops being asserted at all;
+/// * the store read-back becomes **2** rows, each carrying the derived
+///   `meter == "GB-hour"`;
+/// * the control **inverts**, because it is aimed at an axis D-372 removes:
+///   "same everything, a different unit, still 201" says nothing once the unit
+///   is not an axis — two rows differing only in their meter would then render
+///   one key. It becomes "the same SKU again, under a fresh idempotency key →
+///   409 `DUPLICATE_SCOPE_KEY`", the collision having moved from the unit to
+///   the resource, with the row count staying 2.
+///
+/// Only the first assertion — that the first row saves — survives untouched.
+/// The case is renamed `two_resource_skus_sharing_a_unit_are_two_rows`.
 ///
 /// The complement — that two *different* units are two keys, so the unit is the
 /// only discriminator a usage row has today — is
