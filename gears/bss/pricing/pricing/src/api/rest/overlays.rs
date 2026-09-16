@@ -188,7 +188,7 @@ pub struct OverlayLineRequest {
     /// `None` is the **list-default line**, which applies to every target.
     pub plan_id: Option<Uuid>,
     /// Optional narrowing. Requires `plan_id`.
-    pub target_sku: Option<String>,
+    pub target_sku: Option<Uuid>,
     /// The grandfathered generation this line filters to (D-78). Requires
     /// `plan_id`.
     #[serde(default, with = "rfc3339::option")]
@@ -277,7 +277,7 @@ pub struct OverlayLineView {
     /// Its target plan, absent on the list-default line.
     pub plan_id: Option<Uuid>,
     /// Its SKU narrowing.
-    pub target_sku: Option<String>,
+    pub target_sku: Option<Uuid>,
     /// The generation it filters to.
     #[serde(default, with = "rfc3339::option")]
     pub cohort: Option<OffsetDateTime>,
@@ -424,7 +424,7 @@ fn scope_of(class: &str, value: Option<&str>) -> Result<ScopeSelector, DomainErr
 /// One authored line, with every pairing §6 spends a `CHECK` on refused here by
 /// construction.
 fn line_of(request: &OverlayLineRequest) -> Result<OverlayLine, DomainError> {
-    let key = match (request.plan_id, request.target_sku.as_deref()) {
+    let key = match (request.plan_id, request.target_sku) {
         (None, None) => LineKey::list_default(),
         (None, Some(_)) => {
             return Err(DomainError::InvalidRequest(
@@ -436,7 +436,7 @@ fn line_of(request: &OverlayLineRequest) -> Result<OverlayLine, DomainError> {
         (Some(plan), None) => LineKey::for_plan(PlanId::new(plan)),
         (Some(plan), Some(raw)) => {
             let sku = TargetSku::new(raw).ok_or_else(|| {
-                DomainError::InvalidRequest("target_sku may not be blank".to_owned())
+                DomainError::InvalidRequest("target_sku may not be nil".to_owned())
             })?;
             LineKey::for_sku(PlanId::new(plan), sku)
         }
@@ -518,7 +518,7 @@ fn line_view_of(line: &OverlayLine) -> OverlayLineView {
     OverlayLineView {
         line_id: line.line_id,
         plan_id: line.key.plan_id().map(PlanId::get),
-        target_sku: line.key.target_sku().map(|s| s.as_str().to_owned()),
+        target_sku: line.key.target_sku().map(TargetSku::as_uuid),
         cohort: line.key.cohort(),
         adjustment_kind: line.adjustment.kind().as_str().to_owned(),
         magnitude_kind: line.adjustment.magnitude_kind().as_str().to_owned(),

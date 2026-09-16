@@ -583,7 +583,7 @@ pub struct PinnedContentView {
     /// The catalog SKU this revision binds. Hashed, because a
     /// rebind inside the approve→commit window would otherwise re-derive to the
     /// same digest.
-    pub sku_id: Option<Uuid>,
+    pub sku_id: Uuid,
     /// `one_time` | `recurring` | `usage` | `hybrid`.
     pub billing_cycle: Option<String>,
     /// The recurring frequency, interval and all.

@@ -1032,7 +1032,7 @@ impl RoundingPolicyDeclared {
     ///
     /// It also stamped its violation [`Stage::Write`], which nothing reads.
     /// `write_stage_only()` is the sole reader of a violation's stage, and its
-    /// three callers filter `price_row_rules()`, `price_row_rules()` again and a
+    /// three callers filter `row_local_rules()`, `row_local_rules()` again and a
     /// hand-built phase report — never `foundation_plan_rules`, where this rule is
     /// registered. So the stamp asserted that some door judges this fault at the
     /// write, and no door does. It is gone rather than corrected in prose: a
@@ -1046,7 +1046,7 @@ impl RoundingPolicyDeclared {
     /// **D-348's door does not change that, and the re-decision is that the stamp
     /// stays `Stage::Publish`.** A stage is a claim about which door of the
     /// *plan/price* pipeline judges a fault, and `write_stage_only()` — the sole
-    /// reader — is only ever applied to `price_row_rules()` and a hand-built phase
+    /// reader — is only ever applied to `row_local_rules()` and a hand-built phase
     /// report. The config-surface door calls `violation_for` directly and converts
     /// the detail to a `DomainError`; it never looks at `stage`. So stamping
     /// `Stage::Write` would assert an authoring door that still does not exist for

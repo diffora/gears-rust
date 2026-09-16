@@ -269,6 +269,17 @@ fn every_write_stamping_site_is_accounted_for() {
         // is what makes `write_stage_only()` safe on that report instead of
         // silently answering `None`.
         "overlay_rules",
+        // D-372's four row-SKU rules (I3-I6), added 2026-09-16. **The first
+        // write-stage family whose operand is not in the request**: the listing
+        // comes from one registry read the door makes before validating, which
+        // amends D-312's line rather than meeting it. What it does meet is the
+        // criterion under that line -- no fault here has a legitimate intermediate
+        // state, `sku_id` and `charge_kind` being frozen key axes and `meter`
+        // being derived and never authored -- and the invariants are specified as
+        // enforced at save *and* publish, which a publish-only stamp could not
+        // deliver through `api::rest::prices`'s `require_no_key_contradiction`.
+        // The module's own doc carries the argument in full.
+        "row_sku_rules",
     ]
     .into_iter()
     .map(str::to_owned)

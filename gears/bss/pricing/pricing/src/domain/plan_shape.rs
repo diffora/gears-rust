@@ -762,7 +762,7 @@ pub struct PlanShape {
     /// Which revision of it — the second half of the durable name
     /// `(plan_id, revision)` (D-145).
     pub revision: u64,
-    /// The catalog SKU this revision binds, when one is bound.
+    /// The required catalog SKU this revision realizes (D-372).
     ///
     /// **Carried here because it is authored content**
     /// ([`PlanShapePatch::sku_id`](crate::domain::plan::PlanShapePatch::sku_id)
@@ -773,7 +773,7 @@ pub struct PlanShape {
     /// equal. No rule in [`crate::domain::plan_rules`] reads it yet — the
     /// tier-equality half of P3 is the one that will, and it needs the registry
     /// this gear does not call.
-    pub sku_id: Option<Uuid>,
+    pub sku_id: Uuid,
     /// The §17.1 cycle. `None` is an authored-but-unfinished draft, not a
     /// default: nothing in the matrix is implied.
     pub billing_cycle: Option<BillingCycle>,
@@ -880,7 +880,7 @@ impl PlanShape {
         Self {
             plan_id,
             revision,
-            sku_id: None,
+            sku_id: Uuid::nil(),
             billing_cycle: None,
             frequency: None,
             plan_tier: None,

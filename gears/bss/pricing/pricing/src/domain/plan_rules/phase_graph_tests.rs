@@ -173,6 +173,7 @@ fn usage_tuned(
     tune: impl FnOnce(&mut PriceRow),
 ) -> PriceRecord {
     let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::Graduated));
+    row.sku_id = SkuId::new(Uuid::new_v5(&Uuid::NAMESPACE_OID, meter.as_bytes()));
     row.meter = Some(meter.to_owned());
     row.billing_granularity = Some(BillingGranularity::PerHour);
     row.tier_aggregation_window = Some(TierAggregationWindow::CalendarMonth);
@@ -957,7 +958,9 @@ fn an_override_whose_line_has_no_terminal_phase_row_is_orphaned() {
     assert_eq!(violation.code, PHASE_OVERRIDE_ORPHANED);
     assert!(violation.subject.contains(&phase_id(TRIAL).to_string()));
     assert!(
-        violation.subject.contains(METER),
+        violation
+            .subject
+            .contains(&Uuid::new_v5(&Uuid::NAMESPACE_OID, METER.as_bytes()).to_string()),
         "the line is half of what the author has to locate: {}",
         violation.subject
     );
@@ -1582,4 +1585,15 @@ fn every_offending_phase_is_reported_and_not_only_the_first() {
             .iter()
             .all(|v| v.code == DISPLAY_TRIAL_DAYS_INVALID)
     );
+}
+
+#[test]
+fn same_unit_different_skus_do_not_pair_phase_overrides() {
+    let mut subject = phased();
+    let base = usage("usd", "US", phase_id(EVERGREEN), METER);
+    let mut trial = usage("usd", "US", phase_id(TRIAL), METER);
+    trial.row.sku_id = SkuId::new(Uuid::from_u128(0x372));
+    subject.rows = vec![base, trial];
+    let report = judge(&PhaseOverrideBase, &subject);
+    assert_eq!(only(&report).code, PHASE_OVERRIDE_ORPHANED);
 }

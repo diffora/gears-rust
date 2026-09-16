@@ -258,6 +258,7 @@ pub const PRIMITIVE_RULES_UNBUILT: &str = "PRIMITIVE_RULES_UNBUILT";
 #[domain_model]
 #[derive(Clone, Debug)]
 pub struct PublishRuleParams {
+    sku_index: Option<std::sync::Arc<crate::domain::registry_view::SkuIndex>>,
     interval_bounds: CustomIntervalBounds,
     descriptors: DescriptorSetComplete,
     default_rounding_policy: Option<String>,
@@ -332,6 +333,14 @@ impl ReferencingMarket {
 }
 
 impl PublishRuleParams {
+    /// Use the registry snapshot resolved for this publish request.
+    pub fn with_sku_index(
+        mut self,
+        index: std::sync::Arc<crate::domain::registry_view::SkuIndex>,
+    ) -> Self {
+        self.sku_index = Some(index);
+        self
+    }
     /// Bind the rule set to one tenant's configuration.
     #[must_use]
     pub const fn new(
@@ -341,6 +350,7 @@ impl PublishRuleParams {
         size_caps: SoftSizeCaps,
     ) -> Self {
         Self {
+            sku_index: None,
             interval_bounds,
             descriptors,
             default_rounding_policy,
@@ -566,7 +576,12 @@ impl SoftSizeCaps {
 pub fn run_publish_rules(shape: &PlanShape, params: &PublishRuleParams) -> ValidationReport {
     let mut report = ValidationReport::default();
 
-    let row_rules = price_row_rules();
+    // The same immutable registry snapshot judges every row. Missing context
+    // is an empty index and refuses every SKU rather than skipping validation.
+    let row_rules = price_row_rules(crate::domain::row_sku_rules::RowSkuContext {
+        plan_sku: crate::domain::scope_key::SkuId::new(shape.sku_id),
+        index: params.sku_index.clone().unwrap_or_default(),
+    });
     for record in &shape.rows {
         report.absorb(row_rules.run(&record.row));
     }
@@ -986,7 +1001,7 @@ impl ValidationRule<PlanShape> for PlanSizeWithinSoftCaps {
 /// **Why the subject is the plan and not the row.** `grandfather_until` lives on
 /// [`PriceRecord`](crate::domain::price_record::PriceRecord), not on
 /// [`PriceRow`](crate::domain::price_row::PriceRow), so
-/// [`price_row_rules`](crate::domain::rules::price_row_rules) cannot see it —
+/// [`row_local_rules`](crate::domain::rules::row_local_rules) cannot see it —
 /// and widening `PriceRow` to reach it would move a field across the D-162
 /// roster boundary and imply a generation bump for something that is not
 /// evaluation policy at all. The eligibility class it pairs with is on the

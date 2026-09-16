@@ -415,6 +415,33 @@ async fn submit_bulk_import(
         return Ok((StatusCode::ACCEPTED, Json(run_view(&existing))).into_response());
     }
 
+    let sku_index =
+        crate::infra::row_sku::sku_index(state.authoring.catalog.as_ref(), &ctx).await?;
+    let mut plan_skus = std::collections::HashMap::new();
+    for row in &body.rows {
+        if plan_skus.contains_key(&row.plan_id) {
+            continue;
+        }
+        let plan_id = PlanId::new(row.plan_id);
+        let plan = match state
+            .authoring
+            .plans
+            .find_open_draft(&scope, tenant, plan_id)
+            .await
+            .map_err(|e| repo_failure(&e))?
+        {
+            Some(plan) => Some(plan),
+            None => state
+                .authoring
+                .plans
+                .find_current(&scope, tenant, plan_id)
+                .await
+                .map_err(|e| repo_failure(&e))?,
+        };
+        // Cache absence as well, so repeated rows on an inaccessible plan do
+        // not repeat the lookup or acquire different validation context.
+        plan_skus.insert(row.plan_id, plan.map(|plan| plan.sku_id));
+    }
     let now = OffsetDateTime::now_utc();
     let stamp = audit_stamp(&ctx, now, correlation);
     let run = bulk_repo::open(
@@ -470,7 +497,7 @@ async fn submit_bulk_import(
     // round-trip-per-refusal the all-or-nothing posture exists to spare an operator
     // (`domain::import`: "a rule that can answer for a row **must** answer for every
     // row rather than stopping at the first").
-    let rows = match rows_of(&body) {
+    let rows = match rows_of(&body, &sku_index) {
         Ok(rows) => rows,
         Err(unreadable) => {
             // `refuse_unreadable_rows` lands the run itself.
@@ -490,6 +517,40 @@ async fn submit_bulk_import(
 
     // Phase 1: both halves, into one report.
     let mut report = classify(&rows);
+    for (position, row) in rows.iter().enumerate() {
+        let Some(Some(plan_sku)) = plan_skus.get(&row.scope_key.plan_id().get()) else {
+            report.add(
+                position,
+                crate::domain::import::RowViolation {
+                    code: crate::domain::import::IMPORT_PLAN_NOT_FOUND.into(),
+                    detail:
+                        "the row's parent plan has no accessible open draft or current revision"
+                            .into(),
+                },
+            );
+            continue;
+        };
+        let subject = crate::infra::storage::repo::price_repo::authored_content(
+            &row.scope_key,
+            row.content.clone(),
+        );
+        let rules =
+            crate::domain::rules::registry_row_rules(crate::domain::row_sku_rules::RowSkuContext {
+                plan_sku: crate::domain::scope_key::SkuId::new(*plan_sku),
+                index: Arc::clone(&sku_index),
+            });
+        if let Some(faults) = rules.run(&subject.row).write_stage_only() {
+            for fault in faults.violations {
+                report.add(
+                    position,
+                    crate::domain::import::RowViolation {
+                        code: fault.code,
+                        detail: fault.detail,
+                    },
+                );
+            }
+        }
+    }
     // **Not a bare `?`, and Z11-4 is why.** The run above is born `validating`, and
     // `validating` is a state nothing can leave except this handler: `abort` refuses
     // anything that is not `committing`, the lock table has no sweeper, and the only
@@ -972,17 +1033,23 @@ async fn write_scope(
 /// first. The usage
 /// line is the one derivation that genuinely depends on the other two, so it is
 /// attempted only when they both answered.
-fn rows_of(body: &BulkImportRequest) -> Result<Vec<ImportRow>, Vec<UnreadableRow>> {
+fn rows_of(
+    body: &BulkImportRequest,
+    sku_index: &crate::domain::registry_view::SkuIndex,
+) -> Result<Vec<ImportRow>, Vec<UnreadableRow>> {
     let mut rows = Vec::with_capacity(body.rows.len());
     let mut unreadable: Vec<UnreadableRow> = Vec::new();
     for (index, row) in body.rows.iter().enumerate() {
         let mut faults: Vec<String> = Vec::new();
-        let content = content_of(&row.content)
+        let mut content = content_of(&row.content)
             .inspect_err(|e| faults.push(e.to_string()))
             .ok();
         let key = scope_key_of(PlanId::new(row.plan_id), &row.scope_key)
             .inspect_err(|e| faults.push(e.to_string()))
             .ok();
+        if let (Some(key), Some(content)) = (key.as_ref(), content.as_mut()) {
+            crate::infra::row_sku::derive_meter(content, key, sku_index);
+        }
         let line = match (key, content.as_ref()) {
             (Some(key), Some(content)) => {
                 crate::infra::storage::repo::price_repo::resolve_authored_usage_line(

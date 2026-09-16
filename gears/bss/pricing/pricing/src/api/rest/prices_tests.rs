@@ -441,8 +441,29 @@ mod key_contradictions {
     }
 
     fn check(charge_kind: ChargeKind, view: &PriceContentView) -> Result<(), String> {
-        let content = content_of(view).expect("the view converts");
-        super::super::require_no_key_contradiction(&key_on(charge_kind), &content)
+        let mut content = content_of(view).expect("the view converts");
+        let key = key_on(charge_kind);
+        let sku = crate::domain::ports::CatalogSku {
+            sku_id: key.sku_id().as_uuid(),
+            sku_code: "fixture".into(),
+            name: "fixture".into(),
+            metering_unit: charge_kind.is_usage().then(|| "egress.gb".into()),
+            status: "published".into(),
+            plan_tier: None,
+            sku_type: "service".into(),
+            sellable: false,
+            usage_type_ref: None,
+        };
+        let index =
+            std::sync::Arc::new(crate::domain::registry_view::SkuIndex::from_listing(vec![
+                sku,
+            ]));
+        super::super::derive_meter(&mut content, &key, &index);
+        let context = crate::domain::row_sku_rules::RowSkuContext {
+            plan_sku: key.sku_id(),
+            index,
+        };
+        super::super::require_no_key_contradiction(&key, &content, context)
             .map_err(|e| format!("{e:?}"))
     }
 
@@ -474,7 +495,7 @@ mod key_contradictions {
             model_kind: Some("per_unit".to_owned()),
             amount_minor: None,
             unit_rate_nano_minor: Some(2_000_000_000),
-            meter: Some("egress.gb".to_owned()),
+            meter: None,
             billing_granularity: Some("whole_unit".to_owned()),
             included_allowance: Some(IncludedAllowanceView {
                 quantity: 100,

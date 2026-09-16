@@ -69,6 +69,9 @@ const PLAN_B: Uuid = Uuid::from_u128(0x91_b2);
 /// A plan of another tenant, for the cross-tenant pass.
 const PLAN_FOREIGN: Uuid = Uuid::from_u128(0x91_c3);
 const PHASE: Uuid = Uuid::from_u128(0x40_a5);
+/// The SKU the seeded rows price (D-372). Its value is incidental to these
+/// cases; the column is `NOT NULL`, so a seed cannot leave it out.
+const SKU: Uuid = Uuid::from_u128(5);
 
 /// `PLAN`'s published row.
 const ROW: Uuid = Uuid::from_u128(0xa0_01);
@@ -165,6 +168,9 @@ async fn seed_price_row(
         price_id: Set(price_id),
         tenant_id: Set(tenant_id),
         plan_id: Set(plan_id),
+        // D-372's ninth axis: `pricing_price.sku_id` is `NOT NULL` since
+        // `m20260916_000044_price_row_sku`, so a seeded row names a SKU.
+        sku_id: Set(SKU),
         currency: Set("USD".to_owned()),
         region: Set("EU".to_owned()),
         phase: Set(PHASE),

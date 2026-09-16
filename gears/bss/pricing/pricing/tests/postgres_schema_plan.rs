@@ -157,6 +157,10 @@ fn base_row(plan: &str, revision: u32) -> Vec<(String, String)> {
         ("plan_id", format!("'{plan}'")),
         ("revision", revision.to_string()),
         ("tenant_id", format!("'{TENANT}'")),
+        (
+            "sku_id",
+            "'55555555-5555-5555-5555-555555555555'".to_owned(),
+        ),
         ("lifecycle_state", "'draft'".to_owned()),
         ("created_by", format!("'{ACTOR}'")),
         ("created_at_utc", "'2026-08-03 09:00:00+00'".to_owned()),

@@ -102,7 +102,7 @@ fn new_draft(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
         tenant_id,
         created_by: Uuid::from_u128(0xac_10),
         created_at_utc: at(10),
-        sku_id: Some(Uuid::from_u128(0x5_c1)),
+        sku_id: Uuid::from_u128(0x5_c1),
         plan_tier: Some("gold".to_owned()),
         billing_cycle: Some(BillingCycle::Recurring),
         frequency: Some(Frequency::CustomEveryN {
@@ -187,7 +187,7 @@ async fn a_created_draft_reads_back_whole() {
     // Field for field: a mapping that dropped a column would still round-trip
     // the identity, and the drop would only surface at publish.
     assert_eq!(read, created);
-    assert_eq!(read.sku_id, Some(Uuid::from_u128(0x5_c1)));
+    assert_eq!(read.sku_id, Uuid::from_u128(0x5_c1));
     assert_eq!(read.plan_tier.as_deref(), Some("gold"));
     assert_eq!(read.billing_cycle, Some(BillingCycle::Recurring));
     assert_eq!(read.available_from, Some(at(11)));
@@ -549,7 +549,7 @@ async fn every_patched_column_reaches_the_row_it_names() {
     // to distinct instants, and neither may end up holding the other's. The two
     // purchase bounds are moved to adjacent-but-distinct values for the same
     // reason.
-    assert_eq!(updated.sku_id, Some(sku_id));
+    assert_eq!(updated.sku_id, sku_id);
     assert_eq!(updated.plan_tier.as_deref(), Some("platinum"));
     assert_eq!(updated.billing_cycle, Some(BillingCycle::OneTime));
     assert_eq!(updated.available_from, Some(at(14)));
@@ -3028,7 +3028,9 @@ async fn a_retired_plan_takes_no_publish_and_says_so_in_its_own_words() {
         plan_id: sea_orm::ActiveValue::Set(plan_id.get()),
         revision: sea_orm::ActiveValue::Set(1),
         tenant_id: sea_orm::ActiveValue::Set(tenant),
-        sku_id: sea_orm::ActiveValue::Set(None),
+        // D-372: `pricing_plan.sku_id` is `NOT NULL` since
+        // `m20260916_000044_price_row_sku`, so a fabricated draft names one.
+        sku_id: sea_orm::ActiveValue::Set(Uuid::from_u128(5)),
         plan_tier: sea_orm::ActiveValue::Set(None),
         billing_cycle: sea_orm::ActiveValue::Set(None),
         frequency: sea_orm::ActiveValue::Set(None),

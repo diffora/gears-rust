@@ -94,6 +94,7 @@ fn row_of(key: &ScopeKey) -> price::Model {
         price_id: uuid::Uuid::from_u128(0x_11),
         tenant_id: uuid::Uuid::from_u128(0x_7e),
         plan_id: key.plan_id().get(),
+        sku_id: key.sku_id().as_uuid(),
         currency: key.currency().as_str().to_owned(),
         region: key.region().as_str().to_owned(),
         price_overlay: key.price_overlay().as_str().to_owned(),
@@ -203,11 +204,12 @@ fn axis_cases() -> Vec<AxisCase> {
     assert_eq!(base.price_eligibility, price_eligibility.as_str());
     assert_eq!(base.charge_kind, charge_kind.as_str());
     assert_eq!(base.cohort, cohort.to_string());
-    // The ninth axis is read against the fixture rather than against a column:
-    // D-372 shim, Task 6a adds `pricing_price.sku_id` and with it the `AxisCase`
-    // that moves it. Until then `scope_key_columns` cannot see this axis at all,
-    // which is the gap this line stands in for rather than hides.
-    assert_eq!(sku_id, SkuId::new(Uuid::from_u128(5)));
+    // The ninth axis has its column since `m20260916_000044_price_row_sku`, so it
+    // is read against that column like the eight above it rather than against the
+    // fixture's own literal.
+    assert_eq!(base.sku_id, sku_id.as_uuid());
+    // `meter` is checked too, but as a **column**: it is content since D-372, and
+    // the `AxisCase` that used to move it now moves `sku_id`.
     assert_eq!(base.meter.as_deref(), Some(METER));
     assert_eq!(base.dimension_key, dimension_key.as_str());
 
@@ -263,10 +265,12 @@ fn axis_cases() -> Vec<AxisCase> {
             in_market: false,
             moved: moved(|row| Cohort::None.to_string().clone_into(&mut row.cohort)),
         },
+        // D-372: the ninth axis. It moves between two **real** SKUs rather than off
+        // a default, for the reason `base_key`'s doc gives about every other axis.
         AxisCase {
-            axis: "meter",
+            axis: "skuId",
             in_market: true,
-            moved: moved(|row| row.meter = Some("api_bytes".to_owned())),
+            moved: moved(|row| row.sku_id = Uuid::from_u128(0x5_c1)),
         },
         AxisCase {
             axis: "dimensionKey",

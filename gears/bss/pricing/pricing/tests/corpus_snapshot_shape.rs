@@ -16,7 +16,7 @@
 //! that check.
 //!
 //! It lives gear-side because only the gear has the rules
-//! (`price_row_rules`, `design/03-price-structure.md`). `bss-fixtures` cannot
+//! (`row_local_rules`, `design/03-price-structure.md`). `bss-fixtures` cannot
 //! run them — it is the crate a gear takes as a production dependency, and the
 //! corpus's standing invariant is that no evaluator, and no gear's rule set,
 //! reaches it.
@@ -71,7 +71,7 @@
 mod validator;
 
 use bss_fixtures::{Case, Corpus, PublishVerdict, Snapshot};
-use bss_pricing::domain::rules::price_row_rules;
+use bss_pricing::domain::rules::row_local_rules;
 
 /// The snapshots a case carries, each labelled as it reads in a failure line.
 ///
@@ -109,7 +109,7 @@ fn asserted_refusal(case: &Case, side: &str) -> Option<String> {
 #[test]
 fn every_snapshot_in_the_corpus_describes_a_publishable_row() {
     let corpus = Corpus::load(&Corpus::corpus_root()).expect("corpus loads");
-    let rules = price_row_rules();
+    let rules = row_local_rules();
     let mut findings: Vec<String> = Vec::new();
 
     for case in &corpus.cases {

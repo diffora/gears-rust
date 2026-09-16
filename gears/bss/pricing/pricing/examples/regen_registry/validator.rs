@@ -10,7 +10,7 @@
 //! ## Shape first, then the pair
 //!
 //! [`CatalogPublishValidator::validate`] runs the successor's **row-shape**
-//! rules ([`price_row_rules`]) before the **supersession unit guard**
+//! rules ([`row_local_rules`]) before the **supersession unit guard**
 //! ([`supersession_rules`]), and reports the first violation of that order.
 //!
 //! The order is not a preference. A malformed row is malformed regardless of
@@ -54,7 +54,7 @@ use bss_pricing::domain::price_row::{
     PriceRow, QuantitySource, ReservationFlavor as GearReservationFlavor, RolloverPolicy,
     TierAggregationWindow, TierBand, TierQualificationWindow,
 };
-use bss_pricing::domain::rules::{SupersessionPair, price_row_rules, supersession_rules};
+use bss_pricing::domain::rules::{SupersessionPair, row_local_rules, supersession_rules};
 use bss_pricing::domain::scope_key::{ChargeKind, SkuId};
 use uuid::Uuid;
 
@@ -75,7 +75,7 @@ impl PublishValidator for CatalogPublishValidator {
         let before = price_row(predecessor)?;
         let after = price_row(successor)?;
 
-        let shape = price_row_rules().run(&after);
+        let shape = row_local_rules().run(&after);
         if let Some(violation) = shape.violations.first() {
             return Ok(PublishVerdict::Rejected {
                 error_code: violation.code.clone(),
@@ -133,6 +133,42 @@ fn price_row(snapshot: &Snapshot) -> Result<PriceRow, EvalError> {
     slice3_row(snapshot)
 }
 
+/// The SKU id a corpus snapshot's usage line stands for (D-372).
+///
+/// The corpus predates D-372, names a usage line by its `meter`, and has **no
+/// `sku` field at all**; it is also shared with Rating, which has no stake in
+/// this gear's key layout. So the SKU is derived here, in the mapping, on the
+/// same terms as the D-311 `amount_minor` translation [`slice3_row`] performs a
+/// few lines down: it keeps every fixture meaning exactly what it meant without
+/// editing 30-odd TOML files owned by two gears.
+///
+/// **It is a translation, not an invention.** Since D-372 the meter is *derived*
+/// from the SKU's registry declaration (`inst-pr-meter-derived`, I4), so the
+/// meter is a function of the SKU and the contrapositive holds: two rows that
+/// name different meters cannot name one SKU. Giving each distinct meter its own
+/// deterministic id is therefore the corpus's own statement re-spelled on the
+/// axis the gear now keys on. It restores exactly one verdict --
+/// `supersession-continuity/meter-change-rejected`, the only pair in the corpus
+/// whose two sides carry different meters (censused: 15 of the 16 supersession
+/// cases name one meter on both sides) -- and that case goes on asserting what it
+/// always asserted, that a successor re-pointing the continued counter is refused
+/// `SUPERSESSION_UNIT_MISMATCH`.
+///
+/// **It is this programme's fixture convention and not permanent policy.** The
+/// corpus owes a `sku` field of its own, recorded as Owed under D-372 for the
+/// docs task; when it has one, this function goes and [`slice3_row`] reads the
+/// stated value. Nothing outside this example may read a SKU derived this way.
+///
+/// `NAMESPACE_OID` over the meter name, so the value is stable across runs and
+/// machines and two snapshots agree exactly when their meters do. A snapshot with
+/// no meter is a row with no line to be told apart by, and they all share one id:
+/// no rule in either judged set reads this field on such a row, and a
+/// supersession pair that is meterless on both sides was equal on this axis
+/// before the move as well.
+fn corpus_sku(meter: Option<&str>) -> Uuid {
+    Uuid::new_v5(&Uuid::NAMESPACE_OID, meter.unwrap_or_default().as_bytes())
+}
+
 /// The **Slice-3 part** of a snapshot, projected without the
 /// unrepresentable-field gate.
 ///
@@ -154,8 +190,11 @@ fn price_row(snapshot: &Snapshot) -> Result<PriceRow, EvalError> {
 pub fn slice3_row(snapshot: &Snapshot) -> Result<PriceRow, EvalError> {
     Ok(PriceRow {
         charge_kind: charge_kind(snapshot.charge_kind),
-        // D-372 shim: Task 6a (storage) / Task 7 (DTO) supply the real value
-        sku_id: SkuId::new(Uuid::nil()),
+        // **The SKU the corpus does not state, derived from the meter it does**
+        // (D-372). See [`corpus_sku`] for why that is a translation and not an
+        // invention. A shim, and self-retiring: when the corpus gains a SKU of its
+        // own (Task 6a / Task 7), this reads it instead.
+        sku_id: SkuId::new(corpus_sku(snapshot.meter.as_deref())),
         model_kind: Some(snapshot.model_kind),
         // **The corpus predates D-311 and states both prices in `amount_minor`**,
         // so this mapping is where a `per_unit` snapshot's whole-minor-unit price

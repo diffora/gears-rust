@@ -126,11 +126,11 @@ fn advance(op: &str, state: &str) -> String {
 /// The held row, as a real `pricing_price` row — the lock keys it.
 fn seed_price(tenant: &str) -> String {
     format!(
-        "INSERT INTO bss.pricing_price ( \
+        "INSERT INTO bss.pricing_price (sku_id,  \
              price_id, tenant_id, plan_id, currency, region, phase, \
              charge_kind, amount_minor, model_kind, lifecycle_state, \
              created_by, created_at_utc) \
-         VALUES ('{PRICE}', '{tenant}', '{PLAN}', 'EUR', 'eu', '{PHASE}', \
+         VALUES ('55555555-5555-5555-5555-555555555555', '{PRICE}', '{tenant}', '{PLAN}', 'EUR', 'eu', '{PHASE}', \
              'recurring', 1000, 'flat', 'published', '{ACTOR}', now())"
     )
 }

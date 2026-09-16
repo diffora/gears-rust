@@ -298,25 +298,26 @@ async fn a_usage_line_key_is_matched_through_the_store_like_any_other() {
     // created for that lesson did not exercise it. A published usage row holds
     // its key; a row on a *different* meter is a different key and is untouched.
     let h = harness().await;
-    let usage = ScopeKey::new(
-        plan(),
-        CurrencyCode::new("EUR").expect("three letters"),
-        Region::new("eu").expect("a non-blank region"),
-        phase(),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Usage,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
-    )
-    .expect("the class pairs with the cohort");
-    let metered = usage
-        .clone()
+    let usage = |meter: &str| {
+        ScopeKey::new(
+            plan(),
+            CurrencyCode::new("EUR").expect("three letters"),
+            Region::new("eu").expect("a non-blank region"),
+            phase(),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Usage,
+            Cohort::None,
+            SkuId::new(Uuid::new_v5(&Uuid::NAMESPACE_OID, meter.as_bytes())),
+        )
+        .expect("the class pairs with the cohort")
+    };
+    let metered = usage("api-calls")
         .with_usage_line(
             Some(&Meter::new("api-calls").expect("a meter")),
             DimensionKey::new("region=eu"),
         )
         .expect("a usage line on a usage key");
-    let other = usage
+    let other = usage("storage-gb")
         .with_usage_line(
             Some(&Meter::new("storage-gb").expect("a meter")),
             DimensionKey::new("region=eu"),

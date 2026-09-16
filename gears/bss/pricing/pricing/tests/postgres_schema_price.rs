@@ -148,6 +148,10 @@ fn base_row(id: &str) -> Vec<(String, String)> {
     [
         ("price_id", format!("'{id}'")),
         ("tenant_id", format!("'{TENANT}'")),
+        (
+            "sku_id",
+            "'55555555-5555-5555-5555-555555555555'".to_owned(),
+        ),
         ("plan_id", format!("'{PLAN}'")),
         ("currency", "'USD'".to_owned()),
         ("region", "'EU'".to_owned()),
@@ -819,63 +823,10 @@ async fn a_draft_and_its_published_predecessor_share_one_scope_key() {
     .await;
 }
 
-/// Meter injectivity (D-103): one priced line per `(meter, dimension_key)` per
-/// scope-key slice.
-///
-/// The two rows differ in `charge_kind`, which is **out** of this index and
-/// **in** the scope-key one — so the scope-key index cannot refuse them and this
-/// index is the only thing that can. A test that left the charge kinds equal
-/// would have been refused by `uq_pricing_price_scope_key_current` and would
-/// have proved nothing about meter injectivity.
+/// Charge kind and dimension remain independent axes under D-372.
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
-async fn two_published_rows_pricing_one_meter_line_cannot_coexist() {
-    let conn = applied().await;
-    must_succeed(
-        &conn,
-        &insert(
-            PUBLISHED,
-            &[
-                ("lifecycle_state", "'published'"),
-                ("charge_kind", "'usage'"),
-                ("meter", "'cloudlets'"),
-                ("model_kind", "'per_unit'"),
-            ],
-        ),
-    )
-    .await;
-    must_be_rejected(
-        &conn,
-        &insert(
-            OTHER,
-            &[
-                ("lifecycle_state", "'published'"),
-                ("charge_kind", "'recurring'"),
-                ("meter", "'cloudlets'"),
-                ("model_kind", "'per_unit'"),
-            ],
-        ),
-        "uq_pricing_price_meter_line_current",
-    )
-    .await;
-}
-
-/// The `meter IS NOT NULL` conjunct and the empty-tuple `dimension_key`
-/// sentinel, from the accepting side.
-///
-/// Two meterless rows differing only in `charge_kind` must both land: the index
-/// holds no entry at all for the recurring, one-time and setup rows it can never
-/// speak about. And two rows on one meter with **different** dimension keys are
-/// two lines, not one — the per-line reading D-103 fixed the prose to.
-///
-/// The fourth row differs from the third in `dimension_key` **alone**. It used to
-/// move `region` as well, and `region` is an axis of this index and of both
-/// scope-key indexes — so the row would have landed with `dimension_key` dropped
-/// from every one of them, and the case could not fail for the property it names.
-/// One column per case is what the rest of this file does.
-#[tokio::test]
-#[ignore = "requires Docker (testcontainers)"]
-async fn the_meter_line_index_speaks_only_about_metered_lines() {
+async fn charge_kind_and_dimension_remain_distinct_scope_axes() {
     let conn = applied().await;
     must_succeed(
         &conn,
@@ -927,13 +878,7 @@ async fn the_meter_line_index_speaks_only_about_metered_lines() {
 // D-196 clause (2): the usage pair inside the two scope-key indexes
 // ---------------------------------------------------------------------------
 
-/// D-103's confirmed example, which the eight-axis key could not store.
-///
-/// Two usage lines of one plan in one market differ only in `meter`, and under
-/// the eight axes they rendered **one** key — the second was refused
-/// `uq_pricing_price_scope_key_current` at save, so *"a `PaaS` plan pricing
-/// cloudlets, storage and egress is one plan, not three"* was a decision the
-/// store contradicted. Both must land.
+/// D-372: two resource SKUs sharing one unit remain distinct published keys.
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn two_usage_lines_of_one_market_are_two_published_keys() {
@@ -958,7 +903,8 @@ async fn two_usage_lines_of_one_market_are_two_published_keys() {
             &[
                 ("lifecycle_state", "'published'"),
                 ("charge_kind", "'usage'"),
-                ("meter", "'egress_gb'"),
+                ("meter", "'cloudlets'"),
+                ("sku_id", "'55555555-5555-5555-5555-555555555556'"),
                 ("model_kind", "'per_unit'"),
             ],
         ),
@@ -966,7 +912,7 @@ async fn two_usage_lines_of_one_market_are_two_published_keys() {
     .await;
 }
 
-/// The tenth axis carries its own weight: one meter, two dimensions, two keys.
+/// The tenth axis carries its own weight: one SKU, two dimensions, two keys.
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn one_meter_dimensioned_two_ways_is_two_published_keys() {
@@ -1024,7 +970,8 @@ async fn two_usage_lines_of_one_market_are_two_draft_keys() {
             OTHER,
             &[
                 ("charge_kind", "'usage'"),
-                ("meter", "'egress_gb'"),
+                ("meter", "'cloudlets'"),
+                ("sku_id", "'55555555-5555-5555-5555-555555555556'"),
                 ("model_kind", "'per_unit'"),
             ],
         ),
@@ -1099,13 +1046,10 @@ async fn two_meterless_usage_drafts_on_one_key_still_collide() {
     .await;
 }
 
-/// A meterless row and a metered one on otherwise-equal axes are two keys, and
-/// the empty-string sentinel is what makes that statement safe: `Meter::new`
-/// refuses a blank value, so `''` denotes *no meter* and nothing else can render
-/// it.
+/// A different meter cannot create another key on the same SKU (D-372).
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
-async fn a_metered_line_and_a_meterless_one_are_two_keys() {
+async fn changing_only_the_meter_does_not_create_a_second_key() {
     let conn = applied().await;
     must_succeed(
         &conn,
@@ -1115,21 +1059,23 @@ async fn a_metered_line_and_a_meterless_one_are_two_keys() {
                 ("lifecycle_state", "'published'"),
                 ("charge_kind", "'usage'"),
                 ("model_kind", "'per_unit'"),
+                ("meter", "'cloudlets'"),
             ],
         ),
     )
     .await;
-    must_succeed(
+    must_be_rejected(
         &conn,
         &insert(
             OTHER,
             &[
                 ("lifecycle_state", "'published'"),
                 ("charge_kind", "'usage'"),
-                ("meter", "'cloudlets'"),
                 ("model_kind", "'per_unit'"),
+                ("meter", "'egress'"),
             ],
         ),
+        "uq_pricing_price_scope_key_current",
     )
     .await;
 }
@@ -1233,6 +1179,7 @@ async fn every_frozen_column_of_a_published_row_refuses_to_move() {
         format!("price_id = '{OTHER}'"),
         "tenant_id = '99999999-9999-9999-9999-999999999999'".to_owned(),
         "plan_id = '99999999-9999-9999-9999-999999999999'".to_owned(),
+        "sku_id = '99999999-9999-9999-9999-999999999999'".to_owned(),
         "currency = 'EUR'".to_owned(),
         "region = 'US'".to_owned(),
         "price_overlay = 'promo'".to_owned(),

@@ -98,6 +98,7 @@ fn base_params(default_rounding_policy: Option<&str>) -> PublishRuleParams {
         // than zeros, which would advise on every plan in this file.
         SoftSizeCaps::new(100, 500),
     )
+    .with_sku_index(fixture_sku_index())
 }
 
 fn record(price_id: u128, model_kind: Option<ModelKind>, rounding: Option<&str>) -> PriceRecord {
@@ -114,6 +115,7 @@ fn record(price_id: u128, model_kind: Option<ModelKind>, rounding: Option<&str>)
     .expect("all_subscriptions pairs with cohort none");
 
     let mut row = PriceRow::new(ChargeKind::Recurring, model_kind);
+    row.sku_id = SkuId::new(Uuid::from_u128(5));
     row.amount_minor = Some(MinorAmount::new(1000).expect("non-negative"));
 
     PriceRecord {
@@ -681,6 +683,7 @@ fn params_capped(bands: u32, rows: u32) -> PublishRuleParams {
         Some("half_up".to_owned()),
         SoftSizeCaps::new(bands, rows),
     )
+    .with_sku_index(fixture_sku_index())
     .with_declared_regions(declared(&["eu"]))
     .with_tax_display(TaxDisplayPolicy::FailClosed, readiness_for(&["eu"]))
 }
@@ -1281,7 +1284,7 @@ fn every_rule_the_rating_compatibility_union_names_is_registered() {
     use crate::domain::contracts::RATING_COMPAT_UNION;
 
     let params = params(Some("half_up"));
-    let mut registered: Vec<&'static str> = crate::domain::rules::price_row_rules().rule_names();
+    let mut registered: Vec<&'static str> = crate::domain::rules::row_local_rules().rule_names();
     registered.extend(super::foundation_plan_rules(&params).rule_names());
     registered.extend(
         crate::domain::plan_rules::plan_shape_rules(params.interval_bounds, params.descriptors)
@@ -1351,4 +1354,20 @@ fn the_foundation_set_registers_exactly_its_roster_in_order() {
         super::foundation_plan_rules(&params).rule_names(),
         FOUNDATION_REGISTERED
     );
+}
+
+fn fixture_sku_index() -> std::sync::Arc<crate::domain::registry_view::SkuIndex> {
+    std::sync::Arc::new(crate::domain::registry_view::SkuIndex::from_listing(vec![
+        crate::domain::ports::CatalogSku {
+            sku_id: Uuid::from_u128(5),
+            sku_code: "offer".to_owned(),
+            name: "Offer".to_owned(),
+            metering_unit: None,
+            status: "published".to_owned(),
+            plan_tier: None,
+            sku_type: "service".to_owned(),
+            sellable: false,
+            usage_type_ref: None,
+        },
+    ]))
 }

@@ -112,7 +112,7 @@ fn a_scoped_overlay_stores_a_non_empty_value_and_the_classless_one_stores_empty(
 fn a_blank_scope_value_is_refused() {
     assert_eq!(ScopeValue::new(""), None);
     assert_eq!(ScopeValue::new("   "), None);
-    assert_eq!(TargetSku::new(""), None);
+    assert_eq!(TargetSku::new(Uuid::nil()), None);
 }
 
 // ---------------------------------------------------------------------------
@@ -131,7 +131,7 @@ fn a_cohort_cannot_narrow_the_list_default_line() {
 /// not an input to it** (D-78: a filter, not a level).
 #[test]
 fn cohort_does_not_change_a_lines_specificity() {
-    let sku = TargetSku::new("sku-a").expect("a non-blank sku");
+    let sku = TargetSku::new(Uuid::from_u128(0xa)).expect("a non-blank sku");
     assert_eq!(LineKey::list_default().specificity(), 0);
     assert_eq!(LineKey::for_plan(plan(1)).specificity(), 1);
     assert_eq!(LineKey::for_sku(plan(1), sku).specificity(), 2);
@@ -189,7 +189,7 @@ fn a_cohort_line_is_eligible_for_its_generation_and_nothing_else() {
 /// Most-specific wins: `(plan, sku)` over `(plan)` over the default line.
 #[test]
 fn resolution_picks_the_most_specific_line_for_the_priced_row() {
-    let sku = TargetSku::new("sku-a").expect("a non-blank sku");
+    let sku = TargetSku::new(Uuid::from_u128(0xa)).expect("a non-blank sku");
     let lines = vec![
         line(LineKey::list_default(), 500),
         line(LineKey::for_plan(plan(1)), 1000),
@@ -210,7 +210,7 @@ fn resolution_picks_the_most_specific_line_for_the_priced_row() {
     );
 
     // Same list, a SKU the list does not name: the `(plan)` line wins.
-    let other = TargetSku::new("sku-b").expect("a non-blank sku");
+    let other = TargetSku::new(Uuid::from_u128(0xb)).expect("a non-blank sku");
     let resolved = resolve_line(
         &lines,
         plan(1),
@@ -248,7 +248,7 @@ fn resolution_picks_the_most_specific_line_for_the_priced_row() {
 /// the generation would be repriced.
 #[test]
 fn the_eligibility_filter_runs_before_the_specificity_ranking() {
-    let sku = TargetSku::new("sku-a").expect("a non-blank sku");
+    let sku = TargetSku::new(Uuid::from_u128(0xa)).expect("a non-blank sku");
     let cohort_key = LineKey::for_plan(plan(1))
         .for_cohort(at(2099))
         .expect("plan is named");

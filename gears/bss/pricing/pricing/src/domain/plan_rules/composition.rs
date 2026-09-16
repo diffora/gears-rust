@@ -72,6 +72,10 @@
 //!   else). The `plan_tier_override` audit has nothing to audit until the
 //!   equality it overrides can be computed.
 //! - **`SKU_NOT_PUBLISHED`**: the parent SKU's publication state, same registry.
+//!   D-372 landed the **row's** half of this code — `inst-pr-sku-published`, over
+//!   the SKU a price row names ([`crate::domain::row_sku_rules`]) — so the code is
+//!   no longer unraised; what this algorithm still cannot ask is about the
+//!   **parent** SKU a plan adopts.
 //! - **`inst-cmp-usagetype`** (`METER_USAGE_TYPE_UNBOUND`,
 //!   `METER_DIMENSION_UNDECLARED`, and its drift arm): the metering-unit
 //!   declaration's `usageTypeRef` and the `UsageType`'s declared

@@ -50,7 +50,7 @@ fn shape() -> PlanShape {
         3,
         utc_ymd_hms(2026, 8, 4, 10, 0, 0),
     );
-    shape.sku_id = Some(Uuid::from_u128(0x5_c1));
+    shape.sku_id = Uuid::from_u128(0x5_c1);
     shape.plan_tier = Some("gold".to_owned());
     shape.billing_cycle = Some(BillingCycle::Recurring);
     shape.windows = vec![KeyWindows {

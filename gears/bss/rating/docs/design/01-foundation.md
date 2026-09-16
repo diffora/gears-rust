@@ -231,7 +231,7 @@ per-line flow (retroactivity, period obligations); 10 registers publish validato
 
 1. Assemble `EvaluationContext`; verify every frozen input is present (fail closed otherwise).
 2. Steps 1–2 (slice 02): resolve `phase_id`; select the single window on the full ten-axis key; eligibility class order; cohort by pinned price id.
-3. Step 3 (slice 03): map `(meter, dimensionKey)` injectively; granularity round-up on the merged measure; model formula over the evaluation unit.
+3. Step 3 (slice 03): map `(skuId, dimensionKey)` injectively; granularity round-up on the merged measure; model formula over the evaluation unit.
 4. Steps 4–5 (slice 04): stack scope-matching PriceOverlays (class order breaks ties); apply contract overlay; enforce the anti-drift cap.
 5. Step 6 (slice 05): reservation match first — a consumption split re-runs steps 3–5 as a unit over the on-demand remainder (T-D-13) — then commitment-pool waterfall; obligations surfaced, never posted.
 6. Step 7 (slice 06): coupons per stacking policy (price-currency before FX).
@@ -279,7 +279,7 @@ Selection and non-overlap use the pricing canonical key **verbatim**:
 
 ```text
 (planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind, cohort)
-  + on chargeKind = usage: (meter, dimensionKey)
+  + on chargeKind = usage: (skuId, dimensionKey)
 ```
 
 The usage pair is an axis of the key **conditionally** (pricing D-196, 2026-08-06; adopted here

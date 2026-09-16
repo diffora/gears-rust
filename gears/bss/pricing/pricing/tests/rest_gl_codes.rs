@@ -709,6 +709,9 @@ async fn seed_published_revision_naming(harness: &Harness, plan_id: Uuid, gl_cod
         revision: Set(1),
         tenant_id: Set(harness.tenant),
         lifecycle_state: Set(LifecycleState::Draft.as_str().to_owned()),
+        // D-372: `pricing_plan.sku_id` is `NOT NULL` since
+        // `m20260916_000044_price_row_sku`.
+        sku_id: Set(Uuid::from_u128(5)),
         created_by: Set(rest_support::SEED_ACTOR),
         created_at_utc: Set(rest_support::at(9)),
         ..Default::default()

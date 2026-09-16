@@ -584,7 +584,7 @@ async fn the_unrepresentable_line_pairings_are_refused_at_the_edge() {
         ),
         (
             serde_json::json!({
-                "target_sku": "sku-a",
+                "target_sku": Uuid::from_u128(0xa),
                 "adjustment_kind": "discount",
                 "magnitude_kind": "percent_bp",
                 "adjustment_value": 1000,

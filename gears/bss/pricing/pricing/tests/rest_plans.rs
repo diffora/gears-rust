@@ -293,7 +293,8 @@ async fn a_plan_whose_only_revision_is_abandoned_is_not_readable() {
 
 /// A minimal well-formed create body.
 fn create_body(tier: &str) -> serde_json::Value {
-    serde_json::json!({ "plan_tier": tier, "billing_cycle": "recurring" })
+    serde_json::json!({
+        "sku_id": Uuid::from_u128(0x5_c1), "plan_tier": tier, "billing_cycle": "recurring" })
 }
 
 fn keyed(key: &str) -> Vec<(&str, &str)> {
@@ -315,6 +316,7 @@ async fn a_plan_can_be_created_with_a_name_and_reads_back_with_it() {
             "POST",
             PLANS,
             Some(serde_json::json!({
+                "sku_id": Uuid::from_u128(0x5_c1),
                 "plan_tier": "gold",
                 "plan_name": "Managed WordPress",
                 "billing_cycle": "recurring",
@@ -483,6 +485,7 @@ async fn an_empty_plan_name_is_refused_at_the_write() {
             "POST",
             PLANS,
             Some(serde_json::json!({
+                "sku_id": Uuid::from_u128(0x5_c1),
                 "plan_tier": "gold",
                 "plan_name": "   ",
                 "billing_cycle": "recurring",
@@ -3513,6 +3516,7 @@ async fn a_create_carrying_entitlement_grants_and_a_change_contract_stores_them(
             "POST",
             PLANS,
             Some(serde_json::json!({
+                "sku_id": Uuid::from_u128(0x5_c1),
                 "plan_tier": "gold",
                 "billing_cycle": "recurring",
                 "entitlement_grants": {
@@ -3937,6 +3941,7 @@ async fn a_create_whose_purchase_window_admits_no_quantity_is_refused_at_the_wri
             "POST",
             PLANS,
             Some(serde_json::json!({
+                "sku_id": Uuid::from_u128(0x5_c1),
                 "plan_tier": "gold",
                 "billing_cycle": "one_time",
                 "purchase_min_qty": 5,
@@ -5443,4 +5448,23 @@ async fn the_counts_read_folds_the_authoring_state_over_the_whole_catalogue() {
         serde_json::json!({ "total": 3, "draft": 3, "published": 0, "retired": 0 }),
         "the plan with an open draft counts as draft: {counts}"
     );
+}
+
+/// A draft must identify the offer even before its other shape is authored.
+#[tokio::test]
+async fn a_plan_without_a_sku_is_refused() {
+    let harness = Harness::new().await;
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            PLANS,
+            Some(json!({"plan_tier": "gold"})),
+            &keyed("missing-plan-sku"),
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(response).await;
+    assert!(body.to_string().contains("sku_id"), "{body}");
+    assert!(body.to_string().contains("VALIDATION"), "{body}");
 }

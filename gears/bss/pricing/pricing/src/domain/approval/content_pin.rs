@@ -980,7 +980,8 @@ fn put_overlay_line(buf: &mut Vec<u8>, line: &OverlayLine) {
     } = key.parts();
     put_uuid(buf, *line_id);
     put_opt_uuid(buf, plan_id.map(PlanId::get));
-    put_opt_str(buf, target_sku.map(TargetSku::as_str));
+    let target_sku_text = target_sku.map(ToString::to_string);
+    put_opt_str(buf, target_sku_text.as_deref());
     put_opt_instant(buf, cohort);
     put_str(buf, adjustment.kind().as_str());
     match adjustment {
@@ -1171,7 +1172,8 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
 
     put_uuid(buf, plan_id.get());
     put_u64(buf, *revision);
-    put_opt_uuid(buf, *sku_id);
+    // Keep the v17 frame stable for the now-required plan SKU.
+    put_opt_uuid(buf, Some(*sku_id));
     put_opt_str(buf, billing_cycle.map(BillingCycle::as_str));
     put_frequency(buf, *frequency);
     put_opt_str(buf, plan_tier.as_deref());

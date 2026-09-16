@@ -1601,6 +1601,7 @@ async fn a_plans_first_window_is_authorable_through_the_routes_after_an_empty_pu
                     "phase": shape.phase.get().to_string(),
                     "price_eligibility": "all_subscriptions",
                     "charge_kind": "recurring",
+                    "sku_id": rest_support::OFFER_SKU,
                     "cohort": null
                 },
                 "content": {

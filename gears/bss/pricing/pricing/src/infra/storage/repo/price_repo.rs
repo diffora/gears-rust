@@ -1673,7 +1673,7 @@ type ScopeKeyColumns<'a> = (
     &'a str,
     &'a str,
     &'a str,
-    Option<&'a str>,
+    Uuid,
     &'a str,
 );
 
@@ -1816,7 +1816,7 @@ type MarketColumns<'a> = (
     &'a str,
     Uuid,
     &'a str,
-    Option<&'a str>,
+    Uuid,
     &'a str,
 );
 
@@ -1830,7 +1830,7 @@ fn market_columns(row: &price::Model) -> MarketColumns<'_> {
         row.price_overlay.as_str(),
         row.phase,
         row.charge_kind.as_str(),
-        row.meter.as_deref(),
+        row.sku_id,
         row.dimension_key.as_str(),
     )
 }
@@ -1844,12 +1844,16 @@ fn market_columns(row: &price::Model) -> MarketColumns<'_> {
 /// rows are not on one key".
 ///
 /// **All ten axes, not the eight D-196 clause (3) is easy to attach to.** A
-/// comparison that omits the usage line reads a successor on a **different meter
-/// of the same market** as being on the predecessor's key, and this function's
+/// comparison that omits the ninth and tenth reads a successor on a **different
+/// SKU of the same market** as being on the predecessor's key, and this function's
 /// whole sentence is about key *identity*. D-82's unit guard would catch that
 /// particular pair by comparing `meter` between the two rows and answering
 /// `SUPERSESSION_UNIT_MISMATCH` — but a guard that cannot see two axes of the
 /// thing it is comparing is wrong even while a sibling covers for it.
+///
+/// **The ninth axis is `sku_id` since D-372**, not `meter`: the meter left the key
+/// and a row's SKU took its place, so comparing `meter` here would compare content
+/// while the key it is supposed to decide moved one column over.
 fn scope_key_columns(row: &price::Model) -> ScopeKeyColumns<'_> {
     (
         row.plan_id,
@@ -1860,7 +1864,7 @@ fn scope_key_columns(row: &price::Model) -> ScopeKeyColumns<'_> {
         row.price_eligibility.as_str(),
         row.charge_kind.as_str(),
         row.cohort.as_str(),
-        row.meter.as_deref(),
+        row.sku_id,
         row.dimension_key.as_str(),
     )
 }
@@ -3425,50 +3429,11 @@ fn check_grandfather_horizon(
     })
 }
 
-/// Resolve the row's `(meter, dimensionKey)` line against its key's (D-196).
+/// Resolve the authored dimension against the frozen SKU key.
 ///
-/// **Each axis is derived from wherever the wire can actually say it**, and that
-/// is what makes this the mirror image of [`authored_content`] rather than an
-/// inconsistency with it. `charge_kind` is expressible only on the **key** view,
-/// so `content_of` fills the row's copy with a placeholder and the door rewrites
-/// it *from the key*. The usage line is expressible only on the **content**
-/// view — `ScopeKeyRequest` has no such member — so the row's fields are the
-/// author's statement and the key's axes are derived *from the row*. Neither
-/// direction is a preference: in each case the other half has nothing to say.
-///
-/// So two arms, with a reason each:
-///
-/// - **The key names no line** — the wire path, where the key literally cannot
-///   carry one. The line is attached, and `check_usage_line_axes` then refuses a
-///   meter on a charge kind that may not have one, so a metered `recurring` row
-///   is answered here rather than by the meter-line index three statements later.
-/// - **Both name a line and they differ** — an internal caller built both halves
-///   (the supersession door passes the predecessor's key), and this is a
-///   **refusal**, never a rewrite. A door that overwrote the successor's meter
-///   with the key's would make the D-82/D-98/D-127 unit guard's `meter` and
-///   `dimensionKey` clauses structurally unreachable — two of the four
-///   components of the tier counter's own key — which is exactly how
-///   `charge_kind`'s placeholder made `is_usage()` unreachable and cost three
-///   Criticals. One rewrite of that shape per crate is one too
-///   many, and this is the one.
-///
-/// The store has a single home for the pair — the `meter` and `dimension_key`
-/// columns are both the key's axes and the row's fields — so a disagreement
-/// cannot survive a round trip. It exists only between a [`ScopeKey`] value and
-/// a [`PriceRow`] value, which is where it is still cheap to answer.
-///
-/// **That single home is only worth what the two writers agree on.** This
-/// function compares trimmed against trimmed — the key's axes are
-/// `Meter::new`/`DimensionKey::new` values and `row_meter` above is built the
-/// same way — so a `content_model` that rendered the caller's raw string into the
-/// columns would leave the column holding a value the key it is filed under does
-/// not: `scope_key_filter` renders the axis and matches nothing, and `"api_calls "`
-/// then `"api_calls"` land two rows on one canonical key. What makes the sentence
-/// above true is
-/// [`canonical_usage_line`](crate::domain::price_record::canonical_usage_line),
-/// spent on the columns and on the answered record alike; this function still
-/// **refuses** a genuine disagreement rather than resolving one, which is the
-/// distinction the two arms above are about.
+/// The transport rejects authored meters and the registry supplies the persisted
+/// meter. Internal callers pass that derived value; this repository must not
+/// mistake it for authored input. Only the dimension needs reconciliation here.
 pub(crate) fn resolve_authored_usage_line(
     key: &ScopeKey,
     row: &PriceRow,
@@ -3493,7 +3458,11 @@ pub(crate) fn resolve_authored_usage_line(
         // key's **charge kind** against the constructor's message, so
         // `USAGE_LINE_AXIS_MISMATCH` reported `"usage"` against a sentence and named
         // neither line.
-        let key_line = key.dimension_key().as_str().to_owned();
+        let key_line = format!(
+            "{}/{}",
+            key.sku_id().as_uuid(),
+            key.dimension_key().as_str()
+        );
         let row_line = format!(
             "{}/{}",
             row_meter.as_ref().map_or("none", Meter::as_str),
@@ -3520,22 +3489,8 @@ pub(crate) fn resolve_authored_usage_line(
     })
 }
 
-/// An update may not move the row's `(meter, dimensionKey)` line (D-196).
-///
-/// The sibling of [`resolve_authored_usage_line`] on the other door, and the
-/// asymmetry is the point: **create** derives the key's line from the content,
-/// because that is the author's only way to state it; **update** compares the
-/// submitted line against the stored one and refuses a move, because by then the
-/// row is filed under a key and the pair are two of its axes. The eight axes an
-/// update cannot touch are simply absent from `PriceContent`; these two are not,
-/// which is the whole reason this check has to exist as code rather than as a
-/// property of the type.
-///
-/// **A move is a move of the axes, not of the spelling.** Both sides are
-/// normalized before the comparison — see the body — so whitespace around a
-/// meter is not a line change, which is what
-/// [`Meter::normalized`](crate::domain::scope_key::Meter::normalized) means when
-/// it calls the trim the axis's spelling.
+/// An update cannot move the frozen dimension axis. The SKU itself comes from
+/// the stored key; the registry-derived meter may be refreshed on a draft.
 fn check_update_keeps_the_line(
     row: &price::Model,
     submitted: &(Option<String>, String),
@@ -3565,7 +3520,7 @@ fn check_update_keeps_the_line(
             .map(|meter| Meter::normalized(meter).to_owned()),
         DimensionKey::new(&row.dimension_key).as_str().to_owned(),
     );
-    if &stored == submitted {
+    if stored.1 == submitted.1 {
         return Ok(());
     }
     Err(RepoError::UsageLineDisagrees {
@@ -3658,16 +3613,15 @@ fn scope_key_filter(tenant_id: Uuid, key: &ScopeKey) -> Condition {
         sku_id,
         dimension_key,
     } = key.parts();
-    // D-372 shim: the ninth axis has no column yet, so it cannot be filtered on.
-    // Task 6a adds `pricing_price.sku_id` and the
-    // `.add(price::Column::SkuId.eq(sku_id.as_uuid()))` that belongs here; until
-    // then this filter decides "the same key" by nine axes, which is exactly the
-    // under-matching this function's doc is about — two rows on two SKUs answer
-    // as one key, and the store has no second column to tell them apart anyway.
-    let _ = sku_id;
     Condition::all()
         .add(price::Column::TenantId.eq(tenant_id))
         .add(price::Column::PlanId.eq(plan_id.get()))
+        // The ninth axis (D-372 I1). `m20260916_000044_price_row_sku` is what
+        // gives it a column to be compared against; without the predicate this
+        // filter decided "the same key" by nine axes, and two rows pricing two
+        // SKUs answered as one key — the under-matching this function's doc is
+        // about, arriving from the other direction.
+        .add(price::Column::SkuId.eq(sku_id.as_uuid()))
         .add(price::Column::Currency.eq(currency.as_str()))
         .add(price::Column::Region.eq(region.as_str()))
         .add(price::Column::PriceOverlay.eq(price_overlay.as_str()))
@@ -4080,6 +4034,11 @@ fn insert_model(tenant_id: Uuid, record: &PriceRecord) -> Result<price::ActiveMo
         price_id: _,
         tenant_id: _,
         plan_id: _,
+        // The ninth axis (D-372 I1). A key column like `plan_id` beside it, not a
+        // content column: `authored_content` normalizes `row.sku_id` to the key's
+        // own, so the key is the one source, and writing it from the content here
+        // would give the same fact two writers.
+        sku_id: _,
         currency: _,
         region: _,
         price_overlay: _,
@@ -4136,6 +4095,7 @@ fn insert_model(tenant_id: Uuid, record: &PriceRecord) -> Result<price::ActiveMo
         price_id: Set(record.price_id),
         tenant_id: Set(tenant_id),
         plan_id: Set(key.plan_id().get()),
+        sku_id: Set(key.sku_id().as_uuid()),
         currency: Set(key.currency().as_str().to_owned()),
         region: Set(key.region().as_str().to_owned()),
         price_overlay: Set(key.price_overlay().as_str().to_owned()),
@@ -4237,6 +4197,10 @@ fn content_assignments(model: price::ActiveModel) -> Vec<(price::Column, Value)>
         // below; `check_update_keeps_the_line` refuses an edit that moves them,
         // which is what makes writing them back a no-op rather than a key move.)
         plan_id: _,
+        // D-372's ninth axis. A draft edit that moved it would re-file the row
+        // under another SKU's key while addressing it by `price_id`, which is the
+        // key move `update_draft`'s doc refuses for every axis beside it.
+        sku_id: _,
         currency: _,
         region: _,
         price_overlay: _,
@@ -4596,8 +4560,7 @@ fn read_scope_key(row: &price::Model) -> Result<ScopeKey, RepoError> {
             ChargeKind::as_str,
         )?,
         read_cohort(&row.cohort)?,
-        // D-372 shim: Task 6a (storage) / Task 7 (DTO) supply the real value
-        SkuId::new(Uuid::nil()),
+        SkuId::new(row.sku_id),
     )
     .and_then(|key| {
         // The tenth axis, from the same column the two scope-key indexes read
@@ -4666,8 +4629,7 @@ fn to_price_row(
             QuantitySource::as_str,
         )?,
         manual_quantity: read_count("pricing_price.manual_quantity", row.manual_quantity)?,
-        // D-372 shim: Task 6a (storage) / Task 7 (DTO) supply the real value
-        sku_id: SkuId::new(Uuid::nil()),
+        sku_id: SkuId::new(row.sku_id),
         meter: row.meter.clone(),
         dimension_key: row.dimension_key.clone(),
         billing_granularity: read_optional(

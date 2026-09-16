@@ -14,13 +14,18 @@
 //! # The third rule of `inst-cm-constituents` is not here, and that is measured
 //!
 //! *"≥ 2 **published** constituent `meteringUnit` ids (registry-declared)"* — the
-//! publication half has no operand. `metering_unit` / `MeteringUnit` appear
-//! nowhere in `src/`, `PriceRow::meter` is a free `Option<String>` validated
-//! against nothing, and this gear holds no registry client at all
-//! ([`crate::domain::ports`] carries the `CatalogVersion` registry and nothing
-//! else). `COMPOSITE_CONSTITUENT_UNPUBLISHED` is therefore declared in S10 §5 and
-//! **not raised anywhere**, exactly as `plan_rules` names `SKU_NOT_PUBLISHED` and
-//! `contracts` names `GRANT_REF_UNDEFINED`: a rule over an empty lookup either
+//! publication half still has no operand, and D-372 is what makes that a measured
+//! statement rather than a blanket one. That decision gave this gear its first
+//! registry read ([`crate::domain::registry_view`]) and it is a listing of
+//! **SKUs**: a [`CatalogSku`](crate::domain::ports::CatalogSku) declares the unit
+//! it is metered by as a free `Option<String>`, so there is no `meteringUnit`
+//! **id** to look up and no publication state attached to one. `PriceRow::meter`
+//! is the same free string on the other side, and D-372's I4 binds it to the
+//! SKU's declaration rather than to a unit registry.
+//! `COMPOSITE_CONSTITUENT_UNPUBLISHED` is therefore declared in S10 §5 and
+//! **not raised anywhere**, exactly as `contracts` names `GRANT_REF_UNDEFINED`
+//! (and as `plan_rules` named `SKU_NOT_PUBLISHED` until D-372 raised that code's
+//! row half): a rule over an empty lookup either
 //! refuses every composite ever authored or passes every one, and a rule that
 //! always passes is indistinguishable from a rule that holds.
 //!

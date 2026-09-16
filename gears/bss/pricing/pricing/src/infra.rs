@@ -28,6 +28,7 @@ pub mod read_model;
 pub mod registry_deadline;
 pub mod repricing;
 pub mod retirement;
+pub mod row_sku;
 pub mod storage;
 pub mod supersession;
 pub mod synthesis;

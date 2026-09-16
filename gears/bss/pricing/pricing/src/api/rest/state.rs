@@ -26,6 +26,8 @@ use crate::infra::storage::repo::{
 /// [`frontier::ApiState`](crate::api::rest::frontier::ApiState) is.
 #[derive(Clone)]
 pub struct AuthoringState {
+    /// Shared product registry used to resolve authored row SKUs.
+    pub catalog: std::sync::Arc<dyn crate::domain::ports::ProductCatalogClientV1>,
     /// The provider the transaction seam opens its one transaction on.
     pub db: DBProvider<DbError>,
     /// The plan revision chain.

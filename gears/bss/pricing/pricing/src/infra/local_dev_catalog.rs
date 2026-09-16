@@ -103,10 +103,8 @@ fn sku(
         status: status.to_owned(),
         plan_tier: tier.map(str::to_owned),
         sku_type: sku_type.to_owned(),
-        // Every fabricated SKU is a sellable line: the mode exists so a plan
-        // row can be authored from the pick-list, and a member that cannot be
-        // picked teaches nothing here.
-        sellable: true,
+        // Metered SKUs are resources within an offer; unmetered SKUs are offers.
+        sellable: unit.is_none(),
         usage_type_ref: unit.map(dev_usage_type_ref),
     }
 }

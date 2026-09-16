@@ -976,6 +976,9 @@ async fn publish_price_row_in(provider: &DBProvider<DbError>, region: &str) {
         revision: Set(1),
         tenant_id: Set(TENANT),
         lifecycle_state: Set("published".to_owned()),
+        // D-372: `pricing_plan.sku_id` is `NOT NULL` since
+        // `m20260916_000044_price_row_sku`.
+        sku_id: Set(Uuid::from_u128(5)),
         created_by: Set(Uuid::from_u128(0x4444)),
         created_at_utc: Set(now()),
         ..Default::default()
@@ -999,6 +1002,8 @@ async fn publish_price_row_in(provider: &DBProvider<DbError>, region: &str) {
         price_eligibility: Set("all_subscriptions".to_owned()),
         charge_kind: Set("recurring".to_owned()),
         cohort: Set("none".to_owned()),
+        // D-372's ninth axis, `NOT NULL` since `m20260916_000044_price_row_sku`.
+        sku_id: Set(Uuid::from_u128(5)),
         dimension_key: Set(String::new()),
         tax_inclusive: Set(false),
         lifecycle_state: Set("published".to_owned()),
@@ -2093,6 +2098,9 @@ async fn publish_price_row_resolving(provider: &DBProvider<DbError>, resolved: &
         revision: Set(1),
         tenant_id: Set(TENANT),
         lifecycle_state: Set("published".to_owned()),
+        // D-372: `pricing_plan.sku_id` is `NOT NULL` since
+        // `m20260916_000044_price_row_sku`.
+        sku_id: Set(Uuid::from_u128(5)),
         created_by: Set(Uuid::from_u128(0x4444)),
         created_at_utc: Set(now()),
         ..Default::default()
@@ -2116,6 +2124,8 @@ async fn publish_price_row_resolving(provider: &DBProvider<DbError>, resolved: &
         price_eligibility: Set("all_subscriptions".to_owned()),
         charge_kind: Set("recurring".to_owned()),
         cohort: Set("none".to_owned()),
+        // D-372's ninth axis, `NOT NULL` since `m20260916_000044_price_row_sku`.
+        sku_id: Set(Uuid::from_u128(5)),
         dimension_key: Set(String::new()),
         tax_inclusive: Set(false),
         lifecycle_state: Set("published".to_owned()),
@@ -2881,6 +2891,9 @@ async fn seed_revision_naming_gl_code(
         revision: Set(1),
         tenant_id: Set(TENANT),
         lifecycle_state: Set("draft".to_owned()),
+        // D-372: `pricing_plan.sku_id` is `NOT NULL` since
+        // `m20260916_000044_price_row_sku`.
+        sku_id: Set(Uuid::from_u128(5)),
         created_by: Set(Uuid::from_u128(0x4444)),
         created_at_utc: Set(now()),
         ..Default::default()

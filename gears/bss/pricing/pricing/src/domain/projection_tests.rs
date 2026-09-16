@@ -649,6 +649,7 @@ fn a_price_row_freezes_its_key_its_shape_and_its_bands() {
     assert_eq!(row.get("modelKind"), Some(&json!("graduated")));
     assert_eq!(row.get("chargeKind"), Some(&json!("usage")));
     assert_eq!(row.get("meter"), Some(&json!("api_calls")));
+    assert_eq!(row.get("skuId"), Some(&json!(uuid::Uuid::from_u128(5))));
     assert_eq!(row.get("roundingPolicyRef"), Some(&json!("half_up")));
     assert_eq!(
         row.get("scopeKey"),

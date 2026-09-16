@@ -65,7 +65,7 @@ use toolkit_macros::domain_model;
 use crate::domain::concurrency::RowVersion;
 use crate::domain::price_record::{PriceContent, authored_content};
 use crate::domain::publish::rules::{PRIMITIVE_RULES_UNBUILT, unjudged_primitives};
-use crate::domain::rules::price_row_rules;
+use crate::domain::rules::row_local_rules;
 use crate::domain::scope_key::ScopeKey;
 
 /// The wire code for two rows on one canonical scope key.
@@ -75,6 +75,10 @@ use crate::domain::scope_key::ScopeKey;
 /// pipeline notices it. Phase 1 catching it earlier is a better *report*, not a
 /// different fault.
 pub const DUPLICATE_SCOPE_KEY: &str = "DUPLICATE_SCOPE_KEY";
+
+/// A row must name an active draft or current plan visible in its tenant.
+/// Missing and foreign plans share the same finding to avoid existence leaks.
+pub const IMPORT_PLAN_NOT_FOUND: &str = "IMPORT_PLAN_NOT_FOUND";
 
 /// The wire code for a row aimed at a **published** row's scope key.
 ///
@@ -258,7 +262,7 @@ pub fn classify(rows: &[ImportRow]) -> BatchReport {
 /// # The stage subset, not the whole rule set
 ///
 /// Only [`Stage::Write`](crate::domain::validation::Stage) violations are taken.
-/// Running the full `price_row_rules()` here would refuse a batch of legitimately
+/// Running the full `row_local_rules()` here would refuse a batch of legitimately
 /// incomplete drafts — no `model_kind` yet, no bands yet — which is exactly what
 /// §4.2 puts the rule set at publish to permit, and an import lands **drafts**. So
 /// this arm inherits D-312's line rather than restating it: the same
@@ -277,7 +281,9 @@ pub fn classify(rows: &[ImportRow]) -> BatchReport {
 fn key_contradictions(rows: &[ImportRow]) -> Vec<(usize, RowViolation)> {
     // Once, not per row: the pipeline is a fresh allocation of every registered
     // rule and a batch is the case where that multiplies.
-    let rules = price_row_rules();
+    // The transport augments this pure local classifier with registry_row_rules
+    // using one listing and each row's parent-plan SKU context.
+    let rules = row_local_rules();
     let mut found = Vec::new();
     for (index, row) in rows.iter().enumerate() {
         let subject = authored_content(&row.scope_key, row.content.clone()).row;

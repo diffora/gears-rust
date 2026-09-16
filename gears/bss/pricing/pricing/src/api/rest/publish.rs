@@ -346,11 +346,12 @@ async fn publish_plan(
         .await
         .map_err(CanonicalError::from)?;
 
+    let publish = state.publish.resolve_skus(&ctx).await?;
+
     // The commit arm: a second person has seen exactly this content.
     if let Some(record) = approved {
         let authorization = authorization_of(&record).map_err(CanonicalError::from)?;
-        let receipt = state
-            .publish
+        let receipt = publish
             .commit(
                 &ctx,
                 &scope,
@@ -370,8 +371,7 @@ async fn publish_plan(
     // The submit arm. Fail-closed validation first (§5's Purpose cell, §4.2 step
     // 2): a plan that cannot publish must not be put in front of a reviewer, who
     // would then approve a change set the commit refuses.
-    let report = state
-        .publish
+    let report = publish
         .precheck(&scope, tenant, plan_id, now)
         .await
         .map_err(CanonicalError::from)?;
@@ -410,8 +410,7 @@ async fn publish_plan(
     // `rest_publish::a_period_bound_published_beside_an_orphaned_successor_is_still_judged`
     // is what holds it. Written rather than panicked, because a third door onto an
     // occupied key would reach here rather than crash.
-    let receipt = state
-        .publish
+    let receipt = publish
         .commit(
             &ctx,
             &scope,

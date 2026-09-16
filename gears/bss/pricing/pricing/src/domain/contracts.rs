@@ -1066,8 +1066,12 @@ impl EntitlementGrants {
 /// empty lookup would either refuse every grant set ever authored or pass every
 /// one — and a rule that always passes is indistinguishable from a rule that
 /// holds. Named here rather than written, exactly as
-/// [`plan_rules`](crate::domain::plan_rules) names `SKU_NOT_PUBLISHED` and the
-/// divergence half of `PLANTIER_MISSING`.
+/// [`plan_rules`](crate::domain::plan_rules) names the divergence half of
+/// `PLANTIER_MISSING` — and as it named `SKU_NOT_PUBLISHED` until D-372, whose
+/// row half is raised by `inst-pr-sku-published`
+/// ([`crate::domain::row_sku_rules`]) against a **SKU** listing that says nothing
+/// about a feature, quota or `PlanTier` policy, so this rule gains no operand
+/// from it.
 ///
 /// **`inst-gs-drift` is absent for the same reason, one layer out.** D-27 has
 /// the catalog consume the registry's *tier-policy-change signal* and flag every

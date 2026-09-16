@@ -374,6 +374,7 @@ async fn registered_operations() -> OpenApiRegistryImpl {
         compensation,
     );
     let authoring = Arc::new(AuthoringState {
+        catalog: Arc::new(bss_pricing::domain::ports::UnconfiguredProductCatalogClientV1),
         approvals: approvals.clone(),
         db: db.clone(),
         plans: PlanRepo::new(db.clone()),

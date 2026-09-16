@@ -105,6 +105,7 @@ fn service(h: &Harness) -> CutoverService {
         FixtureGate::load(&rest_support::committed_registry_path()),
         Arc::clone(&h.registry) as Arc<_>,
     )
+    .with_product_catalog(std::sync::Arc::new(rest_support::FixtureCatalog::default()))
 }
 
 async fn cut_over(
@@ -246,7 +247,7 @@ fn usage_key(plan_id: PlanId, phase: PhaseId, meter: &str) -> ScopeKey {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Usage,
         Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
+        SkuId::new(Uuid::new_v5(&Uuid::NAMESPACE_OID, meter.as_bytes())),
     )
     .expect("the class pairs with cohort none")
     .with_usage_line(
@@ -403,7 +404,7 @@ async fn a_cutover_may_not_flip_the_formula_that_prices_a_continued_counter() {
 #[tokio::test]
 async fn a_cutover_publishing_an_unproratable_successor_is_refused_by_the_aggregate() {
     // **D-344 Tier B.** `inst-pi-required` is a plan-aggregate rule, not a
-    // row-local one — `price_row_rules` passes this successor and
+    // row-local one — `row_local_rules` passes this successor and
     // `run_publish_rules` does not — so it reddens for the aggregate arm alone and
     // stays green if only Tier A is present. That is the discrimination this probe
     // is for: a cutover that drops the three proration inputs publishes a recurring
@@ -472,6 +473,7 @@ async fn a_cutover_is_refused_while_the_joint_corpus_is_not_green_for_its_shape(
         FixtureGate::closed(),
         Arc::clone(&h.registry) as Arc<_>,
     )
+    .with_product_catalog(std::sync::Arc::new(rest_support::FixtureCatalog::default()))
     .cut_over(
         &rest_support::security_context(SUBMITTER, h.tenant),
         &h.scope(),
@@ -620,7 +622,7 @@ async fn row_exists(h: &Harness, price_id: Uuid) -> bool {
 }
 
 #[tokio::test]
-async fn a_generation_on_a_neighbouring_meter_does_not_occupy_this_line_s_instant() {
+async fn a_generation_on_a_neighbouring_sku_does_not_occupy_this_line_s_instant() {
     // **The fail-closed half of D-296**, and its twin above is the fail-open one.
     // `existing_generations` compared six of the ten axes, omitting `meter` and
     // `dimension_key`, so on D-103's plan every usage line's generations counted

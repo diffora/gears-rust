@@ -612,6 +612,14 @@ pub struct CutoverService {
 }
 
 impl CutoverService {
+    /// Bind the same product catalog as authoring and publishing.
+    pub fn with_product_catalog(
+        mut self,
+        catalog: Arc<dyn crate::domain::ports::ProductCatalogClientV1>,
+    ) -> Self {
+        self.policies = self.policies.with_product_catalog(catalog);
+        self
+    }
     /// Build the workflow over one provider, the deployment's limits, the joint
     /// fixture gate and the resolved registry.
     ///
@@ -756,6 +764,68 @@ pub async fn cutover_in(
     )
     .await?;
 
+    // Replays use the staged derived meter, never a fresh registry answer.
+    // Authored changes still conflict; only the response-only field is restored.
+    let replay_subject = cutover_unit_ref(
+        context.plan_id,
+        &[request.predecessor_key.clone()],
+        request.cutover_at,
+    );
+    if let (Some(staged), Some(copy)) = (&context.staged_successor, &context.staged_copy) {
+        let authorized = crate::infra::approval::authorizing_unit(
+            txn,
+            scope,
+            tenant_id,
+            &context.shape,
+            &replay_subject,
+        )
+        .await?;
+        if authorized.is_none() {
+            if let Some(held) =
+                approval_repo::find_pending_for_subject(txn, tenant_id, &replay_subject)
+                    .await
+                    .map_err(|e| repo_failure(&e))?
+            {
+                let mut replay_request = request.clone();
+                replay_request.successor.row.meter = staged.row.meter.clone();
+                let (_, copy_key) =
+                    compose_and_judge(&context, &replay_request, now, ChangeoverMoment::Submit)?;
+                refuse_divergent_staged(&context, &replay_request, &copy_key)?;
+                return Ok(CutoverOutcome::SubmittedForApproval(Box::new(
+                    CutoverPending {
+                        plan_id: context.plan_id,
+                        revision: context.revision,
+                        successor_price_id: staged.price_id,
+                        copy_price_id: copy.price_id,
+                        copy_key,
+                        approval: held,
+                    },
+                )));
+            }
+        }
+    }
+    let resolved_policies = if policies.sku_index().is_ok() {
+        policies.clone()
+    } else {
+        policies.resolve_skus(ctx).await?
+    };
+    let policies = &resolved_policies;
+    let index = policies.sku_index()?;
+    if let Some(staged) = &context.staged_successor {
+        crate::infra::row_sku::validate(
+            &staged.content(),
+            context.shape.sku_id,
+            Arc::clone(&index),
+        )?;
+    }
+    let mut resolved_request = request.clone();
+    crate::infra::row_sku::derive_meter(
+        &mut resolved_request.successor,
+        &resolved_request.predecessor_key,
+        &index,
+    );
+    let request = &resolved_request;
+
     // 1a. A plan whose current revision can never be superseded takes no successor
     //     row either — `PublishService::commit`'s hoisted refusal and
     //     `supersede_in`'s step 1a, and it was missing here. `plan_repo::retire_revision`
@@ -774,6 +844,11 @@ pub async fn cutover_in(
     //    clear and on both arms, because this is the last point the two share. The
     //    commit floor is stricter and is applied at step 7; this run is what refuses a
     //    request nobody should be asked to review.
+    crate::infra::row_sku::validate(
+        &authored_successor(&context, request),
+        context.shape.sku_id,
+        policies.sku_index()?,
+    )?;
     let (composed, copy_key) = compose_and_judge(&context, request, now, ChangeoverMoment::Submit)?;
 
     let selected = [request.predecessor_key.clone()];

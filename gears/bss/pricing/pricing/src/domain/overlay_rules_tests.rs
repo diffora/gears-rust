@@ -33,7 +33,7 @@ fn usd() -> CurrencyCode {
 }
 
 fn sku(raw: &str) -> TargetSku {
-    TargetSku::new(raw).expect("a non-blank sku")
+    TargetSku::new(Uuid::new_v5(&Uuid::NAMESPACE_OID, raw.as_bytes())).expect("a non-blank sku")
 }
 
 fn brand_scope() -> ScopeSelector {

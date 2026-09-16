@@ -35,6 +35,7 @@ fn price_path(plan_id: Uuid, price_id: Uuid) -> String {
 fn create_body(region: &str) -> serde_json::Value {
     serde_json::json!({
         "scope_key": {
+            "sku_id": rest_support::OFFER_SKU,
             "currency": "USD",
             "region": region,
             "phase": harness_phase(),
@@ -510,6 +511,7 @@ async fn a_create_carrying_a_tier_qualification_window_is_refused_at_any_value()
 fn usage_create_body(region: &str, meter: &str) -> serde_json::Value {
     serde_json::json!({
         "scope_key": {
+            "sku_id": rest_support::resource_sku(meter.trim()),
             "currency": "USD",
             "region": region,
             "phase": harness_phase(),
@@ -521,7 +523,6 @@ fn usage_create_body(region: &str, meter: &str) -> serde_json::Value {
             "model_kind": "per_unit",
             "unit_rate_nano_minor": 700_000_000_i64,
             "tax_inclusive": false,
-            "meter": meter,
             "billing_granularity": "per_hour"
         }
     })
@@ -763,6 +764,7 @@ async fn a_patch_may_not_move_the_canonical_scope_key() {
             &price_path(plan_id, seeded.price_id),
             Some(serde_json::json!({
                 "scope_key": {
+            "sku_id": rest_support::OFFER_SKU,
                     "currency": "USD",
                     "region": "US",
                     "phase": harness_phase(),
@@ -1629,22 +1631,22 @@ async fn two_lines_of_one_market_render_two_distinct_keys() {
                 "POST",
                 &prices_path(plan_id),
                 Some(serde_json::json!({
-                    "scope_key": {
-                        "currency": "USD",
-                        "region": "EU",
-                        "phase": harness_phase(),
-                        "price_eligibility": "all_subscriptions",
-                        "charge_kind": "usage",
-                        "cohort": serde_json::Value::Null
-                    },
-                    "content": {
-                        "model_kind": "per_unit",
-                        "amount_minor": 700,
-                        "tax_inclusive": false,
-                        "meter": meter,
-                        "billing_granularity": "per_hour"
-                    }
-                })),
+                        "scope_key": {
+                "sku_id": rest_support::resource_sku(meter),
+                            "currency": "USD",
+                            "region": "EU",
+                            "phase": harness_phase(),
+                            "price_eligibility": "all_subscriptions",
+                            "charge_kind": "usage",
+                            "cohort": serde_json::Value::Null
+                        },
+                        "content": {
+                            "model_kind": "per_unit",
+                            "amount_minor": 700,
+                            "tax_inclusive": false,
+                            "billing_granularity": "per_hour"
+                        }
+                    })),
                 &keyed(key),
             ))
             .await;
@@ -1666,8 +1668,8 @@ async fn two_lines_of_one_market_render_two_distinct_keys() {
         cloudlets["scope_key"], egress["scope_key"]
     );
     assert_eq!(
-        cloudlets["scope_key"]["meter"],
-        serde_json::json!("cloudlets")
+        cloudlets["scope_key"]["sku_id"],
+        serde_json::json!(rest_support::resource_sku("cloudlets"))
     );
     assert_eq!(
         cloudlets["scope_key"]["dimension_key"],
@@ -1713,8 +1715,8 @@ async fn two_spellings_of_one_meter_are_one_key_on_the_wire_too() {
     assert_eq!(padded.status(), StatusCode::CREATED, "{:?}", padded.body());
     let created = body_json(padded).await;
     assert_eq!(
-        created["scope_key"]["meter"],
-        serde_json::json!("cloudlets"),
+        created["scope_key"]["sku_id"],
+        serde_json::json!(rest_support::resource_sku("cloudlets")),
         "the view renders the axis the row is filed under, not the caller's spelling"
     );
     assert_eq!(
@@ -1766,6 +1768,7 @@ async fn a_metered_row_may_patch_while_echoing_the_key_it_cannot_fully_name() {
             &prices_path(plan_id),
             Some(serde_json::json!({
                 "scope_key": {
+            "sku_id": rest_support::resource_sku("cloudlets"),
                     "currency": "USD",
                     "region": "EU",
                     "phase": harness_phase(),
@@ -1777,7 +1780,6 @@ async fn a_metered_row_may_patch_while_echoing_the_key_it_cannot_fully_name() {
                     "model_kind": "per_unit",
                     "amount_minor": 700,
                     "tax_inclusive": false,
-                    "meter": "cloudlets",
                     "billing_granularity": "per_hour"
                 }
             })),
@@ -1794,6 +1796,7 @@ async fn a_metered_row_may_patch_while_echoing_the_key_it_cannot_fully_name() {
             &price_path(plan_id, price_id),
             Some(serde_json::json!({
                 "scope_key": {
+            "sku_id": rest_support::resource_sku("cloudlets"),
                     "currency": "USD",
                     "region": "EU",
                     "phase": harness_phase(),
@@ -1805,7 +1808,6 @@ async fn a_metered_row_may_patch_while_echoing_the_key_it_cannot_fully_name() {
                     "model_kind": "per_unit",
                     "amount_minor": 900,
                     "tax_inclusive": false,
-                    "meter": "cloudlets",
                     "billing_granularity": "per_hour"
                 }
             })),
@@ -1856,6 +1858,7 @@ async fn a_patch_that_re_rates_a_per_unit_row_moves_the_stored_rate() {
             &prices_path(plan_id),
             Some(serde_json::json!({
                 "scope_key": {
+            "sku_id": rest_support::OFFER_SKU,
                     "currency": "USD",
                     "region": "EU",
                     "phase": harness_phase(),
@@ -1941,6 +1944,7 @@ async fn a_patch_that_moves_the_usage_line_is_refused_by_its_code() {
             &prices_path(plan_id),
             Some(serde_json::json!({
                 "scope_key": {
+            "sku_id": rest_support::resource_sku("cloudlets"),
                     "currency": "USD",
                     "region": "EU",
                     "phase": harness_phase(),
@@ -1952,7 +1956,6 @@ async fn a_patch_that_moves_the_usage_line_is_refused_by_its_code() {
                     "model_kind": "per_unit",
                     "amount_minor": 700,
                     "tax_inclusive": false,
-                    "meter": "cloudlets",
                     "billing_granularity": "per_hour"
                 }
             })),
@@ -1982,8 +1985,8 @@ async fn a_patch_that_moves_the_usage_line_is_refused_by_its_code() {
 
     assert_eq!(
         problem_code(response).await,
-        "USAGE_LINE_AXIS_MISMATCH",
-        "a moved usage line is the axis rule's refusal, not a fault of the store"
+        "VALIDATION",
+        "an authored meter is refused at the write boundary"
     );
 
     let after = price_rows(&harness, plan_id).await;
@@ -2026,11 +2029,11 @@ async fn a_create_carrying_every_slice_ten_primitive_stores_all_of_them() {
 
     let mut body = create_body("EU");
     body["scope_key"]["charge_kind"] = serde_json::json!("usage");
+    body["scope_key"]["sku_id"] = serde_json::json!(rest_support::resource_sku("storage.gb"));
     body["content"] = serde_json::json!({
         "model_kind": "per_unit",
         "amount_minor": 1_500,
         "tax_inclusive": false,
-        "meter": "storage.gb",
         "billing_granularity": "per_hour",
         "reserved_rate_nano_minor": 250_000_000_000_i64,
         "reservation_flavor": "capacity",
@@ -2088,7 +2091,7 @@ async fn a_create_naming_an_unknown_reservation_flavor_is_refused() {
 
     let mut body = create_body("EU");
     body["scope_key"]["charge_kind"] = serde_json::json!("usage");
-    body["content"]["meter"] = serde_json::json!("storage.gb");
+    body["scope_key"]["sku_id"] = serde_json::json!(rest_support::resource_sku("storage.gb"));
     body["content"]["billing_granularity"] = serde_json::json!("per_hour");
     body["content"]["reserved_rate_nano_minor"] = serde_json::json!(250_000_000_000_i64);
     body["content"]["reservation_flavor"] = serde_json::json!("burst");
@@ -2190,7 +2193,7 @@ async fn a_row_on_a_plan_this_tenant_does_have_still_lands() {
 fn flat_on_usage_body() -> serde_json::Value {
     let mut body = create_body("EU");
     body["scope_key"]["charge_kind"] = serde_json::json!("usage");
-    body["scope_key"]["meter"] = serde_json::json!("addon_dr");
+    body["scope_key"]["sku_id"] = serde_json::json!(rest_support::resource_sku("addon_dr"));
     body
 }
 
@@ -2342,7 +2345,7 @@ async fn an_edit_into_a_key_contradiction_is_refused_on_patch() {
     // A legal usage row, authored through the route.
     let mut legal = create_body("EU");
     legal["scope_key"]["charge_kind"] = serde_json::json!("usage");
-    legal["scope_key"]["meter"] = serde_json::json!("addon_dr");
+    legal["scope_key"]["sku_id"] = serde_json::json!(rest_support::resource_sku("addon_dr"));
     legal["content"] = serde_json::json!({
         "model_kind": "per_unit",
         "unit_rate_nano_minor": 1_000_000_000_i64,
@@ -2445,112 +2448,218 @@ async fn a_foreign_tenant_cannot_delete_this_tenants_price_row() {
 }
 
 // ---------------------------------------------------------------------------
-// D-372 — the SKU axis the key does not carry yet.
+// D-372 — distinct resource identities sharing a metering unit.
 // ---------------------------------------------------------------------------
 
-/// **D-372's red-before probe: today the *unit* is the identity.**
-///
-/// A usage row is filed under a key whose ninth axis is `meter` — the unit the
-/// line is measured in — and no axis names the **resource** being measured. Two
-/// SKUs that both bill in `GB-hour` therefore render one key, and the request
-/// body has no member that could tell them apart: the two bodies below are
-/// identical because today they *cannot* differ, so the second save is refused
-/// `DUPLICATE_SCOPE_KEY` and the second SKU has no price at all.
-///
-/// It passes today, which is the whole point — it pins the collision where the
-/// change that removes it has to walk past it.
-///
-/// **D-372 does not add `sku_id` beside the meter; it puts it in the meter's
-/// place.** `scope_key.sku_id` *replaces* the meter axis, and `meter` becomes
-/// response-only and derived from the SKU's own registry declaration — an
-/// authored `content.meter` is refused. So three of the five assertions below
-/// move, and Task 12 of the plan is where they move:
-///
-/// * posts A and B become two *different* `sellable = false` SKUs that both
-///   declare `GB-hour`, with no `content.meter` in either body — both answer
-///   201, and the `DUPLICATE_SCOPE_KEY` reason stops being asserted at all;
-/// * the store read-back becomes **2** rows, each carrying the derived
-///   `meter == "GB-hour"`;
-/// * the control **inverts**, because it is aimed at an axis D-372 removes:
-///   "same everything, a different unit, still 201" says nothing once the unit
-///   is not an axis — two rows differing only in their meter would then render
-///   one key. It becomes "the same SKU again, under a fresh idempotency key →
-///   409 `DUPLICATE_SCOPE_KEY`", the collision having moved from the unit to
-///   the resource, with the row count staying 2.
-///
-/// Only the first assertion — that the first row saves — survives untouched.
-/// The case is renamed `two_resource_skus_sharing_a_unit_are_two_rows`.
-///
-/// The complement — that two *different* units are two keys, so the unit is the
-/// only discriminator a usage row has today — is
-/// `two_lines_of_one_market_render_two_distinct_keys`; read together they say
-/// the unit is doing the SKU's job.
 #[tokio::test]
-async fn two_usage_rows_sharing_a_unit_collide_on_the_meter_axis() {
-    let harness = Harness::new().await;
+async fn two_resource_skus_sharing_a_unit_are_two_rows() {
+    let first_sku = Uuid::from_u128(0x3721);
+    let second_sku = Uuid::from_u128(0x3722);
+    let harness =
+        Harness::new_with_catalog(std::sync::Arc::new(rest_support::FixtureCatalog(vec![
+            rest_support::catalog_sku(rest_support::OFFER_SKU, None, true),
+            rest_support::catalog_sku(first_sku, Some("GB-hour"), false),
+            rest_support::catalog_sku(second_sku, Some("GB-hour"), false),
+        ])))
+        .await;
     let plan_id = seeded_plan(&harness).await;
-
-    // One plan, one currency, one region, one phase, one eligibility, no cohort
-    // and no dimension key — every axis but the meter is held still, so the
-    // refusal below is the meter axis and nothing else. The **idempotency keys**
-    // are the one thing that differs, and they have to: two equal keys would be
-    // answered as a replay of the first save and never reach the duplicate-key
-    // guard at all.
-    let post = async |key: &str| {
-        harness
+    for (sku, key) in [
+        (first_sku, "same-unit-first"),
+        (second_sku, "same-unit-second"),
+    ] {
+        let mut body = usage_create_body("EU", "GB-hour");
+        body["scope_key"]["sku_id"] = serde_json::json!(sku);
+        let response = harness
             .allowed()
             .send(with_headers(
                 "POST",
                 &prices_path(plan_id),
-                Some(usage_create_body("EU", "GB-hour")),
+                Some(body),
                 &keyed(key),
             ))
-            .await
-    };
+            .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let response = body_json(response).await;
+        assert_eq!(response["scope_key"]["sku_id"], serde_json::json!(sku));
+        assert_eq!(response["content"]["meter"], "GB-hour");
+    }
+    let mut body = usage_create_body("EU", "GB-hour");
+    body["scope_key"]["sku_id"] = serde_json::json!(first_sku);
+    let duplicate = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(body),
+            &keyed("same-sku-again"),
+        ))
+        .await;
+    assert_eq!(duplicate.status(), StatusCode::CONFLICT);
+    assert_eq!(problem_code(duplicate).await, "DUPLICATE_SCOPE_KEY");
+    let rows = price_rows(&harness, plan_id).await;
+    assert_eq!(rows.len(), 2);
+    assert!(
+        rows.iter()
+            .all(|row| row.row.meter.as_deref() == Some("GB-hour"))
+    );
+}
 
-    let first = post("d372-shared-unit-1").await;
-    assert_eq!(
-        first.status(),
-        StatusCode::CREATED,
-        "the first GB-hour row saves"
-    );
+#[tokio::test]
+async fn authored_meter_including_null_is_refused() {
+    let harness = Harness::new().await;
+    let plan_id = seeded_plan(&harness).await;
+    for (value, key) in [
+        (serde_json::json!("GB-hour"), "meter-string"),
+        (serde_json::Value::Null, "meter-null"),
+    ] {
+        let mut body = usage_create_body("EU", "GB-hour");
+        body["content"]["meter"] = value;
+        let response = harness
+            .allowed()
+            .send(with_headers(
+                "POST",
+                &prices_path(plan_id),
+                Some(body),
+                &keyed(key),
+            ))
+            .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = body_json(response).await;
+        assert_eq!(response["context"]["violations"][0]["type"], "VALIDATION");
+        assert_eq!(response["context"]["violations"][0]["subject"], "meter");
+    }
+    assert!(price_rows(&harness, plan_id).await.is_empty());
+}
 
-    let second = post("d372-shared-unit-2").await;
-    assert_eq!(
-        second.status(),
-        StatusCode::CONFLICT,
-        "the second GB-hour row collides"
-    );
-    let body = body_json(second).await;
-    assert_eq!(
-        body["context"]["reason"],
-        serde_json::json!("DUPLICATE_SCOPE_KEY"),
-        "and it is the canonical key it collides on, not some other 409: {body}"
-    );
-    assert_eq!(
-        price_rows(&harness, plan_id).await.len(),
-        1,
-        "one key, one row: the second SKU's line was never stored"
-    );
+#[tokio::test]
+async fn a_foreign_sellable_sku_is_refused() {
+    let foreign = Uuid::from_u128(0x3723);
+    let harness =
+        Harness::new_with_catalog(std::sync::Arc::new(rest_support::FixtureCatalog(vec![
+            rest_support::catalog_sku(rest_support::OFFER_SKU, None, true),
+            rest_support::catalog_sku(foreign, Some("GB-hour"), true),
+        ])))
+        .await;
+    let plan_id = seeded_plan(&harness).await;
+    let mut body = usage_create_body("EU", "GB-hour");
+    body["scope_key"]["sku_id"] = serde_json::json!(foreign);
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(body),
+            &keyed("foreign-offer"),
+        ))
+        .await;
+    assert_eq!(problem_code(response).await, "ROW_SKU_SELLABLE");
+    assert!(price_rows(&harness, plan_id).await.is_empty());
+}
 
-    // **The control, and it is what makes the refusal above mean anything.** Two
-    // identical bodies would collide on any key at all, so a case that stopped
-    // at the 409 would stay green with the meter axis deleted outright. A row
-    // that differs *only* in its unit lands, which is the axis being live: the
-    // unit is the sole discriminator two usage rows of one market have today,
-    // and that is precisely the job D-372 says belongs to the SKU.
-    let other_unit = harness
+use rest_support::MutableCatalog;
+
+#[tokio::test]
+async fn a_price_write_reads_the_registry_once_and_outage_writes_nothing() {
+    use std::sync::atomic::Ordering;
+    let catalog = std::sync::Arc::new(MutableCatalog::new());
+    let harness = Harness::new_with_catalog(catalog.clone()).await;
+    let plan_id = seeded_plan(&harness).await;
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(usage_create_body("EU", "GB-hour")),
+            &keyed("one-listing"),
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(catalog.reads.load(Ordering::SeqCst), 1);
+    catalog.unavailable.store(true, Ordering::SeqCst);
+    let response = harness
         .allowed()
         .send(with_headers(
             "POST",
             &prices_path(plan_id),
             Some(usage_create_body("EU", "TB-hour")),
-            &keyed("d372-other-unit-1"),
+            &keyed("outage"),
         ))
         .await;
-    assert_eq!(
-        other_unit.status(),
-        StatusCode::CREATED,
-        "a second unit is a second key, so the meter is a live axis"
-    );
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(catalog.reads.load(Ordering::SeqCst), 2);
+    assert_eq!(price_rows(&harness, plan_id).await.len(), 1);
+}
+
+#[tokio::test]
+async fn publish_rechecks_a_sku_that_was_deprecated_after_authoring() {
+    use std::sync::atomic::Ordering;
+    let catalog = std::sync::Arc::new(MutableCatalog::new());
+    let harness = Harness::new_with_catalog(catalog.clone()).await;
+    let plan_id = Uuid::now_v7();
+    let seeded = rest_support::seed_publishable_plan(&harness, plan_id).await;
+    catalog
+        .listing
+        .lock()
+        .expect("fixture mutex")
+        .iter_mut()
+        .find(|sku| sku.sku_id == rest_support::OFFER_SKU)
+        .expect("offer")
+        .status = "deprecated".into();
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &format!("/bss-pricing/v1/plans/{plan_id}/publish"),
+            None,
+            &[("if-match", &seeded.etag())],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(problem_code(response).await, "SKU_NOT_PUBLISHED");
+    assert_eq!(catalog.reads.load(Ordering::SeqCst), 1);
+    assert!(price_rows(&harness, plan_id).await.iter().all(|row| row.lifecycle_state == bss_pricing::domain::lifecycle::LifecycleState::Draft));
+}
+
+#[tokio::test]
+async fn a_successful_create_replays_without_reading_a_changed_or_unavailable_registry() {
+    use std::sync::atomic::Ordering;
+    let catalog = std::sync::Arc::new(MutableCatalog::new());
+    let h = Harness::new_with_catalog(catalog.clone()).await;
+    let plan = seeded_plan(&h).await;
+    let body = usage_create_body("EU", "GB-hour");
+    let first = h
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan),
+            Some(body.clone()),
+            &keyed("registry-independent-replay"),
+        ))
+        .await;
+    assert_eq!(first.status(), StatusCode::CREATED);
+    let original = body_json(first).await;
+    catalog
+        .listing
+        .lock()
+        .expect("listing")
+        .iter_mut()
+        .find(|sku| sku.sku_id == rest_support::resource_sku("GB-hour"))
+        .expect("resource")
+        .status = "deprecated".into();
+    for unavailable in [false, true] {
+        catalog.unavailable.store(unavailable, Ordering::SeqCst);
+        let replay = h
+            .allowed()
+            .send(with_headers(
+                "POST",
+                &prices_path(plan),
+                Some(body.clone()),
+                &keyed("registry-independent-replay"),
+            ))
+            .await;
+        assert_eq!(replay.status(), StatusCode::CREATED);
+        assert_eq!(body_json(replay).await, original);
+        assert_eq!(catalog.reads.load(Ordering::SeqCst), 1);
+    }
+    assert_eq!(price_rows(&h, plan).await.len(), 1);
 }

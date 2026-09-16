@@ -432,7 +432,7 @@ pub fn plan_supersession(
     // The content step, and it is **two** rule sets rather than one. `inst-su-compose`
     // clause (a) says the successor is "the successor draft row on the same canonical
     // scope key (**S3 rules apply** — incl. the D-82/D-98 unit guard)", and only the
-    // guard was being run: `price_row_rules`'s other callers are `run_publish_rules` and
+    // guard was being run: `row_local_rules`'s other callers are `run_publish_rules` and
     // — since D-312 — the price authoring write, which keeps only the write-stage
     // subset. A supersession successor reaches neither —
     // `infra::publish::validated_draft_rows` deliberately excludes a draft on an
@@ -443,7 +443,8 @@ pub fn plan_supersession(
     //
     // One report for both, so an operator gets one document naming every violation
     // rather than the first set's and then, on the next attempt, the second's.
-    let mut report = crate::domain::rules::price_row_rules().run(successor);
+    // D-372: Task 7 threads RowSkuContext here and calls price_row_rules(ctx)
+    let mut report = crate::domain::rules::row_local_rules().run(successor);
     report.absorb(
         crate::domain::rules::supersession_rules().run(&SupersessionPair::new(
             predecessor.clone(),

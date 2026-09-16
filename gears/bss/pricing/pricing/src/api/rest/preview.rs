@@ -433,7 +433,7 @@ fn market_rows<'a>(
 /// **The mirror claim — that a terminal `recurring` row may price in bands — was
 /// asserted here and is false**, which is why the naming predicate no longer asks
 /// about the money without that being a bug fix. `inst-mk-chargekind` (D-18) is
-/// registered in `price_row_rules()` and refuses `graduated`/`volume`/`package` on
+/// registered in `row_local_rules()` and refuses `graduated`/`volume`/`package` on
 /// a `recurring` row (`MODEL_KIND_CHARGEKIND_MISMATCH`; §3 puts tiered per-seat
 /// pricing in Future scope in the same sentence), and `AMOUNT_PLACEMENT_INVALID`
 /// refuses `flat`/`per_unit` — the only kinds a non-usage row may carry — with an

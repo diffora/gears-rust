@@ -1259,22 +1259,20 @@ async fn the_store_itself_refuses_the_second_draft_the_check_can_only_read_for()
         .await
         .expect_err("a second draft on one canonical scope key must not land");
 
-    // **This assertion changed shape with D-196 clause (2), and the change is a
-    // measured property of `SQLite` rather than a weakening chosen here.** It
-    // used to enumerate the nine indexed columns, because `SQLite` names the
-    // colliding *columns* while Postgres names the index. Once the index carries
-    // an **expression** — `COALESCE(meter, '')`, the sentinel that keeps a
-    // nullable `meter` from dissolving the uniqueness of every non-usage key —
-    // `SQLite` stops naming columns at all and names the index instead:
+    // **This assertion has changed shape twice, and each time because `SQLite`'s
+    // message follows the index's form rather than anything chosen here.**
     //
     //     UNIQUE (a, b)                     -> "UNIQUE constraint failed: t.a, t.b"
     //     UNIQUE (a, b, COALESCE(meter,'')) -> "UNIQUE constraint failed: index 'ix'"
     //
-    // measured directly on both forms, 2026-08-06. So the axis list is no longer
-    // available to assert on this engine, and the index **name** is what both
-    // engines now have in common. That is a real cost of the sentinel and it is
-    // recorded on D-196 rather than absorbed silently: a reader who wants to know
-    // which axes the guarantee covers reads the migration, not the error.
+    // measured directly on both forms, 2026-08-06. D-196 clause (2) put the
+    // `COALESCE(meter, '')` sentinel into the index and the message moved to the
+    // second form, so this asserted the index **name**. D-372 took the sentinel
+    // out again — `sku_id` replaced `meter` on the key and it is `NOT NULL`, so
+    // there is no NULL to coalesce — and the message is back to the first form.
+    // The axis list is therefore assertable again, which is the stronger check:
+    // it says *which* axes the guarantee covers instead of only which index
+    // carries it.
     //
     // The rest of the original note stands: this is also why the repository does
     // not turn the violation back into `DUPLICATE_SCOPE_KEY` itself — recognizing
@@ -1286,8 +1284,9 @@ async fn the_store_itself_refuses_the_second_draft_the_check_can_only_read_for()
         "the refusal must be a unique violation, got: {message}"
     );
     assert!(
-        message.contains("uq_pricing_price_scope_key_draft"),
-        "the violated guard must be the draft-plane scope-key index, got: {message}"
+        message.contains("pricing_price.sku_id"),
+        "the violated guard must be the scope-key index, over an axis list that carries the \
+         SKU, got: {message}"
     );
 
     // And the winner is untouched.
@@ -1323,6 +1322,11 @@ async fn insert_bare_draft(
         price_id: Set(price_id),
         tenant_id: Set(tenant()),
         plan_id: Set(plan().get()),
+        // D-372's ninth axis, and it has to be the **fixture's** SKU: the row this
+        // one races is composed through the repository off a key carrying
+        // `SkuId::new(Uuid::from_u128(5))`, and a different value here would be a
+        // different key, which is not the collision under test.
+        sku_id: Set(Uuid::from_u128(5)),
         currency: Set("USD".to_owned()),
         region: Set("EU".to_owned()),
         phase: Set(Uuid::from_u128(0xfa_5e)),
@@ -4024,14 +4028,27 @@ async fn a_grandfathered_generation_may_not_be_superseded() {
 
 /// The line a key names, as the authoring door receives it.
 fn usage_key(meter: Option<&str>, dimension: &str) -> ScopeKey {
-    base_key(ChargeKind::Usage)
-        .with_usage_line(
-            meter
-                .map(|m| Meter::new(m).expect("a non-blank meter"))
-                .as_ref(),
-            DimensionKey::new(dimension),
-        )
-        .expect("a usage key carries its line")
+    ScopeKey::new(
+        plan(),
+        CurrencyCode::new("USD").expect("currency"),
+        Region::new("EU").expect("region"),
+        PhaseId::new(Uuid::from_u128(0xfa_5e)),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Usage,
+        Cohort::None,
+        SkuId::new(Uuid::new_v5(
+            &Uuid::NAMESPACE_OID,
+            meter.unwrap_or("unresolved").as_bytes(),
+        )),
+    )
+    .expect("usage scope")
+    .with_usage_line(
+        meter
+            .map(|m| Meter::new(m).expect("a non-blank meter"))
+            .as_ref(),
+        DimensionKey::new(dimension),
+    )
+    .expect("a usage key carries its line")
 }
 
 /// A usage row's content, carrying the same line its key does.
@@ -4059,7 +4076,7 @@ fn usage_line_content(meter: Option<&str>, dimension: &str) -> PriceContent {
 }
 
 #[tokio::test]
-async fn two_usage_lines_of_one_market_both_author() {
+async fn two_resource_skus_of_one_market_both_author() {
     // D-103's confirmed example, through the door that refused it: the second
     // line used to answer `DUPLICATE_SCOPE_KEY` because both rendered one key.
     let (repo, _provider) = harness().await;
@@ -4129,38 +4146,6 @@ async fn the_occupancy_read_finds_a_meterless_occupant() {
         matches!(err, RepoError::DuplicateScopeKey(_)),
         "the door refuses it by name, not the index by driver error: {err:?}"
     );
-}
-
-#[tokio::test]
-async fn a_metered_line_does_not_occupy_the_meterless_key() {
-    // The other direction of the same filter: the two are different keys, so
-    // neither read may find the other.
-    let (repo, _provider) = harness().await;
-    let scope = AccessScope::for_tenant(tenant());
-
-    repo.create_draft(
-        &scope,
-        tenant(),
-        draft(
-            Uuid::from_u128(0xd1_96_05),
-            usage_key(Some("cloudlets"), ""),
-            usage_line_content(Some("cloudlets"), ""),
-        ),
-    )
-    .await
-    .expect("the metered line takes its own key");
-
-    repo.create_draft(
-        &scope,
-        tenant(),
-        draft(
-            Uuid::from_u128(0xd1_96_06),
-            usage_key(None, ""),
-            usage_line_content(None, ""),
-        ),
-    )
-    .await
-    .expect("the meterless key is free");
 }
 
 #[tokio::test]
@@ -5821,7 +5806,7 @@ async fn the_same_set_publishes_once_the_region_declares_a_category() {
 /// key whose rows lean on a tenant default that has since been cleared.
 ///
 /// `infra::supersession` reads the default itself and passes it here, and no rule
-/// on that path judges it — `plan_supersession` runs `price_row_rules()` and
+/// on that path judges it — `plan_supersession` runs `row_local_rules()` and
 /// `supersession_rules()`, neither of which holds a rounding rule. Before the
 /// refusal below, this froze `NULL` onto a **published** successor and
 /// `trg_pricing_price_append_only` makes it immutable.

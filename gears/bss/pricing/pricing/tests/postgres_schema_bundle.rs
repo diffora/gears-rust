@@ -146,9 +146,9 @@ async fn seed_revision(conn: &DatabaseConnection, plan: &str, revision: i64) {
     must_succeed(
         conn,
         &format!(
-            "INSERT INTO bss.pricing_plan (
+            "INSERT INTO bss.pricing_plan (sku_id,
                 plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc)
-             VALUES ('{plan}', {revision}, '{TENANT}', 'draft', '{ACTOR}', now())"
+             VALUES ('55555555-5555-5555-5555-555555555555', '{plan}', {revision}, '{TENANT}', 'draft', '{ACTOR}', now())"
         ),
     )
     .await;

@@ -1113,7 +1113,7 @@ async fn project_plan_subject(
         plan_id,
         revision,
         lifecycle_state,
-        sku_id: current.sku_id,
+        sku_id: Some(current.sku_id),
         plan_tier: current.plan_tier,
         plan_tier_override: current.plan_tier_override,
         billing_cycle: current.billing_cycle,

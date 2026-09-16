@@ -227,7 +227,7 @@ Horizontal per-partition evaluation with no cross-partition locks on the hot pat
 
 **Cross-cutting normatives** (frozen resolutions from [`SEAMS.md`](./SEAMS.md), binding every slice):
 
-- **Canonical scope key (K1-K5, K6):** selection and non-overlap use the pricing canonical key — eight unconditional axes `(planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind, cohort)` plus, since pricing D-196 (2026-08-06), the usage pair `(meter, dimensionKey)`; `phase` is a `phase_id`; grandfathering selects the generation by the pinned price id's `cohort`. The slice-02 `SelectionKey` carries the full ten (K6 resolved, T-D-35).
+- **Canonical scope key (K1-K5, K6):** selection and non-overlap use the pricing canonical key — eight unconditional axes `(planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind, cohort)` plus, since pricing D-196 (2026-08-06), the usage pair `(skuId, dimensionKey)`; `phase` is a `phase_id`; grandfathering selects the generation by the pinned price id's `cohort`. The slice-02 `SelectionKey` carries the full ten (K6 resolved, T-D-35).
 - **Overlays (O1-O3):** step 4 **stacks** all PriceOverlay survivors; the class-specificity order `customerGroup > partner > orgTier > brand > region > global` breaks ties, not exclusivity.
 - **Snapshot (S1):** one `pricingSnapshotRef`, **four writers** (D-66 producer split; review #10) — the registry commits `catalogVersion`, pricing pre-stamps its catalog subset, Rating (composition SoR) adds overlay/coupon/FX-lock/`commitmentReservation` (T-D-09), Subscriptions freezes the `(currency, region)` binding.
 - **Determinism / corrections (W2, M7):** replay strictly from the pinned snapshot; counter key `(subscription, meter, dimensionKey, window)`.

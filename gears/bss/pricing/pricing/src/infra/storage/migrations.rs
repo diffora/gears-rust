@@ -100,6 +100,7 @@ pub mod m20260821_000040_create_pricing_repricing_journal;
 pub mod m20260821_000041_create_pricing_bundle_revshare;
 pub mod m20260821_000042_create_pricing_price_overlay_line_amount;
 pub mod m20260821_000043_create_pricing_gl_code_taxonomy;
+pub mod m20260916_000044_price_row_sku;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -217,6 +218,12 @@ impl MigratorTrait for Migrator {
             // `m0001_...` name sorts FIRST under the runner's name ordering, so
             // its `up` creates the schema itself before the `CREATE TABLE`.
             Box::new(coord::migration::Migration::in_schema("bss")),
+            // D-372: `pricing_price.sku_id`, `pricing_plan.sku_id NOT NULL` and the
+            // scope-key indexes re-keyed off `meter`. Appended rather than folded
+            // into `m20260821_000023`: that chain is shipped on `main`, so the SKU
+            // arrives as a migration an operator can see refuse, not as a rewrite of
+            // a file their database has already applied.
+            Box::new(m20260916_000044_price_row_sku::Migration),
         ]
     }
 }

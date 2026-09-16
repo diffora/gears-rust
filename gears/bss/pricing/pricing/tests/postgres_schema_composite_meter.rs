@@ -61,8 +61,8 @@ async fn seed_plan(conn: &DatabaseConnection, revision: i64, state: &str) {
         conn,
         &format!(
             "INSERT INTO bss.pricing_plan \
-             (plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc) \
-             VALUES ('{PLAN}', {revision}, '{TENANT}', '{state}', '{ACTOR}', now())"
+             (sku_id, plan_id, revision, tenant_id, lifecycle_state, created_by, created_at_utc) \
+             VALUES ('55555555-5555-5555-5555-555555555555', '{PLAN}', {revision}, '{TENANT}', '{state}', '{ACTOR}', now())"
         ),
     )
     .await;

@@ -51,7 +51,7 @@ async fn seed_plan(provider: &DBProvider<DbError>, tenant: Uuid, plan_id: u128, 
         revision: Set(1),
         tenant_id: Set(tenant),
         lifecycle_state: Set(state.to_owned()),
-        sku_id: Set(Some(SKU)),
+        sku_id: Set(SKU),
         created_by: Set(Uuid::from_u128(0x4444)),
         created_at_utc: Set(now()),
         ..Default::default()
@@ -106,6 +106,8 @@ async fn seed_row(provider: &DBProvider<DbError>, spec: RowSpec<'_>) {
             "none".to_owned()
         }),
         dimension_key: Set(String::new()),
+        // D-372's ninth axis, `NOT NULL` since `m20260916_000044_price_row_sku`.
+        sku_id: Set(Uuid::from_u128(5)),
         tax_inclusive: Set(false),
         lifecycle_state: Set(state.to_owned()),
         created_by: Set(Uuid::from_u128(0x4444)),

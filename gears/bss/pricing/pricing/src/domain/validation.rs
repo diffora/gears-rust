@@ -72,8 +72,7 @@ use toolkit_macros::domain_model;
 /// own rule rather than by this criterion —
 /// [`rules::level_aggregation`](crate::domain::rules::level_aggregation)'s
 /// `aggregationGranularity` and `maxHold` on a usage `sum` row,
-/// [`rules::package`](crate::domain::rules::package)'s `package_size = 0` and its
-/// bands beside blocks, `manual_quantity` without `quantitySource = manual`, and
+/// [`rules::package`](crate::domain::rules::package)'s bands beside blocks, `manual_quantity` without `quantitySource = manual`, and
 /// `AMOUNT_PLACEMENT_INVALID` for money beside a band ladder. Each rests on the
 /// same "a later call adds the intent" reading the amendment rejected for the two
 /// arms above; whether it reaches them is the owner's question, not one to settle
@@ -82,6 +81,9 @@ use toolkit_macros::domain_model;
 /// is and why. That is what the two `model_kind` arms and
 /// [`rules::allowance`](crate::domain::rules::allowance)'s saturating-offset arm
 /// do, and it is the only account of the split this doc can keep true.
+///
+/// D-372 resolves registry operands before validation and refuses complete SKU
+/// contradictions at write. A zero package size also refuses at write.
 ///
 /// **The stage belongs to the violation, not to the rule** — with one exception,
 /// named below because an unnamed exception to a rule stated this flatly is how the

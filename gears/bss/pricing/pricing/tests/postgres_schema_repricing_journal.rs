@@ -78,11 +78,11 @@ fn seed_price(id: &str) -> String {
     // index, which admits one current row per canonical key.
     let phase = if id == SUCCESSOR { PHASE_B } else { PHASE_A };
     format!(
-        "INSERT INTO bss.pricing_price ( \
+        "INSERT INTO bss.pricing_price (sku_id,  \
              price_id, tenant_id, plan_id, currency, region, phase, \
              charge_kind, amount_minor, model_kind, lifecycle_state, \
              created_by, created_at_utc) \
-         VALUES ('{id}', '{TENANT}', '{PLAN}', 'EUR', 'eu', '{phase}', \
+         VALUES ('55555555-5555-5555-5555-555555555555', '{id}', '{TENANT}', '{PLAN}', 'EUR', 'eu', '{phase}', \
              'recurring', 1000, 'flat', 'published', '{ACTOR}', now())"
     )
 }

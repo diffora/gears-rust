@@ -250,7 +250,7 @@ fn no_rule_of_another_slice_is_registered_here() {
     let names: BTreeSet<&str> = pipeline().rule_names().into_iter().collect();
 
     // `billingGranularity` and `tierAggregationWindow` are Slice 3's, already
-    // registered as `EVAL_POLICY_MISSING` in `rules::price_row_rules`;
+    // registered as `EVAL_POLICY_MISSING` in `rules::row_local_rules`;
     // `taxCategory` is each row's Slice-4 `tax_category_ref` (D-110).
     //
     // **`inst-cs-recurring` used to be on this list and is not any more.** Its
@@ -267,7 +267,7 @@ fn no_rule_of_another_slice_is_registered_here() {
     }
     // And the Slice-3 pipeline is still the only home of the row-local rules,
     // which run over a different subject entirely.
-    assert!(!rules::price_row_rules().rule_names().is_empty());
+    assert!(!rules::row_local_rules().rule_names().is_empty());
 }
 
 /// One deliberately awful plan, one report, **every** finding in it.

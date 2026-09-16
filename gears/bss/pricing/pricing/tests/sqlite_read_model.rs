@@ -333,7 +333,11 @@ async fn harness_with(jobs: JobsConfig) -> Harness {
         &LimitsConfig::default(),
         FixtureGate::load(&committed_registry_path()),
         Arc::clone(&registry) as Arc<dyn CatalogVersionRegistryV1>,
-    );
+    )
+    .with_product_catalog(std::sync::Arc::new(common::FixtureCatalog::default()))
+    .resolve_skus(&ctx_of(TENANT))
+    .await
+    .expect("fixture registry");
     Harness {
         plans: PlanRepo::new(provider.clone()),
         shapes: PlanShapeRepo::new(provider.clone()),
@@ -360,7 +364,7 @@ fn plan_draft_of(tenant: Uuid, plan_id: PlanId, tier: &str) -> NewPlanDraft {
         tenant_id: tenant,
         created_by: ACTOR,
         created_at_utc: at(10),
-        sku_id: Some(Uuid::from_u128(0x5_c1)),
+        sku_id: Uuid::from_u128(0x5_c1),
         plan_tier: Some(tier.to_owned()),
         billing_cycle: Some(BillingCycle::Recurring),
         frequency: Some(Frequency::Monthly),
@@ -847,6 +851,21 @@ async fn a_committed_publish_becomes_pinnable_after_one_sweep() {
     assert_eq!(
         rows[0].payload.get("planId"),
         Some(&serde_json::json!(plan_id.get()))
+    );
+
+    assert_eq!(
+        rows[0].payload["skuId"],
+        serde_json::json!(Uuid::from_u128(0x5_c1))
+    );
+    let prices = rows[0].payload["prices"]
+        .as_array()
+        .expect("projected prices");
+    assert!(!prices.is_empty());
+    assert!(
+        prices
+            .iter()
+            .all(|row| row["skuId"] == serde_json::json!(Uuid::from_u128(5))),
+        "row SKUs must not be replaced by the plan SKU"
     );
 
     let stored = refs(&h).await;
@@ -3324,7 +3343,11 @@ async fn a_sweep_with_no_registry_configured_is_inert() {
             &LimitsConfig::default(),
             FixtureGate::load(&committed_registry_path()),
             Arc::clone(&registry) as Arc<dyn CatalogVersionRegistryV1>,
-        ),
+        )
+        .with_product_catalog(std::sync::Arc::new(common::FixtureCatalog::default()))
+        .resolve_skus(&ctx_of(TENANT))
+        .await
+        .expect("fixture registry"),
         frontier: PinFrontierRepo::new(provider.clone()),
         job: ReadModelWarmJob::new(
             provider.clone(),
@@ -3469,6 +3492,8 @@ async fn draft_row_on_the_same_key(h: &Harness, source: &price::Model, draft_id:
         // stayed `recurring` — a usage source would have put the "same key" draft
         // on a different key, silently.
         plan_id: Set(source.plan_id),
+        // Copied off the source row like every other key column beside it.
+        sku_id: Set(source.sku_id),
         currency: Set(source.currency.clone()),
         region: Set(source.region.clone()),
         price_overlay: Set(source.price_overlay.clone()),

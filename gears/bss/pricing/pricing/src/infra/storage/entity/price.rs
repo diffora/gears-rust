@@ -48,6 +48,16 @@ pub struct Model {
     pub tenant_id: Uuid,
     // --- the canonical scope key, normative order (design 4.1) ---
     pub plan_id: Uuid,
+    /// The SKU this row prices (D-372 I1), the key's ninth axis.
+    ///
+    /// `NOT NULL` on Postgres and trigger-enforced on `SQLite`
+    /// (`m20260916_000044_price_row_sku`): the axis has no absent spelling, which
+    /// is what distinguishes it from `meter` below. `meter` used to be the ninth
+    /// axis, indexed through a `COALESCE(meter, '')` sentinel because it is
+    /// nullable; D-372 replaced it here with a column that cannot be absent, so
+    /// the two scope-key indexes name `sku_id` directly and no sentinel stands
+    /// between a value and its key.
+    pub sku_id: Uuid,
     pub currency: String,
     pub region: String,
     /// Always `base` on a row this gear authors; partner / orgTier / brand

@@ -1344,6 +1344,9 @@ async fn seed_plan(provider: &DBProvider<DbError>, plan_id: PlanId, revision: i6
         revision: Set(revision),
         tenant_id: Set(TENANT),
         lifecycle_state: Set(state.to_owned()),
+        // D-372: `pricing_plan.sku_id` is `NOT NULL` since
+        // `m20260916_000044_price_row_sku`.
+        sku_id: Set(Uuid::from_u128(5)),
         created_by: Set(Uuid::from_u128(0x4444)),
         created_at_utc: Set(utc_ymd_hms(2099, 1, 1, 0, 0, 0)),
         ..Default::default()
@@ -1957,4 +1960,66 @@ async fn a_page_boundary_inside_an_overlay_keeps_its_later_revisions() {
             .map(|row| (row.price_overlay_id, row.revision))
             .collect::<Vec<_>>()
     );
+}
+
+#[tokio::test]
+async fn overlay_sku_targets_come_from_published_resource_rows() {
+    use bss_pricing::domain::overlay::TargetSku;
+    use bss_pricing::infra::storage::entity::price;
+    let provider = provider().await;
+    seed_plan(&provider, plan(1), 0, "published").await;
+    let resource = Uuid::from_u128(0x372);
+    let conn = provider.conn().expect("connection");
+    let row = price::ActiveModel {
+        price_id: Set(Uuid::from_u128(0x372_1)),
+        tenant_id: Set(TENANT),
+        plan_id: Set(plan(1).get()),
+        sku_id: Set(resource),
+        currency: Set("USD".to_owned()),
+        region: Set("eu".to_owned()),
+        phase: Set(Uuid::from_u128(0xf1)),
+        charge_kind: Set("usage".to_owned()),
+        meter: Set(Some("GB-hour".to_owned())),
+        lifecycle_state: Set("published".to_owned()),
+        created_by: Set(Uuid::from_u128(0x4444)),
+        created_at_utc: Set(utc_ymd_hms(2099, 1, 1, 0, 0, 0)),
+        ..Default::default()
+    };
+    price::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(&AccessScope::allow_all(), &row)
+        .expect("scope")
+        .exec(&conn)
+        .await
+        .expect("resource row");
+    let repo = OverlayRepo::new(provider);
+    let scope = AccessScope::allow_all();
+    repo.create(
+        &scope,
+        new_overlay(OVERLAY, 10),
+        vec![percent_line(
+            LINE_A,
+            LineKey::for_sku(plan(1), TargetSku::new(resource).expect("SKU")),
+            1000,
+        )],
+        stamp(),
+    )
+    .await
+    .expect("overlay");
+    let record = repo
+        .load(&scope, TENANT, OVERLAY, 0)
+        .await
+        .expect("read")
+        .expect("exists");
+    let world = repo
+        .world_for(&scope, TENANT, &record)
+        .await
+        .expect("world");
+    let targets = world
+        .published_skus
+        .get(&plan(1))
+        .expect("published resource");
+    assert!(targets.contains(&TargetSku::new(resource).expect("SKU")));
+    assert!(!targets.contains(&TargetSku::new(Uuid::from_u128(5)).expect("plan SKU")));
+    assert!(!targets.contains(&TargetSku::new(Uuid::from_u128(0x999)).expect("unknown SKU")));
 }

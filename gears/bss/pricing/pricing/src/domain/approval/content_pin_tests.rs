@@ -317,7 +317,7 @@ fn base() -> PlanShape {
         constituent_units: vec!["vcpu-hour".to_owned(), "ram-gb-hour".to_owned()],
         formula: serde_json::json!({ "op": "weighted_sum", "weights": [1, 1] }),
     }];
-    shape.sku_id = Some(Uuid::from_u128(0x5_c1));
+    shape.sku_id = Uuid::from_u128(0x5_c1);
     shape.billing_cycle = Some(BillingCycle::Recurring);
     shape.frequency = Some(Frequency::CustomEveryN {
         n: 7,
@@ -470,8 +470,8 @@ fn plan_level_mutators() -> Vec<Mutator> {
         // a `sku_id` outside the digest is a plan that can be pointed at another
         // SKU between the reviewer's sign-off and the commit with every digest
         // equal.
-        ("sku_id", |s| s.sku_id = Some(Uuid::from_u128(0x5_c2))),
-        ("sku_id -> None", |s| s.sku_id = None),
+        ("sku_id", |s| s.sku_id = Uuid::from_u128(0x5_c2)),
+        ("sku_id -> nil", |s| s.sku_id = Uuid::nil()),
         ("billing_cycle", |s| {
             s.billing_cycle = Some(BillingCycle::Hybrid);
         }),
@@ -1764,7 +1764,7 @@ fn overlay_base() -> OverlayRevision {
                 line_id: Uuid::from_u128(0x0_c1),
                 key: LineKey::for_sku(
                     PlanId::new(Uuid::from_u128(1)),
-                    TargetSku::new("sku-a").expect("a non-blank sku"),
+                    TargetSku::new(Uuid::from_u128(0xa)).expect("a non-blank sku"),
                 ),
                 adjustment: Adjustment::Discount(Magnitude::PercentBp(1000)),
             },
@@ -1827,13 +1827,13 @@ fn every_field_of_an_overlay_revision_moves_the_pin() {
         ("lines.key.plan_id", |o| {
             o.lines[0].key = LineKey::for_sku(
                 PlanId::new(Uuid::from_u128(2)),
-                TargetSku::new("sku-a").expect("a non-blank sku"),
+                TargetSku::new(Uuid::from_u128(0xa)).expect("a non-blank sku"),
             );
         }),
         ("lines.key.target_sku", |o| {
             o.lines[0].key = LineKey::for_sku(
                 PlanId::new(Uuid::from_u128(1)),
-                TargetSku::new("sku-b").expect("a non-blank sku"),
+                TargetSku::new(Uuid::from_u128(0xb)).expect("a non-blank sku"),
             );
         }),
         ("lines.key.cohort", |o| {

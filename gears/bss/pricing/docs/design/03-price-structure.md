@@ -166,8 +166,8 @@ model — `modelKind`, ordered bands, `packageSize`/`packagePrice`,
 - Precision above the currency's ISO 4217 minor unit → `PRECISION_EXCEEDED` (422, Foundation)
 
 **Steps**:
-1. [ ] - `p1` - API: POST /bss-pricing/v1/plans/{planId}/prices (draft row; idempotency key honored; scope-key axes defaulted by the Foundation `ScopeKey`) - `inst-pr-create`
-2. [ ] - `p1` - Persist `modelKind` + kind-specific fields (bands / package / `quantitySource`); shared amount/currency/precision checks run in the Foundation - `inst-pr-fields`
+1. [ ] - `p1` - API: POST /bss-pricing/v1/plans/{planId}/prices (draft row; idempotency key honored; required `scope_key.sku_id`; remaining scope-key defaults follow Foundation `ScopeKey`) - `inst-pr-create`
+2. [ ] - `p1` - Persist required row `sku_id`, derived frozen `meter`, `modelKind` + kind-specific fields (bands / package / `quantitySource`); shared amount/currency/precision checks run in the Foundation - `inst-pr-fields`
 3. [ ] - `p1` - PATCH while `draft`; published rows are append-only (change = supersession, Foundation §4.3) - `inst-pr-mutate`
 4. [ ] - `p1` - **RETURN** 201 (draft row, ETag). **Validation split (D-21):** all **row-local** checks run at save *and* re-run at publish — model-kind shape (explicit kind, kind×chargeKind matrix, required/forbidden fields), band-set geometry (ordering, overlap, gap/contiguity, zero-width, open top), precision, evaluation-policy placement, scope-key duplication (PRD AC #12's "save/publish MUST fail" for band geometry is satisfied at save). **Aggregate/cross-entity** checks run at publish only: fixtures, window coverage, phase coverage, hybrid completeness, meter injectivity - `inst-pr-return`
 
@@ -181,19 +181,7 @@ model — `modelKind`, ordered bands, `packageSize`/`packagePrice`,
 only, at the authoring write** (D-312)
 **Output**: pass, or enumerated fail-closed violations
 
-**Stage (D-312).** Every step below runs at the publish pre-check, unchanged. The
-steps marked **`@write`** *also* run on `POST`/`PATCH` of a price row and refuse the
-request there with the same enumerated envelope. A step qualifies for `@write` when
-**all of its operands are present in the request and one of them is an immutable
-component of the scope key** — `chargeKind` above all — the key being uneditable
-after create (`PatchPriceRequest.scope_key`, when present, must equal the stored
-one). Such a request is complete and knowably unpublishable when it arrives, and the
-only call that resolves it retracts the field just sent rather than adding anything.
-A step whose fault is an **absent** operand never qualifies, and neither does one
-whose operands are all mutable content: both are resolved by a later call that adds
-information, which is the multi-call assembly §4.2 exists to protect. So tier bands
-on a `flat` row stay at publish — `model_kind: graduated` resolves that — while
-`billingGranularity` on a `recurring` row does not, because `recurring` is fixed.
+**Stage (D-312, amended by D-372).** Publish runs the complete row pipeline. The `@write` subset also runs at authoring: a complete contradictory value is refused then, whether the field is mutable or part of the frozen key. Missing content that a later edit can complete remains publish-stage. Registry-backed SKU rules are also `@write`: one tenant-scoped registry listing supplies their external operands, and the parent plan supplies its own SKU. Publish rechecks those facts and the derived meter.
 
 **Steps**:
 1. [ ] - `p1` - `modelKind ∈ {flat, per_unit, graduated, volume, package}` MUST be explicit; a tiered row with no kind MUST NOT publish ("tiered (unspecified)" is not publishable, §17.1); no implicit default exists at rating time - `inst-mk-explicit`
@@ -201,6 +189,15 @@ on a `flat` row stay at publish — `model_kind: graduated` resolves that — wh
 3. [ ] - `p1` - **Kind-specific forbidden fields**: tier-band fields absent on `flat`/`per_unit`/`package` (publish-stage: both operands are content); **`@write` (D-312)** — `tierAggregationWindow`/`billingGranularity` are **usage-row only** — presence on `flat` (never a usage row — see 3a) or `per_unit` **non-usage** rows is refused at the authoring write and fails publish with `EVAL_POLICY_MISPLACED` (§17.4 evaluation-policy placement; a `per_unit` usage row carries `billingGranularity` like every usage row — 2026-07-28 review fix) - `inst-mk-forbidden`
 3a. [ ] - `p1` - **`@write` (D-312). Kind×chargeKind matrix (D-18; completed 2026-07-28 review fix, confirmed 2026-07-31)** — the full legality matrix: `flat` and `per_unit` are legal on **non-usage** rows; `per_unit`, `graduated`, `volume`, `package` are legal on **`usage`** rows (a `per_unit` usage row is the plain untiered metered rate — unit price × metered `Q`, `billingGranularity` required like every usage row, no `quantitySource`); `flat` on a `usage` row, and `graduated`/`volume`/`package` on a `recurring`/`one_time`/`one_time_setup` row, fail publish (`MODEL_KIND_CHARGEKIND_MISMATCH`): the tier machinery presupposes a metered quantity stream, and no `Q` semantics exist for non-usage rows. Tiered per-seat pricing (bands over seat count on recurring rows) is Future scope (§17.8) - `inst-mk-chargekind`
 4. [ ] - `p1` - The catalog computes **no** charge: kinds are flags Tariffs maps to formulas one-to-one per §17.2; catalog `volume` = Variant A only (Q3) - `inst-mk-nocompute`
+
+**Row SKU binding (D-372), at write and publish:**
+
+1. [ ] - `p1` - The row's `sku_id` must occur as published in the registry read model; otherwise `SKU_NOT_PUBLISHED` - `inst-pr-sku-published`
+2. [ ] - `p1` - A row names either the plan's own SKU or a SKU with `sellable = false`; another sellable offer is `ROW_SKU_SELLABLE` - `inst-pr-sku-sellability`
+3. [ ] - `p1` - Usage requires a metering unit (`USAGE_ROW_SKU_UNMETERED` otherwise); recurring and one-time fee rows require no metering unit (`FEE_ROW_SKU_METERED` otherwise) - `inst-pr-sku-metered`
+4. [ ] - `p1` - Derive `meter` from the selected SKU at save, refuse authored meter as `VALIDATION` subject `meter`, and verify stored meter against that SKU at publish (`METER_SKU_MISMATCH`) - `inst-pr-meter-derived`
+
+Fee authoring defaults to the plan's own unmetered SKU. A dedicated unmetered, unsellable fee SKU is optional for a fee shared across plans or carrying distinct registry facts. This is authoring guidance, not a mandate to create another SKU.
 
 ### Tier-Band Validation
 
@@ -292,8 +289,7 @@ shape: the whole rule set sat at the publish pre-check, and this plane refused o
 what the store itself decides — a duplicate canonical scope key, a stale entity tag,
 a horizon off its eligibility class, an instant finer than the quantum, a value past
 its column, an edit of a frozen row. **It now also runs the `@write` subset of §3's
-row rules** — the steps whose operands are all present in the request with one of
-them an immutable component of the scope key — and refuses a tripping request with
+row rules** — complete contradictions in authored values and the registry-backed SKU rules (D-372) — and refuses a tripping request with
 the same enumerated violation envelope the publish pre-check returns, rather than a
 single message. Two shapes on one surface is deliberate: a client already parsing the
 publish report parses this unchanged, and folding a multi-violation report into one
@@ -301,7 +297,7 @@ line would hide the second fault behind the first. The publish pre-check still r
 the **whole** set including this subset — the write-side check is an earlier refusal,
 never a replacement, and §4.2's commit-time re-validation is untouched.
 
-**Problem responses (RFC 9457):** `MODEL_KIND_MISSING` (422), `TIER_BANDS_OVERLAP` /
+**Problem responses (RFC 9457):** `SKU_NOT_PUBLISHED`, `USAGE_ROW_SKU_UNMETERED`, `FEE_ROW_SKU_METERED`, `ROW_SKU_SELLABLE`, `METER_SKU_MISMATCH` (422); authored `meter` is `VALIDATION` (400). `MODEL_KIND_MISSING` (422), `TIER_BANDS_OVERLAP` /
 `TIER_BANDS_GAP` (422 — including a tiered row carrying **no bands at all**, and a first band that does not start at the quantity origin: both are the same fault, a quantity the row prices nowhere; 2026-08-02 clarification), `TIER_BAND_EMPTY` (422 — `toQty ≤ fromQty` on a non-open band),
 `TIER_TOP_CLOSED` (422 — the top band must be open; capping belongs to quotas / per-period caps, D-17), `PACKAGE_FIELDS_INVALID` (422),
 `EVAL_POLICY_MISPLACED` (422 — an evaluation-policy or quantity field on a row whose shape does not admit it; **this is also the code for the two directions the rule statements left unnamed** (2026-08-02, found implementing): tier bands present on `flat`/`per_unit`/`package`, and `quantitySource` present on a `per_unit` **usage** row or `manual_quantity` without `quantitySource = manual`. `QUANTITY_SOURCE_MISSING` covers only the absent direction, and a field that may not be there is a placement fault, not a missing one), `MODEL_KIND_CHARGEKIND_MISMATCH` (422 — `graduated`/`volume`/`package` on a non-usage row, or `flat` on a usage row; D-18 + 2026-07-28 review fix), `TIER_AGG_WINDOW_INCOMPATIBLE` (422 — `tierAggregationWindow = per_hour` beside `billingGranularity = per_day`: one billable unit would span twenty-four of the windows meant to band it independently; D-313. Its own code rather than `EVAL_POLICY_MISPLACED` because both values are authorable and each is correct alone — the fault is the pair, which is the shape the tier-qualification pairing rule already minted `TIER_QUAL_WINDOW_INCOMPATIBLE` for — see `design/10-advanced-primitives.md`. **The refusal is judged on any usage row carrying both values, tiered or not, and since 2026-08-15 it is no longer escapable by omission on one class of row (D-317 clause (1)):** a `per_unit` row compiled into a ladder by an `includedAllowance` now owes a `tierAggregationWindow` per `inst-tb-window`, so clearing the window — which used to leave such a row publishable — answers `EVAL_POLICY_MISSING` instead, and the two remedies D-313's own message names are the ones that remain. D-313 argued the pair over an operator-authored ladder and never over a compiled one; the reading holds unchanged, because what a compiled `[0, N) @ $0` opening band bounds per hour is the **allowance**, which under `per_day` units would be re-granted twenty-four times inside one billable unit), `EVAL_POLICY_MISSING` (422 — `tierAggregationWindow` unset on a
@@ -424,7 +420,7 @@ re-enters (a list that can drift is a guard that differs):
 | `aggregation_granularity` | `enum` | `hour (default) \| day`; non-`sum` rows only (D-44); the granule of the rating-side fold |
 | `max_hold_granules` | `bigint` | `≥ 1`; REQUIRED on non-`sum` rows, forbidden otherwise (D-44 `hold_last` bound — beyond it the level reads 0 + operator signal, rating-side); frozen in snapshot. `bigint` like every other count on this row (2026-08-02 type fix — the earlier `int` was the only narrow count here, and the bound that matters is `LEVEL_FIELDS_INVALID`'s, so the width must never be the thing that refuses a value) |
 | `meter` | `ref` | the published `meteringUnit` a usage row prices; feeds the Slice-2 injectivity rule |
-| `dimension_key` | `text` | dimension discriminator on the `(meter, dimensionKey)` line (Slice-2 injectivity); **`NOT NULL DEFAULT ''`** — the empty string is the "empty tuple" sentinel, so the Slice-2 injectivity partial `UNIQUE` collides undimensioned rows instead of treating them as distinct NULLs (2026-07-28 review fix, confirmed 2026-07-31). Launch posture (SEAMS M6 joint wording, closed 2026-07-28): *declaration + freeze are in scope now (the catalog persists `dimension_key` structurally, Rating freezes the declared set in the snapshot); pricing dimension **values** are OSS-emission-gated* — rating design/03 §4.2 carries the same sentence |
+| `dimension_key` | `text` | dimension discriminator on the `(skuId, dimensionKey)` line (Slice-2 injectivity); **`NOT NULL DEFAULT ''`** — the empty string is the "empty tuple" sentinel, so the Slice-2 injectivity partial `UNIQUE` collides undimensioned rows instead of treating them as distinct NULLs (2026-07-28 review fix, confirmed 2026-07-31). Launch posture (SEAMS M6 joint wording, closed 2026-07-28): *declaration + freeze are in scope now (the catalog persists `dimension_key` structurally, Rating freezes the declared set in the snapshot); pricing dimension **values** are OSS-emission-gated* — rating design/03 §4.2 carries the same sentence |
 
 **Row descriptor DTO and freeze (D-373):** `PriceRow` / `PriceContent` and row requests
 (`PriceContentView`) gain optional `invoice_line_template` and `gl_code_ref`; `PriceRecord`

@@ -15,7 +15,7 @@ use crate::domain::price_row::{
 };
 use crate::domain::publish::rules::PRIMITIVE_RULES_UNBUILT;
 use crate::domain::rules::{
-    AMOUNT_PLACEMENT_INVALID, MODEL_KIND_CHARGEKIND_MISMATCH, price_row_rules,
+    AMOUNT_PLACEMENT_INVALID, MODEL_KIND_CHARGEKIND_MISMATCH, row_local_rules,
 };
 use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
@@ -510,7 +510,7 @@ fn a_content_against_content_fault_is_left_where_publish_can_still_see_it() {
     // row that simply has nothing wrong with it — the failure mode this file's own
     // preamble names.
     let judged = authored_content(&metered("eu"), misplaced_money.clone()).row;
-    let full = price_row_rules().run(&judged);
+    let full = row_local_rules().run(&judged);
     assert!(
         full.violations
             .iter()

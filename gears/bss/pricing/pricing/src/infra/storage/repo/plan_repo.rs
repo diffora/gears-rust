@@ -158,7 +158,7 @@ pub struct NewPlanDraft {
     /// When the request was authored, UTC.
     pub created_at_utc: OffsetDateTime,
     /// The catalog SKU this plan realizes, when one is bound.
-    pub sku_id: Option<Uuid>,
+    pub sku_id: Uuid,
     /// The plan's tier.
     pub plan_tier: Option<String>,
     /// The plan's human label (D-318), or `None` when it has never been named.

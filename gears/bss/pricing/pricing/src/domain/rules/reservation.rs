@@ -12,7 +12,7 @@
 //!
 //! It also puts them where the **joint corpus** can reach them.
 //! `examples/regen_registry/validator.rs` answers the corpus's publish cases by
-//! running [`price_row_rules`](super::price_row_rules) and then the supersession
+//! running [`row_local_rules`](super::row_local_rules) and then the supersession
 //! guard; it never assembles a `PlanShape`. A reservation rule registered into
 //! the plan set would therefore have been unreachable from
 //! `corpus/reserved/consumption-on-level-rejected.toml` — the case whose whole

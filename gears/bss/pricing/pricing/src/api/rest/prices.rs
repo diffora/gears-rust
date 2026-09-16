@@ -204,6 +204,8 @@ const AUTHORING_STATES: &[LifecycleState] = &[LifecycleState::Draft, LifecycleSt
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(request, response)]
 pub struct ScopeKeyRequest {
+    /// Registry identity of the priced resource or offer.
+    pub sku_id: Uuid,
     /// ISO 4217 currency.
     pub currency: String,
     /// The pricing region.
@@ -221,21 +223,15 @@ pub struct ScopeKeyRequest {
     pub cohort: Option<OffsetDateTime>,
 }
 
-/// The ten axes as the store holds them.
-///
-/// **Two more members than [`ScopeKeyRequest`], and the asymmetry is D-196's.**
-/// The usage line is authored on the *content* view — a request naming it on the
-/// key would be a second place to state one fact — so `ScopeKeyRequest` has no
-/// `meter` and no `dimension_key`, while the key a row is **filed under** carries
-/// both. This view is the store's rendering, not an echo of the request, and
-/// rendering eight answers two rows on two meters of one market with
-/// byte-identical `scope_key` objects — a reviewer reading the approval surface
-/// sees one key twice and no way to tell which line they are approving.
+/// The frozen canonical key. SKU identifies the resource; the registry-derived
+/// metering unit is rendered only in the row content.
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(response)]
 pub struct ScopeKeyView {
     /// Axis 1.
     pub plan_id: Uuid,
+    /// Registry identity of the priced resource or offer.
+    pub sku_id: Uuid,
     /// Axis 2.
     pub currency: String,
     /// Axis 3.
@@ -251,14 +247,6 @@ pub struct ScopeKeyView {
     /// Axis 8, `null` when the row retains nobody.
     #[serde(default, with = "rfc3339::option")]
     pub cohort: Option<OffsetDateTime>,
-    /// The metering unit, `null` on a row that is not metered (D-196).
-    ///
-    /// **No longer an axis of the key it is rendered beside** (D-372): axis 9 is
-    /// the SKU, and the unit is derived from the SKU's registry declaration and
-    /// carried on the row. The member keeps its place and its spelling until the
-    /// `sku_id` member lands beside it, and is filled from the row's column by
-    /// [`ScopeKeyView::of`] — a key on its own cannot answer it.
-    pub meter: Option<String>,
     /// Axis 10 — the dimension discriminator on the line, `null` for the
     /// undimensioned one (D-196).
     ///
@@ -269,16 +257,12 @@ pub struct ScopeKeyView {
 }
 
 impl ScopeKeyView {
-    /// The key's axes, with the row's `meter` column carried in beside them.
-    ///
-    /// `meter` is a **parameter** rather than a field of the key since D-372:
-    /// the key carries a `sku_id` there now, and the unit it renders is the
-    /// row's derived column. A caller holding only a key — `PinnedWindowsView`,
-    /// whose subject is a key's windows and not a row — passes `None`, which is
-    /// what a key without a row can honestly say.
-    pub(crate) fn of(key: &ScopeKey, meter: Option<&str>) -> Self {
+    /// Render the key identity. The legacy meter argument is ignored; meter is
+    /// response-only content and cannot be reconstructed from a key alone.
+    pub(crate) fn of(key: &ScopeKey, _meter: Option<&str>) -> Self {
         Self {
             plan_id: key.plan_id().get(),
+            sku_id: key.sku_id().as_uuid(),
             currency: key.currency().as_str().to_owned(),
             region: key.region().as_str().to_owned(),
             price_overlay: key.price_overlay().as_str().to_owned(),
@@ -286,7 +270,6 @@ impl ScopeKeyView {
             price_eligibility: key.price_eligibility().as_str().to_owned(),
             charge_kind: key.charge_kind().as_str().to_owned(),
             cohort: key.cohort().generation(),
-            meter: meter.map(str::to_owned),
             dimension_key: (!key.dimension_key().is_none())
                 .then(|| key.dimension_key().as_str().to_owned()),
         }
@@ -367,6 +350,11 @@ pub struct PriceContentView {
     /// The manual quantity, on a `manual` source.
     pub manual_quantity: Option<u64>,
     /// The meter a usage row prices.
+    #[serde(
+        default,
+        deserialize_with = "authored_meter",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub meter: Option<String>,
     /// The priced dimension within the meter; absent on a whole-meter line, as
     /// it is on the scope key this row's view carries beside it.
@@ -797,15 +785,10 @@ async fn create_price(
     let client_key = preconditions::idempotency_key(&headers)?;
     let request_hash = preconditions::request_digest(&body)?;
     let key = scope_key_of(plan_id, &body.scope_key)?;
-    let content = content_of(&body.content)?;
-    // D-312. Without it an author is answered 201 and learns at publish, possibly
-    // from a different person on a different day.
-    //
-    // Ahead of the idempotency gate because every operand is in the request: the
-    // same body answers the same way however many times it arrives, so a replay
-    // reaching it reaches the same verdict the first call did. The two guards
-    // that read the *world* cannot say that, and sit inside the guarded body.
-    require_no_key_contradiction(&key, &content)?;
+    let mut content = content_of(&body.content)?;
+    // Conversion depends only on this request. Catalog and parent-plan facts are
+    // resolved inside the guarded producer, so successful retries replay the
+    // stored response even if the registry has changed or become unavailable.
     let now = OffsetDateTime::now_utc();
 
     let guard = GuardedRequest {
@@ -818,6 +801,7 @@ async fn create_price(
     };
     let scope_for_body = scope.clone();
     let actor = ctx.subject_id();
+    let catalog = Arc::clone(&state.catalog);
     let outcome = idempotent::guarded(
         &state.db,
         &state.idempotency,
@@ -825,31 +809,17 @@ async fn create_price(
         guard,
         move |txn: &DbTx<'_>| -> TxFuture<'_, PriceRecord> {
             Box::pin(async move {
-                // **Inside the guarded body, and on this transaction's runner.**
-                // Both read world state, so ahead of the gate their operands are
-                // re-read on a retry and judged against a world that has moved
-                // since the call they are guarding: a region retired between the
-                // create and its retry answered `REGION_UNKNOWN` for a row already
-                // filed, telling the caller their write never happened while the
-                // recorded 201 sat unread in the dedup cell. That is the inversion
-                // the mandatory `Idempotency-Key` exists to prevent, and
-                // `customer_groups::create_membership` states it at length. A
-                // replay does not reach this closure at all.
-                //
-                // Only the region half has a reachable inversion — no DELETE is
-                // permitted on `pricing_plan`, so a plan that existed still does.
-                // The plan read moves anyway: it is the same class, and left
-                // outside it is a round trip every replay pays for an answer it
-                // will not use.
-                //
-                // The plan first: a row whose plan does not exist has no subject,
-                // so asking whether its region is declared is asking about nothing.
-                //
-                // Still two guards in series and still not redundant: the
-                // publish-time `RegionsDeclared` is what holds against a region
-                // retired between this save and the publish, which no save-time
-                // read can see.
-                require_existing_plan(txn, &scope_for_body, tenant, plan_id).await?;
+                let sku_context = authoring_sku_context(
+                    txn,
+                    catalog.as_ref(),
+                    &ctx,
+                    &scope_for_body,
+                    tenant,
+                    plan_id,
+                )
+                .await?;
+                derive_meter(&mut content, &key, &sku_context.index);
+                require_no_key_contradiction(&key, &content, sku_context)?;
                 require_declared_region(txn, &scope_for_body, tenant, &key).await?;
                 // Minted inside the guarded body for the reason the plan create
                 // states: a replay must answer the FIRST caller's id.
@@ -979,7 +949,14 @@ async fn patch_price(
             )));
         }
     }
-    let content = content_of(&body.content)?;
+    let mut content = content_of(&body.content)?;
+    let conn = state
+        .db
+        .conn()
+        .map_err(|e| DomainError::Internal(format!("price authoring connection: {e}")))?;
+    let sku_context =
+        authoring_sku_context(&conn, state.catalog.as_ref(), &ctx, &scope, tenant, plan_id).await?;
+    derive_meter(&mut content, &stored.scope_key, &sku_context.index);
     // The stored key, because the key is immutable and the block above has already
     // refused a body that names a different one. `PATCH` carries the check as well
     // as `POST` because an existing row is edited through it, and covering the
@@ -989,7 +966,7 @@ async fn patch_price(
     // report rather than through this handler (D-312, "Three doors, not two"). The
     // decision entry used to assert that import could not land such a row, which was
     // measured false — so do not read this pair as exhaustive.
-    require_no_key_contradiction(&stored.scope_key, &content)?;
+    require_no_key_contradiction(&stored.scope_key, &content, sku_context)?;
 
     let updated = state
         .prices
@@ -1214,48 +1191,6 @@ fn price_location(plan_id: PlanId, price_id: Uuid) -> String {
 // tables would be two answers to the same question.
 // ---------------------------------------------------------------------------
 
-/// The plan the path names has to exist for this tenant.
-///
-/// The route files a row under `plan_id`, and every read of a price row goes
-/// *through* the plan — so a row whose plan does not exist is a row nothing can
-/// ever reach. Without this the surface answered 201 and the operator found out
-/// at publish, or never.
-///
-/// **Not a tenancy check, though it looks like one.** The scope filter has
-/// already removed rows this caller may not see, so a foreign plan id and an
-/// invented one are indistinguishable here by construction: both resolve to
-/// `None`, both answer 404, and neither confirms that some other tenant owns the
-/// id. That property is what keeps this guard from becoming an existence oracle,
-/// and it is pinned in the e2e suite rather than only asserted here, because it
-/// is a claim about two responses being *equal* and no single-request test can
-/// see it.
-///
-/// The generic `NotFound` rather than a minted code: D-146's posture is that a
-/// wire code the design set declares must not end up in two spellings, and this
-/// refusal is the plain "the thing you named is not here".
-///
-/// # Errors
-/// [`DomainError::NotFound`] when the plan is not this tenant's;
-/// [`DomainError::Internal`] on a storage failure.
-async fn require_existing_plan(
-    runner: &impl toolkit_db::secure::DBRunner,
-    scope: &toolkit_db::secure::AccessScope,
-    tenant: Uuid,
-    plan_id: PlanId,
-) -> Result<(), DomainError> {
-    let exists =
-        crate::infra::storage::repo::plan_repo::max_revision_on(runner, scope, tenant, plan_id)
-            .await
-            .map_err(|e| repo_failure(&e))?;
-    if exists.is_none() {
-        return Err(DomainError::NotFound {
-            subject: "plan".to_owned(),
-            id: plan_id.get().to_string(),
-        });
-    }
-    Ok(())
-}
-
 /// Refuse a row whose `region` is not an **active** value of the tenant's region
 /// taxonomy (`inst-mc-region`, §2 step 2, C2).
 ///
@@ -1320,14 +1255,13 @@ async fn require_declared_region(
 fn require_no_key_contradiction(
     key: &ScopeKey,
     content: &PriceContent,
-) -> Result<(), CanonicalError> {
+    sku_context: crate::domain::row_sku_rules::RowSkuContext,
+) -> Result<(), DomainError> {
     let subject = price_repo::authored_content(key, content.clone()).row;
-    let report = crate::domain::rules::price_row_rules().run(&subject);
+    let report = crate::domain::rules::price_row_rules(sku_context).run(&subject);
     match report.write_stage_only() {
         None => Ok(()),
-        Some(write_stage) => Err(CanonicalError::from(DomainError::ValidationFailed(
-            write_stage,
-        ))),
+        Some(write_stage) => Err(DomainError::ValidationFailed(write_stage)),
     }
 }
 
@@ -1354,8 +1288,7 @@ pub(crate) fn scope_key_of(
             ChargeKind::as_str,
         )?,
         key.cohort.map_or(Cohort::None, Cohort::Generation),
-        // D-372 shim: Task 6a (storage) / Task 7 (DTO) supply the real value
-        SkuId::new(Uuid::nil()),
+        SkuId::new(key.sku_id),
     )
 }
 
@@ -1373,6 +1306,15 @@ pub(crate) fn scope_key_of(
 /// `refuse_unlanded_primitives`, which is the one guard a divergence there would
 /// silently drop.
 pub(crate) fn content_of(view: &PriceContentView) -> Result<PriceContent, DomainError> {
+    if view.meter.is_some() {
+        let mut report = crate::domain::validation::ValidationReport::default();
+        report.violate_at_write(
+            "VALIDATION",
+            "meter",
+            "meter is derived from scope_key.sku_id and is not accepted on write (D-372)",
+        );
+        return Err(DomainError::ValidationFailed(report));
+    }
     refuse_unlanded_primitives(view)?;
     let bands = view
         .bands
@@ -1412,7 +1354,7 @@ pub(crate) fn content_of(view: &PriceContentView) -> Result<PriceContent, Domain
         manual_quantity: view.manual_quantity,
         // D-372 shim: Task 6a (storage) / Task 7 (DTO) supply the real value
         sku_id: SkuId::new(Uuid::nil()),
-        meter: view.meter.clone(),
+        meter: None,
         dimension_key: view.dimension_key.clone().unwrap_or_default(),
         billing_granularity: optional_token(
             "content.billing_granularity",
@@ -1741,3 +1683,44 @@ fn wire_token<T: Copy>(
 #[cfg(test)]
 #[path = "prices_tests.rs"]
 mod prices_tests;
+
+pub(crate) use crate::infra::row_sku::{derive_meter, sku_index};
+
+async fn authoring_sku_context(
+    runner: &impl toolkit_db::secure::DBRunner,
+    catalog: &dyn crate::domain::ports::ProductCatalogClientV1,
+    ctx: &SecurityContext,
+    scope: &AccessScope,
+    tenant: Uuid,
+    plan_id: PlanId,
+) -> Result<crate::domain::row_sku_rules::RowSkuContext, DomainError> {
+    use crate::infra::storage::repo::plan_repo;
+    let plan = match plan_repo::load_open_draft(runner, scope, tenant, plan_id)
+        .await
+        .map_err(|e| repo_failure(&e))?
+    {
+        Some(plan) => Some(plan),
+        None => plan_repo::load_current(runner, scope, tenant, plan_id)
+            .await
+            .map_err(|e| repo_failure(&e))?,
+    }
+    .ok_or_else(|| DomainError::NotFound {
+        subject: "plan".into(),
+        id: plan_id.get().to_string(),
+    })?;
+    Ok(crate::domain::row_sku_rules::RowSkuContext {
+        plan_sku: SkuId::new(plan.sku_id),
+        index: sku_index(catalog, ctx).await?,
+    })
+}
+
+// Preserve explicit null as presence: writes may not author even a null meter.
+fn authored_meter<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Option<String>, D::Error> {
+    use serde::Deserialize;
+    Ok(Some(
+        serde_json::Value::deserialize(de)?
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+    ))
+}
