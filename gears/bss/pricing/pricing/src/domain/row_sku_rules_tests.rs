@@ -193,6 +193,84 @@ fn a_deprecated_sku_is_refused_by_the_same_rule() {
     assert_eq!(codes_against(ctx, &subject), vec![SKU_NOT_PUBLISHED]);
 }
 
+/// I4 judges a **fee** row too: an unmetered SKU derives no meter, so a stored
+/// one is a mismatch.
+///
+/// The cell the `is_usage()` guard this rule used to open with left unjudged, and
+/// it is reachable: the D-372 migration backfills `sku_id` onto fee rows and
+/// clears nothing, and it drops `uq_pricing_price_meter_line_current`, the one
+/// constraint that noticed a non-usage row carrying a meter.
+#[test]
+fn a_fee_row_carrying_a_meter_its_sku_does_not_derive_is_refused() {
+    assert_eq!(
+        codes(&row(0x4, ChargeKind::Recurring, Some("GB-hour"))),
+        vec![METER_SKU_MISMATCH]
+    );
+}
+
+/// The inconsistent pair is **one** fault, and it is `inst-pr-sku-metered`'s.
+///
+/// Whole-report equality rather than a first-code check, because the fault this
+/// pins is a *second* code: I4 reporting a derivation against a SKU that declares
+/// nothing to derive from.
+#[test]
+fn a_usage_row_on_an_unmetered_sku_reports_the_binding_and_not_the_meter() {
+    assert_eq!(
+        codes(&row(0x4, ChargeKind::Usage, Some("GB-hour"))),
+        vec![USAGE_ROW_SKU_UNMETERED]
+    );
+}
+
+/// The positive control the two cases above need: the same fee row with no meter
+/// is judged by nothing at all.
+#[test]
+fn a_fee_row_on_an_unmetered_sku_with_no_meter_is_admitted() {
+    let subject = row(0x4, ChargeKind::Recurring, None);
+
+    assert_eq!(codes(&subject), Vec::<String>::new());
+}
+
+/// Every one of these refusals reaches the **authoring write**, not only the
+/// publish.
+///
+/// D-372's invariants are enforced at save *and* publish, and the price write door
+/// (`api::rest::prices::require_no_key_contradiction`) keeps only what
+/// `write_stage_only()` returns — so a publish-stage stamp here would have the
+/// door read the registry, judge the row against it, and discard every verdict.
+///
+/// Asserted through that filter rather than by reading `Violation::stage`,
+/// because the filter is what the door actually applies, and over all five codes
+/// rather than one, because a family half-stamped is the state a single case
+/// would pass.
+#[test]
+fn every_row_sku_refusal_is_judged_at_the_authoring_write() {
+    let cases = [
+        (row(0x9, ChargeKind::Usage, None), SKU_NOT_PUBLISHED),
+        (
+            row(0x3, ChargeKind::Usage, Some("GB-hour")),
+            ROW_SKU_SELLABLE,
+        ),
+        (row(0x4, ChargeKind::Usage, None), USAGE_ROW_SKU_UNMETERED),
+        (row(0x2, ChargeKind::Recurring, None), FEE_ROW_SKU_METERED),
+        (
+            row(0x2, ChargeKind::Usage, Some("vCPU-hour")),
+            METER_SKU_MISMATCH,
+        ),
+    ];
+
+    for (subject, code) in cases {
+        let write = price_row_rules(ctx())
+            .run(&subject)
+            .write_stage_only()
+            .unwrap_or_else(|| panic!("{code} must reach the authoring write"));
+        assert!(
+            write.violations.iter().any(|v| v.code == code),
+            "{code} is absent from the write-stage report: {:?}",
+            write.violations
+        );
+    }
+}
+
 /// The other three rules decline to judge a row whose SKU they cannot read.
 ///
 /// The row below carries a meter that agrees with no declaration at all, so a

@@ -277,9 +277,11 @@ pub fn classify(rows: &[ImportRow]) -> BatchReport {
 fn key_contradictions(rows: &[ImportRow]) -> Vec<(usize, RowViolation)> {
     // Once, not per row: the pipeline is a fresh allocation of every registered
     // rule and a batch is the case where that multiplies.
-    // D-372: the row-local roster only, and here that is not merely transitional:
-    // the four registry rules are `Stage::Publish`, so they would add nothing to
-    // the `write_stage_only()` subset this arm takes.
+    // D-372: the row-local roster only. The four registry rules **are**
+    // write-stage, so they would reach this subset -- what they have no operand
+    // for here is the registry listing: a batch door that judged rows against a
+    // read it never made would refuse every row in the batch. Task 7 decides
+    // whether this door makes that read.
     let rules = row_local_rules();
     let mut found = Vec::new();
     for (index, row) in rows.iter().enumerate() {
