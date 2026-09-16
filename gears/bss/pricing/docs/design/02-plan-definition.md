@@ -116,7 +116,7 @@ Inherits Foundation C-set (fail-closed, append-only, UTC, ISO 4217, tenant isola
 | P2 | Custom-frequency anchoring | `customEveryN Days(n)` MUST anchor on `subscription_start` (a `calendar_month`/`fixed_day` anchor fails publish). `customEveryN Months(n)` MAY anchor `subscription_start` or `calendar_month`; a `subscription_start` day beyond the target month clamps to its last day (K2 rule) with the **anchor day preserved** per period (no drift: 31→28→31); UTC; joint anchor fixture with Subscriptions (D-20) | PRD §6.1; D-20 |
 | P3 | PlanTier equality | Plan `PlanTier` = parent SKU `PlanTier` unless an explicit, audited override is declared (default equal, no silent divergence) | PRD §17.3 |
 | P4 | Localization | Plan-owned display content (names, labels, descriptors) is single-language at launch; per-locale authoring is an open registry-owned item | PRD §15 (F-37) |
-| P5 | Descriptor minimum field set | **Pinned D-48 v1 content, shape revised by D-373 (2026-09-16)**: five elements, **four row-borne** — `invoiceLineTemplate`, `glCode`, `taxCategory`, `billingTiming` — and **one derived** — `itemizationRule`, from `pricing_bundle.invoice_itemization` for bundle plans, `itemize` otherwise. Billing descriptors are a contract, not an entity. Publish resolves and freezes the row's template and GL code from authored overrides or tenant defaults (D-373); the effective tax category still resolves and freezes per D-154. The only authored plan-level descriptor content is `pricing_plan.descriptor_ext`, D-152's additive extension, whose required keys are declared per tenant in `pricing_policy_object.additional_required_descriptors`. Billing countersigns at its gear PRD | PRD §15, D-48, D-110, D-152, D-154, D-373 |
+| P5 | Descriptor minimum field set | **Pinned D-48 v1 content, shape revised by D-373 (2026-09-16)**: five elements, **four row-borne** — `invoiceLineTemplate`, `glCode`, `taxCategory`, `billingTiming` — and **one derived** — `itemizationRule`, from `pricing_bundle.invoice_itemization` for bundle plans, `itemize` otherwise. Billing descriptors are a contract, not an entity. Publish resolves and freezes the row's template and GL code from authored overrides or tenant defaults (D-373); the effective tax category still resolves and freezes per D-154. The only authored plan-level descriptor content is `pricing_plan.descriptor_ext`, D-152's additive extension, whose required keys are declared per tenant in `pricing_policy_object.additional_required_descriptors`. Billing countersigns at its gear PRD | PRD §15; D-48, 2026-07-28; composition revised by D-110, 2026-07-31; D-152, 2026-08-03; D-154, 2026-08-03; D-373, 2026-09-16 |
 
 ### 1.7 Naming & Design-Introduced Names
 
@@ -130,7 +130,9 @@ Design-introduced names (Slice 2):
 | `CycleShapeValidator` | Registered rule set validating the billing-cycle matrix (§17.1) per plan |
 | `CompositionValidator` | Registered rule set for `PlanTier`, meter injectivity, add-on rules (§17.3) |
 | `PhaseGraph` | The ordered phase set with `convertsToPhaseId` edges; validated acyclic with exactly one terminal phase |
-| Billing descriptor contract | Four row-borne elements plus derived itemization, with an additive plan extension; checked by the §3 rules (**D-373**) |
+| `RowLineTemplateResolves` | Resolves and freezes each row's effective invoice line template at publish (**D-373**) |
+| `RowGlCodeResolves` | Resolves and freezes each row's effective GL code at publish (**D-373**) |
+| `ExtensionKeysPresent` | Checks the tenant's additional required descriptor keys against the plan extension (D-152; **D-373**) |
 
 ### 1.8 Context & Dependencies
 
@@ -275,7 +277,7 @@ on each row (**D-373**).
 2. [ ] - `p1` - **Row template (D-373 R2)**: effective template = `coalesce(row.invoice_line_template, tenant.default_line_templates[charge_kind])`. An empty result fails publish with `DESCRIPTOR_INCOMPLETE` (422), naming `invoiceLineTemplate` and `priceId`; otherwise publish freezes the template string as `resolved_invoice_line_template`. At both the row and policy write doors, a placeholder outside the vocabulary below is refused with `LINE_TEMPLATE_INVALID` (422), so publish never receives a malformed template - `inst-ds-template`
 3. [ ] - `p1` - **Row GL resolution (D-373 R3)**: effective code = `coalesce(row.gl_code_ref, tenant.default_gl_code_ref)`. An empty result fails publish with `GL_CODE_UNRESOLVED` (422), naming `glCode` and `priceId`, regardless of any tenant policy: GL is a pinned D-48 element. Otherwise publish freezes `resolved_gl_code`, following the rounding/tax resolution precedent (D-334/D-154) - `inst-ds-glresolve`
 4. [ ] - `p1` - **Membership (D-356; D-373 R4)**: when the tenant has declared a GL-code vocabulary (`GET /bss-pricing/v1/config/vocabularies/gl-codes` and its per-value routes, §6 `pricing_gl_code_taxonomy`), each row's **effective** code MUST be an `active` member or publish fails `GL_CODE_UNKNOWN` (422), **one finding per row**, with `priceId`. An empty vocabulary constrains nothing; an absent/blank effective code belongs to `GL_CODE_UNRESOLVED` and is not reported twice. The caller resolves the set of active values; the rule does not know its provider. The tenant writes through D-368's per-value doors; a future ERP provider may populate or reconcile the same table (D-356 *Owed*) - `inst-ds-glcode`
-5. [ ] - `p1` - **Snapshot sufficiency (D-373)**: the frozen contract MUST be sufficient for Billing/ERP posting without re-querying mutable rows. Its **four row-borne** elements are the resolved `invoiceLineTemplate`, resolved `glCode`, effective `taxCategory` (D-154; Slice 4), and `billingTiming` (required on recurring rows by Slice 6, `BILLING_TIMING_MISSING`). Its **one derived** element is `itemizationRule`: projection reads `pricing_bundle.invoice_itemization` for a bundle plan and emits `itemize` otherwise (R1; never authored on the plan, no publish gate). The plan snapshot is exactly `billing { itemizationRule, ext }`, with `ext` from `pricing_plan.descriptor_ext` and D-152's additive required keys checked by step 1. There is no descriptor-set entity or grouping key. Billing renders the frozen template using its locale/period and the registry read model at the pinned `CatalogVersion`, which satisfies the no-mutable-requery promise. Billing's countersign remains pending (P5) - `inst-ds-sufficient`
+5. [ ] - `p1` - **Snapshot sufficiency (D-373)**: the frozen contract MUST be sufficient for Billing/ERP posting without re-querying mutable rows. Its **four row-borne** elements are the resolved `invoiceLineTemplate`, resolved `glCode`, effective `taxCategory` (row source of truth per D-110; resolved and frozen per D-154; Slice 4), and `billingTiming` (required on recurring rows by Slice 6, `BILLING_TIMING_MISSING`). Its **one derived** element is `itemizationRule`: projection reads `pricing_bundle.invoice_itemization` for a bundle plan and emits `itemize` otherwise (R1; never authored on the plan, no publish gate). The plan snapshot is exactly `billing { itemizationRule, ext }`, with `ext` from `pricing_plan.descriptor_ext` and D-152's additive required keys checked by step 1. There is no descriptor-set entity or grouping key. Billing renders the frozen template using its locale/period and the registry read model at the pinned `CatalogVersion`, which satisfies the no-mutable-requery promise. Billing's countersign remains pending (P5) - `inst-ds-sufficient`
 
 The row rules register beside `TaxBasisComplete` over the candidate row set; the plan half
 checks only extension keys (**D-373**). The tax rule still rejects an absent effective category
@@ -601,7 +603,7 @@ backends, since `SQLite` has no array type and a mirror that invented an encodin
 being a mirror where the cycle walk reads — the same transform `included_allowance` takes).
 Cycle/conflict checks run over these plan-authored edges at publish.
 
-Historical: `pricing_plan_descriptor_set` was the per-revision descriptor table; **D-373** dissolves it into row elements and `pricing_plan.descriptor_ext`, and removes the table.
+Historical: `pricing_plan_descriptor_set` was the per-revision descriptor table (copy-on-new-revision, D-83); **D-373** dissolves it into row elements and `pricing_plan.descriptor_ext`, and removes the table; D-48's `billingTiming` already rode the recurring price row (2026-07-28), and D-110 (2026-07-31 review fix) had already moved `taxCategory` off the plan because a per-plan column could not mirror the per-row `tax_category_ref` source of truth when rows carried different categories.
 
 **Row descriptor storage (D-373; `pricing_price`, Slice 3):** nullable authored
 `invoice_line_template` and `gl_code_ref`; publish freezes `resolved_invoice_line_template`
@@ -773,12 +775,13 @@ for Subscriptions runtime. A phase MAY carry an optional operator **`displayName
 
 The system **MUST NOT** publish without the complete billing descriptor contract (**D-373**;
 D-48 v1 content unchanged): **four row-borne** elements and **one derived** itemization rule.
-Every row **MUST** resolve its template and GL code from its authored override or tenant
-default, freeze both results, and report every missing element with `priceId`
+Every row **MUST** resolve its template (`inst-ds-template`) and GL code
+(`inst-ds-glresolve`) from its authored override or tenant default, freeze both results,
+and report every missing element with `priceId`
 (`DESCRIPTOR_INCOMPLETE` for template, `GL_CODE_UNRESOLVED` for GL). Unknown placeholders
 **MUST** fail both row and policy writes (`LINE_TEMPLATE_INVALID`); all seven §3 placeholders
 and the four ASCII defaults **MUST** be supported (**D-373**).
-Tax category remains resolved and frozen, with no warn-mode escape (D-154), and Slice 6
+Tax category remains row-borne (D-110), resolved and frozen, with no warn-mode escape (D-154), and Slice 6
 requires recurring-row `billingTiming`. Derived `itemizationRule` **MUST** read the bundle's
 `invoice_itemization`, or be `itemize` for other plans; `billing.ext` **MUST** carry
 `pricing_plan.descriptor_ext` and missing tenant-required keys **MUST** fail with
@@ -794,7 +797,7 @@ its locale/period and pinned registry data, without mutable catalog reads (**D-3
 **Touches** (**D-373**):
 
 - DB: `pricing_plan`, `pricing_price`, `pricing_policy_object`, `pricing_gl_code_taxonomy`
-- Entities: plan extension, row descriptor rules, itemization projection
+- Entities: `RowLineTemplateResolves`, `RowGlCodeResolves`, `ExtensionKeysPresent`
 
 ### Period Floor & Cap
 
