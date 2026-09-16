@@ -62,7 +62,7 @@ use bss_pricing::domain::price_row::{
     BillingGranularity, ModelKind, PriceRow, TierAggregationWindow, TierBand,
 };
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use bss_pricing::infra::repricing::apply_run_in;
 use bss_pricing::infra::storage::migrations::Migrator;
@@ -401,6 +401,7 @@ fn scope_key(plan: PlanId, phase: Uuid, region: &str) -> ScopeKey {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("scope key")
 }
@@ -416,6 +417,7 @@ fn usage_scope_key(plan: PlanId, phase: Uuid, region: &str) -> ScopeKey {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Usage,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("scope key")
 }
@@ -511,6 +513,7 @@ async fn seed_grandfathered_row(
         PriceEligibility::ExistingGrandfathered,
         ChargeKind::Recurring,
         Cohort::Generation(generation),
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("a grandfathered eligibility pairs with a non-none cohort");
     h.prices

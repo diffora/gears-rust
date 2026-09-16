@@ -18,7 +18,7 @@ use crate::domain::plan_shape::PlanShape;
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::PriceRow;
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use crate::domain::validation::{ValidationReport, ValidationRule};
 use time::OffsetDateTime;
@@ -53,6 +53,7 @@ fn row(
         eligibility,
         ChargeKind::Recurring,
         cohort,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the eligibility and cohort pair");
 

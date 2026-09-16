@@ -72,8 +72,8 @@ use crate::domain::plan_shape::{CustomIntervalUnit, Frequency};
 use crate::domain::projection::PROJECTED_WINDOW_STATES;
 use crate::domain::read_model::{SubjectKind, SubjectRef};
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, PriceOverlay,
-    Region, ScopeKey,
+    ChargeKind, Cohort, DimensionKey, PhaseId, PlanId, PriceEligibility, PriceOverlay, Region,
+    ScopeKey, SkuId,
 };
 use crate::domain::sellability::{PinnedFacts, SellabilityFacts};
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
@@ -504,17 +504,22 @@ fn read_scope_key(value: &JsonValue) -> Result<ScopeKey, RepoError> {
         None => Cohort::None,
         Some(_) => Cohort::Generation(instant(value, "cohort")?),
     };
-    // Axes 9 and 10 (D-196), read back the way `cohort` is: an absent member and
+    // Axis 9 (D-372). A payload frozen before the SKU joined the key has no such
+    // member, and the horizon is INSERT-only, so an absent member is the shim
+    // rather than a corrupt row.
+    // D-372 shim: Task 6a (storage) / Task 7 (DTO) supply the real value
+    let sku_id = match value.get("skuId").filter(|v| !v.is_null()) {
+        None => SkuId::new(Uuid::nil()),
+        Some(_) => SkuId::new(uuid(value, "skuId")?),
+    };
+    // The tenth axis (D-196), read back the way `cohort` is: an absent member and
     // a `null` both mean "no line". The payload is JSON and needs no fixed
     // arity — only the key's *rendering* does, and for a different reason: it is
     // embedded in strings a consumer cannot parse by field.
-    let meter = match value.get("meter").filter(|v| !v.is_null()) {
-        None => None,
-        Some(_) => Some(
-            Meter::new(string(value, "meter")?)
-                .map_err(|e| malformed("scopeKey.meter", &e.to_string()))?,
-        ),
-    };
+    //
+    // **No meter is read beside it**, because the projector no longer writes one
+    // into this object: D-372 took the unit off the key, and the payload's own
+    // `meter` member is the row's column, framed with the row.
     let dimension = match value.get("dimensionKey").filter(|v| !v.is_null()) {
         None => DimensionKey::none(),
         Some(_) => DimensionKey::new(string(value, "dimensionKey")?),
@@ -539,8 +544,9 @@ fn read_scope_key(value: &JsonValue) -> Result<ScopeKey, RepoError> {
             ChargeKind::as_str,
         )?,
         cohort,
+        sku_id,
     )
-    .and_then(|key| key.with_usage_line(meter, dimension))
+    .and_then(|key| key.with_dimension_key(dimension))
     .map_err(|e| malformed("scopeKey", &e.to_string()))
 }
 

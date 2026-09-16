@@ -152,7 +152,7 @@ use crate::domain::price_row::{
     TierAggregationWindow, TierBand, TierQualificationWindow, model_kind_wire,
 };
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use crate::infra::idempotent::{self, Guarded, GuardedRequest, TxFuture};
 use crate::infra::storage::repo::{NewPriceDraft, price_repo};
@@ -251,7 +251,13 @@ pub struct ScopeKeyView {
     /// Axis 8, `null` when the row retains nobody.
     #[serde(default, with = "rfc3339::option")]
     pub cohort: Option<OffsetDateTime>,
-    /// Axis 9 — the metering unit, `null` on a row that is not metered (D-196).
+    /// The metering unit, `null` on a row that is not metered (D-196).
+    ///
+    /// **No longer an axis of the key it is rendered beside** (D-372): axis 9 is
+    /// the SKU, and the unit is derived from the SKU's registry declaration and
+    /// carried on the row. The member keeps its place and its spelling until the
+    /// `sku_id` member lands beside it, and is filled from the row's column by
+    /// [`ScopeKeyView::of`] — a key on its own cannot answer it.
     pub meter: Option<String>,
     /// Axis 10 — the dimension discriminator on the line, `null` for the
     /// undimensioned one (D-196).
@@ -262,8 +268,15 @@ pub struct ScopeKeyView {
     pub dimension_key: Option<String>,
 }
 
-impl From<&ScopeKey> for ScopeKeyView {
-    fn from(key: &ScopeKey) -> Self {
+impl ScopeKeyView {
+    /// The key's axes, with the row's `meter` column carried in beside them.
+    ///
+    /// `meter` is a **parameter** rather than a field of the key since D-372:
+    /// the key carries a `sku_id` there now, and the unit it renders is the
+    /// row's derived column. A caller holding only a key — `PinnedWindowsView`,
+    /// whose subject is a key's windows and not a row — passes `None`, which is
+    /// what a key without a row can honestly say.
+    pub(crate) fn of(key: &ScopeKey, meter: Option<&str>) -> Self {
         Self {
             plan_id: key.plan_id().get(),
             currency: key.currency().as_str().to_owned(),
@@ -273,7 +286,7 @@ impl From<&ScopeKey> for ScopeKeyView {
             price_eligibility: key.price_eligibility().as_str().to_owned(),
             charge_kind: key.charge_kind().as_str().to_owned(),
             cohort: key.cohort().generation(),
-            meter: key.meter().map(|meter| meter.as_str().to_owned()),
+            meter: meter.map(str::to_owned),
             dimension_key: (!key.dimension_key().is_none())
                 .then(|| key.dimension_key().as_str().to_owned()),
         }
@@ -511,7 +524,7 @@ impl From<&PriceRecord> for PriceRowView {
     fn from(record: &PriceRecord) -> Self {
         Self {
             price_id: record.price_id,
-            scope_key: ScopeKeyView::from(&record.scope_key),
+            scope_key: ScopeKeyView::of(&record.scope_key, record.row.meter.as_deref()),
             content: PriceContentView::from(record),
             lifecycle_state: record.lifecycle_state.as_str().to_owned(),
             created_by: record.created_by,
@@ -950,8 +963,11 @@ async fn patch_price(
         // immutability check is for. The stored line is therefore carried onto
         // the named key before the comparison: the axes the caller *can* state
         // must match, and the ones they cannot are taken from the row.
+        // The stored **row's** meter since D-372: the unit left the key, and the
+        // door still checks the D-196 pair over it.
+        let stored_meter = stored.row.meter.as_deref().map(Meter::new).transpose()?;
         let named = scope_key_of(plan_id, named)?.with_usage_line(
-            stored.scope_key.meter().cloned(),
+            stored_meter.as_ref(),
             stored.scope_key.dimension_key().clone(),
         )?;
         if named != stored.scope_key {
@@ -1338,6 +1354,8 @@ pub(crate) fn scope_key_of(
             ChargeKind::as_str,
         )?,
         key.cohort.map_or(Cohort::None, Cohort::Generation),
+        // D-372 shim: Task 6a (storage) / Task 7 (DTO) supply the real value
+        SkuId::new(Uuid::nil()),
     )
 }
 
@@ -1392,6 +1410,8 @@ pub(crate) fn content_of(view: &PriceContentView) -> Result<PriceContent, Domain
             QuantitySource::as_str,
         )?,
         manual_quantity: view.manual_quantity,
+        // D-372 shim: Task 6a (storage) / Task 7 (DTO) supply the real value
+        sku_id: SkuId::new(Uuid::nil()),
         meter: view.meter.clone(),
         dimension_key: view.dimension_key.clone().unwrap_or_default(),
         billing_granularity: optional_token(

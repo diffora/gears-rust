@@ -31,7 +31,7 @@ use crate::domain::plan_shape::{
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow};
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use crate::domain::validation::ValidationReport;
 use crate::domain::window::{CoverageEnd, KeyWindows, WindowInterval, WindowState};
@@ -63,6 +63,7 @@ fn key(charge_kind: ChargeKind, currency: &str, region: &str) -> ScopeKey {
         PriceEligibility::AllSubscriptions,
         charge_kind,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("all_subscriptions pairs with cohort none")
 }

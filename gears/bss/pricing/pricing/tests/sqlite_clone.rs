@@ -51,7 +51,7 @@ use bss_pricing::domain::plan_shape::{AddonRule, PeriodFloorCap, PhaseKind, Plan
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use bss_pricing::infra::clone::{CloneNotice, CloneReceipt, SeededPhaseOrigin, clone_plan_on};
 use bss_pricing::infra::storage::migrations::Migrator;
@@ -196,6 +196,7 @@ fn key_in(
         eligibility,
         ChargeKind::Recurring,
         cohort,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the class pairs with the cohort")
 }

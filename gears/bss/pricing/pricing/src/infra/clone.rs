@@ -97,7 +97,7 @@ use crate::domain::lifecycle::LifecycleState;
 use crate::domain::plan::PlanShapePatch;
 use crate::domain::plan_shape::{PhaseKind, PlanPhase};
 use crate::domain::price_record::PriceRecord;
-use crate::domain::scope_key::{PhaseId, PlanId, PriceEligibility, ScopeKey};
+use crate::domain::scope_key::{Meter, PhaseId, PlanId, PriceEligibility, ScopeKey};
 use crate::infra::storage::repo::{
     NewBundle, NewPlanDraft, NewPriceDraft, bundle_repo, plan_repo, plan_shape_repo, price_repo,
 };
@@ -926,7 +926,7 @@ async fn copy_rows_on(
             tenant_id,
             NewPriceDraft {
                 price_id: Uuid::new_v4(),
-                scope_key: reset_key(&row.scope_key, target, remap)?,
+                scope_key: reset_key(row, target, remap)?,
                 content: reset_content(row),
                 created_by: stamp.actor_principal_id,
                 created_at_utc: now,
@@ -998,11 +998,17 @@ fn remapped_grants(
 /// `none`. Kept because a later change admitting either class would need them —
 /// the same posture D-266 took for the cohort and `grandfather_until` — and not
 /// claimed as behaviour a test proves.
+///
+/// **It takes the record, not the key**, since D-372: the tenth axis still needs
+/// the row's `meter` beside it to be re-attached, and the meter is a column of the
+/// row rather than an axis of the key. `sku_id` carries across unchanged — a clone
+/// prices the same SKU.
 fn reset_key(
-    key: &ScopeKey,
+    record: &PriceRecord,
     target: PlanId,
     remap: &BTreeMap<Uuid, PhaseId>,
 ) -> Result<ScopeKey, DomainError> {
+    let key = &record.scope_key;
     let phase = remap
         .get(&key.phase().get())
         .copied()
@@ -1015,8 +1021,10 @@ fn reset_key(
         PriceEligibility::AllSubscriptions,
         key.charge_kind(),
         crate::domain::scope_key::Cohort::None,
+        key.sku_id(),
     )?;
-    reset.with_usage_line(key.meter().cloned(), key.dimension_key().clone())
+    let meter = record.row.meter.as_deref().map(Meter::new).transpose()?;
+    reset.with_usage_line(meter.as_ref(), key.dimension_key().clone())
 }
 
 /// The copied row's content, with the two lifecycle fields cleared.

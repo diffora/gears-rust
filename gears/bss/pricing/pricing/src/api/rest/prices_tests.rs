@@ -20,7 +20,7 @@ use crate::domain::price_row::{
     BandTop, IncludedAllowance, PriceRow, RolloverPolicy, TierBand, TierQualificationWindow,
 };
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 
 fn record(bands: Vec<TierBand>) -> PriceRecord {
@@ -32,6 +32,7 @@ fn record(bands: Vec<TierBand>) -> PriceRecord {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Usage,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("key");
     PriceRecord {
@@ -434,6 +435,7 @@ mod key_contradictions {
             PriceEligibility::AllSubscriptions,
             charge_kind,
             Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
         )
         .expect("key")
     }

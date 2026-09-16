@@ -36,7 +36,7 @@ use crate::domain::price_row::{
 use crate::domain::rules::model_kind::{KindChargeKindMatrix, KindRequiredFields};
 use crate::domain::rules::{AMOUNT_PLACEMENT_INVALID, MODEL_KIND_CHARGEKIND_MISMATCH};
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use crate::domain::validation::{ValidationReport, ValidationRule};
 use time::Duration;
@@ -89,6 +89,7 @@ fn scope_key(charge_kind: ChargeKind, code: &str, market: &str, on_phase: PhaseI
         PriceEligibility::AllSubscriptions,
         charge_kind,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("all_subscriptions pairs with cohort none")
 }

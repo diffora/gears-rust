@@ -60,7 +60,7 @@ fn delta_of(
     use bss_pricing::domain::price_row::{ModelKind, PriceRow};
     use bss_pricing::domain::projection::{PlanSubjectDelta, RowResolutionProjection};
     use bss_pricing::domain::scope_key::{
-        ChargeKind, Cohort, PlanId, PriceEligibility, Region, ScopeKey,
+        ChargeKind, Cohort, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
     };
 
     let (eligibility, cohort) = if grandfathered {
@@ -79,6 +79,7 @@ fn delta_of(
         eligibility,
         ChargeKind::Recurring,
         cohort,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the class pairs with its cohort");
 
@@ -415,7 +416,7 @@ fn hybrid_delta(plan_id: Uuid) -> bss_pricing::domain::projection::PlanSubjectDe
     use bss_pricing::domain::price_record::PriceRecord;
     use bss_pricing::domain::price_row::{ModelKind, PriceRow};
     use bss_pricing::domain::scope_key::{
-        ChargeKind, Cohort, DimensionKey, Meter, PlanId, PriceEligibility, Region, ScopeKey,
+        ChargeKind, Cohort, DimensionKey, Meter, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
     };
 
     let mut delta = delta_of(
@@ -436,10 +437,11 @@ fn hybrid_delta(plan_id: Uuid) -> bss_pricing::domain::projection::PlanSubjectDe
         PriceEligibility::AllSubscriptions,
         ChargeKind::Usage,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the class pairs with cohort none")
     .with_usage_line(
-        Some(Meter::new("api_calls").expect("a non-blank meter")),
+        Some(&Meter::new("api_calls").expect("a non-blank meter")),
         DimensionKey::none(),
     )
     .expect("a usage line names its meter");
@@ -526,7 +528,7 @@ fn trial_and_steady_delta(plan_id: Uuid) -> bss_pricing::domain::projection::Pla
     use bss_pricing::domain::price_record::PriceRecord;
     use bss_pricing::domain::price_row::{ModelKind, PriceRow};
     use bss_pricing::domain::scope_key::{
-        ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+        ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
     };
 
     let mut delta = delta_of(
@@ -571,6 +573,7 @@ fn trial_and_steady_delta(plan_id: Uuid) -> bss_pricing::domain::projection::Pla
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the class pairs with cohort none");
 

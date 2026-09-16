@@ -36,12 +36,13 @@
 use std::fmt;
 
 use toolkit_macros::domain_model;
+use uuid::Uuid;
 
 pub use bss_fixtures::ModelKind;
 
 use crate::domain::allowance::presented_model_kind;
 use crate::domain::money::{MinorAmount, RateMinor};
-use crate::domain::scope_key::ChargeKind;
+use crate::domain::scope_key::{ChargeKind, SkuId};
 
 /// How a non-usage `per_unit` row obtains its quantity.
 ///
@@ -596,7 +597,26 @@ pub struct PriceRow {
     /// The fixed quantity, required when
     /// [`QuantitySource::Manual`] is authored.
     pub manual_quantity: Option<u64>,
+    /// The SKU this row prices — scope-key axis 9 (D-372).
+    ///
+    /// Carried on the row as well as in the key, for `charge_kind`'s reason one
+    /// axis over: the rules that read it (the I3 metered/usage discriminator,
+    /// and the derivation that fills [`Self::meter`]) are handed a row and not a
+    /// key.
+    ///
+    /// `NOT NULL`: every price row prices exactly one SKU, so there is no
+    /// absent spelling and no `Option`.
+    pub sku_id: SkuId,
     /// The published metering unit a usage row prices.
+    ///
+    /// It was the ninth key axis until D-372 moved that position to the SKU —
+    /// two SKUs sold by one unit were one key — and what is left here is content:
+    /// the unit a reviewer is shown, and the unit the approval pin signs for.
+    ///
+    /// D-372's I4 makes it **derived from [`Self::sku_id`]'s registry declaration
+    /// at save and never authored**. *That derivation is not built yet*: the
+    /// column still carries what the write door was handed, and the refusal of an
+    /// authored `content.meter` arrives with it.
     pub meter: Option<String>,
     /// The dimension discriminator on the `(meter, dimensionKey)` line.
     ///
@@ -697,6 +717,10 @@ impl PriceRow {
     /// Every optional field starts absent and `dimension_key` starts at the
     /// empty-tuple sentinel, which is the authored state of a row nobody has
     /// filled in yet — not a publishable one.
+    ///
+    /// [`PriceRow::sku_id`] is **not** optional and starts at the nil uuid, which
+    /// is a D-372 shim and not a value: the SKU arrives with the DTO and the
+    /// stored column, neither of which carries it yet.
     #[must_use]
     pub fn new(charge_kind: ChargeKind, model_kind: Option<ModelKind>) -> Self {
         Self {
@@ -709,6 +733,8 @@ impl PriceRow {
             package_price_minor: None,
             quantity_source: None,
             manual_quantity: None,
+            // D-372 shim: Task 6a (storage) / Task 7 (DTO) supply the real value
+            sku_id: SkuId::new(Uuid::nil()),
             meter: None,
             dimension_key: String::new(),
             billing_granularity: None,

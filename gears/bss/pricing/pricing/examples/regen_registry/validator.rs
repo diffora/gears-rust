@@ -55,7 +55,8 @@ use bss_pricing::domain::price_row::{
     TierAggregationWindow, TierBand, TierQualificationWindow,
 };
 use bss_pricing::domain::rules::{SupersessionPair, price_row_rules, supersession_rules};
-use bss_pricing::domain::scope_key::ChargeKind;
+use bss_pricing::domain::scope_key::{ChargeKind, SkuId};
+use uuid::Uuid;
 
 /// The pricing gear answering the corpus's publish cases.
 pub struct CatalogPublishValidator;
@@ -153,6 +154,8 @@ fn price_row(snapshot: &Snapshot) -> Result<PriceRow, EvalError> {
 pub fn slice3_row(snapshot: &Snapshot) -> Result<PriceRow, EvalError> {
     Ok(PriceRow {
         charge_kind: charge_kind(snapshot.charge_kind),
+        // D-372 shim: Task 6a (storage) / Task 7 (DTO) supply the real value
+        sku_id: SkuId::new(Uuid::nil()),
         model_kind: Some(snapshot.model_kind),
         // **The corpus predates D-311 and states both prices in `amount_minor`**,
         // so this mapping is where a `per_unit` snapshot's whole-minor-unit price

@@ -19,6 +19,7 @@ use crate::domain::rules::{
 };
 use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    SkuId,
 };
 use uuid::Uuid;
 
@@ -39,6 +40,7 @@ fn key(region: &str, eligibility: PriceEligibility, charge: ChargeKind) -> Scope
         eligibility,
         charge,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the class pairs with the cohort")
 }
@@ -114,7 +116,7 @@ fn usage_row(scope_key: ScopeKey) -> ImportRow {
 fn metered_key() -> ScopeKey {
     key("eu", PriceEligibility::AllSubscriptions, ChargeKind::Usage)
         .with_usage_line(
-            Some(Meter::new("api-calls").expect("a meter")),
+            Some(&Meter::new("api-calls").expect("a meter")),
             DimensionKey::new("region=eu"),
         )
         .expect("a usage line on a usage key")
@@ -201,34 +203,41 @@ fn three_rows_on_one_key_each_name_the_other_two() {
 }
 
 #[test]
-fn two_rows_differing_only_in_their_usage_line_are_two_keys_and_both_author() {
+fn two_rows_differing_only_in_their_sku_are_two_keys_and_both_author() {
     // **D-103's confirmed worked example**, and the case a first build got
-    // backwards (D-283). `uq_pricing_price_scope_key_draft` is the draft plane's partial
-    // `UNIQUE` to include `COALESCE(meter, '')` and `dimension_key`, and D-196
-    // made the usage pair normative axes of the canonical key — so a PaaS plan
-    // pricing cloudlets, storage and egress is one plan, and these two rows are
-    // two keys. `tests/sqlite_price_repo.rs` proves the store admits them both;
-    // this proves Phase 1 does not refuse them first.
-    let usage = key("eu", PriceEligibility::AllSubscriptions, ChargeKind::Usage);
-    let metered = usage
-        .clone()
+    // backwards (D-283). A PaaS plan pricing cloudlets, storage and egress is one
+    // plan, and these two rows are two keys. `tests/sqlite_price_repo.rs` proves
+    // the store admits them both; this proves Phase 1 does not refuse them first.
+    //
+    // **The discriminator is the SKU since D-372**, not the unit: two units of one
+    // SKU render one key, so a case written on the unit alone would assert that
+    // `classify` accepts a genuine duplicate.
+    let line = |sku: u128, meter: &str| {
+        ScopeKey::new(
+            plan(),
+            CurrencyCode::new("EUR").expect("three letters"),
+            Region::new("eu").expect("a non-blank region"),
+            phase(),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Usage,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(sku)),
+        )
+        .expect("the class pairs with the cohort")
         .with_usage_line(
-            Some(Meter::new("api-calls").expect("a meter")),
+            Some(&Meter::new(meter).expect("a meter")),
             DimensionKey::new("region=eu"),
         )
-        .expect("a usage line on a usage key");
-    let other_meter = usage
-        .with_usage_line(
-            Some(Meter::new("storage-gb").expect("a meter")),
-            DimensionKey::new("region=eu"),
-        )
-        .expect("a usage line on a usage key");
+        .expect("a usage line on a usage key")
+    };
+    let metered = line(0x11, "api-calls");
+    let other_sku = line(0x12, "storage-gb");
 
-    let report = classify(&[usage_row(metered.clone()), usage_row(other_meter)]);
+    let report = classify(&[usage_row(metered.clone()), usage_row(other_sku)]);
     assert_eq!(
         failed_rows(&report),
         Vec::<usize>::new(),
-        "two meters are two keys, and Phase 1 must not refuse what the store admits"
+        "two SKUs are two keys, and Phase 1 must not refuse what the store admits"
     );
 
     // And the same line twice IS a duplicate — otherwise this case would pass
@@ -245,13 +254,13 @@ fn two_rows_differing_only_in_their_dimension_key_are_also_two_keys() {
     let eu = usage
         .clone()
         .with_usage_line(
-            Some(Meter::new("api-calls").expect("a meter")),
+            Some(&Meter::new("api-calls").expect("a meter")),
             DimensionKey::new("region=eu"),
         )
         .expect("a usage line on a usage key");
     let us = usage
         .with_usage_line(
-            Some(Meter::new("api-calls").expect("a meter")),
+            Some(&Meter::new("api-calls").expect("a meter")),
             DimensionKey::new("region=us"),
         )
         .expect("a usage line on a usage key");
@@ -410,7 +419,7 @@ fn metered(region: &str) -> ScopeKey {
         ChargeKind::Usage,
     )
     .with_usage_line(
-        Some(Meter::new("api-calls").expect("a meter")),
+        Some(&Meter::new("api-calls").expect("a meter")),
         DimensionKey::new("region=eu"),
     )
     .expect("a usage line on a usage key")

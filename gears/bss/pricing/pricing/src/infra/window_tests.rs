@@ -23,12 +23,13 @@ use crate::domain::materiality::{MaterialityReason, MaterialityVerdict};
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_shape::PlanShape;
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use crate::domain::window::KeyWindows;
 use crate::infra::storage::repo::approval_repo::ApprovalRecord;
 use crate::infra::storage::repo::window_repo::WindowRecord;
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 /// The window scale, fixed at 2099 for `common::COVERAGE_FROM_UTC`'s reason: an
 /// instant no clock reaches cannot make a case mean something different tomorrow.
@@ -49,6 +50,7 @@ fn key() -> ScopeKey {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the class pairs with cohort none")
 }

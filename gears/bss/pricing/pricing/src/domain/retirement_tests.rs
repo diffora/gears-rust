@@ -12,7 +12,7 @@ use crate::domain::error::DomainError;
 use crate::domain::instant::utc_ymd_hms;
 use crate::domain::money::CurrencyCode;
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use crate::domain::window::{WindowInterval, WindowState};
 use time::OffsetDateTime;
@@ -221,6 +221,7 @@ fn generation_key(cohort: OffsetDateTime) -> ScopeKey {
         PriceEligibility::ExistingGrandfathered,
         ChargeKind::Recurring,
         Cohort::Generation(cohort),
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("scope key")
 }

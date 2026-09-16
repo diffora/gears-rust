@@ -40,7 +40,7 @@ use crate::domain::price_row::{
     RolloverPolicy, TierAggregationWindow, TierBand, TierQualificationWindow,
 };
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use crate::domain::validation::{Stage, ValidationReport, ValidationRule, Violation};
 use time::OffsetDateTime;
@@ -135,6 +135,7 @@ fn record(
         PriceEligibility::AllSubscriptions,
         charge_kind,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("all_subscriptions pairs with cohort none");
 

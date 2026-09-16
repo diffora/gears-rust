@@ -689,7 +689,11 @@ impl From<&KeyWindows> for PinnedWindowsView {
             intervals,
         } = group;
         Self {
-            scope_key: ScopeKeyView::from(scope_key),
+            // `None` for the unit: D-372 took `meter` off the key and this view's
+            // subject is a key's windows, with no row to read the derived column
+            // from. The key's own ninth axis is the SKU, which this DTO does not
+            // carry yet.
+            scope_key: ScopeKeyView::of(scope_key, None),
             intervals: intervals.iter().map(WindowIntervalView::from).collect(),
         }
     }

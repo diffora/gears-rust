@@ -1173,7 +1173,8 @@ log:
 
 outside:
   charge_kind          identity - scope-key axis 7
-  meter                identity - the metered line the row prices
+  sku_id               identity - scope-key axis 9, what the row prices (D-372)
+  meter                identity - the unit the row's SKU declares, derived at save
   dimension_key        identity - the line's dimension discriminator
   amount_minor         money
   unit_rate            money - the per_unit rate, D-311

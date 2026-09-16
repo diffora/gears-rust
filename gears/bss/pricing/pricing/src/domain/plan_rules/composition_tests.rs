@@ -30,7 +30,7 @@ use crate::domain::plan_shape::{AddonRule, PlanShape};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow};
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use crate::domain::validation::Stage;
 use crate::domain::validation::{ValidationReport, ValidationRule};
@@ -123,6 +123,7 @@ impl Line {
             self.eligibility,
             self.charge_kind,
             self.cohort,
+            SkuId::new(Uuid::from_u128(5)),
         )
         .expect("the test eligibility and cohort are paired");
 

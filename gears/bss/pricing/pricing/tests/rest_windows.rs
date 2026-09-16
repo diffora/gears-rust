@@ -395,7 +395,9 @@ async fn seed_foreign_priced_plan(h: &Harness, plan_id: Uuid) -> String {
     use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
     use bss_pricing::domain::price_record::PriceContent;
     use bss_pricing::domain::price_row::{ModelKind, PriceRow};
-    use bss_pricing::domain::scope_key::{ChargeKind, Cohort, PriceEligibility, Region, ScopeKey};
+    use bss_pricing::domain::scope_key::{
+        ChargeKind, Cohort, PriceEligibility, Region, ScopeKey, SkuId,
+    };
     use bss_pricing::infra::storage::repo::{NewPriceDraft, price_repo};
 
     rest_support::seed_foreign_current_plan(h, plan_id).await;
@@ -408,6 +410,7 @@ async fn seed_foreign_priced_plan(h: &Harness, plan_id: Uuid) -> String {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("scope key");
     let rendered = key.to_string();
@@ -2861,7 +2864,7 @@ fn sellability_key(
     charge_kind: bss_pricing::domain::scope_key::ChargeKind,
 ) -> bss_pricing::domain::scope_key::ScopeKey {
     use bss_pricing::domain::money::CurrencyCode;
-    use bss_pricing::domain::scope_key::{Cohort, PriceEligibility, Region, ScopeKey};
+    use bss_pricing::domain::scope_key::{Cohort, PriceEligibility, Region, ScopeKey, SkuId};
     ScopeKey::new(
         PlanId::new(plan_id),
         CurrencyCode::new(MARKET_CURRENCY).expect("three letters"),
@@ -2870,6 +2873,7 @@ fn sellability_key(
         PriceEligibility::AllSubscriptions,
         charge_kind,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the class pairs with cohort none")
 }

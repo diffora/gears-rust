@@ -2683,7 +2683,7 @@ mod ordinary_failure_release {
     use crate::domain::price_record::PriceContent;
     use crate::domain::price_row::{ModelKind, PriceRow};
     use crate::domain::scope_key::{
-        ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+        ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
     };
     use crate::infra::storage::migrations::Migrator;
     use crate::infra::storage::repo::repricing_journal_repo::NewJournalRow;
@@ -2756,6 +2756,7 @@ mod ordinary_failure_release {
             PriceEligibility::AllSubscriptions,
             ChargeKind::Recurring,
             Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
         )
         .expect("the class pairs with cohort none");
         let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
@@ -2986,7 +2987,7 @@ mod step0_probe {
     use crate::domain::price_record::PriceContent;
     use crate::domain::price_row::{ModelKind, PriceRow};
     use crate::domain::scope_key::{
-        ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+        ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
     };
     use crate::infra::publish::assemble_from;
     use crate::infra::storage::migrations::Migrator;
@@ -3056,6 +3057,7 @@ mod step0_probe {
                         PriceEligibility::AllSubscriptions,
                         ChargeKind::Recurring,
                         Cohort::None,
+                        SkuId::new(Uuid::from_u128(5)),
                     )
                     .expect("the class pairs with cohort none");
                     let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));

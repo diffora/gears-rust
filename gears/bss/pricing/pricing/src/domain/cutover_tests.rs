@@ -11,6 +11,7 @@ use crate::domain::instant::utc_ymd_hms;
 use crate::domain::money::CurrencyCode;
 use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    SkuId,
 };
 use crate::domain::supersession::{
     ChangeoverMoment, MAX_BATCHING_DELAY, NamedWindow, SUPERSESSION_INSTANT_PASSED,
@@ -249,6 +250,7 @@ fn predecessor_key() -> ScopeKey {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("all_subscriptions pairs with cohort none")
 }
@@ -290,17 +292,20 @@ fn the_copy_carries_the_predecessors_usage_line() {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Usage,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("key")
     .with_usage_line(
-        Some(Meter::new("cloudlets").expect("a non-blank meter")),
+        Some(&Meter::new("cloudlets").expect("a non-blank meter")),
         DimensionKey::new("region=eu"),
     )
     .expect("a usage key carries its line");
 
     let copy = grandfathered_copy_key(&usage, at(10), &[]).expect("a metered generation");
 
-    assert_eq!(copy.meter().map(Meter::as_str), Some("cloudlets"));
+    // The ninth axis is the SKU since D-372, and a generation carries it across
+    // exactly as it carries the tenth.
+    assert_eq!(copy.sku_id(), usage.sku_id());
     assert_eq!(copy.dimension_key().as_str(), "region=eu");
 
     // And the line-less predecessor's copy acquires no line, which is the
@@ -308,7 +313,7 @@ fn the_copy_carries_the_predecessors_usage_line() {
     // key it was copied from.
     let line_less = grandfathered_copy_key(&metered, at(10), &[]).expect("a generation");
 
-    assert_eq!(line_less.meter(), None);
+    assert_eq!(line_less.sku_id(), metered.sku_id());
     assert!(line_less.dimension_key().is_none());
 }
 
@@ -398,6 +403,7 @@ fn sibling_market_key() -> ScopeKey {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("all_subscriptions pairs with cohort none")
 }
@@ -470,13 +476,17 @@ fn the_act_names_the_plan_the_selection_and_the_instant() {
 }
 
 #[test]
-fn two_usage_lines_of_one_market_are_two_selections() {
+fn two_skus_of_one_market_are_two_selections() {
     // The key-set hash is taken over the *canonical* rendering, so it discriminates
     // on all ten axes rather than on the eight a hand-written encoding would list.
-    // Two meters of one market are two selections, which is the same fact C1 had to
+    // Two SKUs of one market are two selections, which is the same fact C1 had to
     // restate for the sellability gate.
+    //
+    // **The operand is the SKU and no longer the unit** (D-372): two units of one
+    // SKU render one key, so a case written on the unit would compare a value the
+    // rendering has stopped carrying and pass on any encoding at all.
     let plan = predecessor_key().plan_id();
-    let line = |meter: &str| {
+    let line = |sku: u128, meter: &str| {
         ScopeKey::new(
             plan,
             CurrencyCode::new("EUR").expect("three letters"),
@@ -485,19 +495,20 @@ fn two_usage_lines_of_one_market_are_two_selections() {
             PriceEligibility::AllSubscriptions,
             ChargeKind::Usage,
             Cohort::None,
+            SkuId::new(Uuid::from_u128(sku)),
         )
         .expect("all_subscriptions pairs with cohort none")
         .with_usage_line(
-            Some(Meter::new(meter).expect("a non-blank meter")),
+            Some(&Meter::new(meter).expect("a non-blank meter")),
             DimensionKey::none(),
         )
         .expect("a usage row carries a usage line")
     };
 
     assert_ne!(
-        crate::infra::cutover::cutover_unit_ref(plan, &[line("api-calls")], at(10)),
-        crate::infra::cutover::cutover_unit_ref(plan, &[line("storage-gb")], at(10)),
-        "two meters of one market are two acts"
+        crate::infra::cutover::cutover_unit_ref(plan, &[line(0x11, "api-calls")], at(10)),
+        crate::infra::cutover::cutover_unit_ref(plan, &[line(0x12, "storage-gb")], at(10)),
+        "two SKUs of one market are two acts"
     );
 }
 

@@ -31,6 +31,7 @@ use bss_pricing::domain::price_row::{
 };
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    SkuId,
 };
 use bss_pricing::infra::cutover::{CutoverOutcome, CutoverRequest, CutoverService};
 use bss_pricing::infra::fixture_gate::FixtureGate;
@@ -245,10 +246,11 @@ fn usage_key(plan_id: PlanId, phase: PhaseId, meter: &str) -> ScopeKey {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Usage,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the class pairs with cohort none")
     .with_usage_line(
-        Some(Meter::new(meter).expect("a non-blank meter")),
+        Some(&Meter::new(meter).expect("a non-blank meter")),
         DimensionKey::none(),
     )
     .expect("a usage line names its meter")
@@ -672,10 +674,13 @@ async fn a_generation_on_a_neighbouring_meter_does_not_occupy_this_line_s_instan
         "and the generation it minted stands on its own line: {:?}",
         pending(&outcome).copy_key
     );
+    // The ninth axis, which is the SKU since D-372 and was the meter when this
+    // case was written. It reads vacuously while every key carries the nil SKU
+    // shim; Task 6a/7 give it a value and this assertion its teeth back.
     assert_eq!(
-        pending(&outcome).copy_key.meter().map(Meter::as_str),
-        Some("egress-gb"),
-        "on this meter, not the neighbour's: {:?}",
+        pending(&outcome).copy_key.sku_id(),
+        egress.sku_id(),
+        "on this line's own SKU, not the neighbour's: {:?}",
         pending(&outcome).copy_key
     );
 }

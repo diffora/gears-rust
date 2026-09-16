@@ -526,7 +526,7 @@ fn a_refused_edge_is_a_lifecycle_refusal_and_not_a_window_code() {
 fn key(charge_kind: &str) -> crate::domain::scope_key::ScopeKey {
     use crate::domain::money::CurrencyCode;
     use crate::domain::scope_key::{
-        ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+        ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
     };
     use uuid::Uuid;
 
@@ -541,6 +541,7 @@ fn key(charge_kind: &str) -> crate::domain::scope_key::ScopeKey {
             _ => ChargeKind::OneTimeSetup,
         },
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("a valid canonical scope key")
 }

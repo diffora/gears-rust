@@ -25,7 +25,7 @@ use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow};
 use crate::domain::rules::MODEL_KIND_MISSING;
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use crate::domain::tax_display::{RegionReadiness, RegionTaxReadiness, TaxDisplayPolicy};
 use crate::domain::taxonomy::REGION_UNKNOWN;
@@ -109,6 +109,7 @@ fn record(price_id: u128, model_kind: Option<ModelKind>, rounding: Option<&str>)
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("all_subscriptions pairs with cohort none");
 
@@ -834,6 +835,7 @@ fn horizoned(price_id: u128, class: PriceEligibility) -> PriceRecord {
             PriceEligibility::ExistingGrandfathered => Cohort::Generation(now()),
             _ => Cohort::None,
         },
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the class pairs with its cohort");
     record.grandfather_until = Some(now());

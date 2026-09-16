@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use super::{
     ABSENT_AXIS_TOKEN, COHORT_ELIGIBILITY_MISMATCH, ChargeKind, Cohort, DimensionKey,
-    KEY_SEPARATOR, Meter, PhaseId, PlanId, PriceEligibility, PriceOverlay, Region, ScopeKey,
+    KEY_SEPARATOR, Meter, PhaseId, PlanId, PriceEligibility, PriceOverlay, Region, ScopeKey, SkuId,
     USAGE_LINE_AXIS_MISMATCH, check_cohort_eligibility, check_usage_line_axes,
 };
 use crate::domain::error::DomainError;
@@ -33,7 +33,21 @@ fn cutover() -> OffsetDateTime {
     from_unix(1_770_000_000, 0).expect("fixed instant is in range")
 }
 
+fn sku() -> SkuId {
+    SkuId::new(Uuid::from_u128(5))
+}
+
 fn key(
+    price_eligibility: PriceEligibility,
+    charge_kind: ChargeKind,
+    cohort: Cohort,
+) -> Result<ScopeKey, DomainError> {
+    key_of(sku(), price_eligibility, charge_kind, cohort)
+}
+
+/// [`key`] with the ninth axis named, for the cases that are about it.
+fn key_of(
+    sku_id: SkuId,
     price_eligibility: PriceEligibility,
     charge_kind: ChargeKind,
     cohort: Cohort,
@@ -46,6 +60,7 @@ fn key(
         price_eligibility,
         charge_kind,
         cohort,
+        sku_id,
     )
 }
 
@@ -289,6 +304,7 @@ fn a_currency_axis_differing_only_in_case_is_the_same_key() {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        sku(),
     )
     .expect("key");
     let lower = ScopeKey::new(
@@ -299,6 +315,7 @@ fn a_currency_axis_differing_only_in_case_is_the_same_key() {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        sku(),
     )
     .expect("key");
 
@@ -333,21 +350,32 @@ fn usage_key(meter: Option<&str>, dimension: &str) -> Result<ScopeKey, DomainErr
     )
     .expect("the eight axes agree")
     .with_usage_line(
-        meter.map(|m| Meter::new(m).expect("a non-blank meter")),
+        meter
+            .map(|m| Meter::new(m).expect("a non-blank meter"))
+            .as_ref(),
         DimensionKey::new(dimension),
     )
 }
 
+/// **Two units of one SKU are one key** — the inverse of what D-196 built, and
+/// D-372's whole point.
+///
+/// D-196 read D-103's multi-line plan correctly and named the wrong
+/// discriminator: it made the *unit* the ninth axis, so two SKUs sharing `GB-hour`
+/// collided while two units of one SKU were two keys. What a row prices is the
+/// SKU, so the unit discriminates nothing and
+/// [`two_skus_are_two_keys`] carries the separation this case used to.
+///
+/// The rows are still two rows and still stored apart — by `dimensionKey`, or by
+/// nothing at all, in which case they are two prices for one thing and the
+/// duplicate-key index is right to say so.
 #[test]
-fn two_usage_lines_of_one_market_are_two_keys() {
-    // The whole of D-196: D-103's confirmed example — one plan pricing
-    // cloudlets and egress in one market — rendered ONE key under the eight
-    // axes, and the second line was refused DUPLICATE_SCOPE_KEY at save.
+fn two_units_of_one_sku_are_one_key() {
     let cloudlets = usage_key(Some("cloudlets"), "").expect("a metered line");
     let egress = usage_key(Some("egress_gb"), "").expect("a second metered line");
 
-    assert_ne!(cloudlets, egress);
-    assert_ne!(cloudlets.to_string(), egress.to_string());
+    assert_eq!(cloudlets, egress);
+    assert_eq!(cloudlets.to_string(), egress.to_string());
 }
 
 #[test]
@@ -371,7 +399,7 @@ fn a_meter_on_a_non_usage_key_is_refused() {
     )
     .expect("the eight axes agree")
     .with_usage_line(
-        Some(Meter::new("cloudlets").expect("meter")),
+        Some(&Meter::new("cloudlets").expect("meter")),
         DimensionKey::none(),
     )
     .expect_err("a meter on a recurring key is refused");
@@ -439,15 +467,17 @@ fn the_canonical_rendering_carries_all_ten_axes_in_order() {
     assert_eq!(axes.len(), 10);
     assert_eq!(axes[6], "usage");
     assert_eq!(axes[7], "none");
-    assert_eq!(axes[8], "cloudlets");
+    // Axis 9 is the SKU since D-372, and the unit is not an axis at all.
+    assert_eq!(axes[8], sku().to_string());
     assert_eq!(axes[9], "region=eu");
 }
 
 #[test]
-fn a_non_usage_key_renders_the_sentinel_on_both_usage_axes() {
-    // Fixed arity means the pair is rendered even where it cannot be set, and
-    // `none` is the token for the same reason `Cohort::None` uses it: an empty
-    // segment between two separators cannot be told from a rendering bug.
+fn a_non_usage_key_renders_the_sentinel_on_the_dimension_axis() {
+    // Fixed arity means the tenth axis is rendered even where it cannot be set,
+    // and `none` is the token for the same reason `Cohort::None` uses it: an
+    // empty segment between two separators cannot be told from a rendering bug.
+    // The ninth takes no sentinel since D-372 — every row has a SKU.
     let rendered = key(
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
@@ -458,7 +488,7 @@ fn a_non_usage_key_renders_the_sentinel_on_both_usage_axes() {
 
     let axes: Vec<&str> = rendered.split('|').collect();
     assert_eq!(axes.len(), 10);
-    assert_eq!(axes[8], "none");
+    assert_eq!(axes[8], sku().to_string());
     assert_eq!(axes[9], "none");
 }
 
@@ -598,21 +628,104 @@ fn no_axis_value_may_render_as_the_absent_axis_token() {
 /// new filler is.
 ///
 /// The loop is the consequence, over the row the collision hides behind: the
-/// meterless usage line is what a `none`-metered row rendered as.
+/// undimensioned line is what a `none`-dimensioned row rendered as.
+///
+/// **One axis since D-372, not two.** The ninth position was the meter's and
+/// carried the same collision; it is a uuid now, with no absent form to collide
+/// with, so the guard that is left is the tenth's.
 #[test]
 fn the_absent_axis_token_is_the_string_the_rendering_writes() {
-    let meterless = usage_key(None, "").expect("a meterless usage line");
-    let rendered = meterless.to_string();
+    let undimensioned = usage_key(Some("cloudlets"), "").expect("an undimensioned line");
+    let rendered = undimensioned.to_string();
     let axes: Vec<&str> = rendered.split(KEY_SEPARATOR).collect();
-    assert_eq!(axes[8], ABSENT_AXIS_TOKEN);
+    assert_eq!(axes[8], sku().to_string());
+    assert_ne!(
+        axes[8], ABSENT_AXIS_TOKEN,
+        "the ninth axis is NOT NULL and renders no sentinel"
+    );
     assert_eq!(axes[9], ABSENT_AXIS_TOKEN);
 
-    for candidate in ["cloudlets", "none_billed", "nonetheless", "NONE", "non"] {
-        let metered = usage_key(Some(candidate), "").expect("an authorable meter");
+    for candidate in ["region=eu", "none_billed", "nonetheless", "NONE", "non"] {
+        let dimensioned = usage_key(Some("cloudlets"), candidate).expect("an authorable dimension");
         assert_ne!(
-            metered.to_string(),
+            dimensioned.to_string(),
             rendered,
-            "meter `{candidate}` renders the meterless line's key"
+            "dimension `{candidate}` renders the undimensioned line's key"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The SKU axis (D-372)
+// ---------------------------------------------------------------------------
+
+/// **The ninth axis is the SKU, not the meter** (D-372).
+///
+/// The meter was the only discriminator a usage row had, so two SKUs sharing a
+/// unit rendered one key and the second was refused `DUPLICATE_SCOPE_KEY` at
+/// save. The SKU is what the row prices, so it is what the key discriminates on;
+/// the meter stays on the row as content, to be derived from the SKU's registry
+/// declaration by I4 rather than authored.
+#[test]
+fn the_key_carries_the_sku_and_not_the_meter() {
+    let sku = SkuId::new(Uuid::from_u128(0x11));
+    let key = key_of(
+        sku,
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Usage,
+        Cohort::None,
+    )
+    .expect("the eight axes agree");
+
+    assert_eq!(key.sku_id, sku);
+
+    // A rendered key spells the sku in the position the meter used to hold.
+    let rendered = key.to_string();
+    let axes: Vec<&str> = rendered.split(KEY_SEPARATOR).collect();
+    assert_eq!(axes.len(), 10, "{rendered}");
+    assert_eq!(
+        axes[8],
+        sku.to_string(),
+        "the sku renders ninth, where the meter did: {rendered}"
+    );
+    assert_ne!(
+        axes[8], ABSENT_AXIS_TOKEN,
+        "no absent-axis token remains where sku_id is NOT NULL: {rendered}"
+    );
+}
+
+/// Two keys that differ **only** in their SKU are two keys — the whole of D-372,
+/// and what [`two_units_of_one_sku_are_one_key`] is the other half of.
+#[test]
+fn two_skus_are_two_keys() {
+    let first = key_of(
+        SkuId::new(Uuid::from_u128(0x11)),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Usage,
+        Cohort::None,
+    )
+    .expect("a key on the first sku");
+    let second = key_of(
+        SkuId::new(Uuid::from_u128(0x12)),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Usage,
+        Cohort::None,
+    )
+    .expect("a key on the second sku");
+
+    assert_ne!(first, second);
+    assert_ne!(first.to_string(), second.to_string());
+}
+
+/// I3's discriminator: only a usage row may sit on a metered SKU.
+#[test]
+fn only_usage_is_usage() {
+    assert!(ChargeKind::Usage.is_usage());
+    for kind in [
+        ChargeKind::Recurring,
+        ChargeKind::OneTime,
+        ChargeKind::OneTimeSetup,
+    ] {
+        assert!(!kind.is_usage(), "{kind} is not a usage charge");
     }
 }

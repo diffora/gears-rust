@@ -61,6 +61,7 @@ use bss_pricing::domain::price_row::{
 };
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    SkuId,
 };
 use bss_pricing::infra::approval::ApprovalService;
 use bss_pricing::infra::fixture_gate::FixtureGate;
@@ -2039,6 +2040,7 @@ pub async fn seed_price_keyed_with_horizon(
         price_eligibility,
         ChargeKind::Recurring,
         cohort,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("scope key");
     harness
@@ -2118,6 +2120,7 @@ pub async fn seed_priced_row_on_phase(
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("scope key");
     let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
@@ -2195,6 +2198,7 @@ pub async fn seed_per_unit_rate_row(
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("scope key");
     let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::PerUnit));
@@ -2846,10 +2850,11 @@ pub fn publishable_usage_scope_key(plan_id: PlanId, phase: PhaseId, region: &str
         PriceEligibility::AllSubscriptions,
         ChargeKind::Usage,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the class pairs with cohort none")
     .with_usage_line(
-        Some(Meter::new(USAGE_METER).expect("a non-blank meter")),
+        Some(&Meter::new(USAGE_METER).expect("a non-blank meter")),
         DimensionKey::none(),
     )
     .expect("a usage line names its meter")
@@ -2866,6 +2871,7 @@ pub fn publishable_scope_key(plan_id: PlanId, phase: PhaseId, region: &str) -> S
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the class pairs with cohort none")
 }

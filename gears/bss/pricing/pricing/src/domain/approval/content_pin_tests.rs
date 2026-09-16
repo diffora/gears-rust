@@ -72,6 +72,7 @@ use crate::domain::price_row::{
 };
 use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    SkuId,
 };
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 use time::OffsetDateTime;
@@ -103,6 +104,23 @@ fn money(units: i64) -> MinorAmount {
 }
 
 fn key(charge_kind: ChargeKind, code: &str, market: &str, phase: PhaseId) -> ScopeKey {
+    sku_key(
+        SkuId::new(Uuid::from_u128(5)),
+        charge_kind,
+        code,
+        market,
+        phase,
+    )
+}
+
+/// [`key`] with the ninth axis named (D-372).
+fn sku_key(
+    sku_id: SkuId,
+    charge_kind: ChargeKind,
+    code: &str,
+    market: &str,
+    phase: PhaseId,
+) -> ScopeKey {
     ScopeKey::new(
         plan(),
         CurrencyCode::new(code).expect("three letters"),
@@ -111,6 +129,7 @@ fn key(charge_kind: ChargeKind, code: &str, market: &str, phase: PhaseId) -> Sco
         PriceEligibility::AllSubscriptions,
         charge_kind,
         Cohort::None,
+        sku_id,
     )
     .expect("all_subscriptions pairs with cohort none")
 }
@@ -138,6 +157,7 @@ fn maximal_row() -> PriceRow {
         package_price_minor: Some(money(400)),
         quantity_source: Some(QuantitySource::Manual),
         manual_quantity: Some(7),
+        sku_id: SkuId::new(Uuid::from_u128(5)),
         meter: Some("api.calls".to_owned()),
         dimension_key: "region:eu".to_owned(),
         billing_granularity: Some(BillingGranularity::PerHour),
@@ -183,11 +203,19 @@ fn maximal_record(seed: u128) -> PriceRecord {
     }
 }
 
-/// The baseline key with a usage line attached — D-196's ninth and tenth axes.
+/// The baseline key with a usage line attached — D-196's tenth axis, and the
+/// unit that is no longer an axis at all (D-372).
 fn line_key(meter: Option<&str>, dimension: &str) -> ScopeKey {
-    key(ChargeKind::Usage, "USD", "EU", phase_id(0x11))
+    sku_line_key(SkuId::new(Uuid::from_u128(5)), meter, dimension)
+}
+
+/// [`line_key`] with the ninth axis named (D-372).
+fn sku_line_key(sku_id: SkuId, meter: Option<&str>, dimension: &str) -> ScopeKey {
+    sku_key(sku_id, ChargeKind::Usage, "USD", "EU", phase_id(0x11))
         .with_usage_line(
-            meter.map(|value| Meter::new(value).expect("a non-blank meter")),
+            meter
+                .map(|value| Meter::new(value).expect("a non-blank meter"))
+                .as_ref(),
             DimensionKey::new(dimension),
         )
         .expect("a usage key carries its line")
@@ -603,15 +631,20 @@ fn window_mutators() -> Vec<Mutator> {
         ("group.scope_key", |s| {
             s.windows[0] = maximal_window_group(phase_id(0x11), "US");
         }),
-        // The usage line, on the **one** path where a scope key is pinned with no
-        // row beside it. In `put_price_record` these two axes are also columns of
-        // `PriceRow`, so the digest moves with them whether or not the key frames
-        // them; a window group carries no row, so here nothing stands in. The two
-        // entries differ from each other only in the dimension, and the runner
-        // requires every mutant to pin distinctly — which is what makes the tenth
-        // axis asserted rather than covered by the ninth.
-        ("group.scope_key.meter", |s| {
-            s.windows[0].scope_key = line_key(Some("cloudlets"), "");
+        // The ninth and tenth axes, on the **one** path where a scope key is
+        // pinned with no row beside it. In `put_price_record` both are also
+        // columns of `PriceRow`, so the digest moves with them whether or not the
+        // key frames them; a window group carries no row, so here nothing stands
+        // in. The two entries differ from each other only in which axis moved, and
+        // the runner requires every mutant to pin distinctly — which is what makes
+        // each asserted rather than covered by the other.
+        //
+        // The ninth is the SKU since D-372, and it is the axis whose absence from
+        // this frame pinned two window plans on two SKUs of one market
+        // identically.
+        ("group.scope_key.sku_id", |s| {
+            s.windows[0].scope_key =
+                sku_line_key(SkuId::new(Uuid::from_u128(0x5c)), Some("cloudlets"), "");
         }),
         ("group.scope_key.dimension_key", |s| {
             s.windows[0].scope_key = line_key(Some("cloudlets"), "eu-west");
@@ -747,6 +780,7 @@ fn row_mutators() -> Vec<Mutator> {
                 PriceEligibility::NewSubscriptionsOnly,
                 ChargeKind::Usage,
                 Cohort::None,
+                SkuId::new(Uuid::from_u128(5)),
             )
             .expect("new_subscriptions_only pairs with cohort none");
         }),
@@ -759,6 +793,7 @@ fn row_mutators() -> Vec<Mutator> {
                 PriceEligibility::ExistingGrandfathered,
                 ChargeKind::Usage,
                 Cohort::Generation(at(6)),
+                SkuId::new(Uuid::from_u128(5)),
             )
             .expect("existing_grandfathered pairs with a generation");
         }),
@@ -814,6 +849,11 @@ fn row_mutators() -> Vec<Mutator> {
         }),
         ("row.manual_quantity", |s| {
             s.rows[0].row.manual_quantity = Some(1_000);
+        }),
+        // The SKU the row prices (D-372), framed as row content as well as in the
+        // key: a reviewer signs for what the row says it prices.
+        ("row.sku_id", |s| {
+            s.rows[0].row.sku_id = SkuId::new(Uuid::from_u128(0x5d));
         }),
         ("row.meter", |s| {
             s.rows[0].row.meter = Some("api.bytes".to_owned());
@@ -1415,11 +1455,20 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 /// read out of the preimage — the hole D-110's own mutator comment says it closes.
 /// The pair `record.tax_category_ref` / `record.tax_category_ref -> None` is what
 /// closes it, and this is their byte vector.
+///
+/// **2026-09-16 (D-372) was the first kind again, and the constant moved to
+/// `v17`:** `put_scope_key` frames `sku_id` where it framed `meter`, and
+/// `put_price_row` frames the SKU beside the unit it still frames, so every
+/// pending unit's digest is stale by construction. The fixture carries a non-nil
+/// SKU (`Uuid::from_u128(5)`) rather than the nil shim, so the golden bytes cover
+/// a real value and not the absence a rollout would read as one; the two mutators
+/// `group.scope_key.sku_id` and `row.sku_id` hold the key frame and the row frame
+/// apart. The overlay and threshold vectors are again unchanged.
 #[test]
 fn the_encoding_is_frozen() {
     assert_eq!(
         hex32(&content_hash(&base())),
-        "25f4aab2a71e21213582e588091483efc5148eab9576d4e514d6103cd8904236"
+        "829d2ba02d2d48ebd9472afcd8556dc637219ffacbcc184a2d36f94b69d08ba1"
     );
 }
 
@@ -1579,7 +1628,7 @@ fn the_two_pin_domains_are_disjoint_and_each_names_its_own_generation() {
     );
     assert_eq!(
         super::CONTENT_PIN_DOMAIN_SEP,
-        b"VHP-BSS-PRICING-APPROVAL-PIN-v16\x1f"
+        b"VHP-BSS-PRICING-APPROVAL-PIN-v17\x1f"
     );
     assert_eq!(
         super::THRESHOLD_PIN_DOMAIN_SEP,

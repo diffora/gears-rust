@@ -206,6 +206,10 @@ pub fn partition_row_fields(row: &PriceRow) -> (Vec<&'static str>, Vec<&'static 
             package_price_minor,
             quantity_source,
             manual_quantity,
+            // The SKU the row prices (D-372). Outside with `meter`, and for the
+            // same reason the doc gives: it is the row's identity — what is being
+            // priced — and not a knob an evaluator reads to derive a quantity.
+            sku_id,
             meter,
             dimension_key,
             // Outside for `unit_rate`'s reason: a rate is the row's price, not a

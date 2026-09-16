@@ -20,6 +20,7 @@ use crate::domain::money::CurrencyCode;
 use crate::domain::price_row::{ModelKind, PriceRow};
 use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    SkuId,
 };
 
 #[test]
@@ -32,6 +33,7 @@ fn the_content_carries_every_editable_column_and_no_identity() {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("all_subscriptions pairs with cohort none");
 
@@ -104,10 +106,11 @@ fn authored_content_spells_the_usage_line_the_way_its_axes_do() {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Usage,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("all_subscriptions pairs with cohort none")
     .with_usage_line(
-        Some(Meter::new("api_calls").expect("a non-blank meter")),
+        Some(&Meter::new("api_calls").expect("a non-blank meter")),
         DimensionKey::new("region=eu"),
     )
     .expect("a usage key carries its line");
@@ -130,8 +133,9 @@ fn authored_content_spells_the_usage_line_the_way_its_axes_do() {
 
     assert_eq!(
         authored.row.meter.as_deref(),
-        key.meter().map(Meter::as_str),
-        "the row's copy of the ninth axis is the axis"
+        Some("api_calls"),
+        "the row's meter is spelled the way an axis value is, though D-372 took it \
+         off the key"
     );
     assert_eq!(
         authored.row.dimension_key,

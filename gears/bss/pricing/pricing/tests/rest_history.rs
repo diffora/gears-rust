@@ -61,7 +61,7 @@ use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{NewPriceDraft, PriceRepo};
@@ -317,6 +317,7 @@ async fn seed_row(db: &DBProvider<DbError>, tenant: Uuid, actor: Uuid, region: &
                     PriceEligibility::AllSubscriptions,
                     ChargeKind::Recurring,
                     Cohort::None,
+                    SkuId::new(Uuid::from_u128(5)),
                 )
                 .expect("the class pairs with cohort none"),
                 content: PriceContent {

@@ -21,7 +21,7 @@ use crate::domain::price_row::{
     TierAggregationWindow, TierBand, TierQualificationWindow,
 };
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 
 /// A band rate, stated in whole minor units so these cases read as they always
@@ -45,6 +45,7 @@ fn record(row: PriceRow) -> PriceRecord {
             PriceEligibility::AllSubscriptions,
             ChargeKind::Recurring,
             Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
         )
         .expect("the eight axes agree"),
         row,

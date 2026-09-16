@@ -549,7 +549,7 @@ mod publish_path {
     use crate::domain::price_row::PriceRow;
     use crate::domain::publish::rules::{PublishRuleParams, SoftSizeCaps};
     use crate::domain::scope_key::{
-        ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+        ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
     };
     use crate::infra::metrics::report_market_metrics;
     use time::OffsetDateTime;
@@ -591,6 +591,7 @@ mod publish_path {
             eligibility,
             ChargeKind::Recurring,
             cohort,
+            SkuId::new(Uuid::from_u128(5)),
         )
         .expect("the eligibility and cohort pair");
 

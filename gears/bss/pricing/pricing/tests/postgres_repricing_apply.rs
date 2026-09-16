@@ -104,7 +104,7 @@ use bss_pricing::domain::plan_shape::{
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use bss_pricing::infra::repricing::apply_run_in;
 use bss_pricing::infra::storage::repo::repricing_journal_repo::NewJournalRow;
@@ -363,6 +363,7 @@ fn scope_key(plan: PlanId, phase: Uuid, region: &str) -> ScopeKey {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("scope key")
 }

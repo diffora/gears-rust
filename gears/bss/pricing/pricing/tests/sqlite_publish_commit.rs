@@ -62,7 +62,7 @@ use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::publish::{PlanPublishUnit, PublishAuthorization};
 use bss_pricing::domain::read_model::SubjectKind;
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use bss_pricing::domain::snapshot::VersionRef;
 use bss_pricing::infra::approval::{ApprovalService, DecideRequest, RegionGrant};
@@ -314,6 +314,7 @@ fn scope_key(eligibility: PriceEligibility) -> ScopeKey {
         eligibility,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the class pairs with cohort none")
 }
@@ -2774,6 +2775,7 @@ async fn seed_referencing_bundle(h: &Harness, sibling_tax_inclusive: bool) {
                     PriceEligibility::AllSubscriptions,
                     ChargeKind::Recurring,
                     Cohort::None,
+                    SkuId::new(Uuid::from_u128(5)),
                 )
                 .expect("the class pairs with cohort none"),
                 content,
@@ -2817,6 +2819,7 @@ async fn seed_referencing_bundle(h: &Harness, sibling_tax_inclusive: bool) {
                         PriceEligibility::AllSubscriptions,
                         ChargeKind::Recurring,
                         Cohort::None,
+                        SkuId::new(Uuid::from_u128(5)),
                     )
                     .expect("the class pairs with cohort none"),
                     content: second,
@@ -3144,6 +3147,7 @@ fn scope_key_in_phase(phase: PhaseId) -> ScopeKey {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the class pairs with cohort none")
 }

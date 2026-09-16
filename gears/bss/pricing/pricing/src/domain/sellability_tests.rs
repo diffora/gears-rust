@@ -16,6 +16,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use bss_pricing_sdk::CatalogVersion;
+use uuid::Uuid;
 
 use super::{
     KeySellability, PinnedFacts, PlanMarketVerdict, Predicate, PredicateAnswer, PredicateOutcome,
@@ -27,6 +28,7 @@ use crate::domain::money::CurrencyCode;
 use crate::domain::plan_shape::Frequency;
 use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    SkuId,
 };
 use crate::domain::window::{CoverageEnd, KeyWindows, WindowInterval, WindowState};
 use time::OffsetDateTime;
@@ -73,6 +75,7 @@ fn key_of(charge_kind: ChargeKind, currency: &CurrencyCode, region: &Region) -> 
         PriceEligibility::AllSubscriptions,
         charge_kind,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the class pairs with cohort none")
 }
@@ -95,6 +98,7 @@ fn eligibility_of(class: PriceEligibility, cohort: Cohort) -> ScopeKey {
         class,
         ChargeKind::Recurring,
         cohort,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the class pairs with the cohort")
 }
@@ -105,6 +109,15 @@ fn eligibility_of(class: PriceEligibility, cohort: Cohort) -> ScopeKey {
 /// recurring key, and a recurring key carrying a meter is refused by
 /// `check_usage_line_axes`.
 fn usage_line_of(meter: &str, dimension: &str, class: PriceEligibility) -> ScopeKey {
+    sku_line_of(SkuId::new(Uuid::from_u128(5)), meter, dimension, class)
+}
+
+/// [`usage_line_of`] with the ninth axis named (D-372).
+///
+/// The unit stopped discriminating keys when the SKU took its place, so a case
+/// about two lines that are **not** one sale has to name two SKUs; the unit rides
+/// along because the D-196 pair rule is still checked at the door.
+fn sku_line_of(sku_id: SkuId, meter: &str, dimension: &str, class: PriceEligibility) -> ScopeKey {
     ScopeKey::new(
         plan(),
         eur(),
@@ -113,10 +126,11 @@ fn usage_line_of(meter: &str, dimension: &str, class: PriceEligibility) -> Scope
         class,
         ChargeKind::Usage,
         Cohort::None,
+        sku_id,
     )
     .expect("the class pairs with cohort none")
     .with_usage_line(
-        Some(Meter::new(meter).expect("a non-blank meter")),
+        Some(&Meter::new(meter).expect("a non-blank meter")),
         DimensionKey::new(dimension),
     )
     .expect("a usage row carries a usage line")
@@ -769,15 +783,26 @@ fn the_conjunction_is_eligibility_resolved() {
 }
 
 #[test]
-fn two_meters_of_one_market_are_not_siblings() {
-    // Most-specific-wins ranks keys that compete for **one** sale, and two meters
-    // of one market do not: a purchase binds both lines, so a `new_subscriptions_only`
-    // row on `api-calls` says nothing about who may buy `storage-gb`. The
-    // `storage-gb` line is staged **uncovered**, so a resolution that mistook the
-    // two for siblings would drop it from the roster and answer over a key with no
-    // window — which is the plan D-196 exists to make storable.
-    let newcomers_line = usage_line_of("api-calls", "", PriceEligibility::NewSubscriptionsOnly);
-    let everyone_line = usage_line_of("storage-gb", "", PriceEligibility::AllSubscriptions);
+fn two_skus_of_one_market_are_not_siblings() {
+    // Most-specific-wins ranks keys that compete for **one** sale, and two SKUs of
+    // one market do not: a purchase binds both lines, so a `new_subscriptions_only`
+    // row on one resource says nothing about who may buy the other. The second
+    // line is staged **uncovered**, so a resolution that mistook the two for
+    // siblings would drop it from the roster and answer over a key with no
+    // window — which is the plan D-196 exists to make storable, and D-372 the
+    // axis that actually separates them.
+    let newcomers_line = sku_line_of(
+        SkuId::new(Uuid::from_u128(0x11)),
+        "api-calls",
+        "",
+        PriceEligibility::NewSubscriptionsOnly,
+    );
+    let everyone_line = sku_line_of(
+        SkuId::new(Uuid::from_u128(0x12)),
+        "storage-gb",
+        "",
+        PriceEligibility::AllSubscriptions,
+    );
 
     let facts = PinnedFacts {
         price_keys: vec![newcomers_line.clone(), everyone_line.clone()],
@@ -796,7 +821,7 @@ fn two_meters_of_one_market_are_not_siblings() {
     assert_eq!(
         surface.keys.len(),
         2,
-        "both meters' lines are gate inputs: {:?}",
+        "both SKUs' lines are gate inputs: {:?}",
         surface
             .keys
             .iter()

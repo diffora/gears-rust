@@ -19,7 +19,7 @@ use crate::domain::ports::metrics::{
     AlarmSeverity, CurrencyBindingCase, PreviewFailClosed, PricingAlarm, PricingMetricsPort,
 };
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 use crate::infra::approval::RegionGrant;
@@ -39,6 +39,7 @@ fn scope_key() -> ScopeKey {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("all_subscriptions pairs with cohort none")
 }

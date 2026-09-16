@@ -31,7 +31,8 @@ use std::collections::BTreeSet;
 use super::{EVALUATION_POLICY_GENERATION, partition_plan_fields, partition_row_fields};
 use crate::domain::contracts::{PlanChangeContract, UsageCounterOnPlanChange};
 use crate::domain::price_row::PriceRow;
-use crate::domain::scope_key::ChargeKind;
+use crate::domain::scope_key::{ChargeKind, SkuId};
+use uuid::Uuid;
 
 /// The document that declares the roster, the log and the generation.
 ///
@@ -70,6 +71,7 @@ fn any_row() -> PriceRow {
         package_price_minor: None,
         quantity_source: None,
         manual_quantity: None,
+        sku_id: SkuId::new(Uuid::from_u128(5)),
         meter: None,
         dimension_key: String::new(),
         billing_granularity: None,

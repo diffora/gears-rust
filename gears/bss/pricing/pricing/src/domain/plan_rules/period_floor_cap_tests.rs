@@ -20,7 +20,7 @@ use crate::domain::plan_shape::{PeriodFloorCap, PlanShape};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow};
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use crate::domain::validation::{ValidationReport, ValidationRule};
 use time::OffsetDateTime;
@@ -58,6 +58,7 @@ fn recurring(seed: u128, code: &str, market: &str) -> PriceRecord {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("all_subscriptions pairs with cohort none");
     let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));

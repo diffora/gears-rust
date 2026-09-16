@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! (planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind,
-//!  cohort, meter, dimensionKey)
+//!  cohort, skuId, dimensionKey)
 //! ```
 //!
 //! It extends the manifest's `(plan, currency, region, priceOverlay)` key
@@ -48,6 +48,27 @@
 //! revisiting: while it reads as unbuilt, every such site reads as correct.
 //! `scope_key_columns`, `content_pin::put_scope_key`, `sellability::siblings` and
 //! `ScopeKeyView` each had to be found separately, by four different routes.
+//!
+//! # The ninth axis is the SKU, not the meter (D-372)
+//!
+//! D-196 read the multi-line plan correctly and named the wrong discriminator.
+//! Two SKUs sold by the **same unit** — two resources both metered in `GB-hour` —
+//! rendered one key under `(… , meter, dimensionKey)`, so the second was refused
+//! `DUPLICATE_SCOPE_KEY` at save exactly as D-103's two lines had been. What a row
+//! prices is a SKU; the unit is a property of the SKU, and a property of the
+//! subject cannot identify it.
+//!
+//! So [`SkuId`] **takes the ninth position** and `meter` leaves the key
+//! altogether. `meter` stays a column of [`crate::domain::price_row::PriceRow`] —
+//! which is why it is still framed as *content* in the approval pin — and D-372's
+//! I4 makes it derived from the SKU's registry declaration at save rather than
+//! authored. **That derivation is not built here**: this change moves the axis and
+//! nothing else, and the column still carries whatever the write door was handed.
+//! `dimensionKey` keeps the tenth position unchanged: it discriminates within one
+//! SKU's line and nothing about it moved.
+//!
+//! The arity is still ten and still fixed — but only one position can now be
+//! absent, the tenth, because the ninth is `NOT NULL` on the row.
 
 use std::fmt;
 
@@ -101,8 +122,10 @@ pub const USAGE_LINE_AXIS_MISMATCH: &str = "USAGE_LINE_AXIS_MISMATCH";
 /// [`ABSENT_AXIS_TOKEN`]: a free-form value equal to the string an absent axis
 /// renders as collides with the absent axis rather than with a sibling one.
 ///
-/// The seven other axes cannot carry it: a uuid, a three-letter currency and four
-/// closed token enums.
+/// Two axes are free-form since D-372 — `region` and `dimensionKey` — and the
+/// eight others cannot carry the character: two uuids (`planId`, `skuId`), a
+/// three-letter currency, four closed token enums and an instant. [`Meter::new`]
+/// keeps its own refusal for the column it is now only a column of.
 pub const KEY_SEPARATOR: char = '|';
 
 /// Refuse an axis value carrying [`KEY_SEPARATOR`].
@@ -124,13 +147,20 @@ fn check_no_separator(axis: &str, value: &str) -> Result<(), DomainError> {
 /// The string the canonical rendering writes where an axis is absent.
 ///
 /// [`KEY_SEPARATOR`]'s sibling, and the other half of the same premise. The
-/// rendering has fixed arity (D-196), so an absent ninth or tenth axis is filled
-/// with this token rather than left empty — and a free-form value **equal** to it
-/// therefore renders the string the absent axis renders. `Meter("none")` on an
-/// undimensioned line and no meter at all are two keys, held apart in the store by
-/// separate columns (`COALESCE(meter, '')` in `pricing_price`'s scope-key
-/// indexes), that render one string. The tenth axis carries the same collision:
-/// [`DimensionKey`] is total and renders its empty value as this token too.
+/// rendering has fixed arity (D-196), so an absent tenth axis is filled with this
+/// token rather than left empty — and a free-form value **equal** to it therefore
+/// renders the string the absent axis renders: [`DimensionKey`] is total and
+/// renders its empty value as this token, so an authored `none` dimension renders
+/// what an undimensioned line renders.
+///
+/// **One axis, not two, since D-372.** The ninth position was `meter`, whose own
+/// absent form carried the same collision — `Meter("none")` on an undimensioned
+/// line and no meter at all were two keys, held apart in the store by
+/// `COALESCE(meter, '')`, that rendered one string. That position is now
+/// [`SkuId`], which is `NOT NULL` and a uuid: it has no absent form to collide
+/// with and no spelling that could reach this token. [`Meter::new`] keeps
+/// refusing the token anyway, because the value is still a stored column and a
+/// meter spelled `none` is still a lie about the row.
 ///
 /// Refused at the axis rather than escaped or re-spelled in the rendering, for the
 /// reason [`KEY_SEPARATOR`] gives: the same four surfaces read the rendering back
@@ -138,9 +168,10 @@ fn check_no_separator(axis: &str, value: &str) -> Result<(), DomainError> {
 /// every rendering already embedded in an approval register row, a
 /// `DUPLICATE_SCOPE_KEY` message and a `unit_request_id`.
 ///
-/// Exactly two axes can collide with it. `region` is free-form and mandatory, so
-/// it has no absent form; the seven others are a uuid, a three-letter currency and
-/// four closed token enums, and `Cohort::Generation` renders epoch milliseconds.
+/// Exactly one axis can collide with it. `region` is free-form and mandatory, so
+/// it has no absent form; the eight others are two uuids, a three-letter currency
+/// and four closed token enums, and `Cohort::Generation` renders epoch
+/// milliseconds.
 pub const ABSENT_AXIS_TOKEN: &str = "none";
 
 /// Refuse a free-form axis value that renders as [`ABSENT_AXIS_TOKEN`].
@@ -182,6 +213,43 @@ impl PlanId {
 impl fmt::Display for PlanId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+/// The SKU a price row prices — the ninth axis since D-372.
+///
+/// It sits where `meter` sat, and the swap is the whole of the decision: the
+/// unit was the only discriminator a usage row had, so two SKUs sold by the
+/// same unit rendered one key and the second was refused `DUPLICATE_SCOPE_KEY`
+/// at save. What a row prices is the SKU, so the SKU is what the key
+/// discriminates on — and the meter, which the SKU's registry declaration
+/// derives, stays on [`crate::domain::price_row::PriceRow`] as content.
+///
+/// `NOT NULL` on the row, so unlike `meter` it has **no absent spelling**: this
+/// axis never renders [`ABSENT_AXIS_TOKEN`], and it cannot collide with it
+/// either, being a uuid.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SkuId(Uuid);
+
+impl SkuId {
+    /// Wrap a SKU id.
+    #[must_use]
+    pub const fn new(id: Uuid) -> Self {
+        Self(id)
+    }
+
+    /// The underlying uuid.
+    #[must_use]
+    pub const fn as_uuid(self) -> Uuid {
+        self.0
+    }
+}
+
+impl fmt::Display for SkuId {
+    /// The hyphenated uuid — the spelling the ninth key segment carries.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0.hyphenated())
     }
 }
 
@@ -396,6 +464,17 @@ impl ChargeKind {
         .into_iter()
         .find(|kind| kind.as_str() == token)
     }
+
+    /// Is this the metered kind?
+    ///
+    /// D-372's I3 discriminator: only a usage row may sit on a metered SKU, and
+    /// only a usage row derives a meter from one. Written here rather than
+    /// re-spelled as a `matches!` per caller, because the two rules that read it
+    /// have to agree about which kinds are metered.
+    #[must_use]
+    pub const fn is_usage(self) -> bool {
+        matches!(self, Self::Usage)
+    }
 }
 
 impl fmt::Display for ChargeKind {
@@ -501,7 +580,13 @@ pub fn check_cohort_eligibility(
     Err(DomainError::ValidationFailed(report))
 }
 
-/// A published metering unit — the ninth axis, on usage rows only (D-196).
+/// A published metering unit — a **column** of the price row, and no longer a key
+/// axis (D-372).
+///
+/// It was the ninth axis under D-196; [`SkuId`] holds that position now and the
+/// unit is derived from the SKU's registry declaration. The type keeps its
+/// refusals because the value is still stored, still rendered to the author, and
+/// still half of the D-196 implication [`check_usage_line_axes`] states.
 ///
 /// Blank is refused, and that refusal is load-bearing rather than tidy: the
 /// store's two scope-key indexes key over `COALESCE(meter, '')`, so the empty
@@ -641,9 +726,15 @@ impl fmt::Display for DimensionKey {
 /// prevent.
 ///
 /// It is a **checked function** rather than a type-level guarantee for
-/// [`check_cohort_eligibility`]'s reason: the axes are separate columns, read
+/// [`check_cohort_eligibility`]'s reason: the two are separate columns, read
 /// back as independent values, so the pairing has to be re-established on every
 /// rehydration and not only at first construction.
+///
+/// **Only one of the two is still a key axis** (D-372): `meter` left the key for
+/// [`SkuId`] and is a column of [`crate::domain::price_row::PriceRow`], so this
+/// rule is now stated over a row and checked by the callers that hold one.
+/// [`ScopeKey::with_dimension_key`] is the half a caller holding only a key can
+/// check.
 ///
 /// # Errors
 ///
@@ -665,7 +756,7 @@ pub fn check_usage_line_axes(
         report.violate(
             USAGE_LINE_AXIS_MISMATCH,
             subject,
-            "meter and dimensionKey are axes of a usage row; a non-usage charge kind carries \
+            "meter and dimensionKey belong to a usage row; a non-usage charge kind carries \
              neither",
         );
         return Err(DomainError::ValidationFailed(report));
@@ -699,7 +790,7 @@ pub struct ScopeKey {
     price_eligibility: PriceEligibility,
     charge_kind: ChargeKind,
     cohort: Cohort,
-    meter: Option<Meter>,
+    sku_id: SkuId,
     dimension_key: DimensionKey,
 }
 
@@ -767,7 +858,7 @@ pub(crate) struct ScopeKeyParts<'a> {
     pub price_eligibility: PriceEligibility,
     pub charge_kind: ChargeKind,
     pub cohort: Cohort,
-    pub meter: Option<&'a Meter>,
+    pub sku_id: SkuId,
     pub dimension_key: &'a DimensionKey,
 }
 
@@ -788,7 +879,7 @@ impl ScopeKey {
             price_eligibility,
             charge_kind,
             cohort,
-            meter,
+            sku_id,
             dimension_key,
         } = self;
         ScopeKeyParts {
@@ -800,7 +891,7 @@ impl ScopeKey {
             price_eligibility: *price_eligibility,
             charge_kind: *charge_kind,
             cohort: *cohort,
-            meter: meter.as_ref(),
+            sku_id: *sku_id,
             dimension_key,
         }
     }
@@ -825,6 +916,14 @@ impl ScopeKey {
     /// matched for **equality** against an instant a different gear produced, so
     /// an unquantized value would build a key nobody can find rather than a key
     /// that is wrong.
+    // **Eight parameters, one per unconditional axis.** The alternative clippy asks
+    // for is a parameters struct, and it would be a second spelling of
+    // [`ScopeKeyParts`] that no destructure gates: the positional signature is
+    // this constructor's whole cover — `ScopeKeyParts`' own doc names it as the
+    // partial cover the three from-storage builders rely on — and an axis added
+    // as a struct field rather than as a parameter is an axis every caller can
+    // keep omitting.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         plan_id: PlanId,
         currency: CurrencyCode,
@@ -833,6 +932,7 @@ impl ScopeKey {
         price_eligibility: PriceEligibility,
         charge_kind: ChargeKind,
         cohort: Cohort,
+        sku_id: SkuId,
     ) -> Result<Self, DomainError> {
         check_cohort_eligibility(price_eligibility, cohort)?;
         if let Some(generation) = cohort.generation() {
@@ -847,12 +947,17 @@ impl ScopeKey {
             price_eligibility,
             charge_kind,
             cohort,
-            meter: None,
+            sku_id,
             dimension_key: DimensionKey::none(),
         })
     }
 
-    /// Attach the usage line — the ninth and tenth axes (D-196).
+    /// Attach the usage line — the tenth axis (D-196, D-372).
+    ///
+    /// **`meter` is borrowed, not stored.** It left the key for [`SkuId`] under
+    /// D-372 and lives on [`crate::domain::price_row::PriceRow`]; it is still a
+    /// parameter because the D-196 implication is stated over the pair and this
+    /// is the door that checks it.
     ///
     /// Separate from [`Self::new`] rather than two more parameters on it, and
     /// the reason is the axes' own shape: they exist on `usage` rows and
@@ -872,28 +977,65 @@ impl ScopeKey {
     /// [`KEY_SEPARATOR`] or equals [`ABSENT_AXIS_TOKEN`] — see those constants for
     /// why the key refuses them rather than escaping or re-spelling them.
     pub fn with_usage_line(
-        mut self,
-        meter: Option<Meter>,
+        self,
+        meter: Option<&Meter>,
         dimension_key: DimensionKey,
     ) -> Result<Self, DomainError> {
-        check_usage_line_axes(self.charge_kind, meter.as_ref(), &dimension_key)?;
-        // The tenth axis's separator guard, here rather than in
-        // [`DimensionKey::new`] because that constructor is total by design; see
-        // its doc. The meter's is [`Meter::new`]'s and is repeated here for the
-        // reason the key rehydration exists at all — this is the door every
-        // *loaded* key comes through too, and a row written around the domain is
-        // exactly what `to_scope_key`'s `CorruptRow` is for.
-        check_no_separator("dimensionKey", dimension_key.as_str())?;
-        // And the absent-axis token, on the same two axes and at the same door.
-        // The tenth axis needs it as much as the ninth: `DimensionKey` is total
-        // and renders its empty value as that token, so an authored `none`
-        // dimension renders what an undimensioned line renders.
-        check_not_absent_token("dimensionKey", dimension_key.as_str())?;
-        if let Some(meter) = meter.as_ref() {
+        check_usage_line_axes(self.charge_kind, meter, &dimension_key)?;
+        // The meter is **borrowed and not kept** since D-372: it left the key for
+        // `sku_id` and lives on the row as content. It is still read here because
+        // the D-196 implication is stated over the pair, and still guarded here
+        // because this is the door a loaded row's meter comes through — the two
+        // refusals now protect the column's spelling rather than the key's
+        // rendering.
+        if let Some(meter) = meter {
             check_no_separator("meter", meter.as_str())?;
             check_not_absent_token("meter", meter.as_str())?;
         }
-        self.meter = meter;
+        self.with_dimension_key(dimension_key)
+    }
+
+    /// Attach the tenth axis **alone** — the door a caller with no row comes
+    /// through (D-372).
+    ///
+    /// [`Self::with_usage_line`]'s other half, and the split is what D-372 forced:
+    /// the pair rule *"a dimensionKey discriminates the dimensions of a meter, so
+    /// without one it names nothing"* was a statement about two axes of this key,
+    /// and one of the two is no longer an axis. A caller holding a key and no row
+    /// — the read model's rehydration, whose payload frames the key's axes and not
+    /// the row's columns — has no meter to state, and refusing it for that would
+    /// refuse every dimensioned key this gear itself wrote.
+    ///
+    /// What survives here is the half that is still about this key: **a dimension
+    /// implies `usage`**. The meter half moved with the meter, onto the row, and
+    /// is checked by the callers that hold one.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::ValidationFailed`] carrying a single
+    /// [`USAGE_LINE_AXIS_MISMATCH`] violation when a non-usage key is handed a
+    /// dimension. [`DomainError::InvalidRequest`] when the value carries
+    /// [`KEY_SEPARATOR`] or equals [`ABSENT_AXIS_TOKEN`].
+    pub fn with_dimension_key(mut self, dimension_key: DimensionKey) -> Result<Self, DomainError> {
+        if !self.charge_kind.is_usage() && !dimension_key.is_none() {
+            let mut report = ValidationReport::default();
+            report.violate(
+                USAGE_LINE_AXIS_MISMATCH,
+                format!("{}/{dimension_key}", self.charge_kind),
+                "a dimensionKey is an axis of a usage row; a non-usage charge kind carries none",
+            );
+            return Err(DomainError::ValidationFailed(report));
+        }
+        // The tenth axis's separator guard, here rather than in
+        // [`DimensionKey::new`] because that constructor is total by design; see
+        // its doc. This is the door every *loaded* key comes through too, and a
+        // row written around the domain is exactly what `to_scope_key`'s
+        // `CorruptRow` is for.
+        check_no_separator("dimensionKey", dimension_key.as_str())?;
+        // And the absent-axis token: `DimensionKey` is total and renders its empty
+        // value as that token, so an authored `none` dimension renders what an
+        // undimensioned line renders.
+        check_not_absent_token("dimensionKey", dimension_key.as_str())?;
         self.dimension_key = dimension_key;
         Ok(self)
     }
@@ -946,10 +1088,10 @@ impl ScopeKey {
         self.cohort
     }
 
-    /// Axis 9 — the metering unit, on a usage row (D-196).
+    /// Axis 9 — the SKU the row prices (D-372).
     #[must_use]
-    pub const fn meter(&self) -> Option<&Meter> {
-        self.meter.as_ref()
+    pub const fn sku_id(&self) -> SkuId {
+        self.sku_id
     }
 
     /// Axis 10 — the dimension discriminator on the line (D-196).
@@ -993,7 +1135,7 @@ impl ScopeKey {
             price_eligibility: _,
             charge_kind,
             cohort: _,
-            meter,
+            sku_id,
             dimension_key,
         } = self;
 
@@ -1010,7 +1152,7 @@ impl ScopeKey {
             price_eligibility: PriceEligibility::ExistingGrandfathered,
             charge_kind: *charge_kind,
             cohort,
-            meter: meter.clone(),
+            sku_id: *sku_id,
             dimension_key: dimension_key.clone(),
         })
     }
@@ -1044,7 +1186,7 @@ impl ScopeKey {
             price_eligibility: _,
             charge_kind,
             cohort: _,
-            meter,
+            sku_id,
             dimension_key,
         } = self;
         *plan_id == other.plan_id
@@ -1053,7 +1195,7 @@ impl ScopeKey {
             && *price_overlay == other.price_overlay
             && *phase == other.phase
             && *charge_kind == other.charge_kind
-            && *meter == other.meter
+            && *sku_id == other.sku_id
             && *dimension_key == other.dimension_key
     }
 }
@@ -1065,21 +1207,21 @@ impl fmt::Display for ScopeKey {
     /// collision between two rows that do not actually share a key.
     ///
     /// **The arity is fixed at ten whatever the row is (D-196)**, `none` filling
-    /// both usage positions on a non-usage key. A rendering whose segment count
+    /// the tenth position on an undimensioned key — and since D-372 only that one:
+    /// the ninth is a SKU id, which every row has. A rendering whose segment count
     /// depended on the charge kind would be a parsing hazard in the three places
     /// this string is embedded rather than read: the rejection message, the
     /// approval register's held-key rows, and `unit_request_id`, the
     /// cross-tenant registry idempotency key.
     ///
-    /// **Ten segments, always.** The three free-form axes refuse
-    /// [`KEY_SEPARATOR`] — [`Region::new`], [`Meter::new`] and
-    /// [`ScopeKey::with_usage_line`] — which is why this impl may join with a
-    /// bare literal and count on ten.
+    /// **Ten segments, always.** The two free-form axes refuse [`KEY_SEPARATOR`]
+    /// — [`Region::new`] and [`ScopeKey::with_dimension_key`] — which is why this
+    /// impl may join with a bare literal and count on ten.
     ///
     /// **And the rendering is injective**, which is the property the four surfaces
-    /// that read it back as identity actually need. The two axes with an absent
-    /// form refuse [`ABSENT_AXIS_TOKEN`] at the same two constructors, so the token
-    /// below means "absent" and cannot also mean an authored value.
+    /// that read it back as identity actually need. The one axis with an absent
+    /// form refuses [`ABSENT_AXIS_TOKEN`] at the door onto the key, so the token
+    /// means "absent" and cannot also mean an authored value.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Destructured, so an eleventh axis is a compile error here rather than a
         // segment silently missing from the string a `DUPLICATE_SCOPE_KEY`
@@ -1093,14 +1235,13 @@ impl fmt::Display for ScopeKey {
             price_eligibility,
             charge_kind,
             cohort,
-            meter,
+            sku_id,
             dimension_key,
         } = self.parts();
         write!(
             f,
             "{plan_id}|{currency}|{region}|{price_overlay}|{phase}|{price_eligibility}|\
-             {charge_kind}|{cohort}|{}|{dimension_key}",
-            meter.map_or("none", Meter::as_str),
+             {charge_kind}|{cohort}|{sku_id}|{dimension_key}"
         )
     }
 }

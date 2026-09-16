@@ -30,7 +30,7 @@ use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use bss_pricing::domain::supersession::{ChangeoverMoment, NamedWindow, plan_supersession};
 use bss_pricing::domain::window::{WindowInterval, WindowState};
@@ -96,6 +96,7 @@ fn key() -> ScopeKey {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("all_subscriptions pairs with cohort none")
 }
@@ -272,6 +273,7 @@ fn other_key() -> ScopeKey {
         PriceEligibility::NewSubscriptionsOnly,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("new_subscriptions_only pairs with cohort none")
 }

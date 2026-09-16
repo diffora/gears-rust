@@ -12,6 +12,7 @@
 
 use serde_json::json;
 use std::collections::BTreeMap;
+use uuid::Uuid;
 
 use super::{
     CROSS_BOUNDARY_CHANGE_POLICY, OverlayIndexDelta, OverlayIndexEntry, OverlaySubjectDelta,
@@ -38,6 +39,7 @@ use crate::domain::price_row::{
 use crate::domain::read_model::OverlayIndexShard;
 use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    SkuId,
 };
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 use time::OffsetDateTime;
@@ -176,6 +178,7 @@ fn graduated_row() -> PriceRecord {
             PriceEligibility::AllSubscriptions,
             ChargeKind::Usage,
             Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
         )
         .expect("the class pairs with cohort none"),
         row,
@@ -393,6 +396,7 @@ fn row_of_kind(kind: ChargeKind, authored: Option<&str>) -> PriceRecord {
         PriceEligibility::AllSubscriptions,
         kind,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the class pairs with cohort none");
     record.billing_timing = authored.map(ToOwned::to_owned);
@@ -657,11 +661,13 @@ fn a_price_row_freezes_its_key_its_shape_and_its_bands() {
             "priceEligibility": "all_subscriptions",
             "chargeKind": "usage",
             "cohort": null,
-            // Axes 9 and 10 (D-196). `null` on this row because the fixture's key
-            // carries no line; the delta is where a consumer resolving a metered
-            // plan reads which line a published usage row prices, and before
-            // D-196 it could not need to — one market held one usage row.
-            "meter": null,
+            // Axis 9 (D-372): the SKU the row prices, and never `null` — the
+            // column is `NOT NULL`. It is what a consumer resolving a published
+            // usage row reads to tell one of a market's rows from another, which
+            // before D-196 it could not need to and under D-196 it could not do.
+            "skuId": uuid::Uuid::from_u128(5),
+            // Axis 10 (D-196). `null` on this row because the fixture's key
+            // carries no dimension.
             "dimensionKey": null,
         })),
         "all ten canonical axes, in the normative order"
@@ -1002,7 +1008,7 @@ fn a_rows_dimension_key_is_spelled_the_way_its_scope_key_spells_it() {
         .scope_key
         .clone()
         .with_usage_line(
-            Some(Meter::new("api_calls").expect("a non-blank meter")),
+            Some(&Meter::new("api_calls").expect("a non-blank meter")),
             DimensionKey::new("region=eu"),
         )
         .expect("a usage key carries its line");
@@ -1081,6 +1087,7 @@ fn recurring_key() -> ScopeKey {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("a valid canonical scope key")
 }

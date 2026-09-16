@@ -268,7 +268,7 @@ use crate::domain::price_row::{
     TierBand, TierQualificationWindow, model_kind_wire,
 };
 use crate::domain::read_model::OverlayIndexShard;
-use crate::domain::scope_key::{Meter, PlanId, ScopeKey, ScopeKeyParts};
+use crate::domain::scope_key::{PlanId, ScopeKey, ScopeKeyParts};
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 use time::OffsetDateTime;
 
@@ -1208,6 +1208,7 @@ fn row_value(row: &PriceRow) -> JsonValue {
         package_price_minor,
         quantity_source,
         manual_quantity,
+        sku_id,
         meter,
         dimension_key,
         billing_granularity,
@@ -1256,6 +1257,11 @@ fn row_value(row: &PriceRow) -> JsonValue {
         "packagePriceMinor": package_price_minor.map(crate::domain::money::MinorAmount::get),
         "quantitySource": quantity_source.map(QuantitySource::as_str),
         "manualQuantity": manual_quantity,
+        // Axis 9 (D-372), rendered on the row as well as in the key beside it,
+        // for the reason `meter` and `dimensionKey` already are: a consumer
+        // joins the two, and an axis spelled on one side only makes the join say
+        // the row is filed under a key it is not.
+        "skuId": sku_id.as_uuid(),
         "meter": meter,
         // The same `null`-for-absent convention `scope_key_value` renders axis 10
         // under, because this member and that one are one fact: a consumer
@@ -1402,7 +1408,7 @@ fn scope_key_value(key: &ScopeKey) -> JsonValue {
         price_eligibility,
         charge_kind,
         cohort,
-        meter,
+        sku_id,
         dimension_key,
     } = key.parts();
     json!({
@@ -1414,14 +1420,14 @@ fn scope_key_value(key: &ScopeKey) -> JsonValue {
         "priceEligibility": price_eligibility.as_str(),
         "chargeKind": charge_kind.as_str(),
         "cohort": cohort.generation().map(format_rfc3339),
-        // Axes 9 and 10 (D-196). `null` rather than the rendering's `none`
-        // sentinel on a row that has no line: the rendering needs fixed arity
-        // because it is embedded in strings, a JSON member does not, and the
-        // read side already reads `cohort` back the same way. A consumer
-        // resolving a metered plan needs the line here or it cannot tell one
-        // published usage row of a market from another — which, before this
-        // decision, could not happen because there could only be one.
-        "meter": meter.map(Meter::as_str),
+        // Axis 9 (D-372). The member the unit held: two SKUs sold by one unit
+        // were one key, so what a consumer resolves a published row by is the
+        // SKU. Never `null` — the axis is `NOT NULL` on the row.
+        "skuId": sku_id.as_uuid(),
+        // Axis 10 (D-196). `null` rather than the rendering's `none` sentinel on
+        // a row that has no line: the rendering needs fixed arity because it is
+        // embedded in strings, a JSON member does not, and the read side already
+        // reads `cohort` back the same way.
         "dimensionKey": (!dimension_key.is_none()).then(|| dimension_key.as_str()),
     })
 }

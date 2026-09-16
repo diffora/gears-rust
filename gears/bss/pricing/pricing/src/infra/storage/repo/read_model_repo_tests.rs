@@ -28,6 +28,7 @@ use crate::domain::price_row::{ModelKind, PriceRow};
 use crate::domain::projection::PlanSubjectDelta;
 use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    SkuId,
 };
 use crate::domain::sellability::{PinnedFacts, SellabilityFacts};
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
@@ -56,6 +57,7 @@ fn key_of(charge_kind: ChargeKind, eligibility: PriceEligibility, cohort: Cohort
         eligibility,
         charge_kind,
         cohort,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the class pairs with the cohort")
 }
@@ -109,7 +111,7 @@ fn populated() -> PlanSubjectDelta {
         Cohort::None,
     )
     .with_usage_line(
-        Some(Meter::new("cloudlets").expect("a non-blank meter")),
+        Some(&Meter::new("cloudlets").expect("a non-blank meter")),
         DimensionKey::new("region=eu"),
     )
     .expect("a usage key carries its line");

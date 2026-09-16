@@ -13,7 +13,7 @@ use crate::domain::overlay::{Adjustment, AmountSet, Magnitude};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow, TierBand};
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 
 #[test]
@@ -127,6 +127,7 @@ fn a_record(row: PriceRow, currency: CurrencyCode) -> PriceRecord {
             PriceEligibility::AllSubscriptions,
             ChargeKind::Recurring,
             Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
         )
         .expect("all_subscriptions pairs with cohort none"),
         row,

@@ -57,6 +57,7 @@ use bss_pricing::domain::price_row::{
 };
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    SkuId,
 };
 use bss_pricing::domain::tax_display::{RegionReadiness, RegionTaxReadiness};
 use bss_pricing::infra::storage::entity::{audit_log, price, price_tier_band, price_window};
@@ -181,6 +182,7 @@ fn base_key(charge_kind: ChargeKind) -> ScopeKey {
         PriceEligibility::AllSubscriptions,
         charge_kind,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("all_subscriptions pairs with cohort none")
 }
@@ -197,6 +199,7 @@ fn new_subscriptions_key(charge_kind: ChargeKind) -> ScopeKey {
         PriceEligibility::NewSubscriptionsOnly,
         charge_kind,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("new_subscriptions_only pairs with cohort none")
 }
@@ -216,6 +219,7 @@ fn grandfathered_key(charge_kind: ChargeKind, cutover: OffsetDateTime) -> ScopeK
         PriceEligibility::ExistingGrandfathered,
         charge_kind,
         Cohort::Generation(cutover),
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("existing_grandfathered pairs with a generation")
 }
@@ -393,7 +397,7 @@ async fn a_created_row_and_its_bands_read_back_whole() {
         read.scope_key,
         key.clone()
             .with_usage_line(
-                Some(Meter::new("api_calls").expect("a non-blank meter")),
+                Some(&Meter::new("api_calls").expect("a non-blank meter")),
                 DimensionKey::new("region:eu"),
             )
             .expect("a usage key carries its line")
@@ -1076,6 +1080,7 @@ async fn an_authored_instant_finer_than_the_quantum_is_refused_on_both_write_pat
         PriceEligibility::ExistingGrandfathered,
         ChargeKind::Recurring,
         Cohort::Generation(at(9) + time::Duration::nanoseconds(1)),
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect_err("a sub-millisecond cutover cannot become an axis value");
     assert!(matches!(err, DomainError::TimestampPrecisionExceeded(_)));
@@ -1218,6 +1223,7 @@ async fn every_other_axis_that_can_move_is_a_different_key_too() {
             PriceEligibility::AllSubscriptions,
             ChargeKind::Recurring,
             Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
         )
         .expect("all_subscriptions pairs with cohort none");
         repo.create_draft(&scope, tenant(), draft(price_id, key, flat_content()))
@@ -1740,7 +1746,7 @@ async fn an_update_rewrites_every_content_column_and_can_clear_one() {
         read.scope_key,
         grandfathered_key(ChargeKind::Usage, at(9))
             .with_usage_line(
-                Some(Meter::new("api_calls").expect("a non-blank meter")),
+                Some(&Meter::new("api_calls").expect("a non-blank meter")),
                 DimensionKey::new("region:eu"),
             )
             .expect("a usage key carries its line")
@@ -3661,6 +3667,7 @@ async fn a_validated_row_of_another_plan_is_caught_by_the_count() {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("all_subscriptions pairs with cohort none");
     repo.create_draft(
@@ -4019,7 +4026,9 @@ async fn a_grandfathered_generation_may_not_be_superseded() {
 fn usage_key(meter: Option<&str>, dimension: &str) -> ScopeKey {
     base_key(ChargeKind::Usage)
         .with_usage_line(
-            meter.map(|m| Meter::new(m).expect("a non-blank meter")),
+            meter
+                .map(|m| Meter::new(m).expect("a non-blank meter"))
+                .as_ref(),
             DimensionKey::new(dimension),
         )
         .expect("a usage key carries its line")
@@ -4182,10 +4191,7 @@ async fn a_loaded_key_carries_the_line_it_was_filed_under() {
         .expect("read")
         .expect("the row is there");
 
-    assert_eq!(
-        loaded.scope_key.meter().map(Meter::as_str),
-        Some("cloudlets")
-    );
+    assert_eq!(loaded.row.meter.as_deref(), Some("cloudlets"));
     assert_eq!(loaded.scope_key.dimension_key().as_str(), "region=eu");
     assert_eq!(loaded.scope_key, usage_key(Some("cloudlets"), "region=eu"));
 }
@@ -4276,7 +4282,7 @@ async fn an_update_may_not_move_the_row_to_another_line() {
         .await
         .expect("read")
         .expect("the row survives a refused update");
-    assert_eq!(read.scope_key.meter().map(Meter::as_str), Some("cloudlets"));
+    assert_eq!(read.row.meter.as_deref(), Some("cloudlets"));
     assert_eq!(read.row_version, created.row_version);
 }
 
@@ -4358,7 +4364,7 @@ async fn a_meter_with_stray_whitespace_does_not_mint_a_second_key() {
     );
     assert_eq!(stored.dimension_key, "region=eu");
     assert_eq!(
-        created.scope_key.meter().map(Meter::as_str),
+        created.row.meter.as_deref(),
         stored.meter.as_deref(),
         "the key the row is filed under and the column that stores that axis must be one value"
     );
@@ -4449,10 +4455,7 @@ async fn an_update_may_respell_the_stored_line_with_stray_whitespace() {
         .await
         .expect("whitespace around an axis value is not a move to another line");
 
-    assert_eq!(
-        updated.scope_key.meter().map(Meter::as_str),
-        Some("cloudlets")
-    );
+    assert_eq!(updated.row.meter.as_deref(), Some("cloudlets"));
     let stored = stored_row(&provider, &scope, price_id).await;
     assert_eq!(stored.meter.as_deref(), Some("cloudlets"));
     assert_eq!(stored.dimension_key, "region=eu");
@@ -5036,6 +5039,7 @@ fn market_key_in(currency: &str, region: &str) -> ScopeKey {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("all_subscriptions pairs with cohort none")
 }
@@ -5056,6 +5060,7 @@ fn grandfathered_market_key(region: &str, cutover: OffsetDateTime) -> ScopeKey {
         PriceEligibility::ExistingGrandfathered,
         ChargeKind::Recurring,
         Cohort::Generation(cutover),
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("existing_grandfathered pairs with a generation")
 }
@@ -5866,6 +5871,7 @@ fn key_on(plan: PlanId, currency: &str, phase: u128, charge_kind: ChargeKind) ->
         PriceEligibility::AllSubscriptions,
         charge_kind,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("all_subscriptions pairs with cohort none")
 }

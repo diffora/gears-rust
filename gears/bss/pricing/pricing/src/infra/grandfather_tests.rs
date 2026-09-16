@@ -26,11 +26,12 @@ use crate::domain::error::DomainError;
 use crate::domain::instant::{format_rfc3339, utc_ymd_hms};
 use crate::domain::money::CurrencyCode;
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 use crate::infra::window::refuse_horizon_span_uncovered;
 use time::OffsetDateTime;
+use uuid::Uuid;
 fn far_future_instant() -> OffsetDateTime {
     utc_ymd_hms(9999, 12, 31, 23, 59, 59)
 }
@@ -52,6 +53,7 @@ fn generation() -> ScopeKey {
         PriceEligibility::ExistingGrandfathered,
         ChargeKind::Recurring,
         Cohort::Generation(at(0)),
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the grandfathered class pairs with a generation cohort")
 }
@@ -244,6 +246,7 @@ fn the_span_walk_carries_no_class_test_of_its_own() {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the ordinary class pairs with cohort none");
     let err = refuse_horizon_span_uncovered(

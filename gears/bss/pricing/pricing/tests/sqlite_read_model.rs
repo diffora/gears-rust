@@ -49,7 +49,7 @@ use bss_pricing::domain::read_model::{
     OverlayIndexShard, OverlayScopeClass, SubjectKind, SubjectRef,
 };
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use bss_pricing::domain::window::{WindowInterval, WindowState};
 use bss_pricing::infra::fixture_gate::FixtureGate;
@@ -408,6 +408,7 @@ fn scope_key(plan_id: PlanId, phase: PhaseId) -> ScopeKey {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the class pairs with cohort none")
 }
@@ -3878,6 +3879,7 @@ async fn a_draft_row_on_a_new_key_gets_no_group_at_all() {
                     PriceEligibility::NewSubscriptionsOnly,
                     ChargeKind::Recurring,
                     Cohort::None,
+                    SkuId::new(Uuid::from_u128(5)),
                 )
                 .expect("the class pairs with cohort none"),
                 content: flat_row(),

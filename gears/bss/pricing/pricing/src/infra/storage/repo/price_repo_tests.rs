@@ -45,10 +45,11 @@ use crate::domain::instant::utc_ymd_hms;
 use crate::domain::money::CurrencyCode;
 use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
-    ScopeKeyParts,
+    ScopeKeyParts, SkuId,
 };
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::price;
+use uuid::Uuid;
 
 const PLAN: uuid::Uuid = uuid::Uuid::from_u128(0x_91_a1);
 const OTHER_PLAN: uuid::Uuid = uuid::Uuid::from_u128(0x_91_a2);
@@ -62,6 +63,8 @@ const ACTOR: uuid::Uuid = uuid::Uuid::from_u128(0x_ac_a1);
 /// the per-axis edit below the only value that axis ever takes in this file, and
 /// a comparator that ignored the column would still disagree — for the wrong
 /// reason. Every axis moves *between two real values*.
+const METER: &str = "api_calls";
+
 fn base_key() -> ScopeKey {
     ScopeKey::new(
         PlanId::new(PLAN),
@@ -71,10 +74,11 @@ fn base_key() -> ScopeKey {
         PriceEligibility::ExistingGrandfathered,
         ChargeKind::Usage,
         Cohort::Generation(utc_ymd_hms(2099, 8, 20, 0, 0, 0)),
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the grandfathered class pairs with a generation cohort")
     .with_usage_line(
-        Some(Meter::new("api_calls").expect("a non-blank meter")),
+        Some(&Meter::new(METER).expect("a non-blank meter")),
         DimensionKey::new("region=eu"),
     )
     .expect("a usage line names its meter")
@@ -113,7 +117,10 @@ fn row_of(key: &ScopeKey) -> price::Model {
         manual_quantity: None,
         package_size: None,
         package_price_minor: None,
-        meter: key.meter().map(|meter| meter.as_str().to_owned()),
+        // **Stated, not read off the key** (D-372): the unit is a column of the
+        // row and no longer an axis, so the fixture names it and `base_key`
+        // names the same one.
+        meter: Some(METER.to_owned()),
         dimension_key: key.dimension_key().as_str().to_owned(),
         billing_granularity: Some("whole_unit".to_owned()),
         aggregation_function: None,
@@ -181,7 +188,7 @@ fn axis_cases() -> Vec<AxisCase> {
         price_eligibility,
         charge_kind,
         cohort,
-        meter,
+        sku_id,
         dimension_key,
     } = key.parts();
 
@@ -196,7 +203,12 @@ fn axis_cases() -> Vec<AxisCase> {
     assert_eq!(base.price_eligibility, price_eligibility.as_str());
     assert_eq!(base.charge_kind, charge_kind.as_str());
     assert_eq!(base.cohort, cohort.to_string());
-    assert_eq!(base.meter.as_deref(), meter.map(Meter::as_str));
+    // The ninth axis is read against the fixture rather than against a column:
+    // D-372 shim, Task 6a adds `pricing_price.sku_id` and with it the `AxisCase`
+    // that moves it. Until then `scope_key_columns` cannot see this axis at all,
+    // which is the gap this line stands in for rather than hides.
+    assert_eq!(sku_id, SkuId::new(Uuid::from_u128(5)));
+    assert_eq!(base.meter.as_deref(), Some(METER));
     assert_eq!(base.dimension_key, dimension_key.as_str());
 
     vec![
@@ -386,8 +398,10 @@ fn the_history_cursor_breaks_a_shared_instant_by_price_id_on_both_engines() {
 /// contract used as the fixture, so a case cannot be armed against a spelling the
 /// key never has.
 fn submitted_line(key: &ScopeKey) -> (Option<String>, String) {
+    // The unit half comes from the fixture's own column since D-372 took it off
+    // the key; the dimension half is still an axis and still read off the key.
     (
-        key.meter().map(|meter| meter.as_str().to_owned()),
+        Some(METER.to_owned()),
         key.dimension_key().as_str().to_owned(),
     )
 }
@@ -536,10 +550,9 @@ fn an_unreadable_axis_names_the_row_it_could_not_read() {
     let row = row_of(&key);
     let loaded = to_scope_key(&row).expect("the fixture's own row must read back");
     assert_eq!(loaded.region().as_str(), key.region().as_str());
-    assert_eq!(
-        loaded.meter().map(Meter::as_str),
-        key.meter().map(Meter::as_str)
-    );
+    // Not the ninth axis: `to_scope_key` reads the nil SKU shim for it until
+    // Task 6a adds the column, so the axis a rehydration can be checked on here
+    // is the tenth.
     assert_eq!(
         loaded.dimension_key().as_str(),
         key.dimension_key().as_str()

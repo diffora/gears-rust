@@ -137,7 +137,7 @@ use crate::domain::projection::PROJECTED_ROW_STATES;
 use crate::domain::repricing::RunSelector;
 use crate::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, PriceOverlay,
-    Region, ScopeKey, ScopeKeyParts,
+    Region, ScopeKey, ScopeKeyParts, SkuId,
 };
 use crate::domain::tax_display::RegionTaxReadiness;
 use crate::infra::storage::RepoError;
@@ -3483,17 +3483,17 @@ pub(crate) fn resolve_authored_usage_line(
             value: e.to_string(),
         })?;
     let row_dimension = DimensionKey::new(&row.dimension_key);
-    if key.meter().is_none() && key.dimension_key().is_none() {
+    // **The key's half is the dimension alone since D-372.** The meter left the
+    // key for `sku_id`, so there is no longer a key-side unit to reconcile a
+    // row-side one against; the tenth axis is still expressible only on the
+    // content view, which is what keeps this function.
+    if key.dimension_key().is_none() {
         // Rendered before the move, and in the shape the arm below uses: the
         // refusal names the two lines the caller has to reconcile. It carried the
         // key's **charge kind** against the constructor's message, so
         // `USAGE_LINE_AXIS_MISMATCH` reported `"usage"` against a sentence and named
         // neither line.
-        let key_line = format!(
-            "{}/{}",
-            key.meter().map_or("none", Meter::as_str),
-            key.dimension_key().as_str()
-        );
+        let key_line = key.dimension_key().as_str().to_owned();
         let row_line = format!(
             "{}/{}",
             row_meter.as_ref().map_or("none", Meter::as_str),
@@ -3508,20 +3508,15 @@ pub(crate) fn resolve_authored_usage_line(
         // mistake with a 500 and an operator alarm. What changed is the operands.
         return key
             .clone()
-            .with_usage_line(row_meter, row_dimension)
+            .with_usage_line(row_meter.as_ref(), row_dimension)
             .map_err(|_| RepoError::UsageLineDisagrees { key_line, row_line });
     }
-    let key_line = (key.meter().map(Meter::as_str), key.dimension_key().as_str());
-    let row_line = (
-        row_meter.as_ref().map(Meter::as_str),
-        row_dimension.as_str(),
-    );
-    if key_line == row_line {
+    if key.dimension_key().as_str() == row_dimension.as_str() {
         return Ok(key.clone());
     }
     Err(RepoError::UsageLineDisagrees {
-        key_line: format!("{}/{}", key_line.0.unwrap_or("none"), key_line.1),
-        row_line: format!("{}/{}", row_line.0.unwrap_or("none"), row_line.1),
+        key_line: key.dimension_key().as_str().to_owned(),
+        row_line: row_dimension.as_str().to_owned(),
     })
 }
 
@@ -3660,9 +3655,16 @@ fn scope_key_filter(tenant_id: Uuid, key: &ScopeKey) -> Condition {
         price_eligibility,
         charge_kind,
         cohort,
-        meter,
+        sku_id,
         dimension_key,
     } = key.parts();
+    // D-372 shim: the ninth axis has no column yet, so it cannot be filtered on.
+    // Task 6a adds `pricing_price.sku_id` and the
+    // `.add(price::Column::SkuId.eq(sku_id.as_uuid()))` that belongs here; until
+    // then this filter decides "the same key" by nine axes, which is exactly the
+    // under-matching this function's doc is about — two rows on two SKUs answer
+    // as one key, and the store has no second column to tell them apart anyway.
+    let _ = sku_id;
     Condition::all()
         .add(price::Column::TenantId.eq(tenant_id))
         .add(price::Column::PlanId.eq(plan_id.get()))
@@ -3673,17 +3675,6 @@ fn scope_key_filter(tenant_id: Uuid, key: &ScopeKey) -> Condition {
         .add(price::Column::PriceEligibility.eq(price_eligibility.as_str()))
         .add(price::Column::ChargeKind.eq(charge_kind.as_str()))
         .add(price::Column::Cohort.eq(cohort.to_string()))
-        // **The NULL trap the indexes have, one layer up (D-196).** A key with
-        // no meter renders `meter IS NULL`, and `Column::Meter.eq(None)` is
-        // `meter = NULL`, which matches nothing — so this read would answer
-        // "the key is free" over an occupied one and the duplicate would arrive
-        // as the index's driver error rather than as this door's refusal. The
-        // store closes the same hole with `COALESCE(meter, '')`; here the
-        // `Option` is in hand, so the arm is explicit.
-        .add(match meter {
-            Some(meter) => price::Column::Meter.eq(meter.as_str()),
-            None => price::Column::Meter.is_null(),
-        })
         .add(price::Column::DimensionKey.eq(dimension_key.as_str()))
 }
 
@@ -4605,21 +4596,24 @@ fn read_scope_key(row: &price::Model) -> Result<ScopeKey, RepoError> {
             ChargeKind::as_str,
         )?,
         read_cohort(&row.cohort)?,
+        // D-372 shim: Task 6a (storage) / Task 7 (DTO) supply the real value
+        SkuId::new(Uuid::nil()),
     )
     .and_then(|key| {
-        // The ninth and tenth axes, from the same columns the two scope-key
-        // indexes read (D-196). Attached here rather than by every consumer,
-        // for the reason the eight above are: the window plane, the approval
-        // register and the supersession door all compare *loaded* keys, and a
-        // key that dropped the pair would compare equal across two rows that
-        // the store holds as two.
+        // The tenth axis, from the same column the two scope-key indexes read
+        // (D-196). Attached here rather than by every consumer, for the reason
+        // the eight above are: the window plane, the approval register and the
+        // supersession door all compare *loaded* keys, and a key that dropped it
+        // would compare equal across two rows that the store holds as two. The
+        // meter is read alongside because the D-196 implication is stated over
+        // the pair; it is no longer an axis (D-372).
         let meter = row
             .meter
             .as_deref()
             .map(Meter::new)
             .transpose()
             .map_err(|e| DomainError::InvalidRequest(format!("pricing_price.meter: {e}")))?;
-        key.with_usage_line(meter, DimensionKey::new(&row.dimension_key))
+        key.with_usage_line(meter.as_ref(), DimensionKey::new(&row.dimension_key))
     })
     .map_err(|e| RepoError::CorruptRow(format!("pricing_price scope key: {e}")))
 }
@@ -4672,6 +4666,8 @@ fn to_price_row(
             QuantitySource::as_str,
         )?,
         manual_quantity: read_count("pricing_price.manual_quantity", row.manual_quantity)?,
+        // D-372 shim: Task 6a (storage) / Task 7 (DTO) supply the real value
+        sku_id: SkuId::new(Uuid::nil()),
         meter: row.meter.clone(),
         dimension_key: row.dimension_key.clone(),
         billing_granularity: read_optional(

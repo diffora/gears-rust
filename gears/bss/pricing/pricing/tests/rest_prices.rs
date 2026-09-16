@@ -1823,10 +1823,7 @@ async fn a_metered_row_may_patch_while_echoing_the_key_it_cannot_fully_name() {
         Some(900)
     );
     assert_eq!(
-        after[0]
-            .scope_key
-            .meter()
-            .map(bss_pricing::domain::scope_key::Meter::as_str),
+        after[0].row.meter.as_deref(),
         Some("cloudlets"),
         "the line the row is filed under is untouched by an ordinary content edit"
     );
@@ -1992,10 +1989,7 @@ async fn a_patch_that_moves_the_usage_line_is_refused_by_its_code() {
     let after = price_rows(&harness, plan_id).await;
     assert_eq!(after.len(), 1, "the refusal creates no second row");
     assert_eq!(
-        after[0]
-            .scope_key
-            .meter()
-            .map(bss_pricing::domain::scope_key::Meter::as_str),
+        after[0].row.meter.as_deref(),
         Some("cloudlets"),
         "and the refused edit leaves the stored line where it was"
     );

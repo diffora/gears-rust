@@ -51,7 +51,7 @@ use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::materiality::{MaterialityReason, MaterialityVerdict};
 use bss_pricing::domain::money::{MinorAmount, RateMinor};
 use bss_pricing::domain::price_record::PriceContent;
-use bss_pricing::domain::scope_key::{Cohort, PlanId, PriceEligibility, ScopeKey};
+use bss_pricing::domain::scope_key::{Cohort, PlanId, PriceEligibility, ScopeKey, SkuId};
 use bss_pricing::domain::window::WindowState;
 use bss_pricing::infra::approval::{DecideRequest, RegionGrant};
 use bss_pricing::infra::storage::entity::{audit_log, outbox, price, price_window};
@@ -881,6 +881,7 @@ async fn an_existing_grandfathered_generation_cannot_be_superseded() {
         PriceEligibility::ExistingGrandfathered,
         base.charge_kind(),
         Cohort::Generation(utc_ymd_hms(2099, 1, 1, 0, 0, 0)),
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("existing_grandfathered carries a generation");
 
@@ -1114,6 +1115,7 @@ async fn usage_key_with_published_row(
         PriceEligibility::NewSubscriptionsOnly,
         bss_pricing::domain::scope_key::ChargeKind::Usage,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("new_subscriptions_only pairs with cohort none");
 

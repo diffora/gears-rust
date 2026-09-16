@@ -10,7 +10,7 @@ use super::supersession_unit_ref;
 use crate::domain::instant::utc_ymd_hms;
 use crate::domain::money::CurrencyCode;
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use time::OffsetDateTime;
 
@@ -27,6 +27,7 @@ fn key(class: PriceEligibility) -> ScopeKey {
         class,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("both classes pair with cohort none")
 }
@@ -46,13 +47,14 @@ fn at(day: u32) -> OffsetDateTime {
 ///
 /// Every axis below is one a change could move: the segment order, the `/`
 /// between the three components, the `|` between the key's ten, the instant's
-/// millisecond format and its `Z`, and the `none` filling the two usage
-/// positions. All of them are load-bearing — the string is a stored
+/// millisecond format and its `Z`, the SKU filling the ninth position and the
+/// `none` filling the tenth. All of them are load-bearing — the string is a stored
 /// `subject_ref` a retry looks itself up by, so a re-spelling silently opens a
 /// second approval unit for an act that already has one.
 const RENDERED: &str = "00000000-0000-0000-0000-0000000094d7/supersession/\
      00000000-0000-0000-0000-0000000094d7|USD|EU|base|\
-     00000000-0000-0000-0000-00000000fa8e|all_subscriptions|recurring|none|none|none\
+     00000000-0000-0000-0000-00000000fa8e|all_subscriptions|recurring|none|\
+     00000000-0000-0000-0000-000000000005|none\
      /2099-04-01T00:00:00.000000Z";
 
 #[test]

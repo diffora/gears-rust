@@ -284,7 +284,7 @@ use crate::domain::price_row::{
     MinQtyUsageFallback, PriceRow, QuantitySource, ReservationFlavor, TierAggregationWindow,
     TierBand, TierQualificationWindow, model_kind_wire,
 };
-use crate::domain::scope_key::{Meter, PhaseId, PlanId, ScopeKey, ScopeKeyParts};
+use crate::domain::scope_key::{PhaseId, PlanId, ScopeKey, ScopeKeyParts};
 use crate::domain::taxonomy::{RegionTaxMarkers, TaxonomyEntry, TaxonomyValueChange};
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 use time::OffsetDateTime;
@@ -578,7 +578,20 @@ use time::OffsetDateTime;
 /// framing a digest was taken under. Every unit pending at rollout answers
 /// `APPROVAL_CONTENT_MISMATCH` and is re-submitted — D-358's runbook drains them
 /// first.
-pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v16\x1f";
+///
+/// # `v17`: the key frame carries the SKU, and the meter is content (D-372)
+///
+/// v17 — D-372: `sku_id` joins the price-row key frame; a reviewer signs for which
+/// SKU a row prices. `meter` moves from key to content.
+///
+/// [`put_scope_key`] frames `sku_id` where it framed `meter`, and the unit is now
+/// framed only by [`put_price_row`], which already framed it. The damage the swap
+/// repairs is [`put_key_windows`]'s, exactly as the ninth axis's arrival was: a
+/// key framed with no row beside it pinned two window plans on two SKUs of one
+/// market identically, so an approve could be satisfied by a re-derivation over
+/// the other SKU's coverage. Every unit pending at rollout answers
+/// `APPROVAL_CONTENT_MISMATCH` and is re-submitted.
+pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v17\x1f";
 
 /// Versioned domain-separation tag for the **threshold-policy** content pin.
 ///
@@ -1483,22 +1496,22 @@ fn put_price_record(buf: &mut Vec<u8>, record: &PriceRecord) {
 /// [`ScopeKey`] exhaustively, so a frame that went short here would not compile.
 ///
 /// **This is where the exhaustive binding earns its keep.** [`put_price_record`]
-/// frames the row straight after the key, and `meter` and `dimension_key` are
-/// **also** columns of [`PriceRow`], so a record's digest moves with them whatever
-/// this does. The damage would land on [`put_key_windows`], where a key is framed
-/// with no row beside it: two window plans on two meters of one market would pin
-/// identically, and an approve could be satisfied by a re-derivation over the
-/// other line's coverage.
+/// frames the row straight after the key, and `sku_id`, `meter` and
+/// `dimension_key` are **also** columns of [`PriceRow`], so a record's digest
+/// moves with them whatever this does. The damage would land on
+/// [`put_key_windows`], where a key is framed with no row beside it: two window
+/// plans on two SKUs of one market would pin identically, and an approve could be
+/// satisfied by a re-derivation over the other SKU's coverage.
 ///
-/// The pair is framed **unconditionally**, `none` and `''` on a non-usage key,
-/// rather than only on `usage` rows: a conditional field count is how two adjacent
-/// values become re-splittable, which is the hazard [`count_of`] exists for one
-/// level up.
+/// Every axis is framed **unconditionally**, `''` filling the tenth on an
+/// undimensioned key, rather than only on `usage` rows: a conditional field count
+/// is how two adjacent values become re-splittable, which is the hazard
+/// [`count_of`] exists for one level up.
 fn put_scope_key(buf: &mut Vec<u8>, key: &ScopeKey) {
     // Destructured through `parts()`, and this is the site where that matters
-    // most: a short frame here pins two window plans on two meters of one market
+    // most: a short frame here pins two window plans on two SKUs of one market
     // identically, so an approve can be satisfied by a re-derivation over the other
-    // line's coverage. An eleventh axis is a compile error here rather than a digest
+    // SKU's coverage. An eleventh axis is a compile error here rather than a digest
     // that quietly stops discriminating. `put_price_row` below has the same shape.
     let ScopeKeyParts {
         plan_id,
@@ -1509,7 +1522,7 @@ fn put_scope_key(buf: &mut Vec<u8>, key: &ScopeKey) {
         price_eligibility,
         charge_kind,
         cohort,
-        meter,
+        sku_id,
         dimension_key,
     } = key.parts();
     put_uuid(buf, plan_id.get());
@@ -1523,11 +1536,11 @@ fn put_scope_key(buf: &mut Vec<u8>, key: &ScopeKey) {
     // is the instant, and hashing a rendering would make the pin depend on a
     // formatting choice.
     put_opt_instant(buf, cohort.generation());
-    // The usage line (D-196). `meter` is genuinely optional — a usage row with no
-    // meter is admissible — while `dimension_key` is total, `''` being the
-    // undimensioned line, so the two take the two different framings rather than
-    // one spelling for both.
-    put_opt_str(buf, meter.map(Meter::as_str));
+    // The ninth axis, the SKU the row prices (D-372). It is `NOT NULL`, so it
+    // takes the total framing the meter it replaced could not: there is no
+    // absent SKU to tell from a present one.
+    put_uuid(buf, sku_id.as_uuid());
+    // The tenth axis (D-196). Total, `''` being the undimensioned line.
     put_str(buf, dimension_key.as_str());
 }
 
@@ -1542,6 +1555,7 @@ fn put_price_row(buf: &mut Vec<u8>, row: &PriceRow) {
         package_price_minor,
         quantity_source,
         manual_quantity,
+        sku_id,
         meter,
         dimension_key,
         billing_granularity,
@@ -1584,6 +1598,13 @@ fn put_price_row(buf: &mut Vec<u8>, row: &PriceRow) {
     put_opt_i64(buf, package_price_minor.map(MinorAmount::get));
     put_opt_str(buf, quantity_source.map(QuantitySource::as_str));
     put_opt_u64(buf, *manual_quantity);
+    // The SKU (D-372), framed on the row as well as in the key beside it, for the
+    // reason `meter` and `dimension_key` already are: they are columns of this row
+    // and a reviewer signs for what the row says, not only for where it is filed.
+    put_uuid(buf, sku_id.as_uuid());
+    // The unit, which D-372 moved **out** of the key frame: it is derived from the
+    // SKU's registry declaration rather than authored, and what a reviewer signs
+    // for is the unit the screen shows them.
     put_opt_str(buf, meter.as_deref());
     put_str(buf, dimension_key);
     put_opt_str(buf, billing_granularity.map(BillingGranularity::as_str));

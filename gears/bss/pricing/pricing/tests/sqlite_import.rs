@@ -27,6 +27,7 @@ use bss_pricing::domain::price_row::{IncludedAllowance, ModelKind, PriceRow, Rol
 use bss_pricing::domain::publish::rules::PRIMITIVE_RULES_UNBUILT;
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
+    SkuId,
 };
 use bss_pricing::infra::import::classify_against_store;
 use bss_pricing::infra::storage::migrations::Migrator;
@@ -69,6 +70,7 @@ fn key(region: &str) -> ScopeKey {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the class pairs with the cohort")
 }
@@ -198,10 +200,11 @@ fn metered_key() -> ScopeKey {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Usage,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the class pairs with the cohort")
     .with_usage_line(
-        Some(Meter::new("api-calls").expect("a meter")),
+        Some(&Meter::new("api-calls").expect("a meter")),
         DimensionKey::new("region=eu"),
     )
     .expect("a usage line on a usage key")
@@ -303,18 +306,19 @@ async fn a_usage_line_key_is_matched_through_the_store_like_any_other() {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Usage,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the class pairs with the cohort");
     let metered = usage
         .clone()
         .with_usage_line(
-            Some(Meter::new("api-calls").expect("a meter")),
+            Some(&Meter::new("api-calls").expect("a meter")),
             DimensionKey::new("region=eu"),
         )
         .expect("a usage line on a usage key");
     let other = usage
         .with_usage_line(
-            Some(Meter::new("storage-gb").expect("a meter")),
+            Some(&Meter::new("storage-gb").expect("a meter")),
             DimensionKey::new("region=eu"),
         )
         .expect("a usage line on a usage key");
@@ -553,6 +557,7 @@ async fn one_read_serves_every_row_of_a_plan_and_a_batch_may_span_plans() {
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
     )
     .expect("the class pairs with the cohort");
     let second_holder = publish(&h, there.clone(), 5_000).await;
