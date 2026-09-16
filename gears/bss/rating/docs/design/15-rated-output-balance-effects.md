@@ -154,7 +154,7 @@ id; rounding and floor/cap execution are Billing's (core slice [`01`](./01-found
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-rating-domain-model-rob`
 
-- **`RatedCharge`** — one charge line + unit: full-precision amount, rounding-policy id, sealed `pricingSnapshotRef`, `{skuId, planId, priceId}`, **`glCode`** (the accounting pass-through Finance/Billing post journal entries from — non-null at MVP, slice [`10`](./10-governance-asc606.md) §4.3; carried, never interpreted), discount/FX lineage, ASC refs (null@MVP), the provisional flag (invoice-period FX), the usage/period key; immutable.
+- **`RatedCharge`** — one charge line + unit: full-precision amount, rounding-policy id, sealed `pricingSnapshotRef`, `{skuId, planId, priceId}`, **`glCode`** (the accounting pass-through Finance/Billing post journal entries from — non-null at MVP, slice [`10`](./10-governance-asc606.md) §4.3; carried, never interpreted), discount/FX lineage, ASC refs (null@MVP), the provisional flag (invoice-period FX), the usage/period key; immutable. Its accounting pass-through is the `glCode` frozen on the row it rated (pricing D-373).
 - **`Adjustment`** — a correction delta: correction key `(unitKey[, slice], prior-rated-version, snapshot)`, signed full-precision amount, reversal effects, bitemporal stamps; immutable; references the `RatedCharge` version it corrects.
 - **`RatedOutputVersion`** — the `prior-rated-version` chain node: which version of a window/unit's rating this outcome is, for deterministic diffing (core slice [`08`](./08-retroactivity-corrections.md)).
 - **`CommitmentBalanceEffect`** — per-pool signed draw/refill deltas for one outcome, idempotent on the outcome key; published to Contracts (T-D-10).

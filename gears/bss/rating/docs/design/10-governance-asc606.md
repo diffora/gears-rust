@@ -195,7 +195,7 @@ the pipeline's, restated normatively in §4.2
 The **ASC 606 envelope fields** on every resolved outcome (01 §4.4): `performanceObligationRef`,
 `sspSnapshotPointer` (both nullable, null at MVP), `glCode`, and — on bundle component lines —
 the effective-share lineage. Consumers (Billing/Finance) MAY ignore nulls; recognition is
-theirs, not Rating's.
+theirs, not Rating's. Rating passes through the `glCode` frozen on the row it rated (pricing D-373).
 
 External boundary contracts (the pricing read-model input contract carrying the registration
 and pass-through clauses) are owned by [`11-consumer-contracts.md`](./11-consumer-contracts.md).
