@@ -212,12 +212,17 @@ pub fn canonical_usage_line(row: &PriceRow) -> (Option<String>, String) {
 /// `infra::storage::repo::price_repo::prepare_draft` performed both inline for as
 /// long as it was the only thing that needed to know them, and that stopped being
 /// true when D-88's orchestrator had to judge and compare a row *before* the store
-/// held it. Three of them:
+/// held it. Four of them:
 ///
 /// - **`charge_kind` comes from the key.** The row's own copy is not stored: the axis
 ///   is the canonical scope key's and the field on [`PriceRow`] is a convenience the
 ///   shape rules read. So a record read back always agrees with its own key, and a
 ///   caller that handed the two different answers gets the key's.
+/// - **`sku_id` comes from the key**, for the same reason and since D-372, which made
+///   it an axis while leaving a column of the same name on the row. The approval
+///   content pin frames both halves — `put_scope_key` writes the axis, `put_price_row`
+///   writes the column — so a row that kept an authored SKU would have a reviewer sign
+///   a preimage saying the row prices one SKU and is filed under another.
 /// - **The bands are sorted by `from_qty`.** A read answers in that order — the table
 ///   carries no ordinal — so a create that kept the authored order would hand the
 ///   caller a record that stops equalling itself after one round trip.
@@ -263,6 +268,7 @@ pub fn authored_content(key: &ScopeKey, content: PriceContent) -> PriceContent {
     let (meter, dimension_key) = canonical_usage_line(&content.row);
     let mut row = PriceRow {
         charge_kind: key.charge_kind(),
+        sku_id: key.sku_id(),
         meter,
         dimension_key,
         ..content.row

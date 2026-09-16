@@ -144,6 +144,63 @@ fn authored_content_spells_the_usage_line_the_way_its_axes_do() {
     );
 }
 
+/// The SKU a row prices is its **key's**, the way `charge_kind` is.
+///
+/// D-372 made `sku_id` a scope-key axis and left a column of the same name on the
+/// row, which is the shape the rewrites above exist for. The approval content pin
+/// frames both halves — `put_scope_key` writes the axis and `put_price_row` writes
+/// the column — so a row that kept an authored SKU would have a reviewer sign a
+/// preimage that says the row prices one SKU and is filed under another. The
+/// callers that matter have no store to compare against: `domain::import` judges
+/// its batch through this function.
+#[test]
+fn authored_content_files_the_row_under_its_keys_sku() {
+    let key = ScopeKey::new(
+        PlanId::new(Uuid::from_u128(0x9_1a4)),
+        CurrencyCode::new("usd").expect("USD is three letters"),
+        Region::new("EU").expect("a non-blank region"),
+        PhaseId::new(Uuid::from_u128(0xfa_5e)),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Usage,
+        Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
+    )
+    .expect("all_subscriptions pairs with cohort none")
+    .with_usage_line(
+        Some(&Meter::new("api_calls").expect("a non-blank meter")),
+        DimensionKey::new("region=eu"),
+    )
+    .expect("a usage key carries its line");
+
+    let authored_sku = SkuId::new(Uuid::from_u128(0x11));
+    let mut row = PriceRow::new(ChargeKind::Usage, Some(ModelKind::PerUnit));
+    row.sku_id = authored_sku;
+    row.meter = Some("api_calls".to_owned());
+    row.dimension_key = "region=eu".to_owned();
+    let content = PriceContent {
+        row,
+        tax_inclusive: false,
+        tax_category_ref: None,
+        billing_timing: None,
+        proration_contract: None,
+        rounding_policy_ref: None,
+        grandfather_until: None,
+        supersedes_price_id: None,
+    };
+
+    let authored = authored_content(&key, content);
+
+    assert_eq!(
+        authored.row.sku_id,
+        key.sku_id(),
+        "the row prices the SKU its key is filed under, not the one the caller sent"
+    );
+    assert_ne!(
+        authored.row.sku_id, authored_sku,
+        "and the authored value is the one that loses, exactly as charge_kind does"
+    );
+}
+
 /// A **different** meter is still a different meter, which is the line the
 /// normalization must not cross.
 ///
