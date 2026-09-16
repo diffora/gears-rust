@@ -17,8 +17,12 @@
 //! `inst-la-units` (the meter must be gauge-kind and the SKU-declared billable
 //! unit must equal `level unit x granule`) and `inst-la-composite` (a non-`sum`
 //! function on a derived meter) are **not implemented here**. Both are
-//! cross-entity checks against the product registry, and this gear has no
-//! registry client yet. They are left out rather than stubbed: a rule that
+//! cross-entity checks against the product registry, and what the registry read
+//! model carries is not enough for either: since D-372 this module *does* judge a
+//! row against the registry ([`price_row_rules`]), but
+//! [`CatalogSku`](crate::domain::ports::CatalogSku) declares a metering unit as a
+//! **string** and carries neither its kind nor a composite's formula. They are
+//! left out rather than stubbed: a rule that
 //! always passes is indistinguishable from a rule that holds, and it would make
 //! `LEVEL_UNIT_MISMATCH` and `LEVEL_COMPOSITE_FORBIDDEN` read as enforced when
 //! nothing enforces them.
@@ -33,6 +37,7 @@ pub mod supersession;
 pub mod tier_bands;
 
 use crate::domain::price_row::PriceRow;
+use crate::domain::row_sku_rules::{self, RowSkuContext};
 use crate::domain::validation::ValidationPipeline;
 
 pub use supersession::SupersessionPair;
@@ -124,6 +129,38 @@ pub const COMPOSITE_SELF_REFERENCE: &str = "COMPOSITE_SELF_REFERENCE";
 /// rest of the code set uses.
 pub const TIER_BAND_PRICE_INCREASE: &str = "TIER_BAND_PRICE_INCREASE";
 
+// ---------------------------------------------------------------------------
+// The row-SKU codes (D-372 I3-I6)
+// ---------------------------------------------------------------------------
+
+/// D-372 I3 — a `usage` row on a SKU that declares no metering unit.
+pub const USAGE_ROW_SKU_UNMETERED: &str = "USAGE_ROW_SKU_UNMETERED";
+
+/// D-372 I3 — a recurring / one-time row on a SKU that declares a metering unit.
+pub const FEE_ROW_SKU_METERED: &str = "FEE_ROW_SKU_METERED";
+
+/// D-372 I4 — the stored `meter` no longer equals the SKU's declaration.
+pub const METER_SKU_MISMATCH: &str = "METER_SKU_MISMATCH";
+
+/// D-372 I5 — a `sellable = true` SKU that is not the plan's own.
+pub const ROW_SKU_SELLABLE: &str = "ROW_SKU_SELLABLE";
+
+/// D-372 I6 — the row's SKU is not in the registry read model, or is in it under
+/// a `status` other than `published`.
+///
+/// The design set has named this code since Slice 2, and until D-372 **nothing
+/// raised it**: the gear had no registry client, and the four modules that name
+/// it ([`crate::domain::plan_rules`] and its `composition` / `composite`
+/// submodules, and [`crate::domain::contracts`]) each record that as measured
+/// absence rather than oversight. It is declared here, beside the four codes
+/// D-372 mints, because every code this gear reports is declared in this module.
+///
+/// What is raised is the **row's** half — `inst-pr-sku-published`, over the SKU a
+/// price row names. The plan-level halves those four modules describe (the
+/// *parent* SKU's publication state, at adoption and at retirement) are still
+/// unraised and still owed.
+pub const SKU_NOT_PUBLISHED: &str = "SKU_NOT_PUBLISHED";
+
 /// Every Slice-3 row-local rule, in report order.
 ///
 /// Ordered by theme — kind, then bands, then package, then level aggregation —
@@ -135,9 +172,24 @@ pub const TIER_BAND_PRICE_INCREASE: &str = "TIER_BAND_PRICE_INCREASE";
 /// The supersession guard is **not** here. It judges a pair, not a row, so it
 /// has its own subject type and its own pipeline
 /// ([`supersession_rules`]).
+///
+/// The **row-SKU** rules are not here either, for the opposite reason: they judge
+/// one row, but against the product / SKU registry rather than against the row
+/// alone, so they cannot be built without a read. [`price_row_rules`] is this
+/// roster with those four in front of it.
 #[must_use]
-pub fn price_row_rules() -> ValidationPipeline<PriceRow> {
-    ValidationPipeline::new()
+pub fn row_local_rules() -> ValidationPipeline<PriceRow> {
+    register_row_local(ValidationPipeline::new())
+}
+
+/// The row-local roster, appended to `pipeline`.
+///
+/// Private and shared by the two public pipelines so the roster is **spelled
+/// once**: a second copy is a rule that can leave one pipeline and stay in the
+/// other, which is the fault `rules_tests`'s roster assertions exist to catch and
+/// the one they could not see.
+fn register_row_local(pipeline: ValidationPipeline<PriceRow>) -> ValidationPipeline<PriceRow> {
+    pipeline
         .with_rule(Box::new(model_kind::ExplicitModelKind))
         .with_rule(Box::new(model_kind::KindRequiredFields))
         .with_rule(Box::new(model_kind::KindForbiddenFields))
@@ -169,6 +221,36 @@ pub fn price_row_rules() -> ValidationPipeline<PriceRow> {
         // `FLOOR_TYPE_MISSING` has no rule and where it is owed.
         .with_rule(Box::new(floor_typing::FloorFallbackDeclared))
         .with_rule(Box::new(floor_typing::FloorOutsideBands))
+}
+
+/// Every row rule, in report order: the four **row-SKU** rules (D-372 I3-I6) and
+/// then the row-local roster [`row_local_rules`] registers.
+///
+/// The registry four run **first**, and that is the contract rather than a
+/// preference. A row naming a SKU this gear cannot read, or one the registry has
+/// not published, is answered by that fact before it is answered by anything its
+/// own columns say — an author sent to fix a band geometry on a row bound to a
+/// SKU that does not exist would fix the wrong thing twice.
+///
+/// `ctx` is one registry read, made at the door and shared by the four
+/// (see [`crate::domain::registry_view`]). Building this pipeline costs four
+/// `Arc` clones and no I/O.
+///
+/// **Not yet the pipeline the doors run.** D-372's Task 7 threads a real
+/// [`RowSkuContext`] through the price write door, the publish path and
+/// `plan_supersession`; until then those callers run [`row_local_rules`] and this
+/// function's only callers are its tests. The alternative -- handing the doors a
+/// context built from an empty listing -- would refuse every price row in the
+/// gear, and one built from a *listing of everything* would be a registry read
+/// this task does not make.
+#[must_use]
+pub fn price_row_rules(ctx: RowSkuContext) -> ValidationPipeline<PriceRow> {
+    let pipeline = ValidationPipeline::new()
+        .with_rule(Box::new(row_sku_rules::RowSkuPublished(ctx.clone())))
+        .with_rule(Box::new(row_sku_rules::RowSkuSellability(ctx.clone())))
+        .with_rule(Box::new(row_sku_rules::UsageRowSkuMetered(ctx.clone())))
+        .with_rule(Box::new(row_sku_rules::MeterMatchesSku(ctx)));
+    register_row_local(pipeline)
 }
 
 /// The supersession unit guard, as a pipeline over a predecessor/successor pair.

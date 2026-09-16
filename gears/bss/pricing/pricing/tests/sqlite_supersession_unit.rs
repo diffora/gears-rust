@@ -1154,7 +1154,7 @@ async fn usage_key_with_published_row(
 /// A `graduated` usage row the S3 rule set passes: a meter, a quantization, a reset
 /// window and a band set whose top band is open.
 ///
-/// Modelled on `domain::rules_tests::graduated_usage`, which is what `price_row_rules`
+/// Modelled on `domain::rules_tests::graduated_usage`, which is what `row_local_rules`
 /// is exercised against — so a row this suite calls legal is a row that set calls legal.
 fn graduated_usage(unit_price: i64) -> PriceContent {
     use bss_pricing::domain::price_row::{
@@ -1269,7 +1269,7 @@ async fn a_usage_key_commits_after_its_approve_rather_than_refusing_itself_forev
 async fn a_successor_the_row_rules_refuse_never_reaches_the_published_plane() {
     // `inst-su-compose` clause (a): "the successor **draft** row on the same canonical
     // scope key (**S3 rules apply** — incl. the D-82/D-98 unit guard)". Only the guard
-    // was running. `price_row_rules` has one other caller, `run_publish_rules`, and a
+    // was running. `row_local_rules` has one other caller, `run_publish_rules`, and a
     // supersession successor never reaches it — D-195's exclusion rule drops a draft on
     // an occupied key from the plan-revision unit's set. So the row that publishes
     // through this unit was judged by **no** row-local rule: a `graduated` successor with
@@ -1287,7 +1287,7 @@ async fn a_successor_the_row_rules_refuse_never_reaches_the_published_plane() {
     // **The code by name, matching the sibling case above.** `SupersessionUnitGuard`
     // raises `ValidationFailed` too, so `matches!(.., ValidationFailed(_))` alone is
     // satisfied by any future rule on this path refusing for an unrelated reason —
-    // while `price_row_rules` silently stops running, which is the exact regression
+    // while `row_local_rules` silently stops running, which is the exact regression
     // this case was written to close.
     let DomainError::ValidationFailed(report) = refused else {
         panic!("got: {refused:?}");
@@ -1306,7 +1306,7 @@ async fn a_successor_the_row_rules_refuse_never_reaches_the_published_plane() {
     assert!(
         !codes.contains(&"SUPERSESSION_UNIT_MISMATCH"),
         "and the unit guard is not what refused it: the request's unit matches its \
-         predecessor's, so this case says nothing about `price_row_rules` if it did: {codes:?}"
+         predecessor's, so this case says nothing about `row_local_rules` if it did: {codes:?}"
     );
     assert_eq!(rows_on_key(&h, &key).await.len(), 1);
 }

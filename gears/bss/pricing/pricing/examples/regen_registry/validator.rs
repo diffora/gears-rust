@@ -10,7 +10,7 @@
 //! ## Shape first, then the pair
 //!
 //! [`CatalogPublishValidator::validate`] runs the successor's **row-shape**
-//! rules ([`price_row_rules`]) before the **supersession unit guard**
+//! rules ([`row_local_rules`]) before the **supersession unit guard**
 //! ([`supersession_rules`]), and reports the first violation of that order.
 //!
 //! The order is not a preference. A malformed row is malformed regardless of
@@ -54,7 +54,7 @@ use bss_pricing::domain::price_row::{
     PriceRow, QuantitySource, ReservationFlavor as GearReservationFlavor, RolloverPolicy,
     TierAggregationWindow, TierBand, TierQualificationWindow,
 };
-use bss_pricing::domain::rules::{SupersessionPair, price_row_rules, supersession_rules};
+use bss_pricing::domain::rules::{SupersessionPair, row_local_rules, supersession_rules};
 use bss_pricing::domain::scope_key::{ChargeKind, SkuId};
 use uuid::Uuid;
 
@@ -75,7 +75,7 @@ impl PublishValidator for CatalogPublishValidator {
         let before = price_row(predecessor)?;
         let after = price_row(successor)?;
 
-        let shape = price_row_rules().run(&after);
+        let shape = row_local_rules().run(&after);
         if let Some(violation) = shape.violations.first() {
             return Ok(PublishVerdict::Rejected {
                 error_code: violation.code.clone(),

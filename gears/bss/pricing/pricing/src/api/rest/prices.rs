@@ -1322,7 +1322,8 @@ fn require_no_key_contradiction(
     content: &PriceContent,
 ) -> Result<(), CanonicalError> {
     let subject = price_repo::authored_content(key, content.clone()).row;
-    let report = crate::domain::rules::price_row_rules().run(&subject);
+    // D-372: Task 7 threads RowSkuContext here and calls price_row_rules(ctx)
+    let report = crate::domain::rules::row_local_rules().run(&subject);
     match report.write_stage_only() {
         None => Ok(()),
         Some(write_stage) => Err(CanonicalError::from(DomainError::ValidationFailed(

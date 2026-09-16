@@ -306,7 +306,7 @@ async fn region_readiness(
 /// repricing re-run it over the post-commit shape inside the same transaction.
 /// This one does neither: `commit_supersession` reads the readiness and the
 /// rounding default itself and goes straight into `commit_supersession_rows`, and
-/// `domain::supersession::plan_supersession` runs `price_row_rules()` and
+/// `domain::supersession::plan_supersession` runs `row_local_rules()` and
 /// `supersession_rules()`, neither of which mentions `tax_category_ref`.
 /// `infra::cutover` states the gap in as many words — *"a same-key supersession
 /// does not change that set and does not run this, which is why `supersede_in`

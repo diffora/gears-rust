@@ -1010,7 +1010,7 @@ async fn approve(harness: &Harness, approval_id: Uuid) {
 async fn a_successor_resolving_no_tax_category_is_refused_rather_than_frozen_as_null() {
     // **The gap, and what made it worse than a bad row.** `commit_supersession`
     // resolves `coalesce(row.tax_category_ref, readiness.taxCategory)` itself and
-    // freezes whatever it gets; `plan_supersession` runs `price_row_rules()` and
+    // freezes whatever it gets; `plan_supersession` runs `row_local_rules()` and
     // `supersession_rules()`, neither of which mentions `tax_category_ref`; and
     // `run_publish_rules` — the only place `TaxBasisComplete` is registered — is
     // never called on this path. So this committed, froze NULL onto a **published**

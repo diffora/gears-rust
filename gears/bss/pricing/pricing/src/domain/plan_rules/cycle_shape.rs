@@ -48,11 +48,15 @@
 //!   **read-model projection** and therefore G6. This slice validates the row's
 //!   shape, never when it is charged.
 //!
-//! **Owned by the product / SKU registry, which this gear cannot read:**
+//! **Owned by the product / SKU registry, which this gear reads only per price
+//! row (D-372) and never for a plan's parent SKU:**
 //!
 //! - "parent SKU `meteringUnit` required" and `SKU_NOT_PUBLISHED`
 //!   (`inst-cs-usage`); the anchor half of `inst-cs-customfreq` is absent for a
-//!   different reason, recorded in [`crate::domain::plan_rules`]'s table.
+//!   different reason, recorded in [`crate::domain::plan_rules`]'s table. D-372
+//!   raises `SKU_NOT_PUBLISHED` over the SKU a **price row** names
+//!   ([`crate::domain::row_sku_rules`]); this cycle rule asks about the **plan's**
+//!   parent SKU, which no read model here carries.
 //!
 //! **Stated by the design set with no code in §5 to report it.** These are not
 //! deferrals, they are gaps: a rule with no code cannot be reported to a

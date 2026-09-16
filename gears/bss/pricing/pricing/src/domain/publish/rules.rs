@@ -150,7 +150,7 @@ use crate::domain::money::CurrencyCode;
 use crate::domain::plan_rules::{CustomIntervalBounds, DescriptorSetComplete, plan_shape_rules};
 use crate::domain::plan_shape::PlanShape;
 use crate::domain::price_row::PriceRow;
-use crate::domain::rules::price_row_rules;
+use crate::domain::rules::row_local_rules;
 use crate::domain::scope_key::{PriceEligibility, Region};
 use crate::domain::tax_display::{
     MarketBasisUniform, RegionTaxReadiness, TaxBasisComplete, TaxDisplayPolicy,
@@ -566,7 +566,9 @@ impl SoftSizeCaps {
 pub fn run_publish_rules(shape: &PlanShape, params: &PublishRuleParams) -> ValidationReport {
     let mut report = ValidationReport::default();
 
-    let row_rules = price_row_rules();
+    // D-372: the row-local roster only. The four registry rules arrive with a
+    // `RowSkuContext` when the publish path reads the registry (Task 7).
+    let row_rules = row_local_rules();
     for record in &shape.rows {
         report.absorb(row_rules.run(&record.row));
     }
@@ -986,7 +988,7 @@ impl ValidationRule<PlanShape> for PlanSizeWithinSoftCaps {
 /// **Why the subject is the plan and not the row.** `grandfather_until` lives on
 /// [`PriceRecord`](crate::domain::price_record::PriceRecord), not on
 /// [`PriceRow`](crate::domain::price_row::PriceRow), so
-/// [`price_row_rules`](crate::domain::rules::price_row_rules) cannot see it —
+/// [`row_local_rules`](crate::domain::rules::row_local_rules) cannot see it —
 /// and widening `PriceRow` to reach it would move a field across the D-162
 /// roster boundary and imply a generation bump for something that is not
 /// evaluation policy at all. The eligibility class it pairs with is on the

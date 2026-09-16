@@ -1281,7 +1281,7 @@ fn every_rule_the_rating_compatibility_union_names_is_registered() {
     use crate::domain::contracts::RATING_COMPAT_UNION;
 
     let params = params(Some("half_up"));
-    let mut registered: Vec<&'static str> = crate::domain::rules::price_row_rules().rule_names();
+    let mut registered: Vec<&'static str> = crate::domain::rules::row_local_rules().rule_names();
     registered.extend(super::foundation_plan_rules(&params).rule_names());
     registered.extend(
         crate::domain::plan_rules::plan_shape_rules(params.interval_bounds, params.descriptors)

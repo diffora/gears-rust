@@ -40,7 +40,7 @@
 //!
 //! | Code | Why absent |
 //! |---|---|
-//! | `SKU_NOT_PUBLISHED` | the parent SKU's publication state lives in the product/SKU registry read model |
+//! | `SKU_NOT_PUBLISHED` | the **parent** SKU's publication state lives in the product/SKU registry read model. Since D-372 the **row's** half is raised by `inst-pr-sku-published` (see [`crate::domain::row_sku_rules`]) and the code is declared in [`crate::domain::rules`]; what is still absent is this table's row — the parent SKU, at adoption and at retirement |
 //! | `PLANTIER_DIVERGENT` | needs the parent SKU's `PlanTier`, from the same registry. The `PLANTIER_MISSING` half needs nothing external and **is** implemented |
 //! | `ADDON_INCOMPATIBLE` (registry half) | "add-on SKUs published + compatible with the base SKU" is a registry read. The **plan-authored** half — an edge pointing outside the plan's own add-on set, and a conflicting pair with both sides `required` — needs nothing external and **is** implemented under this code, because D-16 made those edges plan-authored |
 //! | `ADDON_OVERRIDE_UNRESOLVED` | needs two things this gear does not have: the add-on SKU's plans (a registry join) and `PriceWindow` coverage for the covering-member-key half (Slice 7 storage, D-95 / D-97 / D-116) |

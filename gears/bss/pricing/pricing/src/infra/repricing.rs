@@ -69,7 +69,7 @@
 //! own effect*. A markup/discount/fixed adjustment moves only a row's amount,
 //! and every rule `run_publish_rules` registers that reads `amount_minor`,
 //! `package_price_minor` or `unit_price_minor` is row-local — already run,
-//! pre-commit, inside [`plan_supersession`]'s own `price_row_rules()` call.
+//! pre-commit, inside [`plan_supersession`]'s own `row_local_rules()` call.
 //! None of the genuinely aggregate-only rules (phase coverage, descriptor
 //! completeness, region declaration, window coverage) is sensitive to an
 //! amount's value at all. So for this lane the post-commit pass is not a
@@ -2312,7 +2312,7 @@ async fn apply_rows_in(
             .collect();
 
         // The row-local rule set already exists as one call
-        // (`domain::supersession::plan_supersession`): `price_row_rules()`,
+        // (`domain::supersession::plan_supersession`): `row_local_rules()`,
         // `supersession_rules()` (D-82/D-98) and `compose_windows`'
         // overlap/gap/trailing-void check, over the successor built from the
         // run's own adjustment.

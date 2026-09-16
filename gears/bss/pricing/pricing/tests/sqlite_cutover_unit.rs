@@ -403,7 +403,7 @@ async fn a_cutover_may_not_flip_the_formula_that_prices_a_continued_counter() {
 #[tokio::test]
 async fn a_cutover_publishing_an_unproratable_successor_is_refused_by_the_aggregate() {
     // **D-344 Tier B.** `inst-pi-required` is a plan-aggregate rule, not a
-    // row-local one — `price_row_rules` passes this successor and
+    // row-local one — `row_local_rules` passes this successor and
     // `run_publish_rules` does not — so it reddens for the aggregate arm alone and
     // stays green if only Tier A is present. That is the discrimination this probe
     // is for: a cutover that drops the three proration inputs publishes a recurring

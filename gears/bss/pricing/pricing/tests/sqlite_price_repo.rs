@@ -5821,7 +5821,7 @@ async fn the_same_set_publishes_once_the_region_declares_a_category() {
 /// key whose rows lean on a tenant default that has since been cleared.
 ///
 /// `infra::supersession` reads the default itself and passes it here, and no rule
-/// on that path judges it — `plan_supersession` runs `price_row_rules()` and
+/// on that path judges it — `plan_supersession` runs `row_local_rules()` and
 /// `supersession_rules()`, neither of which holds a rounding rule. Before the
 /// refusal below, this froze `NULL` onto a **published** successor and
 /// `trg_pricing_price_append_only` makes it immutable.

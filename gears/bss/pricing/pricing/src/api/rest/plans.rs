@@ -3070,7 +3070,7 @@ impl DraftShape {
 /// The write-stage door for the plan name (D-318).
 ///
 /// **The plan write path runs no rule pipeline**, unlike the price row's, whose
-/// `require_no_key_contradiction` runs `price_row_rules()` and takes
+/// `require_no_key_contradiction` runs `row_local_rules()` and takes
 /// `write_stage_only()`. Turning the whole plan pipeline on here would refuse
 /// legitimate intermediate states — `PlanTierDeclared` alone would make a draft
 /// with no tier yet unsaveable — which is the mistake D-312's stage split exists

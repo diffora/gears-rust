@@ -65,7 +65,7 @@ use toolkit_macros::domain_model;
 use crate::domain::concurrency::RowVersion;
 use crate::domain::price_record::{PriceContent, authored_content};
 use crate::domain::publish::rules::{PRIMITIVE_RULES_UNBUILT, unjudged_primitives};
-use crate::domain::rules::price_row_rules;
+use crate::domain::rules::row_local_rules;
 use crate::domain::scope_key::ScopeKey;
 
 /// The wire code for two rows on one canonical scope key.
@@ -258,7 +258,7 @@ pub fn classify(rows: &[ImportRow]) -> BatchReport {
 /// # The stage subset, not the whole rule set
 ///
 /// Only [`Stage::Write`](crate::domain::validation::Stage) violations are taken.
-/// Running the full `price_row_rules()` here would refuse a batch of legitimately
+/// Running the full `row_local_rules()` here would refuse a batch of legitimately
 /// incomplete drafts — no `model_kind` yet, no bands yet — which is exactly what
 /// §4.2 puts the rule set at publish to permit, and an import lands **drafts**. So
 /// this arm inherits D-312's line rather than restating it: the same
@@ -277,7 +277,10 @@ pub fn classify(rows: &[ImportRow]) -> BatchReport {
 fn key_contradictions(rows: &[ImportRow]) -> Vec<(usize, RowViolation)> {
     // Once, not per row: the pipeline is a fresh allocation of every registered
     // rule and a batch is the case where that multiplies.
-    let rules = price_row_rules();
+    // D-372: the row-local roster only, and here that is not merely transitional:
+    // the four registry rules are `Stage::Publish`, so they would add nothing to
+    // the `write_stage_only()` subset this arm takes.
+    let rules = row_local_rules();
     let mut found = Vec::new();
     for (index, row) in rows.iter().enumerate() {
         let subject = authored_content(&row.scope_key, row.content.clone()).row;

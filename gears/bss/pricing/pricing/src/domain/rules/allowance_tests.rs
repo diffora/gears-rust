@@ -125,7 +125,7 @@ fn the_two_authorable_shapes_carrying_an_allowance_pass_the_whole_row_local_set(
         ("per_unit", per_unit_usage()),
     ] {
         row.included_allowance = Some(allowance(100, RolloverPolicy::None));
-        let report = crate::domain::rules::price_row_rules().run(&row);
+        let report = crate::domain::rules::row_local_rules().run(&row);
         assert!(
             report.violations.is_empty(),
             "{label}: {:?}",
@@ -139,7 +139,7 @@ fn the_two_authorable_shapes_carrying_an_allowance_pass_the_whole_row_local_set(
         // Drop the window and the untiered shape is refused for the counter it
         // would never reset; the tiered one was already refused without it.
         row.tier_aggregation_window = None;
-        let without = crate::domain::rules::price_row_rules().run(&row);
+        let without = crate::domain::rules::row_local_rules().run(&row);
         assert!(
             without
                 .violations

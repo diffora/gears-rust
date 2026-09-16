@@ -353,7 +353,7 @@ impl ValidationRule<PriceRow> for CompiledAllowanceWellFormed {
 /// The three Slice-3 band-geometry rules over one row.
 ///
 /// Called rather than registered, because this rule's subject is a **derived**
-/// row: running `price_row_rules()` here would recurse through this very rule,
+/// row: running `row_local_rules()` here would recurse through this very rule,
 /// and every non-band rule in that pipeline would then judge a row nobody
 /// authored.
 fn band_report(row: &PriceRow) -> ValidationReport {

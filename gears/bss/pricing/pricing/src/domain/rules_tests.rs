@@ -1,15 +1,22 @@
-//! Tests for the row-local rule registration (Slice 3's set, plus Slice 10's
-//! `inst-rv-attrs` since 2026-08-08).
+//! Tests for the row rule registration (Slice 3's set, plus Slice 10's
+//! `inst-rv-attrs` since 2026-08-08, plus D-372's four registry rules since
+//! 2026-09-16 — those in `price_row_rules`, which is the row-local roster with
+//! the four in front of it).
+
+use std::sync::Arc;
 
 use bss_fixtures::ModelKind;
+use uuid::Uuid;
 
 use super::{
     EVAL_POLICY_MISSING, MODEL_KIND_MISSING, SUPERSESSION_UNIT_MISMATCH, SupersessionPair,
-    TIER_TOP_CLOSED, price_row_rules, supersession_rules,
+    TIER_TOP_CLOSED, price_row_rules, row_local_rules, supersession_rules,
 };
 use crate::domain::money::RateMinor;
 use crate::domain::price_row::{BillingGranularity, PriceRow, TierAggregationWindow, TierBand};
-use crate::domain::scope_key::ChargeKind;
+use crate::domain::registry_view::SkuIndex;
+use crate::domain::row_sku_rules::RowSkuContext;
+use crate::domain::scope_key::{ChargeKind, SkuId};
 
 /// A band rate, stated in whole minor units so these cases read as they
 /// always did (D-311). The stored scale is 10^-9 of one.
@@ -48,7 +55,7 @@ fn the_pipeline_registers_every_row_local_instruction() {
     // judges the ladder that row projects. Both are here rather than in the
     // Foundation plan set, and the corpus reaches both.
     assert_eq!(
-        price_row_rules().rule_names(),
+        row_local_rules().rule_names(),
         vec![
             "inst-mk-explicit",
             "inst-mk-required",
@@ -76,9 +83,36 @@ fn the_pipeline_registers_every_row_local_instruction() {
     );
 }
 
+/// The registry pipeline is the roster above with D-372's four in **front** of
+/// it, and nothing else.
+///
+/// The sibling of the assertion above, and the half it cannot make. Since D-372
+/// the roster is spelled once, in `register_row_local`, and both public pipelines
+/// append it — so a rule leaving the roster reddens both tests, which is right,
+/// and a *registry* rule leaving `price_row_rules` reddens only this one. It is
+/// also the only assertion that the four run **before** the row-local set rather
+/// than after it: an author whose SKU is unreadable is told that first.
+#[test]
+fn the_registry_pipeline_is_the_four_row_sku_rules_and_then_the_roster() {
+    let ctx = RowSkuContext {
+        plan_sku: SkuId::new(Uuid::nil()),
+        index: Arc::new(SkuIndex::default()),
+    };
+
+    let mut expected = vec![
+        "inst-pr-sku-published",
+        "inst-pr-sku-sellability",
+        "inst-pr-sku-metered",
+        "inst-pr-meter-derived",
+    ];
+    expected.extend(row_local_rules().rule_names());
+
+    assert_eq!(price_row_rules(ctx).rule_names(), expected);
+}
+
 #[test]
 fn a_well_formed_graduated_usage_row_publishes() {
-    let report = price_row_rules().run(&graduated_usage());
+    let report = row_local_rules().run(&graduated_usage());
 
     assert!(
         report.is_publishable(),
@@ -100,7 +134,7 @@ fn one_row_reports_every_fault_it_carries() {
     row.billing_granularity = None;
     row.bands = vec![TierBand::closed(0, 1_000, rate(10))];
 
-    let report = price_row_rules().run(&row);
+    let report = row_local_rules().run(&row);
     let codes: Vec<&str> = report
         .violations
         .iter()
@@ -150,7 +184,7 @@ mod write_stage_over_the_whole_set {
     }
 
     fn write_codes(row: &PriceRow) -> Vec<String> {
-        price_row_rules()
+        row_local_rules()
             .run(row)
             .write_stage_only()
             .map(|report| {
@@ -241,7 +275,7 @@ mod write_stage_over_the_whole_set {
         // with neither field is a legitimate half-built row.
         let bare = PriceRow::new(ChargeKind::Recurring, None);
         assert!(
-            price_row_rules().run(&bare).write_stage_only().is_none(),
+            row_local_rules().run(&bare).write_stage_only().is_none(),
             "a recurring row that authored no package field must still save"
         );
     }
@@ -257,7 +291,7 @@ mod write_stage_over_the_whole_set {
 
         assert_eq!(write_codes(&row), vec![PACKAGE_FIELDS_INVALID.to_owned()]);
 
-        let all = price_row_rules().run(&row);
+        let all = row_local_rules().run(&row);
         assert_eq!(
             all.violations
                 .iter()
@@ -287,12 +321,12 @@ mod write_stage_over_the_whole_set {
         // authoring would be broken and only this assertion would say so.
         let row = PriceRow::new(ChargeKind::Usage, None);
         assert!(
-            price_row_rules().run(&row).write_stage_only().is_none(),
+            row_local_rules().run(&row).write_stage_only().is_none(),
             "an incomplete row must still save: {:?}",
             write_codes(&row)
         );
         assert!(
-            !price_row_rules().run(&row).violations.is_empty(),
+            !row_local_rules().run(&row).violations.is_empty(),
             "the probe proves nothing unless this row does fail publish"
         );
     }
@@ -300,7 +334,7 @@ mod write_stage_over_the_whole_set {
     #[test]
     fn a_publishable_row_is_judged_by_nothing_at_the_write() {
         assert!(
-            price_row_rules()
+            row_local_rules()
                 .run(&graduated_usage())
                 .write_stage_only()
                 .is_none()
