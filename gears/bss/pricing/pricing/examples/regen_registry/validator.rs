@@ -133,6 +133,42 @@ fn price_row(snapshot: &Snapshot) -> Result<PriceRow, EvalError> {
     slice3_row(snapshot)
 }
 
+/// The SKU id a corpus snapshot's usage line stands for (D-372).
+///
+/// The corpus predates D-372, names a usage line by its `meter`, and has **no
+/// `sku` field at all**; it is also shared with Rating, which has no stake in
+/// this gear's key layout. So the SKU is derived here, in the mapping, on the
+/// same terms as the D-311 `amount_minor` translation [`slice3_row`] performs a
+/// few lines down: it keeps every fixture meaning exactly what it meant without
+/// editing 30-odd TOML files owned by two gears.
+///
+/// **It is a translation, not an invention.** Since D-372 the meter is *derived*
+/// from the SKU's registry declaration (`inst-pr-meter-derived`, I4), so the
+/// meter is a function of the SKU and the contrapositive holds: two rows that
+/// name different meters cannot name one SKU. Giving each distinct meter its own
+/// deterministic id is therefore the corpus's own statement re-spelled on the
+/// axis the gear now keys on. It restores exactly one verdict --
+/// `supersession-continuity/meter-change-rejected`, the only pair in the corpus
+/// whose two sides carry different meters (censused: 15 of the 16 supersession
+/// cases name one meter on both sides) -- and that case goes on asserting what it
+/// always asserted, that a successor re-pointing the continued counter is refused
+/// `SUPERSESSION_UNIT_MISMATCH`.
+///
+/// **It is this programme's fixture convention and not permanent policy.** The
+/// corpus owes a `sku` field of its own, recorded as Owed under D-372 for the
+/// docs task; when it has one, this function goes and [`slice3_row`] reads the
+/// stated value. Nothing outside this example may read a SKU derived this way.
+///
+/// `NAMESPACE_OID` over the meter name, so the value is stable across runs and
+/// machines and two snapshots agree exactly when their meters do. A snapshot with
+/// no meter is a row with no line to be told apart by, and they all share one id:
+/// no rule in either judged set reads this field on such a row, and a
+/// supersession pair that is meterless on both sides was equal on this axis
+/// before the move as well.
+fn corpus_sku(meter: Option<&str>) -> Uuid {
+    Uuid::new_v5(&Uuid::NAMESPACE_OID, meter.unwrap_or_default().as_bytes())
+}
+
 /// The **Slice-3 part** of a snapshot, projected without the
 /// unrepresentable-field gate.
 ///
@@ -151,37 +187,6 @@ fn price_row(snapshot: &Snapshot) -> Result<PriceRow, EvalError> {
 ///
 /// [`EvalError::UnrepresentableField`] for a value outside a gear enum's
 /// vocabulary, or a negative amount the money type refuses.
-/// The SKU id a corpus snapshot's usage line stands for (D-372).
-///
-/// The corpus predates D-372, names a usage line by its `meter`, and has no
-/// `sku` field at all; it is also shared with Rating, which has no stake in this
-/// gear's key layout. So the SKU is derived here, in the mapping, for the same
-/// reason and on the same terms as the D-311 `amount_minor` translation above:
-/// it keeps every fixture meaning exactly what it meant without editing 30-odd
-/// TOML files owned by two gears.
-///
-/// **It is a translation, not an invention.** Since D-372 the meter is *derived*
-/// from the SKU's registry declaration (`inst-pr-meter-derived`, I4), so the
-/// meter is a function of the SKU and the contrapositive holds: two rows that
-/// name different meters cannot name one SKU. Giving each distinct meter its own
-/// deterministic id is therefore the corpus's own statement re-spelled on the
-/// axis the gear now keys on. It restores exactly one verdict --
-/// `supersession-continuity/meter-change-rejected`, the only pair in the corpus
-/// whose two sides carry different meters (censused: 15 of the 16 supersession
-/// cases name one meter on both sides) -- and that case goes on asserting what it
-/// always asserted, that a successor re-pointing the continued counter is refused
-/// `SUPERSESSION_UNIT_MISMATCH`.
-///
-/// `NAMESPACE_OID` over the meter name, so the value is stable across runs and
-/// machines and two snapshots agree exactly when their meters do. A snapshot with
-/// no meter is a row with no line to be told apart by, and they all share one id:
-/// no rule in either judged set reads this field on such a row, and a
-/// supersession pair that is meterless on both sides was equal on this axis
-/// before the move as well.
-fn corpus_sku(meter: Option<&str>) -> Uuid {
-    Uuid::new_v5(&Uuid::NAMESPACE_OID, meter.unwrap_or_default().as_bytes())
-}
-
 pub fn slice3_row(snapshot: &Snapshot) -> Result<PriceRow, EvalError> {
     Ok(PriceRow {
         charge_kind: charge_kind(snapshot.charge_kind),
