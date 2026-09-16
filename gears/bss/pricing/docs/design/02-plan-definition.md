@@ -49,7 +49,7 @@ Updated:  2026-08-24 by Virtuozzo International GmbH
 This slice owns the **shape of a Plan**: the billing-cycle matrix (one-time / recurring /
 usage-based / hybrid), custom frequency, per-seat quantity provenance, the optional one-time
 setup row, mandatory `PlanTier`, meter injectivity, add-on rules, plan phases with
-`convertsToPhaseId`, the billing descriptor set, and — since **D-319** — the plan-level
+`convertsToPhaseId`, the billing descriptor contract (**D-373**), and — since **D-319** — the plan-level
 **period floor and cap** per sold market. It registers its validation rules into
 the Foundation's fail-closed pipeline and its fields into the read-model projection; it owns
 **no publish mechanics** — everything publishes through the Foundation
@@ -116,7 +116,7 @@ Inherits Foundation C-set (fail-closed, append-only, UTC, ISO 4217, tenant isola
 | P2 | Custom-frequency anchoring | `customEveryN Days(n)` MUST anchor on `subscription_start` (a `calendar_month`/`fixed_day` anchor fails publish). `customEveryN Months(n)` MAY anchor `subscription_start` or `calendar_month`; a `subscription_start` day beyond the target month clamps to its last day (K2 rule) with the **anchor day preserved** per period (no drift: 31→28→31); UTC; joint anchor fixture with Subscriptions (D-20) | PRD §6.1; D-20 |
 | P3 | PlanTier equality | Plan `PlanTier` = parent SKU `PlanTier` unless an explicit, audited override is declared (default equal, no silent divergence) | PRD §17.3 |
 | P4 | Localization | Plan-owned display content (names, labels, descriptors) is single-language at launch; per-locale authoring is an open registry-owned item | PRD §15 (F-37) |
-| P5 | Descriptor minimum field set | **Pinned (D-48, 2026-07-28; composition revised by D-110, 2026-07-31)**: descriptor-set entity = line template, GL code, itemization rule; **two** elements of the v1 five **ride the price row** — `billingTiming` (2026-07-28) and `taxCategory` = the row's `tax_category_ref` (D-110 — a per-plan column could not mirror a per-row source of truth); v1 content unchanged, additive-only extension — **declared in `pricing_policy_object`, per tenant** (**D-152**, 2026-08-03: the "config-extensible required-set" had no carrier anywhere in the set); the `taxCategory` element is the row's **effective** category, resolved and frozen at publish (**D-154**, 2026-08-03); Billing countersigns at its gear PRD | PRD §15, D-48, D-110, D-152, D-154 |
+| P5 | Descriptor minimum field set | **Pinned D-48 v1 content, shape revised by D-373 (2026-09-16)**: five elements, **four row-borne** — `invoiceLineTemplate`, `glCode`, `taxCategory`, `billingTiming` — and **one derived** — `itemizationRule`, from `pricing_bundle.invoice_itemization` for bundle plans, `itemize` otherwise. Billing descriptors are a contract, not an entity. Publish resolves and freezes the row's template and GL code from authored overrides or tenant defaults (D-373); the effective tax category still resolves and freezes per D-154. The only authored plan-level descriptor content is `pricing_plan.descriptor_ext`, D-152's additive extension, whose required keys are declared per tenant in `pricing_policy_object.additional_required_descriptors`. Billing countersigns at its gear PRD | PRD §15, D-48, D-110, D-152, D-154, D-373 |
 
 ### 1.7 Naming & Design-Introduced Names
 
@@ -130,7 +130,7 @@ Design-introduced names (Slice 2):
 | `CycleShapeValidator` | Registered rule set validating the billing-cycle matrix (§17.1) per plan |
 | `CompositionValidator` | Registered rule set for `PlanTier`, meter injectivity, add-on rules (§17.3) |
 | `PhaseGraph` | The ordered phase set with `convertsToPhaseId` edges; validated acyclic with exactly one terminal phase |
-| `DescriptorSet` | The per-plan billing descriptor aggregate checked for completeness at publish |
+| Billing descriptor contract | Four row-borne elements plus derived itemization, with an additive plan extension; checked by the §3 rules (**D-373**) |
 
 ### 1.8 Context & Dependencies
 
@@ -143,7 +143,7 @@ flowchart TB
         CSV["CycleShapeValidator"]
         CMP["CompositionValidator"]
         PHG["PhaseGraph"]
-        DSC["DescriptorSet"]
+        DSC["Row descriptor rules + plan extension (D-373)"]
     end
     FND["Foundation (Slice 1)<br/>ValidationPipeline · ReadModelProjector · EventOutbox"]
     REG --> s2
@@ -155,9 +155,12 @@ flowchart TB
 
 **Consumed:** published `skuId` + SKU `PlanTier` + `meteringUnit` declarations (registry).
 **Produced:** the plan-shape portion of the read model (cycle, frequency metadata, phase map +
-`displayTrialDays`, add-on rules, descriptor set, `invoiceGroupingKey` (D-96),
-`planName` (D-318) —
-`quantitySource` is persisted/validated by Slice 3), validated fail-closed at publish.
+`displayTrialDays`, add-on rules, `planName` (D-318), and **D-373**
+`billing { itemizationRule, ext }`: itemization derives from the bundle
+`invoice_itemization`, or `itemize` for other plans; `ext` is `pricing_plan.descriptor_ext`).
+Under **D-373**, each price row carries the resolved `invoiceLineTemplate` and `glCode`
+beside `taxCategory` and `billingTiming`; `invoiceGroupingKey` is removed (D-96 reversed).
+`quantitySource` is persisted/validated by Slice 3; publish validates fail-closed.
 
 ## 2. Actor Flows (CDSL)
 
@@ -168,7 +171,7 @@ flowchart TB
 **Actor**: `cpt-cf-bss-pricing-actor-finance-manager`, `cpt-cf-bss-pricing-actor-product-manager`
 
 **Success Scenarios**:
-- A draft Plan is created against a **published** SKU with a billing cycle from the §17.1 matrix; add-on rules, phases, and descriptors attach incrementally in `draft`
+- A draft Plan is created against a **published** SKU with a billing cycle from the §17.1 matrix; add-on rules and phases attach incrementally in `draft`; descriptor overrides are authored on rows and the extension on the plan (**D-373**)
 - A recurring plan persists `frequency` (`monthly|quarterly|semiannual|annual|customEveryN{Days|Months}(n)`) as metadata
 
 **Error Scenarios**:
@@ -180,7 +183,7 @@ flowchart TB
 1. [ ] - `p1` - API: POST /bss-pricing/v1/plans (draft; idempotency key honored) - `inst-pa-create`
 2. [ ] - `p1` - Validate the parent `skuId` is **published** in the registry read model - `inst-pa-sku`
 3. [ ] - `p1` - Persist cycle + frequency metadata (`n` validated > 0 and ≤ cap, P1) - `inst-pa-cycle`
-4. [ ] - `p1` - Attach add-on rules / phases / descriptors via PATCH while `draft` - `inst-pa-attach`
+4. [ ] - `p1` - Attach add-on rules / phases via PATCH while `draft`; author descriptor overrides on price rows and `descriptor_ext` on the plan shape (**D-373**) - `inst-pa-attach`
 5. [ ] - `p1` - **RETURN** 201 (draft plan, ETag); `PlanCreated` emitted by the Foundation outbox - `inst-pa-return`
 
 ### Publish a Plan
@@ -197,7 +200,7 @@ flowchart TB
 
 **Steps**:
 1. [ ] - `p1` - API: POST /bss-pricing/v1/plans/{planId}/publish - `inst-pp-api`
-2. [ ] - `p1` - Foundation `ValidationPipeline` executes `CycleShapeValidator` + `CompositionValidator` + `PhaseGraph` + `DescriptorSet` rules (this slice) alongside Slice-3 price rules - `inst-pp-validate`
+2. [ ] - `p1` - Foundation `ValidationPipeline` executes `CycleShapeValidator` + `CompositionValidator` + `PhaseGraph` + row descriptor and plan-extension rules (**D-373**, this slice) alongside Slice-3 price rules - `inst-pp-validate`
 3. [ ] - `p1` - On success: Foundation freezes the shape into the read model + snapshot, emits the frozen events, requests `CatalogVersion` ([`01-foundation.md`](./01-foundation.md) §4.2 steps 3–5) - `inst-pp-freeze`
 4. [ ] - `p1` - **RETURN** 202 (publish accepted / pending approval) or 422 (validation report) - `inst-pp-return`
 
@@ -260,13 +263,59 @@ flowchart TB
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-descriptors`
 
-**Input**: the plan's `DescriptorSet`
-**Output**: pass (set frozen into `CatalogVersion`), or a report listing missing fields
+**Input**: the candidate plan's price rows, `pricing_plan.descriptor_ext`, tenant policy
+and active GL vocabulary resolved by the caller, and the bundle row when present (**D-373**).
+
+**Output**: all completeness/membership findings, naming every missing element and each
+row-borne finding's `priceId`; successful publish freezes the resolved template and GL code
+on each row (**D-373**).
 
 **Steps**:
-1. [ ] - `p1` - Required per manifest §4.1 / D-48 v1: invoice line template (`invoiceLineTemplate`), GL code (`glCode`), composition/itemization rules (`itemizationRule`) on the descriptor set — the three spelled as the validation report and the extension keys spell them, following the wire spelling every other rule's detail uses (`planTier`, `billingGranularity`), since §6 names only the columns and the PRD only the concepts — plus the two **row-borne** elements: `billingTiming` on every recurring row (validated by Slice 6's rule, `BILLING_TIMING_MISSING`) and `taxCategory` as each row's `tax_category_ref` (Slice 4 `inst-td-persist`, sole source of truth per D-110); publish blocks on any missing element with the field and, for the row-borne ones, the row named in the report. **What "missing" means for `taxCategory` (normative, D-154, 2026-08-03, found while building the descriptor rule):** the required element is the row's **effective** category — `coalesce(row.tax_category_ref, readiness.taxCategory)`, [`04-currency-tax.md`](./04-currency-tax.md) `inst-td-policy` — never the column alone, so a tenant declaring one category per region satisfies this element without authoring `tax_category_ref` on every row. Publish **resolves** that category and freezes the resolved value with the row, exactly as it resolves and freezes `rounding_policy_ref` (Foundation §3.7). Two things follow and neither held before: a row whose effective category is **absent** fails publish (`TAX_BASIS_INCOMPLETE`, S4 §5) with **no** warn-mode escape, because D-48 v1 pins this element and a tenant display policy may not publish past a pinned contract element; and Billing reads the category from the frozen row instead of re-resolving the coalesce against `pricing_region_taxonomy`, which is mutable per `(tenant, region)` and whose re-query is what step 2 forbids - `inst-ds-required`
-2. [ ] - `p1` - The frozen set MUST be sufficient for Billing/ERP to post without re-querying mutable rows; the minimum field list is confirmed with Billing (P5) and the validator's required-set is config-extensible without a schema change — **the extension is declared in `pricing_policy_object` (normative, D-152, 2026-08-03, found while building the descriptor rule)**: a per-tenant entry listing additional required descriptor keys, matched against `pricing_plan_descriptor_set.additional_fields`, additive-only over the pinned v1 three, and enforced by the existing `DESCRIPTOR_INCOMPLETE` — **no new code**, a missing extended key being a missing descriptor element like any other. Until now the promise had no carrier: nothing in §6, §10 or [`../PRD.md`](../PRD.md) §14 named where the extended set is declared, so `DESCRIPTOR_INCOMPLETE` could only ever check the v1 three and "config-extensible without a schema change" described a capability with no configuration to exercise it - `inst-ds-sufficient`
-3. [ ] - `p1` - **Membership (D-356, 2026-09-09)**: when the tenant has declared a GL-code vocabulary (`GET /bss-pricing/v1/config/vocabularies/gl-codes` and its per-value routes, §6 `pricing_gl_code_taxonomy`), a **present** `glCode` MUST be an `active` member of it or publish fails `GL_CODE_UNKNOWN` — **one finding per revision**, since the code is a single descriptor field and not a per-row value; an **empty** vocabulary constrains nothing (opt-in — declaring the first value turns the check on, so no existing plan fails on landing), and an absent or blank `glCode` stays step 1's `DESCRIPTOR_INCOMPLETE` rather than being reported twice. The rule is handed a set the publish resolves from `pricing_gl_code_taxonomy` and never learns who wrote it: the MVP provider is the tenant's own declares (`POST …/gl-codes/values`, D-368 — the whole-set `PUT` that stood here is removed), the anticipated one an ERP gear populating or reconciling the same table (D-356 *Owed*). D-48's v1 field list is unchanged — this adds an optional membership check to one of its elements - `inst-ds-glcode`
+1. [ ] - `p1` - **Plan extension (D-152; D-373 R6)**: check the tenant's `pricing_policy_object.additional_required_descriptors` against `pricing_plan.descriptor_ext`, additive-only over the unchanged D-48 five-element contract. Publish fails `DESCRIPTOR_INCOMPLETE` (422), naming every missing extension key. This instruction checks only the plan extension - `inst-ds-required`
+2. [ ] - `p1` - **Row template (D-373 R2)**: effective template = `coalesce(row.invoice_line_template, tenant.default_line_templates[charge_kind])`. An empty result fails publish with `DESCRIPTOR_INCOMPLETE` (422), naming `invoiceLineTemplate` and `priceId`; otherwise publish freezes the template string as `resolved_invoice_line_template`. At both the row and policy write doors, a placeholder outside the vocabulary below is refused with `LINE_TEMPLATE_INVALID` (422), so publish never receives a malformed template - `inst-ds-template`
+3. [ ] - `p1` - **Row GL resolution (D-373 R3)**: effective code = `coalesce(row.gl_code_ref, tenant.default_gl_code_ref)`. An empty result fails publish with `GL_CODE_UNRESOLVED` (422), naming `glCode` and `priceId`, regardless of any tenant policy: GL is a pinned D-48 element. Otherwise publish freezes `resolved_gl_code`, following the rounding/tax resolution precedent (D-334/D-154) - `inst-ds-glresolve`
+4. [ ] - `p1` - **Membership (D-356; D-373 R4)**: when the tenant has declared a GL-code vocabulary (`GET /bss-pricing/v1/config/vocabularies/gl-codes` and its per-value routes, §6 `pricing_gl_code_taxonomy`), each row's **effective** code MUST be an `active` member or publish fails `GL_CODE_UNKNOWN` (422), **one finding per row**, with `priceId`. An empty vocabulary constrains nothing; an absent/blank effective code belongs to `GL_CODE_UNRESOLVED` and is not reported twice. The caller resolves the set of active values; the rule does not know its provider. The tenant writes through D-368's per-value doors; a future ERP provider may populate or reconcile the same table (D-356 *Owed*) - `inst-ds-glcode`
+5. [ ] - `p1` - **Snapshot sufficiency (D-373)**: the frozen contract MUST be sufficient for Billing/ERP posting without re-querying mutable rows. Its **four row-borne** elements are the resolved `invoiceLineTemplate`, resolved `glCode`, effective `taxCategory` (D-154; Slice 4), and `billingTiming` (required on recurring rows by Slice 6, `BILLING_TIMING_MISSING`). Its **one derived** element is `itemizationRule`: projection reads `pricing_bundle.invoice_itemization` for a bundle plan and emits `itemize` otherwise (R1; never authored on the plan, no publish gate). The plan snapshot is exactly `billing { itemizationRule, ext }`, with `ext` from `pricing_plan.descriptor_ext` and D-152's additive required keys checked by step 1. There is no descriptor-set entity or grouping key. Billing renders the frozen template using its locale/period and the registry read model at the pinned `CatalogVersion`, which satisfies the no-mutable-requery promise. Billing's countersign remains pending (P5) - `inst-ds-sufficient`
+
+The row rules register beside `TaxBasisComplete` over the candidate row set; the plan half
+checks only extension keys (**D-373**). The tax rule still rejects an absent effective category
+with `TAX_BASIS_INCOMPLETE` regardless of tenant warn policy (D-154).
+
+**Historical D-154 finding (2026-08-03; the former step numbering is retained):**
+**What "missing" means for `taxCategory` (normative, D-154, 2026-08-03, found while building the descriptor rule):** the required element is the row's **effective** category — `coalesce(row.tax_category_ref, readiness.taxCategory)`, [`04-currency-tax.md`](./04-currency-tax.md) `inst-td-policy` — never the column alone, so a tenant declaring one category per region satisfies this element without authoring `tax_category_ref` on every row. Publish **resolves** that category and freezes the resolved value with the row, exactly as it resolves and freezes `rounding_policy_ref` (Foundation §3.7). Two things follow and neither held before: a row whose effective category is **absent** fails publish (`TAX_BASIS_INCOMPLETE`, S4 §5) with **no** warn-mode escape, because D-48 v1 pins this element and a tenant display policy may not publish past a pinned contract element; and Billing reads the category from the frozen row instead of re-resolving the coalesce against `pricing_region_taxonomy`, which is mutable per `(tenant, region)` and whose re-query is what step 2 forbids. **D-373 (2026-09-16)** preserves this tax rule and applies the same resolve-and-freeze path to the row template and GL code.
+
+**Historical D-152 finding (2026-08-03):** Until now the promise had no carrier: nothing in §6, §10 or [`../PRD.md`](../PRD.md) §14 named where the extended set is declared, so `DESCRIPTOR_INCOMPLETE` could only ever check the v1 three and "config-extensible without a schema change" described a capability with no configuration to exercise it. **D-373 (2026-09-16)** retains the per-tenant required-key policy and moves its value carrier to `pricing_plan.descriptor_ext`; the current contract is four row-borne elements and one derived.
+
+**Template vocabulary (D-373; exhaustive):**
+
+| Placeholder | Source | Resolved by |
+|---|---|---|
+| `{sku}` | the row's SKU's localized `displayName` (registry seeded attribute, products `design/02` §294) | Billing, from the registry read model at the **pinned `CatalogVersion`** |
+| `{sku_code}` | the row's SKU `sku_code` | Billing, same |
+| `{unit}` | the row's SKU `unitDisplayLabel` (localized, sales-facing; never the metering-unit identity) | Billing, same |
+| `{plan}` | `planName` (D-318) | Billing, from the pricing snapshot |
+| `{phase}` | the row's phase `display_name` (D-357) | Billing, from the pricing snapshot |
+| `{dimension}` | the row's `dimension_key` | Billing, from the pricing snapshot |
+| `{period}` | the billed service period | Billing, its own |
+
+Pricing freezes the **template string**, never the rendered label (**D-373**): Billing owns
+the invoice locale and period. Authored literals remain single-language; `{sku}` inherits
+registry localization from the pinned version.
+
+**Shipped tenant defaults (D-373):** the `default_line_templates` map is keyed by the four
+`charge_kind` values and uses exactly these ASCII literals; typographic dash and middle-dot
+forms are prose only, not shipped literals.
+
+| `charge_kind` | default template |
+|---|---|
+| `recurring` | `{sku} - {period}` |
+| `usage` | `{sku}, {unit}` |
+| `one_time` | `{sku}` |
+| `one_time_setup` | `{sku} setup` |
+
+A tenant may edit or empty any default through the policy door (**D-373**); an empty default
+with no authored row override fails the row-template publish rule. The parser accepts only
+the seven placeholders above, at both the row and policy write doors.
 
 ### Period Floor & Cap Validation
 
@@ -296,7 +345,7 @@ so its `revision` number stays consumed (`inst-pl-abandon`, D-145); optional `Pl
 **Transitions**:
 1. [ ] - `p1` - **FROM** draft **TO** published **WHEN** the Foundation pipeline passes (this slice's rules included) and approval (governance slice) completes; shape freezes into the read model - `inst-pl-publish`
 1a. [ ] - `p1` - **FROM** published **TO** superseded **WHEN** the plan's next revision publishes (D-90, 2026-07-31 review fix — the flip happens inside the successor revision's publish commit, mirroring the price rows' flip-at-commit): at most one revision per plan is ever **current** (partial `UNIQUE … WHERE lifecycle_state IN ('published', 'retired')` — widened by D-128 so the predicate keeps holding a row after retirement), so "the current revision" is unique by construction for the projector (D-83), the sellability lifecycle predicate, and every truth-side referential check; superseded revision rows are immutable history - `inst-pl-supersede`
-1b. [ ] - `p1` - **FROM** draft **TO** abandoned **WHEN** the plan's open draft revision is discarded — by its author, or by retirement discarding it inside the retirement transaction ([`11-lifecycle.md`](./11-lifecycle.md) `inst-rt-cancel`, D-128). **The number stays consumed (normative, D-145, 2026-08-02, found while building the draft-authoring plane):** the row is **flipped, not deleted**; its revision-scoped child copies (phase, add-on-rule, descriptor-set and grant rows — D-83/D-92/D-106) are dropped, and the flip is audited exactly as the deletion it replaces was. Revision minting is therefore `max(revision) + 1` over the plan's own rows and consults nothing else, so `(plan_id, revision)` — the durable name `pricing_plan_grant` is keyed by (D-52/D-106), that every revision-scoped child copies under, and that the audit trail records — never denotes two rows over a plan's lifetime. Deleting the row was rejected: `max(revision)` returns to its pre-draft value, the next opened draft mints the **same** number, and a client holding the discarded revision's row version then `PATCH`es the *new* row of that name with a precondition that **passes** — the lost update optimistic concurrency exists to refuse, arriving through the key instead of the version, and most reachable at the initial version every freshly minted revision carries. `abandoned` is **terminal** (no edge leaves it) and sits outside both Foundation §3.7 partial `UNIQUE` predicates — outside `WHERE lifecycle_state = 'draft'`, so a new draft opens immediately **on a plan that has published at least once**, and outside `IN ('published', 'retired')`, so "the current revision" (D-90, widened by D-128) is untouched. **The never-published plan is the exception (D-145 as amended 2026-08-02):** the index is not the only gate a new revision passes, because minting has two entry points and only one is `max(revision) + 1` — a plan's first draft is minted at revision `0` outright, while a successor presupposes a current revision to succeed from. A plan created and abandoned before its first publish therefore holds one row, revision `0`, `abandoned`, has neither a current revision nor an open draft, and can acquire neither; the plan id is spent, and an authoring call naming it is refused `PLAN_ABANDONED_NO_SUCCESSOR` (422, Foundation §3.3, referenced not redefined — §5). The rule is kept rather than narrowed: exempting revision `0` would let `plan/0` name two rows over a plan's lifetime, which is the unstable reference this transition exists to remove, on the one number every plan starts at. Consequence stated plainly: a plan's revision numbers may have **gaps** (rev 1 published, rev 2 abandoned, rev 3 published), which the Slice-12 history surface shows an operator. **Scope:** this is the plan-revision rule only — price-row deletability belongs to [`03-price-structure.md`](./03-price-structure.md) `inst-ps-nodelete` and D-145 does not move it - `inst-pl-abandon`
+1b. [ ] - `p1` - **FROM** draft **TO** abandoned **WHEN** the plan's open draft revision is discarded — by its author, or by retirement discarding it inside the retirement transaction ([`11-lifecycle.md`](./11-lifecycle.md) `inst-rt-cancel`, D-128). **The number stays consumed (normative, D-145, 2026-08-02, found while building the draft-authoring plane):** the row is **flipped, not deleted**; its revision-scoped child copies (phase, add-on-rule, descriptor-set and grant rows — D-83/D-92/D-106) are dropped, and the flip is audited exactly as the deletion it replaces was. Revision minting is therefore `max(revision) + 1` over the plan's own rows and consults nothing else, so `(plan_id, revision)` — the durable name `pricing_plan_grant` is keyed by (D-52/D-106), that every revision-scoped child copies under, and that the audit trail records — never denotes two rows over a plan's lifetime. Deleting the row was rejected: `max(revision)` returns to its pre-draft value, the next opened draft mints the **same** number, and a client holding the discarded revision's row version then `PATCH`es the *new* row of that name with a precondition that **passes** — the lost update optimistic concurrency exists to refuse, arriving through the key instead of the version, and most reachable at the initial version every freshly minted revision carries. `abandoned` is **terminal** (no edge leaves it) and sits outside both Foundation §3.7 partial `UNIQUE` predicates — outside `WHERE lifecycle_state = 'draft'`, so a new draft opens immediately **on a plan that has published at least once**, and outside `IN ('published', 'retired')`, so "the current revision" (D-90, widened by D-128) is untouched. **The never-published plan is the exception (D-145 as amended 2026-08-02):** the index is not the only gate a new revision passes, because minting has two entry points and only one is `max(revision) + 1` — a plan's first draft is minted at revision `0` outright, while a successor presupposes a current revision to succeed from. A plan created and abandoned before its first publish therefore holds one row, revision `0`, `abandoned`, has neither a current revision nor an open draft, and can acquire neither; the plan id is spent, and an authoring call naming it is refused `PLAN_ABANDONED_NO_SUCCESSOR` (422, Foundation §3.3, referenced not redefined — §5). The rule is kept rather than narrowed: exempting revision `0` would let `plan/0` name two rows over a plan's lifetime, which is the unstable reference this transition exists to remove, on the one number every plan starts at. Consequence stated plainly: a plan's revision numbers may have **gaps** (rev 1 published, rev 2 abandoned, rev 3 published), which the Slice-12 history surface shows an operator. **Scope:** this is the plan-revision rule only — price-row deletability belongs to [`03-price-structure.md`](./03-price-structure.md) `inst-ps-nodelete` and D-145 does not move it. **D-373 (2026-09-16)** removes the descriptor-set child table: descriptor row fields travel with price rows and `descriptor_ext` with the plan revision; this dated child-set census records the earlier shape - `inst-pl-abandon`
 2. [ ] - `p1` - **FROM** published **TO** retired **WHEN** the lifecycle slice retires the plan (Slice 11; blocks new subscriptions, preserves snapshots) — the flip targets the plan's **single current published revision** (D-90) and is itself a **publish unit** (D-128: pending `CatalogVersion` ref + plan-subject re-projection, `lifecycle_state` being a projected field the sellability gate reads at the pin). The retired row stays the plan's **current** revision — the partial `UNIQUE` covers `IN ('published', 'retired')` and the projector sources it (Foundation §3.7/§4.4) — so in-flight subscribers keep resolving a warm delta - `inst-pl-retire`
 3. [ ] - `p1` - Published plans never return to draft; a change is a **new revision** through the Foundation's versioning (append-only). **Two refusals on that path answer with codes of their own (normative, D-146, 2026-08-02, found while building the draft-authoring plane):** opening a successor revision on — or re-publishing — a **retired** plan is `PLAN_RETIRED_NO_SUCCESSOR` (422); a second draft on a plan that already holds one is `OPEN_DRAFT_REVISION_EXISTS` (409, naming the open revision). Both are Foundation-owned (§3.3) and **referenced here, never redefined** (R-11). Until this decision both arrived as `LIFECYCLE_FORBIDDEN`, which is the one thing a consumer cannot act on, because the operator's next action differs: the first is a **stop** — a retired plan can never publish again, so any successor is unpublishable by construction ([`11-lifecycle.md`](./11-lifecycle.md) `inst-rt-api`) — while the second names a **different and available** action, go and edit the draft you already have. Discriminating in the detail prose was rejected: a client choosing its next call would have to parse it. The second is not a state-machine transition at all but a uniqueness conflict on the `(plan_id) WHERE lifecycle_state = 'draft'` partial `UNIQUE` (Foundation §3.7), which is why it leaves the 422 bucket for 409 - `inst-pl-norollback`
 
@@ -305,7 +354,7 @@ so its `revision` number stays consumed (`inst-pl-abandon`, D-145); optional `Pl
 | Method | Path | Purpose | Idempotency |
 |--------|------|---------|-------------|
 | `POST` | `/bss-pricing/v1/plans` | Create a draft plan | client idempotency key |
-| `PATCH` | `/bss-pricing/v1/plans/{planId}` | Update draft shape — **exactly one** of cycle, phases, add-ons, descriptors, composites, period floor/cap per call (**D-173**; the composites facet is Slice 10's, authorized by `inst-ad-author`; the period floor/cap facet is **D-319**'s) | ETag |
+| `PATCH` | `/bss-pricing/v1/plans/{planId}` | Update draft shape — **exactly one** of shape (including `descriptor_ext`), phases, add-ons, composites, period floor/cap per call (**D-373** removes the separate descriptors facet; row overrides use the price door) (**D-173**; the composites facet is Slice 10's, authorized by `inst-ad-author`; the period floor/cap facet is **D-319**'s) | ETag |
 | `POST` | `/bss-pricing/v1/plans/{planId}/publish` | Run fail-closed validation + submit for approval/publish | per plan revision |
 | `POST` | `/bss-pricing/v1/plans/{planId}/abandon` | **Discard the plan's open draft revision** — the author-driven arm of `inst-pl-abandon` (**D-145**): the row flips to the terminal `abandoned` state, its child copies drop, the flip is audited, and the `revision` number stays consumed. It is never deleted, so the verb is not `DELETE` | ETag |
 | `GET` | `/bss-pricing/v1/plans` | One canonical authoring revision per plan (draft, else current published/retired), **then** filters, SQL ordering and cursor pagination (**D-367**, superseding the old D-125 collapse). Sort: `plan_id`, `plan_name`, `lifecycle_state`, `billing_cycle`, `created_at`, `price_row_count`; stable ID tie-breaker, NULLS LAST in both directions. Response: `pending_approvals`, `price_row_count`, `model_kinds`, `currencies`. Query-only filters: `has_pending_approvals`, `model_kind`, `currency`, plus `plan_name` and existing scalar keys. Plan timestamps: original `created_at`, shown `revision_created_at`; no `created_at_utc`. Shared OData toolkit unchanged. See [read contract and examples](./ui-read-contracts.md#plan-list-queries-and-creation-timestamps). | — |
@@ -369,10 +418,15 @@ one-time plan, or carrying recurrence/`billingTiming`/tier fields),
 `METER_USAGE_TYPE_UNBOUND` (422 — the row's meter carries no registry `usageTypeRef`; UC3),
 `METER_DIMENSION_UNDECLARED` (422 — a priced `dimensionKey` outside the UsageType's declared
 `metadata_fields` keys; UC3),
-`DESCRIPTOR_INCOMPLETE` (422),
-`GL_CODE_UNKNOWN` (422 — a **present** descriptor `glCode` outside the tenant's **non-empty**
-declared GL-code vocabulary, `inst-ds-glcode`; an empty vocabulary constrains nothing and an
-absent code is `DESCRIPTOR_INCOMPLETE`'s; **D-356**),
+`DESCRIPTOR_INCOMPLETE` (422 — an empty effective row template or missing plan extension
+key; `inst-ds-template` / `inst-ds-required`; **D-373**, D-152),
+`GL_CODE_UNRESOLVED` (422 — an empty effective row GL code after tenant fallback,
+`inst-ds-glresolve`; row named, no policy escape; **D-373**),
+`LINE_TEMPLATE_INVALID` (422 — unknown placeholder at the row or policy write door,
+`inst-ds-template`; **D-373**),
+`GL_CODE_UNKNOWN` (422 — a row's **effective** `glCode` outside the tenant's **non-empty**
+declared active GL vocabulary, `inst-ds-glcode`; one finding per row; an empty vocabulary
+constrains nothing and an absent code is `GL_CODE_UNRESOLVED`'s; **D-356**, **D-373**),
 `PERIOD_FLOOR_CAP_MARKET_UNSOLD` (422 — a period floor/cap authored on a `(currency, region)`
 the plan prices nothing in; the market named; **D-319** — the mirror of
 `BASE_MARKET_INCOMPLETE`, which asks the same question from the market's side),
@@ -474,6 +528,9 @@ shape, and it is owed to a **design decision**, not to a test suite. Rejected: v
 facets separately, one tag per child table, which contradicts D-83's copy-on-new-revision model
 and hands an author four tags for one revision; and taking the first facet and ignoring the rest,
 which produces a plan whose author believes it holds a change it does not.
+**D-373 (2026-09-16)** removes the separate descriptors facet; `descriptor_ext` belongs to
+`shape` and template/GL overrides to price rows, leaving five plan facets. The dated six-facet
+census above records the earlier surface; the one-facet-per-call rule is unchanged.
 
 **The abandon surface is what gives that transition its author-driven caller** (**D-145**,
 2026-08-02, consolidation pass). `inst-pl-abandon` admits two discard paths — by the revision's
@@ -510,10 +567,16 @@ PRD's `customEveryN{Days|Months}(n)`, whose interval rides `custom_interval_n`/
 `custom_interval_unit`; neither document had said what the column holds for the custom case, and
 storage has now frozen it into a column `CHECK`) + `custom_interval_n`/`custom_interval_unit`,
 `plan_tier`, `plan_tier_override` (bool, audited), `available_from`/`available_to`,
-`purchase_min_qty`/`purchase_max_qty` (nullable; one-time plans), `invoice_grouping_key`
+`purchase_min_qty`/`purchase_max_qty` (nullable; one-time plans), and `descriptor_ext`
+(`jsonb NOT NULL DEFAULT '{}'`, D-152's additive value carrier; **D-373**).
+**D-373** removes `invoice_grouping_key` (D-96 reversed) and creates no plan `itemization_rule`
+column: itemization derives from the bundle or is `itemize` for other plans.
+
+Historical D-96 note: `invoice_grouping_key`
 (nullable string; NULL/empty = no grouping — the PRD-glossary Plan field, homed here by D-96,
 2026-07-31 review fix: a Billing layout hint projected into the read model, shape-checked only,
 never overriding the single-currency-per-invoice invariant — Slice 4 `inst-cb-boundary`).
+**D-373 (2026-09-16)** removes that hint; Slice 4's currency invariant remains unchanged.
 
 **`pricing_plan_phase`** (PK **`(tenant_id, plan_id, plan_revision, phase_id)`** — **widened by D-340**, 2026-08-17; copy-on-new-revision, D-83; FK `plan_id`). The key was `(phase_id, plan_revision)`, which named neither the tenant nor the plan and so gave one phase id to one plan **per revision number across the whole table**, every tenant's included — five stand drafts keyed price rows on one id and four of them could never attach it, unrecoverably, a scope key being a row's identity (Foundation §3.7). The widened tuple is the one `idx_pricing_plan_phase_revision` already ranges over and no foreign key in this schema names this table's key, so the ripple is the key itself. A `phase_id` is therefore unique **within a plan's revision** and free across plans; the `plan_revision` half stays for D-83's reason and D-56's stability promise is untouched. A write naming an id the key already holds fails `PHASE_ID_IN_USE` (409, §3 `inst-ph-default`) rather than a `500`. Every plan revision holds ≥ 1 row: phased plans author theirs; non-phased/one-time plans get one **implicit terminal row** (kind `evergreen`) auto-created at plan creation — the default `phase` axis value (D-19). The `phase_id` half is **stable across plan revisions**: a new revision **copies** the phase rows under its own `plan_revision`, ids never re-minted — so the `phase` scope-key axis of continuing price rows (which reference the bare `phase_id`) and same-key supersession are unchanged, while phase **attributes** resolve per revision. A published revision's rows are immutable with it; the open draft edits **its own copies** (D-56 + D-83, 2026-07-30 review fix, confirmed 2026-07-31):
 
@@ -538,26 +601,27 @@ backends, since `SQLite` has no array type and a mirror that invented an encodin
 being a mirror where the cycle walk reads — the same transform `included_allowance` takes).
 Cycle/conflict checks run over these plan-authored edges at publish.
 
-**`pricing_plan_descriptor_set`** (keyed by `(plan_id, plan_revision)` — copy-on-new-revision, D-83; genuinely 1:1 per revision, so the key needs no discriminator): `tenant_id`, `invoice_line_template`, `gl_code`,
-`itemization_rule`, `additional_fields` (the P5 extension's value carrier; the extended
-**required-set** itself is a `pricing_policy_object` entry, **D-152** — `inst-ds-sufficient`). **Two** of the D-48 v1
-contract's five elements are deliberately **not** columns here — `billingTiming` (2026-07-28) and
-now `taxCategory` (**D-110**, 2026-07-31 review fix: a per-plan column cannot mirror the per-row
-`tax_category_ref` Slice 4 makes the source of truth, and the promised publish-time consistency
-check was undefined whenever two rows of a plan carried different categories) — both ride
-`pricing_price` and are delivered with the row.
+Historical: `pricing_plan_descriptor_set` was the per-revision descriptor table; **D-373** dissolves it into row elements and `pricing_plan.descriptor_ext`, and removes the table.
+
+**Row descriptor storage (D-373; `pricing_price`, Slice 3):** nullable authored
+`invoice_line_template` and `gl_code_ref`; publish freezes `resolved_invoice_line_template`
+and `resolved_gl_code`. All four join the frozen-column guard. Tax category and timing
+remain row-borne. Tenant defaults live in Foundation's `pricing_policy_object` as
+`default_gl_code_ref` (nullable text) and `default_line_templates` (`jsonb NOT NULL`, default
+is the §3 shipped map); the additive
+`additional_required_descriptors` policy checks the plan's `descriptor_ext` (D-152).
 
 **`pricing_gl_code_taxonomy`** (PK `(tenant_id, value)`; `display_name`; `state IN ('active',
 'retired')` — the rounding-policy vocabulary's shape (D-334) on its own table, **D-356**,
 2026-09-09): the general-ledger codes a tenant declares, the universe `inst-ds-glcode` checks a
-present descriptor `glCode` against at publish. **Not** a fifth `TaxonomyClass` — a GL code scopes
+row's **effective** `glCode` against at publish (**D-373 R4**). **Not** a fifth `TaxonomyClass` — a GL code scopes
 no overlay — and written through its own route, `GET /bss-pricing/v1/config/vocabularies/gl-codes` with the
 per-value family under it (D-368; the `config/vocabularies` family segment is **D-371**, which
 also measured why this vocabulary is not a `{class}` value of the generic template)
-(`config × read/write`, whole-set replace under `If-Match`, audited, no approval unit). A value the
-`PUT` omits is **retired, never deleted**, and the retirement is refused (`TAXONOMY_VALUE_IN_USE`)
-while a **published** plan revision's `pricing_plan_descriptor_set.gl_code` names it — a draft's is
-not counted, for the rounding guard's reason. **Empty means unconstrained**: the check binds only
+(`config × read/write`, per-value writes with `If-Match` for changes, audited, no approval unit).
+Values are **retired, never deleted**; retirement is refused (`TAXONOMY_VALUE_IN_USE`, 409)
+while any **published** price row's `resolved_gl_code` names the value (**D-373 R5**).
+Drafts are not counted, for the rounding guard's reason; D-368's per-value doors remain unchanged. **Empty means unconstrained**: the check binds only
 where a vocabulary exists. The table is the provider seam D-356 names — the tenant writes it
 today, an ERP gear may populate or reconcile it later, and the rule reads it either way.
 
@@ -707,22 +771,30 @@ for Subscriptions runtime. A phase MAY carry an optional operator **`displayName
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-descriptors`
 
-The system **MUST NOT** publish without the complete billing descriptor set (manifest §4.1 /
-D-48 v1: the **three** descriptor-set fields, with `billingTiming` and `taxCategory` riding the
-price row — D-110); the validation report **MUST** name each missing field; the frozen set **MUST** be
-sufficient for Billing/ERP posting without re-querying mutable rows — which for `taxCategory`
-means the **resolved effective** category is frozen with the row and a row with none fails
-publish with no warn-mode escape (**D-154**). The required-set's config extension is a
-per-tenant `pricing_policy_object` entry checked against `additional_fields` under the existing
-`DESCRIPTOR_INCOMPLETE` (**D-152**). When the tenant has declared a GL-code vocabulary, a present
-`glCode` outside it **MUST** fail publish with `GL_CODE_UNKNOWN`, and an empty vocabulary **MUST**
-constrain nothing (**D-356**).
+The system **MUST NOT** publish without the complete billing descriptor contract (**D-373**;
+D-48 v1 content unchanged): **four row-borne** elements and **one derived** itemization rule.
+Every row **MUST** resolve its template and GL code from its authored override or tenant
+default, freeze both results, and report every missing element with `priceId`
+(`DESCRIPTOR_INCOMPLETE` for template, `GL_CODE_UNRESOLVED` for GL). Unknown placeholders
+**MUST** fail both row and policy writes (`LINE_TEMPLATE_INVALID`); all seven §3 placeholders
+and the four ASCII defaults **MUST** be supported (**D-373**).
+Tax category remains resolved and frozen, with no warn-mode escape (D-154), and Slice 6
+requires recurring-row `billingTiming`. Derived `itemizationRule` **MUST** read the bundle's
+`invoice_itemization`, or be `itemize` for other plans; `billing.ext` **MUST** carry
+`pricing_plan.descriptor_ext` and missing tenant-required keys **MUST** fail with
+`DESCRIPTOR_INCOMPLETE` (D-152; **D-373**). No descriptor entity or grouping key remains (**D-373**).
+Each row's effective GL code outside a declared active vocabulary **MUST** fail
+`GL_CODE_UNKNOWN`, one finding per row; an empty vocabulary **MUST** constrain nothing.
+Retirement **MUST** count only published rows' `resolved_gl_code` (D-356; **D-373**).
+Billing/ERP **MUST** be able to post from the frozen contract; Billing renders labels with
+its locale/period and pinned registry data, without mutable catalog reads (**D-373**).
 
 **Implements**: `cpt-cf-bss-pricing-algo-descriptors`
 
-**Touches**:
-- DB: `pricing_plan_descriptor_set`, `pricing_gl_code_taxonomy`
-- Entities: `DescriptorSet`
+**Touches** (**D-373**):
+
+- DB: `pricing_plan`, `pricing_price`, `pricing_policy_object`, `pricing_gl_code_taxonomy`
+- Entities: plan extension, row descriptor rules, itemization projection
 
 ### Period Floor & Cap
 
@@ -753,7 +825,11 @@ Delta over the Foundation testing architecture (levels + mocking inherited).
 
 Unit:
 
-- [ ] Cycle-matrix validation per §17.1 (each cycle's required/forbidden fields); custom-`n` bounds + anchoring; hybrid completeness; setup-row one-time constraints; one-time purchase-qty range (`minQty > maxQty` rejected) + past-`availableFrom` rejection (any cycle — `inst-cs-availability`); PlanTier equality/override; add-on cycle detection over plan-authored `depends_on` edges (an edge outside the plan's add-on set fails; conflict symmetry normalized; two required conflicting add-ons fail); add-on override-home resolution (unpublished ref or uncovered `(currency, region)` fails); phase-graph acyclicity + single terminal + non-terminal duration required + **linear chain** (a skip/branch/unreachable phase fails, `PHASE_CHAIN_NONLINEAR`; the entry phase = lowest ordinal — L-3 fix); a phase-scoped usage override changing `billingGranularity`/`model_kind`/a window/`package_size` vs its terminal-phase row fails (`PHASE_OVERRIDE_UNIT_MISMATCH`, D-89/D-122) while a `$0` same-denomination trial override passes; a phase-scoped usage row whose `(meter, dimensionKey)` line has **no** terminal-phase row fails (`PHASE_OVERRIDE_ORPHANED`, D-117); a draft whose price row keys on a phase the revision does not attach fails publish naming the row **and** the phase (`PHASE_ROW_ORPHANED`, **D-337**) while the same row on an attached phase passes, and a draft carrying **several** such rows names every one of them rather than the first — the remediation is per row, and the shape that motivated the rule had four; a revision re-publishing an **unchanged** now-past `availableFrom` passes while setting a new past value fails (`inst-cs-availability`); descriptor required-set — including an extended key declared in `pricing_policy_object` and absent from `additional_fields` (`DESCRIPTOR_INCOMPLETE`, **D-152**); a plan with no `billing_cycle` and a recurring plan with no `frequency` each fail naming the field (`CYCLE_METADATA_MISSING`, **D-149**); a one-time plan selling two markets with a `one_time` row in one, and a recurring plan likewise, each fail naming cycle, `chargeKind` and market (`BASE_MARKET_INCOMPLETE`, D-149) while a hybrid missing its whole recurring part still reports `HYBRID_INCOMPLETE`; a required add-on with `maxQty = 0`, an inverted `minQty`/`maxQty` pair and a `stepQty` of 0 each fail naming the bound (`ADDON_QTY_RANGE_INVALID`, **D-150**); `displayTrialDays` on an `interim` phase, and on the `evergreen` terminal phase that carries no duration, both fail (`DISPLAY_TRIAL_DAYS_INVALID`, **D-151**) while a `trial` phase projecting its own duration passes; a period floor authored on a `(currency, region)` the plan prices nothing in fails naming the market (`PERIOD_FLOOR_CAP_MARKET_UNSOLD`, **D-319**) while the same amount on a sold market passes, and an unsold **currency** on a sold region fails the same way; a `0` floor, a `0` cap, a floor one minor unit above its cap and an entry authoring neither each fail naming the bound (`PERIOD_FLOOR_CAP_AMOUNT_INVALID`, **D-319**) while an equal floor and cap pass — a fixed-fee plan is not a contradiction — and a plan authoring **no** bound at all passes, absence being how "no minimum" is said
+- [ ] Cycle-matrix validation per §17.1 (each cycle's required/forbidden fields); custom-`n` bounds + anchoring; hybrid completeness; setup-row one-time constraints; one-time purchase-qty range (`minQty > maxQty` rejected) + past-`availableFrom` rejection (any cycle — `inst-cs-availability`); PlanTier equality/override; add-on cycle detection over plan-authored `depends_on` edges (an edge outside the plan's add-on set fails; conflict symmetry normalized; two required conflicting add-ons fail); add-on override-home resolution (unpublished ref or uncovered `(currency, region)` fails); phase-graph acyclicity + single terminal + non-terminal duration required + **linear chain** (a skip/branch/unreachable phase fails, `PHASE_CHAIN_NONLINEAR`; the entry phase = lowest ordinal — L-3 fix); a phase-scoped usage override changing `billingGranularity`/`model_kind`/a window/`package_size` vs its terminal-phase row fails (`PHASE_OVERRIDE_UNIT_MISMATCH`, D-89/D-122) while a `$0` same-denomination trial override passes; a phase-scoped usage row whose `(meter, dimensionKey)` line has **no** terminal-phase row fails (`PHASE_OVERRIDE_ORPHANED`, D-117); a draft whose price row keys on a phase the revision does not attach fails publish naming the row **and** the phase (`PHASE_ROW_ORPHANED`, **D-337**) while the same row on an attached phase passes, and a draft carrying **several** such rows names every one of them rather than the first — the remediation is per row, and the shape that motivated the rule had four; a revision re-publishing an **unchanged** now-past `availableFrom` passes while setting a new past value fails (`inst-cs-availability`); plan descriptor extension — including a required key declared in `pricing_policy_object` and absent from `pricing_plan.descriptor_ext` (`DESCRIPTOR_INCOMPLETE`, **D-152**, **D-373**); a plan with no `billing_cycle` and a recurring plan with no `frequency` each fail naming the field (`CYCLE_METADATA_MISSING`, **D-149**); a one-time plan selling two markets with a `one_time` row in one, and a recurring plan likewise, each fail naming cycle, `chargeKind` and market (`BASE_MARKET_INCOMPLETE`, D-149) while a hybrid missing its whole recurring part still reports `HYBRID_INCOMPLETE`; a required add-on with `maxQty = 0`, an inverted `minQty`/`maxQty` pair and a `stepQty` of 0 each fail naming the bound (`ADDON_QTY_RANGE_INVALID`, **D-150**); `displayTrialDays` on an `interim` phase, and on the `evergreen` terminal phase that carries no duration, both fail (`DISPLAY_TRIAL_DAYS_INVALID`, **D-151**) while a `trial` phase projecting its own duration passes; a period floor authored on a `(currency, region)` the plan prices nothing in fails naming the market (`PERIOD_FLOOR_CAP_MARKET_UNSOLD`, **D-319**) while the same amount on a sold market passes, and an unsold **currency** on a sold region fails the same way; a `0` floor, a `0` cap, a floor one minor unit above its cap and an entry authoring neither each fail naming the bound (`PERIOD_FLOOR_CAP_AMOUNT_INVALID`, **D-319**) while an equal floor and cap pass — a fixed-fee plan is not a contradiction — and a plan authoring **no** bound at all passes, absence being how "no minimum" is said
+
+- [ ] **D-373** template vocabulary: accept exactly the seven §3 names and all four exact ASCII defaults; reject an unknown placeholder at both row and policy writes with `LINE_TEMPLATE_INVALID`. An authored literal remains single-language; pinned SKU display data supports localized rendering.
+- [ ] **D-373** row resolution: an authored template/GL override wins over its tenant default; otherwise the default resolves by charge kind (template) or tenant (GL). An empty effective template yields `DESCRIPTOR_INCOMPLETE`; an empty effective GL yields `GL_CODE_UNRESOLVED` even with warn policy or empty vocabulary. Every failing row is named by `priceId`.
+- [ ] **D-373** membership: each effective code outside a declared active vocabulary yields its own `GL_CODE_UNKNOWN`; active values pass, empty vocabulary constrains nothing, and unresolved GL is not double-reported. D-152 extension findings enumerate every missing key in `descriptor_ext` independently of row findings.
 
 Integration (testcontainers):
 
@@ -766,12 +842,17 @@ Integration (testcontainers):
 - [ ] The same plan with **zero interim-phase recurring rows** fails publish (`PHASE_UNCOVERED`, naming the phase + market); a single phase-invariant usage row satisfies all phases, and an explicit trial-phase usage row at 0 wins over it for the trial phase
 - [ ] A published plan's shape change opens a new `draft` revision row and publishes it as a new revision — append-only applies to plan-revision rows and price/audit rows (the published revision row never mutates in place; D-56); the publish commit flips the predecessor revision `published → superseded` (D-90): exactly one revision reads `published` afterwards, and retire flips that single current revision
 - [ ] A plan authoring a period floor in one of its two sold markets publishes, and the frozen read-model delta carries the bound with its market and its amount; moving the bound to a third, unpriced market fails publish naming it (`PERIOD_FLOOR_CAP_MARKET_UNSOLD`, D-319). The set copies forward onto a new revision and leaves nothing behind on an abandoned one
-- [ ] The draft revision's phase/add-on/descriptor edits land on **its own copies** (D-83): after the edit the published revision's child rows are unchanged, and a re-warm re-drive of the published version reflects none of the draft's changes
+- [ ] The draft revision's phase/add-on edits land on **its own copies** (D-83); descriptor overrides travel with price rows and `descriptor_ext` with the plan (**D-373**). Published content is unchanged, and a re-warm re-drive of the published version reflects none of the draft's changes
 - [ ] The published read model exposes the setup row's charge-timing semantics (once per lifetime; trial-conversion; never re-charged on migration)
 - [ ] A registry SKU-tier change flags the affected published plan `tier_divergent` and raises the alarm; the frozen tier keeps resolving
 
+- [ ] **D-373** a hybrid plan with setup, subscription and usage rows publishes distinct templates and GL codes; the snapshot freezes `invoiceLineTemplate`/`glCode` beside row tax/timing. Changing tenant defaults afterwards does not change those frozen rows. The plan contains exactly `billing { itemizationRule, ext }` and no `descriptorSet` or `invoiceGroupingKey`.
+- [ ] **D-373** bundle plans project their `invoice_itemization` (`aggregate` or `itemize`); other plans project `itemize`, without an authored plan itemization field or completeness gate. Plan extension values round-trip and copy forward with the revision, with no descriptor-set table.
+- [ ] **D-373 R5** retiring a GL value referenced by a published row's `resolved_gl_code` fails `TAXONOMY_VALUE_IN_USE` (409); draft-only references do not block retirement, and published rows using tenant fallback count too.
+
 API:
 
+- [ ] **D-373** the plan shape exposes `descriptor_ext` and omits the descriptors facet/grouping key; row requests expose optional `invoice_line_template`/`gl_code_ref`, responses also expose both resolved fields; policy writes expose the two tenant defaults and reject unknown template placeholders.
 - [ ] RFC 9457 mapping for the §5 problem codes; the 422 validation report enumerates **all** violations, not the first
 
 ## 10. Non-Functional Considerations
