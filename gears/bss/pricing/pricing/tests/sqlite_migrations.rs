@@ -1894,6 +1894,77 @@ async fn the_sku_backfill_fills_fee_rows_and_refuses_usage_rows() {
         EXPLICIT_FEE_SKU,
         "explicit fee mapping wins"
     );
+    assert_sku_tightening_preserves_children(&db).await;
+    Migrator::up(&db, Some(1))
+        .await
+        .expect("descriptor migration over retained rows");
+    let rows = db.query_all_raw(Statement::from_string(sea_orm::DatabaseBackend::Sqlite,
+        "SELECT charge_kind, sku_id, gl_code_ref, resolved_gl_code FROM pricing_price ORDER BY charge_kind")).await.unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows[0].try_get::<String>("", "resolved_gl_code").unwrap(),
+        "4000-SAAS"
+    );
+    assert_eq!(
+        rows[1]
+            .try_get::<uuid::Uuid>("", "sku_id")
+            .unwrap()
+            .to_string(),
+        PLAN_SKU
+    );
+    assert_eq!(
+        rows[1].try_get::<String>("", "gl_code_ref").unwrap(),
+        "4000-SAAS"
+    );
+    assert_plan_skus_are_uuid_blobs(&db, PLAN_SKU).await;
+    assert!(
+        exec(format!(
+            "UPDATE pricing_price SET sku_id = '{PLAN_SKU}' WHERE price_id = '{FEE_ROW}'"
+        ))
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("immutable")
+    );
+    assert!(
+        exec(format!(
+            "UPDATE pricing_plan SET sku_id = '{EXPLICIT_FEE_SKU}' WHERE plan_id = '{PLAN}'"
+        ))
+        .await
+        .is_err()
+    );
+    assert!(
+        db.query_all_raw(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "PRAGMA foreign_key_check"
+        ))
+        .await
+        .unwrap()
+        .is_empty()
+    );
+}
+
+/// Both legacy plan encodings must support the ORM's typed UUID read.
+async fn assert_plan_skus_are_uuid_blobs(db: &sea_orm::DatabaseConnection, expected_sku: &str) {
+    let plans = db.query_all_raw(Statement::from_string(
+        sea_orm::DatabaseBackend::Sqlite,
+        "SELECT plan_id, sku_id, typeof(sku_id) AS storage, length(sku_id) AS bytes FROM pricing_plan ORDER BY plan_id",
+    )).await.unwrap();
+    assert_eq!(plans.len(), 2, "both legacy plan encodings survive");
+    for plan in plans {
+        assert_eq!(
+            plan.try_get::<uuid::Uuid>("", "sku_id")
+                .unwrap()
+                .to_string(),
+            expected_sku
+        );
+        assert_eq!(plan.try_get::<String>("", "storage").unwrap(), "blob");
+        assert_eq!(plan.try_get::<i64>("", "bytes").unwrap(), 16);
+    }
+}
+
+/// Tightening both SKU columns preserves each parent's foreign-key children.
+async fn assert_sku_tightening_preserves_children(db: &sea_orm::DatabaseConnection) {
     for table in ["pricing_price", "pricing_plan"] {
         let columns = db
             .query_all_raw(Statement::from_string(
@@ -1939,67 +2010,6 @@ async fn the_sku_backfill_fills_fee_rows_and_refuses_usage_rows() {
         .unwrap()
         .unwrap();
     assert_eq!(plan_children.try_get::<i64>("", "n").unwrap(), 1);
-    Migrator::up(&db, Some(1))
-        .await
-        .expect("descriptor migration over retained rows");
-    let rows = db.query_all_raw(Statement::from_string(sea_orm::DatabaseBackend::Sqlite,
-        "SELECT charge_kind, sku_id, gl_code_ref, resolved_gl_code FROM pricing_price ORDER BY charge_kind")).await.unwrap();
-    assert_eq!(rows.len(), 2);
-    assert_eq!(
-        rows[0].try_get::<String>("", "resolved_gl_code").unwrap(),
-        "4000-SAAS"
-    );
-    assert_eq!(
-        rows[1]
-            .try_get::<uuid::Uuid>("", "sku_id")
-            .unwrap()
-            .to_string(),
-        PLAN_SKU
-    );
-    assert_eq!(
-        rows[1].try_get::<String>("", "gl_code_ref").unwrap(),
-        "4000-SAAS"
-    );
-    let plans = db.query_all_raw(Statement::from_string(
-        sea_orm::DatabaseBackend::Sqlite,
-        "SELECT plan_id, sku_id, typeof(sku_id) AS storage, length(sku_id) AS bytes FROM pricing_plan ORDER BY plan_id",
-    )).await.unwrap();
-    assert_eq!(plans.len(), 2, "both legacy plan encodings survive");
-    for plan in plans {
-        assert_eq!(
-            plan.try_get::<uuid::Uuid>("", "sku_id")
-                .unwrap()
-                .to_string(),
-            PLAN_SKU
-        );
-        assert_eq!(plan.try_get::<String>("", "storage").unwrap(), "blob");
-        assert_eq!(plan.try_get::<i64>("", "bytes").unwrap(), 16);
-    }
-    assert!(
-        exec(format!(
-            "UPDATE pricing_price SET sku_id = '{PLAN_SKU}' WHERE price_id = '{FEE_ROW}'"
-        ))
-        .await
-        .unwrap_err()
-        .to_string()
-        .contains("immutable")
-    );
-    assert!(
-        exec(format!(
-            "UPDATE pricing_plan SET sku_id = '{EXPLICIT_FEE_SKU}' WHERE plan_id = '{PLAN}'"
-        ))
-        .await
-        .is_err()
-    );
-    assert!(
-        db.query_all_raw(Statement::from_string(
-            sea_orm::DatabaseBackend::Sqlite,
-            "PRAGMA foreign_key_check"
-        ))
-        .await
-        .unwrap()
-        .is_empty()
-    );
 }
 
 /// D-09's cross-group non-overlap invariant, the `SQLite` arm
@@ -3364,9 +3374,9 @@ async fn sku_backfill_refuses_wrong_tenant_and_ambiguous_revisions() {
         )
         .unwrap();
         Migrator::up(&db, Some(n)).await.unwrap();
-        db.execute_unprepared("INSERT INTO pricing_plan (tenant_id, plan_id, revision, lifecycle_state, created_by, sku_id) VALUES ('tenant-a', 'plan', 1, 'superseded', 'actor', 'sku-a')").await.unwrap();
+        db.execute_unprepared("INSERT INTO pricing_plan (tenant_id, plan_id, revision, lifecycle_state, created_by, sku_id) VALUES ('tenant-a', 'plan', 1, 'superseded', 'actor', '55555555-5555-5555-5555-000000000001')").await.unwrap();
         if ambiguous {
-            db.execute_unprepared("INSERT INTO pricing_plan (tenant_id, plan_id, revision, lifecycle_state, created_by, sku_id) VALUES ('tenant-a', 'plan', 2, 'published', 'actor', 'sku-b')").await.unwrap();
+            db.execute_unprepared("INSERT INTO pricing_plan (tenant_id, plan_id, revision, lifecycle_state, created_by, sku_id) VALUES ('tenant-a', 'plan', 2, 'published', 'actor', '55555555-5555-5555-5555-000000000002')").await.unwrap();
         }
         let tenant = if ambiguous { "tenant-a" } else { "tenant-b" };
         db.execute_unprepared(&format!("INSERT INTO pricing_price (price_id, tenant_id, plan_id, currency, region, phase, charge_kind, lifecycle_state, created_by) VALUES ('unresolved-fee', '{tenant}', 'plan', 'USD', 'EU', 'phase', 'recurring', 'draft', 'actor')")).await.unwrap();
