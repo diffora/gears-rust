@@ -1730,32 +1730,15 @@ async fn both_scope_key_indexes_carry_the_sku_and_two_units_of_one_sku_are_one_k
     .expect("a meterless usage row keys on its SKU like any other");
 }
 
-/// D-372: the migration derives a fee row's SKU from its plan and refuses to guess
-/// a usage row's.
-///
-/// Seeded **before** the last migration so the backfill has something to do: an
-/// empty table proves nothing about a backfill, and every other case in this file
-/// runs the chain over a database with no rows in it.
-///
-/// Three properties, and the third is the one the statement order exists for:
-///
-///   1. a usage row cannot be backfilled and the refusal **names it**, because a
-///      usage row's SKU is a registry fact (which SKU declares `GB-hour`) and the
-///      migration never guesses;
-///   2. the fee row is not named, because it was backfilled;
-///   3. the fee row is **published**, and the backfill still reaches it: the
-///      append-only guard is restated with `sku_id` in its frozen list *after* the
-///      `UPDATE`, and restated first it would have refused exactly this row.
-///
-/// The refusal also has to leave nothing behind, or the re-run it tells the
-/// operator to make would fail on `ADD COLUMN` instead of succeeding. That is what
-/// the migration's `use_transaction` override buys, and the second `up` below is
-/// what measures it.
+/// Both D-372 retry paths preserve legacy rows and children through D-373.
+/// Absent-column refusal rolls expansion back; a prestaged partial assignment
+/// survives refusal, and completing it preserves an explicit fee override too.
 #[tokio::test]
 async fn the_sku_backfill_fills_fee_rows_and_refuses_usage_rows() {
     const TENANT: &str = "11111111-1111-1111-1111-111111111111";
     const PLAN: &str = "22222222-2222-2222-2222-222222222222";
     const PLAN_SKU: &str = "55555555-5555-5555-5555-000000000005";
+    const EXPLICIT_FEE_SKU: &str = "55555555-5555-5555-5555-000000000006";
     const FEE_ROW: &str = "f0000000-0000-0000-0000-00000000000f";
     const USAGE_ROW: &str = "0a5a9e00-0000-0000-0000-00000000000a";
 
@@ -1794,6 +1777,8 @@ async fn the_sku_backfill_fills_fee_rows_and_refuses_usage_rows() {
 
     exec(format!("INSERT INTO pricing_plan_period_floor_cap (tenant_id, plan_id, plan_revision, currency, region, floor_minor) VALUES ('{TENANT}', '{PLAN}', 1, 'USD', 'EU', 1)"))
         .await.expect("seed plan child");
+    exec(format!("INSERT INTO pricing_plan_descriptor_set (tenant_id, plan_id, plan_revision, gl_code, invoice_line_template) VALUES ('{TENANT}', '{PLAN}', 1, '4000-SAAS', '{{sku}} service')"))
+        .await.expect("descriptor-safe legacy plan");
     exec(format!(
         "UPDATE pricing_plan SET lifecycle_state = 'published' WHERE plan_id = '{PLAN}'"
     ))
@@ -1816,7 +1801,7 @@ async fn the_sku_backfill_fills_fee_rows_and_refuses_usage_rows() {
         .await.expect("seed a child of the published price");
     exec(price(USAGE_ROW, "usage", "draft", "'GB-hour'"))
         .await
-        .expect("seed the usage row, draft, so the repair below can delete it");
+        .expect("seed the usage row whose authoritative mapping must be retained");
 
     let err = Migrator::up(&db, Some(1))
         .await
@@ -1832,17 +1817,60 @@ async fn the_sku_backfill_fills_fee_rows_and_refuses_usage_rows() {
         "the fee row was backfilled and is not named: {text}"
     );
 
-    exec(format!(
-        "DELETE FROM pricing_price WHERE price_id = '{USAGE_ROW}'"
-    ))
-    .await
-    .expect("the operator clears the row they cannot repair");
+    let columns = db
+        .query_all_raw(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "PRAGMA table_info(pricing_price)",
+        ))
+        .await
+        .unwrap();
+    assert!(
+        !columns
+            .iter()
+            .any(|r| r.try_get::<String>("", "name").unwrap() == "sku_id")
+    );
+    exec("ALTER TABLE pricing_price ADD COLUMN sku_id TEXT".into())
+        .await
+        .unwrap();
+    exec(format!("UPDATE pricing_price SET sku_id = '{EXPLICIT_FEE_SKU}' WHERE tenant_id = '{TENANT}' AND price_id = '{FEE_ROW}'")).await.unwrap();
+    let refused = Migrator::up(&db, Some(1)).await.unwrap_err().to_string();
+    assert!(
+        refused.contains("prestaged column and explicit mappings are retained"),
+        "{refused}"
+    );
+    let held = db
+        .query_one_raw(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            format!("SELECT sku_id FROM pricing_price WHERE price_id = '{FEE_ROW}'"),
+        ))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        held.try_get::<String>("", "sku_id").unwrap(),
+        EXPLICIT_FEE_SKU
+    );
+    for invalid in ["not-a-uuid", "00000000-0000-0000-0000-000000000000"] {
+        exec(format!("UPDATE pricing_price SET sku_id = '{invalid}' WHERE tenant_id = '{TENANT}' AND price_id = '{USAGE_ROW}'")).await.unwrap();
+        let refused = Migrator::up(&db, Some(1)).await.unwrap_err().to_string();
+        assert!(refused.contains("not a non-nil UUID"), "{refused}");
+        let held = db
+            .query_one_raw(Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                format!("SELECT sku_id FROM pricing_price WHERE price_id = '{USAGE_ROW}'"),
+            ))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(held.try_get::<String>("", "sku_id").unwrap(), invalid);
+    }
+    exec(format!("UPDATE pricing_price SET sku_id = '{PLAN_SKU}' WHERE tenant_id = '{TENANT}' AND price_id = '{USAGE_ROW}'")).await.unwrap();
 
     Migrator::up(&db, Some(1))
         .await
         .expect("tightens once every row has a SKU");
 
-    let sku: String = db
+    let sku: uuid::Uuid = db
         .query_one_raw(Statement::from_string(
             sea_orm::DatabaseBackend::Sqlite,
             format!("SELECT sku_id FROM pricing_price WHERE price_id = '{FEE_ROW}'"),
@@ -1852,7 +1880,11 @@ async fn the_sku_backfill_fills_fee_rows_and_refuses_usage_rows() {
         .expect("the fee row is still there")
         .try_get("", "sku_id")
         .expect("the column the migration added");
-    assert_eq!(sku, PLAN_SKU, "the fee row took its plan's SKU");
+    assert_eq!(
+        sku.to_string(),
+        EXPLICIT_FEE_SKU,
+        "explicit fee mapping wins"
+    );
     for table in ["pricing_price", "pricing_plan"] {
         let columns = db
             .query_all_raw(Statement::from_string(
@@ -1898,12 +1930,52 @@ async fn the_sku_backfill_fills_fee_rows_and_refuses_usage_rows() {
         .unwrap()
         .unwrap();
     assert_eq!(plan_children.try_get::<i64>("", "n").unwrap(), 1);
-    Migrator::down(&db, Some(1))
-        .await
-        .expect("populated down preserves children");
     Migrator::up(&db, Some(1))
         .await
-        .expect("populated up round trip");
+        .expect("descriptor migration over retained rows");
+    let rows = db.query_all_raw(Statement::from_string(sea_orm::DatabaseBackend::Sqlite,
+        "SELECT charge_kind, sku_id, gl_code_ref, resolved_gl_code FROM pricing_price ORDER BY charge_kind")).await.unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows[0].try_get::<String>("", "resolved_gl_code").unwrap(),
+        "4000-SAAS"
+    );
+    assert_eq!(
+        rows[1]
+            .try_get::<uuid::Uuid>("", "sku_id")
+            .unwrap()
+            .to_string(),
+        PLAN_SKU
+    );
+    assert_eq!(
+        rows[1].try_get::<String>("", "gl_code_ref").unwrap(),
+        "4000-SAAS"
+    );
+    assert!(
+        exec(format!(
+            "UPDATE pricing_price SET sku_id = '{PLAN_SKU}' WHERE price_id = '{FEE_ROW}'"
+        ))
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("immutable")
+    );
+    assert!(
+        exec(format!(
+            "UPDATE pricing_plan SET sku_id = '{EXPLICIT_FEE_SKU}' WHERE plan_id = '{PLAN}'"
+        ))
+        .await
+        .is_err()
+    );
+    assert!(
+        db.query_all_raw(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "PRAGMA foreign_key_check"
+        ))
+        .await
+        .unwrap()
+        .is_empty()
+    );
 }
 
 /// D-09's cross-group non-overlap invariant, the `SQLite` arm
@@ -3570,4 +3642,110 @@ async fn semantically_duplicate_legacy_uuid_targets_refuse_and_preserve_both_tex
             .expect("original compact text"),
         compact
     );
+}
+
+/// Refuse incompatible staging before any backfill, even on an empty catalogue.
+#[tokio::test]
+async fn sku_staging_rejects_incompatible_sqlite_columns() {
+    for definition in [
+        "INTEGER",
+        "TEXT CHECK (sku_id IS NULL)",
+        "TEXT NOT NULL DEFAULT ''",
+        "TEXT DEFAULT 'bad'",
+        "TEXT GENERATED ALWAYS AS ('bad') VIRTUAL",
+    ] {
+        let db = Database::connect("sqlite::memory:").await.unwrap();
+        let before = u32::try_from(
+            Migrator::migrations()
+                .iter()
+                .position(|m| m.name() == "m20260916_000044_price_row_sku")
+                .unwrap(),
+        )
+        .unwrap();
+        Migrator::up(&db, Some(before)).await.unwrap();
+        db.execute_unprepared(&format!(
+            "ALTER TABLE pricing_price ADD COLUMN sku_id {definition}"
+        ))
+        .await
+        .unwrap();
+        let original = db
+            .query_one_raw(Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                "SELECT sql FROM sqlite_master WHERE name = 'pricing_price'",
+            ))
+            .await
+            .unwrap()
+            .unwrap()
+            .try_get::<String>("", "sql")
+            .unwrap();
+        let error = Migrator::up(&db, Some(1)).await.unwrap_err().to_string();
+        assert!(
+            error.contains("incompatible prestaged"),
+            "{definition}: {error}"
+        );
+        let after = db
+            .query_one_raw(Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                "SELECT sql FROM sqlite_master WHERE name = 'pricing_price'",
+            ))
+            .await
+            .unwrap()
+            .unwrap()
+            .try_get::<String>("", "sql")
+            .unwrap();
+        assert_eq!(after, original);
+    }
+}
+
+/// Text and blob spellings of one SKU must collide after normalization.
+#[tokio::test]
+async fn sku_staging_normalizes_sqlite_keys_before_unique_tightening() {
+    let db = Database::connect("sqlite::memory:").await.unwrap();
+    let before = u32::try_from(
+        Migrator::migrations()
+            .iter()
+            .position(|m| m.name() == "m20260916_000044_price_row_sku")
+            .unwrap(),
+    )
+    .unwrap();
+    Migrator::up(&db, Some(before)).await.unwrap();
+    db.execute_unprepared("ALTER TABLE pricing_price ADD COLUMN sku_id TEXT")
+        .await
+        .unwrap();
+    for (id, meter, sku) in [
+        (1, "a", "'55555555-5555-5555-5555-555555555555'"),
+        (2, "b", "X'55555555555555555555555555555555'"),
+    ] {
+        db.execute_unprepared(&format!("INSERT INTO pricing_price (price_id, tenant_id, plan_id, currency, region, phase, charge_kind, model_kind, unit_rate_nano, lifecycle_state, created_by, meter, sku_id) VALUES ('00000000-0000-0000-0000-{id:012}', '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', 'USD', 'EU', '33333333-3333-3333-3333-333333333333', 'usage', 'per_unit', 1, 'draft', '44444444-4444-4444-4444-444444444444', '{meter}', {sku})")).await.unwrap();
+    }
+    let error = Migrator::up(&db, Some(1)).await.unwrap_err().to_string();
+    assert!(
+        error.contains("UNIQUE constraint failed") && error.contains("pricing_price.sku_id"),
+        "{error}"
+    );
+    let rows = db
+        .query_all_raw(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "SELECT typeof(sku_id) AS storage FROM pricing_price ORDER BY price_id",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].try_get::<String>("", "storage").unwrap(), "text");
+    assert_eq!(rows[1].try_get::<String>("", "storage").unwrap(), "blob");
+    db.execute_unprepared("UPDATE pricing_price SET sku_id = '66666666-6666-6666-6666-666666666666' WHERE meter = 'b'").await.unwrap();
+    Migrator::up(&db, Some(1))
+        .await
+        .expect("distinct SKU control");
+    let rows = db
+        .query_all_raw(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "SELECT sku_id FROM pricing_price",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    for row in rows {
+        assert!(!row.try_get::<uuid::Uuid>("", "sku_id").unwrap().is_nil());
+    }
 }

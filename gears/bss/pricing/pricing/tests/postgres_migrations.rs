@@ -2045,3 +2045,183 @@ async fn seed_revshare_group(
     )
     .await;
 }
+
+/// Both SKU staging paths are exercised through the production runner, then
+/// the descriptor upgrade preserves the mapped rows and their frozen children.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn sku_staging_preserves_partial_mappings_and_upgrades_through_descriptors() {
+    const TENANT: &str = "11111111-1111-1111-1111-111111111111";
+    const PLAN: &str = "22222222-2222-2222-2222-222222222222";
+    const SKU: &str = "55555555-5555-5555-5555-555555555555";
+    const FEE_SKU: &str = "66666666-6666-6666-6666-666666666666";
+    const FEE: &str = "77777777-7777-7777-7777-777777777777";
+    const USAGE: &str = "88888888-8888-8888-8888-888888888888";
+    let (port, _guard) = pg().await;
+    let db = connect_db(
+        &url_with_search_path(port, "public,bss"),
+        ConnectOpts::default(),
+    )
+    .await
+    .unwrap();
+    let raw = Database::connect(&plain_url(port)).await.unwrap();
+    let through = |last: &str| {
+        Migrator::migrations()
+            .into_iter()
+            .filter(|m| m.name() <= last)
+            .collect()
+    };
+    run_migrations_for_testing(
+        &db,
+        through("m20260821_000043_create_pricing_gl_code_taxonomy"),
+    )
+    .await
+    .unwrap();
+
+    // Shape preflight must reject before any DML, and leave the expansion intact.
+    for definition in [
+        "text",
+        "uuid NOT NULL",
+        "uuid DEFAULT '55555555-5555-5555-5555-555555555555'",
+        "uuid GENERATED ALWAYS AS ('55555555-5555-5555-5555-555555555555'::uuid) STORED",
+    ] {
+        must_succeed(
+            &raw,
+            &format!("ALTER TABLE bss.pricing_price ADD COLUMN sku_id {definition}"),
+        )
+        .await;
+        let error = run_migrations_for_testing(&db, through("m20260916_000044_price_row_sku"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("incompatible prestaged"),
+            "{definition}: {error}"
+        );
+        assert_eq!(count(&raw, "SELECT count(*)::bigint AS n FROM information_schema.columns WHERE table_schema = 'bss' AND table_name = 'pricing_price' AND column_name = 'sku_id'").await, 1);
+        must_succeed(&raw, "ALTER TABLE bss.pricing_price DROP COLUMN sku_id").await;
+    }
+    must_succeed(&raw, &format!("INSERT INTO bss.pricing_plan (tenant_id, plan_id, revision, sku_id, lifecycle_state, created_by) VALUES ('{TENANT}', '{PLAN}', 1, '{SKU}', 'draft', '{TENANT}')")).await;
+    must_succeed(&raw, &format!("INSERT INTO bss.pricing_plan_descriptor_set (tenant_id, plan_id, plan_revision, gl_code, invoice_line_template) VALUES ('{TENANT}', '{PLAN}', 1, '4000-SAAS', '{{sku}} service')")).await;
+    must_succeed(&raw, &format!("INSERT INTO bss.pricing_plan_period_floor_cap (tenant_id, plan_id, plan_revision, currency, region, floor_minor) VALUES ('{TENANT}', '{PLAN}', 1, 'USD', 'EU', 1)")).await;
+    must_succeed(
+        &raw,
+        &format!(
+            "UPDATE bss.pricing_plan SET lifecycle_state = 'published' WHERE plan_id = '{PLAN}'"
+        ),
+    )
+    .await;
+    for (id, kind, state, meter) in [
+        (FEE, "recurring", "published", "NULL"),
+        (USAGE, "usage", "draft", "'GB-hour'"),
+    ] {
+        must_succeed(&raw, &format!("INSERT INTO bss.pricing_price (price_id, tenant_id, plan_id, currency, region, phase, charge_kind, model_kind, amount_minor, lifecycle_state, created_by, meter) VALUES ('{id}', '{TENANT}', '{PLAN}', 'USD', 'EU', '33333333-3333-3333-3333-333333333333', '{kind}', 'per_unit', 1000, '{state}', '{TENANT}', {meter})")).await;
+    }
+    must_succeed(&raw, &format!("INSERT INTO bss.pricing_price_window (window_id, tenant_id, price_id, effective_from, state, reason_code, created_by) VALUES ('99999999-9999-9999-9999-999999999999', '{TENANT}', '{FEE}', '2026-09-01T00:00:00+00:00', 'scheduled', 'test', '{TENANT}')")).await;
+    let error = run_migrations_for_testing(&db, through("m20260916_000044_price_row_sku"))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("D-372 backfill incomplete")
+            && error.contains(USAGE)
+            && !error.contains(FEE),
+        "{error}"
+    );
+    assert_eq!(count(&raw, "SELECT count(*)::bigint AS n FROM information_schema.columns WHERE table_schema = 'bss' AND table_name = 'pricing_price' AND column_name = 'sku_id'").await, 0);
+
+    must_succeed(&raw, "ALTER TABLE bss.pricing_price ADD COLUMN sku_id uuid").await;
+    must_succeed(&raw, &format!("UPDATE bss.pricing_price SET sku_id = '{FEE_SKU}' WHERE tenant_id = '{TENANT}' AND price_id = '{FEE}'")).await;
+    let error = run_migrations_for_testing(&db, through("m20260916_000044_price_row_sku"))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("prestaged column and explicit mappings are retained"),
+        "{error}"
+    );
+    assert_eq!(
+        names(
+            &raw,
+            &format!("SELECT sku_id::text AS v FROM bss.pricing_price WHERE price_id = '{FEE}'")
+        )
+        .await,
+        [FEE_SKU]
+    );
+    must_succeed(&raw, &format!("UPDATE bss.pricing_price SET sku_id = '00000000-0000-0000-0000-000000000000' WHERE price_id = '{USAGE}'")).await;
+    let error = run_migrations_for_testing(&db, through("m20260916_000044_price_row_sku"))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("not a non-nil UUID"), "{error}");
+    assert_eq!(
+        names(
+            &raw,
+            &format!("SELECT sku_id::text AS v FROM bss.pricing_price WHERE price_id = '{USAGE}'")
+        )
+        .await,
+        ["00000000-0000-0000-0000-000000000000"]
+    );
+    must_be_refused(
+        &raw,
+        &format!("UPDATE bss.pricing_price SET sku_id = 'not-a-uuid' WHERE price_id = '{USAGE}'"),
+        "invalid input syntax for type uuid",
+    )
+    .await;
+    must_succeed(&raw, &format!("UPDATE bss.pricing_price SET sku_id = '{SKU}' WHERE tenant_id = '{TENANT}' AND price_id = '{USAGE}'")).await;
+    let upgraded = run_migrations_for_testing(&db, Migrator::migrations())
+        .await
+        .unwrap();
+    assert_eq!(
+        upgraded.applied, 2,
+        "neither refused migration was recorded"
+    );
+    assert_eq!(
+        names(
+            &raw,
+            "SELECT sku_id::text AS v FROM bss.pricing_price ORDER BY charge_kind"
+        )
+        .await,
+        [FEE_SKU, SKU]
+    );
+    assert_eq!(names(&raw, "SELECT resolved_gl_code AS v FROM bss.pricing_price WHERE lifecycle_state = 'published'").await, ["4000-SAAS"]);
+    assert_eq!(
+        count(&raw, "SELECT count(*)::bigint AS n FROM bss.pricing_plan").await,
+        1
+    );
+    assert_eq!(
+        count(
+            &raw,
+            "SELECT count(*)::bigint AS n FROM bss.pricing_price_window"
+        )
+        .await,
+        1
+    );
+    assert_eq!(
+        count(
+            &raw,
+            "SELECT count(*)::bigint AS n FROM bss.pricing_plan_period_floor_cap"
+        )
+        .await,
+        1
+    );
+    must_be_refused(
+        &raw,
+        &format!("UPDATE bss.pricing_price SET sku_id = '{SKU}' WHERE price_id = '{FEE}'"),
+        "immutable",
+    )
+    .await;
+    must_be_refused(
+        &raw,
+        &format!("UPDATE bss.pricing_plan SET sku_id = '{FEE_SKU}' WHERE plan_id = '{PLAN}'"),
+        "frozen",
+    )
+    .await;
+    assert_eq!(
+        run_migrations_for_testing(&db, Migrator::migrations())
+            .await
+            .unwrap()
+            .applied,
+        0
+    );
+}

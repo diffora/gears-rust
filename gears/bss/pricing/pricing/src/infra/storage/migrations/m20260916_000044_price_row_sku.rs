@@ -20,17 +20,11 @@
 //!
 //! # Why this migration insists on a transaction
 //!
-//! [`MigrationTrait::use_transaction`] is overridden to `Some(true)` rather than
-//! left at the default, which is "a transaction on Postgres only". The refusal in
-//! step 2 is the whole point of the file, and a refusal that leaves the nullable
-//! column behind is not a refusal the operator can act on: the re-run they are
-//! told to make would fail on `ADD COLUMN` instead, and `SQLite` has no
-//! `ADD COLUMN IF NOT EXISTS` to soften it. Inside one transaction the refusal
-//! rolls the `ADD` and the backfill back with it, so a re-run starts where the
-//! first attempt did. The platform runner (`toolkit_db::migration_runner`) already
-//! wraps every `up` in an explicit transaction on both engines; this override is
-//! what makes `Migrator::up` -- the path the in-crate `SQLite` suites take -- agree
-//! with it.
+//! Both engines apply this migration atomically. An absent column is added in
+//! that transaction and disappears on refusal. An operator-prestaged nullable
+//! column is validated before mutation and survives refusal with its original
+//! mappings. See `gears/bss/pricing/docs/SKU-UPGRADE.md` for the checked staging
+//! procedure; usage SKU identities must come from an authoritative registry.
 //!
 //! `SQLite` physically rebuilds both tables and their foreign-key descendants,
 //! preserving their data, indexes and triggers without disabling foreign keys.
@@ -322,15 +316,20 @@ const SQLITE_DOWN: &[&str] = &[
 
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
-    /// See the module doc: the refusal below is only actionable if it takes the
-    /// `ADD` back with it, and the default is a transaction on Postgres alone.
+    /// Preserve both the ordinary rollback and operator-prestaged retry paths.
     fn use_transaction(&self) -> Option<bool> {
         Some(true)
     }
 
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        super::exec_backend(self.name(), manager, PG_ADD, SQLITE_ADD).await?;
-        refuse_unless_backfilled(manager).await?;
+        let staged = staged_column(manager).await?;
+        if staged {
+            validate_sku_values(manager).await?;
+        }
+        let start = usize::from(staged);
+        super::exec_backend(self.name(), manager, &PG_ADD[start..], &SQLITE_ADD[start..]).await?;
+        validate_sku_values(manager).await?;
+        refuse_unless_backfilled(manager, staged).await?;
         if manager.get_database_backend() == DbBackend::Sqlite {
             rebuild_sqlite_sku_tables(manager, true).await?;
         }
@@ -346,7 +345,126 @@ impl MigrationTrait for Migration {
     }
 }
 
-/// The one place this migration can stop.
+/// Accept only the ordinary nullable column defined by the staging procedure.
+/// Inspect before any backfill so an incompatible expansion cannot alter data.
+async fn staged_column(manager: &SchemaManager<'_>) -> Result<bool, DbErr> {
+    let backend = manager.get_database_backend();
+    let sql = match backend {
+        DbBackend::Postgres => {
+            "SELECT a.atttypid = 'uuid'::regtype AND NOT a.attnotnull AND NOT a.atthasdef AND a.attidentity = '' AND a.attgenerated = '' AND NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conrelid = a.attrelid AND a.attnum = ANY(c.conkey)) AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.refobjid = a.attrelid AND d.refobjsubid = a.attnum) AS valid FROM pg_attribute a WHERE a.attrelid = 'bss.pricing_price'::regclass AND a.attname = 'sku_id' AND NOT a.attisdropped"
+        }
+        DbBackend::Sqlite => {
+            "SELECT type, [notnull], dflt_value, pk, hidden FROM pragma_table_xinfo('pricing_price') WHERE name = 'sku_id' COLLATE NOCASE"
+        }
+        _ => return Err(DbErr::Custom("D-372: unsupported database".into())),
+    };
+    let rows = manager
+        .get_connection()
+        .query_all_raw(Statement::from_string(backend, sql))
+        .await?;
+    if rows.is_empty() {
+        return Ok(false);
+    }
+    let row = &rows[0];
+    let mut valid = if backend == DbBackend::Postgres {
+        row.try_get::<bool>("", "valid")?
+    } else {
+        row.try_get::<String>("", "type")?
+            .eq_ignore_ascii_case("TEXT")
+            && row.try_get::<i64>("", "notnull")? == 0
+            && row.try_get::<Option<String>>("", "dflt_value")?.is_none()
+            && row.try_get::<i64>("", "pk")? == 0
+            && row.try_get::<i64>("", "hidden")? == 0
+    };
+    if backend == DbBackend::Sqlite {
+        // table_xinfo cannot reveal a column CHECK or collation. The supported
+        // pre-stage ALTER adds exactly this declaration; reject additions.
+        let schema = manager
+            .get_connection()
+            .query_one_raw(Statement::from_string(
+                backend,
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pricing_price'",
+            ))
+            .await?
+            .ok_or_else(|| DbErr::Custom("D-372: pricing_price schema missing".into()))?;
+        let ddl: String = schema.try_get("", "sql")?;
+        let declaration = ddl
+            .split(',')
+            .find(|part| part.trim_start().starts_with("sku_id "))
+            .unwrap_or("");
+        let tokens: Vec<_> = declaration
+            .trim()
+            .trim_end_matches(')')
+            .split_whitespace()
+            .collect();
+        valid &=
+            tokens.len() == 2 && tokens[0] == "sku_id" && tokens[1].eq_ignore_ascii_case("TEXT");
+        let dependencies = manager.get_connection().query_all_raw(Statement::from_string(backend,
+            "SELECT name FROM sqlite_master WHERE tbl_name = 'pricing_price' AND type IN ('index', 'trigger') AND lower(sql) LIKE '%sku_id%'")).await?;
+        valid &= dependencies.is_empty();
+    }
+    if rows.len() != 1 || !valid {
+        return Err(DbErr::Custom("D-372: incompatible prestaged pricing_price.sku_id; expected an ordinary nullable uuid (Postgres) or TEXT (SQLite), without default, generation, identity or key role. See gears/bss/pricing/docs/SKU-UPGRADE.md".into()));
+    }
+    Ok(true)
+}
+
+/// Refuse malformed/nil assignments before tightening, including existing plans.
+async fn validate_sku_values(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+    let backend = manager.get_database_backend();
+    let prefix = if backend == DbBackend::Postgres {
+        "bss."
+    } else {
+        ""
+    };
+    for table in ["pricing_price", "pricing_plan"] {
+        let projection = if backend == DbBackend::Postgres {
+            "sku_id::text"
+        } else {
+            "CASE typeof(sku_id) WHEN 'blob' THEN hex(sku_id) ELSE CAST(sku_id AS TEXT) END"
+        };
+        let rows = manager
+            .get_connection()
+            .query_all_raw(Statement::from_string(
+                backend,
+                format!("SELECT {projection} AS sku FROM {prefix}{table} WHERE sku_id IS NOT NULL"),
+            ))
+            .await?;
+        for row in rows {
+            let value: String = row.try_get("", "sku")?;
+            non_nil_sku(&value, table)?;
+        }
+    }
+    Ok(())
+}
+
+/// Parse either UUID text or the hex projection of the driver's UUID blob.
+fn non_nil_sku(value: &str, table: &str) -> Result<uuid::Uuid, DbErr> {
+    uuid::Uuid::parse_str(value).ok().filter(|sku| !sku.is_nil()).ok_or_else(||
+        DbErr::Custom(format!("D-372: {table}.sku_id {value:?} is not a non-nil UUID; see gears/bss/pricing/docs/SKU-UPGRADE.md")))
+}
+
+/// Normalize every price SKU in the unguarded backup to the ORM's UUID blob.
+/// This makes equivalent text/blob assignments collide under the new key.
+async fn normalize_price_skus(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+    let db = manager.get_connection();
+    let rows = db.query_all_raw(Statement::from_string(DbBackend::Sqlite,
+        "SELECT rowid AS rid, CASE typeof(sku_id) WHEN 'blob' THEN hex(sku_id) ELSE sku_id END AS sku FROM d372_backup_pricing_price")).await?;
+    for row in rows {
+        let rid: i64 = row.try_get("", "rid")?;
+        let text: String = row.try_get("", "sku")?;
+        let sku = non_nil_sku(&text, "pricing_price")?;
+        db.execute_raw(Statement::from_sql_and_values(
+            DbBackend::Sqlite,
+            "UPDATE d372_backup_pricing_price SET sku_id = ? WHERE rowid = ?",
+            [sku.into(), rid.into()],
+        ))
+        .await?;
+    }
+    Ok(())
+}
+
+/// Refuse incomplete mappings before tightening.
 ///
 /// It reads **before** it tightens, so the message names rows while they are still
 /// reachable: after `SET NOT NULL` the statement that would have found them is the
@@ -355,7 +473,7 @@ impl MigrationTrait for Migration {
 /// # Errors
 /// [`DbErr::Custom`] naming the first twenty price rows with no `sku_id` and the
 /// number of plans with none, when either is non-empty.
-async fn refuse_unless_backfilled(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+async fn refuse_unless_backfilled(manager: &SchemaManager<'_>, staged: bool) -> Result<(), DbErr> {
     let db = manager.get_connection();
     let backend = manager.get_database_backend();
     let (rows_sql, plans_sql) = match backend {
@@ -390,10 +508,15 @@ async fn refuse_unless_backfilled(manager: &SchemaManager<'_>) -> Result<(), DbE
             format!("{price} (plan {plan}, {kind}, meter {meter:?})")
         })
         .collect();
+    let recovery = if staged {
+        "The prestaged column and explicit mappings are retained; complete the mapping and retry."
+    } else {
+        "The migration-added column is rolled back; pre-stage it before assigning mappings."
+    };
     Err(DbErr::Custom(format!(
         "D-372 backfill incomplete, refusing to tighten. plans without sku_id: \
          {plans_without_sku}; price rows without sku_id (first 20): [{}]. A usage row's SKU is a \
-         registry fact: set it by hand (or clear the demo data) and re-run.",
+         registry fact. {recovery} Follow gears/bss/pricing/docs/SKU-UPGRADE.md.",
         named.join(", ")
     )))
 }
@@ -489,6 +612,9 @@ async fn rebuild_sqlite_sku_tables(
         ))
         .await?;
     }
+    if required {
+        normalize_price_skus(manager).await?;
+    }
     normalize_overlay_targets(manager, required).await?;
     for table in ordered.iter().rev() {
         db.execute_unprepared(&format!("DROP TABLE {}", quote(table)))
@@ -505,7 +631,14 @@ async fn rebuild_sqlite_sku_tables(
                 .ok_or_else(|| DbErr::Custom(format!("D-372: missing {table}.sku_id declaration")))?
                 .to_owned();
             let replacement = if required {
-                format!("{} NOT NULL", declaration.trim_end())
+                // ALTER TABLE appends the new column immediately before the
+                // table's closing parenthesis; keep NOT NULL inside it.
+                let trimmed = declaration.trim_end();
+                if let Some(column) = trimmed.strip_suffix(')') {
+                    format!("{} NOT NULL)", column.trim_end())
+                } else {
+                    format!("{trimmed} NOT NULL")
+                }
             } else {
                 declaration.replace(" NOT NULL", "")
             };
