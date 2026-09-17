@@ -161,6 +161,14 @@ pub const ROW_SKU_SELLABLE: &str = "ROW_SKU_SELLABLE";
 /// unraised and still owed.
 pub const SKU_NOT_PUBLISHED: &str = "SKU_NOT_PUBLISHED";
 
+/// D-370's reading of a registry SKU: it may not be **newly** named.
+///
+/// Task 7 serves a deprecated SKU as `status: "published"` plus `deprecated:
+/// true`, so [`SKU_NOT_PUBLISHED`] does not fire on it. This code is the
+/// introduction refusal; an already-published row that names a since-deprecated
+/// SKU is admitted.
+pub const ROW_SKU_DEPRECATED: &str = "ROW_SKU_DEPRECATED";
+
 /// Every Slice-3 row-local rule, in report order.
 ///
 /// Ordered by theme — kind, then bands, then package, then level aggregation —
@@ -176,7 +184,7 @@ pub const SKU_NOT_PUBLISHED: &str = "SKU_NOT_PUBLISHED";
 /// The **row-SKU** rules are not here either, for the opposite reason: they judge
 /// one row, but against the product / SKU registry rather than against the row
 /// alone, so they cannot be built without a read. [`price_row_rules`] is this
-/// roster with those four in front of it.
+/// roster with those registry rules in front of it.
 #[must_use]
 pub fn row_local_rules() -> ValidationPipeline<PriceRow> {
     register_row_local(ValidationPipeline::new())
@@ -224,18 +232,21 @@ fn register_row_local(pipeline: ValidationPipeline<PriceRow>) -> ValidationPipel
         .with_rule(Box::new(floor_typing::FloorOutsideBands))
 }
 
-/// Every row rule, in report order: the four **row-SKU** rules (D-372 I3-I6) and
-/// then the row-local roster [`row_local_rules`] registers.
+/// Every row rule, in report order: the **row-SKU** rules (D-372 I3-I6 and
+/// D-370's introduction refusal) and then the row-local roster
+/// [`row_local_rules`] registers.
 ///
-/// The registry four run **first**, and that is the contract rather than a
+/// The registry rules run **first**, and that is the contract rather than a
 /// preference. A row naming a SKU this gear cannot read, or one the registry has
 /// not published, is answered by that fact before it is answered by anything its
 /// own columns say — an author sent to fix a band geometry on a row bound to a
-/// SKU that does not exist would fix the wrong thing twice.
+/// SKU that does not exist would fix the wrong thing twice. A deprecated SKU
+/// that *is* published is answered next, as [`ROW_SKU_DEPRECATED`], and only
+/// when the door says this evaluation introduces the reference.
 ///
-/// `ctx` is one registry read, made at the door and shared by the four
-/// (see [`crate::domain::registry_view`]). Building this pipeline costs four
-/// `Arc` clones and no I/O.
+/// `ctx` is one registry read, made at the door and shared by the registry
+/// rules (see [`crate::domain::registry_view`]). Building this pipeline costs
+/// five `Arc` clones and no I/O.
 ///
 /// Authoring and publish callers supply a fresh request-scoped registry snapshot.
 #[must_use]
@@ -248,6 +259,7 @@ pub fn price_row_rules(ctx: RowSkuContext) -> ValidationPipeline<PriceRow> {
 pub fn registry_row_rules(ctx: RowSkuContext) -> ValidationPipeline<PriceRow> {
     ValidationPipeline::new()
         .with_rule(Box::new(row_sku_rules::RowSkuPublished(ctx.clone())))
+        .with_rule(Box::new(row_sku_rules::RowSkuDeprecated(ctx.clone())))
         .with_rule(Box::new(row_sku_rules::RowSkuSellability(ctx.clone())))
         .with_rule(Box::new(row_sku_rules::UsageRowSkuMetered(ctx.clone())))
         .with_rule(Box::new(row_sku_rules::MeterMatchesSku(ctx)))

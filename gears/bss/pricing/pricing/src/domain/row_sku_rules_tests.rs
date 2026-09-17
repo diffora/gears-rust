@@ -24,8 +24,8 @@ use crate::domain::ports::CatalogSku;
 use crate::domain::price_row::{BillingGranularity, PriceRow, TierAggregationWindow, TierBand};
 use crate::domain::registry_view::SkuIndex;
 use crate::domain::rules::{
-    FEE_ROW_SKU_METERED, METER_SKU_MISMATCH, ROW_SKU_SELLABLE, SKU_NOT_PUBLISHED,
-    USAGE_ROW_SKU_UNMETERED, price_row_rules,
+    FEE_ROW_SKU_METERED, METER_SKU_MISMATCH, ROW_SKU_DEPRECATED, ROW_SKU_SELLABLE,
+    SKU_NOT_PUBLISHED, USAGE_ROW_SKU_UNMETERED, price_row_rules,
 };
 use crate::domain::scope_key::{ChargeKind, SkuId};
 
@@ -55,6 +55,7 @@ fn ctx() -> RowSkuContext {
     RowSkuContext {
         plan_sku: SkuId::new(Uuid::from_u128(0x1)),
         index: Arc::new(index),
+        introducing: true,
     }
 }
 
@@ -187,6 +188,7 @@ fn a_deprecated_sku_is_refused_by_the_same_rule() {
     let ctx = RowSkuContext {
         plan_sku: SkuId::new(Uuid::from_u128(0x1)),
         index: Arc::new(SkuIndex::from_listing(vec![deprecated])),
+        introducing: true,
     };
     // Otherwise a well-formed row on that SKU: the only fault is the status.
     let subject = row(0x7, ChargeKind::Usage, Some("GB-hour"));
@@ -270,6 +272,20 @@ fn every_row_sku_refusal_is_judged_at_the_authoring_write() {
             write.violations
         );
     }
+
+    let (dep_ctx, dep_row) = served_deprecated_row(true);
+    let write = price_row_rules(dep_ctx)
+        .run(&dep_row)
+        .write_stage_only()
+        .unwrap_or_else(|| panic!("{ROW_SKU_DEPRECATED} must reach the authoring write"));
+    assert!(
+        write
+            .violations
+            .iter()
+            .any(|v| v.code == ROW_SKU_DEPRECATED),
+        "{ROW_SKU_DEPRECATED} is absent from the write-stage report: {:?}",
+        write.violations
+    );
 }
 
 /// The other three rules decline to judge a row whose SKU they cannot read.
@@ -284,4 +300,61 @@ fn the_rules_after_the_lookup_decline_when_the_sku_is_absent() {
     let subject = row(0x9, ChargeKind::Usage, Some("vCPU-hour"));
 
     assert_eq!(codes(&subject), vec![SKU_NOT_PUBLISHED]);
+}
+
+/// Task 7 serves a deprecated SKU as `status: "published"` + `deprecated: true`,
+/// so [`SKU_NOT_PUBLISHED`] does not fire. The whole report is this one code.
+fn served_deprecated_row(introducing: bool) -> (RowSkuContext, PriceRow) {
+    let mut deprecated = sku(0x7, Some("GB-hour"), false);
+    deprecated.deprecated = true;
+    let ctx = RowSkuContext {
+        plan_sku: SkuId::new(Uuid::from_u128(0x1)),
+        index: Arc::new(SkuIndex::from_listing(vec![
+            sku(0x1, None, true),
+            deprecated,
+        ])),
+        introducing,
+    };
+    (ctx, row(0x7, ChargeKind::Usage, Some("GB-hour")))
+}
+
+/// Create a row naming a deprecated registry SKU.
+#[test]
+fn creating_a_row_that_names_a_deprecated_sku_is_refused() {
+    let (ctx, subject) = served_deprecated_row(true);
+
+    assert_eq!(codes_against(ctx, &subject), vec![ROW_SKU_DEPRECATED]);
+    assert_eq!(ROW_SKU_DEPRECATED, "ROW_SKU_DEPRECATED");
+}
+
+/// Patch a draft's `sku_id` onto a deprecated SKU -- an introduction of the
+/// reference.
+#[test]
+fn patching_a_drafts_sku_id_onto_a_deprecated_sku_is_refused() {
+    let (ctx, subject) = served_deprecated_row(true);
+
+    assert_eq!(codes_against(ctx, &subject), vec![ROW_SKU_DEPRECATED]);
+}
+
+/// Publish a draft that names a deprecated SKU -- still an introduction: the
+/// live reference has not existed yet.
+#[test]
+fn publishing_a_draft_that_names_a_deprecated_sku_is_refused() {
+    let (ctx, subject) = served_deprecated_row(true);
+
+    assert_eq!(codes_against(ctx, &subject), vec![ROW_SKU_DEPRECATED]);
+}
+
+/// Re-publish a plan whose already-published row names a since-deprecated SKU.
+/// D-370: deprecation withdraws the value from new use and changes nothing
+/// about what already resolves through it.
+#[test]
+fn republishing_an_already_published_row_that_names_a_since_deprecated_sku_is_admitted() {
+    let (ctx, subject) = served_deprecated_row(false);
+
+    assert_eq!(
+        codes_against(ctx, &subject),
+        Vec::<String>::new(),
+        "an already-published row is not an introduction"
+    );
 }

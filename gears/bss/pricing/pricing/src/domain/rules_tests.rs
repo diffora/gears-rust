@@ -84,24 +84,27 @@ fn the_pipeline_registers_every_row_local_instruction() {
     );
 }
 
-/// The registry pipeline is the roster above with D-372's four in **front** of
-/// it, and nothing else.
+/// The registry pipeline is the roster above with the row-SKU rules in
+/// **front** of it, and nothing else.
 ///
 /// The sibling of the assertion above, and the half it cannot make. Since D-372
 /// the roster is spelled once, in `register_row_local`, and both public pipelines
 /// append it — so a rule leaving the roster reddens both tests, which is right,
 /// and a *registry* rule leaving `price_row_rules` reddens only this one. It is
-/// also the only assertion that the four run **before** the row-local set rather
-/// than after it: an author whose SKU is unreadable is told that first.
+/// also the only assertion that the registry rules run **before** the row-local
+/// set rather than after it: an author whose SKU is unreadable is told that
+/// first.
 #[test]
 fn the_registry_pipeline_is_the_four_row_sku_rules_and_then_the_roster() {
     let ctx = RowSkuContext {
         plan_sku: SkuId::new(Uuid::nil()),
         index: Arc::new(SkuIndex::default()),
+        introducing: true,
     };
 
     let mut expected = vec![
         "inst-pr-sku-published",
+        "inst-pr-sku-deprecated",
         "inst-pr-sku-sellability",
         "inst-pr-sku-metered",
         "inst-pr-meter-derived",

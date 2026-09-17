@@ -57,15 +57,21 @@ pub fn derive_meter(
 }
 
 /// Revalidate an already normalized row against the request's registry snapshot.
+///
+/// `introducing` is true for a successor that has never been published (the
+/// supersession and cutover doors). An already-published row is not an
+/// introduction.
 pub fn validate(
     content: &PriceContent,
     plan_sku: Uuid,
     index: Arc<crate::domain::registry_view::SkuIndex>,
+    introducing: bool,
 ) -> Result<(), DomainError> {
     let report =
         crate::domain::rules::price_row_rules(crate::domain::row_sku_rules::RowSkuContext {
             plan_sku: crate::domain::scope_key::SkuId::new(plan_sku),
             index,
+            introducing,
         })
         .run(&content.row);
     if let Some(report) = report.write_stage_only() {

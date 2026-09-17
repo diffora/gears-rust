@@ -473,6 +473,7 @@ mod key_contradictions {
         let sku_context = crate::domain::row_sku_rules::RowSkuContext {
             plan_sku: key.sku_id(),
             index,
+            introducing: true,
         };
         super::super::require_no_key_contradiction(&key, &content, sku_context)
             .map_err(|e| format!("{e:?}"))

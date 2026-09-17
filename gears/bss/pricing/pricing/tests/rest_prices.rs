@@ -2761,3 +2761,174 @@ async fn row_descriptor_overrides_validate_and_null_clears_them() {
     assert!(stored[0].row.invoice_line_template.is_none());
     assert!(stored[0].row.gl_code_ref.is_none());
 }
+
+/// Task 7's served shape: `status: "published"` + `deprecated: true`.
+fn served_deprecated(
+    id: Uuid,
+    meter: Option<&str>,
+    sellable: bool,
+) -> bss_pricing::domain::ports::CatalogSku {
+    let mut sku = rest_support::catalog_sku(id, meter, sellable);
+    sku.deprecated = true;
+    sku
+}
+
+#[tokio::test]
+async fn creating_a_row_that_names_a_deprecated_sku_is_refused() {
+    let resource = rest_support::resource_sku("GB-hour");
+    let harness =
+        Harness::new_with_catalog(std::sync::Arc::new(rest_support::FixtureCatalog(vec![
+            rest_support::catalog_sku(rest_support::OFFER_SKU, None, true),
+            served_deprecated(resource, Some("GB-hour"), false),
+        ])))
+        .await;
+    let plan_id = seeded_plan(&harness).await;
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(usage_create_body("EU", "GB-hour")),
+            &keyed("create-deprecated"),
+        ))
+        .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "a new name of a deprecated SKU must refuse"
+    );
+    assert_eq!(problem_code(response).await, "ROW_SKU_DEPRECATED");
+    assert!(price_rows(&harness, plan_id).await.is_empty());
+}
+
+#[tokio::test]
+async fn patching_a_drafts_sku_id_onto_a_deprecated_sku_is_refused() {
+    let live = rest_support::resource_sku("GB-hour");
+    let onto = Uuid::from_u128(0x3709);
+    let harness =
+        Harness::new_with_catalog(std::sync::Arc::new(rest_support::FixtureCatalog(vec![
+            rest_support::catalog_sku(rest_support::OFFER_SKU, None, true),
+            rest_support::catalog_sku(live, Some("GB-hour"), false),
+            served_deprecated(onto, Some("GB-hour"), false),
+        ])))
+        .await;
+    let plan_id = seeded_plan(&harness).await;
+    let created = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(usage_create_body("EU", "GB-hour")),
+            &keyed("patch-onto-deprecated"),
+        ))
+        .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let tag = etag_of(&created).expect("create answers a tag");
+    let body = body_json(created).await;
+    let price_id = Uuid::parse_str(body["price_id"].as_str().expect("id")).expect("UUID");
+    let mut content = body["content"].clone();
+    content
+        .as_object_mut()
+        .expect("content object")
+        .remove("meter");
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &price_path(plan_id, price_id),
+            Some(serde_json::json!({
+                "scope_key": {
+                    "sku_id": onto,
+                    "currency": body["scope_key"]["currency"],
+                    "region": body["scope_key"]["region"],
+                    "phase": body["scope_key"]["phase"],
+                    "price_eligibility": body["scope_key"]["price_eligibility"],
+                    "charge_kind": body["scope_key"]["charge_kind"],
+                    "cohort": body["scope_key"]["cohort"]
+                },
+                "content": content
+            })),
+            &[("if-match", tag.as_str())],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(response).await;
+    assert!(
+        body.to_string().contains("ROW_SKU_DEPRECATED"),
+        "patching sku_id onto a deprecated SKU must name ROW_SKU_DEPRECATED, got {body}"
+    );
+}
+
+#[tokio::test]
+async fn publishing_a_draft_that_names_a_deprecated_sku_is_refused() {
+    let catalog = std::sync::Arc::new(MutableCatalog::new());
+    let harness = Harness::new_with_catalog(catalog.clone()).await;
+    let plan_id = Uuid::now_v7();
+    let seeded = rest_support::seed_publishable_plan(&harness, plan_id).await;
+    catalog
+        .listing
+        .lock()
+        .expect("fixture mutex")
+        .iter_mut()
+        .find(|sku| sku.sku_id == rest_support::OFFER_SKU)
+        .expect("offer")
+        .deprecated = true;
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &format!("/bss-pricing/v1/plans/{plan_id}/publish"),
+            None,
+            &[("if-match", &seeded.etag())],
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(problem_code(response).await, "ROW_SKU_DEPRECATED");
+    assert!(price_rows(&harness, plan_id)
+        .await
+        .iter()
+        .all(|row| row.lifecycle_state == bss_pricing::domain::lifecycle::LifecycleState::Draft));
+}
+
+#[tokio::test]
+async fn republishing_a_plan_whose_already_published_row_names_a_since_deprecated_sku_is_admitted()
+{
+    let catalog = std::sync::Arc::new(MutableCatalog::new());
+    let harness = Harness::new_with_catalog(catalog.clone()).await;
+    let plan_id = Uuid::now_v7();
+    let seeded = rest_support::seed_publishable_plan(&harness, plan_id).await;
+    harness.publish(plan_id, seeded.revision).await;
+    harness.publish_price(plan_id, seeded.price_id).await;
+    catalog
+        .listing
+        .lock()
+        .expect("fixture mutex")
+        .iter_mut()
+        .find(|sku| sku.sku_id == rest_support::OFFER_SKU)
+        .expect("offer")
+        .deprecated = true;
+    harness.open_successor(plan_id).await;
+    let tag = harness
+        .allowed()
+        .send(request(
+            "GET",
+            &format!("/bss-pricing/v1/plans/{plan_id}"),
+            None,
+        ))
+        .await;
+    let tag = etag_of(&tag).expect("the open successor answers a tag");
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &format!("/bss-pricing/v1/plans/{plan_id}/publish"),
+            None,
+            &[("if-match", &tag)],
+        ))
+        .await;
+    assert_ne!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "an already-published row naming a since-deprecated SKU must still admit"
+    );
+}

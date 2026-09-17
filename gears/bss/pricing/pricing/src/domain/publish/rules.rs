@@ -146,6 +146,7 @@ use crate::domain::bundle_rules::BUNDLE_TAX_BASIS_MIXED;
 use crate::domain::contracts::{ChangeTargetIndex, consumer_contract_rules};
 use crate::domain::coverage::window_coverage_rules;
 use crate::domain::currency_binding::{AddonCoverage, RequiredAddonsCoverMarkets};
+use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_rules::{CustomIntervalBounds, DescriptorSetComplete, plan_shape_rules};
 use crate::domain::plan_shape::PlanShape;
@@ -598,11 +599,16 @@ pub fn run_publish_rules(shape: &PlanShape, params: &PublishRuleParams) -> Valid
 
     // The same immutable registry snapshot judges every row. Missing context
     // is an empty index and refuses every SKU rather than skipping validation.
-    let row_rules = price_row_rules(crate::domain::row_sku_rules::RowSkuContext {
-        plan_sku: crate::domain::scope_key::SkuId::new(shape.sku_id),
-        index: params.sku_index.clone().unwrap_or_default(),
-    });
+    // Publication state is per row: a draft is an introduction, an already-
+    // published row in an earlier revision is not (D-370).
+    let plan_sku = crate::domain::scope_key::SkuId::new(shape.sku_id);
+    let index = params.sku_index.clone().unwrap_or_default();
     for record in &shape.rows {
+        let row_rules = price_row_rules(crate::domain::row_sku_rules::RowSkuContext {
+            plan_sku,
+            index: index.clone(),
+            introducing: record.lifecycle_state != LifecycleState::Published,
+        });
         report.absorb(row_rules.run(&record.row));
     }
     report.absorb(foundation_plan_rules(params).run(shape));

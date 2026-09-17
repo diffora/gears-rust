@@ -1,37 +1,38 @@
-//! D-372 I3-I6: a price row is bound to the registry SKU it names.
-//!
-//! Four rules over one [`PriceRow`], all reading the same
+//! Five rules over one [`PriceRow`], all reading the same
 //! [`SkuIndex`](crate::domain::registry_view::SkuIndex) — the registry listing
 //! the door read once and handed in ([`RowSkuContext`]). They are the first rules
 //! in this gear that judge a row against the **product / SKU registry**, which
 //! until D-372 it had no client for; `plan_rules`, `plan_rules::composition`,
 //! `plan_rules::composite` and `contracts` each record a code they could not
 //! raise for exactly that reason, and `SKU_NOT_PUBLISHED` is the first of them to
-//! stop being one.
+//! stop being one. `ROW_SKU_DEPRECATED` is D-370's reading of a served deprecated
+//! SKU: Task 7 maps it as `status: "published"` plus `deprecated: true`, so
+//! publication is not the fault.
 //!
 //! ## Why the registry rules run first, and why only one of them reads absence
 //!
-//! `RowSkuPublished` is registered ahead of the other three and is the **only**
-//! one that treats an absent SKU as a fault. The other three return without
+//! `RowSkuPublished` is registered ahead of the others and is the **only**
+//! one that treats an absent SKU as a fault. The others return without
 //! judging, because every one of their faults is a statement *about the SKU's
-//! declaration* — its metering unit, its sellability — and a declaration nobody
-//! can read supports no such statement. A row naming a SKU that is not in the
-//! listing would otherwise report three consequences of the one fault the author
-//! has to fix first, which is the reading `rules::model_kind` fixes the same way
-//! for an unauthored `modelKind`.
+//! declaration* — its metering unit, its sellability, whether it is deprecated —
+//! and a declaration nobody can read supports no such statement. A row naming a
+//! SKU that is not in the listing would otherwise report several consequences of
+//! the one fault the author has to fix first, which is the reading
+//! `rules::model_kind` fixes the same way for an unauthored `modelKind`.
 //!
 //! A **deprecated** SKU is the other half and behaves differently on purpose: it
-//! *is* in the listing, so its declaration is readable and the other three judge
-//! it. The author is told the SKU may no longer be adopted **and** what else is
-//! wrong with the row.
+//! *is* in the listing, so its declaration is readable and the other rules judge
+//! it. `RowSkuDeprecated` refuses only an **introduction** of the reference; an
+//! already-published row that names a since-deprecated SKU still admits. A
+//! well-formed new name reports `[ROW_SKU_DEPRECATED]` only — not a cascade with
+//! `SKU_NOT_PUBLISHED`.
 //!
 //! ## The instruction ids
 //!
-//! `inst-pr-sku-published`, `inst-pr-sku-sellability`, `inst-pr-sku-metered` and
-//! `inst-pr-meter-derived` are declared by `docs/design/03-price-structure.md` §3
-//! as of D-372, and the five codes they report by that document's §5; both land
-//! with this programme's documentation task rather than with this module, which is
-//! why a census of the design set run today finds the ids here and not there.
+//! `inst-pr-sku-published`, `inst-pr-sku-deprecated`, `inst-pr-sku-sellability`,
+//! `inst-pr-sku-metered` and `inst-pr-meter-derived` are declared by
+//! `docs/design/03-price-structure.md` §3, and the codes they report by that
+//! document's §5.
 //!
 //! ## Why these refuse at the **save**, not only at the publish
 //!
@@ -77,8 +78,8 @@ use toolkit_macros::domain_model;
 use crate::domain::price_row::PriceRow;
 use crate::domain::registry_view::SkuIndex;
 use crate::domain::rules::{
-    FEE_ROW_SKU_METERED, METER_SKU_MISMATCH, ROW_SKU_SELLABLE, SKU_NOT_PUBLISHED,
-    USAGE_ROW_SKU_UNMETERED,
+    FEE_ROW_SKU_METERED, METER_SKU_MISMATCH, ROW_SKU_DEPRECATED, ROW_SKU_SELLABLE,
+    SKU_NOT_PUBLISHED, USAGE_ROW_SKU_UNMETERED,
 };
 use crate::domain::scope_key::SkuId;
 use crate::domain::validation::{ValidationReport, ValidationRule};
@@ -93,7 +94,7 @@ const PUBLISHED: &str = "published";
 /// One registry read plus the plan's own SKU, as the rules see them.
 ///
 /// Built at the door and cloned into each rule. The
-/// [`Arc`] is why cloning it four times is free: the listing is read once per
+/// [`Arc`] is why cloning it five times is free: the listing is read once per
 /// request and shared, never copied per rule and never held across requests.
 #[domain_model]
 #[derive(Clone, Debug)]
@@ -103,6 +104,13 @@ pub struct RowSkuContext {
     pub plan_sku: SkuId,
     /// The registry listing every rule here judges against.
     pub index: Arc<SkuIndex>,
+    /// Whether this evaluation **introduces** the SKU reference.
+    ///
+    /// A create, a draft whose `sku_id` just changed, or a draft being published
+    /// is an introduction. A row already published in an earlier revision is not:
+    /// `PriceRow` alone cannot tell those apart, so the door that built this
+    /// context does.
+    pub introducing: bool,
 }
 
 /// I6 — the row's SKU exists and is `published`. Runs first: every other rule
@@ -110,6 +118,16 @@ pub struct RowSkuContext {
 #[domain_model]
 #[derive(Clone, Debug)]
 pub struct RowSkuPublished(pub RowSkuContext);
+
+/// D-370 — a deprecated registry SKU may not be **newly** named.
+///
+/// Registered after [`RowSkuPublished`]: Task 7 serves a deprecated SKU as
+/// `status: "published"` plus `deprecated: true`, so publication is not the
+/// fault. The operand is an introduction of the reference, carried on
+/// [`RowSkuContext::introducing`].
+#[domain_model]
+#[derive(Clone, Debug)]
+pub struct RowSkuDeprecated(pub RowSkuContext);
 
 /// I5 — the plan's own SKU, or a `sellable = false` SKU.
 #[domain_model]
@@ -164,6 +182,28 @@ impl ValidationRule<PriceRow> for RowSkuPublished {
                 "sku_id",
                 format!("SKU {} is not in the registry read model", subject.sku_id),
             ),
+        }
+    }
+}
+
+impl ValidationRule<PriceRow> for RowSkuDeprecated {
+    fn name(&self) -> &'static str {
+        "inst-pr-sku-deprecated"
+    }
+
+    fn evaluate(&self, subject: &PriceRow, report: &mut ValidationReport) {
+        if !self.0.introducing {
+            return;
+        }
+        let Some(sku) = self.0.index.get(subject.sku_id) else {
+            return;
+        };
+        if sku.deprecated {
+            report.violate_at_write(
+                ROW_SKU_DEPRECATED,
+                "sku_id",
+                format!("SKU {} is deprecated", subject.sku_id),
+            );
         }
     }
 }

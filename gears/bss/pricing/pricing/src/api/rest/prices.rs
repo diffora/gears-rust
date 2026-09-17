@@ -939,6 +939,11 @@ async fn patch_price(
     let body: PatchPriceRequest = preconditions::parse_body(&body)?;
     let expected = preconditions::if_match(&headers)?;
     let stored = row_of_plan(&state, &scope, tenant, plan_id, price_id).await?;
+    let mut content = content_of(&body.content)?;
+    let conn = state
+        .db
+        .conn()
+        .map_err(|e| DomainError::Internal(format!("price authoring connection: {e}")))?;
     if let Some(named) = &body.scope_key {
         // **Compared over the axes the wire can express** (D-196 clause 3).
         // `ScopeKeyRequest` has no `meter` member — the usage line is authored on
@@ -957,6 +962,23 @@ async fn patch_price(
             stored.scope_key.dimension_key().clone(),
         )?;
         if named != stored.scope_key {
+            // A `sku_id` change is an introduction of that reference. Judge it
+            // before the immutability sentence so a patch onto a deprecated SKU
+            // is `ROW_SKU_DEPRECATED` rather than a generic key refusal.
+            if named.sku_id() != stored.scope_key.sku_id() {
+                let sku_context = authoring_sku_context(
+                    &conn,
+                    state.catalog.as_ref(),
+                    &ctx,
+                    &scope,
+                    tenant,
+                    plan_id,
+                    named.sku_id().as_uuid(),
+                )
+                .await?;
+                derive_meter(&mut content, &named, &sku_context.index);
+                require_no_key_contradiction(&named, &content, sku_context)?;
+            }
             return Err(CanonicalError::from(DomainError::InvalidRequest(
                 "the canonical scope key is immutable; a row's key decides which duplicate it \
                  is, which supersession chain it joins and which window covers it. Delete this \
@@ -965,12 +987,7 @@ async fn patch_price(
             )));
         }
     }
-    let mut content = content_of(&body.content)?;
-    let conn = state
-        .db
-        .conn()
-        .map_err(|e| DomainError::Internal(format!("price authoring connection: {e}")))?;
-    let sku_context = authoring_sku_context(
+    let mut sku_context = authoring_sku_context(
         &conn,
         state.catalog.as_ref(),
         &ctx,
@@ -980,6 +997,8 @@ async fn patch_price(
         stored.scope_key.sku_id().as_uuid(),
     )
     .await?;
+    // The stored `sku_id` is not a new name; only a retarget above is.
+    sku_context.introducing = false;
     derive_meter(&mut content, &stored.scope_key, &sku_context.index);
     // The stored key, because the key is immutable and the block above has already
     // refused a body that names a different one. `PATCH` carries the check as well
@@ -1739,6 +1758,7 @@ async fn authoring_sku_context(
     Ok(crate::domain::row_sku_rules::RowSkuContext {
         plan_sku: SkuId::new(plan.sku_id),
         index: sku_index_for(catalog, ctx, &ids).await?,
+        introducing: true,
     })
 }
 

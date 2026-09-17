@@ -1084,6 +1084,7 @@ fn classify_registry_rows(
             crate::domain::rules::registry_row_rules(crate::domain::row_sku_rules::RowSkuContext {
                 plan_sku: crate::domain::scope_key::SkuId::new(*plan_sku),
                 index: Arc::clone(sku_index),
+                introducing: true,
             });
         if let Some(faults) = rules.run(&subject.row).write_stage_only() {
             for fault in faults.violations {

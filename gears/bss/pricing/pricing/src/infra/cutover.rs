@@ -797,6 +797,7 @@ pub async fn cutover_in(
             &staged.content(),
             context.shape.sku_id,
             Arc::clone(&index),
+            true,
         )?;
     }
     let mut resolved_request = request.clone();
@@ -829,6 +830,7 @@ pub async fn cutover_in(
         &authored_successor(&context, request),
         context.shape.sku_id,
         policies.sku_index()?,
+        true,
     )?;
     let (composed, copy_key) = compose_and_judge(&context, request, now, ChangeoverMoment::Submit)?;
 

@@ -935,6 +935,7 @@ pub async fn supersede_in(
             &staged.content(),
             context.shape.sku_id,
             Arc::clone(&index),
+            true,
         )?;
     }
     let mut resolved_request = request.clone();
@@ -961,7 +962,12 @@ pub async fn supersede_in(
     // (Critical). `price_repo::authored_content` is the one spelling
     // of those two rewrites and the door applies it too.
     let successor_content = requested_content(request, &context);
-    crate::infra::row_sku::validate(&successor_content, context.shape.sku_id, Arc::clone(&index))?;
+    crate::infra::row_sku::validate(
+        &successor_content,
+        context.shape.sku_id,
+        Arc::clone(&index),
+        true,
+    )?;
 
     // The id the act is really about: the **staged** draft's when one stands, and the
     // one the surface minted only when this call is what stages it. See
