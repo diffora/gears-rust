@@ -3420,6 +3420,57 @@ impl bss_pricing::domain::ports::ProductCatalogClientV1 for MutableCatalog {
     }
 }
 
+/// Fixture list plus call counters. `list_calls` is live today; `get_calls`
+/// stays 0 until Task 3/4 add a narrowed read.
+#[derive(Clone)]
+pub struct CountingCatalog {
+    listing: Arc<[bss_pricing::domain::ports::CatalogSku]>,
+    list_calls: Arc<std::sync::atomic::AtomicUsize>,
+    get_calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl CountingCatalog {
+    pub fn new(listing: Vec<bss_pricing::domain::ports::CatalogSku>) -> Self {
+        Self {
+            listing: listing.into(),
+            list_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            get_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
+    pub fn list_calls(&self) -> usize {
+        self.list_calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn get_calls(&self) -> usize {
+        self.get_calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl bss_pricing::domain::ports::ProductCatalogClientV1 for CountingCatalog {
+    async fn list_skus(
+        &self,
+        _ctx: &toolkit_security::SecurityContext,
+    ) -> Result<
+        Vec<bss_pricing::domain::ports::CatalogSku>,
+        toolkit::api::canonical_prelude::CanonicalError,
+    > {
+        self.list_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(self.listing.to_vec())
+    }
+    async fn list_tax_categories(
+        &self,
+        _ctx: &toolkit_security::SecurityContext,
+    ) -> Result<
+        Vec<bss_pricing::domain::ports::CatalogTaxCategory>,
+        toolkit::api::canonical_prelude::CanonicalError,
+    > {
+        Ok(vec![])
+    }
+}
+
 /// Published usage row plus its editable response content, for registry replay probes.
 pub async fn published_usage_for_registry_replay(
     h: &Harness,

@@ -2590,6 +2590,35 @@ async fn a_price_write_reads_the_registry_once_and_outage_writes_nothing() {
     assert_eq!(price_rows(&harness, plan_id).await.len(), 1);
 }
 
+/// Pins what a row save costs today: one whole-catalog read per write. Task 4
+/// narrows it to the two ids the write names and flips these assertions.
+#[tokio::test]
+async fn a_row_save_reads_the_whole_catalog() {
+    let counting = rest_support::CountingCatalog::new(vec![
+        rest_support::catalog_sku(rest_support::OFFER_SKU, None, true),
+        rest_support::catalog_sku(
+            rest_support::resource_sku("GB-hour"),
+            Some("GB-hour"),
+            false,
+        ),
+    ]);
+    let harness = Harness::new_with_catalog(std::sync::Arc::new(counting.clone())).await;
+    let plan_id = seeded_plan(&harness).await;
+    let body = usage_create_body("EU", "GB-hour");
+    let created = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(body),
+            &keyed("whole-catalog-read"),
+        ))
+        .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    assert_eq!(counting.list_calls(), 1, "one whole-catalog read per save");
+    assert_eq!(counting.get_calls(), 0, "no narrowed read exists yet");
+}
+
 #[tokio::test]
 async fn publish_rechecks_a_sku_that_was_deprecated_after_authoring() {
     use std::sync::atomic::Ordering;
