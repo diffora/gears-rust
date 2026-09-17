@@ -82,7 +82,15 @@ Add no other schema objects. UUIDs bound by the ORM are 16-byte blobs; legacy ra
 SQL fixtures can hold UUID text. Bind tenant/plan/price identifiers in their
 existing storage representation; inspect `typeof(...)` first. For SKU assignments
 use canonical non-nil UUID text or a 16-byte UUID blob. Migration 44 validates both
-and normalizes price SKUs to blobs before applying uniqueness constraints.
+and normalizes both plan and price SKUs to blobs in unguarded backups before
+restoring the tables and their guards. Normal application UUID reads then use
+the same 16-byte representation for both.
+
+Fee backfill compares plan assignments before that normalization. If revisions
+of one plan mix text and blob representations of the same SKU, automatic fee
+backfill conservatively refuses the ambiguous stored values. Explicitly stage
+the fee row's authoritative SKU as well; do not edit a published plan solely to
+change its UUID encoding. All plan encodings normalize on the successful retry.
 
 ```sql
 .bail on

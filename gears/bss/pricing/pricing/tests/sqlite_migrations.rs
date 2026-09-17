@@ -1737,6 +1737,7 @@ async fn both_scope_key_indexes_carry_the_sku_and_two_units_of_one_sku_are_one_k
 async fn the_sku_backfill_fills_fee_rows_and_refuses_usage_rows() {
     const TENANT: &str = "11111111-1111-1111-1111-111111111111";
     const PLAN: &str = "22222222-2222-2222-2222-222222222222";
+    const BLOB_PLAN: &str = "22222222-2222-2222-2222-222222222223";
     const PLAN_SKU: &str = "55555555-5555-5555-5555-000000000005";
     const EXPLICIT_FEE_SKU: &str = "55555555-5555-5555-5555-000000000006";
     const FEE_ROW: &str = "f0000000-0000-0000-0000-00000000000f";
@@ -1774,6 +1775,14 @@ async fn the_sku_backfill_fills_fee_rows_and_refuses_usage_rows() {
     ))
     .await
     .expect("seed the plan that holds the one SKU fact the database has");
+
+    // A separate plan with the driver's native UUID binding is the positive
+    // control: normalization must preserve valid blobs as well as fix text.
+    db.execute_raw(Statement::from_sql_and_values(
+        sea_orm::DatabaseBackend::Sqlite,
+        format!("INSERT INTO pricing_plan (tenant_id, plan_id, revision, lifecycle_state, created_by, sku_id) VALUES ('{TENANT}', '{BLOB_PLAN}', 1, 'draft', '{TENANT}', ?)"),
+        [uuid::Uuid::parse_str(PLAN_SKU).unwrap().into()],
+    )).await.unwrap();
 
     exec(format!("INSERT INTO pricing_plan_period_floor_cap (tenant_id, plan_id, plan_revision, currency, region, floor_minor) VALUES ('{TENANT}', '{PLAN}', 1, 'USD', 'EU', 1)"))
         .await.expect("seed plan child");
@@ -1951,6 +1960,21 @@ async fn the_sku_backfill_fills_fee_rows_and_refuses_usage_rows() {
         rows[1].try_get::<String>("", "gl_code_ref").unwrap(),
         "4000-SAAS"
     );
+    let plans = db.query_all_raw(Statement::from_string(
+        sea_orm::DatabaseBackend::Sqlite,
+        "SELECT plan_id, sku_id, typeof(sku_id) AS storage, length(sku_id) AS bytes FROM pricing_plan ORDER BY plan_id",
+    )).await.unwrap();
+    assert_eq!(plans.len(), 2, "both legacy plan encodings survive");
+    for plan in plans {
+        assert_eq!(
+            plan.try_get::<uuid::Uuid>("", "sku_id")
+                .unwrap()
+                .to_string(),
+            PLAN_SKU
+        );
+        assert_eq!(plan.try_get::<String>("", "storage").unwrap(), "blob");
+        assert_eq!(plan.try_get::<i64>("", "bytes").unwrap(), 16);
+    }
     assert!(
         exec(format!(
             "UPDATE pricing_price SET sku_id = '{PLAN_SKU}' WHERE price_id = '{FEE_ROW}'"

@@ -444,22 +444,25 @@ fn non_nil_sku(value: &str, table: &str) -> Result<uuid::Uuid, DbErr> {
         DbErr::Custom(format!("D-372: {table}.sku_id {value:?} is not a non-nil UUID; see gears/bss/pricing/docs/SKU-UPGRADE.md")))
 }
 
-/// Normalize every price SKU in the unguarded backup to the ORM's UUID blob.
-/// This makes equivalent text/blob assignments collide under the new key.
-async fn normalize_price_skus(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+/// Normalize plan and price SKUs in their unguarded backups to ORM UUID blobs.
+/// Published guards stay installed until the rebuild; updates to these copies
+/// cannot alter the original rows or trip their frozen-column checks.
+async fn normalize_sku_backups(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
     let db = manager.get_connection();
-    let rows = db.query_all_raw(Statement::from_string(DbBackend::Sqlite,
-        "SELECT rowid AS rid, CASE typeof(sku_id) WHEN 'blob' THEN hex(sku_id) ELSE sku_id END AS sku FROM d372_backup_pricing_price")).await?;
-    for row in rows {
-        let rid: i64 = row.try_get("", "rid")?;
-        let text: String = row.try_get("", "sku")?;
-        let sku = non_nil_sku(&text, "pricing_price")?;
-        db.execute_raw(Statement::from_sql_and_values(
-            DbBackend::Sqlite,
-            "UPDATE d372_backup_pricing_price SET sku_id = ? WHERE rowid = ?",
-            [sku.into(), rid.into()],
-        ))
-        .await?;
+    for table in ["pricing_plan", "pricing_price"] {
+        let rows = db.query_all_raw(Statement::from_string(DbBackend::Sqlite,
+            format!("SELECT rowid AS rid, CASE typeof(sku_id) WHEN 'blob' THEN hex(sku_id) ELSE sku_id END AS sku FROM d372_backup_{table}"))).await?;
+        for row in rows {
+            let rid: i64 = row.try_get("", "rid")?;
+            let text: String = row.try_get("", "sku")?;
+            let sku = non_nil_sku(&text, table)?;
+            db.execute_raw(Statement::from_sql_and_values(
+                DbBackend::Sqlite,
+                format!("UPDATE d372_backup_{table} SET sku_id = ? WHERE rowid = ?"),
+                [sku.into(), rid.into()],
+            ))
+            .await?;
+        }
     }
     Ok(())
 }
@@ -613,7 +616,7 @@ async fn rebuild_sqlite_sku_tables(
         .await?;
     }
     if required {
-        normalize_price_skus(manager).await?;
+        normalize_sku_backups(manager).await?;
     }
     normalize_overlay_targets(manager, required).await?;
     for table in ordered.iter().rev() {
