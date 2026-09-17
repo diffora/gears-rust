@@ -1372,6 +1372,7 @@ fn fixture_sku_index() -> std::sync::Arc<crate::domain::registry_view::SkuIndex>
             sku_type: "service".to_owned(),
             sellable: false,
             usage_type_ref: None,
+            deprecated: false,
         },
     ]))
 }

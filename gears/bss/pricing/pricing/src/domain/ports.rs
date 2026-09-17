@@ -23,7 +23,7 @@ pub use bss_pricing_sdk::catalog_version_registry::{
     registry_unreachable, unconfigured_registry,
 };
 pub use bss_pricing_sdk::product_catalog::{
-    CatalogSku, CatalogTaxCategory, ProductCatalogClientV1, ProductCatalogError,
+    CatalogSku, CatalogSkuPage, CatalogTaxCategory, ProductCatalogClientV1, ProductCatalogError,
     UnconfiguredProductCatalogClientV1, unconfigured_catalog,
 };
 

@@ -463,6 +463,7 @@ mod key_contradictions {
             sku_type: "service".into(),
             sellable: false,
             usage_type_ref: None,
+            deprecated: false,
         };
         let index =
             std::sync::Arc::new(crate::domain::registry_view::SkuIndex::from_listing(vec![

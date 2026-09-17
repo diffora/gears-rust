@@ -43,7 +43,9 @@ use toolkit_canonical_errors::CanonicalError;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
-use crate::domain::ports::{CatalogSku, CatalogTaxCategory, ProductCatalogClientV1};
+use crate::domain::ports::{
+    CatalogSku, CatalogSkuPage, CatalogTaxCategory, ProductCatalogClientV1,
+};
 
 /// The reserved id namespace every fabricated SKU is minted in.
 ///
@@ -106,6 +108,8 @@ fn sku(
         // Metered SKUs are resources within an offer; unmetered SKUs are offers.
         sellable: unit.is_none(),
         usage_type_ref: unit.map(dev_usage_type_ref),
+        // The flag is a registry-owned fact, not a derivation from `status`.
+        deprecated: false,
     }
 }
 
@@ -246,6 +250,36 @@ impl LocalDevStaticProductCatalog {
 impl ProductCatalogClientV1 for LocalDevStaticProductCatalog {
     async fn list_skus(&self, _ctx: &SecurityContext) -> Result<Vec<CatalogSku>, CanonicalError> {
         Ok(Self::skus())
+    }
+
+    async fn get_skus(
+        &self,
+        _ctx: &SecurityContext,
+        ids: &[Uuid],
+    ) -> Result<Vec<CatalogSku>, CanonicalError> {
+        Ok(Self::skus()
+            .into_iter()
+            .filter(|sku| ids.contains(&sku.sku_id))
+            .collect())
+    }
+
+    async fn search_skus(
+        &self,
+        _ctx: &SecurityContext,
+        q: Option<&str>,
+        limit: u32,
+        _cursor: Option<&str>,
+    ) -> Result<CatalogSkuPage, CanonicalError> {
+        let prefix = q.unwrap_or("");
+        let items = Self::skus()
+            .into_iter()
+            .filter(|sku| sku.name.starts_with(prefix))
+            .take(usize::try_from(limit).unwrap_or(usize::MAX))
+            .collect();
+        Ok(CatalogSkuPage {
+            items,
+            next_cursor: None,
+        })
     }
 
     async fn list_tax_categories(

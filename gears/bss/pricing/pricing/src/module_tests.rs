@@ -645,6 +645,29 @@ impl crate::domain::ports::ProductCatalogClientV1 for EmptyRegistryCatalog {
     {
         Ok(Vec::new())
     }
+
+    async fn get_skus(
+        &self,
+        _ctx: &SecurityContext,
+        _ids: &[Uuid],
+    ) -> Result<Vec<crate::domain::ports::CatalogSku>, toolkit_canonical_errors::CanonicalError>
+    {
+        Ok(Vec::new())
+    }
+
+    async fn search_skus(
+        &self,
+        _ctx: &SecurityContext,
+        _q: Option<&str>,
+        _limit: u32,
+        _cursor: Option<&str>,
+    ) -> Result<crate::domain::ports::CatalogSkuPage, toolkit_canonical_errors::CanonicalError>
+    {
+        Ok(crate::domain::ports::CatalogSkuPage {
+            items: Vec::new(),
+            next_cursor: None,
+        })
+    }
 }
 
 /// A config provider that knows about no gear at all, so `ctx.config()` yields

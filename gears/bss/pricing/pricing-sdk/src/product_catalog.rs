@@ -97,6 +97,19 @@ pub struct CatalogSku {
     /// (registry **P-D-05**); absent on a SKU priced per period. Present
     /// exactly when `metering_unit` is, on a well-formed registry row.
     pub usage_type_ref: Option<String>,
+    /// Registry-owned withdrawal from new sale. Independent of `status`: the
+    /// status word is display vocabulary, this flag is the fact a write path
+    /// consults, and neither is derived from the other.
+    pub deprecated: bool,
+}
+
+/// One page of a prefix search over SKU names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogSkuPage {
+    /// The matching SKUs in this page, in the registry's own order.
+    pub items: Vec<CatalogSku>,
+    /// Absent when there is no further page.
+    pub next_cursor: Option<String>,
 }
 
 /// A tax-category definition owned by Product Catalog, not a tax rate.
@@ -192,6 +205,31 @@ pub trait ProductCatalogClientV1: Send + Sync {
     /// Project with [`ProductCatalogError::from`] to tell the three apart.
     async fn list_skus(&self, ctx: &SecurityContext) -> Result<Vec<CatalogSku>, CanonicalError>;
 
+    /// The SKUs a write names. Ids the registry does not know come back absent,
+    /// not as an error: `SKU_NOT_PUBLISHED` is a rule's finding, not a transport's.
+    ///
+    /// # Errors
+    /// [`CanonicalError`] when no registry is wired, it cannot be reached, or its
+    /// answer is unusable.
+    async fn get_skus(
+        &self,
+        ctx: &SecurityContext,
+        ids: &[Uuid],
+    ) -> Result<Vec<CatalogSku>, CanonicalError>;
+
+    /// The human's selector: a prefix query over the name, paged.
+    ///
+    /// # Errors
+    /// [`CanonicalError`] when no registry is wired, it cannot be reached, or its
+    /// answer is unusable.
+    async fn search_skus(
+        &self,
+        ctx: &SecurityContext,
+        q: Option<&str>,
+        limit: u32,
+        cursor: Option<&str>,
+    ) -> Result<CatalogSkuPage, CanonicalError>;
+
     /// Tax-category definitions available to this tenant, in provider order.
     ///
     /// No CRUD or rate data. Implementations must not fall back to fabricated
@@ -217,6 +255,24 @@ pub struct UnconfiguredProductCatalogClientV1;
 #[async_trait]
 impl ProductCatalogClientV1 for UnconfiguredProductCatalogClientV1 {
     async fn list_skus(&self, _ctx: &SecurityContext) -> Result<Vec<CatalogSku>, CanonicalError> {
+        Err(unconfigured_catalog())
+    }
+
+    async fn get_skus(
+        &self,
+        _ctx: &SecurityContext,
+        _ids: &[Uuid],
+    ) -> Result<Vec<CatalogSku>, CanonicalError> {
+        Err(unconfigured_catalog())
+    }
+
+    async fn search_skus(
+        &self,
+        _ctx: &SecurityContext,
+        _q: Option<&str>,
+        _limit: u32,
+        _cursor: Option<&str>,
+    ) -> Result<CatalogSkuPage, CanonicalError> {
         Err(unconfigured_catalog())
     }
 

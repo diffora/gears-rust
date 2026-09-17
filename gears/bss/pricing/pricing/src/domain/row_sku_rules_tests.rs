@@ -40,6 +40,7 @@ fn sku(id: u128, unit: Option<&str>, sellable: bool) -> CatalogSku {
         sku_type: "service".to_owned(),
         sellable,
         usage_type_ref: unit.map(|unit| format!("gts.cf.usage.{unit}.v1~")),
+        deprecated: false,
     }
 }
 

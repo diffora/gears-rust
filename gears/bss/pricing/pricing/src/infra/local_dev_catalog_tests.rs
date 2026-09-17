@@ -5,7 +5,15 @@
 //! stay **stable**, because a plan binds to one and an id that moved on restart
 //! would leave every bound plan pointing at nothing while still looking bound.
 
+use crate::domain::ports::ProductCatalogClientV1;
+use uuid::Uuid;
+
 use super::{DEV_LOCAL_CODE_PREFIX, DEV_LOCAL_SKU_PREFIX, LocalDevStaticProductCatalog};
+
+/// The catalog never reads the context, so any context serves.
+fn ctx() -> toolkit_security::SecurityContext {
+    toolkit_security::SecurityContext::anonymous()
+}
 
 #[test]
 fn every_id_is_in_the_reserved_namespace() {
@@ -120,4 +128,21 @@ fn the_contract_members_are_consistent_with_the_unit() {
             sku.sku_code
         );
     }
+}
+
+#[tokio::test]
+async fn the_fabricated_catalog_answers_only_the_ids_it_is_asked_for() {
+    let cat = LocalDevStaticProductCatalog::new();
+    let all = cat.list_skus(&ctx()).await.expect("listing");
+    let one = all.first().expect("a fabricated SKU").sku_id;
+    let got = cat
+        .get_skus(&ctx(), &[one, Uuid::from_u128(0xdead)])
+        .await
+        .expect("narrowed read");
+    assert_eq!(got.len(), 1, "an unknown id is absent, not an error");
+    assert_eq!(got[0].sku_id, one);
+    assert!(
+        !got[0].deprecated,
+        "the fabricated catalog declares nothing deprecated"
+    );
 }

@@ -90,6 +90,7 @@ const CONSUMER_FIELDS: &[&str] = &[
     "sku_type",
     "sellable",
     "usage_type_ref",
+    "deprecated",
 ];
 
 #[allow(clippy::no_effect_underscore_binding, unused_variables)]
@@ -120,15 +121,16 @@ fn the_lists_are_exhaustive(registry: Sku, consumer: CatalogSku) {
         sku_type,
         sellable,
         usage_type_ref,
+        deprecated,
     } = consumer;
 }
 
 #[test]
 fn the_field_lists_mirror_the_two_types() {
-    // Thirteen bindings above, thirteen names; nine and nine. It was fifteen
+    // Thirteen bindings above, thirteen names; ten and ten. It was fifteen
     // until P-D-169 took the two accounting codes off the registry's shape.
     assert_eq!(REGISTRY_FIELDS.len(), 13);
-    assert_eq!(CONSUMER_FIELDS.len(), 9);
+    assert_eq!(CONSUMER_FIELDS.len(), 10);
     let _ = the_lists_are_exhaustive;
 }
 
@@ -464,6 +466,7 @@ async fn adoption_block_fixture_registry_half() {
         sku_type: "product".to_owned(),
         sellable: true,
         usage_type_ref: None,
+        deprecated: false,
     };
     assert_eq!(
         deprecated.status, "deprecated",
@@ -490,6 +493,7 @@ async fn usage_binding_fixture_registry_half() {
         sku_type: "product".to_owned(),
         sellable: true,
         usage_type_ref: Some("usage:storage".to_owned()),
+        deprecated: false,
     };
     assert!(
         usage.metering_unit.is_some() && usage.usage_type_ref.is_some(),

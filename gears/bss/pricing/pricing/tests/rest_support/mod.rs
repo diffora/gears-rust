@@ -3369,6 +3369,7 @@ pub fn catalog_sku(
         sku_type: "service".into(),
         sellable,
         usage_type_ref: None,
+        deprecated: false,
     }
 }
 
@@ -3409,6 +3410,64 @@ impl bss_pricing::domain::ports::ProductCatalogClientV1 for MutableCatalog {
         }
         Ok(self.listing.lock().expect("fixture mutex").clone())
     }
+    async fn get_skus(
+        &self,
+        _ctx: &toolkit_security::SecurityContext,
+        ids: &[Uuid],
+    ) -> Result<
+        Vec<bss_pricing::domain::ports::CatalogSku>,
+        toolkit::api::canonical_prelude::CanonicalError,
+    > {
+        use std::sync::atomic::Ordering;
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        if self.unavailable.load(Ordering::SeqCst) {
+            return Err(toolkit::api::canonical_prelude::CanonicalError::internal(
+                "fixture catalog unavailable",
+            )
+            .create());
+        }
+        Ok(self
+            .listing
+            .lock()
+            .expect("fixture mutex")
+            .iter()
+            .filter(|sku| ids.contains(&sku.sku_id))
+            .cloned()
+            .collect())
+    }
+    async fn search_skus(
+        &self,
+        _ctx: &toolkit_security::SecurityContext,
+        q: Option<&str>,
+        limit: u32,
+        _cursor: Option<&str>,
+    ) -> Result<
+        bss_pricing::domain::ports::CatalogSkuPage,
+        toolkit::api::canonical_prelude::CanonicalError,
+    > {
+        use std::sync::atomic::Ordering;
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        if self.unavailable.load(Ordering::SeqCst) {
+            return Err(toolkit::api::canonical_prelude::CanonicalError::internal(
+                "fixture catalog unavailable",
+            )
+            .create());
+        }
+        let prefix = q.unwrap_or("");
+        let items = self
+            .listing
+            .lock()
+            .expect("fixture mutex")
+            .iter()
+            .filter(|sku| sku.name.starts_with(prefix))
+            .take(usize::try_from(limit).unwrap_or(usize::MAX))
+            .cloned()
+            .collect();
+        Ok(bss_pricing::domain::ports::CatalogSkuPage {
+            items,
+            next_cursor: None,
+        })
+    }
     async fn list_tax_categories(
         &self,
         _ctx: &toolkit_security::SecurityContext,
@@ -3420,8 +3479,8 @@ impl bss_pricing::domain::ports::ProductCatalogClientV1 for MutableCatalog {
     }
 }
 
-/// Fixture list plus call counters. `list_calls` is live today; `get_calls`
-/// stays 0 until Task 3/4 add a narrowed read.
+/// Fixture list plus call counters. `list_calls` counts `list_skus`;
+/// `get_calls` counts `get_skus`.
 #[derive(Clone)]
 pub struct CountingCatalog {
     listing: Arc<[bss_pricing::domain::ports::CatalogSku]>,
@@ -3459,6 +3518,46 @@ impl bss_pricing::domain::ports::ProductCatalogClientV1 for CountingCatalog {
         self.list_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(self.listing.to_vec())
+    }
+    async fn get_skus(
+        &self,
+        _ctx: &toolkit_security::SecurityContext,
+        ids: &[Uuid],
+    ) -> Result<
+        Vec<bss_pricing::domain::ports::CatalogSku>,
+        toolkit::api::canonical_prelude::CanonicalError,
+    > {
+        self.get_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(self
+            .listing
+            .iter()
+            .filter(|sku| ids.contains(&sku.sku_id))
+            .cloned()
+            .collect())
+    }
+    async fn search_skus(
+        &self,
+        _ctx: &toolkit_security::SecurityContext,
+        q: Option<&str>,
+        limit: u32,
+        _cursor: Option<&str>,
+    ) -> Result<
+        bss_pricing::domain::ports::CatalogSkuPage,
+        toolkit::api::canonical_prelude::CanonicalError,
+    > {
+        let prefix = q.unwrap_or("");
+        let items = self
+            .listing
+            .iter()
+            .filter(|sku| sku.name.starts_with(prefix))
+            .take(usize::try_from(limit).unwrap_or(usize::MAX))
+            .cloned()
+            .collect();
+        Ok(bss_pricing::domain::ports::CatalogSkuPage {
+            items,
+            next_cursor: None,
+        })
     }
     async fn list_tax_categories(
         &self,

@@ -22,6 +22,7 @@ pub fn catalog_sku(
         sku_type: "service".into(),
         sellable,
         usage_type_ref: None,
+        deprecated: false,
     }
 }
 
@@ -79,6 +80,44 @@ impl bss_pricing::domain::ports::ProductCatalogClientV1 for FixtureCatalog {
         toolkit::api::canonical_prelude::CanonicalError,
     > {
         Ok(self.0.clone())
+    }
+    async fn get_skus(
+        &self,
+        _ctx: &SecurityContext,
+        ids: &[Uuid],
+    ) -> Result<
+        Vec<bss_pricing::domain::ports::CatalogSku>,
+        toolkit::api::canonical_prelude::CanonicalError,
+    > {
+        Ok(self
+            .0
+            .iter()
+            .filter(|sku| ids.contains(&sku.sku_id))
+            .cloned()
+            .collect())
+    }
+    async fn search_skus(
+        &self,
+        _ctx: &SecurityContext,
+        q: Option<&str>,
+        limit: u32,
+        _cursor: Option<&str>,
+    ) -> Result<
+        bss_pricing::domain::ports::CatalogSkuPage,
+        toolkit::api::canonical_prelude::CanonicalError,
+    > {
+        let prefix = q.unwrap_or("");
+        let items = self
+            .0
+            .iter()
+            .filter(|sku| sku.name.starts_with(prefix))
+            .take(usize::try_from(limit).unwrap_or(usize::MAX))
+            .cloned()
+            .collect();
+        Ok(bss_pricing::domain::ports::CatalogSkuPage {
+            items,
+            next_cursor: None,
+        })
     }
     async fn list_tax_categories(
         &self,

@@ -73,6 +73,27 @@ impl ProductCatalogClientV1 for EmptyCatalog {
         Ok(Vec::new())
     }
 
+    async fn get_skus(
+        &self,
+        _ctx: &SecurityContext,
+        _ids: &[Uuid],
+    ) -> Result<Vec<CatalogSku>, CanonicalError> {
+        Ok(Vec::new())
+    }
+
+    async fn search_skus(
+        &self,
+        _ctx: &SecurityContext,
+        _q: Option<&str>,
+        _limit: u32,
+        _cursor: Option<&str>,
+    ) -> Result<bss_pricing::domain::ports::CatalogSkuPage, CanonicalError> {
+        Ok(bss_pricing::domain::ports::CatalogSkuPage {
+            items: Vec::new(),
+            next_cursor: None,
+        })
+    }
+
     async fn list_tax_categories(
         &self,
         _ctx: &SecurityContext,
@@ -150,6 +171,24 @@ impl ProductCatalogClientV1 for UnreachableCatalog {
     }
 
     async fn list_skus(&self, _ctx: &SecurityContext) -> Result<Vec<CatalogSku>, CanonicalError> {
+        Err(catalog_unreachable("connection refused".to_owned()))
+    }
+
+    async fn get_skus(
+        &self,
+        _ctx: &SecurityContext,
+        _ids: &[Uuid],
+    ) -> Result<Vec<CatalogSku>, CanonicalError> {
+        Err(catalog_unreachable("connection refused".to_owned()))
+    }
+
+    async fn search_skus(
+        &self,
+        _ctx: &SecurityContext,
+        _q: Option<&str>,
+        _limit: u32,
+        _cursor: Option<&str>,
+    ) -> Result<bss_pricing::domain::ports::CatalogSkuPage, CanonicalError> {
         Err(catalog_unreachable("connection refused".to_owned()))
     }
 }
