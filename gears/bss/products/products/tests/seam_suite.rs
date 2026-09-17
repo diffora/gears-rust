@@ -592,8 +592,11 @@ impl toolkit::config::ConfigProvider for EmptyConfig {
     }
 }
 
-/// Permissive PDP so `init` can build a `PolicyEnforcer`.
-struct AllowResolver;
+/// Permissive PDP so `init` can build a `PolicyEnforcer`, and so pricing's
+/// catalog door (`require_constraints`) compiles a tenant `In`.
+struct AllowResolver {
+    allowed: uuid::Uuid,
+}
 
 #[async_trait::async_trait]
 impl authz_resolver_sdk::AuthZResolverApi for AllowResolver {
@@ -605,10 +608,17 @@ impl authz_resolver_sdk::AuthZResolverApi for AllowResolver {
         authz_resolver_sdk::models::EvaluationResponse,
         toolkit_canonical_errors::CanonicalError,
     > {
+        use authz_resolver_sdk::constraints::{Constraint, InPredicate, Predicate};
+        use toolkit_security::pep_properties;
         Ok(authz_resolver_sdk::models::EvaluationResponse {
             decision: true,
             context: authz_resolver_sdk::models::EvaluationResponseContext {
-                constraints: Vec::new(),
+                constraints: vec![Constraint {
+                    predicates: vec![Predicate::In(InPredicate::new(
+                        pep_properties::OWNER_TENANT_ID,
+                        vec![self.allowed],
+                    ))],
+                }],
                 deny_reason: None,
             },
         })
@@ -783,7 +793,9 @@ async fn products_boots_without_client_wiring_and_hub_answers_a_projected_sku() 
         .expect("boot the gear's migration chain");
 
     let hub = Arc::new(ClientHub::new());
-    hub.register::<dyn authz_resolver_sdk::AuthZResolverApi>(Arc::new(AllowResolver));
+    hub.register::<dyn authz_resolver_sdk::AuthZResolverApi>(Arc::new(AllowResolver {
+        allowed: TENANT,
+    }));
     hub.register::<dyn types_registry_sdk::TypesRegistryClient>(Arc::new(AcceptingTypesRegistry));
 
     let provider = DBProvider::<DbError>::new(db);
@@ -856,4 +868,196 @@ async fn products_boots_without_client_wiring_and_hub_answers_a_projected_sku() 
     assert_eq!(found[0].status, "published");
 
     drop(std::fs::remove_file(&path));
+}
+
+/// Pricing is present in `gears:` with an empty `config` object so `init`
+/// runs. Absent would be `GearNotFound` and skip. Products stays absent
+/// so its wiring is still Local.
+struct PricingPresent {
+    entry: serde_json::Value,
+}
+
+impl toolkit::config::ConfigProvider for PricingPresent {
+    fn get_gear_config(&self, gear: &str) -> Option<&serde_json::Value> {
+        (gear == "bss-pricing").then_some(&self.entry)
+    }
+}
+
+/// Boot products and pricing on one hub, then `GET /bss-pricing/v1/catalog/skus`.
+///
+/// `source` is whatever pricing's `resolve_product_catalog` stored on the
+/// catalog router at `init` — not a token this test writes onto the view.
+#[tokio::test]
+async fn pricing_beside_products_answers_catalog_skus_from_the_hub_registry() {
+    use axum::body::to_bytes;
+    use axum::http::Request;
+    use bss_pricing::api::rest::catalog_skus::CATALOG_SKUS;
+    use bss_pricing::module::BssPricingGear;
+    use bss_products::gear::BssProductsGear;
+    use bss_products::infra::storage::entity::read_entity;
+    use sea_orm::EntityTrait;
+    use std::sync::Arc;
+    use toolkit::api::OpenApiRegistryImpl;
+    use toolkit::contracts::{DatabaseCapability, RestApiCapability};
+    use toolkit::{ClientHub, Gear, GearCtx};
+    use toolkit_db::secure::{AccessScope, SecureInsertExt};
+    use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
+    use toolkit_gts::gts_id;
+    use toolkit_security::SecurityContext;
+    use tower::ServiceExt;
+
+    const TENANT: uuid::Uuid = uuid::Uuid::from_u128(0xca_7a_10_01);
+    const SKU: uuid::Uuid = uuid::Uuid::from_u128(0xca_7a_10_91);
+
+    let products_path = std::env::temp_dir().join(format!(
+        "bss-products-seam-joint-{}.sqlite3",
+        uuid::Uuid::new_v4()
+    ));
+    let pricing_path = std::env::temp_dir().join(format!(
+        "bss-pricing-seam-joint-{}.sqlite3",
+        uuid::Uuid::new_v4()
+    ));
+    let opts = ConnectOpts {
+        max_conns: Some(4),
+        min_conns: Some(1),
+        ..Default::default()
+    };
+
+    let products_db = connect_db(
+        &format!("sqlite://{}?mode=rwc", products_path.display()),
+        opts.clone(),
+    )
+    .await
+    .expect("products sqlite");
+    let products = BssProductsGear::default();
+    toolkit_db::migration_runner::run_migrations_for_testing(&products_db, products.migrations())
+        .await
+        .expect("products migrations");
+
+    let pricing_db = connect_db(
+        &format!("sqlite://{}?mode=rwc", pricing_path.display()),
+        opts,
+    )
+    .await
+    .expect("pricing sqlite");
+    let pricing = BssPricingGear::default();
+    toolkit_db::migration_runner::run_migrations_for_testing(&pricing_db, pricing.migrations())
+        .await
+        .expect("pricing migrations");
+
+    let hub = Arc::new(ClientHub::new());
+    hub.register::<dyn authz_resolver_sdk::AuthZResolverApi>(Arc::new(AllowResolver {
+        allowed: TENANT,
+    }));
+    hub.register::<dyn types_registry_sdk::TypesRegistryClient>(Arc::new(AcceptingTypesRegistry));
+
+    let products_provider = DBProvider::<DbError>::new(products_db);
+    let products_ctx = GearCtx::new(
+        "bss-products",
+        uuid::Uuid::nil(),
+        Arc::new(EmptyConfig),
+        Arc::clone(&hub),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .with_db(products_provider.clone());
+    products
+        .init(&products_ctx)
+        .await
+        .expect("products init registers the catalog on the hub");
+
+    let row = read_entity::Model {
+        tenant_id: TENANT,
+        entity_kind: "sku".to_owned(),
+        entity_id: SKU,
+        entity_code: Some("COMP-VCPU-H".to_owned()),
+        name: "COMP-VCPU-H".to_owned(),
+        lifecycle_state: "published".to_owned(),
+        deprecated: false,
+        composition_pending: false,
+        sellable: Some(true),
+        deprecation_provenance: None,
+        replaced_by_sku_id: None,
+        region_scope: String::new(),
+        brand_scope: String::new(),
+        sku_type: Some("service".to_owned()),
+        plan_tier_label: Some("Pro".to_owned()),
+        metering_unit: Some("vCPU-hour".to_owned()),
+        usage_type_ref: Some("cf.usage.vcpu-hour".to_owned()),
+        display_attributes: None,
+        category_paths: None,
+        published_version: 3,
+        projected_at: time::OffsetDateTime::UNIX_EPOCH,
+        generation: 0,
+    };
+    let conn = products_provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let model: read_entity::ActiveModel = row.into();
+    read_entity::Entity::insert(model.clone())
+        .secure()
+        .scope_with_model(&scope, &model)
+        .expect("scope the insert")
+        .exec(&conn)
+        .await
+        .expect("insert a projected SKU");
+
+    let pricing_ctx = GearCtx::new(
+        "bss-pricing",
+        uuid::Uuid::nil(),
+        Arc::new(PricingPresent {
+            entry: serde_json::json!({ "config": {} }),
+        }),
+        Arc::clone(&hub),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .with_db(DBProvider::<DbError>::new(pricing_db));
+    pricing
+        .init(&pricing_ctx)
+        .await
+        .expect("pricing init prefers the hub catalog");
+
+    let subject = SecurityContext::builder()
+        .subject_id(uuid::Uuid::now_v7())
+        .subject_tenant_id(TENANT)
+        .subject_type(gts_id!("cf.core.security.subject_user.v1~"))
+        .token_scopes(vec!["*".to_owned()])
+        .build()
+        .expect("authed SecurityContext");
+    let openapi = OpenApiRegistryImpl::new();
+    let router = pricing
+        .register_rest(&pricing_ctx, axum::Router::new(), &openapi)
+        .expect("pricing mounts catalog/skus after init")
+        .layer(axum::Extension(subject));
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(CATALOG_SKUS)
+                .body(axum::body::Body::empty())
+                .expect("build GET"),
+        )
+        .await
+        .expect("catalog/skus answers");
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::OK,
+        "catalog/skus must be reachable after joint boot"
+    );
+    let bytes = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read body");
+    let body: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+    let source = body
+        .get("source")
+        .and_then(serde_json::Value::as_str)
+        .expect("CatalogSkusView.source");
+    // Taken from the HTTP body pricing's init wrote onto the router. Not
+    // constructed here. Config modes can only produce unconfigured /
+    // local_dev_static; the hub path is the remaining CatalogSkusView token.
+    assert_ne!(source, "unconfigured");
+    assert_ne!(source, "local_dev_static");
+    assert_eq!(source, "registry");
+
+    drop(std::fs::remove_file(&products_path));
+    drop(std::fs::remove_file(&pricing_path));
 }

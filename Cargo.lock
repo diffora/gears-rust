@@ -2042,6 +2042,7 @@ dependencies = [
  "cf-gears-authz-resolver",
  "cf-gears-authz-resolver-sdk",
  "cf-gears-bss-coord",
+ "cf-gears-bss-pricing",
  "cf-gears-bss-pricing-sdk",
  "cf-gears-bss-products-sdk",
  "cf-gears-event-broker-sdk",

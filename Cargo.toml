@@ -387,6 +387,9 @@ bss-ledger-sdk = { package = "cf-gears-bss-ledger-sdk", version = "0.1.4", path 
 # must gain one in the same change or that gate turns red — which is the intended
 # coupling, not a latent trap.
 bss-pricing-sdk = { package = "cf-gears-bss-pricing-sdk", path = "gears/bss/pricing/pricing-sdk" }
+# Products' seam suite boots this gear beside `bss-products` on one hub.
+# Dev-only consumer; no `version` for the same WIP reason as the SDK above.
+bss-pricing = { package = "cf-gears-bss-pricing", path = "gears/bss/pricing/pricing" }
 # The products registry SDK. Same posture as pricing-sdk above: no `version`,
 # because neither crate is a release artifact and the gear that consumes it is
 # not published either.

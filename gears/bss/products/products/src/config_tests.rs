@@ -20,13 +20,76 @@ fn client_wiring_is_accepted_so_a_split_deployment_can_boot() {
         r#"{
             "client_wiring": {
                 "product_catalog_client_v1": {
-                    "rest": { "endpoint": "http://bss-products.virtuozzo.svc:8080" }
+                    "transport": "rest",
+                    "endpoint": "http://bss-products.virtuozzo.svc:8080"
                 }
             }
         }"#,
     )
     .expect("the provides wiring key must not trip deny_unknown_fields");
     assert!(cfg.client_wiring.is_object());
+}
+
+#[test]
+fn the_documented_split_wiring_deserializes_as_client_wiring_rest() {
+    let documented = serde_json::json!({
+        "transport": "rest",
+        "endpoint": "http://bss-products.virtuozzo.svc:8080"
+    });
+    let wiring: toolkit_contract::wiring::ClientWiring = serde_json::from_value(documented)
+        .expect("the documented tagged object is what read_wiring deserializes");
+    match wiring {
+        toolkit_contract::wiring::ClientWiring::Rest { endpoint, .. } => {
+            assert_eq!(endpoint, "http://bss-products.virtuozzo.svc:8080");
+        }
+        other => panic!("expected Rest, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_plan_nested_rest_spelling_is_not_client_wiring() {
+    let plan_spelling = serde_json::json!({
+        "rest": { "endpoint": "http://bss-products.virtuozzo.svc:8080" }
+    });
+    serde_json::from_value::<toolkit_contract::wiring::ClientWiring>(plan_spelling)
+        .expect_err("nested rest: { endpoint } is not a transport tag and will not parse");
+}
+
+#[test]
+fn read_wiring_accepts_the_documented_rest_object() {
+    use std::sync::Arc;
+    use toolkit::config::ConfigProvider;
+    use toolkit::{ClientHub, GearCtx};
+
+    struct Documented(serde_json::Value);
+    impl ConfigProvider for Documented {
+        fn get_gear_config(&self, gear: &str) -> Option<&serde_json::Value> {
+            (gear == "bss-products").then_some(&self.0)
+        }
+    }
+
+    let ctx = GearCtx::new(
+        "bss-products",
+        uuid::Uuid::nil(),
+        Arc::new(Documented(serde_json::json!({
+            "config": {
+                "client_wiring": {
+                    "product_catalog_client_v1": {
+                        "transport": "rest",
+                        "endpoint": "http://bss-products.virtuozzo.svc:8080"
+                    }
+                }
+            }
+        }))),
+        Arc::new(ClientHub::new()),
+        tokio_util::sync::CancellationToken::new(),
+    );
+    let wiring = toolkit::wiring::read_wiring(&ctx, "product_catalog_client_v1")
+        .expect("read_wiring must accept the documented tagged object");
+    assert!(
+        matches!(wiring, toolkit_contract::wiring::ClientWiring::Rest { .. }),
+        "documented split-deploy object must be Rest, not Local"
+    );
 }
 
 #[test]

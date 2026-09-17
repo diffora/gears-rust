@@ -195,3 +195,7 @@ futures-core = { workspace = true }
 # The seam suite (`tests/seam_suite.rs`, `design/12` §2.1, P-D-130/P-D-151):
 # the SchemaPin itself is read from `schema-pin.toml`.
 toml = { workspace = true }
+# Joint seam: boot pricing beside products on one hub and hit
+# `GET /bss-pricing/v1/catalog/skus` so `source` comes from pricing's
+# `resolve_product_catalog`, not from a hard-coded token.
+bss-pricing = { workspace = true }

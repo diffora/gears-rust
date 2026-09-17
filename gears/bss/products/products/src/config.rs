@@ -165,13 +165,14 @@ pub const READ_INBOX_RETENTION_HOURS_DEFAULT: u32 = 72;
 ///     config:
 ///       client_wiring:
 ///         product_catalog_client_v1:
-///           rest:
-///             endpoint: "http://bss-products.virtuozzo.svc:8080"
+///           transport: rest
+///           endpoint: "http://bss-products.virtuozzo.svc:8080"
 /// ```
 ///
-/// The platform's `ClientWiring` tag is `transport: rest` with `endpoint`
-/// beside it; the nested `rest:` spelling above is the plan's operator
-/// example. Either way the key lives in this typed config so
+/// `ClientWiring` is `#[serde(tag = "transport")]`. The tagged object
+/// above is what `toolkit::wiring::read_wiring` accepts. The plan's
+/// nested spelling (`rest: { endpoint: ... }`) **will not parse** — it
+/// is not a `transport` tag. The key still lives in this typed config so
 /// `deny_unknown_fields` does not refuse a split deployment.
 ///
 /// A typo in a *value* has no such spelling, which is why
