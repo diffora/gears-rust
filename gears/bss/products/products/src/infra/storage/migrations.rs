@@ -45,6 +45,7 @@ mod m20260901_000026_create_products_deferred_retirement;
 mod m20260901_000027_create_products_materiality_policy;
 mod m20260901_000028_create_products_pii_allowlist;
 mod m20260901_000029_create_products_read_projection;
+mod m20260917_000030_add_read_entity_usage_type_ref;
 
 /// The read-projection migration alone (`products_read_inbox` and its
 /// siblings), for harnesses that build the outbox facility without the gear's
@@ -153,6 +154,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260901_000027_create_products_materiality_policy::Migration),
             Box::new(m20260901_000028_create_products_pii_allowlist::Migration),
             Box::new(m20260901_000029_create_products_read_projection::Migration),
+            Box::new(m20260917_000030_add_read_entity_usage_type_ref::Migration),
         ]
     }
 }
