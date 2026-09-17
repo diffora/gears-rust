@@ -71,7 +71,7 @@ pub fn registry_failure(err: CanonicalError) -> DomainError {
         | CatalogVersionRegistryError::Unreachable(_)
         | CatalogVersionRegistryError::Internal(_)
         | CatalogVersionRegistryError::Other(_) => {
-            DomainError::CatalogVersionUnavailable(err.to_string())
+            DomainError::catalog_version_unavailable(err.to_string())
         }
     }
 }

@@ -341,8 +341,8 @@ impl PolicyObjectRepo {
         crate::domain::error::DomainError,
     > {
         self.sku_index.clone().ok_or_else(|| {
-            crate::domain::error::DomainError::CatalogVersionUnavailable(
-                "product catalog snapshot not resolved".into(),
+            crate::domain::error::DomainError::catalog_version_unavailable(
+                "product catalog snapshot not resolved",
             )
         })
     }

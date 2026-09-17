@@ -2590,6 +2590,36 @@ async fn a_price_write_reads_the_registry_once_and_outage_writes_nothing() {
     assert_eq!(price_rows(&harness, plan_id).await.len(), 1);
 }
 
+/// §4.3: a registry 503 fails the save closed and keeps **that** `Retry-After`.
+///
+/// This file installs no tracing subscriber, so the `tracing::error!` line
+/// `sku_index_for` records is unverified here.
+#[tokio::test]
+async fn a_registry_outage_fails_the_save_and_says_for_how_long_to_wait() {
+    let catalog = std::sync::Arc::new(MutableCatalog::new());
+    let harness = Harness::new_with_catalog(catalog.clone()).await;
+    let plan_id = seeded_plan(&harness).await;
+    *catalog.retry_after_seconds.lock().expect("fixture mutex") = Some(12);
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(usage_create_body("EU", "GB-hour")),
+            &keyed("outage-retry-after"),
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response
+            .headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok()),
+        Some("12"),
+    );
+    assert!(price_rows(&harness, plan_id).await.is_empty());
+}
+
 /// Pins what a row save costs: one `get_skus` of the two ids the write names.
 #[tokio::test]
 async fn a_row_save_reads_only_the_two_skus_it_names() {

@@ -116,7 +116,7 @@ async fn a_registry_that_never_answers_is_the_fail_closed_answer_and_not_a_hang(
     // 400 and a caller must not retry it, so a case that accepted any error
     // would pass on the one answer this seam must never give.
     match answer {
-        Err(DomainError::CatalogVersionUnavailable(detail)) => assert!(
+        Err(DomainError::CatalogVersionUnavailable { detail, .. }) => assert!(
             detail.contains("1ms"),
             "the refusal names the budget it exceeded, because that is the knob an operator \
              moves: {detail}"
@@ -151,7 +151,7 @@ async fn the_registrys_own_outage_keeps_its_own_projection() {
     // is the sole producer of the gear's rejection vocabulary, and a seam that
     // rebuilt the answer itself would be a second one.
     match answer {
-        Err(DomainError::CatalogVersionUnavailable(detail)) => assert!(
+        Err(DomainError::CatalogVersionUnavailable { detail, .. }) => assert!(
             !detail.contains("did not answer within"),
             "an answered outage must not be reported as a lapsed budget: {detail}"
         ),

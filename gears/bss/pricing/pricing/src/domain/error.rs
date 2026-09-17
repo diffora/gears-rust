@@ -913,8 +913,17 @@ pub enum DomainError {
     /// **Transient states only.** A registry that answered and said *no* is
     /// [`Self::CatalogVersionRejected`]; this variant is for the three that a
     /// later request may find changed.
-    #[error("catalog-version registry unavailable: {0}")]
-    CatalogVersionUnavailable(String),
+    ///
+    /// `retry_after_seconds` is the delay the dependency named, when it named
+    /// one. The write door must pass it through; it must not invent a delay
+    /// when the dependency did not.
+    #[error("catalog-version registry unavailable: {detail}")]
+    CatalogVersionUnavailable {
+        /// What the dependency said, kept server-side.
+        detail: String,
+        /// The dependency's own `Retry-After`, in seconds.
+        retry_after_seconds: Option<u64>,
+    },
     /// The read model is unavailable — the fail-closed answer of a **read** path
     /// this gear does not yet have, so nothing in the crate raises it.
     /// `infra::read_model` records the same absence from the projector's side.
@@ -938,4 +947,15 @@ pub enum DomainError {
     /// An infrastructure fault with no domain meaning.
     #[error("internal: {0}")]
     Internal(String),
+}
+
+impl DomainError {
+    /// A registry or catalog outage with no delay of its own.
+    #[must_use]
+    pub fn catalog_version_unavailable(detail: impl Into<String>) -> Self {
+        Self::CatalogVersionUnavailable {
+            detail: detail.into(),
+            retry_after_seconds: None,
+        }
+    }
 }

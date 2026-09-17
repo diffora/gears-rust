@@ -660,14 +660,11 @@ fn the_three_coverage_codes_travel_as_precondition_violations() {
 fn unavailability_is_503_and_keeps_its_diagnostic_server_side() {
     // An operator needs to know which dependency is down; a caller only needs
     // to know to retry, and the registry's internals are not its business.
-    let body = rendered(DomainError::CatalogVersionUnavailable(
-        "registry refused connection at 10.0.0.7".to_owned(),
+    let body = rendered(DomainError::catalog_version_unavailable(
+        "registry refused connection at 10.0.0.7",
     ));
 
-    assert_eq!(
-        status(DomainError::CatalogVersionUnavailable("x".to_owned())),
-        503
-    );
+    assert_eq!(status(DomainError::catalog_version_unavailable("x")), 503);
     assert_eq!(
         status(DomainError::ReadModelUnavailable("x".to_owned())),
         503
@@ -722,7 +719,7 @@ fn a_registry_failure_becomes_the_fail_closed_domain_variant() {
     ] {
         assert!(matches!(
             registry_failure(err),
-            DomainError::CatalogVersionUnavailable(_)
+            DomainError::CatalogVersionUnavailable { .. }
         ));
     }
 }
@@ -981,7 +978,7 @@ fn declared_status(err: &DomainError) -> u16 {
         | D::MigrationCompleted(_) => 409,
 
         // -- 503: fail closed, retry later; the detail stays server-side.
-        D::CatalogVersionUnavailable(_)
+        D::CatalogVersionUnavailable { .. }
         | D::ReadModelUnavailable(_)
         | D::FixtureGateUnavailable(_) => 503,
 
@@ -1067,7 +1064,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
         D::RetireTargetOfMigration(d()),
         D::RetireOverLiveCutover(d()),
         D::MigrationCompleted(d()),
-        D::CatalogVersionUnavailable(d()),
+        D::catalog_version_unavailable(d()),
         D::ReadModelUnavailable(d()),
         D::FixtureGateUnavailable(d()),
         D::Internal(d()),

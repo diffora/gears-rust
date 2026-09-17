@@ -1099,7 +1099,7 @@ async fn registry_absence_stops_the_publish_and_writes_nothing() {
         .expect_err("a publish with no registry must stop");
 
     assert!(
-        matches!(refusal, DomainError::CatalogVersionUnavailable(_)),
+        matches!(refusal, DomainError::CatalogVersionUnavailable { .. }),
         "got {refusal:?}"
     );
     assert_eq!(

@@ -191,6 +191,16 @@ fn unavailable() -> CanonicalError {
     CanonicalError::service_unavailable().create()
 }
 
+/// The 503 that keeps a delay the dependency named. No delay is invented.
+fn unavailable_after(retry_after_seconds: Option<u64>) -> CanonicalError {
+    match retry_after_seconds {
+        Some(seconds) => CanonicalError::service_unavailable()
+            .with_retry_after_seconds(seconds)
+            .create(),
+        None => unavailable(),
+    }
+}
+
 impl From<DomainError> for CanonicalError {
     #[allow(
         clippy::too_many_lines,
@@ -691,7 +701,11 @@ impl From<DomainError> for CanonicalError {
             // `registry.toml` is a deployment state a later request may find
             // changed, so retry is the right instruction and the caller is not the
             // party at fault.
-            D::CatalogVersionUnavailable(_) | D::FixtureGateUnavailable(_) => unavailable(),
+            D::CatalogVersionUnavailable {
+                retry_after_seconds,
+                ..
+            } => unavailable_after(retry_after_seconds),
+            D::FixtureGateUnavailable(_) => unavailable(),
             // The one 503 that reports itself, because nothing else can: the read
             // path this answers for has no producer yet, so no seam upstream raises
             // it, and a read-model outage is per-request by nature rather than a

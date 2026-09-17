@@ -93,7 +93,7 @@ pub(crate) async fn request_version_within(
             // of *why* the peer refused. A `Rejected` answer is deliberately not
             // logged — it is a 400 whose detail travels to the caller, who is the
             // party that can act on it.
-            if let DomainError::CatalogVersionUnavailable(detail) = &failure {
+            if let DomainError::CatalogVersionUnavailable { detail, .. } = &failure {
                 tracing::error!(
                     request_id = %request_id,
                     detail = %detail,
@@ -112,7 +112,7 @@ pub(crate) async fn request_version_within(
                  the transaction rolls back and the deterministic request id lets the retry \
                  re-claim the same handle"
             );
-            Err(DomainError::CatalogVersionUnavailable(format!(
+            Err(DomainError::catalog_version_unavailable(format!(
                 "the catalog version registry did not answer within {}ms",
                 budget.as_millis()
             )))

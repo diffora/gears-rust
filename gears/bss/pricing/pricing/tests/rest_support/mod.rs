@@ -3379,6 +3379,10 @@ pub struct MutableCatalog {
     pub listing: std::sync::Mutex<Vec<bss_pricing::domain::ports::CatalogSku>>,
     pub reads: std::sync::atomic::AtomicUsize,
     pub unavailable: std::sync::atomic::AtomicBool,
+    /// When set, `get_skus` / `search_skus` answer 503 with **this**
+    /// `Retry-After`. Distinct from [`Self::unavailable`], which is an
+    /// internal fault and carries no delay.
+    pub retry_after_seconds: std::sync::Mutex<Option<u64>>,
 }
 
 impl MutableCatalog {
@@ -3387,7 +3391,28 @@ impl MutableCatalog {
             listing: std::sync::Mutex::new(FixtureCatalog::default().0),
             reads: std::sync::atomic::AtomicUsize::new(0),
             unavailable: std::sync::atomic::AtomicBool::new(false),
+            retry_after_seconds: std::sync::Mutex::new(None),
         }
+    }
+
+    fn outage(&self) -> Option<toolkit::api::canonical_prelude::CanonicalError> {
+        use std::sync::atomic::Ordering;
+        if let Some(seconds) = *self.retry_after_seconds.lock().expect("fixture mutex") {
+            return Some(
+                toolkit::api::canonical_prelude::CanonicalError::service_unavailable()
+                    .with_retry_after_seconds(seconds)
+                    .create(),
+            );
+        }
+        if self.unavailable.load(Ordering::SeqCst) {
+            return Some(
+                toolkit::api::canonical_prelude::CanonicalError::internal(
+                    "fixture catalog unavailable",
+                )
+                .create(),
+            );
+        }
+        None
     }
 }
 
@@ -3403,11 +3428,8 @@ impl bss_pricing::domain::ports::ProductCatalogClientV1 for MutableCatalog {
     > {
         use std::sync::atomic::Ordering;
         self.reads.fetch_add(1, Ordering::SeqCst);
-        if self.unavailable.load(Ordering::SeqCst) {
-            return Err(toolkit::api::canonical_prelude::CanonicalError::internal(
-                "fixture catalog unavailable",
-            )
-            .create());
+        if let Some(err) = self.outage() {
+            return Err(err);
         }
         Ok(self
             .listing
@@ -3430,11 +3452,8 @@ impl bss_pricing::domain::ports::ProductCatalogClientV1 for MutableCatalog {
     > {
         use std::sync::atomic::Ordering;
         self.reads.fetch_add(1, Ordering::SeqCst);
-        if self.unavailable.load(Ordering::SeqCst) {
-            return Err(toolkit::api::canonical_prelude::CanonicalError::internal(
-                "fixture catalog unavailable",
-            )
-            .create());
+        if let Some(err) = self.outage() {
+            return Err(err);
         }
         let prefix = q.unwrap_or("");
         let items = self

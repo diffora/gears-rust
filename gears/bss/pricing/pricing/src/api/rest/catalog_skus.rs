@@ -233,7 +233,7 @@ async fn list_skus(
                 "bss-pricing: the product catalog could not be read; the pick-list answers 503"
             );
             Err(CanonicalError::from(
-                DomainError::CatalogVersionUnavailable(format!("product catalog: {e}")),
+                DomainError::catalog_version_unavailable(format!("product catalog: {e}")),
             ))
         }
     }
