@@ -138,6 +138,11 @@ event-broker-sdk = { workspace = true, features = ["outbox"] }
 # as a normal (not dev-only) dependency because that function is production
 # code, not a test.
 serde_json = { workspace = true }
+# Pricing's registry read contract (`ProductCatalogClientV1`). This gear is
+# the implementor: `infra::catalog_provider::BrowseCatalogProvider` maps the
+# browse projection onto `CatalogSku`. The seam suite
+# (`tests/seam_suite.rs`) reads the same types for the SchemaPin.
+bss-pricing-sdk = { workspace = true }
 
 [dev-dependencies]
 # `ServiceExt::oneshot` drives one request through the composed router in
@@ -178,8 +183,5 @@ opentelemetry_sdk = { workspace = true, features = ["trace"] }
 # the leased processor is the SDK's own.
 futures-core = { workspace = true }
 # The seam suite (`tests/seam_suite.rs`, `design/12` §2.1, P-D-130/P-D-151):
-# the SchemaPin's two-sided check reads the consumer side's `CatalogSku` from
-# pricing's SDK and the pin itself from `schema-pin.toml`. Dev-only — the
-# products gear takes no production dependency on pricing.
-bss-pricing-sdk = { workspace = true }
+# the SchemaPin itself is read from `schema-pin.toml`.
 toml = { workspace = true }
