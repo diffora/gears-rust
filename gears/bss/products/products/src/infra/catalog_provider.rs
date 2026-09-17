@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use bss_pricing_sdk::product_catalog::{
     CatalogSku, CatalogSkuPage, CatalogTaxCategory, ProductCatalogClientV1, catalog_unreachable,
 };
+use bss_products_sdk::models::LifecycleState;
 use toolkit_canonical_errors::CanonicalError;
 use toolkit_db::odata::sea_orm_filter::LimitCfg;
 use toolkit_db::secure::AccessScope;
@@ -19,7 +20,7 @@ use toolkit_odata::{CursorV1, ODataQuery, parse_filter_string};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
-use crate::domain::read_model::{ReadSurface, VisibilityFilter};
+use crate::domain::read_model::{ReadSurface, VisibilityFilter, serves};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::read_entity;
 use crate::infra::storage::repo::{self, BrowseQuery};
@@ -52,6 +53,10 @@ pub(crate) enum MappingError {
 /// `name` is copied from the row's `name`. For a SKU the projector fills that
 /// column from `sku_code`; this function does not invent a display label.
 ///
+/// `status` is `"published"` for every SKU that is *in the serving set*
+/// (design §4.2). Deprecation is the `deprecated` flag, not a copy of
+/// `lifecycle_state`. Callers must not pass a draft / discarded / retired row.
+///
 /// # Errors
 ///
 /// [`MappingError::NotASku`] when `entity_kind` is not `sku` (a product row is
@@ -73,7 +78,7 @@ pub(crate) fn catalog_sku_of(row: &read_entity::Model) -> Result<CatalogSku, Map
         sku_code,
         name: row.name.clone(),
         metering_unit: row.metering_unit.clone(),
-        status: row.lifecycle_state.clone(),
+        status: "published".to_owned(),
         plan_tier: row.plan_tier_label.clone(),
         sku_type,
         sellable,
@@ -101,7 +106,18 @@ fn tenant_scope(ctx: &SecurityContext) -> (Uuid, AccessScope) {
     (tenant_id, AccessScope::for_tenant(tenant_id))
 }
 
+/// [`ReadSurface::DefaultBrowse`]'s served set: published and deprecated.
+/// Draft, discarded, retired, and an unparseable state are absent — the same
+/// filter `search_skus` applies at query build.
+fn served_on_default_browse(row: &read_entity::Model) -> bool {
+    LifecycleState::parse(&row.lifecycle_state)
+        .is_some_and(|state| serves(state, ReadSurface::DefaultBrowse))
+}
+
 fn mapped_sku(row: &read_entity::Model) -> Result<Option<CatalogSku>, CanonicalError> {
+    if !served_on_default_browse(row) {
+        return Ok(None);
+    }
     match catalog_sku_of(row) {
         Ok(sku) => Ok(Some(sku)),
         Err(MappingError::NotASku) => Ok(None),
