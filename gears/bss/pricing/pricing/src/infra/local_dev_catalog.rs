@@ -246,12 +246,34 @@ impl LocalDevStaticProductCatalog {
     }
 }
 
+/// One page of a prefix walk over a static list. The cursor is the next
+/// index as a decimal string — opaque to the caller, and enough for a set
+/// that never changes underfoot.
+fn page_skus(
+    skus: Vec<CatalogSku>,
+    q: Option<&str>,
+    limit: u32,
+    cursor: Option<&str>,
+) -> CatalogSkuPage {
+    let prefix = q.unwrap_or("");
+    let filtered: Vec<CatalogSku> = skus
+        .into_iter()
+        .filter(|sku| sku.name.starts_with(prefix))
+        .collect();
+    let offset = cursor
+        .and_then(|token| token.parse::<usize>().ok())
+        .unwrap_or(0);
+    let take = usize::try_from(limit).unwrap_or(usize::MAX);
+    let end = offset.saturating_add(take).min(filtered.len());
+    let items = filtered
+        .get(offset..end)
+        .map_or_else(Vec::new, ToOwned::to_owned);
+    let next_cursor = (end < filtered.len()).then(|| end.to_string());
+    CatalogSkuPage { items, next_cursor }
+}
+
 #[async_trait]
 impl ProductCatalogClientV1 for LocalDevStaticProductCatalog {
-    async fn list_skus(&self, _ctx: &SecurityContext) -> Result<Vec<CatalogSku>, CanonicalError> {
-        Ok(Self::skus())
-    }
-
     async fn get_skus(
         &self,
         _ctx: &SecurityContext,
@@ -268,18 +290,9 @@ impl ProductCatalogClientV1 for LocalDevStaticProductCatalog {
         _ctx: &SecurityContext,
         q: Option<&str>,
         limit: u32,
-        _cursor: Option<&str>,
+        cursor: Option<&str>,
     ) -> Result<CatalogSkuPage, CanonicalError> {
-        let prefix = q.unwrap_or("");
-        let items = Self::skus()
-            .into_iter()
-            .filter(|sku| sku.name.starts_with(prefix))
-            .take(usize::try_from(limit).unwrap_or(usize::MAX))
-            .collect();
-        Ok(CatalogSkuPage {
-            items,
-            next_cursor: None,
-        })
+        Ok(page_skus(Self::skus(), q, limit, cursor))
     }
 
     async fn list_tax_categories(

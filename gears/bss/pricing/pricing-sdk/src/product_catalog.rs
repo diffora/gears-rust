@@ -191,20 +191,6 @@ pub fn catalog_unreachable(detail: impl Into<String>) -> CanonicalError {
 /// (`cpt-cf-bss-products-interface-read-model`, the browse half).
 #[async_trait]
 pub trait ProductCatalogClientV1: Send + Sync {
-    /// Every SKU this tenant may price, in the registry's own order.
-    ///
-    /// Unpaginated on purpose. A catalog large enough to need paging is a
-    /// catalog whose pick-list needed a search box instead, and that is a
-    /// decision for the surface that has one — not something to pretend to
-    /// support with a cursor nobody passes.
-    ///
-    /// # Errors
-    /// [`CanonicalError`] when no registry is wired, it cannot be reached, or its
-    /// answer is unusable. **None of these is an empty catalog**, and a caller
-    /// that renders them as one is telling an operator the tenant sells nothing.
-    /// Project with [`ProductCatalogError::from`] to tell the three apart.
-    async fn list_skus(&self, ctx: &SecurityContext) -> Result<Vec<CatalogSku>, CanonicalError>;
-
     /// The SKUs a write names. Ids the registry does not know come back absent,
     /// not as an error: `SKU_NOT_PUBLISHED` is a rule's finding, not a transport's.
     ///
@@ -254,10 +240,6 @@ pub struct UnconfiguredProductCatalogClientV1;
 
 #[async_trait]
 impl ProductCatalogClientV1 for UnconfiguredProductCatalogClientV1 {
-    async fn list_skus(&self, _ctx: &SecurityContext) -> Result<Vec<CatalogSku>, CanonicalError> {
-        Err(unconfigured_catalog())
-    }
-
     async fn get_skus(
         &self,
         _ctx: &SecurityContext,

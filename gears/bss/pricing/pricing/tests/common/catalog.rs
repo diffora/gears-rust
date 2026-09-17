@@ -77,15 +77,6 @@ impl Default for FixtureCatalog {
 }
 #[async_trait::async_trait]
 impl bss_pricing::domain::ports::ProductCatalogClientV1 for FixtureCatalog {
-    async fn list_skus(
-        &self,
-        _ctx: &SecurityContext,
-    ) -> Result<
-        Vec<bss_pricing::domain::ports::CatalogSku>,
-        toolkit::api::canonical_prelude::CanonicalError,
-    > {
-        Ok(self.0.clone())
-    }
     async fn get_skus(
         &self,
         _ctx: &SecurityContext,

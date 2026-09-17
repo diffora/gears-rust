@@ -34,9 +34,10 @@
 
 use std::sync::Arc;
 
-use axum::extract::Extension;
+use axum::extract::{Extension, Query};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router, http::StatusCode};
+use serde::Deserialize;
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
 use toolkit_security::SecurityContext;
@@ -112,6 +113,23 @@ pub struct CatalogSkusView {
     /// all-clear it has no basis for.
     pub source: String,
     pub items: Vec<CatalogSkuView>,
+    /// Absent when this page is the last, or when nobody was asked.
+    pub next_cursor: Option<String>,
+}
+
+/// The pick-list's three optional query parameters, all raw text.
+///
+/// `Option<String>` so a malformed `limit` is refused by the handler as a
+/// problem document, not by axum as a bare 400 — the same reason every other
+/// paginated read in this gear takes the parameter as a string.
+#[derive(Debug, Default, Deserialize)]
+struct CatalogSkusQuery {
+    /// Prefix on `name`. Absent means no filter.
+    pub q: Option<String>,
+    /// Page size. Absent is the neighbouring list default of 100.
+    pub limit: Option<String>,
+    /// The opaque token the previous page handed back.
+    pub cursor: Option<String>,
 }
 
 fn view_of(sku: CatalogSku) -> CatalogSkuView {
@@ -165,20 +183,32 @@ async fn list_skus(
     Extension(state): Extension<Arc<ApiState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
+    Query(query): Query<CatalogSkusQuery>,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     require_config_read(&enforcer, &ctx).await?;
+    let limit = u32::try_from(
+        crate::api::rest::cursor::PageRequest::parse(
+            crate::api::rest::cursor::parse_limit(query.limit.as_deref())
+                .map_err(CanonicalError::from)?,
+            None,
+        )
+        .map_err(CanonicalError::from)?
+        .limit,
+    )
+    .unwrap_or(u32::MAX);
     match state
         .catalog
-        .list_skus(&ctx)
+        .search_skus(&ctx, query.q.as_deref(), limit, query.cursor.as_deref())
         .await
         .map_err(ProductCatalogError::from)
     {
-        Ok(skus) => Ok((
+        Ok(page) => Ok((
             StatusCode::OK,
             Json(CatalogSkusView {
                 source: state.source.to_owned(),
-                items: skus.into_iter().map(view_of).collect(),
+                items: page.items.into_iter().map(view_of).collect(),
+                next_cursor: page.next_cursor,
             }),
         )
             .into_response()),
@@ -189,6 +219,7 @@ async fn list_skus(
             Json(CatalogSkusView {
                 source: "unconfigured".to_owned(),
                 items: Vec::new(),
+                next_cursor: None,
             }),
         )
             .into_response()),
@@ -247,12 +278,21 @@ pub fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
         .tag(TAG)
         .authenticated()
         .no_license_required()
+        .query_param("q", false, "Prefix filter on the SKU name")
+        .query_param_typed(
+            "limit",
+            false,
+            "SKUs per page (default 100, hard cap 1,000)",
+            "integer",
+        )
+        .query_param("cursor", false, "Opaque pagination cursor")
         .handler(list_skus)
         .json_response_with_schema::<CatalogSkusView>(
             openapi,
             StatusCode::OK,
-            "The catalog, and the source that answered.",
+            "One page of the catalog, and the source that answered.",
         )
+        .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
         .error_500(openapi)

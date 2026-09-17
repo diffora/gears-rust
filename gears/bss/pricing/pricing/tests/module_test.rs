@@ -1072,6 +1072,7 @@ fn query_reading_routes() -> Vec<QueryReadingRoute> {
     use bss_pricing::api::rest::approvals::APPROVALS;
     use bss_pricing::api::rest::audit::AUDIT;
     use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLES};
+    use bss_pricing::api::rest::catalog_skus::CATALOG_SKUS;
     use bss_pricing::api::rest::customer_groups::CUSTOMER_GROUP_MEMBERS;
     use bss_pricing::api::rest::history::{HISTORY, HISTORY_EXPORT};
     use bss_pricing::api::rest::migrations::MIGRATIONS;
@@ -1174,6 +1175,12 @@ fn query_reading_routes() -> Vec<QueryReadingRoute> {
             PLAN_PREVIEW,
             "PreviewQuery",
             vec!["currency", "region"],
+        ),
+        (
+            "GET",
+            CATALOG_SKUS,
+            "CatalogSkusQuery",
+            vec!["cursor", "limit", "q"],
         ),
     ]
 }

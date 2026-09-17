@@ -3393,23 +3393,6 @@ impl MutableCatalog {
 
 #[async_trait::async_trait]
 impl bss_pricing::domain::ports::ProductCatalogClientV1 for MutableCatalog {
-    async fn list_skus(
-        &self,
-        _ctx: &toolkit_security::SecurityContext,
-    ) -> Result<
-        Vec<bss_pricing::domain::ports::CatalogSku>,
-        toolkit::api::canonical_prelude::CanonicalError,
-    > {
-        use std::sync::atomic::Ordering;
-        self.reads.fetch_add(1, Ordering::SeqCst);
-        if self.unavailable.load(Ordering::SeqCst) {
-            return Err(toolkit::api::canonical_prelude::CanonicalError::internal(
-                "fixture catalog unavailable",
-            )
-            .create());
-        }
-        Ok(self.listing.lock().expect("fixture mutex").clone())
-    }
     async fn get_skus(
         &self,
         _ctx: &toolkit_security::SecurityContext,
@@ -3479,8 +3462,9 @@ impl bss_pricing::domain::ports::ProductCatalogClientV1 for MutableCatalog {
     }
 }
 
-/// Fixture list plus call counters. `list_calls` counts `list_skus`;
-/// `get_calls` counts `get_skus`. `last_asked_ids` is the last `get_skus` id list.
+/// Fixture list plus call counters. `list_calls` stays 0 — the whole-catalog
+/// read is gone. `get_calls` counts `get_skus`. `last_asked_ids` is the last
+/// `get_skus` id list.
 #[derive(Clone)]
 pub struct CountingCatalog {
     listing: Arc<[bss_pricing::domain::ports::CatalogSku]>,
@@ -3514,17 +3498,6 @@ impl CountingCatalog {
 
 #[async_trait::async_trait]
 impl bss_pricing::domain::ports::ProductCatalogClientV1 for CountingCatalog {
-    async fn list_skus(
-        &self,
-        _ctx: &toolkit_security::SecurityContext,
-    ) -> Result<
-        Vec<bss_pricing::domain::ports::CatalogSku>,
-        toolkit::api::canonical_prelude::CanonicalError,
-    > {
-        self.list_calls
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(self.listing.to_vec())
-    }
     async fn get_skus(
         &self,
         _ctx: &toolkit_security::SecurityContext,

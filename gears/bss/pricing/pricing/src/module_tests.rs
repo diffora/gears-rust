@@ -638,14 +638,6 @@ impl crate::domain::ports::ProductCatalogClientV1 for EmptyRegistryCatalog {
         Ok(Vec::new())
     }
 
-    async fn list_skus(
-        &self,
-        _ctx: &SecurityContext,
-    ) -> Result<Vec<crate::domain::ports::CatalogSku>, toolkit_canonical_errors::CanonicalError>
-    {
-        Ok(Vec::new())
-    }
-
     async fn get_skus(
         &self,
         _ctx: &SecurityContext,

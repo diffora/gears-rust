@@ -133,7 +133,7 @@ fn the_contract_members_are_consistent_with_the_unit() {
 #[tokio::test]
 async fn the_fabricated_catalog_answers_only_the_ids_it_is_asked_for() {
     let cat = LocalDevStaticProductCatalog::new();
-    let all = cat.list_skus(&ctx()).await.expect("listing");
+    let all = LocalDevStaticProductCatalog::skus();
     let one = all.first().expect("a fabricated SKU").sku_id;
     let got = cat
         .get_skus(&ctx(), &[one, Uuid::from_u128(0xdead)])

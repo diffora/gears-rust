@@ -4,7 +4,7 @@
 //!
 //! All three places that mount this router — `rest_support/mod.rs`,
 //! `module_test.rs` and `rest_authz.rs` — wire
-//! `UnconfiguredProductCatalogClientV1`, whose `list_skus` returns
+//! `UnconfiguredProductCatalogClientV1`, whose `search_skus` returns
 //! `Err(unconfigured_catalog())` unconditionally. The handler has
 //! three arms and only the middle one was reachable in the entire suite: 200
 //! with `source: "unconfigured"` and no items. `view_of`, `state.source` as a
@@ -69,10 +69,6 @@ struct EmptyCatalog;
 
 #[async_trait]
 impl ProductCatalogClientV1 for EmptyCatalog {
-    async fn list_skus(&self, _ctx: &SecurityContext) -> Result<Vec<CatalogSku>, CanonicalError> {
-        Ok(Vec::new())
-    }
-
     async fn get_skus(
         &self,
         _ctx: &SecurityContext,
@@ -168,10 +164,6 @@ impl ProductCatalogClientV1 for UnreachableCatalog {
         _ctx: &SecurityContext,
     ) -> Result<Vec<CatalogTaxCategory>, CanonicalError> {
         Err(catalog_unreachable("connection refused"))
-    }
-
-    async fn list_skus(&self, _ctx: &SecurityContext) -> Result<Vec<CatalogSku>, CanonicalError> {
-        Err(catalog_unreachable("connection refused".to_owned()))
     }
 
     async fn get_skus(
@@ -341,6 +333,119 @@ async fn an_unconfigured_catalog_answers_200_naming_itself_rather_than_failing()
     let body = body_json(response).await;
     assert_eq!(body["source"], "unconfigured");
     assert_eq!(body["items"].as_array().expect("items is a list").len(), 0);
+    assert!(
+        body.as_object()
+            .expect("the body is an object")
+            .contains_key("next_cursor"),
+        "the pick-list page always names the cursor, even when nobody was asked: {body}"
+    );
+    assert!(
+        body["next_cursor"].is_null(),
+        "an unconfigured source has no further page: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_page_of_one_carries_the_first_sku_and_a_cursor() {
+    let response = client(Arc::new(LocalDevStaticProductCatalog), "local_dev_static")
+        .send(request("GET", &format!("{CATALOG_SKUS}?limit=1"), None))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["source"], "local_dev_static");
+    let items = body["items"].as_array().expect("items is a list");
+    assert_eq!(
+        items.len(),
+        1,
+        "limit=1 is one SKU, not the whole catalog: {body}"
+    );
+    let first = &LocalDevStaticProductCatalog::skus()[0];
+    assert_eq!(items[0]["sku_id"], first.sku_id.to_string());
+    assert_eq!(items[0]["name"], first.name);
+    let cursor = body["next_cursor"].as_str().unwrap_or_else(|| {
+        panic!("limit=1 over a multi-SKU catalog must offer a next page: {body}")
+    });
+    assert!(
+        !cursor.is_empty(),
+        "the cursor is an opaque token, not an empty string"
+    );
+}
+
+#[tokio::test]
+async fn the_cursor_from_a_page_of_one_returns_the_next_sku() {
+    let first_page = body_json(
+        client(Arc::new(LocalDevStaticProductCatalog), "local_dev_static")
+            .send(request("GET", &format!("{CATALOG_SKUS}?limit=1"), None))
+            .await,
+    )
+    .await;
+    let cursor = first_page["next_cursor"]
+        .as_str()
+        .expect("the first page left a cursor");
+    let first_id = first_page["items"][0]["sku_id"]
+        .as_str()
+        .expect("the first page named a sku_id")
+        .to_owned();
+
+    let second_page = body_json(
+        client(Arc::new(LocalDevStaticProductCatalog), "local_dev_static")
+            .send(request(
+                "GET",
+                &format!("{CATALOG_SKUS}?limit=1&cursor={cursor}"),
+                None,
+            ))
+            .await,
+    )
+    .await;
+
+    let items = second_page["items"].as_array().expect("items is a list");
+    assert_eq!(
+        items.len(),
+        1,
+        "the next page is also one SKU: {second_page}"
+    );
+    let second = &LocalDevStaticProductCatalog::skus()[1];
+    assert_eq!(items[0]["sku_id"], second.sku_id.to_string());
+    assert_ne!(
+        items[0]["sku_id"].as_str(),
+        Some(first_id.as_str()),
+        "the cursor must advance; repeating the first SKU is not a page: {second_page}"
+    );
+}
+
+#[tokio::test]
+async fn q_filters_the_pick_list_by_name_prefix() {
+    let prefix = "Pro";
+    let response = client(Arc::new(LocalDevStaticProductCatalog), "local_dev_static")
+        .send(request("GET", &format!("{CATALOG_SKUS}?q={prefix}"), None))
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    let items = body["items"].as_array().expect("items is a list");
+    assert!(
+        !items.is_empty(),
+        "the fabricated catalog has a name starting with {prefix}: {body}"
+    );
+    for item in items {
+        assert!(
+            item["name"]
+                .as_str()
+                .expect("name is a string")
+                .starts_with(prefix),
+            "q= is a prefix on name, not a substring or a code: {item}"
+        );
+    }
+    let expected = LocalDevStaticProductCatalog::skus()
+        .into_iter()
+        .filter(|sku| sku.name.starts_with(prefix))
+        .count();
+    assert_eq!(
+        items.len(),
+        expected,
+        "every matching SKU reaches the wire, and no other: {body}"
+    );
 }
 
 #[tokio::test]

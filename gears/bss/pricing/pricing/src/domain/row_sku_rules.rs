@@ -49,7 +49,7 @@
 //! write-stage only where *every operand is in the request*, and a registry
 //! listing never is. What the door does instead is resolve the operand **before**
 //! validation — one
-//! [`list_skus`](crate::domain::ports::ProductCatalogClientV1) per request, not
+//! [`get_skus`](crate::domain::ports::ProductCatalogClientV1) per request, not
 //! per row — so the operand is present when the rule runs, which is what that line
 //! was protecting. The criterion underneath it holds unchanged: a write-stage
 //! stamp must not refuse an author's legitimate **intermediate** state, and none
