@@ -482,9 +482,7 @@ pub async fn apply_run_in(
             run.state.as_str()
         )));
     }
-    // A terminal run replays its tally without consulting mutable registry facts.
-    let resolved_policies = policies.resolve_skus(ctx).await?;
-    let policies = &resolved_policies;
+    // Registry facts are resolved after this run can name the SKUs it writes.
     // **Both parses run before the edge is spent**. Neither reads the
     // store, and both are `DomainError::Internal` on a report that cannot be
     // decoded — so with them below the `advance`, a run whose report is
@@ -2503,7 +2501,14 @@ async fn commit_plan_aggregate_in(
     let revision_no = current.revision;
     let revision_lifecycle = current.lifecycle_state;
     let shape = assemble_from(txn, scope, tenant_id, plan_id, current, now).await?;
-    let params = rule_params(policies, txn, scope, tenant_id, &shape).await?;
+    let resolved = if policies.sku_index().is_ok() {
+        policies.clone()
+    } else {
+        policies
+            .resolve_skus(ctx, &crate::infra::row_sku::sku_ids_of_shape(&shape))
+            .await?
+    };
+    let params = rule_params(&resolved, txn, scope, tenant_id, &shape).await?;
     let report = run_publish_rules(&shape, &params);
     if !report.is_publishable() {
         return Err(DomainError::ValidationFailed(report));

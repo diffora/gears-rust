@@ -3480,12 +3480,13 @@ impl bss_pricing::domain::ports::ProductCatalogClientV1 for MutableCatalog {
 }
 
 /// Fixture list plus call counters. `list_calls` counts `list_skus`;
-/// `get_calls` counts `get_skus`.
+/// `get_calls` counts `get_skus`. `last_asked_ids` is the last `get_skus` id list.
 #[derive(Clone)]
 pub struct CountingCatalog {
     listing: Arc<[bss_pricing::domain::ports::CatalogSku]>,
     list_calls: Arc<std::sync::atomic::AtomicUsize>,
     get_calls: Arc<std::sync::atomic::AtomicUsize>,
+    last_asked_ids: Arc<Mutex<Vec<Uuid>>>,
 }
 
 impl CountingCatalog {
@@ -3494,6 +3495,7 @@ impl CountingCatalog {
             listing: listing.into(),
             list_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             get_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            last_asked_ids: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -3503,6 +3505,10 @@ impl CountingCatalog {
 
     pub fn get_calls(&self) -> usize {
         self.get_calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn last_asked_ids(&self) -> Vec<Uuid> {
+        self.last_asked_ids.lock().expect("fixture mutex").clone()
     }
 }
 
@@ -3529,6 +3535,7 @@ impl bss_pricing::domain::ports::ProductCatalogClientV1 for CountingCatalog {
     > {
         self.get_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        *self.last_asked_ids.lock().expect("fixture mutex") = ids.to_vec();
         Ok(self
             .listing
             .iter()

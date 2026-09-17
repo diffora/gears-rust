@@ -361,9 +361,16 @@ async fn submit_bulk_import(
         return replay_answer(&existing, &request_hash);
     }
 
-    let sku_index =
-        crate::infra::row_sku::sku_index(state.authoring.catalog.as_ref(), &ctx).await?;
     let plan_skus = import_plan_skus(&state.authoring, &scope, tenant, &body).await?;
+    let ids = crate::infra::row_sku::named_sku_ids(
+        plan_skus
+            .values()
+            .copied()
+            .flatten()
+            .chain(body.rows.iter().map(|row| row.scope_key.sku_id)),
+    );
+    let sku_index =
+        crate::infra::row_sku::sku_index_for(state.authoring.catalog.as_ref(), &ctx, &ids).await?;
     let now = OffsetDateTime::now_utc();
     let stamp = audit_stamp(&ctx, now, correlation);
     let run = bulk_repo::open(

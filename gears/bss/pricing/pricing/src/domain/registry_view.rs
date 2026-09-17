@@ -4,8 +4,9 @@
 //! [`ValidationRule`](crate::domain::validation::ValidationRule)s over a
 //! [`PriceRow`](crate::domain::price_row::PriceRow) — the pipeline hands a rule
 //! a subject and a report and nothing else — so the asynchronous
-//! [`list_skus`](crate::domain::ports::ProductCatalogClientV1) happens **once at
-//! the door** and its result rides in beside the subject.
+//! [`get_skus`](crate::domain::ports::ProductCatalogClientV1) of the ids the
+//! write names happens **once at the door** and its result rides in beside
+//! the subject.
 //!
 //! That is a deliberate shape rather than a convenience. A rule that could read
 //! the registry itself would read it per row, so a plan of forty rows would make

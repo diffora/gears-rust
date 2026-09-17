@@ -346,7 +346,10 @@ async fn publish_plan(
         .await
         .map_err(CanonicalError::from)?;
 
-    let publish = state.publish.resolve_skus(&ctx).await?;
+    let publish = state
+        .publish
+        .resolve_skus(&ctx, &crate::infra::row_sku::sku_ids_of_shape(&shape))
+        .await?;
 
     // The commit arm: a second person has seen exactly this content.
     if let Some(record) = approved {

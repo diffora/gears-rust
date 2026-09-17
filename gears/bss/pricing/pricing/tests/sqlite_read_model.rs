@@ -333,7 +333,10 @@ async fn harness_with(jobs: JobsConfig) -> Harness {
         Arc::clone(&registry) as Arc<dyn CatalogVersionRegistryV1>,
     )
     .with_product_catalog(std::sync::Arc::new(common::FixtureCatalog::default()))
-    .resolve_skus(&ctx_of(TENANT))
+    .resolve_skus(
+        &ctx_of(TENANT),
+        &common::FixtureCatalog::default().sku_ids(),
+    )
     .await
     .expect("fixture registry");
     Harness {
@@ -3345,7 +3348,10 @@ async fn a_sweep_with_no_registry_configured_is_inert() {
             Arc::clone(&registry) as Arc<dyn CatalogVersionRegistryV1>,
         )
         .with_product_catalog(std::sync::Arc::new(common::FixtureCatalog::default()))
-        .resolve_skus(&ctx_of(TENANT))
+        .resolve_skus(
+            &ctx_of(TENANT),
+            &common::FixtureCatalog::default().sku_ids(),
+        )
         .await
         .expect("fixture registry"),
         frontier: PinFrontierRepo::new(provider.clone()),

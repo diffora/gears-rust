@@ -831,6 +831,7 @@ async fn create_price(
                     &scope_for_body,
                     tenant,
                     plan_id,
+                    key.sku_id().as_uuid(),
                 )
                 .await?;
                 derive_meter(&mut content, &key, &sku_context.index);
@@ -969,8 +970,16 @@ async fn patch_price(
         .db
         .conn()
         .map_err(|e| DomainError::Internal(format!("price authoring connection: {e}")))?;
-    let sku_context =
-        authoring_sku_context(&conn, state.catalog.as_ref(), &ctx, &scope, tenant, plan_id).await?;
+    let sku_context = authoring_sku_context(
+        &conn,
+        state.catalog.as_ref(),
+        &ctx,
+        &scope,
+        tenant,
+        plan_id,
+        stored.scope_key.sku_id().as_uuid(),
+    )
+    .await?;
     derive_meter(&mut content, &stored.scope_key, &sku_context.index);
     // The stored key, because the key is immutable and the block above has already
     // refused a body that names a different one. `PATCH` carries the check as well
@@ -1701,7 +1710,7 @@ fn wire_token<T: Copy>(
 #[path = "prices_tests.rs"]
 mod prices_tests;
 
-pub(crate) use crate::infra::row_sku::{derive_meter, sku_index};
+pub(crate) use crate::infra::row_sku::{derive_meter, sku_index_for};
 
 async fn authoring_sku_context(
     runner: &impl toolkit_db::secure::DBRunner,
@@ -1710,6 +1719,7 @@ async fn authoring_sku_context(
     scope: &AccessScope,
     tenant: Uuid,
     plan_id: PlanId,
+    row_sku: Uuid,
 ) -> Result<crate::domain::row_sku_rules::RowSkuContext, DomainError> {
     use crate::infra::storage::repo::plan_repo;
     let plan = match plan_repo::load_open_draft(runner, scope, tenant, plan_id)
@@ -1725,9 +1735,10 @@ async fn authoring_sku_context(
         subject: "plan".into(),
         id: plan_id.get().to_string(),
     })?;
+    let ids = crate::infra::row_sku::named_sku_ids([row_sku, plan.sku_id]);
     Ok(crate::domain::row_sku_rules::RowSkuContext {
         plan_sku: SkuId::new(plan.sku_id),
-        index: sku_index(catalog, ctx).await?,
+        index: sku_index_for(catalog, ctx, &ids).await?,
     })
 }
 

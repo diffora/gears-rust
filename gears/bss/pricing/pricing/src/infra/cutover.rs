@@ -774,10 +774,21 @@ pub async fn cutover_in(
     if let Some(outcome) = pending_replay(txn, scope, tenant_id, &context, request, now).await? {
         return Ok(outcome);
     }
+    let ids = crate::infra::row_sku::named_sku_ids(
+        std::iter::once(context.shape.sku_id)
+            .chain(std::iter::once(request.predecessor_key.sku_id().as_uuid()))
+            .chain(
+                context
+                    .shape
+                    .rows
+                    .iter()
+                    .map(|row| row.scope_key.sku_id().as_uuid()),
+            ),
+    );
     let resolved_policies = if policies.sku_index().is_ok() {
         policies.clone()
     } else {
-        policies.resolve_skus(ctx).await?
+        policies.resolve_skus(ctx, &ids).await?
     };
     let policies = &resolved_policies;
     let index = policies.sku_index()?;

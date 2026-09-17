@@ -157,10 +157,14 @@ impl PublishService {
         self
     }
 
-    /// Read one listing for the entire request, including its precheck and commit.
-    pub async fn resolve_skus(&self, ctx: &SecurityContext) -> Result<Self, DomainError> {
+    /// Read the registry rows this write names, including its precheck and commit.
+    pub async fn resolve_skus(
+        &self,
+        ctx: &SecurityContext,
+        ids: &[Uuid],
+    ) -> Result<Self, DomainError> {
         let mut resolved = self.clone();
-        resolved.policies = self.policies.resolve_skus(ctx).await?;
+        resolved.policies = self.policies.resolve_skus(ctx, ids).await?;
         Ok(resolved)
     }
     /// Build the engine over one database provider and the loaded gate.
@@ -543,11 +547,7 @@ impl PublishService {
     ) -> Result<PublishReceipt, DomainError> {
         let ctx = ctx.clone();
         let scope = scope.clone();
-        let policies = if self.policies.sku_index().is_ok() {
-            self.policies.clone()
-        } else {
-            self.policies.resolve_skus(&ctx).await?
-        };
+        let policies_unresolved = self.policies.clone();
         let gate = self.fixture_gate.clone();
         // Cloned beside the gate and for its reason: the transaction closure
         // outlives the borrow of `self`.
@@ -563,6 +563,13 @@ impl PublishService {
                     // 1. The second run. Same assembler, same rule set, same
                     // gate - against the world as it now stands.
                     let shape = assemble(txn, &scope, tenant_id, unit.plan_id, now).await?;
+                    let policies = if policies_unresolved.sku_index().is_ok() {
+                        policies_unresolved.clone()
+                    } else {
+                        policies_unresolved
+                            .resolve_skus(&ctx, &crate::infra::row_sku::sku_ids_of_shape(&shape))
+                            .await?
+                    };
                     let params = rule_params(&policies, txn, &scope, tenant_id, &shape)
                         .await?
                         .opening_initial_coverage();

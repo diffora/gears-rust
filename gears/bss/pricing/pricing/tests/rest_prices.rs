@@ -2590,10 +2590,9 @@ async fn a_price_write_reads_the_registry_once_and_outage_writes_nothing() {
     assert_eq!(price_rows(&harness, plan_id).await.len(), 1);
 }
 
-/// Pins what a row save costs today: one whole-catalog read per write. Task 4
-/// narrows it to the two ids the write names and flips these assertions.
+/// Pins what a row save costs: one `get_skus` of the two ids the write names.
 #[tokio::test]
-async fn a_row_save_reads_the_whole_catalog() {
+async fn a_row_save_reads_only_the_two_skus_it_names() {
     let counting = rest_support::CountingCatalog::new(vec![
         rest_support::catalog_sku(rest_support::OFFER_SKU, None, true),
         rest_support::catalog_sku(
@@ -2611,12 +2610,20 @@ async fn a_row_save_reads_the_whole_catalog() {
             "POST",
             &prices_path(plan_id),
             Some(body),
-            &keyed("whole-catalog-read"),
+            &keyed("named-sku-read"),
         ))
         .await;
     assert_eq!(created.status(), StatusCode::CREATED);
-    assert_eq!(counting.list_calls(), 1, "one whole-catalog read per save");
-    assert_eq!(counting.get_calls(), 0, "no narrowed read exists yet");
+    assert_eq!(counting.list_calls(), 0, "a save must not list the catalog");
+    assert_eq!(counting.get_calls(), 1, "one narrowed read per save");
+    let mut asked = counting.last_asked_ids();
+    asked.sort_unstable();
+    let mut expected = vec![
+        rest_support::resource_sku("GB-hour"),
+        rest_support::OFFER_SKU,
+    ];
+    expected.sort_unstable();
+    assert_eq!(asked, expected, "exactly the row SKU and the plan SKU");
 }
 
 #[tokio::test]

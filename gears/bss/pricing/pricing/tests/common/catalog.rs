@@ -27,6 +27,11 @@ pub fn catalog_sku(
 }
 
 pub struct FixtureCatalog(pub Vec<bss_pricing::domain::ports::CatalogSku>);
+impl FixtureCatalog {
+    pub fn sku_ids(&self) -> Vec<Uuid> {
+        self.0.iter().map(|sku| sku.sku_id).collect()
+    }
+}
 impl Default for FixtureCatalog {
     fn default() -> Self {
         let mut skus = vec![

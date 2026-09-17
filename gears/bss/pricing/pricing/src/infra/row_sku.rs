@@ -2,13 +2,38 @@
 use crate::domain::{error::DomainError, price_record::PriceContent, scope_key::ScopeKey};
 use std::sync::Arc;
 use toolkit_security::SecurityContext;
-/// Resolve one immutable registry listing for the request.
-pub async fn sku_index(
+use uuid::Uuid;
+
+/// Deduplicate the SKU ids a write names, keeping first-seen order.
+#[must_use]
+pub fn named_sku_ids(ids: impl IntoIterator<Item = Uuid>) -> Vec<Uuid> {
+    let mut seen = std::collections::HashSet::new();
+    ids.into_iter().filter(|id| seen.insert(*id)).collect()
+}
+
+/// The plan's own SKU plus every price-row SKU on the assembled unit.
+#[must_use]
+pub fn sku_ids_of_shape(shape: &crate::domain::plan_shape::PlanShape) -> Vec<Uuid> {
+    named_sku_ids(
+        std::iter::once(shape.sku_id).chain(
+            shape
+                .rows
+                .iter()
+                .map(|row| row.scope_key.sku_id().as_uuid()),
+        ),
+    )
+}
+
+/// Resolve exactly the registry rows this write names: the row's SKU and the
+/// plan's own. The rules need no more, and a whole-catalog read per save makes
+/// every price write depend on the registry's whole read-model capacity.
+pub async fn sku_index_for(
     catalog: &dyn crate::domain::ports::ProductCatalogClientV1,
     ctx: &SecurityContext,
+    ids: &[Uuid],
 ) -> Result<Arc<crate::domain::registry_view::SkuIndex>, DomainError> {
     let listing = catalog
-        .list_skus(ctx)
+        .get_skus(ctx, ids)
         .await
         .map_err(|e| DomainError::CatalogVersionUnavailable(e.to_string()))?;
     Ok(Arc::new(
@@ -34,7 +59,7 @@ pub fn derive_meter(
 /// Revalidate an already normalized row against the request's registry snapshot.
 pub fn validate(
     content: &PriceContent,
-    plan_sku: uuid::Uuid,
+    plan_sku: Uuid,
     index: Arc<crate::domain::registry_view::SkuIndex>,
 ) -> Result<(), DomainError> {
     let report =

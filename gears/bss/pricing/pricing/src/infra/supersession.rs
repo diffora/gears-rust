@@ -925,7 +925,11 @@ pub async fn supersede_in(
     if let Some(outcome) = pending_replay(txn, scope, tenant_id, &context, request, now).await? {
         return Ok(outcome);
     }
-    let index = crate::infra::row_sku::sku_index(catalog, ctx).await?;
+    let ids = crate::infra::row_sku::named_sku_ids([
+        request.key.sku_id().as_uuid(),
+        context.shape.sku_id,
+    ]);
+    let index = crate::infra::row_sku::sku_index_for(catalog, ctx, &ids).await?;
     if let Some(staged) = &context.staged {
         crate::infra::row_sku::validate(
             &staged.content(),

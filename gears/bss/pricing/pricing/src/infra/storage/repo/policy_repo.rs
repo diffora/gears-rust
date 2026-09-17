@@ -321,14 +321,15 @@ impl PolicyObjectRepo {
         self
     }
 
-    /// Bind the policy inputs to one fresh immutable product registry listing.
+    /// Bind the policy inputs to the registry rows this write names.
     pub async fn resolve_skus(
         &self,
         ctx: &toolkit_security::SecurityContext,
+        ids: &[uuid::Uuid],
     ) -> Result<Self, crate::domain::error::DomainError> {
         let mut resolved = self.clone();
         resolved.sku_index =
-            Some(crate::infra::row_sku::sku_index(self.catalog.as_ref(), ctx).await?);
+            Some(crate::infra::row_sku::sku_index_for(self.catalog.as_ref(), ctx, ids).await?);
         Ok(resolved)
     }
 

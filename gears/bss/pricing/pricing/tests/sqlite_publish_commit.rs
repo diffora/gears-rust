@@ -245,7 +245,7 @@ async fn harness_with(registry: Arc<RegistryDouble>) -> Harness {
         Arc::clone(&registry) as Arc<dyn CatalogVersionRegistryV1>,
     )
     .with_product_catalog(std::sync::Arc::new(common::FixtureCatalog::default()))
-    .resolve_skus(&ctx())
+    .resolve_skus(&ctx(), &common::FixtureCatalog::default().sku_ids())
     .await
     .expect("fixture registry")
     .with_metrics(Arc::new(metrics_harness.metrics()));
@@ -1073,7 +1073,7 @@ async fn registry_absence_stops_the_publish_and_writes_nothing() {
             Arc::new(UnconfiguredCatalogVersionRegistryV1),
         )
         .with_product_catalog(std::sync::Arc::new(common::FixtureCatalog::default()))
-        .resolve_skus(&ctx())
+        .resolve_skus(&ctx(), &common::FixtureCatalog::default().sku_ids())
         .await
         .expect("fixture registry"),
         registry: Arc::new(RegistryDouble::default()),
