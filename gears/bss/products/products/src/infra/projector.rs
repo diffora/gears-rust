@@ -664,6 +664,7 @@ async fn project_entity(
         sku_type: None,
         plan_tier_label: None,
         metering_unit: None,
+        usage_type_ref: None,
         display_attributes,
         category_paths: None,
         published_version: version,
@@ -679,6 +680,7 @@ async fn project_entity(
             .unwrap_or(false);
         row.sku_type = text("sku_type");
         row.metering_unit = text("metering_unit");
+        row.usage_type_ref = text("usage_type_ref");
         if let Some(tier) = text("plan_tier") {
             row.plan_tier_label = repo::recognized_member(
                 conn,
@@ -932,6 +934,7 @@ fn row_from(
         sku_type: existing.sku_type,
         plan_tier_label: existing.plan_tier_label,
         metering_unit: existing.metering_unit,
+        usage_type_ref: existing.usage_type_ref,
         display_attributes: existing.display_attributes,
         category_paths: existing.category_paths,
         published_version: existing.published_version,

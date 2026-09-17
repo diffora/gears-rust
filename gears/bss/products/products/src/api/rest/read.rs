@@ -338,6 +338,8 @@ pub struct BrowseRowView {
     pub sku_type: Option<String>,
     pub plan_tier_label: Option<String>,
     pub metering_unit: Option<String>,
+    /// The other half of the meter pair; only a SKU that declared one.
+    pub usage_type_ref: Option<String>,
     /// Per active locale, the definition key to its display value (JSON).
     pub display_attributes: Option<String>,
     /// Every assigned category's path, primary and secondary (JSON array).
@@ -500,6 +502,7 @@ fn row_view(row: crate::infra::storage::entity::read_entity::Model) -> BrowseRow
         sku_type: row.sku_type,
         plan_tier_label: row.plan_tier_label,
         metering_unit: row.metering_unit,
+        usage_type_ref: row.usage_type_ref,
         display_attributes: row.display_attributes,
         category_paths: row.category_paths,
         published_version: row.published_version,
@@ -1182,7 +1185,8 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
             "Serves the read projection: published and deprecated rows (deprecated ones flagged, \
              `excludeDeprecated=true` drops them), never drafts, discards or retired heads; \
              scope and visibility are built into the query; `includeFacets=true` adds facets \
-             over category paths (every assigned category), type, tier, sellable and unit. \
+             over category paths (every assigned category), type, tier, sellable and unit; \
+             SKU rows carry `usage_type_ref` when the frozen content declared one. \
              Every answer carries the StalenessStamp. Gates on `product x read` and `sku x \
              read`; above the tenant's ceiling answers 503 READ_MODEL_OVERLOADED with \
              Retry-After.",

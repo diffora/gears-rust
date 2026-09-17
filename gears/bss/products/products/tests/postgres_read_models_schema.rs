@@ -68,6 +68,7 @@ const READ_ENTITY: &[&str] = &[
     "sellable",
     "sku_type",
     "tenant_id",
+    "usage_type_ref",
 ];
 
 const READ_STAMP: &[&str] = &["catalog_version_id", "projected_at", "tenant_id"];

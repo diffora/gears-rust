@@ -52,6 +52,10 @@ pub struct Model {
     pub sku_type: Option<String>,
     pub plan_tier_label: Option<String>,
     pub metering_unit: Option<String>,
+    /// The other half of 03's meter pair; only a SKU that declared one
+    /// carries it. A Product, and a SKU whose frozen content omitted the
+    /// key, stay `None`.
+    pub usage_type_ref: Option<String>,
     /// The resolved per-locale rendering, canonical.
     pub display_attributes: Option<String>,
     /// The assigned categories' full paths, canonical.

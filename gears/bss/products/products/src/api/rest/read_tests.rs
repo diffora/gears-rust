@@ -844,6 +844,7 @@ async fn the_facet_counts_are_over_the_matching_set_and_say_when_they_are_not() 
                 sku_type: None,
                 plan_tier_label: None,
                 metering_unit: None,
+                usage_type_ref: None,
                 display_attributes: None,
                 // Every row in one category, so the category bucket's count
                 // is the number of rows the facet pass actually read.

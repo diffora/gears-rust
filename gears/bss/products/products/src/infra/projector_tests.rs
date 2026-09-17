@@ -21,7 +21,9 @@ use crate::infra::projector::{
     PassOutcome, ProjectorContext, ReadKnobs, poll_dashboards, project_tenant,
 };
 use crate::infra::storage::migrations::Migrator;
-use crate::infra::storage::repo::{self, NewProduct};
+use crate::infra::storage::repo::{
+    self, NewEntityVersion, NewProduct, NewSku, VersionedEntityKind,
+};
 
 pub(super) const TENANT: Uuid = Uuid::from_u128(0x08_01);
 pub(super) const BRAND: Uuid = Uuid::from_u128(0x08_02);
@@ -560,5 +562,122 @@ async fn a_checkpoint_behind_the_swept_tail_rebuilds_and_swaps() {
     assert!(
         read_row(&harness, "product", product).await.is_none(),
         "the old generation's rows were dropped with the swap"
+    );
+}
+
+/// Freeze one SKU version whose content may name `usage_type_ref`, then
+/// announce it the way `SkuPublished` does. The projector reads the frozen
+/// row, not the head.
+async fn announce_sku(
+    harness: &Harness,
+    product_id: Uuid,
+    sku_code: &str,
+    usage_type_ref: Option<&str>,
+) -> Uuid {
+    let sku_id = Uuid::new_v4();
+    let now = crate::domain::canonical::write_instant(OffsetDateTime::now_utc());
+    let conn = harness.state.db.conn().expect("conn");
+    repo::insert_sku(
+        &conn,
+        &scope(),
+        NewSku {
+            sku_id,
+            tenant_id: TENANT,
+            product_id,
+            sku_code: sku_code.to_owned(),
+            region_scope: "eu".to_owned(),
+            brand_scope: String::new(),
+            created_by: ACTOR.to_string(),
+            created_at: now,
+            cloned_from: None,
+            cloned_from_version: None,
+            sku_type: "product".to_owned(),
+            sellable: true,
+            plan_tier: "standard".to_owned(),
+            metering_unit: usage_type_ref.map(|_| "gib_month".to_owned()),
+            usage_type_ref: usage_type_ref.map(str::to_owned),
+        },
+    )
+    .await
+    .expect("insert the sku");
+    let mut content = json!({
+        "sku_code": sku_code,
+        "sku_type": "product",
+        "region_scope": "eu",
+        "brand_scope": "",
+    });
+    if let Some(usage) = usage_type_ref {
+        content["metering_unit"] = json!("gib_month");
+        content["usage_type_ref"] = json!(usage);
+    }
+    let rendered = content.to_string();
+    repo::insert_entity_version(
+        &conn,
+        &scope(),
+        NewEntityVersion {
+            tenant_id: TENANT,
+            entity_kind: VersionedEntityKind::Sku,
+            entity_id: sku_id,
+            published_version: 1,
+            content: rendered,
+            content_digest: vec![0; 32],
+            digest_version: 1,
+            approval_ref: None,
+            actor_ref: ACTOR,
+            published_at: now,
+            binding_snapshot: None,
+        },
+    )
+    .await
+    .expect("freeze the sku");
+    synthetic_inbox(
+        harness,
+        events::SKU_PUBLISHED_PAYLOAD_TYPE,
+        json!({
+            "tenantId": TENANT,
+            "entityKind": "sku",
+            "entityId": sku_id,
+            "internalRevision": 1,
+            "lifecycleState": "published",
+            "publishedVersion": 1
+        }),
+    )
+    .await;
+    sku_id
+}
+
+/// A SKU whose frozen content declares `usage_type_ref` projects that
+/// value; a SKU without the key projects `None`. A Product stays `None`.
+#[tokio::test]
+async fn a_sku_projects_usage_type_ref_from_the_frozen_content() {
+    let harness = harness().await;
+    let product = draft_product(&harness, "Metered Line", "eu").await;
+    publish_product(&harness, product).await;
+    let metered = announce_sku(&harness, product, "SKU-METERED", Some("usage:storage")).await;
+    let bare = announce_sku(&harness, product, "SKU-BARE", None).await;
+
+    project(&harness).await;
+
+    let metered_row = read_row(&harness, "sku", metered)
+        .await
+        .expect("the metered sku projected");
+    assert_eq!(
+        metered_row.usage_type_ref.as_deref(),
+        Some("usage:storage"),
+        "frozen usage_type_ref lands on the serving row"
+    );
+    let bare_row = read_row(&harness, "sku", bare)
+        .await
+        .expect("the bare sku projected");
+    assert_eq!(
+        bare_row.usage_type_ref, None,
+        "a SKU without the key projects None"
+    );
+    let product_row = read_row(&harness, "product", product)
+        .await
+        .expect("the product projected");
+    assert_eq!(
+        product_row.usage_type_ref, None,
+        "a Product is not a SKU and stays None"
     );
 }

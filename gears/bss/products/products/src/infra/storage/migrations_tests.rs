@@ -7195,6 +7195,7 @@ mod read_entity_schema_tests {
                 "sellable",
                 "sku_type",
                 "tenant_id",
+                "usage_type_ref",
             ],
             "inst-ps-shape's list: identity, state and flags, C6's head-read fields, the scope \
              operands, display, paths, the version"
