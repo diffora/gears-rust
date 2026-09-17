@@ -577,3 +577,283 @@ fn the_counterpart_asks_are_filed_on_both_sides() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Task 8: in-process provide, no `client_wiring`
+// ---------------------------------------------------------------------------
+
+/// Config with no gear sections: `config_or_default` is `ProductsConfig::
+/// default()`, and `read_wiring` sees no `client_wiring` → `Local`.
+struct EmptyConfig;
+
+impl toolkit::config::ConfigProvider for EmptyConfig {
+    fn get_gear_config(&self, _gear_name: &str) -> Option<&serde_json::Value> {
+        None
+    }
+}
+
+/// Permissive PDP so `init` can build a `PolicyEnforcer`.
+struct AllowResolver;
+
+#[async_trait::async_trait]
+impl authz_resolver_sdk::AuthZResolverApi for AllowResolver {
+    async fn evaluate(
+        &self,
+        _ctx: toolkit_security::PlatformSecurityContext,
+        _req: authz_resolver_sdk::models::EvaluationRequest,
+    ) -> Result<
+        authz_resolver_sdk::models::EvaluationResponse,
+        toolkit_canonical_errors::CanonicalError,
+    > {
+        Ok(authz_resolver_sdk::models::EvaluationResponse {
+            decision: true,
+            context: authz_resolver_sdk::models::EvaluationResponseContext {
+                constraints: Vec::new(),
+                deny_reason: None,
+            },
+        })
+    }
+}
+
+/// Accepts `register` (the only call `init` makes). Other methods are unused.
+struct AcceptingTypesRegistry;
+
+#[async_trait::async_trait]
+impl types_registry_sdk::TypesRegistryClient for AcceptingTypesRegistry {
+    async fn register(
+        &self,
+        entities: Vec<serde_json::Value>,
+    ) -> Result<Vec<types_registry_sdk::RegisterResult>, toolkit_canonical_errors::CanonicalError>
+    {
+        Ok(entities
+            .iter()
+            .map(|_| types_registry_sdk::RegisterResult::Ok {
+                gts_id: "ok".to_owned(),
+            })
+            .collect())
+    }
+
+    async fn register_type_schemas(
+        &self,
+        _type_schemas: Vec<serde_json::Value>,
+    ) -> Result<Vec<types_registry_sdk::RegisterResult>, toolkit_canonical_errors::CanonicalError>
+    {
+        unimplemented!("seam boot only calls register")
+    }
+
+    async fn get_type_schema(
+        &self,
+        _type_id: &str,
+    ) -> Result<types_registry_sdk::models::GtsTypeSchema, toolkit_canonical_errors::CanonicalError>
+    {
+        unimplemented!("seam boot only calls register")
+    }
+
+    async fn get_type_schema_by_uuid(
+        &self,
+        _type_uuid: uuid::Uuid,
+    ) -> Result<types_registry_sdk::models::GtsTypeSchema, toolkit_canonical_errors::CanonicalError>
+    {
+        unimplemented!("seam boot only calls register")
+    }
+
+    async fn get_type_schemas(
+        &self,
+        _type_ids: Vec<String>,
+    ) -> std::collections::HashMap<
+        String,
+        Result<types_registry_sdk::models::GtsTypeSchema, toolkit_canonical_errors::CanonicalError>,
+    > {
+        unimplemented!("seam boot only calls register")
+    }
+
+    async fn get_type_schemas_by_uuid(
+        &self,
+        _type_uuids: Vec<uuid::Uuid>,
+    ) -> std::collections::HashMap<
+        uuid::Uuid,
+        Result<types_registry_sdk::models::GtsTypeSchema, toolkit_canonical_errors::CanonicalError>,
+    > {
+        unimplemented!("seam boot only calls register")
+    }
+
+    async fn list_type_schemas(
+        &self,
+        _query: types_registry_sdk::models::TypeSchemaQuery,
+    ) -> Result<
+        Vec<types_registry_sdk::models::GtsTypeSchema>,
+        toolkit_canonical_errors::CanonicalError,
+    > {
+        unimplemented!("seam boot only calls register")
+    }
+
+    async fn register_instances(
+        &self,
+        _instances: Vec<serde_json::Value>,
+    ) -> Result<Vec<types_registry_sdk::RegisterResult>, toolkit_canonical_errors::CanonicalError>
+    {
+        unimplemented!("seam boot only calls register")
+    }
+
+    async fn get_instance(
+        &self,
+        _id: &str,
+    ) -> Result<types_registry_sdk::models::GtsInstance, toolkit_canonical_errors::CanonicalError>
+    {
+        unimplemented!("seam boot only calls register")
+    }
+
+    async fn get_instance_by_uuid(
+        &self,
+        _uuid: uuid::Uuid,
+    ) -> Result<types_registry_sdk::models::GtsInstance, toolkit_canonical_errors::CanonicalError>
+    {
+        unimplemented!("seam boot only calls register")
+    }
+
+    async fn get_instances(
+        &self,
+        _ids: Vec<String>,
+    ) -> std::collections::HashMap<
+        String,
+        Result<types_registry_sdk::models::GtsInstance, toolkit_canonical_errors::CanonicalError>,
+    > {
+        unimplemented!("seam boot only calls register")
+    }
+
+    async fn get_instances_by_uuid(
+        &self,
+        _uuids: Vec<uuid::Uuid>,
+    ) -> std::collections::HashMap<
+        uuid::Uuid,
+        Result<types_registry_sdk::models::GtsInstance, toolkit_canonical_errors::CanonicalError>,
+    > {
+        unimplemented!("seam boot only calls register")
+    }
+
+    async fn list_instances(
+        &self,
+        _query: types_registry_sdk::models::InstanceQuery,
+    ) -> Result<
+        Vec<types_registry_sdk::models::GtsInstance>,
+        toolkit_canonical_errors::CanonicalError,
+    > {
+        unimplemented!("seam boot only calls register")
+    }
+}
+
+/// Boot products with no `client_wiring` section: the hub carries a local
+/// `ProductCatalogClientV1` that answers a projected SKU.
+#[tokio::test]
+async fn products_boots_without_client_wiring_and_hub_answers_a_projected_sku() {
+    use bss_pricing_sdk::product_catalog::ProductCatalogClientV1;
+    use bss_products::gear::BssProductsGear;
+    use bss_products::infra::storage::entity::read_entity;
+    use sea_orm::EntityTrait;
+    use std::sync::Arc;
+    use toolkit::contracts::DatabaseCapability;
+    use toolkit::{ClientHub, Gear, GearCtx};
+    use toolkit_db::secure::{AccessScope, SecureInsertExt};
+    use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
+    use toolkit_gts::gts_id;
+    use toolkit_security::SecurityContext;
+
+    const TENANT: uuid::Uuid = uuid::Uuid::from_u128(0xca_7a_10_01);
+    const SKU: uuid::Uuid = uuid::Uuid::from_u128(0xca_7a_10_91);
+
+    let path = std::env::temp_dir().join(format!(
+        "bss-products-seam-provide-{}.sqlite3",
+        uuid::Uuid::new_v4()
+    ));
+    let dsn = format!("sqlite://{}?mode=rwc", path.display());
+    let db = connect_db(
+        &dsn,
+        ConnectOpts {
+            max_conns: Some(4),
+            min_conns: Some(1),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("connect the file-backed sqlite mirror");
+
+    let gear = BssProductsGear::default();
+    toolkit_db::migration_runner::run_migrations_for_testing(&db, gear.migrations())
+        .await
+        .expect("boot the gear's migration chain");
+
+    let hub = Arc::new(ClientHub::new());
+    hub.register::<dyn authz_resolver_sdk::AuthZResolverApi>(Arc::new(AllowResolver));
+    hub.register::<dyn types_registry_sdk::TypesRegistryClient>(Arc::new(AcceptingTypesRegistry));
+
+    let provider = DBProvider::<DbError>::new(db);
+    let ctx = GearCtx::new(
+        "bss-products",
+        uuid::Uuid::nil(),
+        Arc::new(EmptyConfig),
+        Arc::clone(&hub),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .with_db(provider.clone());
+
+    gear.init(&ctx)
+        .await
+        .expect("init with no client_wiring must wire Local");
+
+    let catalog = hub
+        .get::<dyn ProductCatalogClientV1>()
+        .expect("absent client_wiring still registers ProductCatalogClientV1");
+
+    let row = read_entity::Model {
+        tenant_id: TENANT,
+        entity_kind: "sku".to_owned(),
+        entity_id: SKU,
+        entity_code: Some("COMP-VCPU-H".to_owned()),
+        name: "COMP-VCPU-H".to_owned(),
+        lifecycle_state: "published".to_owned(),
+        deprecated: false,
+        composition_pending: false,
+        sellable: Some(true),
+        deprecation_provenance: None,
+        replaced_by_sku_id: None,
+        region_scope: String::new(),
+        brand_scope: String::new(),
+        sku_type: Some("service".to_owned()),
+        plan_tier_label: Some("Pro".to_owned()),
+        metering_unit: Some("vCPU-hour".to_owned()),
+        usage_type_ref: Some("cf.usage.vcpu-hour".to_owned()),
+        display_attributes: None,
+        category_paths: None,
+        published_version: 3,
+        projected_at: time::OffsetDateTime::UNIX_EPOCH,
+        generation: 0,
+    };
+    let conn = provider.conn().expect("scoped connection");
+    let scope = AccessScope::for_tenant(TENANT);
+    let model: read_entity::ActiveModel = row.into();
+    read_entity::Entity::insert(model.clone())
+        .secure()
+        .scope_with_model(&scope, &model)
+        .expect("scope the insert")
+        .exec(&conn)
+        .await
+        .expect("insert a projected SKU");
+
+    let subject = SecurityContext::builder()
+        .subject_id(uuid::Uuid::now_v7())
+        .subject_tenant_id(TENANT)
+        .subject_type(gts_id!("cf.core.security.subject_user.v1~"))
+        .token_scopes(vec!["*".to_owned()])
+        .build()
+        .expect("authed SecurityContext");
+    let found = catalog
+        .get_skus(&subject, &[SKU])
+        .await
+        .expect("get_skus over the wired local provider");
+    assert_eq!(found.len(), 1, "one projected SKU");
+    assert_eq!(found[0].sku_id, SKU);
+    assert_eq!(found[0].sku_code, "COMP-VCPU-H");
+    assert_eq!(found[0].status, "published");
+
+    drop(std::fs::remove_file(&path));
+}

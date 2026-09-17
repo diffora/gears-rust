@@ -61,6 +61,10 @@ unicode-normalization = { workspace = true }
 # feature-gated, so declaring `rest` in `#[toolkit::gear(capabilities = [...])]`
 # needs no feature bump here, matching the sibling pricing gear's manifest.
 toolkit = { workspace = true, features = ["db"] }
+# `#[toolkit::provides]` expands to `::toolkit_contract::…` (`validate_contract`,
+# `ClientWiring`, REST `ClientTuning::apply_to`). `runtime-client` is the
+# apply_to / `ClientConfig` arm the REST factory consumes.
+toolkit-contract = { workspace = true, features = ["runtime-client"] }
 toolkit-db = { workspace = true, features = ["pg", "sqlite"] }
 # `#[derive(Scopable)]` on the storage entities: the SecureORM tenant binding
 # every Foundation table carries.
@@ -143,6 +147,12 @@ serde_json = { workspace = true }
 # browse projection onto `CatalogSku`. The seam suite
 # (`tests/seam_suite.rs`) reads the same types for the SchemaPin.
 bss-pricing-sdk = { workspace = true }
+# REST arm of `#[toolkit::provides]`: `ProductCatalogRestClient::new` builds
+# the default HTTP client and talks to `GET /bss-products/v1/browse`.
+toolkit-http = { workspace = true }
+# `SecurityContext::bearer_token` is a `SecretString`; the REST arm attaches
+# it as `Authorization` without logging the secret.
+secrecy = { workspace = true }
 
 [dev-dependencies]
 # `ServiceExt::oneshot` drives one request through the composed router in

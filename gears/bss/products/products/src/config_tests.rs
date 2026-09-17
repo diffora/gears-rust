@@ -15,6 +15,21 @@ fn defaults_fill_in_for_an_empty_table() {
 }
 
 #[test]
+fn client_wiring_is_accepted_so_a_split_deployment_can_boot() {
+    let cfg: ProductsConfig = serde_json::from_str(
+        r#"{
+            "client_wiring": {
+                "product_catalog_client_v1": {
+                    "rest": { "endpoint": "http://bss-products.virtuozzo.svc:8080" }
+                }
+            }
+        }"#,
+    )
+    .expect("the provides wiring key must not trip deny_unknown_fields");
+    assert!(cfg.client_wiring.is_object());
+}
+
+#[test]
 fn an_unknown_key_is_refused_rather_than_ignored() {
     let parsed: Result<ProductsConfig, _> =
         serde_json::from_str(r#"{"idempotency_retention_hous": 48}"#);

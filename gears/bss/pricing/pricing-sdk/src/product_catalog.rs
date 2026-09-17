@@ -59,6 +59,13 @@
 
 use async_trait::async_trait;
 use toolkit_canonical_errors::{CanonicalError, resource_error};
+use toolkit_contract::ir::binding::{
+    HttpBindingIr, HttpFieldBinding, HttpMethod, HttpMethodBindingIr, StreamFraming,
+};
+use toolkit_contract::ir::contract::{
+    ContractIr, FieldIr, FieldRole, Idempotency, InputShape, MethodIr, MethodKind, PrimitiveType,
+    TypeRef,
+};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
@@ -189,6 +196,15 @@ pub fn catalog_unreachable(detail: impl Into<String>) -> CanonicalError {
 
 /// The registry's read contract
 /// (`cpt-cf-bss-products-interface-read-model`, the browse half).
+///
+/// `#[toolkit::provides]` validates this trait through
+/// [`product_catalog_client_v1_ir`] and
+/// [`product_catalog_client_v1_rest_http_binding`]. The contract-kind suffix
+/// rule (`Api` / `Backend` / `Embedded` / `Extension`) refuses
+/// `#[toolkit::contract]` on this existing name; the IR below is the same
+/// shape the macro would emit (`SafeRead` on every method, tenant
+/// `SecurityContext` off the wire). Do not add a second trait to satisfy
+/// the suffix.
 #[async_trait]
 pub trait ProductCatalogClientV1: Send + Sync {
     /// The SKUs a write names. Ids the registry does not know come back absent,
@@ -263,5 +279,156 @@ impl ProductCatalogClientV1 for UnconfiguredProductCatalogClientV1 {
         _ctx: &SecurityContext,
     ) -> Result<Vec<CatalogTaxCategory>, CanonicalError> {
         Err(unconfigured_catalog())
+    }
+}
+
+fn secctx_field() -> FieldIr {
+    FieldIr {
+        name: "ctx".to_owned(),
+        ty: TypeRef::Named("SecurityContext".to_owned()),
+        optional: false,
+        role: FieldRole::SecurityContext,
+    }
+}
+
+fn query_binding(field: &str) -> HttpFieldBinding {
+    HttpFieldBinding::Query {
+        field: field.to_owned(),
+        param: field.to_owned(),
+    }
+}
+
+fn unary(
+    name: &str,
+    fields: Vec<FieldIr>,
+    output: TypeRef,
+    field_bindings: Vec<HttpFieldBinding>,
+) -> (MethodIr, HttpMethodBindingIr) {
+    let method = MethodIr {
+        name: name.to_owned(),
+        kind: MethodKind::Unary,
+        input: InputShape { fields },
+        output,
+        error: Some(TypeRef::Named("CanonicalError".to_owned())),
+        idempotency: Idempotency::SafeRead,
+        optional: false,
+    };
+    let binding = HttpMethodBindingIr {
+        method_name: name.to_owned(),
+        http_method: HttpMethod::Get,
+        path_template: "/browse".to_owned(),
+        field_bindings,
+        retryable: false,
+        streaming: false,
+        stream_framing: StreamFraming::ServerSentEvents,
+        optional: false,
+    };
+    (method, binding)
+}
+
+/// Contract IR for [`ProductCatalogClientV1`].
+///
+/// `#[toolkit::provides]` calls this as `{contract}_ir()` and runs
+/// [`toolkit_contract::ir::validate_contract`].
+#[must_use]
+pub fn product_catalog_client_v1_ir() -> ContractIr {
+    let (get_skus, _) = get_skus_ir();
+    let (search_skus, _) = search_skus_ir();
+    let (list_tax_categories, _) = list_tax_categories_ir();
+    ContractIr {
+        name: "ProductCatalogClientV1".to_owned(),
+        gear: "bss-products".to_owned(),
+        version: "v1".to_owned(),
+        methods: vec![get_skus, search_skus, list_tax_categories],
+    }
+}
+
+/// HTTP binding IR for [`ProductCatalogClientV1`].
+///
+/// The REST arm of products' provider calls the existing browse door
+/// (`GET /bss-products/v1/browse?kind=sku`); this binding is the IR
+/// `validate_http_binding` checks, not a second contract surface.
+#[must_use]
+pub fn product_catalog_client_v1_rest_http_binding() -> HttpBindingIr {
+    let (_, get_skus) = get_skus_ir();
+    let (_, search_skus) = search_skus_ir();
+    let (_, list_tax_categories) = list_tax_categories_ir();
+    HttpBindingIr {
+        base_path: "/bss-products/v1".to_owned(),
+        methods: vec![get_skus, search_skus, list_tax_categories],
+    }
+}
+
+fn get_skus_ir() -> (MethodIr, HttpMethodBindingIr) {
+    unary(
+        "get_skus",
+        vec![
+            secctx_field(),
+            FieldIr {
+                name: "ids".to_owned(),
+                ty: TypeRef::List(Box::new(TypeRef::Primitive(PrimitiveType::Uuid))),
+                optional: false,
+                role: FieldRole::Wire,
+            },
+        ],
+        TypeRef::List(Box::new(TypeRef::Named("CatalogSku".to_owned()))),
+        vec![query_binding("ids")],
+    )
+}
+
+fn search_skus_ir() -> (MethodIr, HttpMethodBindingIr) {
+    unary(
+        "search_skus",
+        vec![
+            secctx_field(),
+            FieldIr {
+                name: "q".to_owned(),
+                ty: TypeRef::Optional(Box::new(TypeRef::Primitive(PrimitiveType::String))),
+                optional: true,
+                role: FieldRole::Wire,
+            },
+            FieldIr {
+                name: "limit".to_owned(),
+                ty: TypeRef::Primitive(PrimitiveType::I32),
+                optional: false,
+                role: FieldRole::Wire,
+            },
+            FieldIr {
+                name: "cursor".to_owned(),
+                ty: TypeRef::Optional(Box::new(TypeRef::Primitive(PrimitiveType::String))),
+                optional: true,
+                role: FieldRole::Wire,
+            },
+        ],
+        TypeRef::Named("CatalogSkuPage".to_owned()),
+        vec![
+            query_binding("q"),
+            query_binding("limit"),
+            query_binding("cursor"),
+        ],
+    )
+}
+
+fn list_tax_categories_ir() -> (MethodIr, HttpMethodBindingIr) {
+    unary(
+        "list_tax_categories",
+        vec![secctx_field()],
+        TypeRef::List(Box::new(TypeRef::Named("CatalogTaxCategory".to_owned()))),
+        Vec::new(),
+    )
+}
+
+#[cfg(test)]
+mod contract_ir_tests {
+    use toolkit_contract::ir::{validate_contract, validate_http_binding};
+
+    use super::{product_catalog_client_v1_ir, product_catalog_client_v1_rest_http_binding};
+
+    #[test]
+    fn the_contract_ir_and_browse_http_binding_validate() {
+        let ir = product_catalog_client_v1_ir();
+        validate_contract(&ir).expect("contract IR");
+        validate_http_binding(&ir, &product_catalog_client_v1_rest_http_binding())
+            .expect("HTTP binding IR");
     }
 }

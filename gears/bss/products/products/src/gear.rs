@@ -235,6 +235,12 @@ pub(crate) struct ProductsRuntime {
 
 /// The products gear.
 #[toolkit::gear(name = "bss-products", deps = [authz_resolver, types_registry, usage_collector], capabilities = [db, rest, stateful], lifecycle(entry = "serve", stop_timeout = "30s"))]
+#[toolkit::provides(
+    contract = bss_pricing_sdk::product_catalog::ProductCatalogClientV1,
+    local = Self::build_catalog_provider,
+    rest_client = crate::infra::catalog_rest_client::ProductCatalogRestClient,
+    transports = [local, rest],
+)]
 pub struct BssProductsGear {
     /// `None` until `init()` completes, and on a boot where the gear is
     /// compiled in but not configured.
@@ -250,6 +256,22 @@ impl Default for BssProductsGear {
 }
 
 impl BssProductsGear {
+    /// Local factory for `#[toolkit::provides]`: Task 7's browse projection.
+    ///
+    /// Invoked when wiring is `ClientWiring::Local` (the default when
+    /// `client_wiring.product_catalog_client_v1` is absent).
+    fn build_catalog_provider(
+        ctx: &GearCtx,
+        _policies: Arc<toolkit::contract_support::policy::PolicyStack>,
+    ) -> anyhow::Result<Arc<dyn bss_pricing_sdk::product_catalog::ProductCatalogClientV1>> {
+        let db = ctx
+            .db_required()
+            .context("bss-products: database not configured for the catalog provider")?;
+        Ok(Arc::new(
+            crate::infra::catalog_provider::BrowseCatalogProvider::new(db),
+        ))
+    }
+
     /// The lifecycle entry: one ticker, the increment coalescer's sweep
     /// (`dod-coalescer`). Each tick discovers tenants with pending demand
     /// and runs one [`crate::infra::increment::drain_tenant`] pass per
@@ -721,6 +743,12 @@ impl Gear for BssProductsGear {
             );
         }
         tracing::info!(idempotency_retention_hours, "bss-products initialised");
+
+        // `#[toolkit::provides]`-generated wiring: validates the contract IR
+        // (and the browse HTTP binding), reads
+        // `client_wiring.product_catalog_client_v1` (absent → Local), and
+        // registers `Arc<dyn ProductCatalogClientV1>` in the ClientHub.
+        self.wire_product_catalog_client_v1(ctx).await?;
 
         // Platform PEP. Authz is security-critical — the catalog this gear
         // authors is what pricing and every downstream reader depend on — so a

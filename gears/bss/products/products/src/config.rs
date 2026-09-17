@@ -149,6 +149,31 @@ pub const READ_INBOX_RETENTION_HOURS_DEFAULT: u32 = 72;
 /// working one; `deny_unknown_fields` is what turns a typo in the operator's
 /// file into a boot failure rather than a silently ignored setting.
 ///
+/// # `client_wiring.product_catalog_client_v1`
+///
+/// Products provides pricing's `ProductCatalogClientV1` through
+/// `#[toolkit::provides]`. `toolkit::wiring::read_wiring` reads
+/// `gears.bss-products.config.client_wiring.product_catalog_client_v1`.
+/// **An absent `client_wiring` section, or an absent key, is
+/// `ClientWiring::Local`** — a same-process `core-server` needs no config
+/// and gets the in-process catalog provider. Only a split deployment
+/// declares the REST arm:
+///
+/// ```yaml
+/// gears:
+///   bss-products:
+///     config:
+///       client_wiring:
+///         product_catalog_client_v1:
+///           rest:
+///             endpoint: "http://bss-products.virtuozzo.svc:8080"
+/// ```
+///
+/// The platform's `ClientWiring` tag is `transport: rest` with `endpoint`
+/// beside it; the nested `rest:` spelling above is the plan's operator
+/// example. Either way the key lives in this typed config so
+/// `deny_unknown_fields` does not refuse a split deployment.
+///
 /// A typo in a *value* has no such spelling, which is why
 /// [`Self::resolved_idempotency_retention_hours`] exists: `deny_unknown_fields`
 /// catches `idempotency_retention_hous`, and nothing in serde catches a `0`.
@@ -469,6 +494,15 @@ pub struct ProductsConfig {
     /// in hours. **Interim 72 — P-D-133**; the deferred-intent dashboard is
     /// the surface, this is its threshold.
     pub retirement_held_alert_hours: u32,
+
+    /// `#[toolkit::provides]` wiring for `product_catalog_client_v1`.
+    ///
+    /// Absent (the default) is in-process `ClientWiring::Local`. Present so
+    /// a split-deployment `client_wiring` key is not refused by
+    /// `deny_unknown_fields`; `toolkit::wiring::read_wiring` is what
+    /// interprets the value.
+    #[serde(default)]
+    pub client_wiring: serde_json::Value,
 }
 
 impl Default for ProductsConfig {
@@ -514,6 +548,7 @@ impl Default for ProductsConfig {
             breakglass_window_hours: BREAKGLASS_WINDOW_HOURS_DEFAULT,
             breakglass_review_sla_hours: BREAKGLASS_REVIEW_SLA_HOURS_DEFAULT,
             retirement_held_alert_hours: RETIREMENT_HELD_ALERT_HOURS_DEFAULT,
+            client_wiring: serde_json::Value::Null,
         }
     }
 }

@@ -21,6 +21,13 @@ time = { workspace = true }
 # `From<DomainError> for CanonicalError` ladder is the authoritative
 # classification, and the ports carry no second one.
 toolkit-canonical-errors = { workspace = true }
+# Contract IR + HTTP binding for `ProductCatalogClientV1`. Products' 
+# `#[toolkit::provides]` calls `{contract}_ir()` / `validate_contract` and, with
+# `rest` enabled, `validate_http_binding`. The trait name does not carry an
+# `Api`/`Backend` suffix, so `#[toolkit::contract]` cannot generate the IR;
+# this crate authors the equivalent builders instead of inventing a second
+# contract.
+toolkit-contract = { workspace = true }
 # The two opt-in projections over that envelope. They exist because the gear
 # dispatches — an unwired registry is not an outage, and a registry's refusal is
 # not either — not because the contract needs them.

@@ -25,5 +25,6 @@ pub use catalog_version_registry::{
 };
 pub use product_catalog::{
     CatalogSku, CatalogTaxCategory, ProductCatalogClientV1, ProductCatalogError,
-    UnconfiguredProductCatalogClientV1,
+    UnconfiguredProductCatalogClientV1, product_catalog_client_v1_ir,
+    product_catalog_client_v1_rest_http_binding,
 };
