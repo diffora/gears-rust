@@ -11,10 +11,11 @@ mod rest_support;
 
 use axum::http::StatusCode;
 use bss_pricing::api::rest::windows::{
-    DRAFT_WINDOW_BASELINE_REFRESH, DRAFT_WINDOW_OPERATION, PLAN_COVERAGE, PRICE_WINDOWS_LIST,
+    DRAFT_WINDOW_BASELINE_REFRESH, PLAN_COVERAGE, PRICE_WINDOW, PRICE_WINDOWS_LIST,
 };
 use rest_support::{
-    Harness, body_json, seed_draft_plan, seed_price, seed_publishable_plan, with_headers,
+    Harness, body_json, seed_draft_plan, seed_price, seed_publishable_plan, seed_window,
+    with_headers,
 };
 use uuid::Uuid;
 
@@ -35,7 +36,10 @@ async fn first_revision_accepts_a_symbolic_window() {
                 "start": {"kind": "at_publish"},
                 "reason_code": "launch"
             })),
-            &[("if-match", &etag), ("idempotency-key", "draft-window-first")],
+            &[
+                ("if-match", &etag),
+                ("idempotency-key", "draft-window-first"),
+            ],
         ))
         .await;
     assert_eq!(response.status(), StatusCode::CREATED);
@@ -111,7 +115,10 @@ async fn a_stale_plan_etag_is_refused_as_stale_version() {
                 "start": {"kind": "at_publish"},
                 "reason_code": "launch"
             })),
-            &[("if-match", &etag), ("idempotency-key", "draft-window-stale-1")],
+            &[
+                ("if-match", &etag),
+                ("idempotency-key", "draft-window-stale-1"),
+            ],
         ))
         .await;
     assert_eq!(first.status(), StatusCode::CREATED);
@@ -126,7 +133,10 @@ async fn a_stale_plan_etag_is_refused_as_stale_version() {
                 "start": {"kind": "at", "at": "2099-06-01T00:00:00Z"},
                 "reason_code": "launch"
             })),
-            &[("if-match", &etag), ("idempotency-key", "draft-window-stale-2")],
+            &[
+                ("if-match", &etag),
+                ("idempotency-key", "draft-window-stale-2"),
+            ],
         ))
         .await;
     assert_eq!(stale.status(), StatusCode::CONFLICT);
@@ -151,7 +161,10 @@ async fn a_foreign_tenant_cannot_author_a_draft_window() {
                 "start": {"kind": "at_publish"},
                 "reason_code": "launch"
             })),
-            &[("if-match", &etag), ("idempotency-key", "draft-window-foreign")],
+            &[
+                ("if-match", &etag),
+                ("idempotency-key", "draft-window-foreign"),
+            ],
         ))
         .await;
     assert_eq!(posted.status(), StatusCode::NOT_FOUND);
@@ -169,9 +182,7 @@ async fn working_reads_on_a_published_plan_name_a_changed_context() {
         .allowed()
         .send(rest_support::request(
             "GET",
-            &format!(
-                "{PRICE_WINDOWS_LIST}?view=working&plan_id={plan}&plan_revision=0"
-            ),
+            &format!("{PRICE_WINDOWS_LIST}?view=working&plan_id={plan}&plan_revision=0"),
             None,
         ))
         .await;
@@ -197,7 +208,10 @@ async fn committed_collection_reads_do_not_carry_draft_rows() {
                 "start": {"kind": "at_publish"},
                 "reason_code": "launch"
             })),
-            &[("if-match", &etag), ("idempotency-key", "draft-window-committed-hide")],
+            &[
+                ("if-match", &etag),
+                ("idempotency-key", "draft-window-committed-hide"),
+            ],
         ))
         .await;
     assert_eq!(created.status(), StatusCode::CREATED);
@@ -214,7 +228,9 @@ async fn committed_collection_reads_do_not_carry_draft_rows() {
     let page = body_json(committed).await;
     let items = page["items"].as_array().expect("a page carries items");
     assert!(
-        items.iter().all(|item| item["window_id"].as_str() != Some(&window_id)),
+        items
+            .iter()
+            .all(|item| item["window_id"].as_str() != Some(&window_id)),
         "committed collection leaked a draft window: {page}"
     );
 }
@@ -229,7 +245,10 @@ async fn an_empty_draft_working_coverage_reports_the_key_uncovered() {
         .allowed()
         .send(rest_support::request(
             "GET",
-            &format!("{}/{plan}/coverage?view=working&plan_revision=0", PLAN_COVERAGE.replace("/{planId}/coverage", "")),
+            &format!(
+                "{}/{plan}/coverage?view=working&plan_revision=0",
+                PLAN_COVERAGE.replace("/{planId}/coverage", "")
+            ),
             None,
         ))
         .await;
@@ -258,7 +277,10 @@ async fn replay_after_the_owner_leaves_draft_returns_the_stored_answer() {
                 "start": {"kind": "at_publish"},
                 "reason_code": "launch"
             })),
-            &[("if-match", &etag), ("idempotency-key", "draft-window-replay")],
+            &[
+                ("if-match", &etag),
+                ("idempotency-key", "draft-window-replay"),
+            ],
         ))
         .await;
     assert_eq!(first.status(), StatusCode::CREATED);
@@ -274,7 +296,10 @@ async fn replay_after_the_owner_leaves_draft_returns_the_stored_answer() {
                 "start": {"kind": "at_publish"},
                 "reason_code": "launch"
             })),
-            &[("if-match", &etag), ("idempotency-key", "draft-window-replay")],
+            &[
+                ("if-match", &etag),
+                ("idempotency-key", "draft-window-replay"),
+            ],
         ))
         .await;
     assert_eq!(replay.status(), StatusCode::CREATED);
@@ -303,7 +328,10 @@ async fn working_cursors_are_bound_to_the_named_parent() {
                 "start": {"kind": "at_publish"},
                 "reason_code": "launch"
             })),
-            &[("if-match", &etag), ("idempotency-key", "draft-window-page-1")],
+            &[
+                ("if-match", &etag),
+                ("idempotency-key", "draft-window-page-1"),
+            ],
         ))
         .await;
     assert_eq!(created.status(), StatusCode::CREATED);
@@ -318,7 +346,10 @@ async fn working_cursors_are_bound_to_the_named_parent() {
                 "start": {"kind": "at_publish"},
                 "reason_code": "launch"
             })),
-            &[("if-match", &etag), ("idempotency-key", "draft-window-page-2")],
+            &[
+                ("if-match", &etag),
+                ("idempotency-key", "draft-window-page-2"),
+            ],
         ))
         .await;
     assert_eq!(created.status(), StatusCode::CREATED);
@@ -367,38 +398,20 @@ async fn baseline_refresh_discards_operations_the_new_baseline_cannot_carry() {
                 "start": {"kind": "at_publish"},
                 "reason_code": "launch"
             })),
-            &[("if-match", &etag), ("idempotency-key", "draft-window-refresh-create")],
-        ))
-        .await;
-    assert_eq!(created.status(), StatusCode::CREATED);
-    let operation_id = body_json(created).await["operation_id"]
-        .as_str()
-        .expect("create names its operation")
-        .to_owned();
-    let etag = h.plan_etag(plan).await;
-
-    let undone = h
-        .allowed()
-        .send(with_headers(
-            "DELETE",
-            &format!(
-                "{}?plan_revision=0",
-                DRAFT_WINDOW_OPERATION
-                    .replace("{planId}", &plan.to_string())
-                    .replace("{operationId}", &operation_id)
-            ),
-            None,
             &[
-                ("if-match", etag.as_str()),
-                ("idempotency-key", "draft-window-refresh-undo"),
+                ("if-match", &etag),
+                ("idempotency-key", "draft-window-refresh-create"),
             ],
         ))
         .await;
-    assert!(
-        undone.status().is_success(),
-        "undoing the create should succeed: {}",
-        undone.status()
-    );
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created_body = body_json(created).await;
+    let operation_id = created_body["operation_id"]
+        .as_str()
+        .expect("create names its operation")
+        .to_owned();
+    seed_window(&h, row.price_id).await;
+
     let etag = h.plan_etag(plan).await;
     let refresh = h
         .allowed()
@@ -414,10 +427,187 @@ async fn baseline_refresh_discards_operations_the_new_baseline_cannot_carry() {
         .await;
     assert_eq!(refresh.status(), StatusCode::OK);
     let body = body_json(refresh).await;
+    let discarded = body["discarded_operation_ids"]
+        .as_array()
+        .expect("refresh names the operations it dropped");
     assert!(
-        body["discarded_operation_ids"].as_array().is_some(),
-        "refresh names the operations it dropped: {body}"
+        discarded
+            .iter()
+            .any(|id| id.as_str() == Some(operation_id.as_str())),
+        "the overlapping create must be discarded against the recaptured live window: {body}"
     );
+}
+
+#[tokio::test]
+async fn a_draft_create_can_be_patched_and_keeps_its_price() {
+    let h = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_draft_plan(&h, plan).await;
+    let row = seed_price(&h, plan, "eu").await;
+    let etag = h.plan_etag(plan).await;
+    let created = h
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &format!("/bss-pricing/v1/prices/{}/windows", row.price_id),
+            Some(serde_json::json!({
+                "context": {"kind": "draft", "plan_revision": 0},
+                "start": {"kind": "at_publish"},
+                "reason_code": "launch"
+            })),
+            &[
+                ("if-match", &etag),
+                ("idempotency-key", "draft-window-patch-create"),
+            ],
+        ))
+        .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created_body = body_json(created).await;
+    let window_id = created_body["window_id"]
+        .as_str()
+        .expect("create names the window")
+        .to_owned();
+    let etag = h.plan_etag(plan).await;
+    let patched = h
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &PRICE_WINDOW.replace("{windowId}", &window_id),
+            Some(serde_json::json!({
+                "context": {"kind": "draft", "plan_revision": 0},
+                "effective_to": "2099-06-01T00:00:00Z"
+            })),
+            &[
+                ("if-match", etag.as_str()),
+                ("idempotency-key", "draft-window-patch"),
+            ],
+        ))
+        .await;
+    assert_eq!(patched.status(), StatusCode::OK);
+    let body = body_json(patched).await;
+    assert_eq!(body["price_id"], row.price_id.to_string());
+    assert_eq!(body["start"]["kind"], "at_publish");
+    assert_eq!(body["effective_to"], "2099-06-01T00:00:00.000000Z");
+}
+
+#[tokio::test]
+async fn deleting_a_draft_create_removes_the_staged_operation() {
+    let h = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_draft_plan(&h, plan).await;
+    let row = seed_price(&h, plan, "eu").await;
+    let etag = h.plan_etag(plan).await;
+    let created = h
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &format!("/bss-pricing/v1/prices/{}/windows", row.price_id),
+            Some(serde_json::json!({
+                "context": {"kind": "draft", "plan_revision": 0},
+                "start": {"kind": "at_publish"},
+                "reason_code": "launch"
+            })),
+            &[
+                ("if-match", &etag),
+                ("idempotency-key", "draft-window-cancel-create"),
+            ],
+        ))
+        .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let created_body = body_json(created).await;
+    let window_id = created_body["window_id"]
+        .as_str()
+        .expect("create names the window")
+        .to_owned();
+    let operation_id = created_body["operation_id"]
+        .as_str()
+        .expect("create names its operation")
+        .to_owned();
+    let etag = h.plan_etag(plan).await;
+    let deleted = h
+        .allowed()
+        .send(with_headers(
+            "DELETE",
+            &format!(
+                "{}?context=draft&plan_id={plan}&plan_revision=0",
+                PRICE_WINDOW.replace("{windowId}", &window_id)
+            ),
+            None,
+            &[
+                ("if-match", etag.as_str()),
+                ("idempotency-key", "draft-window-cancel"),
+            ],
+        ))
+        .await;
+    assert_eq!(deleted.status(), StatusCode::OK);
+    let body = body_json(deleted).await;
+    assert_eq!(body["operation_id"], operation_id);
+    assert_eq!(body["price_id"], row.price_id.to_string());
+    assert_eq!(body["start"]["kind"], "at_publish");
+
+    let working = h
+        .allowed()
+        .send(rest_support::request(
+            "GET",
+            &format!("{PRICE_WINDOWS_LIST}?view=working&plan_id={plan}&plan_revision=0"),
+            None,
+        ))
+        .await;
+    assert_eq!(working.status(), StatusCode::OK);
+    let page = body_json(working).await;
+    let items = page["items"].as_array().expect("a page carries items");
+    assert!(
+        items
+            .iter()
+            .all(|item| item["window_id"].as_str() != Some(window_id.as_str())),
+        "Create→Remove must drop the staged window from Working: {page}"
+    );
+}
+
+#[tokio::test]
+async fn a_captured_baseline_window_can_be_adjusted_on_a_draft() {
+    let h = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_draft_plan(&h, plan).await;
+    let row = seed_price(&h, plan, "eu").await;
+    let window_id = seed_window(&h, row.price_id).await;
+    let etag = h.plan_etag(plan).await;
+    let refresh = h
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &DRAFT_WINDOW_BASELINE_REFRESH.replace("{planId}", &plan.to_string()),
+            Some(serde_json::json!({ "plan_revision": 0 })),
+            &[
+                ("if-match", etag.as_str()),
+                ("idempotency-key", "draft-window-baseline-capture"),
+            ],
+        ))
+        .await;
+    assert_eq!(refresh.status(), StatusCode::OK);
+
+    let etag = h.plan_etag(plan).await;
+    let patched = h
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &PRICE_WINDOW.replace("{windowId}", &window_id.to_string()),
+            Some(serde_json::json!({
+                "context": {"kind": "draft", "plan_revision": 0},
+                "effective_to": "2099-06-01T00:00:00Z"
+            })),
+            &[
+                ("if-match", etag.as_str()),
+                ("idempotency-key", "draft-window-baseline-adjust"),
+            ],
+        ))
+        .await;
+    assert_eq!(patched.status(), StatusCode::OK);
+    let body = body_json(patched).await;
+    assert_eq!(body["price_id"], row.price_id.to_string());
+    assert_eq!(body["start"]["kind"], "at");
+    assert_eq!(body["start"]["at"], "2099-01-01T00:00:00.000000Z");
+    assert_eq!(body["effective_to"], "2099-06-01T00:00:00.000000Z");
 }
 
 #[tokio::test]
