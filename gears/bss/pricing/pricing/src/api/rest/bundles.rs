@@ -395,8 +395,20 @@ async fn create_bundle(
     let request_hash = preconditions::request_digest(&body)?;
 
     let basis = match body.price_basis.as_deref() {
+        // **Through the `ValidationFailed` envelope**, like the ten composition
+        // codes this module's banner describes — `BASIS_MISSING` is the
+        // eleventh and was the one that did not. It used to be an
+        // `InvalidRequest` whose message *began* with the code, which put the
+        // discriminator in prose: `detail` and `context.constraint` carried the
+        // string and no code-shaped slot carried anything, so a client
+        // branching on the code — which the banner says is what a consumer
+        // matches on — could not find it, and `price_basis` being `Option` on
+        // the wire bought nothing. The status is unchanged (400 either way; see
+        // the banner's note on 422) and the code is now where its siblings are.
         None => check_basis_declared(None).map_err(|code| {
-            DomainError::InvalidRequest(format!("{code}: a bundle must declare its price basis"))
+            let mut report = crate::domain::validation::ValidationReport::default();
+            report.violate_at_write(code, "price_basis", "a bundle must declare its price basis");
+            DomainError::ValidationFailed(report)
         })?,
         Some(token) => PriceBasis::parse(token).ok_or_else(|| {
             DomainError::InvalidRequest(format!(

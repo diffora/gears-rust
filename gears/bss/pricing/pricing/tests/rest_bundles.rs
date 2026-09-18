@@ -261,10 +261,28 @@ async fn a_bundle_with_no_declared_basis_is_refused_by_code() {
         .await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let detail = body_json(response).await.to_string();
+    // **In the code slot, not in the prose.** This used to assert that the
+    // serialised body contained the string anywhere, which a refusal spelling
+    // `InvalidRequest("BASIS_MISSING: a bundle must declare its price basis")`
+    // satisfies — and that is exactly what the door shipped: the code reached
+    // the wire only inside `detail`, where a client branching on it cannot
+    // find it. The module's own banner says the ten composition codes travel
+    // inside the `ValidationFailed` envelope, one violation per failing rule,
+    // and this is the eleventh that did not. The e2e's error-catalogue
+    // cross-check was what noticed; this assertion is what would have.
+    let body = body_json(response).await;
+    let violations = body
+        .pointer("/context/violations")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     assert!(
-        detail.contains("BASIS_MISSING"),
-        "the refusal must carry the code the design set declares, got: {detail}"
+        violations.iter().any(|violation| violation
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            == Some("BASIS_MISSING")),
+        "the refusal must carry the code the design set declares in the slot a \
+         consumer matches on, got: {body}"
     );
 }
 

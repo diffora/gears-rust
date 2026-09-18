@@ -284,6 +284,22 @@ fn every_write_stamping_site_is_accounted_for() {
         // Descriptor-policy grammar and rejection of authored derived meters.
         "billing_descriptors",
         "prices",
+        // `inst-bb-declared`, the bundle create door's own refusal. Its single
+        // operand — an absent `price_basis` — is in the request and nowhere
+        // else, and there is no legitimate intermediate state to protect: the
+        // basis is `NOT NULL` on `pricing_bundle` and [`PriceBasis`] is a closed
+        // enum, so a stored bundle always has one and a create that named none
+        // can only be retracted, never completed by a later call. That is the
+        // doctrine's criterion met the way `package`'s arm meets it.
+        //
+        // It is here because the code used to reach the wire as **prose**: the
+        // door raised `InvalidRequest("BASIS_MISSING: …")`, so `detail` carried
+        // the string and no code-shaped slot carried anything. `api::rest::bundles`'
+        // own banner says the composition codes are what a consumer matches on
+        // and that they travel inside the `ValidationFailed` envelope; this was
+        // the one that did not, which also made `price_basis` being `Option` on
+        // the wire — done precisely to keep the code reachable — buy nothing.
+        "bundles",
     ]
     .into_iter()
     .map(str::to_owned)
