@@ -563,13 +563,25 @@ impl PublishService {
                     // 1. The second run. Same assembler, same rule set, same
                     // gate - against the world as it now stands.
                     let shape = assemble(txn, &scope, tenant_id, unit.plan_id, now).await?;
-                    let policies = if policies_unresolved.sku_index().is_ok() {
-                        policies_unresolved.clone()
-                    } else {
-                        policies_unresolved
-                            .resolve_skus(&ctx, &crate::infra::row_sku::sku_ids_of_shape(&shape))
-                            .await?
-                    };
+                    // Resolved by the caller, **before** this transaction opened.
+                    // The registry cannot be read from in here: in-process,
+                    // `bss-products` answers `get_skus` from its own store and
+                    // takes a `DBProvider::conn()` to do it, and that call is
+                    // refused inside any open transaction because the guard is a
+                    // task-local rather than a per-`Db` flag. `api::rest::publish`
+                    // resolves against a shape it assembles outside, and
+                    // `infra::repricing`'s apply lane does the same per plan — so
+                    // an unresolved snapshot here is a caller that forgot, and it
+                    // is refused rather than papered over with a read that cannot
+                    // succeed.
+                    let policies = policies_unresolved.clone();
+                    if policies.sku_index().is_err() {
+                        return Err(DomainError::catalog_version_unavailable(format!(
+                            "product catalog snapshot not resolved before the publish \
+                             transaction for plan {}",
+                            unit.plan_id
+                        )));
+                    }
                     let params = rule_params(&policies, txn, &scope, tenant_id, &shape)
                         .await?
                         .opening_initial_coverage();

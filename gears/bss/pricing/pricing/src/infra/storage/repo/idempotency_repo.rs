@@ -82,7 +82,7 @@ use sea_orm::{ColumnTrait, Condition, DbErr, EntityTrait};
 use serde_json::Value as JsonValue;
 use time::OffsetDateTime;
 use toolkit_db::secure::{
-    AccessScope, DbTx, ScopeError, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
+    AccessScope, DBRunner, DbTx, ScopeError, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
 };
 use uuid::Uuid;
 
@@ -288,7 +288,7 @@ impl IdempotencyGate {
     )]
     pub async fn recorded_response(
         &self,
-        txn: &DbTx<'_>,
+        runner: &impl DBRunner,
         scope: &AccessScope,
         tenant_id: Uuid,
         operation: &str,
@@ -301,7 +301,7 @@ impl IdempotencyGate {
         // to perform has already been performed, so answering "nothing recorded"
         // to a read that could not run produces exactly the duplicate the guard
         // exists to refuse.
-        let Some(held) = read_held(txn, scope, tenant_id, operation, client_key).await? else {
+        let Some(held) = read_held(runner, scope, tenant_id, operation, client_key).await? else {
             return Ok(None);
         };
         if (now - held.created_at_utc) > self.ttl {
@@ -505,7 +505,7 @@ async fn take_over(
 /// to: it read every error as "no claim", which is the answer that says *go ahead
 /// and perform the act*.
 async fn read_held(
-    txn: &DbTx<'_>,
+    runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
     operation: &str,
@@ -515,7 +515,7 @@ async fn read_held(
         .secure()
         .scope_with(scope)
         .filter(key_of(tenant_id, operation, client_key))
-        .one(txn)
+        .one(runner)
         .await
         .map_err(|e| RepoError::Db(format!("read held idempotency claim: {e}")))
 }

@@ -564,3 +564,40 @@ async fn a_pending_usage_unit_replays_without_catalog_reads_but_approved_commit_
     );
     assert_eq!(catalog.reads.load(Ordering::SeqCst), 2);
 }
+
+/// The supersession reads the registry **outside** the transaction it writes in.
+///
+/// `SupersessionService::supersede` owns one transaction for the whole act and
+/// `supersede_in` used to read the registry from inside it, which is the defect
+/// `rest_prices.rs`'s `a_price_write_reads_the_registry_outside_its_transaction`
+/// states in full: an in-process registry answers from its own store and takes a
+/// `DBProvider::conn()` to do it, and that call is refused inside any open
+/// transaction because the guard is a task-local rather than a per-`Db` flag.
+///
+/// Unlike the price plane this one was never *observed* failing on a stand — the
+/// suite there could not author a price row to supersede, so the door was never
+/// reached. It is the same call in the same position, and this is the probe that
+/// says so rather than leaving it inferred.
+#[tokio::test]
+async fn a_supersession_reads_the_registry_outside_its_transaction() {
+    let catalog = std::sync::Arc::new(rest_support::ConnectionTakingCatalog::new().await);
+    let h = Harness::new_with_catalog(catalog).await;
+    let (plan_id, seeded) = published(&h).await;
+
+    let response = h
+        .allowed_as(SUBMITTER)
+        .send(request(
+            "POST",
+            &path(plan_id),
+            Some(supersede_body(seeded.price_id, 12_000)),
+        ))
+        .await;
+
+    let status = response.status();
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "a registry that needs its own connection must still be readable: {}",
+        body_json(response).await
+    );
+}

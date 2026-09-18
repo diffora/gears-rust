@@ -644,13 +644,77 @@ impl CutoverService {
         }
     }
 
-    /// Compose and, if it may, commit one grandfathering cutover.
+    /// The policy inputs bound to this act's registry snapshot, resolved
+    /// **before** the writing transaction opens — and left unresolved when the
+    /// act will not need them.
     ///
-    /// The whole act in **one** transaction of this service's own. See
-    /// [`cutover_in`] for the order and why every step is where it is.
+    /// `SupersessionService::snapshot_for` carries the argument in full and this
+    /// is the same move one door over: the registry is another gear, its
+    /// in-process implementation takes a `DBProvider::conn()` to answer, and that
+    /// call is refused inside any open transaction because the guard is a
+    /// task-local rather than a per-`Db` flag. A pending replay must still be
+    /// answerable with the registry down and must still read it zero times
+    /// (`rest_cutovers`' registry-replay case pins both), so the two reads the
+    /// transaction opens with are taken here first and the registry is asked only
+    /// when they say this is a fresh act. The transaction re-reads and re-decides
+    /// regardless: this is a *pre*-read, never the authority.
     ///
     /// # Errors
-    /// [`cutover_in`]'s, exactly.
+    /// [`cutover_in`]'s early refusals, and whatever the registry answers.
+    async fn resolved_policies_for(
+        &self,
+        ctx: &SecurityContext,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        request: &CutoverRequest,
+        now: OffsetDateTime,
+    ) -> Result<PolicyObjectRepo, DomainError> {
+        // `cutover_in`'s own step 0, so a permanently refused key is answered by
+        // its own code here rather than by whatever the context read trips over.
+        price_repo::refuse_unsupersedable_class(&request.predecessor_key)
+            .map_err(|e| repo_failure(&e))?;
+        let conn = self
+            .db
+            .conn()
+            .map_err(|e| DomainError::Internal(format!("cutover pre-read connection: {e}")))?;
+        let context = read_cutover_context(
+            &conn,
+            scope,
+            tenant_id,
+            &request.predecessor_key,
+            request.cutover_at,
+            now,
+        )
+        .await?;
+        if pending_replay(&conn, scope, tenant_id, &context, request, now)
+            .await?
+            .is_some()
+        {
+            return Ok(self.policies.clone());
+        }
+        let ids = crate::infra::row_sku::named_sku_ids(
+            std::iter::once(context.shape.sku_id)
+                .chain(std::iter::once(request.predecessor_key.sku_id().as_uuid()))
+                .chain(
+                    context
+                        .shape
+                        .rows
+                        .iter()
+                        .map(|row| row.scope_key.sku_id().as_uuid()),
+                ),
+        );
+        self.policies.resolve_skus(ctx, &ids).await
+    }
+
+    /// Compose and, if it may, commit one grandfathering cutover.
+    ///
+    /// The whole act in **one** transaction of this service's own, with the
+    /// registry snapshot resolved in front of it
+    /// ([`Self::resolved_policies_for`]). See [`cutover_in`] for the order and
+    /// why every step is where it is.
+    ///
+    /// # Errors
+    /// [`cutover_in`]'s, exactly, plus [`Self::resolved_policies_for`]'s.
     pub async fn cut_over(
         &self,
         ctx: &SecurityContext,
@@ -660,10 +724,12 @@ impl CutoverService {
         verdict_json: VerdictJson,
         stamp: AuditStamp,
     ) -> Result<CutoverOutcome, DomainError> {
+        let policies = self
+            .resolved_policies_for(ctx, scope, tenant_id, &request, stamp.recorded_at)
+            .await?;
         let ctx = ctx.clone();
         let scope = scope.clone();
         let registry = Arc::clone(&self.registry);
-        let policies = self.policies.clone();
         let gate = self.fixture_gate.clone();
         let (_, outcome) = self
             .db
@@ -785,11 +851,24 @@ pub async fn cutover_in(
                     .map(|row| row.scope_key.sku_id().as_uuid()),
             ),
     );
-    let resolved_policies = if policies.sku_index().is_ok() {
-        policies.clone()
-    } else {
-        policies.resolve_skus(ctx, &ids).await?
-    };
+    // Resolved by [`CutoverService::cut_over`] **before** this transaction opened
+    // — the registry cannot be read from in here at all. `supersede_in`'s note
+    // carries the argument in full: an in-process registry takes a
+    // `DBProvider::conn()` of its own and that call is refused inside any open
+    // transaction, the guard being a task-local rather than a per-`Db` flag.
+    //
+    // Unresolved means the pre-read judged this act a replay and the re-read
+    // above has just disagreed — a concurrent decision on the staged unit, in
+    // the window between the two. Nothing is written yet and the act is
+    // retryable, so it is refused as exactly that.
+    let resolved_policies = policies.clone();
+    if resolved_policies.sku_index().is_err() {
+        return Err(DomainError::catalog_version_unavailable(
+            "product catalog snapshot not resolved: the staged unit was decided while this \
+             cutover was being judged; retry",
+        ));
+    }
+    debug_assert!(!ids.is_empty(), "a cutover always names at least two SKUs");
     let policies = &resolved_policies;
     let index = policies.sku_index()?;
     if let Some(staged) = &context.staged_successor {
@@ -1944,7 +2023,7 @@ async fn read_cutover_context(
 }
 
 async fn pending_replay(
-    txn: &DbTx<'_>,
+    txn: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
     context: &CutoverContext,

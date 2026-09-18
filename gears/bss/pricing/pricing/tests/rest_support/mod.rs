@@ -3602,3 +3602,86 @@ pub async fn published_usage_for_registry_replay(
     content["bands"][0]["unit_price_nano_minor"] = serde_json::json!(12_000_000_000_i64);
     (plan, seeded, content)
 }
+
+/// A registry that does what the real in-process one does first: take a
+/// non-transactional connection of its own.
+///
+/// `bss-products`' `BrowseCatalogProvider` opens `DBProvider::conn()` before it
+/// reads a single row, and `Db::conn()` is refused inside an open transaction.
+/// The guard is a **task-local**, not a per-`Db` flag, so it fires on any
+/// provider — a sibling gear's store included, which is not a transaction this
+/// caller could bypass. A registry read issued from inside a price write's
+/// transaction therefore cannot be served in-process at all: on a stand with
+/// both gears linked every `POST /prices` answered `503` with
+/// `Cannot create non-transactional connection inside an active transaction`.
+///
+/// The double holds a database only to own that call. It carries the fixture's
+/// rows so a write that reaches it can still succeed — the `conn()` **is** the
+/// assertion, and what it pins is a *placement*: the registry is read before
+/// the writing transaction opens, never inside it. A double that merely counted
+/// calls could not see the difference.
+pub struct ConnectionTakingCatalog {
+    db: DBProvider<DbError>,
+    inner: FixtureCatalog,
+}
+
+impl ConnectionTakingCatalog {
+    /// A provider of its own, deliberately **not** the harness's: the guard is
+    /// task-local rather than per-`Db`, and a separate database is what makes
+    /// that the thing under test rather than an accident of sharing one.
+    pub async fn new() -> Self {
+        let db = connect_db("sqlite::memory:", ConnectOpts::default())
+            .await
+            .expect("connect the registry's own in-memory sqlite");
+        Self {
+            db: DBProvider::<DbError>::new(db),
+            inner: FixtureCatalog::default(),
+        }
+    }
+
+    fn own_connection(&self) -> Result<(), toolkit::api::canonical_prelude::CanonicalError> {
+        self.db.conn().map(drop).map_err(|e| {
+            CanonicalError::service_unavailable()
+                .with_detail(e.to_string())
+                .create()
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl bss_pricing::domain::ports::ProductCatalogClientV1 for ConnectionTakingCatalog {
+    async fn get_skus(
+        &self,
+        ctx: &toolkit_security::SecurityContext,
+        ids: &[Uuid],
+    ) -> Result<
+        Vec<bss_pricing::domain::ports::CatalogSku>,
+        toolkit::api::canonical_prelude::CanonicalError,
+    > {
+        self.own_connection()?;
+        self.inner.get_skus(ctx, ids).await
+    }
+    async fn search_skus(
+        &self,
+        ctx: &toolkit_security::SecurityContext,
+        q: Option<&str>,
+        limit: u32,
+        cursor: Option<&str>,
+    ) -> Result<
+        bss_pricing::domain::ports::CatalogSkuPage,
+        toolkit::api::canonical_prelude::CanonicalError,
+    > {
+        self.own_connection()?;
+        self.inner.search_skus(ctx, q, limit, cursor).await
+    }
+    async fn list_tax_categories(
+        &self,
+        ctx: &toolkit_security::SecurityContext,
+    ) -> Result<
+        Vec<bss_pricing::domain::ports::CatalogTaxCategory>,
+        toolkit::api::canonical_prelude::CanonicalError,
+    > {
+        self.own_connection()?;
+        self.inner.list_tax_categories(ctx).await
+    }
+}

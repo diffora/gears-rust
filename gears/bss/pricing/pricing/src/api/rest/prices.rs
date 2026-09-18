@@ -801,10 +801,72 @@ async fn create_price(
     let request_hash = preconditions::request_digest(&body)?;
     let key = scope_key_of(plan_id, &body.scope_key)?;
     let mut content = content_of(&body.content)?;
-    // Conversion depends only on this request. Catalog and parent-plan facts are
-    // resolved inside the guarded producer, so successful retries replay the
-    // stored response even if the registry has changed or become unavailable.
+    // Conversion depends only on this request.
     let now = OffsetDateTime::now_utc();
+
+    // ## The registry is read before the transaction, not inside it
+    //
+    // D-372's per-write registry read used to sit beside the mutation, inside
+    // `guarded`'s transaction. **An in-process registry cannot serve it there.**
+    // `bss-products` answers `get_skus` from its own store and takes a
+    // `DBProvider::conn()` to do it; `Db::conn()` is refused inside an open
+    // transaction, and the guard is a *task-local* rather than a per-`Db` flag,
+    // so it fires on a sibling gear's provider too — a store this caller could
+    // not bypass its transaction through if it tried. On a deployment with both
+    // gears linked the whole price plane answered `503 … Cannot create
+    // non-transactional connection inside an active transaction`.
+    //
+    // The placement was wrong for the remote wiring as well, which is why the
+    // fix is here and not on the guard: `ProductCatalogRestClient` would hold a
+    // Postgres write transaction open across an HTTP round-trip of unbounded
+    // latency. The transaction exists for *this* gear's store; a cross-gear read
+    // belongs in front of it. `api::rest::publish` already resolves its snapshot
+    // this way and this is the same move one door over.
+    //
+    // ### What the move costs, and what pays for it
+    //
+    // Being inside the guard bought one property: a successful retry replayed
+    // the stored response without consulting the registry at all, so neither
+    // registry drift nor a registry outage could turn a replay into an error.
+    // `recorded_response` buys it back. It is a **read, not a claim** — it opens
+    // nothing — so asking it here decides only whether this request has already
+    // been answered, before anything else is done. Two first-time callers both
+    // miss it and the claim inside the transaction still adjudicates which one
+    // performs; nothing about at-most-once moves out of the transaction.
+    let sku_context = {
+        let conn = state
+            .db
+            .conn()
+            .map_err(|e| DomainError::Internal(format!("price authoring connection: {e}")))?;
+        if let Some((status, body)) = state
+            .idempotency
+            .recorded_response(
+                &conn,
+                &scope,
+                tenant,
+                CREATE_PRICE_OPERATION,
+                &client_key,
+                &request_hash,
+                now,
+            )
+            .await
+            .map_err(|e| repo_failure(&e))?
+        {
+            return Ok(replayed(CREATE_PRICE_OPERATION, plan_id, status, &body)?);
+        }
+        authoring_sku_context(
+            &conn,
+            state.catalog.as_ref(),
+            &ctx,
+            &scope,
+            tenant,
+            plan_id,
+            key.sku_id().as_uuid(),
+        )
+        .await?
+    };
+    derive_meter(&mut content, &key, &sku_context.index);
+    require_no_key_contradiction(&key, &content, sku_context)?;
 
     let guard = GuardedRequest {
         operation: CREATE_PRICE_OPERATION,
@@ -816,7 +878,6 @@ async fn create_price(
     };
     let scope_for_body = scope.clone();
     let actor = ctx.subject_id();
-    let catalog = Arc::clone(&state.catalog);
     let outcome = idempotent::guarded(
         &state.db,
         &state.idempotency,
@@ -824,18 +885,6 @@ async fn create_price(
         guard,
         move |txn: &DbTx<'_>| -> TxFuture<'_, PriceRecord> {
             Box::pin(async move {
-                let sku_context = authoring_sku_context(
-                    txn,
-                    catalog.as_ref(),
-                    &ctx,
-                    &scope_for_body,
-                    tenant,
-                    plan_id,
-                    key.sku_id().as_uuid(),
-                )
-                .await?;
-                derive_meter(&mut content, &key, &sku_context.index);
-                require_no_key_contradiction(&key, &content, sku_context)?;
                 require_declared_region(txn, &scope_for_body, tenant, &key).await?;
                 // Minted inside the guarded body for the reason the plan create
                 // states: a replay must answer the FIRST caller's id.

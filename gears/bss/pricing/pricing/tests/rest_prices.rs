@@ -2962,3 +2962,49 @@ async fn republishing_a_plan_whose_already_published_row_names_a_since_deprecate
         "an already-published row naming a since-deprecated SKU must still admit"
     );
 }
+
+/// The registry is read **before** the write transaction opens, not inside it.
+///
+/// D-372 made every price write read the two SKUs it names, and the read went
+/// in beside the mutation, inside `idempotent::guarded`'s transaction. That is
+/// unserveable by an in-process registry: `bss-products` takes a connection of
+/// its own to answer, `Db::conn()` is refused inside a transaction, and the
+/// guard is a task-local rather than a per-`Db` flag — so it fires even though
+/// the registry touches a different gear's store entirely and could not bypass
+/// this transaction if it tried. On benidorm, with both gears in one process,
+/// the whole price plane answered `503` and the log said
+/// `Cannot create non-transactional connection inside an active transaction`.
+///
+/// The placement is wrong for the remote wiring too, which is why the fix is
+/// the placement rather than the guard: `ProductCatalogRestClient` would hold a
+/// Postgres write transaction open across an HTTP round-trip of unbounded
+/// latency. The transaction is for this gear's own store; a cross-gear read
+/// belongs before it.
+///
+/// Every catalog double in this file answers from memory and cannot see the
+/// difference — which is exactly why the fast tier stayed green while the stand
+/// could not write a single row.
+#[tokio::test]
+async fn a_price_write_reads_the_registry_outside_its_transaction() {
+    let catalog = std::sync::Arc::new(rest_support::ConnectionTakingCatalog::new().await);
+    let harness = Harness::new_with_catalog(catalog).await;
+    let plan_id = seeded_plan(&harness).await;
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &prices_path(plan_id),
+            Some(create_body("EU")),
+            &keyed("registry-outside-the-tx"),
+        ))
+        .await;
+
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "a registry that needs its own connection must still be readable: {:?}",
+        body_json(response).await
+    );
+    assert_eq!(price_rows(&harness, plan_id).await.len(), 1);
+}

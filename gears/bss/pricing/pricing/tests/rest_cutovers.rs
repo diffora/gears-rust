@@ -508,3 +508,33 @@ async fn a_pending_usage_unit_replays_without_catalog_reads_but_approved_commit_
     );
     assert_eq!(catalog.reads.load(Ordering::SeqCst), 2);
 }
+
+/// The cutover reads the registry **outside** the transaction it writes in.
+///
+/// `rest_prices.rs`'s `a_price_write_reads_the_registry_outside_its_transaction`
+/// states the defect in full. This is the third door that carries the call, and
+/// its `resolve_skus` arm sits inside `CutoverService`'s own transaction exactly
+/// as the supersession's did.
+#[tokio::test]
+async fn a_cutover_reads_the_registry_outside_its_transaction() {
+    let catalog = std::sync::Arc::new(rest_support::ConnectionTakingCatalog::new().await);
+    let h = Harness::new_with_catalog(catalog).await;
+    let (plan_id, seeded) = published(&h).await;
+
+    let response = h
+        .allowed_as(SUBMITTER)
+        .send(request(
+            "POST",
+            &path(plan_id),
+            Some(cutover_body(seeded.price_id, 12_000)),
+        ))
+        .await;
+
+    let status = response.status();
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "a registry that needs its own connection must still be readable: {}",
+        body_json(response).await
+    );
+}

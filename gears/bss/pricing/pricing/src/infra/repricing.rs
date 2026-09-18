@@ -891,6 +891,46 @@ async fn yield_to_whoever_ended_the_run(
     tally(runner, scope, tenant_id, operation_id).await
 }
 
+/// The policy inputs bound to one plan's registry snapshot, taken on a
+/// connection rather than inside the apply's transaction.
+///
+/// See `apply_by_plan`'s note for why the registry cannot be read from inside
+/// it. The shape is the plan as it stands **before** the apply, and that is the
+/// same SKU set the aggregate pass will judge: a reprice supersedes rows on the
+/// keys they already hold, so it moves amounts and never a `sku_id`.
+///
+/// # Errors
+/// Whatever the plan read, the assembly or the registry answers.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the operands of the two reads it makes: the runner, the unresolved \
+              policies, the security context the registry request needs, the \
+              compiled scope and tenant, the plan, and the instant the assembly \
+              is taken at"
+)]
+async fn resolved_policies_for_plan(
+    runner: &impl toolkit_db::secure::DBRunner,
+    policies: &PolicyObjectRepo,
+    ctx: &SecurityContext,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    now: OffsetDateTime,
+) -> Result<PolicyObjectRepo, DomainError> {
+    let Some(current) = plan_repo::load_current(runner, scope, tenant_id, plan_id)
+        .await
+        .map_err(|e| repo_failure(&e))?
+    else {
+        // No current revision is not this function's refusal to make: the apply
+        // reads the same row inside the transaction and names it there.
+        return Ok(policies.clone());
+    };
+    let shape = assemble_from(runner, scope, tenant_id, plan_id, current, now).await?;
+    policies
+        .resolve_skus(ctx, &crate::infra::row_sku::sku_ids_of_shape(&shape))
+        .await
+}
+
 /// The per-plan loop half of [`apply_run_in`], split out so the closure that
 /// wraps it above has one call to make rather than the loop's own body typed
 /// out a second time.
@@ -963,7 +1003,32 @@ async fn apply_by_plan(
         }
         let row_ids: Vec<Uuid> = rows.iter().map(|row| row.price_id).collect();
         let scope_for_tx = scope.clone();
-        let policies_for_tx = policies.clone();
+        // ## The registry snapshot is resolved on this loop's connection
+        //
+        // `commit_plan_aggregate_in` runs the publish rules over the plan as the
+        // apply leaves it, and those rules read the registry. It cannot read it
+        // from inside the transaction below: in-process, `bss-products` answers
+        // `get_skus` from its own store and takes a `DBProvider::conn()` to do
+        // it, and that call is refused inside any open transaction because the
+        // guard is a **task-local** rather than a per-`Db` flag. Read from in
+        // there the apply answered 503 and the run finished
+        // `CompletedWithConflicts` — a reprice that refused itself.
+        // `api::rest::publish` resolves against a shape assembled outside its own
+        // transaction for the same reason; this is that move, per plan.
+        //
+        // The ids come from the plan **before** the apply, which is the same set:
+        // a reprice supersedes rows on the keys they already hold, so it moves
+        // amounts and never a `sku_id`.
+        let policies_for_tx = resolved_policies_for_plan(
+            &conn,
+            policies,
+            ctx,
+            scope,
+            tenant_id,
+            plan_id,
+            stamp.recorded_at,
+        )
+        .await?;
         let registry_for_tx = Arc::clone(registry);
         let ctx_for_tx = ctx.clone();
         let adjustment_for_tx = adjustment.clone();
@@ -2501,13 +2566,17 @@ async fn commit_plan_aggregate_in(
     let revision_no = current.revision;
     let revision_lifecycle = current.lifecycle_state;
     let shape = assemble_from(txn, scope, tenant_id, plan_id, current, now).await?;
-    let resolved = if policies.sku_index().is_ok() {
-        policies.clone()
-    } else {
-        policies
-            .resolve_skus(ctx, &crate::infra::row_sku::sku_ids_of_shape(&shape))
-            .await?
-    };
+    // Resolved by `apply_by_plan` before this transaction opened — its note
+    // carries the argument. Unresolved here is a wiring fault rather than a race:
+    // every caller of this function resolves in front of it, so it is refused
+    // rather than papered over with a read this transaction cannot make.
+    let resolved = policies.clone();
+    if resolved.sku_index().is_err() {
+        return Err(DomainError::catalog_version_unavailable(format!(
+            "product catalog snapshot not resolved before the apply transaction for plan \
+             {plan_id}"
+        )));
+    }
     let params = rule_params(&resolved, txn, scope, tenant_id, &shape).await?;
     let report = run_publish_rules(&shape, &params);
     if !report.is_publishable() {

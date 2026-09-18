@@ -661,14 +661,72 @@ impl SupersessionService {
         }
     }
 
+    /// The registry snapshot this act will be judged against, resolved **before**
+    /// the writing transaction opens — and `None` when it will not be needed.
+    ///
+    /// ## Why it cannot be resolved inside the transaction
+    ///
+    /// The registry is another gear. In-process (`#[toolkit::provides]`'s default
+    /// wiring) `bss-products` answers `get_skus` from its own store and takes a
+    /// `DBProvider::conn()` to do it; `Db::conn()` is refused inside an open
+    /// transaction, and the guard is a **task-local** rather than a per-`Db`
+    /// flag, so it fires on that sibling provider too — a store this caller could
+    /// not bypass its own transaction through. Read from inside, the call answers
+    /// `Cannot create non-transactional connection inside an active transaction`
+    /// and the door answers 503. The remote wiring would "work" and be worse: an
+    /// HTTP round-trip of unbounded latency with a Postgres write transaction
+    /// held open across it.
+    ///
+    /// ## Why it is an `Option` rather than always resolved
+    ///
+    /// A pending replay must be answerable **with the registry down**, and must
+    /// read it zero times — `rest_supersessions`'
+    /// `a_pending_usage_unit_replays_without_catalog_reads_but_approved_commit_revalidates`
+    /// pins both halves, and being inside the transaction used to give them for
+    /// free. So the same two reads the transaction opens with are taken here
+    /// first, and the registry is asked only when they say this is a fresh act.
+    /// The transaction re-reads and re-decides regardless: this is a *pre*-read,
+    /// never the authority.
+    async fn snapshot_for(
+        &self,
+        ctx: &SecurityContext,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        request: &SupersessionRequest,
+        now: OffsetDateTime,
+    ) -> Result<Option<Arc<crate::domain::registry_view::SkuIndex>>, DomainError> {
+        // `supersede_in`'s own first step, so a malformed request is refused by
+        // its own code here rather than by whatever the context read trips over.
+        refuse_from_the_request_alone(request)?;
+        let conn = self
+            .db
+            .conn()
+            .map_err(|e| DomainError::Internal(format!("supersession pre-read connection: {e}")))?;
+        let context = read_unit_context(&conn, scope, tenant_id, &request.key, now).await?;
+        if pending_replay(&conn, scope, tenant_id, &context, request, now)
+            .await?
+            .is_some()
+        {
+            return Ok(None);
+        }
+        let ids = crate::infra::row_sku::named_sku_ids([
+            request.key.sku_id().as_uuid(),
+            context.shape.sku_id,
+        ]);
+        crate::infra::row_sku::sku_index_for(self.catalog.as_ref(), ctx, &ids)
+            .await
+            .map(Some)
+    }
+
     /// Compose and, if it may, commit one supersession
     /// (`POST /plans/{planId}/supersessions`).
     ///
-    /// The whole act in **one** transaction of this service's own. See [`supersede_in`]
-    /// for the order and why every step is where it is.
+    /// The whole act in **one** transaction of this service's own, with the
+    /// registry snapshot resolved in front of it ([`Self::snapshot_for`]). See
+    /// [`supersede_in`] for the order and why every step is where it is.
     ///
     /// # Errors
-    /// [`supersede_in`]'s, exactly.
+    /// [`supersede_in`]'s, exactly, plus [`Self::snapshot_for`]'s.
     pub async fn supersede(
         &self,
         ctx: &SecurityContext,
@@ -678,7 +736,9 @@ impl SupersessionService {
         verdict_json: VerdictJson,
         stamp: AuditStamp,
     ) -> Result<SupersessionOutcome, DomainError> {
-        let catalog = Arc::clone(&self.catalog);
+        let snapshot = self
+            .snapshot_for(ctx, scope, tenant_id, &request, stamp.recorded_at)
+            .await?;
         let ctx = ctx.clone();
         let scope = scope.clone();
         let registry = Arc::clone(&self.registry);
@@ -699,7 +759,7 @@ impl SupersessionService {
                     // act, against that size on every task's stack.
                     Box::pin(supersede_in(
                         txn,
-                        catalog.as_ref(),
+                        snapshot,
                         &registry,
                         &ctx,
                         &scope,
@@ -902,7 +962,7 @@ fn refuse_from_the_request_alone(request: &SupersessionRequest) -> Result<(), Do
 )]
 pub async fn supersede_in(
     txn: &DbTx<'_>,
-    catalog: &dyn crate::domain::ports::ProductCatalogClientV1,
+    snapshot: Option<Arc<crate::domain::registry_view::SkuIndex>>,
     registry: &Arc<dyn CatalogVersionRegistryV1>,
     ctx: &SecurityContext,
     scope: &AccessScope,
@@ -925,11 +985,20 @@ pub async fn supersede_in(
     if let Some(outcome) = pending_replay(txn, scope, tenant_id, &context, request, now).await? {
         return Ok(outcome);
     }
-    let ids = crate::infra::row_sku::named_sku_ids([
-        request.key.sku_id().as_uuid(),
-        context.shape.sku_id,
-    ]);
-    let index = crate::infra::row_sku::sku_index_for(catalog, ctx, &ids).await?;
+    // The snapshot is resolved by [`SupersessionService::supersede`], **before**
+    // this transaction opens — see its doc for why the registry cannot be read
+    // from in here. It is absent only when the pre-read above judged this act a
+    // replay and the re-read inside the transaction has just disagreed: a
+    // concurrent decision on the staged unit, in the window between the two. The
+    // act is retryable and nothing has been written, so it is refused as exactly
+    // that rather than by reaching for a registry this transaction cannot read.
+    // `PolicyObjectRepo::sku_index` refuses an unresolved snapshot in the same
+    // words for the same reason.
+    let index = snapshot.ok_or_else(|| {
+        DomainError::catalog_version_unavailable(
+            "product catalog snapshot not resolved: the staged unit was decided while this              supersession was being judged; retry",
+        )
+    })?;
     if let Some(staged) = &context.staged {
         crate::infra::row_sku::validate(
             &staged.content(),
@@ -1709,7 +1778,7 @@ async fn read_unit_context(
 mod supersession_tests;
 
 async fn pending_replay(
-    txn: &DbTx<'_>,
+    txn: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
     context: &UnitContext,
