@@ -4,6 +4,8 @@
 //! [`super::window_repo::schedule`]: callers own the transaction. Replacement is
 //! wholesale for one owner revision; this module does not open a successor.
 
+use std::collections::HashSet;
+
 use sea_orm::ActiveValue::Set;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
 use toolkit_db::secure::{
@@ -20,6 +22,7 @@ use crate::infra::storage::repo::check_authored_instant;
 use crate::infra::storage::repo::draft_window_repo::{
     require_draft_owner, require_price_on_plan, stored_revision,
 };
+use crate::infra::storage::repo::price_repo::{self, CANDIDATE_ROW_STATES};
 use crate::infra::storage::repo::window_repo;
 
 /// List the captured live-window references of one owner revision, ordered by
@@ -105,8 +108,10 @@ pub async fn replace(
 /// Capture the plan's committed live windows as this draft owner's baseline.
 ///
 /// Binding is by `price_id`: an authored scope-key change does not retarget
-/// captured intervals onto another row. Membership, ids, operator versions and
-/// intervals come from the live plane under the caller's guard.
+/// captured intervals onto another row. Membership is the publish candidate set
+/// ([`CANDIDATE_ROW_STATES`]): superseded prices keep their live windows for
+/// activation, but those windows are not compose operands. Ids, operator
+/// versions and intervals come from the live plane under the caller's guard.
 ///
 /// # Errors
 /// The same refusals as [`replace`].
@@ -120,12 +125,16 @@ pub async fn replace_from_live(
     replace(runner, scope, owner, &captured).await
 }
 
-/// The plan's live `pricing_price_window` rows as baseline references, without
-/// writing. Frozen-revision assemble uses this so leftover draft creates are not
-/// re-applied against the candidate set.
+/// The plan's live `pricing_price_window` rows on Published+Draft prices, as
+/// baseline references, without writing.
+///
+/// Superseded covering stays on the live table. Frozen assemble, successor
+/// capture and captured-baseline drift all use this membership so a leftover
+/// predecessor window cannot fail compose as `not in the draft candidate set`.
 ///
 /// # Errors
-/// [`RepoError::Db`] / [`RepoError::CorruptRow`] from the live list.
+/// [`RepoError::Db`] / [`RepoError::CorruptRow`] from the live list or the
+/// candidate-row load.
 pub async fn snapshot_live(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -133,8 +142,12 @@ pub async fn snapshot_live(
     plan_id: PlanId,
 ) -> Result<Vec<WindowBaseline>, RepoError> {
     let live = window_repo::list_for_plan(runner, scope, tenant_id, plan_id).await?;
+    let candidates =
+        price_repo::load_for_plan(runner, scope, tenant_id, plan_id, CANDIDATE_ROW_STATES).await?;
+    let ids: HashSet<Uuid> = candidates.into_iter().map(|row| row.price_id).collect();
     Ok(live
         .into_iter()
+        .filter(|row| ids.contains(&row.price_id))
         .map(|row| WindowBaseline {
             window_id: row.window_id,
             price_id: row.price_id,

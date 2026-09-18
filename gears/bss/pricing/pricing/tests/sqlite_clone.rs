@@ -42,7 +42,9 @@ use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::contracts::{
     EntitlementGrants, GrantSet, PlanChangeContract, UsageCounterOnPlanChange,
 };
-use bss_pricing::domain::draft_window::DraftWindowOwner;
+use bss_pricing::domain::draft_window::{
+    DraftStart, DraftWindowAction, DraftWindowEntry, DraftWindowOwner, compose_windows,
+};
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::instant::utc_ymd_hms;
 use bss_pricing::domain::lifecycle::LifecycleState;
@@ -55,6 +57,7 @@ use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use bss_pricing::infra::clone::{CloneNotice, CloneReceipt, SeededPhaseOrigin, clone_plan_on};
+use bss_pricing::infra::draft_window::{self, DraftWindowCommand};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{
     BundleComponentDraft, BundleRepo, CompositionDraft, NewBundle, NewPlanDraft, NewPriceDraft,
@@ -64,7 +67,7 @@ use bss_pricing::infra::storage::repo::{
 use time::OffsetDateTime;
 
 use sea_orm_migration::MigratorTrait;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use toolkit_db::migration_runner::run_migrations_for_testing;
 use toolkit_db::secure::AccessScope;
 use toolkit_db::secure::TxError;
@@ -1513,6 +1516,132 @@ async fn a_successor_captures_the_predecessors_live_window_ids() {
         intentions.is_empty(),
         "a successor starts with empty intentions; predecessor draft rows stay on \
          the frozen revision: {intentions:?}"
+    );
+}
+
+/// A superseded predecessor keeps its live window (activation still expires it).
+/// Opening a successor must capture only Published+Draft candidates, so compose
+/// and a later draft write do not see `not in the draft candidate set` or
+/// `WINDOW_BASELINE_CHANGED` from that leftover covering.
+#[tokio::test]
+async fn a_successor_omits_superseded_prices_live_windows_from_the_baseline() {
+    let h = harness().await;
+    seed_source(&h).await;
+    let conn = h.provider.conn().expect("conn");
+    let superseded_price = Uuid::from_u128(0xb_0001);
+    let kept_a = Uuid::from_u128(0xb_0002);
+    let kept_b = Uuid::from_u128(0xb_0004);
+    // Live/historical: the predecessor's covering stays on `pricing_price_window`.
+    let superseded_window =
+        common::schedule_coverage_window(&conn, &h.scope, TENANT, superseded_price, stamp()).await;
+    let kept_a_window =
+        common::schedule_coverage_window(&conn, &h.scope, TENANT, kept_a, stamp()).await;
+    let kept_b_window =
+        common::schedule_coverage_window(&conn, &h.scope, TENANT, kept_b, stamp()).await;
+    common::supersede_row_directly(&h.provider, &h.scope, superseded_price).await;
+
+    let opened = h
+        .plans
+        .open_revision(&h.scope, TENANT, source_plan(), stamp())
+        .await
+        .expect("open the successor");
+    let owner = DraftWindowOwner {
+        tenant_id: TENANT,
+        plan_id: source_plan().get(),
+        plan_revision: opened.revision,
+    };
+    let baseline = window_baseline_repo::list(&conn, &h.scope, &owner)
+        .await
+        .expect("read the successor baseline");
+    let captured_prices: HashSet<Uuid> = baseline.iter().map(|row| row.price_id).collect();
+    assert!(
+        !captured_prices.contains(&superseded_price),
+        "superseded covering must stay off the draft baseline: {baseline:?}"
+    );
+    assert_eq!(
+        captured_prices,
+        HashSet::from([kept_a, kept_b]),
+        "the successor captures only still-candidate live windows: {baseline:?}"
+    );
+    assert!(
+        !baseline
+            .iter()
+            .any(|row| row.window_id == superseded_window.window_id)
+    );
+    assert!(
+        baseline
+            .iter()
+            .any(|row| row.window_id == kept_a_window.window_id)
+    );
+    assert!(
+        baseline
+            .iter()
+            .any(|row| row.window_id == kept_b_window.window_id)
+    );
+
+    let keys: BTreeMap<Uuid, bss_pricing::domain::scope_key::ScopeKey> = price_repo::load_for_plan(
+        &conn,
+        &h.scope,
+        TENANT,
+        source_plan(),
+        &[LifecycleState::Published, LifecycleState::Draft],
+    )
+    .await
+    .expect("load candidate rows")
+    .into_iter()
+    .map(|row| (row.price_id, row.scope_key))
+    .collect();
+    assert!(
+        !keys.contains_key(&superseded_price),
+        "the superseded row is not a compose candidate"
+    );
+    compose_windows(&baseline, &[], &keys, stamp().recorded_at)
+        .expect("compose must not refuse leftover superseded covering");
+
+    let extra = Uuid::from_u128(0xb_0005);
+    h.prices
+        .create_draft(
+            &h.scope,
+            TENANT,
+            NewPriceDraft {
+                price_id: extra,
+                scope_key: key_in(
+                    source_plan(),
+                    trial_phase(),
+                    PriceEligibility::AllSubscriptions,
+                    Cohort::None,
+                    "ap",
+                ),
+                content: flat_row(),
+                created_by: ACTOR,
+                created_at_utc: at(10),
+                correlation_id: CORRELATION,
+            },
+        )
+        .await
+        .expect("author a new candidate row on the successor");
+    let extra_window = Uuid::from_u128(0xb_0f05);
+    draft_window::apply_command(
+        &conn,
+        &h.scope,
+        &owner,
+        opened.row_version.get(),
+        DraftWindowCommand::Put(DraftWindowEntry {
+            operation_id: extra_window,
+            action: DraftWindowAction::Create {
+                window_id: extra_window,
+                price_id: extra,
+                start: DraftStart::AtPublish,
+                effective_to: None,
+            },
+            reason_code: "launch".to_owned(),
+        }),
+        stamp(),
+    )
+    .await
+    .expect(
+        "a draft write after open_revision must not see WINDOW_BASELINE_CHANGED from \
+         the superseded predecessor window",
     );
 }
 

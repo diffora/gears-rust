@@ -2156,6 +2156,16 @@ pub async fn load_for_plan(
     load_page(runner, scope, tenant_id, plan_id, states, None, None).await
 }
 
+/// Published plus draft: the candidate set assemble, coverage, and draft-window
+/// baseline capture share. `superseded` and `abandoned` are out — a superseded
+/// row's live window stays on `pricing_price_window` for activation, but is not
+/// a compose operand.
+///
+/// Re-exported as [`crate::infra::publish::CANDIDATE_ROW_STATES`] so existing
+/// readers keep one name.
+pub(crate) const CANDIDATE_ROW_STATES: &[LifecycleState] =
+    &[LifecycleState::Published, LifecycleState::Draft];
+
 /// [`load_for_plan`] over several plans in one round trip.
 ///
 /// A caller holding a set of plans and calling the singular form per plan pays

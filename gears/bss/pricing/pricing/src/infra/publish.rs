@@ -73,7 +73,7 @@
 //! the surface's choice, because the submit path wants to *show* a report while
 //! the commit path wants to *fail* on one.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use toolkit_db::secure::{AccessScope, DBRunner};
@@ -114,16 +114,17 @@ use time::OffsetDateTime;
 
 /// The lifecycle states a publish subject's candidate row set is drawn from.
 ///
-/// Written down once, here, because it is the single most consequential line in
-/// the assembler — see the module doc. `superseded` and `abandoned` are absent
-/// deliberately and their absence is the rule.
+/// Written down once — see [`crate::infra::storage::repo::price_repo::CANDIDATE_ROW_STATES`] — because it is
+/// the single most consequential line in the assembler. `superseded` and
+/// `abandoned` are absent deliberately and their absence is the rule. Baseline
+/// capture uses the same slice so a successor does not compose leftover
+/// covering from superseded prices.
 ///
 /// `pub(crate)` for one reader: `api::rest::windows`' coverage report ranges over
 /// the same set, because a remediation surface that answered about a different row
 /// set from the check whose failure sent the operator there would tell them to fix
 /// something else.
-pub(crate) const CANDIDATE_ROW_STATES: &[LifecycleState] =
-    &[LifecycleState::Published, LifecycleState::Draft];
+pub(crate) use crate::infra::storage::repo::price_repo::CANDIDATE_ROW_STATES;
 
 /// The publish engine, as the surfaces and the commit path see it.
 ///
@@ -1351,14 +1352,10 @@ pub(crate) async fn assemble_from(
         // (published or retired current alike — an approve after a repo-level
         // retire still has to re-derive the same pin).
         draft_window_entries.clear();
-        let live = window_baseline_repo::snapshot_live(runner, scope, tenant_id, plan_id)
+        // Same candidate-filtered snapshot successor capture and drift use.
+        window_baseline = window_baseline_repo::snapshot_live(runner, scope, tenant_id, plan_id)
             .await
             .map_err(|e| repo_failure(&e))?;
-        let candidates: HashSet<Uuid> = shape.rows.iter().map(|row| row.price_id).collect();
-        window_baseline = live
-            .into_iter()
-            .filter(|row| candidates.contains(&row.price_id))
-            .collect();
     }
     shape.draft_window_entries = draft_window_entries;
     shape.window_baseline = window_baseline;

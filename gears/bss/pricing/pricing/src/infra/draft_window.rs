@@ -14,11 +14,10 @@ use uuid::Uuid;
 use crate::domain::audit::{AuditAction, AuditStamp};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::draft_window::{
-    DraftWindowAction, DraftWindowEntry, DraftWindowOwner, WindowBaseline, compose_windows,
+    DraftWindowAction, DraftWindowEntry, DraftWindowOwner, compose_windows,
 };
 use crate::domain::error::DomainError;
 use crate::domain::scope_key::{PlanId, ScopeKey};
-use crate::domain::window::WindowState;
 use crate::infra::publish::CANDIDATE_ROW_STATES;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::repo::plan_repo::{
@@ -26,7 +25,7 @@ use crate::infra::storage::repo::plan_repo::{
 };
 use crate::infra::storage::repo::plan_shape_repo::plan_revision_bump;
 use crate::infra::storage::repo::{
-    draft_window_repo, price_repo, window_baseline_repo, window_guard_repo, window_repo,
+    draft_window_repo, price_repo, window_baseline_repo, window_guard_repo,
 };
 use crate::infra::storage::repo_failure;
 
@@ -123,10 +122,9 @@ pub async fn apply_command(
             compose_windows(&baseline, &entries, &keys, evaluated_at)?;
         }
         DraftWindowCommand::RefreshBaseline => {
-            let live = map_repo_result(
-                window_repo::list_for_plan(runner, scope, owner.tenant_id, plan_id).await,
+            let captured = map_repo_result(
+                window_baseline_repo::snapshot_live(runner, scope, owner.tenant_id, plan_id).await,
             )?;
-            let captured: Vec<WindowBaseline> = live.into_iter().map(baseline_of_live).collect();
             map_repo_result(window_baseline_repo::replace(runner, scope, owner, &captured).await)?;
             let entries = map_repo_result(draft_window_repo::list(runner, scope, owner).await)?;
             let mut kept = Vec::new();
@@ -186,23 +184,30 @@ pub async fn apply_command(
 }
 
 /// Compare captured baseline IDs, operator versions, interval fields and
-/// membership against the live window plane under the caller's guard.
+/// membership against the candidate-filtered live window plane under the
+/// caller's guard.
 ///
-/// Clock-only activation/expiry leaves those fields unchanged, so it does not
-/// conflict. A newly committed window, or any operator edit of a captured one,
-/// is [`DomainError::WindowBaselineChanged`].
+/// Membership is [`CANDIDATE_ROW_STATES`]: superseded covering stays on the live
+/// table and is omitted here, matching successor capture. Clock-only
+/// activation/expiry leaves captured fields unchanged, so it does not conflict.
+/// A newly committed window on a candidate price, or any operator edit of a
+/// captured one, is [`DomainError::WindowBaselineChanged`].
 pub(crate) async fn refuse_captured_baseline_drift(
     runner: &impl DBRunner,
     scope: &AccessScope,
     owner: &DraftWindowOwner,
 ) -> Result<(), DomainError> {
-    let live = map_repo_result(
-        window_repo::list_for_plan(runner, scope, owner.tenant_id, PlanId::new(owner.plan_id))
-            .await,
+    let mut live_view = map_repo_result(
+        window_baseline_repo::snapshot_live(
+            runner,
+            scope,
+            owner.tenant_id,
+            PlanId::new(owner.plan_id),
+        )
+        .await,
     )?;
-    let captured = map_repo_result(window_baseline_repo::list(runner, scope, owner).await)?;
-    let mut live_view: Vec<WindowBaseline> = live.into_iter().map(baseline_of_live).collect();
-    let mut captured_view = captured;
+    let mut captured_view =
+        map_repo_result(window_baseline_repo::list(runner, scope, owner).await)?;
     live_view.sort_by_key(|row| row.window_id);
     captured_view.sort_by_key(|row| row.window_id);
     if live_view == captured_view {
@@ -213,17 +218,6 @@ pub(crate) async fn refuse_captured_baseline_drift(
          intervals or membership); refresh the baseline and reapprove"
             .to_owned(),
     ))
-}
-
-fn baseline_of_live(row: crate::infra::storage::repo::window_repo::WindowRecord) -> WindowBaseline {
-    WindowBaseline {
-        window_id: row.window_id,
-        price_id: row.price_id,
-        mutation_seq: row.mutation_seq,
-        effective_from: row.effective_from,
-        effective_to: row.effective_to,
-        cancelled: row.state == WindowState::Cancelled,
-    }
 }
 
 async fn refuse_stale_baseline(

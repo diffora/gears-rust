@@ -425,6 +425,30 @@ pub async fn publish_row_directly(
     assert_eq!(result.rows_affected, 1, "the seed must have moved one row");
 }
 
+/// Move a published price row to `superseded` directly, past the engine.
+///
+/// The live `pricing_price_window` on the row is left in place: activation still
+/// expires superseded covering, and draft baseline capture must omit it.
+pub async fn supersede_row_directly(
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+    price_id: Uuid,
+) {
+    let conn = provider.conn().expect("conn");
+    let result = price::Entity::update_many()
+        .secure()
+        .scope_with(scope)
+        .col_expr(
+            price::Column::LifecycleState,
+            Expr::value(LifecycleState::Superseded.as_str()),
+        )
+        .filter(Condition::all().add(price::Column::PriceId.eq(price_id)))
+        .exec(&conn)
+        .await
+        .expect("supersede the seeded row");
+    assert_eq!(result.rows_affected, 1, "the seed must have moved one row");
+}
+
 /// Move a plan revision to `superseded` directly, past the engine.
 ///
 /// [`publish_plan_directly`] is a blunt UPDATE and does not demote the revision it
