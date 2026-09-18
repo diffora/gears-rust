@@ -240,6 +240,7 @@ use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
 use crate::api::rest::preconditions;
+use toolkit::api::operation_builder::OperationBuilderODataExt as _;
 // One parse for one wire shape: the `attributes` payload is identical at both
 // doors, and two spellings of it would be a second contract for one set of
 // rows. The Product door declares it; this one reuses it, the same direction
@@ -387,6 +388,8 @@ impl From<SkuRecord> for SkuView {
 /// [`crate::api::rest::products::router`]'s doc for why this registers its
 /// own absolute path rather than being nested by a caller.
 pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Router {
+    let router = register_list_door(Router::new(), openapi);
+
     let router = OperationBuilder::get("/bss-products/v1/skus/{id}")
         .operation_id("bss_products.get_sku")
         .summary("Read a SKU head")
@@ -409,7 +412,7 @@ pub(crate) fn router(state: Arc<ApiState>, openapi: &dyn OpenApiRegistry) -> Rou
         .error_404(openapi)
         .error_500(openapi)
         .error_503(openapi)
-        .register(Router::new(), openapi);
+        .register(router, openapi);
 
     let router = OperationBuilder::post("/bss-products/v1/skus")
         .operation_id("bss_products.create_sku")
@@ -840,6 +843,82 @@ fn register_cancel_retire_door(router: Router, openapi: &dyn OpenApiRegistry) ->
         .error_500(openapi)
         .error_503(openapi)
         .register(router, openapi)
+}
+
+/// Register the authoring collection independently of the point and mutation doors.
+fn register_list_door(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+    OperationBuilder::get("/bss-products/v1/skus")
+        .operation_id("bss_products.list_skus")
+        .summary("List and search current Sku heads")
+        .description(
+            "Returns current authoring heads in every lifecycle state, including draft, \
+             retired and discarded, without waiting for catalog projection. Gates on \
+             `sku x read`, scoped to the caller's tenant and PDP constraints. \
+             Each item has the same shape as GET /skus/{id}, including internal_revision. \
+             Supports OData $filter and $orderby; $select is refused. Default order: sku_code asc, sku_id asc. \
+             This is a live keyset walk, not a snapshot across concurrent edits.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .with_odata_filter::<repo::SkuHeadFilterField>()
+        .query_param("$orderby", false, "Orderable fields: sku_id, product_id, sku_code, lifecycle_state, sellable, internal_revision, published_version. Nullable fields cannot be order keys.")
+        .query_param_typed("limit", false, "Page size: default 50, capped at 200. Alias: $top.", "integer")
+        .query_param("cursor", false, "Opaque next_cursor or prev_cursor. Alias: $skiptoken. Keep the same filter; omit $orderby on continuation.")
+        .handler(list_skus)
+        .json_response_with_schema::<toolkit_odata::Page<SkuView>>(openapi, StatusCode::OK, "One page of current heads.")
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi)
+}
+
+/// `GET /skus`: current heads, including drafts and terminal states.
+async fn list_skus(
+    Extension(state): Extension<Arc<ApiState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    axum::extract::Query(raw): axum::extract::Query<std::collections::HashMap<String, String>>,
+    toolkit::api::odata::OData(odata): toolkit::api::odata::OData,
+) -> Result<axum::Json<toolkit_odata::Page<SkuView>>, CanonicalError> {
+    use crate::api::rest::odata as query;
+
+    let ctx = require_authenticated(extension_ctx)?;
+    let scope = crate::authz::access_scope(
+        &enforcer,
+        &ctx,
+        &crate::authz::resource_types::SKU,
+        crate::authz::actions::READ,
+        None,
+        None,
+        true,
+    )
+    .await
+    .map_err(|e| {
+        authz_error_to_canonical(e, |reason| {
+            SkuResource::permission_denied()
+                .with_reason(reason)
+                .create()
+        })
+    })?;
+    query::reject_undeclared_query_params(&raw, query::QueryFamily::Odata, &[])?;
+    query::reject_unsupported_odata_options(&odata, None, None, Some(query::NO_SELECT))?;
+    let conn = state
+        .db
+        .conn()
+        .map_err(|e| CanonicalError::internal(format!("bss-products: db conn: {e}")).create())?;
+    let page = repo::list_skus_page(
+        &conn,
+        &scope,
+        ctx.subject_tenant_id(),
+        &odata,
+        query::LISTING_LIMIT_CFG,
+    )
+    .await
+    .map_err(|e| query::head_list_error_to_canonical("skus", &e))?;
+    Ok(axum::Json(page.map_items(SkuView::from)))
 }
 
 /// `GET /skus/{id}`. See `products::get_product`'s doc

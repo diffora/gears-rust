@@ -352,6 +352,18 @@ pub(crate) fn odata_error_to_canonical(door: &str, err: &toolkit_odata::Error) -
     DomainError::Validation(report).into()
 }
 
+/// Preserve the head decoder's corruption classification when assembling a list.
+pub(crate) fn head_list_error_to_canonical(
+    door: &str,
+    error: &crate::infra::storage::repo::HeadListError,
+) -> CanonicalError {
+    use toolkit_db::odata::sea_orm_filter::PaginateOdataTryError;
+    match error {
+        PaginateOdataTryError::OData(error) => odata_error_to_canonical(door, error),
+        PaginateOdataTryError::MapError(error) => super::repo_error_to_canonical(error),
+    }
+}
+
 #[cfg(test)]
 #[path = "odata_tests.rs"]
 mod tests;

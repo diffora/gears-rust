@@ -9349,3 +9349,6 @@ async fn an_over_long_idempotency_key_is_refused_and_the_cap_is_admitted() {
         "the cap is admitted"
     );
 }
+
+#[path = "head_list_tests.rs"]
+mod head_list_tests;

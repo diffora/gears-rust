@@ -197,6 +197,45 @@ caller — `PreAuthorized` is never wire-visible (§2 publish). The transition f
 of its own: `draft→published` and `draft→discarded` are the publish and discard doors above, and
 its **three remaining** edges are driven by slice 04's surfaces.
 
+### List and search current Product and SKU heads
+
+`GET /bss-products/v1/products` and `GET /bss-products/v1/skus` serve the authoring
+collections under `product × read` and `sku × read`, respectively (owner-approved,
+2026-09-18). Both read the current head tables, constrained by the PDP's `AccessScope`
+**and** the caller's tenant. They include all five lifecycle states by default:
+`draft`, `published`, `deprecated`, `retired`, and `discarded`. They do not depend on
+the read projector; `/browse` remains the published/deprecated catalog surface.
+
+Each answer is `{items, page_info}`. Items use the same `ProductView` or `SkuView` as
+the corresponding point GET, including `internal_revision`. To obtain an HTTP `ETag`
+for a subsequent edit, use `GET /{products|skus}/{id}`; a collection has no per-item
+ETag response header.
+
+| Collection | `$filter` fields | Default order |
+|---|---|---|
+| Products | `product_id`, `brand_id`, `name`, `product_code`, `lifecycle_state`, `internal_revision`, `published_version` | `name asc, product_id asc` |
+| SKUs | `sku_id`, `product_id`, `sku_code`, `lifecycle_state`, `sku_type`, `sellable`, `internal_revision`, `published_version` | `sku_code asc, sku_id asc` |
+
+String search uses `contains` or `startswith`; exact matching uses `eq`. For example:
+
+```text
+GET /bss-products/v1/products?$filter=contains(name,'Cloud') and lifecycle_state eq 'draft'
+GET /bss-products/v1/skus?$filter=product_id eq 00000000-0000-0000-0000-000000000123 and sellable eq true
+```
+
+Clients must URL-encode query values. `$orderby` accepts the listed fields except
+nullable `product_code` and `sku_type`; those are filterable but not orderable.
+Pagination uses `limit` (alias `$top`), default 50 and capped at 200, and `cursor`
+(alias `$skiptoken`). `page_info` contains `next_cursor`, `prev_cursor`, and `limit`.
+On continuation keep the same `$filter` and omit `$orderby`. Cursors are bound to
+the collection, tenant and filter. This is a live keyset walk, not a snapshot:
+concurrent edits to ordering/filter fields can move rows between pages.
+
+Invalid filters, unknown parameters, unsupported `$select`, and malformed or
+incompatible cursors return **400**. Missing authentication returns **401**, a denied
+or unconstrained grant **403**, and an unavailable PDP **503**. Storage failures are
+**500**; an empty authorized result is **200** with `items: []`.
+
 ### Create a Product
 
 Declared by [`../features/foundation.md`](../features/foundation.md) §2 as `cpt-cf-bss-products-flow-create-product`.

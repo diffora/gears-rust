@@ -1975,6 +1975,7 @@ pub fn effective_odata(
 
 mod bulk;
 mod governance;
+mod head_lists;
 mod increment;
 mod lifecycle;
 mod pii_allowlist;
@@ -1988,6 +1989,7 @@ mod versions;
 
 pub use bulk::*;
 pub use governance::*;
+pub use head_lists::*;
 pub use increment::*;
 pub use lifecycle::*;
 pub use pii_allowlist::*;
