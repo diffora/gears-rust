@@ -3,8 +3,8 @@
 //! Live scheduling stays in [`super`] and still runs through
 //! [`crate::infra::window::WindowService`]. Every draft write shares one
 //! guarded envelope: namespaced digest and revision match are the caller's;
-//! claim, the per-plan serial lock, [`crate::infra::draft_window::apply_command`],
-//! and replay live here. Draft commands never enter `WindowService`.
+//! claim, [`crate::infra::draft_window::apply_command`] (which takes the per-plan
+//! serial lock), and replay live here. Draft commands never enter `WindowService`.
 //!
 //! Recovery routes are still registered by [`super::router`] so the
 //! census-visible `pub fn router` is the mount that carries them. This file
@@ -32,7 +32,7 @@ use crate::domain::error::DomainError;
 use crate::domain::scope_key::PlanId;
 use crate::infra::draft_window::{self, DraftWindowCommand};
 use crate::infra::idempotent::{self, Guarded, GuardedRequest};
-use crate::infra::storage::repo::{draft_window_repo, window_baseline_repo, window_guard_repo};
+use crate::infra::storage::repo::{draft_window_repo, window_baseline_repo};
 use crate::infra::storage::repo_failure;
 use time::OffsetDateTime;
 
@@ -102,7 +102,8 @@ struct WireIdentity {
     reason_code: String,
 }
 
-/// Claim, lock, apply, record — one transaction, every draft write.
+/// Claim, apply, record — one transaction, every draft write.
+/// The per-plan window guard is acquired inside [`apply_command`], not here.
 pub(super) async fn run_draft_command(
     run: DraftCommandRun,
     work: DraftWork,
@@ -130,9 +131,6 @@ pub(super) async fn run_draft_command(
         },
         move |txn| {
             Box::pin(async move {
-                window_guard_repo::acquire(txn, &mutation_scope, tenant, plan_id.get())
-                    .await
-                    .map_err(|e| repo_failure(&e))?;
                 apply_work(txn, &mutation_scope, &owner, expected, stamp, status, work).await
             })
         },

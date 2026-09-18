@@ -432,6 +432,8 @@ impl PlanRepo {
             .db()
             .in_transaction::<PlanRevision, RepoError, _>(move |txn| {
                 Box::pin(async move {
+                    // Guard owner: PlanRepo::update_draft opens this transaction for PATCH /plans.
+                    window_guard_repo::acquire(txn, &scope, tenant_id, plan_id.get()).await?;
                     update_draft_on(
                         txn, &scope, tenant_id, plan_id, revision, expected, patch, stamp,
                     )
@@ -539,6 +541,8 @@ impl PlanRepo {
             .db()
             .in_transaction::<PlanRevision, RepoError, _>(move |txn| {
                 Box::pin(async move {
+                    // Guard owner: PlanRepo::abandon_draft opens this transaction.
+                    window_guard_repo::acquire(txn, &scope, tenant_id, plan_id.get()).await?;
                     let Some(guard) = swap_guard(tenant_id, plan_id, revision, expected) else {
                         return Err(
                             refuse(txn, &scope, tenant_id, plan_id, revision, expected).await
@@ -820,6 +824,8 @@ impl PlanRepo {
             .db()
             .in_transaction::<PlanRevision, RepoError, _>(move |txn| {
                 Box::pin(async move {
+                    // Guard owner: PlanRepo::open_revision opens this transaction.
+                    window_guard_repo::acquire(txn, &scope, tenant_id, plan_id.get()).await?;
                     insert_revision(txn, &scope, row).await?;
                     copy_phases(txn, &scope, tenant_id, plan_id, source, next).await?;
                     copy_addon_rules(txn, &scope, tenant_id, plan_id, source, next).await?;
@@ -2028,6 +2034,9 @@ async fn insert_revision(
         }
     };
     window_guard_repo::ensure(runner, scope, tenant_id, plan_id).await?;
+    // New plan mint: ensure inserts the guard. No concurrent schedule writer can
+    // address this plan_id until this transaction commits, so the mint does not
+    // acquire (the row did not exist).
     Ok(())
 }
 

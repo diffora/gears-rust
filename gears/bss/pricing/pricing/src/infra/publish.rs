@@ -104,7 +104,8 @@ use crate::infra::registry_deadline::request_version_now;
 use crate::infra::storage::repo::{
     NewAuditEntry, NewOutboxEvent, PendingVersionRow, PlanPublishedPayload, PolicyObjectRepo,
     approval_repo, audit_repo, catalog_version_ref_repo, draft_window_repo, outbox_repo, plan_repo,
-    plan_shape_repo, price_repo, taxonomy_repo, window_baseline_repo, window_repo,
+    plan_shape_repo, price_repo, taxonomy_repo, window_baseline_repo, window_guard_repo,
+    window_repo,
 };
 use crate::infra::storage::repo_failure;
 use time::OffsetDateTime;
@@ -560,6 +561,10 @@ impl PublishService {
             .db()
             .in_transaction::<PublishReceipt, DomainError, _>(move |txn| {
                 Box::pin(async move {
+                    // Guard owner: PublishService::commit opens this transaction.
+                    window_guard_repo::acquire(txn, &scope, tenant_id, unit.plan_id.get())
+                        .await
+                        .map_err(|e| repo_failure(&e))?;
                     // 1. The second run. Same assembler, same rule set, same
                     // gate - against the world as it now stands.
                     let shape = assemble(txn, &scope, tenant_id, unit.plan_id, now).await?;
@@ -1251,10 +1256,11 @@ pub(crate) async fn assemble_from(
     // the *shape*, not the draft the shape is assembled from.
     //
     // The five ignored fields are ignored **by name**: `plan_id` and `revision`
-    // are the constructor's own arguments, and `lifecycle_state`, `created_by`,
-    // `created_at_utc` and `row_version` are the row's provenance rather than
-    // its authored content — the rules judge what an author wrote, and the pin
-    // frames the same set.
+    // are the constructor's own arguments, and `created_by`, `created_at_utc`
+    // and `row_version` are the row's provenance rather than its authored
+    // content — the rules judge what an author wrote, and the pin frames the
+    // same set. `lifecycle_state` is read below to know whether a captured
+    // draft-window baseline must still match the live plane.
     let crate::domain::plan::PlanRevision {
         // `plan_id` is the caller's argument; `revision` is bound because the
         // child-table loads below key on it.
@@ -1273,7 +1279,7 @@ pub(crate) async fn assemble_from(
         available_to,
         entitlement_grants,
         change_contract,
-        lifecycle_state: _,
+        lifecycle_state,
         created_by: _,
         created_at_utc: _,
         row_version: _,
@@ -1359,9 +1365,13 @@ pub(crate) async fn assemble_from(
     shape.window_baseline = window_baseline_repo::list(runner, scope, &owner)
         .await
         .map_err(|e| repo_failure(&e))?;
+    if lifecycle_state.is_content_mutable() {
+        crate::infra::draft_window::refuse_captured_baseline_drift(runner, scope, &owner).await?;
+    }
     // Submit and commit re-compose: the pin hashes authoring inputs, the
     // coverage rules judge the time-resolved plane. `AtPublish` stamps
     // `evaluated_at` here and is hashed as the literal `at_publish`.
+    // Time-dependent cancel/adjust permissibility is rechecked here against `now`.
     shape.windows = compose_validation_plane(
         &shape.rows,
         &shape.window_baseline,

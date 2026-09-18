@@ -12,15 +12,18 @@ use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::draft_window::{
     DraftStart, DraftWindowAction, DraftWindowEntry, DraftWindowOwner, WindowBaseline,
 };
+use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::instant::utc_ymd_hms;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::scope_key::PlanId;
+use bss_pricing::infra::draft_window::{self, DraftWindowCommand};
 use bss_pricing::infra::storage::RepoError;
-use bss_pricing::infra::storage::entity::price;
+use bss_pricing::infra::storage::entity::{price, window_guard};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::draft_window_repo;
 use bss_pricing::infra::storage::repo::window_baseline_repo;
 use bss_pricing::infra::storage::repo::window_guard_repo;
+use bss_pricing::infra::storage::repo::window_repo::{self, NewWindow};
 use bss_pricing::infra::storage::repo::{NewPlanDraft, PlanRepo};
 
 use sea_orm::ActiveValue::Set;
@@ -29,7 +32,7 @@ use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use sea_orm_migration::MigratorTrait;
 use time::OffsetDateTime;
 use toolkit_db::migration_runner::run_migrations_for_testing;
-use toolkit_db::secure::{AccessScope, SecureInsertExt, SecureUpdateExt};
+use toolkit_db::secure::{AccessScope, SecureDeleteExt, SecureInsertExt, SecureUpdateExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
 
@@ -556,5 +559,118 @@ async fn a_non_draft_revision_refuses_insert() {
     assert!(
         err.to_string().contains("pricing_draft_window"),
         "must name the draft-window guard, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn apply_command_without_a_guard_row_is_an_error() {
+    let (provider, _plans) = seeded_plan().await;
+    let conn = provider.conn().expect("conn");
+    window_guard::Entity::delete_many()
+        .secure()
+        .scope_with(&scope())
+        .exec(&conn)
+        .await
+        .expect("drop the guard");
+    let err = draft_window::apply_command(
+        &conn,
+        &scope(),
+        &owner(),
+        0,
+        DraftWindowCommand::Put(symbolic_create(Uuid::from_u128(0x_d7_b1))),
+        stamp(),
+    )
+    .await
+    .expect_err("no guard row");
+    assert!(
+        matches!(err, DomainError::NotFound { .. }),
+        "zero affected rows must be NotFound, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn sequential_draft_puts_serialize_as_success_then_success() {
+    let (provider, _plans) = seeded_plan().await;
+    let conn = provider.conn().expect("conn");
+    let first = Uuid::from_u128(0x_d7_c1);
+    let second = Uuid::from_u128(0x_d7_c2);
+    let first_entry = DraftWindowEntry {
+        operation_id: first,
+        action: DraftWindowAction::Create {
+            window_id: first,
+            price_id: ROW,
+            start: DraftStart::AtPublish,
+            effective_to: Some(t(10)),
+        },
+        reason_code: "launch".to_owned(),
+    };
+    let second_entry = DraftWindowEntry {
+        operation_id: second,
+        action: DraftWindowAction::Create {
+            window_id: second,
+            price_id: ROW,
+            start: DraftStart::At(t(10)),
+            effective_to: None,
+        },
+        reason_code: "successor".to_owned(),
+    };
+    let v1 = draft_window::apply_command(
+        &conn,
+        &scope(),
+        &owner(),
+        0,
+        DraftWindowCommand::Put(first_entry),
+        stamp(),
+    )
+    .await
+    .expect("first put");
+    draft_window::apply_command(
+        &conn,
+        &scope(),
+        &owner(),
+        v1,
+        DraftWindowCommand::Put(second_entry),
+        stamp(),
+    )
+    .await
+    .expect("second put");
+    let listed = draft_window_repo::list(&conn, &scope(), &owner())
+        .await
+        .expect("list");
+    assert_eq!(listed.len(), 2);
+}
+
+#[tokio::test]
+async fn a_new_live_window_conflicts_with_an_empty_captured_baseline() {
+    let (provider, _plans) = seeded_plan().await;
+    let conn = provider.conn().expect("conn");
+    window_repo::schedule(
+        &conn,
+        &scope(),
+        NewWindow {
+            window_id: Uuid::from_u128(0x_e1),
+            tenant_id: TENANT,
+            price_id: ROW,
+            effective_from: t(8),
+            effective_to: None,
+            reason_code: "live membership".to_owned(),
+        },
+        stamp(),
+    )
+    .await
+    .expect("schedule a live window the captured baseline does not name");
+    let err = draft_window::apply_command(
+        &conn,
+        &scope(),
+        &owner(),
+        0,
+        DraftWindowCommand::Put(symbolic_create(Uuid::from_u128(0x_d7_c3))),
+        stamp(),
+    )
+    .await
+    .expect_err("new live membership must conflict");
+    assert!(
+        matches!(err, DomainError::WindowBaselineChanged(_)),
+        "WINDOW_BASELINE_CHANGED, got: {err:?}"
     );
 }

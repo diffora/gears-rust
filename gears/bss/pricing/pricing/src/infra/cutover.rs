@@ -66,7 +66,7 @@ use crate::infra::storage::repo::window_repo::{NewWindow, WindowRecord};
 use crate::infra::storage::repo::{
     NewOutboxEvent, NewPriceDraft, PendingVersionRow, PriceUpdatedPayload,
     PriceWindowTransitionPayload, WindowMutationEvent, catalog_version_ref_repo, outbox_repo,
-    plan_repo, price_repo, window_repo,
+    plan_repo, price_repo, window_guard_repo, window_repo,
 };
 use crate::infra::storage::repo_failure;
 use crate::infra::window::VerdictJson;
@@ -815,6 +815,16 @@ pub async fn cutover_in(
     stamp: AuditStamp,
 ) -> Result<CutoverOutcome, DomainError> {
     let now = stamp.recorded_at;
+
+    // Guard owner: cutover_in is the cutover commit transaction.
+    window_guard_repo::acquire(
+        txn,
+        scope,
+        tenant_id,
+        request.predecessor_key.plan_id().get(),
+    )
+    .await
+    .map_err(|e| repo_failure(&e))?;
 
     // 0. The refusal that needs no world at all, answered from the key alone and
     //    ahead of the registry request because it is **permanent** (D-156). A

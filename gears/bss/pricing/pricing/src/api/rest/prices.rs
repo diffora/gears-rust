@@ -155,7 +155,7 @@ use crate::domain::scope_key::{
     ChargeKind, Cohort, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use crate::infra::idempotent::{self, Guarded, GuardedRequest, TxFuture};
-use crate::infra::storage::repo::{NewPriceDraft, price_repo};
+use crate::infra::storage::repo::{NewPriceDraft, price_repo, window_guard_repo};
 use crate::infra::storage::repo_failure;
 use time::OffsetDateTime;
 
@@ -886,6 +886,10 @@ async fn create_price(
         move |txn: &DbTx<'_>| -> TxFuture<'_, PriceRecord> {
             Box::pin(async move {
                 require_declared_region(txn, &scope_for_body, tenant, &key).await?;
+                // Guard owner: HTTP create is the txn owner; create_draft_on stays composable.
+                window_guard_repo::acquire(txn, &scope_for_body, tenant, plan_id.get())
+                    .await
+                    .map_err(|e| repo_failure(&e))?;
                 // Minted inside the guarded body for the reason the plan create
                 // states: a replay must answer the FIRST caller's id.
                 let draft = NewPriceDraft {

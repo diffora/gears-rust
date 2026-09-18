@@ -78,7 +78,7 @@ use bss_pricing::domain::scope_key::PlanId;
 use bss_pricing::domain::window::WindowState;
 use bss_pricing::infra::jobs::window_activation::WindowActivationJob;
 use bss_pricing::infra::storage::RepoError;
-use bss_pricing::infra::storage::entity::{outbox, price};
+use bss_pricing::infra::storage::entity::{outbox, price, window_guard};
 use bss_pricing::infra::storage::repo::window_repo::{self, NewWindow};
 use bss_pricing::infra::storage::repo::{
     NewOutboxEvent, PriceWindowTransitionPayload, outbox_repo,
@@ -157,6 +157,18 @@ async fn seed(pg: &Pg) {
         .exec(&conn)
         .await
         .expect("seed the price row");
+    let guard = window_guard::ActiveModel {
+        tenant_id: Set(TENANT),
+        plan_id: Set(PLAN),
+        serial: Set(0),
+    };
+    window_guard::Entity::insert(guard.clone())
+        .secure()
+        .scope_with_model(&scope(), &guard)
+        .expect("scope the seeded window guard")
+        .exec(&conn)
+        .await
+        .expect("seed the window guard");
     window_repo::schedule(
         &conn,
         &scope(),

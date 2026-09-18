@@ -164,7 +164,7 @@ use crate::domain::instant::format_rfc3339;
 use crate::domain::scope_key::PlanId;
 use crate::infra::storage::repo::window_repo::{DueBoundary, DueWindow};
 use crate::infra::storage::repo::{
-    NewOutboxEvent, PriceWindowTransitionPayload, outbox_repo, window_repo,
+    NewOutboxEvent, PriceWindowTransitionPayload, outbox_repo, window_guard_repo, window_repo,
 };
 use crate::infra::storage::repo_failure;
 use time::OffsetDateTime;
@@ -473,8 +473,9 @@ impl WindowActivationJob {
                 NewOutboxEvent::price_window_expired(window.tenant_id, &payload, now)
             }
         };
-        let (tenant_id, window_id, to, at) = (
+        let (tenant_id, plan_id, window_id, to, at) = (
             window.tenant_id,
+            window.plan_id,
             window.window_id,
             window.boundary.target_state(),
             window.at,
@@ -490,6 +491,12 @@ impl WindowActivationJob {
             .db()
             .in_transaction::<(), DomainError, _>(move |txn| {
                 Box::pin(async move {
+                    // Guard owner: WindowActivationJob::flip opens this transaction.
+                    // Clock-only transitions leave mutation_seq unchanged (window_repo::transition
+                    // advances it only on Cancel) and do not void pending approvals.
+                    window_guard_repo::acquire(txn, &scope, tenant_id, plan_id.get())
+                        .await
+                        .map_err(|e| repo_failure(&e))?;
                     window_repo::transition(txn, &scope, tenant_id, window_id, to, at, stamp)
                         .await
                         .map_err(|e| repo_failure(&e))?;

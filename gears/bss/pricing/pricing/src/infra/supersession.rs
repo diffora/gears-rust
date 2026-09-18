@@ -122,7 +122,8 @@ use crate::infra::storage::repo::outbox_repo::{
 };
 use crate::infra::storage::repo::{
     NewPriceDraft, NewWindow, PendingVersionRow, WindowMutationEvent, WindowRecord, approval_repo,
-    audit_repo, catalog_version_ref_repo, outbox_repo, plan_repo, price_repo, window_repo,
+    audit_repo, catalog_version_ref_repo, outbox_repo, plan_repo, price_repo, window_guard_repo,
+    window_repo,
 };
 use crate::infra::storage::repo_failure;
 use crate::infra::window::VerdictJson;
@@ -975,6 +976,11 @@ pub async fn supersede_in(
 
     // 0 and 0a, both answerable from the request alone.
     refuse_from_the_request_alone(request)?;
+
+    // Guard owner: supersede_in is the supersession commit transaction.
+    window_guard_repo::acquire(txn, scope, tenant_id, request.key.plan_id().get())
+        .await
+        .map_err(|e| repo_failure(&e))?;
 
     // 1. Every fact the judgement needs, read inside the transaction that writes.
     let context = read_unit_context(txn, scope, tenant_id, &request.key, now).await?;

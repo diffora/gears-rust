@@ -270,7 +270,7 @@ use crate::infra::storage::repo::outbox_repo::{NewOutboxEvent, PriceWindowTransi
 use crate::infra::storage::repo::window_repo::{NewWindow, WindowRecord};
 use crate::infra::storage::repo::{
     PendingVersionRow, audit_repo, catalog_version_ref_repo, outbox_repo, plan_repo, price_repo,
-    window_repo,
+    window_guard_repo, window_repo,
 };
 use crate::infra::storage::repo_failure;
 use time::OffsetDateTime;
@@ -1158,6 +1158,33 @@ where
     F: FnOnce(PlanContext) -> Result<Planned, DomainError> + Send,
 {
     let now = stamp.recorded_at;
+    // Guard owner: mutate_in is the live-window orchestration body (HTTP
+    // `WindowService::mutate` / `schedule_in` supply the transaction).
+    let plan_id = match subject {
+        Subject::NewOn { price_id } => {
+            let key = price_repo::load_scope_key(runner, scope, tenant_id, price_id)
+                .await
+                .map_err(|e| repo_failure(&e))?
+                .ok_or_else(|| DomainError::NotFound {
+                    subject: "price row".to_owned(),
+                    id: price_id.to_string(),
+                })?;
+            key.plan_id()
+        }
+        Subject::Existing => {
+            let record = window_repo::find(runner, scope, tenant_id, window_id)
+                .await
+                .map_err(|e| repo_failure(&e))?
+                .ok_or_else(|| DomainError::NotFound {
+                    subject: "price window".to_owned(),
+                    id: window_id.to_string(),
+                })?;
+            record.scope_key.plan_id()
+        }
+    };
+    window_guard_repo::acquire(runner, scope, tenant_id, plan_id.get())
+        .await
+        .map_err(|e| repo_failure(&e))?;
     // 1. Every fact the validation needs, read inside the
     // transaction that writes: a comparison made before it opened
     // is a hint and not a precondition (D-176).

@@ -148,7 +148,7 @@ use crate::infra::storage::repo::approval_repo::{ApprovalRecord, NewApproval};
 use crate::infra::storage::repo::bundle_repo::{self, CompositionDraft};
 use crate::infra::storage::repo::{
     NewAuditEntry, approval_repo, audit_repo, bulk_repo, plan_repo, price_repo,
-    repricing_journal_repo, threshold_repo,
+    repricing_journal_repo, threshold_repo, window_guard_repo,
 };
 use crate::infra::storage::{RepoError, repo_failure};
 use time::OffsetDateTime;
@@ -705,6 +705,10 @@ impl ApprovalService {
             .db()
             .in_transaction::<ApprovalRecord, DomainError, _>(move |txn| {
                 Box::pin(async move {
+                    // Guard owner: ApprovalService::submit opens this transaction.
+                    window_guard_repo::acquire(txn, &scope, tenant_id, plan_id.get())
+                        .await
+                        .map_err(|e| repo_failure(&e))?;
                     let shape =
                         crate::infra::publish::assemble(txn, &scope, tenant_id, plan_id, now)
                             .await?;
@@ -821,6 +825,10 @@ impl ApprovalService {
                 id: price_id.to_string(),
             })?;
         let plan_id = key.plan_id();
+        // Guard owner: submit_window_mutation_on reads the candidate/window set.
+        window_guard_repo::acquire(runner, scope, tenant_id, plan_id.get())
+            .await
+            .map_err(|e| repo_failure(&e))?;
         let revision = plan_repo::load_current(runner, scope, tenant_id, plan_id)
             .await
             .map_err(|e| repo_failure(&e))?
@@ -922,6 +930,10 @@ impl ApprovalService {
                 id: price_id.to_string(),
             })?;
         let plan_id = key.plan_id();
+        // Guard owner: submit_horizon_tightening_on reads the candidate set.
+        window_guard_repo::acquire(runner, scope, tenant_id, plan_id.get())
+            .await
+            .map_err(|e| repo_failure(&e))?;
         let revision = plan_repo::load_current(runner, scope, tenant_id, plan_id)
             .await
             .map_err(|e| repo_failure(&e))?
@@ -1138,6 +1150,10 @@ impl ApprovalService {
     ) -> Result<ApprovalRecord, DomainError> {
         let now = stamp.recorded_at;
         let plan_id = key.plan_id();
+        // Guard owner: submit_supersession_on reads the candidate/window set.
+        window_guard_repo::acquire(runner, scope, tenant_id, plan_id.get())
+            .await
+            .map_err(|e| repo_failure(&e))?;
         let revision = plan_repo::load_current(runner, scope, tenant_id, plan_id)
             .await
             .map_err(|e| repo_failure(&e))?
@@ -1259,6 +1275,10 @@ impl ApprovalService {
             )));
         }
 
+        // Guard owner: submit_cutover_on reads the candidate/window set.
+        window_guard_repo::acquire(runner, scope, tenant_id, plan_id.get())
+            .await
+            .map_err(|e| repo_failure(&e))?;
         let revision = plan_repo::load_current(runner, scope, tenant_id, plan_id)
             .await
             .map_err(|e| repo_failure(&e))?
@@ -1346,6 +1366,10 @@ impl ApprovalService {
         stamp: AuditStamp,
     ) -> Result<ApprovalRecord, DomainError> {
         let now = stamp.recorded_at;
+        // Guard owner: submit_retirement_on reads the candidate/window set.
+        window_guard_repo::acquire(runner, scope, tenant_id, plan_id.get())
+            .await
+            .map_err(|e| repo_failure(&e))?;
         let current = plan_repo::load_current(runner, scope, tenant_id, plan_id)
             .await
             .map_err(|e| repo_failure(&e))?

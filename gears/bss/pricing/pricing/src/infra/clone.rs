@@ -100,6 +100,7 @@ use crate::domain::price_record::PriceRecord;
 use crate::domain::scope_key::{Meter, PhaseId, PlanId, PriceEligibility, ScopeKey};
 use crate::infra::storage::repo::{
     NewBundle, NewPlanDraft, NewPriceDraft, bundle_repo, plan_repo, plan_shape_repo, price_repo,
+    window_guard_repo,
 };
 use crate::infra::storage::repo_failure;
 use std::collections::{BTreeMap, BTreeSet};
@@ -311,6 +312,11 @@ pub async fn clone_plan_on(
     now: OffsetDateTime,
     stamp: AuditStamp,
 ) -> Result<CloneReceipt, DomainError> {
+    // Guard owner: clone_plan_on is the clone transaction. The source plan already
+    // has a guard; the target is minted below and ensure plants its row.
+    window_guard_repo::acquire(runner, scope, tenant_id, source.get())
+        .await
+        .map_err(|e| repo_failure(&e))?;
     let current = plan_repo::load_current(runner, scope, tenant_id, source)
         .await
         .map_err(|e| repo_failure(&e))?

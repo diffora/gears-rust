@@ -41,7 +41,7 @@ use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::window::WindowState;
 use bss_pricing::infra::jobs::window_activation::{ActivationReport, WindowActivationJob};
 use bss_pricing::infra::metrics::test_harness::MetricsHarness;
-use bss_pricing::infra::storage::entity::{outbox, price, price_window};
+use bss_pricing::infra::storage::entity::{outbox, price, price_window, window_guard};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::window_repo::{self, NewWindow};
 
@@ -139,6 +139,13 @@ async fn harness() -> DBProvider<DbError> {
     ] {
         seed_price_row(&provider, tenant, plan, row, charge_kind, lifecycle_state).await;
     }
+    for (tenant, plan) in [
+        (TENANT, PLAN),
+        (TENANT, PLAN_B),
+        (OTHER_TENANT, PLAN_FOREIGN),
+    ] {
+        seed_window_guard(&provider, tenant, plan).await;
+    }
     provider
 }
 
@@ -189,6 +196,22 @@ async fn seed_price_row(
         .exec(&conn)
         .await
         .unwrap_or_else(|e| panic!("seed price row {price_id}: {e}"));
+}
+
+async fn seed_window_guard(provider: &DBProvider<DbError>, tenant_id: Uuid, plan_id: Uuid) {
+    let conn = provider.conn().expect("scoped connection");
+    let row = window_guard::ActiveModel {
+        tenant_id: Set(tenant_id),
+        plan_id: Set(plan_id),
+        serial: Set(0),
+    };
+    window_guard::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(&scope_of(tenant_id), &row)
+        .expect("scope the seeded window guard")
+        .exec(&conn)
+        .await
+        .unwrap_or_else(|e| panic!("seed window guard {plan_id}: {e}"));
 }
 
 /// Move one seeded row along `pricing_price`'s own lifecycle.

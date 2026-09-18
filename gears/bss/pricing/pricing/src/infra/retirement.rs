@@ -97,7 +97,8 @@ use crate::infra::storage::repo::audit_repo::NewAuditEntry;
 use crate::infra::storage::repo::outbox_repo::PriceWindowTransitionPayload;
 use crate::infra::storage::repo::{
     NewOutboxEvent, PendingVersionRow, PlanRetiredPayload, WindowMutationEvent, audit_repo,
-    catalog_version_ref_repo, migration_repo, outbox_repo, plan_repo, price_repo, window_repo,
+    catalog_version_ref_repo, migration_repo, outbox_repo, plan_repo, price_repo,
+    window_guard_repo, window_repo,
 };
 use crate::infra::storage::repo_failure;
 use crate::infra::window::VerdictJson;
@@ -980,6 +981,11 @@ pub async fn retire_in(
     stamp: AuditStamp,
 ) -> Result<RetirementOutcome, DomainError> {
     let now = stamp.recorded_at;
+
+    // Guard owner: retire_in is the retirement commit transaction.
+    window_guard_repo::acquire(txn, scope, tenant_id, plan_id.get())
+        .await
+        .map_err(|e| repo_failure(&e))?;
 
     // 1. and 2.
     let preview = compose_preview(txn, scope, tenant_id, plan_id, now).await?;

@@ -1,10 +1,10 @@
 //! Revision-owned draft-window authoring (D-374).
 //!
-//! The HTTP door owns idempotency, the per-plan serial lock and audit
-//! persistence around this function. [`apply_command`] is the compare-and-swap
+//! The HTTP door owns idempotency and audit persistence around this function.
+//! [`apply_command`] takes the per-plan serial lock, then the compare-and-swap
 //! of the draft parent plus the composition that refuses overlap, empty
-//! intervals, wrong ownership and illegal live-history edits. Coverage holes
-//! are not a save failure.
+//! intervals, wrong ownership, captured-baseline drift and illegal live-history
+//! edits. Coverage holes are not a save failure.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -25,7 +25,9 @@ use crate::infra::storage::repo::plan_repo::{
     load_revision, record_revision_mutation, refuse, swap_guard,
 };
 use crate::infra::storage::repo::plan_shape_repo::plan_revision_bump;
-use crate::infra::storage::repo::{draft_window_repo, price_repo, window_baseline_repo, window_repo};
+use crate::infra::storage::repo::{
+    draft_window_repo, price_repo, window_baseline_repo, window_guard_repo, window_repo,
+};
 use crate::infra::storage::repo_failure;
 
 /// One authoring act against a draft window set.
@@ -45,9 +47,10 @@ pub enum DraftWindowCommand {
 /// # Errors
 /// [`DomainError::DraftWindowContextChanged`] when the owner is no longer an
 /// open draft; [`DomainError::StaleVersion`] when `expected_plan_version` is
-/// not current; [`DomainError::WindowBaselineChanged`] when an adjust or cancel
-/// names a window the captured baseline no longer carries; composition refusals
-/// from [`compose_windows`]; storage failures through [`repo_failure`].
+/// not current; [`DomainError::WindowBaselineChanged`] when the captured live
+/// baseline no longer matches committed windows, or an adjust or cancel names a
+/// window the captured baseline no longer carries; composition refusals from
+/// [`compose_windows`]; storage failures through [`repo_failure`].
 pub async fn apply_command(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -56,6 +59,11 @@ pub async fn apply_command(
     command: DraftWindowCommand,
     stamp: AuditStamp,
 ) -> Result<u64, DomainError> {
+    // Guard owner: apply_command is the draft-window orchestration body.
+    // HTTP `run_draft_command` supplies the transaction and must not acquire again.
+    window_guard_repo::acquire(runner, scope, owner.tenant_id, owner.plan_id)
+        .await
+        .map_err(map_repo)?;
     let plan_id = PlanId::new(owner.plan_id);
     let expected = RowVersion::new(expected_plan_version);
     let Some(guard) = swap_guard(owner.tenant_id, plan_id, owner.plan_revision, expected) else {
@@ -94,6 +102,9 @@ pub async fn apply_command(
 
     let keys = candidate_keys(runner, scope, owner).await?;
     let evaluated_at = stamp.recorded_at;
+    if !matches!(command, DraftWindowCommand::RefreshBaseline) {
+        refuse_captured_baseline_drift(runner, scope, owner).await?;
+    }
 
     match command {
         DraftWindowCommand::Put(entry) => {
@@ -115,17 +126,7 @@ pub async fn apply_command(
             let live = map_repo_result(
                 window_repo::list_for_plan(runner, scope, owner.tenant_id, plan_id).await,
             )?;
-            let captured: Vec<WindowBaseline> = live
-                .into_iter()
-                .map(|row| WindowBaseline {
-                    window_id: row.window_id,
-                    price_id: row.price_id,
-                    mutation_seq: row.mutation_seq,
-                    effective_from: row.effective_from,
-                    effective_to: row.effective_to,
-                    cancelled: row.state == WindowState::Cancelled,
-                })
-                .collect();
+            let captured: Vec<WindowBaseline> = live.into_iter().map(baseline_of_live).collect();
             map_repo_result(window_baseline_repo::replace(runner, scope, owner, &captured).await)?;
             let entries = map_repo_result(draft_window_repo::list(runner, scope, owner).await)?;
             let mut kept = Vec::new();
@@ -182,6 +183,47 @@ pub async fn apply_command(
         .await,
     )?;
     Ok(updated.row_version.get())
+}
+
+/// Compare captured baseline IDs, operator versions, interval fields and
+/// membership against the live window plane under the caller's guard.
+///
+/// Clock-only activation/expiry leaves those fields unchanged, so it does not
+/// conflict. A newly committed window, or any operator edit of a captured one,
+/// is [`DomainError::WindowBaselineChanged`].
+pub(crate) async fn refuse_captured_baseline_drift(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    owner: &DraftWindowOwner,
+) -> Result<(), DomainError> {
+    let live = map_repo_result(
+        window_repo::list_for_plan(runner, scope, owner.tenant_id, PlanId::new(owner.plan_id))
+            .await,
+    )?;
+    let captured = map_repo_result(window_baseline_repo::list(runner, scope, owner).await)?;
+    let mut live_view: Vec<WindowBaseline> = live.into_iter().map(baseline_of_live).collect();
+    let mut captured_view = captured;
+    live_view.sort_by_key(|row| row.window_id);
+    captured_view.sort_by_key(|row| row.window_id);
+    if live_view == captured_view {
+        return Ok(());
+    }
+    Err(DomainError::WindowBaselineChanged(
+        "the captured live baseline no longer matches committed windows (ids, operator versions, \
+         intervals or membership); refresh the baseline and reapprove"
+            .to_owned(),
+    ))
+}
+
+fn baseline_of_live(row: crate::infra::storage::repo::window_repo::WindowRecord) -> WindowBaseline {
+    WindowBaseline {
+        window_id: row.window_id,
+        price_id: row.price_id,
+        mutation_seq: row.mutation_seq,
+        effective_from: row.effective_from,
+        effective_to: row.effective_to,
+        cancelled: row.state == WindowState::Cancelled,
+    }
 }
 
 async fn refuse_stale_baseline(

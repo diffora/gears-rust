@@ -148,7 +148,7 @@ use crate::infra::storage::odata_mapping::{
 };
 use crate::infra::storage::repo::check_authored_instant;
 use crate::infra::storage::repo::outbox_repo::{NewOutboxEvent, PriceCreatedPayload};
-use crate::infra::storage::repo::{NewAuditEntry, audit_repo, outbox_repo};
+use crate::infra::storage::repo::{NewAuditEntry, audit_repo, outbox_repo, window_guard_repo};
 
 /// The noun the authoring refusals name, so one subject word reaches the wire
 /// from every method here.
@@ -367,6 +367,7 @@ impl PriceRepo {
         // than one runner-taking body — `create_draft_on` runs both, which the
         // seam needs, and this path keeps the refusal ahead of the BEGIN.
         let prepared = prepare_draft(tenant_id, draft)?;
+        let plan_id = prepared.record.scope_key.plan_id().get();
 
         let scope = scope.clone();
         let (_, outcome) = self
@@ -374,6 +375,9 @@ impl PriceRepo {
             .db()
             .in_transaction::<PriceRecord, RepoError, _>(move |txn| {
                 Box::pin(async move {
+                    // Guard owner: PriceRepo::create_draft opens this transaction for
+                    // bulk/import doors that do not wrap create_draft_on.
+                    window_guard_repo::acquire(txn, &scope, tenant_id, plan_id).await?;
                     Box::pin(insert_prepared(txn, &scope, tenant_id, prepared)).await
                 })
             })
@@ -733,6 +737,13 @@ impl PriceRepo {
             .db()
             .in_transaction::<PriceRecord, RepoError, _>(move |txn| {
                 Box::pin(async move {
+                    // Guard owner: PriceRepo::update_draft opens this transaction for
+                    // interactive PATCH and bulk edits.
+                    let plan_id = load_scope_key(txn, &scope, tenant_id, price_id)
+                        .await?
+                        .ok_or_else(|| not_found(price_id))?
+                        .plan_id();
+                    window_guard_repo::acquire(txn, &scope, tenant_id, plan_id.get()).await?;
                     // `inst-bk-lock`, in the door rather than on a surface: a rule
                     // that lives on one authoring path is not a rule, and this is
                     // the second path onto the same rows.
@@ -882,6 +893,12 @@ impl PriceRepo {
             .db()
             .in_transaction::<(), RepoError, _>(move |txn| {
                 Box::pin(async move {
+                    // Guard owner: PriceRepo::delete_draft opens this transaction.
+                    let plan_id = load_scope_key(txn, &scope, tenant_id, price_id)
+                        .await?
+                        .ok_or_else(|| not_found(price_id))?
+                        .plan_id();
+                    window_guard_repo::acquire(txn, &scope, tenant_id, plan_id.get()).await?;
                     // `inst-bk-lock` in this door too. D-292 identified two
                     // authoring paths and guarded one — by its own standard, "a
                     // rule that lives on one authoring path is not a rule". A

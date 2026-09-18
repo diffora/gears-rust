@@ -121,7 +121,7 @@ use crate::infra::registry_deadline::request_version_now;
 use crate::infra::storage::repo::audit_repo::NewAuditEntry;
 use crate::infra::storage::repo::catalog_version_ref_repo::PendingVersionRow;
 use crate::infra::storage::repo::{
-    audit_repo, catalog_version_ref_repo, plan_repo, price_repo, window_repo,
+    audit_repo, catalog_version_ref_repo, plan_repo, price_repo, window_guard_repo, window_repo,
 };
 use crate::infra::storage::repo_failure;
 use time::OffsetDateTime;
@@ -354,6 +354,18 @@ async fn tighten_in(
     stamp: AuditStamp,
 ) -> Result<HorizonOutcome, DomainError> {
     let now = stamp.recorded_at;
+    // Guard owner: tighten_in is the grandfather-horizon orchestration body.
+    let plan_id = price_repo::load_scope_key(runner, scope, tenant_id, price_id)
+        .await
+        .map_err(|e| repo_failure(&e))?
+        .ok_or_else(|| DomainError::NotFound {
+            subject: "price row".to_owned(),
+            id: price_id.to_string(),
+        })?
+        .plan_id();
+    window_guard_repo::acquire(runner, scope, tenant_id, plan_id.get())
+        .await
+        .map_err(|e| repo_failure(&e))?;
     // 1. Every fact the validation needs, read inside the transaction that writes.
     let context = read_horizon_context(runner, scope, tenant_id, price_id, now).await?;
     let prior = context.generation.grandfather_until;

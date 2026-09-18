@@ -225,7 +225,7 @@ use crate::infra::storage::repo::repricing_journal_repo::JournalRow;
 use crate::infra::storage::repo::{
     BulkOperationRecord, NewAuditEntry, NewPriceDraft, PendingVersionRow, PolicyObjectRepo,
     WindowMutationEvent, audit_repo, bulk_repo, catalog_version_ref_repo, outbox_repo, plan_repo,
-    price_repo, repricing_journal_repo, window_repo,
+    price_repo, repricing_journal_repo, window_guard_repo, window_repo,
 };
 use crate::infra::storage::repo_failure;
 use crate::infra::supersession::{SupersessionCommit, commit_supersession, supersession_unit_ref};
@@ -2136,6 +2136,10 @@ async fn apply_plan_in(
     changeover: OffsetDateTime,
     stamp: AuditStamp,
 ) -> Result<(), DomainError> {
+    // Guard owner: apply_plan_in is the per-plan repricing commit transaction.
+    window_guard_repo::acquire(txn, scope, tenant_id, plan_id.get())
+        .await
+        .map_err(|e| repo_failure(&e))?;
     // **Re-asked here, inside the transaction that writes.** The run-level call of
     // this same guard runs on the autocommit connection before `take_locks`, so a
     // unit opened over one of this plan's keys after that point was invisible to

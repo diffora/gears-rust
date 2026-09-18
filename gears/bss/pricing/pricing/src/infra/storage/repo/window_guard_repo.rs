@@ -51,6 +51,27 @@ pub async fn acquire(
     Ok(())
 }
 
+/// Acquire every named plan guard in sorted `(tenant_id, plan_id)` order.
+///
+/// Callers that lock more than one plan must go through this so two transactions
+/// cannot deadlock by taking the same pair in opposite orders.
+///
+/// # Errors
+/// [`acquire`]'s, for the first plan that has no guard row or fails to lock.
+pub async fn acquire_sorted(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    plans: impl IntoIterator<Item = (Uuid, Uuid)>,
+) -> Result<(), RepoError> {
+    let mut plans: Vec<(Uuid, Uuid)> = plans.into_iter().collect();
+    plans.sort_unstable();
+    plans.dedup();
+    for (tenant_id, plan_id) in plans {
+        acquire(runner, scope, tenant_id, plan_id).await?;
+    }
+    Ok(())
+}
+
 /// Insert the lock row for a newly created plan. A successor revision of the
 /// same `plan_id` is a no-op on the primary key.
 pub(super) async fn ensure(

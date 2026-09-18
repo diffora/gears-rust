@@ -8,20 +8,37 @@
 
 mod pg_support;
 
+use std::sync::Arc;
+use std::time::Duration;
+
+use bss_pricing::config::LimitsConfig;
 use bss_pricing::domain::audit::AuditStamp;
 use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::draft_window::{
     DraftStart, DraftWindowAction, DraftWindowEntry, DraftWindowOwner, WindowBaseline,
 };
+use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::instant::utc_ymd_hms;
 use bss_pricing::domain::lifecycle::LifecycleState;
+use bss_pricing::domain::materiality::MaterialityVerdict;
+use bss_pricing::domain::ports::UnconfiguredCatalogVersionRegistryV1;
+use bss_pricing::domain::publish::{PlanPublishUnit, PublishAuthorization};
 use bss_pricing::domain::scope_key::PlanId;
+use bss_pricing::infra::approval::ApprovalService;
+use bss_pricing::infra::draft_window::{self, DraftWindowCommand};
+use bss_pricing::infra::fixture_gate::FixtureGate;
+use bss_pricing::infra::publish::PublishService;
 use bss_pricing::infra::storage::RepoError;
 use bss_pricing::infra::storage::entity::{plan, price};
 use bss_pricing::infra::storage::repo::draft_window_repo;
 use bss_pricing::infra::storage::repo::window_baseline_repo;
 use bss_pricing::infra::storage::repo::window_guard_repo;
+use bss_pricing::infra::storage::repo::window_repo::{self, NewWindow};
 use bss_pricing::infra::storage::repo::{NewPlanDraft, PlanRepo};
+use bss_pricing::infra::window::WindowService;
+use serde_json::json;
+use tokio::sync::Notify;
+use toolkit_security::SecurityContext;
 
 use pg_support::Pg;
 use sea_orm::ActiveValue::Set;
@@ -105,6 +122,7 @@ fn symbolic_create(window_id: Uuid) -> DraftWindowEntry {
 }
 
 struct Store {
+    pg: Pg,
     db: DBProvider<DbError>,
     plans: PlanRepo,
     raw: DatabaseConnection,
@@ -115,7 +133,7 @@ async fn store() -> Store {
     let db = DBProvider::<DbError>::new(pg.db().await);
     let plans = PlanRepo::new(db.clone());
     let raw = pg.raw().await;
-    Store { db, plans, raw }
+    Store { pg, db, plans, raw }
 }
 
 async fn seed_price(store: &Store, tenant_id: Uuid, plan_id: Uuid, price_id: Uuid) {
@@ -448,4 +466,453 @@ async fn at_publish_cannot_carry_an_authored_start() {
         err.to_string().contains("chk_pricing_draft_window_shape"),
         "must be the shape CHECK, got: {err}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Guard serialization: park A after acquire, start B, observe the block.
+// ---------------------------------------------------------------------------
+
+const RACE_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn race_ctx() -> SecurityContext {
+    SecurityContext::builder()
+        .subject_id(ACTOR)
+        .subject_tenant_id(TENANT)
+        .build()
+        .expect("a subject and a tenant are all a context needs")
+}
+
+fn race_verdict_json(_: &MaterialityVerdict) -> Result<serde_json::Value, DomainError> {
+    Ok(json!({}))
+}
+
+fn live_window(id: u128, from_day: u32, to_day: u32) -> NewWindow {
+    NewWindow {
+        window_id: Uuid::from_u128(id),
+        tenant_id: TENANT,
+        price_id: ROW,
+        effective_from: t(from_day),
+        effective_to: Some(t(to_day)),
+        reason_code: "raceProbe".to_owned(),
+    }
+}
+
+async fn hold_guard(
+    pg: &Pg,
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+) -> tokio::task::JoinHandle<Result<(), toolkit_db::secure::TxError<RepoError>>> {
+    let db = pg.db().await;
+    tokio::spawn(async move {
+        let (_db, out) = db
+            .in_transaction::<(), RepoError, _>(move |txn| {
+                Box::pin(async move {
+                    window_guard_repo::acquire(txn, &scope(), TENANT, PLAN).await?;
+                    started.notify_one();
+                    release.notified().await;
+                    Ok(())
+                })
+            })
+            .await;
+        out
+    })
+}
+
+async fn count_sql(conn: &DatabaseConnection, sql: &str) -> i64 {
+    conn.query_one_raw(Statement::from_string(
+        sea_orm::DatabaseBackend::Postgres,
+        sql.to_owned(),
+    ))
+    .await
+    .expect("count query")
+    .expect("one row")
+    .try_get::<i64>("", "n")
+    .expect("n")
+}
+
+async fn committed_window_ids(conn: &DatabaseConnection) -> Vec<String> {
+    conn.query_all_raw(Statement::from_string(
+        sea_orm::DatabaseBackend::Postgres,
+        format!(
+            "SELECT w.window_id::text AS id
+               FROM bss.pricing_price_window w
+               JOIN bss.pricing_price p ON p.price_id = w.price_id
+              WHERE p.plan_id = '{PLAN}' AND w.state <> 'cancelled'
+              ORDER BY w.window_id"
+        ),
+    ))
+    .await
+    .expect("list windows")
+    .into_iter()
+    .map(|row| row.try_get::<String>("", "id").expect("id"))
+    .collect()
+}
+
+async fn overlapping_non_cancelled(conn: &DatabaseConnection) -> i64 {
+    count_sql(
+        conn,
+        &format!(
+            "SELECT count(*)::bigint AS n
+               FROM bss.pricing_price_window a
+               JOIN bss.pricing_price pa ON pa.price_id = a.price_id
+               JOIN bss.pricing_price_window b
+                 ON a.price_id = b.price_id
+                AND a.window_id < b.window_id
+                AND a.state <> 'cancelled'
+                AND b.state <> 'cancelled'
+                AND a.effective_from < COALESCE(b.effective_to, 'infinity'::timestamptz)
+                AND b.effective_from < COALESCE(a.effective_to, 'infinity'::timestamptz)
+              WHERE pa.plan_id = '{PLAN}'"
+        ),
+    )
+    .await
+}
+
+async fn artifact_counts(conn: &DatabaseConnection) -> (i64, i64, i64, i64) {
+    let windows = count_sql(
+        conn,
+        &format!(
+            "SELECT count(*)::bigint AS n
+               FROM bss.pricing_price_window w
+               JOIN bss.pricing_price p ON p.price_id = w.price_id
+              WHERE p.plan_id = '{PLAN}'"
+        ),
+    )
+    .await;
+    let audit = count_sql(
+        conn,
+        &format!(
+            "SELECT count(*)::bigint AS n FROM bss.pricing_audit_log WHERE tenant_id = '{TENANT}'"
+        ),
+    )
+    .await;
+    let outbox = count_sql(
+        conn,
+        &format!(
+            "SELECT count(*)::bigint AS n FROM bss.pricing_outbox WHERE tenant_id = '{TENANT}'"
+        ),
+    )
+    .await;
+    let versions = count_sql(
+        conn,
+        &format!(
+            "SELECT count(*)::bigint AS n FROM bss.pricing_catalog_version_ref WHERE tenant_id = '{TENANT}'"
+        ),
+    )
+    .await;
+    (windows, audit, outbox, versions)
+}
+
+/// published window IDs == IDs in the authorized operation set
+/// published row versions == versions in the authorized candidate set
+/// no committed key has overlapping non-cancelled intervals
+/// failed transaction adds no window, audit success, outbox event or version reference
+async fn assert_invariants(
+    conn: &DatabaseConnection,
+    authorized_window_ids: &[String],
+    authorized_row_version: i64,
+    before_artifacts: (i64, i64, i64, i64),
+    failed_txn_added_nothing: bool,
+) {
+    let windows = committed_window_ids(conn).await;
+    assert_eq!(
+        windows, authorized_window_ids,
+        "published window IDs == IDs in the authorized operation set"
+    );
+    let versions = count_sql(
+        conn,
+        &format!(
+            "SELECT count(*)::bigint AS n FROM bss.pricing_price \
+             WHERE plan_id = '{PLAN}' AND row_version <> {authorized_row_version}"
+        ),
+    )
+    .await;
+    assert_eq!(
+        versions, 0,
+        "published row versions == versions in the authorized candidate set"
+    );
+    assert_eq!(
+        overlapping_non_cancelled(conn).await,
+        0,
+        "no committed key has overlapping non-cancelled intervals"
+    );
+    if failed_txn_added_nothing {
+        assert_eq!(
+            artifact_counts(conn).await,
+            before_artifacts,
+            "failed transaction adds no window, audit success, outbox event or version reference"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires Docker (testcontainers)"]
+async fn a_draft_edit_is_serialized_against_publish() {
+    let store = seeded_plan().await;
+    let before = artifact_counts(&store.raw).await;
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let first = hold_guard(&store.pg, Arc::clone(&started), Arc::clone(&release)).await;
+    started.notified().await;
+
+    let db = store.pg.db().await;
+    let second = tokio::spawn(async move {
+        let publish = PublishService::new(
+            DBProvider::<DbError>::new(db),
+            &LimitsConfig::default(),
+            FixtureGate::closed(),
+            Arc::new(UnconfiguredCatalogVersionRegistryV1),
+        );
+        publish
+            .commit(
+                &race_ctx(),
+                &scope(),
+                TENANT,
+                PlanPublishUnit::plan_content(PlanId::new(PLAN), 0),
+                RowVersion::new(0),
+                PublishAuthorization::auto_publishable(),
+                ACTOR,
+                TEST_CORRELATION,
+                t(1),
+            )
+            .await
+    });
+
+    pg_support::wait_until_a_backend_blocks(&store.raw).await;
+    release.notify_one();
+    tokio::time::timeout(RACE_TIMEOUT, first)
+        .await
+        .expect("T1 must finish once released")
+        .expect("its task must not panic")
+        .expect("T1 only held the guard");
+    let second = tokio::time::timeout(RACE_TIMEOUT, second)
+        .await
+        .expect("T2 must reach a verdict once T1 releases")
+        .expect("its task must not panic");
+    assert!(
+        second.is_err(),
+        "publish of an incomplete draft must not succeed, got {second:?}"
+    );
+    assert_invariants(&store.raw, &[], 0, before, true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires Docker (testcontainers)"]
+async fn a_live_adjust_is_serialized_against_publish() {
+    let store = seeded_plan().await;
+    let before = artifact_counts(&store.raw).await;
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let first = hold_guard(&store.pg, Arc::clone(&started), Arc::clone(&release)).await;
+    started.notified().await;
+
+    let db = store.pg.db().await;
+    let second = tokio::spawn(async move {
+        WindowService::new(
+            DBProvider::<DbError>::new(db),
+            Arc::new(UnconfiguredCatalogVersionRegistryV1),
+        )
+        .schedule(
+            &race_ctx(),
+            &scope(),
+            TENANT,
+            ROW,
+            Uuid::from_u128(0x_e2),
+            t(8),
+            Some(t(20)),
+            "raceProbe".to_owned(),
+            race_verdict_json,
+            stamp(),
+        )
+        .await
+    });
+
+    pg_support::wait_until_a_backend_blocks(&store.raw).await;
+    release.notify_one();
+    tokio::time::timeout(RACE_TIMEOUT, first)
+        .await
+        .expect("T1 must finish once released")
+        .expect("its task must not panic")
+        .expect("T1 only held the guard");
+    let second = tokio::time::timeout(RACE_TIMEOUT, second)
+        .await
+        .expect("T2 must reach a verdict once T1 releases")
+        .expect("its task must not panic");
+    assert!(
+        second.is_err(),
+        "live schedule against a draft-only plan must not write a window, got {second:?}"
+    );
+    assert_invariants(&store.raw, &[], 0, before, true).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires Docker (testcontainers)"]
+async fn a_row_key_edit_is_serialized_against_submit() {
+    let store = seeded_plan().await;
+    let before = artifact_counts(&store.raw).await;
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let first = hold_guard(&store.pg, Arc::clone(&started), Arc::clone(&release)).await;
+    started.notified().await;
+
+    let db = store.pg.db().await;
+    let second = tokio::spawn(async move {
+        ApprovalService::new(DBProvider::<DbError>::new(db))
+            .submit(
+                &scope(),
+                TENANT,
+                PlanId::new(PLAN),
+                Uuid::from_u128(0x_aa_01),
+                json!({}),
+                stamp(),
+            )
+            .await
+    });
+
+    pg_support::wait_until_a_backend_blocks(&store.raw).await;
+    release.notify_one();
+    tokio::time::timeout(RACE_TIMEOUT, first)
+        .await
+        .expect("T1 must finish once released")
+        .expect("its task must not panic")
+        .expect("T1 only held the guard");
+    let second = tokio::time::timeout(RACE_TIMEOUT, second)
+        .await
+        .expect("T2 must reach a verdict once T1 releases")
+        .expect("its task must not panic");
+    // Submit may succeed after T1 releases: that is one valid serialized result.
+    // A failure must add no artifacts; a success must not publish windows.
+    match second {
+        Ok(_) => assert_invariants(&store.raw, &[], 0, before, false).await,
+        Err(_) => assert_invariants(&store.raw, &[], 0, before, true).await,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires Docker (testcontainers)"]
+async fn concurrent_new_draft_windows_are_serialized() {
+    let store = seeded_plan().await;
+    let before = artifact_counts(&store.raw).await;
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let first = hold_guard(&store.pg, Arc::clone(&started), Arc::clone(&release)).await;
+    started.notified().await;
+
+    let db = store.pg.db().await;
+    let window_id = Uuid::from_u128(0x_d7_b2);
+    let second = tokio::spawn(async move {
+        let (_db, out) = db
+            .in_transaction::<u64, DomainError, _>(move |txn| {
+                Box::pin(async move {
+                    draft_window::apply_command(
+                        txn,
+                        &scope(),
+                        &owner(),
+                        0,
+                        DraftWindowCommand::Put(symbolic_create(window_id)),
+                        stamp(),
+                    )
+                    .await
+                })
+            })
+            .await;
+        out
+    });
+
+    pg_support::wait_until_a_backend_blocks(&store.raw).await;
+    release.notify_one();
+    tokio::time::timeout(RACE_TIMEOUT, first)
+        .await
+        .expect("T1 must finish once released")
+        .expect("its task must not panic")
+        .expect("T1 only held the guard");
+    let second = tokio::time::timeout(RACE_TIMEOUT, second)
+        .await
+        .expect("T2 must reach a verdict once T1 releases")
+        .expect("its task must not panic");
+    second.expect("T2's draft put is uncontended after T1 releases");
+    // Draft operations are not published windows. The authorized live set stays empty.
+    assert_invariants(&store.raw, &[], 0, before, false).await;
+    let listed = {
+        let conn = store.db.conn().expect("conn");
+        draft_window_repo::list(&conn, &scope(), &owner())
+            .await
+            .expect("list draft operations")
+    };
+    assert_eq!(listed, vec![symbolic_create(window_id)]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires Docker (testcontainers)"]
+async fn two_overlapping_live_inserts_are_serialized() {
+    let store = seeded_plan().await;
+    let before = artifact_counts(&store.raw).await;
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let db_a = store.pg.db().await;
+    let first = {
+        let started = Arc::clone(&started);
+        let release = Arc::clone(&release);
+        tokio::spawn(async move {
+            let (_db, out) = db_a
+                .in_transaction::<(), RepoError, _>(move |txn| {
+                    Box::pin(async move {
+                        window_guard_repo::acquire(txn, &scope(), TENANT, PLAN).await?;
+                        started.notify_one();
+                        release.notified().await;
+                        window_repo::schedule(txn, &scope(), live_window(0x_e1, 8, 16), stamp())
+                            .await?;
+                        Ok(())
+                    })
+                })
+                .await;
+            out
+        })
+    };
+    started.notified().await;
+
+    let db_b = store.pg.db().await;
+    let second = tokio::spawn(async move {
+        WindowService::new(
+            DBProvider::<DbError>::new(db_b),
+            Arc::new(UnconfiguredCatalogVersionRegistryV1),
+        )
+        .schedule(
+            &race_ctx(),
+            &scope(),
+            TENANT,
+            ROW,
+            Uuid::from_u128(0x_e2),
+            t(10),
+            Some(t(20)),
+            "raceProbe".to_owned(),
+            race_verdict_json,
+            stamp(),
+        )
+        .await
+    });
+
+    pg_support::wait_until_a_backend_blocks(&store.raw).await;
+    release.notify_one();
+    tokio::time::timeout(RACE_TIMEOUT, first)
+        .await
+        .expect("T1 must finish once released")
+        .expect("its task must not panic")
+        .expect("T1's overlapping insert must commit");
+    let second = tokio::time::timeout(RACE_TIMEOUT, second)
+        .await
+        .expect("T2 must reach a verdict once T1 releases")
+        .expect("its task must not panic");
+    assert!(
+        second.is_err(),
+        "T2 must not also commit an overlapping live window, got {second:?}"
+    );
+    assert_invariants(
+        &store.raw,
+        &[Uuid::from_u128(0x_e1).to_string()],
+        0,
+        before,
+        false,
+    )
+    .await;
 }
