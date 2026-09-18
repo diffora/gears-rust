@@ -1282,9 +1282,7 @@ async fn a_cancel_can_move_a_published_plan_outside_its_own_coverage() {
     let shape = subject
         .plan()
         .expect("a window unit's pinned subject is a plan, never a threshold policy");
-    // `false`: this suite is about the rule, not about the publish's D-332
-    // exemption, which has its own case in `domain::coverage_tests`.
-    let codes: Vec<String> = window_coverage_rules(false)
+    let codes: Vec<String> = window_coverage_rules()
         .run(shape)
         .violations
         .iter()
