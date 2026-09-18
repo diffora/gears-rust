@@ -3138,6 +3138,9 @@ async fn planes_of_the_plan_aggregate(harness: &Harness, out: &mut Planes) {
     plane!(out, &conn, harness, plan_addon_rule);
     plane!(out, &conn, harness, plan_period_floor_cap);
     plane!(out, &conn, harness, composite_meter);
+    plane!(out, &conn, harness, draft_window);
+    plane!(out, &conn, harness, window_baseline);
+    plane!(out, &conn, harness, window_guard);
 }
 
 /// The price row, its bands and its windows.

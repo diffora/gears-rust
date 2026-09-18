@@ -37,6 +37,9 @@ INDEX idx_pricing_catalog_version_ref_version
 INDEX idx_pricing_composite_meter_revision
   ON pricing_composite_meter
   DDL CREATE INDEX idx_pricing_composite_meter_revision ON pricing_composite_meter (tenant_id, plan_id, plan_revision)
+INDEX idx_pricing_draft_window_revision
+  ON pricing_draft_window
+  DDL CREATE INDEX idx_pricing_draft_window_revision ON pricing_draft_window (tenant_id, plan_id, plan_revision)
 INDEX idx_pricing_group_membership_payer
   ON pricing_group_membership
   DDL CREATE INDEX idx_pricing_group_membership_payer ON pricing_group_membership (tenant_id, payer_tenant_id, effective_from)
@@ -106,6 +109,9 @@ INDEX idx_pricing_read_model_resolve
 INDEX idx_pricing_snapshot_provenance_plan
   ON pricing_snapshot_provenance
   DDL CREATE INDEX idx_pricing_snapshot_provenance_plan ON pricing_snapshot_provenance (tenant_id, source_plan_id)
+INDEX idx_pricing_window_baseline_revision
+  ON pricing_window_baseline
+  DDL CREATE INDEX idx_pricing_window_baseline_revision ON pricing_window_baseline (tenant_id, plan_id, plan_revision)
 INDEX uq_pricing_approval_key_pending
   ON pricing_approval_key
   DDL CREATE UNIQUE INDEX uq_pricing_approval_key_pending ON pricing_approval_key (tenant_id, scope_key) WHERE state = 'submitted'
@@ -340,6 +346,28 @@ TABLE pricing_customer_group_taxonomy
   COLUMN value TEXT NOT NULL DEFAULT - PK 2
   CONSTRAINT chk_pricing_customer_group_taxonomy_state CHECK (state IN ('active', 'retired'))
   CONSTRAINT chk_pricing_customer_group_taxonomy_value_present CHECK (length(trim(value, char(9,10,11,12,13,32))) > 0)
+TABLE pricing_draft_window
+  COLUMN action TEXT NOT NULL DEFAULT - PK 0
+  COLUMN effective_from TEXT NULL DEFAULT - PK 0
+  COLUMN effective_to TEXT NULL DEFAULT - PK 0
+  COLUMN operation_id TEXT NOT NULL DEFAULT - PK 4
+  COLUMN plan_id TEXT NOT NULL DEFAULT - PK 2
+  COLUMN plan_revision bigint NOT NULL DEFAULT - PK 3
+  COLUMN price_id TEXT NULL DEFAULT - PK 0
+  COLUMN reason_code TEXT NOT NULL DEFAULT - PK 0
+  COLUMN start_kind TEXT NULL DEFAULT - PK 0
+  COLUMN target_window_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 1
+  CONSTRAINT chk_pricing_draft_window_action CHECK (action IN ('create', 'adjust_end', 'cancel'))
+  CONSTRAINT chk_pricing_draft_window_interval CHECK (effective_from IS NULL OR effective_to IS NULL OR effective_to > effective_from)
+  CONSTRAINT chk_pricing_draft_window_reason_code CHECK (length(trim(reason_code)) > 0)
+  CONSTRAINT chk_pricing_draft_window_shape CHECK ((action = 'create' AND operation_id = target_window_id AND price_id IS NOT NULL AND start_kind IN ('at', 'at_publish') AND ((start_kind = 'at' AND effective_from IS NOT NULL) OR (start_kind = 'at_publish' AND effective_from IS NULL))) OR (action = 'adjust_end' AND start_kind IS NULL AND effective_from IS NULL AND price_id IS NULL) OR (action = 'cancel' AND start_kind IS NULL AND effective_from IS NULL AND effective_to IS NULL AND price_id IS NULL))
+  CONSTRAINT fk_pricing_draft_window_price FOREIGN KEY (price_id)
+  CONSTRAINT fk_pricing_draft_window_revision FOREIGN KEY (plan_id, plan_revision)
+  CONSTRAINT uq_pricing_draft_window_target UNIQUE (tenant_id, plan_id, plan_revision, target_window_id)
+  FK plan_id -> pricing_plan.plan_id
+  FK plan_revision -> pricing_plan.revision
+  FK price_id -> pricing_price.price_id
 TABLE pricing_gl_code_taxonomy
   COLUMN display_name TEXT NOT NULL DEFAULT - PK 0
   COLUMN state TEXT NOT NULL DEFAULT 'active' PK 0
@@ -793,6 +821,27 @@ TABLE pricing_snapshot_provenance
   CONSTRAINT chk_pricing_snapshot_provenance_resolved CHECK (json_valid(resolved) AND json_type(resolved) = 'array' AND json_array_length(resolved) > 0)
   CONSTRAINT chk_pricing_snapshot_provenance_revision CHECK (source_revision IS NULL OR source_revision >= 0)
   CONSTRAINT chk_pricing_snapshot_provenance_trigger CHECK (trigger_kind IN ('migration', 'first_rating'))
+TABLE pricing_window_baseline
+  COLUMN cancelled boolean NOT NULL DEFAULT - PK 0
+  COLUMN effective_from TEXT NOT NULL DEFAULT - PK 0
+  COLUMN effective_to TEXT NULL DEFAULT - PK 0
+  COLUMN mutation_seq bigint NOT NULL DEFAULT - PK 0
+  COLUMN plan_id TEXT NOT NULL DEFAULT - PK 2
+  COLUMN plan_revision bigint NOT NULL DEFAULT - PK 3
+  COLUMN price_id TEXT NOT NULL DEFAULT - PK 0
+  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 1
+  COLUMN window_id TEXT NOT NULL DEFAULT - PK 4
+  CONSTRAINT chk_pricing_window_baseline_interval CHECK (effective_to IS NULL OR effective_to > effective_from)
+  CONSTRAINT chk_pricing_window_baseline_mutation_seq CHECK (mutation_seq >= 0)
+  CONSTRAINT fk_pricing_window_baseline_price FOREIGN KEY (price_id)
+  CONSTRAINT fk_pricing_window_baseline_revision FOREIGN KEY (plan_id, plan_revision)
+  FK plan_id -> pricing_plan.plan_id
+  FK plan_revision -> pricing_plan.revision
+  FK price_id -> pricing_price.price_id
+TABLE pricing_window_guard
+  COLUMN plan_id TEXT NOT NULL DEFAULT - PK 2
+  COLUMN serial bigint NOT NULL DEFAULT - PK 0
+  COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 1
 TRIGGER trg_pricing_approval_born_submitted
   ON pricing_approval
   DDL CREATE TRIGGER trg_pricing_approval_born_submitted BEFORE INSERT ON pricing_approval FOR EACH ROW WHEN NEW.state <> 'submitted' BEGIN SELECT RAISE(ABORT, 'pricing_approval: a record is born submitted'); END
@@ -910,6 +959,27 @@ TRIGGER trg_pricing_composite_meter_same_tenant_as_its_revision_on_insert
 TRIGGER trg_pricing_composite_meter_same_tenant_as_its_revision_on_update
   ON pricing_composite_meter
   DDL CREATE TRIGGER trg_pricing_composite_meter_same_tenant_as_its_revision_on_update BEFORE UPDATE ON pricing_composite_meter FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_composite_meter: the plan revision belongs to another tenant and may not hold this row') WHERE EXISTS (SELECT 1 FROM pricing_plan WHERE plan_id = NEW.plan_id AND revision = NEW.plan_revision) AND NOT EXISTS (SELECT 1 FROM pricing_plan WHERE plan_id = NEW.plan_id AND revision = NEW.plan_revision AND tenant_id = NEW.tenant_id); END
+TRIGGER trg_pricing_draft_window_no_delete
+  ON pricing_draft_window
+  DDL CREATE TRIGGER trg_pricing_draft_window_no_delete BEFORE DELETE ON pricing_draft_window FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_draft_window: DELETE of a draft window under a non-draft plan revision is not permitted') WHERE NOT EXISTS (SELECT 1 FROM pricing_plan WHERE plan_id = OLD.plan_id AND revision = OLD.plan_revision AND lifecycle_state = 'draft'); END
+TRIGGER trg_pricing_draft_window_no_insert
+  ON pricing_draft_window
+  DDL CREATE TRIGGER trg_pricing_draft_window_no_insert BEFORE INSERT ON pricing_draft_window FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_draft_window: INSERT of a draft window under a non-draft plan revision is not permitted') WHERE NOT EXISTS (SELECT 1 FROM pricing_plan WHERE plan_id = NEW.plan_id AND revision = NEW.plan_revision AND lifecycle_state = 'draft'); END
+TRIGGER trg_pricing_draft_window_no_update
+  ON pricing_draft_window
+  DDL CREATE TRIGGER trg_pricing_draft_window_no_update BEFORE UPDATE ON pricing_draft_window FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_draft_window: UPDATE of a draft window under a non-draft plan revision is not permitted') WHERE NOT EXISTS (SELECT 1 FROM pricing_plan WHERE plan_id = OLD.plan_id AND revision = OLD.plan_revision AND lifecycle_state = 'draft') OR NOT EXISTS (SELECT 1 FROM pricing_plan WHERE plan_id = NEW.plan_id AND revision = NEW.plan_revision AND lifecycle_state = 'draft'); END
+TRIGGER trg_pricing_draft_window_price_on_plan_insert
+  ON pricing_draft_window
+  DDL CREATE TRIGGER trg_pricing_draft_window_price_on_plan_insert BEFORE INSERT ON pricing_draft_window FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_draft_window: price does not belong to plan of this tenant') WHERE NEW.price_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pricing_price WHERE price_id = NEW.price_id AND tenant_id = NEW.tenant_id AND plan_id = NEW.plan_id); END
+TRIGGER trg_pricing_draft_window_price_on_plan_update
+  ON pricing_draft_window
+  DDL CREATE TRIGGER trg_pricing_draft_window_price_on_plan_update BEFORE UPDATE ON pricing_draft_window FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_draft_window: price does not belong to plan of this tenant') WHERE NEW.price_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pricing_price WHERE price_id = NEW.price_id AND tenant_id = NEW.tenant_id AND plan_id = NEW.plan_id); END
+TRIGGER trg_pricing_draft_window_same_tenant_as_its_revision_on_insert
+  ON pricing_draft_window
+  DDL CREATE TRIGGER trg_pricing_draft_window_same_tenant_as_its_revision_on_insert BEFORE INSERT ON pricing_draft_window FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_draft_window: the plan revision belongs to another tenant and may not hold this row') WHERE EXISTS (SELECT 1 FROM pricing_plan WHERE plan_id = NEW.plan_id AND revision = NEW.plan_revision) AND NOT EXISTS (SELECT 1 FROM pricing_plan WHERE plan_id = NEW.plan_id AND revision = NEW.plan_revision AND tenant_id = NEW.tenant_id); END
+TRIGGER trg_pricing_draft_window_same_tenant_as_its_revision_on_update
+  ON pricing_draft_window
+  DDL CREATE TRIGGER trg_pricing_draft_window_same_tenant_as_its_revision_on_update BEFORE UPDATE ON pricing_draft_window FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_draft_window: the plan revision belongs to another tenant and may not hold this row') WHERE EXISTS (SELECT 1 FROM pricing_plan WHERE plan_id = NEW.plan_id AND revision = NEW.plan_revision) AND NOT EXISTS (SELECT 1 FROM pricing_plan WHERE plan_id = NEW.plan_id AND revision = NEW.plan_revision AND tenant_id = NEW.tenant_id); END
 TRIGGER trg_pricing_group_membership_no_overlap_insert
   ON pricing_group_membership
   DDL CREATE TRIGGER trg_pricing_group_membership_no_overlap_insert BEFORE INSERT ON pricing_group_membership FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_group_membership: interval overlaps an existing membership for this payer (D-09)') WHERE EXISTS (SELECT 1 FROM pricing_group_membership existing WHERE existing.tenant_id = NEW.tenant_id AND existing.payer_tenant_id = NEW.payer_tenant_id AND (existing.effective_to IS NULL OR NEW.effective_from < existing.effective_to) AND (NEW.effective_to IS NULL OR existing.effective_from < NEW.effective_to)); END
@@ -1105,3 +1175,24 @@ TRIGGER trg_pricing_snapshot_provenance_no_delete
 TRIGGER trg_pricing_snapshot_provenance_no_update
   ON pricing_snapshot_provenance
   DDL CREATE TRIGGER trg_pricing_snapshot_provenance_no_update BEFORE UPDATE ON pricing_snapshot_provenance FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_snapshot_provenance: a migrated-origin snapshot is frozen; it resolves through no CatalogVersion, so this row is the only thing making it immutable'); END
+TRIGGER trg_pricing_window_baseline_no_delete
+  ON pricing_window_baseline
+  DDL CREATE TRIGGER trg_pricing_window_baseline_no_delete BEFORE DELETE ON pricing_window_baseline FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_window_baseline: DELETE of a baseline under a non-draft plan revision is not permitted') WHERE NOT EXISTS (SELECT 1 FROM pricing_plan WHERE plan_id = OLD.plan_id AND revision = OLD.plan_revision AND lifecycle_state = 'draft'); END
+TRIGGER trg_pricing_window_baseline_no_insert
+  ON pricing_window_baseline
+  DDL CREATE TRIGGER trg_pricing_window_baseline_no_insert BEFORE INSERT ON pricing_window_baseline FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_window_baseline: INSERT of a baseline under a non-draft plan revision is not permitted') WHERE NOT EXISTS (SELECT 1 FROM pricing_plan WHERE plan_id = NEW.plan_id AND revision = NEW.plan_revision AND lifecycle_state = 'draft'); END
+TRIGGER trg_pricing_window_baseline_no_update
+  ON pricing_window_baseline
+  DDL CREATE TRIGGER trg_pricing_window_baseline_no_update BEFORE UPDATE ON pricing_window_baseline FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_window_baseline: UPDATE of a baseline under a non-draft plan revision is not permitted') WHERE NOT EXISTS (SELECT 1 FROM pricing_plan WHERE plan_id = OLD.plan_id AND revision = OLD.plan_revision AND lifecycle_state = 'draft') OR NOT EXISTS (SELECT 1 FROM pricing_plan WHERE plan_id = NEW.plan_id AND revision = NEW.plan_revision AND lifecycle_state = 'draft'); END
+TRIGGER trg_pricing_window_baseline_price_on_plan_insert
+  ON pricing_window_baseline
+  DDL CREATE TRIGGER trg_pricing_window_baseline_price_on_plan_insert BEFORE INSERT ON pricing_window_baseline FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_window_baseline: price does not belong to plan of this tenant') WHERE NOT EXISTS (SELECT 1 FROM pricing_price WHERE price_id = NEW.price_id AND tenant_id = NEW.tenant_id AND plan_id = NEW.plan_id); END
+TRIGGER trg_pricing_window_baseline_price_on_plan_update
+  ON pricing_window_baseline
+  DDL CREATE TRIGGER trg_pricing_window_baseline_price_on_plan_update BEFORE UPDATE ON pricing_window_baseline FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_window_baseline: price does not belong to plan of this tenant') WHERE NOT EXISTS (SELECT 1 FROM pricing_price WHERE price_id = NEW.price_id AND tenant_id = NEW.tenant_id AND plan_id = NEW.plan_id); END
+TRIGGER trg_pricing_window_baseline_same_tenant_as_its_revision_on_insert
+  ON pricing_window_baseline
+  DDL CREATE TRIGGER trg_pricing_window_baseline_same_tenant_as_its_revision_on_insert BEFORE INSERT ON pricing_window_baseline FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_window_baseline: the plan revision belongs to another tenant and may not hold this row') WHERE EXISTS (SELECT 1 FROM pricing_plan WHERE plan_id = NEW.plan_id AND revision = NEW.plan_revision) AND NOT EXISTS (SELECT 1 FROM pricing_plan WHERE plan_id = NEW.plan_id AND revision = NEW.plan_revision AND tenant_id = NEW.tenant_id); END
+TRIGGER trg_pricing_window_baseline_same_tenant_as_its_revision_on_update
+  ON pricing_window_baseline
+  DDL CREATE TRIGGER trg_pricing_window_baseline_same_tenant_as_its_revision_on_update BEFORE UPDATE ON pricing_window_baseline FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_window_baseline: the plan revision belongs to another tenant and may not hold this row') WHERE EXISTS (SELECT 1 FROM pricing_plan WHERE plan_id = NEW.plan_id AND revision = NEW.plan_revision) AND NOT EXISTS (SELECT 1 FROM pricing_plan WHERE plan_id = NEW.plan_id AND revision = NEW.plan_revision AND tenant_id = NEW.tenant_id); END

@@ -44,6 +44,7 @@ entities! {
     catalog_version_ref,
     composite_meter,
     customer_group_taxonomy,
+    draft_window,
     gl_code_taxonomy,
     group_membership,
     idempotency_dedup,
@@ -69,4 +70,6 @@ entities! {
     repricing_journal,
     rounding_policy_taxonomy,
     snapshot_provenance,
+    window_baseline,
+    window_guard,
 }

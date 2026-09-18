@@ -17,16 +17,16 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use toolkit_macros::domain_model;
 use time::OffsetDateTime;
+use toolkit_macros::domain_model;
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
 use crate::domain::instant::{check_quantum, format_rfc3339};
 use crate::domain::scope_key::ScopeKey;
 use crate::domain::window::{
-    WindowInterval, WindowState, check_cancellation, check_effective_to_adjustment,
-    interval_is_non_empty, OCCUPYING_STATES,
+    OCCUPYING_STATES, WindowInterval, WindowState, check_cancellation,
+    check_effective_to_adjustment, interval_is_non_empty,
 };
 
 /// How a draft create intention names its start before commit materialization.
@@ -56,6 +56,19 @@ pub enum DraftWindowAction {
     Cancel {
         window_id: Uuid,
     },
+}
+
+/// The plan revision that owns a draft-window set or captured baseline.
+///
+/// First draft is revision **0**. These three values are the parent key of
+/// `pricing_draft_window` and `pricing_window_baseline`; they are not a live
+/// `pricing_price_window` identity.
+#[domain_model]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DraftWindowOwner {
+    pub tenant_id: Uuid,
+    pub plan_id: Uuid,
+    pub plan_revision: u64,
 }
 
 /// A persisted draft-window operation on a plan revision.
@@ -222,11 +235,8 @@ pub fn compose_windows(
                     )));
                 }
                 let state = infer_state(current, evaluated_at);
-                let interval = WindowInterval::new(
-                    current.effective_from,
-                    current.effective_to,
-                    state,
-                );
+                let interval =
+                    WindowInterval::new(current.effective_from, current.effective_to, state);
                 check_effective_to_adjustment(&interval, *effective_to, evaluated_at)?;
                 if let Some(row) = live.get_mut(window_id) {
                     row.effective_to = *effective_to;
@@ -288,7 +298,10 @@ fn infer_state(row: &ComposedLiveWindow, evaluated_at: OffsetDateTime) -> Window
     WindowState::Scheduled
 }
 
-fn refuse_overlap(proposed: &[ProposedWindow], evaluated_at: OffsetDateTime) -> Result<(), DomainError> {
+fn refuse_overlap(
+    proposed: &[ProposedWindow],
+    evaluated_at: OffsetDateTime,
+) -> Result<(), DomainError> {
     for (left_idx, left) in proposed.iter().enumerate() {
         let left_state = window_state(left, evaluated_at);
         if !OCCUPYING_STATES.contains(&left_state) {

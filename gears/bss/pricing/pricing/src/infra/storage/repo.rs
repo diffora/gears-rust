@@ -43,6 +43,7 @@ pub mod audit_repo;
 pub mod bulk_repo;
 pub mod bundle_repo;
 pub mod catalog_version_ref_repo;
+pub mod draft_window_repo;
 pub mod group_membership_repo;
 pub mod idempotency_repo;
 pub mod migration_repo;
@@ -58,6 +59,8 @@ pub mod repricing_journal_repo;
 pub mod synthesis_repo;
 pub mod taxonomy_repo;
 pub mod threshold_repo;
+pub mod window_baseline_repo;
+pub mod window_guard_repo;
 pub mod window_repo;
 
 use time::OffsetDateTime;
@@ -108,9 +111,10 @@ pub use window_repo::{NewWindow, WindowRecord};
 /// (`availableFrom`/`availableTo`), `price_repo` (`grandfatherUntil`),
 /// `window_repo` and `group_membership_repo` and `threshold_repo`
 /// (`effectiveFrom`/`effectiveTo`), `overlay_repo` (the overlay interval and a
-/// line's `cohort`), `migration_repo` (`effectiveAt`) and `synthesis_repo`
-/// (`snapshotInstant`) — every table with such a column, which is the invariant to
-/// re-derive by grep rather than a list to trust.
+/// line's `cohort`), `migration_repo` (`effectiveAt`), `synthesis_repo`
+/// (`snapshotInstant`), `draft_window_repo` and `window_baseline_repo` — every
+/// table with such a column, which is the invariant to re-derive by grep rather
+/// than a list to trust.
 ///
 /// **What is outside it is machine-generated, not merely uncompared.** `created_at`,
 /// the audit chain, outbox timestamps, `pricing_migration.announced_at` and a

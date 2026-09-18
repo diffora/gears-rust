@@ -102,6 +102,9 @@ pub mod m20260821_000042_create_pricing_price_overlay_line_amount;
 pub mod m20260821_000043_create_pricing_gl_code_taxonomy;
 pub mod m20260916_000044_price_row_sku;
 pub mod m20260916_000045_descriptor_grain;
+pub mod m20260918_000046_create_pricing_draft_window;
+pub mod m20260918_000047_create_pricing_window_baseline;
+pub mod m20260918_000048_create_pricing_window_guard;
 
 use sea_orm::{ConnectionTrait, Statement};
 use sea_orm_migration::prelude::*;
@@ -226,6 +229,9 @@ impl MigratorTrait for Migrator {
             // a file their database has already applied.
             Box::new(m20260916_000044_price_row_sku::Migration),
             Box::new(m20260916_000045_descriptor_grain::Migration),
+            Box::new(m20260918_000046_create_pricing_draft_window::Migration),
+            Box::new(m20260918_000047_create_pricing_window_baseline::Migration),
+            Box::new(m20260918_000048_create_pricing_window_guard::Migration),
         ]
     }
 }

@@ -1,8 +1,8 @@
 //! Pure tests for draft-window start resolution and schedule composition.
 
 use super::{
-    compose_windows, resolve_start, DraftStart, DraftWindowAction, DraftWindowEntry, ProposedWindow,
-    WindowBaseline,
+    DraftStart, DraftWindowAction, DraftWindowEntry, ProposedWindow, WindowBaseline,
+    compose_windows, resolve_start,
 };
 use crate::domain::error::DomainError;
 use crate::domain::instant::utc_ymd_hms;
@@ -51,10 +51,7 @@ fn operation_id(n: u128) -> Uuid {
 }
 
 fn keys_for(prices: &[(Uuid, &str)]) -> BTreeMap<Uuid, ScopeKey> {
-    prices
-        .iter()
-        .map(|(id, kind)| (*id, key(kind)))
-        .collect()
+    prices.iter().map(|(id, kind)| (*id, key(kind))).collect()
 }
 
 fn entry(action: DraftWindowAction) -> DraftWindowEntry {

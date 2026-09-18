@@ -42,11 +42,12 @@ use bss_pricing::infra::storage::entity::{
     approval, approval_key, approval_threshold, approval_threshold_tombstone, audit_log,
     brand_taxonomy, bulk_operation, bulk_row_lock, bundle, bundle_component, bundle_revshare,
     bundle_revshare_group, catalog_version_ref, composite_meter, customer_group_taxonomy,
-    gl_code_taxonomy, group_membership, idempotency_dedup, migration, operator_flag,
+    draft_window, gl_code_taxonomy, group_membership, idempotency_dedup, migration, operator_flag,
     org_tier_taxonomy, outbox, partner_taxonomy, pin_frontier, plan, plan_addon_rule,
     plan_period_floor_cap, plan_phase, policy_object, price, price_overlay, price_overlay_line,
     price_overlay_line_amount, price_tier_band, price_window, read_model, region_taxonomy,
-    repricing_journal, rounding_policy_taxonomy, snapshot_provenance,
+    repricing_journal, rounding_policy_taxonomy, snapshot_provenance, window_baseline,
+    window_guard,
 };
 use bss_pricing::infra::storage::migrations::Migrator;
 use sea_orm::{ConnectionTrait, Database, EntityName, EntityTrait, Statement};
@@ -118,6 +119,9 @@ const EXPECTED_TABLES: &[&str] = &[
     // D-356's GL-code taxonomy (`pricing_gl_code_taxonomy`): the same shape on its own
     // table, named here on the day it landed.
     "pricing_gl_code_taxonomy",
+    "pricing_draft_window",
+    "pricing_window_baseline",
+    "pricing_window_guard",
     "coord_leases",
 ];
 
@@ -176,6 +180,13 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_composite_meter_no_update",
     "trg_pricing_composite_meter_same_tenant_as_its_revision_on_insert",
     "trg_pricing_composite_meter_same_tenant_as_its_revision_on_update",
+    "trg_pricing_draft_window_no_delete",
+    "trg_pricing_draft_window_no_insert",
+    "trg_pricing_draft_window_no_update",
+    "trg_pricing_draft_window_price_on_plan_insert",
+    "trg_pricing_draft_window_price_on_plan_update",
+    "trg_pricing_draft_window_same_tenant_as_its_revision_on_insert",
+    "trg_pricing_draft_window_same_tenant_as_its_revision_on_update",
     // Slice 9's membership plane, D-09's cross-group non-overlap invariant on
     // the `SQLite` arm -- `pricing_group_membership`'s two `RAISE(ABORT, ...)` triggers,
     // one per DML verb the interval can change through.
@@ -261,6 +272,13 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     // snapshot is **frozen**, so no UPDATE is sanctioned at all.
     "trg_pricing_snapshot_provenance_no_delete",
     "trg_pricing_snapshot_provenance_no_update",
+    "trg_pricing_window_baseline_no_delete",
+    "trg_pricing_window_baseline_no_insert",
+    "trg_pricing_window_baseline_no_update",
+    "trg_pricing_window_baseline_price_on_plan_insert",
+    "trg_pricing_window_baseline_price_on_plan_update",
+    "trg_pricing_window_baseline_same_tenant_as_its_revision_on_insert",
+    "trg_pricing_window_baseline_same_tenant_as_its_revision_on_update",
 ];
 
 /// Every index the chain creates, `uq_` and `idx_` alike.
@@ -284,6 +302,7 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_bundle_tenant",
     "idx_pricing_catalog_version_ref_version",
     "idx_pricing_composite_meter_revision",
+    "idx_pricing_draft_window_revision",
     // The resolution walk (`inst-cg-resolve`) and the exclusion constraint's own
     // probe are both per-payer range scans.
     "idx_pricing_group_membership_payer",
@@ -309,6 +328,7 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_price_window_price",
     "idx_pricing_read_model_resolve",
     "idx_pricing_snapshot_provenance_plan",
+    "idx_pricing_window_baseline_revision",
     "uq_pricing_approval_key_pending",
     "uq_pricing_approval_policy_pending",
     "uq_pricing_bulk_operation_client_key",
@@ -397,6 +417,10 @@ const EXPECTED_CHECKS: &[&str] = &[
     // over `pricing_customer_group_taxonomy`.
     "chk_pricing_customer_group_taxonomy_state",
     "chk_pricing_customer_group_taxonomy_value_present",
+    "chk_pricing_draft_window_action",
+    "chk_pricing_draft_window_interval",
+    "chk_pricing_draft_window_reason_code",
+    "chk_pricing_draft_window_shape",
     // D-356's declared GL-code vocabulary -- the taxonomy shape, on its own table.
     "chk_pricing_gl_code_taxonomy_state",
     "chk_pricing_gl_code_taxonomy_value_present",
@@ -565,6 +589,8 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_snapshot_provenance_resolved",
     "chk_pricing_snapshot_provenance_revision",
     "chk_pricing_snapshot_provenance_trigger",
+    "chk_pricing_window_baseline_interval",
+    "chk_pricing_window_baseline_mutation_seq",
 ];
 
 /// Every trigger's body, pinned by digest — the roster, in `sqlite_master`'s
@@ -639,6 +665,10 @@ const EXPECTED_PRIMARY_KEYS: &[(&str, &str)] = &[
     // Slice 9's own taxonomy (`inst-cg-taxonomy`), the four's own key shape on
     // its own table.
     ("pricing_customer_group_taxonomy", "tenant_id, value"),
+    (
+        "pricing_draft_window",
+        "tenant_id, plan_id, plan_revision, operation_id",
+    ),
     // D-356 (`pricing_gl_code_taxonomy`): the taxonomies' key, on a table of their shape.
     ("pricing_gl_code_taxonomy", "tenant_id, value"),
     // Slice 9's membership plane (`inst-cg-record`). Keyed on its own surrogate
@@ -714,6 +744,11 @@ const EXPECTED_PRIMARY_KEYS: &[(&str, &str)] = &[
     // subscription: the subscription's uniqueness is a partial-free UNIQUE index
     // beside it, which is the rule rather than the identity.
     ("pricing_snapshot_provenance", "provenance_id"),
+    (
+        "pricing_window_baseline",
+        "tenant_id, plan_id, plan_revision, window_id",
+    ),
+    ("pricing_window_guard", "tenant_id, plan_id"),
 ];
 
 fn expected_primary_keys() -> Vec<(String, String)> {
@@ -879,6 +914,34 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     (
         "trg_pricing_composite_meter_same_tenant_as_its_revision_on_update",
         15_646_905_659_757_730_516_u64,
+    ),
+    (
+        "trg_pricing_draft_window_no_delete",
+        17_997_119_672_094_347_443_u64,
+    ),
+    (
+        "trg_pricing_draft_window_no_insert",
+        7_587_344_713_120_536_679_u64,
+    ),
+    (
+        "trg_pricing_draft_window_no_update",
+        8_521_262_050_270_875_284_u64,
+    ),
+    (
+        "trg_pricing_draft_window_price_on_plan_insert",
+        2_183_054_652_113_400_u64,
+    ),
+    (
+        "trg_pricing_draft_window_price_on_plan_update",
+        3_801_711_946_716_247_928_u64,
+    ),
+    (
+        "trg_pricing_draft_window_same_tenant_as_its_revision_on_insert",
+        5_537_595_488_581_834_361_u64,
+    ),
+    (
+        "trg_pricing_draft_window_same_tenant_as_its_revision_on_update",
+        12_582_622_430_078_687_705_u64,
     ),
     (
         "trg_pricing_group_membership_no_overlap_insert",
@@ -1137,6 +1200,34 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     (
         "trg_pricing_snapshot_provenance_no_update",
         3_248_933_936_782_516_701_u64,
+    ),
+    (
+        "trg_pricing_window_baseline_no_delete",
+        6_352_242_670_310_673_225_u64,
+    ),
+    (
+        "trg_pricing_window_baseline_no_insert",
+        1_047_224_653_905_583_793_u64,
+    ),
+    (
+        "trg_pricing_window_baseline_no_update",
+        1_038_840_681_158_761_478_u64,
+    ),
+    (
+        "trg_pricing_window_baseline_price_on_plan_insert",
+        11_250_995_766_061_782_230_u64,
+    ),
+    (
+        "trg_pricing_window_baseline_price_on_plan_update",
+        12_228_755_852_981_001_782_u64,
+    ),
+    (
+        "trg_pricing_window_baseline_same_tenant_as_its_revision_on_insert",
+        8_763_783_237_728_261_929_u64,
+    ),
+    (
+        "trg_pricing_window_baseline_same_tenant_as_its_revision_on_update",
+        11_464_293_147_184_735_177_u64,
     ),
 ];
 
@@ -1466,6 +1557,9 @@ async fn the_chain_creates_every_table_and_re_runs_cleanly() {
         rounding_policy_taxonomy::Entity,
         // D-356's GL-code taxonomy (`pricing_gl_code_taxonomy`), named on the day it landed.
         gl_code_taxonomy::Entity,
+        draft_window::Entity,
+        window_baseline::Entity,
+        window_guard::Entity,
     );
 
     // The completeness half, and the reason the roster above is no longer a

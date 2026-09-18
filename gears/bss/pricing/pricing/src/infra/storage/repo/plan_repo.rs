@@ -108,6 +108,7 @@ use crate::infra::storage::repo::plan_shape_repo::{
     copy_addon_rules, copy_composites, copy_period_floor_caps, copy_phases, delete_addon_rules,
     delete_composites, delete_period_floor_caps, delete_phases,
 };
+use crate::infra::storage::repo::window_guard_repo;
 use crate::infra::storage::repo::{NewAuditEntry, audit_repo, outbox_repo};
 use toolkit_odata::{ODataQuery, Page};
 
@@ -2018,6 +2019,15 @@ async fn insert_revision(
         .exec(runner)
         .await
         .map_err(|e| RepoError::Db(format!("insert pricing_plan: {e}")))?;
+    let (tenant_id, plan_id) = match (&row.tenant_id, &row.plan_id) {
+        (Set(tenant_id), Set(plan_id)) => (*tenant_id, *plan_id),
+        _ => {
+            return Err(RepoError::Db(
+                "pricing_plan insert is missing tenant_id or plan_id".to_owned(),
+            ));
+        }
+    };
+    window_guard_repo::ensure(runner, scope, tenant_id, plan_id).await?;
     Ok(())
 }
 

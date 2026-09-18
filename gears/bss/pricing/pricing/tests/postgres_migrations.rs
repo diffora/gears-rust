@@ -298,6 +298,10 @@ const EXPECTED_RELATIONAL_CONSTRAINTS: &[&str] = &[
     // under a revision number its parent never had.
     "fk_pricing_composite_meter_revision: FOREIGN KEY (plan_id, plan_revision) \
      REFERENCES bss.pricing_plan(plan_id, revision)",
+    "fk_pricing_draft_window_price: FOREIGN KEY (price_id) \
+     REFERENCES bss.pricing_price(price_id)",
+    "fk_pricing_draft_window_revision: FOREIGN KEY (plan_id, plan_revision) \
+     REFERENCES bss.pricing_plan(plan_id, revision)",
     "fk_pricing_plan_addon_rule_revision: FOREIGN KEY (plan_id, plan_revision) \
      REFERENCES bss.pricing_plan(plan_id, revision)",
     "fk_pricing_plan_period_floor_cap_revision: FOREIGN KEY (plan_id, plan_revision) \
@@ -318,9 +322,14 @@ const EXPECTED_RELATIONAL_CONSTRAINTS: &[&str] = &[
      REFERENCES bss.pricing_price(price_id)",
     "fk_pricing_repricing_journal_run: FOREIGN KEY (run_id) \
      REFERENCES bss.pricing_bulk_operation(operation_id)",
-    // The one table-level `UNIQUE` (`contype = 'u'`) the chain declares: every
-    // other uniqueness in it is a partial `CREATE UNIQUE INDEX`, which is why
-    // this list is short and `EXPECTED_INDEXES` is not.
+    "fk_pricing_window_baseline_price: FOREIGN KEY (price_id) \
+     REFERENCES bss.pricing_price(price_id)",
+    "fk_pricing_window_baseline_revision: FOREIGN KEY (plan_id, plan_revision) \
+     REFERENCES bss.pricing_plan(plan_id, revision)",
+    // Table-level `UNIQUE`s (`contype = 'u'`): every other uniqueness in the chain
+    // is a partial `CREATE UNIQUE INDEX`, which is why this list is short and
+    // `EXPECTED_INDEXES` is not.
+    "uq_pricing_draft_window_target: UNIQUE (tenant_id, plan_id, plan_revision, target_window_id)",
     "uq_pricing_price_tier_band_lower_bound: UNIQUE (price_id, from_qty)",
 ];
 
@@ -368,6 +377,7 @@ const EXPECTED_FUNCTIONS: &[&str] = &[
     "pricing_bundle_revshare_group_append_only",
     // Slice 10's composite meter: one PL/pgSQL function, three SQLite triggers.
     "pricing_composite_meter_append_only",
+    "pricing_draft_window_append_only",
     // Slice 11. One PL/pgSQL function carrying the five arms the SQLite mirror
     // spells as five triggers.
     "pricing_migration_append_only",
@@ -388,6 +398,7 @@ const EXPECTED_FUNCTIONS: &[&str] = &[
     // Slice 11. Two unconditional arms in one function: a migrated-origin
     // snapshot is frozen, so no UPDATE is sanctioned at all.
     "pricing_snapshot_provenance_frozen",
+    "pricing_window_baseline_append_only",
 ];
 
 /// The triggers those functions are bound to, one per function.
@@ -406,6 +417,7 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_bundle_revshare_append_only",
     "trg_pricing_bundle_revshare_group_append_only",
     "trg_pricing_composite_meter_append_only",
+    "trg_pricing_draft_window_append_only",
     "trg_pricing_migration_append_only",
     "trg_pricing_plan_addon_rule_append_only",
     "trg_pricing_plan_append_only",
@@ -421,6 +433,7 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_price_window_append_only",
     "trg_pricing_repricing_journal_progress",
     "trg_pricing_snapshot_provenance_frozen",
+    "trg_pricing_window_baseline_append_only",
 ];
 
 /// The partial indexes — the `WHERE`-carrying ones, where the predicate *is* the
@@ -447,6 +460,7 @@ const EXPECTED_REVISION_COLUMNS: &[&str] = &[
     "pricing_bundle_revshare_group.plan_revision bigint",
     "pricing_catalog_version_ref.subject_revision bigint",
     "pricing_composite_meter.plan_revision bigint",
+    "pricing_draft_window.plan_revision bigint",
     "pricing_migration.source_revision bigint",
     "pricing_plan.revision bigint",
     "pricing_plan_addon_rule.plan_revision bigint",
@@ -456,6 +470,7 @@ const EXPECTED_REVISION_COLUMNS: &[&str] = &[
     "pricing_price_overlay_line.overlay_revision bigint",
     "pricing_price_overlay_line_amount.overlay_revision bigint",
     "pricing_snapshot_provenance.source_revision bigint",
+    "pricing_window_baseline.plan_revision bigint",
 ];
 
 const EXPECTED_PARTIAL_INDEXES: &[&str] = &[
@@ -515,6 +530,7 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_bundle_tenant",
     "idx_pricing_catalog_version_ref_version",
     "idx_pricing_composite_meter_revision",
+    "idx_pricing_draft_window_revision",
     "idx_pricing_group_membership_payer",
     "idx_pricing_group_membership_walk",
     "idx_pricing_idempotency_dedup_created",
@@ -538,6 +554,7 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_price_window_price",
     "idx_pricing_read_model_resolve",
     "idx_pricing_snapshot_provenance_plan",
+    "idx_pricing_window_baseline_revision",
     "uq_pricing_approval_key_pending",
     "uq_pricing_approval_policy_pending",
     // D-307's physical half, and the one this roster exists for: it is not partial,
@@ -597,6 +614,7 @@ const EXPECTED_PRIMARY_KEYS: &[&str] = &[
     // names the other as its twin.
     "pricing_composite_meter: tenant_id, plan_id, plan_revision, composite_id",
     "pricing_customer_group_taxonomy: tenant_id, value",
+    "pricing_draft_window: tenant_id, plan_id, plan_revision, operation_id",
     // D-356 (`pricing_gl_code_taxonomy`): the taxonomies' key on its own table.
     "pricing_gl_code_taxonomy: tenant_id, value",
     // Slice 9's membership plane (`inst-cg-record`). Keyed on its own surrogate
@@ -646,6 +664,8 @@ const EXPECTED_PRIMARY_KEYS: &[&str] = &[
     "pricing_rounding_policy_taxonomy: tenant_id, value",
     // Read back from `pricing_snapshot_provenance`'s own DDL rather than from the live server.
     "pricing_snapshot_provenance: provenance_id",
+    "pricing_window_baseline: tenant_id, plan_id, plan_revision, window_id",
+    "pricing_window_guard: tenant_id, plan_id",
 ];
 
 const EXPECTED_CHECKS: &[&str] = &[
@@ -699,6 +719,10 @@ const EXPECTED_CHECKS: &[&str] = &[
     // `config`'s four.
     "chk_pricing_customer_group_taxonomy_state",
     "chk_pricing_customer_group_taxonomy_value_present",
+    "chk_pricing_draft_window_action",
+    "chk_pricing_draft_window_interval",
+    "chk_pricing_draft_window_reason_code",
+    "chk_pricing_draft_window_shape",
     // D-356's declared GL-code vocabulary, the same two the SQLite mirror carries.
     "chk_pricing_gl_code_taxonomy_state",
     "chk_pricing_gl_code_taxonomy_value_present",
@@ -861,6 +885,8 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_snapshot_provenance_resolved",
     "chk_pricing_snapshot_provenance_revision",
     "chk_pricing_snapshot_provenance_trigger",
+    "chk_pricing_window_baseline_interval",
+    "chk_pricing_window_baseline_mutation_seq",
 ];
 
 // ---------------------------------------------------------------------------
@@ -1504,6 +1530,8 @@ const REQUIRED_DEREFERENCES: &[&str] = &[
     "pricing_composite_meter_append_only.tenant_id",
     "pricing_plan_period_floor_cap_append_only.tenant_id",
     "pricing_price_overlay_line_append_only.tenant_id",
+    "pricing_draft_window_append_only.tenant_id",
+    "pricing_window_baseline_append_only.tenant_id",
 ];
 
 /// The anti-vacuity control for the census above.
@@ -2172,8 +2200,12 @@ async fn sku_staging_preserves_partial_mappings_and_upgrades_through_descriptors
     let upgraded = run_migrations_for_testing(&db, Migrator::migrations())
         .await
         .unwrap();
+    let remaining_after_043 = Migrator::migrations()
+        .iter()
+        .filter(|m| m.name() > "m20260821_000043_create_pricing_gl_code_taxonomy")
+        .count();
     assert_eq!(
-        upgraded.applied, 2,
+        upgraded.applied, remaining_after_043,
         "neither refused migration was recorded"
     );
     assert_eq!(
