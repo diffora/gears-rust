@@ -9,14 +9,18 @@ use sea_orm::{ColumnTrait, Condition, EntityTrait, Order};
 use toolkit_db::secure::{
     AccessScope, DBRunner, SecureDeleteExt, SecureEntityExt, SecureInsertExt,
 };
+use uuid::Uuid;
 
 use crate::domain::draft_window::{DraftWindowOwner, WindowBaseline};
+use crate::domain::scope_key::PlanId;
+use crate::domain::window::WindowState;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::window_baseline;
 use crate::infra::storage::repo::check_authored_instant;
 use crate::infra::storage::repo::draft_window_repo::{
     require_draft_owner, require_price_on_plan, stored_revision,
 };
+use crate::infra::storage::repo::window_repo;
 
 /// List the captured live-window references of one owner revision, ordered by
 /// `window_id`.
@@ -96,6 +100,50 @@ pub async fn replace(
             .map_err(|e| RepoError::Db(format!("insert pricing_window_baseline: {e}")))?;
     }
     Ok(())
+}
+
+/// Capture the plan's committed live windows as this draft owner's baseline.
+///
+/// Binding is by `price_id`: an authored scope-key change does not retarget
+/// captured intervals onto another row. Membership, ids, operator versions and
+/// intervals come from the live plane under the caller's guard.
+///
+/// # Errors
+/// The same refusals as [`replace`].
+pub async fn replace_from_live(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    owner: &DraftWindowOwner,
+) -> Result<(), RepoError> {
+    let captured =
+        snapshot_live(runner, scope, owner.tenant_id, PlanId::new(owner.plan_id)).await?;
+    replace(runner, scope, owner, &captured).await
+}
+
+/// The plan's live `pricing_price_window` rows as baseline references, without
+/// writing. Frozen-revision assemble uses this so leftover draft creates are not
+/// re-applied against the candidate set.
+///
+/// # Errors
+/// [`RepoError::Db`] / [`RepoError::CorruptRow`] from the live list.
+pub async fn snapshot_live(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+) -> Result<Vec<WindowBaseline>, RepoError> {
+    let live = window_repo::list_for_plan(runner, scope, tenant_id, plan_id).await?;
+    Ok(live
+        .into_iter()
+        .map(|row| WindowBaseline {
+            window_id: row.window_id,
+            price_id: row.price_id,
+            mutation_seq: row.mutation_seq,
+            effective_from: row.effective_from,
+            effective_to: row.effective_to,
+            cancelled: row.state == WindowState::Cancelled,
+        })
+        .collect())
 }
 
 fn baseline_owner_filter(owner: &DraftWindowOwner, number: i64) -> Condition {

@@ -839,6 +839,25 @@ impl PriceRepo {
                     // published, and telling its author to go and cancel a
                     // window would send them to the wrong object.
                     refuse_if_a_window_stands_on_it(txn, &scope, tenant_id, price_id).await?;
+                    // Draft-create intentions name this `price_id` and the FK
+                    // refuses the row delete while they remain. Drop them on the
+                    // open revision in this same transaction; `record_price_mutation`
+                    // voids pending/approved units after the row is gone.
+                    if let Some(draft) =
+                        super::plan_repo::load_open_draft(txn, &scope, tenant_id, plan_id).await?
+                    {
+                        super::draft_window_repo::remove_creates_for_price(
+                            txn,
+                            &scope,
+                            &crate::domain::draft_window::DraftWindowOwner {
+                                tenant_id,
+                                plan_id: plan_id.get(),
+                                plan_revision: draft.revision,
+                            },
+                            price_id,
+                        )
+                        .await?;
+                    }
                     // Read whole before the row goes, because the record names
                     // the plan whose chain it extends and that fact lives on the
                     // row being deleted.

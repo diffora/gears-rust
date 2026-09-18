@@ -1,22 +1,16 @@
 //! The database-under-test, the three verbs the schema suites drive it with, and
-//! the one window every publishable fixture owes its rows.
+//! the covering a publishable fixture owes its rows.
 //!
 //! Everything here is shared because it has **no per-suite content at all**: a
 //! migrated `SQLite` database, a statement that must land, a statement whose
-//! result is read back, and the coverage window `inst-wc-required` demands of
-//! any fixture that publishes. Each of the schema suites once carried its own
-//! copy of the first three, and the copies had already stopped agreeing — not
-//! about what the helpers do, but about the schema they were describing, so one
-//! file said `pricing_price` carried nine `CHECK` constraints while the migration
-//! that had grown six more sat two tasks away in the same branch. A helper each
-//! suite re-types is a sentence each suite has to keep true on its own.
+//! result is read back, and the coverage `inst-wc-required` demands of any
+//! fixture that publishes. Each of the schema suites once carried its own copy
+//! of the first three, and the copies had already stopped agreeing.
 //!
-//! [`schedule_coverage_window`] is here for the sharper version of that reason.
-//! Four seeds across four suites publish a plan, and each of them now owes its
-//! rows a window. Four copies of that decision would be four places to change the
-//! day the rule moves, and four chances for one of them to schedule a window that
-//! satisfies the letter of the rule while asserting about a world the system
-//! would not hold.
+//! [`author_covering_intention`] is the publishable-draft covering (explicit
+//! AtPublish create). [`schedule_coverage_window`] remains for tests that
+//! specifically exercise historical or committed live `pricing_price_window`
+//! rows.
 //!
 //! What is deliberately **not** here is `must_be_rejected`. Every suite asserts
 //! that a refusal is *the one under test* — a raw "some error happened" would
@@ -48,8 +42,14 @@ use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
 use bss_pricing::domain::audit::AuditStamp;
+use bss_pricing::domain::concurrency::RowVersion;
+use bss_pricing::domain::draft_window::{
+    DraftStart, DraftWindowAction, DraftWindowEntry, DraftWindowOwner,
+};
 use bss_pricing::domain::instant::utc_ymd_hms;
 use bss_pricing::domain::lifecycle::LifecycleState;
+use bss_pricing::domain::scope_key::PlanId;
+use bss_pricing::infra::draft_window::{self, DraftWindowCommand};
 use bss_pricing::infra::storage::entity::{plan, price, region_taxonomy};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::window_repo::{NewWindow, WindowRecord, schedule};
@@ -203,38 +203,76 @@ pub fn coverage_window_id(price_id: Uuid) -> Uuid {
     Uuid::from_u128(price_id.as_u128() ^ SALT)
 }
 
-/// Schedule the window `inst-wc-required` demands of a billable row's key.
+/// Author an explicit covering create on an open draft (`inst-wc-required`).
 ///
-/// **Why every publishable fixture in this crate calls this.** `inst-wc-required`
-/// (S7 §3) makes publish fail for a billable row whose canonical scope key holds
-/// no active or scheduled `PriceWindow`, and before 2026-08-04 every fixture in
-/// every suite published with **zero** windows. Seventy-four tests reddened the
-/// day the rule registered. The fix is the fixtures: a published row lives in
-/// time, so a fixture that publishes one has to say when it is effective.
+/// Publishable never-published fixtures use this instead of
+/// [`schedule_coverage_window`]: a live `pricing_price_window` on a draft makes
+/// assemble refuse `WindowBaselineChanged`, and compose ignores live seed
+/// windows. Prefer [`DraftStart::AtPublish`] with an open end.
 ///
-/// **There is deliberately no way to opt out.** No flag, no "skip coverage"
-/// parameter, no test-only bypass — a rule a fixture can opt out of is a rule the
-/// next fixture opts out of, and the refusal is the whole content of the definition of done this
-/// slice is built for. A suite for which windows are noise calls this and moves
-/// on; it does not get an exemption.
+/// The operation id is [`coverage_window_id`] so suites that later cancel or
+/// shorten the materialized covering can name it.
+///
+/// # Panics
+/// When the command is refused. That is the fixture being wrong about the world.
+#[allow(clippy::too_many_arguments)]
+pub async fn author_covering_intention(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+    revision: u64,
+    expected: RowVersion,
+    price_id: Uuid,
+    start: DraftStart,
+    effective_to: Option<OffsetDateTime>,
+    stamp: AuditStamp,
+) -> RowVersion {
+    let window_id = coverage_window_id(price_id);
+    let next = draft_window::apply_command(
+        runner,
+        scope,
+        &DraftWindowOwner {
+            tenant_id,
+            plan_id: plan_id.get(),
+            plan_revision: revision,
+        },
+        expected.get(),
+        DraftWindowCommand::Put(DraftWindowEntry {
+            operation_id: window_id,
+            action: DraftWindowAction::Create {
+                window_id,
+                price_id,
+                start,
+                effective_to,
+            },
+            reason_code: "fixtureCoverage".to_owned(),
+        }),
+        stamp,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("author covering intention for price row {price_id}: {e}"));
+    RowVersion::new(next)
+}
+
+/// Schedule a **live** `pricing_price_window` for tests that exercise
+/// historical or already-committed coverage — not for publishable-draft setup.
+///
+/// Never-published plans that must pass `inst-wc-required` should call
+/// [`author_covering_intention`] instead. A live seed on a draft is ignored by
+/// compose and makes captured-baseline drift refuse the publish.
 ///
 /// **`window_repo::schedule` and not `POST …/prices/{priceId}/windows`, for
 /// isolation and speed.** The route is mounted and works — `rest_windows.rs` drives
-/// it, including the sequence that authors a plan's first window through it — so
-/// this is a choice rather than a workaround, and it is stated as one because a
-/// fixture whose recorded reason is false is worse than one with none. Two grounds:
-/// a mutation through the service resolves the plan's *current* revision, and this
-/// window has to exist **before** the plan publishes; and every publishing fixture
-/// in the crate goes through here, so routing them through the schedule path would
-/// make one defect in it redden four suites at once, none of them naming the rule
-/// that broke.
+/// it — so this is a choice rather than a workaround. Two grounds: a mutation
+/// through the service resolves the plan's *current* revision, and historical
+/// fixtures often need a window before any draft context exists; and routing
+/// every live seed through the schedule path would make one defect in it redden
+/// four suites at once.
 ///
 /// The window is `scheduled` — the only state `window_repo::schedule` creates,
 /// §4's initial one — over `[COVERAGE_FROM_UTC, COVERAGE_TO_UTC)`. Both instants
-/// are **fixed dates and not offsets from `now`**: a fixture computed from the
-/// clock is one that changes what it asserts every day it runs, and a fixture
-/// dated far enough ahead to look safe is one that starts failing on a Tuesday
-/// somebody has to bisect.
+/// are **fixed dates and not offsets from `now`**.
 ///
 /// # Panics
 /// When the schedule is refused — an overlap on the key, a row that is not there,
@@ -262,6 +300,36 @@ pub async fn schedule_coverage_window(
     )
     .await
     .unwrap_or_else(|e| panic!("schedule the coverage window of price row {price_id}: {e}"))
+}
+
+/// Open-ended live covering from [`coverage_from`], for committed-state suites
+/// whose assemble path now judges `inst-wc-required` over live windows.
+///
+/// Finite [`schedule_coverage_window`] is the historical `[FROM, TO)` fixture
+/// rest_windows posts adjacent to. Repricing apply runs publish aggregate
+/// rules; a finite tail is `WINDOW_TRAILING_VOID`.
+pub async fn schedule_open_ended_coverage(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    price_id: Uuid,
+    stamp: AuditStamp,
+) -> WindowRecord {
+    schedule(
+        runner,
+        scope,
+        NewWindow {
+            window_id: coverage_window_id(price_id),
+            tenant_id,
+            price_id,
+            effective_from: midnight(COVERAGE_FROM_UTC),
+            effective_to: None,
+            reason_code: "fixtureCoverage".to_owned(),
+        },
+        stamp,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("schedule open-ended covering of price row {price_id}: {e}"))
 }
 
 /// Declare the region universe every publishing fixture's rows sell in.

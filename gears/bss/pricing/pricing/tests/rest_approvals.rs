@@ -27,7 +27,6 @@ mod counts;
 use bss_pricing::authz::{actions, labels};
 use bss_pricing::config::JobsConfig;
 use bss_pricing::domain::approval::ApprovalState;
-use bss_pricing::domain::instant::format_rfc3339;
 use bss_pricing::domain::window::WindowState;
 use bss_pricing::infra::jobs::window_activation::WindowActivationJob;
 use bss_pricing::infra::storage::repo::window_repo;
@@ -867,25 +866,31 @@ async fn the_record_carries_the_content_its_pin_covers() {
     assert_eq!(pinned["rows"][0]["scope_key"]["region"], "eu");
     assert_eq!(pinned["phases"][0]["kind"], "evergreen");
     assert_eq!(pinned["rows"][0]["content"]["gl_code_ref"], "4000");
-    // The window plane, over the wire. The pin frames it, so D-61 says the
-    // document has to carry it — and the interval rendering is `GET …/coverage`'s
-    // own `WindowIntervalView`, so an operator and a reviewer read one spelling.
-    let (from_y, from_m, from_d) = common::COVERAGE_FROM_UTC;
-    let (to_y, to_m, to_d) = common::COVERAGE_TO_UTC;
+    // Draft covering is hashed as authoring inputs, not as the clock-resolved
+    // `windows` plane (that plane is outside the pin). The seed's AtPublish
+    // create is what a reviewer is signing.
     assert_eq!(
-        pinned["windows"],
-        serde_json::json!([{
-            "scope_key": pinned["rows"][0]["scope_key"],
-            "intervals": [{
-                // The gear's renderer, not `time`'s: an expectation that spells
-                // the instant its own way asserts a form the gear may not emit.
-                "effective_from": format_rfc3339(utc_ymd_hms(from_y, from_m, from_d, 0, 0, 0)),
-                "effective_to": format_rfc3339(utc_ymd_hms(to_y, to_m, to_d, 0, 0, 0)),
-                "state": "scheduled",
-            }],
-        }]),
-        "the seed's coverage window, filed under the row's own key: {pinned}"
+        pinned["draft_window_entries"].as_array().map(Vec::len),
+        Some(1),
+        "one covering intention: {pinned}"
     );
+    assert_eq!(
+        pinned["draft_window_entries"][0]["reason_code"],
+        "fixtureCoverage"
+    );
+    assert_eq!(
+        pinned["draft_window_entries"][0]["action"]["kind"],
+        "create"
+    );
+    assert_eq!(
+        pinned["draft_window_entries"][0]["action"]["start"]["kind"],
+        "at_publish"
+    );
+    assert_eq!(
+        pinned["draft_window_entries"][0]["action"]["price_id"],
+        seeded.price_id.to_string()
+    );
+    assert_eq!(pinned["window_baseline"], serde_json::json!([]));
     assert_eq!(body["content_matches_pin"], true);
 }
 
@@ -940,8 +945,7 @@ async fn an_activation_under_a_pending_unit_does_not_void_the_approval() {
     // Published for real on both planes: the revision so the window unit has a
     // current revision to pin, and the price row so the sweep's projected-state
     // filter can see its window.
-    h.publish(plan_id, seeded.revision).await;
-    h.publish_price(plan_id, seeded.price_id).await;
+    h.publish_seeded(plan_id, &seeded).await;
 
     let window_id = common::coverage_window_id(seeded.price_id);
     let approval_id = Uuid::from_u128(0x_a1_d0);
@@ -1514,29 +1518,7 @@ async fn deleting_an_approved_intention_breaks_the_pin() {
     let h = Harness::new().await;
     let plan_id = Uuid::now_v7();
     let seeded = seed_publishable_plan(&h, plan_id).await;
-    let etag = h.plan_etag(plan_id).await;
-    let created = h
-        .allowed_as(SUBMITTER)
-        .send(with_headers(
-            "POST",
-            &format!("/bss-pricing/v1/prices/{}/windows", seeded.price_id),
-            Some(serde_json::json!({
-                "context": {"kind": "draft", "plan_revision": 0},
-                "start": {"kind": "at_publish"},
-                "reason_code": "launch"
-            })),
-            &[
-                ("if-match", etag.as_str()),
-                ("idempotency-key", "rest-approvals-at-publish"),
-            ],
-        ))
-        .await;
-    assert_eq!(created.status(), axum::http::StatusCode::CREATED);
-    let created_body = body_json(created).await;
-    let operation_id = created_body["operation_id"]
-        .as_str()
-        .expect("create names its operation")
-        .to_owned();
+    let operation_id = common::coverage_window_id(seeded.price_id).to_string();
 
     let submitted = h
         .allowed_as(SUBMITTER)

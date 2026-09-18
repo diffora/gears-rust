@@ -40,8 +40,7 @@ fn preview_body() -> serde_json::Value {
 async fn published(h: &Harness) -> Uuid {
     let plan_id = Uuid::now_v7();
     let seeded = seed_publishable_plan(h, plan_id).await;
-    h.publish(plan_id, seeded.revision).await;
-    h.publish_price(plan_id, seeded.price_id).await;
+    h.publish_seeded(plan_id, &seeded).await;
     plan_id
 }
 

@@ -36,14 +36,22 @@ use std::sync::Arc;
 
 use bss_pricing::config::JobsConfig;
 use bss_pricing::domain::audit::AuditStamp;
+use bss_pricing::domain::concurrency::RowVersion;
+use bss_pricing::domain::draft_window::{
+    DraftStart, DraftWindowAction, DraftWindowEntry, DraftWindowOwner,
+};
 use bss_pricing::domain::events::CatalogEvent;
 use bss_pricing::domain::lifecycle::LifecycleState;
+use bss_pricing::domain::plan_shape::{BillingCycle, Frequency};
+use bss_pricing::domain::scope_key::PlanId;
 use bss_pricing::domain::window::WindowState;
+use bss_pricing::infra::draft_window::{self, DraftWindowCommand};
 use bss_pricing::infra::jobs::window_activation::{ActivationReport, WindowActivationJob};
 use bss_pricing::infra::metrics::test_harness::MetricsHarness;
 use bss_pricing::infra::storage::entity::{outbox, price, price_window, window_guard};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::window_repo::{self, NewWindow};
+use bss_pricing::infra::storage::repo::{NewPlanDraft, PlanRepo, draft_window_repo};
 
 use bss_pricing::domain::instant::utc_ymd_hms;
 use sea_orm::ActiveValue::Set;
@@ -1116,4 +1124,105 @@ async fn a_superseded_rows_active_window_still_expires() {
         ],
         "the predecessor's end reaches the consumer that has to stop resolving it"
     );
+}
+
+/// Draft-window intentions on an abandoned revision stay as history and never
+/// become live `pricing_price_window` rows the sweep can activate.
+#[tokio::test]
+async fn abandoned_draft_intentions_never_activate() {
+    let provider = harness().await;
+    let plans = PlanRepo::new(provider.clone());
+    let plan_id = PlanId::new(Uuid::from_u128(0x91_d7));
+    let created = plans
+        .create_draft(
+            &scope_of(TENANT),
+            NewPlanDraft {
+                plan_name: None,
+                plan_id,
+                tenant_id: TENANT,
+                created_by: ACTOR,
+                created_at_utc: t(0),
+                sku_id: SKU,
+                plan_tier: None,
+                billing_cycle: Some(BillingCycle::Recurring),
+                frequency: Some(Frequency::Monthly),
+                plan_tier_override: false,
+                purchase_min_qty: None,
+                purchase_max_qty: None,
+                descriptor_ext: std::collections::BTreeMap::new(),
+                available_from: None,
+                available_to: None,
+                cloned_from: None,
+                correlation_id: TEST_CORRELATION,
+            },
+        )
+        .await
+        .expect("create the abandoned-to-be draft");
+    let price_id = Uuid::from_u128(0xa0_d7);
+    seed_price_row(
+        &provider,
+        TENANT,
+        plan_id.get(),
+        price_id,
+        "recurring",
+        "draft",
+    )
+    .await;
+    let window_id = Uuid::from_u128(0x_d7_ac);
+    let owner = DraftWindowOwner {
+        tenant_id: TENANT,
+        plan_id: plan_id.get(),
+        plan_revision: created.revision,
+    };
+    let conn = provider.conn().expect("conn");
+    draft_window::apply_command(
+        &conn,
+        &scope_of(TENANT),
+        &owner,
+        created.row_version.get(),
+        DraftWindowCommand::Put(DraftWindowEntry {
+            operation_id: window_id,
+            action: DraftWindowAction::Create {
+                window_id,
+                price_id,
+                start: DraftStart::At(t(1)),
+                effective_to: None,
+            },
+            reason_code: "launch".to_owned(),
+        }),
+        stamp_at(t(0)),
+    )
+    .await
+    .expect("author a due-looking intention");
+
+    plans
+        .abandon_draft(
+            &scope_of(TENANT),
+            TENANT,
+            plan_id,
+            created.revision,
+            RowVersion::new(created.row_version.get() + 1),
+            stamp_at(t(1)),
+        )
+        .await
+        .expect("abandon the revision");
+
+    let report = sweep(&provider, t(10)).await;
+    assert_eq!(
+        report,
+        ActivationReport::default(),
+        "an abandoned intention is not a live schedule: {report:?}"
+    );
+    let live = window_repo::list_for_plan(&conn, &scope_of(TENANT), TENANT, plan_id)
+        .await
+        .expect("list live windows");
+    assert!(
+        live.is_empty(),
+        "activation is live pricing_price_window only, got {live:?}"
+    );
+    let history = draft_window_repo::list(&conn, &scope_of(TENANT), &owner)
+        .await
+        .expect("abandoned history remains");
+    assert_eq!(history.len(), 1, "{history:?}");
+    assert_eq!(history[0].operation_id, window_id);
 }

@@ -83,8 +83,10 @@
 //! any other first publish (G1). This module therefore performs **no validation
 //! of its own** — it authors a draft, and the publish path judges it. In
 //! particular the clone is expected to be *unpublishable* on arrival, because
-//! `inst-cl-windows` leaves its billable rows without coverage; that is reported
-//! rather than prevented.
+//! `inst-cl-windows` leaves its billable rows without coverage — neither live
+//! `pricing_price_window` rows, nor `pricing_draft_window` intentions, nor a
+//! captured baseline are copied onto the new plan (revision 0). That is
+//! reported rather than prevented.
 
 use toolkit_db::secure::{AccessScope, DBRunner, DbTx};
 use uuid::Uuid;
@@ -119,8 +121,9 @@ const COPIED_ROW_STATES: &[LifecycleState] = &[LifecycleState::Published];
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CloneNotice {
     /// `inst-cl-windows`: `PriceWindow` schedules are Slice 7-owned runtime
-    /// state (D-03) and are never cloned, so the clone's billable rows have no
-    /// coverage and its publish is blocked until the operator schedules some.
+    /// state (D-03) and are never cloned — nor are draft-window intentions or
+    /// a captured baseline — so the clone's billable rows have no coverage and
+    /// its publish is blocked until the operator authors explicit covering.
     /// Expected, and the reason this is a notice rather than a failure.
     NoCoverageScheduled { rows: usize },
     /// `inst-cl-resets`: `existing_grandfathered` rows are lifecycle state, not
@@ -312,11 +315,6 @@ pub async fn clone_plan_on(
     now: OffsetDateTime,
     stamp: AuditStamp,
 ) -> Result<CloneReceipt, DomainError> {
-    // Guard owner: clone_plan_on is the clone transaction. The source plan already
-    // has a guard; the target is minted below and ensure plants its row.
-    window_guard_repo::acquire(runner, scope, tenant_id, source.get())
-        .await
-        .map_err(|e| repo_failure(&e))?;
     let current = plan_repo::load_current(runner, scope, tenant_id, source)
         .await
         .map_err(|e| repo_failure(&e))?
@@ -325,6 +323,12 @@ pub async fn clone_plan_on(
                 "plan {source} holds no published revision to clone"
             ))
         })?;
+    // Guard owner: clone_plan_on is the clone transaction. The source is known
+    // to have a current revision (and therefore a guard row) after the read
+    // above; the target is minted below and ensure plants its row.
+    window_guard_repo::acquire(runner, scope, tenant_id, source.get())
+        .await
+        .map_err(|e| repo_failure(&e))?;
 
     let source_revision = current.revision;
     // **Destructured, so a field added to `PlanRevision` and forgotten here
@@ -393,6 +397,9 @@ pub async fn clone_plan_on(
             .map_err(|e| repo_failure(&e))?,
     );
 
+    // The target is a new plan at revision 0. Windows, draft intentions and
+    // captured baselines are lifecycle state of the source and stay behind
+    // (`inst-cl-windows`); nothing below copies those tables.
     let created = plan_repo::create_draft_on(
         runner,
         scope,

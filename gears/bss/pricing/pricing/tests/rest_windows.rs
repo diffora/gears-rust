@@ -161,15 +161,15 @@ fn keys_of(report: &serde_json::Value) -> Vec<String> {
 /// violation list: the property is that the coverage finding names this key in this
 /// spelling, not that coverage is the plan's only fault.
 ///
-/// # The row is **published** here, and after D-332 that is the whole fixture
+/// # The row is **published** here; D-332 no longer opens coverage on first publish
 ///
-/// The publish now opens coverage itself for a key whose every billable row is a
-/// draft it is freezing, so a draft row — what this test seeded until
-/// 2026-08-17 — no longer produces the refusal this test is about. The case that
-/// keeps the rule's full force is the other one: a key that **had** coverage and
-/// lost it, which is an author's mistake rather than an artefact of ordering.
-/// Publishing the row through `publish_price` and scheduling nothing is exactly
-/// that key, and it is the population an operator actually remediates from.
+/// First publish no longer plants an implicit covering window. A draft row — what
+/// this test seeded until 2026-08-17 — is not the population that produces the
+/// refusal this test is about. The case that keeps the rule's full force is the
+/// other one: a key that **had** coverage and lost it, which is an author's
+/// mistake rather than an artefact of ordering. Publishing the row through
+/// `publish_price` and scheduling nothing is exactly that key, and it is the
+/// population an operator actually remediates from.
 #[tokio::test]
 async fn the_report_names_the_uncovered_key_the_publish_refusal_named() {
     let h = Harness::new().await;
@@ -250,6 +250,8 @@ async fn a_covered_key_carries_its_interval_and_its_coverage_end() {
     let h = Harness::new().await;
     let plan_id = Uuid::now_v7();
     let seeded = seed_publishable_plan(&h, plan_id).await;
+    // Coverage GET reads committed live intervals, not draft AtPublish intentions.
+    h.cover_committed_price(seeded.price_id).await;
 
     let report = coverage(&h, plan_id).await;
     let keys = keys_of(&report);
@@ -272,18 +274,6 @@ async fn a_covered_key_carries_its_interval_and_its_coverage_end() {
         Some(&serde_json::json!({ "kind": "ends", "at": wire(common_to()) }))
     );
     assert_eq!(covered.get("interior_gaps"), Some(&serde_json::json!([])));
-    // The plan really is publishable, so `covered` is not a report about a plan
-    // that is broken for some other reason.
-    let accepted = h
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &publish_path(plan_id),
-            None,
-            &[("if-match", &format!("\"{}-{}\"", 0, seeded.version.get()))],
-        ))
-        .await;
-    assert_eq!(accepted.status(), StatusCode::ACCEPTED);
 }
 
 fn common_from() -> OffsetDateTime {
@@ -307,6 +297,7 @@ async fn an_interior_gap_is_named_with_its_bounds_and_its_key() {
     let h = Harness::new().await;
     let plan_id = Uuid::now_v7();
     let seeded = seed_publishable_plan(&h, plan_id).await;
+    h.cover_committed_price(seeded.price_id).await;
 
     window(&h, seeded.price_id, 0x_a1, 10, Some(20)).await;
     window(&h, seeded.price_id, 0x_a2, 30, Some(40)).await;
@@ -597,6 +588,7 @@ async fn every_component_key_gets_its_own_entry() {
     let h = Harness::new().await;
     let plan_id = Uuid::now_v7();
     let seeded = seed_publishable_plan(&h, plan_id).await;
+    h.cover_committed_price(seeded.price_id).await;
     // A second row on a different market, with no window of its own.
     let uncovered = seed_price(&h, plan_id, "US").await;
     let covered =
@@ -841,7 +833,8 @@ async fn a_published_plan_with_no_open_draft_is_still_reported() {
     );
     assert_eq!(
         entry.get("coverage_end"),
-        Some(&serde_json::json!({ "kind": "ends", "at": wire(common_to()) }))
+        Some(&serde_json::json!({ "kind": "open_ended", "at": null })),
+        "real commit materializes AtPublish as open-ended covering: {report}"
     );
 }
 
@@ -856,6 +849,7 @@ async fn a_cancelled_window_is_reported_and_is_not_coverage() {
     let h = Harness::new().await;
     let plan_id = Uuid::now_v7();
     let seeded = seed_publishable_plan(&h, plan_id).await;
+    h.cover_committed_price(seeded.price_id).await;
 
     let conn = h.state.db.conn().expect("conn");
     bss_pricing::infra::storage::repo::window_repo::transition(
@@ -984,8 +978,7 @@ async fn precondition_violations(
 /// which a schedule and a lengthening open a unit and write nothing.
 async fn published_unconfigured(h: &Harness, plan_id: Uuid) -> rest_support::Publishable {
     let seeded = seed_publishable_plan(h, plan_id).await;
-    h.publish(plan_id, seeded.revision).await;
-    h.publish_price(plan_id, seeded.price_id).await;
+    h.publish_seeded(plan_id, &seeded).await;
     seeded
 }
 
@@ -1085,7 +1078,11 @@ fn etag_of(response: &axum::http::Response<axum::body::Body>) -> Option<String> 
 /// not state.
 async fn delete_window(h: &Harness, window_id: Uuid) -> axum::http::Response<axum::body::Body> {
     h.allowed()
-        .send(request("DELETE", &format!("{}?context=live", window_path(window_id)), None))
+        .send(request(
+            "DELETE",
+            &format!("{}?context=live", window_path(window_id)),
+            None,
+        ))
         .await
 }
 
@@ -1440,19 +1437,11 @@ async fn publish_through_the_routes(h: &Harness, plan_id: Uuid, etag: &str) {
     );
 }
 
-/// **D-332: a priced plan publishes on its FIRST call**, and the window it needed
-/// is the one the publish opened.
+/// A priced plan publishes on its first call **when it authors an explicit covering**.
 ///
-/// The test beside this one records the order that used to be forced — empty
-/// publish, then the row and its window, then publish again — and why it was
-/// reachable. This one records that it is no longer *required*: the author files
-/// a row and publishes, once.
-///
-/// What it pins is the pair. The plan reaches `published` **and** the key holds
-/// a live window whose start is the commit instant, because either alone would
-/// pass on a bug: a publish that skipped the coverage rule would satisfy the
-/// first, and a window written without the row being frozen would satisfy the
-/// second.
+/// D-374 withdrew D-332's implicit first-publish window. The author files a row
+/// **and** an AtPublish create, then publishes once. The commit materializes
+/// that intention as a live `scheduled` open-ended window.
 #[tokio::test]
 async fn a_priced_plan_publishes_on_its_first_call_and_the_publish_opens_the_window() {
     let h = Harness::new().await;
@@ -1462,6 +1451,21 @@ async fn a_priced_plan_publishes_on_its_first_call_and_the_publish_opens_the_win
     // unpublishable for five other reasons, and a probe that reddened on those
     // would say nothing about coverage.
     let row = rest_support::seed_priced_row_on_phase(&h, plan_id, "EU", 1_500, shape.phase).await;
+    let conn = h.db.conn().expect("conn");
+    let version = common::author_covering_intention(
+        &conn,
+        &h.scope(),
+        h.tenant,
+        PlanId::new(plan_id),
+        shape.revision,
+        shape.version,
+        row.price_id,
+        bss_pricing::domain::draft_window::DraftStart::AtPublish,
+        None,
+        rest_support::seed_stamp(),
+    )
+    .await;
+    let etag = format!("\"{}-{}\"", shape.revision, version.get());
 
     // Submitted by hand rather than through the helper, so a refusal names the
     // rule that produced it instead of a bare status.
@@ -1471,7 +1475,7 @@ async fn a_priced_plan_publishes_on_its_first_call_and_the_publish_opens_the_win
             "POST",
             &publish_path(plan_id),
             None,
-            &[("if-match", &shape.etag())],
+            &[("if-match", &etag)],
         ))
         .await;
     let status = probe.status();
@@ -1499,7 +1503,7 @@ async fn a_priced_plan_publishes_on_its_first_call_and_the_publish_opens_the_win
             "POST",
             &publish_path(plan_id),
             None,
-            &[("if-match", &shape.etag())],
+            &[("if-match", &etag)],
         ))
         .await;
     let committed_status = committed.status();
@@ -1515,8 +1519,8 @@ async fn a_priced_plan_publishes_on_its_first_call_and_the_publish_opens_the_win
             .await
             .as_deref(),
         Some("published"),
-        "a priced plan's first publish is refused only by the coverage rule, and the \
-         publish now satisfies it by opening the window itself"
+        "a priced plan's first publish needs an explicit covering; the commit \
+         materializes that AtPublish create"
     );
 
     let conn = h.state.db.conn().expect("conn");
@@ -1917,7 +1921,11 @@ async fn a_foreign_tenants_caller_moves_no_window_and_reads_no_sellability() {
 
     let deleted = h
         .other_tenant()
-        .send(request("DELETE", &format!("{}?context=live", window_path(first)), None))
+        .send(request(
+            "DELETE",
+            &format!("{}?context=live", window_path(first)),
+            None,
+        ))
         .await;
     assert_eq!(
         deleted.status(),
@@ -4134,8 +4142,16 @@ async fn a_foreign_tenant_cannot_cancel_this_tenants_window() {
 
     rest_support::foreign_is_indistinguishable(
         &h,
-        request("DELETE", &format!("{}?context=live", window_path(window_id)), None),
-        request("DELETE", &format!("{}?context=live", window_path(Uuid::now_v7())), None),
+        request(
+            "DELETE",
+            &format!("{}?context=live", window_path(window_id)),
+            None,
+        ),
+        request(
+            "DELETE",
+            &format!("{}?context=live", window_path(Uuid::now_v7())),
+            None,
+        ),
     )
     .await;
 

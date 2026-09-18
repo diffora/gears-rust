@@ -171,8 +171,7 @@ fn stamp_of(actor: Uuid) -> bss_pricing::domain::audit::AuditStamp {
 async fn published_plan(h: &Harness) -> (PlanId, Publishable) {
     let plan_uuid = Uuid::now_v7();
     let seeded = rest_support::seed_publishable_plan(h, plan_uuid).await;
-    h.publish(plan_uuid, seeded.revision).await;
-    h.publish_price(plan_uuid, seeded.price_id).await;
+    h.publish_seeded(plan_uuid, &seeded).await;
     (PlanId::new(plan_uuid), seeded)
 }
 

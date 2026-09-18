@@ -37,7 +37,9 @@ use bss_pricing::domain::window::{WindowInterval, WindowState};
 use bss_pricing::infra::storage::RepoError;
 use bss_pricing::infra::storage::entity::{price, price_window};
 use bss_pricing::infra::storage::migrations::Migrator;
-use bss_pricing::infra::storage::repo::{NewPriceDraft, PriceRepo, price_repo, window_repo};
+use bss_pricing::infra::storage::repo::{
+    NewPlanDraft, NewPriceDraft, PlanRepo, PriceRepo, price_repo, window_repo,
+};
 use bss_pricing::infra::supersession::{SupersessionCommit, commit_supersession};
 use time::OffsetDateTime;
 
@@ -180,7 +182,35 @@ async fn flip_state(
 /// rather than fabricated — this suite's subject is the commit, and a commit staged
 /// by anything but the real door would be a commit over a world the gear cannot
 /// produce.
+///
+/// The plan row is seeded first: `PriceRepo::create_draft` acquires the plan's
+/// window guard, which does not exist until the plan does.
 async fn composed(repo: &PriceRepo, provider: &DBProvider<DbError>, scope: &AccessScope) -> u64 {
+    PlanRepo::new(provider.clone())
+        .create_draft(
+            scope,
+            NewPlanDraft {
+                plan_name: None,
+                plan_id: plan(),
+                tenant_id: tenant(),
+                created_by: Uuid::from_u128(0xac_20),
+                created_at_utc: now(),
+                sku_id: Uuid::from_u128(5),
+                plan_tier: None,
+                billing_cycle: None,
+                frequency: None,
+                plan_tier_override: false,
+                purchase_min_qty: None,
+                purchase_max_qty: None,
+                descriptor_ext: std::collections::BTreeMap::new(),
+                available_from: None,
+                available_to: None,
+                cloned_from: None,
+                correlation_id: TEST_CORRELATION,
+            },
+        )
+        .await
+        .expect("seed the plan the window guard names");
     repo.create_draft(scope, tenant(), draft(PREDECESSOR, 1_000))
         .await
         .expect("author the predecessor");
@@ -935,8 +965,7 @@ async fn published_plan_stating_its_own_category(harness: &Harness) -> (PlanId, 
         content,
     )
     .await;
-    harness.publish(plan_uuid, seeded.revision).await;
-    harness.publish_price(plan_uuid, seeded.price_id).await;
+    harness.publish_seeded(plan_uuid, &seeded).await;
     let plan_id = PlanId::new(plan_uuid);
     let key = rest_support::publishable_scope_key(plan_id, seeded.phase, "eu");
     (plan_id, key, seeded.price_id)

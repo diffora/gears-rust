@@ -43,6 +43,7 @@ use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::contracts::{
     AnchorDay, BillingAnchorPolicy, ProrationBasis, ProrationContract,
 };
+use bss_pricing::domain::draft_window::DraftStart;
 use bss_pricing::domain::instant::utc_ymd_hms;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::CurrencyCode;
@@ -1068,6 +1069,11 @@ impl Harness {
     /// that sequence deliberately, and
     /// `rest_windows.rs::a_plans_first_window_is_authorable_through_the_routes_after_an_empty_publish`
     /// drives it to prove the routes compose.
+    ///
+    /// This is a fake `publish_revision` and does **not** materialize draft-window
+    /// creates onto `pricing_price_window`. Suites that read committed coverage
+    /// (cutover, supersession, synthesis, live window POST) call
+    /// [`Self::cover_committed_price`] after [`Self::publish_price`].
     pub async fn publish(&self, plan_id: Uuid, revision: u64) {
         let plan_id = PlanId::new(plan_id);
         let scope = self.scope();
@@ -1159,6 +1165,32 @@ impl Harness {
             })
             .await;
         outcome.expect("publish the seeded price row");
+    }
+
+    /// Plant the historical `[COVERAGE_FROM, COVERAGE_TO)` live covering on a
+    /// price that has already been fake-published.
+    ///
+    /// [`Self::publish`] does not run assemble. Draft `AtPublish` intentions stay
+    /// on `pricing_draft_window` until a real commit. Consumer suites that resolve
+    /// coverage at 2099-08-20 need a live `pricing_price_window`; this is that
+    /// committed-state fixture, not a publishable-draft setup.
+    pub async fn cover_committed_price(&self, price_id: Uuid) {
+        let conn = self.db.conn().expect("conn");
+        crate::common::schedule_coverage_window(
+            &conn,
+            &self.scope(),
+            self.tenant,
+            price_id,
+            stamp(),
+        )
+        .await;
+    }
+
+    /// Fake-publish the seeded plan and price, then plant historical live covering.
+    pub async fn publish_seeded(&self, plan_id: Uuid, seeded: &Publishable) {
+        self.publish(plan_id, seeded.revision).await;
+        self.publish_price(plan_id, seeded.price_id).await;
+        self.cover_committed_price(seeded.price_id).await;
     }
 
     /// Move a revision straight to `retired`.
@@ -2320,6 +2352,9 @@ pub async fn retire_customer_group(harness: &Harness, value: &str) {
 
 /// Seed one `scheduled` window on a price row, straight through the repository.
 ///
+/// Live `pricing_price_window` for historical/committed-state suites — not a
+/// publishable-draft covering. Draft covering is [`crate::common::author_covering_intention`].
+///
 /// **The repository and not the route**, deliberately: a suite that needs a window
 /// to exist in order to drive `PATCH`/`DELETE` must not depend on `POST` working,
 /// or a single defect in the schedule path would redden every window suite at once
@@ -2613,33 +2648,30 @@ pub async fn seed_publishable_plan_with(
         .await
         .expect("author the price row");
 
-    // `inst-wc-required`: the row cannot publish until its canonical scope key
-    // holds an active or scheduled window. Twenty-four tests across
-    // `rest_publish.rs` and `rest_approvals.rs` reach the publish route through
-    // this one seed, and every one of them asserted a 202 that the rule refuses
-    // without this.
-    //
-    // The decision is `common::schedule_coverage_window`'s and not this file's,
-    // so the two `sqlite_*` seeds that owe the same window cannot drift from it.
-    //
-    // **Scheduled through the repository for isolation and speed, and no longer
-    // because the route could not do it.** The sentence here used to read that
-    // `POST …/prices/{priceId}/windows` "is not mounted: a seed cannot use a door
-    // that does not exist yet", and it is withdrawn rather than edited: the route
-    // is mounted and this suite's own cases drive it. What the route cannot do is
-    // author *this* window, because a window mutation resolves the plan's current
-    // revision and this seed's plan has not published yet — the seed exists to make
-    // that publish possible. Reaching the route from here would also mean every
-    // publish fixture in the crate depended on the schedule path, so one defect in
-    // it would redden four suites at once with none of them naming the rule that
-    // broke. `rest_support::seed_window` carries the same note for the same reason.
+    // `inst-wc-required`: compose judges explicit draft intentions, not live
+    // seed windows. AtPublish create, no `pricing_price_window` on this
+    // never-published draft. The decision is `common::author_covering_intention`'s
+    // and not this file's, so the sqlite seeds that owe the same covering cannot
+    // drift from it.
     let conn = harness.state.db.conn().expect("conn");
-    crate::common::schedule_coverage_window(&conn, &scope, harness.tenant, price_id, stamp()).await;
+    let version = crate::common::author_covering_intention(
+        &conn,
+        &scope,
+        harness.tenant,
+        plan,
+        shape.revision,
+        shape.version,
+        price_id,
+        DraftStart::AtPublish,
+        None,
+        stamp(),
+    )
+    .await;
 
     Publishable {
         phase,
         revision: shape.revision,
-        version: shape.version,
+        version,
         price_id,
     }
 }
@@ -3589,6 +3621,7 @@ pub async fn published_usage_for_registry_replay(
     .await;
     h.publish(plan, seeded.revision).await;
     h.publish_price(plan, seeded.price_id).await;
+    h.cover_committed_price(seeded.price_id).await;
     let record = price_rows(h, plan)
         .await
         .into_iter()

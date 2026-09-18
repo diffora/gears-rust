@@ -102,8 +102,7 @@ fn stamp_of(actor: Uuid) -> AuditStamp {
 async fn published_plan(h: &Harness) -> (PlanId, Publishable) {
     let plan_uuid = Uuid::now_v7();
     let seeded = rest_support::seed_publishable_plan(h, plan_uuid).await;
-    h.publish(plan_uuid, seeded.revision).await;
-    h.publish_price(plan_uuid, seeded.price_id).await;
+    h.publish_seeded(plan_uuid, &seeded).await;
     (PlanId::new(plan_uuid), seeded)
 }
 
@@ -1146,6 +1145,8 @@ async fn usage_key_with_published_row(
         .expect("author the usage row");
     let key = authored.scope_key;
     let conn = h.db.conn().expect("conn");
+    // Historical live covering on this extra published key — not a publishable-draft
+    // setup.
     common::schedule_coverage_window(&conn, &h.scope(), h.tenant, price_id, stamp_of(SUBMITTER))
         .await;
     h.publish_price(plan_id.get(), price_id).await;

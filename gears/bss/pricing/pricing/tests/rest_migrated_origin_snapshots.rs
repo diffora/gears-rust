@@ -11,18 +11,14 @@
 //! them — a reader that ignored `effective_from` entirely would pass every case
 //! in `domain::synthesis`.
 //!
-//! # The covering window is the publish path's own, and that was a finding
+//! # The covering window is the committed-state fixture
 //!
-//! This file first seeded one with `rest_support::seed_window`. Every case
-//! reddened with `WindowOverlap` — a **driver** refusal rather than an assertion,
-//! which is the signal that a guard exists that the fixture did not know about.
-//! It does: `Harness::publish_price` already schedules `[2099-08-04,
-//! 2099-09-01)` on the published row, so the extra open-ended window collided
-//! with it on the same canonical scope key. The fixture uses the real one
-//! instead. Both instants below are therefore facts about a window the
-//! production path created, not about one the test invented, and neither ages -
-//! `rest_support`'s standing rule is that fixture windows are dated 2099 so no
-//! wall clock reaches them and no activation sweep moves them.
+//! Fake `Harness::publish` does not materialize draft AtPublish creates. The
+//! historical `[2099-08-04, 2099-09-01)` live covering is planted by
+//! [`rest_support::Harness::publish_seeded`]. A second `seed_window` on the same
+//! key overlaps that interval. Both instants below are facts about that fixture
+//! window, dated 2099 so no wall clock reaches them and no activation sweep
+//! moves them.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -84,9 +80,7 @@ fn seeded_key() -> FrozenKey {
 async fn covered_plan(h: &Harness) -> Uuid {
     let plan_id = Uuid::now_v7();
     let seeded = seed_publishable_plan(h, plan_id).await;
-    h.publish(plan_id, seeded.revision).await;
-    // This schedules `[2099-08-04, 2099-09-01)` on the row. See the module doc.
-    h.publish_price(plan_id, seeded.price_id).await;
+    h.publish_seeded(plan_id, &seeded).await;
     plan_id
 }
 
@@ -423,11 +417,10 @@ async fn a_draft_rows_window_is_not_evidence_and_the_key_fails_closed() {
     let h = Harness::new().await;
     let plan_id = Uuid::now_v7();
     let seeded = seed_publishable_plan(&h, plan_id).await;
-    // The plan revision publishes; **the row does not**. `seed_publishable_plan`
-    // already schedules the coverage window `[2099-08-04, 2099-09-01)` on the row,
-    // and `publish_price` is what would move the row itself to `published` — so
-    // skipping it leaves exactly the state under test: a covering window over a
-    // `draft` row, which the store admits and the reader has to refuse on its own.
+    // Historical live covering on a still-draft row: the store admits it, and the
+    // reader must refuse it on its own. `seed_publishable_plan` authors a draft
+    // AtPublish intention only; `publish_price` is skipped so the row stays draft.
+    h.cover_committed_price(seeded.price_id).await;
     h.publish(plan_id, seeded.revision).await;
 
     let outcome = h
@@ -506,8 +499,7 @@ async fn the_frozen_record_names_the_source_plans_revision() {
     let h = Harness::new().await;
     let plan_id = Uuid::now_v7();
     let seeded = seed_publishable_plan(&h, plan_id).await;
-    h.publish(plan_id, seeded.revision).await;
-    h.publish_price(plan_id, seeded.price_id).await;
+    h.publish_seeded(plan_id, &seeded).await;
 
     let frozen = h
         .governance
@@ -659,8 +651,7 @@ async fn a_per_unit_lines_rate_reaches_the_frozen_payload() {
     let h = Harness::new().await;
     let plan_id = Uuid::now_v7();
     let seeded = seed_publishable_per_unit_plan(&h, plan_id, RATE_NANO_MINOR).await;
-    h.publish(plan_id, seeded.revision).await;
-    h.publish_price(plan_id, seeded.price_id).await;
+    h.publish_seeded(plan_id, &seeded).await;
 
     let frozen = h
         .governance
@@ -740,8 +731,7 @@ async fn a_tiered_lines_band_set_reaches_the_frozen_payload() {
     let h = Harness::new().await;
     let plan_id = Uuid::now_v7();
     let seeded = seed_publishable_tiered_usage_plan(&h, plan_id, seeded_bands()).await;
-    h.publish(plan_id, seeded.revision).await;
-    h.publish_price(plan_id, seeded.price_id).await;
+    h.publish_seeded(plan_id, &seeded).await;
 
     let frozen = h
         .governance
@@ -801,8 +791,7 @@ async fn the_slice_10_content_columns_reach_the_frozen_payload() {
     let h = Harness::new().await;
     let plan_id = Uuid::now_v7();
     let seeded = seed_publishable_tiered_usage_plan(&h, plan_id, seeded_bands()).await;
-    h.publish(plan_id, seeded.revision).await;
-    h.publish_price(plan_id, seeded.price_id).await;
+    h.publish_seeded(plan_id, &seeded).await;
 
     let frozen = h
         .governance
@@ -882,8 +871,7 @@ async fn a_usage_lines_billing_timing_is_projected_and_not_the_raw_column() {
     let h = Harness::new().await;
     let plan_id = Uuid::now_v7();
     let seeded = seed_publishable_tiered_usage_plan(&h, plan_id, seeded_bands()).await;
-    h.publish(plan_id, seeded.revision).await;
-    h.publish_price(plan_id, seeded.price_id).await;
+    h.publish_seeded(plan_id, &seeded).await;
 
     let frozen = h
         .governance
@@ -939,8 +927,7 @@ async fn the_proration_contract_and_the_manual_quantity_reach_the_frozen_payload
         ANCHOR_DAY,
     )
     .await;
-    h.publish(plan_id, seeded.revision).await;
-    h.publish_price(plan_id, seeded.price_id).await;
+    h.publish_seeded(plan_id, &seeded).await;
 
     let frozen = h
         .governance
@@ -1011,8 +998,7 @@ async fn a_period_bound_is_materialized_into_the_frozen_payload() {
         .await
         .expect("author the period floor on the open draft");
 
-    h.publish(plan_id, seeded.revision).await;
-    h.publish_price(plan_id, seeded.price_id).await;
+    h.publish_seeded(plan_id, &seeded).await;
 
     let frozen = h
         .governance

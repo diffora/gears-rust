@@ -42,6 +42,7 @@ use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::contracts::{
     EntitlementGrants, GrantSet, PlanChangeContract, UsageCounterOnPlanChange,
 };
+use bss_pricing::domain::draft_window::DraftWindowOwner;
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::instant::utc_ymd_hms;
 use bss_pricing::domain::lifecycle::LifecycleState;
@@ -57,7 +58,8 @@ use bss_pricing::infra::clone::{CloneNotice, CloneReceipt, SeededPhaseOrigin, cl
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{
     BundleComponentDraft, BundleRepo, CompositionDraft, NewBundle, NewPlanDraft, NewPriceDraft,
-    PlanRepo, PlanShapeRepo, PriceRepo, bundle_repo, plan_repo, plan_shape_repo, price_repo,
+    PlanRepo, PlanShapeRepo, PriceRepo, bundle_repo, draft_window_repo, plan_repo, plan_shape_repo,
+    price_repo, window_baseline_repo,
 };
 use time::OffsetDateTime;
 
@@ -1409,6 +1411,9 @@ async fn no_window_is_cloned_and_the_receipt_says_so() {
     let h = harness().await;
     seed_source(&h).await;
     let conn = h.provider.conn().expect("conn");
+    // Live/historical: a committed `pricing_price_window` on the published source,
+    // so the clone emptiness assertions range over real runtime state rather than
+    // draft intentions.
     common::schedule_coverage_window(&conn, &h.scope, TENANT, Uuid::from_u128(0xb_0001), stamp())
         .await;
 
@@ -1433,6 +1438,81 @@ async fn no_window_is_cloned_and_the_receipt_says_so() {
         windows.is_empty(),
         "PriceWindow schedules are Slice 7 runtime state and are never cloned, \
          got {windows:?}"
+    );
+
+    let clone_owner = DraftWindowOwner {
+        tenant_id: TENANT,
+        plan_id: target_plan().get(),
+        plan_revision: 0,
+    };
+    let intentions = draft_window_repo::list(&conn, &h.scope, &clone_owner)
+        .await
+        .expect("read the clone's draft intentions");
+    assert!(
+        intentions.is_empty(),
+        "a new-plan clone must not inherit the source's draft-window history: {intentions:?}"
+    );
+    let baseline = window_baseline_repo::list(&conn, &h.scope, &clone_owner)
+        .await
+        .expect("read the clone's baseline");
+    assert!(
+        baseline.is_empty(),
+        "a new-plan clone starts with no captured baseline: {baseline:?}"
+    );
+}
+
+/// A successor of the **same** plan captures the predecessor's committed window
+/// identities. Those ids stay the live names; the successor does not mint
+/// replacements and does not copy the predecessor's draft-window history.
+#[tokio::test]
+async fn a_successor_captures_the_predecessors_live_window_ids() {
+    let h = harness().await;
+    seed_source(&h).await;
+    let conn = h.provider.conn().expect("conn");
+    // Live/historical: committed windows on the published predecessor are what
+    // a successor captures; draft intentions of the frozen revision stay behind.
+    let live = common::schedule_coverage_window(
+        &conn,
+        &h.scope,
+        TENANT,
+        Uuid::from_u128(0xb_0001),
+        stamp(),
+    )
+    .await;
+
+    let opened = h
+        .plans
+        .open_revision(&h.scope, TENANT, source_plan(), stamp())
+        .await
+        .expect("open the successor");
+
+    let owner = DraftWindowOwner {
+        tenant_id: TENANT,
+        plan_id: source_plan().get(),
+        plan_revision: opened.revision,
+    };
+    let baseline = window_baseline_repo::list(&conn, &h.scope, &owner)
+        .await
+        .expect("read the successor baseline");
+    assert_eq!(
+        baseline.len(),
+        1,
+        "the successor must capture the predecessor's committed windows: {baseline:?}"
+    );
+    assert_eq!(baseline[0].window_id, live.window_id);
+    assert_eq!(baseline[0].price_id, Uuid::from_u128(0xb_0001));
+    assert_eq!(baseline[0].mutation_seq, live.mutation_seq);
+    assert_eq!(baseline[0].effective_from, live.effective_from);
+    assert_eq!(baseline[0].effective_to, live.effective_to);
+    assert!(!baseline[0].cancelled);
+
+    let intentions = draft_window_repo::list(&conn, &h.scope, &owner)
+        .await
+        .expect("read the successor intentions");
+    assert!(
+        intentions.is_empty(),
+        "a successor starts with empty intentions; predecessor draft rows stay on \
+         the frozen revision: {intentions:?}"
     );
 }
 

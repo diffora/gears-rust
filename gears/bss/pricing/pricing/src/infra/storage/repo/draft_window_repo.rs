@@ -120,6 +120,42 @@ pub async fn remove(
     Ok(())
 }
 
+/// Drop draft-create intentions that name `price_id` on an open draft owner.
+///
+/// Used by draft-price deletion so `pricing_draft_window.price_id` does not
+/// orphan a row the price delete is about to remove. Zero matching creates is
+/// success: the price may never have been covered.
+///
+/// # Errors
+/// [`RepoError::NotFound`] when the owner revision is absent or outside `scope`;
+/// [`RepoError::NotDraft`] when the owner is frozen;
+/// [`RepoError::Db`] on a scope or storage failure.
+pub async fn remove_creates_for_price(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    owner: &DraftWindowOwner,
+    price_id: Uuid,
+) -> Result<(), RepoError> {
+    require_draft_owner(runner, scope, owner).await?;
+    let number = stored_revision(owner)?;
+    draft_window::Entity::delete_many()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            owner_filter(owner, number)
+                .add(draft_window::Column::Action.eq("create"))
+                .add(draft_window::Column::PriceId.eq(price_id)),
+        )
+        .exec(runner)
+        .await
+        .map_err(|e| {
+            RepoError::Db(format!(
+                "delete draft-create intentions for price {price_id}: {e}"
+            ))
+        })?;
+    Ok(())
+}
+
 /// The draft operation that addresses `window_id`, either as its operation id
 /// or as the live window it mutates.
 ///

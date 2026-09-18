@@ -30,6 +30,7 @@ use async_trait::async_trait;
 use bss_pricing::config::{JobsConfig, LimitsConfig};
 use bss_pricing::domain::concurrency::RowVersion;
 use bss_pricing::domain::contracts::{BillingAnchorPolicy, ProrationBasis, ProrationContract};
+use bss_pricing::domain::draft_window::{DraftStart, DraftWindowOwner};
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::instant::{format_rfc3339, parse_rfc3339, utc_ymd_hms};
 use bss_pricing::domain::lifecycle::LifecycleState;
@@ -67,7 +68,7 @@ use bss_pricing::infra::storage::repo::overlay_repo::{NewOverlay, OverlayRepo};
 use bss_pricing::infra::storage::repo::window_repo::{self, NewWindow};
 use bss_pricing::infra::storage::repo::{
     NewMembership, NewPlanDraft, NewPriceDraft, PendingVersionRow, PinFrontierRepo, PlanRepo,
-    PlanShapeRepo, PriceRepo, catalog_version_ref_repo, plan_repo,
+    PlanShapeRepo, PriceRepo, catalog_version_ref_repo, plan_repo, window_baseline_repo,
 };
 use bss_pricing_sdk::CatalogVersion;
 use bss_pricing_sdk::catalog_version_registry::{CatalogVersionRegistryV1, PendingVersionRef};
@@ -551,27 +552,25 @@ async fn seed_publishable_of(
         .await
         .expect("author the price row");
 
-    // `inst-wc-required`: the row does not publish until its key holds an active
-    // or scheduled window. Thirty tests in this file reddened when the rule
-    // registered.
-    //
-    // It is `common::schedule_coverage_window`'s interval and not this file's, and
-    // that interval ends exactly where [`window_at`]'s scale begins — so §8's
-    // window suites build their own chains **adjacent** to it rather than
-    // overlapping it, which `window_repo::schedule` would refuse. The consequence
-    // is visible and deliberate: every §8 delta carries this leading `scheduled`
-    // interval as well as the ones its own case authored, and each of those tests
-    // says so.
-    common::schedule_coverage_window(
+    // `inst-wc-required`: compose judges explicit draft intentions. Open-ended
+    // covering from the shared fixture start so first publish satisfies
+    // `inst-fg-trailing`. Live seed windows are not coverage. §8 tests that
+    // schedule later live windows first close this covering to `coverage_to`.
+    let version = common::author_covering_intention(
         &h.provider.conn().expect("conn"),
         &scope,
         tenant,
+        plan_id,
+        created.revision,
+        after_contract.row_version,
         price_id,
+        DraftStart::At(common::coverage_from()),
+        None,
         stamp(),
     )
     .await;
 
-    (created.revision, after_contract.row_version)
+    (created.revision, version)
 }
 
 /// Publish a seeded plan at `now` and hand back the pending handle its commit
@@ -2687,6 +2686,83 @@ async fn a_delta_never_freezes_a_superseded_lifecycle_state() {
     );
 }
 
+/// A successor's captured baseline keeps the predecessor's live window ids, so
+/// the projector still freezes those same four-state intervals — never a draft
+/// operation and never a reminted identity.
+#[tokio::test]
+async fn a_successor_projects_the_same_live_window_ids() {
+    let h = harness().await;
+    let plan_id = PlanId::new(Uuid::new_v4());
+    let (rev0, version0) = seed_publishable(&h, plan_id, "gold").await;
+    let pending_v5 = publish(&h, plan_id, rev0, version0, at_min(12, 0)).await;
+    let conn = h.provider.conn().expect("conn");
+    let before = window_repo::list_for_plan(&conn, &h.scope, TENANT, plan_id)
+        .await
+        .expect("the first publish materialized covering windows");
+    assert!(
+        !before.is_empty(),
+        "the first freeze must have a committed interval: {before:?}"
+    );
+    let live_ids: Vec<Uuid> = before.iter().map(|row| row.window_id).collect();
+
+    let opened = h
+        .plans
+        .open_revision(&h.scope, TENANT, plan_id, stamp_of(ACTOR, at_min(12, 1)))
+        .await
+        .expect("open a successor");
+    let owner = DraftWindowOwner {
+        tenant_id: TENANT,
+        plan_id: plan_id.get(),
+        plan_revision: opened.revision,
+    };
+    let captured = window_baseline_repo::list(&conn, &h.scope, &owner)
+        .await
+        .expect("read the captured baseline");
+    let captured_ids: Vec<Uuid> = captured.iter().map(|row| row.window_id).collect();
+    assert_eq!(
+        captured_ids, live_ids,
+        "the successor reuses the live ids rather than minting replacements"
+    );
+
+    let pending_v6 = publish(
+        &h,
+        plan_id,
+        opened.revision,
+        opened.row_version,
+        at_min(12, 2),
+    )
+    .await;
+    h.registry.commit(&pending_v5, 5);
+    h.registry.commit(&pending_v6, 6);
+    sweep(&h, at(13)).await;
+
+    let deltas = deltas(&h).await;
+    let v6 = deltas
+        .iter()
+        .find(|row| row.catalog_version == 6)
+        .expect("V6's delta");
+    let groups = window_groups(v6);
+    assert_eq!(groups.len(), 1, "one committed key: {groups:?}");
+    let starts: Vec<&str> = groups[0]["intervals"]
+        .as_array()
+        .expect("intervals")
+        .iter()
+        .filter_map(|interval| interval["effectiveFrom"].as_str())
+        .collect();
+    let expected_start = format_rfc3339(before[0].effective_from);
+    assert!(
+        starts.contains(&expected_start.as_str()),
+        "the projector still freezes the predecessor's committed interval {expected_start}, \
+         got {starts:?}"
+    );
+    assert!(
+        v6.payload.get("draftWindowEntries").is_none()
+            && v6.payload.get("windowBaseline").is_none(),
+        "consumers expose only committed four-state intervals: {}",
+        v6.payload
+    );
+}
+
 #[tokio::test]
 async fn the_open_draft_revision_is_never_the_projection_source() {
     // Sec 4.4's 2026-07-30 review fix, as behaviour: a degraded re-drive must
@@ -2940,15 +3016,16 @@ async fn a_pending_ref_the_registry_has_not_answered_is_overdue_and_not_degraded
     let (_, pending) = seed_and_publish_at(&h, "gold", at_min(12, 0)).await;
     h.registry.script(&pending, vec![None]);
 
-    // Requested at 12:00; the ratified max batching delay is five minutes, so by
-    // 13:00 the registry is overdue - and by 14:00 it still is.
-    let first = sweep(&h, at(13)).await;
+    // Publish stamps `requested_at` at the commit write instant (wall clock),
+    // not the fixture `now` argument. The overdue clock starts there.
+    let overdue_at = OffsetDateTime::now_utc() + time::Duration::seconds(301);
+    let first = sweep(&h, overdue_at).await;
     assert_eq!(first.commit_overdue, 1);
     assert_eq!(
         first.degraded_emitted, 0,
         "there is nothing degraded about a publish whose version does not exist yet"
     );
-    let second = sweep(&h, at(14)).await;
+    let second = sweep(&h, overdue_at + time::Duration::hours(1)).await;
     assert_eq!(second.commit_overdue, 1, "still unanswered, still alarming");
     assert_eq!(second.degraded_emitted, 0);
 
@@ -2977,7 +3054,7 @@ async fn a_registry_that_errors_still_trips_the_commit_overdue_alarm() {
     h.registry
         .fail_with(&registry_unreachable("down".to_owned()));
 
-    let report = sweep(&h, at(13)).await;
+    let report = sweep(&h, OffsetDateTime::now_utc() + time::Duration::seconds(301)).await;
 
     assert_eq!(report.versions_projected, 0);
     assert_eq!(
@@ -3419,7 +3496,7 @@ fn coverage_window_from() -> OffsetDateTime {
     utc_ymd_hms(y, m, d, 0, 0, 0)
 }
 
-/// Cancel the coverage window `seed_publishable_of` scheduled on `price_id`.
+/// Cancel the coverage window `seed_publishable_of` materialized on `price_id`.
 ///
 /// For the one case whose property is a key with **no** surviving window: the
 /// seed's window is content like any other and has to be removed the way the
@@ -3437,6 +3514,28 @@ async fn cancel_coverage_window(h: &Harness, price_id: Uuid) {
     )
     .await
     .expect("cancel the seed's coverage window");
+}
+
+/// Live/historical: shorten the materialized seed covering to [`common::coverage_to`]
+/// so later `window_repo::schedule` calls at [`window_at`] do not overlap it.
+async fn close_seed_coverage(h: &Harness, price_id: Uuid) {
+    let conn = h.provider.conn().expect("conn");
+    let window_id = common::coverage_window_id(price_id);
+    let row = window_repo::find(&conn, &h.scope, TENANT, window_id)
+        .await
+        .expect("read the seed covering")
+        .expect("first publish materialized the covering create");
+    window_repo::adjust_effective_to(
+        &conn,
+        &h.scope,
+        TENANT,
+        window_id,
+        Some(common::coverage_to()),
+        row.mutation_seq,
+        stamp(),
+    )
+    .await
+    .expect("close the seed covering so later live windows can sit after it");
 }
 
 /// The one `published` price row a seeded plan has, as its stored row.
@@ -3627,6 +3726,7 @@ async fn a_cancelled_window_is_not_projected_and_an_expired_one_is() {
     let h = harness().await;
     let (plan_id, pending) = seed_and_publish_at(&h, "gold", at(12)).await;
     let price_id = published_price_id(&h, plan_id).await;
+    close_seed_coverage(&h, price_id).await;
 
     window(
         &h,
@@ -3734,6 +3834,7 @@ async fn a_draft_rows_window_does_not_move_the_published_keys_coverage_end() {
     let h = harness().await;
     let (plan_id, pending) = seed_and_publish_at(&h, "gold", at(12)).await;
     let published = published_price(&h, plan_id).await;
+    close_seed_coverage(&h, published.price_id).await;
 
     // The published row's own coverage, and the whole of it.
     window(
@@ -3825,7 +3926,11 @@ async fn a_projected_key_whose_only_window_was_cancelled_reads_uncovered() {
     let h = harness().await;
     let (plan_id, pending) = seed_and_publish_at(&h, "gold", at(12)).await;
     let price_id = published_price_id(&h, plan_id).await;
-
+    // **The seed covering first**, because the property under test is
+    // that a key with *no surviving window* reads `uncovered` — and the row could
+    // not have published without one (`inst-wc-required`). Cancelling only a
+    // later window would leave the key covered by the seed.
+    cancel_coverage_window(&h, price_id).await;
     window(
         &h,
         price_id,
@@ -3835,12 +3940,6 @@ async fn a_projected_key_whose_only_window_was_cancelled_reads_uncovered() {
         WindowState::Cancelled,
     )
     .await;
-    // **And the seed's coverage window too**, because the property under test is
-    // that a key with *no surviving window* reads `uncovered` — and the row could
-    // not have published without one (`inst-wc-required`). Cancelling only the
-    // case's own window would leave the key covered by the seed's and this test
-    // would be asserting about a different world than its name claims.
-    cancel_coverage_window(&h, price_id).await;
 
     h.registry.commit(&pending, 1);
     sweep(&h, at(13)).await;
@@ -3883,6 +3982,7 @@ async fn a_draft_row_on_a_new_key_gets_no_group_at_all() {
     let h = harness().await;
     let (plan_id, pending) = seed_and_publish_at(&h, "gold", at(12)).await;
     let published = published_price(&h, plan_id).await;
+    close_seed_coverage(&h, published.price_id).await;
     window(
         &h,
         published.price_id,
@@ -4022,6 +4122,11 @@ async fn an_activation_re_projects_nothing_and_the_frozen_delta_answers_anyway()
     let h = harness().await;
     let (plan_id, pending) = seed_and_publish_at(&h, "gold", at(12)).await;
     let price_id = published_price_id(&h, plan_id).await;
+    // The seed covering is cancelled first so the extra window can sit on the
+    // key without overlapping, and so a sweep at `window_at(10)` counts **one**
+    // activation. The row published with its coverage first, as `inst-wc-required`
+    // requires.
+    cancel_coverage_window(&h, price_id).await;
     let window_id = Uuid::from_u128(0x_b1);
     window(
         &h,
@@ -4032,14 +4137,6 @@ async fn an_activation_re_projects_nothing_and_the_frozen_delta_answers_anyway()
         WindowState::Scheduled,
     )
     .await;
-    // The seed's coverage window is cancelled, because this test counts
-    // activations and its whole claim is that **one** window flipped. The seed's
-    // interval ends before the sweep instant below, so a sweep at `window_at(10)`
-    // finds it due to activate as well and answers `activated == 2` — a number
-    // that says nothing about the flip under test. Cancelled through §4's real
-    // edge, which is what removing a window means; the row published with its
-    // coverage first, as `inst-wc-required` requires.
-    cancel_coverage_window(&h, price_id).await;
 
     h.registry.commit(&pending, 1);
     sweep(&h, at(13)).await;
@@ -4654,7 +4751,7 @@ async fn three_charge_kinds_freeze_distinct_descriptors_before_default_drift() {
     use bss_pricing::infra::storage::repo::policy_repo;
     let h = harness().await;
     let plan_id = PlanId::new(Uuid::now_v7());
-    let (revision, version) = seed_publishable(&h, plan_id, "gold").await;
+    let (revision, mut version) = seed_publishable(&h, plan_id, "gold").await;
     let seeded = h
         .prices
         .list_for_plan(&h.scope, TENANT, plan_id, &[LifecycleState::Draft])
@@ -4746,7 +4843,21 @@ async fn three_charge_kinds_freeze_distinct_descriptors_before_default_drift() {
             )
             .await
             .expect("descriptor row");
-        common::schedule_coverage_window(&conn, &h.scope, TENANT, price_id, stamp()).await;
+        // Extra keys need the same explicit covering as the seed row; a live
+        // window here would make assemble refuse baseline drift.
+        version = common::author_covering_intention(
+            &conn,
+            &h.scope,
+            TENANT,
+            plan_id,
+            revision,
+            version,
+            price_id,
+            DraftStart::AtPublish,
+            None,
+            stamp(),
+        )
+        .await;
     }
     let pending = publish(&h, plan_id, revision, version, at(12)).await;
     let drifted = (

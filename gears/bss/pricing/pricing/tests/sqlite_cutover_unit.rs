@@ -70,8 +70,7 @@ fn stamp_of(actor: Uuid) -> bss_pricing::domain::audit::AuditStamp {
 async fn published_plan(h: &Harness) -> (PlanId, Publishable) {
     let plan_uuid = Uuid::now_v7();
     let seeded = rest_support::seed_publishable_plan(h, plan_uuid).await;
-    h.publish(plan_uuid, seeded.revision).await;
-    h.publish_price(plan_uuid, seeded.price_id).await;
+    h.publish_seeded(plan_uuid, &seeded).await;
     (PlanId::new(plan_uuid), seeded)
 }
 
@@ -185,6 +184,8 @@ async fn second_published_key(h: &Harness, plan_id: PlanId) -> ScopeKey {
         .await
         .expect("author the neighbouring row");
     let conn = h.db.conn().expect("conn");
+    // Historical live covering on this extra published key — not a publishable-draft
+    // setup. The seeded row's covering is planted by `publish_seeded`.
     common::schedule_coverage_window(&conn, &h.scope(), h.tenant, price_id, stamp_of(SUBMITTER))
         .await;
     h.publish_price(plan_id.get(), price_id).await;
@@ -322,6 +323,8 @@ async fn published_usage_line(h: &Harness, key: &ScopeKey, meter: &str) -> Uuid 
         .await
         .expect("author the usage row");
     let conn = h.db.conn().expect("conn");
+    // Historical live covering on this extra published key — not a publishable-draft
+    // setup. The seeded row's covering is planted by `publish_seeded`.
     common::schedule_coverage_window(&conn, &h.scope(), h.tenant, price_id, stamp_of(SUBMITTER))
         .await;
     h.publish_price(key.plan_id().get(), price_id).await;
@@ -1029,8 +1032,7 @@ async fn retained_copy_keeps_predecessor_descriptors_after_tenant_defaults_chang
         inherited,
     )
     .await;
-    h.publish(plan_uuid, seeded.revision).await;
-    h.publish_price(plan_uuid, seeded.price_id).await;
+    h.publish_seeded(plan_uuid, &seeded).await;
     let predecessor = row(&h, seeded.price_id).await;
     assert!(predecessor.row.gl_code_ref.is_none());
     assert!(predecessor.row.invoice_line_template.is_none());

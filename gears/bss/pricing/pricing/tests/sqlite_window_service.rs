@@ -121,6 +121,7 @@ async fn two_keys(h: &Harness, plan_id: Uuid) -> TwoKeys {
     let us_window = seed_window(h, second.price_id).await;
     h.publish(plan_id, seeded.revision).await;
     h.publish_price(plan_id, seeded.price_id).await;
+    h.cover_committed_price(seeded.price_id).await;
     h.publish_price(plan_id, second.price_id).await;
     TwoKeys {
         eu_key: rest_support::publishable_scope_key(PlanId::new(plan_id), seeded.phase, "eu")
@@ -870,8 +871,7 @@ async fn assert_pending_ref(h: &Harness, plan_id: Uuid, revision: u64, handle: &
 /// row.
 async fn published(h: &Harness, plan_id: Uuid) -> Publishable {
     let seeded = seed_publishable_plan(h, plan_id).await;
-    h.publish(plan_id, seeded.revision).await;
-    h.publish_price(plan_id, seeded.price_id).await;
+    h.publish_seeded(plan_id, &seeded).await;
     rest_support::approve_threshold_policy(h, &[("EUR", 100_000)]).await;
     seeded
 }
@@ -1237,8 +1237,7 @@ async fn a_cancel_can_move_a_published_plan_outside_its_own_coverage() {
         .exec(&conn)
         .await
         .expect("set available_from inside the coverage span");
-    h.publish(plan_id, seeded.revision).await;
-    h.publish_price(plan_id, seeded.price_id).await;
+    h.publish_seeded(plan_id, &seeded).await;
     // The schedule below is not a registered trigger, so what decides it is the
     // per-currency threshold; without an entry it would open a unit and write nothing.
     rest_support::approve_threshold_policy(&h, &[("EUR", 100_000)]).await;
@@ -1366,8 +1365,7 @@ fn after_the_policy_starts() -> OffsetDateTime {
 /// readings.
 async fn published_with_policy_from(h: &Harness, plan_id: Uuid, from: &str) -> Publishable {
     let seeded = seed_publishable_plan(h, plan_id).await;
-    h.publish(plan_id, seeded.revision).await;
-    h.publish_price(plan_id, seeded.price_id).await;
+    h.publish_seeded(plan_id, &seeded).await;
     rest_support::approve_threshold_policy_from(h, from, &[("EUR", 100_000)]).await;
     seeded
 }
@@ -1721,6 +1719,7 @@ async fn published_with_a_generation_until(
     .await;
     h.publish(plan_id, seeded.revision).await;
     h.publish_price(plan_id, seeded.price_id).await;
+    h.cover_committed_price(seeded.price_id).await;
     h.publish_price(plan_id, generation.price_id).await;
     rest_support::approve_threshold_policy(h, &[("EUR", 100_000), ("USD", 100_000)]).await;
     generation.price_id
@@ -1846,6 +1845,7 @@ async fn an_ordinary_keys_window_is_not_judged_against_any_horizon() {
     let ordinary = rest_support::seed_price(&h, plan_id, "us").await;
     h.publish(plan_id, seeded.revision).await;
     h.publish_price(plan_id, seeded.price_id).await;
+    h.cover_committed_price(seeded.price_id).await;
     h.publish_price(plan_id, ordinary.price_id).await;
     rest_support::approve_threshold_policy(&h, &[("EUR", 100_000), ("USD", 100_000)]).await;
 

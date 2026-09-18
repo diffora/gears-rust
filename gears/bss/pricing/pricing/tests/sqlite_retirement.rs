@@ -25,6 +25,17 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+mod common;
+
+use std::collections::BTreeSet;
+
+use bss_pricing::domain::approval::ApprovalState;
+use bss_pricing::domain::audit::AuditSubjectKind;
+use bss_pricing::domain::concurrency::RowVersion;
+use bss_pricing::domain::draft_window::{
+    DraftStart, DraftWindowAction, DraftWindowEntry, DraftWindowOwner,
+};
+use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::instant::utc_ymd_hms;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
@@ -35,11 +46,14 @@ use bss_pricing::domain::retirement::BlockingReferenceKind;
 use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
+use bss_pricing::infra::draft_window::{self, DraftWindowCommand};
 use bss_pricing::infra::storage::migrations::Migrator;
+use bss_pricing::infra::storage::repo::approval_repo::{self, NewApproval};
 use bss_pricing::infra::storage::repo::{
-    NewPlanDraft, PlanRepo, PlanShapeRepo, PriceRepo, plan_repo,
+    NewPlanDraft, PlanRepo, PlanShapeRepo, PriceRepo, draft_window_repo, plan_repo,
 };
 use bss_pricing::infra::storage::{RepoError, repo_failure};
+use serde_json::json;
 use time::OffsetDateTime;
 
 use sea_orm_migration::MigratorTrait;
@@ -849,4 +863,230 @@ async fn an_override_only_a_superseded_revision_holds_does_not_block() {
         "revision 0's frozen rule row is not the override consumers resolve: {report:?}"
     );
     assert!(report.ensure_retirable(retiring.get()).is_ok());
+}
+
+fn draft_owner(plan_id: PlanId, revision: u64) -> DraftWindowOwner {
+    DraftWindowOwner {
+        tenant_id: TENANT,
+        plan_id: plan_id.get(),
+        plan_revision: revision,
+    }
+}
+
+/// Deleting a never-published price drops its draft-create intentions and voids
+/// a pending approval in the same transaction. A published row, and a live
+/// window standing on a draft, still refuse.
+#[tokio::test]
+async fn deleting_a_draft_price_drops_its_create_intentions_and_voids_approval() {
+    let (plans, provider) = harness().await;
+    let prices = PriceRepo::new(provider.clone());
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_d01));
+    let created = plans
+        .create_draft(&scope(), new_draft(plan_id))
+        .await
+        .expect("create the draft plan");
+    let price_id = price_row_on(&prices, plan_id).await;
+    let window_id = Uuid::from_u128(0x_d7_e1);
+    let conn = provider.conn().expect("conn");
+    draft_window::apply_command(
+        &conn,
+        &scope(),
+        &draft_owner(plan_id, created.revision),
+        created.row_version.get(),
+        DraftWindowCommand::Put(DraftWindowEntry {
+            operation_id: window_id,
+            action: DraftWindowAction::Create {
+                window_id,
+                price_id,
+                start: DraftStart::AtPublish,
+                effective_to: None,
+            },
+            reason_code: "launch".to_owned(),
+        }),
+        stamp(),
+    )
+    .await
+    .expect("author the covering create");
+
+    let approval_id = Uuid::from_u128(0x_a9_01);
+    approval_repo::open(
+        &conn,
+        &scope(),
+        NewApproval {
+            approval_id,
+            tenant_id: TENANT,
+            subject_ref: format!("{}/{}", plan_id, created.revision),
+            subject_kind: AuditSubjectKind::PlanRevision,
+            content_hash: vec![0_u8; 32],
+            materiality: json!({}),
+            held_keys: BTreeSet::new(),
+        },
+        stamp(),
+    )
+    .await
+    .expect("open a pending unit on the draft");
+
+    prices
+        .delete_draft(
+            &scope(),
+            TENANT,
+            price_id,
+            RowVersion::new(0),
+            stamp(),
+            None,
+        )
+        .await
+        .expect("the draft price deletes together with its create intention");
+
+    let leftover =
+        draft_window_repo::list(&conn, &scope(), &draft_owner(plan_id, created.revision))
+            .await
+            .expect("list remaining intentions");
+    assert!(
+        leftover.is_empty(),
+        "the create that named the deleted price must leave with it: {leftover:?}"
+    );
+    let unit = approval_repo::read(&conn, &scope(), TENANT, approval_id)
+        .await
+        .expect("read the unit")
+        .expect("the unit is still there as history");
+    assert_eq!(unit.state, ApprovalState::Voided);
+}
+
+/// Abandoned revisions keep draft-window history. Working authoring against that
+/// owner is a changed context, not a delete of the audit rows.
+#[tokio::test]
+async fn abandoned_draft_windows_are_retained_and_refuse_new_writes() {
+    let (plans, provider) = harness().await;
+    let prices = PriceRepo::new(provider.clone());
+    let plan_id = PlanId::new(Uuid::from_u128(0x9_d02));
+    let created = plans
+        .create_draft(&scope(), new_draft(plan_id))
+        .await
+        .expect("create the draft plan");
+    let price_id = price_row_on(&prices, plan_id).await;
+    let window_id = Uuid::from_u128(0x_d7_e2);
+    let conn = provider.conn().expect("conn");
+    let version = draft_window::apply_command(
+        &conn,
+        &scope(),
+        &draft_owner(plan_id, created.revision),
+        created.row_version.get(),
+        DraftWindowCommand::Put(DraftWindowEntry {
+            operation_id: window_id,
+            action: DraftWindowAction::Create {
+                window_id,
+                price_id,
+                start: DraftStart::AtPublish,
+                effective_to: None,
+            },
+            reason_code: "launch".to_owned(),
+        }),
+        stamp(),
+    )
+    .await
+    .expect("author the intention");
+
+    plans
+        .abandon_draft(
+            &scope(),
+            TENANT,
+            plan_id,
+            created.revision,
+            RowVersion::new(version),
+            stamp(),
+        )
+        .await
+        .expect("abandon the draft");
+
+    let retained =
+        draft_window_repo::list(&conn, &scope(), &draft_owner(plan_id, created.revision))
+            .await
+            .expect("abandoned history is still readable");
+    assert_eq!(retained.len(), 1, "{retained:?}");
+    assert_eq!(retained[0].operation_id, window_id);
+
+    let err = draft_window::apply_command(
+        &conn,
+        &scope(),
+        &draft_owner(plan_id, created.revision),
+        version,
+        DraftWindowCommand::Remove {
+            operation_id: window_id,
+        },
+        stamp(),
+    )
+    .await
+    .expect_err("an abandoned owner is not writable");
+    assert!(
+        matches!(err, DomainError::DraftWindowContextChanged(_)),
+        "stale authoring after abandon names the changed context, got {err:?}"
+    );
+}
+
+/// A published price, and a live window standing on a still-draft price, are
+/// history. Deletion must not remove them.
+#[tokio::test]
+async fn deletion_cannot_remove_published_or_live_window_history() {
+    let (plans, provider) = harness().await;
+    let prices = PriceRepo::new(provider.clone());
+    let published_plan = PlanId::new(Uuid::from_u128(0x9_d03));
+    plans
+        .create_draft(&scope(), new_draft(published_plan))
+        .await
+        .expect("create the draft that will carry a published row");
+    let published_price = price_row_on(&prices, published_plan).await;
+    common::publish_row_directly(&provider, &scope(), published_price).await;
+    let err = prices
+        .delete_draft(
+            &scope(),
+            TENANT,
+            published_price,
+            RowVersion::new(0),
+            stamp(),
+            None,
+        )
+        .await
+        .expect_err("a published row is frozen");
+    assert!(
+        matches!(err, RepoError::NotDraft { .. }),
+        "published history is refused as not-draft, got {err:?}"
+    );
+
+    let live_plan = PlanId::new(Uuid::from_u128(0x9_d04));
+    let created = plans
+        .create_draft(&scope(), new_draft(live_plan))
+        .await
+        .expect("create the draft that will carry a live window");
+    let live_price = price_row_on(&prices, live_plan).await;
+    let conn = provider.conn().expect("conn");
+    // Live/historical setup: a committed `pricing_price_window` on a still-draft
+    // row, so deletion is refused for standing history rather than for coverage.
+    let window =
+        common::schedule_coverage_window(&conn, &scope(), TENANT, live_price, stamp()).await;
+    let err = prices
+        .delete_draft(
+            &scope(),
+            TENANT,
+            live_price,
+            RowVersion::new(0),
+            stamp(),
+            None,
+        )
+        .await
+        .expect_err("a live window still stands on the draft");
+    assert_eq!(
+        err,
+        RepoError::PriceWindowScheduled {
+            price_id: live_price.to_string(),
+            window_id: window.window_id.to_string(),
+        }
+    );
+
+    let still = plans
+        .find_revision(&scope(), TENANT, live_plan, created.revision)
+        .await
+        .expect("the draft plan is untouched")
+        .expect("it is there");
+    assert_eq!(still.lifecycle_state, LifecycleState::Draft);
 }

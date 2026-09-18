@@ -94,6 +94,7 @@ use crate::domain::concurrency::RowVersion;
 use crate::domain::contracts::{
     EntitlementGrants, GrantSet, PlanChangeContract, UsageCounterOnPlanChange,
 };
+use crate::domain::draft_window::DraftWindowOwner;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::plan::{PlanRevision, PlanShapePatch};
 use crate::domain::plan_shape::{BillingCycle, CustomIntervalUnit, Frequency};
@@ -108,6 +109,7 @@ use crate::infra::storage::repo::plan_shape_repo::{
     copy_addon_rules, copy_composites, copy_period_floor_caps, copy_phases, delete_addon_rules,
     delete_composites, delete_period_floor_caps, delete_phases,
 };
+use crate::infra::storage::repo::window_baseline_repo;
 use crate::infra::storage::repo::window_guard_repo;
 use crate::infra::storage::repo::{NewAuditEntry, audit_repo, outbox_repo};
 use toolkit_odata::{ODataQuery, Page};
@@ -578,6 +580,10 @@ impl PlanRepo {
                     // A plan that is not a bundle drops nothing.
                     bundle_repo::delete_composition(txn, &scope, tenant_id, plan_id, revision)
                         .await?;
+                    // Draft-window operations and the captured baseline stay on
+                    // the tombstone: they are audit history. Working and committed
+                    // reads key off the open draft / published revision, so an
+                    // abandoned owner cannot author or activate.
                     let result = plan::Entity::update_many()
                         .secure()
                         .scope_with(&scope)
@@ -842,6 +848,21 @@ impl PlanRepo {
                     // parent revision is not `draft`.
                     bundle_repo::copy_composition(txn, &scope, tenant_id, plan_id, source, next)
                         .await?;
+                    // D-374: the successor starts with empty draft intentions and a
+                    // captured baseline of the predecessor's committed windows,
+                    // bound by `price_id` so a later key edit cannot silently
+                    // transfer intervals onto another row. Predecessor
+                    // `pricing_draft_window` rows stay on the frozen revision.
+                    window_baseline_repo::replace_from_live(
+                        txn,
+                        &scope,
+                        &DraftWindowOwner {
+                            tenant_id,
+                            plan_id: plan_id.get(),
+                            plan_revision: next,
+                        },
+                    )
+                    .await?;
                     // The record of the identity this transaction minted, in the
                     // transaction that minted it. The stamp is the call's own -
                     // `created_by` is the actor and `now` the instant - so this

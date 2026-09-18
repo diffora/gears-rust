@@ -73,7 +73,7 @@
 //! the surface's choice, because the submit path wants to *show* a report while
 //! the commit path wants to *fail* on one.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use toolkit_db::secure::{AccessScope, DBRunner};
@@ -1337,15 +1337,31 @@ pub(crate) async fn assemble_from(
         plan_id: plan_id.get(),
         plan_revision: revision,
     };
-    shape.draft_window_entries = draft_window_repo::list(runner, scope, &owner)
+    let mut draft_window_entries = draft_window_repo::list(runner, scope, &owner)
         .await
         .map_err(|e| repo_failure(&e))?;
-    shape.window_baseline = window_baseline_repo::list(runner, scope, &owner)
+    let mut window_baseline = window_baseline_repo::list(runner, scope, &owner)
         .await
         .map_err(|e| repo_failure(&e))?;
     if lifecycle_state.is_content_mutable() {
         crate::infra::draft_window::refuse_captured_baseline_drift(runner, scope, &owner).await?;
+    } else {
+        // Frozen owners keep draft-window rows as audit history. Compose must
+        // not re-apply those creates. Committed covering is the live plane
+        // (published or retired current alike — an approve after a repo-level
+        // retire still has to re-derive the same pin).
+        draft_window_entries.clear();
+        let live = window_baseline_repo::snapshot_live(runner, scope, tenant_id, plan_id)
+            .await
+            .map_err(|e| repo_failure(&e))?;
+        let candidates: HashSet<Uuid> = shape.rows.iter().map(|row| row.price_id).collect();
+        window_baseline = live
+            .into_iter()
+            .filter(|row| candidates.contains(&row.price_id))
+            .collect();
     }
+    shape.draft_window_entries = draft_window_entries;
+    shape.window_baseline = window_baseline;
     // Submit and commit re-compose: the pin hashes authoring inputs, the
     // coverage rules judge the time-resolved plane. `AtPublish` stamps
     // `evaluated_at` here and is hashed as the literal `at_publish`.

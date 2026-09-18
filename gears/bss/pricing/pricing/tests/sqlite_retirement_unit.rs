@@ -97,8 +97,7 @@ fn service(h: &Harness) -> RetirementService {
 async fn published_plan(h: &Harness) -> PlanId {
     let plan_uuid = Uuid::now_v7();
     let seeded = rest_support::seed_publishable_plan(h, plan_uuid).await;
-    h.publish(plan_uuid, seeded.revision).await;
-    h.publish_price(plan_uuid, seeded.price_id).await;
+    h.publish_seeded(plan_uuid, &seeded).await;
     PlanId::new(plan_uuid)
 }
 
@@ -457,8 +456,7 @@ async fn a_retirement_cancelled_window_emits_its_event() {
     let h = Harness::new().await;
     let plan_uuid = Uuid::now_v7();
     let seeded = rest_support::seed_publishable_plan(&h, plan_uuid).await;
-    h.publish(plan_uuid, seeded.revision).await;
-    h.publish_price(plan_uuid, seeded.price_id).await;
+    h.publish_seeded(plan_uuid, &seeded).await;
     let window_id = common::coverage_window_id(seeded.price_id);
 
     let floor = outbox_floor(&h).await;
@@ -496,8 +494,7 @@ async fn a_kept_window_is_left_alone_and_announces_nothing() {
     let h = Harness::new().await;
     let plan_uuid = Uuid::now_v7();
     let seeded = rest_support::seed_publishable_plan(&h, plan_uuid).await;
-    h.publish(plan_uuid, seeded.revision).await;
-    h.publish_price(plan_uuid, seeded.price_id).await;
+    h.publish_seeded(plan_uuid, &seeded).await;
     let window_id = common::coverage_window_id(seeded.price_id);
 
     let floor = outbox_floor(&h).await;
@@ -587,6 +584,7 @@ async fn plan_with_a_generation(
     .await;
     h.publish(plan_uuid, seeded.revision).await;
     h.publish_price(plan_uuid, seeded.price_id).await;
+    h.cover_committed_price(seeded.price_id).await;
     h.publish_price(plan_uuid, generation.price_id).await;
     schedule_window(h, generation.price_id, from, to).await;
     (PlanId::new(plan_uuid), seeded.price_id, generation.price_id)

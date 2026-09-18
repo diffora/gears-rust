@@ -281,38 +281,6 @@ async fn capture_live_baseline(
     seeded
 }
 
-/// Extend the captured seed window so the composed plane has no trailing void.
-async fn author_open_ended_adjust(
-    h: &Harness,
-    plan_id: Uuid,
-    plan_revision: u64,
-    window_id: Uuid,
-    idempotency_key: &str,
-) {
-    let etag = h.plan_etag(plan_id).await;
-    let response = h
-        .allowed_as(SUBMITTER)
-        .send(with_headers(
-            "PATCH",
-            &format!("/bss-pricing/v1/price-windows/{window_id}"),
-            Some(serde_json::json!({
-                "context": {"kind": "draft", "plan_revision": plan_revision},
-                "effective_to": null
-            })),
-            &[
-                ("if-match", etag.as_str()),
-                ("idempotency-key", idempotency_key),
-            ],
-        ))
-        .await;
-    let status = response.status();
-    assert_eq!(
-        status,
-        axum::http::StatusCode::OK,
-        "the open-ended adjust has to land for the publish under test to mean anything: status={status}"
-    );
-}
-
 async fn bump_seeded_etag(h: &Harness, plan_id: Uuid, seeded: &mut Publishable) {
     let current = h
         .state
@@ -323,27 +291,6 @@ async fn bump_seeded_etag(h: &Harness, plan_id: Uuid, seeded: &mut Publishable) 
         .expect("there is one");
     seeded.revision = current.revision;
     seeded.version = current.row_version;
-}
-
-/// Recapture the live seed window and open-end it so submit/commit can cover.
-async fn cover_live_seed(
-    h: &Harness,
-    plan_id: Uuid,
-    seeded: Publishable,
-    idempotency_prefix: &str,
-) -> Publishable {
-    let mut seeded =
-        capture_live_baseline(h, plan_id, seeded, &format!("{idempotency_prefix}-refresh")).await;
-    author_open_ended_adjust(
-        h,
-        plan_id,
-        seeded.revision,
-        common::coverage_window_id(seeded.price_id),
-        &format!("{idempotency_prefix}-open-end"),
-    )
-    .await;
-    bump_seeded_etag(h, plan_id, &mut seeded).await;
-    seeded
 }
 
 /// Publishable shape and price, with no live window and no draft intention.
@@ -392,8 +339,7 @@ async fn seed_uncovered_plan_with(
 }
 
 async fn seed_publishable_plan(h: &Harness, plan_id: Uuid) -> Publishable {
-    let seeded = seed_live_window_plan(h, plan_id).await;
-    cover_live_seed(h, plan_id, seeded, "task-7-cover").await
+    seed_live_window_plan(h, plan_id).await
 }
 
 // ---------------------------------------------------------------------------

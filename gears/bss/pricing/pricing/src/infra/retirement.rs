@@ -690,6 +690,9 @@ pub async fn compose_preview_with(
     // carried by its active windows as much as by its scheduled ones, and a rule
     // that saw only the candidates would read a covered key as uncovered and keep
     // windows nothing was going to strand.
+    // Live `pricing_price_window` only. Abandoned draft-window intentions are
+    // audit history and are not on this plane, so they cannot be cancelled or
+    // activated here.
     let plane = window_repo::list_for_plan(runner, scope, tenant_id, plan_id)
         .await
         .map_err(|e| repo_failure(&e))?;

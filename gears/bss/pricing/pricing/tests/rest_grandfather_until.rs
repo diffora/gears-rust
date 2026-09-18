@@ -110,8 +110,7 @@ struct Generation {
 async fn cut_over(h: &Harness) -> Generation {
     let plan_id = Uuid::now_v7();
     let seeded = seed_publishable_plan(h, plan_id).await;
-    h.publish(plan_id, seeded.revision).await;
-    h.publish_price(plan_id, seeded.price_id).await;
+    h.publish_seeded(plan_id, &seeded).await;
 
     let cutover = serde_json::json!({
         "predecessor_price_id": seeded.price_id.to_string(),

@@ -465,7 +465,7 @@ async fn seed_published_content(h: &Harness, key: ScopeKey, content: PriceConten
         )
         .await
         .expect("author the price row");
-    common::schedule_coverage_window(
+    common::schedule_open_ended_coverage(
         &h.provider.conn().expect("conn"),
         &h.scope,
         TENANT,
@@ -536,7 +536,7 @@ async fn seed_grandfathered_row(
         )
         .await
         .expect("author the grandfathered row");
-    common::schedule_coverage_window(
+    common::schedule_open_ended_coverage(
         &h.provider.conn().expect("conn"),
         &h.scope,
         TENANT,
