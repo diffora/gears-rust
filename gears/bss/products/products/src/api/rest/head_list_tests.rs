@@ -9,7 +9,7 @@ use crate::{
 use axum::{
     Router,
     body::Body,
-    http::{Request, StatusCode},
+    http::{Request, StatusCode, header::ETAG},
 };
 use sea_orm::{ConnectionTrait as _, Database};
 use serde_json::{Value, json};
@@ -291,6 +291,46 @@ async fn lists_reject_invalid_queries_instead_of_silently_ignoring_them() {
                 "{kind} {key}={value}: {body}"
             );
         }
+    }
+}
+
+#[tokio::test]
+async fn lists_refuse_order_on_nullable_keys() {
+    let h = harness().await;
+    for (kind, orderby) in [("products", "product_code asc"), ("skus", "sku_type desc")] {
+        let (status, body) = get(
+            app(&h, TENANT),
+            &url(kind, &[("$orderby", orderby)]),
+            Some(TENANT),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{kind} {orderby}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn lists_answer_an_empty_page_without_an_etag() {
+    let h = harness().await;
+    for kind in ["products", "skus"] {
+        let response = app(&h, TENANT)
+            .oneshot(
+                Request::builder()
+                    .uri(&url(kind, &[("$top", "1")]))
+                    .extension(authed_ctx(TENANT))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response.headers().get(ETAG).is_none(),
+            "a collection has no per-item ETag; GET /{kind}/{{id}} is the edit token"
+        );
+        let body = json_body(response).await;
+        assert_eq!(body["items"], json!([]));
+        assert_eq!(body["page_info"]["limit"], 1);
+        assert!(body["page_info"]["next_cursor"].is_null());
     }
 }
 
