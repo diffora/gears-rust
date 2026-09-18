@@ -51,6 +51,9 @@ use crate::domain::contracts::{
     AnchorDay, BillingAnchorPolicy, GrantSet, ProrationBasis, ProrationContract,
     UsageCounterOnPlanChange,
 };
+use crate::domain::draft_window::{
+    DraftStart, DraftWindowAction, DraftWindowEntry, WindowBaseline,
+};
 use crate::domain::instant::utc_ymd_hms;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::materiality::{ThresholdBasis, ThresholdEntry, ThresholdVersion};
@@ -71,8 +74,7 @@ use crate::domain::price_row::{
     TierAggregationWindow, TierBand, TierQualificationWindow,
 };
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
-    SkuId,
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 use time::OffsetDateTime;
@@ -207,24 +209,6 @@ fn maximal_record(seed: u128) -> PriceRecord {
     }
 }
 
-/// The baseline key with a usage line attached — D-196's tenth axis, and the
-/// unit that is no longer an axis at all (D-372).
-fn line_key(meter: Option<&str>, dimension: &str) -> ScopeKey {
-    sku_line_key(SkuId::new(Uuid::from_u128(5)), meter, dimension)
-}
-
-/// [`line_key`] with the ninth axis named (D-372).
-fn sku_line_key(sku_id: SkuId, meter: Option<&str>, dimension: &str) -> ScopeKey {
-    sku_key(sku_id, ChargeKind::Usage, "USD", "EU", phase_id(0x11))
-        .with_usage_line(
-            meter
-                .map(|value| Meter::new(value).expect("a non-blank meter"))
-                .as_ref(),
-            DimensionKey::new(dimension),
-        )
-        .expect("a usage key carries its line")
-}
-
 /// One key's window set with **every** field of both structs authored: an
 /// interval with a closed end, one with an open end, and two distinct states.
 ///
@@ -348,6 +332,46 @@ fn base() -> PlanShape {
         maximal_window_group(phase_id(0x11), "EU"),
         maximal_window_group(phase_id(0x12), "EU"),
     ];
+    // v19 pins authoring inputs, not the composed (clock-resolved) plane. One
+    // intention so the brief's equality test can move `reason_code` rather than
+    // fill an absence; one baseline row so a cancel is a value change.
+    shape.draft_window_entries = vec![
+        DraftWindowEntry {
+            operation_id: Uuid::from_u128(0xd01),
+            action: DraftWindowAction::Create {
+                window_id: Uuid::from_u128(0xd01),
+                price_id: Uuid::from_u128(0xb001),
+                start: DraftStart::AtPublish,
+                effective_to: None,
+            },
+            reason_code: "launch".to_owned(),
+        },
+        DraftWindowEntry {
+            operation_id: Uuid::from_u128(0xd03),
+            action: DraftWindowAction::Cancel {
+                window_id: Uuid::from_u128(0xb01),
+            },
+            reason_code: "withdraw".to_owned(),
+        },
+    ];
+    shape.window_baseline = vec![
+        WindowBaseline {
+            window_id: Uuid::from_u128(0xb01),
+            price_id: Uuid::from_u128(0xb002),
+            mutation_seq: 3,
+            effective_from: at(4),
+            effective_to: Some(at(8)),
+            cancelled: false,
+        },
+        WindowBaseline {
+            window_id: Uuid::from_u128(0xb03),
+            price_id: Uuid::from_u128(0xb002),
+            mutation_seq: 1,
+            effective_from: at(1),
+            effective_to: None,
+            cancelled: false,
+        },
+    ];
     // **Two markets with complementary bounds** (D-319). The golden vector below
     // covered an empty collection until 2026-08-20 -- a framed count of zero and
     // nothing else -- so `put_period_floor_cap`'s four members were reached by no
@@ -407,7 +431,7 @@ type Mutator = (&'static str, fn(&mut PlanShape));
 fn mutators() -> Vec<Mutator> {
     let mut all = plan_level_mutators();
     all.extend(child_mutators());
-    all.extend(window_mutators());
+    all.extend(window_authoring_mutators());
     all.extend(row_mutators());
     all.extend(slice10_row_mutators());
     all.extend(plan_contract_mutators());
@@ -605,54 +629,85 @@ fn child_mutators() -> Vec<Mutator> {
     ]
 }
 
-/// One mutator per field of `KeyWindows` and `WindowInterval`.
+/// One mutator per hashed draft-window / baseline field (v19).
 ///
-/// A fourth table for the same reason the other three are separate: the entry
-/// count, not a boundary in the encoder.
-fn window_mutators() -> Vec<Mutator> {
+/// Composed `PlanShape::windows` are the validation plane and are **not**
+/// content: `AtPublish` resolves at `evaluated_at`, so hashing that plane would
+/// make every approve fail `APPROVAL_CONTENT_MISMATCH` between submit and
+/// commit. The pin frames the authoring inputs instead.
+fn window_authoring_mutators() -> Vec<Mutator> {
     vec![
-        ("windows: one group dropped", |s| {
-            s.windows = vec![maximal_window_group(phase_id(0x11), "EU")];
+        ("draft_window_entries: dropped", |s| {
+            s.draft_window_entries.clear();
         }),
-        ("windows -> empty", |s| s.windows = Vec::new()),
-        ("group.scope_key", |s| {
-            s.windows[0] = maximal_window_group(phase_id(0x11), "US");
+        ("entry.operation_id", |s| {
+            s.draft_window_entries[0].operation_id = Uuid::from_u128(0xd99);
         }),
-        // The ninth and tenth axes, on the **one** path where a scope key is
-        // pinned with no row beside it. In `put_price_record` both are also
-        // columns of `PriceRow`, so the digest moves with them whether or not the
-        // key frames them; a window group carries no row, so here nothing stands
-        // in. The two entries differ from each other only in which axis moved, and
-        // the runner requires every mutant to pin distinctly — which is what makes
-        // each asserted rather than covered by the other.
-        //
-        // The ninth is the SKU since D-372, and it is the axis whose absence from
-        // this frame pinned two window plans on two SKUs of one market
-        // identically.
-        ("group.scope_key.sku_id", |s| {
-            s.windows[0].scope_key =
-                sku_line_key(SkuId::new(Uuid::from_u128(0x5c)), Some("cloudlets"), "");
+        ("entry.reason_code", |s| {
+            s.draft_window_entries[0].reason_code.push_str(" reviewed");
         }),
-        ("group.scope_key.dimension_key", |s| {
-            s.windows[0].scope_key = line_key(Some("cloudlets"), "eu-west");
+        ("entry.start at_publish -> at", |s| {
+            match &mut s.draft_window_entries[0].action {
+                DraftWindowAction::Create { start, .. } => *start = DraftStart::At(at(9)),
+                DraftWindowAction::AdjustEnd { .. } | DraftWindowAction::Cancel { .. } => {
+                    panic!("base() authors a create")
+                }
+            }
         }),
-        ("group: one interval dropped", |s| {
-            s.windows[0].intervals.pop();
+        ("entry.create.window_id", |s| {
+            match &mut s.draft_window_entries[0].action {
+                DraftWindowAction::Create { window_id, .. } => {
+                    *window_id = Uuid::from_u128(0xd02);
+                }
+                DraftWindowAction::AdjustEnd { .. } | DraftWindowAction::Cancel { .. } => {
+                    panic!("base() authors a create")
+                }
+            }
         }),
-        ("interval.effective_from", |s| {
-            s.windows[0].intervals[0].effective_from = at(5);
+        ("entry.create.price_id", |s| {
+            match &mut s.draft_window_entries[0].action {
+                DraftWindowAction::Create { price_id, .. } => {
+                    *price_id = Uuid::from_u128(0xb002);
+                }
+                DraftWindowAction::AdjustEnd { .. } | DraftWindowAction::Cancel { .. } => {
+                    panic!("base() authors a create")
+                }
+            }
         }),
-        ("interval.effective_to", |s| {
-            s.windows[0].intervals[0].effective_to = Some(at(7));
+        ("entry.create.effective_to", |s| {
+            match &mut s.draft_window_entries[0].action {
+                DraftWindowAction::Create { effective_to, .. } => *effective_to = Some(at(20)),
+                DraftWindowAction::AdjustEnd { .. } | DraftWindowAction::Cancel { .. } => {
+                    panic!("base() authors a create")
+                }
+            }
         }),
-        // The open end is a *state* of the interval and not an absent value, so
-        // it has to pin differently from every closed end — the ABSENT marker's
-        // whole job, asserted here as it is for `BandTop::open`.
-        ("interval.effective_to -> None", |s| {
-            s.windows[0].intervals[0].effective_to = None;
+        ("entry.action -> adjust_end", |s| {
+            s.draft_window_entries[1].action = DraftWindowAction::AdjustEnd {
+                window_id: Uuid::from_u128(0xb01),
+                effective_to: Some(at(6)),
+            };
         }),
-        ("interval.state", |s| {
-            s.windows[0].intervals[0].state = WindowState::Cancelled;
+        ("baseline.window_id", |s| {
+            s.window_baseline[0].window_id = Uuid::from_u128(0xb02);
+        }),
+        ("baseline.price_id", |s| {
+            s.window_baseline[0].price_id = Uuid::from_u128(0xb001);
+        }),
+        ("baseline.mutation_seq", |s| {
+            s.window_baseline[0].mutation_seq = 4;
+        }),
+        ("baseline.effective_from", |s| {
+            s.window_baseline[0].effective_from = at(5);
+        }),
+        ("baseline.effective_to", |s| {
+            s.window_baseline[0].effective_to = Some(at(9));
+        }),
+        ("baseline.effective_to -> None", |s| {
+            s.window_baseline[0].effective_to = None;
+        }),
+        ("baseline.cancelled", |s| {
+            s.window_baseline[0].cancelled = true;
         }),
     ]
 }
@@ -1220,6 +1275,14 @@ fn the_other_collections_are_sets_too() {
     let mut intervals = base();
     intervals.windows[0].intervals.reverse();
     assert_eq!(content_hash(&straight), content_hash(&intervals));
+
+    let mut entries = base();
+    entries.draft_window_entries.reverse();
+    assert_eq!(content_hash(&straight), content_hash(&entries));
+
+    let mut captured = base();
+    captured.window_baseline.reverse();
+    assert_eq!(content_hash(&straight), content_hash(&captured));
 }
 
 /// Two shapes built independently, field for field, pin identically.
@@ -1231,51 +1294,64 @@ fn two_independently_built_equal_shapes_pin_identically() {
     assert_eq!(content_hash(&base()), content_hash(&base()));
 }
 
-/// The same shape with its one window in each of the four states of §4's machine.
+/// The brief's equality: `evaluated_at` is not content; a reason-code edit is.
 ///
-/// Not `base()` mutated in place, so that the interval under test is the group's
-/// only member and nothing else in the group can be what an assertion below is
-/// about.
-fn one_window_in_state(state: WindowState) -> PlanShape {
+/// `base()` already carries one intention, so this is the fixture with unchanged
+/// authoring inputs plus the two mutations the task names. Hashing the
+/// time-resolved `AtPublish` proposal would fail the first assertion the moment
+/// submit and approve disagree on the clock.
+#[test]
+fn authoring_inputs_are_pinned_not_the_resolved_clock() {
     let mut shape = base();
-    shape.windows = vec![KeyWindows {
-        scope_key: key(ChargeKind::Usage, "USD", "EU", phase_id(0x11)),
-        intervals: vec![WindowInterval::new(at(4), Some(at(8)), state)],
-    }];
-    shape
+    let before = content_hash(&shape);
+    shape.evaluated_at += time::Duration::hours(1);
+    assert_eq!(before, content_hash(&shape));
+    shape.draft_window_entries[0]
+        .reason_code
+        .push_str(" reviewed change");
+    assert_ne!(before, content_hash(&shape));
 }
 
 /// **`scheduled → active → expired` does not move the pin; `→ cancelled` does.**
 ///
-/// The inverse of the `("interval.state", …)` mutator above, which moves the state
-/// to `Cancelled` and therefore asserts only the half that must move. This is the
-/// half that must **not**, and it is the one whose absence let the defect land:
-/// `put_window_interval` framed `WindowState::as_str` verbatim, so an ordinary
-/// `WindowActivationJob` tick re-keyed the digest of every pending unit.
-///
-/// Derived from the design set rather than from the encoder. §4 transitions 1 and
-/// 2 (`inst-ws-activate`, `inst-ws-expire`) fire on `now` reaching a **stored
-/// bound**, and D-99's paired clarification is explicit that they are *not publish
-/// units* and re-project nothing, *"so the time-driven transitions change nothing
-/// projected"* — a pin that moved on one would be a projected consequence of a
-/// tick. §4 transition 3 (`inst-ws-cancel`) is the operator's act, a publish unit
-/// under D-99 and always-material under D-62, so a reviewer is entitled to see it
-/// and the digest has to carry it. Both directions here, because either one alone
-/// is satisfiable by an encoder that is wrong in the other.
-///
-/// Byte-identity and not "verifies": `content_hash` returns the 32 bytes, so
-/// `assert_eq!` over the arrays is the strongest available statement.
+/// v19 hashes `WindowBaseline::cancelled`, not clock-derived active/expired on
+/// the composed plane. Flipping `PlanShape::windows` state is the clock; flipping
+/// the baseline cancel marker is an author.
 #[test]
 fn the_clock_may_flip_a_window_but_not_the_pin() {
-    let scheduled = one_window_in_state(WindowState::Scheduled);
-    let active = one_window_in_state(WindowState::Active);
-    let expired = one_window_in_state(WindowState::Expired);
-    let cancelled = one_window_in_state(WindowState::Cancelled);
+    let scheduled = {
+        let mut shape = base();
+        shape.windows[0].intervals[0].state = WindowState::Scheduled;
+        shape
+    };
+    let active = {
+        let mut shape = base();
+        shape.windows[0].intervals[0].state = WindowState::Active;
+        shape
+    };
+    let expired = {
+        let mut shape = base();
+        shape.windows[0].intervals[0].state = WindowState::Expired;
+        shape
+    };
+    let cancelled = {
+        let mut shape = base();
+        shape.window_baseline[0].cancelled = true;
+        shape
+    };
 
-    // Without this the equalities below would be equalities about one shape.
-    assert_ne!(scheduled, active, "these really are different shapes");
-    assert_ne!(active, expired, "these really are different shapes");
-    assert_ne!(scheduled, cancelled, "these really are different shapes");
+    assert_ne!(
+        scheduled.windows, active.windows,
+        "these really are different shapes"
+    );
+    assert_ne!(
+        active.windows, expired.windows,
+        "these really are different shapes"
+    );
+    assert_ne!(
+        scheduled.window_baseline, cancelled.window_baseline,
+        "these really are different shapes"
+    );
 
     assert_eq!(
         content_hash(&scheduled),
@@ -1451,13 +1527,17 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 /// a real value and not the absence a rollout would read as one; the two mutators
 /// `group.scope_key.sku_id` and `row.sku_id` hold the key frame and the row frame
 /// apart. The overlay and threshold vectors are again unchanged.
+///
+/// **2026-09-18 (D-374) was the first kind, and the constant moved to `v19`:**
+/// the composed `windows` plane left the preimage; `draft_window_entries` and
+/// `window_baseline` joined it. Every open unit answers `APPROVAL_CONTENT_MISMATCH`
+/// until resubmitted. There is no pin-rewrite path.
 #[test]
-// D-373 v18 freezes row-authored template/GL overrides and plan extension data.
-// Resolved descriptors remain outside the pin; field mutators cover that boundary.
+// D-374 v19 freezes explicit draft-window authoring inputs, not the composed plane.
 fn the_encoding_is_frozen() {
     assert_eq!(
         hex32(&content_hash(&base())),
-        "5cc854c67decc9f212fd532b2c76f5536b6299027d4463c763b28245873b808d"
+        "b301cd75459cac1a26ffc5539057e9a3207c8fd2492cf6aac69137e0ab91622d"
     );
 }
 
@@ -1617,7 +1697,7 @@ fn the_two_pin_domains_are_disjoint_and_each_names_its_own_generation() {
     );
     assert_eq!(
         super::CONTENT_PIN_DOMAIN_SEP,
-        b"VHP-BSS-PRICING-APPROVAL-PIN-v18\x1f"
+        b"VHP-BSS-PRICING-APPROVAL-PIN-v19\x1f"
     );
     assert_eq!(
         super::THRESHOLD_PIN_DOMAIN_SEP,

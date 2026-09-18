@@ -277,19 +277,6 @@ pub struct PublishRuleParams {
     tax_display_policy: TaxDisplayPolicy,
     region_readiness: RegionTaxReadiness,
     change_targets: ChangeTargetIndex,
-    /// **Will the caller open coverage for a key this run is freezing?** (D-332)
-    ///
-    /// True from the publish, which writes the initial window itself, and false
-    /// everywhere else the same rule set runs — the repricing apply's aggregate
-    /// pass above all. That distinction cannot be read off the shape: a draft
-    /// row's key is identical in both, and only the caller knows whether a
-    /// window is coming. Held as a field for this struct's own stated reason —
-    /// a rule that decided it for itself would answer differently in the two
-    /// runs for no authored reason.
-    ///
-    /// Defaults to **false**, which is the fail-closed direction: a caller that
-    /// forgets to say so gets the refusal rather than a silently skipped rule.
-    opens_initial_coverage: bool,
 }
 
 /// One market of one **bundle that references this plan as a component**, and the
@@ -392,9 +379,6 @@ impl PublishRuleParams {
             // authored edge reads as dangling and the publish is refused. A
             // caller who forgets is loud immediately.
             change_targets: ChangeTargetIndex::empty(),
-            // False by construction: only the publish may say otherwise, and a
-            // caller that forgets gets the refusal rather than a skipped rule.
-            opens_initial_coverage: false,
         }
     }
 
@@ -457,24 +441,6 @@ impl PublishRuleParams {
     pub fn with_declared_gl_codes(mut self, values: BTreeSet<String>) -> Self {
         self.declared_gl_codes = values;
         self
-    }
-
-    /// Declare that this run opens coverage for the keys it is freezing (D-332).
-    ///
-    /// The publish says so; nothing else may. `sqlite_repricing_apply`'s
-    /// aggregate case is what makes the distinction real rather than
-    /// theoretical: it runs this set over a plan carrying a stray draft, and a
-    /// draft whose key the apply will never cover has to keep failing.
-    #[must_use]
-    pub const fn opening_initial_coverage(mut self) -> Self {
-        self.opens_initial_coverage = true;
-        self
-    }
-
-    /// Does the caller open coverage itself? See the field.
-    #[must_use]
-    pub const fn opens_initial_coverage(&self) -> bool {
-        self.opens_initial_coverage
     }
 
     /// Attach what the store found about the plans this one's change contract
@@ -622,7 +588,7 @@ pub fn run_publish_rules(shape: &PlanShape, params: &PublishRuleParams) -> Valid
     // same doc's reason: coverage is a statement about a key's window plane and
     // reads last.
     report.absorb(consumer_contract_rules(&params.change_targets).run(shape));
-    report.absorb(window_coverage_rules(params.opens_initial_coverage()).run(shape));
+    report.absorb(window_coverage_rules().run(shape));
     report
 }
 

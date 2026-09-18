@@ -73,6 +73,7 @@
 //! the surface's choice, because the submit path wants to *show* a report while
 //! the commit path wants to *fail* on one.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use toolkit_db::secure::{AccessScope, DBRunner};
@@ -82,6 +83,7 @@ use uuid::Uuid;
 
 use crate::domain::audit::{AuditAction, AuditSubjectKind, subject_state};
 use crate::domain::concurrency::RowVersion;
+use crate::domain::draft_window::{DraftWindowOwner, compose_windows, proposed_window_state};
 use crate::domain::error::DomainError;
 use crate::domain::instant::from_unix_millis;
 use crate::domain::instant::timestamp_millis;
@@ -96,13 +98,13 @@ use crate::domain::read_model::SubjectRef;
 use crate::domain::scope_key::{PhaseId, PlanId};
 use crate::domain::tax_display::{RegionReadiness, RegionTaxReadiness};
 use crate::domain::validation::ValidationReport;
-use crate::domain::window::{self, KeyWindows, WindowInterval};
+use crate::domain::window::{WindowInterval, group_by_key_seeded};
 use crate::infra::fixture_gate::{FixtureGate, Reservation};
 use crate::infra::registry_deadline::request_version_now;
 use crate::infra::storage::repo::{
     NewAuditEntry, NewOutboxEvent, PendingVersionRow, PlanPublishedPayload, PolicyObjectRepo,
-    approval_repo, audit_repo, catalog_version_ref_repo, outbox_repo, plan_repo, plan_shape_repo,
-    price_repo, taxonomy_repo, window_repo,
+    approval_repo, audit_repo, catalog_version_ref_repo, draft_window_repo, outbox_repo, plan_repo,
+    plan_shape_repo, price_repo, taxonomy_repo, window_baseline_repo, window_repo,
 };
 use crate::infra::storage::repo_failure;
 use time::OffsetDateTime;
@@ -272,9 +274,7 @@ impl PublishService {
         let shape = assemble(&conn, scope, tenant_id, plan_id, now).await?;
         // D-332: the pre-check must judge the plan the way the commit will, or a
         // plan the commit would publish is refused before a unit ever opens.
-        let params = rule_params(&self.policies, &conn, scope, tenant_id, &shape)
-            .await?
-            .opening_initial_coverage();
+        let params = rule_params(&self.policies, &conn, scope, tenant_id, &shape).await?;
         let report = run_publish_rules(&shape, &params);
         crate::infra::metrics::report_market_metrics(&*self.metrics, &shape, &params);
         check_fixtures(&self.fixture_gate, &shape)?;
@@ -582,9 +582,7 @@ impl PublishService {
                             unit.plan_id
                         )));
                     }
-                    let params = rule_params(&policies, txn, &scope, tenant_id, &shape)
-                        .await?
-                        .opening_initial_coverage();
+                    let params = rule_params(&policies, txn, &scope, tenant_id, &shape).await?;
                     if shape.revision != unit.revision {
                         return Err(DomainError::NotFound {
                             subject: "open plan draft revision".to_owned(),
@@ -665,21 +663,11 @@ impl PublishService {
                     // Exactly the rows the rule set just judged, at the
                     // versions it judged them at. See `publish_rows`: a
                     // re-derived set would publish rows validated by nothing.
-                    // **D-332: the initial windows, written after the pin.**
-                    //
-                    // Not before the rules, which is where this sat first and
-                    // where it was wrong: the submit computes the content pin
-                    // over a shape with no publish-opened window, so writing one
-                    // ahead of the rules made the commit's content differ from
-                    // the reviewer's and the approval died with
-                    // `APPROVAL_CONTENT_MISMATCH`. The pin was right — the
-                    // placement was not.
-                    //
-                    // It does not need to be early. `inst-wc-required` already
-                    // passes on a key this publish is freezing for the first
-                    // time (`coverage::opened_by_this_publish`), so the rule and
-                    // the write are independent: the rule states that coverage
-                    // *will* exist, and this is where it comes to.
+                    // **D-332 leftover writer, still here until Task 7.** Coverage
+                    // no longer skips a key this publish would open: an explicit
+                    // covering intention must already be on the composed plane or
+                    // `inst-wc-required` has refused the commit. The writer remains
+                    // so Task 7 can delete it in one place rather than restore it.
                     open_initial_windows(
                         txn,
                         &scope,
@@ -1360,7 +1348,26 @@ pub(crate) async fn assemble_from(
     shape.rows = price_repo::load_for_plan(runner, scope, tenant_id, plan_id, CANDIDATE_ROW_STATES)
         .await
         .map_err(|e| repo_failure(&e))?;
-    shape.windows = window_plane(runner, scope, tenant_id, plan_id, &shape.rows).await?;
+    let owner = DraftWindowOwner {
+        tenant_id,
+        plan_id: plan_id.get(),
+        plan_revision: revision,
+    };
+    shape.draft_window_entries = draft_window_repo::list(runner, scope, &owner)
+        .await
+        .map_err(|e| repo_failure(&e))?;
+    shape.window_baseline = window_baseline_repo::list(runner, scope, &owner)
+        .await
+        .map_err(|e| repo_failure(&e))?;
+    // Submit and commit re-compose: the pin hashes authoring inputs, the
+    // coverage rules judge the time-resolved plane. `AtPublish` stamps
+    // `evaluated_at` here and is hashed as the literal `at_publish`.
+    shape.windows = compose_validation_plane(
+        &shape.rows,
+        &shape.window_baseline,
+        &shape.draft_window_entries,
+        now,
+    )?;
     shape.baseline = published_baseline(runner, scope, tenant_id, plan_id).await?;
     Ok(shape)
 }
@@ -1406,9 +1413,6 @@ async fn open_initial_windows(
     let uncovered: Vec<_> = report
         .required()
         .filter(|entry| !entry.has_live_window())
-        // The same predicate the rule skips on, so the two cannot disagree
-        // about which keys this publish is answering for.
-        .filter(|entry| crate::domain::coverage::opened_by_this_publish(shape, entry.scope_key()))
         .map(|entry| entry.scope_key().clone())
         .collect();
 
@@ -1450,57 +1454,29 @@ async fn open_initial_windows(
     Ok(())
 }
 
-/// The plan's window plane, grouped per canonical scope key, seeded with the
-/// candidate rows' keys.
-///
-/// **Read here rather than only at `GET …/coverage`** so the coverage report
-/// appears in [`PublishService::precheck`] too. The pre-check is the operator's
-/// remediation path: a plan that cannot publish for want of a window has to say
-/// so before the two-person unit opens, or the first news of it is a refused
-/// commit.
-///
-/// # Two filters this deliberately does not apply
-///
-/// `window_repo::list_for_plan` is taken whole — every window state, over every
-/// price row of the plan whatever its lifecycle state — because the coverage
-/// rules are **validation over a hypothetical**: "if this row were current on
-/// this key, would the interval set be sound?", asked of a change set made of
-/// `draft` rows about to publish. That is the same posture
-/// `price_repo::load_scope_keys_for_plan` states for itself and the same posture
-/// `window_repo::refuse_overlap` runs under.
-///
-/// The two readers that *assert facts to a consumer* — `read_model::project_windows`
-/// and the activation sweep — restrict to
-/// [`PROJECTED_ROW_STATES`](crate::domain::projection::PROJECTED_ROW_STATES)
-/// instead, and that asymmetry is the point rather than an inconsistency to
-/// resolve. A later group narrowing this read to match theirs would move the
-/// publish check across that line, and a `draft` row's own window would stop
-/// counting as the coverage of the key it is about to publish onto.
-///
-/// Which of the intervals then *contribute* coverage is each reader's own
-/// statement: [`KeyWindows::coverage_end`] drops `cancelled`, and
-/// [`crate::domain::coverage`] names the state set `inst-wc-required` and
-/// `inst-fg-detect` read.
+/// Compose the draft-window authoring inputs into the validation plane.
 ///
 /// # Errors
-/// [`DomainError::Internal`] on a storage failure, or when a window names a price
-/// row that is not on the plan.
-async fn window_plane(
-    runner: &impl DBRunner,
-    scope: &AccessScope,
-    tenant_id: Uuid,
-    plan_id: PlanId,
+/// [`compose_windows`] refusals (overlap, empty interval, elapsed exact start,
+/// unknown price row, illegal live-history edit).
+fn compose_validation_plane(
     candidates: &[PriceRecord],
-) -> Result<Vec<KeyWindows>, DomainError> {
-    let records = window_repo::list_for_plan(runner, scope, tenant_id, plan_id)
-        .await
-        .map_err(|e| repo_failure(&e))?;
-    Ok(window::group_by_key_seeded(
+    baseline: &[crate::domain::draft_window::WindowBaseline],
+    entries: &[crate::domain::draft_window::DraftWindowEntry],
+    evaluated_at: OffsetDateTime,
+) -> Result<Vec<crate::domain::window::KeyWindows>, DomainError> {
+    let keys: BTreeMap<Uuid, crate::domain::scope_key::ScopeKey> = candidates
+        .iter()
+        .map(|row| (row.price_id, row.scope_key.clone()))
+        .collect();
+    let proposed = compose_windows(baseline, entries, &keys, evaluated_at)?;
+    Ok(group_by_key_seeded(
         candidates.iter().map(|record| record.scope_key.clone()),
-        records.into_iter().map(|w| {
+        proposed.into_iter().map(|window| {
+            let state = proposed_window_state(&window, evaluated_at);
             (
-                w.scope_key,
-                WindowInterval::new(w.effective_from, w.effective_to, w.state),
+                window.key,
+                WindowInterval::new(window.effective_from, window.effective_to, state),
             )
         }),
     ))

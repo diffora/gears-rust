@@ -303,7 +303,7 @@ fn refuse_overlap(
     evaluated_at: OffsetDateTime,
 ) -> Result<(), DomainError> {
     for (left_idx, left) in proposed.iter().enumerate() {
-        let left_state = window_state(left, evaluated_at);
+        let left_state = proposed_window_state(left, evaluated_at);
         if !OCCUPYING_STATES.contains(&left_state) {
             continue;
         }
@@ -311,7 +311,7 @@ fn refuse_overlap(
             if left.key != right.key {
                 continue;
             }
-            let right_state = window_state(right, evaluated_at);
+            let right_state = proposed_window_state(right, evaluated_at);
             if !OCCUPYING_STATES.contains(&right_state) {
                 continue;
             }
@@ -337,7 +337,10 @@ fn refuse_overlap(
     Ok(())
 }
 
-fn window_state(window: &ProposedWindow, evaluated_at: OffsetDateTime) -> WindowState {
+pub(crate) fn proposed_window_state(
+    window: &ProposedWindow,
+    evaluated_at: OffsetDateTime,
+) -> WindowState {
     if window.effective_to.is_some_and(|end| end <= evaluated_at) {
         return WindowState::Expired;
     }

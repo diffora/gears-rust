@@ -180,6 +180,67 @@ async fn a_plan_that_cannot_publish_opens_no_unit_at_all() {
     );
 }
 
+/// D-374: a live window the seed wrote is not coverage. Submit needs an explicit
+/// covering intention on the draft; the publish path does not invent one.
+#[tokio::test]
+async fn a_plan_with_no_authored_window_cannot_submit() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = seed_publishable_plan(&h, plan_id).await;
+
+    let response = publish_as(&h, SUBMITTER, plan_id, &seeded.etag()).await;
+
+    assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    assert_eq!(problem_code(response).await, "WINDOW_COVERAGE_MISSING");
+    assert!(
+        approval_rows(&h).await.is_empty(),
+        "an uncovered key must not reach a reviewer"
+    );
+}
+
+/// An explicit `AtPublish` intention is coverage. After the draft POST the plan
+/// ETag has moved; submit uses the bumped tag.
+#[tokio::test]
+async fn an_explicit_at_publish_intention_lets_submit_open_a_unit() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = seed_publishable_plan(&h, plan_id).await;
+    author_at_publish(&h, plan_id, seeded.price_id, "rest-publish-at-publish").await;
+
+    let response = publish_as(&h, SUBMITTER, plan_id, &h.plan_etag(plan_id).await).await;
+
+    assert_eq!(response.status(), axum::http::StatusCode::ACCEPTED);
+    let body = body_json(response).await;
+    assert_eq!(body["outcome"], "submitted_for_approval");
+    assert_eq!(approval_rows(&h).await.len(), 1);
+}
+
+/// Author one open-ended `AtPublish` create on the seed's price row.
+async fn author_at_publish(h: &Harness, plan_id: Uuid, price_id: Uuid, idempotency_key: &str) {
+    let etag = h.plan_etag(plan_id).await;
+    let response = h
+        .allowed_as(SUBMITTER)
+        .send(with_headers(
+            "POST",
+            &format!("/bss-pricing/v1/prices/{price_id}/windows"),
+            Some(serde_json::json!({
+                "context": {"kind": "draft", "plan_revision": 0},
+                "start": {"kind": "at_publish"},
+                "reason_code": "launch"
+            })),
+            &[
+                ("if-match", etag.as_str()),
+                ("idempotency-key", idempotency_key),
+            ],
+        ))
+        .await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::CREATED,
+        "the covering intention has to land for the submit under test to mean anything"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Slice 10's two composite rules, driven through this route.
 // ---------------------------------------------------------------------------

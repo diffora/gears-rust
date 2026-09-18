@@ -78,10 +78,10 @@
 //! of what the destructures miss — see *Every struct is destructured* below, which
 //! covers the nested aggregates inside the shape.
 //!
-//! # Two fields of `PlanShape` are deliberately **not** hashed
+//! # Three fields of `PlanShape` are deliberately **not** hashed
 //!
-//! [`PlanShape::evaluated_at`] and [`PlanShape::baseline`], and the first is not
-//! a preference:
+//! [`PlanShape::evaluated_at`], [`PlanShape::baseline`], and the composed
+//! [`PlanShape::windows`] plane, and the first is not a preference:
 //!
 //! - **`evaluated_at`** is the instant the validation pipeline is being run at,
 //!   handed in by the caller (`plan_shape.rs`'s own module doc: it is a field so
@@ -96,10 +96,14 @@
 //!   pends: a `submitted` unit holds the plan's scope key through
 //!   `PENDING_CHANGE_UNIT_EXISTS`, so no second publish of the same plan can
 //!   land and change what the baseline is.
+//! - **`windows`** is the composed validation plane. Symbolic `at_publish` starts
+//!   resolve at `evaluated_at`; clock-driven active/expired tokens are not
+//!   authors. v19 hashes [`PlanShape::draft_window_entries`] and
+//!   [`PlanShape::window_baseline`] instead.
 //!
 //! Every other field of the shape is hashed, and the **price rows'** own
 //! provenance (`created_by`, `created_at_utc`) and `row_version` with them: the
-//! rule inside the shape is "everything, minus the two argued above", rather
+//! rule inside the shape is "everything, minus the three argued above", rather
 //! than a hand-picked consumer-visible subset, because a subset is a list
 //! somebody has to keep true and the failure mode of getting it wrong is a
 //! mutation the guard cannot see. What that rule does **not** reach is the
@@ -111,7 +115,7 @@
 //! them — [`PIN_WINDOW_STATE_LIVE`] for `scheduled`, `active` and `expired`, and
 //! [`PIN_WINDOW_STATE_CANCELLED`] for `cancelled`. It is the one place this
 //! encoder frames something other than the value it was handed, so it is argued
-//! here rather than read off [`put_window_interval`].
+//! here rather than read off the v3 window-interval encoder.
 //!
 //! **The three collapsed states are the clock's, and the clock is not an author.**
 //! §4's `scheduled → active` (`inst-ws-activate`) and `active → expired`
@@ -149,13 +153,13 @@
 //! # Collections are hashed in a canonical order, not the order they arrive in
 //!
 //! `rows`, `phases`, `addon_rules`, `depends_on`, `conflicts_with`, `bands`,
-//! `windows` and each key's `intervals` are sorted on their members' own
+//! `draft_window_entries` and `window_baseline` are sorted on their members' own
 //! identities before framing. The repositories already return them in exactly
 //! these orders (`price_repo::load_for_plan` by `price_id`,
 //! `plan_shape_repo::load_phases` by `(ordinal, phase_id)`, `load_addon_rules`
-//! by `addon_sku_id`, the band read by `from_qty`, and
-//! `window::group_by_key_seeded` by the key's canonical rendering and then by
-//! `(effective_from, effective_to, state)`), so this changes no digest today. It is here for the day one of
+//! by `addon_sku_id`, the band read by `from_qty`, `draft_window_repo::list` by
+//! `operation_id`, and `window_baseline_repo::list` by `window_id`), so this
+//! changes no digest today. It is here for the day one of
 //! those `ORDER BY`s changes: without it, a query-plan-visible reordering would
 //! fail every pending approval in the fleet with `APPROVAL_CONTENT_MISMATCH`,
 //! which looks exactly like the attack the pin exists to catch and is not one.
@@ -172,8 +176,8 @@
 //! No field of any struct this encoder frames is reached through a dot. Each
 //! encoder binds its struct with an exhaustive pattern and no `..`, so a field
 //! added to `PlanShape`, `PriceRecord`, `PriceRow`, `PlanPhase`, `AddonRule`,
-//! `TierBand`, `IncludedAllowance`, `KeyWindows`,
-//! `WindowInterval`, `OverlayRevision`, `OverlayLine`, `OverlayInterval`,
+//! `TierBand`, `IncludedAllowance`, `DraftWindowEntry`, `WindowBaseline`,
+//! `OverlayRevision`, `OverlayLine`, `OverlayInterval`,
 //! `TargetRef`, `MembershipMoveProposal`,
 //! `ThresholdEntry`, `GrantSet`, `EntitlementGrants`, `CompositeMeter`,
 //! `PlanChangeContract`, `PeriodFloorCap` or `ProrationContract` **fails to
@@ -181,8 +185,8 @@
 //! cannot give that guarantee: it can only fail for the fields it already knows
 //! about, which is the wrong set by definition.
 //!
-//! It worked: `PlanShape::windows` could not be added without E0027 here, and
-//! the decision it forced is recorded on [`CONTENT_PIN_DOMAIN_SEP`].
+//! It worked: `PlanShape::draft_window_entries` could not be added without E0027
+//! here, and the decision it forced is recorded on [`CONTENT_PIN_DOMAIN_SEP`].
 //!
 //! **The nested types need the gate as much as the outer ones**, and a claim
 //! written about the outer types does not reach them. `EntitlementGrants`,
@@ -264,6 +268,9 @@ use crate::domain::contracts::{
     AnchorDay, BillingAnchorPolicy, EntitlementGrants, GrantSet, PlanChangeContract,
     ProrationBasis, ProrationContract,
 };
+use crate::domain::draft_window::{
+    DraftStart, DraftWindowAction, DraftWindowEntry, WindowBaseline,
+};
 use crate::domain::instant::timestamp_micros;
 use crate::domain::materiality::{
     ThresholdBasis, ThresholdEntry, ThresholdVersion, ThresholdVersionParts,
@@ -285,7 +292,6 @@ use crate::domain::price_row::{
 };
 use crate::domain::scope_key::{PhaseId, PlanId, ScopeKey, ScopeKeyParts};
 use crate::domain::taxonomy::{RegionTaxMarkers, TaxonomyEntry, TaxonomyValueChange};
-use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 use time::OffsetDateTime;
 
 /// Versioned domain-separation tag for the approval content pin.
@@ -596,7 +602,19 @@ use time::OffsetDateTime;
 /// v18 replaces plan descriptors/grouping with plan extensions and row
 /// descriptor overrides. Pending v17 units fail stale-pin verification and must
 /// be submitted again; no existing approval is reinterpreted under this frame.
-pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v18\x1f";
+///
+/// # `v19`: explicit draft-window authoring joins the pin (D-374)
+///
+/// The composed `windows` plane left the preimage: it is time-resolved
+/// (`AtPublish` stamps `evaluated_at`) and clock-derived active/expired state
+/// is not an author. v19 frames `draft_window_entries` (stable operation ids,
+/// the literal `at_publish` start, ends, reasons) and `window_baseline`
+/// (ids, price ids, operator `mutation_seq`, intervals, cancelled) instead.
+///
+/// **Drain-fail.** Every open approval unit in a deployed tenant answers
+/// `APPROVAL_CONTENT_MISMATCH` until it is withdrawn and resubmitted under v19.
+/// There is no pin-rewrite path: a stored v18 digest cannot be translated.
+pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v19\x1f";
 
 /// Versioned domain-separation tag for the **threshold-policy** content pin.
 ///
@@ -659,7 +677,12 @@ const PIN_THRESHOLD_BASIS_PERCENT: &str = "percent_bp";
 /// those four tokens are pinned to `chk_pricing_price_window_state` and to the
 /// wire, and a frozen encoding must not move when a persisted token is renamed.
 /// `live` is none of the four, so the two vocabularies cannot be read for each
-/// other either.
+/// other either. Kept as the v3 vocabulary the module doc names; v19 no longer
+/// frames composed window state.
+#[allow(
+    dead_code,
+    reason = "named by the v3 narrowing section of the module doc"
+)]
 const PIN_WINDOW_STATE_LIVE: &str = "live";
 
 /// The token the preimage frames a `cancelled` window state as.
@@ -667,6 +690,10 @@ const PIN_WINDOW_STATE_LIVE: &str = "live";
 /// It spells the word the wire spells, and that is a coincidence rather than a
 /// dependency: it is written out here for [`PIN_WINDOW_STATE_LIVE`]'s reason, so
 /// that a rename on the persisted side re-keys no pin.
+#[allow(
+    dead_code,
+    reason = "named by the v3 narrowing section of the module doc"
+)]
 const PIN_WINDOW_STATE_CANCELLED: &str = "cancelled";
 
 /// NULL-safe presence marker for an absent field: a bare byte.
@@ -679,7 +706,7 @@ const PRESENT: u8 = 0x01;
 /// shown)`.
 ///
 /// Total: there is no shape this cannot hash, which is why it returns the digest
-/// rather than a `Result`. See the module doc for the two fields it does not
+/// rather than a `Result`. See the module doc for the fields it does not
 /// cover and why.
 #[must_use]
 pub fn content_hash(shape: &PlanShape) -> [u8; 32] {
@@ -1167,8 +1194,10 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
         entitlement_grants,
         composites,
         change_contract,
-        windows,
-        // Not hashed; the module doc argues both, and the first one is the
+        windows: _,
+        draft_window_entries,
+        window_baseline,
+        // Not hashed; the module doc argues all three, and `evaluated_at` is the
         // difference between a pin that can ever verify and one that cannot.
         baseline: _,
         evaluated_at: _,
@@ -1245,73 +1274,89 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
         put_price_record(buf, record);
     }
 
-    let mut ordered_windows: Vec<&KeyWindows> = windows.iter().collect();
-    ordered_windows.sort_by_key(|group| group.scope_key.to_string());
-    put_u64(buf, count_of(ordered_windows.len()));
-    for group in ordered_windows {
-        put_key_windows(buf, group);
+    let mut ordered_entries: Vec<&DraftWindowEntry> = draft_window_entries.iter().collect();
+    ordered_entries.sort_unstable_by_key(|entry| entry.operation_id);
+    put_u64(buf, count_of(ordered_entries.len()));
+    for entry in ordered_entries {
+        put_draft_window_entry(buf, entry);
+    }
+
+    let mut ordered_baseline: Vec<&WindowBaseline> = window_baseline.iter().collect();
+    ordered_baseline.sort_unstable_by_key(|row| row.window_id);
+    put_u64(buf, count_of(ordered_baseline.len()));
+    for row in ordered_baseline {
+        put_window_baseline(buf, row);
     }
 }
 
-/// One canonical scope key's window set.
-///
-/// **Sorted here as well as by its producer**, which is the module doc's own
-/// discipline for `rows`: `window::group_by_key_seeded` already promises exactly
-/// these two orders — groups by the key's canonical rendering, intervals by
-/// `(effective_from, effective_to, state)` — so this changes no digest today. It
-/// is here for the day that promise is restated, and because
-/// [`PlanShape::windows`] is a public field a caller can fill in any order at
-/// all.
-///
-/// `state` is part of the within-group **order** for `group_by_key_seeded`'s
-/// reason: the two instants are not a total order over the elements, because a
-/// `scheduled` window may carry exactly the bounds of an `expired` one on the same
-/// key. It is the full four-valued state that sorts, not the narrowed token
-/// [`put_window_interval`] frames, so the order is total and deterministic — and
-/// the digest is order-free even so, since intervals that tie on their bounds
-/// frame to the same token sequence in whichever order they are visited.
-fn put_key_windows(buf: &mut Vec<u8>, group: &KeyWindows) {
-    let KeyWindows {
-        scope_key,
-        intervals,
-    } = group;
-    put_scope_key(buf, scope_key);
-    let mut ordered: Vec<&WindowInterval> = intervals.iter().collect();
-    ordered.sort_unstable_by_key(|i| (i.effective_from, i.effective_to, i.state));
-    put_u64(buf, count_of(ordered.len()));
-    for interval in ordered {
-        put_window_interval(buf, interval);
+fn put_draft_window_entry(buf: &mut Vec<u8>, entry: &DraftWindowEntry) {
+    let DraftWindowEntry {
+        operation_id,
+        action,
+        reason_code,
+    } = entry;
+    put_uuid(buf, *operation_id);
+    put_draft_window_action(buf, action);
+    put_str(buf, reason_code);
+}
+
+fn put_draft_window_action(buf: &mut Vec<u8>, action: &DraftWindowAction) {
+    match action {
+        DraftWindowAction::Create {
+            window_id,
+            price_id,
+            start,
+            effective_to,
+        } => {
+            put_str(buf, "create");
+            put_uuid(buf, *window_id);
+            put_uuid(buf, *price_id);
+            put_draft_start(buf, start);
+            put_opt_instant(buf, *effective_to);
+        }
+        DraftWindowAction::AdjustEnd {
+            window_id,
+            effective_to,
+        } => {
+            put_str(buf, "adjust_end");
+            put_uuid(buf, *window_id);
+            put_opt_instant(buf, *effective_to);
+        }
+        DraftWindowAction::Cancel { window_id } => {
+            put_str(buf, "cancel");
+            put_uuid(buf, *window_id);
+        }
     }
 }
 
-/// One interval, with its state framed through [`pin_window_state`] rather than
-/// verbatim — the module doc's narrowing, and the only place in this encoder where
-/// the bytes are not the value.
-fn put_window_interval(buf: &mut Vec<u8>, interval: &WindowInterval) {
-    let WindowInterval {
+fn put_draft_start(buf: &mut Vec<u8>, start: &DraftStart) {
+    match start {
+        DraftStart::AtPublish => {
+            put_str(buf, "at_publish");
+            put_none(buf);
+        }
+        DraftStart::At(at) => {
+            put_str(buf, "at");
+            put_instant(buf, *at);
+        }
+    }
+}
+
+fn put_window_baseline(buf: &mut Vec<u8>, row: &WindowBaseline) {
+    let WindowBaseline {
+        window_id,
+        price_id,
+        mutation_seq,
         effective_from,
         effective_to,
-        state,
-    } = interval;
+        cancelled,
+    } = row;
+    put_uuid(buf, *window_id);
+    put_uuid(buf, *price_id);
+    put_u64(buf, *mutation_seq);
     put_instant(buf, *effective_from);
     put_opt_instant(buf, *effective_to);
-    put_str(buf, pin_window_state(*state));
-}
-
-/// The two-token reading of a window state: clock-driven or cancelled.
-///
-/// **Exhaustive on purpose**, with no wildcard arm: a fifth window state would
-/// have to be classified here, and a `_ =>` would classify it silently — as
-/// `live`, which is the direction that hides a mutation from a reviewer. The
-/// classification is the argument in the module doc, not a formatting choice, so
-/// the compiler is what asks the next author for it.
-const fn pin_window_state(state: WindowState) -> &'static str {
-    match state {
-        WindowState::Scheduled | WindowState::Active | WindowState::Expired => {
-            PIN_WINDOW_STATE_LIVE
-        }
-        WindowState::Cancelled => PIN_WINDOW_STATE_CANCELLED,
-    }
+    put_bool(buf, *cancelled);
 }
 
 /// The custom interval **rides the variant**, so the token alone would collapse
@@ -1707,10 +1752,9 @@ fn put_threshold_entry(buf: &mut Vec<u8>, entry: &ThresholdEntry) {
 
 /// One basis, framed as its tag and then its value.
 ///
-/// **Exhaustive on purpose**, with no wildcard arm and for [`pin_window_state`]'s
-/// reason: a third basis would have to be framed here, and a `_ =>` would frame it
-/// as one of these two — which is a threshold a reviewer signed off in one unit
-/// applying as another.
+/// **Exhaustive on purpose**, with no wildcard arm: a third basis would have to be
+/// framed here, and a `_ =>` would frame it as one of these two — which is a
+/// threshold a reviewer signed off in one unit applying as another.
 fn put_threshold_basis(buf: &mut Vec<u8>, basis: ThresholdBasis) {
     match basis {
         ThresholdBasis::Absolute { minor } => {

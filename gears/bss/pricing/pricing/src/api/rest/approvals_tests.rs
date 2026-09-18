@@ -9,6 +9,7 @@ use super::{
     report_region_grant_transport,
 };
 use crate::domain::approval::content_hash;
+use crate::domain::draft_window::{DraftStart, DraftWindowAction, DraftWindowEntry};
 use crate::domain::instant::utc_ymd_hms;
 use crate::domain::materiality::delta::MoveScale;
 use crate::domain::materiality::triggers::Trigger;
@@ -18,30 +19,12 @@ use crate::domain::plan_shape::{BillingCycle, PlanShape};
 use crate::domain::ports::metrics::{
     AlarmSeverity, CurrencyBindingCase, PreviewFailClosed, PricingAlarm, PricingMetricsPort,
 };
-use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
-};
-use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
+use crate::domain::scope_key::PlanId;
 use crate::infra::approval::RegionGrant;
 use time::OffsetDateTime;
 
 fn instant(day: u32) -> OffsetDateTime {
     utc_ymd_hms(2099, 8, day, 0, 0, 0)
-}
-
-/// The scope key the window group below is filed under.
-fn scope_key() -> ScopeKey {
-    ScopeKey::new(
-        PlanId::new(Uuid::from_u128(0x9_1a4)),
-        CurrencyCode::new("EUR").expect("three letters"),
-        Region::new("eu").expect("a non-blank region"),
-        PhaseId::new(Uuid::from_u128(0xf1)),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
-    )
-    .expect("all_subscriptions pairs with cohort none")
 }
 
 fn shape() -> PlanShape {
@@ -53,13 +36,15 @@ fn shape() -> PlanShape {
     shape.sku_id = Uuid::from_u128(0x5_c1);
     shape.plan_tier = Some("gold".to_owned());
     shape.billing_cycle = Some(BillingCycle::Recurring);
-    shape.windows = vec![KeyWindows {
-        scope_key: scope_key(),
-        intervals: vec![WindowInterval::new(
-            instant(4),
-            Some(instant(11)),
-            WindowState::Scheduled,
-        )],
+    shape.draft_window_entries = vec![DraftWindowEntry {
+        operation_id: Uuid::from_u128(0xd01),
+        action: DraftWindowAction::Create {
+            window_id: Uuid::from_u128(0xd01),
+            price_id: Uuid::from_u128(0xb001),
+            start: DraftStart::AtPublish,
+            effective_to: Some(instant(11)),
+        },
+        reason_code: "launch".to_owned(),
     }];
     shape
 }
@@ -93,21 +78,29 @@ fn the_pinned_content_carries_the_plan_the_pin_was_taken_over() {
     assert_eq!(view.sku_id, shape.sku_id);
     assert_eq!(view.plan_tier, shape.plan_tier);
     assert_eq!(view.billing_cycle.as_deref(), Some("recurring"));
-    // And `windows` is the same case with the operands swapped: the pin framed it
-    // from the day it existed and this view did not, so two subjects differing
-    // only in their intervals rendered identically here and hashed apart. D-61's
-    // invariant is that the document is the content the hash covers.
-    assert_eq!(view.windows.len(), 1, "one key, one entry");
-    assert_eq!(view.windows[0].scope_key.region, "eu");
-    assert_eq!(view.windows[0].scope_key.charge_kind, "recurring");
-    assert_eq!(
-        view.windows[0].intervals.len(),
-        1,
-        "one interval, from the shape's own group"
-    );
-    assert_eq!(view.windows[0].intervals[0].effective_from, instant(4));
-    assert_eq!(view.windows[0].intervals[0].effective_to, Some(instant(11)));
-    assert_eq!(view.windows[0].intervals[0].state, "scheduled");
+    // And the draft-window intention is the same case with the operands swapped:
+    // the pin frames authoring inputs and this view must show them, so two
+    // subjects differing only in a reason code cannot render identically here
+    // while hashing apart.
+    assert_eq!(view.draft_window_entries.len(), 1, "one hashed intention");
+    assert_eq!(view.draft_window_entries[0].reason_code, "launch");
+    match &view.draft_window_entries[0].action {
+        crate::api::rest::approvals::PinnedDraftWindowActionView::Create {
+            start,
+            effective_to,
+            ..
+        } => {
+            assert!(matches!(
+                start,
+                crate::api::rest::windows::DraftStartView::AtPublish
+            ));
+            assert_eq!(*effective_to, Some(instant(11)));
+        }
+        crate::api::rest::approvals::PinnedDraftWindowActionView::AdjustEnd { .. }
+        | crate::api::rest::approvals::PinnedDraftWindowActionView::Cancel { .. } => {
+            panic!("the fixture authors a create")
+        }
+    }
 }
 
 /// The document a reviewer reads and the digest they sign move **together**.
@@ -121,12 +114,14 @@ fn the_pinned_content_carries_the_plan_the_pin_was_taken_over() {
 fn a_window_the_pin_moves_for_moves_the_document_too() {
     let pinned = shape();
     let mut moved = shape();
-    moved.windows[0].intervals[0].effective_to = Some(instant(12));
+    moved.draft_window_entries[0]
+        .reason_code
+        .push_str(" reviewed change");
 
     assert_ne!(
         content_hash(&pinned),
         content_hash(&moved),
-        "the interval is content: the pin has to move"
+        "the reason is content: the pin has to move"
     );
     assert_ne!(
         serde_json::to_value(PinnedContentView::from(&pinned)).expect("render the pinned document"),

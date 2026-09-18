@@ -1,7 +1,7 @@
 //! `CoverageChecker` — the publish-time coverage rules of
 //! `design/07-pricewindow-linkage.md` §3: `inst-wc-required`, `inst-wc-perkey`,
-//! `inst-fg-detect` and `inst-wc-availability`, and the three §5 codes they
-//! raise.
+//! `inst-fg-detect`, `inst-fg-trailing` and `inst-wc-availability`, and the four
+//! §5 codes they raise.
 //!
 //! Where [`crate::domain::window`] is about **one** window — its state machine,
 //! its interval, the four refusals a single mutation can provoke — this module is
@@ -111,15 +111,15 @@ pub const WINDOW_GAP: &str = "WINDOW_GAP";
 /// siblings are the two constants above it, both of which are also per-key
 /// coverage rules.
 ///
-/// # But unlike those two it is a [`DomainError`] and not a report violation
+/// # Two raising contexts, one code
 ///
-/// [`WINDOW_COVERAGE_MISSING`] and [`WINDOW_GAP`] are raised by registered publish
-/// rules, which fan out through the validation envelope. This one is raised
-/// **inside a window-mutating transaction** (`inst-fg-when`), where there is no
-/// report to fan out into and the mutation must simply not happen — so it travels
-/// as [`DomainError::WindowTrailingVoid`](crate::domain::error::DomainError::WindowTrailingVoid),
-/// exactly as the phase's design asked. One code, one wire rendering, two raising
-/// contexts is fine; two codes for one rule would not be.
+/// Window-mutating transactions still raise
+/// [`DomainError::WindowTrailingVoid`](crate::domain::error::DomainError::WindowTrailingVoid)
+/// (`inst-fg-when`). Publish validation raises the same code as a
+/// [`Violation`](crate::domain::validation::Violation) inside the envelope: D-374
+/// requires a finite ultimate coverage end on a required key to block submit and
+/// commit, with **no** subscriber-exemption provider. One code, one wire
+/// rendering.
 pub const WINDOW_TRAILING_VOID: &str = "WINDOW_TRAILING_VOID";
 
 /// A plan's purchasability interval reaches outside a billable key's coverage
@@ -429,27 +429,6 @@ pub fn check(billable: &[ScopeKey], windows: &[KeyWindows]) -> CoverageReport {
     CoverageReport { keys }
 }
 
-/// Will this publish open the key's coverage itself (D-332)?
-///
-/// True when every billable row on the key is a **draft** this publish is about
-/// to freeze. A key that already carries a published row is not this case: its
-/// coverage existed and stopped, which is a gap an author has to answer for.
-#[must_use]
-pub fn opened_by_this_publish(shape: &PlanShape, key: &ScopeKey) -> bool {
-    let mut seen = false;
-    for record in shape
-        .rows
-        .iter()
-        .filter(|record| is_billable(record) && &record.scope_key == key)
-    {
-        if record.lifecycle_state != crate::domain::lifecycle::LifecycleState::Draft {
-            return false;
-        }
-        seen = true;
-    }
-    seen
-}
-
 /// The billable keys of a publish subject, in `rows` order and de-duplicated.
 ///
 /// Two rows legitimately share a key — a `superseded` predecessor and its
@@ -610,7 +589,7 @@ fn cycle_length(frequency: Frequency) -> time::Duration {
 // The registered rules
 // ---------------------------------------------------------------------------
 
-/// Slice 7's own publish pipeline: the three coverage rules, in reading order.
+/// Slice 7's own publish pipeline: the four coverage rules, in reading order.
 ///
 /// **Its own pipeline rather than an arm of `foundation_plan_rules`**, whose doc
 /// says the next *Foundation* rule registers beside it "instead of being appended
@@ -619,25 +598,22 @@ fn cycle_length(frequency: Frequency) -> time::Duration {
 /// `crate::domain::publish::rules::GrandfatherHorizonOnItsClass` already argues
 /// for a slice rule that cannot live in the slice-2 set.
 ///
-/// **Three rules and not one**, which is a testability decision rather than a
-/// structural one: each of the three instructions is then removable on its own,
+/// **Four rules and not one**, which is a testability decision rather than a
+/// structural one: each of the four instructions is then removable on its own,
 /// and "exactly one test reddens" stays legible for each. One rule owning all
 /// three would have one registration and three reasons to redden.
 ///
-/// The cost is that each rule builds the report for itself — three passes over a
+/// The cost is that each rule builds the report for itself — four passes over a
 /// key set bounded by the §14 per-plan soft cap. A shared build would need a
 /// carrier between rules, which [`ValidationPipeline`](crate::domain::validation::ValidationPipeline)
 /// deliberately does not have: a rule that carried results between runs is the
 /// one thing §4.2's twice-run clause cannot survive.
 #[must_use]
-pub fn window_coverage_rules(
-    opens_initial_coverage: bool,
-) -> crate::domain::validation::ValidationPipeline<PlanShape> {
+pub fn window_coverage_rules() -> crate::domain::validation::ValidationPipeline<PlanShape> {
     crate::domain::validation::ValidationPipeline::new()
-        .with_rule(Box::new(KeyCoverageRequired {
-            opens_initial_coverage,
-        }))
+        .with_rule(Box::new(KeyCoverageRequired))
         .with_rule(Box::new(NoInteriorGap))
+        .with_rule(Box::new(NoTrailingVoid))
         .with_rule(Box::new(AvailabilityInsideCoverage))
 }
 
@@ -653,18 +629,13 @@ pub fn window_coverage_rules(
 /// Reported **once per uncovered key**, naming the key, because scheduling one
 /// window is the edit — not once per row, which would name the same remedy twice
 /// for two rows sharing a key.
+///
+/// D-374 withdrew D-332's publish-written exemption: a brand-new draft key with
+/// no authored covering intention fails the same way a published key that lost
+/// coverage does.
 #[domain_model]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct KeyCoverageRequired {
-    /// **Will the caller open coverage for a key it is freezing?** (D-332)
-    ///
-    /// Carried on the rule because `ValidationRule::evaluate` is handed the
-    /// subject and nothing else, and this is not a fact about the subject: a
-    /// draft row's key looks identical whether a publish is about to cover it or
-    /// a repricing apply is merely re-judging it. False is the fail-closed
-    /// default — a caller that says nothing gets the refusal.
-    pub opens_initial_coverage: bool,
-}
+pub struct KeyCoverageRequired;
 
 impl ValidationRule<PlanShape> for KeyCoverageRequired {
     /// `inst-wc-required` — **and this rule holds `inst-wc-perkey` too**, which
@@ -675,8 +646,8 @@ impl ValidationRule<PlanShape> for KeyCoverageRequired {
     /// excluded — is a property of the same walk over the same key set, so
     /// splitting it out would be two rules asking one question twice. It is
     /// recorded here rather than left to be noticed because a census written over
-    /// this set from the design document's ids would look for four names, find
-    /// three, and be "fixed" by weakening it against a pipeline that is correct.
+    /// this set from the design document's ids would look for five names, find
+    /// four, and be "fixed" by weakening it against a pipeline that is correct.
     /// The register of what this module holds is `coverage.rs`'s module doc; the
     /// register of what it *names* is `rule_names()`, and they are one entry
     /// apart on purpose.
@@ -688,20 +659,6 @@ impl ValidationRule<PlanShape> for KeyCoverageRequired {
         let coverage = check_shape(subject);
         for entry in coverage.required() {
             if entry.has_live_window() {
-                continue;
-            }
-            // **D-332: a key whose rows this publish is freezing for the first
-            // time is covered by the publish itself**, which opens a window on
-            // it at the commit instant. Skipped here so the *submit* arm agrees
-            // with the commit — the rules run on both, and a refusal at submit
-            // would mean the unit never opens and the commit is never reached.
-            //
-            // The rule keeps its whole force on every other key: one carrying a
-            // row that is **already published** has had coverage and lost it,
-            // which is an author's mistake and not an artefact of ordering.
-            // That distinction is the reason this is a filter on the key's rows
-            // rather than a flag on the publish.
-            if self.opens_initial_coverage && opened_by_this_publish(subject, entry.scope_key()) {
                 continue;
             }
             report.violate(
@@ -747,6 +704,44 @@ impl ValidationRule<PlanShape> for NoInteriorGap {
                          the ones inside this interval",
                         entry.scope_key(),
                         format_rfc3339(start),
+                        format_rfc3339(end)
+                    ),
+                );
+            }
+        }
+    }
+}
+
+/// A required key's ultimate coverage end must not be finite (`inst-fg-trailing`).
+///
+/// D-374: there is **no** subscriber-exemption provider. A finite window plus an
+/// adjacent open-ended successor can pass; a brand-new draft does not exempt the
+/// future obligation. Uncovered keys are skipped — `WINDOW_COVERAGE_MISSING`
+/// already names them.
+#[domain_model]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoTrailingVoid;
+
+impl ValidationRule<PlanShape> for NoTrailingVoid {
+    fn name(&self) -> &'static str {
+        "inst-fg-trailing"
+    }
+
+    fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
+        let coverage = check_shape(subject);
+        for entry in coverage.required() {
+            if !entry.has_live_window() {
+                continue;
+            }
+            if let CoverageEnd::Ends(end) = entry.coverage_end() {
+                report.violate(
+                    WINDOW_TRAILING_VOID,
+                    entry.scope_key().to_string(),
+                    format!(
+                        "scope key {} coverage ends at {}: a required key must remain covered \
+                         with no finite tail, and there is no subscriber exemption. Schedule an \
+                         open-ended successor or extend the last window",
+                        entry.scope_key(),
                         format_rfc3339(end)
                     ),
                 );

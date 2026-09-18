@@ -17,10 +17,13 @@
 use uuid::Uuid;
 
 use super::{
-    AVAILABILITY_OUTSIDE_COVERAGE, WINDOW_COVERAGE_MISSING, WINDOW_GAP, check_shape,
-    longest_cycle_sold, window_coverage_rules,
+    AVAILABILITY_OUTSIDE_COVERAGE, WINDOW_COVERAGE_MISSING, WINDOW_GAP, WINDOW_TRAILING_VOID,
+    check_shape, longest_cycle_sold, window_coverage_rules,
 };
 use crate::domain::concurrency::RowVersion;
+use crate::domain::draft_window::{
+    DraftStart, DraftWindowAction, DraftWindowEntry, compose_windows,
+};
 use crate::domain::instant::format_rfc3339;
 use crate::domain::instant::utc_ymd_hms;
 use crate::domain::lifecycle::LifecycleState;
@@ -34,7 +37,10 @@ use crate::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use crate::domain::validation::ValidationReport;
-use crate::domain::window::{CoverageEnd, KeyWindows, WindowInterval, WindowState};
+use crate::domain::window::{
+    CoverageEnd, KeyWindows, WindowInterval, WindowState, group_by_key_seeded,
+};
+use std::collections::BTreeMap;
 use time::OffsetDateTime;
 
 // ---------------------------------------------------------------------------
@@ -130,11 +136,7 @@ fn one_row_plan(windows: Vec<KeyWindows>) -> PlanShape {
 }
 
 fn verdict(shape: &PlanShape) -> ValidationReport {
-    // `false`: the contract of every caller except the publish. D-332 lets the
-    // publish skip a key it is about to cover, and this module's subject is the
-    // rule itself — so the default is what it runs under, and the exemption has
-    // its own case below.
-    window_coverage_rules(false).run(shape)
+    window_coverage_rules().run(shape)
 }
 
 fn codes(report: &ValidationReport) -> Vec<String> {
@@ -151,27 +153,16 @@ fn codes(report: &ValidationReport) -> Vec<String> {
 
 /// `inst-wc-required`: a billable row whose key has no active/scheduled window
 /// fails publish. No silent fallback — Tariffs step 2 would resolve nothing.
-#[test]
-/// **D-332's exemption, and the two halves that make it narrow.**
 ///
-/// The publish opens coverage for a key it is freezing, so the rule must not
-/// refuse that key — while a key carrying a row that is **already published**
-/// has had coverage and lost it, which is an author's mistake and stays refused.
-/// Both are asserted from one fixture pair, because the exemption is only sound
-/// if the second half holds: a rule that skipped every uncovered key would pass
-/// this test's first assertion and delete itself.
-fn the_publish_exemption_reaches_a_draft_key_and_not_a_published_one() {
-    // `one_row_plan` with no windows: one billable key, uncovered.
+/// D-374 withdrew D-332's publish-written exemption: a brand-new draft key with
+/// no authored covering intention fails the same way a published key that lost
+/// coverage does. The publish path does not open a window of its own.
+#[test]
+fn a_brand_new_key_with_no_window_fails_even_on_the_publish_path() {
     let draft = one_row_plan(vec![]);
     assert!(
-        window_coverage_rules(true).run(&draft).is_publishable(),
-        "the publish opens this key's first window itself, so refusing it would \
-         refuse a plan the same call is about to cover"
-    );
-    assert!(
-        !window_coverage_rules(false).run(&draft).is_publishable(),
-        "and every other caller of this set - the repricing apply's aggregate \
-         pass - opens nothing, so there the same key must still fail"
+        !window_coverage_rules().run(&draft).is_publishable(),
+        "a brand-new key still needs an authored window; publish does not write one"
     );
 
     let mut lost = one_row_plan(vec![]);
@@ -179,10 +170,53 @@ fn the_publish_exemption_reaches_a_draft_key_and_not_a_published_one() {
         row.lifecycle_state = LifecycleState::Published;
     }
     assert!(
-        !window_coverage_rules(true).run(&lost).is_publishable(),
-        "a key whose row is already frozen had coverage and lost it: the \
-         exemption must not reach it even from the publish"
+        !window_coverage_rules().run(&lost).is_publishable(),
+        "a key whose row is already frozen had coverage and lost it"
     );
+}
+
+/// An explicit `AtPublish` intention, composed into the validation plane, is
+/// live coverage: `inst-wc-required` is satisfied without an implicit window.
+#[test]
+fn an_explicit_at_publish_intention_supplies_coverage() {
+    let mut shape = one_row_plan(Vec::new());
+    assert_eq!(
+        codes(&verdict(&shape)),
+        vec![WINDOW_COVERAGE_MISSING.to_owned()]
+    );
+
+    let price_id = shape.rows[0].price_id;
+    let scope_key = shape.rows[0].scope_key.clone();
+    let keys = BTreeMap::from([(price_id, scope_key.clone())]);
+    let entries = vec![DraftWindowEntry {
+        operation_id: Uuid::from_u128(0xd01),
+        action: DraftWindowAction::Create {
+            window_id: Uuid::from_u128(0xd02),
+            price_id,
+            start: DraftStart::AtPublish,
+            effective_to: None,
+        },
+        reason_code: "launch".to_owned(),
+    }];
+    let proposed = compose_windows(&[], &entries, &keys, shape.evaluated_at)
+        .expect("an open-ended at_publish create composes");
+    shape.draft_window_entries = entries;
+    shape.windows = group_by_key_seeded(
+        [scope_key],
+        proposed.into_iter().map(|window| {
+            (
+                window.key,
+                WindowInterval::new(
+                    window.effective_from,
+                    window.effective_to,
+                    WindowState::Scheduled,
+                ),
+            )
+        }),
+    );
+
+    assert_eq!(codes(&verdict(&shape)), Vec::<String>::new());
+    assert!(verdict(&shape).is_publishable());
 }
 
 #[test]
@@ -363,7 +397,7 @@ fn an_interior_gap_between_two_scheduled_windows_is_named() {
         scope_key.clone(),
         vec![
             interval(1, Some(3), WindowState::Scheduled),
-            interval(6, Some(9), WindowState::Scheduled),
+            interval(6, None, WindowState::Scheduled),
         ],
     )]);
 
@@ -410,7 +444,7 @@ fn adjacent_windows_are_not_a_gap() {
         scope_key.clone(),
         vec![
             interval(1, Some(3), WindowState::Active),
-            interval(3, Some(9), WindowState::Scheduled),
+            interval(3, None, WindowState::Scheduled),
         ],
     )]);
 
@@ -438,7 +472,7 @@ fn adjacency_is_not_a_gap_when_a_later_window_follows() {
         vec![
             interval(1, Some(3), WindowState::Active),
             interval(3, Some(5), WindowState::Scheduled),
-            interval(8, Some(10), WindowState::Scheduled),
+            interval(8, None, WindowState::Scheduled),
         ],
     )]);
 
@@ -467,7 +501,7 @@ fn overlapping_windows_do_not_open_a_gap_at_the_inner_end() {
         vec![
             interval(1, Some(5), WindowState::Active),
             interval(3, Some(7), WindowState::Scheduled),
-            interval(8, Some(10), WindowState::Scheduled),
+            interval(8, None, WindowState::Scheduled),
         ],
     )]);
 
@@ -519,13 +553,10 @@ fn an_open_ended_window_leaves_no_interior_gap() {
     );
 }
 
-/// A void with **no successor** is not an interior gap, and this rule says
-/// nothing about it.
+/// A void with **no successor** is not an interior gap.
 ///
-/// `inst-fg-trailing`'s whole reason for existing (D-62). The assertion is that
-/// the walk is silent, not that it is wrong: a coverage end in the future with
-/// nothing after it is exactly the shape a cancelled successor leaves, and the
-/// rule that refuses it needs W6's cycle and the D-79 subscriber lane.
+/// `inst-fg-trailing` names that finite tail (D-374). There is no subscriber
+/// exemption: a required key with live coverage that ends is unpublishable.
 #[test]
 fn a_void_with_no_successor_is_not_an_interior_gap() {
     let scope_key = key(ChargeKind::Recurring, "EUR", "eu");
@@ -542,10 +573,27 @@ fn a_void_with_no_successor_is_not_an_interior_gap() {
         Vec::new(),
         "there is no successor for the interior check to compare against"
     );
-    assert!(
-        verdict(&shape).is_publishable(),
-        "the key holds a live window, so inst-wc-required is satisfied too"
+    assert_eq!(
+        codes(&verdict(&shape)),
+        vec![WINDOW_TRAILING_VOID.to_owned()],
+        "a finite tail with no open-ended successor is the trailing void, not an interior gap"
     );
+}
+
+/// A finite window plus an adjacent open-ended successor covers the key forever.
+#[test]
+fn a_finite_window_with_an_adjacent_open_ended_successor_publishes() {
+    let scope_key = key(ChargeKind::Recurring, "EUR", "eu");
+    let shape = one_row_plan(vec![group(
+        scope_key,
+        vec![
+            interval(1, Some(3), WindowState::Active),
+            interval(3, None, WindowState::Scheduled),
+        ],
+    )]);
+
+    assert_eq!(codes(&verdict(&shape)), Vec::<String>::new());
+    assert!(verdict(&shape).is_publishable());
 }
 
 /// A gap between an expired window and a later scheduled one is **not** reported.
@@ -560,7 +608,7 @@ fn a_void_behind_an_expired_window_is_not_an_interior_gap() {
         scope_key.clone(),
         vec![
             interval(1, Some(2), WindowState::Expired),
-            interval(6, Some(9), WindowState::Scheduled),
+            interval(6, None, WindowState::Scheduled),
         ],
     )]);
 
@@ -588,7 +636,7 @@ fn a_gap_on_a_key_no_candidate_row_holds_is_still_named() {
             other.clone(),
             vec![
                 interval(1, Some(3), WindowState::Scheduled),
-                interval(6, Some(9), WindowState::Scheduled),
+                interval(6, None, WindowState::Scheduled),
             ],
         ),
     ]);
@@ -607,7 +655,7 @@ fn every_interior_gap_on_a_key_is_named_in_order() {
         vec![
             interval(1, Some(2), WindowState::Active),
             interval(4, Some(5), WindowState::Scheduled),
-            interval(7, Some(8), WindowState::Scheduled),
+            interval(7, None, WindowState::Scheduled),
         ],
     )]);
 
@@ -640,10 +688,13 @@ fn an_available_to_past_the_last_window_fails_publish() {
     let report = verdict(&shape);
     assert_eq!(
         codes(&report),
-        vec![AVAILABILITY_OUTSIDE_COVERAGE.to_owned()]
+        vec![
+            WINDOW_TRAILING_VOID.to_owned(),
+            AVAILABILITY_OUTSIDE_COVERAGE.to_owned()
+        ]
     );
-    assert_eq!(report.violations[0].subject, scope_key.to_string());
-    assert!(report.violations[0].detail.contains(&format_rfc3339(at(9))));
+    assert_eq!(report.violations[1].subject, scope_key.to_string());
+    assert!(report.violations[1].detail.contains(&format_rfc3339(at(9))));
 }
 
 /// The same bound inside coverage publishes — the world that makes the refusal
@@ -653,14 +704,18 @@ fn an_available_to_inside_coverage_publishes() {
     let scope_key = key(ChargeKind::Recurring, "EUR", "eu");
     let mut shape = one_row_plan(vec![group(
         scope_key,
-        vec![interval(1, Some(9), WindowState::Scheduled)],
+        vec![
+            interval(1, Some(9), WindowState::Scheduled),
+            interval(9, None, WindowState::Scheduled),
+        ],
     )]);
     shape.available_from = Some(at(2));
     shape.available_to = Some(at(9));
 
     assert!(
         verdict(&shape).is_publishable(),
-        "availableTo == the coverage end is inside coverage: both ends are exclusive"
+        "availableTo == the first window's exclusive end is inside coverage once an \
+         open-ended successor continues past it"
     );
 }
 
@@ -670,7 +725,10 @@ fn an_available_from_before_all_coverage_fails_publish() {
     let scope_key = key(ChargeKind::Recurring, "EUR", "eu");
     let mut shape = one_row_plan(vec![group(
         scope_key.clone(),
-        vec![interval(5, Some(9), WindowState::Scheduled)],
+        vec![
+            interval(5, Some(9), WindowState::Scheduled),
+            interval(9, None, WindowState::Scheduled),
+        ],
     )]);
     shape.available_from = Some(at(2));
     shape.available_to = Some(at(9));
@@ -759,7 +817,7 @@ fn a_plan_with_no_availability_bounds_is_not_judged_by_the_availability_rule() {
         // Coverage starts a day in and ends: an unset `availableFrom` would fail
         // every containment test if the rule read it as "purchasable from
         // forever".
-        vec![interval(5, Some(9), WindowState::Scheduled)],
+        vec![interval(5, None, WindowState::Scheduled)],
     )]);
 
     assert!(verdict(&shape).is_publishable());
@@ -790,9 +848,12 @@ fn one_component_key_short_of_the_availability_bound_blocks_the_plan() {
     let report = verdict(&shape);
     assert_eq!(
         codes(&report),
-        vec![AVAILABILITY_OUTSIDE_COVERAGE.to_owned()]
+        vec![
+            WINDOW_TRAILING_VOID.to_owned(),
+            AVAILABILITY_OUTSIDE_COVERAGE.to_owned()
+        ]
     );
-    assert_eq!(report.violations[0].subject, usage.to_string());
+    assert_eq!(report.violations[1].subject, usage.to_string());
 }
 
 // ---------------------------------------------------------------------------

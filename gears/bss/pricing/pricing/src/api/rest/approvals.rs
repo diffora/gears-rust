@@ -25,17 +25,18 @@
 //!
 //! The rendering is the **authoring plane's own** — [`PlanPhaseView`],
 //! [`AddonRuleView`], [`FrequencyView`],
-//! [`PriceRowView`], [`ScopeKeyView`] — plus [`WindowIntervalView`], which is
-//! `GET …/coverage`'s, so a reviewer reads the change set in the same shape the
-//! author wrote it and the operator inspects it. A second rendering of one fact is
-//! a second answer to it.
+//! [`PriceRowView`], [`ScopeKeyView`] — plus the hashed draft-window
+//! operations and captured baseline, so a reviewer reads the change set in the
+//! same shape the author wrote it. A second rendering of one fact is a second
+//! answer to it.
 //!
 //! [`PinnedContentView`] carries exactly the fields the pin hashes and no
-//! others. `evaluated_at` and `baseline` are outside the digest
-//! (`domain::approval::content_pin`'s module doc argues both), so putting them
-//! here would show a reviewer content their signature does not cover. **The
-//! conversion is an exhaustive destructure** and that is what keeps the sentence
-//! true: under dot-access `PlanShape::windows` walks straight past it into the pin.
+//! others. `evaluated_at`, `baseline` and the composed `windows` plane are
+//! outside the digest (`domain::approval::content_pin`'s module doc argues all
+//! three), so putting them here would show a reviewer content their signature
+//! does not cover. **The conversion is an exhaustive destructure** and that is
+//! what keeps the sentence true: under dot-access a hashed authoring field
+//! walks straight past it into the pin.
 //!
 //! # The three decisions declare no precondition header, and that is decided
 //!
@@ -89,9 +90,9 @@ use crate::api::rest::error::authz_error_to_canonical;
 use crate::api::rest::odata_list::{map_odata_page_err, reject_non_odata_list_params};
 use crate::api::rest::plans::{AddonRuleView, FrequencyView, PeriodFloorCapView, PlanPhaseView};
 use crate::api::rest::preconditions;
-use crate::api::rest::prices::{PriceRowView, ScopeKeyView};
+use crate::api::rest::prices::PriceRowView;
 use crate::api::rest::state::GovernanceState;
-use crate::api::rest::windows::WindowIntervalView;
+use crate::api::rest::windows::DraftStartView;
 use crate::domain::instant::rfc3339;
 use std::collections::BTreeMap;
 use time::OffsetDateTime;
@@ -100,13 +101,15 @@ use crate::domain::approval::{ApprovalState, DecisionBy, WithdrawAuthority};
 use crate::domain::audit::AuditSubjectKind;
 use crate::domain::bulk::BulkState;
 use crate::domain::contracts::{EntitlementGrants, GrantSet, PlanChangeContract};
+use crate::domain::draft_window::{
+    DraftStart, DraftWindowAction, DraftWindowEntry, WindowBaseline,
+};
 use crate::domain::error::DomainError;
 use crate::domain::materiality::triggers::Trigger;
 use crate::domain::materiality::{
     MaterialityReason, MaterialityVerdict, ThresholdBasis, ThresholdEntry, ThresholdVersion,
 };
 use crate::domain::plan_shape::{CompositeMeter, PlanShape};
-use crate::domain::window::KeyWindows;
 use crate::infra::approval::{ApprovalDetail, DecideRequest, PinnedSubject, RegionGrant};
 use crate::infra::approval_participants::ParticipantName;
 use crate::infra::storage::repo::approval_repo::ApprovalRecord;
@@ -649,49 +652,137 @@ pub struct PinnedContentView {
     /// a price row, a period floor changes what a subscriber pays without
     /// appearing as a line on the invoice that would explain it.
     pub period_floor_caps: Vec<PeriodFloorCapView>,
-    /// The window plane the pin covers, one entry per canonical scope key.
+    /// The draft-window operations the pin covers (D-374).
     ///
-    /// Hashed here, for the reason
-    /// `sku_id` is: a field inside the digest and outside this document is a field
-    /// a reviewer is told `content_matches_pin: false` about while looking at a
-    /// page that does not contain it. Two plans differing **only** in their window
-    /// intervals rendered byte-identical here and hashed differently.
-    pub windows: Vec<PinnedWindowsView>,
+    /// Shown because they are hashed: operation ids, the literal `at_publish`
+    /// start, ends and reasons. The composed, clock-resolved plane is not.
+    pub draft_window_entries: Vec<PinnedDraftWindowView>,
+    /// The captured live-window references the pin covers (D-374).
+    ///
+    /// Identities, price ids, operator `mutation_seq`, intervals and the
+    /// cancelled marker. Clock-derived active/expired state is not a field of
+    /// the baseline and is not shown here.
+    pub window_baseline: Vec<PinnedWindowBaselineView>,
 }
 
-/// One canonical scope key's window set, as the pinned document renders it.
-///
-/// The interval rendering is [`WindowIntervalView`] — `GET …/coverage`'s own, not
-/// a second spelling of it — and the key is [`ScopeKeyView`], the authoring
-/// plane's, which is what [`PriceRowView`] shows a reviewer a few lines above. A
-/// second rendering of one fact is a second answer to it.
-///
-/// What it does **not** carry is a coverage end or a gap list: those are *derived*
-/// from the intervals, the pin frames the intervals, and a document showing a
-/// reviewer a derivation their signature does not cover is the failure this whole
-/// view exists to avoid. `GET …/coverage` is where the derived answers live.
+/// One hashed draft-window operation, as the pinned document renders it.
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(response)]
-pub struct PinnedWindowsView {
-    /// The ten axes the windows are filed under.
-    pub scope_key: ScopeKeyView,
-    /// The key's intervals, in the order the pin frames them.
-    pub intervals: Vec<WindowIntervalView>,
+pub struct PinnedDraftWindowView {
+    /// Stable operation identity.
+    pub operation_id: Uuid,
+    /// The mutation this operation authors.
+    pub action: PinnedDraftWindowActionView,
+    /// Operator reason; an edit here moves the pin.
+    pub reason_code: String,
 }
 
-impl From<&KeyWindows> for PinnedWindowsView {
-    fn from(group: &KeyWindows) -> Self {
-        let KeyWindows {
-            scope_key,
-            intervals,
-        } = group;
+/// The hashed action of one draft-window operation.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+#[serde(tag = "kind")]
+pub enum PinnedDraftWindowActionView {
+    /// Create a window, possibly with a symbolic start.
+    Create {
+        window_id: Uuid,
+        price_id: Uuid,
+        start: DraftStartView,
+        #[serde(default, with = "rfc3339::option")]
+        effective_to: Option<OffsetDateTime>,
+    },
+    /// Shorten or open the end of a captured baseline window.
+    AdjustEnd {
+        window_id: Uuid,
+        #[serde(default, with = "rfc3339::option")]
+        effective_to: Option<OffsetDateTime>,
+    },
+    /// Cancel a captured baseline window.
+    Cancel { window_id: Uuid },
+}
+
+/// One hashed live-window baseline row.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct PinnedWindowBaselineView {
+    pub window_id: Uuid,
+    pub price_id: Uuid,
+    pub mutation_seq: u64,
+    #[serde(with = "rfc3339")]
+    pub effective_from: OffsetDateTime,
+    #[serde(default, with = "rfc3339::option")]
+    pub effective_to: Option<OffsetDateTime>,
+    pub cancelled: bool,
+}
+
+impl From<&DraftStart> for DraftStartView {
+    fn from(start: &DraftStart) -> Self {
+        match *start {
+            DraftStart::AtPublish => Self::AtPublish,
+            DraftStart::At(at) => Self::At { at },
+        }
+    }
+}
+
+impl From<&DraftWindowAction> for PinnedDraftWindowActionView {
+    fn from(action: &DraftWindowAction) -> Self {
+        match action {
+            DraftWindowAction::Create {
+                window_id,
+                price_id,
+                start,
+                effective_to,
+            } => Self::Create {
+                window_id: *window_id,
+                price_id: *price_id,
+                start: DraftStartView::from(start),
+                effective_to: *effective_to,
+            },
+            DraftWindowAction::AdjustEnd {
+                window_id,
+                effective_to,
+            } => Self::AdjustEnd {
+                window_id: *window_id,
+                effective_to: *effective_to,
+            },
+            DraftWindowAction::Cancel { window_id } => Self::Cancel {
+                window_id: *window_id,
+            },
+        }
+    }
+}
+
+impl From<&DraftWindowEntry> for PinnedDraftWindowView {
+    fn from(entry: &DraftWindowEntry) -> Self {
+        let DraftWindowEntry {
+            operation_id,
+            action,
+            reason_code,
+        } = entry;
         Self {
-            // `None` for the unit: D-372 took `meter` off the key and this view's
-            // subject is a key's windows, with no row to read the derived column
-            // from. The key's own ninth axis is the SKU, which this DTO does not
-            // carry yet.
-            scope_key: ScopeKeyView::of(scope_key, None),
-            intervals: intervals.iter().map(WindowIntervalView::from).collect(),
+            operation_id: *operation_id,
+            action: PinnedDraftWindowActionView::from(action),
+            reason_code: reason_code.clone(),
+        }
+    }
+}
+
+impl From<&WindowBaseline> for PinnedWindowBaselineView {
+    fn from(row: &WindowBaseline) -> Self {
+        let WindowBaseline {
+            window_id,
+            price_id,
+            mutation_seq,
+            effective_from,
+            effective_to,
+            cancelled,
+        } = row;
+        Self {
+            window_id: *window_id,
+            price_id: *price_id,
+            mutation_seq: *mutation_seq,
+            effective_from: *effective_from,
+            effective_to: *effective_to,
+            cancelled: *cancelled,
         }
     }
 }
@@ -733,10 +824,12 @@ impl From<&PlanShape> for PinnedContentView {
             entitlement_grants,
             composites,
             change_contract,
-            windows,
+            windows: _,
+            draft_window_entries,
+            window_baseline,
             // Outside the digest, so outside this document: showing a reviewer
             // content their signature does not cover is what the pin's module doc
-            // argues against for both of these.
+            // argues against for these three.
             baseline: _,
             evaluated_at: _,
         } = shape;
@@ -774,7 +867,14 @@ impl From<&PlanShape> for PinnedContentView {
                 .cloned()
                 .map(PeriodFloorCapView::from)
                 .collect(),
-            windows: windows.iter().map(PinnedWindowsView::from).collect(),
+            draft_window_entries: draft_window_entries
+                .iter()
+                .map(PinnedDraftWindowView::from)
+                .collect(),
+            window_baseline: window_baseline
+                .iter()
+                .map(PinnedWindowBaselineView::from)
+                .collect(),
         }
     }
 }

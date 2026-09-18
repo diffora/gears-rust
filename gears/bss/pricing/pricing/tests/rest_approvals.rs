@@ -1505,3 +1505,93 @@ async fn catalog_authority_compiled_to_another_tenant_does_not_authorize_a_withd
         "a refused withdraw leaves the unit open and its scope keys held"
     );
 }
+
+/// Deleting an approved covering intention moves the pin. The unit stays
+/// approved; `content_matches_pin` is the flag that says the document is no
+/// longer what was signed.
+#[tokio::test]
+async fn deleting_an_approved_intention_breaks_the_pin() {
+    let h = Harness::new().await;
+    let plan_id = Uuid::now_v7();
+    let seeded = seed_publishable_plan(&h, plan_id).await;
+    let etag = h.plan_etag(plan_id).await;
+    let created = h
+        .allowed_as(SUBMITTER)
+        .send(with_headers(
+            "POST",
+            &format!("/bss-pricing/v1/prices/{}/windows", seeded.price_id),
+            Some(serde_json::json!({
+                "context": {"kind": "draft", "plan_revision": 0},
+                "start": {"kind": "at_publish"},
+                "reason_code": "launch"
+            })),
+            &[
+                ("if-match", etag.as_str()),
+                ("idempotency-key", "rest-approvals-at-publish"),
+            ],
+        ))
+        .await;
+    assert_eq!(created.status(), axum::http::StatusCode::CREATED);
+    let created_body = body_json(created).await;
+    let operation_id = created_body["operation_id"]
+        .as_str()
+        .expect("create names its operation")
+        .to_owned();
+
+    let submitted = h
+        .allowed_as(SUBMITTER)
+        .send(with_headers(
+            "POST",
+            &format!("/bss-pricing/v1/plans/{plan_id}/publish"),
+            None,
+            &[("if-match", &h.plan_etag(plan_id).await)],
+        ))
+        .await;
+    assert_eq!(submitted.status(), axum::http::StatusCode::ACCEPTED);
+    let approval_id = approval_rows(&h).await[0].approval_id;
+
+    let decided = h
+        .allowed_as(APPROVER)
+        .send(with_headers(
+            "POST",
+            &decision_path(approval_id, "approve"),
+            None,
+            &[],
+        ))
+        .await;
+    assert_eq!(decided.status(), axum::http::StatusCode::OK);
+
+    let removed = h
+        .allowed_as(SUBMITTER)
+        .send(with_headers(
+            "DELETE",
+            &format!(
+                "/bss-pricing/v1/plans/{plan_id}/draft-window-operations/{operation_id}?plan_revision=0"
+            ),
+            None,
+            &[
+                ("if-match", &h.plan_etag(plan_id).await),
+                ("idempotency-key", "rest-approvals-drop-intention"),
+            ],
+        ))
+        .await;
+    assert_eq!(removed.status(), axum::http::StatusCode::OK);
+
+    let body = body_json(
+        h.allowed_as(APPROVER)
+            .send(with_headers(
+                "GET",
+                &format!("/bss-pricing/v1/approvals/{approval_id}"),
+                None,
+                &[],
+            ))
+            .await,
+    )
+    .await;
+
+    assert_eq!(body["approval"]["state"], "approved");
+    assert_eq!(
+        body["content_matches_pin"], false,
+        "dropping the covering intention the reviewer signed is a content change"
+    );
+}

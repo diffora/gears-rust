@@ -41,8 +41,11 @@
 //! and the two answers are free to disagree the day the publish unit changes
 //! what it feeds in.
 //!
-//! Draft-window intentions compose separately via [`crate::domain::draft_window`]
-//! (D-374); this type gains revision-owned window fields in a later task.
+//! Draft-window intentions compose via [`crate::domain::draft_window`] (D-374).
+//! [`PlanShape::draft_window_entries`] and [`PlanShape::window_baseline`] are the
+//! authoring inputs the approval pin hashes; [`PlanShape::windows`] is the
+//! composed validation plane `infra::publish::assemble` fills from
+//! [`crate::domain::draft_window::compose_windows`].
 //!
 //! ## `windows` is the plane the coverage rules range over, and it is
 //! deliberately unfiltered
@@ -129,6 +132,7 @@ use toolkit_macros::domain_model;
 use uuid::Uuid;
 
 use crate::domain::contracts::{EntitlementGrants, PlanChangeContract};
+use crate::domain::draft_window::{DraftWindowEntry, WindowBaseline};
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::scope_key::{ChargeKind, PhaseId, PlanId, Region};
@@ -821,7 +825,8 @@ pub struct PlanShape {
     /// The plan's window plane, one entry per canonical scope key; see the
     /// module doc for why it is here and why the read behind it is unfiltered.
     ///
-    /// Built by `infra::publish::assemble` through
+    /// Built by `infra::publish::assemble` from
+    /// [`compose_windows`](crate::domain::draft_window::compose_windows) through
     /// [`group_by_key_seeded`](crate::domain::window::group_by_key_seeded),
     /// seeded with [`PlanShape::rows`]' keys — so a candidate key with no window
     /// at all is present with an empty interval list rather than absent, and
@@ -829,7 +834,19 @@ pub struct PlanShape {
     /// Keys the candidate set does not mention are here too when a window sits
     /// on one: a `superseded` predecessor's shortened interval is part of its
     /// key's coverage, and that key's successor is a candidate row.
+    ///
+    /// This is the **composed** validation plane. Symbolic `at_publish` starts
+    /// are resolved at `evaluated_at`; the approval pin hashes the authoring
+    /// inputs below rather than these resolved intervals.
     pub windows: Vec<KeyWindows>,
+    /// Revision-owned draft-window operations (D-374). Hashed by the content
+    /// pin, including the literal `at_publish` start — not the resolved instant.
+    pub draft_window_entries: Vec<DraftWindowEntry>,
+    /// Captured live-window references for this revision (D-374). Hashed by the
+    /// content pin: identities, price ids, operator `mutation_seq`, intervals
+    /// and the cancelled marker. Clock-derived active/expired state is not a
+    /// field of this type.
+    pub window_baseline: Vec<WindowBaseline>,
     /// The plan's current published revision, when it has one. `None` is a
     /// first publish; see [`PublishedBaseline`].
     pub baseline: Option<PublishedBaseline>,
@@ -869,6 +886,8 @@ impl PlanShape {
             composites: Vec::new(),
             change_contract: PlanChangeContract::default(),
             windows: Vec::new(),
+            draft_window_entries: Vec::new(),
+            window_baseline: Vec::new(),
             baseline: None,
             evaluated_at,
         }
