@@ -371,6 +371,12 @@ impl From<DomainError> for CanonicalError {
             D::WindowStartElapsed(detail) => {
                 aborted(detail, crate::domain::window::WINDOW_START_ELAPSED)
             }
+            D::DraftWindowContextChanged(detail) => {
+                aborted(detail, crate::domain::window::DRAFT_WINDOW_CONTEXT_CHANGED)
+            }
+            D::WindowBaselineChanged(detail) => {
+                aborted(detail, crate::domain::window::WINDOW_BASELINE_CHANGED)
+            }
             // `inst-su-instant`'s two floors. An architectural 422 (§5) rendered
             // 400, and a precondition failure rather than a conflict for the reason
             // its neighbour above is one — the clock moved, not the world. It is

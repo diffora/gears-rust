@@ -105,7 +105,8 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::taxonomies::{VOCABULARY, VOCABULARY_VALUE, VOCABULARY_VALUES};
     use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
     use bss_pricing::api::rest::windows::{
-        PLAN_COVERAGE, PLAN_SELLABILITY, PRICE_WINDOW, PRICE_WINDOWS, PRICE_WINDOWS_LIST,
+        DRAFT_WINDOW_BASELINE_REFRESH, DRAFT_WINDOW_OPERATION, PLAN_COVERAGE, PLAN_SELLABILITY,
+        PRICE_WINDOW, PRICE_WINDOWS, PRICE_WINDOWS_LIST,
     };
     vec![
         ("GET", FRONTIER),
@@ -245,6 +246,8 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         ("GET", PRICE_WINDOWS_LIST),
         ("PATCH", PRICE_WINDOW),
         ("DELETE", PRICE_WINDOW),
+        ("DELETE", DRAFT_WINDOW_OPERATION),
+        ("POST", DRAFT_WINDOW_BASELINE_REFRESH),
         // Slice 7's interactive repricing: the supersession unit (D-88), one route in a
         // module of its own. It answers 202 on both arms and takes **no** idempotency
         // header, which is S5's own column for it — the act's identity is the key — so
@@ -847,11 +850,9 @@ async fn an_unconfigured_gear_reserves_its_prefix_and_answers_404_under_it() {
 /// carries no version column for an `If-Match` to name, and declaring one would
 /// tell a generated client to send a precondition the server cannot test.
 ///
-/// **`DELETE /price-windows/{windowId}` is deliberately not here either**, and it is
-/// the one absence a test enforces rather than a doc asserting: §5's Idempotency cell
-/// for that surface is **empty**, so it declares neither header, and
-/// `the_window_cancel_declares_no_precondition_header` is what keeps a later group
-/// from adding one to be helpful.
+/// **`DELETE /price-windows/{windowId}` is here because the draft door reads both
+/// headers.** Live cancel still sends neither; the declarations are optional so a
+/// generated client can omit them on `?context=live` and must send them on draft.
 ///
 /// **The roster is no longer the census, and that is the 2026-08-17 repair.** It
 /// carried twelve rows against fourteen routes that read an `If-Match`, and its
@@ -881,7 +882,9 @@ fn if_match_routes() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::tax_display_policy::TAX_DISPLAY_POLICY;
     use bss_pricing::api::rest::taxonomies::VOCABULARY_VALUE;
     use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
-    use bss_pricing::api::rest::windows::{PRICE_WINDOW, PRICE_WINDOWS};
+    use bss_pricing::api::rest::windows::{
+        DRAFT_WINDOW_BASELINE_REFRESH, DRAFT_WINDOW_OPERATION, PRICE_WINDOW, PRICE_WINDOWS,
+    };
     vec![
         ("PATCH", PLAN),
         ("POST", PLAN_ABANDON),
@@ -893,8 +896,14 @@ fn if_match_routes() -> Vec<(&'static str, &'static str)> {
         ("POST", PLAN_PUBLISH),
         // Slice 7's window `PATCH`: §5 gives it an **ETag**, and on a window route the
         // tag is the window row's own version (D-141's rule for a price row, applied
-        // to the surface that addresses one window by id).
+        // to the surface that addresses one window by id). The draft door asserts the
+        // **plan** tag on the same path.
         ("PATCH", PRICE_WINDOW),
+        // Draft cancel and the two recovery routes assert the plan tag. Live cancel
+        // still sends none; the header is optional on DELETE `/price-windows/{windowId}`.
+        ("DELETE", PRICE_WINDOW),
+        ("DELETE", DRAFT_WINDOW_OPERATION),
+        ("POST", DRAFT_WINDOW_BASELINE_REFRESH),
         // Slice 7's horizon door: §5 gives it an **ETag** too, and on a price route
         // that is the row's own version (D-141). It is the one entry here whose tag
         // is **frozen** — a published row's version never moves, so this
@@ -984,11 +993,17 @@ fn idempotency_key_routes() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::overlays::PRICE_OVERLAYS;
     use bss_pricing::api::rest::plans::{PLAN_CLONE, PLANS};
     use bss_pricing::api::rest::prices::PLAN_PRICES;
-    use bss_pricing::api::rest::windows::PRICE_WINDOWS;
+    use bss_pricing::api::rest::windows::{
+        DRAFT_WINDOW_BASELINE_REFRESH, DRAFT_WINDOW_OPERATION, PRICE_WINDOW, PRICE_WINDOWS,
+    };
     vec![
         ("POST", PLANS),
         ("POST", PLAN_PRICES),
         ("POST", PRICE_WINDOWS),
+        ("PATCH", PRICE_WINDOW),
+        ("DELETE", PRICE_WINDOW),
+        ("DELETE", DRAFT_WINDOW_OPERATION),
+        ("POST", DRAFT_WINDOW_BASELINE_REFRESH),
         ("POST", PLAN_CLONE),
         ("POST", BUNDLES),
         ("POST", PRICE_OVERLAYS),
@@ -1080,7 +1095,9 @@ fn query_reading_routes() -> Vec<QueryReadingRoute> {
     use bss_pricing::api::rest::plans::PLANS;
     use bss_pricing::api::rest::preview::PLAN_PREVIEW;
     use bss_pricing::api::rest::prices::PLAN_PRICES;
-    use bss_pricing::api::rest::windows::{PLAN_SELLABILITY, PRICE_WINDOWS_LIST};
+    use bss_pricing::api::rest::windows::{
+        DRAFT_WINDOW_OPERATION, PLAN_COVERAGE, PLAN_SELLABILITY, PRICE_WINDOW, PRICE_WINDOWS_LIST,
+    };
     vec![
         // D-125's cursor walks. Collection GETs take `Query<HashMap>` plus the
         // OData extractor; named filter keys are retired. `limit` and `cursor`
@@ -1140,7 +1157,15 @@ fn query_reading_routes() -> Vec<QueryReadingRoute> {
             "GET",
             PRICE_WINDOWS_LIST,
             "HashMap",
-            vec!["$filter", "$orderby", "cursor", "limit"],
+            vec![
+                "$filter",
+                "$orderby",
+                "cursor",
+                "limit",
+                "plan_id",
+                "plan_revision",
+                "view",
+            ],
         ),
         (
             "GET",
@@ -1169,6 +1194,24 @@ fn query_reading_routes() -> Vec<QueryReadingRoute> {
             PLAN_SELLABILITY,
             "SellabilityQuery",
             vec!["at", "currency", "region"],
+        ),
+        (
+            "GET",
+            PLAN_COVERAGE,
+            "CoverageQuery",
+            vec!["plan_revision", "view"],
+        ),
+        (
+            "DELETE",
+            PRICE_WINDOW,
+            "WindowDeleteQuery",
+            vec!["context", "plan_id", "plan_revision"],
+        ),
+        (
+            "DELETE",
+            DRAFT_WINDOW_OPERATION,
+            "DraftOperationQuery",
+            vec!["plan_revision"],
         ),
         (
             "GET",
@@ -2027,7 +2070,6 @@ fn routes_asserting_no_precondition() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::rounding_policies::ROUNDING_POLICY_VALUES;
     use bss_pricing::api::rest::supersessions::PLAN_SUPERSESSIONS;
     use bss_pricing::api::rest::taxonomies::VOCABULARY_VALUES;
-    use bss_pricing::api::rest::windows::PRICE_WINDOW;
     vec![
         // D-353: the per-value taxonomy `POST`. The value is the resource's natural
         // key, so the create is idempotent on it without a header — a repeat with
@@ -2049,9 +2091,6 @@ fn routes_asserting_no_precondition() -> Vec<(&'static str, &'static str)> {
         ("POST", APPROVAL_APPROVE),
         ("POST", APPROVAL_REJECT),
         ("POST", APPROVAL_WITHDRAW),
-        // §5's Idempotency cell is empty and
-        // `the_window_cancel_declares_no_precondition_header` is the guard.
-        ("DELETE", PRICE_WINDOW),
         // Its key is `run_id` **inside the body**, so it reads no
         // header and is invisible to the header census by design;
         // `the_repricing_run_declares_no_precondition_header` guards that.
@@ -2314,27 +2353,23 @@ async fn a_read_route_declares_no_precondition_header() {
 }
 
 #[tokio::test]
-async fn the_window_cancel_declares_no_precondition_header() {
-    // §5's Idempotency cell for `DELETE /price-windows/{windowId}` is **empty**, and
-    // `api::rest::windows` reports that as the design set's call rather than an
-    // omission to improve on — the refusal of a second cancellation
-    // (`WINDOW_NOT_CANCELLABLE`) is what stands in for a key.
-    //
-    // A **mutating** route with no declared precondition is otherwise exactly the hole
-    // `every_mutating_route_declares_its_precondition_header` closes, so the absence
-    // needs its own assertion or it is indistinguishable from a forgotten
-    // declaration. Add a header here to be helpful and this reddens.
+async fn the_window_cancel_declares_optional_precondition_headers() {
+    // Live cancel still sends neither header; the draft door reads both. The
+    // declarations are optional so a generated live client can omit them, and
+    // present so a generated draft client can send them.
     let openapi = registered_operations().await;
 
-    let headers = declared_headers(
+    let mut headers = declared_headers(
         &openapi,
         "DELETE",
         bss_pricing::api::rest::windows::PRICE_WINDOW,
     );
+    headers.sort();
 
-    assert!(
-        headers.is_empty(),
-        "the cancel takes neither an If-Match nor an Idempotency-Key: {headers:?}"
+    assert_eq!(
+        headers,
+        ["idempotency-key".to_owned(), "if-match".to_owned()],
+        "draft cancel reads both headers; live cancel still omits them"
     );
 }
 

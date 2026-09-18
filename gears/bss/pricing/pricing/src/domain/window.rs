@@ -136,6 +136,14 @@ pub const WINDOW_START_IN_PAST: &str = "WINDOW_START_IN_PAST";
 /// intention that was valid at submit but elapsed before commit.
 pub const WINDOW_START_ELAPSED: &str = "WINDOW_START_ELAPSED";
 
+/// Working or draft authoring named a revision that is no longer an open draft
+/// (D-374, 409).
+pub const DRAFT_WINDOW_CONTEXT_CHANGED: &str = "DRAFT_WINDOW_CONTEXT_CHANGED";
+
+/// A staged adjust or cancel no longer matches the captured live baseline
+/// (D-374, 409).
+pub const WINDOW_BASELINE_CHANGED: &str = "WINDOW_BASELINE_CHANGED";
+
 /// A draft price row cannot be discarded while a window stands on it.
 ///
 /// **The design set declares no code for this refusal and the entry is owed** —

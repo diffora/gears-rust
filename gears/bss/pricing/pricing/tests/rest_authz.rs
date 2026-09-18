@@ -65,7 +65,8 @@ use bss_pricing::api::rest::tax_display_policy::TAX_DISPLAY_POLICY;
 use bss_pricing::api::rest::taxonomies::{VOCABULARY, VOCABULARY_VALUE, VOCABULARY_VALUES};
 use bss_pricing::api::rest::threshold_policy::APPROVAL_THRESHOLD_POLICY;
 use bss_pricing::api::rest::windows::{
-    PLAN_COVERAGE, PLAN_SELLABILITY, PRICE_WINDOW, PRICE_WINDOWS, PRICE_WINDOWS_LIST,
+    DRAFT_WINDOW_BASELINE_REFRESH, DRAFT_WINDOW_OPERATION, PLAN_COVERAGE, PLAN_SELLABILITY,
+    PRICE_WINDOW, PRICE_WINDOWS, PRICE_WINDOWS_LIST,
 };
 use bss_pricing::authz::{actions, labels};
 use bss_pricing::domain::approval::ApprovalState;
@@ -426,6 +427,20 @@ fn census() -> Vec<Route> {
         Route {
             method: "DELETE",
             path: PRICE_WINDOW,
+            resource_type: labels::PLAN,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        Route {
+            method: "DELETE",
+            path: DRAFT_WINDOW_OPERATION,
+            resource_type: labels::PLAN,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        Route {
+            method: "POST",
+            path: DRAFT_WINDOW_BASELINE_REFRESH,
             resource_type: labels::PLAN,
             action: actions::WRITE,
             mutating: true,
@@ -1233,6 +1248,10 @@ fn drive(
     // what the exception does and does not permit.
     let path = if route.path == PLAN_SELLABILITY {
         format!("{path}?at=2099-01-01T00:00:00Z&currency=EUR&region=EU")
+    } else if route.method == "DELETE" && route.path == PRICE_WINDOW {
+        format!("{path}?context=live")
+    } else if route.method == "DELETE" && route.path == DRAFT_WINDOW_OPERATION {
+        format!("{path}?plan_revision=0")
     } else {
         path
     };
@@ -1381,6 +1400,7 @@ fn body_for(
         // gate this suite is about.
         ("POST", PRICE_WINDOWS) => (
             Some(serde_json::json!({
+                "context": {"kind": "live"},
                 "effective_from": "2099-01-01T00:00:00Z",
                 "reason_code": "authz-probe"
             })),
@@ -1422,13 +1442,26 @@ fn body_for(
             })),
             vec![],
         ),
-        // The membership `PATCH` takes the same well-formed body and the same
-        // wrong-but-well-formed tag as the price-window `PATCH` — merged into
-        // one arm on `clippy::match_same_arms`'s say-so, not a coincidence
-        // worth two spellings.
-        ("PATCH", PRICE_WINDOW | CUSTOMER_GROUP_MEMBER) => (
+        // The membership `PATCH` takes a well-formed body and a wrong-but-well-formed
+        // tag. The window `PATCH` is the same shape plus the mandatory live `context`.
+        ("PATCH", PRICE_WINDOW) => (
+            Some(serde_json::json!({
+                "context": {"kind": "live"},
+                "effective_to": "2099-06-01T00:00:00Z"
+            })),
+            vec![("if-match", "\"0\"")],
+        ),
+        ("PATCH", CUSTOMER_GROUP_MEMBER) => (
             Some(serde_json::json!({ "effective_to": "2099-06-01T00:00:00Z" })),
             vec![("if-match", "\"0\"")],
+        ),
+        ("DELETE", DRAFT_WINDOW_OPERATION) => (
+            None,
+            vec![("if-match", version), ("idempotency-key", key)],
+        ),
+        ("POST", DRAFT_WINDOW_BASELINE_REFRESH) => (
+            Some(serde_json::json!({ "plan_revision": 0 })),
+            vec![("if-match", version), ("idempotency-key", key)],
         ),
         // The reason is mandatory on a reject (`inst-as-reject`), and a reject
         // without one is refused **after** the gate — but a body that carries it
@@ -3555,6 +3588,10 @@ const BY_ID_WRITES_THIS_FIXTURE_CANNOT_STAGE: &[(&str, &str)] = &[
     ("POST", PRICE_WINDOWS),
     ("PATCH", PRICE_WINDOW),
     ("DELETE", PRICE_WINDOW),
+    // `{operationId}` is filled with the bulk-import placeholder; this fixture
+    // seeds no draft-window operation, so the owner's undo 404s. Paid in
+    // `rest_draft_windows`.
+    ("DELETE", DRAFT_WINDOW_OPERATION),
     ("POST", PLAN_SUPERSESSIONS),
     ("POST", PLAN_CUTOVERS),
     ("PATCH", PRICE_GRANDFATHER_UNTIL),

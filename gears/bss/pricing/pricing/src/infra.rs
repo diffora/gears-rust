@@ -10,6 +10,7 @@ pub mod change_graph;
 pub mod clone;
 pub mod currency_binding;
 pub mod cutover;
+pub mod draft_window;
 pub mod error_mapping;
 pub mod fixture_gate;
 pub mod grandfather;

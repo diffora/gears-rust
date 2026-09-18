@@ -41,7 +41,7 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-use toolkit_odata::PageInfo;
+use toolkit_odata::{CursorV1, PageInfo, SortDir};
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
@@ -333,6 +333,61 @@ pub fn decode_id_and_revision(raw: &str) -> Result<(Uuid, u64), DomainError> {
     // Fixes the total length as well as the last field.
     let revision: [u8; 8] = revision.try_into().map_err(|_| refuse())?;
     Ok((Uuid::from_bytes(*id), u64::from_be_bytes(revision)))
+}
+
+const WORKING_CURSOR_NS: &str = "working";
+
+/// Bind a Working-view page token to the named parent revision.
+///
+/// Encoded as a platform `CursorV1` so the shared `OData` extractor accepts it;
+/// the `f` field carries the parent identity the next request must repeat.
+///
+/// # Errors
+/// [`DomainError::Internal`] when the token will not encode, which is this
+/// crate's rendering rather than a caller mistake.
+pub fn encode_working_window(
+    plan_id: Uuid,
+    revision: u64,
+    after: Uuid,
+) -> Result<String, DomainError> {
+    let cursor = CursorV1 {
+        k: vec!["window_id".to_owned()],
+        o: SortDir::Asc,
+        s: after.to_string(),
+        f: Some(format!("{WORKING_CURSOR_NS}:{plan_id}:{revision}")),
+        d: "fwd".to_owned(),
+    };
+    cursor.encode().map_err(|e| {
+        DomainError::Internal(format!("cannot encode a working-window cursor: {e}"))
+    })
+}
+
+/// The window id a Working cursor resumes after, once it matches `plan_id` and
+/// `revision`.
+///
+/// # Errors
+/// [`DomainError::InvalidRequest`] when the token belongs to a different parent
+/// or does not name a window id.
+pub fn working_cursor_after(
+    cursor: &CursorV1,
+    plan_id: Uuid,
+    revision: u64,
+) -> Result<Uuid, DomainError> {
+    let expected = format!("{WORKING_CURSOR_NS}:{plan_id}:{revision}");
+    if cursor.f.as_deref() != Some(expected.as_str()) {
+        return Err(DomainError::InvalidRequest(
+            "cursor: the token is bound to a different working view (plan and revision); \
+             pass back a `next_cursor` from the same `view=working` listing, or omit it"
+                .to_owned(),
+        ));
+    }
+    cursor.s.parse::<Uuid>().map_err(|_| {
+        DomainError::InvalidRequest(
+            "cursor: the token is not one this surface issued; \
+             pass back a `next_cursor` verbatim, or omit it to start from the beginning"
+                .to_owned(),
+        )
+    })
 }
 
 /// The page envelope's cursor block for an [`encode_id_and_revision`] walk.

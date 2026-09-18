@@ -173,6 +173,17 @@ pub(crate) fn if_match_param(subject: &str) -> ParamSpec {
     }
 }
 
+/// Optional `If-Match`: required on the draft door, ignored on the live one.
+pub(crate) fn if_match_param_optional(subject: &str) -> ParamSpec {
+    let mut spec = if_match_param(subject);
+    spec.required = false;
+    spec.description = Some(format!(
+        "Optional optimistic-concurrency precondition. Required when `context.kind` is `draft` \
+         (the plan revision's entity tag). Ignored when `context.kind` is `live`. {subject}"
+    ));
+    spec
+}
+
 /// The `Idempotency-Key` header, likewise.
 pub(crate) fn idempotency_key_param() -> ParamSpec {
     ParamSpec {
@@ -194,6 +205,18 @@ pub(crate) fn idempotency_key_param() -> ParamSpec {
         // here has.
         array: false,
     }
+}
+
+/// Optional `Idempotency-Key`: required on the draft door, unused on live cancel.
+pub(crate) fn idempotency_key_param_optional() -> ParamSpec {
+    let mut spec = idempotency_key_param();
+    spec.required = false;
+    spec.description = Some(
+        "Optional client idempotency key. Required when `context.kind` is `draft`. Live cancel \
+         still takes none, which is §5's empty Idempotency cell for that surface."
+            .to_owned(),
+    );
+    spec
 }
 
 // ---------------------------------------------------------------------------

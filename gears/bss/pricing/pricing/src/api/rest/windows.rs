@@ -114,12 +114,12 @@
 //! operator here, and the whole value of a remediation surface is that acting on
 //! it makes the publish pass.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::extract::{Extension, Path, Query};
 use axum::http::HeaderMap;
-use axum::http::header::ETAG;
+use axum::http::header::{ETAG, LOCATION};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router, body::Bytes, http::StatusCode};
 use bss_pricing_sdk::CatalogVersion;
@@ -130,7 +130,7 @@ use toolkit::api::odata::OData;
 use toolkit::api::operation_builder::OperationBuilderODataExt;
 use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
 use toolkit_db::secure::{AccessScope, DBRunner};
-use toolkit_odata::Page;
+use toolkit_odata::{Page, PageInfo};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
@@ -138,12 +138,19 @@ use crate::api::rest::approvals::{ApprovalView, MaterialityView};
 use crate::api::rest::auth_context::require_authenticated;
 use crate::api::rest::correlation::{CorrelationId, require_correlation};
 use crate::api::rest::error::authz_error_to_canonical;
-use crate::api::rest::odata_list::{map_odata_page_err, reject_non_odata_list_params};
-use crate::api::rest::plans::{idempotency_key_param, if_match_param};
+use crate::api::rest::cursor::{encode_working_window, working_cursor_after};
+use crate::api::rest::odata_list::map_odata_page_err;
+use crate::api::rest::plans::{
+    idempotency_key_param, idempotency_key_param_optional, if_match_param, if_match_param_optional,
+};
 use crate::api::rest::preconditions;
 use crate::api::rest::state::GovernanceState;
 use crate::domain::concurrency::RowVersion;
 use crate::domain::coverage::{self, CoverageReport, KeyCoverage};
+use crate::domain::draft_window::{
+    DraftStart, DraftWindowAction, DraftWindowEntry, DraftWindowOwner, ProposedWindow,
+    compose_windows,
+};
 use crate::domain::error::DomainError;
 use crate::domain::instant::rfc3339;
 use crate::domain::money::CurrencyCode;
@@ -152,13 +159,19 @@ use crate::domain::scope_key::{PlanId, Region};
 use crate::domain::sellability::{
     PredicateAnswer, PredicateOutcome, SellabilityFacts, SellabilitySurface,
 };
-use crate::domain::window::{CoverageEnd, WindowInterval};
+use crate::domain::window::{CoverageEnd, WindowInterval, WindowState};
+use crate::infra::draft_window::{self, DraftWindowCommand};
 use crate::infra::idempotent::{self, Guarded, GuardedRequest};
 use crate::infra::publish::CANDIDATE_ROW_STATES;
 use crate::infra::storage::repo::window_repo::WindowRecord;
-use crate::infra::storage::repo::{pin_frontier_repo, price_repo, read_model_repo, window_repo};
+use crate::infra::storage::odata_mapping::LIST_LIMIT_CFG;
+use crate::infra::storage::repo::{
+    draft_window_repo, pin_frontier_repo, price_repo, read_model_repo, window_baseline_repo,
+    window_guard_repo, window_repo,
+};
 use crate::infra::storage::repo_failure;
 use crate::infra::window::{PendingApproval, WindowMutationOutcome, WindowMutationReceipt};
+use serde::Serialize;
 use time::OffsetDateTime;
 
 /// `OpenAPI` tag applied to the window operations (DE0205 requires a tag and a
@@ -199,6 +212,14 @@ pub const PRICE_WINDOW: &str = "/bss-pricing/v1/price-windows/{windowId}";
 /// reason: DE0801 validates a literal and silently passes a `const`.
 pub const PRICE_WINDOWS_LIST: &str = "/bss-pricing/v1/price-windows";
 
+/// Undo one staged draft-window operation (D-374 recovery).
+pub const DRAFT_WINDOW_OPERATION: &str =
+    "/bss-pricing/v1/plans/{planId}/draft-window-operations/{operationId}";
+
+/// Recapture the live window baseline of an open draft (D-374 recovery).
+pub const DRAFT_WINDOW_BASELINE_REFRESH: &str =
+    "/bss-pricing/v1/plans/{planId}/draft-window-baseline/refresh";
+
 /// The sellability surface the joint gate reads (§5, `dod-sellability`).
 ///
 /// The literal is repeated in the `OperationBuilder` call for [`PLAN_COVERAGE`]'s
@@ -221,6 +242,97 @@ pub struct SellabilityQuery {
     pub currency: Option<String>,
     /// The region half of the bound market.
     pub region: Option<String>,
+}
+
+/// Door discriminator for collection and coverage reads (D-374).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct CoverageQuery {
+    /// `working` or `committed`. Absent is committed.
+    pub view: Option<String>,
+    /// Required on `view=working`.
+    pub plan_revision: Option<String>,
+}
+
+/// Query on `DELETE /price-windows/{windowId}`.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct WindowDeleteQuery {
+    /// `live` or `draft`. Required; never inferred.
+    pub context: Option<String>,
+    /// Required when `context=draft`.
+    pub plan_id: Option<String>,
+    /// Required when `context=draft`.
+    pub plan_revision: Option<String>,
+}
+
+/// Query on draft-window operation undo.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct DraftOperationQuery {
+    /// The draft revision that owns the operation.
+    pub plan_revision: Option<String>,
+}
+
+/// Explicit live-vs-draft door on window writes. Never inferred from parent state.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request, response)]
+#[serde(tag = "kind")]
+pub enum WindowWriteContext {
+    /// Published-plane mutation through [`crate::infra::window::WindowService`].
+    Live,
+    /// Revision-owned draft authoring. First draft is revision **0**.
+    Draft { plan_revision: u64 },
+}
+
+/// Tagged draft start: an exact instant or the symbolic publish instant.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request, response)]
+#[serde(tag = "kind")]
+pub enum DraftStartView {
+    /// Symbolic: resolves at submit, commit and Working reads, never stored as a stamp.
+    AtPublish,
+    /// An exact UTC instant.
+    At {
+        #[serde(with = "rfc3339")]
+        at: OffsetDateTime,
+    },
+}
+
+/// The 201 body of a draft-window create.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct DraftWindowView {
+    pub window_id: Uuid,
+    pub operation_id: Uuid,
+    pub plan_id: Uuid,
+    pub price_id: Uuid,
+    pub plan_revision: u64,
+    pub state: String,
+    pub start: DraftStartView,
+    #[serde(default, with = "rfc3339::option")]
+    pub effective_to: Option<OffsetDateTime>,
+    pub reason_code: String,
+}
+
+/// Refresh response: operations the new baseline could not carry.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(request, response)]
+pub struct RefreshBaselineRequest {
+    pub plan_revision: u64,
+}
+
+/// What a baseline refresh answers.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct RefreshBaselineView {
+    pub plan_id: Uuid,
+    pub plan_revision: u64,
+    pub discarded_operation_ids: Vec<Uuid>,
+}
+
+/// What undoing a draft operation answers.
+#[derive(Debug, Clone)]
+#[toolkit_macros::api_dto(response)]
+pub struct DraftOperationRemovedView {
+    pub operation_id: Uuid,
 }
 
 /// One canonical scope key's coverage, as the wire renders it.
@@ -357,6 +469,12 @@ pub struct WindowSummaryView {
     /// lists and then adjusts needs the precondition from the page, and a client
     /// that cannot read response headers can still submit an `If-Match`.
     pub mutation_seq: u64,
+    /// Symbolic start on a Working row; omitted on committed live windows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<DraftStartView>,
+    /// The draft operation that produced this Working row, when one exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<Uuid>,
 }
 
 impl From<&WindowRecord> for WindowSummaryView {
@@ -374,6 +492,8 @@ impl From<&WindowRecord> for WindowSummaryView {
             expired_at: record.expired_at,
             cancelled_at: record.cancelled_at,
             mutation_seq: record.mutation_seq,
+            start: None,
+            operation_id: None,
         }
     }
 }
@@ -405,13 +525,18 @@ pub struct CoverageGapView {
 #[derive(Debug, Clone)]
 #[toolkit_macros::api_dto(request, response)]
 pub struct ScheduleWindowRequest {
+    /// Live or draft door. Required; never inferred from the parent lifecycle.
+    pub context: WindowWriteContext,
     /// Inclusive start, UTC, strictly in the future (`inst-ws-future-start`,
-    /// D-63).
-    #[serde(with = "rfc3339")]
-    pub effective_from: OffsetDateTime,
+    /// D-63). Live door only.
+    #[serde(default, with = "rfc3339::option")]
+    pub effective_from: Option<OffsetDateTime>,
     /// Exclusive end, UTC; absent is open-ended.
     #[serde(default, with = "rfc3339::option")]
     pub effective_to: Option<OffsetDateTime>,
+    /// Draft start: `at` or `at_publish`. Draft door only; illegal on live.
+    #[serde(default)]
+    pub start: Option<DraftStartView>,
     /// Why the window was scheduled — free text the store keeps with the row.
     pub reason_code: String,
 }
@@ -423,8 +548,10 @@ pub struct ScheduleWindowRequest {
 /// extension rather than a shortening, so it passes the trailing-void floor by
 /// construction — a key covered forever satisfies every floor there is.
 #[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(request)]
+#[toolkit_macros::api_dto(request, response)]
 pub struct AdjustWindowRequest {
+    /// Live or draft door. Required; never inferred from the parent lifecycle.
+    pub context: WindowWriteContext,
     /// The new exclusive end, UTC; absent makes the window open-ended.
     #[serde(default, with = "rfc3339::option")]
     pub effective_to: Option<OffsetDateTime>,
@@ -721,6 +848,21 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
             "integer",
         )
         .query_param("cursor", false, "Opaque base64url pagination cursor")
+        .query_param(
+            "view",
+            false,
+            "Door discriminator: `working` or `committed`. Absent is committed.",
+        )
+        .query_param(
+            "plan_id",
+            false,
+            "Required on `view=working`. Illegal on the committed collection.",
+        )
+        .query_param(
+            "plan_revision",
+            false,
+            "Required on `view=working`. First draft is revision 0.",
+        )
         .handler(list_price_windows)
         .with_odata_filter::<WindowFilterField>()
         .with_odata_orderby::<WindowFilterField>()
@@ -732,6 +874,7 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
+        .error_409(openapi)
         .error_500(openapi)
         .error_503(openapi)
         .register(Router::new(), openapi);
@@ -755,6 +898,16 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
         .authenticated()
         .no_license_required()
         .path_param("planId", "The plan whose coverage is reported.")
+        .query_param(
+            "view",
+            false,
+            "Door discriminator: `working` or `committed`. Absent is committed.",
+        )
+        .query_param(
+            "plan_revision",
+            false,
+            "Required on `view=working`. First draft is revision 0.",
+        )
         .handler(get_plan_coverage)
         .json_response_with_schema::<PlanCoverageView>(
             openapi,
@@ -764,6 +917,7 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
         .error_400(openapi)
         .error_401(openapi)
         .error_403(openapi)
+        .error_409(openapi)
         .error_500(openapi)
         .error_503(openapi)
         .register(router, openapi);
@@ -806,6 +960,10 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
         .authenticated()
         .no_license_required()
         .path_param("priceId", "The price row the window applies to.")
+        .param(if_match_param_optional(
+            "Required when `context.kind` is `draft`: the plan revision's entity tag. Ignored on \
+             the live door.",
+        ))
         .param(idempotency_key_param())
         .json_request::<ScheduleWindowRequest>(openapi, "The interval and its reason code.")
         .handler(schedule_window)
@@ -814,6 +972,11 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
             StatusCode::ACCEPTED,
             "The window is scheduled, or a unit was opened and nothing was written; `outcome` says \
              which.",
+        )
+        .json_response_with_schema::<DraftWindowView>(
+            openapi,
+            StatusCode::CREATED,
+            "A draft-window create on an open plan revision.",
         )
         .error_400(openapi)
         .error_401(openapi)
@@ -825,6 +988,7 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
         .register(router, openapi);
 
     let router = mounted_window_mutations(router, openapi);
+    let router = mounted_draft_recovery(router, openapi);
 
     let router = OperationBuilder::get("/bss-pricing/v1/plans/{planId}/sellability")
         .operation_id("bss_pricing.get_plan_sellability")
@@ -936,21 +1100,23 @@ fn mounted_window_mutations(router: Router, openapi: &dyn OpenApiRegistry) -> Ro
         .no_license_required()
         .path_param("windowId", "The window whose end is moved.")
         .param(if_match_param(
-            "On a window route the tag is the window row's **own** version and nothing else, \
-             because the path addresses one window by id - the same rule D-141 states for a price \
-             row, and never the plan's tag. Here that version is the window's **act sequence** \
-             (D-190): the number of operator acts it has been the subject of, which the activation \
-             and expiry sweeps deliberately do not move. Copy it verbatim out of the `ETag` of the \
-             answer to the act that scheduled or last moved this window - there is no `GET` on a \
-             window, so those responses are where the tag comes from. A tag naming a sequence some \
-             other act has consumed is `STALE_VERSION` (409), naming both.",
+            "On the live door the tag is the window row's **own** act sequence (D-190). On the \
+             draft door it is the **plan** revision's entity tag (`\"<revision>-<row_version>\"`). \
+             Copy it verbatim out of the `ETag` of the last successful act. A tag naming a \
+             sequence some other act has consumed is `STALE_VERSION` (409).",
         ))
+        .param(idempotency_key_param_optional())
         .json_request::<AdjustWindowRequest>(openapi, "The new end, or nothing for open-ended.")
         .handler(adjust_window)
         .json_response_with_schema::<WindowMutationOutcomeView>(
             openapi,
             StatusCode::ACCEPTED,
             "The end moved, or a unit was opened and nothing moved; `outcome` says which.",
+        )
+        .json_response_with_schema::<DraftWindowView>(
+            openapi,
+            StatusCode::OK,
+            "A draft adjust staged on an open plan revision.",
         )
         .error_400(openapi)
         .error_401(openapi)
@@ -989,11 +1155,104 @@ fn mounted_window_mutations(router: Router, openapi: &dyn OpenApiRegistry) -> Ro
         .authenticated()
         .no_license_required()
         .path_param("windowId", "The window to cancel.")
+        .query_param("context", true, "`live` or `draft`. Required; never inferred.")
+        .query_param(
+            "plan_id",
+            false,
+            "Required when `context=draft`. The plan revision that owns the draft operation.",
+        )
+        .query_param(
+            "plan_revision",
+            false,
+            "Required when `context=draft`. First draft is revision 0.",
+        )
+        .param(if_match_param_optional(
+            "Required when `context=draft`: the plan revision's entity tag. Live cancel takes none.",
+        ))
+        .param(idempotency_key_param_optional())
         .handler(cancel_window)
         .json_response_with_schema::<WindowMutationOutcomeView>(
             openapi,
             StatusCode::ACCEPTED,
             "The window is cancelled, or a unit was opened and nothing moved; `outcome` says which.",
+        )
+        .json_response_with_schema::<DraftWindowView>(
+            openapi,
+            StatusCode::OK,
+            "A draft cancel or create-undo on an open plan revision.",
+        )
+        .error_400(openapi)
+        .error_401(openapi)
+        .error_403(openapi)
+        .error_404(openapi)
+        .error_409(openapi)
+        .error_500(openapi)
+        .error_503(openapi)
+        .register(router, openapi)
+}
+
+/// Recovery routes: undo one staged operation, or recapture the live baseline.
+fn mounted_draft_recovery(router: Router, openapi: &dyn OpenApiRegistry) -> Router {
+    let router = OperationBuilder::delete(
+        "/bss-pricing/v1/plans/{planId}/draft-window-operations/{operationId}",
+    )
+    .operation_id("bss_pricing.remove_draft_window_operation")
+    .summary("Undo one staged draft-window operation")
+    .description(
+        "Removes one draft-window operation from an open plan revision under the plan's entity \
+         tag. Gates on `plan` x `write` with `resource_id` the plan. An `Idempotency-Key` and \
+         `If-Match` are required.",
+    )
+    .tag(TAG)
+    .authenticated()
+    .no_license_required()
+    .path_param("planId", "The plan whose draft owns the operation.")
+    .path_param("operationId", "The staged operation to drop.")
+    .query_param(
+        "plan_revision",
+        true,
+        "The draft revision that owns the operation. First draft is 0.",
+    )
+    .param(if_match_param(
+        "The plan revision's entity tag (`\"<revision>-<row_version>\"`).",
+    ))
+    .param(idempotency_key_param())
+    .handler(undo_draft_window_operation)
+    .json_response_with_schema::<DraftOperationRemovedView>(
+        openapi,
+        StatusCode::OK,
+        "The operation was dropped from the draft set.",
+    )
+    .error_400(openapi)
+    .error_401(openapi)
+    .error_403(openapi)
+    .error_404(openapi)
+    .error_409(openapi)
+    .error_500(openapi)
+    .error_503(openapi)
+    .register(router, openapi);
+
+    OperationBuilder::post("/bss-pricing/v1/plans/{planId}/draft-window-baseline/refresh")
+        .operation_id("bss_pricing.refresh_draft_window_baseline")
+        .summary("Recapture the live window baseline of an open draft")
+        .description(
+            "Replaces the captured live-window baseline of an open draft and drops operations the \
+             new baseline cannot carry. Gates on `plan` x `write` with `resource_id` the plan.",
+        )
+        .tag(TAG)
+        .authenticated()
+        .no_license_required()
+        .path_param("planId", "The plan whose draft baseline is recaptured.")
+        .param(if_match_param(
+            "The plan revision's entity tag (`\"<revision>-<row_version>\"`).",
+        ))
+        .param(idempotency_key_param())
+        .json_request::<RefreshBaselineRequest>(openapi, "The draft revision to refresh.")
+        .handler(refresh_draft_window_baseline)
+        .json_response_with_schema::<RefreshBaselineView>(
+            openapi,
+            StatusCode::OK,
+            "The new baseline, naming operations the refresh discarded.",
         )
         .error_400(openapi)
         .error_401(openapi)
@@ -1115,7 +1374,7 @@ enum Lookup {
     Window(Uuid),
 }
 
-/// `POST /prices/{priceId}/windows`: schedule a window, answering 202.
+/// `POST /prices/{priceId}/windows`: live 202 or draft 201.
 async fn schedule_window(
     Extension(state): Extension<Arc<GovernanceState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
@@ -1131,88 +1390,35 @@ async fn schedule_window(
     let coarse = tenant_write_scope(&enforcer, &ctx, tenant).await?;
     let plan_id = resolve_plan(&state, &coarse, tenant, Lookup::Price(price_id)).await?;
     let scope = window_write_scope(&enforcer, &ctx, plan_id, tenant).await?;
-    // **After the gate**, `api/rest.rs`'s stated discipline. Reading the key and
-    // parsing the body first — on the argument that a caller who omitted the key
-    // should be told that rather than that a price id does not exist — is sound
-    // about the *lookup* and wrong about the *gate*: a caller with no authority on
-    // the window plane is answered 400 where the two rules written elsewhere in this
-    // layer both say 403, and the PDP is asked only on the well-formed path, so the
-    // census's recorded question sequence for the route is a claim about a subset of
-    // requests.
     let key = preconditions::idempotency_key(&headers)?;
     let request: ScheduleWindowRequest = preconditions::parse_body(&body)?;
-    let digest = preconditions::request_digest(&request)?;
-
-    let now = OffsetDateTime::now_utc();
-    let stamp = crate::api::rest::auth_context::audit_stamp(&ctx, now, correlation);
-    let windows = state.windows.clone();
-    let mutation_ctx = ctx.clone();
-    let mutation_scope = scope.clone();
-    let effective_from = request.effective_from;
-    let effective_to = request.effective_to;
-    // The third writer of `pricing_price_window.reason_code`, and guarded for the
-    // reason `cutovers` and `supersessions` are: the column is frozen by the table's
-    // append-only trigger, so a blank or unbounded value is what an auditor reads
-    // forever. A door on two of three writers is a door that reads as closed.
     crate::api::rest::require_reason_code(&request.reason_code)?;
-    let reason_code = request.reason_code.clone();
-
-    let guarded = idempotent::guarded(
-        &state.db,
-        &state.idempotency,
-        &scope,
-        GuardedRequest {
-            operation: SCHEDULE_WINDOW_OPERATION,
-            client_key: key,
-            request_hash: digest,
-            tenant_id: tenant,
-            status: StatusCode::ACCEPTED.as_u16().into(),
-            now,
-        },
-        move |txn| {
-            Box::pin(async move {
-                // Minted **inside** the guarded body, which is `plans.rs`'s and
-                // `prices.rs`'s stated rule and not a preference: an id minted outside
-                // would be a second one nobody is ever told about, since a replay does
-                // not reach this closure at all. Server-minted either way, like a price
-                // row's id and for the same reason — the surface has to name the window
-                // in its answer before the row is durable.
-                let window_id = Uuid::now_v7();
-                windows
-                    .schedule_in(
-                        txn,
-                        &mutation_ctx,
-                        &mutation_scope,
-                        tenant,
-                        price_id,
-                        window_id,
-                        effective_from,
-                        effective_to,
-                        reason_code,
-                        verdict_json,
-                        stamp,
-                    )
-                    .await
-            })
-        },
-        |outcome| body_of(&view_of(outcome)),
-    )
-    .await?;
-
-    match guarded {
-        Guarded::Performed(outcome) => Ok(answer(outcome)),
-        // The stored status and body, verbatim. **No `ETag`**, for
-        // `api::rest::prices::replayed`'s reason: the dedup row holds a status and a
-        // body and no headers, and the window's act sequence may have moved since — a
-        // tag rebuilt from a stored body would be a precondition token that looks valid
-        // and is not.
-        Guarded::Replayed { status, body } => {
-            Ok(replayed(SCHEDULE_WINDOW_OPERATION, status, &body)?)
+    match request.context.clone() {
+        WindowWriteContext::Live => {
+            schedule_live_window(state, ctx, scope, correlation, tenant, price_id, key, request)
+                .await
+        }
+        WindowWriteContext::Draft { plan_revision } => {
+            let tag = preconditions::if_match_revision(&headers)?;
+            schedule_draft_window(
+                state,
+                ctx,
+                scope,
+                correlation,
+                tenant,
+                plan_id,
+                price_id,
+                key,
+                request,
+                tag,
+                plan_revision,
+            )
+            .await
         }
     }
 }
 
-/// `PATCH /price-windows/{windowId}`: move a future end, answering 202.
+/// `PATCH /price-windows/{windowId}`: live 202 or draft 200.
 async fn adjust_window(
     Extension(state): Extension<Arc<GovernanceState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
@@ -1226,60 +1432,107 @@ async fn adjust_window(
     let correlation = require_correlation(correlation)?;
     let tenant = ctx.subject_tenant_id();
     let coarse = tenant_write_scope(&enforcer, &ctx, tenant).await?;
-    let plan_id = resolve_plan(&state, &coarse, tenant, Lookup::Window(window_id)).await?;
-    let scope = window_write_scope(&enforcer, &ctx, plan_id, tenant).await?;
-    // **After the gate**, with its thirteen sibling `If-Match` consumers rather
-    // than against them; see `schedule_window` above for the argument that moved.
-    // Required and parsed here; the comparison itself is the store's, inside the
-    // writing transaction (D-176 — a tag compared out here is a hint), where it rides
-    // the `UPDATE`'s own `WHERE` over the window's act sequence (D-191).
-    let expected = preconditions::if_match(&headers)?;
     let request: AdjustWindowRequest = preconditions::parse_body(&body)?;
-
-    let stamp =
-        crate::api::rest::auth_context::audit_stamp(&ctx, OffsetDateTime::now_utc(), correlation);
-    let outcome = state
-        .windows
-        .adjust_effective_to(
-            &ctx,
-            &scope,
-            tenant,
-            window_id,
-            request.effective_to,
-            expected.get(),
-            verdict_json,
-            stamp,
-        )
-        .await?;
-    Ok(answer(outcome))
+    match request.context.clone() {
+        WindowWriteContext::Live => {
+            let plan_id = resolve_plan(&state, &coarse, tenant, Lookup::Window(window_id)).await?;
+            let scope = window_write_scope(&enforcer, &ctx, plan_id, tenant).await?;
+            let expected = preconditions::if_match(&headers)?;
+            let stamp = crate::api::rest::auth_context::audit_stamp(
+                &ctx,
+                OffsetDateTime::now_utc(),
+                correlation,
+            );
+            let outcome = state
+                .windows
+                .adjust_effective_to(
+                    &ctx,
+                    &scope,
+                    tenant,
+                    window_id,
+                    request.effective_to,
+                    expected.get(),
+                    verdict_json,
+                    stamp,
+                )
+                .await?;
+            Ok(answer(outcome))
+        }
+        WindowWriteContext::Draft { plan_revision } => {
+            let plan_id =
+                resolve_draft_window_plan(&state, &coarse, tenant, window_id, plan_revision)
+                    .await?;
+            let scope = window_write_scope(&enforcer, &ctx, plan_id, tenant).await?;
+            let tag = preconditions::if_match_revision(&headers)?;
+            let key = preconditions::idempotency_key(&headers)?;
+            adjust_draft_window(
+                state,
+                ctx,
+                scope,
+                correlation,
+                tenant,
+                plan_id,
+                window_id,
+                key,
+                request,
+                tag,
+                plan_revision,
+            )
+            .await
+        }
+    }
 }
 
-/// `DELETE /price-windows/{windowId}`: cancel a scheduled window, answering 202.
-///
-/// **No header preconditions at all**, which is §5's Idempotency column for this
-/// surface — see the module doc for why that is reported as a divergence rather
-/// than improved on.
+/// `DELETE /price-windows/{windowId}`: live 202 or draft 200.
 async fn cancel_window(
     Extension(state): Extension<Arc<GovernanceState>>,
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
     correlation: Option<Extension<CorrelationId>>,
     Path(window_id): Path<Uuid>,
+    Query(query): Query<WindowDeleteQuery>,
+    headers: HeaderMap,
 ) -> Result<Response, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let correlation = require_correlation(correlation)?;
     let tenant = ctx.subject_tenant_id();
     let coarse = tenant_write_scope(&enforcer, &ctx, tenant).await?;
-    let plan_id = resolve_plan(&state, &coarse, tenant, Lookup::Window(window_id)).await?;
-    let scope = window_write_scope(&enforcer, &ctx, plan_id, tenant).await?;
-
-    let stamp =
-        crate::api::rest::auth_context::audit_stamp(&ctx, OffsetDateTime::now_utc(), correlation);
-    let outcome = state
-        .windows
-        .cancel(&ctx, &scope, tenant, window_id, verdict_json, stamp)
-        .await?;
-    Ok(answer(outcome))
+    match delete_context(&query)? {
+        WindowWriteContext::Live => {
+            let plan_id = resolve_plan(&state, &coarse, tenant, Lookup::Window(window_id)).await?;
+            let scope = window_write_scope(&enforcer, &ctx, plan_id, tenant).await?;
+            let stamp = crate::api::rest::auth_context::audit_stamp(
+                &ctx,
+                OffsetDateTime::now_utc(),
+                correlation,
+            );
+            let outcome = state
+                .windows
+                .cancel(&ctx, &scope, tenant, window_id, verdict_json, stamp)
+                .await?;
+            Ok(answer(outcome))
+        }
+        WindowWriteContext::Draft { plan_revision } => {
+            let plan_id = delete_draft_plan_id(&query)?;
+            let scope = window_write_scope(&enforcer, &ctx, plan_id, tenant).await?;
+            let tag = preconditions::if_match_revision(&headers)?;
+            let key = preconditions::idempotency_key(&headers)?;
+            cancel_draft_window(
+                state,
+                ctx,
+                scope,
+                correlation,
+                tenant,
+                plan_id,
+                window_id,
+                key,
+                query,
+                tag,
+                plan_revision,
+            )
+            .await
+        }
+    }
 }
 
 /// Render a window mutation's outcome, and on the committed arm emit its `ETag`.
@@ -1423,14 +1676,19 @@ async fn list_price_windows(
     OData(odata): OData,
 ) -> Result<Json<Page<WindowSummaryView>>, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
-    reject_non_odata_list_params(&extras)?;
+    reject_unknown_window_list_params(&extras)?;
+    let view = list_view(&extras)?;
+    let resource_id = match view {
+        ListView::Committed => None,
+        ListView::Working { plan_id, .. } => Some(crate::authz::ResourceRef(plan_id)),
+    };
     let scope = crate::authz::access_scope(
         &enforcer,
         &ctx,
         &crate::authz::resource_types::PLAN,
         crate::authz::actions::READ,
         /* owner_tenant_id */ None,
-        /* resource_id */ None,
+        /* resource_id */ resource_id,
     )
     .await
     .map_err(authz_error_to_canonical)?;
@@ -1438,13 +1696,33 @@ async fn list_price_windows(
     let conn = state.db.conn().map_err(|e| {
         CanonicalError::internal(format!("bss-pricing: price window listing: {e}")).create()
     })?;
-    let page = window_repo::list_odata(&conn, &scope, ctx.subject_tenant_id(), &odata)
-        .await
-        .map_err(map_odata_page_err)?;
-    Ok(Json(Page {
-        items: page.items.iter().map(WindowSummaryView::from).collect(),
-        page_info: page.page_info,
-    }))
+    match view {
+        ListView::Committed => {
+            let page = window_repo::list_odata(&conn, &scope, ctx.subject_tenant_id(), &odata)
+                .await
+                .map_err(map_odata_page_err)?;
+            Ok(Json(Page {
+                items: page.items.iter().map(WindowSummaryView::from).collect(),
+                page_info: page.page_info,
+            }))
+        }
+        ListView::Working {
+            plan_id,
+            plan_revision,
+        } => {
+            let page = list_working_windows(
+                &state,
+                &conn,
+                &scope,
+                ctx.subject_tenant_id(),
+                plan_id,
+                plan_revision,
+                &odata,
+            )
+            .await?;
+            Ok(Json(page))
+        }
+    }
 }
 
 /// `GET /plans/{planId}/coverage`: the per-key coverage report.
@@ -1462,6 +1740,7 @@ async fn get_plan_coverage(
     Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
     extension_ctx: Option<Extension<SecurityContext>>,
     Path(plan_id): Path<Uuid>,
+    Query(query): Query<CoverageQuery>,
 ) -> Result<Json<PlanCoverageView>, CanonicalError> {
     let ctx = require_authenticated(extension_ctx)?;
     let plan_id = PlanId::new(plan_id);
@@ -1481,7 +1760,12 @@ async fn get_plan_coverage(
         CanonicalError::internal(format!("bss-pricing: plan coverage: {e}")).create()
     })?;
 
-    let report = plan_coverage(&conn, &scope, tenant, plan_id).await?;
+    let report = match coverage_view(&query)? {
+        ListView::Committed => plan_coverage(&conn, &scope, tenant, plan_id).await?,
+        ListView::Working { plan_revision, .. } => {
+            working_coverage(&state, &conn, &scope, tenant, plan_id.get(), plan_revision).await?
+        }
+    };
 
     Ok(Json(PlanCoverageView {
         plan_id: plan_id.get(),
@@ -1695,4 +1979,1063 @@ async fn sellability_facts(
         return Ok(SellabilityFacts::NotAddressable { plan_id });
     };
     read_model_repo::sellability_facts(&delta).map_err(|e| CanonicalError::from(repo_failure(&e)))
+}
+
+const SCHEDULE_DRAFT_WINDOW_OPERATION: &str = "bss_pricing.schedule_draft_window";
+const ADJUST_DRAFT_WINDOW_OPERATION: &str = "bss_pricing.adjust_draft_window";
+const CANCEL_DRAFT_WINDOW_OPERATION: &str = "bss_pricing.cancel_draft_window";
+const REMOVE_DRAFT_WINDOW_OPERATION: &str = "bss_pricing.remove_draft_window_operation";
+const REFRESH_DRAFT_WINDOW_BASELINE_OPERATION: &str = "bss_pricing.refresh_draft_window_baseline";
+
+const WINDOW_LIST_EXTRA_KEYS: &[&str] = &["limit", "cursor", "view", "plan_id", "plan_revision"];
+
+enum ListView {
+    Committed,
+    Working { plan_id: Uuid, plan_revision: u64 },
+}
+
+#[derive(Serialize)]
+struct NamespacedDigest<'a, T: Serialize> {
+    context: &'a str,
+    plan_revision: Option<u64>,
+    parent: Uuid,
+    method: &'a str,
+    route: &'a str,
+    payload: &'a T,
+}
+
+struct DraftHttpOutcome {
+    status: StatusCode,
+    body: serde_json::Value,
+    plan_revision: u64,
+    row_version: u64,
+    location: Option<String>,
+}
+
+fn reject_unknown_window_list_params(
+    query: &HashMap<String, String>,
+) -> Result<(), CanonicalError> {
+    if let Some(unknown) = query
+        .keys()
+        .find(|k| !k.starts_with('$') && !WINDOW_LIST_EXTRA_KEYS.contains(&k.as_str()))
+    {
+        return Err(CanonicalError::from(DomainError::InvalidRequest(format!(
+            "unrecognized query parameter `{unknown}`; the window collection accepts OData \
+             parameters plus `limit`, `cursor`, `view`, `plan_id` and `plan_revision`"
+        ))));
+    }
+    Ok(())
+}
+
+fn parse_revision(raw: Option<&String>) -> Result<u64, DomainError> {
+    let raw = raw.ok_or_else(|| {
+        DomainError::InvalidRequest("the `plan_revision` query parameter is required".to_owned())
+    })?;
+    raw.trim().parse::<u64>().map_err(|_| {
+        DomainError::InvalidRequest(format!("plan_revision: `{raw}` is not a revision number"))
+    })
+}
+
+fn list_view(extras: &HashMap<String, String>) -> Result<ListView, DomainError> {
+    match extras.get("view").map(String::as_str).unwrap_or("committed") {
+        "committed" => {
+            if extras.contains_key("plan_id") || extras.contains_key("plan_revision") {
+                return Err(DomainError::InvalidRequest(
+                    "plan_id and plan_revision are illegal on the committed window collection; \
+                     use view=working"
+                        .to_owned(),
+                ));
+            }
+            Ok(ListView::Committed)
+        }
+        "working" => {
+            let plan_id = extras.get("plan_id").ok_or_else(|| {
+                DomainError::InvalidRequest("plan_id is required on view=working".to_owned())
+            })?;
+            let plan_id = plan_id.parse::<Uuid>().map_err(|_| {
+                DomainError::InvalidRequest(format!("plan_id: `{plan_id}` is not a UUID"))
+            })?;
+            Ok(ListView::Working {
+                plan_id,
+                plan_revision: parse_revision(extras.get("plan_revision"))?,
+            })
+        }
+        other => Err(DomainError::InvalidRequest(format!(
+            "unknown view `{other}`; use working or committed"
+        ))),
+    }
+}
+
+fn coverage_view(query: &CoverageQuery) -> Result<ListView, DomainError> {
+    match query.view.as_deref().unwrap_or("committed") {
+        "committed" => Ok(ListView::Committed),
+        "working" => Ok(ListView::Working {
+            plan_id: Uuid::nil(),
+            plan_revision: parse_revision(query.plan_revision.as_ref())?,
+        }),
+        other => Err(DomainError::InvalidRequest(format!(
+            "unknown view `{other}`; use working or committed"
+        ))),
+    }
+}
+
+fn delete_context(query: &WindowDeleteQuery) -> Result<WindowWriteContext, DomainError> {
+    match query.context.as_deref() {
+        None => Err(DomainError::InvalidRequest(
+            "the `context` query parameter is required; live vs draft is never inferred".to_owned(),
+        )),
+        Some("live") => {
+            if query.plan_id.is_some() || query.plan_revision.is_some() {
+                return Err(DomainError::InvalidRequest(
+                    "plan_id and plan_revision are illegal when context=live".to_owned(),
+                ));
+            }
+            Ok(WindowWriteContext::Live)
+        }
+        Some("draft") => Ok(WindowWriteContext::Draft {
+            plan_revision: parse_revision(query.plan_revision.as_ref())?,
+        }),
+        Some(other) => Err(DomainError::InvalidRequest(format!(
+            "context: `{other}` is not `live` or `draft`"
+        ))),
+    }
+}
+
+fn delete_draft_plan_id(query: &WindowDeleteQuery) -> Result<PlanId, DomainError> {
+    let raw = query.plan_id.as_deref().ok_or_else(|| {
+        DomainError::InvalidRequest("plan_id is required when context=draft".to_owned())
+    })?;
+    let plan_id = raw.parse::<Uuid>().map_err(|_| {
+        DomainError::InvalidRequest(format!("plan_id: `{raw}` is not a UUID"))
+    })?;
+    Ok(PlanId::new(plan_id))
+}
+
+fn require_matching_revision(
+    tag: &preconditions::RevisionTag,
+    plan_revision: u64,
+) -> Result<(), DomainError> {
+    if tag.revision == plan_revision {
+        return Ok(());
+    }
+    Err(DomainError::InvalidRequest(format!(
+        "If-Match names revision {} but the request names plan_revision {plan_revision}",
+        tag.revision
+    )))
+}
+
+fn namespaced_digest<T: Serialize>(
+    context: &str,
+    plan_revision: Option<u64>,
+    parent: Uuid,
+    method: &str,
+    route: &str,
+    payload: &T,
+) -> Result<Vec<u8>, DomainError> {
+    preconditions::request_digest(&NamespacedDigest {
+        context,
+        plan_revision,
+        parent,
+        method,
+        route,
+        payload,
+    })
+}
+
+fn live_schedule_fields(
+    request: &ScheduleWindowRequest,
+) -> Result<(OffsetDateTime, Option<OffsetDateTime>), DomainError> {
+    if request.start.is_some() {
+        return Err(DomainError::InvalidRequest(
+            "start is illegal when context.kind is live".to_owned(),
+        ));
+    }
+    let effective_from = request.effective_from.ok_or_else(|| {
+        DomainError::InvalidRequest(
+            "effective_from is required when context.kind is live".to_owned(),
+        )
+    })?;
+    Ok((effective_from, request.effective_to))
+}
+
+fn draft_schedule_start(request: &ScheduleWindowRequest) -> Result<DraftStart, DomainError> {
+    if request.effective_from.is_some() {
+        return Err(DomainError::InvalidRequest(
+            "effective_from is illegal when context.kind is draft; send start".to_owned(),
+        ));
+    }
+    match &request.start {
+        Some(DraftStartView::AtPublish) => Ok(DraftStart::AtPublish),
+        Some(DraftStartView::At { at }) => Ok(DraftStart::At(*at)),
+        None => Err(DomainError::InvalidRequest(
+            "start is required when context.kind is draft".to_owned(),
+        )),
+    }
+}
+
+fn start_view(start: DraftStart) -> DraftStartView {
+    match start {
+        DraftStart::AtPublish => DraftStartView::AtPublish,
+        DraftStart::At(at) => DraftStartView::At { at },
+    }
+}
+
+fn context_changed(plan_id: Uuid, revision: u64) -> DomainError {
+    DomainError::DraftWindowContextChanged(format!(
+        "plan {plan_id} revision {revision} is not an open draft"
+    ))
+}
+
+async fn require_open_draft(
+    state: &GovernanceState,
+    scope: &AccessScope,
+    tenant: Uuid,
+    plan_id: Uuid,
+    plan_revision: u64,
+) -> Result<(), CanonicalError> {
+    let row = state
+        .plans
+        .find_revision(scope, tenant, PlanId::new(plan_id), plan_revision)
+        .await
+        .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+    match row {
+        Some(row) if row.lifecycle_state.is_content_mutable() => Ok(()),
+        _ => Err(CanonicalError::from(context_changed(plan_id, plan_revision))),
+    }
+}
+
+async fn resolve_draft_window_plan(
+    state: &GovernanceState,
+    scope: &AccessScope,
+    tenant: Uuid,
+    window_id: Uuid,
+    plan_revision: u64,
+) -> Result<PlanId, CanonicalError> {
+    let conn = state.db.conn().map_err(|e| {
+        CanonicalError::internal(format!("bss-pricing: draft window lookup: {e}")).create()
+    })?;
+    if let Some((owner, _)) = draft_window_repo::find_addressing(&conn, scope, tenant, window_id)
+        .await
+        .map_err(|e| CanonicalError::from(repo_failure(&e)))?
+    {
+        if owner.plan_revision != plan_revision {
+            return Err(CanonicalError::from(context_changed(
+                owner.plan_id,
+                plan_revision,
+            )));
+        }
+        return Ok(PlanId::new(owner.plan_id));
+    }
+    resolve_plan(state, scope, tenant, Lookup::Window(window_id)).await
+}
+
+fn draft_owner(tenant: Uuid, plan_id: PlanId, plan_revision: u64) -> DraftWindowOwner {
+    DraftWindowOwner {
+        tenant_id: tenant,
+        plan_id: plan_id.get(),
+        plan_revision,
+    }
+}
+
+fn draft_location(plan_id: PlanId, plan_revision: u64) -> String {
+    format!(
+        "{PRICE_WINDOWS_LIST}?view=working&plan_id={}&plan_revision={plan_revision}",
+        plan_id.get()
+    )
+}
+
+fn answer_draft(outcome: DraftHttpOutcome) -> Response {
+    let etag = preconditions::revision_etag(
+        outcome.plan_revision,
+        RowVersion::new(outcome.row_version),
+    );
+    match outcome.location {
+        Some(location) => (
+            outcome.status,
+            [(ETAG, etag.clone()), (LOCATION, location)],
+            Json(outcome.body),
+        )
+            .into_response(),
+        None => (outcome.status, [(ETAG, etag)], Json(outcome.body)).into_response(),
+    }
+}
+
+fn draft_window_json(view: &DraftWindowView) -> Result<serde_json::Value, DomainError> {
+    serde_json::to_value(view)
+        .map_err(|e| DomainError::Internal(format!("cannot render a draft window: {e}")))
+}
+
+async fn schedule_live_window(
+    state: Arc<GovernanceState>,
+    ctx: SecurityContext,
+    scope: AccessScope,
+    correlation: Uuid,
+    tenant: Uuid,
+    price_id: Uuid,
+    key: String,
+    request: ScheduleWindowRequest,
+) -> Result<Response, CanonicalError> {
+    let (effective_from, effective_to) = live_schedule_fields(&request)?;
+    let digest = namespaced_digest("live", None, price_id, "POST", PRICE_WINDOWS, &request)?;
+    let now = OffsetDateTime::now_utc();
+    let stamp = crate::api::rest::auth_context::audit_stamp(&ctx, now, correlation);
+    let windows = state.windows.clone();
+    let mutation_ctx = ctx.clone();
+    let mutation_scope = scope.clone();
+    let reason_code = request.reason_code.clone();
+    let guarded = idempotent::guarded(
+        &state.db,
+        &state.idempotency,
+        &scope,
+        GuardedRequest {
+            operation: SCHEDULE_WINDOW_OPERATION,
+            client_key: key,
+            request_hash: digest,
+            tenant_id: tenant,
+            status: StatusCode::ACCEPTED.as_u16().into(),
+            now,
+        },
+        move |txn| {
+            Box::pin(async move {
+                let window_id = Uuid::now_v7();
+                windows
+                    .schedule_in(
+                        txn,
+                        &mutation_ctx,
+                        &mutation_scope,
+                        tenant,
+                        price_id,
+                        window_id,
+                        effective_from,
+                        effective_to,
+                        reason_code,
+                        verdict_json,
+                        stamp,
+                    )
+                    .await
+            })
+        },
+        |outcome| body_of(&view_of(outcome)),
+    )
+    .await?;
+    match guarded {
+        Guarded::Performed(outcome) => Ok(answer(outcome)),
+        Guarded::Replayed { status, body } => {
+            Ok(replayed(SCHEDULE_WINDOW_OPERATION, status, &body)?)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn schedule_draft_window(
+    state: Arc<GovernanceState>,
+    ctx: SecurityContext,
+    scope: AccessScope,
+    correlation: Uuid,
+    tenant: Uuid,
+    plan_id: PlanId,
+    price_id: Uuid,
+    key: String,
+    request: ScheduleWindowRequest,
+    tag: preconditions::RevisionTag,
+    plan_revision: u64,
+) -> Result<Response, CanonicalError> {
+    require_matching_revision(&tag, plan_revision)?;
+    let start = draft_schedule_start(&request)?;
+    let digest = namespaced_digest(
+        "draft",
+        Some(plan_revision),
+        plan_id.get(),
+        "POST",
+        PRICE_WINDOWS,
+        &request,
+    )?;
+    let now = OffsetDateTime::now_utc();
+    let stamp = crate::api::rest::auth_context::audit_stamp(&ctx, now, correlation);
+    let owner = draft_owner(tenant, plan_id, plan_revision);
+    let expected = tag.version.get();
+    let reason_code = request.reason_code.clone();
+    let effective_to = request.effective_to;
+    let start_wire = start_view(start);
+    let mutation_scope = scope.clone();
+    let guarded = idempotent::guarded(
+        &state.db,
+        &state.idempotency,
+        &scope,
+        GuardedRequest {
+            operation: SCHEDULE_DRAFT_WINDOW_OPERATION,
+            client_key: key,
+            request_hash: digest,
+            tenant_id: tenant,
+            status: StatusCode::CREATED.as_u16().into(),
+            now,
+        },
+        move |txn| {
+            Box::pin(async move {
+                window_guard_repo::acquire(txn, &mutation_scope, tenant, plan_id.get())
+                    .await
+                    .map_err(|e| repo_failure(&e))?;
+                let window_id = Uuid::now_v7();
+                let entry = DraftWindowEntry {
+                    operation_id: window_id,
+                    action: DraftWindowAction::Create {
+                        window_id,
+                        price_id,
+                        start,
+                        effective_to,
+                    },
+                    reason_code: reason_code.clone(),
+                };
+                let row_version = draft_window::apply_command(
+                    txn,
+                    &mutation_scope,
+                    &owner,
+                    expected,
+                    DraftWindowCommand::Put(entry),
+                    stamp,
+                )
+                .await?;
+                let view = DraftWindowView {
+                    window_id,
+                    operation_id: window_id,
+                    plan_id: plan_id.get(),
+                    price_id,
+                    plan_revision,
+                    state: "draft".to_owned(),
+                    start: start_wire,
+                    effective_to,
+                    reason_code,
+                };
+                Ok(DraftHttpOutcome {
+                    status: StatusCode::CREATED,
+                    body: draft_window_json(&view)?,
+                    plan_revision,
+                    row_version,
+                    location: Some(draft_location(plan_id, plan_revision)),
+                })
+            })
+        },
+        |outcome| Ok(outcome.body.clone()),
+    )
+    .await?;
+    match guarded {
+        Guarded::Performed(outcome) => Ok(answer_draft(outcome)),
+        Guarded::Replayed { status, body } => {
+            Ok(replayed(SCHEDULE_DRAFT_WINDOW_OPERATION, status, &body)?)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn adjust_draft_window(
+    state: Arc<GovernanceState>,
+    ctx: SecurityContext,
+    scope: AccessScope,
+    correlation: Uuid,
+    tenant: Uuid,
+    plan_id: PlanId,
+    window_id: Uuid,
+    key: String,
+    request: AdjustWindowRequest,
+    tag: preconditions::RevisionTag,
+    plan_revision: u64,
+) -> Result<Response, CanonicalError> {
+    require_matching_revision(&tag, plan_revision)?;
+    let digest = namespaced_digest(
+        "draft",
+        Some(plan_revision),
+        plan_id.get(),
+        "PATCH",
+        PRICE_WINDOW,
+        &request,
+    )?;
+    let now = OffsetDateTime::now_utc();
+    let stamp = crate::api::rest::auth_context::audit_stamp(&ctx, now, correlation);
+    let owner = draft_owner(tenant, plan_id, plan_revision);
+    let expected = tag.version.get();
+    let effective_to = request.effective_to;
+    let mutation_scope = scope.clone();
+    let guarded = idempotent::guarded(
+        &state.db,
+        &state.idempotency,
+        &scope,
+        GuardedRequest {
+            operation: ADJUST_DRAFT_WINDOW_OPERATION,
+            client_key: key,
+            request_hash: digest,
+            tenant_id: tenant,
+            status: StatusCode::OK.as_u16().into(),
+            now,
+        },
+        move |txn| {
+            Box::pin(async move {
+                window_guard_repo::acquire(txn, &mutation_scope, tenant, plan_id.get())
+                    .await
+                    .map_err(|e| repo_failure(&e))?;
+                let existing = draft_window_repo::find_addressing(txn, &mutation_scope, tenant, window_id)
+                    .await
+                    .map_err(|e| repo_failure(&e))?;
+                let (operation_id, action, reason_code, start) = match existing {
+                    Some((_, entry)) if matches!(entry.action, DraftWindowAction::Create { .. }) => {
+                        let DraftWindowAction::Create {
+                            window_id: created_id,
+                            price_id,
+                            start,
+                            ..
+                        } = entry.action
+                        else {
+                            unreachable!("matched Create");
+                        };
+                        (
+                            entry.operation_id,
+                            DraftWindowAction::Create {
+                                window_id: created_id,
+                                price_id,
+                                start,
+                                effective_to,
+                            },
+                            entry.reason_code,
+                            Some(start_view(start)),
+                        )
+                    }
+                    Some((_, entry)) => (
+                        entry.operation_id,
+                        DraftWindowAction::AdjustEnd {
+                            window_id,
+                            effective_to,
+                        },
+                        entry.reason_code,
+                        None,
+                    ),
+                    None => (
+                        Uuid::now_v7(),
+                        DraftWindowAction::AdjustEnd {
+                            window_id,
+                            effective_to,
+                        },
+                        "adjust".to_owned(),
+                        None,
+                    ),
+                };
+                let entry = DraftWindowEntry {
+                    operation_id,
+                    action,
+                    reason_code: reason_code.clone(),
+                };
+                let row_version = draft_window::apply_command(
+                    txn,
+                    &mutation_scope,
+                    &owner,
+                    expected,
+                    DraftWindowCommand::Put(entry),
+                    stamp,
+                )
+                .await?;
+                let view = DraftWindowView {
+                    window_id,
+                    operation_id,
+                    plan_id: plan_id.get(),
+                    price_id: Uuid::nil(),
+                    plan_revision,
+                    state: "draft".to_owned(),
+                    start: start.unwrap_or(DraftStartView::AtPublish),
+                    effective_to,
+                    reason_code,
+                };
+                Ok(DraftHttpOutcome {
+                    status: StatusCode::OK,
+                    body: draft_window_json(&view)?,
+                    plan_revision,
+                    row_version,
+                    location: None,
+                })
+            })
+        },
+        |outcome| Ok(outcome.body.clone()),
+    )
+    .await?;
+    match guarded {
+        Guarded::Performed(outcome) => Ok(answer_draft(outcome)),
+        Guarded::Replayed { status, body } => {
+            Ok(replayed(ADJUST_DRAFT_WINDOW_OPERATION, status, &body)?)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn cancel_draft_window(
+    state: Arc<GovernanceState>,
+    ctx: SecurityContext,
+    scope: AccessScope,
+    correlation: Uuid,
+    tenant: Uuid,
+    plan_id: PlanId,
+    window_id: Uuid,
+    key: String,
+    query: WindowDeleteQuery,
+    tag: preconditions::RevisionTag,
+    plan_revision: u64,
+) -> Result<Response, CanonicalError> {
+    require_matching_revision(&tag, plan_revision)?;
+    let digest = namespaced_digest(
+        "draft",
+        Some(plan_revision),
+        plan_id.get(),
+        "DELETE",
+        PRICE_WINDOW,
+        &serde_json::json!({
+            "window_id": window_id,
+            "plan_id": query.plan_id,
+            "plan_revision": plan_revision,
+        }),
+    )?;
+    let now = OffsetDateTime::now_utc();
+    let stamp = crate::api::rest::auth_context::audit_stamp(&ctx, now, correlation);
+    let owner = draft_owner(tenant, plan_id, plan_revision);
+    let expected = tag.version.get();
+    let mutation_scope = scope.clone();
+    let guarded = idempotent::guarded(
+        &state.db,
+        &state.idempotency,
+        &scope,
+        GuardedRequest {
+            operation: CANCEL_DRAFT_WINDOW_OPERATION,
+            client_key: key,
+            request_hash: digest,
+            tenant_id: tenant,
+            status: StatusCode::OK.as_u16().into(),
+            now,
+        },
+        move |txn| {
+            Box::pin(async move {
+                window_guard_repo::acquire(txn, &mutation_scope, tenant, plan_id.get())
+                    .await
+                    .map_err(|e| repo_failure(&e))?;
+                let existing = draft_window_repo::find_addressing(txn, &mutation_scope, tenant, window_id)
+                    .await
+                    .map_err(|e| repo_failure(&e))?;
+                let command = match existing {
+                    Some((_, entry))
+                        if matches!(entry.action, DraftWindowAction::Create { .. }) =>
+                    {
+                        DraftWindowCommand::Remove {
+                            operation_id: entry.operation_id,
+                        }
+                    }
+                    Some((_, entry)) => DraftWindowCommand::Put(DraftWindowEntry {
+                        operation_id: entry.operation_id,
+                        action: DraftWindowAction::Cancel { window_id },
+                        reason_code: entry.reason_code,
+                    }),
+                    None => DraftWindowCommand::Put(DraftWindowEntry {
+                        operation_id: Uuid::now_v7(),
+                        action: DraftWindowAction::Cancel { window_id },
+                        reason_code: "cancel".to_owned(),
+                    }),
+                };
+                let operation_id = match &command {
+                    DraftWindowCommand::Remove { operation_id } => *operation_id,
+                    DraftWindowCommand::Put(entry) => entry.operation_id,
+                    DraftWindowCommand::RefreshBaseline => window_id,
+                };
+                let row_version = draft_window::apply_command(
+                    txn, &mutation_scope, &owner, expected, command, stamp,
+                )
+                .await?;
+                let view = DraftWindowView {
+                    window_id,
+                    operation_id,
+                    plan_id: plan_id.get(),
+                    price_id: Uuid::nil(),
+                    plan_revision,
+                    state: "draft".to_owned(),
+                    start: DraftStartView::AtPublish,
+                    effective_to: None,
+                    reason_code: "cancel".to_owned(),
+                };
+                Ok(DraftHttpOutcome {
+                    status: StatusCode::OK,
+                    body: draft_window_json(&view)?,
+                    plan_revision,
+                    row_version,
+                    location: None,
+                })
+            })
+        },
+        |outcome| Ok(outcome.body.clone()),
+    )
+    .await?;
+    match guarded {
+        Guarded::Performed(outcome) => Ok(answer_draft(outcome)),
+        Guarded::Replayed { status, body } => {
+            Ok(replayed(CANCEL_DRAFT_WINDOW_OPERATION, status, &body)?)
+        }
+    }
+}
+
+async fn undo_draft_window_operation(
+    Extension(state): Extension<Arc<GovernanceState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    correlation: Option<Extension<CorrelationId>>,
+    Path((plan_id, operation_id)): Path<(Uuid, Uuid)>,
+    Query(query): Query<DraftOperationQuery>,
+    headers: HeaderMap,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let correlation = require_correlation(correlation)?;
+    let tenant = ctx.subject_tenant_id();
+    let plan_id = PlanId::new(plan_id);
+    let scope = window_write_scope(&enforcer, &ctx, plan_id, tenant).await?;
+    let tag = preconditions::if_match_revision(&headers)?;
+    let key = preconditions::idempotency_key(&headers)?;
+    let plan_revision = parse_revision(query.plan_revision.as_ref())?;
+    require_matching_revision(&tag, plan_revision)?;
+    let digest = namespaced_digest(
+        "draft",
+        Some(plan_revision),
+        plan_id.get(),
+        "DELETE",
+        DRAFT_WINDOW_OPERATION,
+        &serde_json::json!({ "operation_id": operation_id, "plan_revision": plan_revision }),
+    )?;
+    let now = OffsetDateTime::now_utc();
+    let stamp = crate::api::rest::auth_context::audit_stamp(&ctx, now, correlation);
+    let owner = draft_owner(tenant, plan_id, plan_revision);
+    let expected = tag.version.get();
+    let mutation_scope = scope.clone();
+    let guarded = idempotent::guarded(
+        &state.db,
+        &state.idempotency,
+        &scope,
+        GuardedRequest {
+            operation: REMOVE_DRAFT_WINDOW_OPERATION,
+            client_key: key,
+            request_hash: digest,
+            tenant_id: tenant,
+            status: StatusCode::OK.as_u16().into(),
+            now,
+        },
+        move |txn| {
+            Box::pin(async move {
+                window_guard_repo::acquire(txn, &mutation_scope, tenant, plan_id.get())
+                    .await
+                    .map_err(|e| repo_failure(&e))?;
+                let row_version = draft_window::apply_command(
+                    txn,
+                    &mutation_scope,
+                    &owner,
+                    expected,
+                    DraftWindowCommand::Remove { operation_id },
+                    stamp,
+                )
+                .await?;
+                let view = DraftOperationRemovedView { operation_id };
+                Ok(DraftHttpOutcome {
+                    status: StatusCode::OK,
+                    body: serde_json::to_value(view).map_err(|e| {
+                        DomainError::Internal(format!("cannot render a draft undo: {e}"))
+                    })?,
+                    plan_revision,
+                    row_version,
+                    location: None,
+                })
+            })
+        },
+        |outcome| Ok(outcome.body.clone()),
+    )
+    .await?;
+    match guarded {
+        Guarded::Performed(outcome) => Ok(answer_draft(outcome)),
+        Guarded::Replayed { status, body } => {
+            Ok(replayed(REMOVE_DRAFT_WINDOW_OPERATION, status, &body)?)
+        }
+    }
+}
+
+async fn refresh_draft_window_baseline(
+    Extension(state): Extension<Arc<GovernanceState>>,
+    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
+    extension_ctx: Option<Extension<SecurityContext>>,
+    correlation: Option<Extension<CorrelationId>>,
+    Path(plan_id): Path<Uuid>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, CanonicalError> {
+    let ctx = require_authenticated(extension_ctx)?;
+    let correlation = require_correlation(correlation)?;
+    let tenant = ctx.subject_tenant_id();
+    let plan_id = PlanId::new(plan_id);
+    let scope = window_write_scope(&enforcer, &ctx, plan_id, tenant).await?;
+    let tag = preconditions::if_match_revision(&headers)?;
+    let key = preconditions::idempotency_key(&headers)?;
+    let request: RefreshBaselineRequest = preconditions::parse_body(&body)?;
+    require_matching_revision(&tag, request.plan_revision)?;
+    let digest = namespaced_digest(
+        "draft",
+        Some(request.plan_revision),
+        plan_id.get(),
+        "POST",
+        DRAFT_WINDOW_BASELINE_REFRESH,
+        &request,
+    )?;
+    let now = OffsetDateTime::now_utc();
+    let stamp = crate::api::rest::auth_context::audit_stamp(&ctx, now, correlation);
+    let owner = draft_owner(tenant, plan_id, request.plan_revision);
+    let expected = tag.version.get();
+    let plan_revision = request.plan_revision;
+    let mutation_scope = scope.clone();
+    let guarded = idempotent::guarded(
+        &state.db,
+        &state.idempotency,
+        &scope,
+        GuardedRequest {
+            operation: REFRESH_DRAFT_WINDOW_BASELINE_OPERATION,
+            client_key: key,
+            request_hash: digest,
+            tenant_id: tenant,
+            status: StatusCode::OK.as_u16().into(),
+            now,
+        },
+        move |txn| {
+            Box::pin(async move {
+                window_guard_repo::acquire(txn, &mutation_scope, tenant, plan_id.get())
+                    .await
+                    .map_err(|e| repo_failure(&e))?;
+                let before = draft_window_repo::list(txn, &mutation_scope, &owner)
+                    .await
+                    .map_err(|e| repo_failure(&e))?;
+                let row_version = draft_window::apply_command(
+                    txn,
+                    &mutation_scope,
+                    &owner,
+                    expected,
+                    DraftWindowCommand::RefreshBaseline,
+                    stamp,
+                )
+                .await?;
+                let after = draft_window_repo::list(txn, &mutation_scope, &owner)
+                    .await
+                    .map_err(|e| repo_failure(&e))?;
+                let kept: HashSet<Uuid> = after.iter().map(|row| row.operation_id).collect();
+                let discarded_operation_ids: Vec<Uuid> = before
+                    .into_iter()
+                    .filter(|row| !kept.contains(&row.operation_id))
+                    .map(|row| row.operation_id)
+                    .collect();
+                let view = RefreshBaselineView {
+                    plan_id: plan_id.get(),
+                    plan_revision,
+                    discarded_operation_ids,
+                };
+                Ok(DraftHttpOutcome {
+                    status: StatusCode::OK,
+                    body: serde_json::to_value(view).map_err(|e| {
+                        DomainError::Internal(format!("cannot render a baseline refresh: {e}"))
+                    })?,
+                    plan_revision,
+                    row_version,
+                    location: None,
+                })
+            })
+        },
+        |outcome| Ok(outcome.body.clone()),
+    )
+    .await?;
+    match guarded {
+        Guarded::Performed(outcome) => Ok(answer_draft(outcome)),
+        Guarded::Replayed { status, body } => Ok(replayed(
+            REFRESH_DRAFT_WINDOW_BASELINE_OPERATION,
+            status,
+            &body,
+        )?),
+    }
+}
+
+async fn list_working_windows(
+    state: &GovernanceState,
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    plan_id: Uuid,
+    plan_revision: u64,
+    odata: &toolkit_odata::ODataQuery,
+) -> Result<Page<WindowSummaryView>, CanonicalError> {
+    require_open_draft(state, scope, tenant, plan_id, plan_revision).await?;
+    if odata.filter.is_some() {
+        return Err(CanonicalError::from(DomainError::InvalidRequest(
+            "view=working does not accept $filter; page with limit and cursor".to_owned(),
+        )));
+    }
+    let now = OffsetDateTime::now_utc();
+    let proposed = compose_working(runner, scope, tenant, plan_id, plan_revision, now).await?;
+    let owner = draft_owner(tenant, PlanId::new(plan_id), plan_revision);
+    let entries = draft_window_repo::list(runner, scope, &owner)
+        .await
+        .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+    let after = odata
+        .cursor
+        .as_ref()
+        .map(|cursor| working_cursor_after(cursor, plan_id, plan_revision))
+        .transpose()?;
+    let mut rows: Vec<ProposedWindow> = proposed
+        .into_iter()
+        .filter(|row| after.map_or(true, |id| row.window_id > id))
+        .collect();
+    rows.sort_by_key(|row| row.window_id);
+    let limit = odata
+        .limit
+        .unwrap_or(LIST_LIMIT_CFG.default)
+        .min(LIST_LIMIT_CFG.max);
+    let extra = rows.len() > limit as usize;
+    rows.truncate(limit as usize);
+    let next_cursor = if extra {
+        rows.last()
+            .map(|row| encode_working_window(plan_id, plan_revision, row.window_id))
+            .transpose()?
+    } else {
+        None
+    };
+    Ok(Page {
+        items: rows
+            .iter()
+            .map(|row| working_summary(row, &entries, now))
+            .collect(),
+        page_info: PageInfo {
+            next_cursor,
+            prev_cursor: None,
+            limit,
+        },
+    })
+}
+
+async fn working_coverage(
+    state: &GovernanceState,
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    plan_id: Uuid,
+    plan_revision: u64,
+) -> Result<CoverageReport, CanonicalError> {
+    require_open_draft(state, scope, tenant, plan_id, plan_revision).await?;
+    let now = OffsetDateTime::now_utc();
+    let proposed = compose_working(runner, scope, tenant, plan_id, plan_revision, now).await?;
+    let rows = price_repo::load_for_plan(
+        runner,
+        scope,
+        tenant,
+        PlanId::new(plan_id),
+        CANDIDATE_ROW_STATES,
+    )
+    .await
+    .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+    let billable: Vec<_> = rows
+        .iter()
+        .filter(|record| coverage::is_billable(record))
+        .map(|record| record.scope_key.clone())
+        .collect();
+    let windows = crate::domain::window::group_by_key_seeded(
+        billable.iter().cloned(),
+        proposed.into_iter().map(|row| {
+            (
+                row.key.clone(),
+                WindowInterval::new(
+                    row.effective_from,
+                    row.effective_to,
+                    working_interval_state(&row, now),
+                ),
+            )
+        }),
+    );
+    Ok(coverage::check(&billable, &windows))
+}
+
+async fn compose_working(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant: Uuid,
+    plan_id: Uuid,
+    plan_revision: u64,
+    now: OffsetDateTime,
+) -> Result<Vec<ProposedWindow>, CanonicalError> {
+    let owner = draft_owner(tenant, PlanId::new(plan_id), plan_revision);
+    let entries = draft_window_repo::list(runner, scope, &owner)
+        .await
+        .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+    let baseline = window_baseline_repo::list(runner, scope, &owner)
+        .await
+        .map_err(|e| CanonicalError::from(repo_failure(&e)))?;
+    let keys = price_repo::load_for_plan(
+        runner,
+        scope,
+        tenant,
+        PlanId::new(plan_id),
+        CANDIDATE_ROW_STATES,
+    )
+    .await
+    .map_err(|e| CanonicalError::from(repo_failure(&e)))?
+    .into_iter()
+    .map(|row| (row.price_id, row.scope_key))
+    .collect();
+    compose_windows(&baseline, &entries, &keys, now).map_err(CanonicalError::from)
+}
+
+fn working_interval_state(row: &ProposedWindow, now: OffsetDateTime) -> WindowState {
+    if row.effective_to.is_some_and(|end| end <= now) {
+        return WindowState::Expired;
+    }
+    if row.effective_from <= now {
+        return WindowState::Active;
+    }
+    WindowState::Scheduled
+}
+
+fn working_summary(
+    row: &ProposedWindow,
+    entries: &[DraftWindowEntry],
+    now: OffsetDateTime,
+) -> WindowSummaryView {
+    let entry = entries.iter().find(|entry| match &entry.action {
+        DraftWindowAction::Create { window_id, .. }
+        | DraftWindowAction::AdjustEnd { window_id, .. }
+        | DraftWindowAction::Cancel { window_id } => *window_id == row.window_id,
+    });
+    let (start, operation_id, reason_code, state) = match entry {
+        Some(entry) => match &entry.action {
+            DraftWindowAction::Create { start, .. } => (
+                Some(start_view(*start)),
+                Some(entry.operation_id),
+                entry.reason_code.clone(),
+                "draft".to_owned(),
+            ),
+            _ => (
+                None,
+                Some(entry.operation_id),
+                entry.reason_code.clone(),
+                working_interval_state(row, now).as_str().to_owned(),
+            ),
+        },
+        None => (
+            None,
+            None,
+            "baseline".to_owned(),
+            working_interval_state(row, now).as_str().to_owned(),
+        ),
+    };
+    WindowSummaryView {
+        window_id: row.window_id,
+        price_id: row.price_id,
+        scope_key: row.key.to_string(),
+        effective_from: row.effective_from,
+        effective_to: row.effective_to,
+        state,
+        reason_code,
+        created_at: now,
+        activated_at: None,
+        expired_at: None,
+        cancelled_at: None,
+        mutation_seq: 0,
+        start,
+        operation_id,
+    }
 }

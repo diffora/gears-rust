@@ -202,6 +202,23 @@ pub enum DomainError {
     /// now stands. Re-composing against a fresh instant is the remedy.
     #[error("window start elapsed: {0}")]
     WindowStartElapsed(String),
+    /// Working or authoring named a plan revision that is no longer an open draft
+    /// (D-374, **409** `DRAFT_WINDOW_CONTEXT_CHANGED`).
+    ///
+    /// A conflict rather than a lifecycle refusal: the caller held a coherent
+    /// draft context when they composed the request, and what refused it is that
+    /// the owner left `draft`. Re-reading the parent is the remedy; retrying the
+    /// same Working URL or the same draft mutation is not.
+    #[error("draft window context changed: {0}")]
+    DraftWindowContextChanged(String),
+    /// A draft adjust or cancel named a live window the captured baseline no
+    /// longer carries (D-374, **409** `WINDOW_BASELINE_CHANGED`).
+    ///
+    /// Refreshing the baseline is the remedy: the live identity moved under the
+    /// staged operation, and replaying it against the old snapshot would edit a
+    /// window the draft no longer owns.
+    #[error("window baseline changed: {0}")]
+    WindowBaselineChanged(String),
     /// A cancel or an `effectiveTo` shortening would leave the canonical scope key
     /// uncovered with no successor (`07-pricewindow-linkage.md` §5,
     /// `inst-fg-trailing`, architectural **422** rendered 400). Names the key and

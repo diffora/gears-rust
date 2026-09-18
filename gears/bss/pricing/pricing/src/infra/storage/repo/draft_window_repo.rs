@@ -120,6 +120,55 @@ pub async fn remove(
     Ok(())
 }
 
+/// The draft operation that addresses `window_id`, either as its operation id
+/// or as the live window it mutates.
+///
+/// Used by `PATCH`/`DELETE /price-windows/{windowId}` to resolve a plan when the
+/// id is not yet a `pricing_price_window` row.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure;
+/// [`RepoError::CorruptRow`] when a stored token is outside its CHECK set.
+pub async fn find_addressing(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    window_id: Uuid,
+) -> Result<Option<(DraftWindowOwner, DraftWindowEntry)>, RepoError> {
+    let row = draft_window::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(draft_window::Column::TenantId.eq(tenant_id))
+                .add(
+                    Condition::any()
+                        .add(draft_window::Column::OperationId.eq(window_id))
+                        .add(draft_window::Column::TargetWindowId.eq(window_id)),
+                ),
+        )
+        .order_by(draft_window::Column::PlanRevision, Order::Desc)
+        .one(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("find pricing_draft_window: {e}")))?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let plan_revision = u64::try_from(row.plan_revision).map_err(|_| {
+        RepoError::CorruptRow(format!(
+            "pricing_draft_window {} plan_revision {} is negative",
+            row.operation_id, row.plan_revision
+        ))
+    })?;
+    let owner = DraftWindowOwner {
+        tenant_id: row.tenant_id,
+        plan_id: row.plan_id,
+        plan_revision,
+    };
+    let entry = to_entry(row)?;
+    Ok(Some((owner, entry)))
+}
+
 fn owner_filter(owner: &DraftWindowOwner, number: i64) -> Condition {
     Condition::all()
         .add(draft_window::Column::TenantId.eq(owner.tenant_id))

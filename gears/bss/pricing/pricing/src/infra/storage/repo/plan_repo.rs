@@ -991,7 +991,7 @@ impl PlanRepo {
     skip_all,
     fields(tenant_id = %tenant_id, plan_id = %after.plan_id, revision = after.revision, action = %action)
 )]
-pub(super) async fn record_revision_mutation(
+pub(crate) async fn record_revision_mutation(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
@@ -2068,7 +2068,7 @@ pub(super) async fn mutable_draft(
 /// One extra read, taken only on the refusal path. It costs nothing in the
 /// normal case and is the difference between an operator being told to retry
 /// and being told to stop retrying.
-pub(super) async fn refuse(
+pub(crate) async fn refuse(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
@@ -2189,7 +2189,7 @@ pub(crate) fn current_tokens() -> Vec<&'static str> {
 /// price row's bands, applied to a plan's shape), so the swap that admits a
 /// phase edit has to be the same conjunction, on the same row, as the swap that
 /// admits a column edit. Two spellings of it are two rules free to disagree.
-pub(super) fn swap_guard(
+pub(crate) fn swap_guard(
     tenant_id: Uuid,
     plan_id: PlanId,
     revision: u64,

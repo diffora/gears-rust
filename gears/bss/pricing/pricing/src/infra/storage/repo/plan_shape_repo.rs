@@ -1373,7 +1373,7 @@ pub(super) async fn copy_addon_rules(
 /// rev-share sets ride the plan revision's entity tag exactly as this module's
 /// child sets do, so re-spelling the swap there would be a second copy of the
 /// one statement that must not drift.
-pub(super) async fn plan_revision_bump(
+pub(crate) async fn plan_revision_bump(
     runner: &impl DBRunner,
     scope: &AccessScope,
     guard: Condition,

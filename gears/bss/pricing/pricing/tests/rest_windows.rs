@@ -1031,6 +1031,7 @@ async fn post_window_under(
             "POST",
             &windows_path(price_id),
             Some(serde_json::json!({
+                "context": {"kind": "live"},
                 "effective_from": wire(from),
                 "effective_to": to.map(wire),
                 "reason_code": "priceIncrease",
@@ -1061,7 +1062,10 @@ async fn patch_window_asserting(
         .send(with_headers(
             "PATCH",
             &window_path(window_id),
-            Some(serde_json::json!({ "effective_to": to.map(wire) })),
+            Some(serde_json::json!({
+                "context": {"kind": "live"},
+                "effective_to": to.map(wire)
+            })),
             &[("if-match", if_match)],
         ))
         .await
@@ -1081,7 +1085,7 @@ fn etag_of(response: &axum::http::Response<axum::body::Body>) -> Option<String> 
 /// not state.
 async fn delete_window(h: &Harness, window_id: Uuid) -> axum::http::Response<axum::body::Body> {
     h.allowed()
-        .send(request("DELETE", &window_path(window_id), None))
+        .send(request("DELETE", &format!("{}?context=live", window_path(window_id)), None))
         .await
 }
 
@@ -1913,7 +1917,7 @@ async fn a_foreign_tenants_caller_moves_no_window_and_reads_no_sellability() {
 
     let deleted = h
         .other_tenant()
-        .send(request("DELETE", &window_path(first), None))
+        .send(request("DELETE", &format!("{}?context=live", window_path(first)), None))
         .await;
     assert_eq!(
         deleted.status(),
@@ -1926,7 +1930,10 @@ async fn a_foreign_tenants_caller_moves_no_window_and_reads_no_sellability() {
         .send(with_headers(
             "PATCH",
             &window_path(first),
-            Some(serde_json::json!({ "effective_to": wire(common_to()) })),
+            Some(serde_json::json!({
+                "context": {"kind": "live"},
+                "effective_to": wire(common_to())
+            })),
             &[("if-match", IF_MATCH)],
         ))
         .await;
@@ -1937,7 +1944,10 @@ async fn a_foreign_tenants_caller_moves_no_window_and_reads_no_sellability() {
         .send(with_headers(
             "POST",
             &windows_path(seeded.price_id),
-            Some(serde_json::json!({ "effective_from": wire(common_to()) })),
+            Some(serde_json::json!({
+                "context": {"kind": "live"},
+                "effective_from": wire(common_to())
+            })),
             &[],
         ))
         .await;
@@ -3984,6 +3994,7 @@ async fn a_schedule_without_an_idempotency_key_is_refused_and_writes_nothing() {
             "POST",
             &windows_path(seeded.price_id),
             Some(serde_json::json!({
+                "context": {"kind": "live"},
                 "effective_from": wire(common_to()),
                 "effective_to": wire(at(0)),
                 "reason_code": "priceIncrease",
@@ -4051,6 +4062,7 @@ async fn a_foreign_tenant_cannot_schedule_a_window_on_this_tenants_row() {
             "POST",
             &windows_path(price_id),
             Some(serde_json::json!({
+                "context": {"kind": "live"},
                 "effective_from": wire(common_to()),
                 "effective_to": serde_json::Value::Null,
                 "reason_code": "priceIncrease",
@@ -4092,7 +4104,10 @@ async fn a_foreign_tenant_cannot_shorten_this_tenants_window() {
         with_headers(
             "PATCH",
             &window_path(id),
-            Some(serde_json::json!({ "effective_to": wire(at(30)) })),
+            Some(serde_json::json!({
+                "context": {"kind": "live"},
+                "effective_to": wire(at(30))
+            })),
             &[("if-match", IF_MATCH)],
         )
     };
@@ -4119,8 +4134,8 @@ async fn a_foreign_tenant_cannot_cancel_this_tenants_window() {
 
     rest_support::foreign_is_indistinguishable(
         &h,
-        request("DELETE", &window_path(window_id), None),
-        request("DELETE", &window_path(Uuid::now_v7()), None),
+        request("DELETE", &format!("{}?context=live", window_path(window_id)), None),
+        request("DELETE", &format!("{}?context=live", window_path(Uuid::now_v7())), None),
     )
     .await;
 

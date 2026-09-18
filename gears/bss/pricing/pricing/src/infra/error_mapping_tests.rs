@@ -441,6 +441,14 @@ fn the_window_codes_survive_the_ladder() {
         aborted_reason(DomainError::WindowStartElapsed(detail())),
         crate::domain::window::WINDOW_START_ELAPSED
     );
+    assert_eq!(
+        aborted_reason(DomainError::DraftWindowContextChanged(detail())),
+        crate::domain::window::DRAFT_WINDOW_CONTEXT_CHANGED
+    );
+    assert_eq!(
+        aborted_reason(DomainError::WindowBaselineChanged(detail())),
+        crate::domain::window::WINDOW_BASELINE_CHANGED
+    );
 }
 
 /// `inst-fg-trailing`'s code survives the ladder, spelled against
@@ -973,6 +981,8 @@ fn declared_status(err: &DomainError) -> u16 {
         | D::ApprovalContentMismatch(_)
         | D::WindowOverlap(_)
         | D::WindowStartElapsed(_)
+        | D::DraftWindowContextChanged(_)
+        | D::WindowBaselineChanged(_)
         | D::WindowHistoricalImmutable(_)
         | D::WindowNotCancellable(_)
         | D::MembershipOverlap(_)
@@ -1024,6 +1034,8 @@ fn one_of_every_variant() -> Vec<DomainError> {
         D::MigrationBlocked(d()),
         D::WindowStartInPast(d()),
         D::WindowStartElapsed(d()),
+        D::DraftWindowContextChanged(d()),
+        D::WindowBaselineChanged(d()),
         D::SupersessionInstantPassed(d()),
         D::WindowTrailingVoid(d()),
         D::ThresholdInvalid(d()),
@@ -1083,7 +1095,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
 /// gate [`declared_status`]'s exhaustive match cannot give: a new variant makes
 /// that match fail to compile, and this makes the roster that is *missing* the
 /// value fail the case. Bump it in the same edit that adds the variant to both.
-const DOMAIN_ERROR_VARIANTS: usize = 69;
+const DOMAIN_ERROR_VARIANTS: usize = 71;
 
 #[test]
 fn every_domain_error_variant_lands_in_its_declared_category() {
