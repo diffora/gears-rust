@@ -6,38 +6,57 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
+mod common;
 mod pg_support;
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use bss_pricing::config::LimitsConfig;
+use bss_pricing::domain::approval::{DecisionBy, WithdrawAuthority};
 use bss_pricing::domain::audit::AuditStamp;
 use bss_pricing::domain::concurrency::RowVersion;
+use bss_pricing::domain::contracts::{BillingAnchorPolicy, ProrationBasis, ProrationContract};
 use bss_pricing::domain::draft_window::{
     DraftStart, DraftWindowAction, DraftWindowEntry, DraftWindowOwner, WindowBaseline,
 };
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::instant::utc_ymd_hms;
 use bss_pricing::domain::lifecycle::LifecycleState;
-use bss_pricing::domain::materiality::MaterialityVerdict;
-use bss_pricing::domain::ports::UnconfiguredCatalogVersionRegistryV1;
+use bss_pricing::domain::materiality::{ThresholdBasis, ThresholdEntry};
+use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
+use bss_pricing::domain::plan::PlanShapePatch;
+use bss_pricing::domain::plan_shape::{BillingCycle, Frequency, PhaseKind, PlanPhase};
+use bss_pricing::domain::price_record::PriceContent;
+use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::publish::{PlanPublishUnit, PublishAuthorization};
-use bss_pricing::domain::scope_key::PlanId;
-use bss_pricing::infra::approval::ApprovalService;
+use bss_pricing::domain::scope_key::{
+    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+};
+use bss_pricing::infra::approval::{ApprovalService, DecideRequest, RegionGrant};
 use bss_pricing::infra::draft_window::{self, DraftWindowCommand};
 use bss_pricing::infra::fixture_gate::FixtureGate;
 use bss_pricing::infra::publish::PublishService;
 use bss_pricing::infra::storage::RepoError;
 use bss_pricing::infra::storage::entity::{plan, price};
 use bss_pricing::infra::storage::repo::draft_window_repo;
+use bss_pricing::infra::storage::repo::price_repo;
 use bss_pricing::infra::storage::repo::window_baseline_repo;
 use bss_pricing::infra::storage::repo::window_guard_repo;
-use bss_pricing::infra::storage::repo::window_repo::{self, NewWindow};
-use bss_pricing::infra::storage::repo::{NewPlanDraft, PlanRepo};
-use bss_pricing::infra::window::WindowService;
+use bss_pricing::infra::storage::repo::window_repo;
+use bss_pricing::infra::storage::repo::{
+    NewPlanDraft, NewPriceDraft, PlanRepo, PlanShapeRepo, PriceRepo,
+};
+use bss_pricing::infra::threshold::{AssertedPolicy, ThresholdService};
+use bss_pricing::infra::window::{WindowMutationOutcome, WindowService};
+use bss_pricing_sdk::catalog_version::CatalogVersion;
+use bss_pricing_sdk::catalog_version_registry::{CatalogVersionRegistryV1, PendingVersionRef};
 use serde_json::json;
 use tokio::sync::Notify;
+use toolkit_canonical_errors::CanonicalError;
 use toolkit_security::SecurityContext;
 
 use pg_support::Pg;
@@ -47,7 +66,7 @@ use sea_orm::{
     ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, EntityTrait, Statement,
 };
 use time::OffsetDateTime;
-use toolkit_db::secure::{AccessScope, SecureInsertExt, SecureUpdateExt};
+use toolkit_db::secure::{AccessScope, SecureInsertExt, SecureUpdateExt, TxError};
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
@@ -61,6 +80,13 @@ const SKU: Uuid = Uuid::from_u128(5);
 const ROW: Uuid = Uuid::from_u128(0xa0_01);
 const FOREIGN_ROW: Uuid = Uuid::from_u128(0xa0_99);
 const TEST_CORRELATION: Uuid = Uuid::from_u128(0x_c0_11_a7_10);
+const APPROVER: Uuid = Uuid::from_u128(0xac_02);
+const OFFER_SKU: Uuid = Uuid::from_u128(0x5_c1);
+const COVER_WINDOW: Uuid = Uuid::from_u128(0x_c0_7e);
+const DRAFT_A: Uuid = Uuid::from_u128(0x_d7_a1);
+const DRAFT_B: Uuid = Uuid::from_u128(0x_d7_b2);
+const LIVE_A: Uuid = Uuid::from_u128(0x_e1);
+const LIVE_B: Uuid = Uuid::from_u128(0x_e2);
 
 fn t(day: u32) -> OffsetDateTime {
     utc_ymd_hms(2099, 9, day, 0, 0, 0)
@@ -125,6 +151,8 @@ struct Store {
     pg: Pg,
     db: DBProvider<DbError>,
     plans: PlanRepo,
+    shapes: PlanShapeRepo,
+    prices: PriceRepo,
     raw: DatabaseConnection,
 }
 
@@ -132,8 +160,17 @@ async fn store() -> Store {
     let pg = Pg::applied().await;
     let db = DBProvider::<DbError>::new(pg.db().await);
     let plans = PlanRepo::new(db.clone());
+    let shapes = PlanShapeRepo::new(db.clone());
+    let prices = PriceRepo::new(db.clone());
     let raw = pg.raw().await;
-    Store { pg, db, plans, raw }
+    Store {
+        pg,
+        db,
+        plans,
+        shapes,
+        prices,
+        raw,
+    }
 }
 
 async fn seed_price(store: &Store, tenant_id: Uuid, plan_id: Uuid, price_id: Uuid) {
@@ -469,10 +506,44 @@ async fn at_publish_cannot_carry_an_authored_start() {
 }
 
 // ---------------------------------------------------------------------------
-// Guard serialization: park A after acquire, start B, observe the block.
+// Guard serialization: T1 is a named door parked after its write; T2 is the
+// other named door. Copy `postgres_window.rs`'s choreography.
 // ---------------------------------------------------------------------------
 
 const RACE_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Default)]
+struct RegistryDouble {
+    issued: Mutex<HashMap<String, String>>,
+}
+
+#[async_trait]
+impl CatalogVersionRegistryV1 for RegistryDouble {
+    async fn request_version(
+        &self,
+        _ctx: &SecurityContext,
+        request_id: &str,
+    ) -> Result<PendingVersionRef, CanonicalError> {
+        let mut issued = self.issued.lock().expect("no panics in the double");
+        let next = issued.len();
+        let pending = issued
+            .entry(request_id.to_owned())
+            .or_insert_with(|| format!("pend-{next}"))
+            .clone();
+        Ok(PendingVersionRef {
+            request_id: request_id.to_owned(),
+            pending_ref: pending,
+        })
+    }
+
+    async fn committed_version(
+        &self,
+        _ctx: &SecurityContext,
+        _pending_ref: &str,
+    ) -> Result<Option<CatalogVersion>, CanonicalError> {
+        Ok(None)
+    }
+}
 
 fn race_ctx() -> SecurityContext {
     SecurityContext::builder()
@@ -482,40 +553,350 @@ fn race_ctx() -> SecurityContext {
         .expect("a subject and a tenant are all a context needs")
 }
 
-fn race_verdict_json(_: &MaterialityVerdict) -> Result<serde_json::Value, DomainError> {
-    Ok(json!({}))
+fn race_now() -> OffsetDateTime {
+    utc_ymd_hms(2099, 8, 3, 0, 0, 0)
 }
 
-fn live_window(id: u128, from_day: u32, to_day: u32) -> NewWindow {
-    NewWindow {
-        window_id: Uuid::from_u128(id),
-        tenant_id: TENANT,
-        price_id: ROW,
-        effective_from: t(from_day),
-        effective_to: Some(t(to_day)),
-        reason_code: "raceProbe".to_owned(),
+fn race_stamp() -> AuditStamp {
+    AuditStamp {
+        actor_principal_id: ACTOR,
+        recorded_at: race_now(),
+        correlation_id: TEST_CORRELATION,
     }
 }
 
-async fn hold_guard(
-    pg: &Pg,
-    started: Arc<Notify>,
-    release: Arc<Notify>,
-) -> tokio::task::JoinHandle<Result<(), toolkit_db::secure::TxError<RepoError>>> {
-    let db = pg.db().await;
-    tokio::spawn(async move {
-        let (_db, out) = db
-            .in_transaction::<(), RepoError, _>(move |txn| {
-                Box::pin(async move {
-                    window_guard_repo::acquire(txn, &scope(), TENANT, PLAN).await?;
-                    started.notify_one();
-                    release.notified().await;
-                    Ok(())
-                })
-            })
-            .await;
-        out
-    })
+fn stamp_of(actor: Uuid, at: OffsetDateTime) -> AuditStamp {
+    AuditStamp {
+        actor_principal_id: actor,
+        recorded_at: at,
+        correlation_id: TEST_CORRELATION,
+    }
+}
+
+fn coverage_from() -> OffsetDateTime {
+    let (y, m, d) = common::COVERAGE_FROM_UTC;
+    utc_ymd_hms(y, m, d, 0, 0, 0)
+}
+
+fn coverage_to() -> OffsetDateTime {
+    let (y, m, d) = common::COVERAGE_TO_UTC;
+    utc_ymd_hms(y, m, d, 0, 0, 0)
+}
+
+fn owner_rev(plan_revision: u64) -> DraftWindowOwner {
+    DraftWindowOwner {
+        tenant_id: TENANT,
+        plan_id: PLAN,
+        plan_revision,
+    }
+}
+
+fn covering_create(
+    window_id: Uuid,
+    reason: &str,
+    start: OffsetDateTime,
+    effective_to: Option<OffsetDateTime>,
+) -> DraftWindowEntry {
+    DraftWindowEntry {
+        operation_id: window_id,
+        action: DraftWindowAction::Create {
+            window_id,
+            price_id: ROW,
+            start: DraftStart::At(start),
+            effective_to,
+        },
+        reason_code: reason.to_owned(),
+    }
+}
+
+fn publishable_row(amount_minor: i64) -> PriceContent {
+    let mut row = {
+        let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
+        descriptor_row.gl_code_ref = Some("4000".to_owned());
+        descriptor_row
+    };
+    row.amount_minor = Some(MinorAmount::new(amount_minor).expect("a non-negative amount"));
+    PriceContent {
+        row,
+        tax_inclusive: false,
+        tax_category_ref: Some("standard".to_owned()),
+        billing_timing: Some("advance".to_owned()),
+        proration_contract: Some(ProrationContract {
+            billing_anchor_policy: BillingAnchorPolicy::CalendarMonth,
+            proration_basis: ProrationBasis::CalendarDaysActual,
+            credit_on_downgrade: false,
+        }),
+        rounding_policy_ref: Some("half_up".to_owned()),
+        grandfather_until: None,
+        supersedes_price_id: None,
+    }
+}
+
+fn publishable_scope_key() -> ScopeKey {
+    ScopeKey::new(
+        PlanId::new(PLAN),
+        CurrencyCode::new("EUR").expect("currency"),
+        Region::new("eu").expect("region"),
+        PhaseId::new(PHASE),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Recurring,
+        Cohort::None,
+        SkuId::new(Uuid::from_u128(5)),
+    )
+    .expect("scope key")
+}
+
+fn committed_registry_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/corpus/registry.toml")
+}
+
+fn is_version_overlap_or_baseline(err: &DomainError) -> bool {
+    matches!(
+        err,
+        DomainError::StaleVersion(_)
+            | DomainError::WindowOverlap(_)
+            | DomainError::WindowBaselineChanged(_)
+    )
+}
+
+fn domain_from_tx<T: std::fmt::Debug>(
+    out: Result<T, TxError<DomainError>>,
+) -> Result<T, DomainError> {
+    match out {
+        Ok(value) => Ok(value),
+        Err(TxError::Domain(err)) => Err(err),
+        Err(other) => panic!("transaction failed outside the domain: {other:?}"),
+    }
+}
+
+fn must_commit(outcome: &WindowMutationOutcome) {
+    match outcome {
+        WindowMutationOutcome::Committed(_) => {}
+        WindowMutationOutcome::SubmittedForApproval(_) => {
+            panic!(
+                "named live door submitted for approval instead of writing; install the EUR threshold"
+            )
+        }
+    }
+}
+
+async fn publish_service(db: DBProvider<DbError>, registry: Arc<RegistryDouble>) -> PublishService {
+    PublishService::new(
+        db,
+        &LimitsConfig::default(),
+        FixtureGate::load(&committed_registry_path()),
+        registry as Arc<dyn CatalogVersionRegistryV1>,
+    )
+    .with_product_catalog(Arc::new(common::FixtureCatalog::default()))
+    .resolve_skus(&race_ctx(), &common::FixtureCatalog::default().sku_ids())
+    .await
+    .expect("fixture registry")
+}
+
+fn windows_on(db: DBProvider<DbError>, registry: Arc<RegistryDouble>) -> WindowService {
+    WindowService::new(db, registry as Arc<dyn CatalogVersionRegistryV1>)
+}
+
+async fn seed_publishable_draft() -> (Store, u64) {
+    let store = store().await;
+    common::declare_fixture_regions(&store.db, TENANT).await;
+    let created = store
+        .plans
+        .create_draft(
+            &scope(),
+            NewPlanDraft {
+                plan_name: None,
+                plan_id: PlanId::new(PLAN),
+                tenant_id: TENANT,
+                created_by: ACTOR,
+                created_at_utc: race_now(),
+                sku_id: OFFER_SKU,
+                plan_tier: Some("gold".to_owned()),
+                billing_cycle: Some(BillingCycle::Recurring),
+                frequency: Some(Frequency::Monthly),
+                plan_tier_override: false,
+                purchase_min_qty: None,
+                purchase_max_qty: None,
+                descriptor_ext: std::collections::BTreeMap::new(),
+                available_from: None,
+                available_to: None,
+                cloned_from: None,
+                correlation_id: TEST_CORRELATION,
+            },
+        )
+        .await
+        .expect("create the draft plan");
+    let after_phases = store
+        .shapes
+        .replace_phases(
+            &scope(),
+            TENANT,
+            PlanId::new(PLAN),
+            created.revision,
+            created.row_version,
+            vec![PlanPhase {
+                phase_id: PhaseId::new(PHASE),
+                kind: PhaseKind::Evergreen,
+                display_name: None,
+                ordinal: 0,
+                converts_to_phase_id: None,
+                phase_duration_days: None,
+                display_trial_days: None,
+            }],
+            race_stamp(),
+        )
+        .await
+        .expect("attach the phase chain");
+    let after_descriptors = store
+        .plans
+        .update_draft(
+            &scope(),
+            TENANT,
+            PlanId::new(PLAN),
+            created.revision,
+            after_phases.row_version,
+            PlanShapePatch {
+                descriptor_ext: Some(std::collections::BTreeMap::new()),
+                ..Default::default()
+            },
+            race_stamp(),
+        )
+        .await
+        .expect("attach the descriptor set");
+    store
+        .prices
+        .create_draft(
+            &scope(),
+            TENANT,
+            NewPriceDraft {
+                price_id: ROW,
+                scope_key: publishable_scope_key(),
+                content: publishable_row(9_900),
+                created_by: ACTOR,
+                created_at_utc: race_now(),
+                correlation_id: TEST_CORRELATION,
+            },
+        )
+        .await
+        .expect("author the price row");
+    (store, after_descriptors.row_version.get())
+}
+
+async fn apply_on_store(
+    store: &Store,
+    revision: u64,
+    expected: u64,
+    command: DraftWindowCommand,
+) -> u64 {
+    let conn = store.db.conn().expect("conn");
+    draft_window::apply_command(
+        &conn,
+        &scope(),
+        &owner_rev(revision),
+        expected,
+        command,
+        race_stamp(),
+    )
+    .await
+    .expect("apply draft-window command")
+}
+
+async fn capture_empty_baseline(store: &Store, expected: u64) -> u64 {
+    apply_on_store(store, 0, expected, DraftWindowCommand::RefreshBaseline).await
+}
+
+async fn put_covering(store: &Store, expected: u64, reason: &str) -> u64 {
+    apply_on_store(
+        store,
+        0,
+        expected,
+        DraftWindowCommand::Put(covering_create(COVER_WINDOW, reason, coverage_from(), None)),
+    )
+    .await
+}
+
+async fn first_publish(store: &Store, registry: Arc<RegistryDouble>, expected: u64) {
+    let publish = publish_service(store.db.clone(), registry).await;
+    publish
+        .commit(
+            &race_ctx(),
+            &scope(),
+            TENANT,
+            PlanPublishUnit::plan_content(PlanId::new(PLAN), 0),
+            RowVersion::new(expected),
+            PublishAuthorization::auto_publishable(),
+            ACTOR,
+            TEST_CORRELATION,
+            race_now(),
+        )
+        .await
+        .expect("first publish of the live-schedulable fixture");
+}
+
+async fn install_eur_threshold(store: &Store) {
+    let thresholds = ThresholdService::new(store.db.clone());
+    let unit = Uuid::from_u128(0x_aa_70);
+    let asserted = AssertedPolicy {
+        tag: thresholds
+            .state(&scope(), TENANT)
+            .await
+            .expect("the policy state reads")
+            .tag(),
+        now: race_now(),
+    };
+    thresholds
+        .propose(
+            &scope(),
+            TENANT,
+            unit,
+            race_now(),
+            vec![ThresholdEntry {
+                currency: CurrencyCode::new("EUR").expect("a valid code"),
+                basis: ThresholdBasis::Absolute { minor: 500 },
+            }],
+            asserted,
+            json!({ "material": true, "reason": "alwaysMaterialTrigger" }),
+            race_stamp(),
+        )
+        .await
+        .expect("the proposal opens its unit");
+    ApprovalService::new(store.db.clone())
+        .decide(
+            &scope(),
+            TENANT,
+            DecideRequest {
+                approval_id: unit,
+                decision: DecisionBy::Approve(APPROVER),
+                reason: None,
+                approver_regions: RegionGrant::Explicit(std::collections::BTreeSet::from([
+                    Region::new("eu").expect("a non-blank region"),
+                ])),
+                stamp: stamp_of(APPROVER, utc_ymd_hms(2099, 8, 3, 1, 0, 0)),
+                withdraw_authority: WithdrawAuthority::OwnUnitsOnly,
+            },
+        )
+        .await
+        .expect("an independent principal puts the policy in force");
+}
+
+async fn price_row_version(store: &Store) -> i64 {
+    store
+        .prices
+        .find(&scope(), TENANT, ROW)
+        .await
+        .expect("read the price")
+        .expect("the row exists")
+        .row_version
+        .get() as i64
+}
+
+async fn live_seq(store: &Store, window_id: Uuid) -> u64 {
+    let conn = store.db.conn().expect("conn");
+    window_repo::find(&conn, &scope(), TENANT, window_id)
+        .await
+        .expect("read the window")
+        .expect("the window exists")
+        .mutation_seq
 }
 
 async fn count_sql(conn: &DatabaseConnection, sql: &str) -> i64 {
@@ -648,34 +1029,63 @@ async fn assert_invariants(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires Docker (testcontainers)"]
 async fn a_draft_edit_is_serialized_against_publish() {
-    let store = seeded_plan().await;
-    let before = artifact_counts(&store.raw).await;
-    let started = Arc::new(Notify::new());
-    let release = Arc::new(Notify::new());
-    let first = hold_guard(&store.pg, Arc::clone(&started), Arc::clone(&release)).await;
-    started.notified().await;
+    let (store, version) = seed_publishable_draft().await;
+    let version = capture_empty_baseline(&store, version).await;
+    let version = put_covering(&store, version, "cover").await;
+    let registry = Arc::new(RegistryDouble::default());
+    let t2 = publish_service(
+        DBProvider::<DbError>::new(store.pg.db().await),
+        Arc::clone(&registry),
+    )
+    .await;
 
-    let db = store.pg.db().await;
+    let wrote = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let first = {
+        let db = store.pg.db().await;
+        let (wrote, release) = (Arc::clone(&wrote), Arc::clone(&release));
+        tokio::spawn(async move {
+            let (_db, out) = db
+                .in_transaction::<u64, DomainError, _>(move |txn| {
+                    Box::pin(async move {
+                        let next = draft_window::apply_command(
+                            txn,
+                            &scope(),
+                            &owner_rev(0),
+                            version,
+                            DraftWindowCommand::Put(covering_create(
+                                COVER_WINDOW,
+                                "raceReplace",
+                                coverage_from(),
+                                None,
+                            )),
+                            race_stamp(),
+                        )
+                        .await?;
+                        wrote.notify_one();
+                        release.notified().await;
+                        Ok(next)
+                    })
+                })
+                .await;
+            out
+        })
+    };
+    wrote.notified().await;
+
     let second = tokio::spawn(async move {
-        let publish = PublishService::new(
-            DBProvider::<DbError>::new(db),
-            &LimitsConfig::default(),
-            FixtureGate::closed(),
-            Arc::new(UnconfiguredCatalogVersionRegistryV1),
-        );
-        publish
-            .commit(
-                &race_ctx(),
-                &scope(),
-                TENANT,
-                PlanPublishUnit::plan_content(PlanId::new(PLAN), 0),
-                RowVersion::new(0),
-                PublishAuthorization::auto_publishable(),
-                ACTOR,
-                TEST_CORRELATION,
-                t(1),
-            )
-            .await
+        t2.commit(
+            &race_ctx(),
+            &scope(),
+            TENANT,
+            PlanPublishUnit::plan_content(PlanId::new(PLAN), 0),
+            RowVersion::new(version),
+            PublishAuthorization::auto_publishable(),
+            ACTOR,
+            TEST_CORRELATION,
+            race_now(),
+        )
+        .await
     });
 
     pg_support::wait_until_a_backend_blocks(&store.raw).await;
@@ -684,45 +1094,137 @@ async fn a_draft_edit_is_serialized_against_publish() {
         .await
         .expect("T1 must finish once released")
         .expect("its task must not panic")
-        .expect("T1 only held the guard");
+        .expect("T1's named Put must commit");
+    let after_t1 = artifact_counts(&store.raw).await;
     let second = tokio::time::timeout(RACE_TIMEOUT, second)
         .await
         .expect("T2 must reach a verdict once T1 releases")
         .expect("its task must not panic");
+    let err = second.expect_err("publish must lose to T1's version bump");
     assert!(
-        second.is_err(),
-        "publish of an incomplete draft must not succeed, got {second:?}"
+        matches!(err, DomainError::StaleVersion(_)),
+        "T2's conflict must be the version T1 moved, got {err:?}"
     );
-    assert_invariants(&store.raw, &[], 0, before, true).await;
+    assert_invariants(
+        &store.raw,
+        &[],
+        price_row_version(&store).await,
+        after_t1,
+        true,
+    )
+    .await;
+    let listed = {
+        let conn = store.db.conn().expect("conn");
+        draft_window_repo::list(&conn, &scope(), &owner_rev(0))
+            .await
+            .expect("list draft operations")
+    };
+    assert_eq!(
+        listed,
+        vec![covering_create(
+            COVER_WINDOW,
+            "raceReplace",
+            coverage_from(),
+            None,
+        )],
+        "T1's Put is the winner's authorized draft operation"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires Docker (testcontainers)"]
 async fn a_live_adjust_is_serialized_against_publish() {
-    let store = seeded_plan().await;
-    let before = artifact_counts(&store.raw).await;
-    let started = Arc::new(Notify::new());
-    let release = Arc::new(Notify::new());
-    let first = hold_guard(&store.pg, Arc::clone(&started), Arc::clone(&release)).await;
-    started.notified().await;
+    let (store, version) = seed_publishable_draft().await;
+    let version = capture_empty_baseline(&store, version).await;
+    let version = put_covering(&store, version, "cover").await;
+    let registry = Arc::new(RegistryDouble::default());
+    first_publish(&store, Arc::clone(&registry), version).await;
+    let conn = store.db.conn().expect("conn");
+    common::schedule_coverage_window(&conn, &scope(), TENANT, ROW, race_stamp()).await;
+    install_eur_threshold(&store).await;
+    let opened = store
+        .plans
+        .open_revision(&scope(), TENANT, PlanId::new(PLAN), race_stamp())
+        .await
+        .expect("open the successor T2 will publish");
+    let draft_version = apply_on_store(
+        &store,
+        opened.revision,
+        opened.row_version.get(),
+        DraftWindowCommand::RefreshBaseline,
+    )
+    .await;
+    let draft_version = apply_on_store(
+        &store,
+        opened.revision,
+        draft_version,
+        DraftWindowCommand::Put(covering_create(
+            COVER_WINDOW,
+            "successorCover",
+            coverage_to(),
+            None,
+        )),
+    )
+    .await;
+    let cover_id = common::coverage_window_id(ROW);
+    let seq = live_seq(&store, cover_id).await;
+    let lengthened = utc_ymd_hms(2099, 10, 1, 0, 0, 0);
 
-    let db = store.pg.db().await;
+    let t2 = publish_service(
+        DBProvider::<DbError>::new(store.pg.db().await),
+        Arc::clone(&registry),
+    )
+    .await;
+    let t1_windows = windows_on(
+        DBProvider::<DbError>::new(store.pg.db().await),
+        Arc::clone(&registry),
+    );
+
+    let wrote = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let first = {
+        let db = store.pg.db().await;
+        let (wrote, release) = (Arc::clone(&wrote), Arc::clone(&release));
+        tokio::spawn(async move {
+            let (_db, out) = db
+                .in_transaction::<WindowMutationOutcome, DomainError, _>(move |txn| {
+                    Box::pin(async move {
+                        let outcome = t1_windows
+                            .adjust_effective_to_in(
+                                txn,
+                                &race_ctx(),
+                                &scope(),
+                                TENANT,
+                                cover_id,
+                                Some(lengthened),
+                                seq,
+                                bss_pricing::api::rest::windows::verdict_json,
+                                race_stamp(),
+                            )
+                            .await?;
+                        must_commit(&outcome);
+                        wrote.notify_one();
+                        release.notified().await;
+                        Ok(outcome)
+                    })
+                })
+                .await;
+            out
+        })
+    };
+    wrote.notified().await;
+
     let second = tokio::spawn(async move {
-        WindowService::new(
-            DBProvider::<DbError>::new(db),
-            Arc::new(UnconfiguredCatalogVersionRegistryV1),
-        )
-        .schedule(
+        t2.commit(
             &race_ctx(),
             &scope(),
             TENANT,
-            ROW,
-            Uuid::from_u128(0x_e2),
-            t(8),
-            Some(t(20)),
-            "raceProbe".to_owned(),
-            race_verdict_json,
-            stamp(),
+            PlanPublishUnit::plan_content(PlanId::new(PLAN), opened.revision),
+            RowVersion::new(draft_version),
+            PublishAuthorization::auto_publishable(),
+            ACTOR,
+            TEST_CORRELATION,
+            race_now(),
         )
         .await
     });
@@ -733,27 +1235,73 @@ async fn a_live_adjust_is_serialized_against_publish() {
         .await
         .expect("T1 must finish once released")
         .expect("its task must not panic")
-        .expect("T1 only held the guard");
+        .expect("T1's named adjust must commit");
+    let after_t1 = artifact_counts(&store.raw).await;
     let second = tokio::time::timeout(RACE_TIMEOUT, second)
         .await
         .expect("T2 must reach a verdict once T1 releases")
         .expect("its task must not panic");
+    let err = second.expect_err("publish must lose to T1's live lengthening");
     assert!(
-        second.is_err(),
-        "live schedule against a draft-only plan must not write a window, got {second:?}"
+        matches!(err, DomainError::WindowBaselineChanged(_)),
+        "T2's conflict must be the baseline T1 moved, got {err:?}"
     );
-    assert_invariants(&store.raw, &[], 0, before, true).await;
+    assert_invariants(
+        &store.raw,
+        &[cover_id.to_string()],
+        price_row_version(&store).await,
+        after_t1,
+        true,
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires Docker (testcontainers)"]
 async fn a_row_key_edit_is_serialized_against_submit() {
-    let store = seeded_plan().await;
-    let before = artifact_counts(&store.raw).await;
-    let started = Arc::new(Notify::new());
+    let (store, _version) = seed_publishable_draft().await;
+    let record = store
+        .prices
+        .find(&scope(), TENANT, ROW)
+        .await
+        .expect("read the draft")
+        .expect("the row exists");
+    let expected = record.row_version;
+    let mut content = record.content();
+    content.row.amount_minor = Some(MinorAmount::new(10_900).expect("a non-negative amount"));
+
+    let wrote = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
-    let first = hold_guard(&store.pg, Arc::clone(&started), Arc::clone(&release)).await;
-    started.notified().await;
+    let first = {
+        let db = store.pg.db().await;
+        let (wrote, release) = (Arc::clone(&wrote), Arc::clone(&release));
+        tokio::spawn(async move {
+            let (_db, out) = db
+                .in_transaction::<bss_pricing::domain::price_record::PriceRecord, RepoError, _>(
+                    move |txn| {
+                        Box::pin(async move {
+                            let updated = price_repo::update_draft_on(
+                                txn,
+                                &scope(),
+                                TENANT,
+                                ROW,
+                                expected,
+                                content,
+                                race_stamp(),
+                                None,
+                            )
+                            .await?;
+                            wrote.notify_one();
+                            release.notified().await;
+                            Ok(updated)
+                        })
+                    },
+                )
+                .await;
+            out
+        })
+    };
+    wrote.notified().await;
 
     let db = store.pg.db().await;
     let second = tokio::spawn(async move {
@@ -764,7 +1312,7 @@ async fn a_row_key_edit_is_serialized_against_submit() {
                 PlanId::new(PLAN),
                 Uuid::from_u128(0x_aa_01),
                 json!({}),
-                stamp(),
+                race_stamp(),
             )
             .await
     });
@@ -775,31 +1323,66 @@ async fn a_row_key_edit_is_serialized_against_submit() {
         .await
         .expect("T1 must finish once released")
         .expect("its task must not panic")
-        .expect("T1 only held the guard");
+        .expect("T1's named update_draft must commit");
+    let after_t1 = artifact_counts(&store.raw).await;
     let second = tokio::time::timeout(RACE_TIMEOUT, second)
         .await
         .expect("T2 must reach a verdict once T1 releases")
         .expect("its task must not panic");
-    // Submit may succeed after T1 releases: that is one valid serialized result.
-    // A failure must add no artifacts; a success must not publish windows.
+    let version = price_row_version(&store).await;
     match second {
-        Ok(_) => assert_invariants(&store.raw, &[], 0, before, false).await,
-        Err(_) => assert_invariants(&store.raw, &[], 0, before, true).await,
+        Ok(_) => assert_invariants(&store.raw, &[], version, after_t1, false).await,
+        Err(err) => {
+            assert!(
+                is_version_overlap_or_baseline(&err),
+                "submit may succeed after T1 or conflict on T1's write, got {err:?}"
+            );
+            assert_invariants(&store.raw, &[], version, after_t1, true).await;
+        }
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires Docker (testcontainers)"]
 async fn concurrent_new_draft_windows_are_serialized() {
-    let store = seeded_plan().await;
-    let before = artifact_counts(&store.raw).await;
-    let started = Arc::new(Notify::new());
+    let (store, version) = seed_publishable_draft().await;
+    let version = capture_empty_baseline(&store, version).await;
+
+    let wrote = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
-    let first = hold_guard(&store.pg, Arc::clone(&started), Arc::clone(&release)).await;
-    started.notified().await;
+    let first = {
+        let db = store.pg.db().await;
+        let (wrote, release) = (Arc::clone(&wrote), Arc::clone(&release));
+        tokio::spawn(async move {
+            let (_db, out) = db
+                .in_transaction::<u64, DomainError, _>(move |txn| {
+                    Box::pin(async move {
+                        let next = draft_window::apply_command(
+                            txn,
+                            &scope(),
+                            &owner_rev(0),
+                            version,
+                            DraftWindowCommand::Put(covering_create(
+                                DRAFT_A,
+                                "windowA",
+                                coverage_from(),
+                                None,
+                            )),
+                            race_stamp(),
+                        )
+                        .await?;
+                        wrote.notify_one();
+                        release.notified().await;
+                        Ok(next)
+                    })
+                })
+                .await;
+            out
+        })
+    };
+    wrote.notified().await;
 
     let db = store.pg.db().await;
-    let window_id = Uuid::from_u128(0x_d7_b2);
     let second = tokio::spawn(async move {
         let (_db, out) = db
             .in_transaction::<u64, DomainError, _>(move |txn| {
@@ -807,10 +1390,15 @@ async fn concurrent_new_draft_windows_are_serialized() {
                     draft_window::apply_command(
                         txn,
                         &scope(),
-                        &owner(),
-                        0,
-                        DraftWindowCommand::Put(symbolic_create(window_id)),
-                        stamp(),
+                        &owner_rev(0),
+                        version.saturating_add(1),
+                        DraftWindowCommand::Put(covering_create(
+                            DRAFT_B,
+                            "windowB",
+                            coverage_from(),
+                            None,
+                        )),
+                        race_stamp(),
                     )
                     .await
                 })
@@ -825,71 +1413,109 @@ async fn concurrent_new_draft_windows_are_serialized() {
         .await
         .expect("T1 must finish once released")
         .expect("its task must not panic")
-        .expect("T1 only held the guard");
+        .expect("T1's named Put A must commit");
+    let after_t1 = artifact_counts(&store.raw).await;
     let second = tokio::time::timeout(RACE_TIMEOUT, second)
         .await
         .expect("T2 must reach a verdict once T1 releases")
         .expect("its task must not panic");
-    second.expect("T2's draft put is uncontended after T1 releases");
-    // Draft operations are not published windows. The authorized live set stays empty.
-    assert_invariants(&store.raw, &[], 0, before, false).await;
+    let err = domain_from_tx(second).expect_err("Put B must not also land on the overlapping key");
+    assert!(
+        is_version_overlap_or_baseline(&err),
+        "T2's conflict must be overlap or the version T1 moved, got {err:?}"
+    );
+    assert_invariants(
+        &store.raw,
+        &[],
+        price_row_version(&store).await,
+        after_t1,
+        true,
+    )
+    .await;
     let listed = {
         let conn = store.db.conn().expect("conn");
-        draft_window_repo::list(&conn, &scope(), &owner())
+        draft_window_repo::list(&conn, &scope(), &owner_rev(0))
             .await
             .expect("list draft operations")
     };
-    assert_eq!(listed, vec![symbolic_create(window_id)]);
+    assert_eq!(
+        listed,
+        vec![covering_create(DRAFT_A, "windowA", coverage_from(), None,)]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires Docker (testcontainers)"]
 async fn two_overlapping_live_inserts_are_serialized() {
-    let store = seeded_plan().await;
-    let before = artifact_counts(&store.raw).await;
-    let started = Arc::new(Notify::new());
+    let (store, version) = seed_publishable_draft().await;
+    let version = capture_empty_baseline(&store, version).await;
+    let version = put_covering(&store, version, "cover").await;
+    let registry = Arc::new(RegistryDouble::default());
+    first_publish(&store, Arc::clone(&registry), version).await;
+    let conn = store.db.conn().expect("conn");
+    common::schedule_coverage_window(&conn, &scope(), TENANT, ROW, race_stamp()).await;
+    install_eur_threshold(&store).await;
+
+    let t1_windows = windows_on(
+        DBProvider::<DbError>::new(store.pg.db().await),
+        Arc::clone(&registry),
+    );
+    let t2_windows = windows_on(
+        DBProvider::<DbError>::new(store.pg.db().await),
+        Arc::clone(&registry),
+    );
+
+    let wrote = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
-    let db_a = store.pg.db().await;
     let first = {
-        let started = Arc::clone(&started);
-        let release = Arc::clone(&release);
+        let db = store.pg.db().await;
+        let (wrote, release) = (Arc::clone(&wrote), Arc::clone(&release));
         tokio::spawn(async move {
-            let (_db, out) = db_a
-                .in_transaction::<(), RepoError, _>(move |txn| {
+            let (_db, out) = db
+                .in_transaction::<WindowMutationOutcome, DomainError, _>(move |txn| {
                     Box::pin(async move {
-                        window_guard_repo::acquire(txn, &scope(), TENANT, PLAN).await?;
-                        started.notify_one();
-                        release.notified().await;
-                        window_repo::schedule(txn, &scope(), live_window(0x_e1, 8, 16), stamp())
+                        let outcome = t1_windows
+                            .schedule_in(
+                                txn,
+                                &race_ctx(),
+                                &scope(),
+                                TENANT,
+                                ROW,
+                                LIVE_A,
+                                coverage_to(),
+                                Some(utc_ymd_hms(2099, 9, 16, 0, 0, 0)),
+                                "windowA".to_owned(),
+                                bss_pricing::api::rest::windows::verdict_json,
+                                race_stamp(),
+                            )
                             .await?;
-                        Ok(())
+                        must_commit(&outcome);
+                        wrote.notify_one();
+                        release.notified().await;
+                        Ok(outcome)
                     })
                 })
                 .await;
             out
         })
     };
-    started.notified().await;
+    wrote.notified().await;
 
-    let db_b = store.pg.db().await;
     let second = tokio::spawn(async move {
-        WindowService::new(
-            DBProvider::<DbError>::new(db_b),
-            Arc::new(UnconfiguredCatalogVersionRegistryV1),
-        )
-        .schedule(
-            &race_ctx(),
-            &scope(),
-            TENANT,
-            ROW,
-            Uuid::from_u128(0x_e2),
-            t(10),
-            Some(t(20)),
-            "raceProbe".to_owned(),
-            race_verdict_json,
-            stamp(),
-        )
-        .await
+        t2_windows
+            .schedule(
+                &race_ctx(),
+                &scope(),
+                TENANT,
+                ROW,
+                LIVE_B,
+                utc_ymd_hms(2099, 9, 8, 0, 0, 0),
+                Some(utc_ymd_hms(2099, 9, 20, 0, 0, 0)),
+                "windowB".to_owned(),
+                bss_pricing::api::rest::windows::verdict_json,
+                race_stamp(),
+            )
+            .await
     });
 
     pg_support::wait_until_a_backend_blocks(&store.raw).await;
@@ -898,21 +1524,35 @@ async fn two_overlapping_live_inserts_are_serialized() {
         .await
         .expect("T1 must finish once released")
         .expect("its task must not panic")
-        .expect("T1's overlapping insert must commit");
+        .expect("T1's named schedule must commit");
+    let after_t1 = artifact_counts(&store.raw).await;
     let second = tokio::time::timeout(RACE_TIMEOUT, second)
         .await
         .expect("T2 must reach a verdict once T1 releases")
         .expect("its task must not panic");
-    assert!(
-        second.is_err(),
-        "T2 must not also commit an overlapping live window, got {second:?}"
-    );
+    match second {
+        Ok(WindowMutationOutcome::Committed(_)) => {
+            panic!("T2 must not also commit an overlapping live window")
+        }
+        Ok(WindowMutationOutcome::SubmittedForApproval(_)) => {
+            panic!("T2 submitted for approval instead of overlapping")
+        }
+        Err(err) => assert!(
+            matches!(err, DomainError::WindowOverlap(_)),
+            "T2's conflict must be the overlap T1 committed, got {err:?}"
+        ),
+    }
+    let mut authorized = vec![
+        common::coverage_window_id(ROW).to_string(),
+        LIVE_A.to_string(),
+    ];
+    authorized.sort();
     assert_invariants(
         &store.raw,
-        &[Uuid::from_u128(0x_e1).to_string()],
-        0,
-        before,
-        false,
+        &authorized,
+        price_row_version(&store).await,
+        after_t1,
+        true,
     )
     .await;
 }

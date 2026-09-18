@@ -713,104 +713,23 @@ impl PriceRepo {
         stamp: AuditStamp,
         on_behalf_of: Option<Uuid>,
     ) -> Result<PriceRecord, RepoError> {
-        let horizon = content.grandfather_until;
-        // Before the row is even read: an instant the catalog cannot compare is
-        // refused wherever it arrives, and this path can reject it without a
-        // round trip.
-        check_authored_instant("grandfatherUntil", horizon)?;
-        let assignments = content_assignments(content_model(&content)?);
-        let bands = band_models(tenant_id, price_id, &content.row.bands)?;
-        // The **canonical** line, because that is what the stored side is: the
-        // guard below compares the two, and comparing a raw submission against a
-        // normalized column answered `USAGE_LINE_AXIS_MISMATCH` for a `PATCH`
-        // that resubmitted the row's own line with a stray space — a refusal that
-        // named a move nobody made and left the row unrepairable in place.
-        let content_line = canonical_usage_line(&content.row);
-        let Some(guard) = swap_guard(tenant_id, price_id, expected) else {
-            let conn = self.conn()?;
-            return Err(refuse(&conn, scope, tenant_id, price_id, expected).await);
-        };
-
         let scope = scope.clone();
         let (_, outcome) = self
             .db
             .db()
             .in_transaction::<PriceRecord, RepoError, _>(move |txn| {
                 Box::pin(async move {
-                    // Guard owner: PriceRepo::update_draft opens this transaction for
-                    // interactive PATCH and bulk edits.
-                    let plan_id = load_scope_key(txn, &scope, tenant_id, price_id)
-                        .await?
-                        .ok_or_else(|| not_found(price_id))?
-                        .plan_id();
-                    window_guard_repo::acquire(txn, &scope, tenant_id, plan_id.get()).await?;
-                    // `inst-bk-lock`, in the door rather than on a surface: a rule
-                    // that lives on one authoring path is not a rule, and this is
-                    // the second path onto the same rows.
-                    refuse_if_locked_elsewhere(txn, &scope, tenant_id, price_id, on_behalf_of)
-                        .await?;
-                    let Some(row) =
-                        mutable_draft(txn, &scope, tenant_id, price_id, expected).await?
-                    else {
-                        return Err(refuse(txn, &scope, tenant_id, price_id, expected).await);
-                    };
-                    // The row's class cannot move on an update, so the stored
-                    // one is the one the submitted horizon has to pair with.
-                    check_grandfather_horizon(horizon, read_eligibility(&row)?)?;
-                    // **And neither can its usage line, since D-196 made the pair
-                    // key axes.** This path used to rewrite `meter` and
-                    // `dimension_key` as ordinary content columns, which — once
-                    // they became axes — moved the row onto a *different*
-                    // canonical scope key with no occupancy check of any kind: a
-                    // `PATCH` could land a draft on a key another row already
-                    // holds, and the only thing that would notice is the index,
-                    // as a driver error. Found by this door's own round-trip test
-                    // after clause (3) attached the pair to the loaded key.
-                    //
-                    // A refusal rather than `charge_kind`'s silent ignore, and
-                    // this doc's own sentence is the reason: moving a key "is
-                    // exactly what deleting the draft and authoring another one
-                    // is", which is a remedy worth naming. `charge_kind` is
-                    // ignored because the store keeps no second value to have
-                    // disagreed about; here it keeps one and the caller can see
-                    // it.
-                    check_update_keeps_the_line(&row, &content_line)?;
-                    delete_bands(txn, &scope, tenant_id, price_id).await?;
-                    let mut update = price::Entity::update_many().secure().scope_with(&scope);
-                    for (column, value) in assignments {
-                        update = update.col_expr(column, Expr::value(value));
-                    }
-                    let result = update
-                        .col_expr(
-                            price::Column::RowVersion,
-                            Expr::col(price::Column::RowVersion).add(1_i64),
-                        )
-                        .filter(guard)
-                        .exec(txn)
-                        .await
-                        .map_err(|e| RepoError::Db(format!("update price draft: {e}")))?;
-                    // The read above is not the guard — a concurrent publish can
-                    // land between it and this statement — so a swap that
-                    // matched nothing is still resolved, and the band delete it
-                    // has already done is undone by the rollback.
-                    if result.rows_affected == 0 {
-                        return Err(refuse(txn, &scope, tenant_id, price_id, expected).await);
-                    }
-                    insert_bands(txn, &scope, bands).await?;
-                    let updated = load_record(txn, &scope, tenant_id, price_id)
-                        .await?
-                        .ok_or_else(|| not_found(price_id))?;
-                    record_price_mutation(
+                    Box::pin(update_draft_on(
                         txn,
                         &scope,
                         tenant_id,
-                        &updated,
-                        AuditAction::Update,
-                        Some(expected),
+                        price_id,
+                        expected,
+                        content,
                         stamp,
-                    )
-                    .await?;
-                    Ok(updated)
+                        on_behalf_of,
+                    ))
+                    .await
                 })
             })
             .await;
@@ -4073,6 +3992,83 @@ pub async fn create_draft_on(
         prepare_draft(tenant_id, draft)?,
     ))
     .await
+}
+
+/// [`PriceRepo::update_draft`]'s body, on a runner the caller owns.
+///
+/// Guard owner: the caller's transaction. The struct method opens one for
+/// interactive PATCH and bulk edits; race tests park after this write.
+///
+/// # Errors
+/// Whatever [`PriceRepo::update_draft`] documents.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "PriceRepo::update_draft's argument list, plus the transaction the caller owns"
+)]
+pub async fn update_draft_on(
+    runner: &DbTx<'_>,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    price_id: Uuid,
+    expected: RowVersion,
+    content: PriceContent,
+    stamp: AuditStamp,
+    on_behalf_of: Option<Uuid>,
+) -> Result<PriceRecord, RepoError> {
+    let horizon = content.grandfather_until;
+    check_authored_instant("grandfatherUntil", horizon)?;
+    let assignments = content_assignments(content_model(&content)?);
+    let bands = band_models(tenant_id, price_id, &content.row.bands)?;
+    let content_line = canonical_usage_line(&content.row);
+    let Some(guard) = swap_guard(tenant_id, price_id, expected) else {
+        return Err(refuse(runner, scope, tenant_id, price_id, expected).await);
+    };
+
+    // Guard owner: PriceRepo::update_draft / update_draft_on is the txn owner for
+    // interactive PATCH and bulk edits.
+    let plan_id = load_scope_key(runner, scope, tenant_id, price_id)
+        .await?
+        .ok_or_else(|| not_found(price_id))?
+        .plan_id();
+    window_guard_repo::acquire(runner, scope, tenant_id, plan_id.get()).await?;
+    refuse_if_locked_elsewhere(runner, scope, tenant_id, price_id, on_behalf_of).await?;
+    let Some(row) = mutable_draft(runner, scope, tenant_id, price_id, expected).await? else {
+        return Err(refuse(runner, scope, tenant_id, price_id, expected).await);
+    };
+    check_grandfather_horizon(horizon, read_eligibility(&row)?)?;
+    check_update_keeps_the_line(&row, &content_line)?;
+    delete_bands(runner, scope, tenant_id, price_id).await?;
+    let mut update = price::Entity::update_many().secure().scope_with(scope);
+    for (column, value) in assignments {
+        update = update.col_expr(column, Expr::value(value));
+    }
+    let result = update
+        .col_expr(
+            price::Column::RowVersion,
+            Expr::col(price::Column::RowVersion).add(1_i64),
+        )
+        .filter(guard)
+        .exec(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("update price draft: {e}")))?;
+    if result.rows_affected == 0 {
+        return Err(refuse(runner, scope, tenant_id, price_id, expected).await);
+    }
+    insert_bands(runner, scope, bands).await?;
+    let updated = load_record(runner, scope, tenant_id, price_id)
+        .await?
+        .ok_or_else(|| not_found(price_id))?;
+    record_price_mutation(
+        runner,
+        scope,
+        tenant_id,
+        &updated,
+        AuditAction::Update,
+        Some(expected),
+        stamp,
+    )
+    .await?;
+    Ok(updated)
 }
 
 /// The whole insert: content, plus the columns only a creation writes.

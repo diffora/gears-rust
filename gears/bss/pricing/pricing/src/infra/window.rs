@@ -605,6 +605,68 @@ impl WindowService {
         .await
     }
 
+    /// [`Self::adjust_effective_to`] **inside a transaction the caller owns**.
+    ///
+    /// Same domain pre-check and plan closure; the caller holds the transaction
+    /// so a race test can park after the write. HTTP PATCH still uses
+    /// [`Self::adjust_effective_to`], which opens its own transaction.
+    ///
+    /// # Errors
+    /// [`Self::adjust_effective_to`]'s, exactly.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "`Self::adjust_effective_to`'s reason, plus the transaction the caller owns"
+    )]
+    pub async fn adjust_effective_to_in(
+        &self,
+        runner: &impl DBRunner,
+        ctx: &SecurityContext,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        window_id: Uuid,
+        effective_to: Option<OffsetDateTime>,
+        expected_seq: u64,
+        verdict_json: VerdictJson,
+        stamp: AuditStamp,
+    ) -> Result<WindowMutationOutcome, DomainError> {
+        let now = stamp.recorded_at;
+        mutate_in(
+            runner,
+            &self.registry,
+            ctx,
+            scope,
+            tenant_id,
+            window_id,
+            Subject::Existing,
+            stamp,
+            verdict_json,
+            move |plan| {
+                let current = plan.current.as_ref().ok_or_else(|| DomainError::NotFound {
+                    subject: "price window".to_owned(),
+                    id: window_id.to_string(),
+                })?;
+                window::check_effective_to_adjustment(
+                    &WindowInterval::new(
+                        current.effective_from,
+                        current.effective_to,
+                        current.state,
+                    ),
+                    effective_to,
+                    now,
+                )?;
+                Ok(Planned {
+                    price_id: current.price_id,
+                    effective_from: current.effective_from,
+                    effective_to,
+                    reason_code: current.reason_code.clone(),
+                    op: Op::Adjust { expected_seq },
+                    plan,
+                })
+            },
+        )
+        .await
+    }
+
     /// Cancel a not-yet-active window (`DELETE /price-windows/{windowId}`).
     ///
     /// A **state flip**, never a deletion: the store refuses `DELETE`
