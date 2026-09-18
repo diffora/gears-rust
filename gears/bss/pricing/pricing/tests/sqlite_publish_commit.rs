@@ -50,6 +50,9 @@ use bss_pricing::domain::contracts::{
     BillingAnchorPolicy, EntitlementGrants, GrantSet, PlanChangeContract, ProrationBasis,
     ProrationContract, UsageCounterOnPlanChange,
 };
+use bss_pricing::domain::draft_window::{
+    DraftStart, DraftWindowAction, DraftWindowEntry, DraftWindowOwner,
+};
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::evaluation_policy::EVALUATION_POLICY_GENERATION;
 use bss_pricing::domain::instant::utc_ymd_hms;
@@ -65,7 +68,9 @@ use bss_pricing::domain::scope_key::{
     ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
 };
 use bss_pricing::domain::snapshot::VersionRef;
+use bss_pricing::domain::window::WindowState;
 use bss_pricing::infra::approval::{ApprovalService, DecideRequest, RegionGrant};
+use bss_pricing::infra::draft_window::{self, DraftWindowCommand};
 use bss_pricing::infra::fixture_gate::FixtureGate;
 use bss_pricing::infra::metrics::test_harness::MetricsHarness;
 use bss_pricing::infra::publish::PublishService;
@@ -79,7 +84,7 @@ use bss_pricing::infra::storage::repo::{
 use bss_pricing::infra::storage::repo::{
     IdempotencyGate, NewAuditEntry, NewBulkOperation, NewMembership, NewOutboxEvent, NewPlanDraft,
     NewPriceDraft, PlanPublishedPayload, PlanRepo, PlanShapeRepo, PriceRepo, audit_repo, bulk_repo,
-    group_membership_repo, outbox_repo,
+    draft_window_repo, group_membership_repo, outbox_repo, window_repo,
 };
 use bss_pricing_sdk::catalog_version::CatalogVersion;
 use bss_pricing_sdk::catalog_version_registry::{
@@ -177,6 +182,16 @@ const CORRELATION: Uuid = Uuid::from_u128(0xc0_11);
 /// `chk_pricing_approval_distinct_principals` and `inst-tp-distinct` both
 /// require of an approve.
 const APPROVER: Uuid = Uuid::from_u128(0xac_11);
+/// Authored id of the covering create [`seed_publishable`] writes.
+const COVER_WINDOW: Uuid = Uuid::from_u128(0x_c0_7e);
+const DROP_WINDOW: Uuid = Uuid::from_u128(0x_c0_22);
+const NEW_WINDOW: Uuid = Uuid::from_u128(0x_c0_33);
+const STOLEN_WINDOW: Uuid = Uuid::from_u128(0x_5_701e);
+const LATE_PRICE: Uuid = Uuid::from_u128(0xb_0002);
+const LATE_WINDOW: Uuid = Uuid::from_u128(0x_c0_1a);
+const GATED_WINDOW: Uuid = Uuid::from_u128(0x_c0_1b);
+const TRIAL_WINDOW: Uuid = Uuid::from_u128(0x_c0_1c);
+const SECOND_MARKET_WINDOW: Uuid = Uuid::from_u128(0x_c0_1d);
 
 fn plan_id() -> PlanId {
     PlanId::new(Uuid::from_u128(0x9_1a4))
@@ -390,17 +405,132 @@ async fn seed_publishable(h: &Harness) -> (u64, RowVersion, Uuid) {
         .await
         .expect("author the price row");
 
-    // `inst-wc-required`: the row does not publish until its canonical scope key
-    // holds an active or scheduled window. Thirteen tests in this file reddened
-    // when the rule registered, every one of them because the plan they publish
-    // had no window at all.
-    //
-    // The interval is `common::schedule_coverage_window`'s, not this file's, so
-    // the seed cannot drift from the three other suites that owe the same thing.
-    let conn = h.provider.conn().expect("conn");
-    common::schedule_coverage_window(&conn, &h.scope, TENANT, price_id, stamp()).await;
+    // `inst-wc-required`: the row does not publish until the composed plane holds
+    // an explicit covering intention. Live seed windows are not coverage.
+    let version = author_covering(
+        h,
+        created.revision,
+        after_descriptors.row_version,
+        price_id,
+        COVER_WINDOW,
+        DraftStart::AtPublish,
+        None,
+        stamp(),
+    )
+    .await;
 
-    (created.revision, after_descriptors.row_version, price_id)
+    (created.revision, version, price_id)
+}
+
+fn draft_owner(revision: u64) -> DraftWindowOwner {
+    DraftWindowOwner {
+        tenant_id: TENANT,
+        plan_id: plan_id().get(),
+        plan_revision: revision,
+    }
+}
+
+async fn apply_draft(
+    h: &Harness,
+    revision: u64,
+    expected: RowVersion,
+    command: DraftWindowCommand,
+    when: bss_pricing::domain::audit::AuditStamp,
+) -> RowVersion {
+    let conn = h.provider.conn().expect("conn");
+    let next = draft_window::apply_command(
+        &conn,
+        &h.scope,
+        &draft_owner(revision),
+        expected.get(),
+        command,
+        when,
+    )
+    .await
+    .expect("apply a draft-window command");
+    RowVersion::new(next)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn author_covering(
+    h: &Harness,
+    revision: u64,
+    expected: RowVersion,
+    price_id: Uuid,
+    window_id: Uuid,
+    start: DraftStart,
+    effective_to: Option<OffsetDateTime>,
+    when: bss_pricing::domain::audit::AuditStamp,
+) -> RowVersion {
+    apply_draft(
+        h,
+        revision,
+        expected,
+        DraftWindowCommand::Put(DraftWindowEntry {
+            operation_id: window_id,
+            action: DraftWindowAction::Create {
+                window_id,
+                price_id,
+                start,
+                effective_to,
+            },
+            reason_code: "launch".to_owned(),
+        }),
+        when,
+    )
+    .await
+}
+
+async fn capture_baseline(h: &Harness, revision: u64, expected: RowVersion) -> RowVersion {
+    apply_draft(
+        h,
+        revision,
+        expected,
+        DraftWindowCommand::RefreshBaseline,
+        stamp(),
+    )
+    .await
+}
+
+async fn current_draft_version(h: &Harness) -> RowVersion {
+    h.plans
+        .find_open_draft(&h.scope, TENANT, plan_id())
+        .await
+        .expect("read the open draft")
+        .expect("there is one")
+        .row_version
+}
+
+async fn plan_windows(h: &Harness) -> Vec<window_repo::WindowRecord> {
+    let conn = h.provider.conn().expect("conn");
+    window_repo::list_for_plan(&conn, &h.scope, TENANT, plan_id())
+        .await
+        .expect("list the plan's windows")
+}
+
+async fn draft_entries(h: &Harness, revision: u64) -> Vec<DraftWindowEntry> {
+    let conn = h.provider.conn().expect("conn");
+    draft_window_repo::list(&conn, &h.scope, &draft_owner(revision))
+        .await
+        .expect("list draft intentions")
+}
+
+async fn assert_commit_wrote_nothing(h: &Harness, revision: u64, version: RowVersion) {
+    let still = h
+        .plans
+        .find_revision(&h.scope, TENANT, plan_id(), revision)
+        .await
+        .expect("read the revision")
+        .expect("it is there");
+    assert_eq!(still.lifecycle_state, LifecycleState::Draft);
+    assert_eq!(still.row_version, version, "its tag did not move either");
+    assert!(version_refs(h).await.is_empty());
+    assert!(outbox_rows(h).await.is_empty());
+    assert!(
+        publish_records(h).await.is_empty(),
+        "the refusal wrote no publish record; the authoring seeds' records are theirs"
+    );
+    assert_seam_holds(h).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -520,15 +650,9 @@ async fn publish_records(h: &Harness) -> Vec<audit_log::Model> {
 
 /// How many records the authoring seeds leave on the plan's segment: the plan
 /// create, the two facet edits [`seed_publishable`] makes (`replace_phases` and
-/// `set_descriptor_set`), and the price row's own `create` — which
-/// `record_price_mutation` files on the **plan's** chain, not a chain of its own.
-///
-/// The old decomposition said "one per facet the seed sets (phases, add-on rules,
-/// descriptors)", and the seed sets no add-on rules; the fourth record is the
-/// price row's. Three cases derive an expected `seq` from this constant, so a
-/// maintainer re-deriving it from a wrong decomposition after a seed change gets
-/// the offset wrong in a way that still compiles.
-const SEEDED_AUTHORING_RECORDS: i64 = 4;
+/// `set_descriptor_set`), the price row's own `create`, and the covering
+/// draft-window put.
+const SEEDED_AUTHORING_RECORDS: i64 = 5;
 
 async fn read_model_rows(h: &Harness) -> Vec<read_model::Model> {
     let conn = h.provider.conn().expect("conn");
@@ -676,6 +800,468 @@ async fn a_first_publish_leaves_exactly_the_five_artifacts_and_nothing_else() {
     assert_eq!(records[0].correlation_id, Some(CORRELATION));
 
     assert_seam_holds(&h).await;
+}
+
+#[tokio::test]
+async fn publish_writes_the_authored_window_id_as_scheduled() {
+    let h = harness().await;
+    let (revision, version, price_id) = seed_publishable(&h).await;
+
+    h.publish
+        .commit(
+            &ctx(),
+            &h.scope,
+            TENANT,
+            PlanPublishUnit::plan_content(plan_id(), revision),
+            version,
+            PublishAuthorization::auto_publishable(),
+            ACTOR,
+            CORRELATION,
+            at(12),
+        )
+        .await
+        .expect("the publish commits");
+
+    let windows = plan_windows(&h).await;
+    assert_eq!(windows.len(), 1, "exactly the approved create is written");
+    assert_eq!(windows[0].window_id, COVER_WINDOW);
+    assert_eq!(windows[0].price_id, price_id);
+    assert_eq!(windows[0].state, WindowState::Scheduled);
+    assert_eq!(windows[0].reason_code, "launch");
+    let entries = draft_entries(&h, revision).await;
+    assert_eq!(
+        entries.len(),
+        1,
+        "authoring rows remain as revision history"
+    );
+    assert!(
+        matches!(
+            entries[0].action,
+            DraftWindowAction::Create {
+                start: DraftStart::AtPublish,
+                ..
+            }
+        ),
+        "a successful commit leaves at_publish symbolic on the draft row; \
+         success materializes a live window instead: {:?}",
+        entries[0].action
+    );
+    assert_seam_holds(&h).await;
+}
+
+#[tokio::test]
+async fn an_unmodified_baseline_window_is_not_rewritten() {
+    let h = harness().await;
+    let (revision, version, _) = seed_publishable(&h).await;
+    h.publish
+        .commit(
+            &ctx(),
+            &h.scope,
+            TENANT,
+            PlanPublishUnit::plan_content(plan_id(), revision),
+            version,
+            PublishAuthorization::auto_publishable(),
+            ACTOR,
+            CORRELATION,
+            at(12),
+        )
+        .await
+        .expect("the first publish commits");
+    let before = plan_windows(&h)
+        .await
+        .into_iter()
+        .find(|row| row.window_id == COVER_WINDOW)
+        .expect("the covering window landed");
+
+    let opened = h
+        .plans
+        .open_revision(&h.scope, TENANT, plan_id(), stamp_of(ACTOR, at(13)))
+        .await
+        .expect("open the successor");
+    let captured = capture_baseline(&h, opened.revision, opened.row_version).await;
+    h.publish
+        .commit(
+            &ctx(),
+            &h.scope,
+            TENANT,
+            PlanPublishUnit::plan_content(plan_id(), opened.revision),
+            captured,
+            PublishAuthorization::auto_publishable(),
+            ACTOR,
+            CORRELATION,
+            at(14),
+        )
+        .await
+        .expect("the successor publishes with an unmodified captured baseline");
+
+    let after = plan_windows(&h)
+        .await
+        .into_iter()
+        .find(|row| row.window_id == COVER_WINDOW)
+        .expect("the baseline window is still there");
+    assert_eq!(after.created_at, before.created_at);
+    assert_eq!(after.mutation_seq, before.mutation_seq);
+    assert_eq!(after.effective_from, before.effective_from);
+    assert_eq!(after.effective_to, before.effective_to);
+    assert_eq!(after.state, before.state);
+    assert_seam_holds(&h).await;
+}
+
+#[tokio::test]
+async fn a_mixed_create_adjust_cancel_transaction_applies_in_order() {
+    let h = harness().await;
+    let (revision, version, price_id) = seed_publishable(&h).await;
+    let handoff = utc_ymd_hms(2099, 9, 10, 0, 0, 0);
+    let next_handoff = utc_ymd_hms(2099, 9, 15, 0, 0, 0);
+    let version = apply_draft(
+        &h,
+        revision,
+        version,
+        DraftWindowCommand::Put(DraftWindowEntry {
+            operation_id: COVER_WINDOW,
+            action: DraftWindowAction::Create {
+                window_id: COVER_WINDOW,
+                price_id,
+                start: DraftStart::AtPublish,
+                effective_to: Some(handoff),
+            },
+            reason_code: "launch".to_owned(),
+        }),
+        stamp(),
+    )
+    .await;
+    let version = author_covering(
+        &h,
+        revision,
+        version,
+        price_id,
+        DROP_WINDOW,
+        DraftStart::At(handoff),
+        None,
+        stamp(),
+    )
+    .await;
+    h.publish
+        .commit(
+            &ctx(),
+            &h.scope,
+            TENANT,
+            PlanPublishUnit::plan_content(plan_id(), revision),
+            version,
+            PublishAuthorization::auto_publishable(),
+            ACTOR,
+            CORRELATION,
+            at(12),
+        )
+        .await
+        .expect("the first publish commits the adjacent pair");
+
+    let opened = h
+        .plans
+        .open_revision(&h.scope, TENANT, plan_id(), stamp_of(ACTOR, at(13)))
+        .await
+        .expect("open the successor");
+    let mut next = capture_baseline(&h, opened.revision, opened.row_version).await;
+    next = apply_draft(
+        &h,
+        opened.revision,
+        next,
+        DraftWindowCommand::Put(DraftWindowEntry {
+            operation_id: Uuid::from_u128(0x_ca_01),
+            action: DraftWindowAction::Cancel {
+                window_id: DROP_WINDOW,
+            },
+            reason_code: "replace".to_owned(),
+        }),
+        stamp(),
+    )
+    .await;
+    next = apply_draft(
+        &h,
+        opened.revision,
+        next,
+        DraftWindowCommand::Put(DraftWindowEntry {
+            operation_id: Uuid::from_u128(0x_a0_01),
+            action: DraftWindowAction::AdjustEnd {
+                window_id: COVER_WINDOW,
+                effective_to: Some(next_handoff),
+            },
+            reason_code: "extend".to_owned(),
+        }),
+        stamp(),
+    )
+    .await;
+    next = author_covering(
+        &h,
+        opened.revision,
+        next,
+        price_id,
+        NEW_WINDOW,
+        DraftStart::At(next_handoff),
+        None,
+        stamp(),
+    )
+    .await;
+    h.publish
+        .commit(
+            &ctx(),
+            &h.scope,
+            TENANT,
+            PlanPublishUnit::plan_content(plan_id(), opened.revision),
+            next,
+            PublishAuthorization::auto_publishable(),
+            ACTOR,
+            CORRELATION,
+            at(14),
+        )
+        .await
+        .expect("mixed cancel/adjust/create commit");
+
+    let windows = plan_windows(&h).await;
+    let keep = windows
+        .iter()
+        .find(|row| row.window_id == COVER_WINDOW)
+        .expect("adjusted baseline id is stable");
+    assert_eq!(keep.effective_to, Some(next_handoff));
+    assert_ne!(keep.state, WindowState::Cancelled);
+    let dropped = windows
+        .iter()
+        .find(|row| row.window_id == DROP_WINDOW)
+        .expect("cancelled baseline remains as history");
+    assert_eq!(dropped.state, WindowState::Cancelled);
+    let created = windows
+        .iter()
+        .find(|row| row.window_id == NEW_WINDOW)
+        .expect("the approved create used its authored id");
+    assert_eq!(created.state, WindowState::Scheduled);
+    assert_eq!(created.effective_from, next_handoff);
+    assert_eq!(created.effective_to, None);
+    assert_seam_holds(&h).await;
+}
+
+#[tokio::test]
+async fn an_elapsed_exact_start_after_approval_rolls_back_and_leaves_intentions() {
+    let h = harness().await;
+    let created = h
+        .plans
+        .create_draft(&h.scope, new_plan_draft())
+        .await
+        .expect("create the draft");
+    let after_phases = h
+        .shapes
+        .replace_phases(
+            &h.scope,
+            TENANT,
+            plan_id(),
+            created.revision,
+            created.row_version,
+            vec![PlanPhase {
+                phase_id: terminal_phase(),
+                kind: PhaseKind::Evergreen,
+                display_name: None,
+                ordinal: 0,
+                converts_to_phase_id: None,
+                phase_duration_days: None,
+                display_trial_days: None,
+            }],
+            stamp(),
+        )
+        .await
+        .expect("attach the phase chain");
+    let after_descriptors = h
+        .plans
+        .update_draft(
+            &h.scope,
+            TENANT,
+            plan_id(),
+            created.revision,
+            after_phases.row_version,
+            PlanShapePatch {
+                descriptor_ext: Some(std::collections::BTreeMap::new()),
+                ..Default::default()
+            },
+            stamp(),
+        )
+        .await
+        .expect("attach the descriptor set");
+    let price_id = Uuid::from_u128(0xb_0001);
+    h.prices
+        .create_draft(
+            &h.scope,
+            TENANT,
+            NewPriceDraft {
+                price_id,
+                scope_key: scope_key(PriceEligibility::AllSubscriptions),
+                content: flat_row(),
+                created_by: ACTOR,
+                created_at_utc: at(10),
+                correlation_id: TEST_CORRELATION,
+            },
+        )
+        .await
+        .expect("author the price row");
+    // Valid against the HTTP stamp (`at(12)`) and elapsed against the post-lock
+    // wall clock this commit must use.
+    let version = author_covering(
+        &h,
+        created.revision,
+        after_descriptors.row_version,
+        price_id,
+        COVER_WINDOW,
+        DraftStart::At(at(13)),
+        None,
+        stamp_of(ACTOR, at(10)),
+    )
+    .await;
+
+    let refusal = h
+        .publish
+        .commit(
+            &ctx(),
+            &h.scope,
+            TENANT,
+            PlanPublishUnit::plan_content(plan_id(), created.revision),
+            version,
+            PublishAuthorization::auto_publishable(),
+            ACTOR,
+            CORRELATION,
+            at(12),
+        )
+        .await
+        .expect_err("an exact start behind the write clock cannot commit");
+    assert!(
+        matches!(refusal, DomainError::WindowStartElapsed(_)),
+        "got {refusal:?}"
+    );
+    assert_commit_wrote_nothing(&h, created.revision, version).await;
+    assert!(plan_windows(&h).await.is_empty());
+    let entries = draft_entries(&h, created.revision).await;
+    assert_eq!(entries.len(), 1);
+    assert!(
+        matches!(
+            entries[0].action,
+            DraftWindowAction::Create {
+                start: DraftStart::At(_),
+                ..
+            }
+        ),
+        "the failed attempt leaves the exact start unresolved: {:?}",
+        entries[0].action
+    );
+}
+
+#[tokio::test]
+async fn a_failure_after_the_first_window_write_rolls_back_every_artifact() {
+    let h = harness().await;
+    let (revision, version, _) = seed_publishable(&h).await;
+    h.prices
+        .create_draft(
+            &h.scope,
+            TENANT,
+            NewPriceDraft {
+                price_id: LATE_PRICE,
+                scope_key: scope_key(PriceEligibility::NewSubscriptionsOnly),
+                content: flat_row(),
+                created_by: ACTOR,
+                created_at_utc: at(11),
+                correlation_id: TEST_CORRELATION,
+            },
+        )
+        .await
+        .expect("author the second key");
+    let version = author_covering(
+        &h,
+        revision,
+        version,
+        LATE_PRICE,
+        STOLEN_WINDOW,
+        DraftStart::AtPublish,
+        None,
+        stamp(),
+    )
+    .await;
+    seed_stolen_window(&h).await;
+
+    let refusal = h
+        .publish
+        .commit(
+            &ctx(),
+            &h.scope,
+            TENANT,
+            PlanPublishUnit::plan_content(plan_id(), revision),
+            version,
+            PublishAuthorization::auto_publishable(),
+            ACTOR,
+            CORRELATION,
+            at(12),
+        )
+        .await
+        .expect_err("the second insert must refuse the stolen id");
+    assert!(
+        matches!(
+            refusal,
+            DomainError::ConcurrentMutation(_) | DomainError::Internal(_)
+        ),
+        "got {refusal:?}"
+    );
+    assert_commit_wrote_nothing(&h, revision, version).await;
+    assert!(
+        plan_windows(&h).await.is_empty(),
+        "the first window write rolled back with the rest of the transaction"
+    );
+    assert_eq!(draft_entries(&h, revision).await.len(), 2);
+}
+
+async fn seed_stolen_window(h: &Harness) {
+    let other = PlanId::new(Uuid::from_u128(0x9_1a5));
+    let mut draft = new_plan_draft();
+    draft.plan_id = other;
+    h.plans
+        .create_draft(&h.scope, draft)
+        .await
+        .expect("create the foreign plan");
+    let foreign_price = Uuid::from_u128(0xb_0099);
+    h.prices
+        .create_draft(
+            &h.scope,
+            TENANT,
+            NewPriceDraft {
+                price_id: foreign_price,
+                scope_key: ScopeKey::new(
+                    other,
+                    CurrencyCode::new("EUR").expect("three letters"),
+                    Region::new("eu").expect("a non-blank region"),
+                    terminal_phase(),
+                    PriceEligibility::AllSubscriptions,
+                    ChargeKind::Recurring,
+                    Cohort::None,
+                    SkuId::new(Uuid::from_u128(5)),
+                )
+                .expect("the class pairs with cohort none"),
+                content: flat_row(),
+                created_by: ACTOR,
+                created_at_utc: at(10),
+                correlation_id: TEST_CORRELATION,
+            },
+        )
+        .await
+        .expect("author the foreign price");
+    let conn = h.provider.conn().expect("conn");
+    window_repo::schedule(
+        &conn,
+        &h.scope,
+        window_repo::NewWindow {
+            window_id: STOLEN_WINDOW,
+            tenant_id: TENANT,
+            price_id: foreign_price,
+            effective_from: utc_ymd_hms(2099, 8, 4, 0, 0, 0),
+            effective_to: None,
+            reason_code: "stolen".to_owned(),
+        },
+        stamp(),
+    )
+    .await
+    .expect("occupy the authored id on another plan");
 }
 
 #[tokio::test]
@@ -868,13 +1454,14 @@ async fn a_second_publish_extends_every_counter_by_one() {
         .open_revision(&h.scope, TENANT, plan_id(), stamp_of(ACTOR, at(13)))
         .await
         .expect("open the successor");
+    let captured = capture_baseline(&h, opened.revision, opened.row_version).await;
     h.publish
         .commit(
             &ctx(),
             &h.scope,
             TENANT,
             PlanPublishUnit::plan_content(plan_id(), opened.revision),
-            opened.row_version,
+            captured,
             PublishAuthorization::auto_publishable(),
             ACTOR,
             CORRELATION,
@@ -904,10 +1491,11 @@ async fn a_second_publish_extends_every_counter_by_one() {
     let mut events = outbox_rows(&h).await;
     events.sort_by_key(|row| row.seq);
     assert_eq!(events.len(), 2);
-    assert_eq!(
-        events[1].seq,
-        events[0].seq + 1,
-        "the aggregate's counter advanced by one"
+    assert!(
+        events[1].seq > events[0].seq,
+        "the second publish extended the stream: {} then {}",
+        events[0].seq,
+        events[1].seq
     );
 
     let records = publish_records(&h).await;
@@ -985,11 +1573,14 @@ async fn a_commit_time_validation_failure_writes_nothing_at_all() {
     // the **one** this test names. Without it the row is unpublishable for two
     // reasons at once, and an `any(code == ...)` assertion would stay green with
     // the rounding rule deleted — the second fault answering for the first.
-    common::schedule_coverage_window(
-        &h.provider.conn().expect("conn"),
-        &h.scope,
-        TENANT,
+    let version = author_covering(
+        &h,
+        revision,
+        version,
         Uuid::from_u128(0xb_0002),
+        LATE_WINDOW,
+        DraftStart::AtPublish,
+        None,
         stamp(),
     )
     .await;
@@ -1426,11 +2017,14 @@ async fn a_row_authored_after_the_precheck_is_judged_by_the_second_run() {
     // (`new_subscriptions_only`), so `inst-wc-perkey` gives it its own coverage
     // obligation: covering the seed's key covers nothing else. This test is about
     // the late row *publishing*, so it has to be publishable.
-    common::schedule_coverage_window(
-        &h.provider.conn().expect("conn"),
-        &h.scope,
-        TENANT,
+    let version = author_covering(
+        &h,
+        revision,
+        version,
         late,
+        LATE_WINDOW,
+        DraftStart::AtPublish,
+        None,
         stamp(),
     )
     .await;
@@ -1520,10 +2114,12 @@ async fn drive_the_approval_plane(h: &Harness) {
     //
     // The unit is opened over the plan's *current* draft revision, which the
     // abandon above consumed, so a fresh one is opened first.
-    h.plans
+    let opened = h
+        .plans
         .open_revision(&h.scope, TENANT, plan_id(), stamp_of(ACTOR, at(15)))
         .await
         .expect("open a revision to submit");
+    let _ = capture_baseline(&h, opened.revision, opened.row_version).await;
     let approvals = ApprovalService::new(h.provider.clone());
     let approval_id = Uuid::from_u128(0xa_0001);
     approvals
@@ -1696,29 +2292,30 @@ async fn drive_the_window_plane(h: &Harness) {
         h.provider.clone(),
         Arc::clone(&h.registry) as Arc<dyn CatalogVersionRegistryV1>,
     );
-    let price_id = h
-        .prices
-        .list_for_plan(&h.scope, TENANT, plan_id(), &[LifecycleState::Published])
+    let extra = Uuid::from_u128(0xb_00e1);
+    h.prices
+        .create_draft(
+            &h.scope,
+            TENANT,
+            NewPriceDraft {
+                price_id: extra,
+                scope_key: scope_key(PriceEligibility::NewSubscriptionsOnly),
+                content: flat_row(),
+                created_by: ACTOR,
+                created_at_utc: at(18),
+                correlation_id: TEST_CORRELATION,
+            },
+        )
         .await
-        .expect("read the published rows")
-        .first()
-        .expect("the commit above published one")
-        .price_id;
+        .expect("author a second key so the census can schedule without overlapping the covering window");
+    common::publish_row_directly(&h.provider, &h.scope, extra).await;
     windows
         .schedule(
             &ctx(),
             &h.scope,
             TENANT,
-            price_id,
+            extra,
             Uuid::now_v7(),
-            // **Exactly** where the plan's seeded window ends, which is legal and
-            // deliberate on two counts: the intervals are half-open, so
-            // `effectiveTo == next.effectiveFrom` is adjacency and not an overlap,
-            // and it therefore opens no interior gap for `inst-fg-detect` either.
-            // Scheduling anywhere earlier collides with that window; anywhere later
-            // opens a hole, and either would make this census fail for a reason
-            // that has nothing to do with the vocabulary it is about.
-            //
             // 2099 is a fact rather than a date off the clock: a window dated today
             // races the activation sweep, which is a defect this program has already
             // paid for once.
@@ -2501,6 +3098,7 @@ async fn a_segment_holding_two_publishes_is_one_unbroken_chain() {
         .open_revision(&h.scope, TENANT, plan_id(), stamp_of(ACTOR, at(13)))
         .await
         .expect("open the successor");
+    let captured = capture_baseline(&h, opened.revision, opened.row_version).await;
     let second_unit = approve_unit(&h, Uuid::from_u128(0xa_7002)).await;
     h.publish
         .commit(
@@ -2508,7 +3106,7 @@ async fn a_segment_holding_two_publishes_is_one_unbroken_chain() {
             &h.scope,
             TENANT,
             PlanPublishUnit::plan_content(plan_id(), opened.revision),
-            opened.row_version,
+            captured,
             authorization_of(&second_unit),
             ACTOR,
             CORRELATION,
@@ -2841,8 +3439,22 @@ async fn seed_referencing_bundle(h: &Harness, sibling_tax_inclusive: bool) {
             .await
             .expect("author the second market's row");
         common::publish_row_directly(&h.provider, &h.scope, price).await;
-        let conn = h.provider.conn().expect("conn");
-        common::schedule_coverage_window(&conn, &h.scope, TENANT, price, stamp()).await;
+        if owner == plan_id() {
+            let _ = author_covering(
+                h,
+                0,
+                current_draft_version(h).await,
+                price,
+                SECOND_MARKET_WINDOW,
+                DraftStart::AtPublish,
+                None,
+                stamp(),
+            )
+            .await;
+        } else {
+            let conn = h.provider.conn().expect("conn");
+            common::schedule_coverage_window(&conn, &h.scope, TENANT, price, stamp()).await;
+        }
     }
 
     // The bundle, and its composition at revision 0 — the revision
@@ -3012,11 +3624,14 @@ async fn the_commits_rule_run_reports_what_it_judged() {
         )
         .await
         .expect("author the tax-inclusive row");
-    common::schedule_coverage_window(
-        &h.provider.conn().expect("conn"),
-        &h.scope,
-        TENANT,
+    let version = author_covering(
+        &h,
+        revision,
+        version,
         gated,
+        GATED_WINDOW,
+        DraftStart::AtPublish,
+        None,
         stamp(),
     )
     .await;
@@ -3232,8 +3847,17 @@ async fn make_two_phased(h: &Harness) {
         )
         .await
         .expect("author the trial-phase row");
-    let conn = h.provider.conn().expect("conn");
-    common::schedule_coverage_window(&conn, &h.scope, TENANT, trial_price, stamp()).await;
+    let _ = author_covering(
+        h,
+        current.revision,
+        current_draft_version(h).await,
+        trial_price,
+        TRIAL_WINDOW,
+        DraftStart::AtPublish,
+        None,
+        stamp(),
+    )
+    .await;
 }
 
 /// **A per-phase grant set keyed to a phase the schedule does not have is refused

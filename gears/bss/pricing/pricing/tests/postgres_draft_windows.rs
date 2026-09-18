@@ -609,6 +609,19 @@ fn covering_create(
     }
 }
 
+fn covering_at_publish(window_id: Uuid, reason: &str) -> DraftWindowEntry {
+    DraftWindowEntry {
+        operation_id: window_id,
+        action: DraftWindowAction::Create {
+            window_id,
+            price_id: ROW,
+            start: DraftStart::AtPublish,
+            effective_to: None,
+        },
+        reason_code: reason.to_owned(),
+    }
+}
+
 fn publishable_row(amount_minor: i64) -> PriceContent {
     let mut row = {
         let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
@@ -1555,4 +1568,99 @@ async fn two_overlapping_live_inserts_are_serialized() {
         true,
     )
     .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires Docker (testcontainers)"]
+async fn a_delayed_commit_stamps_at_publish_from_the_post_wait_clock() {
+    let (store, version) = seed_publishable_draft().await;
+    let version = capture_empty_baseline(&store, version).await;
+    let version = apply_on_store(
+        &store,
+        0,
+        version,
+        DraftWindowCommand::Put(covering_at_publish(COVER_WINDOW, "launch")),
+    )
+    .await;
+    let registry = Arc::new(RegistryDouble::default());
+    let t2 = publish_service(
+        DBProvider::<DbError>::new(store.pg.db().await),
+        Arc::clone(&registry),
+    )
+    .await;
+
+    let wrote = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let first = {
+        let db = store.pg.db().await;
+        let (wrote, release) = (Arc::clone(&wrote), Arc::clone(&release));
+        tokio::spawn(async move {
+            let (_db, out) = db
+                .in_transaction::<(), RepoError, _>(move |txn| {
+                    Box::pin(async move {
+                        window_guard_repo::acquire(txn, &scope(), TENANT, PLAN).await?;
+                        wrote.notify_one();
+                        release.notified().await;
+                        Ok(())
+                    })
+                })
+                .await;
+            out
+        })
+    };
+    wrote.notified().await;
+
+    let second = tokio::spawn(async move {
+        t2.commit(
+            &race_ctx(),
+            &scope(),
+            TENANT,
+            PlanPublishUnit::plan_content(PlanId::new(PLAN), 0),
+            RowVersion::new(version),
+            PublishAuthorization::auto_publishable(),
+            ACTOR,
+            TEST_CORRELATION,
+            race_now(),
+        )
+        .await
+    });
+
+    pg_support::wait_until_a_backend_blocks(&store.raw).await;
+    let released_at = OffsetDateTime::now_utc();
+    release.notify_one();
+    tokio::time::timeout(RACE_TIMEOUT, first)
+        .await
+        .expect("T1 must finish once released")
+        .expect("its task must not panic")
+        .expect("T1's parked guard must commit");
+    let receipt = tokio::time::timeout(RACE_TIMEOUT, second)
+        .await
+        .expect("T2 must reach a verdict once T1 releases")
+        .expect("its task must not panic")
+        .expect("the delayed commit publishes");
+    assert!(receipt.published_price_ids().contains(&ROW));
+
+    let conn = store.db.conn().expect("conn");
+    let windows = window_repo::list_for_plan(&conn, &scope(), TENANT, PlanId::new(PLAN))
+        .await
+        .expect("list committed windows");
+    assert_eq!(windows.len(), 1, "exactly the authored create is written");
+    assert_eq!(windows[0].window_id, COVER_WINDOW);
+    assert_ne!(
+        windows[0].effective_from,
+        race_now(),
+        "at_publish must not reuse the stale HTTP stamp after the guard wait"
+    );
+    let floor = bss_pricing::domain::instant::truncate_millis(released_at);
+    assert!(
+        windows[0].effective_from >= floor,
+        "at_publish must stamp at or after the post-wait clock: got {}, floor {}",
+        windows[0].effective_from,
+        floor
+    );
+    assert_eq!(
+        windows[0].effective_from,
+        bss_pricing::domain::instant::truncate_millis(windows[0].effective_from),
+        "the write instant is quantized to milliseconds"
+    );
 }

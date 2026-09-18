@@ -81,9 +81,11 @@ use toolkit_db::{DBProvider, DbError};
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
 
-use crate::domain::audit::{AuditAction, AuditSubjectKind, subject_state};
+use crate::domain::audit::{AuditAction, AuditStamp, AuditSubjectKind, subject_state};
 use crate::domain::concurrency::RowVersion;
-use crate::domain::draft_window::{DraftWindowOwner, compose_windows, proposed_window_state};
+use crate::domain::draft_window::{
+    DraftWindowAction, DraftWindowOwner, compose_windows, proposed_window_state, resolve_start,
+};
 use crate::domain::error::DomainError;
 use crate::domain::instant::from_unix_millis;
 use crate::domain::instant::timestamp_millis;
@@ -98,7 +100,7 @@ use crate::domain::read_model::SubjectRef;
 use crate::domain::scope_key::{PhaseId, PlanId};
 use crate::domain::tax_display::{RegionReadiness, RegionTaxReadiness};
 use crate::domain::validation::ValidationReport;
-use crate::domain::window::{WindowInterval, group_by_key_seeded};
+use crate::domain::window::{WindowInterval, WindowState, group_by_key_seeded};
 use crate::infra::fixture_gate::{FixtureGate, Reservation};
 use crate::infra::registry_deadline::request_version_now;
 use crate::infra::storage::repo::{
@@ -565,9 +567,9 @@ impl PublishService {
                     window_guard_repo::acquire(txn, &scope, tenant_id, unit.plan_id.get())
                         .await
                         .map_err(|e| repo_failure(&e))?;
-                    // 1. The second run. Same assembler, same rule set, same
-                    // gate - against the world as it now stands.
-                    let shape = assemble(txn, &scope, tenant_id, unit.plan_id, now).await?;
+                    // The HTTP/test stamp is stale after the guard wait.
+                    // `at_publish` and time-dependent guards use `write_at`.
+                    let _stale_request_now = now;
                     // Resolved by the caller, **before** this transaction opened.
                     // The registry cannot be read from in here: in-process,
                     // `bss-products` answers `get_skus` from its own store and
@@ -587,58 +589,22 @@ impl PublishService {
                             unit.plan_id
                         )));
                     }
-                    let params = rule_params(&policies, txn, &scope, tenant_id, &shape).await?;
-                    if shape.revision != unit.revision {
-                        return Err(DomainError::NotFound {
-                            subject: "open plan draft revision".to_owned(),
-                            id: format!("{}/{}", unit.plan_id, unit.revision),
-                        });
-                    }
 
-                    // 1a. The approve→commit window, closed **here** and not at
-                    // the surface. `inst-ap-pin` scopes the TOCTOU void to a
-                    // `submitted` record, so an approved unit is not voided when
-                    // its subject moves, and a check made before this
-                    // transaction opened would be a check the world can move
-                    // behind. The row-version swap below does not cover it: it
-                    // swaps on the *revision's* version, and a price row edited
-                    // after the approve moves the row's version and not the
-                    // revision's.
-                    //
-                    // Ahead of the rules, because the answer is about the
-                    // reviewer's decision rather than about the plan: telling an
-                    // operator to fix a violation in content the second person
-                    // never agreed to is the wrong next action.
-                    if let Some(pinned) = authorization.pinned_content_hash()
-                        && crate::domain::approval::content_hash(&shape) != pinned
-                    {
-                        return Err(DomainError::ApprovalContentMismatch(format!(
-                            "plan {}/{}: the content approved under {} is not the content this \
-                             commit would freeze; re-submit and have the change reviewed again",
-                            unit.plan_id,
-                            unit.revision,
-                            authorization
-                                .approval_ref()
-                                .map_or_else(|| "-".to_owned(), |id| id.to_string()),
-                        )));
-                    }
-
-                    let report = run_publish_rules(&shape, &params);
-                    // **Reported here as well as at the pre-check, and the
-                    // commit is the more important of the two.** The route's
-                    // approved arm reaches this without a pre-check at all, and
-                    // a plan that failed its pre-check is never approved — so a
-                    // block raised *here* is one that appeared between the
-                    // reviewer's decision and the commit, which is the only kind
-                    // an operator cannot see coming. There is no double count:
-                    // the two runs are two events, and a plan blocked at
-                    // pre-check never reaches this one.
-                    crate::infra::metrics::report_market_metrics(&*metrics, &shape, &params);
-                    if !report.is_publishable() {
-                        return Err(DomainError::ValidationFailed(report));
-                    }
-                    let validated = validated_draft_rows(&shape);
-                    check_fixtures(&gate, &shape)?;
+                    let mut write_at = quantized(OffsetDateTime::now_utc());
+                    judge_commit_subject(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        unit,
+                        expected,
+                        &authorization,
+                        &policies,
+                        metrics.as_ref(),
+                        &gate,
+                        write_at,
+                        true,
+                    )
+                    .await?;
 
                     // The one **permanent** refusal that would otherwise land
                     // after the registry request, moved ahead of it: a retired
@@ -653,7 +619,34 @@ impl PublishService {
                     // version, ever: two incrementers make `CatalogVersion`
                     // unordered.
                     let pending = request_version_now(registry.as_ref(), &ctx, &request_id).await?;
+                    write_at = quantized(OffsetDateTime::now_utc());
+                    let (shape, params, validated) = judge_commit_subject(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        unit,
+                        expected,
+                        &authorization,
+                        &policies,
+                        metrics.as_ref(),
+                        &gate,
+                        write_at,
+                        false,
+                    )
+                    .await?;
 
+                    materialize_approved_windows(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        &shape,
+                        actor_principal_id,
+                        write_at,
+                        correlation_id,
+                    )
+                    .await?;
+
+                    let now = write_at;
                     // 3. The row set.
                     let published_revision = plan_repo::publish_revision(
                         txn,
@@ -668,21 +661,6 @@ impl PublishService {
                     // Exactly the rows the rule set just judged, at the
                     // versions it judged them at. See `publish_rows`: a
                     // re-derived set would publish rows validated by nothing.
-                    // **D-332 leftover writer, still here until Task 7.** Coverage
-                    // no longer skips a key this publish would open: an explicit
-                    // covering intention must already be on the composed plane or
-                    // `inst-wc-required` has refused the commit. The writer remains
-                    // so Task 7 can delete it in one place rather than restore it.
-                    open_initial_windows(
-                        txn,
-                        &scope,
-                        tenant_id,
-                        &shape,
-                        actor_principal_id,
-                        now,
-                        correlation_id,
-                    )
-                    .await?;
 
                     let price_ids = price_repo::publish_rows(
                         txn,
@@ -1387,76 +1365,160 @@ fn quantized(at: OffsetDateTime) -> OffsetDateTime {
     from_unix_millis(timestamp_millis(at)).unwrap_or(at)
 }
 
-/// Open a window on every billable key of this publish that has none (D-332).
+/// Re-read, pin, compose at `write_at`, and run publish rules.
 ///
-/// # Why this is not a relaxation of the future-only rule
-///
-/// `inst-ws-future-start` exists against one attack: a `plan x write` holder
-/// `POST`ing a window that starts sixty days ago, having the activation job pick
-/// it up, and repricing open arrears periods — bypassing the two-person
-/// `BackdateGrant` that S2 calls the only sanctioned backdating. A window opened
-/// **here** starts at this commit's own instant, on a key that has no coverage
-/// at all: there is no earlier interval to overwrite and no arrears period the
-/// instant precedes. The route stays future-only; nothing a client can POST
-/// changes.
-///
-/// # It writes `scheduled`, not `active`
-///
-/// The state machine is untouched: the activation sweep flips it, exactly as it
-/// does for a window an operator scheduled, and `inst-wc-required` is satisfied
-/// by "active **or** scheduled" either way. Writing `active` here would make
-/// this the second thing that decides activation.
-///
-/// The uncovered set is `coverage::check_shape`'s own, not a second reading of
-/// it: a private notion of "covered" here and the rule's there would drift, and
-/// the one that publishes would be the one nobody tested.
-async fn open_initial_windows(
-    runner: &impl DBRunner,
+/// Called once after the plan guard (so validation failure does not consume a
+/// registry handle) and again after `request_version_now` so symbolic starts
+/// resolve to this transaction's final write instant.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the commit's judged subject is one snapshot of every operand the rules and pin need"
+)]
+async fn judge_commit_subject(
+    txn: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    unit: PlanPublishUnit,
+    _expected: RowVersion,
+    authorization: &PublishAuthorization,
+    policies: &PolicyObjectRepo,
+    metrics: &dyn crate::domain::ports::metrics::PricingMetricsPort,
+    gate: &FixtureGate,
+    write_at: OffsetDateTime,
+    emit_metrics: bool,
+) -> Result<(PlanShape, PublishRuleParams, Vec<(Uuid, RowVersion)>), DomainError> {
+    let draft = plan_repo::load_open_draft(txn, scope, tenant_id, unit.plan_id)
+        .await
+        .map_err(|e| repo_failure(&e))?
+        .ok_or_else(|| DomainError::NotFound {
+            subject: "open plan draft revision".to_owned(),
+            id: unit.plan_id.to_string(),
+        })?;
+    if draft.revision != unit.revision {
+        return Err(DomainError::NotFound {
+            subject: "open plan draft revision".to_owned(),
+            id: format!("{}/{}", unit.plan_id, unit.revision),
+        });
+    }
+    let shape = assemble_from(txn, scope, tenant_id, unit.plan_id, draft, write_at).await?;
+
+    if let Some(pinned) = authorization.pinned_content_hash()
+        && crate::domain::approval::content_hash(&shape) != pinned
+    {
+        return Err(DomainError::ApprovalContentMismatch(format!(
+            "plan {}/{}: the content approved under {} is not the content this \
+             commit would freeze; re-submit and have the change reviewed again",
+            unit.plan_id,
+            unit.revision,
+            authorization
+                .approval_ref()
+                .map_or_else(|| "-".to_owned(), |id| id.to_string()),
+        )));
+    }
+
+    let params = rule_params(policies, txn, scope, tenant_id, &shape).await?;
+    let report = run_publish_rules(&shape, &params);
+    if emit_metrics {
+        crate::infra::metrics::report_market_metrics(metrics, &shape, &params);
+    }
+    if !report.is_publishable() {
+        return Err(DomainError::ValidationFailed(report));
+    }
+    let validated = validated_draft_rows(&shape);
+    check_fixtures(gate, &shape)?;
+    Ok((shape, params, validated))
+}
+
+/// Apply approved cancel/end adjustments, then creates with their authored ids.
+async fn materialize_approved_windows(
+    txn: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
     shape: &PlanShape,
     actor_principal_id: Uuid,
-    now: OffsetDateTime,
+    write_at: OffsetDateTime,
     correlation_id: Uuid,
 ) -> Result<(), DomainError> {
-    let report = crate::domain::coverage::check_shape(shape);
-    let uncovered: Vec<_> = report
-        .required()
-        .filter(|entry| !entry.has_live_window())
-        .map(|entry| entry.scope_key().clone())
-        .collect();
+    let stamp = AuditStamp {
+        actor_principal_id,
+        recorded_at: write_at,
+        correlation_id,
+    };
+    let mut cancels = Vec::new();
+    let mut adjusts = Vec::new();
+    let mut creates = Vec::new();
+    for entry in &shape.draft_window_entries {
+        match &entry.action {
+            DraftWindowAction::Cancel { window_id } => cancels.push(*window_id),
+            DraftWindowAction::AdjustEnd {
+                window_id,
+                effective_to,
+            } => adjusts.push((*window_id, *effective_to)),
+            DraftWindowAction::Create {
+                window_id,
+                price_id,
+                start,
+                effective_to,
+            } => creates.push((
+                *window_id,
+                *price_id,
+                *start,
+                *effective_to,
+                entry.reason_code.clone(),
+            )),
+        }
+    }
 
-    for key in uncovered {
-        // The key came out of the shape's own billable set, so a row for it
-        // exists; a `continue` rather than an error keeps this from being a
-        // second place that decides what a publishable shape is.
-        let Some(row) = shape.rows.iter().find(|record| record.scope_key == key) else {
-            continue;
-        };
-        window_repo::schedule(
-            runner,
+    for window_id in cancels {
+        window_repo::transition(
+            txn,
+            scope,
+            tenant_id,
+            window_id,
+            WindowState::Cancelled,
+            write_at,
+            stamp,
+        )
+        .await
+        .map_err(|e| repo_failure(&e))?;
+    }
+    for (window_id, effective_to) in adjusts {
+        let seq = shape
+            .window_baseline
+            .iter()
+            .find(|row| row.window_id == window_id)
+            .map(|row| row.mutation_seq)
+            .ok_or_else(|| {
+                DomainError::InvalidRequest(format!(
+                    "window {window_id} is not on the captured baseline"
+                ))
+            })?;
+        window_repo::adjust_effective_to(
+            txn,
+            scope,
+            tenant_id,
+            window_id,
+            effective_to,
+            seq,
+            stamp,
+        )
+        .await
+        .map_err(|e| repo_failure(&e))?;
+    }
+    for (window_id, price_id, start, effective_to, reason_code) in creates {
+        let effective_from = resolve_start(&start, write_at)?;
+        window_repo::publish_scheduled(
+            txn,
             scope,
             window_repo::NewWindow {
-                window_id: Uuid::now_v7(),
+                window_id,
                 tenant_id,
-                price_id: row.price_id,
-                // **Quantised to the millisecond** (D-144). `now` is the
-                // commit's own instant and carries microseconds; an authored
-                // instant may not, and `check_authored_instant` refuses one —
-                // which surfaced as the publish failing on
-                // `TIMESTAMP_PRECISION_EXCEEDED` after every rule had passed.
-                effective_from: quantized(now),
-                effective_to: None,
-                // Named for what it is, so an operator reading the window plane
-                // can tell the ones they scheduled from the one the publish
-                // opened for them.
-                reason_code: "initial coverage opened by publish (D-332)".to_owned(),
+                price_id,
+                effective_from,
+                effective_to,
+                reason_code,
             },
-            crate::domain::audit::AuditStamp {
-                actor_principal_id,
-                recorded_at: now,
-                correlation_id,
-            },
+            stamp,
         )
         .await
         .map_err(|e| repo_failure(&e))?;

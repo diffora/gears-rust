@@ -26,11 +26,14 @@ mod rest_support;
 
 use bss_pricing::domain::approval::ApprovalState;
 use bss_pricing::domain::lifecycle::LifecycleState;
-use bss_pricing::domain::scope_key::PhaseId;
+use bss_pricing::domain::price_record::PriceContent;
+use bss_pricing::domain::scope_key::{PhaseId, PlanId, ScopeKey};
+use bss_pricing::infra::storage::repo::NewPriceDraft;
 use rest_support::{
-    Harness, approval_row, approval_rows, audit_rows, body_json, outbox_correlations_of,
-    plan_state, price_rows, problem_code, publishable_row, publishable_scope_key, refused_by,
-    seed_draft_plan, seed_publishable_plan, seed_publishable_plan_with, with_headers,
+    Harness, Publishable, SEED_ACTOR, approval_row, approval_rows, at, audit_rows, body_json,
+    outbox_correlations_of, plan_state, price_rows, problem_code, publishable_row,
+    publishable_scope_key, refused_by, seed_draft_plan,
+    seed_publishable_plan as seed_live_window_plan, seed_publishable_shape, version, with_headers,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -186,7 +189,7 @@ async fn a_plan_that_cannot_publish_opens_no_unit_at_all() {
 async fn a_plan_with_no_authored_window_cannot_submit() {
     let h = Harness::new().await;
     let plan_id = Uuid::now_v7();
-    let seeded = seed_publishable_plan(&h, plan_id).await;
+    let seeded = seed_uncovered_plan(&h, plan_id).await;
 
     let response = publish_as(&h, SUBMITTER, plan_id, &seeded.etag()).await;
 
@@ -204,8 +207,8 @@ async fn a_plan_with_no_authored_window_cannot_submit() {
 async fn an_explicit_at_publish_intention_lets_submit_open_a_unit() {
     let h = Harness::new().await;
     let plan_id = Uuid::now_v7();
-    let seeded = seed_publishable_plan(&h, plan_id).await;
-    author_at_publish(&h, plan_id, seeded.price_id, "rest-publish-at-publish").await;
+    let seeded = seed_uncovered_plan(&h, plan_id).await;
+    author_at_publish(&h, plan_id, 0, seeded.price_id, "rest-publish-at-publish").await;
 
     let response = publish_as(&h, SUBMITTER, plan_id, &h.plan_etag(plan_id).await).await;
 
@@ -216,7 +219,13 @@ async fn an_explicit_at_publish_intention_lets_submit_open_a_unit() {
 }
 
 /// Author one open-ended `AtPublish` create on the seed's price row.
-async fn author_at_publish(h: &Harness, plan_id: Uuid, price_id: Uuid, idempotency_key: &str) {
+async fn author_at_publish(
+    h: &Harness,
+    plan_id: Uuid,
+    plan_revision: u64,
+    price_id: Uuid,
+    idempotency_key: &str,
+) {
     let etag = h.plan_etag(plan_id).await;
     let response = h
         .allowed_as(SUBMITTER)
@@ -224,7 +233,7 @@ async fn author_at_publish(h: &Harness, plan_id: Uuid, price_id: Uuid, idempoten
             "POST",
             &format!("/bss-pricing/v1/prices/{price_id}/windows"),
             Some(serde_json::json!({
-                "context": {"kind": "draft", "plan_revision": 0},
+                "context": {"kind": "draft", "plan_revision": plan_revision},
                 "start": {"kind": "at_publish"},
                 "reason_code": "launch"
             })),
@@ -239,6 +248,152 @@ async fn author_at_publish(h: &Harness, plan_id: Uuid, price_id: Uuid, idempoten
         axum::http::StatusCode::CREATED,
         "the covering intention has to land for the submit under test to mean anything"
     );
+}
+
+/// Capture the seed's live window as the draft baseline.
+///
+/// Live seed windows are not coverage until they are on the composed plane.
+async fn capture_live_baseline(
+    h: &Harness,
+    plan_id: Uuid,
+    mut seeded: Publishable,
+    idempotency_key: &str,
+) -> Publishable {
+    let etag = seeded.etag();
+    let response = h
+        .allowed_as(SUBMITTER)
+        .send(with_headers(
+            "POST",
+            &format!("/bss-pricing/v1/plans/{plan_id}/draft-window-baseline/refresh"),
+            Some(serde_json::json!({ "plan_revision": seeded.revision })),
+            &[
+                ("if-match", etag.as_str()),
+                ("idempotency-key", idempotency_key),
+            ],
+        ))
+        .await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::OK,
+        "the captured baseline has to land for the publish under test to mean anything"
+    );
+    bump_seeded_etag(h, plan_id, &mut seeded).await;
+    seeded
+}
+
+/// Extend the captured seed window so the composed plane has no trailing void.
+async fn author_open_ended_adjust(
+    h: &Harness,
+    plan_id: Uuid,
+    plan_revision: u64,
+    window_id: Uuid,
+    idempotency_key: &str,
+) {
+    let etag = h.plan_etag(plan_id).await;
+    let response = h
+        .allowed_as(SUBMITTER)
+        .send(with_headers(
+            "PATCH",
+            &format!("/bss-pricing/v1/price-windows/{window_id}"),
+            Some(serde_json::json!({
+                "context": {"kind": "draft", "plan_revision": plan_revision},
+                "effective_to": null
+            })),
+            &[
+                ("if-match", etag.as_str()),
+                ("idempotency-key", idempotency_key),
+            ],
+        ))
+        .await;
+    let status = response.status();
+    assert_eq!(
+        status,
+        axum::http::StatusCode::OK,
+        "the open-ended adjust has to land for the publish under test to mean anything: status={status}"
+    );
+}
+
+async fn bump_seeded_etag(h: &Harness, plan_id: Uuid, seeded: &mut Publishable) {
+    let current = h
+        .state
+        .plans
+        .find_open_draft(&h.scope(), h.tenant, PlanId::new(plan_id))
+        .await
+        .expect("read the open draft")
+        .expect("there is one");
+    seeded.revision = current.revision;
+    seeded.version = current.row_version;
+}
+
+/// Recapture the live seed window and open-end it so submit/commit can cover.
+async fn cover_live_seed(
+    h: &Harness,
+    plan_id: Uuid,
+    seeded: Publishable,
+    idempotency_prefix: &str,
+) -> Publishable {
+    let mut seeded =
+        capture_live_baseline(h, plan_id, seeded, &format!("{idempotency_prefix}-refresh")).await;
+    author_open_ended_adjust(
+        h,
+        plan_id,
+        seeded.revision,
+        common::coverage_window_id(seeded.price_id),
+        &format!("{idempotency_prefix}-open-end"),
+    )
+    .await;
+    bump_seeded_etag(h, plan_id, &mut seeded).await;
+    seeded
+}
+
+/// Publishable shape and price, with no live window and no draft intention.
+async fn seed_uncovered_plan(h: &Harness, plan_id: Uuid) -> Publishable {
+    seed_uncovered_plan_with(
+        h,
+        plan_id,
+        |plan, phase| publishable_scope_key(plan, phase, "eu"),
+        publishable_row(),
+    )
+    .await
+}
+
+async fn seed_uncovered_plan_with(
+    h: &Harness,
+    plan_id: Uuid,
+    key_for: impl FnOnce(PlanId, PhaseId) -> ScopeKey,
+    content: PriceContent,
+) -> Publishable {
+    let plan = PlanId::new(plan_id);
+    let shape = seed_publishable_shape(h, plan_id).await;
+    let phase = shape.phase;
+    let price_id = Uuid::now_v7();
+    h.state
+        .prices
+        .create_draft(
+            &h.scope(),
+            h.tenant,
+            NewPriceDraft {
+                price_id,
+                scope_key: key_for(plan, phase),
+                content,
+                created_by: SEED_ACTOR,
+                created_at_utc: at(10),
+                correlation_id: Uuid::from_u128(0x_c0_11_a7_10),
+            },
+        )
+        .await
+        .expect("author the price row");
+    Publishable {
+        phase,
+        revision: shape.revision,
+        version: shape.version,
+        price_id,
+    }
+}
+
+async fn seed_publishable_plan(h: &Harness, plan_id: Uuid) -> Publishable {
+    let seeded = seed_live_window_plan(h, plan_id).await;
+    cover_live_seed(h, plan_id, seeded, "task-7-cover").await
 }
 
 // ---------------------------------------------------------------------------
@@ -495,13 +650,19 @@ async fn a_row_keyed_on_a_phase_the_revision_never_attached_is_refused_naming_bo
     // observed plan came to be — a client that invented an id instead of reading
     // one back.
     let ghost = PhaseId::new(Uuid::now_v7());
-    let seeded = seed_publishable_plan_with(
+    let seeded = seed_uncovered_plan_with(
         &h,
         plan_id,
         move |plan, _attached| publishable_scope_key(plan, ghost, "eu"),
         publishable_row(),
     )
     .await;
+    author_at_publish(&h, plan_id, 0, seeded.price_id, "task-7-ghost-cover").await;
+    let seeded = {
+        let mut seeded = seeded;
+        bump_seeded_etag(&h, plan_id, &mut seeded).await;
+        seeded
+    };
 
     let refused = publish_as(&h, SUBMITTER, plan_id, &seeded.etag()).await;
 
@@ -1323,8 +1484,19 @@ async fn a_threshold_policy_whose_start_is_ahead_does_not_govern_todays_publish(
 /// Answers `(the staged successor's price id, the supersession unit's id)`.
 async fn a_plan_with_a_staged_successor(h: &Harness, plan_id: Uuid) -> (String, Uuid) {
     let seeded = seed_publishable_plan(h, plan_id).await;
-    h.publish(plan_id, seeded.revision).await;
-    h.publish_price(plan_id, seeded.price_id).await;
+    let submitted = publish_as(h, SUBMITTER, plan_id, &seeded.etag()).await;
+    assert_eq!(
+        submitted.status(),
+        axum::http::StatusCode::ACCEPTED,
+        "the first freeze has to reach a reviewer"
+    );
+    approve_through_the_route(h, only_unit(h).await).await;
+    let committed = publish_as(h, SUBMITTER, plan_id, &seeded.etag()).await;
+    assert_eq!(
+        committed.status(),
+        axum::http::StatusCode::OK,
+        "the first freeze has to land so the supersession has a published predecessor"
+    );
 
     let staged = body_json(
         h.allowed_as(SUBMITTER)
@@ -1389,13 +1561,19 @@ async fn a_revision_carrying_only_a_period_floor(h: &Harness, plan_id: Uuid) -> 
             .await,
     )
     .await;
-    format!(
-        "\"{}-{}\"",
-        patched["revision"]
-            .as_u64()
-            .expect("the successor revision"),
-        patched["row_version"].as_u64().expect("its version")
-    )
+    let revision = patched["revision"]
+        .as_u64()
+        .expect("the successor revision");
+    let row_version = patched["row_version"].as_u64().expect("its version");
+    let seeded = Publishable {
+        phase: PhaseId::new(Uuid::nil()),
+        revision,
+        version: version(row_version),
+        price_id: Uuid::nil(),
+    };
+    capture_live_baseline(h, plan_id, seeded, "task-7-successor-refresh")
+        .await
+        .etag()
 }
 
 /// **A plan revision whose whole content is a D-319 period floor is judged, and
@@ -1539,7 +1717,8 @@ async fn a_publish_beside_a_pending_supersession_reaches_the_held_key_guard() {
         approval_rows(&h)
             .await
             .into_iter()
-            .all(|row| row.subject_kind != "plan_revision"),
+            .filter(|row| row.subject_kind == "plan_revision")
+            .all(|row| row.state != "submitted"),
         "and no plan-revision unit was opened either"
     );
 }

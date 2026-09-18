@@ -368,7 +368,48 @@ pub async fn schedule(
     check_authored_instant("effectiveFrom", Some(new.effective_from))?;
     check_authored_instant("effectiveTo", new.effective_to)?;
     refuse_empty_interval(new.effective_from, new.effective_to)?;
+    insert_scheduled(runner, scope, new, stamp).await
+}
 
+/// Insert a `scheduled` window from the publish materializer.
+///
+/// Allows `effective_from == truncate_millis(stamp.recorded_at)` so an `at_publish`
+/// start can stamp to this transaction's write instant. A strictly earlier start
+/// is [`RepoError::WindowStartElapsed`] (`WINDOW_START_ELAPSED`), not live
+/// `WINDOW_START_IN_PAST`. Overlap, ownership and precision checks are the same
+/// as [`schedule`]. Only the publish materializer may call this.
+///
+/// # Errors
+/// [`RepoError::WindowStartElapsed`] when `effective_from` is before the quantized
+/// stamp; otherwise the same refusals as [`schedule`].
+pub async fn publish_scheduled(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    new: NewWindow,
+    stamp: AuditStamp,
+) -> Result<WindowRecord, RepoError> {
+    check_authored_instant("effectiveFrom", Some(new.effective_from))?;
+    check_authored_instant("effectiveTo", new.effective_to)?;
+    refuse_empty_interval(new.effective_from, new.effective_to)?;
+    let now = truncate_millis(stamp.recorded_at);
+    if new.effective_from < now {
+        return Err(RepoError::WindowStartElapsed(format!(
+            "window start {} is before the publish instant {}",
+            format_rfc3339(new.effective_from),
+            format_rfc3339(now)
+        )));
+    }
+    insert_scheduled(runner, scope, new, stamp).await
+}
+
+/// Shared insert for [`schedule`] and [`publish_scheduled`] after the caller's
+/// start-bound check.
+async fn insert_scheduled(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    new: NewWindow,
+    stamp: AuditStamp,
+) -> Result<WindowRecord, RepoError> {
     let key = price_repo::load_scope_key(runner, scope, new.tenant_id, new.price_id)
         .await?
         .ok_or_else(|| RepoError::NotFound {

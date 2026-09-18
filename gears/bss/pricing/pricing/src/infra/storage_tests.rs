@@ -915,6 +915,7 @@ fn declared_class(err: &RepoError) -> DomainError {
         }
 
         R::WindowOverlap { .. } => D::WindowOverlap(d()),
+        R::WindowStartElapsed(_) => D::WindowStartElapsed(d()),
         R::WindowHistorical { .. } => D::WindowHistoricalImmutable(d()),
         R::MembershipOverlap { .. } => D::MembershipOverlap(d()),
         R::MembershipConflict { .. } => D::MembershipConflict(d()),
@@ -1083,6 +1084,7 @@ repo_error_roster! {
         requested: detail(),
         conflicting: detail(),
     },
+    WindowStartElapsed(detail()),
     WindowHistorical {
         window_id: detail(),
         frozen: detail(),

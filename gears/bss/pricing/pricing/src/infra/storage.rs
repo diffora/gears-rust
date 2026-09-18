@@ -753,6 +753,16 @@ pub enum RepoError {
         /// What about it is frozen, as a phrase.
         frozen: String,
     },
+    /// A publish-path window start is strictly before the quantized stamp.
+    ///
+    /// Distinct from live create's `WINDOW_START_IN_PAST`: [`publish_scheduled`]
+    /// allows `effective_from == quantized(stamp.recorded_at)` (`at_publish`) and
+    /// answers [`DomainError::WindowStartElapsed`] (`WINDOW_START_ELAPSED`) for a
+    /// strictly earlier start.
+    ///
+    /// [`publish_scheduled`]: crate::infra::storage::repo::window_repo::publish_scheduled
+    #[error("pricing repo: window start elapsed: {0}")]
+    WindowStartElapsed(String),
     /// A window interval whose end is not strictly after its start.
     ///
     /// The application half of `chk_pricing_price_window_interval`, and it exists
@@ -1289,6 +1299,7 @@ pub fn repo_failure(err: &RepoError) -> DomainError {
         // corrupting this line to `Internal` left the whole crate green while a
         // colliding interval answered 500.
         RepoError::WindowOverlap { .. } => DomainError::WindowOverlap(err.to_string()),
+        RepoError::WindowStartElapsed(_) => DomainError::WindowStartElapsed(err.to_string()),
         // `WindowStateForbidden` belongs in the refused-edge arm above, not here; its
         // own doc says why the two §5 window refusals that remain a surface's are not
         // it. This is the one window refusal the store both enforces physically and
