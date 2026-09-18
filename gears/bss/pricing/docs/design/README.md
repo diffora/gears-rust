@@ -27,7 +27,8 @@ decision rationale in [`../ADR/`](../ADR/).
 ## Slice documents
 
 The cross-slice [UI read-contract amendment](./ui-read-contracts.md) records the
-2026-09-10 implementation and remaining decisions for slices 02, 04 and 05.
+2026-09-10 implementation and remaining decisions for slices 02, 04 and 05, and
+the 2026-09-18 Working/Committed window reads (D-374).
 
 - [`01-foundation.md`](./01-foundation.md) — **shared engine**: `Plan`/`Price` model, canonical scope key, draft→publish state machine, fail-closed validation pipeline, append-only history + versioning/supersession, read-model projection + `pricingSnapshotRef`, event fan-out + `CatalogVersion` request, tenant isolation, ISO 4217 money, idempotency/ETag. Carries the catalog-wide normative statements (§4).
 - [`02-plan-definition.md`](./02-plan-definition.md) — billing cycles, custom frequency, per-seat quantity provenance (`quantitySource` persisted/validated in Slice 3), one-time-setup row, mandatory `PlanTier`, meter injectivity, add-on rules, phases + `convertsToPhaseId`, billing descriptors (PRD §6.1, §6.3)
@@ -35,7 +36,7 @@ The cross-slice [UI read-contract amendment](./ui-read-contracts.md) records the
 - [`04-currency-tax.md`](./04-currency-tax.md) — per-`(currency, region)` rows, region/brand taxonomies, tax-display basis + `not_sellable_ga` gate, single-currency-per-invoice binding, base-price preview (PRD §6.4)
 - [`05-governance.md`](./05-governance.md) — materiality + two-person rule, per-currency threshold policy, RBAC deny-by-default + the preview grant (the backdating grant and its flow are struck — D-330), tenant/region isolation, audit trail + retention (PRD §6.7 approval, §6.12)
 - [`06-consumer-contracts.md`](./06-consumer-contracts.md) — proration input contract (canonical `prorationBasis` enum), `billingTiming`, entitlement grant set, plan-change contract, rating compatibility (PRD §6.9)
-- [`07-pricewindow-linkage.md`](./07-pricewindow-linkage.md) — `PriceWindow` ownership (store, state machine, activation job, `PriceWindow*` events — consolidated per D-03), window coverage + future-gap, sellability surface (joint gate), grandfathering eligibility + atomic cutover (PRD §6.5)
+- [`07-pricewindow-linkage.md`](./07-pricewindow-linkage.md) — `PriceWindow` ownership (store, state machine, activation job, `PriceWindow*` events — consolidated per D-03), **revision-owned draft-window intentions** (ADR-0004 / D-374, supersedes D-332), window coverage + future-gap, sellability surface (joint gate), grandfathering eligibility + atomic cutover (PRD §6.5)
 - [`08-bundles.md`](./08-bundles.md) — bundle price basis (`sum_of_parts` via component `planId`s / `own_price`), currency + frequency coverage, rev-share reconciliation, itemization (PRD §6.3 bundle)
 - [`09-price-overlays.md`](./09-price-overlays.md) — `PriceOverlay` authoring/validation (scope, adjustment, explicit precedence, tax basis) + `customerGroup` taxonomy, effective-dated audited membership, resolved-group freezing (PRD §6.6)
 - [`10-advanced-primitives.md`](./10-advanced-primitives.md) — reserved capacity (same-row attributes), prepaid grant (GA-gated), `includedAllowance` compilation (D-45), trailing-tier qualification (`tierQualificationWindow`, D-40), derived meter formula-as-data, `discountRef` hook, typed `minQtyThreshold` (PRD §6.10)

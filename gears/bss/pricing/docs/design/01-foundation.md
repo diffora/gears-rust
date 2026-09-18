@@ -103,6 +103,7 @@ stale) on read-model outage.
 | `cpt-cf-bss-pricing-adr-canonical-scope-key` | The single scope key is `(planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind, cohort)` + on `chargeKind = usage`: `(skuId, dimensionKey)` (the pair conditional, D-196) — the manifest key extended additively so hybrid components, a grandfathered row + its successor, and two usage lines of one market are distinct keys with concurrent active windows. **§4.1 "Canonical Scope Key (normative)"** is the normative statement — not §4.4, which is "Read Model and `pricingSnapshotRef`" (item 25 of the 2026-08-26 products review; the same wrong pointer stood in ADR-0001 twice and ADR-0002 once). |
 | `cpt-cf-bss-pricing-adr-grandfathering-cohort-axis` | Multi-generation grandfathering: the additive `cohort` axis (= the cutover instant; `none` on non-grandfathered rows) makes every cutover a **new** generation on its own key; within the grandfathered class Tariffs selects by the cohort of the subscription's pinned price id. |
 | `cpt-cf-bss-pricing-adr-pricewindow-consolidation` | The `PriceWindow` machinery is gear-owned (Slice 7): store, state machine, activation job, `PriceWindow*` production; multi-window units are local ACID transactions. |
+| `cpt-cf-bss-pricing-adr-draft-windows` | Revision-owned draft-window intentions; publish creates no implicit coverage (**supersedes D-332**, D-374). Live mutations remain D-99 publish units; draft authoring is not. |
 
 ### 1.3 Architecture Layers
 
@@ -813,6 +814,13 @@ the plan. The cutover and supersession units already requested addressability
 (`inst-gc-commit`, `inst-su-commit`); this closes the standalone surface. Activation and
 expiry, by contrast, are **not** publish units and need none — see §4.4: the read model carries
 window **intervals**, and "active at `t`" is derived at read time.
+**Draft-window authoring is not this rule (normative, D-374, 2026-09-18, supersedes D-332).**
+Create / adjust / cancel of revision-owned intentions, operation undo and baseline refresh
+write no `PriceWindowScheduled`, request no `CatalogVersion`, and re-project nothing. The
+revision's publish is the unit that materializes approved operations into live `scheduled`
+windows; from that instant those windows follow the paragraph above. Publish writes **no**
+implicit coverage — `open_initial_windows` is withdrawn. Incomplete draft saves remain legal;
+submit/commit still require `inst-wc-required`.
 
 Consumers never read draft state and never substitute a default for an absent
 evaluation-policy field (absence must have failed step 2). The catalog computes **no** monetary

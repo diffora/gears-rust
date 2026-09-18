@@ -294,11 +294,12 @@ shape.
 |-----------------|-------------------|
 | `POST/PATCH /bss-pricing/v1/plans*`, `POST /bss-pricing/v1/plans/{id}/prices*`, `DELETE …/prices/{id}` (S2/S3) | `plan × write` |
 | `POST /bss-pricing/v1/plans/{id}/publish` (S2) | `plan × publish` |
-| `GET /bss-pricing/v1/plans*` (incl. `GET /bss-pricing/v1/plans/counts`, D-360 — the list's pair, asked once, no resource), `GET …/prices`, `GET …/coverage`, `GET …/sellability`, `GET /bss-pricing/v1/migrations/{id}`, `GET /bss-pricing/v1/bulk-imports/{id}`, `GET /bss-pricing/v1/repricing-runs/{id}` (S2/S3/S7/S11/S12) | `plan × read` |
+| `GET /bss-pricing/v1/plans*` (incl. `GET /bss-pricing/v1/plans/counts`, D-360 — the list's pair, asked once, no resource), `GET …/prices`, `GET …/coverage` (incl. `view=working`, D-374), `GET …/sellability`, `GET /bss-pricing/v1/price-windows*` (default `view=committed`; working requires `plan_id` + `plan_revision`, D-374), `GET /bss-pricing/v1/migrations/{id}`, `GET /bss-pricing/v1/bulk-imports/{id}`, `GET /bss-pricing/v1/repricing-runs/{id}` (S2/S3/S7/S11/S12) | `plan × read` |
 | `GET /bss-pricing/v1/migrated-origin-snapshots/{subscriptionRef}` (S11 — the D-102 `migrated-origin` read surface, `inst-sy-surface`) | `plan × read` — called by the **Rating/Tariffs service identity**; the ref resolves through no `CatalogVersion`, so it cannot be served off the read-model contract, and until D-102 the D-87 payload had no reader-facing surface at all |
 | `GET /bss-pricing/v1/plans/{id}/preview` (S4) | `plan × preview` |
 | `POST /bss-pricing/v1/plans/{id}/cutovers`, `POST /bss-pricing/v1/plans/{id}/supersessions` (D-88), `PATCH /bss-pricing/v1/prices/{id}/grandfather-until` (S7) | `plan × write` (+ material approval per the standard price-delta evaluation) |
-| `POST /bss-pricing/v1/prices/{id}/windows`, `PATCH/DELETE /bss-pricing/v1/price-windows/{id}` (S7 — owned window machinery, D-03) | `plan × write` (a window is an attribute of the row's sellable life) |
+| `POST /bss-pricing/v1/prices/{id}/windows`, `PATCH/DELETE /bss-pricing/v1/price-windows/{id}` (S7 — owned window machinery, D-03; **`context` mandatory, D-374** — live and draft share these paths) | `plan × write` (a window is an attribute of the row's sellable life) |
+| `DELETE /bss-pricing/v1/plans/{id}/draft-window-operations/{operationId}`, `POST /bss-pricing/v1/plans/{id}/draft-window-baseline/refresh` (S7 — D-374 recovery) | `plan × write`, `resource_id = planId` (same PDP census as window writes) |
 | Plan retirement / `POST` migration schedule / cancel (S11) | `plan × retire` / `plan × migrate` — **and both are audit actions as well as authz ones (2026-08-07)**: this table types the *permission*, while `retire` and `migrate` are also tokens of the audit `action` vocabulary, each minted with its writer in the slice that landed it. D-175's closure rule ("no writer without a token", the companion of D-158's "no token without a writer") is what makes the two lists have to agree, and this row had left which one it belonged to unstated |
 | `POST /bss-pricing/v1/migrations/{id}/start` / `/complete` (S11 — the Subscriptions execution handshake, D-65, 2026-07-29) | `plan × migrate` — called by the Subscriptions **service identity**, not a human role (the service-to-service row below grants only `plan × read`, so this lane is granted explicitly) |
 | `POST/PATCH /bss-pricing/v1/bundles*` (S8 authoring) | `bundle × write` |
@@ -354,6 +355,10 @@ at generation `v13` (D-318, 2026-08-15) also joins the reviewer's document: a na
 consumer surface calls the plan, so leaving it out of the digest would let it be swapped between
 submit and approve, and leaving it out of the document would ask a reviewer to sign for text they
 never read.
+**D-374 (2026-09-18):** a plan-revision unit's pin covers the proposed window schedule —
+live baseline references, every authored operation, row versions and symbolic starts.
+`CONTENT_PIN_DOMAIN_SEP` bumps `v18` → `v19`; open units drain-fail
+`APPROVAL_CONTENT_MISMATCH`. Draft-window writes themselves open no unit.
 
 ### Audit Trail and Retention
 
@@ -376,7 +381,7 @@ never read.
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-state-approval`
 
 **States**: submitted, approved, rejected, voided, unwound
-**Initial State**: submitted (opened by a material **change unit** — a publish, a window mutation (D-62/D-99), a retirement (D-109), a policy diff (D-10), an import batch (D-13); submitter recorded)
+**Initial State**: submitted (opened by a material **change unit** — a publish, a **live** window mutation (D-62/D-99), a retirement (D-109), a policy diff (D-10), an import batch (D-13); submitter recorded). **Draft-window authoring is not a change unit (D-374):** it opens no approval record; the revision submit pins the composed Working schedule including live references and every authored operation.
 
 **Transitions**:
 1. [ ] - `p1` - **FROM** submitted **TO** approved **WHEN** an independent FinanceReviewer approves (G2 holds) → the Foundation publish continues - `inst-as-approve`

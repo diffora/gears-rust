@@ -3,6 +3,7 @@
 This amendment describes backend changes in `diffora/glcode-pricing`, not a
 claim that Pricing Studio has integrated them. D-361–D-367 amend the earlier
 read/approval contracts without changing plan lifecycle or publish policy.
+D-374 adds Working/Committed window reads (`view` as a door discriminator).
 
 ## Plan pending approvals
 
@@ -359,3 +360,28 @@ any nonempty query string receives 400. Responses are private/no-store.
 The [published explanatory HTML](https://artifacts.os.jele.io/pricing-branch)
 has been refreshed for D-361–367. This does not deploy Pricing or integrate the
 real Pricing Studio; the adjacent Studio artifact is unchanged.
+
+## Working and Committed window reads (D-374)
+
+`view` is a **door discriminator**, not an OData `$filter` field (same class as
+products `kind`). Default remains `committed`: today's live `pricing_price_window`
+table. Draft intentions never appear on the committed door.
+
+Working reads are `plan × read` and require the parent plus revision:
+
+| Surface | Required query |
+|---|---|
+| `GET /bss-pricing/v1/price-windows` | `view=working&plan_id={planId}&plan_revision={n}` |
+| `GET /bss-pricing/v1/price-windows/{windowId}` | `view=working&plan_id={planId}&plan_revision={n}` |
+| `GET /bss-pricing/v1/plans/{planId}/coverage` | `view=working&plan_revision={n}` |
+
+Unknown `view` is 400. `view=working` on a revision that is not an open draft is
+409 `DRAFT_WINDOW_CONTEXT_CHANGED`. Named `plan_id` is legal **only** with
+`view=working`; on the committed collection it stays 400 (existing OData-only
+contract). Working composes captured live baseline **references** plus draft
+operations and returns provenance so a live record cannot be confused with a
+draft intention. Bind `view`, parent and revision into the cursor fingerprint.
+Historical published revisions are not mutable working views.
+
+`at_publish` stays symbolic on Working until commit stamps `effective_from`.
+Unchanged baseline ids are references, not copies.

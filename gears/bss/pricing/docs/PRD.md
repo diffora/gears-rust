@@ -107,6 +107,7 @@ Updated:  2026-08-24 by Virtuozzo International GmbH
   - [Commercial-shape and lifecycle completeness (review follow-ups)](#commercial-shape-and-lifecycle-completeness-review-follow-ups)
   - [Governance and referential-integrity completeness (review follow-ups)](#governance-and-referential-integrity-completeness-review-follow-ups)
   - [Instant precision and grandfathering-field placement (implementation-finding follow-ups)](#instant-precision-and-grandfathering-field-placement-implementation-finding-follow-ups)
+  - [Revision-owned draft windows (D-374)](#revision-owned-draft-windows-d-374)
 - [13. Dependencies](#13-dependencies)
 - [14. Assumptions](#14-assumptions)
 - [15. Open Questions](#15-open-questions)
@@ -695,9 +696,9 @@ Publish/preview **MUST** reject the enumerated configurations that would force m
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-fr-pricewindow-coverage`
 
-For billable usage at time `t`, an active or scheduled `PriceWindow` **MUST** exist for the resolved **canonical scope key** (resolved on the **base** `priceOverlay`) or publish **MUST** fail (no silent fallback), directing the operator to schedule a window. Because `priceEligibility` and `chargeKind` are part of the key, a grandfathered row and its successor, and the components of a hybrid plan, are **distinct keys** that MAY each hold an active window at the same `t` — not an overlap violation.
+For billable usage at time `t`, an active or scheduled `PriceWindow` **MUST** exist for the resolved **canonical scope key** (resolved on the **base** `priceOverlay`) or publish **MUST** fail (no silent fallback), directing the operator to schedule a window. Coverage at submit/commit is the **Working** composition of captured live baseline references plus explicit draft-window operations on the revision (**D-374**, ADR-0004) — publish **MUST NOT** write an implicit window (D-332 superseded). Incomplete draft **saves** without a window remain legal. Because `priceEligibility` and `chargeKind` are part of the key, a grandfathered row and its successor, and the components of a hybrid plan, are **distinct keys** that MAY each hold an active window at the same `t` — not an overlap violation.
 
-**Rationale**: Publishing a billable row without window coverage lets Tariffs step 2 resolve nothing (fails closed).
+**Rationale**: Publishing a billable row without window coverage lets Tariffs step 2 resolve nothing (fails closed). An implicit window at commit cannot be reviewed, versioned, or given a finite authored tail.
 
 **Actors**: `cpt-cf-bss-pricing-actor-rating`
 
@@ -1773,10 +1774,12 @@ this PRD and the design set are the wire paths.
 ### PriceWindow linkage
 
 **24. Publish requires window coverage**
-- **Given** a billable Plan with price rows for `(currency, region)` but no active or scheduled `PriceWindow`
+- **Given** a billable Plan with price rows for `(currency, region)` but no active or scheduled `PriceWindow` in the Working composition (live baseline references plus draft-window operations)
 - **When** publish is requested
-- **Then** publication MUST fail for production sellability
-- **And** MUST direct the operator to schedule a window via the window-scheduling API (owned here since the consolidation)
+- **Then** publication MUST fail for production sellability (`WINDOW_COVERAGE_MISSING`)
+- **And** MUST NOT write an implicit open-ended window at the commit instant (**D-374**, supersedes D-332)
+- **And** MUST direct the operator to schedule a window via the window-scheduling API (owned here since the consolidation) — on an open draft, via `context.kind = draft`
+- **And** a draft **save** of that same plan without any window MUST succeed
 - **And** for **one-time** plans the two effectivity mechanisms are distinct and both apply: a **`PriceWindow`** governs **price effectivity** (a purchase at `t` MUST have a covering window) while `availableFrom`/`availableTo` govern **purchasability** — when they disagree, purchase requires **both** an active window **and** an open availability interval (AC #5)
 
 **25. Grandfathering eligibility on window/price**
@@ -2160,10 +2163,11 @@ this PRD and the design set are the wire paths.
 - **And** the operator MUST use supersession + grandfathering (or retirement + migration) instead, preserving the frozen snapshot for bound subscriptions; **deletion is available only for `draft` rows that were never published**
 
 **78. Future-gap coverage across scheduled windows**
-- **Given** a plan with two or more scheduled `PriceWindow` rows for one scope key
+- **Given** a plan with two or more scheduled `PriceWindow` rows (or draft intentions that will materialize as such) for one scope key
 - **When** publish runs
 - **Then** validation MUST reject any uncovered time interval (gap) between the end of one active/scheduled window and the start of the next for billable periods
 - **And** MUST direct the operator to close the gap via the Slice 7 publish-time coverage / window-scheduling flow (extends the publish-time coverage check, AC #24)
+- **And** two contiguous half-open windows (`effectiveTo` of the first = `effectiveFrom` of the next) MUST pass
 
 **79. Add-on dependency acyclicity**
 - **Given** add-on rules with inter-add-on dependencies
@@ -2435,6 +2439,20 @@ this PRD and the design set are the wire paths.
 - **And** the bound MUST NOT be read as a general per-row availability date: "this row stops being sellable at `T`" is owned by `PriceWindow` `effectiveTo` and the plan's `availableTo`, and only the eligibility machinery derives a signal from `grandfatherUntil` (re-bind at the next renewal, AC #73)
 - **And** a grandfathered row with a null `grandfatherUntil` remains indefinite — the converse is deliberately not constrained
 
+### Revision-owned draft windows (D-374)
+
+**118. Draft windows are explicit; publish writes no implicit coverage**
+- **Given** an open draft plan revision (first draft is revision `0`)
+- **When** a priced row is saved with no draft-window intention
+- **Then** the save MUST succeed
+- **And** submit/commit MUST fail coverage (`WINDOW_COVERAGE_MISSING`) until the operator authors covering intentions (`context.kind = draft`)
+- **And** publish MUST NOT insert an implicit open-ended window at the commit instant (D-332 superseded)
+- **And** `at_publish` MUST remain symbolic on Working reads until commit stamps `effective_from`; an exact start elapsed at commit MUST fail `WINDOW_START_ELAPSED` (409) and roll back
+- **And** unchanged live baseline windows MUST NOT be duplicated at a successor publish
+- **And** `availableTo`, plan retirement, or an assumed zero subscriber count MUST NOT exempt a trailing void (D-182)
+- **And** live window POST/PATCH/DELETE that omit `context` MUST be the existing canonical 400 — never inferred as live or draft
+- **And** Working reads require `view=working` (door discriminator, not `$filter`); default remains `committed`
+
 ## 13. Dependencies
 
 | Dependency | Description | Criticality |
@@ -2582,7 +2600,7 @@ Tariffs' **Volume Variant B** (per-tier block fee) is **dropped** (decided 2026-
 | Bundle components | All `includedSkuIds` MUST be published; rev-share MUST sum to 100% per vendor SKU when set |
 | Bundle price basis | A Bundle MUST declare its price basis: `sum_of_parts` or `own_price`; the basis and any explicit price MUST be persisted and frozen. For `sum_of_parts` the bundle MUST reference the specific **component `planId`s** (not bare `skuId`s) whose rows are summed, and publish MUST validate that **every** referenced component has a **covering published price row in each `(currency, region)` the bundle sells in** (and matching `frequency` for recurring components). A missing or ambiguous component row MUST fail publish. Itemization is independent of the basis; **rev-share requires `sum_of_parts`** (D-55 — an `own_price` bundle has no per-vendor-SKU allocation base; `own_price` + rev-share fails publish until an allocation base is decided, a named Future gate) |
 | Billing descriptors | Publish MUST include the complete billing descriptor contract per manifest §4.1 / D-48 v1 (**D-373**): **four row-borne** elements (`invoiceLineTemplate`, `glCode`, `taxCategory`, `billingTiming`, required on recurring rows) and **one derived** `itemizationRule` (bundle value, `itemize` otherwise); the plan half is `billing { itemizationRule, ext }` |
-| Price window coverage | For billable usage at time `t`, an active `PriceWindow` MUST exist for the resolved **canonical scope key** (resolved on the **base** `priceOverlay`) or Tariffs step 2 MUST fail (no silent fallback). Because `priceEligibility` and `chargeKind` are part of the key, a grandfathered row and its successor, and the `recurring`/`usage`/`one_time_setup` components of a hybrid plan, are **distinct keys** that MAY each hold an active window at the same `t` |
+| Price window coverage | For billable usage at time `t`, an active `PriceWindow` MUST exist for the resolved **canonical scope key** (resolved on the **base** `priceOverlay`) or Tariffs step 2 MUST fail (no silent fallback). Submit/commit coverage is the Working composition of live baseline references plus explicit draft-window operations (**D-374**, ADR-0004); publish MUST NOT write an implicit window (D-332 superseded). Incomplete draft saves without a window remain legal. Because `priceEligibility` and `chargeKind` are part of the key, a grandfathered row and its successor, and the `recurring`/`usage`/`one_time_setup` components of a hybrid plan, are **distinct keys** that MAY each hold an active window at the same `t` |
 | Hybrid completeness | Hybrid plans MUST include at least one recurring and one usage price row |
 | One-time setup charge | Recurring and hybrid plans MAY declare an **optional one-time setup/activation price row** on the same `planId`, charged **once per subscription lifetime** (at activation; at trial conversion for trialed plans; never re-charged on plan change/migration) and frozen in `pricingSnapshotRef`. It is a **first-class plan price row** — **not** a synthetic add-on SKU. Publish MUST validate it as one-time (no recurrence, no `billingTiming`/tier fields) |
 | Sellability gate | A subscription/purchase MUST NOT be created unless all **six** predicates of `fr-sellability-gate` hold, at `t`, for **every** canonical scope key the purchase binds on the bound `(currency, region)` — the `recurring`/`usage`/`one_time_setup` components and every phase of the chain, eligibility-resolved, grandfathered generations excluded; one failing component key blocks the plan-market, never a partial sale (D-94 — this row had kept the pre-D-94 singular "the bound canonical scope key", 2026-07-31 review fix): (1) active (not merely *scheduled*) `PriceWindow`; (2) addressable in a **committed `CatalogVersion`**; (3) `availableFrom`/`availableTo` open; (4) lifecycle not retired; (5) no GA-gate flag on the bound market; (6) registry `sellable = true` for a **standalone** line (D-46; bundle components exempt) — a joint rule with Subscriptions. Plans of **any billing cycle** MAY declare optional plan-level `availableFrom`/`availableTo` (validated against window coverage at publish); **deferred publish** is out of launch scope |
@@ -2629,11 +2647,11 @@ Normative relationship: **supersession is versioning scoped to one canonical sco
 
 | **Change class** | **New `CatalogVersion`?** | **Incrementer** |
 |------------------|---------------------------|-----------------|
-| Price-only edit (amount/window on existing plan) | Yes — content MUST become addressable in a `CatalogVersion` (MAY be **batched**). For a **window** edit this means the window surface is itself a **publish unit** (**D-99**, 2026-07-31 review fix: schedule / future-`effectiveTo` adjustment / cancellation run validation → pending ref → warm and re-project the affected rows' plan subject — before that rule the surface requested nothing, so the pinned read model kept advertising coverage the truth side had removed, and the sellability predicates it is resolved from went stale). Window **activation/expiry** increment nothing: the read model carries window **intervals** and "active at `t`" is derived at read time | Registry, on catalog publish request |
+| Price-only edit (amount/window on existing plan) | Yes — content MUST become addressable in a `CatalogVersion` (MAY be **batched**). For a **live window** edit this means the window surface is itself a **publish unit** (**D-99**, 2026-07-31 review fix: schedule / future-`effectiveTo` adjustment / cancellation run validation → pending ref → warm and re-project the affected rows' plan subject — before that rule the surface requested nothing, so the pinned read model kept advertising coverage the truth side had removed, and the sellability predicates it is resolved from went stale). Window **activation/expiry** increment nothing: the read model carries window **intervals** and "active at `t`" is derived at read time. **Draft-window authoring is not this class (D-374):** create/adjust/cancel of revision-owned intentions request no `CatalogVersion`; the revision publish materializes approved operations | Registry, on catalog publish request |
 | Structural edit (model kind, tiers, descriptors, composition) | Yes — addressable in a `CatalogVersion` (MAY be batched) | Registry, on catalog publish request |
 | **Plan retirement** (`published → retired`) | Yes — a **publish unit** in its own right (**D-128**, 2026-08-01 review fix): pending ref → plan-subject re-projection → warm, with the plan's lifecycle state a projected field. The class was **missing** from this table while the sellability gate's predicate (4) reads that state from the *pinned* read model, and a retired plan can never publish again to correct the lag — so the pin advertised it as sellable permanently. Under D-51 a plan with in-flight subscribers on every key cancels no window either, so the price-only (window) class above does not cover it | Registry, on catalog publish request |
 | `PriceOverlay` / customer-group membership change | Yes — each committed mutation is a **publish unit through the engine** (validation → pending ref → warm); consumer visibility is version-pinned exactly like plan content, and the registry's batching coalesces chatty membership traffic | Registry, on catalog publish request |
-| Draft-only edits (no publish) | No | — |
+| Draft-only edits (no publish) | No — includes draft-window authoring, operation undo and baseline refresh (D-374) | — |
 
 On **every** `PlanPublished`, this PRD MUST request that the plan's content become addressable in a `CatalogVersion`; the registry is the **sole** incrementer and **MAY batch** multiple approved publishes into **one** discretionary catalog publish. `PlanPublished` carries a **pending** version reference; the committed `CatalogVersion` is emitted as `CatalogVersionPublished`, and `pricingSnapshotRef` MUST pin that committed version (AC #27, #63). The increment-trigger taxonomy and the **max batching-delay SLO** from `PlanPublished` to `CatalogVersionPublished` are ratified (D-47: interactive <= 5s coalescing; bulk <= 5 min hard max; p95 pending→committed <= 60s) — D-47, mirrored in the products-gear PRD.
 

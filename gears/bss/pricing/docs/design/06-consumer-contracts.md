@@ -159,6 +159,7 @@ Tariffs/Rating compute from.
 
 **Success Scenarios**:
 - A consumer pins a committed `CatalogVersion` and reads the contract fields exactly as published (Foundation §4.4): proration inputs on recurring rows, `billingTiming`, the grant set, the change contract, `{skuId, planId, priceId}`
+- Consumers never read draft-window intentions: committed `PriceWindow` intervals in the pinned delta are live four-state rows only (D-374 / D-99). Working composition is an authoring read (`view=working`), not a consumer pin
 - Absence semantics are trustworthy: a missing `allowedChangeTargets` **means** no self-service change (fail-safe), never "unknown"
 
 **Error Scenarios**:

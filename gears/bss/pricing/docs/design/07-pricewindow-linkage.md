@@ -51,7 +51,10 @@ Updated:  2026-08-24 by Virtuozzo International GmbH
 This slice owns the **time axis of published prices** — including the `PriceWindow`
 machinery itself (D-03): the window tables and state machine, **scheduling**, the UTC
 **activation/expiration job** (a coordination-lease singleton), and the `PriceWindow*`
-**event emission** from the gear outbox; plus the publish-time **window-coverage check**
+**event emission** from the gear outbox; **revision-owned draft-window intentions**
+(ADR-0004 / D-374, supersedes D-332 — Working composition, approval pin, atomic
+materialization; publish writes no implicit coverage); plus the publish-time
+**window-coverage check**
 (every billable row linkable to an active/scheduled `PriceWindow` on its canonical scope key,
 base `priceOverlay`), **future-gap detection** across scheduled windows, the **sellability
 gate** inputs (active window + committed `CatalogVersion` + `availableFrom`/`availableTo` +
@@ -64,7 +67,7 @@ not a cross-component protocol; the UC document remains scenario source material
 
 **Traces to**: `cpt-cf-bss-pricing-fr-pricewindow-coverage`,
 `cpt-cf-bss-pricing-fr-future-gap-coverage`, `cpt-cf-bss-pricing-fr-sellability-gate`,
-`cpt-cf-bss-pricing-fr-grandfathering-eligibility`
+`cpt-cf-bss-pricing-fr-grandfathering-eligibility`; ADR `cpt-cf-bss-pricing-adr-draft-windows`
 
 ### 1.2 Purpose
 
@@ -93,10 +96,11 @@ indefinite lifetime the operator controls via `grandfatherUntil`.
 
 **In scope**: the `PriceWindow` entity, state machine, scheduling/cancellation API, the UTC
 activation/expiration singleton job, and `PriceWindow*` event emission (consolidated, D-03);
-publish-time coverage on the base-`priceOverlay` scope key; future-gap rejection; the
-sellability gate **inputs** (joint rule with Subscriptions); `priceEligibility` + `cohort` +
-`grandfatherUntil` read-model exposure with most-specific-wins documentation; the cutover
-transaction (shorten + two schedules as one **local ACID** approval unit); the
+**revision-owned draft-window intentions** and Working/Committed reads (ADR-0004 / D-374,
+supersedes D-332); publish-time coverage on the base-`priceOverlay` scope key; future-gap
+rejection; the sellability gate **inputs** (joint rule with Subscriptions); `priceEligibility`
++ `cohort` + `grandfatherUntil` read-model exposure with most-specific-wins documentation;
+the cutover transaction (shorten + two schedules as one **local ACID** approval unit); the
 `grandfatherUntil` expiry signal.
 
 **Out of scope**: the scheduler/timeline **UI** (Frontend DESIGN); FX rate-lock from the
@@ -131,8 +135,9 @@ Design-introduced names (Slice 7):
 | `CutoverOrchestrator` | Builds the W4 atomic unit (shorten + grandfathered copy + successor) as one approval + one **local ACID** transaction |
 | `SupersessionOrchestrator` | Builds the **supersession unit** (D-88): successor row + predecessor-window shorten + successor-window schedule as one approval + one local ACID transaction — the only path to `published → superseded` |
 | `EligibilityExpirySignal` | The published signal that a row's `grandfatherUntil` passed — Subscriptions re-binds at next renewal |
-| `WindowScheduler` | The owned scheduling/cancellation surface: creates `scheduled` windows (overlap-validated per scope key), cancels not-yet-active ones, adjusts a future `effectiveTo` (D-03) |
+| `WindowScheduler` | The owned scheduling/cancellation surface: creates `scheduled` windows (overlap-validated per scope key), cancels not-yet-active ones, adjusts a future `effectiveTo` (D-03). Live mutations are D-99 publish units. Draft intentions are a **separate** revision-owned store (D-374) and are not this actor |
 | `WindowActivationJob` | Coordination-lease singleton: flips `scheduled → active` at `effectiveFrom` and `active → expired` at `effectiveTo` (UTC, idempotent, ordered per `(tenant, plan)`), emitting `PriceWindowActivated`/`Expired` from the outbox |
+| Draft-window intentions | Revision-owned proposed schedule (create / adjust_end / cancel) composed with captured live baseline **references** for Working reads and approval; materialized only at publish (ADR-0004 / D-374) |
 
 ### 1.8 Context & Dependencies
 
@@ -140,6 +145,7 @@ Design-introduced names (Slice 7):
 flowchart TB
     subgraph s7["Slice 7 — Window Linkage & Grandfathering"]
         WT["pricing_price_window store + WindowActivationJob<br/>state machine · PriceWindow* outbox (owned, D-03)"]
+        DW["revision-owned draft-window intentions<br/>Working composition · materialize at publish (D-374)"]
         CC["CoverageChecker"]
         SS["SellabilitySurface"]
         CO["CutoverOrchestrator"]
@@ -150,6 +156,7 @@ flowchart TB
     TRF["Tariffs step 2<br/>window resolution · most-specific-wins"]
     CC --> WT
     CO --> WT
+    DW -.->|publish materializes creates| WT
     CC --> FND
     CO --> FND
     FND --> TRF
@@ -157,8 +164,10 @@ flowchart TB
     ES --> SUB
 ```
 
-**Owned:** the `pricing_price_window` store + state machine, the `WindowActivationJob`, and
-`PriceWindowScheduled/Activated/Cancelled/Expired` emission (D-03; previously consumed from the effective-dating UC).
+**Owned:** the `pricing_price_window` store + state machine, the `WindowActivationJob`,
+`PriceWindowScheduled/Activated/Cancelled/Expired` emission (D-03; previously consumed from the
+effective-dating UC), and the revision-owned draft-window intention / baseline / guard tables
+(ADR-0004 / D-374 — not states of the live machine).
 **Produced:** the coverage guarantee, the sellability surface, eligibility fields +
 most-specific-wins semantics, the cutover unit, the expiry signal.
 
@@ -200,7 +209,7 @@ which is what the joint fixture gate guards. Until 2026-08-17 it ran none of the
 **Output**: pass, or a fail-closed violation directing the operator to schedule a window
 
 **Steps**:
-1. [ ] - `p1` - Every billable row's **canonical scope key** (resolved on the base `priceOverlay`) MUST have an active or scheduled `PriceWindow`; absence fails publish — no silent fallback (Tariffs step 2 would resolve nothing). **Exempt: a key this same publish opens (D-332, 2026-08-17)** — the publish writes each priced row's initial window at the commit instant, so the coverage exists by the end of the act that judged it; the exemption is scoped to the publishing run and never to the rule set, because the identical set runs in the repricing apply where no window is opened - `inst-wc-required`
+1. [ ] - `p1` - Every billable row's **canonical scope key** (resolved on the base `priceOverlay`) MUST have an active or scheduled `PriceWindow`; absence fails publish — no silent fallback (Tariffs step 2 would resolve nothing). **No publish-written exemption (D-374, 2026-09-18, supersedes D-332).** D-332 let the same publish open each priced key's initial window at the commit instant; that write is withdrawn. Coverage at submit/commit is the **Working** composition — captured live baseline references plus draft-window operations — not a window the commit invents. Incomplete draft **saves** with no window remain legal. A key this publish is freezing with no authored covering intention fails exactly as a later publish whose coverage was removed. The identical rule set still runs in the repricing apply, which opens nothing - `inst-wc-required`
 2. [ ] - `p1` - Distinct keys hold windows independently: a hybrid's `recurring`/`usage`/`one_time_setup` components and a grandfathered row + successor each carry their own coverage (W2) - `inst-wc-perkey`
 3. [ ] - `p1` - `availableFrom`/`availableTo` (when set) validate **against** window coverage: a purchasability interval reaching outside all coverage fails publish (W5 — dates gate purchase, they do not schedule publish) - `inst-wc-availability`
 
@@ -214,7 +223,7 @@ which is what the joint fixture gate guards. Until 2026-08-17 it ran none of the
 **Steps**:
 1. [ ] - `p1` - Sort windows by `effectiveFrom`; any uncovered interval between one window's end and the next's start over billable periods → reject, naming `[gapStart, gapEnd)` and the scope key - `inst-fg-detect`
 1a. [ ] - `p1` - **Trailing void (normative, D-62, 2026-07-29 review fix):** `inst-fg-detect` is an *interior* check — it compares each window against its successor and by construction cannot see a void with **no** successor. A cancellation or an `effectiveTo` shortening that removes the last coverage on a key is therefore invisible to it. Any cancel/shorten MUST additionally leave the key covered through `max(current coverage end, now + the longest billing cycle sold on that key)` — otherwise reject (`WINDOW_TRAILING_VOID`, 422), naming the key and the first uncovered instant. The **only** exemption is D-51's, **narrowed by D-80 (2026-07-30 review fix)**: a key with no in-flight subscribers **whose plan is also not currently sellable on the key's `(currency, region)` market** — "sellable" evaluated over the full key conjunction (`inst-sg-conjunction`, D-94, 2026-07-31: a usage or phase component key of a sellable plan-market is never exempt, zero subscribers or not — otherwise the exempt cancel reopened the void for that component line while the plan kept selling) — on a sellable plan-market the check always applies (the exemption raced the gate: with zero subscribers *today*, cancelling the sole successor left the key sellable until its active window's end, and anyone subscribing in that interval landed in the void), so cancelling the sole successor of a sellable key is rejected outright. The in-flight-subscriber predicate resolves through the **D-79 Subscriptions inbound lane** (PRD §9.2 lane 3), is **re-resolved inside the mutating commit**, and **fails closed on lane outage or timeout** (treated as subscribers-present: check + materiality apply). **The lane answers per price id (normative, D-131, 2026-08-01 review fix):** the response is a **presence map over the submitted price-id set**, not one aggregate count over it — every consumer of the lane (this exemption, D-51's per-key window decision, the D-80/D-94 gate reasoning) decides **per canonical scope key**, and a single count over the union answers only "does this plan have any subscriber at all", under which retirement would cancel nothing whenever one key is occupied. A mutating unit makes **one** call over the union of its touched keys' price-id sets and derives per-key presence from the map — never one call per key, which would put N synchronous cross-gear round trips inside an ACID transaction holding the row locks and the audit chain segment; the call carries a stated timeout, whose expiry is the fail-closed case above. This closes the same hazard D-05 closed on the retirement path: without it one `plan × write` holder can `DELETE` the two-person-approved scheduled successor, let the active window expire at its natural end, and leave every arrears charge and renewal on the key failing closed. **The exemption is unreachable in the implementation, and the refusal therefore stands unexempted (normative, D-182, 2026-08-04, found while building the window routes):** the D-79 lane has no client, no contract type and no counterpart gear in the built system, and D-131's fail-closed case is about the predicate's **evaluability** rather than the mechanism of its silence, so an **absent** lane is that case too — every cancel and every `effectiveTo` shortening that would leave the key uncovered through the floor above is refused, *including the exempt ones*, under this rule's own `WINDOW_TRAILING_VOID` and with **no second code and no unreachable exemption branch**. The refusal is removed by the change that lands the lane client, which is gated on Subscriptions building the read **and** on SUB-P8 moving from its authored union count to D-131's per-price-id map; at that point the exemption becomes reachable for the first time. Slice 11's `inst-rt-cancel` consumes the same lane for the same predicate at the opposite polarity and inherits the same refusal with the opposite sign - `inst-fg-trailing`
-2. [ ] - `p1` - The check runs at publish **and** inside every window-mutating operation (schedule, cancel, `effectiveTo` adjustment, cutover, retirement-triggered cancellation) — windows are slice-owned (D-03), every mutation goes through `WindowScheduler`/`CutoverOrchestrator`, and there is **no side door**: the window tables carry the same REVOKE + column-whitelist trigger discipline as `pricing_price`, so a gap can never be introduced past validation - `inst-fg-when`
+2. [ ] - `p1` - The check runs at publish **and** inside every window-mutating operation (schedule, cancel, `effectiveTo` adjustment, cutover, retirement-triggered cancellation, **and draft-window create/adjust/cancel plus baseline refresh — D-374**) — windows are slice-owned (D-03), live mutations go through `WindowScheduler`/`CutoverOrchestrator`, draft mutations go through the revision-owned store, and there is **no side door**: the window tables carry the same REVOKE + column-whitelist trigger discipline as `pricing_price`, so a gap can never be introduced past validation. Draft writes are not a live-table side door; submit/commit still judge the Working composition - `inst-fg-when`
 
 ### Sellability Gate
 
@@ -288,16 +297,16 @@ The set named the "supersession unit" everywhere (one-pending-unit-per-key, the 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-state-price-window`
 
 **States**: scheduled, active, expired, cancelled
-**Initial State**: scheduled (created by `WindowScheduler`/`CutoverOrchestrator`; overlap-validated per canonical scope key at creation)
+**Initial State**: scheduled (created by `WindowScheduler`/`CutoverOrchestrator`, or **materialized from an approved draft-window create** at revision publish — D-374; overlap-validated per canonical scope key at creation). **Draft intentions are not states of this machine** (ADR-0004): they live on the revision, compose with live baseline references for Working reads, and never appear in `pricing_price_window` until publish writes `scheduled`.
 
 **Transitions**:
 1. [ ] - `p1` - **FROM** scheduled **TO** active **WHEN** `now ≥ effectiveFrom` (the `WindowActivationJob` flips it and emits `PriceWindowActivated`; idempotent, ordered per `(tenant, plan)`) - `inst-ws-activate`
 2. [ ] - `p1` - **FROM** active **TO** expired **WHEN** `now ≥ effectiveTo` (job flips it and emits `PriceWindowExpired`; an open-ended window — `effectiveTo = null` — never expires; **no fallback pricing exists**: a key without a successor window fails closed downstream, per the coverage doctrine) - `inst-ws-expire`
 3. [ ] - `p1` - **FROM** scheduled **TO** cancelled **WHEN** cancelled before activation (retirement flow, cutover unwind, or operator cancellation; emits `PriceWindowCancelled`); an **active or historical window is never cancelled or deleted** — active windows are only shortened via `effectiveTo` - `inst-ws-cancel`
 4. [ ] - `p1` - **Historical immutability:** once `effectiveFrom` has passed, `effectiveFrom` and the window↔price binding are immutable; the only permitted mutation of an `active` window is moving its **future** `effectiveTo` (shorten/extend, overlap- and coverage-validated — cutover's shorten uses this path); `expired`/`cancelled` windows are immutable history (7y retention with the audit store) - `inst-ws-immutable`
-5a. [ ] - `p1` - **Every window mutation is a publish unit (normative, D-99, 2026-07-31 review fix):** a committed schedule, future-`effectiveTo` adjustment or cancellation runs the Foundation engine path — validation → pending `CatalogVersion` ref → warm — and **re-projects the affected rows' plan subject** (Foundation §4.2/§4.4); the mutation is consumer-visible only at `CatalogVersionPublished` + warm-completion, exactly like plan content and the D-06 overlay/membership units. Windows are plan facts, so no `subject_kind` of their own is introduced. Before this rule the standalone `WindowScheduler` surface (§5) requested nothing and warmed nothing while emitting only `PriceWindow*` events, yet predicate (1) of the gate and the D-80 coverage horizon are required to be evaluable from the **pinned** read model (`inst-sg-pinned`) and PRD §17.5's increment table already required a window edit to become addressable in a `CatalogVersion`: a cancellation left the last-warmed delta advertising coverage the truth side had removed — selling into precisely the trailing void D-62 → D-80 → D-94 closed, with `inst-fg-when`'s "no side door" true of this table and false of what consumers read — and a coverage extension could not lift a horizon block until an unrelated publish happened to re-project the plan. **Activation and expiry are not publish units and need none:** the read model carries window **intervals**, so the time-driven transitions change nothing projected (Foundation §4.4). The cutover and supersession units already carried this (`inst-gc-commit`, `inst-su-commit`) - `inst-ws-publishunit`
+5a. [ ] - `p1` - **Every window mutation is a publish unit (normative, D-99, 2026-07-31 review fix; authoring/committed split, D-374, 2026-09-18):** a committed schedule, future-`effectiveTo` adjustment or cancellation runs the Foundation engine path — validation → pending `CatalogVersion` ref → warm — and **re-projects the affected rows' plan subject** (Foundation §4.2/§4.4); the mutation is consumer-visible only at `CatalogVersionPublished` + warm-completion, exactly like plan content and the D-06 overlay/membership units. Windows are plan facts, so no `subject_kind` of their own is introduced. Before this rule the standalone `WindowScheduler` surface (§5) requested nothing and warmed nothing while emitting only `PriceWindow*` events, yet predicate (1) of the gate and the D-80 coverage horizon are required to be evaluable from the **pinned** read model (`inst-sg-pinned`) and PRD §17.5's increment table already required a window edit to become addressable in a `CatalogVersion`: a cancellation left the last-warmed delta advertising coverage the truth side had removed — selling into precisely the trailing void D-62 → D-80 → D-94 closed, with `inst-fg-when`'s "no side door" true of this table and false of what consumers read — and a coverage extension could not lift a horizon block until an unrelated publish happened to re-project the plan. **Activation and expiry are not publish units and need none:** the read model carries window **intervals**, so the time-driven transitions change nothing projected (Foundation §4.4). The cutover and supersession units already carried this (`inst-gc-commit`, `inst-su-commit`). **Draft-window authoring is not a publish unit (D-374):** create / adjust / cancel of revision-owned intentions, operation undo and baseline refresh emit audit records and neither request a `CatalogVersion` nor emit `PriceWindowScheduled`. The revision's publish materializes approved operations into live `scheduled` windows; those materialized creates then follow this step - `inst-ws-publishunit`
 5b. [ ] - `p1` - **Changeover vs pin-eligibility (normative, D-101):** the D-47-derived instant floors (`inst-gc-compose`, `inst-su-instant`) bound the *batching* delay only — they cannot bound a **degraded** warm, whose re-drive continues past the SLO without limit (Foundation §3.6/§4.4). If a changeover instant arrives while the `CatalogVersion` carrying its successor row is not yet **pin-eligible**, consumers pinning the previous pin-eligible version resolve the predecessor row **with its pre-shorten interval** — coherently the old price, never a mixed or half-switched set (that coherence is what version-level pin-eligibility buys). This state is a money exposure with an operator remedy, not a silent one: it raises Critical `pricing.window.changeover_unwarmed` (§7) for the duration - `inst-ws-changeover-warm`
-5. [ ] - `p1` - **Future-only start (normative, D-63, 2026-07-29 review fix):** `effectiveFrom` MUST be **strictly in the future** at creation (`WINDOW_START_IN_PAST`, 422). `inst-ws-immutable` guards only *mutation* of a past start, so without this rule a `plan × write` holder could POST a window starting 60 days ago, have the `WindowActivationJob` activate it on its next pass, and reprice open (unposted) arrears periods — bypassing the `BackdateGrant` (reason-mandatory, two-person) that S2 `inst-cs-availability` calls "the **only** sanctioned backdating", and never tripping S5's `BACKDATE_SIDE_EFFECT` predicate. Retroactive effectiveness exists **only** as reference rows on the Slice 5 historical-import path, which schedules no windows - `inst-ws-future-start`
+5. [ ] - `p1` - **Future-only start (normative, D-63, 2026-07-29 review fix; `at_publish` exception, D-374, 2026-09-18):** on the **live** create path, `effectiveFrom` MUST be **strictly in the future** at creation (`WINDOW_START_IN_PAST`, 422). `inst-ws-immutable` guards only *mutation* of a past start, so without this rule a `plan × write` holder could POST a window starting 60 days ago, have the `WindowActivationJob` activate it on its next pass, and reprice open (unposted) arrears periods — bypassing the `BackdateGrant` (reason-mandatory, two-person) that S2 `inst-cs-availability` calls "the **only** sanctioned backdating", and never tripping S5's `BACKDATE_SIDE_EFFECT` predicate. Retroactive effectiveness exists **only** as reference rows on the Slice 5 historical-import path, which schedules no windows. **Draft intentions** MAY carry `start.kind = at_publish` (symbolic until commit) or an exact future UTC millisecond instant. Materializing `at_publish` stamps `effective_from` to the publish commit instant — a publish-path exception, not a live-POST exception. An exact authored start that has elapsed at commit is `WINDOW_START_ELAPSED` (409); the publish rolls back. D-332's implicit window at the commit instant is **not** this exception and is withdrawn - `inst-ws-future-start`
 
 ### Grandfathered Row Eligibility State Machine
 
@@ -321,16 +330,19 @@ admits the row here, and stating it twice would put one rule under two owners
 
 | Method | Path | Purpose | Idempotency |
 |--------|------|---------|-------------|
-| `POST` | `/bss-pricing/v1/prices/{priceId}/windows` | Schedule a window (overlap-validated; D-03 owned surface). **A publish unit** (D-99): pending `CatalogVersion` ref + plan-subject re-projection, 202 | client idempotency key |
-| `PATCH` | `/bss-pricing/v1/price-windows/{windowId}` | Adjust a future `effectiveTo` (shorten/extend; coverage-validated). **A publish unit** (D-99); a shorten is additionally always-material (D-62) | ETag |
-| `DELETE` | `/bss-pricing/v1/price-windows/{windowId}` | Cancel a not-yet-active window (emits `PriceWindowCancelled`). **A publish unit** (D-99); always-material (D-62) | — |
+| `POST` | `/bss-pricing/v1/prices/{priceId}/windows` | Schedule a window. **`context` is mandatory (D-374)** — missing is canonical 400, never inferred. `{"kind":"live"}`: overlap-validated live create, strictly future `effective_from`; **a publish unit** (D-99): pending `CatalogVersion` ref + plan-subject re-projection, 202; no If-Match. `{"kind":"draft","plan_revision":n}`: revision-owned intention (`start` = `at` \| `at_publish`); 201; If-Match is the **plan** ETag; not a publish unit | client idempotency key |
+| `PATCH` | `/bss-pricing/v1/price-windows/{windowId}` | Adjust a future `effectiveTo` (live) or a draft intention / staged `adjust_end` (draft). Same `context` discriminator. Live: **a publish unit** (D-99); a shorten is additionally always-material (D-62); If-Match is window `mutation_seq`. Draft: plan ETag; not a publish unit | ETag (live: `mutation_seq`; draft: plan tag) |
+| `DELETE` | `/bss-pricing/v1/price-windows/{windowId}` | Cancel a not-yet-active live window, or remove a draft intention / stage cancellation of a baseline scheduled window. Query `context` is mandatory. Live: **a publish unit** (D-99); always-material (D-62); no If-Match. Draft: plan ETag + Idempotency-Key. Never cancel an active/expired live window through draft context | live: — ; draft: client key |
 
 **The approval unit a controlled window mutation opens is subject to the ACT, not the window (normative, D-184, 2026-08-05):** its subject is `<plan>/<window>/<operation>/<prior end>/<new end>`, so an approval names the transition it authorizes and cannot answer for another act on the same window. A **schedule**'s subject carries no window id at all — it is `<plan>/schedule/<priceId>/<effectiveFrom>/<effectiveTo>`, the id of the window being an **outcome minted at the commit**, so the call made after the approve reproduces the subject and completes. The same subject is **rendered to the reviewer** on the approval detail, which is what lets a reviewer of a cancel tell their unit from a reviewer of a lengthening (D-61). The act is authenticated by the record's own subject rather than by the content pin. **Each act is named by its operation, the act sequence it was read at, and its transition (D-190, 2026-08-05)** — the window row carries a `mutation_seq` counting **operator acts only**, which the activation and expiry sweeps deliberately leave unmoved, because a counter the clock could move would make an approved retry name a subject no unit was opened under. **Both Idempotency cells are now honoured (D-191, 2026-08-05):** the `POST` replays through the gate — the same key and body return the first answer and mint no second window — and the `PATCH`'s `If-Match` names that same act sequence, compared in the `UPDATE`'s own predicate, with a consumed sequence refused as `STALE_VERSION` (409). A window has no `GET`, so the tag is served by the mutating verbs themselves; and a key identifies an **attempt** rather than an act, so completing an act a reviewer has approved is a new attempt under a new key. The `DELETE`'s empty cell stays empty. **Every act reads the threshold policy at its own instant (D-194, 2026-08-05)**, not at the wall clock the reading happens on.
 | `POST` | `/bss-pricing/v1/plans/{planId}/supersessions` | Compose + submit the atomic **supersession unit** (D-88): successor row + predecessor-window shorten + successor-window schedule, one approval unit / one local ACID transaction; changeover instant ≥ approval commit + the max batching-delay SLO | per `(planId, scope key, changeover instant)` |
 | `POST` | `/bss-pricing/v1/plans/{planId}/cutovers` | Compose + submit the atomic grandfathering cutover — **single- or multi-key** (D-28): the payload carries a scope-key selector; all selected keys cut over at **one instant** as **one approval unit** / one local ACID transaction (per-key generations created; the unit pends every touched key; the S5 per-row hash pin covers the whole set) | per `(planId, key-set hash, cutover instant)` |
 | `PATCH` | `/bss-pricing/v1/prices/{priceId}/grandfather-until` | Tighten `grandfatherUntil` (material change). **Preconditions in D-329's order, below** | ETag (see D-329 cl. 3 — it cannot refuse a lost update here) |
 | `GET` | `/bss-pricing/v1/plans/{planId}/sellability?at=&currency=&region=` | The sellability surface for the joint gate | — |
-| `GET` | `/bss-pricing/v1/plans/{planId}/coverage` | Coverage/gap report per scope key (operator remediation) | — |
+| `GET` | `/bss-pricing/v1/plans/{planId}/coverage` | Coverage/gap report per scope key (operator remediation). Default `view=committed`. `view=working&plan_revision={n}` composes baseline + draft intentions (D-374). `view` is a door discriminator, not `$filter` | — |
+| `GET` | `/bss-pricing/v1/price-windows` / `…/{windowId}` | Committed collection by default. Working requires `view=working&plan_id={planId}&plan_revision={n}` (D-374). Named `plan_id` is legal **only** with `view=working` | — |
+| `DELETE` | `/bss-pricing/v1/plans/{planId}/draft-window-operations/{operationId}` | Discard a staged live adjust/cancel on the open draft; plan ETag; 204. `plan × write` | client key |
+| `POST` | `/bss-pricing/v1/plans/{planId}/draft-window-baseline/refresh` | Replace baseline references; retain new-window intentions; drop staged ops whose target version changed. Body `{"plan_revision":n}`. Does not renew approval. `plan × write` | client key |
 
 **Problem responses (RFC 9457):** `WINDOW_COVERAGE_MISSING` (422, names the scope key),
 `WINDOW_GAP` (422, names `[gapStart, gapEnd)`), `WINDOW_OVERLAP` (409 — the scheduled/adjusted
@@ -352,7 +364,13 @@ submit, or closer than the max batching-delay SLO at approval commit; D-88 — t
 `GRANDFATHER_UNTIL_FORBIDDEN` (422 — `grandfatherUntil` non-null on a row whose
 `priceEligibility` is not `existing_grandfathered`; D-147, 2026-08-02. Declared here rather than
 in the Foundation catalogue because this slice owns the eligibility machinery the rule is part of,
-exactly as it owns the slice's other grandfathering refusals).
+exactly as it owns the slice's other grandfathering refusals),
+`DRAFT_WINDOW_CONTEXT_CHANGED` (409 — draft context names a revision that is not an open draft,
+or `view=working` on such a revision; D-374),
+`WINDOW_BASELINE_CHANGED` (409 — a captured live window was mutated by an operator after
+baseline capture or approval; D-374),
+`WINDOW_START_ELAPSED` (409 — an exact authored draft start has passed at commit; nothing
+commits; D-374).
 
 **The horizon door's preconditions, in the order it applies them (normative, D-329, 2026-08-16).**
 `PATCH …/prices/{priceId}/grandfather-until` is the only writer of a live row's
@@ -392,10 +410,10 @@ told to clear a field it may not carry. **No event and no code are minted** for 
 cl. 4): §7 declares no event for them, `PriceUpdated` is the supersession's and its dedup key would
 collapse repeated tightenings, and D-204 cl. (2) forbids the code. Visibility is D-06's route.
 
-**All three window mutations address a revision the catalog has already frozen (normative, D-314,
+**All three live window mutations address a revision the catalog has already frozen (normative, D-314,
 2026-08-15, found by an operator taking a plan that already carried rows to `published`).** The
 subject is the plan's **current** revision — `published` or `retired`, Foundation §4.4/§3.7's sense —
-so on a plan whose only revision is a `draft` all three answer **404**, naming the current plan
+so on a plan whose only revision is a `draft` all three **live** answers are **404**, naming the current plan
 revision as the thing that is absent. This is a rule and not an artifact of how the revision
 happens to be looked up, on two independent grounds: the pending ref a mutation records carries
 the pinned `(revision, lifecycle_state)` pair and the store admits **no** `draft` value for the
@@ -406,14 +424,17 @@ and its revision-scoped children are physically immutable, which a draft's are n
 consequence used to be an **ordering constraint on a plan's first publish**: `inst-wc-required`
 refuses a *billable* row whose key holds no live window, so a plan whose shape was otherwise sound
 had to publish an **empty** row set first, after which the row and its window became authorable and
-rode the next publish. **That order is abolished (normative, D-332, 2026-08-17).** The publish
-itself opens each priced row's **initial** window at the commit instant, so the key it freezes is
-covered by the same act that freezes it, and `inst-wc-required` is exempted for exactly the keys
-that publish opens — the exemption is a property of *that* run and not of the rule set, because the
-same rules run in the repricing apply, which opens nothing. Scheduling therefore means moving a
-price **later**, which is what `inst-ws-future-start` (D-63) already required of it. What the old
-order cost is stated in D-314, which is now a record of a cost that was paid rather than one that
-is owed.
+rode the next publish. **D-332 (2026-08-17, product-owner confirmed) abolished that order by having
+publish write each priced row's initial window at the commit instant.** **That write is withdrawn
+(normative, D-374, 2026-09-18, supersedes D-332).** Draft-window intentions are authored on the
+open revision **beside** the live machine — they are not `draft` rows in `pricing_price_window` —
+so D-314's three grounds still hold of live mutations. First publish of a priced plan is in force
+from the commit instant **only if** the author wrote a covering intention (`at_publish` or an
+exact start). Scheduling a **live** window still means moving a price **later**, which is what
+`inst-ws-future-start` (D-63) already required of the live POST. What the old empty-publish order
+cost is stated in D-314, which remains a record of a cost that was paid rather than one that is
+owed: coverage is now authored on the same revision, not by a ceremony publish and not by an
+implicit window.
 
 **Instants on these surfaces are UTC at millisecond resolution (normative, D-144, 2026-08-02,
 found while building the draft-authoring plane).** `effectiveFrom`/`effectiveTo`, the cutover
@@ -472,6 +493,23 @@ historical immutability via the same `REVOKE` + column-whitelist trigger discipl
 adjustment; DELETE always rejected — cancel is a state, not a deletion); coverage/gap checks
 read the owned table directly (no mirror — D-03).
 
+**Revision-owned draft windows (normative, D-374, 2026-09-18).** These tables are **not**
+`pricing_price_window` and admit no four-state token. Guard rows are lock identity, not
+business coverage.
+
+**`pricing_draft_window`** — intentions keyed `(tenant_id, plan_id, plan_revision)`, referencing
+`price_id`; actions `create` (stable `window_id`, `start` = exact instant or `at_publish`,
+optional exclusive `effective_to`) / `adjust_end` / `cancel`. Incomplete saves are legal.
+
+**`pricing_window_baseline`** — captured live identity + operator `mutation_seq` at the moment
+the draft opened or last refreshed. Unchanged entries are **references**, never copies, at
+publish. Refresh is an explicit draft mutation that invalidates approval.
+
+**`pricing_window_guard`** — one row per `(tenant_id, plan_id)` serialized under ordinary secure
+ORM UPDATEs. The creating migration `INSERT … SELECT DISTINCT tenant_id, plan_id FROM
+pricing_plan`; create/clone keep inserting one. Zero-row acquire is an error. This is **not**
+an implicit-window backfill.
+
 ## 7. Events & Alarms
 
 No new frozen event names — the manifest §4.1 `PriceWindow*` set is now **produced by this
@@ -505,8 +543,11 @@ surface Subscriptions consumes is two-way: at re-bind it reports the released ge
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-window-coverage`
 
 Publish **MUST** fail for any billable row whose canonical scope key (base `priceOverlay`) lacks
-an active/scheduled window, directing the operator to schedule one; distinct keys carry
-independent coverage; `availableFrom`/`availableTo` validate against coverage.
+an active/scheduled window **in the Working composition at submit/commit** (captured live
+baseline references plus draft-window operations; D-374), directing the operator to schedule
+one; distinct keys carry independent coverage; `availableFrom`/`availableTo` validate against
+coverage. Publish **MUST NOT** write an implicit window (D-332 superseded). Incomplete draft
+**saves** without a window remain legal.
 
 **Implements**: `cpt-cf-bss-pricing-algo-window-coverage`
 
@@ -529,7 +570,9 @@ closed downstream. Every window **mutation** (schedule / adjust / cancel) **MUST
 unit through the Foundation engine — pending `CatalogVersion` ref + plan-subject re-projection +
 warm (D-99, `inst-ws-publishunit`) — so no window change is consumer-visible outside a committed
 version; activation and expiry are **not** publish units, because the read model carries window
-**intervals** and "active at `t`" is derived at read time.
+**intervals** and "active at `t`" is derived at read time. Draft-window authoring is **not** a
+publish unit (D-374): intentions emit no `PriceWindowScheduled` until the revision publish
+materializes them.
 
 **Implements**: `cpt-cf-bss-pricing-state-price-window`
 
@@ -633,7 +676,8 @@ Unit:
 
 Integration (testcontainers):
 
-- [ ] Publishing a billable row without a window fails (`WINDOW_COVERAGE_MISSING`); scheduling a window via the owned API then re-publishing passes
+- [ ] Publishing a billable row without a window fails (`WINDOW_COVERAGE_MISSING`); scheduling a window via the owned API then re-publishing passes. **D-332's implicit first-publish window is withdrawn (D-374):** a priced first publish with no authored covering intention fails the same code; a draft save of that plan **without** a window succeeds
+- [ ] Two contiguous draft windows `[T0, T1)` then `[T1, ∞)` on one key pass submit; `at_publish` stays symbolic on Working reads until commit stamps `effective_from`; an exact start elapsed at commit is `WINDOW_START_ELAPSED` and rolls back; an unchanged live baseline id is not duplicated; `available_to` / retirement is not a trailing-void exemption
 - [ ] A scheduled window activates at `effectiveFrom` within the job SLO and `PriceWindowActivated` emits ordered per `(tenant, plan)`; a killed-and-restarted job (lease takeover) activates exactly once (idempotent)
 - [ ] Overlap on the same canonical scope key is rejected at scheduling (`WINDOW_OVERLAP`); adjacent windows (`effectiveTo = next.effectiveFrom`) pass
 - [ ] Mutating a historical window (past `effectiveFrom`, or expired/cancelled) is rejected (`WINDOW_HISTORICAL_IMMUTABLE`); DELETE of an active window is rejected (`WINDOW_NOT_CANCELLABLE`); cancelling a scheduled window emits `PriceWindowCancelled`
