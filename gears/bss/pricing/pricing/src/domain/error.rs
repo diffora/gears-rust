@@ -194,6 +194,14 @@ pub enum DomainError {
     /// tripping S5's `BACKDATE_SIDE_EFFECT` predicate.
     #[error("window start is not in the future: {0}")]
     WindowStartInPast(String),
+    /// An exact authored draft start has elapsed at commit (D-374, **409**).
+    ///
+    /// A conflict rather than a precondition failure for
+    /// [`DomainError::WindowStartInPast`]'s reason with the sign reversed: the
+    /// request was well-formed at submit and what refused it is where the clock
+    /// now stands. Re-composing against a fresh instant is the remedy.
+    #[error("window start elapsed: {0}")]
+    WindowStartElapsed(String),
     /// A cancel or an `effectiveTo` shortening would leave the canonical scope key
     /// uncovered with no successor (`07-pricewindow-linkage.md` §5,
     /// `inst-fg-trailing`, architectural **422** rendered 400). Names the key and

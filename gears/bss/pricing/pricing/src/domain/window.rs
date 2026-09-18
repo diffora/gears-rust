@@ -129,6 +129,13 @@ pub const WINDOW_NOT_CANCELLABLE: &str = "WINDOW_NOT_CANCELLABLE";
 /// Slice 5 historical-import path, which schedules no windows at all.
 pub const WINDOW_START_IN_PAST: &str = "WINDOW_START_IN_PAST";
 
+/// An exact authored draft start has passed at commit (D-374, **409**).
+///
+/// Distinct from [`WINDOW_START_IN_PAST`]: the live create path refuses a start that
+/// is not strictly future at creation, while this refusal names an exact draft
+/// intention that was valid at submit but elapsed before commit.
+pub const WINDOW_START_ELAPSED: &str = "WINDOW_START_ELAPSED";
+
 /// A draft price row cannot be discarded while a window stands on it.
 ///
 /// **The design set declares no code for this refusal and the entry is owed** —

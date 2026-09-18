@@ -365,6 +365,12 @@ impl From<DomainError> for CanonicalError {
             D::WindowStartInPast(detail) => {
                 precondition("effective_from", &detail, "WINDOW_START_IN_PAST")
             }
+            // D-374's elapsed exact draft start. A conflict rather than a
+            // precondition failure: the intention was valid at submit and the clock
+            // moved under it before commit.
+            D::WindowStartElapsed(detail) => {
+                aborted(detail, crate::domain::window::WINDOW_START_ELAPSED)
+            }
             // `inst-su-instant`'s two floors. An architectural 422 (§5) rendered
             // 400, and a precondition failure rather than a conflict for the reason
             // its neighbour above is one — the clock moved, not the world. It is

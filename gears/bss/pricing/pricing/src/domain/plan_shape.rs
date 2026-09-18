@@ -41,6 +41,9 @@
 //! and the two answers are free to disagree the day the publish unit changes
 //! what it feeds in.
 //!
+//! Draft-window intentions compose separately via [`crate::domain::draft_window`]
+//! (D-374); this type gains revision-owned window fields in a later task.
+//!
 //! ## `windows` is the plane the coverage rules range over, and it is
 //! deliberately unfiltered
 //!
