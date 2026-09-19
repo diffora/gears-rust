@@ -1,5 +1,21 @@
-//! `pricing_price` and `pricing_price_tier_band`, proved by **executing the
-//! statement each object must refuse**, on Postgres.
+//! `pricing_price`, `pricing_price_tier_band` and the four tables the charge-line
+//! split moved their columns onto, proved by **executing the statement each object
+//! must refuse**, on Postgres.
+//!
+//! # One logical row, six tables
+//!
+//! This suite was written when a price row was one table with its bands beside it.
+//! The split moved the eight structural axes to `pricing_charge_line`, the shared
+//! content to `pricing_charge_line_version`, currency and region to
+//! `pricing_market_price` and band geometry to `pricing_charge_tier`; the money
+//! and the rates stayed. The guards went with their columns, so the *cases* did not
+//! change -- "this otherwise-valid row, with `billing_timing` moved" is still the
+//! whole of one -- and [`insert`] and [`band`] route each column to the table that
+//! owns it now. What a case asserts is the guard's new name, on its new table.
+//!
+//! It sat red behind `#[ignore]` for a whole task after the split, because the
+//! fast tier cannot run it and its mirror has no equivalent suite: for that
+//! stretch some twenty CHECKs had no executed refusal on either engine.
 //!
 //! # Why this suite exists
 //!
@@ -27,9 +43,9 @@
 //! A refusal an *earlier* guard produced is not evidence about the guard the
 //! test names. This table makes the hazard concrete: its `CHECK`s all share one
 //! row, and several of them fire on the same illegal value. `package_size = 0`
-//! trips `chk_pricing_price_package_size` only on a row whose `model_kind` is
+//! trips `chk_pricing_charge_line_version_package_size` only on a row whose `model_kind` is
 //! already `package`; on any other kind
-//! `chk_pricing_price_package_fields_kind` answers first and the test would be
+//! `chk_pricing_charge_line_version_package_fields_kind` answers first and the test would be
 //! green while saying nothing about the constraint it names. Every refusal
 //! below is therefore an otherwise-**valid** row with exactly one column moved.
 //!
@@ -102,13 +118,26 @@ async fn applied() -> DatabaseConnection {
     Pg::applied().await.raw().await
 }
 
+/// Separates the statements of one logical row -- see [`insert`].
+const THEN: &str = "\n-- then --\n";
+
+/// Run a statement, or the [`THEN`]-separated sequence one logical row became, and
+/// hand back the **first** refusal.
+///
+/// A price row used to be one `INSERT`. Since the charge-line split it is four --
+/// the line, its version, its market, then the monetary row -- and the guard a case
+/// names may sit on any of them. Stopping at the first refusal keeps the suite's
+/// rule intact: the row is otherwise valid, so whatever answers first is the object
+/// under test and not a neighbour.
 async fn exec(conn: &DatabaseConnection, sql: &str) -> Result<(), sea_orm::DbErr> {
-    conn.execute_raw(Statement::from_string(
-        sea_orm::DatabaseBackend::Postgres,
-        sql.to_owned(),
-    ))
-    .await
-    .map(|_| ())
+    for statement in sql.split(THEN) {
+        conn.execute_raw(Statement::from_string(
+            sea_orm::DatabaseBackend::Postgres,
+            statement.to_owned(),
+        ))
+        .await?;
+    }
+    Ok(())
 }
 
 /// Run one statement that must land.
@@ -160,6 +189,7 @@ fn base_row(id: &str) -> Vec<(String, String)> {
         ("model_kind", "'flat'".to_owned()),
         ("amount_minor", "1000".to_owned()),
         ("lifecycle_state", "'draft'".to_owned()),
+        ("plan_revision", "0".to_owned()),
         ("created_by", format!("'{ACTOR}'")),
         ("created_at_utc", "'2026-08-03 09:00:00+00'".to_owned()),
     ]
@@ -168,7 +198,105 @@ fn base_row(id: &str) -> Vec<(String, String)> {
     .collect()
 }
 
+/// The columns the **charge line** owns since the split: the eight structural axes.
+const LINE_COLUMNS: [&str; 8] = [
+    "plan_id",
+    "phase",
+    "price_overlay",
+    "price_eligibility",
+    "charge_kind",
+    "cohort",
+    "sku_id",
+    "dimension_key",
+];
+
+/// The columns the **market price** owns: the two monetary axes.
+const MARKET_COLUMNS: [&str; 2] = ["currency", "region"];
+
+/// The shared content the **line version** owns.
+const VERSION_COLUMNS: [&str; 17] = [
+    "model_kind",
+    "meter",
+    "billing_timing",
+    "billing_granularity",
+    "aggregation_function",
+    "aggregation_granularity",
+    "tier_aggregation_window",
+    "tier_qualification_window",
+    "package_size",
+    "quantity_source",
+    "manual_quantity",
+    "min_qty_purchase",
+    "min_qty_usage",
+    "min_qty_usage_fallback",
+    "max_hold_granules",
+    "included_allowance",
+    "reservation_flavor",
+];
+
+/// An id minted from the values that identify the row, so two logical rows that
+/// agree on a line's axes name **one** line rather than colliding on its scope.
+fn derived_id(namespace: u128, parts: &[&str]) -> String {
+    let mut bytes = Vec::new();
+    for part in parts {
+        bytes.extend_from_slice(part.as_bytes());
+        bytes.push(0xff);
+    }
+    uuid::Uuid::new_v5(&uuid::Uuid::from_u128(namespace), &bytes).to_string()
+}
+
+/// The three graph ids a logical row resolves to, from its own column values.
+fn graph_ids(columns: &[(String, String)]) -> (String, String, String) {
+    let value = |name: &str| {
+        columns
+            .iter()
+            .find(|(column, _)| column == name)
+            .map_or("", |(_, value)| value.as_str())
+    };
+    let axes: Vec<&str> = LINE_COLUMNS.iter().map(|name| value(name)).collect();
+    let line = derived_id(0x5c01, &axes);
+    // The version's id covers its **content and state** as well as its revision.
+    // Two logical rows that agree on all of it name one version, which is the real
+    // model: markets of one line share their structure. Two that disagree would
+    // otherwise be silently folded into whichever landed first, and a case would go
+    // on to assert something about a `flat` version it believes is `graduated`.
+    // Minted apart, the second is refused by
+    // `uq_pricing_charge_line_version_revision` -- by name, at the row that asked.
+    let state = match value("version_state") {
+        "" => value("lifecycle_state"),
+        explicit => explicit,
+    };
+    let mut content: Vec<&str> = vec![&line, value("plan_revision"), state];
+    content.extend(VERSION_COLUMNS.iter().map(|name| value(name)));
+    let version = derived_id(0x5c02, &content);
+    let market = derived_id(0x5c03, &[&line, value("currency"), value("region")]);
+    (line, version, market)
+}
+
+fn render_insert(table: &str, columns: &[(&str, String)], unless: &str) -> String {
+    let names = columns
+        .iter()
+        .map(|(column, _)| *column)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let values = columns
+        .iter()
+        .map(|(_, value)| value.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("INSERT INTO bss.{table} ({names}) VALUES ({values}){unless}")
+}
+
 /// `INSERT` of [`base_row`] with the named columns replaced or added.
+///
+/// **One logical row, routed to the table that owns each column.** The cases below
+/// still say "this row, with `billing_timing` moved" -- which table that column
+/// lives on is this function's business and not theirs. The three identity rows are
+/// inserted unless present (by primary key only, so every *other* guard on them
+/// still answers), because two logical rows on one line share it.
+///
+/// `version_state` is the one name here that is not a column: the line version
+/// takes the price row's `lifecycle_state` unless a case says otherwise.
 fn insert(id: &str, overrides: &[(&str, &str)]) -> String {
     let mut columns = base_row(id);
     for (name, value) in overrides {
@@ -177,17 +305,83 @@ fn insert(id: &str, overrides: &[(&str, &str)]) -> String {
             None => columns.push(((*name).to_owned(), (*value).to_owned())),
         }
     }
-    let names = columns
-        .iter()
-        .map(|(column, _)| column.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let values = columns
-        .iter()
-        .map(|(_, value)| value.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("INSERT INTO bss.pricing_price ({names}) VALUES ({values})")
+    let (line, version, market) = graph_ids(&columns);
+    let pick = |name: &str| {
+        columns
+            .iter()
+            .find(|(column, _)| column == name)
+            .map(|(_, value)| value.clone())
+    };
+    let tenant = pick("tenant_id").unwrap_or_default();
+
+    let mut line_row = vec![
+        ("tenant_id", tenant.clone()),
+        ("charge_line_id", format!("'{line}'")),
+    ];
+    let mut market_row = vec![
+        ("tenant_id", tenant.clone()),
+        ("market_price_id", format!("'{market}'")),
+        ("charge_line_id", format!("'{line}'")),
+    ];
+    let mut version_row = vec![
+        ("tenant_id", tenant),
+        ("line_version_id", format!("'{version}'")),
+        ("charge_line_id", format!("'{line}'")),
+        (
+            "lifecycle_state",
+            pick("version_state")
+                .or_else(|| pick("lifecycle_state"))
+                .unwrap_or_default(),
+        ),
+    ];
+    let mut price_row = vec![
+        ("charge_line_id", format!("'{line}'")),
+        ("line_version_id", format!("'{version}'")),
+        ("market_price_id", format!("'{market}'")),
+    ];
+    for (name, value) in &columns {
+        let name = name.as_str();
+        if name == "version_state" {
+            continue;
+        }
+        if LINE_COLUMNS.contains(&name) {
+            line_row.push((name, value.clone()));
+        }
+        if MARKET_COLUMNS.contains(&name) {
+            market_row.push((name, value.clone()));
+        }
+        if VERSION_COLUMNS.contains(&name) {
+            version_row.push((name, value.clone()));
+        }
+        if matches!(name, "plan_revision" | "created_by" | "created_at_utc") {
+            version_row.push((name, value.clone()));
+        }
+        let owned_elsewhere = (LINE_COLUMNS.contains(&name) && name != "plan_id")
+            || MARKET_COLUMNS.contains(&name)
+            || VERSION_COLUMNS.contains(&name);
+        if !owned_elsewhere {
+            price_row.push((name, value.clone()));
+        }
+    }
+    [
+        render_insert(
+            "pricing_charge_line",
+            &line_row,
+            " ON CONFLICT ON CONSTRAINT pricing_charge_line_pkey DO NOTHING",
+        ),
+        render_insert(
+            "pricing_charge_line_version",
+            &version_row,
+            " ON CONFLICT ON CONSTRAINT pricing_charge_line_version_pkey DO NOTHING",
+        ),
+        render_insert(
+            "pricing_market_price",
+            &market_row,
+            " ON CONFLICT ON CONSTRAINT pricing_market_price_pkey DO NOTHING",
+        ),
+        render_insert("pricing_price", &price_row, ""),
+    ]
+    .join(THEN)
 }
 
 // ---------------------------------------------------------------------------
@@ -211,7 +405,14 @@ async fn every_state_the_price_row_machine_reaches_is_storable() {
         &conn,
         &insert(
             PUBLISHED,
-            &[("lifecycle_state", "'published'"), ("region", "'US'")],
+            &[
+                ("lifecycle_state", "'published'"),
+                ("region", "'US'"),
+                // One revision of a line holds one version, and a version carries
+                // its own state -- so three states of one line are three revisions,
+                // which is what they are in a real chain.
+                ("plan_revision", "1"),
+            ],
         ),
     )
     .await;
@@ -219,7 +420,11 @@ async fn every_state_the_price_row_machine_reaches_is_storable() {
         &conn,
         &insert(
             SUPERSEDED,
-            &[("lifecycle_state", "'superseded'"), ("region", "'APAC'")],
+            &[
+                ("lifecycle_state", "'superseded'"),
+                ("region", "'APAC'"),
+                ("plan_revision", "2"),
+            ],
         ),
     )
     .await;
@@ -269,13 +474,13 @@ async fn neither_free_form_key_axis_admits_the_separator() {
     must_be_rejected(
         &conn,
         &insert(DRAFT, &[("region", "'eu|west'")]),
-        "chk_pricing_price_region_no_separator",
+        "chk_pricing_market_price_region_no_separator",
     )
     .await;
     must_be_rejected(
         &conn,
         &insert(DRAFT, &[("meter", "'api|calls'")]),
-        "chk_pricing_price_meter_no_separator",
+        "chk_pricing_charge_line_version_meter_no_separator",
     )
     .await;
 }
@@ -305,8 +510,20 @@ async fn a_lifecycle_state_outside_the_price_row_machine_is_refused() {
     for state in ["'retired'", "'abandoned'", "'archived'"] {
         must_be_rejected(
             &conn,
-            &insert(DRAFT, &[("lifecycle_state", state)]),
+            // The version keeps a legal state of its own: it would otherwise take the
+            // row's, and its own state CHECK would answer ahead of the one named here.
+            &insert(
+                DRAFT,
+                &[("lifecycle_state", state), ("version_state", "'draft'")],
+            ),
             "chk_pricing_price_lifecycle_state",
+        )
+        .await;
+        // And the version's machine is the same closed set, on its own table.
+        must_be_rejected(
+            &conn,
+            &insert(DRAFT, &[("version_state", state)]),
+            "chk_pricing_charge_line_version_lifecycle_state",
         )
         .await;
     }
@@ -320,7 +537,7 @@ async fn a_price_overlay_other_than_base_is_refused() {
     must_be_rejected(
         &conn,
         &insert(DRAFT, &[("price_overlay", "'promo'")]),
-        "chk_pricing_price_overlay",
+        "chk_pricing_charge_line_overlay",
     )
     .await;
 }
@@ -334,7 +551,7 @@ async fn an_eligibility_class_outside_the_three_is_refused() {
     must_be_rejected(
         &conn,
         &insert(DRAFT, &[("price_eligibility", "'legacy_only'")]),
-        "chk_pricing_price_eligibility",
+        "chk_pricing_charge_line_eligibility",
     )
     .await;
 }
@@ -346,13 +563,13 @@ async fn a_charge_kind_outside_the_four_is_refused() {
     must_be_rejected(
         &conn,
         &insert(DRAFT, &[("charge_kind", "'discount'")]),
-        "chk_pricing_price_charge_kind",
+        "chk_pricing_charge_line_charge_kind",
     )
     .await;
 }
 
 /// The kind set, and the row carries no package fields — so
-/// `chk_pricing_price_package_fields_kind`, which also mentions `model_kind`,
+/// `chk_pricing_charge_line_version_package_fields_kind`, which also mentions `model_kind`,
 /// has nothing to object to and this constraint is the only thing that can
 /// answer.
 #[tokio::test]
@@ -362,7 +579,7 @@ async fn a_model_kind_outside_the_five_is_refused() {
     must_be_rejected(
         &conn,
         &insert(DRAFT, &[("model_kind", "'tiered'")]),
-        "chk_pricing_price_model_kind",
+        "chk_pricing_charge_line_version_model_kind",
     )
     .await;
 }
@@ -374,7 +591,7 @@ async fn a_billing_timing_outside_advance_and_arrears_is_refused() {
     must_be_rejected(
         &conn,
         &insert(DRAFT, &[("billing_timing", "'on_signup'")]),
-        "chk_pricing_price_billing_timing",
+        "chk_pricing_charge_line_version_billing_timing",
     )
     .await;
 }
@@ -427,7 +644,7 @@ async fn a_max_hold_granules_below_one_is_refused() {
     must_be_rejected(
         &conn,
         &insert(DRAFT, &[("max_hold_granules", "0")]),
-        "chk_pricing_price_max_hold_granules",
+        "chk_pricing_charge_line_version_max_hold_granules",
     )
     .await;
     must_succeed(&conn, &insert(DRAFT, &[("max_hold_granules", "1")])).await;
@@ -471,8 +688,14 @@ async fn neither_rate_column_admits_a_negative() {
 #[ignore = "requires Docker (testcontainers)"]
 async fn neither_minimum_quantity_column_admits_a_negative() {
     const MINIMA: [(&str, &str); 2] = [
-        ("min_qty_purchase", "chk_pricing_price_min_qty_purchase"),
-        ("min_qty_usage", "chk_pricing_price_min_qty_usage"),
+        (
+            "min_qty_purchase",
+            "chk_pricing_charge_line_version_min_qty_purchase",
+        ),
+        (
+            "min_qty_usage",
+            "chk_pricing_charge_line_version_min_qty_usage",
+        ),
     ];
 
     let conn = applied().await;
@@ -509,7 +732,7 @@ async fn a_quantity_source_outside_the_two_is_refused() {
     must_be_rejected(
         &conn,
         &insert(DRAFT, &[("quantity_source", "'metered'")]),
-        "chk_pricing_price_quantity_source",
+        "chk_pricing_charge_line_version_quantity_source",
     )
     .await;
 }
@@ -524,7 +747,7 @@ async fn a_negative_manual_quantity_is_refused() {
             DRAFT,
             &[("quantity_source", "'manual'"), ("manual_quantity", "-1")],
         ),
-        "chk_pricing_price_manual_quantity",
+        "chk_pricing_charge_line_version_manual_quantity",
     )
     .await;
 }
@@ -532,7 +755,7 @@ async fn a_negative_manual_quantity_is_refused() {
 /// A package block of zero units prices nothing.
 ///
 /// The row is `model_kind = 'package'` on purpose: on any other kind
-/// `chk_pricing_price_package_fields_kind` answers first, and the test would be
+/// `chk_pricing_charge_line_version_package_fields_kind` answers first, and the test would be
 /// green while proving nothing about the constraint it names. This is the
 /// concrete instance of the module doc's second rule.
 #[tokio::test]
@@ -550,7 +773,7 @@ async fn a_zero_or_negative_package_size_is_refused() {
                     ("package_price_minor", "100"),
                 ],
             ),
-            "chk_pricing_price_package_size",
+            "chk_pricing_charge_line_version_package_size",
         )
         .await;
     }
@@ -582,7 +805,7 @@ async fn a_billing_granularity_outside_the_five_is_refused() {
     must_be_rejected(
         &conn,
         &insert(DRAFT, &[("billing_granularity", "'per_week'")]),
-        "chk_pricing_price_billing_granularity",
+        "chk_pricing_charge_line_version_billing_granularity",
     )
     .await;
 }
@@ -594,7 +817,7 @@ async fn an_aggregation_function_outside_the_three_is_refused() {
     must_be_rejected(
         &conn,
         &insert(DRAFT, &[("aggregation_function", "'average'")]),
-        "chk_pricing_price_aggregation_function",
+        "chk_pricing_charge_line_version_aggregation_function",
     )
     .await;
 }
@@ -606,7 +829,7 @@ async fn an_aggregation_granularity_outside_hour_and_day_is_refused() {
     must_be_rejected(
         &conn,
         &insert(DRAFT, &[("aggregation_granularity", "'minute'")]),
-        "chk_pricing_price_aggregation_granularity",
+        "chk_pricing_charge_line_version_aggregation_granularity",
     )
     .await;
 }
@@ -618,7 +841,7 @@ async fn a_tier_aggregation_window_outside_the_four_is_refused() {
     must_be_rejected(
         &conn,
         &insert(DRAFT, &[("tier_aggregation_window", "'weekly'")]),
-        "chk_pricing_price_tier_aggregation_window",
+        "chk_pricing_charge_line_version_tier_aggregation_window",
     )
     .await;
 }
@@ -632,7 +855,7 @@ async fn a_tier_qualification_window_outside_the_two_is_refused() {
     must_be_rejected(
         &conn,
         &insert(DRAFT, &[("tier_qualification_window", "'rolling'")]),
-        "chk_pricing_price_tier_qualification_window",
+        "chk_pricing_charge_line_version_tier_qualification_window",
     )
     .await;
 }
@@ -659,7 +882,7 @@ async fn package_fields_on_a_non_package_row_are_refused() {
                 ("package_price_minor", "100"),
             ],
         ),
-        "chk_pricing_price_package_fields_kind",
+        "chk_pricing_charge_line_version_package_fields_kind",
     )
     .await;
     must_be_rejected(
@@ -672,7 +895,7 @@ async fn package_fields_on_a_non_package_row_are_refused() {
                 ("package_price_minor", "100"),
             ],
         ),
-        "chk_pricing_price_package_fields_kind",
+        "chk_pricing_charge_line_version_package_fields_kind",
     )
     .await;
     // And the legal shape, so this is an exclusivity rule and not a ban.
@@ -704,14 +927,14 @@ async fn the_cohort_eligibility_biconditional_is_refused_in_both_directions() {
     must_be_rejected(
         &conn,
         &insert(DRAFT, &[("cohort", &format!("'{COHORT}'"))]),
-        "chk_pricing_price_cohort_eligibility",
+        "chk_pricing_charge_line_cohort_eligibility",
     )
     .await;
     // The class without a cohort.
     must_be_rejected(
         &conn,
         &insert(DRAFT, &[("price_eligibility", "'existing_grandfathered'")]),
-        "chk_pricing_price_cohort_eligibility",
+        "chk_pricing_charge_line_cohort_eligibility",
     )
     .await;
     // `new_subscriptions_only` pairs with `cohort = 'none'` like
@@ -726,9 +949,14 @@ async fn the_cohort_eligibility_biconditional_is_refused_in_both_directions() {
 
 /// Only a grandfathered row may carry a horizon.
 ///
+/// **A trigger now, not a CHECK.** The horizon stayed on the price row and the
+/// eligibility class moved to the charge line, and a CHECK cannot read another
+/// table, so `trg_pricing_price_grandfather_class` says it instead. The refusal
+/// carries no constraint name; its sentence is the assertion.
+///
 /// The row below keeps `cohort = 'none'`, which keeps
-/// `chk_pricing_price_cohort_eligibility` satisfied — otherwise that neighbour
-/// answers and this constraint is never reached.
+/// `chk_pricing_charge_line_cohort_eligibility` satisfied — otherwise that neighbour
+/// answers and this guard is never reached.
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn a_grandfathering_horizon_on_an_ungrandfathered_row_is_refused() {
@@ -736,7 +964,7 @@ async fn a_grandfathering_horizon_on_an_ungrandfathered_row_is_refused() {
     must_be_rejected(
         &conn,
         &insert(DRAFT, &[("grandfather_until", "'2026-12-01 00:00:00+00'")]),
-        "chk_pricing_price_grandfather_until",
+        "grandfather_until is permitted only on an existing_grandfathered line",
     )
     .await;
     must_be_rejected(
@@ -748,31 +976,58 @@ async fn a_grandfathering_horizon_on_an_ungrandfathered_row_is_refused() {
                 ("grandfather_until", "'2026-12-01 00:00:00+00'"),
             ],
         ),
-        "chk_pricing_price_grandfather_until",
+        "grandfather_until is permitted only on an existing_grandfathered line",
     )
     .await;
 }
 
 // ---------------------------------------------------------------------------
-// The three partial UNIQUE indexes
+// The draft-plane partial UNIQUE, and what replaced the published-plane one
 // ---------------------------------------------------------------------------
 
-/// At most one **current** row per canonical scope key.
+/// Two **published** monetary versions of one market coexist (D-195 amendment).
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
-async fn two_published_rows_on_one_scope_key_cannot_coexist() {
+async fn two_published_rows_of_one_market_may_coexist() {
+    // **This case used to assert the refusal, and the reversal is the point.**
+    // `uq_pricing_price_scope_key_current` admitted one published row per key. The
+    // charge-line split removed it on purpose (D-195 amendment, 2026-09-19): two
+    // scheduled immutable monetary versions of one market stand together when
+    // their windows do not overlap, and which of them is in force is the window
+    // plane's answer -- `excl_pricing_price_window_no_overlap`, judged per market,
+    // which `postgres_window` proves by executing it.
     let conn = applied().await;
     must_succeed(
         &conn,
         &insert(PUBLISHED, &[("lifecycle_state", "'published'")]),
     )
     .await;
-    must_be_rejected(
+    must_succeed(
         &conn,
-        &insert(OTHER, &[("lifecycle_state", "'published'")]),
-        "uq_pricing_price_scope_key_current",
+        &insert(
+            OTHER,
+            &[("lifecycle_state", "'published'"), ("plan_revision", "1")],
+        ),
     )
     .await;
+    // Same market, both published: the row plane is silent about it now.
+    let shared = conn
+        .query_one_raw(Statement::from_string(
+            sea_orm::DatabaseBackend::Postgres,
+            format!(
+                "SELECT count(DISTINCT market_price_id)::text AS v FROM bss.pricing_price \
+                 WHERE price_id IN ('{PUBLISHED}', '{OTHER}')"
+            ),
+        ))
+        .await
+        .expect("query")
+        .expect("one row")
+        .try_get::<String>("", "v")
+        .expect("read the value");
+    assert_eq!(
+        shared, "1",
+        "the two rows must be one market, or this proves nothing about coexistence"
+    );
 }
 
 /// D-148: the same rule on the **draft** plane, which the published index
@@ -786,12 +1041,7 @@ async fn two_published_rows_on_one_scope_key_cannot_coexist() {
 async fn two_draft_rows_on_one_scope_key_cannot_coexist() {
     let conn = applied().await;
     must_succeed(&conn, &insert(DRAFT, &[])).await;
-    must_be_rejected(
-        &conn,
-        &insert(OTHER, &[]),
-        "uq_pricing_price_scope_key_draft",
-    )
-    .await;
+    must_be_rejected(&conn, &insert(OTHER, &[]), "uq_pricing_price_market_draft").await;
 }
 
 /// And the two indexes are **disjoint by construction**, which is the reason
@@ -811,14 +1061,25 @@ async fn a_draft_and_its_published_predecessor_share_one_scope_key() {
     .await;
     must_succeed(
         &conn,
-        &insert(DRAFT, &[("supersedes_price_id", &format!("'{PUBLISHED}'"))]),
+        &insert(
+            DRAFT,
+            &[
+                ("supersedes_price_id", &format!("'{PUBLISHED}'")),
+                // The successor is authored in the next revision, as it is in a
+                // real chain: one revision of a line holds one version.
+                ("plan_revision", "1"),
+            ],
+        ),
     )
     .await;
-    // A superseded predecessor is outside both predicates, so the chain may be
+    // A superseded predecessor is outside the draft predicate, so the chain may be
     // arbitrarily long on one key.
     must_succeed(
         &conn,
-        &insert(SUPERSEDED, &[("lifecycle_state", "'superseded'")]),
+        &insert(
+            SUPERSEDED,
+            &[("lifecycle_state", "'superseded'"), ("plan_revision", "2")],
+        ),
     )
     .await;
 }
@@ -979,50 +1240,15 @@ async fn two_usage_lines_of_one_market_are_two_draft_keys() {
     .await;
 }
 
-/// **The hole the naive widening would have opened, proved on Postgres.**
+/// **Two meterless usage drafts of one market are one key** -- the draft-plane half of
+/// a pair whose published half has no object any more.
 ///
-/// `meter` is nullable and NULLs are *distinct* inside a `UNIQUE` index, so an
-/// index that simply listed the column would stop refusing the duplicate it
-/// refuses today on every non-usage key — every one of which carries
-/// `meter IS NULL`. Measured on `SQLite` before the migration was written; this is
-/// the same fact on the engine that actually runs production, and it is why both
-/// indexes key over `COALESCE(meter, '')` rather than over the column.
-///
-/// Two published usage rows with **no meter at all** are the sharpest form: they
-/// are inside the widened axis set and still share one key.
-#[tokio::test]
-#[ignore = "requires Docker (testcontainers)"]
-async fn two_meterless_usage_rows_on_one_key_still_collide() {
-    let conn = applied().await;
-    must_succeed(
-        &conn,
-        &insert(
-            PUBLISHED,
-            &[
-                ("lifecycle_state", "'published'"),
-                ("charge_kind", "'usage'"),
-                ("model_kind", "'per_unit'"),
-            ],
-        ),
-    )
-    .await;
-    must_be_rejected(
-        &conn,
-        &insert(
-            OTHER,
-            &[
-                ("lifecycle_state", "'published'"),
-                ("charge_kind", "'usage'"),
-                ("model_kind", "'per_unit'"),
-            ],
-        ),
-        "uq_pricing_price_scope_key_current",
-    )
-    .await;
-}
-
-/// And the same on the draft plane, where the NULL would have been just as
-/// distinct.
+/// The pair was written against D-196's storage, where `meter` was a nullable scope
+/// axis and both partial indexes keyed over `COALESCE(meter, '')` so that two NULLs
+/// would still collide. D-372 made `sku_id NOT NULL` the axis and `meter` derived
+/// content of the line version, so there is no sentinel left to get wrong; and the
+/// published-plane index the other half executed was removed on purpose (D-195
+/// amendment). What remains true and refusable is this: one draft per market.
 #[tokio::test]
 #[ignore = "requires Docker (testcontainers)"]
 async fn two_meterless_usage_drafts_on_one_key_still_collide() {
@@ -1041,7 +1267,7 @@ async fn two_meterless_usage_drafts_on_one_key_still_collide() {
             OTHER,
             &[("charge_kind", "'usage'"), ("model_kind", "'per_unit'")],
         ),
-        "uq_pricing_price_scope_key_draft",
+        "uq_pricing_price_market_draft",
     )
     .await;
 }
@@ -1075,7 +1301,10 @@ async fn changing_only_the_meter_does_not_create_a_second_key() {
                 ("meter", "'egress'"),
             ],
         ),
-        "uq_pricing_price_scope_key_current",
+        // `meter` is content of the line version, not an axis of the line. The two
+        // rows are therefore one line, and a second content on one revision of it
+        // is a second version -- which is where the store says no.
+        "uq_pricing_charge_line_version_revision",
     )
     .await;
 }
@@ -1179,14 +1408,6 @@ async fn every_frozen_column_of_a_published_row_refuses_to_move() {
         format!("price_id = '{OTHER}'"),
         "tenant_id = '99999999-9999-9999-9999-999999999999'".to_owned(),
         "plan_id = '99999999-9999-9999-9999-999999999999'".to_owned(),
-        "sku_id = '99999999-9999-9999-9999-999999999999'".to_owned(),
-        "currency = 'EUR'".to_owned(),
-        "region = 'US'".to_owned(),
-        "price_overlay = 'promo'".to_owned(),
-        "phase = '99999999-9999-9999-9999-999999999999'".to_owned(),
-        "price_eligibility = 'new_subscriptions_only'".to_owned(),
-        "charge_kind = 'usage'".to_owned(),
-        format!("cohort = '{COHORT}'"),
         "amount_minor = 2000".to_owned(),
         // D-311's `per_unit` rate (`pricing_price.unit_rate_nano`, guarded by
         // `chk_pricing_price_unit_rate_nano`). It sits beside the column it was split out of
@@ -1196,61 +1417,33 @@ async fn every_frozen_column_of_a_published_row_refuses_to_move() {
         // editable by any writer outside this crate, away from the pin that
         // approved it. The Slice-6 note below is the same rot found twice.
         "unit_rate_nano = 23_000_000".to_owned(),
-        "model_kind = 'per_unit'".to_owned(),
         "tax_inclusive = true".to_owned(),
         "tax_category_ref = 'reduced'".to_owned(),
         "resolved_tax_category = 'standard'".to_owned(),
-        "invoice_line_template = '{sku}'".to_owned(),
-        "gl_code_ref = '4000'".to_owned(),
-        "resolved_invoice_line_template = '{sku}'".to_owned(),
-        "resolved_gl_code = '4000'".to_owned(),
         // Its twin (`pricing_price`), and it is here because this case's own
         // sibling census made it red the moment the column existed - which is the
         // whole point of the pair. The guard freezes it for the same reason: a
         // charge replayed from a pinned `CatalogVersion` must round the way it
         // rounded when the version was cut.
         "resolved_rounding_policy = 'half_even/2'".to_owned(),
-        "billing_timing = 'advance'".to_owned(),
-        // Slice 6's proration contract. `pricing_plan` carries all four in the
-        // guard and **none of them here**, so for two days the whitelist froze
-        // four columns nothing tested -- the exact rot this loop's own comment
-        // describes, found while Slice 10 extended the same list.
-        "billing_anchor_policy = 'fixed_day'".to_owned(),
-        "anchor_day = 15".to_owned(),
-        "proration_basis = 'by_second'".to_owned(),
-        "credit_on_downgrade = true".to_owned(),
-        "quantity_source = 'manual'".to_owned(),
-        "manual_quantity = 5".to_owned(),
-        "package_size = 10".to_owned(),
         "package_price_minor = 100".to_owned(),
-        "meter = 'cloudlets'".to_owned(),
-        "dimension_key = 'eu-west'".to_owned(),
-        "billing_granularity = 'per_hour'".to_owned(),
-        "aggregation_function = 'sum'".to_owned(),
-        "aggregation_granularity = 'day'".to_owned(),
-        "tier_aggregation_window = 'calendar_month'".to_owned(),
-        "tier_qualification_window = 'current'".to_owned(),
-        "max_hold_granules = 3".to_owned(),
-        "included_allowance = '{\"units\": 100}'::jsonb".to_owned(),
         // Slice 10's reservation pair (`pricing_price`). The rate is the
         // sharpest case on this table: a writer moving it on a published row
         // moves money per covered granule, away from the pin that approved it.
         "reserved_rate_nano = 250".to_owned(),
-        "reservation_flavor = 'capacity'".to_owned(),
-        // Slice 10's typed floors and discount hook (`pricing_price`).
-        // `min_qty_purchase` decides who may buy, `min_qty_usage` what is
-        // billable, the fallback what happens beneath it, and `discount_ref`
-        // which instrument discounts the line -- four different consequences of
-        // one writer moving a published row.
-        "min_qty_purchase = 10".to_owned(),
-        "min_qty_usage = 20".to_owned(),
-        "min_qty_usage_fallback = 'exception'".to_owned(),
-        "discount_ref = 'promo/spring'".to_owned(),
         "rounding_policy_ref = 'policy/1'".to_owned(),
         format!("supersedes_price_id = '{OTHER}'"),
         "created_by = '99999999-9999-9999-9999-999999999999'".to_owned(),
         "created_at_utc = '2026-08-02 09:00:00+00'".to_owned(),
         "row_version = 1".to_owned(),
+        // The three references the split added, and the revision beside them. A
+        // frozen monetary version that could be walked onto another line, another
+        // version of its structure or another market would keep its money and
+        // change what the money is for.
+        "charge_line_id = '99999999-9999-9999-9999-999999999999'".to_owned(),
+        "line_version_id = '99999999-9999-9999-9999-999999999999'".to_owned(),
+        "market_price_id = '99999999-9999-9999-9999-999999999999'".to_owned(),
+        "plan_revision = 7".to_owned(),
     ];
     // The cross-check, by name and against the table. The history the old
     // literal carried is worth keeping because it is the argument for reading
@@ -1296,7 +1489,125 @@ async fn every_frozen_column_of_a_published_row_refuses_to_move() {
         must_be_rejected(
             &conn,
             &format!("UPDATE bss.pricing_price SET {change} WHERE price_id = '{PUBLISHED}'"),
-            "price, scope, model and entity-tag columns are immutable",
+            "price, market-policy and entity-tag columns are immutable",
+        )
+        .await;
+    }
+}
+
+/// The line version's only sanctioned in-place move once it has left `draft`.
+const VERSION_SANCTIONED_MUTABLE: [&str; 1] = ["lifecycle_state"];
+
+/// **The shared content froze with the version it moved onto.**
+///
+/// Every column below used to be a column of `pricing_price` and was exercised by
+/// the case above. The charge-line split moved them to
+/// `pricing_charge_line_version`, whose own guard freezes them -- and a list that
+/// merely lost those entries would have left that guard with no executed refusal
+/// at all, which is the rot the case above was written to stop. The same two-way
+/// census reads the version's guard off the catalog, so a column added to the
+/// table and forgotten in the trigger reddens this, and so does a move naming a
+/// column that is no longer there.
+///
+/// The line's axes and the market's currency and region are not here: those rows
+/// are identities, refused wholesale rather than column by column
+/// (`postgres_charge_lines::identity_rows_refuse_an_in_place_key_move`).
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn every_frozen_column_of_a_published_line_version_refuses_to_move() {
+    let conn = applied().await;
+    must_succeed(
+        &conn,
+        &insert(PUBLISHED, &[("lifecycle_state", "'published'")]),
+    )
+    .await;
+
+    let moves = [
+        "model_kind = 'per_unit'".to_owned(),
+        "invoice_line_template = '{sku}'".to_owned(),
+        "gl_code_ref = '4000'".to_owned(),
+        "resolved_invoice_line_template = '{sku}'".to_owned(),
+        "resolved_gl_code = '4000'".to_owned(),
+        "billing_timing = 'advance'".to_owned(),
+        // Slice 6's proration contract. `pricing_plan` carries all four in the
+        // guard and **none of them here**, so for two days the whitelist froze
+        // four columns nothing tested -- the exact rot this loop's own comment
+        // describes, found while Slice 10 extended the same list.
+        "billing_anchor_policy = 'fixed_day'".to_owned(),
+        "anchor_day = 15".to_owned(),
+        "proration_basis = 'by_second'".to_owned(),
+        "credit_on_downgrade = true".to_owned(),
+        "quantity_source = 'manual'".to_owned(),
+        "manual_quantity = 5".to_owned(),
+        "package_size = 10".to_owned(),
+        "meter = 'cloudlets'".to_owned(),
+        "billing_granularity = 'per_hour'".to_owned(),
+        "aggregation_function = 'sum'".to_owned(),
+        "aggregation_granularity = 'day'".to_owned(),
+        "tier_aggregation_window = 'calendar_month'".to_owned(),
+        "tier_qualification_window = 'current'".to_owned(),
+        "max_hold_granules = 3".to_owned(),
+        "included_allowance = '{\"units\": 100}'::jsonb".to_owned(),
+        "reservation_flavor = 'capacity'".to_owned(),
+        // Slice 10's typed floors and discount hook (`pricing_price`).
+        // `min_qty_purchase` decides who may buy, `min_qty_usage` what is
+        // billable, the fallback what happens beneath it, and `discount_ref`
+        // which instrument discounts the line -- four different consequences of
+        // one writer moving a published row.
+        "min_qty_purchase = 10".to_owned(),
+        "min_qty_usage = 20".to_owned(),
+        "min_qty_usage_fallback = 'exception'".to_owned(),
+        "discount_ref = 'promo/spring'".to_owned(),
+        "tenant_id = '99999999-9999-9999-9999-999999999999'".to_owned(),
+        "line_version_id = '99999999-9999-9999-9999-999999999999'".to_owned(),
+        "charge_line_id = '99999999-9999-9999-9999-999999999999'".to_owned(),
+        "plan_revision = 7".to_owned(),
+        "created_by = '99999999-9999-9999-9999-999999999999'".to_owned(),
+        "created_at_utc = '2026-08-02 09:00:00+00'".to_owned(),
+        "row_version = 1".to_owned(),
+    ];
+    let census = pg_support::frozen_columns(
+        &conn,
+        "pricing_charge_line_version",
+        "pricing_charge_line_version_append_only",
+        "IF NEW.tenant_id",
+        &VERSION_SANCTIONED_MUTABLE,
+    )
+    .await;
+    assert!(
+        !census.owed.is_empty() && census.missing().is_empty(),
+        "the version's guard must name every content column the table holds; \
+         missing: {:?}",
+        census.missing()
+    );
+    let exercised: BTreeSet<&str> = moves
+        .iter()
+        .map(|change| {
+            change
+                .split(' ')
+                .next()
+                .expect("every move is `column = value`")
+        })
+        .collect();
+    let owed: BTreeSet<&str> = census.owed.iter().map(String::as_str).collect();
+    let untested: Vec<&&str> = owed.difference(&exercised).collect();
+    assert!(
+        untested.is_empty(),
+        "these columns are on bss.pricing_charge_line_version and no UPDATE below \
+         moves them: {untested:?}"
+    );
+    let stale: Vec<&&str> = exercised.difference(&owed).collect();
+    assert!(
+        stale.is_empty(),
+        "these moves name something that is not an owed column of \
+         bss.pricing_charge_line_version: {stale:?}"
+    );
+
+    for change in &moves {
+        must_be_rejected(
+            &conn,
+            &update_version_of(PUBLISHED, change),
+            "shared content is immutable",
         )
         .await;
     }
@@ -1321,7 +1632,11 @@ async fn a_published_row_may_only_move_to_superseded() {
         &conn,
         &insert(
             SUPERSEDED,
-            &[("lifecycle_state", "'superseded'"), ("region", "'US'")],
+            &[
+                ("lifecycle_state", "'superseded'"),
+                ("region", "'US'"),
+                ("plan_revision", "1"),
+            ],
         ),
     )
     .await;
@@ -1434,7 +1749,11 @@ async fn a_row_that_left_draft_cannot_be_deleted() {
         &conn,
         &insert(
             SUPERSEDED,
-            &[("lifecycle_state", "'superseded'"), ("region", "'US'")],
+            &[
+                ("lifecycle_state", "'superseded'"),
+                ("region", "'US'"),
+                ("plan_revision", "1"),
+            ],
         ),
     )
     .await;
@@ -1553,11 +1872,51 @@ async fn a_grandfathering_horizon_may_be_tightened() {
 const BAND_A: &str = "bbbbbbbb-0000-0000-0000-000000000001";
 const BAND_B: &str = "bbbbbbbb-0000-0000-0000-000000000002";
 
+/// One authored band: its **geometry** on the price row's line version, then its
+/// **rate** on the price row, joined on the ordinal.
+///
+/// The ordinal is read off the band id's last digit (`BAND_A` is band 0), so a case
+/// still says "this band, those bounds" and nothing about positions. Geometry is
+/// inserted unless that ordinal is present -- by primary key only, so its CHECKs and
+/// its lower-bound `UNIQUE` still answer -- because two markets of one line share
+/// it. A price row that does not exist yields no geometry statement effect at all
+/// and a rate naming no version, which is the row the rate table's own trigger is
+/// there to refuse.
 fn band(band_id: &str, price_id: &str, from_qty: &str, to_qty: &str, unit_price: &str) -> String {
+    let ordinal = band_id
+        .chars()
+        .last()
+        .and_then(|digit| digit.to_digit(16))
+        .map_or(0, |digit| digit.saturating_sub(1));
+    [
+        format!(
+            "INSERT INTO bss.pricing_charge_tier
+                (tenant_id, line_version_id, band_ordinal, from_qty, to_qty)
+             SELECT '{TENANT}', line_version_id, {ordinal}, {from_qty}, {to_qty}
+               FROM bss.pricing_price WHERE price_id = '{price_id}'
+             ON CONFLICT ON CONSTRAINT pricing_charge_tier_pkey DO NOTHING"
+        ),
+        rate(band_id, price_id, ordinal, unit_price),
+    ]
+    .join(THEN)
+}
+
+/// The rate half of [`band`] alone.
+fn rate(band_id: &str, price_id: &str, ordinal: u32, unit_price: &str) -> String {
     format!(
         "INSERT INTO bss.pricing_price_tier_band
-            (band_id, tenant_id, price_id, from_qty, to_qty, unit_price_nano)
-         VALUES ('{band_id}', '{TENANT}', '{price_id}', {from_qty}, {to_qty}, {unit_price})"
+            (band_id, tenant_id, price_id, line_version_id, band_ordinal, unit_price_nano)
+         VALUES ('{band_id}', '{TENANT}', '{price_id}',
+            (SELECT line_version_id FROM bss.pricing_price WHERE price_id = '{price_id}'),
+            {ordinal}, {unit_price})"
+    )
+}
+
+/// `UPDATE` of the line version a price row hangs off.
+fn update_version_of(price_id: &str, set: &str) -> String {
+    format!(
+        "UPDATE bss.pricing_charge_line_version SET {set} WHERE line_version_id = \
+         (SELECT line_version_id FROM bss.pricing_price WHERE price_id = '{price_id}')"
     )
 }
 
@@ -1597,7 +1956,7 @@ async fn a_negative_band_lower_bound_is_refused() {
     must_be_rejected(
         &conn,
         &band(BAND_A, DRAFT, "-1", "100", "500"),
-        "chk_pricing_price_tier_band_from_qty",
+        "chk_pricing_charge_tier_from_qty",
     )
     .await;
 }
@@ -1629,13 +1988,13 @@ async fn a_zero_width_or_inverted_band_is_refused() {
     must_be_rejected(
         &conn,
         &band(BAND_A, DRAFT, "100", "100", "500"),
-        "chk_pricing_price_tier_band_width",
+        "chk_pricing_charge_tier_width",
     )
     .await;
     must_be_rejected(
         &conn,
         &band(BAND_A, DRAFT, "100", "50", "500"),
-        "chk_pricing_price_tier_band_width",
+        "chk_pricing_charge_tier_width",
     )
     .await;
 }
@@ -1651,7 +2010,7 @@ async fn two_bands_sharing_a_lower_bound_cannot_coexist() {
     must_be_rejected(
         &conn,
         &band(BAND_B, DRAFT, "0", "200", "400"),
-        "uq_pricing_price_tier_band_lower_bound",
+        "uq_pricing_charge_tier_lower_bound",
     )
     .await;
 }
@@ -1746,11 +2105,12 @@ async fn a_band_on_a_price_row_of_the_wrong_kind_is_refused() {
     must_be_rejected(
         &conn,
         &band(BAND_A, DRAFT, "0", "100", "500"),
-        "band rows are forbidden on a flat price row",
+        "band rows are forbidden on a flat line version",
     )
     .await;
 
-    // And a kindless one.
+    // And a kindless one -- on a line of its own, since a second content on one
+    // line's revision is a second version and the store refuses that first.
     must_succeed(
         &conn,
         &insert(
@@ -1758,7 +2118,7 @@ async fn a_band_on_a_price_row_of_the_wrong_kind_is_refused() {
             &[
                 ("model_kind", "NULL"),
                 ("amount_minor", "NULL"),
-                ("region", "'US'"),
+                ("dimension_key", "'kindless'"),
             ],
         ),
     )
@@ -1766,7 +2126,7 @@ async fn a_band_on_a_price_row_of_the_wrong_kind_is_refused() {
     must_be_rejected(
         &conn,
         &band(BAND_A, OTHER, "0", "100", "500"),
-        "band rows are forbidden on a kindless price row",
+        "band rows are forbidden on a kindless line version",
     )
     .await;
 
@@ -1800,13 +2160,29 @@ async fn a_band_repointed_onto_a_price_row_of_the_wrong_kind_is_refused() {
     seed_graduated_draft(&conn, DRAFT, "EU").await;
     must_succeed(&conn, &insert(OTHER, &[("region", "'US'")])).await;
     must_succeed(&conn, &band(BAND_A, DRAFT, "0", "100", "500")).await;
+    // **The rule has no trigger of its own any more, and needs none.** A rate names
+    // its price row *and that row's line version* through one compound key, and its
+    // ordinal through another into the version's geometry -- which exists only under
+    // a banded kind. So walking a rate onto a `flat` row is refused twice over, by
+    // structure: moving the price alone leaves the version behind it,
     must_be_rejected(
         &conn,
         &format!(
             "UPDATE bss.pricing_price_tier_band SET price_id = '{OTHER}' \
              WHERE band_id = '{BAND_A}'"
         ),
-        "band rows are forbidden on a flat price row",
+        "fk_pricing_price_tier_band_price",
+    )
+    .await;
+    // and moving both lands on a version that has no band 0 to be the rate of.
+    must_be_rejected(
+        &conn,
+        &format!(
+            "UPDATE bss.pricing_price_tier_band SET price_id = '{OTHER}', line_version_id = \
+             (SELECT line_version_id FROM bss.pricing_price WHERE price_id = '{OTHER}') \
+             WHERE band_id = '{BAND_A}'"
+        ),
+        "fk_pricing_price_tier_band_tier",
     )
     .await;
 }
@@ -1826,14 +2202,14 @@ async fn a_banded_price_row_cannot_become_a_kind_that_carries_no_bands() {
     must_succeed(&conn, &band(BAND_A, DRAFT, "0", "NULL", "500")).await;
     must_be_rejected(
         &conn,
-        &format!("UPDATE bss.pricing_price SET model_kind = 'flat' WHERE price_id = '{DRAFT}'"),
-        "still carries bands and may not become a flat row",
+        &update_version_of(DRAFT, "model_kind = 'flat'"),
+        "still carries bands and may not become a flat version",
     )
     .await;
     must_be_rejected(
         &conn,
-        &format!("UPDATE bss.pricing_price SET model_kind = NULL WHERE price_id = '{DRAFT}'"),
-        "still carries bands and may not become a kindless row",
+        &update_version_of(DRAFT, "model_kind = NULL"),
+        "still carries bands and may not become a kindless version",
     )
     .await;
 }
@@ -1850,11 +2226,8 @@ async fn a_banded_price_row_moves_between_the_two_banded_kinds() {
     let conn = applied().await;
     seed_graduated_draft(&conn, DRAFT, "EU").await;
     must_succeed(&conn, &band(BAND_A, DRAFT, "0", "NULL", "500")).await;
-    must_succeed(
-        &conn,
-        &format!("UPDATE bss.pricing_price SET model_kind = 'volume' WHERE price_id = '{DRAFT}'"),
-    )
-    .await;
+    must_succeed(&conn, &update_version_of(DRAFT, "model_kind = 'volume'")).await;
+    // Rates first, then the geometry they name -- the order the two keys impose.
     must_succeed(
         &conn,
         &format!("DELETE FROM bss.pricing_price_tier_band WHERE price_id = '{DRAFT}'"),
@@ -1862,9 +2235,13 @@ async fn a_banded_price_row_moves_between_the_two_banded_kinds() {
     .await;
     must_succeed(
         &conn,
-        &format!("UPDATE bss.pricing_price SET model_kind = 'flat' WHERE price_id = '{DRAFT}'"),
+        &format!(
+            "DELETE FROM bss.pricing_charge_tier WHERE line_version_id = \
+             (SELECT line_version_id FROM bss.pricing_price WHERE price_id = '{DRAFT}')"
+        ),
     )
     .await;
+    must_succeed(&conn, &update_version_of(DRAFT, "model_kind = 'flat'")).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -1897,9 +2274,35 @@ async fn a_band_cannot_be_inserted_under_a_frozen_price_row() {
         ),
     )
     .await;
+    // The geometry half answers first: the row's version is frozen with it.
     must_be_rejected(
         &conn,
         &band(BAND_A, PUBLISHED, "0", "100", "500"),
+        "INSERT of a band under a published line version is not permitted",
+    )
+    .await;
+
+    // The rate half is its own guard, and needs a world where only it can answer:
+    // a frozen price row over a version still in `draft`, so the geometry lands and
+    // the rate is what is refused.
+    must_succeed(
+        &conn,
+        &insert(
+            OTHER,
+            &[
+                ("model_kind", "'graduated'"),
+                ("charge_kind", "'usage'"),
+                ("amount_minor", "NULL"),
+                ("lifecycle_state", "'published'"),
+                ("version_state", "'draft'"),
+                ("plan_revision", "1"),
+            ],
+        ),
+    )
+    .await;
+    must_be_rejected(
+        &conn,
+        &band(BAND_A, OTHER, "0", "100", "500"),
         "INSERT of a band under a published price row is not permitted",
     )
     .await;
@@ -1986,6 +2389,8 @@ async fn a_band_cannot_be_repointed_onto_a_frozen_price_row() {
                 ("amount_minor", "NULL"),
                 ("lifecycle_state", "'published'"),
                 ("region", "'US'"),
+                // Frozen content is a version of its own: one revision holds one.
+                ("plan_revision", "1"),
             ],
         ),
     )
