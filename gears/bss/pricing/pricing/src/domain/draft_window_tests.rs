@@ -2,7 +2,7 @@
 
 use super::{
     DraftStart, DraftWindowAction, DraftWindowEntry, ProposedWindow, WindowBaseline,
-    compose_windows, resolve_start,
+    compose_windows, project_working_windows, resolve_start,
 };
 use crate::domain::error::DomainError;
 use crate::domain::instant::utc_ymd_hms;
@@ -382,4 +382,34 @@ fn elapsed_exact_start_at_commit_is_window_start_elapsed() {
 
     let err = compose_windows(&[], &entries, &keys, later).expect_err("elapsed exact start");
     assert_eq!(code_of(&err), Some(WINDOW_START_ELAPSED));
+
+    let working = project_working_windows(&[], &entries, &keys, later)
+        .expect("Working still shows a legally saved elapsed exact start");
+    assert_eq!(working.len(), 1);
+    assert_eq!(working[0].effective_from, first);
+}
+
+#[test]
+fn working_projection_keeps_a_cancel_after_the_target_becomes_active() {
+    let pid = price_id(1);
+    let wid = window_id(1);
+    let keys = keys_for(&[(pid, "recurring")]);
+    let baseline = vec![WindowBaseline {
+        window_id: wid,
+        price_id: pid,
+        mutation_seq: 1,
+        effective_from: t(0),
+        effective_to: None,
+        cancelled: false,
+    }];
+    let entries = vec![entry(DraftWindowAction::Cancel { window_id: wid })];
+
+    assert!(matches!(
+        compose_windows(&baseline, &entries, &keys, t(1)),
+        Err(DomainError::WindowNotCancellable(_))
+    ));
+
+    let working = project_working_windows(&baseline, &entries, &keys, t(1))
+        .expect("Working still shows the staged cancel of a now-active baseline");
+    assert!(working.is_empty());
 }

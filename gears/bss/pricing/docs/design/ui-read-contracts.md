@@ -372,7 +372,6 @@ Working reads are `plan × read` and require the parent plus revision:
 | Surface | Required query |
 |---|---|
 | `GET /bss-pricing/v1/price-windows` | `view=working&plan_id={planId}&plan_revision={n}` |
-| `GET /bss-pricing/v1/price-windows/{windowId}` | `view=working&plan_id={planId}&plan_revision={n}` |
 | `GET /bss-pricing/v1/plans/{planId}/coverage` | `view=working&plan_revision={n}` |
 
 Unknown `view` is 400. `view=working` on a revision that is not an open draft is
@@ -380,7 +379,10 @@ Unknown `view` is 400. `view=working` on a revision that is not an open draft is
 `view=working`; on the committed collection it stays 400 (existing OData-only
 contract). Working composes captured live baseline **references** plus draft
 operations and returns provenance so a live record cannot be confused with a
-draft intention. Bind `view`, parent and revision into the cursor fingerprint.
+draft intention. List and coverage keep a legally saved proposal visible after
+the clock has moved (elapsed exact start, or a staged cancel/adjust whose live
+state has changed); submit and commit still refuse those cases. Bind `view`,
+parent and revision into the cursor fingerprint.
 Historical published revisions are not mutable working views.
 
 `at_publish` stays symbolic on Working until commit stamps `effective_from`.

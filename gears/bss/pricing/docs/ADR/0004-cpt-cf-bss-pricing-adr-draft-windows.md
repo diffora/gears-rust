@@ -129,7 +129,7 @@ Content-Type: application/json
 
 A successor draft uses the open revision (example `"3-7"` with `"plan_revision": 3`).
 Alternative start: `"start": {"kind": "at", "at": "2027-01-01T00:00:00.000Z"}`.
-Return `201`, `Location: /bss-pricing/v1/price-windows/{windowId}?view=working&plan_id={planId}&plan_revision=0`,
+Return `201`, `Location: /bss-pricing/v1/price-windows?view=working&plan_id={planId}&plan_revision=0`,
 the saved `window_id`, `plan_id`, `price_id`, `plan_revision`, `state: draft`,
 `start`, `effective_to`, and the updated plan-revision ETag. The revision number
 in the body must agree with If-Match.
@@ -168,7 +168,8 @@ Two explicit recovery operations (both `plan × write`, `resource_id = planId`):
   `discarded_operation_ids`. Re-evaluate coverage; do not renew approval
   automatically.
 
-Extend existing list/by-ID/coverage readers with explicit `view=working|committed`.
+Extend existing list and coverage readers with explicit `view=working|committed`.
+Price windows have **no GET-by-id** (D-191: `{windowId}` is PATCH+DELETE only).
 **`view` is a door discriminator, not an OData field.** Default remains
 `committed` (today's live table; draft rows never appear). Working reads are
 `plan × read` and require:
@@ -176,14 +177,16 @@ Extend existing list/by-ID/coverage readers with explicit `view=working|committe
 | Surface | Required query |
 |---|---|
 | `GET /price-windows` | `view=working&plan_id={planId}&plan_revision={n}` |
-| `GET /price-windows/{windowId}` | `view=working&plan_id={planId}&plan_revision={n}` |
 | `GET /plans/{planId}/coverage` | `view=working&plan_revision={n}` |
 
 Unknown `view` → 400. `view=working` on a revision that is not an open draft →
 409 `DRAFT_WINDOW_CONTEXT_CHANGED`. Named `plan_id` is legal **only** with
 `view=working`; on the committed collection it stays 400 (the existing
 OData-only contract). Working composes baseline plus intentions and returns
-provenance so UI cannot confuse a live record with a draft intention. Bind
+provenance so UI cannot confuse a live record with a draft intention. List and
+coverage keep a legally saved proposal visible after the clock has moved;
+submit and commit still refuse elapsed exact starts and time-dependent
+cancel/adjust legality. Bind
 `view`, parent and revision into the cursor fingerprint. Historical published
 revisions are not mutable working views.
 

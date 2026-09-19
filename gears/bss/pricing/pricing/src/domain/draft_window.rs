@@ -4,7 +4,11 @@
 //! Draft entries and live baseline references are authoring inputs; [`ProposedWindow`]
 //! is an ephemeral validation result projected at `evaluated_at`. Symbolic
 //! [`DraftStart::AtPublish`] resolves to the evaluation instant at submit and commit
-//! without persisting that resolution as an authored timestamp.
+//! without persisting that resolution as an authored timestamp. Working list and
+//! coverage use [`project_working_windows`]: they keep a legally saved proposal
+//! visible after the clock has moved. Submit, save, and commit still use
+//! [`compose_windows`], which refuses elapsed exact starts and time-dependent
+//! cancel/adjust legality.
 //!
 //! ## `at_publish` adjacency hazard
 //!
@@ -139,7 +143,33 @@ pub fn resolve_start(
     }
 }
 
-/// Compose baseline references with explicit draft entries into proposed windows.
+fn resolve_start_for(
+    start: &DraftStart,
+    evaluated_at: OffsetDateTime,
+    clock: ClockBound,
+) -> Result<OffsetDateTime, DomainError> {
+    match (start, clock) {
+        (DraftStart::At(at), ClockBound::Working) => {
+            check_quantum("start", *at)?;
+            Ok(*at)
+        }
+        _ => resolve_start(start, evaluated_at),
+    }
+}
+
+/// How strictly composition applies the evaluation clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClockBound {
+    /// Submit, save, and commit: elapsed exact starts and live-state cancel/adjust
+    /// checks use `evaluated_at`.
+    Commit,
+    /// Working projection: keep the authored proposal visible after the clock moved.
+    /// Overlap, empty intervals, missing targets, and binding immutability still refuse.
+    Working,
+}
+
+/// Compose baseline references with explicit draft entries into proposed windows
+/// for save, submit, and commit.
 ///
 /// # Errors
 /// Refuses missing targets, duplicate operations on one window, empty intervals,
@@ -150,6 +180,34 @@ pub fn compose_windows(
     entries: &[DraftWindowEntry],
     keys: &BTreeMap<Uuid, ScopeKey>,
     evaluated_at: OffsetDateTime,
+) -> Result<Vec<ProposedWindow>, DomainError> {
+    compose_schedule(baseline, entries, keys, evaluated_at, ClockBound::Commit)
+}
+
+/// Project the Working schedule for list and coverage reads.
+///
+/// Unlike [`compose_windows`], an elapsed exact start or a cancel/adjust whose
+/// live state has moved since save does not fail the whole collection. Submit
+/// and commit still refuse those cases.
+///
+/// # Errors
+/// Same structural refusals as [`compose_windows`] (overlap, empty intervals,
+/// missing targets, duplicate operations, unknown price rows, immutable binding).
+pub fn project_working_windows(
+    baseline: &[WindowBaseline],
+    entries: &[DraftWindowEntry],
+    keys: &BTreeMap<Uuid, ScopeKey>,
+    evaluated_at: OffsetDateTime,
+) -> Result<Vec<ProposedWindow>, DomainError> {
+    compose_schedule(baseline, entries, keys, evaluated_at, ClockBound::Working)
+}
+
+fn compose_schedule(
+    baseline: &[WindowBaseline],
+    entries: &[DraftWindowEntry],
+    keys: &BTreeMap<Uuid, ScopeKey>,
+    evaluated_at: OffsetDateTime,
+    clock: ClockBound,
 ) -> Result<Vec<ProposedWindow>, DomainError> {
     let mut live: HashMap<Uuid, ComposedLiveWindow> = baseline
         .iter()
@@ -200,7 +258,7 @@ pub fn compose_windows(
                         "price row {price_id} is not in the draft candidate set"
                     )));
                 }
-                let effective_from = resolve_start(start, evaluated_at)?;
+                let effective_from = resolve_start_for(start, evaluated_at, clock)?;
                 if matches!(start, DraftStart::At(_)) {
                     check_quantum("effectiveFrom", effective_from)?;
                 }
@@ -233,10 +291,12 @@ pub fn compose_windows(
                         current.price_id
                     )));
                 }
-                let state = infer_state(current, evaluated_at);
-                let interval =
-                    WindowInterval::new(current.effective_from, current.effective_to, state);
-                check_effective_to_adjustment(&interval, *effective_to, evaluated_at)?;
+                if clock == ClockBound::Commit {
+                    let state = infer_state(current, evaluated_at);
+                    let interval =
+                        WindowInterval::new(current.effective_from, current.effective_to, state);
+                    check_effective_to_adjustment(&interval, *effective_to, evaluated_at)?;
+                }
                 if let Some(row) = live.get_mut(window_id) {
                     row.effective_to = *effective_to;
                 }
@@ -253,8 +313,10 @@ pub fn compose_windows(
                         current.price_id
                     )));
                 }
-                let state = infer_state(current, evaluated_at);
-                check_cancellation(state)?;
+                if clock == ClockBound::Commit {
+                    let state = infer_state(current, evaluated_at);
+                    check_cancellation(state)?;
+                }
                 if let Some(row) = live.get_mut(window_id) {
                     row.cancelled = true;
                 }

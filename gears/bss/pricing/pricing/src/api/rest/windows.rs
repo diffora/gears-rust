@@ -152,7 +152,7 @@ use crate::domain::concurrency::RowVersion;
 use crate::domain::coverage::{self, CoverageReport, KeyCoverage};
 use crate::domain::draft_window::{
     DraftStart, DraftWindowAction, DraftWindowEntry, DraftWindowOwner, ProposedWindow,
-    compose_windows,
+    project_working_windows,
 };
 use crate::domain::error::DomainError;
 use crate::domain::instant::rfc3339;
@@ -2509,7 +2509,7 @@ async fn compose_working(
     .into_iter()
     .map(|row| (row.price_id, row.scope_key))
     .collect();
-    compose_windows(&baseline, &entries, &keys, now).map_err(CanonicalError::from)
+    project_working_windows(&baseline, &entries, &keys, now).map_err(CanonicalError::from)
 }
 
 fn working_interval_state(row: &ProposedWindow, now: OffsetDateTime) -> WindowState {

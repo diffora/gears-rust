@@ -340,7 +340,7 @@ admits the row here, and stating it twice would put one rule under two owners
 | `PATCH` | `/bss-pricing/v1/prices/{priceId}/grandfather-until` | Tighten `grandfatherUntil` (material change). **Preconditions in D-329's order, below** | ETag (see D-329 cl. 3 — it cannot refuse a lost update here) |
 | `GET` | `/bss-pricing/v1/plans/{planId}/sellability?at=&currency=&region=` | The sellability surface for the joint gate | — |
 | `GET` | `/bss-pricing/v1/plans/{planId}/coverage` | Coverage/gap report per scope key (operator remediation). Default `view=committed`. `view=working&plan_revision={n}` composes baseline + draft intentions (D-374). `view` is a door discriminator, not `$filter` | — |
-| `GET` | `/bss-pricing/v1/price-windows` / `…/{windowId}` | Committed collection by default. Working requires `view=working&plan_id={planId}&plan_revision={n}` (D-374). Named `plan_id` is legal **only** with `view=working` | — |
+| `GET` | `/bss-pricing/v1/price-windows` | Committed collection by default. Working requires `view=working&plan_id={planId}&plan_revision={n}` (D-374). Named `plan_id` is legal **only** with `view=working`. No GET-by-id (D-191: `{windowId}` is PATCH+DELETE) | — |
 | `DELETE` | `/bss-pricing/v1/plans/{planId}/draft-window-operations/{operationId}` | Discard a staged live adjust/cancel on the open draft; plan ETag; 204. `plan × write` | client key |
 | `POST` | `/bss-pricing/v1/plans/{planId}/draft-window-baseline/refresh` | Replace baseline references; retain new-window intentions; drop staged ops whose target version changed. Body `{"plan_revision":n}`. Does not renew approval. `plan × write` | client key |
 
