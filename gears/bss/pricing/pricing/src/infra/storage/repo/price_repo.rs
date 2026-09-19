@@ -322,10 +322,10 @@ impl PriceRepo {
     /// The canonical scope key is checked for an occupant first. `inst-pr-return`
     /// (D-21) puts scope-key duplication among the **row-local** checks that run
     /// at save *and* re-run at publish, and the check has to happen here because
-    /// the database's own `uq_pricing_price_scope_key_current` is partial over
-    /// `lifecycle_state = 'published'` — it cannot see a second **draft** on one
-    /// key, which is the ambiguity publish would fail on, discovered a round trip
-    /// earlier.
+    /// the database's own `uq_pricing_price_market_draft` sees only a second
+    /// **draft** on one market — it says nothing about a draft beside a *published*
+    /// row, which since the charge-line split no index refuses at all. This read is
+    /// what keeps the authoring door shut on that shape.
     ///
     /// This is not the way to reprice an occupied key. That is the D-88
     /// supersession unit, whose row half is [`insert_successor_draft_on`] — a door
@@ -1092,19 +1092,22 @@ type ResolutionKey = (Option<String>, Option<String>, String, String);
 /// only door. It is not any more: [`insert_successor_draft_on`] stages a successor
 /// **beside** the published row it will supersede (D-195), which is exactly a
 /// draft row on a key something else holds — and this statement flips it while
-/// that something is still `published`, so `uq_pricing_price_scope_key_current`
-/// refuses it. Measured, not reasoned: the refusal arrives as a raw driver
-/// unique-violation, so it reaches the caller as [`RepoError::Db`] — **a 500, not
-/// a refusal an operator can act on**.
+/// that something is still `published`. Until 2026-09-19
+/// `uq_pricing_price_scope_key_current` refused that, as a raw driver
+/// unique-violation reaching the caller as [`RepoError::Db`] — a 500. The
+/// charge-line split removed that index on purpose (D-195 amendment), so **this
+/// statement now publishes the successor beside its predecessor and says nothing**;
+/// `tests/sqlite_price_repo.rs` pins that permission, where it used to pin the
+/// refusal.
 ///
-/// This function is nevertheless **unchanged**, and deliberately so. The remedy is
-/// an ordering the supersession commit owes rather than a check here:
-/// `inst-su-commit` flips the predecessor `published → superseded` **before** the
-/// successor's publish, in the same transaction, and with the key free on the
-/// published plane this statement is ordinary again. A guard here could only
-/// re-refuse what the index already refuses, one round trip earlier and for every
-/// publish, to catch a caller that has skipped a documented step of its own
-/// commit; `tests/sqlite_price_repo.rs` pins both arms instead.
+/// This function is still **unchanged**, and the reason moved. Nothing here can
+/// tell a supersession successor from any other validated draft, so the two callers
+/// own it: `commit_supersession_rows` flips the predecessor first, and the plan
+/// publish never hands this function a draft on an occupied key
+/// (`infra::publish::unit_row_set`). The argument used to end "a guard here could
+/// only re-refuse what the index already refuses". There is no index to re-refuse
+/// for, so those two are load-bearing rather than courteous, and a third caller
+/// owes the same care.
 ///
 /// **`draft -> published` is the row's only edge out of `draft`** and this is the
 /// sanctioned producer of it. The predicate is restated here rather than left to

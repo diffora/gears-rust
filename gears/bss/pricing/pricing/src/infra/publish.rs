@@ -821,14 +821,18 @@ impl PublishService {
 /// successor**, staged by `price_repo::insert_successor_draft_on` beside the published
 /// row it will supersede.
 ///
-/// Sweeping it up is not a near-miss. `publish_rows` would flip it to `published`
-/// while its predecessor still reads `published`, the published-plane partial `UNIQUE`
-/// would refuse the statement, and the refusal arrives as a raw driver error —
-/// `RepoError::Db` → `DomainError::Internal` → **500**, taking an entirely unrelated
-/// revision publish down with it for as long as a supersession is pending on any key
-/// of the plan. No publish rule catches it first; there is no scope-key-duplication
-/// rule in the set (found by review, after `publish_rows`' amended doc had
-/// named the wrong caller for this collision).
+/// Sweeping it up is not a near-miss, and since 2026-09-19 it is not a loud one
+/// either. `publish_rows` would flip it to `published` while its predecessor still
+/// reads `published`. That used to die on the published-plane partial `UNIQUE` as a
+/// raw driver error — a **500** taking an unrelated revision publish down with it.
+/// The charge-line split removed that index on purpose (D-195 amendment), so the
+/// statement now **succeeds**: the successor is published by a unit that neither
+/// flips its predecessor nor moves a window, and the answer is `200`. Measured by
+/// switching this filter off — `rest_publish`'s two staged-successor cases answer
+/// `200` where they owe `409` and `202`, and nothing else in the gear notices.
+/// No publish rule catches it first; there is no scope-key-duplication rule in the
+/// set. **This filter is therefore the only thing standing there**, where it used to
+/// be the polite half of a pair.
 ///
 /// So the rule is: **a draft row whose canonical scope key already carries a published
 /// row is not this unit's to publish.** It publishes through the unit that staged it,
