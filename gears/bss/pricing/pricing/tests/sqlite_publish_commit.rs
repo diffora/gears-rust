@@ -76,7 +76,7 @@ use bss_pricing::infra::fixture_gate::FixtureGate;
 use bss_pricing::infra::metrics::test_harness::MetricsHarness;
 use bss_pricing::infra::publish::PublishService;
 use bss_pricing::infra::storage::entity::{
-    audit_log, catalog_version_ref, outbox, pin_frontier, read_model,
+    audit_log, catalog_version_ref, charge_line_version, outbox, pin_frontier, price, read_model,
 };
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::{
@@ -4190,4 +4190,267 @@ async fn a_period_bound_on_an_unsold_market_is_refused_by_the_publish_path() {
         fixed.is_publishable(),
         "the same bound on a sold market is the whole point of the field: {fixed:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Shared structure across a line's markets, through the real commit.
+//
+// `domain::structural_schedule` proves the rule and
+// `domain::publish::rules_tests` proves it is registered. What is only provable
+// here is the **wiring**: that `infra::publish::assemble` builds a structure
+// binding per composed window off the row's stored `line_version_id`, so the
+// rule has operands at all. A rule with an empty operand list passes every
+// plan.
+// ---------------------------------------------------------------------------
+
+/// The second market of the plan's one logical line.
+const SECOND_MARKET_PRICE: Uuid = Uuid::from_u128(0xb_0003);
+
+fn second_market_key() -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan_id(),
+            terminal_phase(),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the class pairs with cohort none"),
+        CurrencyCode::new("USD").expect("three letters"),
+        Region::new("us").expect("a non-blank region"),
+    )
+}
+
+/// Author a draft row in the plan's second market, bound to `line_version_id`
+/// when the case names one. No window: a caller that wants one calls
+/// [`author_covering`], which is what the cases below differ by.
+async fn author_second_market(h: &Harness, line_version_id: Option<Uuid>) {
+    h.prices
+        .create_draft(
+            &h.scope,
+            TENANT,
+            NewPriceDraft {
+                price_id: SECOND_MARKET_PRICE,
+                line_version_id,
+                market_price_id: None,
+                scope_key: second_market_key(),
+                content: flat_row(),
+                created_by: ACTOR,
+                created_at_utc: at(10),
+                correlation_id: TEST_CORRELATION,
+            },
+        )
+        .await
+        .expect("author the second market's row");
+}
+
+/// A **second** charge-line version of the plan's one line, byte-identical to
+/// the first except for its identity and the revision it belongs to.
+///
+/// Within one revision the store cannot produce two structures for one line:
+/// `charge_line_repo::find_or_insert_version` keys the version on
+/// `(charge_line_id, plan_revision)`, so every market a revision authors is
+/// bound to the same one and simultaneity holds by derivation. The state the
+/// rule guards arrives across revisions — a predecessor still covering part of
+/// the horizon while a successor covers the rest — and this helper reaches it
+/// directly rather than driving a supersession, because what is under test is
+/// the schedule and not the door that writes it.
+///
+/// The clone's **content is identical**, deliberately: it makes the refusal
+/// attributable to the version identity, which is what a consumer resolving
+/// "the line's structure" reads, rather than to any content rule.
+async fn clone_line_version(h: &Harness) -> Uuid {
+    let conn = h.provider.conn().expect("conn");
+    let original = charge_line_version::Entity::find()
+        .secure()
+        .scope_with(&h.scope)
+        .filter(Condition::all().add(charge_line_version::Column::TenantId.eq(TENANT)))
+        .one(&conn)
+        .await
+        .expect("read the line version")
+        .expect("the seeded revision authored one");
+    let clone_id = Uuid::from_u128(0x5e_c0_11);
+    let mut clone: charge_line_version::ActiveModel = original.into();
+    clone.line_version_id = sea_orm::ActiveValue::Set(clone_id);
+    clone.plan_revision = sea_orm::ActiveValue::Set(1);
+    clone.row_version = sea_orm::ActiveValue::Set(0);
+    charge_line_version::Entity::insert(clone.clone())
+        .secure()
+        .scope_with_model(&h.scope, &clone)
+        .expect("scope the cloned version")
+        .exec(&conn)
+        .await
+        .expect("insert the second version of one line");
+    clone_id
+}
+
+/// Two markets of one line publish together, and the store binds both to **one**
+/// charge-line version — which is what makes the simultaneity rule satisfiable
+/// inside a revision rather than merely unviolated.
+#[tokio::test]
+async fn a_two_market_revision_binds_both_markets_to_one_structure() {
+    let h = harness().await;
+    let (revision, version, first_price) = seed_publishable(&h).await;
+    author_second_market(&h, None).await;
+    let version = author_covering(
+        &h,
+        revision,
+        version,
+        SECOND_MARKET_PRICE,
+        SECOND_MARKET_WINDOW,
+        DraftStart::AtPublish,
+        None,
+        stamp(),
+    )
+    .await;
+
+    h.publish
+        .commit(
+            &ctx(),
+            &h.scope,
+            TENANT,
+            PlanPublishUnit::plan_content(plan_id(), revision),
+            version,
+            PublishAuthorization::auto_publishable(),
+            ACTOR,
+            CORRELATION,
+            at(12),
+        )
+        .await
+        .expect("a two-market revision publishes");
+
+    let rows = h
+        .prices
+        .list_for_plan(&h.scope, TENANT, plan_id(), &[LifecycleState::Published])
+        .await
+        .expect("read the published rows");
+    assert_eq!(rows.len(), 2, "both markets are on the plan");
+
+    let conn = h.provider.conn().expect("conn");
+    let stored = price::Entity::find()
+        .secure()
+        .scope_with(&h.scope)
+        .filter(Condition::all().add(price::Column::TenantId.eq(TENANT)))
+        .all(&conn)
+        .await
+        .expect("read the monetary rows");
+    let versions: std::collections::BTreeSet<Uuid> =
+        stored.iter().map(|row| row.line_version_id).collect();
+    assert_eq!(
+        versions.len(),
+        1,
+        "one revision authors one structure, and both markets are priced against it: {stored:?}"
+    );
+    assert!(
+        stored.iter().any(|row| row.price_id == first_price)
+            && stored.iter().any(|row| row.price_id == SECOND_MARKET_PRICE),
+        "both markets are the ones under test"
+    );
+    assert_eq!(plan_windows(&h).await.len(), 2);
+    assert_seam_holds(&h).await;
+}
+
+/// Two markets of one line, covered over the same span, bound to **two**
+/// charge-line versions: the state a cutover performed in one market and
+/// forgotten in the other leaves behind. The commit refuses and writes nothing.
+///
+/// This is the case that proves `assemble` fills `structure_bindings` at all: a
+/// rule whose operand list is empty passes every plan, and nothing else on the
+/// publish path reads that field.
+#[tokio::test]
+async fn two_markets_on_two_structure_versions_commit_nothing() {
+    let h = harness().await;
+    let (revision, version, _) = seed_publishable(&h).await;
+    let second_version = clone_line_version(&h).await;
+    author_second_market(&h, Some(second_version)).await;
+    let version = author_covering(
+        &h,
+        revision,
+        version,
+        SECOND_MARKET_PRICE,
+        SECOND_MARKET_WINDOW,
+        DraftStart::AtPublish,
+        None,
+        stamp(),
+    )
+    .await;
+
+    let refusal = h
+        .publish
+        .commit(
+            &ctx(),
+            &h.scope,
+            TENANT,
+            PlanPublishUnit::plan_content(plan_id(), revision),
+            version,
+            PublishAuthorization::auto_publishable(),
+            ACTOR,
+            CORRELATION,
+            at(12),
+        )
+        .await
+        .expect_err("two structures under one line cannot publish");
+
+    match &refusal {
+        DomainError::ValidationFailed(report) => {
+            let codes: Vec<&str> = report.violations.iter().map(|v| v.code.as_str()).collect();
+            assert_eq!(
+                codes,
+                ["STRUCTURE_CUTOVER_MISMATCH"],
+                "exactly the fault this test staged, and nothing standing in for it"
+            );
+            assert_eq!(
+                report.violations[0].subject,
+                second_market_key().line().to_string(),
+                "the finding names the logical line, because the edit is to one of its markets"
+            );
+        }
+        other => panic!("expected a validation report, got {other:?}"),
+    }
+
+    assert_commit_wrote_nothing(&h, revision, version).await;
+}
+
+/// A second market with a row and **no window** is the coverage rule's finding,
+/// and the structure rule stays silent on it.
+///
+/// Both halves are asserted: one code, not two. A market nobody scheduled
+/// changes nobody's structure, and a sweep that reported it too would tell the
+/// author the same absence twice under two names.
+#[tokio::test]
+async fn a_second_market_with_no_window_is_the_coverage_rules_finding_alone() {
+    let h = harness().await;
+    let (revision, version, _) = seed_publishable(&h).await;
+    author_second_market(&h, None).await;
+
+    let refusal = h
+        .publish
+        .commit(
+            &ctx(),
+            &h.scope,
+            TENANT,
+            PlanPublishUnit::plan_content(plan_id(), revision),
+            version,
+            PublishAuthorization::auto_publishable(),
+            ACTOR,
+            CORRELATION,
+            at(12),
+        )
+        .await
+        .expect_err("an uncovered market cannot publish");
+
+    match &refusal {
+        DomainError::ValidationFailed(report) => {
+            let codes: Vec<&str> = report.violations.iter().map(|v| v.code.as_str()).collect();
+            assert_eq!(codes, ["WINDOW_COVERAGE_MISSING"]);
+            assert_eq!(
+                report.violations[0].subject,
+                second_market_key().to_string()
+            );
+        }
+        other => panic!("expected a validation report, got {other:?}"),
+    }
+
+    assert_commit_wrote_nothing(&h, revision, version).await;
 }

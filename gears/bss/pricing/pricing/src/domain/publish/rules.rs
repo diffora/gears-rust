@@ -589,7 +589,24 @@ pub fn run_publish_rules(shape: &PlanShape, params: &PublishRuleParams) -> Valid
     // reads last.
     report.absorb(consumer_contract_rules(&params.change_targets).run(shape));
     report.absorb(window_coverage_rules().run(shape));
+    // Last, and after coverage on purpose: this rule asks which structure each
+    // market is bound to at each boundary, and a market with no window at all
+    // has no boundary to ask about. Reporting "your markets disagree" ahead of
+    // "this market has no window" would name the wrong edit.
+    report.absorb(structure_schedule_rules().run(shape));
     report
+}
+
+/// The shared-structure cutover set (Slice 7, `inst-sc-simultaneous`).
+///
+/// A pipeline of one, for `foundation_plan_rules`' reason: the next rule about
+/// structure scheduling registers beside this one rather than being appended to
+/// a call site.
+#[must_use]
+fn structure_schedule_rules() -> ValidationPipeline<PlanShape> {
+    ValidationPipeline::new().with_rule(Box::new(
+        crate::domain::structural_schedule::StructureCutoverSimultaneous,
+    ))
 }
 
 /// The Foundation's own rules over a publish subject.

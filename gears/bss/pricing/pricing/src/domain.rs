@@ -50,6 +50,7 @@ pub mod rules;
 pub mod scope_key;
 pub mod sellability;
 pub mod snapshot;
+pub mod structural_schedule;
 pub mod supersession;
 pub mod synthesis;
 pub mod tax_display;

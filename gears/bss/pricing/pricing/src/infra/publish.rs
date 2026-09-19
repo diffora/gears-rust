@@ -1365,12 +1365,26 @@ pub(crate) async fn assemble_from(
     // coverage rules judge the time-resolved plane. `AtPublish` stamps
     // `evaluated_at` here and is hashed as the literal `at_publish`.
     // Time-dependent cancel/adjust permissibility is rechecked here against `now`.
-    shape.windows = compose_validation_plane(
+    // The structure half of the plane, loaded from the same rows in the same
+    // transaction: which immutable charge-line version each monetary row is
+    // priced against. `PriceRecord` carries the structure's *content* and not
+    // the identity of the version it came from, so the map is read rather than
+    // derived from `shape.rows`.
+    let line_versions: BTreeMap<Uuid, Uuid> =
+        price_repo::load_line_versions_for_plan(runner, scope, tenant_id, plan_id)
+            .await
+            .map_err(|e| repo_failure(&e))?
+            .into_iter()
+            .collect();
+    let (windows, structure_bindings) = compose_validation_plane(
         &shape.rows,
         &shape.window_baseline,
         &shape.draft_window_entries,
+        &line_versions,
         now,
     )?;
+    shape.windows = windows;
+    shape.structure_bindings = structure_bindings;
     shape.baseline = published_baseline(runner, scope, tenant_id, plan_id).await?;
     Ok(shape)
 }
@@ -1541,23 +1555,61 @@ async fn materialize_approved_windows(
     Ok(())
 }
 
-/// Compose the draft-window authoring inputs into the validation plane.
+/// Compose the draft-window authoring inputs into the validation plane and the
+/// structure schedule that plane implies.
+///
+/// Two returns off **one** composition rather than two calls: the grouped
+/// [`KeyWindows`](crate::domain::window::KeyWindows) plane drops the price each
+/// interval schedules, and the structure a market is bound to is a property of
+/// that price — so a second pass would have to re-derive the composition and
+/// could disagree with the first.
 ///
 /// # Errors
 /// [`compose_windows`] refusals (overlap, empty interval, elapsed exact start,
-/// unknown price row, illegal live-history edit).
+/// unknown price row, illegal live-history edit), and
+/// [`DomainError::InvalidRequest`] when a composed window names a price row that
+/// is not in `line_versions` — unreachable while both maps are built from one
+/// candidate read, and loud rather than silent because a dropped binding is a
+/// structure rule that passes by having nothing to judge.
 fn compose_validation_plane(
     candidates: &[PriceRecord],
     baseline: &[crate::domain::draft_window::WindowBaseline],
     entries: &[crate::domain::draft_window::DraftWindowEntry],
+    line_versions: &BTreeMap<Uuid, Uuid>,
     evaluated_at: OffsetDateTime,
-) -> Result<Vec<crate::domain::window::KeyWindows>, DomainError> {
+) -> Result<
+    (
+        Vec<crate::domain::window::KeyWindows>,
+        Vec<crate::domain::structural_schedule::StructureBinding>,
+    ),
+    DomainError,
+> {
     let keys: BTreeMap<Uuid, crate::domain::scope_key::MarketPriceScopeKey> = candidates
         .iter()
         .map(|row| (row.price_id, row.scope_key.clone()))
         .collect();
     let proposed = compose_windows(baseline, entries, &keys, evaluated_at)?;
-    Ok(group_by_key_seeded(
+
+    let mut bindings = Vec::with_capacity(proposed.len());
+    for window in &proposed {
+        let line_version_id = line_versions
+            .get(&window.price_id)
+            .copied()
+            .ok_or_else(|| {
+                DomainError::InvalidRequest(format!(
+                    "window {} schedules price row {}, which names no charge-line version",
+                    window.window_id, window.price_id
+                ))
+            })?;
+        bindings.push(crate::domain::structural_schedule::StructureBinding {
+            market: window.key.clone(),
+            line_version_id,
+            effective_from: window.effective_from,
+            effective_to: window.effective_to,
+        });
+    }
+
+    let windows = group_by_key_seeded(
         candidates.iter().map(|record| record.scope_key.clone()),
         proposed.into_iter().map(|window| {
             let state = proposed_window_state(&window, evaluated_at);
@@ -1566,7 +1618,8 @@ fn compose_validation_plane(
                 WindowInterval::new(window.effective_from, window.effective_to, state),
             )
         }),
-    ))
+    );
+    Ok((windows, bindings))
 }
 
 /// What the plan's current revision holds, for the rules that compare

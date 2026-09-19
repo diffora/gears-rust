@@ -338,6 +338,43 @@ fn the_aggregate_runs_the_slice_six_consumer_contract_set() {
     );
 }
 
+/// The aggregate carries Slice 7's structure-cutover set, and the clean fixture
+/// proves the finding is the second structure and not something else.
+///
+/// One market, two bindings, two versions, overlapping — the shape only this
+/// rule judges, since `shape.windows` is left clean and no other rule on the
+/// publish path reads `structure_bindings` at all.
+///
+/// Registration is worth its own case for the reason the two above give:
+/// deleting the `.with_rule(…)` line leaves every unit test in
+/// `domain::structural_schedule` green, because they call the function directly.
+#[test]
+fn the_aggregate_runs_the_structure_cutover_set() {
+    use crate::domain::structural_schedule::StructureBinding;
+    use crate::domain::window::WINDOW_OVERLAP;
+
+    let mut doubled = clean_plan();
+    let market = doubled.rows[0].scope_key.clone();
+    doubled.structure_bindings = vec![
+        StructureBinding {
+            market: market.clone(),
+            line_version_id: Uuid::from_u128(0x5e_01),
+            effective_from: now(),
+            effective_to: None,
+        },
+        StructureBinding {
+            market,
+            line_version_id: Uuid::from_u128(0x5e_02),
+            effective_from: now() + time::Duration::hours(1),
+            effective_to: None,
+        },
+    ];
+
+    let report = run_publish_rules(&doubled, &params(Some("half_up")));
+
+    assert_eq!(codes(&report), [WINDOW_OVERLAP]);
+}
+
 #[test]
 fn the_same_subject_run_twice_yields_byte_identical_reports() {
     // The property §4.2's two runs depend on, and the reason no rule may hold

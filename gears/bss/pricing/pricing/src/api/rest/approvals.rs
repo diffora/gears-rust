@@ -825,6 +825,10 @@ impl From<&PlanShape> for PinnedContentView {
             composites,
             change_contract,
             windows: _,
+            // Derived from the two planes above; a reviewer is shown the
+            // authoring inputs, and the structure schedule is what the rules
+            // compute from them.
+            structure_bindings: _,
             draft_window_entries,
             window_baseline,
             // Outside the digest, so outside this document: showing a reviewer

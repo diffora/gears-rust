@@ -1208,6 +1208,11 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
         composites,
         change_contract,
         windows: _,
+        // Derived from `windows` and the row plane, and unhashed for the same
+        // reason: the pin frames the authoring inputs, and a resolved
+        // projection of them would be a second, time-dependent spelling of what
+        // `draft_window_entries` and `rows` already say.
+        structure_bindings: _,
         draft_window_entries,
         window_baseline,
         // Not hashed; the module doc argues all three, and `evaluated_at` is the

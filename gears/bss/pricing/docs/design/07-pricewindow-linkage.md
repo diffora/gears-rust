@@ -226,6 +226,19 @@ which is what the joint fixture gate guards. Until 2026-08-17 it ran none of the
 1a. [ ] - `p1` - **Trailing void (normative, D-62, 2026-07-29 review fix):** `inst-fg-detect` is an *interior* check — it compares each window against its successor and by construction cannot see a void with **no** successor. A cancellation or an `effectiveTo` shortening that removes the last coverage on a key is therefore invisible to it. Any cancel/shorten MUST additionally leave the key covered through `max(current coverage end, now + the longest billing cycle sold on that key)` — otherwise reject (`WINDOW_TRAILING_VOID`, 422), naming the key and the first uncovered instant. The **only** exemption is D-51's, **narrowed by D-80 (2026-07-30 review fix)**: a key with no in-flight subscribers **whose plan is also not currently sellable on the key's `(currency, region)` market** — "sellable" evaluated over the full key conjunction (`inst-sg-conjunction`, D-94, 2026-07-31: a usage or phase component key of a sellable plan-market is never exempt, zero subscribers or not — otherwise the exempt cancel reopened the void for that component line while the plan kept selling) — on a sellable plan-market the check always applies (the exemption raced the gate: with zero subscribers *today*, cancelling the sole successor left the key sellable until its active window's end, and anyone subscribing in that interval landed in the void), so cancelling the sole successor of a sellable key is rejected outright. The in-flight-subscriber predicate resolves through the **D-79 Subscriptions inbound lane** (PRD §9.2 lane 3), is **re-resolved inside the mutating commit**, and **fails closed on lane outage or timeout** (treated as subscribers-present: check + materiality apply). **The lane answers per price id (normative, D-131, 2026-08-01 review fix):** the response is a **presence map over the submitted price-id set**, not one aggregate count over it — every consumer of the lane (this exemption, D-51's per-key window decision, the D-80/D-94 gate reasoning) decides **per canonical scope key**, and a single count over the union answers only "does this plan have any subscriber at all", under which retirement would cancel nothing whenever one key is occupied. A mutating unit makes **one** call over the union of its touched keys' price-id sets and derives per-key presence from the map — never one call per key, which would put N synchronous cross-gear round trips inside an ACID transaction holding the row locks and the audit chain segment; the call carries a stated timeout, whose expiry is the fail-closed case above. This closes the same hazard D-05 closed on the retirement path: without it one `plan × write` holder can `DELETE` the two-person-approved scheduled successor, let the active window expire at its natural end, and leave every arrears charge and renewal on the key failing closed. **The exemption is unreachable in the implementation, and the refusal therefore stands unexempted (normative, D-182, 2026-08-04, found while building the window routes):** the D-79 lane has no client, no contract type and no counterpart gear in the built system, and D-131's fail-closed case is about the predicate's **evaluability** rather than the mechanism of its silence, so an **absent** lane is that case too — every cancel and every `effectiveTo` shortening that would leave the key uncovered through the floor above is refused, *including the exempt ones*, under this rule's own `WINDOW_TRAILING_VOID` and with **no second code and no unreachable exemption branch**. The refusal is removed by the change that lands the lane client, which is gated on Subscriptions building the read **and** on SUB-P8 moving from its authored union count to D-131's per-price-id map; at that point the exemption becomes reachable for the first time. Slice 11's `inst-rt-cancel` consumes the same lane for the same predicate at the opposite polarity and inherits the same refusal with the opposite sign - `inst-fg-trailing`
 2. [ ] - `p1` - The check runs at publish **and** inside every window-mutating operation (schedule, cancel, `effectiveTo` adjustment, cutover, retirement-triggered cancellation, **and draft-window create/adjust/cancel plus baseline refresh — D-374**) — windows are slice-owned (D-03), live mutations go through `WindowScheduler`/`CutoverOrchestrator`, draft mutations go through the revision-owned store, and there is **no side door**: the window tables carry the same REVOKE + column-whitelist trigger discipline as `pricing_price`, so a gap can never be introduced past validation. Draft writes are not a live-table side door; submit/commit still judge the Working composition - `inst-fg-when`
 
+### Simultaneous Structural Cutover
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-structure-cutover`
+
+**Input**: one logical charge line's required markets, plus one structure binding per composed
+window — the market it schedules and the `lineVersionId` its price row names
+**Output**: pass, or the boundary at which the line's markets disagree
+
+**Steps**:
+1. [ ] - `p1` - Sweep the boundary instants the binding set implies inside the required coverage horizon (each binding's start and end, clipped). At every boundary at which **any** market of the line is bound, every bound market MUST name the **same** `lineVersionId`; two of them naming different ones is `STRUCTURE_CUTOVER_MISMATCH` (422), naming the line, the boundary, and each market's version. Money remains free: two markets whose monetary versions or amounts change on different days are legal exactly as long as the structure they are priced against does not differ. A market bound to two versions at one instant is the existing `WINDOW_OVERLAP` - `inst-sc-simultaneous`
+2. [ ] - `p1` - A market that is bound before a boundary and **not at it**, while a sibling moves to a new version there, is `STRUCTURE_MARKET_BINDING_MISSING` (422): the author split one market's window at the cutover and left the other's ending there. The refusal is scoped to that shape deliberately — an instant at which **no** market of the line is bound is not this rule's instant (a plan published ahead of its start date is bound to nothing today, and `inst-wc-required` counts a scheduled window as coverage), a market that simply launches later than its sibling changes nobody's structure, and a market with **no** window at all is `inst-wc-required`'s finding. Two rules answering one question is two answers free to disagree - `inst-sc-scope`
+3. [ ] - `p1` - Scheduling is **derived**, never separate: the binding set is read off the same composed window plane `inst-wc-required` judges, one binding per window, so a structural cutover is authored by splitting each market's window and binding the new interval to a new monetary version of the new structure. The existing price version's structure reference is never mutated in place. Judgement is per logical line **and selection class** — `priceEligibility` and `cohort` are axes of the line key — so a grandfathered generation's frozen selection is judged on its own and never against its successor's - `inst-sc-derived`
+
 ### Sellability Gate
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-sellability`
@@ -353,7 +366,12 @@ binding), `WINDOW_NOT_CANCELLABLE` (409 — DELETE on an active/historical windo
 `WINDOW_TRAILING_VOID` (422 — a cancel/shorten that would leave the key uncovered with no
 successor, `inst-fg-trailing`; names the key and the first uncovered instant),
 `WINDOW_START_IN_PAST` (422 — `effectiveFrom` not strictly in the future at creation,
-`inst-ws-future-start`), `CUTOVER_GAP` (422 — composed over a key with no coverage to shorten; **the supersession's identical refusal is declared nowhere and therefore travels as `LIFECYCLE_FORBIDDEN`** — D-204, 2026-08-06, recorded rather than repaired, since a wire code is this section's to declare),
+`inst-ws-future-start`),
+`STRUCTURE_CUTOVER_MISMATCH` (422 — two markets of one logical line bound to different
+charge-line versions at one instant; names the line, the boundary and each market's version,
+`inst-sc-simultaneous`),
+`STRUCTURE_MARKET_BINDING_MISSING` (422 — a market bound before a boundary and not at it while
+a sibling moves to a new version there; names the market and the boundary, `inst-sc-scope`), `CUTOVER_GAP` (422 — composed over a key with no coverage to shorten; **the supersession's identical refusal is declared nowhere and therefore travels as `LIFECYCLE_FORBIDDEN`** — D-204, 2026-08-06, recorded rather than repaired, since a wire code is this section's to declare),
 `CUTOVER_INSTANT_PASSED` (422 — instant in the past at submit, or closer than the max
 batching-delay SLO at approval commit),
 `SUPERSESSION_INSTANT_PASSED` (422 — the supersession unit's changeover instant in the past at
@@ -581,6 +599,24 @@ materializes them.
 - API: `POST /bss-pricing/v1/prices/{priceId}/windows`, `PATCH/DELETE /bss-pricing/v1/price-windows/{windowId}`
 - DB: `pricing_price_window`, `pricing_outbox`
 - Entities: `WindowScheduler`, `WindowActivationJob`
+
+### Structural Cutover
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-structure-cutover`
+
+A shared charge-line structure **MUST** become effective in **every** market of its logical
+line at the same instant. Publish **MUST** reject a binding set in which two markets of one
+line are priced against different `lineVersionId`s at any instant inside the required coverage
+horizon, and a market dropped exactly where a sibling cuts over. Independent **monetary**
+scheduling is untouched: markets reprice on their own days (W7). The structure schedule is
+**derived** from the composed window plane — no second scheduling surface, and no in-place
+mutation of a published price version's structure reference.
+
+**Implements**: `cpt-cf-bss-pricing-algo-structure-cutover`
+
+**Touches**:
+- DB: `pricing_price`, `pricing_charge_line_version`, `pricing_price_window`
+- Entities: `StructureBinding`, `StructureCutoverSimultaneous`
 
 ### Future Gaps
 

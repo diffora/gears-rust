@@ -2817,6 +2817,49 @@ pub async fn load_scope_key(
     to_scope_key(&graph).map(Some)
 }
 
+/// Every row of one plan paired with the **immutable charge-line version** its
+/// money is priced against, in `price_id` order.
+///
+/// The structure half of [`load_scope_keys_for_plan`]'s question, and the reason
+/// it is a query of its own rather than a field of [`PriceRecord`]: the record is
+/// the *resolved* row — it carries the structure's content, folded into
+/// [`PriceRow`], and not the identity of the version that content came from.
+/// Which version a market is bound to over an interval is what
+/// [`StructureBinding`](crate::domain::structural_schedule::StructureBinding)
+/// asks, and two markets carrying identical content off two different versions
+/// is exactly the state that question exists to catch.
+///
+/// **No lifecycle filter**, for [`load_scope_keys_for_plan`]'s reason verbatim: a
+/// window belongs to whatever row it names, in whatever state that row stands,
+/// and a `superseded` predecessor's shortened interval is part of its market's
+/// structure schedule.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure.
+pub async fn load_line_versions_for_plan(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+) -> Result<Vec<(Uuid, Uuid)>, RepoError> {
+    let rows = price::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(price::Column::TenantId.eq(tenant_id))
+                .add(price::Column::PlanId.eq(plan_id.get())),
+        )
+        .order_by(price::Column::PriceId, Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read the line versions of plan {plan_id}: {e}")))?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.price_id, row.line_version_id))
+        .collect())
+}
+
 /// Every row of one plan paired with its canonical scope key.
 ///
 /// The window plane's other question: which of a plan's rows share a key, because

@@ -767,6 +767,19 @@ pub struct PlanShape {
     /// are resolved at `evaluated_at`; the approval pin hashes the authoring
     /// inputs below rather than these resolved intervals.
     pub windows: Vec<KeyWindows>,
+    /// Which shared structure each market is priced against over each composed
+    /// window, one entry per window of the plane above.
+    ///
+    /// A **derived** plane like [`Self::windows`], and unhashed by the content
+    /// pin for the same reason: it is the resolved projection of the authoring
+    /// inputs, not an input of its own. It is separate from `windows` because
+    /// [`KeyWindows`] groups intervals by market and drops the price each one
+    /// schedules, and the structure a market is bound to is a property of that
+    /// price — so the one plane cannot answer both questions.
+    ///
+    /// Read by
+    /// [`StructureCutoverSimultaneous`](crate::domain::structural_schedule::StructureCutoverSimultaneous).
+    pub structure_bindings: Vec<crate::domain::structural_schedule::StructureBinding>,
     /// Revision-owned draft-window operations (D-374). Hashed by the content
     /// pin, including the literal `at_publish` start — not the resolved instant.
     pub draft_window_entries: Vec<DraftWindowEntry>,
@@ -815,6 +828,7 @@ impl PlanShape {
             composites: Vec::new(),
             change_contract: PlanChangeContract::default(),
             windows: Vec::new(),
+            structure_bindings: Vec::new(),
             draft_window_entries: Vec::new(),
             window_baseline: Vec::new(),
             baseline: None,
