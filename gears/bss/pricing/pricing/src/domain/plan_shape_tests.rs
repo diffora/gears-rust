@@ -13,9 +13,7 @@ use std::fmt;
 
 use uuid::Uuid;
 
-use super::{
-    CustomIntervalUnit, Frequency, PhaseGraph, PhaseKind, PlanPhase, PlanShape,
-};
+use super::{CustomIntervalUnit, Frequency, PhaseGraph, PhaseKind, PlanPhase, PlanShape};
 use crate::domain::concurrency::RowVersion;
 use crate::domain::instant::utc_ymd_hms;
 use crate::domain::lifecycle::LifecycleState;
