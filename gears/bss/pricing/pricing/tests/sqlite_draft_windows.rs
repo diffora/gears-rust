@@ -32,7 +32,9 @@ use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use sea_orm_migration::MigratorTrait;
 use time::OffsetDateTime;
 use toolkit_db::migration_runner::run_migrations_for_testing;
-use toolkit_db::secure::{AccessScope, SecureDeleteExt, SecureInsertExt, SecureUpdateExt};
+use toolkit_db::secure::{
+    AccessScope, SecureDeleteExt, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
+};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
 
@@ -50,6 +52,12 @@ const PHASE: Uuid = Uuid::from_u128(0x40_a5);
 const SKU: Uuid = Uuid::from_u128(5);
 const ROW: Uuid = Uuid::from_u128(0xa0_01);
 const FOREIGN_ROW: Uuid = Uuid::from_u128(0xa0_99);
+/// Three monetary rows of one logical line, differing only in market.
+const EUR_EU: Uuid = Uuid::from_u128(0xa0_11);
+const USD_US: Uuid = Uuid::from_u128(0xa0_12);
+const USD_CA: Uuid = Uuid::from_u128(0xa0_13);
+/// The draft successor of the published `USD_US` row, on the same market.
+const USD_US_NEXT: Uuid = Uuid::from_u128(0xa0_14);
 const TEST_CORRELATION: Uuid = Uuid::from_u128(0x_c0_11_a7_10);
 
 fn t(day: u32) -> OffsetDateTime {
@@ -126,20 +134,93 @@ async fn seed_price(
     plan_id: Uuid,
     price_id: Uuid,
 ) {
+    seed_market_row(provider, tenant_id, plan_id, price_id, "USD", "EU").await;
+}
+
+/// A **published** monetary row of the named market, on its own line version.
+///
+/// `uq_pricing_price_market_draft` admits one draft price per market, so the
+/// only way a market legitimately holds two monetary versions at once is a
+/// frozen predecessor beside the draft successor — which is the supersession
+/// shape, and the one the independent-window rule has to judge.
+async fn seed_published_market_row(
+    provider: &DBProvider<DbError>,
+    price_id: Uuid,
+    currency: &str,
+    region: &str,
+) {
+    seed_row(
+        provider,
+        &RowSeed {
+            tenant_id: TENANT,
+            plan_id: PLAN,
+            price_id,
+            currency,
+            region,
+            lifecycle_state: "published",
+            plan_revision: 0,
+        },
+    )
+    .await;
+}
+
+/// One monetary row of the plan's single logical line, in the named market.
+///
+/// The charge line, its version and the market are find-or-insert, so two calls
+/// differing only in `currency`/`region` mint two markets of **one** line, and
+/// two calls with the same market mint two monetary versions of it. That is the
+/// shape the independent-window rule is about, and it cannot be built by a
+/// helper that hard-codes its market.
+async fn seed_market_row(
+    provider: &DBProvider<DbError>,
+    tenant_id: Uuid,
+    plan_id: Uuid,
+    price_id: Uuid,
+    currency: &str,
+    region: &str,
+) {
+    seed_row(
+        provider,
+        &RowSeed {
+            tenant_id,
+            plan_id,
+            price_id,
+            currency,
+            region,
+            lifecycle_state: "draft",
+            plan_revision: 1,
+        },
+    )
+    .await;
+}
+
+/// What a seeded monetary row varies.
+struct RowSeed<'a> {
+    tenant_id: Uuid,
+    plan_id: Uuid,
+    price_id: Uuid,
+    currency: &'a str,
+    region: &'a str,
+    lifecycle_state: &'a str,
+    plan_revision: i64,
+}
+
+async fn seed_row(provider: &DBProvider<DbError>, seed: &RowSeed<'_>) {
     let conn = provider.conn().expect("scoped connection");
-    let row_scope = AccessScope::for_tenant(tenant_id);
+    let row_scope = AccessScope::for_tenant(seed.tenant_id);
     let seeded_graph = common::seed_charge_graph(
         &conn,
         &row_scope,
         &common::ChargeGraphSeed {
-            tenant_id,
-            plan_id,
+            tenant_id: seed.tenant_id,
+            plan_id: seed.plan_id,
+            plan_revision: seed.plan_revision,
             phase: PHASE,
             sku_id: SKU,
             charge_kind: "recurring".to_owned(),
-            currency: "USD".to_owned(),
-            region: "EU".to_owned(),
-            lifecycle_state: "draft".to_owned(),
+            currency: seed.currency.to_owned(),
+            region: seed.region.to_owned(),
+            lifecycle_state: seed.lifecycle_state.to_owned(),
             model_kind: Some("flat".to_owned()),
             created_by: ACTOR,
             created_at_utc: t(1),
@@ -148,15 +229,15 @@ async fn seed_price(
     )
     .await;
     let row = price::ActiveModel {
-        plan_revision: Set(1),
+        plan_revision: Set(seed.plan_revision),
         charge_line_id: Set(seeded_graph.charge_line_id),
         line_version_id: Set(seeded_graph.line_version_id),
         market_price_id: Set(seeded_graph.market_price_id),
-        price_id: Set(price_id),
-        tenant_id: Set(tenant_id),
-        plan_id: Set(plan_id),
+        price_id: Set(seed.price_id),
+        tenant_id: Set(seed.tenant_id),
+        plan_id: Set(seed.plan_id),
         amount_minor: Set(Some(1_000)),
-        lifecycle_state: Set("draft".to_owned()),
+        lifecycle_state: Set(seed.lifecycle_state.to_owned()),
         created_by: Set(ACTOR),
         created_at_utc: Set(t(1)),
         ..price::ActiveModel::default()
@@ -167,7 +248,7 @@ async fn seed_price(
         .expect("scope the seeded price row")
         .exec(&conn)
         .await
-        .unwrap_or_else(|e| panic!("seed price row {price_id}: {e}"));
+        .unwrap_or_else(|e| panic!("seed price row {}: {e}", seed.price_id));
 }
 
 async fn seeded_plan() -> (DBProvider<DbError>, PlanRepo) {
@@ -718,5 +799,143 @@ async fn a_new_live_window_conflicts_with_an_empty_captured_baseline() {
     assert!(
         matches!(err, DomainError::WindowBaselineChanged(_)),
         "WINDOW_BASELINE_CHANGED, got: {err:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Independent monetary windows on the full market key
+//
+// The domain proves the grouping (`domain::draft_window::draft_window_tests`);
+// these two prove the **store** hands it the right candidate set — one market
+// key per monetary row, resolved through the row's `market_price_id` and
+// `line_version_id` rather than off the row itself.
+// ---------------------------------------------------------------------------
+
+/// Three markets of one logical line take three overlapping windows, because
+/// each competes only against its own market.
+#[tokio::test]
+async fn three_markets_of_one_line_take_overlapping_windows() {
+    let (provider, _plans) = seeded_plan().await;
+    seed_market_row(&provider, TENANT, PLAN, EUR_EU, "EUR", "EU").await;
+    seed_market_row(&provider, TENANT, PLAN, USD_US, "USD", "US").await;
+    seed_market_row(&provider, TENANT, PLAN, USD_CA, "USD", "CA").await;
+    let conn = provider.conn().expect("conn");
+
+    let mut version = 0_u64;
+    for (nth, (price_id, end)) in [(EUR_EU, Some(t(10))), (USD_US, Some(t(20))), (USD_CA, None)]
+        .into_iter()
+        .enumerate()
+    {
+        let window_id = Uuid::from_u128(0xd7_a0 + nth as u128);
+        version = draft_window::apply_command(
+            &conn,
+            &scope(),
+            &owner(),
+            version,
+            DraftWindowCommand::Put(DraftWindowEntry {
+                operation_id: window_id,
+                action: DraftWindowAction::Create {
+                    window_id,
+                    price_id,
+                    start: DraftStart::At(t(5)),
+                    effective_to: end,
+                },
+                reason_code: "launch".to_owned(),
+            }),
+            stamp(),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("market {nth} competes only with itself: {e:?}"));
+    }
+
+    let listed = draft_window_repo::list(&conn, &scope(), &owner())
+        .await
+        .expect("list");
+    assert_eq!(
+        listed.len(),
+        3,
+        "three markets, three intentions, all starting at the same instant"
+    );
+}
+
+/// The complement: two monetary versions of **one** market still collide, and
+/// the refusal writes nothing — no intention row and no revision bump.
+#[tokio::test]
+async fn a_second_version_of_one_market_overlaps_and_writes_nothing() {
+    let (provider, _plans) = seeded_plan().await;
+    seed_published_market_row(&provider, USD_US, "USD", "US").await;
+    seed_market_row(&provider, TENANT, PLAN, USD_US_NEXT, "USD", "US").await;
+    let conn = provider.conn().expect("conn");
+
+    let first = Uuid::from_u128(0xd7_b1);
+    let accepted = draft_window::apply_command(
+        &conn,
+        &scope(),
+        &owner(),
+        0,
+        DraftWindowCommand::Put(DraftWindowEntry {
+            operation_id: first,
+            action: DraftWindowAction::Create {
+                window_id: first,
+                price_id: USD_US,
+                start: DraftStart::At(t(5)),
+                effective_to: Some(t(10)),
+            },
+            reason_code: "launch".to_owned(),
+        }),
+        stamp(),
+    )
+    .await
+    .expect("the market's first window");
+
+    let second = Uuid::from_u128(0xd7_b2);
+    let err = draft_window::apply_command(
+        &conn,
+        &scope(),
+        &owner(),
+        accepted,
+        DraftWindowCommand::Put(DraftWindowEntry {
+            operation_id: second,
+            action: DraftWindowAction::Create {
+                window_id: second,
+                price_id: USD_US_NEXT,
+                start: DraftStart::At(t(7)),
+                effective_to: Some(t(20)),
+            },
+            reason_code: "successor".to_owned(),
+        }),
+        stamp(),
+    )
+    .await
+    .expect_err("one market cannot hold two prices at once");
+    assert!(
+        matches!(err, DomainError::WindowOverlap(_)),
+        "WINDOW_OVERLAP, got: {err:?}"
+    );
+
+    let listed = draft_window_repo::list(&conn, &scope(), &owner())
+        .await
+        .expect("list");
+    assert_eq!(
+        listed.len(),
+        1,
+        "the refused intention left no row behind: {listed:?}"
+    );
+    let revision = plan::Entity::find()
+        .secure()
+        .scope_with(&scope())
+        .filter(
+            Condition::all()
+                .add(plan::Column::PlanId.eq(PLAN))
+                .add(plan::Column::Revision.eq(0_i64)),
+        )
+        .one(&conn)
+        .await
+        .expect("read the plan revision")
+        .expect("the seeded revision");
+    assert_eq!(
+        u64::try_from(revision.row_version).expect("non-negative row version"),
+        accepted,
+        "a refused save does not bump the revision"
     );
 }

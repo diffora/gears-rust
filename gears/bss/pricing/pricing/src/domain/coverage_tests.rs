@@ -137,6 +137,47 @@ fn one_row_plan(windows: Vec<KeyWindows>) -> PlanShape {
     shape
 }
 
+/// An explicit `create` intention with an exact start, as the draft door records it.
+fn window_create(
+    operation: u128,
+    window: u128,
+    price_id: Uuid,
+    from: OffsetDateTime,
+    to: Option<OffsetDateTime>,
+) -> DraftWindowEntry {
+    DraftWindowEntry {
+        operation_id: Uuid::from_u128(operation),
+        action: DraftWindowAction::Create {
+            window_id: Uuid::from_u128(window),
+            price_id,
+            start: DraftStart::At(from),
+            effective_to: to,
+        },
+        reason_code: "launch".to_owned(),
+    }
+}
+
+/// The validation plane a composed proposal projects onto, seeded with every
+/// required key so a market with no window at all still appears.
+fn scheduled_plane(
+    required: impl IntoIterator<Item = MarketPriceScopeKey>,
+    proposed: Vec<crate::domain::draft_window::ProposedWindow>,
+) -> Vec<KeyWindows> {
+    group_by_key_seeded(
+        required,
+        proposed.into_iter().map(|window| {
+            (
+                window.key,
+                WindowInterval::new(
+                    window.effective_from,
+                    window.effective_to,
+                    WindowState::Scheduled,
+                ),
+            )
+        }),
+    )
+}
+
 fn verdict(shape: &PlanShape) -> ValidationReport {
     window_coverage_rules().run(shape)
 }
@@ -667,6 +708,88 @@ fn every_interior_gap_on_a_key_is_named_in_order() {
     assert_eq!(
         check_shape(&shape).keys[0].interior_gaps(),
         vec![(at(2), at(4)), (at(5), at(7))]
+    );
+}
+
+/// Row 5 of the market-window matrix, driven through the whole composition
+/// path rather than a hand-built interval set: two monetary versions of **one**
+/// market, the first ending at `t1` and the second starting at `t2 > t1`.
+///
+/// `compose_windows` accepts it — a hole is not a save failure, D-374 keeps
+/// authoring incremental — and the coverage rule is what refuses it. A suite
+/// that only hand-built `KeyWindows` could not tell those two answers apart.
+#[test]
+fn a_hole_between_two_versions_of_one_market_composes_and_then_fails_coverage() {
+    let scope_key = key(ChargeKind::Recurring, "EUR", "eu");
+    let first = Uuid::from_u128(0xb001);
+    let second = Uuid::from_u128(0xb002);
+    let mut shape = one_row_plan(Vec::new());
+    shape.rows = vec![
+        row_on(0xb001, scope_key.clone()),
+        row_on(0xb002, scope_key.clone()),
+    ];
+    let keys = BTreeMap::from([(first, scope_key.clone()), (second, scope_key.clone())]);
+    let entries = vec![
+        window_create(0xd11, 0xd12, first, at(1), Some(at(3))),
+        window_create(0xd21, 0xd22, second, at(6), None),
+    ];
+
+    let proposed = compose_windows(&[], &entries, &keys, shape.evaluated_at)
+        .expect("a hole between two versions of one market is legal to save");
+    assert_eq!(proposed.len(), 2, "both intentions survive composition");
+
+    shape.draft_window_entries = entries;
+    shape.windows = scheduled_plane([scope_key.clone()], proposed);
+
+    let report = verdict(&shape);
+    assert_eq!(codes(&report), vec![WINDOW_GAP.to_owned()]);
+    assert_eq!(report.violations[0].subject, scope_key.to_string());
+    assert!(
+        report.violations[0].detail.contains(&format_rfc3339(at(3)))
+            && report.violations[0].detail.contains(&format_rfc3339(at(6))),
+        "the detail names the uncovered span: {}",
+        report.violations[0].detail
+    );
+}
+
+/// The same hole, with a second market beside it: coverage is required and
+/// reported **per market**, so a fully covered EUR/eu does not excuse the hole
+/// in USD/us and is not itself named.
+#[test]
+fn a_covered_market_does_not_excuse_its_siblings_hole() {
+    let covered = key(ChargeKind::Recurring, "EUR", "eu");
+    let holed = key(ChargeKind::Recurring, "USD", "us");
+    let eur = Uuid::from_u128(0xb001);
+    let usd_first = Uuid::from_u128(0xb002);
+    let usd_second = Uuid::from_u128(0xb003);
+    let mut shape = one_row_plan(Vec::new());
+    shape.rows = vec![
+        row_on(0xb001, covered.clone()),
+        row_on(0xb002, holed.clone()),
+        row_on(0xb003, holed.clone()),
+    ];
+    let keys = BTreeMap::from([
+        (eur, covered.clone()),
+        (usd_first, holed.clone()),
+        (usd_second, holed.clone()),
+    ]);
+    let entries = vec![
+        window_create(0xd31, 0xd32, eur, at(1), None),
+        window_create(0xd41, 0xd42, usd_first, at(1), Some(at(3))),
+        window_create(0xd51, 0xd52, usd_second, at(6), None),
+    ];
+
+    let proposed = compose_windows(&[], &entries, &keys, shape.evaluated_at)
+        .expect("two markets schedule independently");
+    shape.draft_window_entries = entries;
+    shape.windows = scheduled_plane([covered, holed.clone()], proposed);
+
+    let report = verdict(&shape);
+    assert_eq!(codes(&report), vec![WINDOW_GAP.to_owned()]);
+    assert_eq!(
+        report.violations[0].subject,
+        holed.to_string(),
+        "only the market that opened the hole is named"
     );
 }
 

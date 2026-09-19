@@ -660,3 +660,66 @@ async fn a_draft_window_cannot_be_rebound_onto_another_plans_price() {
         posted.status()
     );
 }
+
+/// Two markets of one plan take windows over the **same** span, because the
+/// conflict scope of a window is the full market key.
+///
+/// The door resolves each intention through its price's market variant, so the
+/// EUR-vs-USD or region-vs-region distinction is made in storage, not in the
+/// payload. A grouping that collapsed to the logical line would refuse the
+/// second call here with `WINDOW_OVERLAP`.
+#[tokio::test]
+async fn two_markets_of_one_plan_take_windows_over_the_same_span() {
+    let h = Harness::new().await;
+    let plan = Uuid::now_v7();
+    seed_draft_plan(&h, plan).await;
+    let eu = seed_price(&h, plan, "eu").await;
+    let us = seed_price(&h, plan, "us").await;
+
+    let mut etag = h.plan_etag(plan).await;
+    for (nth, price_id) in [eu.price_id, us.price_id].into_iter().enumerate() {
+        let response = h
+            .allowed()
+            .send(with_headers(
+                "POST",
+                &format!("/bss-pricing/v1/prices/{price_id}/windows"),
+                Some(serde_json::json!({
+                    "context": {"kind": "draft", "plan_revision": 0},
+                    "start": {"kind": "at", "at": "2099-06-01T00:00:00Z"},
+                    "reason_code": "launch"
+                })),
+                &[
+                    ("if-match", &etag),
+                    ("idempotency-key", &format!("two-markets-{nth}")),
+                ],
+            ))
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "market {nth} competes only with itself: {}",
+            body_json(response).await
+        );
+        etag = h.plan_etag(plan).await;
+    }
+
+    let report = h
+        .allowed()
+        .send(rest_support::request(
+            "GET",
+            &format!(
+                "{}/{plan}/coverage?view=working&plan_revision=0",
+                PLAN_COVERAGE.replace("/{planId}/coverage", "")
+            ),
+            None,
+        ))
+        .await;
+    assert_eq!(report.status(), StatusCode::OK);
+    let body = body_json(report).await;
+    let keys = body["keys"].as_array().expect("coverage names keys");
+    assert_eq!(keys.len(), 2, "one entry per market: {body}");
+    assert!(
+        keys.iter().all(|entry| entry["covered"] == true),
+        "both markets are covered by their own window: {body}"
+    );
+}
