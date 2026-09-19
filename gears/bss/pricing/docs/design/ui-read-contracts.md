@@ -387,3 +387,89 @@ Historical published revisions are not mutable working views.
 
 `at_publish` stays symbolic on Working until commit stamps `effective_from`.
 Unchanged baseline ids are references, not copies.
+
+## Line-first authoring: charge lines and market prices (2026-09-20)
+
+**A price row is no longer authored, or read, as one object.** What every market
+of a charge shares — the eight structural axes, the calculation model, tier
+*geometry*, the usage policy, the descriptor and the proration contract — is a
+**charge line**. What differs per currency and region — the amounts and rates that
+fill that structure, and the market's tax and rounding policy — is a **market
+price** filed under an exact line version. A Studio screen that edits "a price"
+now edits one of the two, and the wire says which.
+
+```text
+POST/GET         /bss-pricing/v1/plans/{planId}/charge-lines
+GET/PATCH/DELETE /bss-pricing/v1/plans/{planId}/charge-lines/{lineVersionId}
+POST/GET         /bss-pricing/v1/plans/{planId}/charge-lines/{lineVersionId}/prices
+GET/PATCH/DELETE /bss-pricing/v1/plans/{planId}/prices/{priceId}
+```
+
+`POST /plans/{planId}/prices` is **removed**, not deprecated: a price row cannot be
+created without naming the structure it is priced against. The `priceId` routes
+stay — windows, history and supersession address a monetary version by id — and
+their `PATCH` now takes `{money, market_policy}` only.
+
+A line response carries both identities separately, and its prices with theirs:
+
+```json
+{
+  "charge_line_id": "…", "line_version_id": "…", "plan_revision": 0,
+  "lifecycle_state": "draft", "row_version": 0,
+  "scope_key": {"plan_id": "…", "price_overlay": "base", "phase": "…",
+                "price_eligibility": "all_subscriptions", "charge_kind": "usage",
+                "cohort": null, "sku_id": "…", "dimension_key": null},
+  "structure": {"model_kind": "graduated", "meter": "cloudlets",
+                "tiers": [{"from_qty": 0, "to_qty": 100}, {"from_qty": 100, "to_qty": null}]},
+  "prices": [
+    {"market_price_id": "…", "price_id": "…", "line_version_id": "…",
+     "charge_line_id": "…", "currency": "USD", "region": "US",
+     "money": {"tier_rates_nano_minor": [500, 400]},
+     "market_policy": {"tax_inclusive": false},
+     "lifecycle_state": "draft", "row_version": 0}
+  ]
+}
+```
+
+`charge_line_id` is stable across revisions; `line_version_id` is the content of
+one revision and freezes on publication. `market_price_id` is the stable variant;
+`price_id` is the monetary version. A revision keeps the logical ids and allocates
+new version ids.
+
+### Which tag a screen must hold
+
+| Act | Precondition | Answers |
+|---|---|---|
+| `POST`/`PATCH`/`DELETE` a line | the **plan revision's** tag, `"<revision>-<version>"` | the moved plan tag |
+| `POST` a market price | `Idempotency-Key`, no tag | the row's own `"<version>"` |
+| `PATCH`/`DELETE` a market price | the **row's own** tag | the row's new tag |
+
+A line's structure is the plan's content, so editing it moves the plan tag and a
+screen holding a stale one gets `409 STALE_VERSION` — the same contract a draft
+window write has. Filing or repricing a market does **not** move the plan tag, so a
+pricing grid can post markets under a tag it captured once.
+
+### Each door refuses the other's fields
+
+Both request shapes set `deny_unknown_fields`. `currency`, `amount_minor` or
+`tax_inclusive` on a structure is `400 unknown field`, and so is `model_kind`,
+`tiers` or `package_size` on a market price. A field that is silently dropped is a
+screen that believes it saved something, which is why neither door ignores them.
+`meter` is derived from the SKU and refused on write **including an explicit
+`null`**; `charge_kinds` is derived and never authored.
+
+### Tier rates
+
+Geometry is the line's and rates are the market's, joined by position:
+`money.tier_rates_nano_minor` is one rate per tier of the line, in its quantity
+order. A different count is `400 MARKET_TIER_RATE_COUNT_MISMATCH`. Sending none is
+a legal unfinished draft. Editing the geometry keeps each market's rates where the
+new ladder still has a tier at that position, so a grid does not lose its numbers
+when a bound moves; a market left with fewer rates than tiers is reported by the
+publish pre-check, not refused at save.
+
+### Deleting
+
+`DELETE` of a line version a market price still references is
+`409 CHARGE_LINE_IN_USE`, naming a row to delete first. Deleting a line's only
+version deletes the logical line and its markets, and frees the axes for a new one.

@@ -284,6 +284,12 @@ fn every_write_stamping_site_is_accounted_for() {
         // Descriptor-policy grammar and rejection of authored derived meters.
         "billing_descriptors",
         "prices",
+        // The line door and the market-price door. Two operands, both in the
+        // request and nowhere else: an authored `meter`, which D-372 derives from
+        // the SKU and refuses on write wherever it is sent; and a tier-rate count
+        // that does not match the line's geometry, which cannot be completed by a
+        // later call because a rate is stored against a band by position.
+        "charge_lines",
         // `inst-bb-declared`, the bundle create door's own refusal. Its single
         // operand — an absent `price_basis` — is in the request and nowhere
         // else, and there is no legitimate intermediate state to protect: the

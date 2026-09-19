@@ -119,7 +119,7 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::{Extension, Path, Query};
-use axum::http::header::{ETAG, LOCATION};
+use axum::http::header::ETAG;
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router, http::HeaderMap, http::StatusCode};
 use bss_fixtures::ModelKind;
@@ -129,7 +129,7 @@ use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit::api::odata::OData;
 use toolkit::api::operation_builder::OperationBuilderODataExt;
 use toolkit::api::{OpenApiRegistry, operation_builder::OperationBuilder};
-use toolkit_db::secure::{AccessScope, DbTx};
+use toolkit_db::secure::AccessScope;
 use toolkit_odata::Page;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
@@ -152,20 +152,15 @@ use crate::domain::price_row::{
     TierAggregationWindow, TierBand, TierQualificationWindow, model_kind_wire,
 };
 use crate::domain::scope_key::{
-    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, Meter, PhaseId, PlanId,
-    PriceEligibility, Region, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
-use crate::infra::idempotent::{self, Guarded, GuardedRequest, TxFuture};
-use crate::infra::storage::repo::{NewPriceDraft, price_repo, window_guard_repo};
+use crate::infra::storage::repo::price_repo;
 use crate::infra::storage::repo_failure;
 use time::OffsetDateTime;
 
 /// `OpenAPI` tag applied to every price operation (DE0205).
 const TAG: &str = "BSS Pricing Price Rows";
-
-/// The idempotency-gate operation name for the guarded create. Its own, so a
-/// client key reused across the two guarded creates does not collide.
-const CREATE_PRICE_OPERATION: &str = "bss_pricing.create_price";
 
 /// A plan's price rows.
 pub const PLAN_PRICES: &str = "/bss-pricing/v1/plans/{planId}/prices";
@@ -538,34 +533,6 @@ impl From<&PriceRecord> for PriceRowView {
     }
 }
 
-/// A create: the key the row is filed under, and what it says.
-#[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(request, response)]
-pub struct CreatePriceRequest {
-    /// The six axes a caller authors; the seventh is the `{planId}` segment.
-    pub scope_key: ScopeKeyRequest,
-    /// The row's whole content.
-    pub content: PriceContentView,
-}
-
-/// An edit: the whole content, and optionally the key it must still be on.
-///
-/// **The scope key is immutable.** `PriceRepo::update_draft` cannot move it, so
-/// a body naming a different one is refused rather than silently ignored: a key
-/// decides which duplicate a row is, which supersession chain it joins and which
-/// window covers it, and moving it would need the create-time duplicate check
-/// re-run against a different key — which is what deleting the draft and
-/// authoring another one already is.
-#[derive(Debug, Clone)]
-#[toolkit_macros::api_dto(request, response)]
-pub struct PatchPriceRequest {
-    /// The key the caller believes the row is on. Optional; when present it must
-    /// equal the stored one.
-    pub scope_key: Option<ScopeKeyRequest>,
-    /// The row's whole content, replacing what is there.
-    pub content: PriceContentView,
-}
-
 /// Build the Axum router for the price surface and register its operations.
 ///
 /// No route declares a 422: §3.3's status-rendering rule makes every
@@ -577,47 +544,6 @@ pub struct PatchPriceRequest {
 )]
 pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Router {
     let mut router = Router::new();
-
-    router = OperationBuilder::post("/bss-pricing/v1/plans/{planId}/prices")
-        .operation_id("bss_pricing.create_price")
-        .summary("Create a draft price row on a canonical scope key")
-        .description(
-            "Creates a `draft` price row and its tier bands in one transaction, and answers \
-             `201` with a `Location` header naming the row and an `ETag` carrying its own row \
-             version. The `price_id` is minted by the server. An `Idempotency-Key` header is \
-             required: the gate runs in the same transaction as the insert, so a retry carrying \
-             the same key and body is answered the recorded response - the original price id \
-             included - and a retry with a different body is refused \
-             `IDEMPOTENCY_PAYLOAD_MISMATCH`. A key already held by a `draft` or `published` row \
-             is refused `DUPLICATE_SCOPE_KEY` (on the draft plane too, since D-148). The row's \
-             `charge_kind` is the key's, not the body's, so the response echoes what was stored \
-             rather than what was sent. Slice-3 shape rules run at publish, not here - with \
-             one exception: content that contradicts the frozen scope key (a `model_kind` the \
-             key's `charge_kind` forbids, `billingGranularity` on a non-usage key) is refused \
-             `400` here, carrying the same enumerated violation report the publish pre-check \
-             answers rather than a single message (D-312). A row missing its kind, its amount \
-             or its bands still saves - that is the multi-call authoring this door protects.",
-        )
-        .tag(TAG)
-        .authenticated()
-        .no_license_required()
-        .path_param("planId", "The plan the row prices.")
-        .param(crate::api::rest::plans::idempotency_key_param())
-        .json_request::<CreatePriceRequest>(openapi, "The row's scope key and content.")
-        .handler(create_price)
-        .json_response_with_schema::<PriceRowView>(
-            openapi,
-            StatusCode::CREATED,
-            "The newly created draft row.",
-        )
-        .error_400(openapi)
-        .error_401(openapi)
-        .error_403(openapi)
-        .error_404(openapi)
-        .error_409(openapi)
-        .error_500(openapi)
-        .error_503(openapi)
-        .register(router, openapi);
 
     router = OperationBuilder::get(PLAN_PRICE)
         .operation_id("bss_pricing.get_price")
@@ -652,18 +578,17 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
 
     router = OperationBuilder::patch("/bss-pricing/v1/plans/{planId}/prices/{priceId}")
         .operation_id("bss_pricing.patch_price")
-        .summary("Replace a draft row's content")
+        .summary("Replace a draft market price's monetary content")
         .description(
-            "Replaces the whole content of a `draft` row, band set included, under the \
-             `If-Match` precondition (D-141). It is a whole-content submission rather than a \
-             field patch because a row's fields are not independent: moving `model_kind` from \
-             `graduated` to `flat` has to drop the bands and set `amount_minor` in the same \
-             write. The canonical scope key is **immutable** - a body naming a different one is \
-             `400`, never a silent no-op. A row belonging to a different plan than the `{planId}` \
-             segment answers `404`. Because the key is immutable, content that contradicts it is \
-             refused `400` here as it is on the create, carrying the publish pre-check's own \
-             enumerated violation report (D-312) - so an edit of a row stored before that check \
-             existed has to fix the contradiction before any other change to it will save.",
+            "Replaces the money and market policy of a `draft` price row under the `If-Match` \
+             precondition (D-141). **Monetary content only**: model, tier geometry, package \
+             size and every other shared field belong to the row's charge line and are edited \
+             through `PATCH .../charge-lines/{lineVersionId}`; sent here they are refused as \
+             unknown fields rather than ignored. The market - currency and region - is the \
+             row's identity and is never editable: a different market is a different price, \
+             filed under the line. Tier rates are one per tier of the line, in its quantity \
+             order (`MARKET_TIER_RATE_COUNT_MISMATCH` otherwise). A row belonging to a \
+             different plan than the `{planId}` segment answers `404`.",
         )
         .tag(TAG)
         .authenticated()
@@ -674,7 +599,10 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             "On a price route the tag is the row's **own** version and nothing else (D-141: \
              never derived from the plan's), because the path addresses one row by id.",
         ))
-        .json_request::<PatchPriceRequest>(openapi, "The row's whole new content.")
+        .json_request::<crate::api::rest::charge_lines::PatchMarketPriceRequest>(
+            openapi,
+            "The row's whole monetary content.",
+        )
         .handler(patch_price)
         .json_response_with_schema::<PriceRowView>(
             openapi,
@@ -781,157 +709,6 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
 // Handlers.
 // ---------------------------------------------------------------------------
 
-/// `POST /plans/{planId}/prices`.
-async fn create_price(
-    Extension(state): Extension<Arc<AuthoringState>>,
-    Extension(enforcer): Extension<authz_resolver_sdk::PolicyEnforcer>,
-    extension_ctx: Option<Extension<SecurityContext>>,
-    extension_correlation: Option<Extension<CorrelationId>>,
-    Path(plan_id): Path<Uuid>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<Response, CanonicalError> {
-    let ctx = require_authenticated(extension_ctx)?;
-    let correlation = require_correlation(extension_correlation)?;
-    let tenant = ctx.subject_tenant_id();
-    let plan_id = PlanId::new(plan_id);
-    let scope = write_scope(&enforcer, &ctx, plan_id.get(), tenant).await?;
-
-    let body: CreatePriceRequest = preconditions::parse_body(&body)?;
-    let client_key = preconditions::idempotency_key(&headers)?;
-    let request_hash = preconditions::request_digest(&body)?;
-    let key = scope_key_of(plan_id, &body.scope_key)?;
-    let mut content = content_of(&body.content)?;
-    // Conversion depends only on this request.
-    let now = OffsetDateTime::now_utc();
-
-    // ## The registry is read before the transaction, not inside it
-    //
-    // D-372's per-write registry read used to sit beside the mutation, inside
-    // `guarded`'s transaction. **An in-process registry cannot serve it there.**
-    // `bss-products` answers `get_skus` from its own store and takes a
-    // `DBProvider::conn()` to do it; `Db::conn()` is refused inside an open
-    // transaction, and the guard is a *task-local* rather than a per-`Db` flag,
-    // so it fires on a sibling gear's provider too — a store this caller could
-    // not bypass its transaction through if it tried. On a deployment with both
-    // gears linked the whole price plane answered `503 … Cannot create
-    // non-transactional connection inside an active transaction`.
-    //
-    // The placement was wrong for the remote wiring as well, which is why the
-    // fix is here and not on the guard: `ProductCatalogRestClient` would hold a
-    // Postgres write transaction open across an HTTP round-trip of unbounded
-    // latency. The transaction exists for *this* gear's store; a cross-gear read
-    // belongs in front of it. `api::rest::publish` already resolves its snapshot
-    // this way and this is the same move one door over.
-    //
-    // ### What the move costs, and what pays for it
-    //
-    // Being inside the guard bought one property: a successful retry replayed
-    // the stored response without consulting the registry at all, so neither
-    // registry drift nor a registry outage could turn a replay into an error.
-    // `recorded_response` buys it back. It is a **read, not a claim** — it opens
-    // nothing — so asking it here decides only whether this request has already
-    // been answered, before anything else is done. Two first-time callers both
-    // miss it and the claim inside the transaction still adjudicates which one
-    // performs; nothing about at-most-once moves out of the transaction.
-    let sku_context = {
-        let conn = state
-            .db
-            .conn()
-            .map_err(|e| DomainError::Internal(format!("price authoring connection: {e}")))?;
-        if let Some((status, body)) = state
-            .idempotency
-            .recorded_response(
-                &conn,
-                &scope,
-                tenant,
-                CREATE_PRICE_OPERATION,
-                &client_key,
-                &request_hash,
-                now,
-            )
-            .await
-            .map_err(|e| repo_failure(&e))?
-        {
-            return Ok(replayed(CREATE_PRICE_OPERATION, plan_id, status, &body)?);
-        }
-        authoring_sku_context(
-            &conn,
-            state.catalog.as_ref(),
-            &ctx,
-            &scope,
-            tenant,
-            plan_id,
-            key.sku_id().as_uuid(),
-        )
-        .await?
-    };
-    derive_meter(&mut content, &key, &sku_context.index);
-    require_no_key_contradiction(&key, &content, sku_context)?;
-
-    let guard = GuardedRequest {
-        operation: CREATE_PRICE_OPERATION,
-        client_key,
-        request_hash,
-        tenant_id: tenant,
-        status: StatusCode::CREATED.as_u16().into(),
-        now,
-    };
-    let scope_for_body = scope.clone();
-    let actor = ctx.subject_id();
-    let outcome = idempotent::guarded(
-        &state.db,
-        &state.idempotency,
-        &scope,
-        guard,
-        move |txn: &DbTx<'_>| -> TxFuture<'_, PriceRecord> {
-            Box::pin(async move {
-                require_declared_region(txn, &scope_for_body, tenant, &key).await?;
-                // Guard owner: HTTP create is the txn owner; create_draft_on stays composable.
-                window_guard_repo::acquire(txn, &scope_for_body, tenant, plan_id.get())
-                    .await
-                    .map_err(|e| repo_failure(&e))?;
-                // Minted inside the guarded body for the reason the plan create
-                // states: a replay must answer the FIRST caller's id.
-                let draft = NewPriceDraft {
-                    price_id: Uuid::now_v7(),
-                    line_version_id: None,
-                    market_price_id: None,
-                    scope_key: key,
-                    content,
-                    created_by: actor,
-                    created_at_utc: now,
-                    correlation_id: correlation,
-                };
-                // `guarded`'s mutation speaks `DomainError`; the ladder is the
-                // same one it used to apply here. See `plans.rs`'s note.
-                Box::pin(price_repo::create_draft_on(
-                    txn,
-                    &scope_for_body,
-                    tenant,
-                    draft,
-                ))
-                .await
-                .map_err(|e| repo_failure(&e))
-            })
-        },
-        |record: &PriceRecord| {
-            serde_json::to_value(PriceRowView::from(record)).map_err(|e| {
-                DomainError::Internal(format!("cannot render the created price row: {e}"))
-            })
-        },
-    )
-    .await
-    .map_err(CanonicalError::from)?;
-
-    Ok(match outcome {
-        Guarded::Performed(record) => created(plan_id, &record),
-        Guarded::Replayed { status, body } => {
-            replayed(CREATE_PRICE_OPERATION, plan_id, status, &body)?
-        }
-    })
-}
-
 /// `GET /plans/{planId}/prices/{priceId}`.
 ///
 /// The gate is `plan x read` with `resource_id = planId`, like
@@ -992,57 +769,37 @@ async fn patch_price(
     // the row to the plan.
     let scope = write_scope(&enforcer, &ctx, plan_id.get(), tenant).await?;
 
-    let body: PatchPriceRequest = preconditions::parse_body(&body)?;
+    let body: crate::api::rest::charge_lines::PatchMarketPriceRequest =
+        preconditions::parse_body(&body)?;
     let expected = preconditions::if_match(&headers)?;
     let stored = row_of_plan(&state, &scope, tenant, plan_id, price_id).await?;
-    let mut content = content_of(&body.content)?;
     let conn = state
         .db
         .conn()
         .map_err(|e| DomainError::Internal(format!("price authoring connection: {e}")))?;
-    if let Some(named) = &body.scope_key {
-        // **Compared over the axes the wire can express** (D-196 clause 3).
-        // `ScopeKeyRequest` has no `meter` member — the usage line is authored on
-        // the *content* view and the door derives the ninth and tenth axes from
-        // it — so a stored usage row's key always carries a line this body could
-        // not have named. Comparing the two raw would refuse every `PATCH` that
-        // echoes its own key on a metered row, which is the opposite of what this
-        // immutability check is for. The stored line is therefore carried onto
-        // the named key before the comparison: the axes the caller *can* state
-        // must match, and the ones they cannot are taken from the row.
-        // The stored **row's** meter since D-372: the unit left the key, and the
-        // door still checks the D-196 pair over it.
-        let stored_meter = stored.row.meter.as_deref().map(Meter::new).transpose()?;
-        let named = scope_key_of(plan_id, named)?.with_usage_line(
-            stored_meter.as_ref(),
-            stored.scope_key.dimension_key().clone(),
-        )?;
-        if named != stored.scope_key {
-            // A `sku_id` change is an introduction of that reference. Judge it
-            // before the immutability sentence so a patch onto a deprecated SKU
-            // is `ROW_SKU_DEPRECATED` rather than a generic key refusal.
-            if named.sku_id() != stored.scope_key.sku_id() {
-                let sku_context = authoring_sku_context(
-                    &conn,
-                    state.catalog.as_ref(),
-                    &ctx,
-                    &scope,
-                    tenant,
-                    plan_id,
-                    named.sku_id().as_uuid(),
-                )
-                .await?;
-                derive_meter(&mut content, &named, &sku_context.index);
-                require_no_key_contradiction(&named, &content, sku_context)?;
-            }
-            return Err(CanonicalError::from(DomainError::InvalidRequest(
-                "the canonical scope key is immutable; a row's key decides which duplicate it \
-                 is, which supersession chain it joins and which window covers it. Delete this \
-                 draft and author another one on the key you want"
-                    .to_owned(),
-            )));
-        }
-    }
+    // **The shared half is the stored one, by construction.** The request carries
+    // money and market policy only, so the content this edit submits is the line
+    // version's own structure filled with the new money -- there is no shared field
+    // for it to move, which is what lets the repository leave the structure, and
+    // the sibling markets' rates that point into its geometry, untouched.
+    let placed = price_repo::load_market_price(&conn, &scope, tenant, price_id)
+        .await
+        .map_err(|e| repo_failure(&e))?
+        .ok_or_else(|| DomainError::NotFound {
+            subject: "price row".to_owned(),
+            id: price_id.to_string(),
+        })?;
+    let line = crate::infra::charge_line::require_line_of_plan(
+        &conn,
+        &scope,
+        tenant,
+        plan_id,
+        placed.line_version_id,
+    )
+    .await?;
+    let mut content =
+        crate::api::rest::charge_lines::market_content(&line, &body.money, &body.market_policy)?;
+    content.supersedes_price_id = stored.supersedes_price_id;
     let mut sku_context = authoring_sku_context(
         &conn,
         state.catalog.as_ref(),
@@ -1053,31 +810,19 @@ async fn patch_price(
         stored.scope_key.sku_id().as_uuid(),
     )
     .await?;
-    // The stored `sku_id` is not a new name; only a retarget above is.
     sku_context.introducing = false;
     derive_meter(&mut content, &stored.scope_key, &sku_context.index);
-    // The stored key, because the key is immutable and the block above has already
-    // refused a body that names a different one. `PATCH` carries the check as well
-    // as `POST` because an existing row is edited through it, and covering the
-    // create alone would leave that door open — it is the door the Studio actually
-    // used. These two are not, however, the *only* doors a row enters through:
-    // `bulk_imports` is the third, and it carries this same line on its own phase-1
-    // report rather than through this handler (D-312, "Three doors, not two"). The
-    // decision entry used to assert that import could not land such a row, which was
-    // measured false — so do not read this pair as exhaustive.
     require_no_key_contradiction(&stored.scope_key, &content, sku_context)?;
 
     let updated = state
         .prices
-        .update_draft(
+        .update_draft_money(
             &scope,
             tenant,
             price_id,
             expected,
             content,
             audit_stamp(&ctx, OffsetDateTime::now_utc(), correlation),
-            // An interactive edit belongs to no run, so the bulk lock excludes it
-            // whoever holds the row (`inst-bk-lock`).
             /* on_behalf_of */
             None,
         )
@@ -1183,7 +928,7 @@ async fn list_plan_prices(
 // ---------------------------------------------------------------------------
 
 /// The `plan x write` gate, spelled once for the three mutating routes.
-async fn write_scope(
+pub(crate) async fn write_scope(
     enforcer: &authz_resolver_sdk::PolicyEnforcer,
     ctx: &SecurityContext,
     resource_id: Uuid,
@@ -1195,6 +940,25 @@ async fn write_scope(
         &crate::authz::resource_types::PLAN,
         crate::authz::actions::WRITE,
         /* owner_tenant_id */ Some(crate::authz::OwnerTenant(tenant)),
+        /* resource_id */ Some(crate::authz::ResourceRef(resource_id)),
+    )
+    .await
+    .map_err(authz_error_to_canonical)
+}
+
+/// `plan x read` on the named plan -- the authoring read every price and line
+/// route shares.
+pub(crate) async fn read_scope(
+    enforcer: &authz_resolver_sdk::PolicyEnforcer,
+    ctx: &SecurityContext,
+    resource_id: Uuid,
+) -> Result<AccessScope, CanonicalError> {
+    crate::authz::access_scope(
+        enforcer,
+        ctx,
+        &crate::authz::resource_types::PLAN,
+        crate::authz::actions::READ,
+        /* owner_tenant_id */ None,
         /* resource_id */ Some(crate::authz::ResourceRef(resource_id)),
     )
     .await
@@ -1235,50 +999,8 @@ fn answer(record: &PriceRecord) -> ([(axum::http::HeaderName, String); 1], Json<
     )
 }
 
-/// The 201 a performed create answers with.
-fn created(plan_id: PlanId, record: &PriceRecord) -> Response {
-    (
-        StatusCode::CREATED,
-        [
-            (LOCATION, price_location(plan_id, record.price_id)),
-            (ETAG, preconditions::etag(record.row_version)),
-        ],
-        Json(PriceRowView::from(record)),
-    )
-        .into_response()
-}
-
-/// The recorded answer a replay is handed back.
-///
-/// `Location` is rebuilt from the recorded body's `price_id`, which is a pure
-/// function of data that body carries. No `ETag`: the dedup row stores a status
-/// and a body and no headers, and the row's version may have moved since — a tag
-/// rebuilt from a stale body would be a precondition token that looks valid and
-/// is not.
-///
-/// # Errors
-/// [`DomainError::Internal`] when the stored status is not one — see
-/// [`super::replayed_status`].
-fn replayed(
-    operation: &str,
-    plan_id: PlanId,
-    status: i32,
-    body: &serde_json::Value,
-) -> Result<Response, DomainError> {
-    let status = super::replayed_status(operation, status)?;
-    let location = body
-        .get("price_id")
-        .and_then(serde_json::Value::as_str)
-        .and_then(|raw| Uuid::parse_str(raw).ok())
-        .map(|price_id| price_location(plan_id, price_id));
-    Ok(match location {
-        Some(location) => (status, [(LOCATION, location)], Json(body.clone())).into_response(),
-        None => (status, Json(body.clone())).into_response(),
-    })
-}
-
 /// Where a row lives, spelled once.
-fn price_location(plan_id: PlanId, price_id: Uuid) -> String {
+pub(crate) fn price_location(plan_id: PlanId, price_id: Uuid) -> String {
     format!("/bss-pricing/v1/plans/{plan_id}/prices/{price_id}")
 }
 
@@ -1306,7 +1028,7 @@ fn price_location(plan_id: PlanId, price_id: Uuid) -> String {
 /// # Errors
 /// [`DomainError::RegionUnknown`] carrying `REGION_UNKNOWN` when the region is
 /// not declared active; [`DomainError::Internal`] on a storage failure.
-async fn require_declared_region(
+pub(crate) async fn require_declared_region(
     runner: &impl toolkit_db::secure::DBRunner,
     scope: &toolkit_db::secure::AccessScope,
     tenant: Uuid,
@@ -1351,7 +1073,7 @@ async fn require_declared_region(
 /// Answers the enumerated report rather than a single message: a client already
 /// parsing the publish envelope parses this unchanged, and folding a
 /// multi-violation report into one line hides the second fault behind the first.
-fn require_no_key_contradiction(
+pub(crate) fn require_no_key_contradiction(
     key: &MarketPriceScopeKey,
     content: &PriceContent,
     sku_context: crate::domain::row_sku_rules::RowSkuContext,
@@ -1732,7 +1454,7 @@ fn band_of(view: &TierBandView) -> Result<TierBand, DomainError> {
 
 /// An amount, refused rather than coerced when it is negative: typed credit rows
 /// are deliberately out of scope, so a negative price is a mistake.
-fn amount(field: &str, raw: Option<i64>) -> Result<Option<MinorAmount>, DomainError> {
+pub(crate) fn amount(field: &str, raw: Option<i64>) -> Result<Option<MinorAmount>, DomainError> {
     raw.map(|value| {
         MinorAmount::new(value).map_err(|e| match e {
             DomainError::AmountNegative(_) => {
@@ -1765,7 +1487,7 @@ pub(crate) fn optional_token<T: Copy>(
 }
 
 /// Read a wire token back into the domain value that renders it.
-fn wire_token<T: Copy>(
+pub(crate) fn wire_token<T: Copy>(
     field: &str,
     token: &str,
     candidates: &[T],
@@ -1790,7 +1512,7 @@ mod prices_tests;
 
 pub(crate) use crate::infra::row_sku::{derive_meter, sku_index_for};
 
-async fn authoring_sku_context(
+pub(crate) async fn authoring_sku_context(
     runner: &impl toolkit_db::secure::DBRunner,
     catalog: &dyn crate::domain::ports::ProductCatalogClientV1,
     ctx: &SecurityContext,
@@ -1822,7 +1544,9 @@ async fn authoring_sku_context(
 }
 
 // Preserve explicit null as presence: writes may not author even a null meter.
-fn authored_meter<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Option<String>, D::Error> {
+pub(crate) fn authored_meter<'de, D: serde::Deserializer<'de>>(
+    de: D,
+) -> Result<Option<String>, D::Error> {
     use serde::Deserialize;
     Ok(Some(
         serde_json::Value::deserialize(de)?

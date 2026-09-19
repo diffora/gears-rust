@@ -807,6 +807,10 @@ impl Harness {
                 Arc::clone(&self.state),
                 &openapi,
             ))
+            .merge(bss_pricing::api::rest::charge_lines::router(
+                Arc::clone(&self.state),
+                &openapi,
+            ))
             .merge(bss_pricing::api::rest::overlays::router(
                 Arc::clone(&self.state),
                 &openapi,

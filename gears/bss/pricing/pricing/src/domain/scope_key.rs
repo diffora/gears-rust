@@ -1388,6 +1388,31 @@ impl fmt::Display for MarketPriceScopeKey {
     }
 }
 
+impl fmt::Display for ChargeLineScopeKey {
+    /// The eight structural axes, in the market key's own order with its two
+    /// monetary segments left out -- so a line's rendering is the market key's
+    /// with `currency|region` removed, and nothing else differs between them.
+    ///
+    /// This is the string a `DUPLICATE_SCOPE_KEY` refusal names when the collision
+    /// is between two **lines**, where there is no currency to name. Injective for
+    /// [`MarketPriceScopeKey`]'s reason: the one free-form axis refuses the
+    /// separator and the absent token at its door.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}|{}|{}|{}|{}|{}|{}|{}",
+            self.plan_id(),
+            self.price_overlay(),
+            self.phase(),
+            self.price_eligibility(),
+            self.charge_kind(),
+            self.cohort(),
+            self.sku_id(),
+            self.dimension_key(),
+        )
+    }
+}
+
 #[cfg(test)]
 #[path = "scope_key_tests.rs"]
 mod scope_key_tests;

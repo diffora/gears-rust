@@ -745,6 +745,49 @@ impl PriceRepo {
         outcome.map_err(tx_failure)
     }
 
+    /// [`Self::update_draft`] for the **monetary half alone** -- the market-price
+    /// door, which leaves the line's shared structure exactly as it stands. See
+    /// [`update_draft_money_on`] for why that is a correctness property.
+    ///
+    /// # Errors
+    /// Whatever [`Self::update_draft`] documents.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "update_draft's argument list; the two doors differ in one decision"
+    )]
+    pub async fn update_draft_money(
+        &self,
+        scope: &AccessScope,
+        tenant_id: Uuid,
+        price_id: Uuid,
+        expected: RowVersion,
+        content: PriceContent,
+        stamp: AuditStamp,
+        on_behalf_of: Option<Uuid>,
+    ) -> Result<PriceRecord, RepoError> {
+        let scope = scope.clone();
+        let (_, outcome) = self
+            .db
+            .db()
+            .in_transaction::<PriceRecord, RepoError, _>(move |txn| {
+                Box::pin(async move {
+                    Box::pin(update_draft_money_on(
+                        txn,
+                        &scope,
+                        tenant_id,
+                        price_id,
+                        expected,
+                        content,
+                        stamp,
+                        on_behalf_of,
+                    ))
+                    .await
+                })
+            })
+            .await;
+        outcome.map_err(tx_failure)
+    }
+
     /// Delete an open draft row and its bands, under the caller's row version.
     ///
     /// Only a never-published `draft` is deletable (§4.3). The bands go first —
@@ -4428,6 +4471,87 @@ pub async fn update_draft_on(
     stamp: AuditStamp,
     on_behalf_of: Option<Uuid>,
 ) -> Result<PriceRecord, RepoError> {
+    update_draft_halves(
+        runner,
+        scope,
+        tenant_id,
+        price_id,
+        expected,
+        content,
+        stamp,
+        on_behalf_of,
+        Halves::Both,
+    )
+    .await
+}
+
+/// [`update_draft_on`] for the **monetary half alone** -- the market-price door.
+///
+/// The line's own `PATCH` owns the shared structure since line-first authoring, so
+/// this door must leave it exactly as it stands. That is a correctness property and
+/// not only a division of labour: rewriting the structure replaces the version's
+/// tier geometry, and a sibling market's rates point into that geometry through a
+/// compound key -- so a whole-content edit of one market of a tiered line is
+/// refused by the store as soon as a second market is priced.
+///
+/// `content`'s shared half is still required, and is expected to be the stored
+/// one: the rates are bound to the version's geometry by position, and the
+/// line-axis guard reads the usage line off it.
+///
+/// # Errors
+/// Whatever [`PriceRepo::update_draft`] documents.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "update_draft_on's argument list; the two doors differ in one decision"
+)]
+pub async fn update_draft_money_on(
+    runner: &DbTx<'_>,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    price_id: Uuid,
+    expected: RowVersion,
+    content: PriceContent,
+    stamp: AuditStamp,
+    on_behalf_of: Option<Uuid>,
+) -> Result<PriceRecord, RepoError> {
+    update_draft_halves(
+        runner,
+        scope,
+        tenant_id,
+        price_id,
+        expected,
+        content,
+        stamp,
+        on_behalf_of,
+        Halves::MoneyOnly,
+    )
+    .await
+}
+
+/// Which owners an edit of one resolved row writes through to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Halves {
+    /// The price row and the line version it names.
+    Both,
+    /// The price row alone.
+    MoneyOnly,
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "update_draft_on's argument list, plus which halves to write"
+)]
+async fn update_draft_halves(
+    runner: &DbTx<'_>,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    price_id: Uuid,
+    expected: RowVersion,
+    content: PriceContent,
+    stamp: AuditStamp,
+    on_behalf_of: Option<Uuid>,
+    halves: Halves,
+) -> Result<PriceRecord, RepoError> {
     let horizon = content.grandfather_until;
     check_authored_instant("grandfatherUntil", horizon)?;
     let assignments = content_assignments(content_model(&content));
@@ -4474,14 +4598,16 @@ pub async fn update_draft_on(
     // `pricing_charge_tier`, so clearing the ladder while this row's rates
     // still reference it is a raw FK violation rather than an edit.
     delete_bands(runner, scope, tenant_id, price_id).await?;
-    super::charge_line_repo::update_draft_structure(
-        runner,
-        scope,
-        tenant_id,
-        graph.price.line_version_id,
-        &content,
-    )
-    .await?;
+    if halves == Halves::Both {
+        super::charge_line_repo::update_draft_structure(
+            runner,
+            scope,
+            tenant_id,
+            graph.price.line_version_id,
+            &content,
+        )
+        .await?;
+    }
     let mut update = price::Entity::update_many().secure().scope_with(scope);
     for (column, value) in assignments {
         update = update.col_expr(column, Expr::value(value));
@@ -4789,6 +4915,328 @@ fn out_of_range(field: &str, value: u64) -> RepoError {
 
 /// Map a stored row and its bands to the domain value, at this boundary and
 /// nowhere else.
+/// A charge-line version read **on its own**, with or without prices under it.
+///
+/// Line-first authoring drafts the shared structure before any market prices it,
+/// so the version needs a reading that does not start from a price row. The
+/// shared half arrives as the same [`PriceContent`] every rule already reads --
+/// with no money on it and no bands, since a band is geometry *and* a rate --
+/// and the geometry arrives beside it, which is the only place a rate-less band
+/// can be said.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LineRecord {
+    /// The stable logical line.
+    pub charge_line_id: Uuid,
+    /// This version of its shared content.
+    pub line_version_id: Uuid,
+    /// The plan revision that owns the version.
+    pub plan_revision: u64,
+    /// The version's own state; content is mutable only in `draft`.
+    pub lifecycle_state: LifecycleState,
+    /// The version's own entity tag.
+    pub row_version: RowVersion,
+    /// The eight structural axes.
+    pub scope_key: ChargeLineScopeKey,
+    /// The shared half of the content; the monetary half is empty.
+    pub content: PriceContent,
+    /// Tier geometry, in quantity order.
+    pub tiers: Vec<crate::domain::charge_line::TierGeometry>,
+    /// Publish-frozen descriptor results.
+    pub resolved_invoice_line_template: Option<String>,
+    /// Publish-frozen GL code.
+    pub resolved_gl_code: Option<String>,
+    /// Authoring principal.
+    pub created_by: Uuid,
+    /// Authoring instant.
+    pub created_at_utc: OffsetDateTime,
+}
+
+/// A monetary version, and where it sits: its line, the exact structure version it
+/// is priced against, and its market.
+///
+/// Beside [`PriceRecord`] rather than inside it. The record is the resolved row
+/// every rule reads and some hundreds of fixtures construct; the three references
+/// matter to the authoring surface alone, which has to tell a client *which*
+/// variant and *which* structure a price belongs to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MarketPriceRecord {
+    /// The resolved row.
+    pub record: PriceRecord,
+    /// The stable logical line.
+    pub charge_line_id: Uuid,
+    /// The structure version this money is priced against.
+    pub line_version_id: Uuid,
+    /// The stable currency/region variant.
+    pub market_price_id: Uuid,
+}
+
+/// Read one line version by id, as the resolved shared content it stores.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure; [`RepoError::CorruptRow`] when
+/// a stored token is outside the set its column is `CHECK`-constrained to.
+pub async fn load_line_record(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    line_version_id: Uuid,
+) -> Result<Option<LineRecord>, RepoError> {
+    let Some(version) = charge_line_version::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(charge_line_version::Column::TenantId.eq(tenant_id))
+                .add(charge_line_version::Column::LineVersionId.eq(line_version_id)),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read pricing_charge_line_version: {e}")))?
+    else {
+        return Ok(None);
+    };
+    let line =
+        super::charge_line_repo::require_line(runner, scope, tenant_id, version.charge_line_id)
+            .await?;
+    line_record(runner, scope, tenant_id, line, version)
+        .await
+        .map(Some)
+}
+
+/// Every line of a plan, each at its **latest** version, in a stable order.
+///
+/// Latest rather than "of revision N": a version is minted on demand, so a line
+/// untouched since revision 2 has no version at revision 5 and is still a line of
+/// the plan. The order is the line id's, which is deterministic per logical scope.
+///
+/// # Errors
+/// As [`load_line_record`].
+pub async fn list_line_records(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_id: PlanId,
+) -> Result<Vec<LineRecord>, RepoError> {
+    let lines = charge_line::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(charge_line::Column::TenantId.eq(tenant_id))
+                .add(charge_line::Column::PlanId.eq(plan_id.get())),
+        )
+        .order_by(charge_line::Column::ChargeLineId, sea_orm::Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("list pricing_charge_line: {e}")))?;
+    let mut records = Vec::with_capacity(lines.len());
+    for line in lines {
+        let latest = charge_line_version::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(
+                Condition::all()
+                    .add(charge_line_version::Column::TenantId.eq(tenant_id))
+                    .add(charge_line_version::Column::ChargeLineId.eq(line.charge_line_id)),
+            )
+            .order_by(
+                charge_line_version::Column::PlanRevision,
+                sea_orm::Order::Desc,
+            )
+            .one(runner)
+            .await
+            .map_err(|e| RepoError::Db(format!("read latest line version: {e}")))?;
+        if let Some(version) = latest {
+            records.push(line_record(runner, scope, tenant_id, line, version).await?);
+        }
+    }
+    Ok(records)
+}
+
+/// The monetary versions priced against one line version, in market order.
+///
+/// # Errors
+/// As [`load_line_record`].
+pub async fn list_prices_of_version(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    line_version_id: Uuid,
+) -> Result<Vec<MarketPriceRecord>, RepoError> {
+    let rows = price::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(price::Column::TenantId.eq(tenant_id))
+                .add(price::Column::LineVersionId.eq(line_version_id)),
+        )
+        .order_by(price::Column::MarketPriceId, sea_orm::Order::Asc)
+        .order_by(price::Column::PriceId, sea_orm::Order::Asc)
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("list pricing_price of a line version: {e}")))?;
+    let mut records = Vec::with_capacity(rows.len());
+    for row in rows {
+        let price_id = row.price_id;
+        let graph = load_graph(runner, scope, tenant_id, row).await?;
+        let geometry = super::charge_line_repo::load_geometry(
+            runner,
+            scope,
+            tenant_id,
+            graph.price.line_version_id,
+        )
+        .await?;
+        let rates = load_bands(runner, scope, tenant_id, price_id).await?;
+        records.push(market_price_record(&graph, &geometry, &rates)?);
+    }
+    Ok(records)
+}
+
+/// One monetary version with the three references that place it in the graph.
+///
+/// # Errors
+/// As [`load_line_record`].
+pub async fn load_market_price(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    price_id: Uuid,
+) -> Result<Option<MarketPriceRecord>, RepoError> {
+    let Some(row) = price::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(price::Column::TenantId.eq(tenant_id))
+                .add(price::Column::PriceId.eq(price_id)),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read pricing_price: {e}")))?
+    else {
+        return Ok(None);
+    };
+    let graph = load_graph(runner, scope, tenant_id, row).await?;
+    let geometry = super::charge_line_repo::load_geometry(
+        runner,
+        scope,
+        tenant_id,
+        graph.price.line_version_id,
+    )
+    .await?;
+    let rates = load_bands(runner, scope, tenant_id, price_id).await?;
+    market_price_record(&graph, &geometry, &rates).map(Some)
+}
+
+fn market_price_record(
+    graph: &PriceGraph,
+    geometry: &[charge_tier::Model],
+    rates: &[price_tier_band::Model],
+) -> Result<MarketPriceRecord, RepoError> {
+    Ok(MarketPriceRecord {
+        record: to_record(graph, geometry, rates)?,
+        charge_line_id: graph.line.charge_line_id,
+        line_version_id: graph.version.line_version_id,
+        market_price_id: graph.market.market_price_id,
+    })
+}
+
+async fn line_record(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    line: charge_line::Model,
+    version: charge_line_version::Model,
+) -> Result<LineRecord, RepoError> {
+    let scope_key = read_line_key(&line, &version)?;
+    let geometry =
+        super::charge_line_repo::load_geometry(runner, scope, tenant_id, version.line_version_id)
+            .await?;
+    let tiers = geometry
+        .iter()
+        .map(|band| {
+            Ok(crate::domain::charge_line::TierGeometry {
+                from_qty: read_bound("pricing_charge_tier.from_qty", band.from_qty)?,
+                to_qty: match read_count("pricing_charge_tier.to_qty", band.to_qty)? {
+                    None => BandTop::Open,
+                    Some(top) => BandTop::Closed(top),
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, RepoError>>()?;
+    // **A graph with no money under it.** `to_price_row` reads the shared half off
+    // the version and the line and the monetary half off the price row, so a price
+    // row carrying nothing yields exactly the shared half -- through the one reader
+    // every stored token already goes through, rather than a second copy of it
+    // that could drift. The market is never consulted on this path.
+    let graph = PriceGraph {
+        price: price::Model {
+            price_id: Uuid::nil(),
+            tenant_id,
+            market_price_id: Uuid::nil(),
+            line_version_id: version.line_version_id,
+            charge_line_id: line.charge_line_id,
+            plan_id: line.plan_id,
+            plan_revision: version.plan_revision,
+            amount_minor: None,
+            unit_rate_nano: None,
+            package_price_minor: None,
+            reserved_rate_nano: None,
+            tax_inclusive: false,
+            tax_category_ref: None,
+            resolved_tax_category: None,
+            rounding_policy_ref: None,
+            resolved_rounding_policy: None,
+            grandfather_until: None,
+            supersedes_price_id: None,
+            lifecycle_state: version.lifecycle_state.clone(),
+            created_by: version.created_by,
+            created_at_utc: version.created_at_utc,
+            row_version: version.row_version,
+        },
+        market: super::super::entity::market_price::Model {
+            tenant_id,
+            market_price_id: Uuid::nil(),
+            charge_line_id: line.charge_line_id,
+            currency: String::new(),
+            region: String::new(),
+        },
+        line,
+        version,
+    };
+    let row = to_price_row(&graph, scope_key.charge_kind(), &geometry, &[])?;
+    let version = &graph.version;
+    Ok(LineRecord {
+        charge_line_id: graph.line.charge_line_id,
+        line_version_id: version.line_version_id,
+        plan_revision: u64::try_from(version.plan_revision).map_err(|_| {
+            RepoError::CorruptRow(format!(
+                "pricing_charge_line_version.plan_revision {} is negative",
+                version.plan_revision
+            ))
+        })?,
+        lifecycle_state: read_lifecycle(&version.lifecycle_state)?,
+        row_version: read_row_version(version.line_version_id, version.row_version)?,
+        scope_key,
+        content: PriceContent {
+            row,
+            tax_inclusive: false,
+            tax_category_ref: None,
+            billing_timing: version.billing_timing.clone(),
+            proration_contract: to_proration_contract(version)?,
+            rounding_policy_ref: None,
+            grandfather_until: None,
+            supersedes_price_id: None,
+        },
+        tiers,
+        resolved_invoice_line_template: version.resolved_invoice_line_template.clone(),
+        resolved_gl_code: version.resolved_gl_code.clone(),
+        created_by: version.created_by,
+        created_at_utc: version.created_at_utc,
+    })
+}
+
 fn to_record(
     graph: &PriceGraph,
     geometry: &[charge_tier::Model],
@@ -4828,12 +5276,25 @@ fn to_scope_key(graph: &PriceGraph) -> Result<MarketPriceScopeKey, RepoError> {
 }
 
 fn read_scope_key(graph: &PriceGraph) -> Result<MarketPriceScopeKey, RepoError> {
-    let line = &graph.line;
     let market = &graph.market;
     let currency = CurrencyCode::new(&market.currency)
         .map_err(|e| RepoError::CorruptRow(format!("pricing_market_price.currency: {e}")))?;
     let region = Region::new(&market.region)
         .map_err(|e| RepoError::CorruptRow(format!("pricing_market_price.region: {e}")))?;
+    read_line_key(&graph.line, &graph.version)
+        .map(|logical| MarketPriceScopeKey::new(logical, currency, region))
+}
+
+/// The eight structural axes, read off the line and the version that carries its
+/// derived meter.
+///
+/// Split out of [`read_scope_key`] because a charge line is readable **before it
+/// has a market**: line-first authoring drafts the structure and prices it
+/// afterwards, so the logical key has to be assemblable without a currency.
+fn read_line_key(
+    line: &charge_line::Model,
+    version: &charge_line_version::Model,
+) -> Result<ChargeLineScopeKey, RepoError> {
     read_token(
         "pricing_charge_line.price_overlay",
         &line.price_overlay,
@@ -4853,10 +5314,8 @@ fn read_scope_key(graph: &PriceGraph) -> Result<MarketPriceScopeKey, RepoError> 
         read_cohort(&line.cohort)?,
         SkuId::new(line.sku_id),
     )
-    .map(|logical| MarketPriceScopeKey::new(logical, currency, region))
     .and_then(|key| {
-        let meter = graph
-            .version
+        let meter = version
             .meter
             .as_deref()
             .map(Meter::new)
@@ -4866,7 +5325,7 @@ fn read_scope_key(graph: &PriceGraph) -> Result<MarketPriceScopeKey, RepoError> 
             })?;
         key.with_usage_line(meter.as_ref(), DimensionKey::new(&line.dimension_key))
     })
-    .map_err(|e| RepoError::CorruptRow(format!("pricing_price scope key: {e}")))
+    .map_err(|e| RepoError::CorruptRow(format!("pricing_charge_line scope key: {e}")))
 }
 
 fn read_eligibility(line: &charge_line::Model) -> Result<PriceEligibility, RepoError> {

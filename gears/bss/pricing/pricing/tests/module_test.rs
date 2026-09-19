@@ -75,6 +75,9 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::bulk_imports::{BULK_IMPORT, BULK_IMPORT_ABORT, BULK_IMPORTS};
     use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
     use bss_pricing::api::rest::catalog_skus::{CATALOG_SKUS, CATALOG_TAX_CATEGORIES};
+    use bss_pricing::api::rest::charge_lines::{
+        PLAN_CHARGE_LINE, PLAN_CHARGE_LINE_PRICES, PLAN_CHARGE_LINES,
+    };
     use bss_pricing::api::rest::customer_groups::{
         CUSTOMER_GROUP_MEMBER, CUSTOMER_GROUP_MEMBER_MOVE, CUSTOMER_GROUP_MEMBERS,
         CUSTOMER_GROUP_MEMBERS_MOVE, CUSTOMER_GROUP_TAXONOMY,
@@ -143,7 +146,15 @@ fn declared_paths() -> Vec<(&'static str, &'static str)> {
         // spends it. Addressed by the caller's `run_id` like the `GET` and never by
         // the minted operation id.
         ("POST", REPRICING_RUN_ABORT),
-        ("POST", PLAN_PRICES),
+        // Line-first authoring: the flat `POST …/prices` create is gone, and a
+        // price row is created under the line version it is priced against.
+        ("POST", PLAN_CHARGE_LINES),
+        ("GET", PLAN_CHARGE_LINES),
+        ("GET", PLAN_CHARGE_LINE),
+        ("PATCH", PLAN_CHARGE_LINE),
+        ("DELETE", PLAN_CHARGE_LINE),
+        ("POST", PLAN_CHARGE_LINE_PRICES),
+        ("GET", PLAN_CHARGE_LINE_PRICES),
         ("GET", PLAN_PRICES),
         ("GET", PLAN_PRICE),
         ("PATCH", PLAN_PRICE),
@@ -515,6 +526,10 @@ async fn registered_operations() -> OpenApiRegistryImpl {
                 Arc::clone(&authoring),
                 &openapi,
             ))
+            .merge(bss_pricing::api::rest::charge_lines::router(
+                Arc::clone(&authoring),
+                &openapi,
+            ))
             .merge(bss_pricing::api::rest::overlays::router(
                 Arc::clone(&authoring),
                 &openapi,
@@ -867,6 +882,9 @@ fn if_match_routes() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::billing_descriptors::BILLING_DESCRIPTORS;
     use bss_pricing::api::rest::bulk_imports::{BULK_IMPORT_ABORT, BULK_IMPORTS};
     use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLES};
+    use bss_pricing::api::rest::charge_lines::{
+        PLAN_CHARGE_LINE, PLAN_CHARGE_LINE_PRICES, PLAN_CHARGE_LINES,
+    };
     use bss_pricing::api::rest::customer_groups::{
         CUSTOMER_GROUP_MEMBER, CUSTOMER_GROUP_MEMBER_MOVE, CUSTOMER_GROUP_MEMBERS,
         CUSTOMER_GROUP_MEMBERS_MOVE, CUSTOMER_GROUP_TAXONOMY,
@@ -875,7 +893,7 @@ fn if_match_routes() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::gl_codes::GL_CODE_VALUE;
     use bss_pricing::api::rest::overlays::{PRICE_OVERLAY_BY_ID, PRICE_OVERLAYS};
     use bss_pricing::api::rest::plans::{PLAN, PLAN_ABANDON, PLAN_CLONE, PLANS};
-    use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
+    use bss_pricing::api::rest::prices::PLAN_PRICE;
     use bss_pricing::api::rest::publish::PLAN_PUBLISH;
     use bss_pricing::api::rest::rounding_policies::ROUNDING_POLICY_VALUE;
     use bss_pricing::api::rest::rounding_policy::ROUNDING_POLICY;
@@ -890,6 +908,12 @@ fn if_match_routes() -> Vec<(&'static str, &'static str)> {
         ("POST", PLAN_ABANDON),
         ("PATCH", PLAN_PRICE),
         ("DELETE", PLAN_PRICE),
+        // A line's structure is the plan's content, so its three writes assert the
+        // **plan revision's** tag -- revision and version -- as a draft-window write
+        // does, and answer with the moved one. The create is keyed as well.
+        ("POST", PLAN_CHARGE_LINES),
+        ("PATCH", PLAN_CHARGE_LINE),
+        ("DELETE", PLAN_CHARGE_LINE),
         // The publish mount: its tag names the revision it freezes **and** that
         // revision's version, which is what the commit's compare-and-swap
         // submits.
@@ -926,7 +950,7 @@ fn if_match_routes() -> Vec<(&'static str, &'static str)> {
         // than through a version, and are listed under `idempotency_key_routes` too —
         // the window schedule among them, which is §5's own Idempotency cell for it.
         ("POST", PLANS),
-        ("POST", PLAN_PRICES),
+        ("POST", PLAN_CHARGE_LINE_PRICES),
         ("POST", PRICE_WINDOWS),
         // The clone is a create too, and the one whose classification is worth
         // stating: it addresses an **existing** plan in its path, so it reads
@@ -987,18 +1011,19 @@ fn if_match_routes() -> Vec<(&'static str, &'static str)> {
 fn idempotency_key_routes() -> Vec<(&'static str, &'static str)> {
     use bss_pricing::api::rest::bulk_imports::{BULK_IMPORT_ABORT, BULK_IMPORTS};
     use bss_pricing::api::rest::bundles::BUNDLES;
+    use bss_pricing::api::rest::charge_lines::{PLAN_CHARGE_LINE_PRICES, PLAN_CHARGE_LINES};
     use bss_pricing::api::rest::customer_groups::{
         CUSTOMER_GROUP_MEMBER_MOVE, CUSTOMER_GROUP_MEMBERS, CUSTOMER_GROUP_MEMBERS_MOVE,
     };
     use bss_pricing::api::rest::overlays::PRICE_OVERLAYS;
     use bss_pricing::api::rest::plans::{PLAN_CLONE, PLANS};
-    use bss_pricing::api::rest::prices::PLAN_PRICES;
     use bss_pricing::api::rest::windows::{
         DRAFT_WINDOW_BASELINE_REFRESH, DRAFT_WINDOW_OPERATION, PRICE_WINDOW, PRICE_WINDOWS,
     };
     vec![
         ("POST", PLANS),
-        ("POST", PLAN_PRICES),
+        ("POST", PLAN_CHARGE_LINES),
+        ("POST", PLAN_CHARGE_LINE_PRICES),
         ("POST", PRICE_WINDOWS),
         ("PATCH", PRICE_WINDOW),
         ("DELETE", PRICE_WINDOW),
@@ -2427,4 +2452,195 @@ async fn the_repricing_run_declares_no_precondition_header() {
         "the repricing run's idempotency column is its `run_id` body member, so it declares \
          neither an If-Match nor an Idempotency-Key: {headers:?}"
     );
+}
+
+/// The schema component a route's request body refers to, when it names one.
+fn declared_request_schema(
+    openapi: &OpenApiRegistryImpl,
+    method: &str,
+    path: &str,
+) -> Option<String> {
+    let key = format!("{method}:{path}");
+    let entry = openapi
+        .operation_specs
+        .get(&key)
+        .unwrap_or_else(|| panic!("{key} is not a registered operation"));
+    match entry.value().request_body.as_ref().map(|body| &body.schema) {
+        Some(toolkit::api::operation_builder::RequestBodySchema::Ref { schema_name }) => {
+            Some(schema_name.clone())
+        }
+        _ => None,
+    }
+}
+
+// **The property names of the whole document, not its text.** A request
+// component refers to its nested shapes by `$ref`, so a search of the request
+// alone would miss a member one hop down -- and every member asserted here
+// lives exactly one hop down, on `MoneyView` or `StructureView`. The names are
+// collected from `properties` rather than by searching the rendering: the
+// first version of this case searched the text and reddened on a **doc
+// comment** that names the members it forbids, which is a test that fails when
+// the prose is right.
+fn members_of(
+    components: &std::collections::BTreeMap<
+        String,
+        utoipa::openapi::RefOr<utoipa::openapi::Schema>,
+    >,
+    root: &str,
+) -> std::collections::BTreeSet<String> {
+    fn walk(
+        value: &serde_json::Value,
+        names: &mut std::collections::BTreeSet<String>,
+        hops: &mut Vec<String>,
+    ) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if let Some(serde_json::Value::Object(properties)) = map.get("properties") {
+                    names.extend(properties.keys().cloned());
+                }
+                if let Some(serde_json::Value::String(reference)) = map.get("$ref")
+                    && let Some(name) = reference.strip_prefix("#/components/schemas/")
+                {
+                    hops.push(name.to_owned());
+                }
+                for nested in map.values() {
+                    walk(nested, names, hops);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for nested in items {
+                    walk(nested, names, hops);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut names = std::collections::BTreeSet::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut pending = vec![root.to_owned()];
+    while let Some(name) = pending.pop() {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        let Some(schema) = components.get(&name) else {
+            continue;
+        };
+        let rendered = serde_json::to_value(schema).expect("a component renders");
+        walk(&rendered, &mut names, &mut pending);
+    }
+    assert!(
+        seen.len() > 1,
+        "{root} resolved to itself alone, so this census is checking nothing"
+    );
+    names
+}
+
+/// **The wire contract the two authoring doors publish, and the one they stopped
+/// publishing.**
+///
+/// A route census proves the *paths* moved. This proves the **documents** did:
+/// that each door's request refers to its own component, that both components are
+/// emitted with the members a generated client will send, and — the half a path
+/// census cannot see — that the flat create's request type is gone from the
+/// document rather than left behind as a schema nothing refers to. A removed
+/// route whose DTO still ships is a client that can still be generated against a
+/// request this server no longer accepts.
+#[tokio::test]
+async fn the_two_authoring_doors_publish_their_own_request_documents() {
+    use bss_pricing::api::rest::charge_lines::{
+        PLAN_CHARGE_LINE, PLAN_CHARGE_LINE_PRICES, PLAN_CHARGE_LINES,
+    };
+    use bss_pricing::api::rest::prices::{PLAN_PRICE, PLAN_PRICES};
+    let openapi = registered_operations().await;
+
+    for (method, path, expected) in [
+        ("POST", PLAN_CHARGE_LINES, "CreateChargeLineRequest"),
+        ("PATCH", PLAN_CHARGE_LINE, "PatchChargeLineRequest"),
+        ("POST", PLAN_CHARGE_LINE_PRICES, "CreateMarketPriceRequest"),
+        ("PATCH", PLAN_PRICE, "PatchMarketPriceRequest"),
+    ] {
+        assert_eq!(
+            declared_request_schema(&openapi, method, path).as_deref(),
+            Some(expected),
+            "{method} {path} must publish {expected}"
+        );
+    }
+
+    let components = openapi.components_registry.load();
+    for name in [
+        "CreateChargeLineRequest",
+        "PatchChargeLineRequest",
+        "CreateMarketPriceRequest",
+        "PatchMarketPriceRequest",
+        "ChargeLineView",
+        "MarketPriceView",
+        "StructureView",
+        "MoneyView",
+    ] {
+        assert!(
+            components.contains_key(name),
+            "{name} must be emitted as a component, or a generated client cannot build it"
+        );
+    }
+
+    // The flat create is gone from the document, request type and all.
+    assert!(
+        !openapi
+            .operation_specs
+            .iter()
+            .any(|entry| entry.value().path == PLAN_PRICES
+                && entry.value().method == axum::http::Method::POST),
+        "POST {PLAN_PRICES} is removed, not deprecated: a price names the structure it prices"
+    );
+    assert!(
+        !components.contains_key("CreatePriceRequest"),
+        "and its request document goes with it, or a client can still be generated against it"
+    );
+    assert!(
+        !components.contains_key("PatchPriceRequest"),
+        "so does the whole-content price patch: the shared half is the line's now"
+    );
+
+    // The removed members are gone from the shapes that survive: a market price
+    // request carries no structure, and a structure carries no money.
+    let market = members_of(&components, "CreateMarketPriceRequest");
+    for member in ["model_kind", "tiers", "package_size", "billing_granularity"] {
+        assert!(
+            !market.contains(member),
+            "a market price request must not publish `{member}`: {market:?}"
+        );
+    }
+    // The control: the members it *does* publish, so the census is not vacuous.
+    for member in [
+        "currency",
+        "region",
+        "amount_minor",
+        "tier_rates_nano_minor",
+        "tax_inclusive",
+    ] {
+        assert!(
+            market.contains(member),
+            "and it must still publish `{member}`: {market:?}"
+        );
+    }
+
+    let line = members_of(&components, "CreateChargeLineRequest");
+    for member in [
+        "currency",
+        "region",
+        "amount_minor",
+        "tax_inclusive",
+        "unit_rate_nano_minor",
+    ] {
+        assert!(
+            !line.contains(member),
+            "a charge line request must not publish `{member}`: {line:?}"
+        );
+    }
+    for member in ["model_kind", "tiers", "charge_kind", "sku_id", "phase"] {
+        assert!(
+            line.contains(member),
+            "and it must still publish `{member}`: {line:?}"
+        );
+    }
 }

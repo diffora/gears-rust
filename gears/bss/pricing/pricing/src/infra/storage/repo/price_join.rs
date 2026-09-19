@@ -22,12 +22,12 @@ use crate::infra::storage::entity::{charge_line, charge_line_version, market_pri
 pub struct PriceGraph {
     /// The monetary version: amounts, rates and market policy.
     pub price: price::Model,
+    /// The currency/region variant this money belongs to.
+    pub market: market_price::Model,
     /// The stable logical line: the eight axes of the catalog key.
     pub line: charge_line::Model,
     /// The shared calculation the money is priced against.
     pub version: charge_line_version::Model,
-    /// The currency/region variant this money belongs to.
-    pub market: market_price::Model,
 }
 
 /// One row's graph.
@@ -150,9 +150,9 @@ pub async fn load_graphs(
                 })?;
             Ok(PriceGraph {
                 price: price.clone(),
+                market,
                 line,
                 version,
-                market,
             })
         })
         .collect()

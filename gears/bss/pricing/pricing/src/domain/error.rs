@@ -346,6 +346,17 @@ pub enum DomainError {
     /// invent.
     #[error("phase id already in use: {0}")]
     PhaseIdInUse(String),
+
+    /// A draft charge-line version cannot be deleted while a market price still
+    /// references it (`CHARGE_LINE_IN_USE`, `409`).
+    ///
+    /// Out of [`DomainError::LifecycleForbidden`] for D-146's reason: no state
+    /// machine refused an edge here, and the remedy is not "wait for a state" but
+    /// "delete the monetary versions first" -- a different action wants a different
+    /// code, not merely a different sentence. It is the conflict class because the
+    /// request is well-formed and would succeed against a different stored state.
+    #[error("charge line in use: {0}")]
+    ChargeLineInUse(String),
     /// The submitted `ETag` / row version is stale: an interactive edit and a
     /// bulk run collided, or the caller is working from a read it did not
     /// refresh. Neither change is silently overwritten.

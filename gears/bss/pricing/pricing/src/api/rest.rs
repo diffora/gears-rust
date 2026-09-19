@@ -305,6 +305,7 @@ pub(crate) const MIGRATION_SCOPE_MAX_BYTES: usize = 64 * 1024;
 pub(crate) const REASON_CODE_MAX_CHARS: usize = 512;
 
 pub mod billing_descriptors;
+pub mod charge_lines;
 pub mod preconditions;
 pub mod preview;
 pub mod prices;

@@ -1691,6 +1691,10 @@ impl RestApiCapability for BssPricingGear {
                 Arc::clone(&rt.authoring_api),
                 openapi,
             ))
+            .merge(crate::api::rest::charge_lines::router(
+                Arc::clone(&rt.authoring_api),
+                openapi,
+            ))
             .merge(crate::api::rest::bundles::router(
                 Arc::clone(&rt.authoring_api),
                 openapi,

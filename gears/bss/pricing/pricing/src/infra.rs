@@ -7,6 +7,7 @@ pub mod audit_read;
 pub mod bulk;
 pub mod bundle;
 pub mod change_graph;
+pub mod charge_line;
 pub mod clone;
 pub mod currency_binding;
 pub mod cutover;

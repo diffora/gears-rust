@@ -39,6 +39,9 @@ use bss_pricing::api::rest::billing_descriptors::BILLING_DESCRIPTORS;
 use bss_pricing::api::rest::bulk_imports::{BULK_IMPORT, BULK_IMPORT_ABORT, BULK_IMPORTS};
 use bss_pricing::api::rest::bundles::{BUNDLE_BY_ID, BUNDLE_PUBLISH, BUNDLES};
 use bss_pricing::api::rest::catalog_skus::{CATALOG_SKUS, CATALOG_TAX_CATEGORIES};
+use bss_pricing::api::rest::charge_lines::{
+    PLAN_CHARGE_LINE, PLAN_CHARGE_LINE_PRICES, PLAN_CHARGE_LINES,
+};
 use bss_pricing::api::rest::customer_groups::{
     CUSTOMER_GROUP_MEMBER, CUSTOMER_GROUP_MEMBER_MOVE, CUSTOMER_GROUP_MEMBERS,
     CUSTOMER_GROUP_MEMBERS_MOVE, CUSTOMER_GROUP_TAXONOMY,
@@ -354,12 +357,58 @@ fn census() -> Vec<Route> {
             action: actions::WRITE,
             mutating: true,
         },
+        // Line-first authoring. A line's structure is the plan's content and a
+        // market price is a row of the plan, so all six ask for the plan pair the
+        // price routes already ask for -- no new permission, and none was wanted: a
+        // role that may author a plan's prices may author the lines they hang off.
         Route {
             method: "POST",
-            path: PLAN_PRICES,
+            path: PLAN_CHARGE_LINES,
             resource_type: labels::PLAN,
             action: actions::WRITE,
             mutating: true,
+        },
+        Route {
+            method: "GET",
+            path: PLAN_CHARGE_LINES,
+            resource_type: labels::PLAN,
+            action: actions::READ,
+            mutating: false,
+        },
+        Route {
+            method: "GET",
+            path: PLAN_CHARGE_LINE,
+            resource_type: labels::PLAN,
+            action: actions::READ,
+            mutating: false,
+        },
+        Route {
+            method: "PATCH",
+            path: PLAN_CHARGE_LINE,
+            resource_type: labels::PLAN,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        Route {
+            method: "DELETE",
+            path: PLAN_CHARGE_LINE,
+            resource_type: labels::PLAN,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        Route {
+            method: "POST",
+            path: PLAN_CHARGE_LINE_PRICES,
+            resource_type: labels::PLAN,
+            action: actions::WRITE,
+            mutating: true,
+        },
+        Route {
+            method: "GET",
+            path: PLAN_CHARGE_LINE_PRICES,
+            resource_type: labels::PLAN,
+            action: actions::READ,
+            mutating: false,
         },
         Route {
             method: "GET",
@@ -991,6 +1040,9 @@ struct Seeded {
     plan: Uuid,
     /// Its one draft price row.
     price: Uuid,
+    /// The line version [`Seeded::price`] is priced against, so the line routes
+    /// reach their gate on a line that exists.
+    line_version: Uuid,
     /// The pending unit the approval rows are aimed at.
     approval: Uuid,
     /// One `scheduled` window on [`Seeded::price`], so the two window routes that
@@ -1059,6 +1111,19 @@ async fn seed(harness: &Harness) -> Seeded {
         )
         .await
         .expect("open the pending unit the approval rows are driven against");
+    let line_version = {
+        let conn = harness.db.conn().expect("conn");
+        bss_pricing::infra::storage::repo::price_repo::load_market_price(
+            &conn,
+            &harness.scope(),
+            harness.tenant,
+            price.price_id,
+        )
+        .await
+        .expect("read the seeded price's graph")
+        .expect("the seeded price exists")
+        .line_version_id
+    };
     let window = rest_support::seed_window(harness, price.price_id).await;
     // A live seed window is not on the captured baseline. Assemble of a mutable
     // draft refuses that drift (`WINDOW_BASELINE_CHANGED`, 409), so GET/reject
@@ -1183,6 +1248,7 @@ async fn seed(harness: &Harness) -> Seeded {
     Seeded {
         plan: plan_id,
         price: price.price_id,
+        line_version,
         approval: approval_id,
         window,
         bundle,
@@ -1212,6 +1278,7 @@ fn drive(
         .path
         .replace("{planId}", &seeded.plan.to_string())
         .replace("{priceId}", &seeded.price.to_string())
+        .replace("{lineVersionId}", &seeded.line_version.to_string())
         .replace("{approvalId}", &seeded.approval.to_string())
         .replace("{windowId}", &seeded.window.to_string())
         .replace("{bundleId}", &seeded.bundle.to_string())
@@ -1362,18 +1429,31 @@ fn body_for(
             Some(serde_json::json!({ "plan_revision": 0, "markets": [] })),
             vec![],
         ),
-        ("POST", PLAN_PRICES) => (
+        // A line on axes the seeded one does not hold (`one_time`), so an allowed
+        // drive is a create and not a duplicate.
+        ("POST", PLAN_CHARGE_LINES) => (
             Some(serde_json::json!({
                 "scope_key": {
-                    "currency": "USD",
-                    "region": "US",
                     "phase": rest_support::seeded_phase().get().to_string(),
                     "price_eligibility": "all_subscriptions",
-                    "charge_kind": "recurring",
+                    "charge_kind": "one_time",
                     "sku_id": rest_support::OFFER_SKU,
                     "cohort": serde_json::Value::Null
                 },
-                "content": { "model_kind": "flat", "amount_minor": 100 }
+                "structure": { "model_kind": "flat" }
+            })),
+            vec![("if-match", version), ("idempotency-key", key)],
+        ),
+        ("PATCH", PLAN_CHARGE_LINE) => (
+            Some(serde_json::json!({ "structure": { "model_kind": "flat" } })),
+            vec![("if-match", version)],
+        ),
+        // A second market of the seeded line.
+        ("POST", PLAN_CHARGE_LINE_PRICES) => (
+            Some(serde_json::json!({
+                "currency": "USD",
+                "region": "US",
+                "money": { "amount_minor": 100 }
             })),
             vec![("idempotency-key", key)],
         ),
@@ -1382,7 +1462,7 @@ fn body_for(
             vec![("if-match", version)],
         ),
         ("PATCH", PLAN_PRICE) => (
-            Some(serde_json::json!({ "content": { "model_kind": "flat", "amount_minor": 7 } })),
+            Some(serde_json::json!({ "money": { "amount_minor": 7 } })),
             vec![("if-match", "\"0\"")],
         ),
         // A well-formed instant and a well-formed tag, both deliberately wrong for
@@ -1393,7 +1473,11 @@ fn body_for(
             Some(serde_json::json!({ "grandfather_until": "2030-01-01T00:00:00Z" })),
             vec![("if-match", "\"0\"")],
         ),
-        ("POST", PLAN_ABANDON | PLAN_PUBLISH) => (None, vec![("if-match", version)]),
+        // The plan-tag writes with no body: the two revision transitions, and the
+        // line delete, whose subject is the plan's content too.
+        ("POST", PLAN_ABANDON | PLAN_PUBLISH) | ("DELETE", PLAN_CHARGE_LINE) => {
+            (None, vec![("if-match", version)])
+        }
         // The clone holds no version of the source — it reads the source's
         // current revision and writes nothing to it — so the precondition it
         // carries is the idempotency key, not an `If-Match`.
@@ -1645,6 +1729,10 @@ async fn registered_paths() -> Vec<String> {
                 &openapi,
             ))
             .merge(bss_pricing::api::rest::prices::router(
+                Arc::clone(&harness.state),
+                &openapi,
+            ))
+            .merge(bss_pricing::api::rest::charge_lines::router(
                 Arc::clone(&harness.state),
                 &openapi,
             ))
@@ -3328,6 +3416,7 @@ fn absent_ids(seeded: &Seeded) -> Seeded {
     let mut fresh = seeded.clone();
     fresh.plan = Uuid::now_v7();
     fresh.price = Uuid::now_v7();
+    fresh.line_version = Uuid::now_v7();
     fresh.approval = Uuid::now_v7();
     fresh.window = Uuid::now_v7();
     fresh.bundle = Uuid::now_v7();
@@ -3382,6 +3471,7 @@ fn absent_ids(seeded: &Seeded) -> Seeded {
 const VARIED_SEGMENTS: &[&str] = &[
     "{planId}",
     "{priceId}",
+    "{lineVersionId}",
     "{approvalId}",
     "{windowId}",
     "{bundleId}",
@@ -3573,6 +3663,13 @@ const BY_ID_WRITES_THIS_FIXTURE_CANNOT_STAGE: &[(&str, &str)] = &[
     // resting on an exemption.
     ("POST", BULK_IMPORT_ABORT),
     ("POST", REPRICING_RUN_ABORT),
+    // **The seeded line is priced, and a priced line is not deletable.** The
+    // owner's own call answers `409 CHARGE_LINE_IN_USE`, because the one line this
+    // seed has is the line `Seeded::price` hangs off -- which the price routes
+    // need. Paid in
+    // `rest_charge_lines::a_line_under_another_plans_url_or_another_tenant_is_absent`,
+    // which drafts an unpriced line of its own and varies the id.
+    ("DELETE", PLAN_CHARGE_LINE),
     // Paid in `rest_migrations::a_foreign_tenant_is_refused_like_an_unknown_migration_and_the_owner_is_not`,
     // whose fixture schedules a real migration and varies the id.
     ("DELETE", MIGRATION_BY_ID),

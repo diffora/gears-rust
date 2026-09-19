@@ -27,7 +27,7 @@ fn prices_path(plan_id: Uuid) -> String {
     format!("{PLANS}/{plan_id}/prices")
 }
 
-fn price_path(plan_id: Uuid, price_id: Uuid) -> String {
+fn price_path(plan_id: Uuid, price_id: impl std::fmt::Display) -> String {
     format!("{PLANS}/{plan_id}/prices/{price_id}")
 }
 
@@ -66,6 +66,333 @@ async fn seeded_plan(harness: &Harness) -> Uuid {
 }
 
 // ---------------------------------------------------------------------------
+// The two doors, driven as one row.
+//
+// A resolved price row used to be one `POST` and one `PATCH`. Line-first authoring
+// split both: the shared structure is authored on the charge line and the money on
+// a market price filed under it. Every case below still says "author this row" --
+// which refusal answers is the case's subject, not which door raised it -- so these
+// two helpers split a resolved row into its two halves and drive both doors over
+// the real router, answering with the **first refusal** or the price door's reply.
+// ---------------------------------------------------------------------------
+
+/// The members of a resolved row's content that belong to the market, not the line.
+const MONEY_MEMBERS: [&str; 4] = [
+    "amount_minor",
+    "unit_rate_nano_minor",
+    "package_price_minor",
+    "reserved_rate_nano_minor",
+];
+const POLICY_MEMBERS: [&str; 4] = [
+    "tax_inclusive",
+    "tax_category_ref",
+    "rounding_policy_ref",
+    "grandfather_until",
+];
+
+/// Split a resolved row's content into `(structure, money, market_policy)`.
+fn split_content(
+    content: &serde_json::Value,
+) -> (serde_json::Value, serde_json::Value, serde_json::Value) {
+    let mut structure = serde_json::Map::new();
+    let mut money = serde_json::Map::new();
+    let mut policy = serde_json::Map::new();
+    for (name, value) in content.as_object().cloned().unwrap_or_default() {
+        match name.as_str() {
+            "bands" => {
+                let bands = value.as_array().cloned().unwrap_or_default();
+                structure.insert(
+                    "tiers".to_owned(),
+                    bands
+                        .iter()
+                        .map(|band| {
+                            serde_json::json!({
+                                "from_qty": band["from_qty"],
+                                "to_qty": band["to_qty"],
+                            })
+                        })
+                        .collect(),
+                );
+                money.insert(
+                    "tier_rates_nano_minor".to_owned(),
+                    bands
+                        .iter()
+                        .map(|band| band["unit_price_nano_minor"].clone())
+                        .collect(),
+                );
+            }
+            // The usage dimension is an axis of the line, not content.
+            "dimension_key" | "supersedes_price_id" => {}
+            member if MONEY_MEMBERS.contains(&member) => {
+                money.insert(name, value);
+            }
+            member if POLICY_MEMBERS.contains(&member) => {
+                policy.insert(name, value);
+            }
+            _ => {
+                structure.insert(name, value);
+            }
+        }
+    }
+    (structure.into(), money.into(), policy.into())
+}
+
+fn header<'a>(headers: &'a [(&'a str, &'a str)], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map(|(_, value)| *value)
+}
+
+/// The latest version of the plan's line on these axes, when the plan has one.
+async fn line_on(harness: &Harness, plan_id: Uuid, axes: &serde_json::Value) -> Option<String> {
+    let listed = body_json(
+        harness
+            .allowed()
+            .send(request(
+                "GET",
+                &format!("{PLANS}/{plan_id}/charge-lines"),
+                None,
+            ))
+            .await,
+    )
+    .await;
+    listed["items"].as_array()?.iter().find_map(|line| {
+        let key = &line["scope_key"];
+        let same = [
+            "phase",
+            "sku_id",
+            "price_eligibility",
+            "charge_kind",
+            "cohort",
+        ]
+        .iter()
+        .all(|axis| key[*axis] == axes[*axis])
+            && key["dimension_key"].as_str().unwrap_or_default()
+                == axes["dimension_key"].as_str().unwrap_or_default();
+        same.then(|| {
+            line["line_version_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()
+        })
+    })
+}
+
+/// The line a resolved row belongs to: drafted through the line door unless the
+/// plan already has one on these axes. `Err` is the line door's own refusal.
+async fn line_for(
+    client: &rest_support::Client,
+    harness: &Harness,
+    plan_id: Uuid,
+    row: &serde_json::Value,
+    idempotency_key: &str,
+) -> Result<String, axum::http::Response<axum::body::Body>> {
+    let scope_key = &row["scope_key"];
+    let (structure, _, _) = split_content(&row["content"]);
+    let mut axes = serde_json::Map::new();
+    for axis in [
+        "phase",
+        "sku_id",
+        "price_eligibility",
+        "charge_kind",
+        "cohort",
+    ] {
+        if let Some(value) = scope_key.get(axis) {
+            axes.insert(axis.to_owned(), value.clone());
+        }
+    }
+    axes.insert(
+        "dimension_key".to_owned(),
+        row["content"]
+            .get("dimension_key")
+            .cloned()
+            .unwrap_or_else(|| "".into()),
+    );
+    let axes = serde_json::Value::from(axes);
+    if let Some(existing) = line_on(harness, plan_id, &axes).await {
+        return Ok(existing);
+    }
+    // Read rather than asserted: a plan that does not exist has no tag to hand
+    // out, and the case that names one is asking what the *line door* says.
+    let tag = etag_of(
+        &harness
+            .allowed()
+            .send(request("GET", &format!("{PLANS}/{plan_id}"), None))
+            .await,
+    )
+    .unwrap_or_else(|| "\"0-0\"".to_owned());
+    let response = client
+        .send(with_headers(
+            "POST",
+            &format!("{PLANS}/{plan_id}/charge-lines"),
+            Some(serde_json::json!({ "scope_key": axes, "structure": structure })),
+            &[
+                ("if-match", tag.as_str()),
+                ("idempotency-key", idempotency_key),
+            ],
+        ))
+        .await;
+    if response.status() != StatusCode::CREATED {
+        return Err(response);
+    }
+    Ok(body_json(response).await["line_version_id"]
+        .as_str()
+        .expect("a created line names its version")
+        .to_owned())
+}
+
+/// File a resolved row's **money** under a line version: the market-price door alone.
+async fn price_under(
+    client: &rest_support::Client,
+    plan_id: Uuid,
+    line_version_id: &str,
+    row: &serde_json::Value,
+    headers: &[(&str, &str)],
+) -> axum::http::Response<axum::body::Body> {
+    let (_, money, policy) = split_content(&row["content"]);
+    client
+        .send(with_headers(
+            "POST",
+            &format!("{PLANS}/{plan_id}/charge-lines/{line_version_id}/prices"),
+            Some(serde_json::json!({
+                "currency": row["scope_key"]["currency"],
+                "region": row["scope_key"]["region"],
+                "money": money,
+                "market_policy": policy,
+            })),
+            headers,
+        ))
+        .await
+}
+
+/// Author one resolved row: its line unless the plan already has it, then its
+/// market price. `client` sends the two writes; the harness's own allowed caller
+/// does the reads between them.
+async fn author(
+    client: &rest_support::Client,
+    harness: &Harness,
+    plan_id: Uuid,
+    row: serde_json::Value,
+    headers: &[(&str, &str)],
+) -> axum::http::Response<axum::body::Body> {
+    let line_key = format!(
+        "{}-line",
+        header(headers, "idempotency-key").unwrap_or("row")
+    );
+    match line_for(client, harness, plan_id, &row, &line_key).await {
+        Ok(line_version_id) => price_under(client, plan_id, &line_version_id, &row, headers).await,
+        Err(refusal) => refusal,
+    }
+}
+
+/// Replace one row's **money** alone: the market-price door, under the row's own tag.
+async fn reprice(
+    client: &rest_support::Client,
+    plan_id: Uuid,
+    price_id: impl std::fmt::Display,
+    row: &serde_json::Value,
+    headers: &[(&str, &str)],
+) -> axum::http::Response<axum::body::Body> {
+    let (_, money, policy) = split_content(&row["content"]);
+    client
+        .send(with_headers(
+            "PATCH",
+            &price_path(plan_id, price_id),
+            Some(serde_json::json!({ "money": money, "market_policy": policy })),
+            headers,
+        ))
+        .await
+}
+
+/// The resolved row a create answered about, read back through its `Location`.
+///
+/// The market-price create answers with the *monetary* representation -- the
+/// market, the money, the three references. The cases that assert the resolved
+/// row (its key, its shared content) read it the way a client would: by following
+/// the `Location` the create handed them.
+async fn resolved(
+    harness: &Harness,
+    response: axum::http::Response<axum::body::Body>,
+) -> serde_json::Value {
+    let location = location_of(&response).expect("a create names the row it made");
+    body_json(
+        harness
+            .allowed()
+            .send(request("GET", &location, None))
+            .await,
+    )
+    .await
+}
+
+/// Replace one resolved row's whole content: its line's structure under the plan's
+/// current tag, then its money under the row's own -- which is the tag `headers`
+/// carries, exactly as the flat `PATCH` took it.
+async fn revise(
+    client: &rest_support::Client,
+    harness: &Harness,
+    plan_id: Uuid,
+    price_id: impl std::fmt::Display,
+    row: serde_json::Value,
+    headers: &[(&str, &str)],
+) -> axum::http::Response<axum::body::Body> {
+    let (structure, money, policy) = split_content(&row["content"]);
+    let mut money_request = serde_json::json!({ "money": money, "market_policy": policy });
+    // A body that names a scope key is handed to the price door as it came: the
+    // market is identity there and the door refuses the member.
+    if let Some(named) = row.get("scope_key") {
+        money_request["scope_key"] = named.clone();
+    }
+    let placed = body_json(
+        harness
+            .allowed()
+            .send(request(
+                "GET",
+                &format!("{PLANS}/{plan_id}/charge-lines"),
+                None,
+            ))
+            .await,
+    )
+    .await;
+    let line_version_id = placed["items"].as_array().and_then(|lines| {
+        lines.iter().find_map(|line| {
+            line["prices"]
+                .as_array()?
+                .iter()
+                .any(|price| price["price_id"] == price_id.to_string())
+                .then(|| {
+                    line["line_version_id"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned()
+                })
+        })
+    });
+    if let (Some(line_version_id), None) = (line_version_id, row.get("scope_key")) {
+        let tag = harness.plan_etag(plan_id).await;
+        let response = client
+            .send(with_headers(
+                "PATCH",
+                &format!("{PLANS}/{plan_id}/charge-lines/{line_version_id}"),
+                Some(serde_json::json!({ "structure": structure })),
+                &[("if-match", tag.as_str())],
+            ))
+            .await;
+        if response.status() != StatusCode::OK {
+            return response;
+        }
+    }
+    client
+        .send(with_headers(
+            "PATCH",
+            &price_path(plan_id, price_id),
+            Some(money_request),
+            headers,
+        ))
+        .await
+}
+
+// ---------------------------------------------------------------------------
 // Create.
 // ---------------------------------------------------------------------------
 
@@ -84,15 +411,14 @@ async fn a_row_on_an_undeclared_region_is_refused_at_save() {
     let harness = Harness::new().await;
     let plan_id = seeded_plan(&harness).await;
 
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(create_body("ap-south")),
-            &keyed("undeclared-region-1"),
-        ))
-        .await;
+    let response = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        create_body("ap-south"),
+        &keyed("undeclared-region-1"),
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(problem_code(response).await, "REGION_UNKNOWN");
@@ -109,15 +435,14 @@ async fn a_row_on_a_declared_region_still_authors() {
     let harness = Harness::new().await;
     let plan_id = seeded_plan(&harness).await;
 
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(create_body("EU")),
-            &keyed("declared-region-1"),
-        ))
-        .await;
+    let response = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        create_body("EU"),
+        &keyed("declared-region-1"),
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::CREATED);
 }
@@ -134,15 +459,14 @@ async fn a_row_on_a_retired_region_is_refused_at_save() {
     let plan_id = seeded_plan(&harness).await;
     common::retire_fixture_region(&harness.db, harness.tenant, "EU").await;
 
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(create_body("EU")),
-            &keyed("retired-region-1"),
-        ))
-        .await;
+    let response = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        create_body("EU"),
+        &keyed("retired-region-1"),
+    )
+    .await;
 
     assert_eq!(problem_code(response).await, "REGION_UNKNOWN");
 }
@@ -152,20 +476,19 @@ async fn a_create_answers_201_with_the_location_and_the_rows_own_tag() {
     let harness = Harness::new().await;
     let plan_id = seeded_plan(&harness).await;
 
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(create_body("EU")),
-            &keyed("price-1"),
-        ))
-        .await;
+    let response = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        create_body("EU"),
+        &keyed("price-1"),
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::CREATED);
     let location = location_of(&response);
     let tag = etag_of(&response);
-    let body = body_json(response).await;
+    let body = resolved(&harness, response).await;
     let price_id = body["price_id"].as_str().expect("the id is answered");
     assert_eq!(
         location,
@@ -185,15 +508,14 @@ async fn a_create_answers_201_with_the_location_and_the_rows_own_tag() {
 async fn create_location_is_a_get_of_the_row() {
     let harness = Harness::new().await;
     let plan_id = seeded_plan(&harness).await;
-    let created = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(create_body("EU")),
-            &keyed("price-get"),
-        ))
-        .await;
+    let created = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        create_body("EU"),
+        &keyed("price-get"),
+    )
+    .await;
     assert_eq!(created.status(), StatusCode::CREATED);
     let location = location_of(&created).expect("create sets Location");
     let price_id = body_json(created).await["price_id"]
@@ -213,15 +535,15 @@ async fn create_location_is_a_get_of_the_row() {
     assert_eq!(body["row_version"], 0);
     assert_eq!(etag, "\"0\"");
 
-    let patched = harness
-        .allowed()
-        .send(with_headers(
-            "PATCH",
-            &price_path(plan_id, price_id),
-            Some(serde_json::json!({ "content": { "model_kind": "flat", "amount_minor": 99 } })),
-            &[("if-match", etag.as_str())],
-        ))
-        .await;
+    let patched = revise(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        price_id,
+        serde_json::json!({ "content": { "model_kind": "flat", "amount_minor": 99 } }),
+        &[("if-match", etag.as_str())],
+    )
+    .await;
     assert_eq!(patched.status(), StatusCode::OK);
 }
 
@@ -269,26 +591,24 @@ async fn get_if_none_match_matching_tag_is_304() {
 async fn a_replayed_create_answers_the_original_price_id() {
     let harness = Harness::new().await;
     let plan_id = seeded_plan(&harness).await;
-    let first = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(create_body("EU")),
-            &keyed("price-2"),
-        ))
-        .await;
+    let first = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        create_body("EU"),
+        &keyed("price-2"),
+    )
+    .await;
     let first_id = body_json(first).await["price_id"].clone();
 
-    let replay = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(create_body("EU")),
-            &keyed("price-2"),
-        ))
-        .await;
+    let replay = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        create_body("EU"),
+        &keyed("price-2"),
+    )
+    .await;
 
     assert_eq!(replay.status(), StatusCode::CREATED);
     assert_eq!(body_json(replay).await["price_id"], first_id);
@@ -318,29 +638,27 @@ async fn a_replay_is_answered_after_its_region_is_retired() {
     let harness = Harness::new().await;
     let plan_id = seeded_plan(&harness).await;
 
-    let first = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(create_body("EU")),
-            &keyed("price-region-retired-between"),
-        ))
-        .await;
+    let first = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        create_body("EU"),
+        &keyed("price-region-retired-between"),
+    )
+    .await;
     assert_eq!(first.status(), StatusCode::CREATED);
     let first_id = body_json(first).await["price_id"].clone();
 
     common::retire_fixture_region(&harness.db, harness.tenant, "EU").await;
 
-    let replay = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(create_body("EU")),
-            &keyed("price-region-retired-between"),
-        ))
-        .await;
+    let replay = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        create_body("EU"),
+        &keyed("price-region-retired-between"),
+    )
+    .await;
 
     assert_eq!(
         replay.status(),
@@ -366,25 +684,23 @@ async fn a_replay_is_answered_after_its_region_is_retired() {
 async fn a_spent_key_replayed_over_a_different_body_is_refused_by_its_code() {
     let harness = Harness::new().await;
     let plan_id = seeded_plan(&harness).await;
-    harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(create_body("EU")),
-            &keyed("price-3"),
-        ))
-        .await;
+    author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        create_body("EU"),
+        &keyed("price-3"),
+    )
+    .await;
 
-    let mismatched = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(create_body("US")),
-            &keyed("price-3"),
-        ))
-        .await;
+    let mismatched = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        create_body("US"),
+        &keyed("price-3"),
+    )
+    .await;
 
     assert_eq!(mismatched.status(), StatusCode::CONFLICT);
     assert_eq!(
@@ -405,25 +721,23 @@ async fn a_second_draft_on_one_canonical_key_is_refused_by_its_code() {
     // would fail on - discovered a round trip earlier.
     let harness = Harness::new().await;
     let plan_id = seeded_plan(&harness).await;
-    harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(create_body("EU")),
-            &keyed("dup-1"),
-        ))
-        .await;
+    author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        create_body("EU"),
+        &keyed("dup-1"),
+    )
+    .await;
 
-    let clash = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(create_body("EU")),
-            &keyed("dup-2"),
-        ))
-        .await;
+    let clash = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        create_body("EU"),
+        &keyed("dup-2"),
+    )
+    .await;
 
     assert_eq!(clash.status(), StatusCode::CONFLICT);
     assert_eq!(problem_code(clash).await, "DUPLICATE_SCOPE_KEY");
@@ -484,19 +798,14 @@ async fn a_create_carrying_a_tier_qualification_window_is_refused_at_any_value()
     let plan_id = seeded_plan(&harness).await;
 
     for (index, window) in ["trailing_period", "current"].into_iter().enumerate() {
-        let response = harness
-            .allowed()
-            .send(with_headers(
-                "POST",
-                &prices_path(plan_id),
-                Some(create_body_with(
-                    "EU",
-                    "tier_qualification_window",
-                    serde_json::json!(window),
-                )),
-                &keyed(&format!("tqw-{index}")),
-            ))
-            .await;
+        let response = author(
+            &harness.allowed(),
+            &harness,
+            plan_id,
+            create_body_with("EU", "tier_qualification_window", serde_json::json!(window)),
+            &keyed(&format!("tqw-{index}")),
+        )
+        .await;
 
         assert_refused_naming(response, "tier_qualification_window").await;
     }
@@ -540,22 +849,21 @@ async fn a_usage_row_carrying_a_none_allowance_is_authored_and_echoed() {
     body["content"]["included_allowance"] =
         serde_json::json!({ "quantity": 100, "rollover_policy": "none" });
 
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(body),
-            &keyed("allow-none"),
-        ))
-        .await;
+    let response = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        body,
+        &keyed("allow-none"),
+    )
+    .await;
 
     assert_eq!(
         response.status(),
         StatusCode::CREATED,
         "rolloverPolicy = none has a rule that judges it and a compile that honours it"
     );
-    let echoed = body_json(response).await;
+    let echoed = resolved(&harness, response).await;
     assert_eq!(
         echoed["content"]["included_allowance"]["quantity"],
         serde_json::json!(100),
@@ -581,19 +889,18 @@ async fn an_allowance_on_a_non_usage_key_is_refused_at_the_write() {
     let harness = Harness::new().await;
     let plan_id = seeded_plan(&harness).await;
 
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(create_body_with(
-                "EU",
-                "included_allowance",
-                serde_json::json!({ "quantity": 100, "rollover_policy": "none" }),
-            )),
-            &keyed("allow-recurring"),
-        ))
-        .await;
+    let response = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        create_body_with(
+            "EU",
+            "included_allowance",
+            serde_json::json!({ "quantity": 100, "rollover_policy": "none" }),
+        ),
+        &keyed("allow-recurring"),
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(problem_code(response).await, "ALLOWANCE_ON_NON_USAGE");
@@ -616,15 +923,14 @@ async fn a_create_carrying_a_carried_allowance_is_refused_on_a_key_that_would_ot
     body["content"]["included_allowance"] =
         serde_json::json!({ "quantity": 100, "rollover_policy": "carry" });
 
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(body),
-            &keyed("allow-carry"),
-        ))
-        .await;
+    let response = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        body,
+        &keyed("allow-carry"),
+    )
+    .await;
 
     assert_refused_naming(response, "included_allowance").await;
     assert!(
@@ -652,21 +958,21 @@ async fn a_patch_cannot_slip_either_primitive_past_the_create_check() {
             serde_json::json!({ "quantity": 100, "rollover_policy": "carry" }),
         ),
     ] {
-        let response = harness
-            .allowed()
-            .send(with_headers(
-                "PATCH",
-                &price_path(plan_id, seeded.price_id),
-                Some(serde_json::json!({
-                    "content": {
-                        "model_kind": "flat",
-                        "amount_minor": 99,
-                        field: value
-                    }
-                })),
-                &[("if-match", "\"0\"")],
-            ))
-            .await;
+        let response = revise(
+            &harness.allowed(),
+            &harness,
+            plan_id,
+            seeded.price_id,
+            serde_json::json!({
+                "content": {
+                    "model_kind": "flat",
+                    "amount_minor": 99,
+                    field: value
+                }
+            }),
+            &[("if-match", "\"0\"")],
+        )
+        .await;
 
         assert_refused_naming(response, field).await;
     }
@@ -683,40 +989,35 @@ async fn a_row_carrying_neither_primitive_creates_and_patches_exactly_as_before(
     let harness = Harness::new().await;
     let plan_id = seeded_plan(&harness).await;
 
-    let created = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(create_body_with(
-                "EU",
-                "tier_qualification_window",
-                serde_json::Value::Null,
-            )),
-            &keyed("null-window"),
-        ))
-        .await;
+    let created = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        create_body_with("EU", "tier_qualification_window", serde_json::Value::Null),
+        &keyed("null-window"),
+    )
+    .await;
     assert_eq!(created.status(), StatusCode::CREATED);
     let price_id = body_json(created).await["price_id"]
         .as_str()
         .and_then(|raw| Uuid::parse_str(raw).ok())
         .expect("the id is answered");
 
-    let patched = harness
-        .allowed()
-        .send(with_headers(
-            "PATCH",
-            &price_path(plan_id, price_id),
-            Some(serde_json::json!({
-                "content": {
-                    "model_kind": "flat",
-                    "amount_minor": 42,
-                    "included_allowance": serde_json::Value::Null
-                }
-            })),
-            &[("if-match", "\"0\"")],
-        ))
-        .await;
+    let patched = revise(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        price_id,
+        serde_json::json!({
+            "content": {
+                "model_kind": "flat",
+                "amount_minor": 42,
+                "included_allowance": serde_json::Value::Null
+            }
+        }),
+        &[("if-match", "\"0\"")],
+    )
+    .await;
     assert_eq!(patched.status(), StatusCode::OK);
     let after = price_rows(&harness, plan_id).await;
     assert_eq!(after[0].row_version.get(), 1, "the edit landed");
@@ -732,15 +1033,15 @@ async fn a_patch_under_a_stale_tag_is_refused_and_the_row_does_not_move() {
     let plan_id = seeded_plan(&harness).await;
     let seeded = seed_price(&harness, plan_id, "EU").await;
 
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "PATCH",
-            &price_path(plan_id, seeded.price_id),
-            Some(serde_json::json!({ "content": { "model_kind": "flat", "amount_minor": 99 } })),
-            &[("if-match", "\"7\"")],
-        ))
-        .await;
+    let response = revise(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        seeded.price_id,
+        serde_json::json!({ "content": { "model_kind": "flat", "amount_minor": 99 } }),
+        &[("if-match", "\"7\"")],
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::CONFLICT);
     assert_eq!(problem_code(response).await, "STALE_VERSION");
@@ -757,35 +1058,38 @@ async fn a_patch_may_not_move_the_canonical_scope_key() {
     let plan_id = seeded_plan(&harness).await;
     let seeded = seed_price(&harness, plan_id, "EU").await;
 
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "PATCH",
-            &price_path(plan_id, seeded.price_id),
-            Some(serde_json::json!({
-                "scope_key": {
-            "sku_id": rest_support::OFFER_SKU,
-                    "currency": "USD",
-                    "region": "US",
-                    "phase": harness_phase(),
-                    "price_eligibility": "all_subscriptions",
-                    "charge_kind": "recurring",
-                    "cohort": serde_json::Value::Null
-                },
-                "content": { "model_kind": "flat", "amount_minor": 99 }
-            })),
-            &[("if-match", "\"0\"")],
-        ))
-        .await;
+    let response = revise(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        seeded.price_id,
+        serde_json::json!({
+            "scope_key": {
+        "sku_id": rest_support::OFFER_SKU,
+                "currency": "USD",
+                "region": "US",
+                "phase": harness_phase(),
+                "price_eligibility": "all_subscriptions",
+                "charge_kind": "recurring",
+                "cohort": serde_json::Value::Null
+            },
+            "content": { "model_kind": "flat", "amount_minor": 99 }
+        }),
+        &[("if-match", "\"0\"")],
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     // The guard's own sentence: `PATCH` on this row answers a code-less 400 for
     // several independent faults, and the scope-key immutability rule is the one
     // under test.
+    // The market is the row's identity and the route carries it, so the monetary
+    // request has no `scope_key` member at all -- a body naming one is refused as
+    // a member the door does not have, where it used to be compared and refused.
     refused_by(
         &body_json(response).await,
         "invalid_argument",
-        "the canonical scope key is immutable",
+        "unknown field `scope_key`",
     );
     let after = price_rows(&harness, plan_id).await;
     assert_eq!(after[0].scope_key.region().as_str(), "EU");
@@ -802,15 +1106,15 @@ async fn a_price_under_the_wrong_plans_url_is_not_found() {
     let other_plan = seeded_plan(&harness).await;
     let seeded = seed_price(&harness, plan_id, "EU").await;
 
-    let patched = harness
-        .allowed()
-        .send(with_headers(
-            "PATCH",
-            &price_path(other_plan, seeded.price_id),
-            Some(serde_json::json!({ "content": { "model_kind": "flat", "amount_minor": 99 } })),
-            &[("if-match", "\"0\"")],
-        ))
-        .await;
+    let patched = revise(
+        &harness.allowed(),
+        &harness,
+        other_plan,
+        seeded.price_id,
+        serde_json::json!({ "content": { "model_kind": "flat", "amount_minor": 99 } }),
+        &[("if-match", "\"0\"")],
+    )
+    .await;
     let deleted = harness
         .allowed()
         .send(with_headers(
@@ -1198,7 +1502,7 @@ async fn a_foreign_tenants_caller_moves_no_row_of_this_tenants() {
     for (method, body, headers) in [
         (
             "PATCH",
-            Some(serde_json::json!({ "content": { "model_kind": "flat", "amount_minor": 1 } })),
+            Some(serde_json::json!({ "money": { "amount_minor": 1 } })),
             vec![("if-match", "\"0\"")],
         ),
         ("DELETE", None, vec![("if-match", "\"0\"")]),
@@ -1219,15 +1523,14 @@ async fn a_foreign_tenants_caller_moves_no_row_of_this_tenants() {
         );
     }
 
-    let created = harness
-        .other_tenant()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(create_body("US")),
-            &[("idempotency-key", "foreign-tenant-create")],
-        ))
-        .await;
+    let created = author(
+        &harness.other_tenant(),
+        &harness,
+        plan_id,
+        create_body("US"),
+        &[("idempotency-key", "foreign-tenant-create")],
+    )
+    .await;
     assert_eq!(
         created.status(),
         StatusCode::NOT_FOUND,
@@ -1244,15 +1547,15 @@ async fn a_foreign_tenants_caller_moves_no_row_of_this_tenants() {
 
     // The positive control: the same verb, from the owner, still lands - so the
     // three refusals above are about the caller and not about a dead route.
-    let own = harness
-        .allowed()
-        .send(with_headers(
-            "PATCH",
-            &price_path(plan_id, seeded.price_id),
-            Some(serde_json::json!({ "content": { "model_kind": "flat", "amount_minor": 1 } })),
-            &[("if-match", "\"0\"")],
-        ))
-        .await;
+    let own = revise(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        seeded.price_id,
+        serde_json::json!({ "content": { "model_kind": "flat", "amount_minor": 1 } }),
+        &[("if-match", "\"0\"")],
+    )
+    .await;
     assert_eq!(own.status(), StatusCode::OK);
 }
 
@@ -1294,17 +1597,32 @@ async fn every_price_route_is_denied_with_the_database_unchanged() {
     let plan_id = seeded_plan(&harness).await;
     let seeded = seed_price(&harness, plan_id, "EU").await;
 
+    // The seeded row's line, so the denied create is aimed at a line that exists:
+    // a refusal has to be the gate's, not a 404 for a line nobody drafted.
+    let line = line_for(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        &create_body("EU"),
+        "denied-line",
+    )
+    .await
+    .expect("the seeded row's line is found");
     for (method, path, body, headers) in [
         (
             "POST",
-            prices_path(plan_id),
-            Some(create_body("US")),
+            format!("{PLANS}/{plan_id}/charge-lines/{line}/prices"),
+            Some(serde_json::json!({
+                "currency": "USD",
+                "region": "US",
+                "money": { "amount_minor": 1_500 }
+            })),
             vec![("idempotency-key", "denied-price")],
         ),
         (
             "PATCH",
             price_path(plan_id, seeded.price_id),
-            Some(serde_json::json!({ "content": { "model_kind": "flat", "amount_minor": 1 } })),
+            Some(serde_json::json!({ "money": { "amount_minor": 1 } })),
             vec![("if-match", "\"0\"")],
         ),
         (
@@ -1370,17 +1688,23 @@ async fn plan_records(harness: &Harness, plan_id: Uuid) -> Vec<(String, String, 
 async fn a_price_create_writes_exactly_one_record_naming_the_row() {
     let harness = Harness::new().await;
     let plan_id = seeded_plan(&harness).await;
+    // The line is drafted first and is an act of its own -- it records a
+    // plan-revision update, since a line's structure is the plan's content. What
+    // this case counts is the market price's create.
+    let row = create_body("EU");
+    let line = line_for(&harness.allowed(), &harness, plan_id, &row, "audit-line")
+        .await
+        .expect("the line drafts");
     let before = plan_records(&harness, plan_id).await.len();
 
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(create_body("EU")),
-            &keyed("audit-create"),
-        ))
-        .await;
+    let response = price_under(
+        &harness.allowed(),
+        plan_id,
+        &line,
+        &row,
+        &keyed("audit-create"),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::CREATED);
     let price_id = body_json(response).await["price_id"]
         .as_str()
@@ -1403,15 +1727,16 @@ async fn a_price_patch_writes_exactly_one_record_naming_the_row() {
     let seeded = seed_price(&harness, plan_id, "EU").await;
     let before = plan_records(&harness, plan_id).await.len();
 
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "PATCH",
-            &price_path(plan_id, seeded.price_id),
-            Some(serde_json::json!({ "content": { "model_kind": "flat", "amount_minor": 99 } })),
-            &[("if-match", "\"0\"")],
-        ))
-        .await;
+    // The price door alone: a structure edit is the line's act and records a
+    // plan-revision update of its own, which is not what this case counts.
+    let response = reprice(
+        &harness.allowed(),
+        plan_id,
+        seeded.price_id,
+        &serde_json::json!({ "content": { "amount_minor": 99 } }),
+        &[("if-match", "\"0\"")],
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let records = plan_records(&harness, plan_id).await;
@@ -1479,7 +1804,7 @@ async fn a_refused_price_write_leaves_no_record_of_having_happened() {
     for (method, body) in [
         (
             "PATCH",
-            Some(serde_json::json!({ "content": { "model_kind": "flat", "amount_minor": 99 } })),
+            Some(serde_json::json!({ "money": { "amount_minor": 99 } })),
         ),
         ("DELETE", None),
     ] {
@@ -1511,15 +1836,15 @@ async fn every_price_record_extends_the_plans_own_segment() {
     let plan_id = seeded_plan(&harness).await;
     let seeded = seed_price(&harness, plan_id, "EU").await;
 
-    harness
-        .allowed()
-        .send(with_headers(
-            "PATCH",
-            &price_path(plan_id, seeded.price_id),
-            Some(serde_json::json!({ "content": { "model_kind": "flat", "amount_minor": 99 } })),
-            &[("if-match", "\"0\"")],
-        ))
-        .await;
+    revise(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        seeded.price_id,
+        serde_json::json!({ "content": { "model_kind": "flat", "amount_minor": 99 } }),
+        &[("if-match", "\"0\"")],
+    )
+    .await;
 
     let chains: std::collections::BTreeSet<Uuid> = rest_support::audit_rows(&harness)
         .await
@@ -1550,7 +1875,7 @@ async fn every_price_record_carries_the_before_and_after_state_its_action_implie
     for (method, body, tag) in [
         (
             "PATCH",
-            Some(serde_json::json!({ "content": { "model_kind": "flat", "amount_minor": 99 } })),
+            Some(serde_json::json!({ "money": { "amount_minor": 99 } })),
             "\"0\"",
         ),
         ("DELETE", None, "\"1\""),
@@ -1625,38 +1950,37 @@ async fn two_lines_of_one_market_render_two_distinct_keys() {
     let plan_id = seeded_plan(&harness).await;
 
     let author = async |meter: &str, key: &str| {
-        let response = harness
-            .allowed()
-            .send(with_headers(
-                "POST",
-                &prices_path(plan_id),
-                Some(serde_json::json!({
-                        "scope_key": {
-                "sku_id": rest_support::resource_sku(meter),
-                            "currency": "USD",
-                            "region": "EU",
-                            "phase": harness_phase(),
-                            "price_eligibility": "all_subscriptions",
-                            "charge_kind": "usage",
-                            "cohort": serde_json::Value::Null
-                        },
-                        "content": {
-                            "model_kind": "per_unit",
-                            "amount_minor": 700,
-                            "tax_inclusive": false,
-                            "billing_granularity": "per_hour"
-                        }
-                    })),
-                &keyed(key),
-            ))
-            .await;
+        let response = author(
+            &harness.allowed(),
+            &harness,
+            plan_id,
+            serde_json::json!({
+                    "scope_key": {
+            "sku_id": rest_support::resource_sku(meter),
+                        "currency": "USD",
+                        "region": "EU",
+                        "phase": harness_phase(),
+                        "price_eligibility": "all_subscriptions",
+                        "charge_kind": "usage",
+                        "cohort": serde_json::Value::Null
+                    },
+                    "content": {
+                        "model_kind": "per_unit",
+                        "amount_minor": 700,
+                        "tax_inclusive": false,
+                        "billing_granularity": "per_hour"
+                    }
+                }),
+            &keyed(key),
+        )
+        .await;
         assert_eq!(
             response.status(),
             StatusCode::CREATED,
             "{:?}",
             response.body()
         );
-        body_json(response).await
+        resolved(&harness, response).await
     };
 
     let cloudlets = author("cloudlets", "d196-view-1").await;
@@ -1703,17 +2027,16 @@ async fn two_spellings_of_one_meter_are_one_key_on_the_wire_too() {
     let harness = Harness::new().await;
     let plan_id = seeded_plan(&harness).await;
 
-    let padded = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(usage_create_body("EU", "cloudlets ")),
-            &keyed("ws-meter-1"),
-        ))
-        .await;
+    let padded = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        usage_create_body("EU", "cloudlets "),
+        &keyed("ws-meter-1"),
+    )
+    .await;
     assert_eq!(padded.status(), StatusCode::CREATED, "{:?}", padded.body());
-    let created = body_json(padded).await;
+    let created = resolved(&harness, padded).await;
     assert_eq!(
         created["scope_key"]["sku_id"],
         serde_json::json!(rest_support::resource_sku("cloudlets")),
@@ -1726,15 +2049,14 @@ async fn two_spellings_of_one_meter_are_one_key_on_the_wire_too() {
          resubmits a line the update guard recognises"
     );
 
-    let clash = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(usage_create_body("EU", "cloudlets")),
-            &keyed("ws-meter-2"),
-        ))
-        .await;
+    let clash = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        usage_create_body("EU", "cloudlets"),
+        &keyed("ws-meter-2"),
+    )
+    .await;
     assert_eq!(clash.status(), StatusCode::CONFLICT);
     assert_eq!(problem_code(clash).await, "DUPLICATE_SCOPE_KEY");
     assert_eq!(
@@ -1761,59 +2083,49 @@ async fn a_metered_row_may_patch_while_echoing_the_key_it_cannot_fully_name() {
     let harness = Harness::new().await;
     let plan_id = seeded_plan(&harness).await;
 
-    let create = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(serde_json::json!({
-                "scope_key": {
-            "sku_id": rest_support::resource_sku("cloudlets"),
-                    "currency": "USD",
-                    "region": "EU",
-                    "phase": harness_phase(),
-                    "price_eligibility": "all_subscriptions",
-                    "charge_kind": "usage",
-                    "cohort": serde_json::Value::Null
-                },
-                "content": {
-                    "model_kind": "per_unit",
-                    "amount_minor": 700,
-                    "tax_inclusive": false,
-                    "billing_granularity": "per_hour"
-                }
-            })),
-            &keyed("d196-clause3-create"),
-        ))
-        .await;
+    let create = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        serde_json::json!({
+            "scope_key": {
+        "sku_id": rest_support::resource_sku("cloudlets"),
+                "currency": "USD",
+                "region": "EU",
+                "phase": harness_phase(),
+                "price_eligibility": "all_subscriptions",
+                "charge_kind": "usage",
+                "cohort": serde_json::Value::Null
+            },
+            "content": {
+                "model_kind": "per_unit",
+                "amount_minor": 700,
+                "tax_inclusive": false,
+                "billing_granularity": "per_hour"
+            }
+        }),
+        &keyed("d196-clause3-create"),
+    )
+    .await;
     assert_eq!(create.status(), StatusCode::CREATED, "{:?}", create.body());
     let price_id = price_rows(&harness, plan_id).await[0].price_id;
 
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "PATCH",
-            &price_path(plan_id, price_id),
-            Some(serde_json::json!({
-                "scope_key": {
-            "sku_id": rest_support::resource_sku("cloudlets"),
-                    "currency": "USD",
-                    "region": "EU",
-                    "phase": harness_phase(),
-                    "price_eligibility": "all_subscriptions",
-                    "charge_kind": "usage",
-                    "cohort": serde_json::Value::Null
-                },
-                "content": {
-                    "model_kind": "per_unit",
-                    "amount_minor": 900,
-                    "tax_inclusive": false,
-                    "billing_granularity": "per_hour"
-                }
-            })),
-            &[("if-match", "\"0\"")],
-        ))
-        .await;
+    let response = revise(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        price_id,
+        serde_json::json!({
+            "content": {
+                "model_kind": "per_unit",
+                "amount_minor": 900,
+                "tax_inclusive": false,
+                "billing_granularity": "per_hour"
+            }
+        }),
+        &[("if-match", "\"0\"")],
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::OK, "{:?}", response.body());
     let after = price_rows(&harness, plan_id).await;
@@ -1851,56 +2163,55 @@ async fn a_patch_that_re_rates_a_per_unit_row_moves_the_stored_rate() {
     let harness = Harness::new().await;
     let plan_id = seeded_plan(&harness).await;
 
-    let create = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(serde_json::json!({
-                "scope_key": {
-            "sku_id": rest_support::OFFER_SKU,
-                    "currency": "USD",
-                    "region": "EU",
-                    "phase": harness_phase(),
-                    "price_eligibility": "all_subscriptions",
-                    "charge_kind": "recurring",
-                    "cohort": serde_json::Value::Null
-                },
-                "content": {
-                    "model_kind": "per_unit",
-                    // Neither rate is a whole number of minor units, and neither is
-                    // the other scaled by a power of ten: a slip between the wire's
-                    // nano scale and the minor-unit one lands on a number these
-                    // assertions refuse rather than on a plausible price.
-                    "unit_rate_nano_minor": 1_234_567_891_i64,
-                    "quantity_source": "manual",
-                    "manual_quantity": 12,
-                    "tax_inclusive": false
-                }
-            })),
-            &keyed("per-unit-re-rate"),
-        ))
-        .await;
+    let create = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        serde_json::json!({
+            "scope_key": {
+        "sku_id": rest_support::OFFER_SKU,
+                "currency": "USD",
+                "region": "EU",
+                "phase": harness_phase(),
+                "price_eligibility": "all_subscriptions",
+                "charge_kind": "recurring",
+                "cohort": serde_json::Value::Null
+            },
+            "content": {
+                "model_kind": "per_unit",
+                // Neither rate is a whole number of minor units, and neither is
+                // the other scaled by a power of ten: a slip between the wire's
+                // nano scale and the minor-unit one lands on a number these
+                // assertions refuse rather than on a plausible price.
+                "unit_rate_nano_minor": 1_234_567_891_i64,
+                "quantity_source": "manual",
+                "manual_quantity": 12,
+                "tax_inclusive": false
+            }
+        }),
+        &keyed("per-unit-re-rate"),
+    )
+    .await;
     assert_eq!(create.status(), StatusCode::CREATED, "{:?}", create.body());
     let price_id = price_rows(&harness, plan_id).await[0].price_id;
 
-    let patched = harness
-        .allowed()
-        .send(with_headers(
-            "PATCH",
-            &price_path(plan_id, price_id),
-            Some(serde_json::json!({
-                "content": {
-                    "model_kind": "per_unit",
-                    "unit_rate_nano_minor": 987_654_321_i64,
-                    "quantity_source": "manual",
-                    "manual_quantity": 12,
-                    "tax_inclusive": false
-                }
-            })),
-            &[("if-match", "\"0\"")],
-        ))
-        .await;
+    let patched = revise(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        price_id,
+        serde_json::json!({
+            "content": {
+                "model_kind": "per_unit",
+                "unit_rate_nano_minor": 987_654_321_i64,
+                "quantity_source": "manual",
+                "manual_quantity": 12,
+                "tax_inclusive": false
+            }
+        }),
+        &[("if-match", "\"0\"")],
+    )
+    .await;
     assert_eq!(patched.status(), StatusCode::OK, "{:?}", patched.body());
 
     let after = price_rows(&harness, plan_id).await;
@@ -1937,51 +2248,50 @@ async fn a_patch_that_moves_the_usage_line_is_refused_by_its_code() {
     let harness = Harness::new().await;
     let plan_id = seeded_plan(&harness).await;
 
-    let create = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(serde_json::json!({
-                "scope_key": {
-            "sku_id": rest_support::resource_sku("cloudlets"),
-                    "currency": "USD",
-                    "region": "EU",
-                    "phase": harness_phase(),
-                    "price_eligibility": "all_subscriptions",
-                    "charge_kind": "usage",
-                    "cohort": serde_json::Value::Null
-                },
-                "content": {
-                    "model_kind": "per_unit",
-                    "amount_minor": 700,
-                    "tax_inclusive": false,
-                    "billing_granularity": "per_hour"
-                }
-            })),
-            &keyed("d196-line-move-create"),
-        ))
-        .await;
+    let create = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        serde_json::json!({
+            "scope_key": {
+        "sku_id": rest_support::resource_sku("cloudlets"),
+                "currency": "USD",
+                "region": "EU",
+                "phase": harness_phase(),
+                "price_eligibility": "all_subscriptions",
+                "charge_kind": "usage",
+                "cohort": serde_json::Value::Null
+            },
+            "content": {
+                "model_kind": "per_unit",
+                "amount_minor": 700,
+                "tax_inclusive": false,
+                "billing_granularity": "per_hour"
+            }
+        }),
+        &keyed("d196-line-move-create"),
+    )
+    .await;
     assert_eq!(create.status(), StatusCode::CREATED, "{:?}", create.body());
     let price_id = price_rows(&harness, plan_id).await[0].price_id;
 
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "PATCH",
-            &price_path(plan_id, price_id),
-            Some(serde_json::json!({
-                "content": {
-                    "model_kind": "per_unit",
-                    "amount_minor": 700,
-                    "tax_inclusive": false,
-                    "meter": "egress_gb",
-                    "billing_granularity": "per_hour"
-                }
-            })),
-            &[("if-match", "\"0\"")],
-        ))
-        .await;
+    let response = revise(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        price_id,
+        serde_json::json!({
+            "content": {
+                "model_kind": "per_unit",
+                "amount_minor": 700,
+                "tax_inclusive": false,
+                "meter": "egress_gb",
+                "billing_granularity": "per_hour"
+            }
+        }),
+        &[("if-match", "\"0\"")],
+    )
+    .await;
 
     assert_eq!(
         problem_code(response).await,
@@ -2043,15 +2353,14 @@ async fn a_create_carrying_every_slice_ten_primitive_stores_all_of_them() {
         "discount_ref": "promo/spring"
     });
 
-    let created = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(body),
-            &keyed("slice-10-primitives"),
-        ))
-        .await;
+    let created = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        body,
+        &keyed("slice-10-primitives"),
+    )
+    .await;
     assert_eq!(created.status(), StatusCode::CREATED);
 
     let rows = price_rows(&harness, plan_id).await;
@@ -2096,15 +2405,14 @@ async fn a_create_naming_an_unknown_reservation_flavor_is_refused() {
     body["content"]["reserved_rate_nano_minor"] = serde_json::json!(250_000_000_000_i64);
     body["content"]["reservation_flavor"] = serde_json::json!("burst");
 
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(body),
-            &keyed("unknown-flavor"),
-        ))
-        .await;
+    let response = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        body,
+        &keyed("unknown-flavor"),
+    )
+    .await;
 
     assert_refused_naming(response, "reservation_flavor").await;
     assert!(
@@ -2137,15 +2445,14 @@ async fn a_row_on_a_plan_this_tenant_does_not_have_is_refused() {
     let harness = Harness::new().await;
     let absent = Uuid::now_v7();
 
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(absent),
-            Some(create_body("EU")),
-            &keyed("absent-plan-1"),
-        ))
-        .await;
+    let response = author(
+        &harness.allowed(),
+        &harness,
+        absent,
+        create_body("EU"),
+        &keyed("absent-plan-1"),
+    )
+    .await;
 
     assert_eq!(
         response.status(),
@@ -2173,15 +2480,14 @@ async fn a_row_on_a_plan_this_tenant_does_have_still_lands() {
     let harness = Harness::new().await;
     let plan_id = seeded_plan(&harness).await;
 
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(create_body("EU")),
-            &keyed("present-plan-1"),
-        ))
-        .await;
+    let response = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        create_body("EU"),
+        &keyed("present-plan-1"),
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::CREATED);
     assert_eq!(price_rows(&harness, plan_id).await.len(), 1);
@@ -2205,15 +2511,14 @@ async fn a_kind_illegal_on_the_charge_kind_is_refused_at_save() {
     let harness = Harness::new().await;
     let plan_id = seeded_plan(&harness).await;
 
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(flat_on_usage_body()),
-            &keyed("d312-flat-on-usage-1"),
-        ))
-        .await;
+    let response = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        flat_on_usage_body(),
+        &keyed("d312-flat-on-usage-1"),
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(
@@ -2232,15 +2537,14 @@ async fn an_eval_policy_field_off_its_charge_kind_is_refused_at_save() {
     let plan_id = seeded_plan(&harness).await;
     let body = create_body_with("EU", "billing_granularity", serde_json::json!("whole_unit"));
 
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(body),
-            &keyed("d312-granularity-1"),
-        ))
-        .await;
+    let response = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        body,
+        &keyed("d312-granularity-1"),
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(problem_code(response).await, "EVAL_POLICY_MISPLACED");
@@ -2266,15 +2570,14 @@ async fn an_eval_policy_field_is_refused_before_a_kind_has_been_picked() {
     body["content"] =
         serde_json::json!({ "billing_granularity": "whole_unit", "tax_inclusive": false });
 
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(body),
-            &keyed("d312-granularity-no-kind-1"),
-        ))
-        .await;
+    let response = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        body,
+        &keyed("d312-granularity-no-kind-1"),
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(problem_code(response).await, "EVAL_POLICY_MISPLACED");
@@ -2297,15 +2600,14 @@ async fn an_incomplete_row_still_saves() {
 
     let mut no_kind = create_body("EU");
     no_kind["content"] = serde_json::json!({ "tax_inclusive": false });
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(no_kind),
-            &keyed("d312-incomplete-1"),
-        ))
-        .await;
+    let response = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        no_kind,
+        &keyed("d312-incomplete-1"),
+    )
+    .await;
     assert_eq!(
         response.status(),
         StatusCode::CREATED,
@@ -2315,15 +2617,14 @@ async fn an_incomplete_row_still_saves() {
     let mut unpriced = create_body("EU");
     unpriced["scope_key"]["charge_kind"] = serde_json::json!("one_time");
     unpriced["content"] = serde_json::json!({ "model_kind": "flat", "tax_inclusive": false });
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(unpriced),
-            &keyed("d312-incomplete-2"),
-        ))
-        .await;
+    let response = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        unpriced,
+        &keyed("d312-incomplete-2"),
+    )
+    .await;
     assert_eq!(
         response.status(),
         StatusCode::CREATED,
@@ -2352,15 +2653,14 @@ async fn an_edit_into_a_key_contradiction_is_refused_on_patch() {
         "billing_granularity": "whole_unit",
         "tax_inclusive": false
     });
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(legal),
-            &keyed("d312-patch-1"),
-        ))
-        .await;
+    let response = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        legal,
+        &keyed("d312-patch-1"),
+    )
+    .await;
     assert_eq!(
         response.status(),
         StatusCode::CREATED,
@@ -2374,17 +2674,19 @@ async fn an_edit_into_a_key_contradiction_is_refused_on_patch() {
         .to_owned();
 
     // The edit the picker used to offer: `flat`, on a usage key.
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "PATCH",
-            &price_path(plan_id, price_id.parse().expect("uuid")),
-            Some(serde_json::json!({
-                "content": { "model_kind": "flat", "amount_minor": 300, "tax_inclusive": false }
-            })),
-            &[("if-match", tag.as_str())],
-        ))
-        .await;
+    // `model_kind` is the line's, so the contradiction is reached through the line
+    // door -- which judges it against the same frozen key, with the same code.
+    let response = revise(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        price_id.parse::<Uuid>().expect("uuid"),
+        serde_json::json!({
+            "content": { "model_kind": "flat", "amount_minor": 300, "tax_inclusive": false }
+        }),
+        &[("if-match", tag.as_str())],
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(
@@ -2469,31 +2771,22 @@ async fn two_resource_skus_sharing_a_unit_are_two_rows() {
     ] {
         let mut body = usage_create_body("EU", "GB-hour");
         body["scope_key"]["sku_id"] = serde_json::json!(sku);
-        let response = harness
-            .allowed()
-            .send(with_headers(
-                "POST",
-                &prices_path(plan_id),
-                Some(body),
-                &keyed(key),
-            ))
-            .await;
+        let response = author(&harness.allowed(), &harness, plan_id, body, &keyed(key)).await;
         assert_eq!(response.status(), StatusCode::CREATED);
-        let response = body_json(response).await;
+        let response = resolved(&harness, response).await;
         assert_eq!(response["scope_key"]["sku_id"], serde_json::json!(sku));
         assert_eq!(response["content"]["meter"], "GB-hour");
     }
     let mut body = usage_create_body("EU", "GB-hour");
     body["scope_key"]["sku_id"] = serde_json::json!(first_sku);
-    let duplicate = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(body),
-            &keyed("same-sku-again"),
-        ))
-        .await;
+    let duplicate = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        body,
+        &keyed("same-sku-again"),
+    )
+    .await;
     assert_eq!(duplicate.status(), StatusCode::CONFLICT);
     assert_eq!(problem_code(duplicate).await, "DUPLICATE_SCOPE_KEY");
     let rows = price_rows(&harness, plan_id).await;
@@ -2514,19 +2807,14 @@ async fn authored_meter_including_null_is_refused() {
     ] {
         let mut body = usage_create_body("EU", "GB-hour");
         body["content"]["meter"] = value;
-        let response = harness
-            .allowed()
-            .send(with_headers(
-                "POST",
-                &prices_path(plan_id),
-                Some(body),
-                &keyed(key),
-            ))
-            .await;
+        let response = author(&harness.allowed(), &harness, plan_id, body, &keyed(key)).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let response = body_json(response).await;
         assert_eq!(response["context"]["violations"][0]["type"], "VALIDATION");
-        assert_eq!(response["context"]["violations"][0]["subject"], "meter");
+        assert_eq!(
+            response["context"]["violations"][0]["subject"],
+            "structure.meter"
+        );
     }
     assert!(price_rows(&harness, plan_id).await.is_empty());
 }
@@ -2543,15 +2831,14 @@ async fn a_foreign_sellable_sku_is_refused() {
     let plan_id = seeded_plan(&harness).await;
     let mut body = usage_create_body("EU", "GB-hour");
     body["scope_key"]["sku_id"] = serde_json::json!(foreign);
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(body),
-            &keyed("foreign-offer"),
-        ))
-        .await;
+    let response = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        body,
+        &keyed("foreign-offer"),
+    )
+    .await;
     assert_eq!(problem_code(response).await, "ROW_SKU_SELLABLE");
     assert!(price_rows(&harness, plan_id).await.is_empty());
 }
@@ -2564,29 +2851,41 @@ async fn a_price_write_reads_the_registry_once_and_outage_writes_nothing() {
     let catalog = std::sync::Arc::new(MutableCatalog::new());
     let harness = Harness::new_with_catalog(catalog.clone()).await;
     let plan_id = seeded_plan(&harness).await;
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(usage_create_body("EU", "GB-hour")),
-            &keyed("one-listing"),
-        ))
-        .await;
+    // One read per door: the line resolves its SKU when it is drafted, the price
+    // when it is filed. The count is taken around the price door alone.
+    let row = usage_create_body("EU", "GB-hour");
+    let line = line_for(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        &row,
+        "one-listing-line",
+    )
+    .await
+    .expect("the line drafts");
+    let drafted = catalog.reads.load(Ordering::SeqCst);
+    assert_eq!(drafted, 1, "the line door read the registry once");
+    let response = price_under(
+        &harness.allowed(),
+        plan_id,
+        &line,
+        &row,
+        &keyed("one-listing"),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::CREATED);
-    assert_eq!(catalog.reads.load(Ordering::SeqCst), 1);
+    assert_eq!(catalog.reads.load(Ordering::SeqCst), drafted + 1);
     catalog.unavailable.store(true, Ordering::SeqCst);
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(usage_create_body("EU", "TB-hour")),
-            &keyed("outage"),
-        ))
-        .await;
+    let response = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        usage_create_body("EU", "TB-hour"),
+        &keyed("outage"),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(catalog.reads.load(Ordering::SeqCst), 2);
+    assert_eq!(catalog.reads.load(Ordering::SeqCst), drafted + 2);
     assert_eq!(price_rows(&harness, plan_id).await.len(), 1);
 }
 
@@ -2600,15 +2899,14 @@ async fn a_registry_outage_fails_the_save_and_says_for_how_long_to_wait() {
     let harness = Harness::new_with_catalog(catalog.clone()).await;
     let plan_id = seeded_plan(&harness).await;
     *catalog.retry_after_seconds.lock().expect("fixture mutex") = Some(12);
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(usage_create_body("EU", "GB-hour")),
-            &keyed("outage-retry-after"),
-        ))
-        .await;
+    let response = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        usage_create_body("EU", "GB-hour"),
+        &keyed("outage-retry-after"),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(
         response
@@ -2634,18 +2932,36 @@ async fn a_row_save_reads_only_the_two_skus_it_names() {
     let harness = Harness::new_with_catalog(std::sync::Arc::new(counting.clone())).await;
     let plan_id = seeded_plan(&harness).await;
     let body = usage_create_body("EU", "GB-hour");
-    let created = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(body),
-            &keyed("named-sku-read"),
-        ))
-        .await;
+    // One narrowed read per **door**; the count is taken around the price door.
+    let line = line_for(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        &body,
+        "named-sku-line",
+    )
+    .await
+    .expect("the line drafts");
+    let drafted = counting.get_calls();
+    assert_eq!(
+        drafted, 1,
+        "the line door makes one narrowed read of its own"
+    );
+    let created = price_under(
+        &harness.allowed(),
+        plan_id,
+        &line,
+        &body,
+        &keyed("named-sku-read"),
+    )
+    .await;
     assert_eq!(created.status(), StatusCode::CREATED);
     assert_eq!(counting.list_calls(), 0, "a save must not list the catalog");
-    assert_eq!(counting.get_calls(), 1, "one narrowed read per save");
+    assert_eq!(
+        counting.get_calls(),
+        drafted + 1,
+        "one narrowed read per save"
+    );
     let mut asked = counting.last_asked_ids();
     asked.sort_unstable();
     let mut expected = vec![
@@ -2693,17 +3009,19 @@ async fn a_successful_create_replays_without_reading_a_changed_or_unavailable_re
     let h = Harness::new_with_catalog(catalog.clone()).await;
     let plan = seeded_plan(&h).await;
     let body = usage_create_body("EU", "GB-hour");
-    let first = h
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan),
-            Some(body.clone()),
-            &keyed("registry-independent-replay"),
-        ))
-        .await;
+    let first = author(
+        &h.allowed(),
+        &h,
+        plan,
+        body.clone(),
+        &keyed("registry-independent-replay"),
+    )
+    .await;
     assert_eq!(first.status(), StatusCode::CREATED);
     let original = body_json(first).await;
+    // Two reads so far: the line door's and the price door's. A replay adds none.
+    let authored = catalog.reads.load(Ordering::SeqCst);
+    assert_eq!(authored, 2);
     catalog
         .listing
         .lock()
@@ -2714,18 +3032,17 @@ async fn a_successful_create_replays_without_reading_a_changed_or_unavailable_re
         .status = "deprecated".into();
     for unavailable in [false, true] {
         catalog.unavailable.store(unavailable, Ordering::SeqCst);
-        let replay = h
-            .allowed()
-            .send(with_headers(
-                "POST",
-                &prices_path(plan),
-                Some(body.clone()),
-                &keyed("registry-independent-replay"),
-            ))
-            .await;
+        let replay = author(
+            &h.allowed(),
+            &h,
+            plan,
+            body.clone(),
+            &keyed("registry-independent-replay"),
+        )
+        .await;
         assert_eq!(replay.status(), StatusCode::CREATED);
         assert_eq!(body_json(replay).await, original);
-        assert_eq!(catalog.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(catalog.reads.load(Ordering::SeqCst), authored);
     }
     assert_eq!(price_rows(&h, plan).await.len(), 1);
 }
@@ -2737,15 +3054,14 @@ async fn row_descriptor_overrides_validate_and_null_clears_them() {
     let plan_id = seeded_plan(&harness).await;
     let mut authored = create_body("EU");
     authored["content"]["invoice_line_template"] = serde_json::json!("{sku_typo}");
-    let refused = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(authored.clone()),
-            &keyed("descriptor-invalid"),
-        ))
-        .await;
+    let refused = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        authored.clone(),
+        &keyed("descriptor-invalid"),
+    )
+    .await;
     assert!(refused.status().is_client_error());
     assert!(
         body_json(refused)
@@ -2756,32 +3072,31 @@ async fn row_descriptor_overrides_validate_and_null_clears_them() {
     assert!(price_rows(&harness, plan_id).await.is_empty());
     authored["content"]["invoice_line_template"] = serde_json::json!("{{SKU}} {sku} - {period}");
     authored["content"]["gl_code_ref"] = serde_json::json!("4100");
-    let created = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(authored.clone()),
-            &keyed("descriptor-valid"),
-        ))
-        .await;
+    let created = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        authored.clone(),
+        &keyed("descriptor-valid"),
+    )
+    .await;
     assert_eq!(created.status(), StatusCode::CREATED);
     let tag = etag_of(&created).expect("price tag");
-    let body = body_json(created).await;
+    let body = resolved(&harness, created).await;
     assert_eq!(body["content"]["gl_code_ref"], "4100");
     assert!(body["resolved_gl_code"].is_null());
     let price_id = Uuid::parse_str(body["price_id"].as_str().expect("id")).expect("UUID");
     authored["content"]["invoice_line_template"] = serde_json::Value::Null;
     authored["content"]["gl_code_ref"] = serde_json::Value::Null;
-    let cleared = harness
-        .allowed()
-        .send(with_headers(
-            "PATCH",
-            &price_path(plan_id, price_id),
-            Some(serde_json::json!({"content": authored["content"]})),
-            &[("if-match", &tag)],
-        ))
-        .await;
+    let cleared = revise(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        price_id,
+        serde_json::json!({"content": authored["content"]}),
+        &[("if-match", &tag)],
+    )
+    .await;
     assert_eq!(cleared.status(), StatusCode::OK);
     let body = body_json(cleared).await;
     assert!(body["content"]["invoice_line_template"].is_null());
@@ -2813,15 +3128,14 @@ async fn creating_a_row_that_names_a_deprecated_sku_is_refused() {
         ])))
         .await;
     let plan_id = seeded_plan(&harness).await;
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(usage_create_body("EU", "GB-hour")),
-            &keyed("create-deprecated"),
-        ))
-        .await;
+    let response = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        usage_create_body("EU", "GB-hour"),
+        &keyed("create-deprecated"),
+    )
+    .await;
     assert_eq!(
         response.status(),
         StatusCode::BAD_REQUEST,
@@ -2832,7 +3146,7 @@ async fn creating_a_row_that_names_a_deprecated_sku_is_refused() {
 }
 
 #[tokio::test]
-async fn patching_a_drafts_sku_id_onto_a_deprecated_sku_is_refused() {
+async fn a_priced_draft_cannot_reach_a_deprecated_sku_through_a_second_line() {
     let live = rest_support::resource_sku("GB-hour");
     let onto = Uuid::from_u128(0x3709);
     let harness =
@@ -2843,50 +3157,39 @@ async fn patching_a_drafts_sku_id_onto_a_deprecated_sku_is_refused() {
         ])))
         .await;
     let plan_id = seeded_plan(&harness).await;
-    let created = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(usage_create_body("EU", "GB-hour")),
-            &keyed("patch-onto-deprecated"),
-        ))
-        .await;
+    let created = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        usage_create_body("EU", "GB-hour"),
+        &keyed("patch-onto-deprecated"),
+    )
+    .await;
     assert_eq!(created.status(), StatusCode::CREATED);
-    let tag = etag_of(&created).expect("create answers a tag");
-    let body = body_json(created).await;
-    let price_id = Uuid::parse_str(body["price_id"].as_str().expect("id")).expect("UUID");
-    let mut content = body["content"].clone();
-    content
-        .as_object_mut()
-        .expect("content object")
-        .remove("meter");
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "PATCH",
-            &price_path(plan_id, price_id),
-            Some(serde_json::json!({
-                "scope_key": {
-                    "sku_id": onto,
-                    "currency": body["scope_key"]["currency"],
-                    "region": body["scope_key"]["region"],
-                    "phase": body["scope_key"]["phase"],
-                    "price_eligibility": body["scope_key"]["price_eligibility"],
-                    "charge_kind": body["scope_key"]["charge_kind"],
-                    "cohort": body["scope_key"]["cohort"]
-                },
-                "content": content
-            })),
-            &[("if-match", tag.as_str())],
-        ))
-        .await;
+    // **A row's SKU is an axis of its line and is never edited**, so the old form of
+    // this case -- a `PATCH` naming another `sku_id` -- has no request to send: the
+    // monetary door has no `scope_key` member and the line door has no axes. What is
+    // left of "a priced draft must not reach a deprecated SKU" is the only road that
+    // still leads there: drafting a second line on it, beside the live one.
+    let mut onto_deprecated = usage_create_body("EU", "GB-hour");
+    onto_deprecated["scope_key"]["sku_id"] = serde_json::json!(onto);
+    let response = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        onto_deprecated,
+        &keyed("line-onto-deprecated"),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = body_json(response).await;
     assert!(
         body.to_string().contains("ROW_SKU_DEPRECATED"),
-        "patching sku_id onto a deprecated SKU must name ROW_SKU_DEPRECATED, got {body}"
+        "drafting a line onto a deprecated SKU must name ROW_SKU_DEPRECATED, got {body}"
     );
+    let rows = price_rows(&harness, plan_id).await;
+    assert_eq!(rows.len(), 1, "the live row stands alone");
+    assert_eq!(rows[0].scope_key.sku_id().as_uuid(), live);
 }
 
 #[tokio::test]
@@ -3001,15 +3304,14 @@ async fn a_price_write_reads_the_registry_outside_its_transaction() {
     let harness = Harness::new_with_catalog(catalog).await;
     let plan_id = seeded_plan(&harness).await;
 
-    let response = harness
-        .allowed()
-        .send(with_headers(
-            "POST",
-            &prices_path(plan_id),
-            Some(create_body("EU")),
-            &keyed("registry-outside-the-tx"),
-        ))
-        .await;
+    let response = author(
+        &harness.allowed(),
+        &harness,
+        plan_id,
+        create_body("EU"),
+        &keyed("registry-outside-the-tx"),
+    )
+    .await;
 
     assert_eq!(
         response.status(),

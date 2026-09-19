@@ -151,6 +151,7 @@ fn conflicts_are_409() {
     // primary key refused, which §5 types 409 outright. It answered `500` and
     // advised a retry until 2026-08-17, for a class no retry can fix.
     assert_eq!(status(DomainError::PhaseIdInUse(detail())), 409);
+    assert_eq!(status(DomainError::ChargeLineInUse(detail())), 409);
     assert_eq!(status(DomainError::StaleVersion(detail())), 409);
     assert_eq!(
         status(DomainError::IdempotencyPayloadMismatch(detail())),
@@ -965,6 +966,7 @@ fn declared_status(err: &DomainError) -> u16 {
         // -- 409: a conflict on mutable state, resolved by refetching.
         D::DuplicateScopeKey(_)
         | D::PhaseIdInUse(_)
+        | D::ChargeLineInUse(_)
         | D::StaleVersion(_)
         | D::IdempotencyPayloadMismatch(_)
         | D::IdempotencyKeyInFlight(_)
@@ -1057,6 +1059,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
         },
         D::DuplicateScopeKey(d()),
         D::PhaseIdInUse(d()),
+        D::ChargeLineInUse(d()),
         D::StaleVersion(d()),
         D::IdempotencyPayloadMismatch(d()),
         D::IdempotencyKeyInFlight(d()),
@@ -1095,7 +1098,7 @@ fn one_of_every_variant() -> Vec<DomainError> {
 /// gate [`declared_status`]'s exhaustive match cannot give: a new variant makes
 /// that match fail to compile, and this makes the roster that is *missing* the
 /// value fail the case. Bump it in the same edit that adds the variant to both.
-const DOMAIN_ERROR_VARIANTS: usize = 71;
+const DOMAIN_ERROR_VARIANTS: usize = 72;
 
 #[test]
 fn every_domain_error_variant_lands_in_its_declared_category() {

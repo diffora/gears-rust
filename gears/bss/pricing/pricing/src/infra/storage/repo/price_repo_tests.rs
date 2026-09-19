@@ -118,6 +118,13 @@ fn row_of(key: &MarketPriceScopeKey) -> PriceGraph {
             created_at_utc: utc_ymd_hms(2099, 8, 5, 0, 0, 0),
             row_version: 0,
         },
+        market: market_price::Model {
+            tenant_id: uuid::Uuid::from_u128(0x_7e),
+            market_price_id: uuid::Uuid::from_u128(0x_a1),
+            charge_line_id: uuid::Uuid::from_u128(0xc3),
+            currency: key.currency().as_str().to_owned(),
+            region: key.region().as_str().to_owned(),
+        },
         line: charge_line::Model {
             tenant_id: uuid::Uuid::from_u128(0x_7e),
             charge_line_id: uuid::Uuid::from_u128(0xc3),
@@ -168,13 +175,6 @@ fn row_of(key: &MarketPriceScopeKey) -> PriceGraph {
             created_by: ACTOR,
             created_at_utc: utc_ymd_hms(2099, 8, 5, 0, 0, 0),
             row_version: 0,
-        },
-        market: market_price::Model {
-            tenant_id: uuid::Uuid::from_u128(0x_7e),
-            market_price_id: uuid::Uuid::from_u128(0x_a1),
-            charge_line_id: uuid::Uuid::from_u128(0xc3),
-            currency: key.currency().as_str().to_owned(),
-            region: key.region().as_str().to_owned(),
         },
     }
 }

@@ -431,6 +431,9 @@ impl From<DomainError> for CanonicalError {
             // `plan_rules`' roster is the codes the publish pipeline produces, and
             // a constant filed there would read as a rule this gear does not have.
             D::PhaseIdInUse(detail) => aborted(detail, "PHASE_ID_IN_USE"),
+            // The line door's own refusal: a structure still priced is not deletable,
+            // and the remedy names the rows to delete first.
+            D::ChargeLineInUse(detail) => aborted(detail, "CHARGE_LINE_IN_USE"),
             D::StaleVersion(detail) => aborted(detail, "STALE_VERSION"),
             D::IdempotencyPayloadMismatch(detail) => {
                 aborted(detail, "IDEMPOTENCY_PAYLOAD_MISMATCH")
