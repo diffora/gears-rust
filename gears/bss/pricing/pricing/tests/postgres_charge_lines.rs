@@ -94,7 +94,7 @@ async fn the_four_normalized_tables_exist_on_a_fresh_boot() {
     let conn = pg.raw().await;
     let names = pg_support::catalog_strings(
         &conn,
-        "SELECT tablename FROM pg_tables WHERE schemaname = 'bss' AND tablename IN \
+        "SELECT tablename::text AS v FROM pg_tables WHERE schemaname = 'bss' AND tablename IN \
          ('pricing_charge_line','pricing_charge_line_version','pricing_market_price',\
          'pricing_charge_tier') ORDER BY tablename",
     )
@@ -269,6 +269,59 @@ async fn tier_geometry_requires_a_tiered_version() {
             "INSERT INTO bss.pricing_charge_tier (tenant_id, line_version_id, band_ordinal, \
              from_qty, to_qty) VALUES ('{TENANT}','{OTHER_VERSION}',0,0,100)"
         ),
+    )
+    .await;
+}
+
+/// **Two bands of one version cannot start at the same quantity.**
+///
+/// The table this geometry came from was keyed `(price_id, from_qty)` -- a band's
+/// identity was where it starts -- and the charge-line split moved the key to
+/// `band_ordinal` without carrying that refusal across. A fresh ordinal is
+/// exactly how a duplicate lower bound would arrive, so that is the row this
+/// case offers.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn a_second_band_on_one_lower_bound_is_refused() {
+    let pg = Pg::applied().await;
+    let conn = pg.raw().await;
+    seed(&conn).await;
+    must_succeed(
+        &conn,
+        &format!(
+            "INSERT INTO bss.pricing_charge_line_version (tenant_id, line_version_id, \
+             charge_line_id, plan_revision, lifecycle_state, model_kind, created_by, \
+             created_at_utc, row_version) VALUES \
+             ('{TENANT}','{OTHER_VERSION}','{LINE}',2,'draft','graduated','{TENANT}',\
+             '2026-01-01T00:00:00Z',0)"
+        ),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &format!(
+            "INSERT INTO bss.pricing_charge_tier (tenant_id, line_version_id, band_ordinal, \
+             from_qty, to_qty) VALUES ('{TENANT}','{OTHER_VERSION}',0,0,100)"
+        ),
+    )
+    .await;
+
+    // The control: a different lower bound under a fresh ordinal is an ordinary band.
+    must_succeed(
+        &conn,
+        &format!(
+            "INSERT INTO bss.pricing_charge_tier (tenant_id, line_version_id, band_ordinal, \
+             from_qty, to_qty) VALUES ('{TENANT}','{OTHER_VERSION}',1,100,NULL)"
+        ),
+    )
+    .await;
+    must_be_rejected(
+        &conn,
+        &format!(
+            "INSERT INTO bss.pricing_charge_tier (tenant_id, line_version_id, band_ordinal, \
+             from_qty, to_qty) VALUES ('{TENANT}','{OTHER_VERSION}',2,0,50)"
+        ),
+        "uq_pricing_charge_tier_lower_bound",
     )
     .await;
 }

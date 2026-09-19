@@ -62,6 +62,8 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
+mod common;
+
 use std::time::Duration;
 
 use bss_pricing::infra::storage::migrations::Migrator;
@@ -280,7 +282,7 @@ const EXPECTED_RELATIONAL_CONSTRAINTS: &[&str] = &[
     "excl_pricing_group_membership_no_overlap: EXCLUDE USING gist (tenant_id WITH =, \
      payer_tenant_id WITH =, tstzrange(effective_from, effective_to, '[)'::text) WITH &&)",
     "excl_pricing_price_window_no_overlap: EXCLUDE USING gist (tenant_id WITH =, \
-     price_id WITH =, tstzrange(effective_from, effective_to, '[)'::text) WITH &&) \
+     market_price_id WITH =, tstzrange(effective_from, effective_to, '[)'::text) WITH &&) \
      WHERE ((state = ANY (ARRAY['scheduled'::text, 'active'::text])))",
     "fk_pricing_bulk_row_lock_operation: FOREIGN KEY (bulk_operation_id) \
      REFERENCES bss.pricing_bulk_operation(operation_id)",
@@ -292,6 +294,10 @@ const EXPECTED_RELATIONAL_CONSTRAINTS: &[&str] = &[
      REFERENCES bss.pricing_bundle_revshare_group(bundle_id, plan_revision, vendor_sku_id)",
     "fk_pricing_bundle_revshare_group_bundle: FOREIGN KEY (bundle_id) \
      REFERENCES bss.pricing_bundle(bundle_id)",
+    "fk_pricing_charge_line_version_line: FOREIGN KEY (tenant_id, charge_line_id) REFERENCES \
+     bss.pricing_charge_line(tenant_id, charge_line_id)",
+    "fk_pricing_charge_tier_version: FOREIGN KEY (tenant_id, line_version_id) REFERENCES \
+     bss.pricing_charge_line_version(tenant_id, line_version_id)",
     // The five composite keys onto `pricing_plan (plan_id, revision)`. Each is
     // the half `postgres_schema_plan_shape.rs` says a refusal cannot show: a
     // single-column key would refuse the same row and would let a child sit
@@ -302,20 +308,32 @@ const EXPECTED_RELATIONAL_CONSTRAINTS: &[&str] = &[
      REFERENCES bss.pricing_price(price_id)",
     "fk_pricing_draft_window_revision: FOREIGN KEY (plan_id, plan_revision) \
      REFERENCES bss.pricing_plan(plan_id, revision)",
+    "fk_pricing_market_price_line: FOREIGN KEY (tenant_id, charge_line_id) REFERENCES \
+     bss.pricing_charge_line(tenant_id, charge_line_id)",
     "fk_pricing_plan_addon_rule_revision: FOREIGN KEY (plan_id, plan_revision) \
      REFERENCES bss.pricing_plan(plan_id, revision)",
     "fk_pricing_plan_period_floor_cap_revision: FOREIGN KEY (plan_id, plan_revision) \
      REFERENCES bss.pricing_plan(plan_id, revision)",
     "fk_pricing_plan_phase_revision: FOREIGN KEY (plan_id, plan_revision) \
      REFERENCES bss.pricing_plan(plan_id, revision)",
+    "fk_pricing_price_line_plan: FOREIGN KEY (tenant_id, charge_line_id, plan_id) REFERENCES \
+     bss.pricing_charge_line(tenant_id, charge_line_id, plan_id)",
+    "fk_pricing_price_market_line: FOREIGN KEY (tenant_id, market_price_id, charge_line_id) \
+     REFERENCES bss.pricing_market_price(tenant_id, market_price_id, charge_line_id)",
     "fk_pricing_price_overlay_line_amount_line: FOREIGN KEY (tenant_id, overlay_revision, line_id) \
      REFERENCES bss.pricing_price_overlay_line(tenant_id, overlay_revision, line_id)",
     "fk_pricing_price_overlay_line_overlay: FOREIGN KEY (price_overlay_id, overlay_revision) \
      REFERENCES bss.pricing_price_overlay(price_overlay_id, revision)",
-    "fk_pricing_price_tier_band_price: FOREIGN KEY (price_id) \
-     REFERENCES bss.pricing_price(price_id)",
+    "fk_pricing_price_tier_band_price: FOREIGN KEY (tenant_id, price_id, line_version_id) \
+     REFERENCES bss.pricing_price(tenant_id, price_id, line_version_id)",
+    "fk_pricing_price_tier_band_tier: FOREIGN KEY (tenant_id, line_version_id, band_ordinal) \
+     REFERENCES bss.pricing_charge_tier(tenant_id, line_version_id, band_ordinal)",
+    "fk_pricing_price_version_line: FOREIGN KEY (tenant_id, line_version_id, charge_line_id) \
+     REFERENCES bss.pricing_charge_line_version(tenant_id, line_version_id, charge_line_id)",
     "fk_pricing_price_window_price: FOREIGN KEY (price_id) \
      REFERENCES bss.pricing_price(price_id)",
+    "fk_pricing_price_window_price_market: FOREIGN KEY (tenant_id, price_id, market_price_id) \
+     REFERENCES bss.pricing_price(tenant_id, price_id, market_price_id)",
     "fk_pricing_repricing_journal_applied_price: FOREIGN KEY (applied_price_id) \
      REFERENCES bss.pricing_price(price_id)",
     "fk_pricing_repricing_journal_price: FOREIGN KEY (price_id) \
@@ -326,11 +344,22 @@ const EXPECTED_RELATIONAL_CONSTRAINTS: &[&str] = &[
      REFERENCES bss.pricing_price(price_id)",
     "fk_pricing_window_baseline_revision: FOREIGN KEY (plan_id, plan_revision) \
      REFERENCES bss.pricing_plan(plan_id, revision)",
+    "uq_pricing_charge_line_id_plan: UNIQUE (tenant_id, charge_line_id, plan_id)",
+    "uq_pricing_charge_line_logical_scope: UNIQUE (tenant_id, plan_id, sku_id, price_overlay, \
+     phase, price_eligibility, charge_kind, cohort, dimension_key)",
+    "uq_pricing_charge_line_version_line: UNIQUE (tenant_id, line_version_id, charge_line_id)",
+    "uq_pricing_charge_line_version_revision: UNIQUE (tenant_id, charge_line_id, plan_revision)",
+    "uq_pricing_charge_tier_lower_bound: UNIQUE (tenant_id, line_version_id, from_qty)",
     // Table-level `UNIQUE`s (`contype = 'u'`): every other uniqueness in the chain
     // is a partial `CREATE UNIQUE INDEX`, which is why this list is short and
     // `EXPECTED_INDEXES` is not.
     "uq_pricing_draft_window_target: UNIQUE (tenant_id, plan_id, plan_revision, target_window_id)",
-    "uq_pricing_price_tier_band_lower_bound: UNIQUE (price_id, from_qty)",
+    "uq_pricing_market_price_line: UNIQUE (tenant_id, market_price_id, charge_line_id)",
+    "uq_pricing_market_price_scope: UNIQUE (tenant_id, charge_line_id, currency, region)",
+    "uq_pricing_price_id_market: UNIQUE (tenant_id, price_id, market_price_id)",
+    "uq_pricing_price_id_version: UNIQUE (tenant_id, price_id, line_version_id)",
+    "uq_pricing_price_tenant_id: UNIQUE (tenant_id, price_id)",
+    "uq_pricing_price_tier_band_ordinal: UNIQUE (price_id, band_ordinal)",
 ];
 
 /// Every table's primary key as `table: col, col` (D-236).
@@ -375,9 +404,15 @@ const EXPECTED_FUNCTIONS: &[&str] = &[
     "pricing_bundle_component_append_only",
     "pricing_bundle_revshare_append_only",
     "pricing_bundle_revshare_group_append_only",
+    "pricing_charge_line_append_only",
+    "pricing_charge_line_version_append_only",
+    "pricing_charge_tier_append_only",
+    "pricing_charge_tier_kind",
+    "pricing_charge_tier_parent_kind",
     // Slice 10's composite meter: one PL/pgSQL function, three SQLite triggers.
     "pricing_composite_meter_append_only",
     "pricing_draft_window_append_only",
+    "pricing_market_price_append_only",
     // Slice 11. One PL/pgSQL function carrying the five arms the SQLite mirror
     // spells as five triggers.
     "pricing_migration_append_only",
@@ -386,12 +421,12 @@ const EXPECTED_FUNCTIONS: &[&str] = &[
     "pricing_plan_period_floor_cap_append_only",
     "pricing_plan_phase_append_only",
     "pricing_price_append_only",
+    "pricing_price_grandfather_class",
     "pricing_price_overlay_append_only",
     "pricing_price_overlay_line_amount_append_only",
     "pricing_price_overlay_line_append_only",
+    "pricing_price_package_price_kind",
     "pricing_price_tier_band_append_only",
-    "pricing_price_tier_band_kind",
-    "pricing_price_tier_band_parent_kind",
     "pricing_price_window_append_only",
     // Slice 12: one PL/pgSQL function, four SQLite triggers.
     "pricing_repricing_journal_progress",
@@ -416,20 +451,26 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_bundle_component_append_only",
     "trg_pricing_bundle_revshare_append_only",
     "trg_pricing_bundle_revshare_group_append_only",
+    "trg_pricing_charge_line_append_only",
+    "trg_pricing_charge_line_version_append_only",
+    "trg_pricing_charge_tier_append_only",
+    "trg_pricing_charge_tier_kind",
+    "trg_pricing_charge_tier_parent_kind",
     "trg_pricing_composite_meter_append_only",
     "trg_pricing_draft_window_append_only",
+    "trg_pricing_market_price_append_only",
     "trg_pricing_migration_append_only",
     "trg_pricing_plan_addon_rule_append_only",
     "trg_pricing_plan_append_only",
     "trg_pricing_plan_period_floor_cap_append_only",
     "trg_pricing_plan_phase_append_only",
     "trg_pricing_price_append_only",
+    "trg_pricing_price_grandfather_class",
     "trg_pricing_price_overlay_append_only",
     "trg_pricing_price_overlay_line_amount_append_only",
     "trg_pricing_price_overlay_line_append_only",
+    "trg_pricing_price_package_price_kind",
     "trg_pricing_price_tier_band_append_only",
-    "trg_pricing_price_tier_band_kind",
-    "trg_pricing_price_tier_band_parent_kind",
     "trg_pricing_price_window_append_only",
     "trg_pricing_repricing_journal_progress",
     "trg_pricing_snapshot_provenance_frozen",
@@ -459,6 +500,7 @@ const EXPECTED_REVISION_COLUMNS: &[&str] = &[
     "pricing_bundle_revshare.plan_revision bigint",
     "pricing_bundle_revshare_group.plan_revision bigint",
     "pricing_catalog_version_ref.subject_revision bigint",
+    "pricing_charge_line_version.plan_revision bigint",
     "pricing_composite_meter.plan_revision bigint",
     "pricing_draft_window.plan_revision bigint",
     "pricing_migration.source_revision bigint",
@@ -466,6 +508,7 @@ const EXPECTED_REVISION_COLUMNS: &[&str] = &[
     "pricing_plan_addon_rule.plan_revision bigint",
     "pricing_plan_period_floor_cap.plan_revision bigint",
     "pricing_plan_phase.plan_revision bigint",
+    "pricing_price.plan_revision bigint",
     "pricing_price_overlay.revision bigint",
     "pricing_price_overlay_line.overlay_revision bigint",
     "pricing_price_overlay_line_amount.overlay_revision bigint",
@@ -489,12 +532,11 @@ const EXPECTED_PARTIAL_INDEXES: &[&str] = &[
     "uq_pricing_plan_current",
     "uq_pricing_plan_open_draft",
     "uq_pricing_plan_phase_terminal",
+    "uq_pricing_price_market_draft",
     // D-107. Without the predicate a draft revision of a published overlay
     // collides with itself and an overlay is authorable exactly once.
     "uq_pricing_price_overlay_open_draft",
     "uq_pricing_price_overlay_precedence",
-    "uq_pricing_price_scope_key_current",
-    "uq_pricing_price_scope_key_draft",
 ];
 
 /// Every index the chain declares, **by name** — the whole set, of which
@@ -529,11 +571,15 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_bundle_revshare_revision",
     "idx_pricing_bundle_tenant",
     "idx_pricing_catalog_version_ref_version",
+    "idx_pricing_charge_line_plan",
+    "idx_pricing_charge_line_version_line",
+    "idx_pricing_charge_tier_version",
     "idx_pricing_composite_meter_revision",
     "idx_pricing_draft_window_revision",
     "idx_pricing_group_membership_payer",
     "idx_pricing_group_membership_walk",
     "idx_pricing_idempotency_dedup_created",
+    "idx_pricing_market_price_line",
     "idx_pricing_migration_due",
     "idx_pricing_migration_source",
     "idx_pricing_migration_target",
@@ -543,6 +589,8 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_plan_period_floor_cap_revision",
     "idx_pricing_plan_phase_revision",
     "idx_pricing_plan_tenant",
+    "idx_pricing_price_line",
+    "idx_pricing_price_market",
     "idx_pricing_price_overlay_line_amount_tenant",
     "idx_pricing_price_overlay_line_plan",
     "idx_pricing_price_overlay_line_revision",
@@ -551,6 +599,7 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_price_supersedes",
     "idx_pricing_price_tier_band_price",
     "idx_pricing_price_window_due",
+    "idx_pricing_price_window_market",
     "idx_pricing_price_window_price",
     "idx_pricing_read_model_resolve",
     "idx_pricing_snapshot_provenance_plan",
@@ -569,11 +618,10 @@ const EXPECTED_INDEXES: &[&str] = &[
     "uq_pricing_plan_current",
     "uq_pricing_plan_open_draft",
     "uq_pricing_plan_phase_terminal",
+    "uq_pricing_price_market_draft",
     "uq_pricing_price_overlay_line_key",
     "uq_pricing_price_overlay_open_draft",
     "uq_pricing_price_overlay_precedence",
-    "uq_pricing_price_scope_key_current",
-    "uq_pricing_price_scope_key_draft",
     "uq_pricing_snapshot_provenance_subscription",
 ];
 
@@ -607,6 +655,9 @@ const EXPECTED_PRIMARY_KEYS: &[&str] = &[
     "pricing_bundle_revshare: bundle_id, plan_revision, vendor_sku_id, party",
     "pricing_bundle_revshare_group: bundle_id, plan_revision, vendor_sku_id",
     "pricing_catalog_version_ref: tenant_id, pending_ref, subject_kind, subject_ref",
+    "pricing_charge_line: tenant_id, charge_line_id",
+    "pricing_charge_line_version: tenant_id, line_version_id",
+    "pricing_charge_tier: tenant_id, line_version_id, band_ordinal",
     // Tenant- and plan-scoped (D-340). `composite_id, plan_revision` alone is a
     // client-supplied id with no tenant, so one composite id would belong to one
     // plan per revision *number* across the whole table. `pricing_plan_phase`
@@ -622,6 +673,7 @@ const EXPECTED_PRIMARY_KEYS: &[&str] = &[
     // job, not the primary key's.
     "pricing_group_membership: membership_id",
     "pricing_idempotency_dedup: tenant_id, operation, client_key",
+    "pricing_market_price: tenant_id, market_price_id",
     // Client-supplied (`inst-ms-api`, M2), and therefore **tenant-scoped since
     // `pricing_migration`**: it was `migration_id` alone until 2026-08-11, which put
     // a client-chosen identifier in a deployment-wide namespace and let one tenant
@@ -710,6 +762,31 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_catalog_version_ref_subject_lifecycle",
     "chk_pricing_catalog_version_ref_subject_revision",
     "chk_pricing_catalog_version_ref_version",
+    "chk_pricing_charge_line_charge_kind",
+    "chk_pricing_charge_line_cohort_eligibility",
+    "chk_pricing_charge_line_eligibility",
+    "chk_pricing_charge_line_overlay",
+    "chk_pricing_charge_line_version_aggregation_function",
+    "chk_pricing_charge_line_version_aggregation_granularity",
+    "chk_pricing_charge_line_version_billing_granularity",
+    "chk_pricing_charge_line_version_billing_timing",
+    "chk_pricing_charge_line_version_lifecycle_state",
+    "chk_pricing_charge_line_version_manual_quantity",
+    "chk_pricing_charge_line_version_max_hold_granules",
+    "chk_pricing_charge_line_version_meter_no_separator",
+    "chk_pricing_charge_line_version_min_qty_purchase",
+    "chk_pricing_charge_line_version_min_qty_usage",
+    "chk_pricing_charge_line_version_model_kind",
+    "chk_pricing_charge_line_version_package_fields_kind",
+    "chk_pricing_charge_line_version_package_size",
+    "chk_pricing_charge_line_version_quantity_source",
+    "chk_pricing_charge_line_version_revision",
+    "chk_pricing_charge_line_version_row_version",
+    "chk_pricing_charge_line_version_tier_aggregation_window",
+    "chk_pricing_charge_line_version_tier_qualification_window",
+    "chk_pricing_charge_tier_from_qty",
+    "chk_pricing_charge_tier_ordinal",
+    "chk_pricing_charge_tier_width",
     // Slice 10's composite meter. One CHECK only: arity and self-reference are
     // publish rules, for `pricing_composite_meter`'s portability reason.
     "chk_pricing_composite_meter_output_unit",
@@ -738,6 +815,7 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_group_membership_row_version",
     "chk_pricing_idempotency_dedup_answered",
     "chk_pricing_idempotency_dedup_status",
+    "chk_pricing_market_price_region_no_separator",
     // Slice 11, the same twelve the SQLite mirror carries, name for name.
     "chk_pricing_migration_announced_before_effective",
     "chk_pricing_migration_cancelled_at",
@@ -801,23 +879,8 @@ const EXPECTED_CHECKS: &[&str] = &[
     // when the threshold moved to `pricing_approval_threshold`, and a CHECK over a
     // column that no longer exists is what a stale claim looks like.
     "chk_pricing_policy_object_tier_band_cap",
-    "chk_pricing_price_aggregation_function",
-    "chk_pricing_price_aggregation_granularity",
     "chk_pricing_price_amount_non_negative",
-    "chk_pricing_price_billing_granularity",
-    "chk_pricing_price_billing_timing",
-    "chk_pricing_price_charge_kind",
-    "chk_pricing_price_cohort_eligibility",
-    "chk_pricing_price_eligibility",
-    "chk_pricing_price_grandfather_until",
     "chk_pricing_price_lifecycle_state",
-    "chk_pricing_price_manual_quantity",
-    "chk_pricing_price_max_hold_granules",
-    "chk_pricing_price_meter_no_separator",
-    "chk_pricing_price_min_qty_purchase",
-    "chk_pricing_price_min_qty_usage",
-    "chk_pricing_price_model_kind",
-    "chk_pricing_price_overlay",
     // Slice 9's overlay object. `chk_pricing_price_overlay` one line up is the
     // **price row's** `price_overlay` axis CHECK (always `base`); everything from
     // here down belongs to the overlay object, which is a separate row.
@@ -841,18 +904,12 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_price_overlay_scope_class",
     "chk_pricing_price_overlay_scope_value",
     "chk_pricing_price_overlay_tax_basis",
-    "chk_pricing_price_package_fields_kind",
     "chk_pricing_price_package_price",
-    "chk_pricing_price_package_size",
-    "chk_pricing_price_quantity_source",
-    "chk_pricing_price_region_no_separator",
     "chk_pricing_price_reserved_rate_nano",
+    "chk_pricing_price_revision",
     "chk_pricing_price_row_version",
-    "chk_pricing_price_tier_aggregation_window",
-    "chk_pricing_price_tier_band_from_qty",
+    "chk_pricing_price_tier_band_ordinal",
     "chk_pricing_price_tier_band_unit_price",
-    "chk_pricing_price_tier_band_width",
-    "chk_pricing_price_tier_qualification_window",
     // D-311's `per_unit` rate, non-negative for the reason `amount_minor` is:
     // typed credit rows are Future scope, so a negative price is a mistake
     // caught where it lands. Postgres only -- `pricing_price`'s migration doc
@@ -1693,13 +1750,34 @@ async fn a_journal_row_may_not_name_another_tenants_run() {
     const RUN: &str = "8f8f8f8f-0000-0000-0000-0000000000c2";
 
     let (conn, _guard) = applied().await;
+    // A price row is a monetary version of a market of a charge line now, so the
+    // journal's subject needs that graph under it -- seeded by the shared seeder
+    // rather than by a fourth hand-written copy of it.
+    let graph = common::seed_charge_graph_sql(
+        &conn,
+        &common::SqlGraphSeed {
+            charge_kind: "usage",
+            model_kind: Some("per_unit"),
+            created_by: ACTOR,
+            created_at_utc: "2026-08-17 09:00:00+00",
+            ..common::SqlGraphSeed::new(
+                TENANT_A,
+                PLAN,
+                PHASE,
+                "55555555-5555-5555-5555-555555555555",
+            )
+        },
+    )
+    .await;
     must_succeed(
         &conn,
         &format!(
-            "INSERT INTO bss.pricing_price (sku_id, price_id, tenant_id, plan_id, currency, region, \
-             phase, charge_kind, model_kind, lifecycle_state, created_by, created_at_utc) \
-             VALUES ('55555555-5555-5555-5555-555555555555', '{PRICE}', '{TENANT_A}', '{PLAN}', 'USD', 'EU', '{PHASE}', 'usage', \
-             'per_unit', 'draft', '{ACTOR}', '2026-08-17 09:00:00+00')"
+            "INSERT INTO bss.pricing_price (price_id, tenant_id, plan_id, plan_revision, \
+             charge_line_id, line_version_id, market_price_id, lifecycle_state, created_by, \
+             created_at_utc) \
+             VALUES ('{PRICE}', '{TENANT_A}', '{PLAN}', 0, '{}', '{}', '{}', 'draft', \
+             '{ACTOR}', '2026-08-17 09:00:00+00')",
+            graph.charge_line_id, graph.line_version_id, graph.market_price_id
         ),
     )
     .await;

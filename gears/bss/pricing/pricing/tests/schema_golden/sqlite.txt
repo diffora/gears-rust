@@ -430,6 +430,7 @@ TABLE pricing_charge_tier
   CONSTRAINT chk_pricing_charge_tier_ordinal CHECK (band_ordinal >= 0)
   CONSTRAINT chk_pricing_charge_tier_width CHECK (to_qty IS NULL OR to_qty > from_qty)
   CONSTRAINT fk_pricing_charge_tier_version FOREIGN KEY (tenant_id, line_version_id)
+  CONSTRAINT uq_pricing_charge_tier_lower_bound UNIQUE (tenant_id, line_version_id, from_qty)
   FK line_version_id -> pricing_charge_line_version.line_version_id
   FK tenant_id -> pricing_charge_line_version.tenant_id
 TABLE pricing_composite_meter
