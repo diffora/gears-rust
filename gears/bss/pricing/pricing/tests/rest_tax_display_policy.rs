@@ -41,8 +41,8 @@ use bss_pricing::domain::scope_key::PlanId;
 use bss_pricing::infra::storage::entity::region_taxonomy;
 use bss_pricing::infra::storage::repo::NewPriceDraft;
 use rest_support::{
-    Harness, body_json, etag_of, problem_code, publishable_row, publishable_scope_key, refused_by,
-    seed_publishable_shape, with_headers,
+    Harness, body_json, cover_never_published_price, etag_of, problem_code, publishable_row,
+    publishable_scope_key, refused_by, seed_publishable_shape, with_headers,
 };
 use sea_orm::ActiveValue::Set;
 use sea_orm::EntityTrait;
@@ -303,18 +303,9 @@ async fn seed_tax_inclusive_plan(
         .await
         .expect("author the tax-inclusive row");
 
-    // `inst-wc-required`: no row publishes without a window on its canonical key.
-    let conn = harness.state.db.conn().expect("conn");
-    common::schedule_coverage_window(
-        &conn,
-        &scope,
-        harness.tenant,
-        price_id,
-        rest_support::seed_stamp(),
-    )
-    .await;
-
-    shape.etag()
+    // `inst-wc-required`: compose judges explicit draft intentions, not live
+    // seed windows on a mutable draft.
+    cover_never_published_price(harness, plan_id, &shape, price_id).await
 }
 
 async fn publish(

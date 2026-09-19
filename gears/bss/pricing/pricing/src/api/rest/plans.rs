@@ -213,7 +213,7 @@ pub(crate) fn idempotency_key_param_optional() -> ParamSpec {
     spec.required = false;
     spec.description = Some(
         "Optional client idempotency key. Required when `context.kind` is `draft`. Live cancel \
-         still takes none, which is §5's empty Idempotency cell for that surface."
+         still takes none, which is S5's empty Idempotency cell for that surface."
             .to_owned(),
     );
     spec

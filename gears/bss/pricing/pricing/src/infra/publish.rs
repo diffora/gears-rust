@@ -570,7 +570,7 @@ impl PublishService {
                         .map_err(|e| repo_failure(&e))?;
                     // The HTTP/test stamp is stale after the guard wait.
                     // `at_publish` and time-dependent guards use `write_at`.
-                    let _stale_request_now = now;
+                    let _ = now;
                     // Resolved by the caller, **before** this transaction opened.
                     // The registry cannot be read from in here: in-process,
                     // `bss-products` answers `get_skus` from its own store and

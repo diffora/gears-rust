@@ -42,6 +42,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+mod common;
 mod pg_support;
 
 use std::sync::{Arc, Mutex};
@@ -138,6 +139,8 @@ async fn a_price_row(store: &Store, region: &str) -> Uuid {
         descriptor_row
     };
     row.amount_minor = Some(MinorAmount::new(9_900).expect("a non-negative amount"));
+    let plan_id = Uuid::from_u128(0x50_c5);
+    common::seed_window_guard(&store.db, TENANT, plan_id).await;
     store
         .prices
         .create_draft(
@@ -146,7 +149,7 @@ async fn a_price_row(store: &Store, region: &str) -> Uuid {
             NewPriceDraft {
                 price_id,
                 scope_key: ScopeKey::new(
-                    PlanId::new(Uuid::from_u128(0x50_c5)),
+                    PlanId::new(plan_id),
                     CurrencyCode::new("EUR").expect("three letters"),
                     Region::new(region).expect("a non-blank region"),
                     PhaseId::new(Uuid::from_u128(0xfa_80)),

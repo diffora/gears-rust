@@ -2929,6 +2929,17 @@ async fn republishing_a_plan_whose_already_published_row_names_a_since_deprecate
     let seeded = rest_support::seed_publishable_plan(&harness, plan_id).await;
     harness.publish(plan_id, seeded.revision).await;
     harness.publish_price(plan_id, seeded.price_id).await;
+    // Fake `Harness::publish` does not materialize `AtPublish` creates. The
+    // successor captures live covering; without a live window the HTTP publish
+    // of the successor is uncovered and this case never reaches the SKU rule.
+    common::schedule_open_ended_coverage(
+        &harness.db.conn().expect("conn"),
+        &harness.scope(),
+        harness.tenant,
+        seeded.price_id,
+        rest_support::seed_stamp(),
+    )
+    .await;
     catalog
         .listing
         .lock()

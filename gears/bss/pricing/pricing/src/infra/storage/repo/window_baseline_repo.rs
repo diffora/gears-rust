@@ -49,7 +49,7 @@ pub async fn list(
         .all(runner)
         .await
         .map_err(|e| RepoError::Db(format!("list pricing_window_baseline: {e}")))?;
-    rows.into_iter().map(to_baseline).collect()
+    rows.into_iter().map(|row| to_baseline(&row)).collect()
 }
 
 /// Replace the captured baseline of an open draft owner wholesale.
@@ -190,7 +190,7 @@ fn to_model(
     })
 }
 
-fn to_baseline(row: window_baseline::Model) -> Result<WindowBaseline, RepoError> {
+fn to_baseline(row: &window_baseline::Model) -> Result<WindowBaseline, RepoError> {
     let mutation_seq = u64::try_from(row.mutation_seq).map_err(|_| {
         RepoError::CorruptRow(format!(
             "pricing_window_baseline {} mutation_seq {} is negative",

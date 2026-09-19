@@ -186,7 +186,7 @@ const APPROVER: Uuid = Uuid::from_u128(0xac_11);
 const COVER_WINDOW: Uuid = Uuid::from_u128(0x_c0_7e);
 const DROP_WINDOW: Uuid = Uuid::from_u128(0x_c0_22);
 const NEW_WINDOW: Uuid = Uuid::from_u128(0x_c0_33);
-const STOLEN_WINDOW: Uuid = Uuid::from_u128(0x_5_701e);
+const STOLEN_WINDOW: Uuid = Uuid::from_u128(0x0005_701e);
 const LATE_PRICE: Uuid = Uuid::from_u128(0xb_0002);
 const LATE_WINDOW: Uuid = Uuid::from_u128(0x_c0_1a);
 const GATED_WINDOW: Uuid = Uuid::from_u128(0x_c0_1b);
@@ -2119,7 +2119,7 @@ async fn drive_the_approval_plane(h: &Harness) {
         .open_revision(&h.scope, TENANT, plan_id(), stamp_of(ACTOR, at(15)))
         .await
         .expect("open a revision to submit");
-    let _ = capture_baseline(&h, opened.revision, opened.row_version).await;
+    let _ = capture_baseline(h, opened.revision, opened.row_version).await;
     let approvals = ApprovalService::new(h.provider.clone());
     let approval_id = Uuid::from_u128(0xa_0001);
     approvals

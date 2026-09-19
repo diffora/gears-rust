@@ -309,8 +309,7 @@ async fn adjust(
     };
     let reason_code = existing
         .as_ref()
-        .map(|entry| entry.reason_code.clone())
-        .unwrap_or_else(|| "adjust".to_owned());
+        .map_or_else(|| "adjust".to_owned(), |entry| entry.reason_code.clone());
     let row_version = draft_window::apply_command(
         txn,
         scope,
@@ -336,7 +335,7 @@ async fn adjust(
         effective_to,
         reason_code: identity.reason_code,
     };
-    ok_outcome(status, view, owner.plan_revision, row_version)
+    ok_outcome(status, &view, owner.plan_revision, row_version)
 }
 
 async fn cancel(
@@ -400,7 +399,7 @@ async fn cancel(
         effective_to: None,
         reason_code: identity.reason_code,
     };
-    ok_outcome(status, view, owner.plan_revision, row_version)
+    ok_outcome(status, &view, owner.plan_revision, row_version)
 }
 
 async fn undo(
@@ -477,6 +476,7 @@ async fn refresh(
 }
 
 /// Shared header-to-command glue for the mixed POST/PATCH/DELETE doors.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn schedule_draft_window(
     state: Arc<GovernanceState>,
     ctx: toolkit_security::SecurityContext,
@@ -625,6 +625,7 @@ pub(super) async fn cancel_draft_window(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn undo_draft_operation(
     state: Arc<GovernanceState>,
     ctx: toolkit_security::SecurityContext,
@@ -668,6 +669,7 @@ pub(super) async fn undo_draft_operation(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn refresh_draft_baseline(
     state: Arc<GovernanceState>,
     ctx: toolkit_security::SecurityContext,
@@ -743,22 +745,22 @@ async fn wire_identity(
         return Ok(WireIdentity {
             price_id: *price_id,
             start: start_view(*start),
-            reason_code: existing
-                .map(|entry| entry.reason_code.clone())
-                .unwrap_or_else(|| fallback_reason.to_owned()),
+            reason_code: existing.map_or_else(
+                || fallback_reason.to_owned(),
+                |entry| entry.reason_code.clone(),
+            ),
         });
     }
-    if let Some(entry) = existing {
-        if let DraftWindowAction::Create {
+    if let Some(entry) = existing
+        && let DraftWindowAction::Create {
             price_id, start, ..
         } = &entry.action
-        {
-            return Ok(WireIdentity {
-                price_id: *price_id,
-                start: start_view(*start),
-                reason_code: entry.reason_code.clone(),
-            });
-        }
+    {
+        return Ok(WireIdentity {
+            price_id: *price_id,
+            start: start_view(*start),
+            reason_code: entry.reason_code.clone(),
+        });
     }
     let baseline = window_baseline_repo::list(txn, scope, owner)
         .await
@@ -776,9 +778,10 @@ async fn wire_identity(
         start: DraftStartView::At {
             at: row.effective_from,
         },
-        reason_code: existing
-            .map(|entry| entry.reason_code.clone())
-            .unwrap_or_else(|| fallback_reason.to_owned()),
+        reason_code: existing.map_or_else(
+            || fallback_reason.to_owned(),
+            |entry| entry.reason_code.clone(),
+        ),
     })
 }
 
@@ -795,7 +798,7 @@ fn answer_draft(outcome: DraftHttpOutcome) -> Response {
     match outcome.location {
         Some(location) => (
             outcome.status,
-            [(ETAG, etag.clone()), (LOCATION, location)],
+            [(ETAG, etag), (LOCATION, location)],
             Json(outcome.body),
         )
             .into_response(),
@@ -805,13 +808,13 @@ fn answer_draft(outcome: DraftHttpOutcome) -> Response {
 
 fn ok_outcome(
     status: StatusCode,
-    view: DraftWindowView,
+    view: &DraftWindowView,
     plan_revision: u64,
     row_version: u64,
 ) -> Result<DraftHttpOutcome, DomainError> {
     Ok(DraftHttpOutcome {
         status,
-        body: draft_window_json(&view)?,
+        body: draft_window_json(view)?,
         plan_revision,
         row_version,
         location: None,

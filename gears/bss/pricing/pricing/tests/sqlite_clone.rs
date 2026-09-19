@@ -1534,9 +1534,9 @@ async fn a_successor_omits_superseded_prices_live_windows_from_the_baseline() {
     // Live/historical: the predecessor's covering stays on `pricing_price_window`.
     let superseded_window =
         common::schedule_coverage_window(&conn, &h.scope, TENANT, superseded_price, stamp()).await;
-    let kept_a_window =
+    let first_kept_covering =
         common::schedule_coverage_window(&conn, &h.scope, TENANT, kept_a, stamp()).await;
-    let kept_b_window =
+    let second_kept_covering =
         common::schedule_coverage_window(&conn, &h.scope, TENANT, kept_b, stamp()).await;
     common::supersede_row_directly(&h.provider, &h.scope, superseded_price).await;
 
@@ -1571,12 +1571,12 @@ async fn a_successor_omits_superseded_prices_live_windows_from_the_baseline() {
     assert!(
         baseline
             .iter()
-            .any(|row| row.window_id == kept_a_window.window_id)
+            .any(|row| row.window_id == first_kept_covering.window_id)
     );
     assert!(
         baseline
             .iter()
-            .any(|row| row.window_id == kept_b_window.window_id)
+            .any(|row| row.window_id == second_kept_covering.window_id)
     );
 
     let keys: BTreeMap<Uuid, bss_pricing::domain::scope_key::ScopeKey> = price_repo::load_for_plan(

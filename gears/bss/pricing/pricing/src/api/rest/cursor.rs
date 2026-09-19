@@ -357,9 +357,9 @@ pub fn encode_working_window(
         f: Some(format!("{WORKING_CURSOR_NS}:{plan_id}:{revision}")),
         d: "fwd".to_owned(),
     };
-    cursor.encode().map_err(|e| {
-        DomainError::Internal(format!("cannot encode a working-window cursor: {e}"))
-    })
+    cursor
+        .encode()
+        .map_err(|e| DomainError::Internal(format!("cannot encode a working-window cursor: {e}")))
 }
 
 /// The window id a Working cursor resumes after, once it matches `plan_id` and

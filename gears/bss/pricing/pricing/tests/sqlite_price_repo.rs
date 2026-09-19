@@ -130,6 +130,18 @@ async fn harness() -> (PriceRepo, DBProvider<DbError>) {
         .await
         .expect("run migrator");
     let provider = DBProvider::<DbError>::new(db);
+    // Lock identity for every plan this file authors through `create_draft`.
+    // The repository acquires; it does not insert the guard. Production
+    // seeders remain plan create and clone.
+    for plan_id in [
+        plan().get(),
+        Uuid::from_u128(0x9_1a5),
+        Uuid::from_u128(0xa1),
+        Uuid::from_u128(0xb1),
+        Uuid::from_u128(0xc1),
+    ] {
+        common::seed_window_guard(&provider, tenant(), plan_id).await;
+    }
     (PriceRepo::new(provider.clone()), provider)
 }
 
@@ -2289,12 +2301,13 @@ async fn a_price_row_may_not_be_created_into_another_tenant() {
     let price_id = Uuid::from_u128(0xb_b1);
 
     // The insert side of the BOLA the test above closes for reads, updates and
-    // deletes, and the only side no `WHERE` clause can close: a scoped read
-    // filters rows that exist, while a scoped insert has to refuse a row before
-    // it does. `scope_with_model` is what refuses it — the `ActiveModel`'s own
-    // `tenant_id` is checked against the caller's scope — and without that
-    // check a caller could plant a price row inside another tenant's catalog,
-    // priced however it liked, and then be unable to see or unwrite it.
+    // deletes. D-374 made `create_draft` acquire the plan's window-guard lock
+    // before the price INSERT, so a caller scoped to another tenant is refused
+    // at that lock — they cannot see the victim's guard row — rather than at
+    // `pricing_price`'s `scope_with_model`. Isolation is the same: no row
+    // lands under either tenant. Putting `ensure` inside `create_draft` would
+    // move the first failure onto `pricing_window_guard scope: insert denied`
+    // and hide the price-row BOLA that `create_draft_on` still owns.
     let err = repo
         .create_draft(
             &AccessScope::for_tenant(mine),
@@ -2303,10 +2316,12 @@ async fn a_price_row_may_not_be_created_into_another_tenant() {
         )
         .await
         .expect_err("a row may not be created into a tenant the caller is not scoped to");
-    let RepoError::Db(detail) = err else {
-        panic!("a refused insert scope is a storage failure, not a typed refusal");
-    };
-    assert!(detail.contains("pricing_price scope"), "got: {detail}");
+    match err {
+        RepoError::NotFound { ref subject, .. } => {
+            assert_eq!(subject, "window guard", "got: {err}");
+        }
+        other => panic!("a foreign create_draft is refused at the window guard, got {other:?}"),
+    }
 
     // And nothing landed under either tenant — least of all the victim's.
     assert_eq!(
@@ -3467,6 +3482,7 @@ async fn another_tenants_draft_rows_are_invisible_to_a_publish() {
     let mine = AccessScope::for_tenant(tenant());
     let theirs_tenant = Uuid::from_u128(0x7e_22);
     let theirs = AccessScope::for_tenant(theirs_tenant);
+    common::seed_window_guard(&provider, theirs_tenant, plan().get()).await;
     let my_row = Uuid::from_u128(0xb_0001);
     let their_row = Uuid::from_u128(0xb_0002);
     repo.create_draft(
@@ -5349,6 +5365,7 @@ async fn the_gated_market_count_dedups_markets_and_excludes_what_cannot_be_clear
     // A second tenant, on the market `EU` is already counted for the first.
     let other_tenant = Uuid::from_u128(0x7e_12);
     let other_scope = AccessScope::for_tenant(other_tenant);
+    common::seed_window_guard(&provider, other_tenant, plan().get()).await;
     let elsewhere = Uuid::from_u128(0xd2_07);
     repo.create_draft(
         &other_scope,

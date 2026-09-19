@@ -37,6 +37,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+mod common;
 mod pg_support;
 
 use std::collections::BTreeMap;
@@ -155,6 +156,7 @@ struct Harness {
 async fn harness() -> Harness {
     let pg = Pg::applied().await;
     let db = DBProvider::<DbError>::new(pg.db().await);
+    common::seed_window_guard(&db, TENANT, plan().get()).await;
     let prices = PriceRepo::new(DBProvider::<DbError>::new(pg.db().await));
     Harness { db, prices }
 }

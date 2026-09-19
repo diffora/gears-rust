@@ -7,7 +7,7 @@
 //!
 //! The `INSERT … SELECT DISTINCT` below seeds a row for every plan that already
 //! exists when this migration applies. It is **not** an implicit-window backfill.
-//! SQLite parses `INSERT … SELECT … FROM t ON CONFLICT` as a join on `CONFLICT`,
+//! `SQLite` parses `INSERT … SELECT … FROM t ON CONFLICT` as a join on `CONFLICT`,
 //! so the mirror uses `WHERE true` before `ON CONFLICT` (the documented UPSERT
 //! disambiguation). Postgres does not need that.
 //! Create and clone still insert one row in the same transaction as `pricing_plan`,

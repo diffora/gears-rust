@@ -54,6 +54,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
+mod common;
 mod pg_support;
 
 use std::sync::Arc;
@@ -223,6 +224,7 @@ fn commit_plan(shorten_seq: u64) -> SupersessionCommit {
 async fn seed(pg: &Pg) -> u64 {
     let provider = toolkit_db::DBProvider::<toolkit_db::DbError>::new(pg.db().await);
     let repo = bss_pricing::infra::storage::repo::PriceRepo::new(provider.clone());
+    common::seed_window_guard(&provider, TENANT, plan_id().get()).await;
     repo.create_draft(&scope(), TENANT, draft(PREDECESSOR, 1_000))
         .await
         .expect("author the predecessor");

@@ -74,7 +74,7 @@ pub async fn acquire_sorted(
 
 /// Insert the lock row for a newly created plan. A successor revision of the
 /// same `plan_id` is a no-op on the primary key.
-pub(super) async fn ensure(
+pub(crate) async fn ensure(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,

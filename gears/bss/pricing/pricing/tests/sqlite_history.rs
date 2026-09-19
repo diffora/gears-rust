@@ -40,6 +40,8 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+mod common;
+
 use bss_pricing::domain::audit::AuditStamp;
 use bss_pricing::domain::instant::utc_ymd_hms;
 use bss_pricing::domain::lifecycle::LifecycleState;
@@ -162,6 +164,7 @@ async fn harness() -> (HistoryExporter, DBProvider<DbError>) {
 /// `superseded` predecessor — the one row an operator asking "what did this
 /// price used to say" is most likely asking about.
 async fn seed(provider: &DBProvider<DbError>) {
+    common::seed_window_guard(provider, TENANT, PLAN).await;
     seed_row(provider, TENANT, EARLY, "USD", "superseded", at(9)).await;
     seed_row(provider, TENANT, TIED_FIRST, "EUR", "published", at(10)).await;
     seed_row(provider, TENANT, TIED_SECOND, "GBP", "draft", at(10)).await;

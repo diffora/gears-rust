@@ -70,9 +70,12 @@ use bss_pricing::api::rest::windows::{
 };
 use bss_pricing::authz::{actions, labels};
 use bss_pricing::domain::approval::ApprovalState;
+use bss_pricing::domain::draft_window::DraftWindowOwner;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::read_model::SubjectRef;
-use bss_pricing::infra::storage::repo::{PendingVersionRow, catalog_version_ref_repo};
+use bss_pricing::infra::storage::repo::{
+    PendingVersionRow, catalog_version_ref_repo, window_baseline_repo,
+};
 use rest_support::{
     Harness, approval_row, body_json, mutable_planes, plan_count, plan_row_version, price_rows,
     request, seed_draft_plan, seed_price, with_headers,
@@ -1045,6 +1048,21 @@ async fn seed(harness: &Harness) -> Seeded {
         .await
         .expect("open the pending unit the approval rows are driven against");
     let window = rest_support::seed_window(harness, price.price_id).await;
+    // A live seed window is not on the captured baseline. Assemble of a mutable
+    // draft refuses that drift (`WINDOW_BASELINE_CHANGED`, 409), so GET/reject
+    // of this unit would have no owner-success control. Recapture without bumping
+    // the plan tag the rest of this census drives (`"0-4"`).
+    window_baseline_repo::replace_from_live(
+        &harness.db.conn().expect("conn"),
+        &harness.scope(),
+        &DraftWindowOwner {
+            tenant_id: harness.tenant,
+            plan_id,
+            plan_revision: 0,
+        },
+    )
+    .await
+    .expect("capture the seeded live window so assemble can re-derive this unit");
     let bundle = harness
         .state
         .bundles
@@ -1261,10 +1279,14 @@ fn drive(
 
 /// The well-formed body and preconditions [`drive`] sends for one route.
 ///
-/// Split out of `drive` to keep it under `clippy::too_many_lines` — `census`'s
+/// Split out of `drive` to keep it under `clippy::too_many_lines` -- `census`'s
 /// own reason for the sibling lint's `allow` applies here too: the catalogue
 /// is one match arm per route and its length **is** its content, so there is
 /// nothing to split on but the function boundary itself.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one match arm per census route; splitting would hide the catalogue"
+)]
 fn body_for(
     route: &Route,
     seeded: &Seeded,
@@ -1455,10 +1477,9 @@ fn body_for(
             Some(serde_json::json!({ "effective_to": "2099-06-01T00:00:00Z" })),
             vec![("if-match", "\"0\"")],
         ),
-        ("DELETE", DRAFT_WINDOW_OPERATION) => (
-            None,
-            vec![("if-match", version), ("idempotency-key", key)],
-        ),
+        ("DELETE", DRAFT_WINDOW_OPERATION) => {
+            (None, vec![("if-match", version), ("idempotency-key", key)])
+        }
         ("POST", DRAFT_WINDOW_BASELINE_REFRESH) => (
             Some(serde_json::json!({ "plan_revision": 0 })),
             vec![("if-match", version), ("idempotency-key", key)],

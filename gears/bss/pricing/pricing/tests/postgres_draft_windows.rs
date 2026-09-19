@@ -83,6 +83,9 @@ const TEST_CORRELATION: Uuid = Uuid::from_u128(0x_c0_11_a7_10);
 const APPROVER: Uuid = Uuid::from_u128(0xac_02);
 const OFFER_SKU: Uuid = Uuid::from_u128(0x5_c1);
 const COVER_WINDOW: Uuid = Uuid::from_u128(0x_c0_7e);
+/// Successor covering after the materialized first-publish window is closed at
+/// [`coverage_to`], so Working still satisfies `inst-wc-required`.
+const TAIL_WINDOW: Uuid = Uuid::from_u128(0x_c0_7f);
 const DRAFT_A: Uuid = Uuid::from_u128(0x_d7_a1);
 const DRAFT_B: Uuid = Uuid::from_u128(0x_d7_b2);
 const LIVE_A: Uuid = Uuid::from_u128(0x_e1);
@@ -337,7 +340,7 @@ async fn a_second_operation_on_the_same_target_is_refused() {
         .await
         .expect("first create");
     let adjust = DraftWindowEntry {
-        operation_id: Uuid::from_u128(0x_d7_16),
+        operation_id: Uuid::from_u128(0xd716),
         action: DraftWindowAction::AdjustEnd {
             window_id,
             effective_to: Some(t(12)),
@@ -430,7 +433,7 @@ async fn a_baseline_replace_round_trips() {
         effective_to: Some(t(9)),
         cancelled: false,
     };
-    window_baseline_repo::replace(&conn, &scope(), &owner(), &[captured.clone()])
+    window_baseline_repo::replace(&conn, &scope(), &owner(), std::slice::from_ref(&captured))
         .await
         .expect("replace");
     let listed = window_baseline_repo::list(&conn, &scope(), &owner())
@@ -846,6 +849,26 @@ async fn first_publish(store: &Store, registry: Arc<RegistryDouble>, expected: u
         .expect("first publish of the live-schedulable fixture");
 }
 
+/// Bound the open-ended window `first_publish` materializes so a later live
+/// schedule can occupy the tail. `WindowService` refuses that bound
+/// (`WINDOW_TRAILING_VOID`: schedule the successor first); this race is about
+/// the guard, not that rule, so the store door plants the finite covering.
+async fn close_materialized_covering_at_to(store: &Store) {
+    let seq = live_seq(store, COVER_WINDOW).await;
+    let conn = store.db.conn().expect("conn");
+    window_repo::adjust_effective_to(
+        &conn,
+        &scope(),
+        TENANT,
+        COVER_WINDOW,
+        Some(coverage_to()),
+        seq,
+        race_stamp(),
+    )
+    .await
+    .expect("fixture: bound the materialized covering so the race can occupy the tail");
+}
+
 async fn install_eur_threshold(store: &Store) {
     let thresholds = ThresholdService::new(store.db.clone());
     let unit = Uuid::from_u128(0x_aa_70);
@@ -900,7 +923,9 @@ async fn price_row_version(store: &Store) -> i64 {
         .expect("read the price")
         .expect("the row exists")
         .row_version
-        .get() as i64
+        .get()
+        .try_into()
+        .expect("row_version fits i64")
 }
 
 async fn live_seq(store: &Store, window_id: Uuid) -> u64 {
@@ -1152,8 +1177,7 @@ async fn a_live_adjust_is_serialized_against_publish() {
     let version = put_covering(&store, version, "cover").await;
     let registry = Arc::new(RegistryDouble::default());
     first_publish(&store, Arc::clone(&registry), version).await;
-    let conn = store.db.conn().expect("conn");
-    common::schedule_coverage_window(&conn, &scope(), TENANT, ROW, race_stamp()).await;
+    close_materialized_covering_at_to(&store).await;
     install_eur_threshold(&store).await;
     let opened = store
         .plans
@@ -1172,14 +1196,14 @@ async fn a_live_adjust_is_serialized_against_publish() {
         opened.revision,
         draft_version,
         DraftWindowCommand::Put(covering_create(
-            COVER_WINDOW,
+            TAIL_WINDOW,
             "successorCover",
             coverage_to(),
             None,
         )),
     )
     .await;
-    let cover_id = common::coverage_window_id(ROW);
+    let cover_id = COVER_WINDOW;
     let seq = live_seq(&store, cover_id).await;
     let lengthened = utc_ymd_hms(2099, 10, 1, 0, 0, 0);
 
@@ -1465,8 +1489,7 @@ async fn two_overlapping_live_inserts_are_serialized() {
     let version = put_covering(&store, version, "cover").await;
     let registry = Arc::new(RegistryDouble::default());
     first_publish(&store, Arc::clone(&registry), version).await;
-    let conn = store.db.conn().expect("conn");
-    common::schedule_coverage_window(&conn, &scope(), TENANT, ROW, race_stamp()).await;
+    close_materialized_covering_at_to(&store).await;
     install_eur_threshold(&store).await;
 
     let t1_windows = windows_on(
@@ -1555,10 +1578,7 @@ async fn two_overlapping_live_inserts_are_serialized() {
             "T2's conflict must be the overlap T1 committed, got {err:?}"
         ),
     }
-    let mut authorized = vec![
-        common::coverage_window_id(ROW).to_string(),
-        LIVE_A.to_string(),
-    ];
+    let mut authorized = vec![COVER_WINDOW.to_string(), LIVE_A.to_string()];
     authorized.sort();
     assert_invariants(
         &store.raw,

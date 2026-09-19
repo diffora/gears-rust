@@ -1,7 +1,7 @@
 //! Explicit draft-window authoring and Working reads (D-374).
 //!
 //! Live mutations stay in `rest_windows.rs`. This binary owns the draft door:
-//! tagged `context`, plan ETags, Working reads, recovery, and replay after the
+//! tagged `context`, plan `ETags`, Working reads, recovery, and replay after the
 //! owner leaves `draft`.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]

@@ -26,8 +26,8 @@ use bss_pricing::domain::scope_key::PlanId;
 use bss_pricing::infra::storage::entity::{gl_code_taxonomy, plan, price};
 use bss_pricing::infra::storage::repo::NewPriceDraft;
 use rest_support::{
-    Harness, body_json, etag_of, problem_code, publishable_row, publishable_scope_key,
-    seed_publishable_shape, with_headers,
+    Harness, body_json, cover_never_published_price, etag_of, problem_code, publishable_row,
+    publishable_scope_key, seed_publishable_shape, with_headers,
 };
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
@@ -69,17 +69,9 @@ async fn seed_priced_plan(harness: &Harness, plan_id: Uuid, case_seq: u128) -> S
         .await
         .expect("author the row");
 
-    // `inst-wc-required`: no row publishes without a window on its canonical key.
-    let conn = harness.state.db.conn().expect("conn");
-    common::schedule_coverage_window(
-        &conn,
-        &scope,
-        harness.tenant,
-        price_id,
-        rest_support::seed_stamp(),
-    )
-    .await;
-    shape.etag()
+    // `inst-wc-required`: compose judges explicit draft intentions, not live
+    // seed windows on a mutable draft.
+    cover_never_published_price(harness, plan_id, &shape, price_id).await
 }
 
 /// **The vocabulary, end to end**: an undeclared code is refused at publish, and

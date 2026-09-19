@@ -202,7 +202,7 @@ async fn a_plan_with_no_authored_window_cannot_submit() {
 }
 
 /// An explicit `AtPublish` intention is coverage. After the draft POST the plan
-/// ETag has moved; submit uses the bumped tag.
+/// `ETag` has moved; submit uses the bumped tag.
 #[tokio::test]
 async fn an_explicit_at_publish_intention_lets_submit_open_a_unit() {
     let h = Harness::new().await;

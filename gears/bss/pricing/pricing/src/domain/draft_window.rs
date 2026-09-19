@@ -178,8 +178,7 @@ pub fn compose_windows(
         };
         if !operated.insert(window_id) {
             return Err(DomainError::InvalidRequest(format!(
-                "window {} is named by more than one draft operation",
-                window_id
+                "window {window_id} is named by more than one draft operation"
             )));
         }
 

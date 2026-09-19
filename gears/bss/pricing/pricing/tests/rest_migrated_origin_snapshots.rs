@@ -13,7 +13,7 @@
 //!
 //! # The covering window is the committed-state fixture
 //!
-//! Fake `Harness::publish` does not materialize draft AtPublish creates. The
+//! Fake `Harness::publish` does not materialize draft `AtPublish` creates. The
 //! historical `[2099-08-04, 2099-09-01)` live covering is planted by
 //! [`rest_support::Harness::publish_seeded`]. A second `seed_window` on the same
 //! key overlaps that interval. Both instants below are facts about that fixture

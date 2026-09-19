@@ -10,6 +10,8 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+mod common;
+
 use bss_pricing::domain::bulk::{BulkKind, BulkState};
 use bss_pricing::domain::instant::utc_ymd_hms;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
@@ -92,6 +94,8 @@ async fn a_price_row(p: &DBProvider<DbError>, region: &str) -> Uuid {
         descriptor_row
     };
     row.amount_minor = Some(MinorAmount::new(9_900).expect("a non-negative amount"));
+    let plan_id = Uuid::from_u128(0x50_c5);
+    common::seed_window_guard(p, TENANT, plan_id).await;
     PriceRepo::new(p.clone())
         .create_draft(
             &scope(),
@@ -99,7 +103,7 @@ async fn a_price_row(p: &DBProvider<DbError>, region: &str) -> Uuid {
             NewPriceDraft {
                 price_id,
                 scope_key: ScopeKey::new(
-                    PlanId::new(Uuid::from_u128(0x50_c5)),
+                    PlanId::new(plan_id),
                     CurrencyCode::new("EUR").expect("three letters"),
                     Region::new(region).expect("a non-blank region"),
                     PhaseId::new(Uuid::from_u128(0xfa_80)),

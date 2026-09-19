@@ -2506,6 +2506,34 @@ impl PublishableShape {
     }
 }
 
+/// Cover a never-published priced draft so HTTP publish composes `inst-wc-required`.
+///
+/// A live [`crate::common::schedule_coverage_window`] on a mutable draft makes
+/// assemble refuse `WINDOW_BASELINE_CHANGED` (D-374). Returns the bumped plan
+/// `ETag` after the `AtPublish` create.
+pub async fn cover_never_published_price(
+    harness: &Harness,
+    plan_id: Uuid,
+    shape: &PublishableShape,
+    price_id: Uuid,
+) -> String {
+    let conn = harness.state.db.conn().expect("conn");
+    let version = crate::common::author_covering_intention(
+        &conn,
+        &harness.scope(),
+        harness.tenant,
+        PlanId::new(plan_id),
+        shape.revision,
+        shape.version,
+        price_id,
+        DraftStart::AtPublish,
+        None,
+        stamp(),
+    )
+    .await;
+    format!("\"{}-{}\"", shape.revision, version.get())
+}
+
 /// A plan the publish rule set passes on its shape alone: one evergreen terminal
 /// phase, a descriptor set, a tier and a frequency, and nothing priced.
 pub async fn seed_publishable_shape(harness: &Harness, plan_id: Uuid) -> PublishableShape {

@@ -824,6 +824,7 @@ impl From<&KeyCoverage> for KeyCoverageView {
 /// rather than leaking whose plans exist. **No 422** — the design set's 422s are
 /// architectural and reach the wire as 400s carrying their code
 /// (`infra::error_mapping`).
+#[allow(clippy::too_many_lines)] // OperationBuilder chains for list, coverage, mutations, and D-374 recovery
 pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Router {
     let router = OperationBuilder::get("/bss-pricing/v1/price-windows")
         .operation_id("bss_pricing.list_price_windows")
@@ -831,9 +832,10 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
         .description(
             "One page of the tenant's price windows in `window_id` order, with an opaque `cursor` \
              and a `limit` whose server default is 100 and whose hard cap is 1,000 (D-125). \
-             Narrow with `$filter=price_id eq <uuid>`. There is no `plan_id` filter: a window is \
-             bound to a **row** and carries no plan reference, so that the row and its canonical \
-             scope key cannot disagree - a plan's whole time axis is \
+             Narrow with `$filter=price_id eq <uuid>`. Working reads (`view=working`) also take \
+             `plan_id` and `plan_revision` as query keys, not `$filter`; those keys are illegal \
+             on the committed collection. A window row still carries no plan column -- the \
+             Working door names the revision that owns intentions. A plan's whole time axis is \
              `GET /bss-pricing/v1/plans/{planId}/coverage`, which answers it per key. Every \
              state is on the page, cancelled and expired included, because \"why did this key \
              lose its successor\" is a question about a plane rather than about a live row. Each \
@@ -928,8 +930,14 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
         .operation_id("bss_pricing.schedule_price_window")
         .summary("Schedule a window on a price row")
         .description(
-            "Schedules a `[effectiveFrom, effectiveTo)` window on the row's canonical scope key \
-             and answers `202` with the pending `CatalogVersion` handle. It is a **publish unit** \
+            "Schedules a `[effectiveFrom, effectiveTo)` window on the row's canonical scope key. \
+             **`context` is mandatory (D-374) and is never inferred.** `{\"kind\":\"live\"}` is \
+             the existing publish-unit path: it answers `202` with the pending `CatalogVersion` \
+             handle. `{\"kind\":\"draft\",\"plan_revision\":n}` authors a revision-owned \
+             intention, requires the plan entity tag as `If-Match`, and answers `201` with \
+             `start` (`at` or `at_publish`). Missing `context` is the canonical 400. \
+             \
+             Live (`kind=live`) is a **publish unit** \
              (D-99): the mutation re-projects the plan subject and is consumer-visible only at \
              `CatalogVersionPublished` + warm, so a `200` would claim the coverage changed for \
              readers when it has not. `effectiveFrom` must be strictly in the future \
@@ -967,7 +975,11 @@ pub fn router(state: Arc<GovernanceState>, openapi: &dyn OpenApiRegistry) -> Rou
              the live door.",
         ))
         .param(idempotency_key_param())
-        .json_request::<ScheduleWindowRequest>(openapi, "The interval and its reason code.")
+        .json_request::<ScheduleWindowRequest>(
+            openapi,
+            "Mandatory `context` (`live` or `draft` plus revision), the interval, and its reason \
+             code. Draft uses `start` (`at` or `at_publish`); live uses `effective_from`.",
+        )
         .handler(schedule_window)
         .json_response_with_schema::<WindowMutationOutcomeView>(
             openapi,
@@ -2037,11 +2049,7 @@ fn parse_revision(raw: Option<&String>) -> Result<u64, DomainError> {
 }
 
 fn list_view(extras: &HashMap<String, String>) -> Result<ListView, DomainError> {
-    match extras
-        .get("view")
-        .map(String::as_str)
-        .unwrap_or("committed")
-    {
+    match extras.get("view").map_or("committed", String::as_str) {
         "committed" => {
             if extras.contains_key("plan_id") || extras.contains_key("plan_revision") {
                 return Err(DomainError::InvalidRequest(
@@ -2251,6 +2259,7 @@ pub(super) fn draft_window_json(view: &DraftWindowView) -> Result<serde_json::Va
         .map_err(|e| DomainError::Internal(format!("cannot render a draft window: {e}")))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn schedule_live_window(
     state: Arc<GovernanceState>,
     ctx: SecurityContext,
@@ -2403,7 +2412,7 @@ async fn list_working_windows(
         .transpose()?;
     let mut rows: Vec<ProposedWindow> = proposed
         .into_iter()
-        .filter(|row| after.map_or(true, |id| row.window_id > id))
+        .filter(|row| after.is_none_or(|id| row.window_id > id))
         .collect();
     rows.sort_by_key(|row| row.window_id);
     let limit = odata

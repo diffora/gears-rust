@@ -197,6 +197,7 @@ async fn the_gated_market_read_is_paged_and_still_counts_every_market_once() {
     let repo = PriceRepo::new(provider.clone());
     let scope = AccessScope::for_tenant(tenant());
     let all = AccessScope::allow_all();
+    common::seed_window_guard(&provider, tenant(), plan().get()).await;
 
     // Five published tax-inclusive rows over four markets: `EU` twice, so the
     // deduplication is load-bearing, and the two `EU` rows are **not adjacent** so

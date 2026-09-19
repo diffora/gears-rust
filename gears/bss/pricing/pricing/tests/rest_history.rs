@@ -44,6 +44,8 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+mod common;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -299,6 +301,8 @@ async fn body_json(response: axum::http::Response<Body>) -> serde_json::Value {
 /// One published price row, authored by `actor`, on its own market so nothing
 /// collides on the canonical scope key.
 async fn seed_row(db: &DBProvider<DbError>, tenant: Uuid, actor: Uuid, region: &str, hour: u32) {
+    let plan_id = Uuid::from_u128(0x9_1a4);
+    common::seed_window_guard(db, tenant, plan_id).await;
     let prices = PriceRepo::new(db.clone());
     let mut row = {
         let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
@@ -314,7 +318,7 @@ async fn seed_row(db: &DBProvider<DbError>, tenant: Uuid, actor: Uuid, region: &
             NewPriceDraft {
                 price_id: Uuid::now_v7(),
                 scope_key: ScopeKey::new(
-                    PlanId::new(Uuid::from_u128(0x9_1a4)),
+                    PlanId::new(plan_id),
                     CurrencyCode::new("EUR").expect("three letters"),
                     Region::new(region).expect("a non-blank region"),
                     PhaseId::new(Uuid::from_u128(0xfa_5e)),

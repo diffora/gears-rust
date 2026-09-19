@@ -8,7 +8,7 @@
 //! of the first three, and the copies had already stopped agreeing.
 //!
 //! [`author_covering_intention`] is the publishable-draft covering (explicit
-//! AtPublish create). [`schedule_coverage_window`] remains for tests that
+//! `AtPublish` create). [`schedule_coverage_window`] remains for tests that
 //! specifically exercise historical or committed live `pricing_price_window`
 //! rows.
 //!
@@ -33,8 +33,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use sea_orm::ActiveValue::Set;
-use sea_orm::sea_query::Expr;
-use sea_orm::{ColumnTrait, Condition, EntityTrait};
+use sea_orm::sea_query::{Expr, OnConflict};
+use sea_orm::{ColumnTrait, Condition, DbErr, EntityTrait};
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, Statement};
 use sea_orm_migration::{MigrationTrait, MigratorTrait, SchemaManager};
 use toolkit_db::secure::{AccessScope, DBRunner, SecureInsertExt, SecureUpdateExt};
@@ -50,7 +50,7 @@ use bss_pricing::domain::instant::utc_ymd_hms;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::scope_key::PlanId;
 use bss_pricing::infra::draft_window::{self, DraftWindowCommand};
-use bss_pricing::infra::storage::entity::{plan, price, region_taxonomy};
+use bss_pricing::infra::storage::entity::{plan, price, region_taxonomy, window_guard};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::window_repo::{NewWindow, WindowRecord, schedule};
 use time::OffsetDateTime;
@@ -114,6 +114,35 @@ pub async fn scalar(conn: &DatabaseConnection, sql: &str) -> String {
         .expect("query")
         .expect("one row");
     row.try_get::<String>("", "v").expect("read value")
+}
+
+/// Insert the per-plan lock row `PriceRepo::create_draft` acquires.
+///
+/// Idempotent on `(tenant_id, plan_id)` so a fixture that authors two rows of
+/// the same plan can call it twice. This is lock identity, not coverage: it
+/// does not schedule a window and does not capture a baseline.
+pub async fn seed_window_guard(provider: &DBProvider<DbError>, tenant_id: Uuid, plan_id: Uuid) {
+    let conn = provider.conn().expect("conn");
+    let row = window_guard::ActiveModel {
+        tenant_id: Set(tenant_id),
+        plan_id: Set(plan_id),
+        serial: Set(0),
+    };
+    let on_conflict =
+        OnConflict::columns([window_guard::Column::TenantId, window_guard::Column::PlanId])
+            .do_nothing()
+            .to_owned();
+    match window_guard::Entity::insert(row.clone())
+        .secure()
+        .scope_with_model(&AccessScope::for_tenant(tenant_id), &row)
+        .expect("scope the seeded window guard")
+        .on_conflict_raw(on_conflict)
+        .exec(&conn)
+        .await
+    {
+        Ok(_) | Err(toolkit_db::secure::ScopeError::Db(DbErr::RecordNotInserted)) => {}
+        Err(e) => panic!("seed the lock row create_draft acquires: {e}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -306,7 +335,7 @@ pub async fn schedule_coverage_window(
 /// whose assemble path now judges `inst-wc-required` over live windows.
 ///
 /// Finite [`schedule_coverage_window`] is the historical `[FROM, TO)` fixture
-/// rest_windows posts adjacent to. Repricing apply runs publish aggregate
+/// `rest_windows` posts adjacent to. Repricing apply runs publish aggregate
 /// rules; a finite tail is `WINDOW_TRAILING_VOID`.
 pub async fn schedule_open_ended_coverage(
     runner: &impl DBRunner,

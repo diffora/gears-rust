@@ -2700,6 +2700,14 @@ async fn the_revision_scoped_tables_are_a_closed_set_and_each_one_is_copied_and_
         "pricing_plan_phase",
     ];
 
+    /// D-374 window stores also carry `plan_revision`, so the schema census
+    /// sees them. They do **not** take the copy/drop obligation this case
+    /// names: `open_revision` captures a live baseline and starts empty of
+    /// operations; `abandon_draft` retains the rows for audit. Listed so a
+    /// third `plan_revision` table still fails here.
+    const REVISION_OWNED_WINDOW_STORES: [&str; 2] =
+        ["pricing_draft_window", "pricing_window_baseline"];
+
     let conn = common::migrated_db().await;
     // Every table of the whole chain that carries a `plan_revision` column,
     // asked of `sqlite_master` and `pragma_table_info` rather than of a list
@@ -2715,12 +2723,18 @@ async fn the_revision_scoped_tables_are_a_closed_set_and_each_one_is_copied_and_
     )
     .await;
 
+    let mut expected: Vec<&str> = REVISION_SCOPED
+        .iter()
+        .chain(REVISION_OWNED_WINDOW_STORES.iter())
+        .copied()
+        .collect();
+    expected.sort_unstable();
     assert_eq!(
         found,
-        REVISION_SCOPED.join(","),
+        expected.join(","),
         "the set of tables carrying `plan_revision` has changed. A revision-scoped \
-         table is one whose rows version with a plan revision, and every one of \
-         them owes two things that nothing else in this gear will supply: \
+         *shape* table is one whose rows version with a plan revision, and every \
+         one of them in `REVISION_SCOPED` owes two things: \
          `PlanRepo::open_revision` must copy its rows onto the newly opened \
          revision, inside that method's transaction and after the revision row is \
          inserted (the table's INSERT trigger requires the new parent to be \
@@ -2734,8 +2748,11 @@ async fn the_revision_scoped_tables_are_a_closed_set_and_each_one_is_copied_and_
          them, and - the third path, which this message omitted until \
          2026-08-15 - `infra::clone::clone_plan_on` must copy the set onto a \
          cloned plan, which no assertion here can see because a clone is a \
-         different plan. Only then add the table here. Do NOT simply add it \
-         here: this assertion is the notice, not the obligation."
+         different plan. Only then add the table to `REVISION_SCOPED`. Do NOT \
+         simply add it there: this assertion is the notice, not the obligation. \
+         D-374's `pricing_draft_window` / `pricing_window_baseline` are the \
+         documented exception: add them to `REVISION_OWNED_WINDOW_STORES` only, \
+         and prove successor capture / abandon-retain in the draft-window suites."
     );
 }
 

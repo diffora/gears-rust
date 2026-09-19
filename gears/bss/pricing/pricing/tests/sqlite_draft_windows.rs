@@ -302,7 +302,7 @@ async fn a_second_operation_on_the_same_target_is_refused() {
     draft_window_repo::put(&conn, &scope(), &owner(), &symbolic_create(window_id))
         .await
         .expect("first create");
-    let other_op = Uuid::from_u128(0x_d7_16);
+    let other_op = Uuid::from_u128(0xd716);
     let adjust = DraftWindowEntry {
         operation_id: other_op,
         action: DraftWindowAction::AdjustEnd {
@@ -397,7 +397,7 @@ async fn a_baseline_replace_round_trips() {
         effective_to: Some(t(9)),
         cancelled: false,
     };
-    window_baseline_repo::replace(&conn, &scope(), &owner(), &[captured.clone()])
+    window_baseline_repo::replace(&conn, &scope(), &owner(), std::slice::from_ref(&captured))
         .await
         .expect("replace");
     let listed = window_baseline_repo::list(&conn, &scope(), &owner())

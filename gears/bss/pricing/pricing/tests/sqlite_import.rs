@@ -115,6 +115,9 @@ async fn harness() -> Harness {
         .await
         .expect("run migrator");
     let provider = DBProvider::<DbError>::new(db);
+    common::seed_window_guard(&provider, TENANT, plan().get()).await;
+    common::seed_window_guard(&provider, TENANT, Uuid::from_u128(0x50_c4)).await;
+    common::seed_window_guard(&provider, OTHER_TENANT, plan().get()).await;
     let prices = PriceRepo::new(provider.clone());
     Harness { provider, prices }
 }

@@ -1440,7 +1440,7 @@ async fn publish_through_the_routes(h: &Harness, plan_id: Uuid, etag: &str) {
 /// A priced plan publishes on its first call **when it authors an explicit covering**.
 ///
 /// D-374 withdrew D-332's implicit first-publish window. The author files a row
-/// **and** an AtPublish create, then publishes once. The commit materializes
+/// **and** an `AtPublish` create, then publishes once. The commit materializes
 /// that intention as a live `scheduled` open-ended window.
 #[tokio::test]
 async fn a_priced_plan_publishes_on_its_first_call_and_the_publish_opens_the_window() {

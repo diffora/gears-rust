@@ -50,6 +50,10 @@ pub enum DraftWindowCommand {
 /// baseline no longer matches committed windows, or an adjust or cancel names a
 /// window the captured baseline no longer carries; composition refusals from
 /// [`compose_windows`]; storage failures through [`repo_failure`].
+#[allow(
+    clippy::cognitive_complexity,
+    reason = "one transactional body: acquire, CAS, compose, persist, bump"
+)]
 pub async fn apply_command(
     runner: &impl DBRunner,
     scope: &AccessScope,

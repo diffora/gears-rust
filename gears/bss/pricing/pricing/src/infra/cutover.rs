@@ -800,6 +800,7 @@ impl CutoverService {
 )]
 #[allow(
     clippy::too_many_lines,
+    clippy::cognitive_complexity,
     reason = "cutover keeps approval, registry handoff, and its two row mutations in one ordered transactional procedure"
 )]
 pub async fn cutover_in(

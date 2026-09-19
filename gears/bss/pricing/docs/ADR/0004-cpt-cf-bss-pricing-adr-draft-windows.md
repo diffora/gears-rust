@@ -101,8 +101,10 @@ Wire and persistence shape: [`../DECISIONS.md`](../DECISIONS.md) D-374 and
 * Design: D-332 marked superseded; `inst-wc-required` has no publish-written
   exemption; Working/Committed reads are specified; new recovery routes sit on
   `plan × write`.
-* Implementation (later tasks): `open_initial_windows` / `opened_by_this_publish`
-  gone; REST and dual-engine tests; E2E authored, not executed in this programme.
+* Implementation (Tasks 2–10): `open_initial_windows` / `opened_by_this_publish`
+  gone; REST and dual-engine tests; local fmt / `--lib --tests` / clippy /
+  `make test-pricing-pg` GREEN (2026-09-19). E2E authored in vhp-core `0ed17b10`,
+  not executed in this programme.
 
 ## Public contract
 

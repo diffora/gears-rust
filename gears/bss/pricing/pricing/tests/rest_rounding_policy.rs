@@ -28,8 +28,8 @@ use bss_pricing::domain::scope_key::PlanId;
 use bss_pricing::infra::storage::entity::rounding_policy_taxonomy;
 use bss_pricing::infra::storage::repo::NewPriceDraft;
 use rest_support::{
-    Harness, body_json, etag_of, problem_code, publishable_row, publishable_scope_key,
-    seed_publishable_shape, with_headers,
+    Harness, body_json, cover_never_published_price, etag_of, problem_code, publishable_row,
+    publishable_scope_key, seed_publishable_shape, with_headers,
 };
 use sea_orm::ActiveValue::Set;
 use sea_orm::EntityTrait;
@@ -232,18 +232,11 @@ async fn with_a_default_set_a_plan_whose_rows_have_no_ref_publishes() {
         .await
         .expect("author the row");
 
-    // `inst-wc-required`: no row publishes without a window on its canonical key.
-    let conn = harness.state.db.conn().expect("conn");
-    common::schedule_coverage_window(
-        &conn,
-        &scope,
-        harness.tenant,
-        price_id,
-        rest_support::seed_stamp(),
-    )
-    .await;
+    // `inst-wc-required`: compose judges explicit draft intentions, not live
+    // seed windows on a mutable draft.
+    let etag = cover_never_published_price(&harness, plan_id, &shape, price_id).await;
 
-    let refused = publish(&harness, plan_id, &shape.etag()).await;
+    let refused = publish(&harness, plan_id, &etag).await;
     assert_eq!(
         refused.status(),
         StatusCode::BAD_REQUEST,
@@ -264,7 +257,7 @@ async fn with_a_default_set_a_plan_whose_rows_have_no_ref_publishes() {
     .await;
     assert_eq!(set.status(), StatusCode::OK);
 
-    let after = publish(&harness, plan_id, &shape.etag()).await;
+    let after = publish(&harness, plan_id, &etag).await;
     let status = after.status();
     let body = body_json(after).await;
     // **202 and an opened unit**, not merely "the code is absent". A publish that
@@ -314,20 +307,12 @@ async fn an_undeclared_rounding_reference_is_refused_and_declaring_it_lets_the_p
         )
         .await
         .expect("author the row");
-    let conn = harness.state.db.conn().expect("conn");
-    common::schedule_coverage_window(
-        &conn,
-        &scope,
-        harness.tenant,
-        price_id,
-        rest_support::seed_stamp(),
-    )
-    .await;
+    let etag = cover_never_published_price(&harness, plan_id, &shape, price_id).await;
 
     // A vocabulary that does not contain the row's reference.
     declare_rounding_value(&harness, "bankers").await;
 
-    let refused = publish(&harness, plan_id, &shape.etag()).await;
+    let refused = publish(&harness, plan_id, &etag).await;
     assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
     let detail = body_json(refused).await.to_string();
     assert!(
@@ -337,7 +322,7 @@ async fn an_undeclared_rounding_reference_is_refused_and_declaring_it_lets_the_p
 
     declare_rounding_value(&harness, "half_even").await;
 
-    let after = publish(&harness, plan_id, &shape.etag()).await;
+    let after = publish(&harness, plan_id, &etag).await;
     let status = after.status();
     let body = body_json(after).await;
     assert_eq!(
@@ -380,17 +365,9 @@ async fn a_tenant_with_no_declared_vocabulary_publishes_any_reference() {
         )
         .await
         .expect("author the row");
-    let conn = harness.state.db.conn().expect("conn");
-    common::schedule_coverage_window(
-        &conn,
-        &scope,
-        harness.tenant,
-        price_id,
-        rest_support::seed_stamp(),
-    )
-    .await;
+    let etag = cover_never_published_price(&harness, plan_id, &shape, price_id).await;
 
-    let after = publish(&harness, plan_id, &shape.etag()).await;
+    let after = publish(&harness, plan_id, &etag).await;
     assert_eq!(
         after.status(),
         StatusCode::ACCEPTED,
