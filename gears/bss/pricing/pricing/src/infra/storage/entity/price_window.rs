@@ -17,10 +17,19 @@
 //! [`super::approval`] gives one table over.
 //!
 //! **This entity carries no canonical scope key**, and no `plan_id` either. Both
-//! live on `pricing_price`, and the window is bound to a row rather than to a
-//! key precisely so the two cannot disagree; the repository resolves the key on
-//! every read and hands back a `WindowRecord` that carries it, which is what the
-//! non-overlap and coverage rules are per.
+//! live on the `pricing_price` graph, and the window is bound to a row rather
+//! than to a key precisely so the two cannot disagree; the repository resolves
+//! the key on every read and hands back a `WindowRecord` that carries it, which
+//! is what the coverage rules are per.
+//!
+//! It does carry `market_price_id`, and that one column is not a convenience:
+//! **non-overlap is per logical market**, not per row and not per version, so a
+//! revised monetary version competes with the earlier versions of its own
+//! market. The column is the subject both dialects' guards compare — `PostgreSQL`'s
+//! `EXCLUDE USING gist (tenant_id, market_price_id, tstzrange(..))` and `SQLite`'s
+//! insert/update triggers — and the table's foreign key is the compound
+//! `(tenant_id, price_id, market_price_id)`, so the row and its market cannot
+//! come apart.
 //!
 //! The `resource_col` is `window_id`, so a scope naming one window reaches that
 //! row and no other — `pricing_approval`'s shape.
@@ -43,10 +52,11 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub window_id: Uuid,
     pub tenant_id: Uuid,
-    /// The price row this interval belongs to, and thereby the canonical scope
-    /// key it is filed under. Immutable after creation (§6), which the
-    /// migration's frozen-column whitelist holds.
+    /// The price row this interval belongs to. Immutable after creation (§6).
     pub price_id: Uuid,
+    /// Stable market this window occupies. Overlap is per market, never per
+    /// `price_id` or line version.
+    pub market_price_id: Uuid,
     /// Inclusive start of the half-open interval, UTC.
     pub effective_from: OffsetDateTime,
     /// **Exclusive** end, UTC. `None` is open-ended. Exclusive is what makes

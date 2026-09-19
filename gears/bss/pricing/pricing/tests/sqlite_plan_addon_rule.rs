@@ -66,7 +66,7 @@ fn stamp_of(actor: uuid::Uuid, when: OffsetDateTime) -> bss_pricing::domain::aud
 
 const TENANT: &str = "11111111-1111-1111-1111-111111111111";
 /// The SKU every seeded plan revision names (D-372). `pricing_plan.sku_id` is
-/// `NOT NULL` since `m20260916_000044_price_row_sku`; the value is incidental
+/// `NOT NULL` in the fresh-install DDL; the value is incidental
 /// to these cases and the column is not.
 const SKU: &str = "00000000-0000-0000-0000-000000000005";
 const PLAN: &str = "22222222-2222-2222-2222-222222222222";
@@ -595,7 +595,7 @@ fn draft_of(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
         created_by: Uuid::from_u128(0xac_10),
         created_at_utc: at(10),
         // D-372: `pricing_plan.sku_id` is `NOT NULL` since
-        // `m20260916_000044_price_row_sku`, so a draft with no SKU is refused
+        // the fresh-install DDL, so a draft with no SKU is refused
         // by the store. `PlanShape.sku_id` stays `Option` until Task 8.
         sku_id: Uuid::from_u128(5),
         plan_tier: None,

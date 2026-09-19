@@ -125,18 +125,20 @@ pub struct Migration;
 
 const PG_UP_STATEMENTS: &[&str] = &[
     "CREATE TABLE bss.pricing_price_tier_band (
-            tenant_id       uuid   NOT NULL,
-            band_id         uuid   NOT NULL,
-            from_qty        bigint NOT NULL,
-            price_id        uuid   NOT NULL,
-            to_qty          bigint,
-            unit_price_nano bigint NOT NULL,
-            CONSTRAINT chk_pricing_price_tier_band_from_qty CHECK (from_qty >= 0),
+            tenant_id       uuid    NOT NULL,
+            band_id         uuid    NOT NULL,
+            price_id        uuid    NOT NULL,
+            line_version_id uuid    NOT NULL,
+            band_ordinal    integer NOT NULL,
+            unit_price_nano bigint  NOT NULL,
+            CONSTRAINT chk_pricing_price_tier_band_ordinal CHECK (band_ordinal >= 0),
             CONSTRAINT chk_pricing_price_tier_band_unit_price CHECK (unit_price_nano >= 0),
-            CONSTRAINT chk_pricing_price_tier_band_width CHECK (to_qty IS NULL OR to_qty > from_qty),
-            CONSTRAINT fk_pricing_price_tier_band_price FOREIGN KEY (price_id) REFERENCES bss.pricing_price(price_id),
+            CONSTRAINT fk_pricing_price_tier_band_price FOREIGN KEY (tenant_id, price_id, line_version_id)
+                REFERENCES bss.pricing_price (tenant_id, price_id, line_version_id),
+            CONSTRAINT fk_pricing_price_tier_band_tier FOREIGN KEY (tenant_id, line_version_id, band_ordinal)
+                REFERENCES bss.pricing_charge_tier (tenant_id, line_version_id, band_ordinal),
             CONSTRAINT pricing_price_tier_band_pkey PRIMARY KEY (band_id),
-            CONSTRAINT uq_pricing_price_tier_band_lower_bound UNIQUE (price_id, from_qty)
+            CONSTRAINT uq_pricing_price_tier_band_ordinal UNIQUE (price_id, band_ordinal)
         )",
     "CREATE INDEX idx_pricing_price_tier_band_price ON bss.pricing_price_tier_band USING btree (tenant_id, price_id)",
     "CREATE OR REPLACE FUNCTION bss.pricing_price_tier_band_append_only() RETURNS trigger AS $$
@@ -168,48 +170,32 @@ const PG_UP_STATEMENTS: &[&str] = &[
           RETURN NEW;
         END;
      $$ LANGUAGE plpgsql",
-    "CREATE OR REPLACE FUNCTION bss.pricing_price_tier_band_kind() RETURNS trigger AS $$
-        DECLARE
-          parent_kind text;
-        BEGIN
-          SELECT model_kind INTO parent_kind
-            FROM bss.pricing_price WHERE price_id = NEW.price_id;
-          IF parent_kind IS NULL OR parent_kind NOT IN ('graduated','volume') THEN
-            RAISE EXCEPTION
-              'pricing_price_tier_band: band rows are forbidden on a % price row',
-              coalesce(parent_kind, 'kindless');
-          END IF;
-          RETURN NEW;
-        END;
-     $$ LANGUAGE plpgsql",
     "CREATE TRIGGER trg_pricing_price_tier_band_append_only BEFORE INSERT OR DELETE OR UPDATE ON bss.pricing_price_tier_band FOR EACH ROW EXECUTE FUNCTION bss.pricing_price_tier_band_append_only()",
-    "CREATE TRIGGER trg_pricing_price_tier_band_kind BEFORE INSERT OR UPDATE ON bss.pricing_price_tier_band FOR EACH ROW EXECUTE FUNCTION bss.pricing_price_tier_band_kind()",
 ];
 
 const PG_DOWN_STATEMENTS: &[&str] = &[
     "DROP TABLE IF EXISTS bss.pricing_price_tier_band",
     "DROP FUNCTION IF EXISTS bss.pricing_price_tier_band_append_only()",
-    "DROP FUNCTION IF EXISTS bss.pricing_price_tier_band_kind()",
 ];
 
 const SQLITE_UP_STATEMENTS: &[&str] = &[
     "CREATE TABLE pricing_price_tier_band (
-            tenant_id       text   NOT NULL,
-            band_id         text   NOT NULL,
-            from_qty        bigint NOT NULL,
-            price_id        text   NOT NULL,
-            to_qty          bigint,
-            unit_price_nano bigint NOT NULL,
+            tenant_id       text    NOT NULL,
+            band_id         text    NOT NULL,
+            price_id        text    NOT NULL,
+            line_version_id text    NOT NULL,
+            band_ordinal    integer NOT NULL,
+            unit_price_nano bigint  NOT NULL,
             PRIMARY KEY (band_id),
-            CONSTRAINT chk_pricing_price_tier_band_from_qty CHECK (from_qty >= 0),
+            CONSTRAINT chk_pricing_price_tier_band_ordinal CHECK (band_ordinal >= 0),
             CONSTRAINT chk_pricing_price_tier_band_unit_price CHECK (unit_price_nano >= 0),
-            CONSTRAINT chk_pricing_price_tier_band_width CHECK (to_qty IS NULL OR to_qty > from_qty),
-            CONSTRAINT fk_pricing_price_tier_band_price FOREIGN KEY (price_id) REFERENCES pricing_price(price_id),
-            CONSTRAINT uq_pricing_price_tier_band_lower_bound UNIQUE (price_id, from_qty)
+            CONSTRAINT fk_pricing_price_tier_band_price FOREIGN KEY (tenant_id, price_id, line_version_id)
+                REFERENCES pricing_price (tenant_id, price_id, line_version_id),
+            CONSTRAINT fk_pricing_price_tier_band_tier FOREIGN KEY (tenant_id, line_version_id, band_ordinal)
+                REFERENCES pricing_charge_tier (tenant_id, line_version_id, band_ordinal),
+            CONSTRAINT uq_pricing_price_tier_band_ordinal UNIQUE (price_id, band_ordinal)
         )",
     "CREATE INDEX idx_pricing_price_tier_band_price ON pricing_price_tier_band (tenant_id, price_id)",
-    "CREATE TRIGGER trg_pricing_price_tier_band_kind_insert BEFORE INSERT ON pricing_price_tier_band FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_price_tier_band: band rows are permitted only on a graduated or volume price row') WHERE NOT EXISTS (SELECT 1 FROM pricing_price WHERE price_id = NEW.price_id AND model_kind IN ('graduated','volume')); END",
-    "CREATE TRIGGER trg_pricing_price_tier_band_kind_update BEFORE UPDATE ON pricing_price_tier_band FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_price_tier_band: band rows are permitted only on a graduated or volume price row') WHERE NOT EXISTS (SELECT 1 FROM pricing_price WHERE price_id = NEW.price_id AND model_kind IN ('graduated','volume')); END",
     "CREATE TRIGGER trg_pricing_price_tier_band_no_delete BEFORE DELETE ON pricing_price_tier_band FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_price_tier_band: DELETE of a band under a non-draft price row is not permitted') WHERE NOT EXISTS (SELECT 1 FROM pricing_price WHERE price_id = OLD.price_id AND lifecycle_state = 'draft'); END",
     "CREATE TRIGGER trg_pricing_price_tier_band_no_insert BEFORE INSERT ON pricing_price_tier_band FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_price_tier_band: INSERT of a band under a non-draft price row is not permitted') WHERE NOT EXISTS (SELECT 1 FROM pricing_price WHERE price_id = NEW.price_id AND lifecycle_state = 'draft'); END",
     "CREATE TRIGGER trg_pricing_price_tier_band_no_update BEFORE UPDATE ON pricing_price_tier_band FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_price_tier_band: UPDATE of a band under a non-draft price row is not permitted') WHERE NOT EXISTS (SELECT 1 FROM pricing_price WHERE price_id = OLD.price_id AND lifecycle_state = 'draft') OR NOT EXISTS (SELECT 1 FROM pricing_price WHERE price_id = NEW.price_id AND lifecycle_state = 'draft'); END",

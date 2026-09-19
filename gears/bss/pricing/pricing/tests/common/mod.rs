@@ -37,7 +37,9 @@ use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, Condition, DbErr, EntityTrait};
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, Statement};
 use sea_orm_migration::{MigrationTrait, MigratorTrait, SchemaManager};
-use toolkit_db::secure::{AccessScope, DBRunner, SecureInsertExt, SecureUpdateExt};
+use toolkit_db::secure::{
+    AccessScope, DBRunner, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
+};
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
@@ -545,3 +547,505 @@ mod catalog;
     reason = "each integration binary uses a different part of common"
 )]
 pub use catalog::FixtureCatalog;
+
+// ---------------------------------------------------------------------------
+// The charge-line graph a seeded price row hangs off.
+// ---------------------------------------------------------------------------
+
+/// The logical axes and shared structure a seeded `pricing_price` row needs
+/// behind it.
+///
+/// **Why a fixture needs this at all.** A price row no longer carries its own
+/// scope key or its own structure: the eight logical axes live on
+/// `pricing_charge_line`, the shared calculation on
+/// `pricing_charge_line_version`, and currency/region on
+/// `pricing_market_price`. A suite that inserts a bare `price::ActiveModel`
+/// writes three dangling foreign keys, so every fixture that seeds a row by
+/// hand seeds its graph first — through this one helper, because the copies
+/// would stop agreeing exactly as the three schema-suite copies of
+/// [`migrated_db`] once did.
+///
+/// The defaults are the same ones the suites were already spelling: the base
+/// overlay, the ungrandfathered `all_subscriptions` class, an empty dimension
+/// and a `published` lifecycle.
+pub struct ChargeGraphSeed {
+    pub tenant_id: Uuid,
+    pub plan_id: Uuid,
+    pub plan_revision: i64,
+    pub phase: Uuid,
+    pub sku_id: Uuid,
+    pub price_overlay: String,
+    pub price_eligibility: String,
+    pub charge_kind: String,
+    pub cohort: String,
+    pub dimension_key: String,
+    pub currency: String,
+    pub region: String,
+    pub lifecycle_state: String,
+    pub model_kind: Option<String>,
+    pub meter: Option<String>,
+    pub invoice_line_template: Option<String>,
+    pub gl_code_ref: Option<String>,
+    pub resolved_invoice_line_template: Option<String>,
+    pub resolved_gl_code: Option<String>,
+    pub created_by: Uuid,
+    pub created_at_utc: OffsetDateTime,
+}
+
+impl Default for ChargeGraphSeed {
+    fn default() -> Self {
+        Self {
+            tenant_id: Uuid::nil(),
+            plan_id: Uuid::nil(),
+            plan_revision: 1,
+            phase: Uuid::nil(),
+            sku_id: Uuid::nil(),
+            price_overlay: "base".to_owned(),
+            price_eligibility: "all_subscriptions".to_owned(),
+            charge_kind: "recurring".to_owned(),
+            cohort: "none".to_owned(),
+            dimension_key: String::new(),
+            currency: "EUR".to_owned(),
+            region: "eu".to_owned(),
+            lifecycle_state: "published".to_owned(),
+            model_kind: None,
+            meter: None,
+            invoice_line_template: None,
+            gl_code_ref: None,
+            resolved_invoice_line_template: None,
+            resolved_gl_code: None,
+            created_by: Uuid::nil(),
+            created_at_utc: utc_ymd_hms(2026, 1, 1, 0, 0, 0),
+        }
+    }
+}
+
+/// The three immutable references a seeded price row fills in.
+#[derive(Clone, Copy, Debug)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "every field is an id because the struct is nothing but references"
+)]
+pub struct SeededGraph {
+    pub charge_line_id: Uuid,
+    pub line_version_id: Uuid,
+    pub market_price_id: Uuid,
+}
+
+/// Derive a stable id from a logical key, so re-seeding the same key twice
+/// addresses the same row rather than colliding on its unique constraint.
+fn seeded_id(namespace: u128, parts: &[&[u8]]) -> Uuid {
+    let mut bytes = Vec::new();
+    for part in parts {
+        bytes.extend_from_slice(part);
+        bytes.push(0xff);
+    }
+    Uuid::new_v5(&Uuid::from_u128(namespace), &bytes)
+}
+
+/// Seed (or reuse) the charge line, its version and its market.
+///
+/// Find-or-insert on each of the three, keyed the way the table's own unique
+/// constraint is, so a suite may call this once per price row of a line without
+/// minting a second line, a second version of one revision, or a second market.
+pub async fn seed_charge_graph(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    seed: &ChargeGraphSeed,
+) -> SeededGraph {
+    use bss_pricing::infra::storage::entity::{charge_line, charge_line_version, market_price};
+
+    let charge_line_id = seeded_id(
+        0x5f01,
+        &[
+            seed.tenant_id.as_bytes(),
+            seed.plan_id.as_bytes(),
+            seed.phase.as_bytes(),
+            seed.price_overlay.as_bytes(),
+            seed.price_eligibility.as_bytes(),
+            seed.charge_kind.as_bytes(),
+            seed.cohort.as_bytes(),
+            seed.sku_id.as_bytes(),
+            seed.dimension_key.as_bytes(),
+        ],
+    );
+    // **Found by its logical scope, not by the id this helper would mint.** The
+    // repository derives `charge_line_id` with its own namespace, so a fixture
+    // that seeds beside a row the repository already wrote would look for an id
+    // that is not there, insert, and collide on
+    // `uq_pricing_charge_line_logical_scope` instead. The scope is what "the same
+    // line" means, so the scope is what the lookup asks about.
+    let present = charge_line::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(charge_line::Column::TenantId.eq(seed.tenant_id))
+                .add(charge_line::Column::PlanId.eq(seed.plan_id))
+                .add(charge_line::Column::Phase.eq(seed.phase))
+                .add(charge_line::Column::SkuId.eq(seed.sku_id))
+                .add(charge_line::Column::PriceOverlay.eq(seed.price_overlay.clone()))
+                .add(charge_line::Column::PriceEligibility.eq(seed.price_eligibility.clone()))
+                .add(charge_line::Column::ChargeKind.eq(seed.charge_kind.clone()))
+                .add(charge_line::Column::Cohort.eq(seed.cohort.clone()))
+                .add(charge_line::Column::DimensionKey.eq(seed.dimension_key.clone())),
+        )
+        .one(runner)
+        .await
+        .expect("read back the seeded charge line");
+    let charge_line_id = present
+        .as_ref()
+        .map_or(charge_line_id, |row| row.charge_line_id);
+    if present.is_none() {
+        let line = charge_line::ActiveModel {
+            tenant_id: Set(seed.tenant_id),
+            charge_line_id: Set(charge_line_id),
+            plan_id: Set(seed.plan_id),
+            phase: Set(seed.phase),
+            price_overlay: Set(seed.price_overlay.clone()),
+            price_eligibility: Set(seed.price_eligibility.clone()),
+            charge_kind: Set(seed.charge_kind.clone()),
+            cohort: Set(seed.cohort.clone()),
+            sku_id: Set(seed.sku_id),
+            dimension_key: Set(seed.dimension_key.clone()),
+        };
+        charge_line::Entity::insert(line.clone())
+            .secure()
+            .scope_with_model(scope, &line)
+            .expect("scope the seeded charge line")
+            .exec(runner)
+            .await
+            .expect("seed the charge line");
+    }
+
+    let line_version_id = seeded_id(
+        0x5f02,
+        &[charge_line_id.as_bytes(), &seed.plan_revision.to_be_bytes()],
+    );
+    let present = charge_line_version::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(charge_line_version::Column::TenantId.eq(seed.tenant_id))
+                .add(charge_line_version::Column::ChargeLineId.eq(charge_line_id))
+                .add(charge_line_version::Column::PlanRevision.eq(seed.plan_revision)),
+        )
+        .one(runner)
+        .await
+        .expect("read back the seeded line version");
+    let line_version_id = present
+        .as_ref()
+        .map_or(line_version_id, |row| row.line_version_id);
+    if present.is_none() {
+        let version = charge_line_version::ActiveModel {
+            tenant_id: Set(seed.tenant_id),
+            line_version_id: Set(line_version_id),
+            charge_line_id: Set(charge_line_id),
+            plan_revision: Set(seed.plan_revision),
+            lifecycle_state: Set(seed.lifecycle_state.clone()),
+            model_kind: Set(seed.model_kind.clone()),
+            meter: Set(seed.meter.clone()),
+            invoice_line_template: Set(seed.invoice_line_template.clone()),
+            gl_code_ref: Set(seed.gl_code_ref.clone()),
+            resolved_invoice_line_template: Set(seed.resolved_invoice_line_template.clone()),
+            resolved_gl_code: Set(seed.resolved_gl_code.clone()),
+            created_by: Set(seed.created_by),
+            created_at_utc: Set(seed.created_at_utc),
+            row_version: Set(0),
+            ..Default::default()
+        };
+        charge_line_version::Entity::insert(version.clone())
+            .secure()
+            .scope_with_model(scope, &version)
+            .expect("scope the seeded line version")
+            .exec(runner)
+            .await
+            .expect("seed the line version");
+    }
+
+    let market_price_id = seeded_id(
+        0x5f03,
+        &[
+            charge_line_id.as_bytes(),
+            seed.currency.as_bytes(),
+            seed.region.as_bytes(),
+        ],
+    );
+    let present = market_price::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(market_price::Column::TenantId.eq(seed.tenant_id))
+                .add(market_price::Column::ChargeLineId.eq(charge_line_id))
+                .add(market_price::Column::Currency.eq(seed.currency.clone()))
+                .add(market_price::Column::Region.eq(seed.region.clone())),
+        )
+        .one(runner)
+        .await
+        .expect("read back the seeded market");
+    let market_price_id = present
+        .as_ref()
+        .map_or(market_price_id, |row| row.market_price_id);
+    if present.is_none() {
+        let market = market_price::ActiveModel {
+            tenant_id: Set(seed.tenant_id),
+            market_price_id: Set(market_price_id),
+            charge_line_id: Set(charge_line_id),
+            currency: Set(seed.currency.clone()),
+            region: Set(seed.region.clone()),
+        };
+        market_price::Entity::insert(market.clone())
+            .secure()
+            .scope_with_model(scope, &market)
+            .expect("scope the seeded market")
+            .exec(runner)
+            .await
+            .expect("seed the market");
+    }
+
+    SeededGraph {
+        charge_line_id,
+        line_version_id,
+        market_price_id,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The same graph, for the suites that write raw SQL.
+// ---------------------------------------------------------------------------
+
+/// A charge-line graph expressed as SQL literals.
+///
+/// [`seed_charge_graph`]'s sibling for the schema suites, which write their rows
+/// by hand precisely so a repository precheck cannot answer for a missing
+/// constraint. They still need the three parent rows a `pricing_price` row
+/// references, and they need them spelled the same way — a second copy of this
+/// INSERT in each suite is how the copies stopped agreeing before.
+pub struct SqlGraphSeed<'a> {
+    pub tenant_id: &'a str,
+    pub plan_id: &'a str,
+    pub phase: &'a str,
+    pub sku_id: &'a str,
+    pub charge_kind: &'a str,
+    pub price_eligibility: &'a str,
+    pub cohort: &'a str,
+    pub dimension_key: &'a str,
+    pub currency: &'a str,
+    pub region: &'a str,
+    pub model_kind: Option<&'a str>,
+    pub lifecycle_state: &'a str,
+    pub created_by: &'a str,
+    pub created_at_utc: &'a str,
+    pub plan_revision: i64,
+}
+
+impl<'a> SqlGraphSeed<'a> {
+    /// The defaults the schema suites were already spelling.
+    #[must_use]
+    pub fn new(tenant_id: &'a str, plan_id: &'a str, phase: &'a str, sku_id: &'a str) -> Self {
+        Self {
+            tenant_id,
+            plan_id,
+            phase,
+            sku_id,
+            charge_kind: "recurring",
+            price_eligibility: "all_subscriptions",
+            cohort: "none",
+            dimension_key: "",
+            currency: "USD",
+            region: "EU",
+            model_kind: Some("flat"),
+            lifecycle_state: "published",
+            created_by: tenant_id,
+            created_at_utc: "2026-08-02 10:00:00 +00:00",
+            plan_revision: 0,
+        }
+    }
+}
+
+/// The three ids a seeded price row references.
+#[derive(Clone, Debug)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "every field is an id because the struct is nothing but references"
+)]
+pub struct SqlGraphIds {
+    pub charge_line_id: String,
+    pub line_version_id: String,
+    pub market_price_id: String,
+}
+
+/// Seed (or reuse) the line, version and market, in SQL.
+///
+/// `INSERT OR IGNORE` on each of the three, because a suite seeds several price
+/// rows of one line and the second call must address the first call's rows
+/// rather than collide with them. The ids are derived from the logical key, so
+/// "the same key" and "the same row" are the same statement.
+///
+/// # Panics
+/// When a statement the schema should accept is refused.
+pub async fn seed_charge_graph_sql(
+    conn: &DatabaseConnection,
+    seed: &SqlGraphSeed<'_>,
+) -> SqlGraphIds {
+    let charge_line_id = seeded_id(
+        0x5f01,
+        &[
+            seed.tenant_id.as_bytes(),
+            seed.plan_id.as_bytes(),
+            seed.phase.as_bytes(),
+            seed.price_eligibility.as_bytes(),
+            seed.charge_kind.as_bytes(),
+            seed.cohort.as_bytes(),
+            seed.sku_id.as_bytes(),
+            seed.dimension_key.as_bytes(),
+        ],
+    )
+    .to_string();
+    let line_version_id = seeded_id(
+        0x5f02,
+        &[charge_line_id.as_bytes(), &seed.plan_revision.to_be_bytes()],
+    )
+    .to_string();
+    let market_price_id = seeded_id(
+        0x5f03,
+        &[
+            charge_line_id.as_bytes(),
+            seed.currency.as_bytes(),
+            seed.region.as_bytes(),
+        ],
+    )
+    .to_string();
+
+    must_succeed(
+        conn,
+        &format!(
+            "INSERT OR IGNORE INTO pricing_charge_line (tenant_id, charge_line_id, plan_id, \
+             phase, price_eligibility, charge_kind, cohort, sku_id, dimension_key) VALUES \
+             ('{}','{charge_line_id}','{}','{}','{}','{}','{}','{}','{}')",
+            seed.tenant_id,
+            seed.plan_id,
+            seed.phase,
+            seed.price_eligibility,
+            seed.charge_kind,
+            seed.cohort,
+            seed.sku_id,
+            seed.dimension_key,
+        ),
+    )
+    .await;
+
+    let model_kind = seed
+        .model_kind
+        .map_or_else(|| "NULL".to_owned(), |kind| format!("'{kind}'"));
+    must_succeed(
+        conn,
+        &format!(
+            "INSERT OR IGNORE INTO pricing_charge_line_version (tenant_id, line_version_id, \
+             charge_line_id, plan_revision, lifecycle_state, model_kind, created_by, \
+             created_at_utc, row_version) VALUES \
+             ('{}','{line_version_id}','{charge_line_id}',{},'{}',{model_kind},'{}','{}',0)",
+            seed.tenant_id,
+            seed.plan_revision,
+            seed.lifecycle_state,
+            seed.created_by,
+            seed.created_at_utc,
+        ),
+    )
+    .await;
+
+    must_succeed(
+        conn,
+        &format!(
+            "INSERT OR IGNORE INTO pricing_market_price (tenant_id, market_price_id, \
+             charge_line_id, currency, region) VALUES \
+             ('{}','{market_price_id}','{charge_line_id}','{}','{}')",
+            seed.tenant_id, seed.currency, seed.region,
+        ),
+    )
+    .await;
+
+    SqlGraphIds {
+        charge_line_id,
+        line_version_id,
+        market_price_id,
+    }
+}
+
+/// The market id [`seed_charge_graph_sql`] derives for one logical key.
+///
+/// Exposed because a window row has to name its price's market without
+/// re-seeding the graph: non-overlap is judged per market and the table's
+/// foreign key is the compound `(tenant_id, price_id, market_price_id)`, so a
+/// fixture that writes windows by hand needs the id the seeder minted.
+#[must_use]
+pub fn sql_market_id(
+    tenant_id: &str,
+    plan_id: &str,
+    phase: &str,
+    sku_id: &str,
+    charge_kind: &str,
+    currency: &str,
+    region: &str,
+) -> String {
+    let charge_line_id = seeded_id(
+        0x5f01,
+        &[
+            tenant_id.as_bytes(),
+            plan_id.as_bytes(),
+            phase.as_bytes(),
+            b"all_subscriptions",
+            charge_kind.as_bytes(),
+            b"none",
+            sku_id.as_bytes(),
+            b"",
+        ],
+    )
+    .to_string();
+    seeded_id(
+        0x5f03,
+        &[
+            charge_line_id.as_bytes(),
+            currency.as_bytes(),
+            region.as_bytes(),
+        ],
+    )
+    .to_string()
+}
+
+/// The line-version id [`seed_charge_graph_sql`] derives for one logical key and
+/// revision.
+///
+/// [`sql_market_id`]'s sibling, for the cases whose subject is shared content
+/// rather than a market.
+#[must_use]
+pub fn sql_line_version_id(
+    tenant_id: &str,
+    plan_id: &str,
+    phase: &str,
+    sku_id: &str,
+    charge_kind: &str,
+    plan_revision: i64,
+) -> String {
+    let charge_line_id = seeded_id(
+        0x5f01,
+        &[
+            tenant_id.as_bytes(),
+            plan_id.as_bytes(),
+            phase.as_bytes(),
+            b"all_subscriptions",
+            charge_kind.as_bytes(),
+            b"none",
+            sku_id.as_bytes(),
+            b"",
+        ],
+    )
+    .to_string();
+    seeded_id(
+        0x5f02,
+        &[charge_line_id.as_bytes(), &plan_revision.to_be_bytes()],
+    )
+    .to_string()
+}

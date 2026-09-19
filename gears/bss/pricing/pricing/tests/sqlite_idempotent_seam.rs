@@ -68,7 +68,7 @@ fn new_draft(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
         created_by: Uuid::from_u128(0xac_11),
         created_at_utc: at(9),
         // D-372: `pricing_plan.sku_id` is `NOT NULL` since
-        // `m20260916_000044_price_row_sku`, so a draft with no SKU is refused
+        // the fresh-install DDL, so a draft with no SKU is refused
         // by the store. `PlanShape.sku_id` stays `Option` until Task 8.
         sku_id: Uuid::from_u128(5),
         plan_tier: Some("gold".to_owned()),

@@ -20,8 +20,7 @@ use crate::domain::instant::utc_ymd_hms;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::plan_shape::{
-    CompositeMeter, CustomIntervalUnit, Frequency, PeriodFloorCap, PhaseKind,
-    PlanPhase,
+    CompositeMeter, CustomIntervalUnit, Frequency, PeriodFloorCap, PhaseKind, PlanPhase,
 };
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow};
@@ -296,7 +295,6 @@ fn the_payloads_members_partition_into_the_read_and_the_ignored() {
         // not thereby sellable — so reading them here would make an
         // authorization fact decide a sellability one.
         "allowedChangeTargets",
-        "billingCycle",
         "comparabilityRank",
         // Slice 10's derived-meter definitions. **Ignored deliberately**: a
         // composite says how a billable quantity is *derived* once a thing is

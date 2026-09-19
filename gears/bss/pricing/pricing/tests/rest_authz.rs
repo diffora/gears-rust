@@ -1028,6 +1028,18 @@ struct Seeded {
 /// What the approval rows need from the seed is one thing only: an id that
 /// resolves to a record in the caller's tenant, so a refusal is the gate's and
 /// never a 404's.
+/// The plan-plane entity tag this census drives every `If-Match` with.
+///
+/// **One constant, because it is a fact about [`seed`] and not about any one
+/// call.** It was fifteen copies of a literal until pricing a plan started
+/// moving the plan's tag — `charge_line_repo::ensure_draft_graph` bumps the
+/// containing revision, so `seed_price` below advances it once more than it used
+/// to — and fifteen copies meant fifteen places for the next such move to be
+/// missed. The failure it produces is quiet in the wrong way: the owner's own
+/// call answers `409`, and a census that only checked the *foreign* caller's
+/// refusal would still have passed while proving nothing.
+const CENSUS_ETAG: &str = "\"0-4\"";
+
 async fn seed(harness: &Harness) -> Seeded {
     let plan_id = Uuid::now_v7();
     seed_draft_plan(harness, plan_id).await;
@@ -1051,7 +1063,7 @@ async fn seed(harness: &Harness) -> Seeded {
     // A live seed window is not on the captured baseline. Assemble of a mutable
     // draft refuses that drift (`WINDOW_BASELINE_CHANGED`, 409), so GET/reject
     // of this unit would have no owner-success control. Recapture without bumping
-    // the plan tag the rest of this census drives (`"0-4"`).
+    // the plan tag the rest of this census drives ([`CENSUS_ETAG`]).
     window_baseline_repo::replace_from_live(
         &harness.db.conn().expect("conn"),
         &harness.scope(),
@@ -2451,7 +2463,7 @@ async fn an_unauthenticated_caller_is_refused_on_every_route() {
 
         let anonymous = harness
             .anonymous()
-            .send(drive(&route, &seeded, "\"0-4\"", "anonymous-key"))
+            .send(drive(&route, &seeded, CENSUS_ETAG, "anonymous-key"))
             .await;
         assert_eq!(
             anonymous.status(),
@@ -2465,7 +2477,7 @@ async fn an_unauthenticated_caller_is_refused_on_every_route() {
         // request of its own and not a replay of one the gate refused.
         let authenticated = harness
             .allowed()
-            .send(drive(&route, &seeded, "\"0-4\"", "authenticated-key"))
+            .send(drive(&route, &seeded, CENSUS_ETAG, "authenticated-key"))
             .await;
         assert!(
             authenticated.status() != StatusCode::UNAUTHORIZED
@@ -2723,7 +2735,7 @@ async fn every_route_asks_the_catalogued_pair() {
         let (client, seen) = harness.recording();
 
         let response = client
-            .send(drive(&route, &seeded, "\"0-4\"", "census-key"))
+            .send(drive(&route, &seeded, CENSUS_ETAG, "census-key"))
             .await;
         assert!(
             response.status() != StatusCode::UNAUTHORIZED
@@ -2893,7 +2905,7 @@ async fn a_question_is_never_anchored_to_another_objects_id() {
         let (client, seen) = harness.recording();
 
         let response = client
-            .send(drive(&route, &seeded, "\"0-4\"", "census-anchor"))
+            .send(drive(&route, &seeded, CENSUS_ETAG, "census-anchor"))
             .await;
         assert!(
             response.status() != StatusCode::UNAUTHORIZED
@@ -3079,7 +3091,7 @@ async fn every_mutating_route_is_denied_with_the_state_unchanged() {
 
         let response = harness
             .denied()
-            .send(drive(&route, &seeded, "\"0-4\"", "denied-key"))
+            .send(drive(&route, &seeded, CENSUS_ETAG, "denied-key"))
             .await;
 
         assert_eq!(
@@ -3158,7 +3170,7 @@ async fn every_route_is_denied_with_a_403() {
     for route in census() {
         let response = harness
             .denied()
-            .send(drive(&route, &seeded, "\"0-4\"", "denied-all-key"))
+            .send(drive(&route, &seeded, CENSUS_ETAG, "denied-all-key"))
             .await;
 
         assert_eq!(
@@ -3195,7 +3207,7 @@ async fn a_pdp_outage_fails_closed_on_every_route() {
 
         let response = harness
             .unavailable()
-            .send(drive(&route, &seeded, "\"0-4\"", "outage-key"))
+            .send(drive(&route, &seeded, CENSUS_ETAG, "outage-key"))
             .await;
 
         assert_eq!(
@@ -3220,7 +3232,7 @@ async fn a_pdp_outage_fails_closed_on_every_route() {
         };
         let twin = twin_host
             .allowed()
-            .send(drive(&route, twin_world, "\"0-4\"", "twin-key"))
+            .send(drive(&route, twin_world, CENSUS_ETAG, "twin-key"))
             .await;
         assert_ne!(
             twin.status(),
@@ -3472,15 +3484,20 @@ async fn a_foreign_tenants_object_reads_like_an_absent_one_on_every_by_id_read()
 
         let owner = harness
             .allowed()
-            .send(drive(&route, &seeded, "\"0-4\"", "owner-key"))
+            .send(drive(&route, &seeded, CENSUS_ETAG, "owner-key"))
             .await;
         let foreign = harness
             .other_tenant()
-            .send(drive(&route, &seeded, "\"0-4\"", "foreign-key"))
+            .send(drive(&route, &seeded, CENSUS_ETAG, "foreign-key"))
             .await;
         let absent = harness
             .other_tenant()
-            .send(drive(&route, &absent_ids(&seeded), "\"0-4\"", "absent-key"))
+            .send(drive(
+                &route,
+                &absent_ids(&seeded),
+                CENSUS_ETAG,
+                "absent-key",
+            ))
             .await;
 
         // The control. A route the owner cannot read either says nothing about
@@ -3697,7 +3714,7 @@ async fn a_foreign_tenants_object_is_refused_like_an_absent_one_on_every_by_id_w
         let controlled = seed(&control).await;
         let owner = control
             .allowed()
-            .send(drive(&route, &controlled, "\"0-4\"", "owner-key"))
+            .send(drive(&route, &controlled, CENSUS_ETAG, "owner-key"))
             .await;
         if !owner.status().is_success() {
             let status = owner.status();
@@ -3724,11 +3741,16 @@ async fn a_foreign_tenants_object_is_refused_like_an_absent_one_on_every_by_id_w
 
         let foreign = harness
             .other_tenant()
-            .send(drive(&route, &seeded, "\"0-4\"", "foreign-key"))
+            .send(drive(&route, &seeded, CENSUS_ETAG, "foreign-key"))
             .await;
         let absent = harness
             .other_tenant()
-            .send(drive(&route, &absent_ids(&seeded), "\"0-4\"", "absent-key"))
+            .send(drive(
+                &route,
+                &absent_ids(&seeded),
+                CENSUS_ETAG,
+                "absent-key",
+            ))
             .await;
 
         let foreign_status = foreign.status();
@@ -3837,7 +3859,7 @@ async fn a_write_whose_target_tenant_is_outside_the_scope_is_denied_on_every_wri
 
         let response = harness
             .scope_mismatch()
-            .send(drive(&route, &seeded, "\"0-4\"", "mismatch-key"))
+            .send(drive(&route, &seeded, CENSUS_ETAG, "mismatch-key"))
             .await;
 
         assert_eq!(

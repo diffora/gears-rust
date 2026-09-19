@@ -386,7 +386,7 @@ fn effective_lines(subject: &PlanShape) -> Vec<ChargeLineVersion> {
                     scope_key: record.scope_key.line().clone(),
                     structure,
                     billing_timing: record.billing_timing.clone(),
-                    proration_contract: record.proration_contract.clone(),
+                    proration_contract: record.proration_contract,
                 }
             });
     }

@@ -78,6 +78,10 @@ pub mod m20260821_000018_create_pricing_outbox;
 pub mod m20260821_000019_create_pricing_partner_taxonomy;
 pub mod m20260821_000020_create_pricing_pin_frontier;
 pub mod m20260821_000021_create_pricing_plan;
+pub mod m20260821_000022_01_create_pricing_charge_line;
+pub mod m20260821_000022_02_create_pricing_charge_line_version;
+pub mod m20260821_000022_03_create_pricing_market_price;
+pub mod m20260821_000022_04_create_pricing_charge_tier;
 pub mod m20260821_000022_create_pricing_policy_object;
 pub mod m20260821_000023_create_pricing_price;
 pub mod m20260821_000024_create_pricing_price_overlay;
@@ -90,7 +94,6 @@ pub mod m20260821_000030_create_pricing_bundle_component;
 pub mod m20260821_000031_create_pricing_bundle_revshare_group;
 pub mod m20260821_000032_create_pricing_composite_meter;
 pub mod m20260821_000033_create_pricing_plan_addon_rule;
-pub mod m20260821_000034_create_pricing_plan_descriptor_set;
 pub mod m20260821_000035_create_pricing_plan_period_floor_cap;
 pub mod m20260821_000036_create_pricing_plan_phase;
 pub mod m20260821_000037_create_pricing_price_overlay_line;
@@ -100,8 +103,6 @@ pub mod m20260821_000040_create_pricing_repricing_journal;
 pub mod m20260821_000041_create_pricing_bundle_revshare;
 pub mod m20260821_000042_create_pricing_price_overlay_line_amount;
 pub mod m20260821_000043_create_pricing_gl_code_taxonomy;
-pub mod m20260916_000044_price_row_sku;
-pub mod m20260916_000045_descriptor_grain;
 pub mod m20260918_000046_create_pricing_draft_window;
 pub mod m20260918_000047_create_pricing_window_baseline;
 pub mod m20260918_000048_create_pricing_window_guard;
@@ -190,6 +191,10 @@ impl MigratorTrait for Migrator {
             Box::new(m20260821_000019_create_pricing_partner_taxonomy::Migration),
             Box::new(m20260821_000020_create_pricing_pin_frontier::Migration),
             Box::new(m20260821_000021_create_pricing_plan::Migration),
+            Box::new(m20260821_000022_01_create_pricing_charge_line::Migration),
+            Box::new(m20260821_000022_02_create_pricing_charge_line_version::Migration),
+            Box::new(m20260821_000022_03_create_pricing_market_price::Migration),
+            Box::new(m20260821_000022_04_create_pricing_charge_tier::Migration),
             Box::new(m20260821_000022_create_pricing_policy_object::Migration),
             Box::new(m20260821_000023_create_pricing_price::Migration),
             Box::new(m20260821_000024_create_pricing_price_overlay::Migration),
@@ -202,7 +207,6 @@ impl MigratorTrait for Migrator {
             Box::new(m20260821_000031_create_pricing_bundle_revshare_group::Migration),
             Box::new(m20260821_000032_create_pricing_composite_meter::Migration),
             Box::new(m20260821_000033_create_pricing_plan_addon_rule::Migration),
-            Box::new(m20260821_000034_create_pricing_plan_descriptor_set::Migration),
             Box::new(m20260821_000035_create_pricing_plan_period_floor_cap::Migration),
             Box::new(m20260821_000036_create_pricing_plan_phase::Migration),
             Box::new(m20260821_000037_create_pricing_price_overlay_line::Migration),
@@ -222,13 +226,6 @@ impl MigratorTrait for Migrator {
             // `m0001_...` name sorts FIRST under the runner's name ordering, so
             // its `up` creates the schema itself before the `CREATE TABLE`.
             Box::new(coord::migration::Migration::in_schema("bss")),
-            // D-372: `pricing_price.sku_id`, `pricing_plan.sku_id NOT NULL` and the
-            // scope-key indexes re-keyed off `meter`. Appended rather than folded
-            // into `m20260821_000023`: that chain is shipped on `main`, so the SKU
-            // arrives as a migration an operator can see refuse, not as a rewrite of
-            // a file their database has already applied.
-            Box::new(m20260916_000044_price_row_sku::Migration),
-            Box::new(m20260916_000045_descriptor_grain::Migration),
             Box::new(m20260918_000046_create_pricing_draft_window::Migration),
             Box::new(m20260918_000047_create_pricing_window_baseline::Migration),
             Box::new(m20260918_000048_create_pricing_window_guard::Migration),

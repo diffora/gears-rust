@@ -93,6 +93,8 @@ use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt};
 use toolkit_db::{DBProvider, DbError};
 use uuid::Uuid;
 
+mod common;
+
 const TENANT: Uuid = Uuid::from_u128(0x7e_11);
 const ACTOR: Uuid = Uuid::from_u128(0xac_01);
 const PLAN: Uuid = Uuid::from_u128(0x91_a1);
@@ -132,19 +134,36 @@ async fn seed(pg: &Pg) {
     let db = pg.db().await;
     let provider = DBProvider::<DbError>::new(db);
     let conn = provider.conn().expect("scoped connection");
+    let seeded_graph = common::seed_charge_graph(
+        &conn,
+        &scope(),
+        &common::ChargeGraphSeed {
+            tenant_id: TENANT,
+            plan_id: PLAN,
+            phase: PHASE,
+            sku_id: Uuid::from_u128(0x5_c1),
+            charge_kind: "recurring".to_owned(),
+            currency: "USD".to_owned(),
+            region: "EU".to_owned(),
+            lifecycle_state: "published".to_owned(),
+            model_kind: Some("flat".to_owned()),
+            resolved_invoice_line_template: Some("{sku} - {period}".to_owned()),
+            resolved_gl_code: Some("4000".to_owned()),
+            created_by: ACTOR,
+            created_at_utc: t(1),
+            ..Default::default()
+        },
+    )
+    .await;
     let row = price::ActiveModel {
+        plan_revision: Set(1),
+        charge_line_id: Set(seeded_graph.charge_line_id),
+        line_version_id: Set(seeded_graph.line_version_id),
+        market_price_id: Set(seeded_graph.market_price_id),
         price_id: Set(ROW),
         tenant_id: Set(TENANT),
         plan_id: Set(PLAN),
-        sku_id: Set(Uuid::from_u128(0x5_c1)),
-        resolved_invoice_line_template: Set(Some("{sku} - {period}".to_owned())),
-        resolved_gl_code: Set(Some("4000".to_owned())),
-        currency: Set("USD".to_owned()),
-        region: Set("EU".to_owned()),
-        phase: Set(PHASE),
-        charge_kind: Set("recurring".to_owned()),
         amount_minor: Set(Some(1_000)),
-        model_kind: Set(Some("flat".to_owned())),
         lifecycle_state: Set("published".to_owned()),
         created_by: Set(ACTOR),
         created_at_utc: Set(t(1)),

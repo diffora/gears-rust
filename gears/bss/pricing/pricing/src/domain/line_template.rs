@@ -113,7 +113,9 @@ impl DefaultLineTemplates {
     pub fn from_map(values: BTreeMap<String, String>) -> Result<Self, String> {
         let expected = ["recurring", "usage", "one_time"];
         if values.len() != expected.len() || expected.iter().any(|key| !values.contains_key(*key)) {
-            return Err("default_line_templates requires exactly recurring, usage, one_time".to_owned());
+            return Err(
+                "default_line_templates requires exactly recurring, usage, one_time".to_owned(),
+            );
         }
         for (kind, source) in &values {
             if let Err(errors) = parse(source) {

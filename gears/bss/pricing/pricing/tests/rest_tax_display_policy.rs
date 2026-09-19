@@ -293,6 +293,8 @@ async fn seed_tax_inclusive_plan(
             harness.tenant,
             NewPriceDraft {
                 price_id,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: publishable_scope_key(plan, shape.phase, region),
                 content,
                 created_by: rest_support::SEED_ACTOR,

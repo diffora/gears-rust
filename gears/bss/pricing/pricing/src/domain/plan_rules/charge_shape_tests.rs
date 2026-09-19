@@ -266,15 +266,15 @@ fn charge_kinds_collects_presence_from_lines() {
     let usage = line(2, ChargeKind::Usage, phase_id(TERMINAL));
     let recurring = line(3, ChargeKind::Recurring, phase_id(TERMINAL));
     assert_eq!(
-        charge_kinds(&[one_time.clone()]),
+        charge_kinds(std::slice::from_ref(&one_time)),
         BTreeSet::from([ChargeKind::OneTime])
     );
     assert_eq!(
-        charge_kinds(&[usage.clone()]),
+        charge_kinds(std::slice::from_ref(&usage)),
         BTreeSet::from([ChargeKind::Usage])
     );
     assert_eq!(
-        charge_kinds(&[recurring.clone()]),
+        charge_kinds(std::slice::from_ref(&recurring)),
         BTreeSet::from([ChargeKind::Recurring])
     );
     assert_eq!(
@@ -410,7 +410,7 @@ fn a_missing_market_variant_is_named_with_phase_line_and_market() {
         }],
     );
     subject.frequency = Some(Frequency::Monthly);
-    subject.charge_lines = vec![recurring.clone()];
+    subject.charge_lines = vec![recurring];
     let report = findings(&super::LineMarketPricePresent, &subject);
     assert_eq!(codes(&report), vec![LINE_MARKET_PRICE_MISSING]);
     let subject_key = &report.violations[0].subject;

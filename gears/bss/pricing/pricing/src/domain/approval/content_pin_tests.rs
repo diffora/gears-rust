@@ -710,6 +710,12 @@ fn window_authoring_mutators() -> Vec<Mutator> {
     ]
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one line over the bar since the pin gained the line-version and market \
+              identities; the case is one table of inputs and splitting it would split the \
+              table"
+)]
 fn row_mutators() -> Vec<Mutator> {
     vec![
         // PriceRecord

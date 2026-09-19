@@ -17,8 +17,8 @@ use crate::domain::instant::utc_ymd_hms;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::plan_rules::{
-    CustomIntervalBounds, DescriptorSetComplete, INVALID_CUSTOM_INTERVAL,
-    PHASE_GRAPH_INVALID, PHASE_ROW_ORPHANED, PLANTIER_MISSING,
+    CustomIntervalBounds, DescriptorSetComplete, INVALID_CUSTOM_INTERVAL, PHASE_GRAPH_INVALID,
+    PHASE_ROW_ORPHANED, PLANTIER_MISSING,
 };
 use crate::domain::plan_shape::{Frequency, PlanShape};
 use crate::domain::price_record::PriceRecord;

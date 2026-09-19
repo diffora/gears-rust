@@ -397,6 +397,8 @@ async fn seed_publishable(h: &Harness) -> (u64, RowVersion, Uuid) {
             TENANT,
             NewPriceDraft {
                 price_id,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: scope_key(PriceEligibility::AllSubscriptions),
                 content: flat_row(),
                 created_by: ACTOR,
@@ -1093,6 +1095,8 @@ async fn an_elapsed_exact_start_after_approval_rolls_back_and_leaves_intentions(
             TENANT,
             NewPriceDraft {
                 price_id,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: scope_key(PriceEligibility::AllSubscriptions),
                 content: flat_row(),
                 created_by: ACTOR,
@@ -1162,6 +1166,8 @@ async fn a_failure_after_the_first_window_write_rolls_back_every_artifact() {
             TENANT,
             NewPriceDraft {
                 price_id: LATE_PRICE,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: scope_key(PriceEligibility::NewSubscriptionsOnly),
                 content: flat_row(),
                 created_by: ACTOR,
@@ -1229,6 +1235,8 @@ async fn seed_stolen_window(h: &Harness) {
             TENANT,
             NewPriceDraft {
                 price_id: foreign_price,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: MarketPriceScopeKey::new(
                     ChargeLineScopeKey::new(
                         other,
@@ -1560,6 +1568,8 @@ async fn a_commit_time_validation_failure_writes_nothing_at_all() {
             TENANT,
             NewPriceDraft {
                 price_id: Uuid::from_u128(0xb_0002),
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: scope_key(PriceEligibility::NewSubscriptionsOnly),
                 content: PriceContent {
                     rounding_policy_ref: None,
@@ -2007,6 +2017,8 @@ async fn a_row_authored_after_the_precheck_is_judged_by_the_second_run() {
             TENANT,
             NewPriceDraft {
                 price_id: late,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: scope_key(PriceEligibility::NewSubscriptionsOnly),
                 content: flat_row(),
                 created_by: ACTOR,
@@ -2303,6 +2315,8 @@ async fn drive_the_window_plane(h: &Harness) {
             TENANT,
             NewPriceDraft {
                 price_id: extra,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: scope_key(PriceEligibility::NewSubscriptionsOnly),
                 content: flat_row(),
                 created_by: ACTOR,
@@ -2604,6 +2618,8 @@ async fn drive_every_audited_path(h: &Harness) -> Vec<audit_log::Model> {
             TENANT,
             NewPriceDraft {
                 price_id: doomed,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: scope_key(PriceEligibility::NewSubscriptionsOnly),
                 content: flat_row(),
                 created_by: ACTOR,
@@ -3379,6 +3395,8 @@ async fn seed_referencing_bundle(h: &Harness, sibling_tax_inclusive: bool) {
             TENANT,
             NewPriceDraft {
                 price_id: sibling_price,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: MarketPriceScopeKey::new(
                     ChargeLineScopeKey::new(
                         sibling_plan,
@@ -3425,6 +3443,8 @@ async fn seed_referencing_bundle(h: &Harness, sibling_tax_inclusive: bool) {
                 TENANT,
                 NewPriceDraft {
                     price_id: price,
+                    line_version_id: None,
+                    market_price_id: None,
                     scope_key: MarketPriceScopeKey::new(
                         ChargeLineScopeKey::new(
                             owner,
@@ -3619,6 +3639,8 @@ async fn the_commits_rule_run_reports_what_it_judged() {
             TENANT,
             NewPriceDraft {
                 price_id: gated,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: scope_key(PriceEligibility::NewSubscriptionsOnly),
                 content: PriceContent {
                     tax_inclusive: true,
@@ -3848,6 +3870,8 @@ async fn make_two_phased(h: &Harness) {
             TENANT,
             NewPriceDraft {
                 price_id: trial_price,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: scope_key_in_phase(trial_phase()),
                 content: flat_row(),
                 created_by: ACTOR,

@@ -69,7 +69,7 @@
 //! commitment, and a value blocked by somebody's unpublished experiment is a
 //! value no operator can retire on a schedule.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, ExprTrait, QuerySelect, Set};
@@ -92,9 +92,9 @@ use crate::domain::taxonomy::{
 };
 use crate::domain::validation::ValidationReport;
 use crate::infra::storage::entity::{
-    brand_taxonomy, customer_group_taxonomy, gl_code_taxonomy, group_membership, org_tier_taxonomy,
-    partner_taxonomy, policy_object, price, price_overlay, region_taxonomy,
-    rounding_policy_taxonomy,
+    brand_taxonomy, charge_line_version, customer_group_taxonomy, gl_code_taxonomy,
+    group_membership, org_tier_taxonomy, partner_taxonomy, policy_object, price, price_overlay,
+    region_taxonomy, rounding_policy_taxonomy,
 };
 use crate::infra::storage::{RepoError, contention_or_db};
 
@@ -848,19 +848,37 @@ pub async fn references_to(
     // `brand` is "**not** a price-row field (Foundation §4.1)", and the same is
     // true of the two D-120 classes. Counting the row plane for them would be a
     // query that can only ever answer zero.
+    // The region axis moved to `pricing_market_price`, so the markets of the
+    // region are resolved first and the rows counted by reference. No market in
+    // the region means no row in it, without a statement that can only answer
+    // zero.
     let published_price_rows = if class == TaxonomyClass::Region {
-        price::Entity::find()
-            .secure()
-            .scope_with(scope)
-            .filter(
-                Condition::all()
-                    .add(price::Column::TenantId.eq(tenant_id))
-                    .add(price::Column::Region.eq(value.as_str()))
-                    .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str())),
-            )
-            .count(runner)
-            .await
-            .map_err(|e| RepoError::Db(format!("count pricing_price: {e}")))?
+        let markets: Vec<Uuid> = super::market_price_repo::in_regions(
+            runner,
+            scope,
+            tenant_id,
+            &[value.as_str().to_owned()],
+        )
+        .await?
+        .into_iter()
+        .map(|market| market.market_price_id)
+        .collect();
+        if markets.is_empty() {
+            0
+        } else {
+            price::Entity::find()
+                .secure()
+                .scope_with(scope)
+                .filter(
+                    Condition::all()
+                        .add(price::Column::TenantId.eq(tenant_id))
+                        .add(price::Column::MarketPriceId.is_in(markets))
+                        .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str())),
+                )
+                .count(runner)
+                .await
+                .map_err(|e| RepoError::Db(format!("count pricing_price: {e}")))?
+        }
     } else {
         0
     };
@@ -914,6 +932,13 @@ pub async fn references_for_values(
         cnt: i64,
     }
 
+    /// The per-market counts the region totals are folded from.
+    #[derive(sea_orm::FromQueryResult)]
+    struct MarketGroup {
+        market_price_id: Uuid,
+        cnt: i64,
+    }
+
     let mut references: BTreeMap<String, ValueReferences> = values
         .iter()
         .map(|entry| (entry.value.as_str().to_owned(), ValueReferences::default()))
@@ -963,24 +988,46 @@ pub async fn references_for_values(
     // three classes cannot have a price-row reference at all.
     if class == TaxonomyClass::Region {
         for chunk in names.chunks(MAX_IN_BINDS) {
+            // Grouped by the market reference and folded back to its region, for
+            // the reason the single-value count one function up gives: the region
+            // is a column of `pricing_market_price` now. The fold is over the
+            // tenant's markets in these regions, not over its rows.
+            let region_of: HashMap<Uuid, String> =
+                super::market_price_repo::in_regions(runner, scope, tenant_id, chunk)
+                    .await?
+                    .into_iter()
+                    .map(|market| (market.market_price_id, market.region))
+                    .collect();
+            if region_of.is_empty() {
+                continue;
+            }
+            let market_ids: Vec<Uuid> = region_of.keys().copied().collect();
             let groups: Vec<Group> = price::Entity::find()
                 .secure()
                 .scope_with(scope)
                 .filter(
                     Condition::all()
                         .add(price::Column::TenantId.eq(tenant_id))
-                        .add(price::Column::Region.is_in(chunk.to_vec()))
+                        .add(price::Column::MarketPriceId.is_in(market_ids))
                         .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str())),
                 )
                 .project_all(runner, |q| {
                     q.select_only()
-                        .column_as(Expr::col(price::Column::Region), "value")
+                        .column(price::Column::MarketPriceId)
                         .column_as(Expr::col(price::Column::PriceId).count(), "cnt")
-                        .group_by(price::Column::Region)
-                        .into_model::<Group>()
+                        .group_by(price::Column::MarketPriceId)
+                        .into_model::<MarketGroup>()
                 })
                 .await
-                .map_err(|e| RepoError::Db(format!("group pricing_price: {e}")))?;
+                .map_err(|e| RepoError::Db(format!("group pricing_price: {e}")))?
+                .into_iter()
+                .filter_map(|group| {
+                    region_of.get(&group.market_price_id).map(|region| Group {
+                        value: region.clone(),
+                        cnt: group.cnt,
+                    })
+                })
+                .collect();
             for group in groups {
                 if let Some(entry) = references.get_mut(&group.value) {
                     entry.published_price_rows = u64::try_from(group.cnt).unwrap_or(0);
@@ -1009,13 +1056,26 @@ pub async fn rows_resolving_category_through(
     value: &ScopeValue,
 ) -> Result<u64, RepoError> {
     let scope = &AccessScope::for_tenant(tenant_id);
+    let markets: Vec<Uuid> = super::market_price_repo::in_regions(
+        runner,
+        scope,
+        tenant_id,
+        &[value.as_str().to_owned()],
+    )
+    .await?
+    .into_iter()
+    .map(|market| market.market_price_id)
+    .collect();
+    if markets.is_empty() {
+        return Ok(0);
+    }
     price::Entity::find()
         .secure()
         .scope_with(scope)
         .filter(
             Condition::all()
                 .add(price::Column::TenantId.eq(tenant_id))
-                .add(price::Column::Region.eq(value.as_str()))
+                .add(price::Column::MarketPriceId.is_in(markets))
                 .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str()))
                 .add(price::Column::TaxCategoryRef.is_null()),
         )
@@ -2698,6 +2758,27 @@ async fn references_to_gl_code(
     value: &ScopeValue,
 ) -> Result<u64, RepoError> {
     let scope = &AccessScope::for_tenant(tenant_id);
+    // The frozen GL code is shared content of the line version, so the versions
+    // naming it are resolved first and the published rows counted through them.
+    // Still *rows*, not versions: the answer this feeds is "a published row still
+    // names the code".
+    let versions: Vec<Uuid> = charge_line_version::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(charge_line_version::Column::TenantId.eq(tenant_id))
+                .add(charge_line_version::Column::ResolvedGlCode.eq(value.as_str())),
+        )
+        .all(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read line versions naming a GL code: {e}")))?
+        .into_iter()
+        .map(|version| version.line_version_id)
+        .collect();
+    if versions.is_empty() {
+        return Ok(0);
+    }
     price::Entity::find()
         .secure()
         .scope_with(scope)
@@ -2705,7 +2786,7 @@ async fn references_to_gl_code(
             Condition::all()
                 .add(price::Column::TenantId.eq(tenant_id))
                 .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str()))
-                .add(price::Column::ResolvedGlCode.eq(value.as_str())),
+                .add(price::Column::LineVersionId.is_in(versions)),
         )
         .count(runner)
         .await

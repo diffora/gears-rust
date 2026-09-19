@@ -342,6 +342,8 @@ async fn seed_phaseless_source(h: &Harness, row_phases: &[PhaseId]) {
                 TENANT,
                 NewPriceDraft {
                     price_id,
+                    line_version_id: None,
+                    market_price_id: None,
                     scope_key: key_in(
                         source_plan(),
                         *phase,
@@ -403,6 +405,8 @@ async fn seed_published_rows(h: &Harness) {
                 TENANT,
                 NewPriceDraft {
                     price_id: id,
+                    line_version_id: None,
+                    market_price_id: None,
                     scope_key: key_in(
                         source_plan(),
                         phase,
@@ -1010,6 +1014,8 @@ async fn a_left_behind_grandfathered_row_does_not_vote_on_the_adopted_phase_id()
             TENANT,
             NewPriceDraft {
                 price_id: grandfathered,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: key_in(
                     source_plan(),
                     other_stranded_phase(),
@@ -1169,6 +1175,8 @@ async fn both_cutover_classes_stay_behind_and_the_receipt_names_each() {
             TENANT,
             NewPriceDraft {
                 price_id: grandfathered,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: key_on(
                     source_plan(),
                     terminal_phase(),
@@ -1302,6 +1310,8 @@ async fn a_superseding_row_loses_its_predecessor_link() {
             TENANT,
             NewPriceDraft {
                 price_id: successor,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: key_in(
                     source_plan(),
                     terminal_phase(),
@@ -1381,6 +1391,8 @@ async fn both_eligibility_classes_on_one_market_survive_the_clone() {
             TENANT,
             NewPriceDraft {
                 price_id: colliding,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: key_on(
                     source_plan(),
                     terminal_phase(),
@@ -1612,6 +1624,8 @@ async fn a_successor_omits_superseded_prices_live_windows_from_the_baseline() {
             TENANT,
             NewPriceDraft {
                 price_id: extra,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: key_in(
                     source_plan(),
                     trial_phase(),

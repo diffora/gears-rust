@@ -440,6 +440,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
             expired_at     timestamptz,
             mutation_seq   bigint      NOT NULL DEFAULT 0,
             price_id       uuid        NOT NULL,
+            market_price_id uuid       NOT NULL,
             reason_code    text        NOT NULL,
             state          text        NOT NULL,
             created_at     timestamptz NOT NULL DEFAULT now(),
@@ -454,12 +455,14 @@ const PG_UP_STATEMENTS: &[&str] = &[
             CONSTRAINT chk_pricing_price_window_reason_code CHECK (length(btrim(reason_code)) > 0),
             CONSTRAINT chk_pricing_price_window_mutation_seq CHECK (mutation_seq >= 0),
             CONSTRAINT chk_pricing_price_window_state CHECK (state IN ('scheduled','active','expired','cancelled')),
-            CONSTRAINT excl_pricing_price_window_no_overlap EXCLUDE USING gist (tenant_id WITH =, price_id WITH =, tstzrange(effective_from, effective_to, '[)'::text) WITH &&) WHERE ((state = ANY (ARRAY['scheduled'::text, 'active'::text]))),
+            CONSTRAINT excl_pricing_price_window_no_overlap EXCLUDE USING gist (tenant_id WITH =, market_price_id WITH =, tstzrange(effective_from, effective_to, '[)'::text) WITH &&) WHERE ((state = ANY (ARRAY['scheduled'::text, 'active'::text]))),
             CONSTRAINT fk_pricing_price_window_price FOREIGN KEY (price_id) REFERENCES bss.pricing_price(price_id),
+            CONSTRAINT fk_pricing_price_window_price_market FOREIGN KEY (tenant_id, price_id, market_price_id) REFERENCES bss.pricing_price (tenant_id, price_id, market_price_id),
             CONSTRAINT pricing_price_window_pkey PRIMARY KEY (window_id)
         )",
     "CREATE INDEX idx_pricing_price_window_due ON bss.pricing_price_window USING btree (state, effective_from)",
     "CREATE INDEX idx_pricing_price_window_price ON bss.pricing_price_window USING btree (tenant_id, price_id)",
+    "CREATE INDEX idx_pricing_price_window_market ON bss.pricing_price_window USING btree (tenant_id, market_price_id)",
     "CREATE OR REPLACE FUNCTION bss.pricing_price_window_append_only() RETURNS trigger AS $$
         BEGIN
           IF TG_OP = 'DELETE' THEN
@@ -477,6 +480,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
           IF NEW.window_id      IS DISTINCT FROM OLD.window_id
           OR NEW.tenant_id      IS DISTINCT FROM OLD.tenant_id
           OR NEW.price_id       IS DISTINCT FROM OLD.price_id
+          OR NEW.market_price_id IS DISTINCT FROM OLD.market_price_id
           OR NEW.effective_from IS DISTINCT FROM OLD.effective_from
           OR NEW.reason_code    IS DISTINCT FROM OLD.reason_code
           OR NEW.created_by     IS DISTINCT FROM OLD.created_by
@@ -531,6 +535,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             expired_at     text,
             mutation_seq   integer NOT NULL DEFAULT 0,
             price_id       text    NOT NULL,
+            market_price_id text   NOT NULL,
             reason_code    text    NOT NULL,
             state          text    NOT NULL,
             created_at     text    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now') || '+00:00'),
@@ -546,18 +551,20 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             CONSTRAINT chk_pricing_price_window_reason_code CHECK (length(trim(reason_code)) > 0),
             CONSTRAINT chk_pricing_price_window_mutation_seq CHECK (mutation_seq >= 0),
             CONSTRAINT chk_pricing_price_window_state CHECK (state IN ('scheduled','active','expired','cancelled')),
-            CONSTRAINT fk_pricing_price_window_price FOREIGN KEY (price_id) REFERENCES pricing_price(price_id)
+            CONSTRAINT fk_pricing_price_window_price FOREIGN KEY (price_id) REFERENCES pricing_price(price_id),
+            CONSTRAINT fk_pricing_price_window_price_market FOREIGN KEY (tenant_id, price_id, market_price_id) REFERENCES pricing_price (tenant_id, price_id, market_price_id)
         )",
     "CREATE INDEX idx_pricing_price_window_due ON pricing_price_window (state, effective_from)",
     "CREATE INDEX idx_pricing_price_window_price ON pricing_price_window (tenant_id, price_id)",
+    "CREATE INDEX idx_pricing_price_window_market ON pricing_price_window (tenant_id, market_price_id)",
     "CREATE TRIGGER trg_pricing_price_window_act_sequence BEFORE UPDATE ON pricing_price_window FOR EACH ROW WHEN OLD.state NOT IN ('expired','cancelled') AND NEW.mutation_seq IS NOT OLD.mutation_seq AND NEW.mutation_seq <> OLD.mutation_seq + 1 BEGIN SELECT RAISE(ABORT, 'pricing_price_window: the act sequence moves by one act at a time; it names an act, and a name that can be reused or run backwards names nothing'); END",
     "CREATE TRIGGER trg_pricing_price_window_flip_whitelist BEFORE UPDATE ON pricing_price_window FOR EACH ROW WHEN OLD.state NOT IN ('expired','cancelled') AND NEW.state IS NOT OLD.state AND NOT (OLD.state = 'scheduled' AND NEW.state IN ('active','cancelled')) AND NOT (OLD.state = 'active' AND NEW.state = 'expired') BEGIN SELECT RAISE(ABORT, 'pricing_price_window: state transition is not a sanctioned one'); END",
-    "CREATE TRIGGER trg_pricing_price_window_frozen_columns BEFORE UPDATE ON pricing_price_window FOR EACH ROW WHEN OLD.state NOT IN ('expired','cancelled') AND (NEW.window_id IS NOT OLD.window_id OR NEW.tenant_id IS NOT OLD.tenant_id OR NEW.price_id IS NOT OLD.price_id OR NEW.effective_from IS NOT OLD.effective_from OR NEW.reason_code IS NOT OLD.reason_code OR NEW.created_by IS NOT OLD.created_by OR NEW.created_at IS NOT OLD.created_at) BEGIN SELECT RAISE(ABORT, 'pricing_price_window: the window is bound to its price row and its start; only state, effective_to and the flip timestamps may move'); END",
+    "CREATE TRIGGER trg_pricing_price_window_frozen_columns BEFORE UPDATE ON pricing_price_window FOR EACH ROW WHEN OLD.state NOT IN ('expired','cancelled') AND (NEW.window_id IS NOT OLD.window_id OR NEW.tenant_id IS NOT OLD.tenant_id OR NEW.price_id IS NOT OLD.price_id OR NEW.market_price_id IS NOT OLD.market_price_id OR NEW.effective_from IS NOT OLD.effective_from OR NEW.reason_code IS NOT OLD.reason_code OR NEW.created_by IS NOT OLD.created_by OR NEW.created_at IS NOT OLD.created_at) BEGIN SELECT RAISE(ABORT, 'pricing_price_window: the window is bound to its price row and its start; only state, effective_to and the flip timestamps may move'); END",
     "CREATE TRIGGER trg_pricing_price_window_future_end BEFORE UPDATE ON pricing_price_window FOR EACH ROW WHEN OLD.state NOT IN ('expired','cancelled') AND NEW.effective_to IS NOT OLD.effective_to AND ((NEW.effective_to IS NOT NULL AND datetime(NEW.effective_to) <= CURRENT_TIMESTAMP) OR (OLD.effective_to IS NOT NULL AND datetime(OLD.effective_to) <= CURRENT_TIMESTAMP)) BEGIN SELECT RAISE(ABORT, 'pricing_price_window: effective_to may only be moved while it is in the future, and only to a future instant'); END",
     "CREATE TRIGGER trg_pricing_price_window_immutable_history BEFORE UPDATE ON pricing_price_window FOR EACH ROW WHEN OLD.state IN ('expired','cancelled') BEGIN SELECT RAISE(ABORT, 'pricing_price_window: an expired or cancelled window is immutable history'); END",
     "CREATE TRIGGER trg_pricing_price_window_no_delete BEFORE DELETE ON pricing_price_window FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_price_window: DELETE of a window is not permitted; cancel is a state, not a deletion'); END",
-    "CREATE TRIGGER trg_pricing_price_window_no_overlap_insert BEFORE INSERT ON pricing_price_window FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_price_window: interval overlaps an occupying window on this price row') WHERE NEW.state IN ('scheduled','active') AND EXISTS (SELECT 1 FROM pricing_price_window existing WHERE existing.tenant_id = NEW.tenant_id AND existing.price_id = NEW.price_id AND existing.state IN ('scheduled','active') AND (existing.effective_to IS NULL OR NEW.effective_from < existing.effective_to) AND (NEW.effective_to IS NULL OR existing.effective_from < NEW.effective_to)); END",
-    "CREATE TRIGGER trg_pricing_price_window_no_overlap_update BEFORE UPDATE ON pricing_price_window FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_price_window: interval overlaps an occupying window on this price row') WHERE NEW.state IN ('scheduled','active') AND EXISTS (SELECT 1 FROM pricing_price_window existing WHERE existing.tenant_id = NEW.tenant_id AND existing.price_id = NEW.price_id AND existing.window_id <> NEW.window_id AND existing.state IN ('scheduled','active') AND (existing.effective_to IS NULL OR NEW.effective_from < existing.effective_to) AND (NEW.effective_to IS NULL OR existing.effective_from < NEW.effective_to)); END",
+    "CREATE TRIGGER trg_pricing_price_window_no_overlap_insert BEFORE INSERT ON pricing_price_window FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_price_window: interval overlaps an occupying window on this market') WHERE NEW.state IN ('scheduled','active') AND EXISTS (SELECT 1 FROM pricing_price_window existing WHERE existing.tenant_id = NEW.tenant_id AND existing.market_price_id = NEW.market_price_id AND existing.state IN ('scheduled','active') AND (existing.effective_to IS NULL OR NEW.effective_from < existing.effective_to) AND (NEW.effective_to IS NULL OR existing.effective_from < NEW.effective_to)); END",
+    "CREATE TRIGGER trg_pricing_price_window_no_overlap_update BEFORE UPDATE ON pricing_price_window FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_price_window: interval overlaps an occupying window on this market') WHERE NEW.state IN ('scheduled','active') AND EXISTS (SELECT 1 FROM pricing_price_window existing WHERE existing.tenant_id = NEW.tenant_id AND existing.market_price_id = NEW.market_price_id AND existing.window_id <> NEW.window_id AND existing.state IN ('scheduled','active') AND (existing.effective_to IS NULL OR NEW.effective_from < existing.effective_to) AND (NEW.effective_to IS NULL OR existing.effective_from < NEW.effective_to)); END",
 ];
 
 const SQLITE_DOWN_STATEMENTS: &[&str] = &["DROP TABLE IF EXISTS pricing_price_window"];

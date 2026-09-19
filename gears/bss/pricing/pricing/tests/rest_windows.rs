@@ -423,6 +423,8 @@ async fn seed_foreign_priced_plan(h: &Harness, plan_id: Uuid) -> String {
             h.other,
             NewPriceDraft {
                 price_id: Uuid::now_v7(),
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: key,
                 content: PriceContent {
                     row,
@@ -1388,58 +1390,6 @@ async fn a_window_units_detail_renders_the_act_being_signed_for() {
     );
 }
 
-/// Publish `plan_id` through the mounted surfaces: submit, an **independent**
-/// approve, then the commit call.
-///
-/// Both calls carry the same tag, which is the publish route's own two-arm shape:
-/// the submit freezes nothing, so the revision's version has not moved when the
-/// commit arrives.
-async fn publish_through_the_routes(h: &Harness, plan_id: Uuid, etag: &str) {
-    let submitted = h
-        .allowed_as(SUBMITTER)
-        .send(with_headers(
-            "POST",
-            &publish_path(plan_id),
-            None,
-            &[("if-match", etag)],
-        ))
-        .await;
-    assert_eq!(
-        submitted.status(),
-        StatusCode::ACCEPTED,
-        "the submit arm opens the unit"
-    );
-    let approval_id = units_of(h, AuditSubjectKind::PlanRevision).await[0].approval_id;
-    let approved = h
-        .allowed_as(APPROVER)
-        .send(with_headers(
-            "POST",
-            &format!("/bss-pricing/v1/approvals/{approval_id}/approve"),
-            None,
-            &[],
-        ))
-        .await;
-    assert_eq!(
-        approved.status(),
-        StatusCode::OK,
-        "a second principal signs"
-    );
-    let committed = h
-        .allowed_as(SUBMITTER)
-        .send(with_headers(
-            "POST",
-            &publish_path(plan_id),
-            None,
-            &[("if-match", etag)],
-        ))
-        .await;
-    assert_eq!(
-        committed.status(),
-        StatusCode::OK,
-        "the commit arm freezes the revision"
-    );
-}
-
 /// A priced plan publishes on its first call **when it authors an explicit covering**.
 ///
 /// D-374 withdrew D-332's implicit first-publish window. The author files a row
@@ -1553,122 +1503,73 @@ async fn a_priced_plan_publishes_on_its_first_call_and_the_publish_opens_the_win
     );
 }
 
-/// **A plan's first billable row and its first window are authorable through the
-/// mounted surfaces — it takes two publishes, and this executes both.**
+/// **An unpriced plan does not publish**, and this is the route-level statement
+/// of it.
 ///
-/// The case that settles what `infra::window`'s divergence section is allowed to
-/// claim. The report it replaced said *"a plan cannot make its first publish through
-/// the mounted surfaces at all"*, and this is the counterexample: every step through a
-/// mounted route, no fixture reaching past them, ending in a **mutating** 202 on a
-/// window of a key that held none. It grew a step when the schedule began consulting
-/// the threshold policy — six calls now rather than three — and the step is D-10's own
-/// two-person configuration act, so the sequence an operator performs is longer and
-/// still contains no deadlock.
+/// This case used to assert the opposite — that "a plan with no price row
+/// publishes: the coverage rule ranges over the billable set" — and documented a
+/// bootstrap built on it: publish empty, author the row, schedule its window,
+/// let the row ride the next publish. `PHASE_CHARGE_LINES_EMPTY` ended that:
+/// §4.1 says every phase has its complete charge-line set, and an attached
+/// ordinary phase holding no logical charge line is a fault. The owner confirmed
+/// the rule on 2026-09-19.
 ///
-/// **Why the empty publish is not a trick.** `coverage::check` ranges over the
-/// **billable** set, so a plan with no price row presents no key for
-/// `inst-wc-required` to find uncovered, and `run_publish_rules` has no
-/// minimum-row rule — a plan whose shape is sound publishes with an empty row set.
-/// That is the state the sequence starts from, and it is asserted (`published`, with
-/// `price_rows` empty — no row was frozen) rather than assumed, because the whole
-/// argument rests on it.
+/// The supported bootstrap is the one the draft-window work made possible and
+/// `cover_never_published_price` already drives: author the row and an
+/// `AtPublish` covering intention on the draft, then publish once. There is no
+/// step that needs a published-but-empty revision.
 ///
-/// This block sat above the `#[tokio::test]` of the test *beside* this one until
-/// 2026-08-20 — a second doc attribute on a function that executes **one** publish
-/// and makes no such assertion — so rustdoc showed two contradictory descriptions of
-/// that case and none of this one.
-///
-/// What is **true**, and is the narrow statement the module doc now carries: the
-/// billable row cannot ride the *first* publish, because at that moment its key holds
-/// no window and no window can be scheduled on a plan with no current revision. So
-/// the order is forced — publish, author, schedule, and the row rides the next
-/// publish — and nothing about it is a deadlock.
+/// **Emptiness is the only fault here**, which is what makes this sharper than
+/// the roster case in `rest_publish`: the shape passes every other publish rule —
+/// terminal phase, descriptor set, tier, frequency — so a refusal naming anything
+/// else, or naming this among others, would be a different plan being judged.
 #[tokio::test]
-async fn a_plans_first_window_is_authorable_through_the_routes_after_an_empty_publish() {
+async fn an_unpriced_plan_does_not_publish_and_the_refusal_names_the_empty_phase() {
     let h = Harness::new().await;
     let plan_id = Uuid::now_v7();
     let shape = rest_support::seed_publishable_shape(&h, plan_id).await;
 
-    // 1. The empty first publish, through submit → independent approve → commit.
-    publish_through_the_routes(&h, plan_id, &shape.etag()).await;
+    let refused = h
+        .allowed_as(SUBMITTER)
+        .send(with_headers(
+            "POST",
+            &publish_path(plan_id),
+            None,
+            &[("if-match", shape.etag().as_str())],
+        ))
+        .await;
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+
+    let body = body_json(refused).await;
+    let violations = body["context"]["violations"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the refusal enumerates its violations: {body}"));
+    assert_eq!(
+        violations
+            .iter()
+            .filter_map(|violation| violation["type"].as_str())
+            .collect::<Vec<_>>(),
+        vec!["PHASE_CHARGE_LINES_EMPTY"],
+        "emptiness is the only thing wrong with this shape: {body}"
+    );
+    assert!(
+        violations[0]["subject"]
+            .as_str()
+            .is_some_and(|subject| subject.contains(&shape.phase.get().to_string())),
+        "and the phase an author would price is named: {body}"
+    );
+
+    // Nothing opened and nothing froze: a refused submit is not a submit.
+    assert!(
+        rest_support::approval_rows(&h).await.is_empty(),
+        "an unpublishable plan must not reach a reviewer"
+    );
     assert_eq!(
         rest_support::plan_state(&h, plan_id, shape.revision)
             .await
             .as_deref(),
-        Some("published"),
-        "a plan with no price row publishes: the coverage rule ranges over the billable set"
-    );
-    assert!(
-        rest_support::price_rows(&h, plan_id).await.is_empty(),
-        "and it froze no rows, which is what makes the next step the first authoring"
-    );
-
-    // 2. The billable row, authored through `POST /plans/{planId}/prices`.
-    let created = h
-        .allowed_as(SUBMITTER)
-        .send(with_headers(
-            "POST",
-            &format!("/bss-pricing/v1/plans/{plan_id}/prices"),
-            Some(serde_json::json!({
-                "scope_key": {
-                    "currency": "EUR",
-                    "region": "eu",
-                    "phase": shape.phase.get().to_string(),
-                    "price_eligibility": "all_subscriptions",
-                    "charge_kind": "recurring",
-                    "sku_id": rest_support::OFFER_SKU,
-                    "cohort": null
-                },
-                "content": {
-                    "model_kind": "flat",
-                    "amount_minor": 9_900,
-                    "tax_inclusive": false
-                }
-            })),
-            &[("idempotency-key", "first-row-of-a-published-plan")],
-        ))
-        .await;
-    assert_eq!(created.status(), StatusCode::CREATED);
-    let price_id = body_json(created)
-        .await
-        .get("price_id")
-        .and_then(|v| v.as_str())
-        .map(|s| Uuid::parse_str(s).expect("a uuid"))
-        .expect("the create names the row it authored");
-
-    // 3. The threshold policy, which is the step the sequence grew when the schedule
-    // began consulting the evaluator. It is not a detour: a schedule is not on
-    // `inst-mat-registered`'s list, so an unconfigured tenant gets a unit and no
-    // window — and configuring the policy is itself a two-person act (D-10), which is
-    // the same shape as step 1. The plan has **no published price row** at this point,
-    // so the change set carries none and no bar is consulted at all; the entry is
-    // authored on the row's own currency because that is what an operator would do.
-    rest_support::approve_threshold_policy(&h, &[("EUR", 100_000)]).await;
-
-    // 4. The window on it, through `POST /prices/{priceId}/windows` — 202, mutating.
-    let scheduled = post_window(&h, price_id, at(0), None).await;
-    assert_eq!(
-        scheduled.status(),
-        StatusCode::ACCEPTED,
-        "the plan's first window, through the route it is declared on"
-    );
-    let body = body_json(scheduled).await;
-    assert_eq!(
-        body["outcome"], "mutated",
-        "the window is written, not merely proposed: {body}"
-    );
-    assert_eq!(body["window"]["plan_id"], plan_id.to_string());
-    assert_eq!(body["window"]["price_id"], price_id.to_string());
-    assert_eq!(
-        body["window"]["revision"], shape.revision,
-        "the mutation freezes the plan's current revision, which is the one just published"
-    );
-    assert_eq!(body["window"]["state"], "scheduled");
-    assert!(
-        body["window"]["pending_version_ref"]
-            .as_str()
-            .is_some_and(|handle| !handle.is_empty()),
-        "and it carries the pending handle a publish unit answers with: {body}"
+        Some("draft"),
+        "and the revision is still a draft"
     );
 }
 

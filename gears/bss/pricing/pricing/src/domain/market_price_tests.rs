@@ -106,7 +106,7 @@ fn per_unit_round_trip_keeps_sub_minor_rate_and_descriptors() {
     row.min_qty_purchase = Some(1);
     round_trip(&row);
 
-    let (structure, mut money) = split_row(row.clone());
+    let (structure, mut money) = split_row(row);
     money.unit_rate = Some(sub_minor(23_000_000));
     let changed = resolve_row(&structure, &money).expect("rate change stays publishable");
     assert_eq!(changed.unit_rate, money.unit_rate);
@@ -226,7 +226,7 @@ fn tax_and_rounding_stay_on_the_market_record() {
         resolved_gl_code: None,
         price_id: Uuid::from_u128(0xb_10),
         scope_key: market("US"),
-        row: row.clone(),
+        row,
         tax_inclusive: true,
         tax_category_ref: Some("standard-vat".to_owned()),
         billing_timing: Some("advance".to_owned()),
@@ -255,7 +255,7 @@ fn tax_and_rounding_stay_on_the_market_record() {
         charge_line_id: Uuid::from_u128(0xc_01),
         line_version_id: Uuid::from_u128(0xc_02),
         scope_key: line(),
-        structure: structure.clone(),
+        structure,
         billing_timing: record.billing_timing.clone(),
         proration_contract: record.proration_contract,
     };

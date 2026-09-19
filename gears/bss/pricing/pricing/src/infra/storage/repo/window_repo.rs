@@ -416,6 +416,16 @@ async fn insert_scheduled(
             subject: "price".to_owned(),
             id: new.price_id.to_string(),
         })?;
+    // **The window competes on the market, not on the row.** Both dialects' overlap
+    // guards are keyed on `market_price_id`, and the table's foreign key is the
+    // compound `(tenant_id, price_id, market_price_id)` — so the column is read off
+    // the row rather than re-derived from the key it resolved to.
+    let market_price_id = price_repo::load_market_id(runner, scope, new.tenant_id, new.price_id)
+        .await?
+        .ok_or_else(|| RepoError::NotFound {
+            subject: "price".to_owned(),
+            id: new.price_id.to_string(),
+        })?;
 
     refuse_overlap(
         runner,
@@ -432,6 +442,7 @@ async fn insert_scheduled(
         window_id: Set(new.window_id),
         tenant_id: Set(new.tenant_id),
         price_id: Set(new.price_id),
+        market_price_id: Set(market_price_id),
         effective_from: Set(new.effective_from),
         effective_to: Set(new.effective_to),
         state: Set(WindowState::Scheduled.as_str().to_owned()),
@@ -1486,8 +1497,16 @@ fn overlap_or(
     action: &str,
 ) -> RepoError {
     let message = err.to_string();
+    // **"on this market", not "on this price row".** Non-overlap became a
+    // question about the logical market when currency and region left the price
+    // row: a revised monetary version competes with the earlier versions of its
+    // own market, and both dialects' guards are keyed on `market_price_id`. The
+    // `SQLite` mirror's `RAISE(ABORT, ...)` text moved with them, and a
+    // recognizer left on the old sentence stops recognizing anything — every
+    // overlap on `SQLite` would surface as the raw 500 this function exists to
+    // prevent, on all three writers at once.
     let is_overlap = message.contains("excl_pricing_price_window_no_overlap")
-        || message.contains("interval overlaps an occupying window on this price row");
+        || message.contains("interval overlaps an occupying window on this market");
     if is_overlap {
         return RepoError::WindowOverlap {
             key: key.to_string(),

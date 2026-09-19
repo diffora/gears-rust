@@ -31,9 +31,7 @@ use crate::domain::plan_rules::{
     PHASE_IN_USE, PHASE_OVERRIDE_ORPHANED, PHASE_OVERRIDE_UNIT_MISMATCH, PHASE_ROW_ORPHANED,
     PHASE_UNCOVERED, TERMINAL_PHASE_CHANGED, TERMINAL_PHASE_KIND_INVALID,
 };
-use crate::domain::plan_shape::{
-    PhaseGraph, PhaseKind, PlanPhase, PlanShape, PublishedBaseline,
-};
+use crate::domain::plan_shape::{PhaseGraph, PhaseKind, PlanPhase, PlanShape, PublishedBaseline};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
     AggregationFunction, AggregationGranularity, BillingGranularity, IncludedAllowance, PriceRow,

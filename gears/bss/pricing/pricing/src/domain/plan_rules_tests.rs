@@ -14,9 +14,7 @@ use uuid::Uuid;
 
 use super::{CustomIntervalBounds, DescriptorSetComplete, plan_shape_rules};
 use crate::domain::instant::utc_ymd_hms;
-use crate::domain::plan_shape::{
-    AddonRule, CustomIntervalUnit, Frequency, PlanShape,
-};
+use crate::domain::plan_shape::{AddonRule, CustomIntervalUnit, Frequency, PlanShape};
 use crate::domain::rules;
 use crate::domain::scope_key::PlanId;
 use crate::domain::validation::ValidationPipeline;

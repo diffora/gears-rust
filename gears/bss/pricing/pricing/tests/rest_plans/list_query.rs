@@ -1,8 +1,10 @@
 //! Real-router regression tests for the canonical, SQL-paginated plan projection.
 
+use bss_pricing::domain::scope_key::{Cohort, PriceEligibility};
+
 use super::{
     Harness, PLANS, StatusCode, a_unit_over, body_json, etag_of, json, plan_path, request,
-    seed_draft_plan, seed_price, seed_publishable_plan, with_headers,
+    seed_draft_plan, seed_price, seed_price_keyed, seed_publishable_plan, with_headers,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -215,9 +217,10 @@ async fn filtering_uses_shown_revision_and_creation_time_survives_a_successor() 
 
 #[tokio::test]
 async fn price_count_sorts_before_pagination_and_membership_predicates_are_independent() {
-    use bss_pricing::infra::storage::entity::price;
+    use bss_pricing::infra::storage::entity::{charge_line_version, market_price, price};
+    use sea_orm::ActiveValue::Set;
     use sea_orm::{ColumnTrait, Condition, EntityTrait};
-    use toolkit_db::secure::SecureUpdateExt;
+    use toolkit_db::secure::{SecureEntityExt, SecureInsertExt, SecureUpdateExt};
     let h = Harness::new().await;
     let ids: Vec<_> = (10..13).map(Uuid::from_u128).collect();
     for id in &ids {
@@ -225,21 +228,78 @@ async fn price_count_sorts_before_pagination_and_membership_predicates_are_indep
     }
     seed_price(&h, ids[1], "EU").await;
     seed_price(&h, ids[2], "EU").await;
-    let second = seed_price(&h, ids[2], "US").await;
-    // The two matches live on different rows: flat/USD and per_unit/EUR.
+    // **The two matches must live on different *lines*, not different rows.**
+    // `model_kind` is shared calculation structure, so every market of one line
+    // reads the same one — a fixture that set `per_unit` on a second row of the
+    // seeded line would move the first row's model too, and the plan would hold
+    // no `flat` at all. `new_subscriptions_only` is an axis of the charge line,
+    // so it buys a second line; that line gets the `EUR` market and the
+    // `per_unit` model while the seeded line keeps `flat` and `USD`.
+    let second = seed_price_keyed(
+        &h,
+        ids[2],
+        "US",
+        PriceEligibility::NewSubscriptionsOnly,
+        Cohort::None,
+    )
+    .await;
+    let conn = h.db.conn().unwrap();
+    let stored = price::Entity::find()
+        .secure()
+        .scope_with(&h.scope())
+        .filter(Condition::all().add(price::Column::PriceId.eq(second.price_id)))
+        .one(&conn)
+        .await
+        .unwrap()
+        .unwrap();
+    let graph = bss_pricing::infra::storage::repo::price_join::load_graph(
+        &conn,
+        &h.scope(),
+        stored.tenant_id,
+        stored,
+    )
+    .await
+    .unwrap();
+    // A market is an identity row, so the currency is not edited: a second
+    // market is added on that second line and the draft row repointed at it.
+    let eur_market = Uuid::now_v7();
+    let eur = market_price::ActiveModel {
+        tenant_id: Set(graph.market.tenant_id),
+        market_price_id: Set(eur_market),
+        charge_line_id: Set(graph.market.charge_line_id),
+        currency: Set("EUR".to_owned()),
+        region: Set(graph.market.region.clone()),
+    };
+    market_price::Entity::insert(eur.clone())
+        .secure()
+        .scope_with_model(&h.scope(), &eur)
+        .expect("scope the second market")
+        .exec(&conn)
+        .await
+        .unwrap();
     price::Entity::update_many()
         .secure()
         .scope_with(&h.scope())
         .col_expr(
-            price::Column::Currency,
-            sea_orm::sea_query::Expr::value("EUR"),
-        )
-        .col_expr(
-            price::Column::ModelKind,
-            sea_orm::sea_query::Expr::value("per_unit"),
+            price::Column::MarketPriceId,
+            sea_orm::sea_query::Expr::value(eur_market),
         )
         .filter(Condition::all().add(price::Column::PriceId.eq(second.price_id)))
-        .exec(&h.db.conn().unwrap())
+        .exec(&conn)
+        .await
+        .unwrap();
+    charge_line_version::Entity::update_many()
+        .secure()
+        .scope_with(&h.scope())
+        .col_expr(
+            charge_line_version::Column::ModelKind,
+            sea_orm::sea_query::Expr::value("per_unit"),
+        )
+        .filter(
+            Condition::all()
+                .add(charge_line_version::Column::LineVersionId.eq(graph.version.line_version_id)),
+        )
+        .exec(&conn)
         .await
         .unwrap();
     for (order, expected) in [

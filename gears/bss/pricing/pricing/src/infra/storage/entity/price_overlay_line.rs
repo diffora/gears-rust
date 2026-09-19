@@ -85,7 +85,7 @@ pub struct Model {
     /// Optional narrowing; requires `plan_id`, because a bare SKU is ambiguous
     /// per `(currency, region)`.
     ///
-    /// A `uuid` since `m20260916_000044_price_row_sku` (D-372): a SKU is a handle
+    /// A `uuid` since D-372: a SKU is a handle
     /// into the registry on the price plane, and an overlay line that narrows to
     /// one names the same thing. `PostgreSQL` stores a UUID; `SQLite` stores the
     /// driver's canonical 16-byte blob, normalized by the migration.

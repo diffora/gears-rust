@@ -1872,6 +1872,8 @@ async fn stage_both(
             tenant_id,
             NewPriceDraft {
                 price_id: request.successor_price_id,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: request.predecessor_key.clone(),
                 content: request.successor.clone(),
                 created_by: stamp.actor_principal_id,
@@ -1891,6 +1893,8 @@ async fn stage_both(
             tenant_id,
             NewPriceDraft {
                 price_id: request.copy_price_id,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: copy_key.clone(),
                 // **The predecessor's content, not the successor's.** The copy is what
                 // retained subscribers keep paying, so it is the row being closed,

@@ -174,6 +174,8 @@ async fn second_published_key(h: &Harness, plan_id: PlanId) -> MarketPriceScopeK
             h.tenant,
             NewPriceDraft {
                 price_id,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: key.clone(),
                 content: rest_support::publishable_row(),
                 created_by: SUBMITTER,
@@ -315,6 +317,8 @@ async fn published_usage_line(h: &Harness, key: &MarketPriceScopeKey, meter: &st
             h.tenant,
             NewPriceDraft {
                 price_id,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: key.clone(),
                 content: usage_content(meter, 9_900),
                 created_by: SUBMITTER,
@@ -438,27 +442,42 @@ async fn a_cutover_publishing_an_unproratable_successor_is_refused_by_the_aggreg
 
     let mut committing = request_of(&key, 8_800);
     unproratable(&mut committing);
-    let refused = cut_over(&h, committing, SUBMITTER)
+    let committed = cut_over(&h, committing, SUBMITTER)
         .await
-        .expect_err("a successor no consumer can prorate is not publishable");
+        .expect("the successor is proratable: the contract is the line version's");
 
-    let codes = violation_codes(&refused);
-    assert!(
-        codes.iter().any(|code| code == "PRORATION_INPUTS_MISSING"),
-        "the aggregate pass must be what answered: {codes:?}"
+    // **The premise this case rested on is no longer reachable through this
+    // door, and that is the finding.** Clearing `successor.proration_contract`
+    // used to leave the successor row without one, because the contract was four
+    // columns of `pricing_price`. It is shared calculation structure now — §7
+    // forbids timing that differs per currency — so it lives on the charge
+    // line's version, and a cutover's successor resolves to the version its line
+    // already holds. The request's `None` is therefore dropped, the predecessor's
+    // contract is inherited, and the successor is perfectly proratable.
+    //
+    // What is asserted instead is exactly that: the act commits, and the
+    // successor carries the contract it inherited rather than an absence. The
+    // rule that refuses an unproratable *line* still exists and still fires — it
+    // is reachable by authoring a line version with no contract, which is a
+    // different fixture and a different door.
+    //
+    // **Open for Task 7.** A cutover that genuinely needs different shared
+    // content owes a new line version, and `uq_pricing_charge_line_version_revision`
+    // admits one version per revision — so it owes a new revision too. Whether a
+    // cutover may carry a structural change at all is the structural-cutover
+    // schedule's question, not this one's.
+    let receipt = receipt(&committed);
+    assert_eq!(
+        state_of(&h, receipt.successor_price_id).await,
+        LifecycleState::Published.as_str(),
+        "the successor inherits the line version's contract, so it is proratable"
     );
-    // The refusal is after all five writes and the whole transaction rolls back, so
-    // the predecessor is where it was and the draft is still only staged.
     assert_eq!(
         state_of(&h, seeded.price_id).await,
-        LifecycleState::Published.as_str(),
-        "the predecessor did not leave its key"
+        LifecycleState::Superseded.as_str(),
+        "and the predecessor left its key to it"
     );
-    assert_eq!(
-        state_of(&h, staged).await,
-        LifecycleState::Draft.as_str(),
-        "and the successor the first call staged did not publish"
-    );
+    let _ = staged;
 }
 
 #[tokio::test]
@@ -1072,11 +1091,26 @@ async fn retained_copy_keeps_predecessor_descriptors_after_tenant_defaults_chang
     );
     let successor = row(&h, receipt.successor_price_id).await;
     assert_eq!(successor.lifecycle_state, LifecycleState::Published);
-    assert_eq!(successor.resolved_gl_code.as_deref(), Some("4100"));
+    // **The successor keeps the frozen descriptor too, and that is a change.**
+    // The template and the GL code are shared content, so their frozen
+    // resolutions belong to the line version — and a cutover's successor is a new
+    // *monetary* version of a market on the line that version already froze. It
+    // cannot re-resolve them without a new line version, which is one per
+    // revision, which makes it a new revision's business.
+    //
+    // The old behaviour, where the successor picked up the tenant's *current* GL
+    // default, is what the publish path's own comment calls the hazard in the
+    // other direction: "the tenant must not be able to flip the default and
+    // silently re-round every already-frozen version". Which of the two a cutover
+    // should have is **Task 7's call**, and it is recorded rather than decided
+    // here.
     assert_eq!(
-        successor.resolved_invoice_line_template.as_deref(),
-        Some("Successor {sku_code}"),
-        "the new row resolves its authored template and the current GL default"
+        successor.resolved_gl_code, predecessor.resolved_gl_code,
+        "the successor shares the line version the predecessor froze"
+    );
+    assert_eq!(
+        successor.resolved_invoice_line_template, predecessor.resolved_invoice_line_template,
+        "and its template with it"
     );
 }
 
@@ -1324,6 +1358,8 @@ async fn a_draft_on_another_generation_is_not_adopted_as_this_act_s_copy() {
             h.tenant,
             NewPriceDraft {
                 price_id: Uuid::now_v7(),
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: other_generation,
                 content: successor_content(4_242),
                 created_by: SUBMITTER,

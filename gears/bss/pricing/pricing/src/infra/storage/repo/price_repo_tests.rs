@@ -48,7 +48,8 @@ use crate::domain::scope_key::{
     MarketPriceScopeKeyParts, Meter, PhaseId, PlanId, PriceEligibility, Region, SkuId,
 };
 use crate::infra::storage::RepoError;
-use crate::infra::storage::entity::price;
+use crate::infra::storage::entity::{charge_line, charge_line_version, market_price, price};
+use crate::infra::storage::repo::price_join::PriceGraph;
 use uuid::Uuid;
 
 const PLAN: uuid::Uuid = uuid::Uuid::from_u128(0x_91_a1);
@@ -91,64 +92,90 @@ fn base_key() -> MarketPriceScopeKey {
 /// The ten key columns are written **from the key** rather than typed twice, so a
 /// case that moves an axis on the key moves the column the comparators read and
 /// the two cannot drift apart in this fixture.
-fn row_of(key: &MarketPriceScopeKey) -> price::Model {
-    price::Model {
-        price_id: uuid::Uuid::from_u128(0x_11),
-        tenant_id: uuid::Uuid::from_u128(0x_7e),
-        plan_id: key.plan_id().get(),
-        sku_id: key.sku_id().as_uuid(),
-        invoice_line_template: None,
-        gl_code_ref: None,
-        resolved_invoice_line_template: None,
-        resolved_gl_code: None,
-        currency: key.currency().as_str().to_owned(),
-        region: key.region().as_str().to_owned(),
-        price_overlay: key.price_overlay().as_str().to_owned(),
-        phase: key.phase().get(),
-        price_eligibility: key.price_eligibility().as_str().to_owned(),
-        charge_kind: key.charge_kind().as_str().to_owned(),
-        cohort: key.cohort().to_string(),
-        amount_minor: None,
-        unit_rate_nano: None,
-        model_kind: Some("graduated".to_owned()),
-        tax_inclusive: false,
-        tax_category_ref: None,
-        resolved_tax_category: None,
-        resolved_rounding_policy: None,
-        billing_timing: None,
-        billing_anchor_policy: None,
-        anchor_day: None,
-        proration_basis: None,
-        credit_on_downgrade: None,
-        quantity_source: None,
-        manual_quantity: None,
-        package_size: None,
-        package_price_minor: None,
-        // **Stated, not read off the key** (D-372): the unit is a column of the
-        // row and no longer an axis, so the fixture names it and `base_key`
-        // names the same one.
-        meter: Some(METER.to_owned()),
-        dimension_key: key.dimension_key().as_str().to_owned(),
-        billing_granularity: Some("whole_unit".to_owned()),
-        aggregation_function: None,
-        aggregation_granularity: None,
-        tier_aggregation_window: Some("calendar_month".to_owned()),
-        tier_qualification_window: None,
-        max_hold_granules: None,
-        included_allowance: None,
-        reserved_rate_nano: None,
-        reservation_flavor: None,
-        min_qty_purchase: None,
-        min_qty_usage: None,
-        min_qty_usage_fallback: None,
-        discount_ref: None,
-        rounding_policy_ref: Some("half_up".to_owned()),
-        grandfather_until: None,
-        supersedes_price_id: None,
-        lifecycle_state: "published".to_owned(),
-        created_by: ACTOR,
-        created_at_utc: utc_ymd_hms(2099, 8, 5, 0, 0, 0),
-        row_version: 0,
+fn row_of(key: &MarketPriceScopeKey) -> PriceGraph {
+    PriceGraph {
+        price: price::Model {
+            price_id: uuid::Uuid::from_u128(0x_11),
+            tenant_id: uuid::Uuid::from_u128(0x_7e),
+            market_price_id: uuid::Uuid::from_u128(0xa1),
+            line_version_id: uuid::Uuid::from_u128(0xb2),
+            charge_line_id: uuid::Uuid::from_u128(0xc3),
+            plan_id: key.plan_id().get(),
+            plan_revision: 1,
+            amount_minor: None,
+            unit_rate_nano: None,
+            package_price_minor: None,
+            reserved_rate_nano: None,
+            tax_inclusive: false,
+            tax_category_ref: None,
+            resolved_tax_category: None,
+            rounding_policy_ref: Some("half_up".to_owned()),
+            resolved_rounding_policy: None,
+            grandfather_until: None,
+            supersedes_price_id: None,
+            lifecycle_state: "published".to_owned(),
+            created_by: ACTOR,
+            created_at_utc: utc_ymd_hms(2099, 8, 5, 0, 0, 0),
+            row_version: 0,
+        },
+        line: charge_line::Model {
+            tenant_id: uuid::Uuid::from_u128(0x_7e),
+            charge_line_id: uuid::Uuid::from_u128(0xc3),
+            plan_id: key.plan_id().get(),
+            phase: key.phase().get(),
+            price_overlay: key.price_overlay().as_str().to_owned(),
+            price_eligibility: key.price_eligibility().as_str().to_owned(),
+            charge_kind: key.charge_kind().as_str().to_owned(),
+            cohort: key.cohort().to_string(),
+            sku_id: key.sku_id().as_uuid(),
+            dimension_key: key.dimension_key().as_str().to_owned(),
+        },
+        version: charge_line_version::Model {
+            tenant_id: uuid::Uuid::from_u128(0x_7e),
+            line_version_id: uuid::Uuid::from_u128(0xb2),
+            charge_line_id: uuid::Uuid::from_u128(0xc3),
+            plan_revision: 1,
+            lifecycle_state: "published".to_owned(),
+            invoice_line_template: None,
+            gl_code_ref: None,
+            resolved_invoice_line_template: None,
+            resolved_gl_code: None,
+            model_kind: Some("graduated".to_owned()),
+            package_size: None,
+            quantity_source: None,
+            manual_quantity: None,
+            // **Stated, not read off the key** (D-372): the unit is content of
+            // the line version and no longer an axis, so the fixture names it and
+            // `base_key` names the same one.
+            meter: Some(METER.to_owned()),
+            billing_granularity: Some("whole_unit".to_owned()),
+            tier_aggregation_window: Some("calendar_month".to_owned()),
+            tier_qualification_window: None,
+            aggregation_function: None,
+            aggregation_granularity: None,
+            max_hold_granules: None,
+            included_allowance: None,
+            reservation_flavor: None,
+            min_qty_purchase: None,
+            min_qty_usage: None,
+            min_qty_usage_fallback: None,
+            discount_ref: None,
+            billing_timing: None,
+            billing_anchor_policy: None,
+            anchor_day: None,
+            proration_basis: None,
+            credit_on_downgrade: None,
+            created_by: ACTOR,
+            created_at_utc: utc_ymd_hms(2099, 8, 5, 0, 0, 0),
+            row_version: 0,
+        },
+        market: market_price::Model {
+            tenant_id: uuid::Uuid::from_u128(0x_7e),
+            market_price_id: uuid::Uuid::from_u128(0x_a1),
+            charge_line_id: uuid::Uuid::from_u128(0xc3),
+            currency: key.currency().as_str().to_owned(),
+            region: key.region().as_str().to_owned(),
+        },
     }
 }
 
@@ -162,7 +189,7 @@ struct AxisCase {
     /// `market_columns`' contract rather than a demand that it compare everything.
     in_market: bool,
     /// The base row with that axis, and only that axis, moved.
-    moved: price::Model,
+    moved: PriceGraph,
 }
 
 /// One case per axis of the canonical scope key.
@@ -180,7 +207,7 @@ struct AxisCase {
 fn axis_cases() -> Vec<AxisCase> {
     let key = base_key();
     let base = row_of(&key);
-    let moved = |mutate: fn(&mut price::Model)| {
+    let moved = |mutate: fn(&mut PriceGraph)| {
         let mut row = base.clone();
         mutate(&mut row);
         row
@@ -202,48 +229,48 @@ fn axis_cases() -> Vec<AxisCase> {
     // Every binding read against the column it projects onto: the fixture claims
     // `row_of` writes the key's ten axes into the row's ten columns, and this is
     // where that claim is checked rather than assumed.
-    assert_eq!(base.plan_id, plan_id.get());
-    assert_eq!(base.currency, currency.as_str());
-    assert_eq!(base.region, region.as_str());
-    assert_eq!(base.price_overlay, price_overlay.as_str());
-    assert_eq!(base.phase, phase.get());
-    assert_eq!(base.price_eligibility, price_eligibility.as_str());
-    assert_eq!(base.charge_kind, charge_kind.as_str());
-    assert_eq!(base.cohort, cohort.to_string());
-    // The ninth axis has its column since `m20260916_000044_price_row_sku`, so it
+    assert_eq!(base.line.plan_id, plan_id.get());
+    assert_eq!(base.market.currency, currency.as_str());
+    assert_eq!(base.market.region, region.as_str());
+    assert_eq!(base.line.price_overlay, price_overlay.as_str());
+    assert_eq!(base.line.phase, phase.get());
+    assert_eq!(base.line.price_eligibility, price_eligibility.as_str());
+    assert_eq!(base.line.charge_kind, charge_kind.as_str());
+    assert_eq!(base.line.cohort, cohort.to_string());
+    // The ninth axis has its own column on the charge line, so it
     // is read against that column like the eight above it rather than against the
     // fixture's own literal.
-    assert_eq!(base.sku_id, sku_id.as_uuid());
+    assert_eq!(base.line.sku_id, sku_id.as_uuid());
     // `meter` is checked too, but as a **column**: it is content since D-372, and
     // the `AxisCase` that used to move it now moves `sku_id`.
-    assert_eq!(base.meter.as_deref(), Some(METER));
-    assert_eq!(base.dimension_key, dimension_key.as_str());
+    assert_eq!(base.version.meter.as_deref(), Some(METER));
+    assert_eq!(base.line.dimension_key, dimension_key.as_str());
 
     vec![
         AxisCase {
             axis: "planId",
             in_market: true,
-            moved: moved(|row| row.plan_id = OTHER_PLAN),
+            moved: moved(|row| row.line.plan_id = OTHER_PLAN),
         },
         AxisCase {
             axis: "currency",
             in_market: true,
-            moved: moved(|row| "USD".clone_into(&mut row.currency)),
+            moved: moved(|row| "USD".clone_into(&mut row.market.currency)),
         },
         AxisCase {
             axis: "region",
             in_market: true,
-            moved: moved(|row| "us".clone_into(&mut row.region)),
+            moved: moved(|row| "us".clone_into(&mut row.market.region)),
         },
         AxisCase {
             axis: "priceOverlay",
             in_market: true,
-            moved: moved(|row| "partner".clone_into(&mut row.price_overlay)),
+            moved: moved(|row| "partner".clone_into(&mut row.line.price_overlay)),
         },
         AxisCase {
             axis: "phase",
             in_market: true,
-            moved: moved(|row| row.phase = OTHER_PHASE),
+            moved: moved(|row| row.line.phase = OTHER_PHASE),
         },
         // **The two `market_columns` deliberately does not compare.** A cutover's
         // copy moves exactly these on its way to a new generation, so seeing them
@@ -254,7 +281,7 @@ fn axis_cases() -> Vec<AxisCase> {
             moved: moved(|row| {
                 PriceEligibility::AllSubscriptions
                     .as_str()
-                    .clone_into(&mut row.price_eligibility);
+                    .clone_into(&mut row.line.price_eligibility);
             }),
         },
         AxisCase {
@@ -263,25 +290,25 @@ fn axis_cases() -> Vec<AxisCase> {
             moved: moved(|row| {
                 ChargeKind::Recurring
                     .as_str()
-                    .clone_into(&mut row.charge_kind);
+                    .clone_into(&mut row.line.charge_kind);
             }),
         },
         AxisCase {
             axis: "cohort",
             in_market: false,
-            moved: moved(|row| Cohort::None.to_string().clone_into(&mut row.cohort)),
+            moved: moved(|row| Cohort::None.to_string().clone_into(&mut row.line.cohort)),
         },
         // D-372: the ninth axis. It moves between two **real** SKUs rather than off
         // a default, for the reason `base_key`'s doc gives about every other axis.
         AxisCase {
             axis: "skuId",
             in_market: true,
-            moved: moved(|row| row.sku_id = Uuid::from_u128(0x5_c1)),
+            moved: moved(|row| row.line.sku_id = Uuid::from_u128(0x5_c1)),
         },
         AxisCase {
             axis: "dimensionKey",
             in_market: true,
-            moved: moved(|row| "region=us".clone_into(&mut row.dimension_key)),
+            moved: moved(|row| "region=us".clone_into(&mut row.line.dimension_key)),
         },
     ]
 }
@@ -432,7 +459,7 @@ fn submitted_line(key: &MarketPriceScopeKey) -> (Option<String>, String) {
 /// A `type` rather than the tuple written twice: `clippy::type_complexity` is
 /// denied workspace-wide, and the two arrays below are the same shape by
 /// intent — one respelling, one moving — so they should read as one shape.
-type StoredLineEdit = (&'static str, fn(&mut price::Model));
+type StoredLineEdit = (&'static str, fn(&mut PriceGraph));
 
 /// Both columns are exercised: `meter` is an `Option` and `dimension_key` is a
 /// total `''`-defaulting column, and they are normalized by two different
@@ -444,9 +471,11 @@ fn the_update_guard_reads_a_raw_stored_column_as_the_line_it_spells() {
     let submitted = submitted_line(&key);
 
     let respelled: [StoredLineEdit; 2] = [
-        ("meter", |row| row.meter = Some(" api_calls ".to_owned())),
+        ("meter", |row| {
+            row.version.meter = Some(" api_calls ".to_owned());
+        }),
         ("dimensionKey", |row| {
-            " region=eu ".clone_into(&mut row.dimension_key);
+            " region=eu ".clone_into(&mut row.line.dimension_key);
         }),
     ];
 
@@ -474,7 +503,7 @@ fn the_update_guard_still_refuses_a_line_that_actually_moves() {
     let submitted = submitted_line(&key);
 
     let moved: [StoredLineEdit; 1] = [("dimensionKey", |row| {
-        "region=us".clone_into(&mut row.dimension_key);
+        "region=us".clone_into(&mut row.line.dimension_key);
     })];
 
     for (column, move_it) in moved {
@@ -518,18 +547,18 @@ fn an_unreadable_axis_names_the_row_it_could_not_read() {
     let key = base_key();
 
     let mut row = row_of(&key);
-    "e|u".clone_into(&mut row.region);
+    "e|u".clone_into(&mut row.market.region);
     let err = to_scope_key(&row)
         .expect_err("a region carrying the canonical key's separator is not a readable axis");
     let RepoError::CorruptRow(detail) = &err else {
         panic!("an unreadable axis is a corrupt row, not some other failure: {err}");
     };
     assert!(
-        detail.contains("pricing_price.region"),
+        detail.contains("pricing_market_price.region"),
         "the refusal must name the column: {detail}"
     );
     assert!(
-        detail.contains(&row.price_id.to_string()),
+        detail.contains(&row.price.price_id.to_string()),
         "and the row, because the caller is a listing and the answer is a 500 over all of it: \
          {detail}"
     );
@@ -538,13 +567,13 @@ fn an_unreadable_axis_names_the_row_it_could_not_read() {
     // line reads — it is attached in the `and_then` after the key is built, so a
     // wrapper that only covered the early returns would miss it.
     let mut row = row_of(&key);
-    row.meter = Some("api|calls".to_owned());
+    row.version.meter = Some("api|calls".to_owned());
     let err = to_scope_key(&row).expect_err("nor is such a meter");
     let RepoError::CorruptRow(detail) = &err else {
         panic!("an unreadable meter is a corrupt row too: {err}");
     };
     assert!(
-        detail.contains(&row.price_id.to_string()),
+        detail.contains(&row.price.price_id.to_string()),
         "the usage-line arm must name the row as well: {detail}"
     );
 

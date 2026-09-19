@@ -15,7 +15,7 @@ use crate::domain::materiality::delta::MoveScale;
 use crate::domain::materiality::triggers::Trigger;
 use crate::domain::materiality::{MaterialityReason, MaterialityVerdict, TrippedRow};
 use crate::domain::money::CurrencyCode;
-use crate::domain::plan_shape::{PlanShape};
+use crate::domain::plan_shape::PlanShape;
 use crate::domain::ports::metrics::{
     AlarmSeverity, CurrencyBindingCase, PreviewFailClosed, PricingAlarm, PricingMetricsPort,
 };

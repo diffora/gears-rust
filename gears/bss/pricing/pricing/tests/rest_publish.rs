@@ -168,15 +168,24 @@ async fn a_publish_of_a_publishable_plan_opens_a_pinned_unit() {
 async fn a_plan_that_cannot_publish_opens_no_unit_at_all() {
     let h = Harness::new().await;
     let plan_id = Uuid::now_v7();
-    // The authoring suites' seed rather than the publishable one: a `recurring`
-    // plan carrying no frequency, which is a legal draft (§4.2 puts the rules at
-    // publish) and an illegal publish.
+    // The authoring suites' seed rather than the publishable one: a bare draft
+    // with no phases, which is a legal draft (§4.2 puts the rules at publish) and
+    // an illegal publish.
+    //
+    // **It used to be refused `RECURRING_FREQUENCY_REQUIRED`, and cannot be now.**
+    // The frequency is required when a *recurring charge line* exists, not when a
+    // plan is nominally recurring — `billing_cycle` was removed and the plan's
+    // behaviour is derived from the lines its phases actually hold. This seed
+    // holds none, so the rule has nothing to fire on and the phase graph answers
+    // first. The case is about validation running *before* the submit, and it
+    // still names one specific refusal rather than accepting any, which is what
+    // keeps it from passing on an unrelated error.
     seed_draft_plan(&h, plan_id).await;
 
     let response = publish_as(&h, SUBMITTER, plan_id, "\"0-0\"").await;
 
     assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
-    assert_eq!(problem_code(response).await, "RECURRING_FREQUENCY_REQUIRED");
+    assert_eq!(problem_code(response).await, "PHASE_GRAPH_INVALID");
     assert!(
         approval_rows(&h).await.is_empty(),
         "an unpublishable plan must not reach a reviewer"
@@ -321,6 +330,8 @@ async fn seed_uncovered_plan_with(
             h.tenant,
             NewPriceDraft {
                 price_id,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: key_for(plan, phase),
                 content,
                 created_by: SEED_ACTOR,
@@ -622,19 +633,32 @@ async fn a_row_keyed_on_a_phase_the_revision_never_attached_is_refused_naming_bo
             .iter()
             .filter_map(|violation| violation["type"].as_str())
             .collect::<Vec<_>>(),
-        vec!["PHASE_ROW_ORPHANED", "PHASE_UNCOVERED"],
-        "the row with no phase, then the phase with no rows: {body}"
+        vec![
+            "PHASE_CHARGE_LINES_EMPTY",
+            "PHASE_ROW_ORPHANED",
+            "PHASE_UNCOVERED"
+        ],
+        "the attached phase with no lines, the row on a phase that is not attached, \
+         then that phase's want of coverage: {body}"
     );
     // Both operands reach the wire, because both remediations need one of them:
     // attach *that* id, or delete *that* row.
+    //
+    // Found **by type** rather than by position: the roster gained
+    // `PHASE_CHARGE_LINES_EMPTY` ahead of this one, and an index would have gone
+    // on reading whichever violation happened to sort first.
+    let orphaned = violations
+        .iter()
+        .find(|violation| violation["type"] == "PHASE_ROW_ORPHANED")
+        .unwrap_or_else(|| panic!("the orphaned-row violation is in the roster: {body}"));
     assert!(
-        violations[0]["subject"]
+        orphaned["subject"]
             .as_str()
             .is_some_and(|subject| subject.contains(&ghost.to_string())),
         "the phase the rows already name is what an author would attach: {body}"
     );
     assert!(
-        violations[0]["description"]
+        orphaned["description"]
             .as_str()
             .is_some_and(|detail| detail.contains(&seeded.price_id.to_string())),
         "the row is named, because deleting it is the other remediation: {body}"

@@ -46,6 +46,8 @@ use bss_pricing::infra::storage::repo::taxonomy_repo::{
 };
 use time::OffsetDateTime;
 
+mod common;
+
 const TENANT: Uuid = Uuid::from_u128(0x1111_1111_1111_1111_1111_1111_1111_1111);
 const OTHER_TENANT: Uuid = Uuid::from_u128(0x9999_9999_9999_9999_9999_9999_9999_9999);
 
@@ -975,7 +977,7 @@ async fn publish_price_row_in(provider: &DBProvider<DbError>, region: &str) {
         tenant_id: Set(TENANT),
         lifecycle_state: Set("published".to_owned()),
         // D-372: `pricing_plan.sku_id` is `NOT NULL` since
-        // `m20260916_000044_price_row_sku`.
+        // the fresh-install DDL.
         sku_id: Set(Uuid::from_u128(5)),
         created_by: Set(Uuid::from_u128(0x4444)),
         created_at_utc: Set(now()),
@@ -989,20 +991,36 @@ async fn publish_price_row_in(provider: &DBProvider<DbError>, region: &str) {
         .await
         .expect("seed the plan revision");
 
+    let seeded_graph = common::seed_charge_graph(
+        &conn,
+        &AccessScope::allow_all(),
+        &common::ChargeGraphSeed {
+            tenant_id: TENANT,
+            plan_id,
+            phase: Uuid::from_u128(0xf1),
+            sku_id: Uuid::from_u128(5),
+            price_overlay: "base".to_owned(),
+            price_eligibility: "all_subscriptions".to_owned(),
+            charge_kind: "recurring".to_owned(),
+            cohort: "none".to_owned(),
+            dimension_key: String::new(),
+            currency: "EUR".to_owned(),
+            region: region.to_owned(),
+            lifecycle_state: "published".to_owned(),
+            created_by: Uuid::from_u128(0x4444),
+            created_at_utc: now(),
+            ..Default::default()
+        },
+    )
+    .await;
     let price_row = price::ActiveModel {
+        plan_revision: Set(1),
+        charge_line_id: Set(seeded_graph.charge_line_id),
+        line_version_id: Set(seeded_graph.line_version_id),
+        market_price_id: Set(seeded_graph.market_price_id),
         price_id: Set(Uuid::from_u128(0xb001)),
         tenant_id: Set(TENANT),
         plan_id: Set(plan_id),
-        currency: Set("EUR".to_owned()),
-        region: Set(region.to_owned()),
-        price_overlay: Set("base".to_owned()),
-        phase: Set(Uuid::from_u128(0xf1)),
-        price_eligibility: Set("all_subscriptions".to_owned()),
-        charge_kind: Set("recurring".to_owned()),
-        cohort: Set("none".to_owned()),
-        // D-372's ninth axis, `NOT NULL` since `m20260916_000044_price_row_sku`.
-        sku_id: Set(Uuid::from_u128(5)),
-        dimension_key: Set(String::new()),
         tax_inclusive: Set(false),
         lifecycle_state: Set("published".to_owned()),
         created_by: Set(Uuid::from_u128(0x4444)),
@@ -2097,7 +2115,7 @@ async fn publish_price_row_resolving(provider: &DBProvider<DbError>, resolved: &
         tenant_id: Set(TENANT),
         lifecycle_state: Set("published".to_owned()),
         // D-372: `pricing_plan.sku_id` is `NOT NULL` since
-        // `m20260916_000044_price_row_sku`.
+        // the fresh-install DDL.
         sku_id: Set(Uuid::from_u128(5)),
         created_by: Set(Uuid::from_u128(0x4444)),
         created_at_utc: Set(now()),
@@ -2111,20 +2129,36 @@ async fn publish_price_row_resolving(provider: &DBProvider<DbError>, resolved: &
         .await
         .expect("seed the plan revision");
 
+    let seeded_graph = common::seed_charge_graph(
+        &conn,
+        &AccessScope::allow_all(),
+        &common::ChargeGraphSeed {
+            tenant_id: TENANT,
+            plan_id,
+            phase: Uuid::from_u128(0xf1),
+            sku_id: Uuid::from_u128(5),
+            price_overlay: "base".to_owned(),
+            price_eligibility: "all_subscriptions".to_owned(),
+            charge_kind: "recurring".to_owned(),
+            cohort: "none".to_owned(),
+            dimension_key: String::new(),
+            currency: "EUR".to_owned(),
+            region: "eu".to_owned(),
+            lifecycle_state: "published".to_owned(),
+            created_by: Uuid::from_u128(0x4444),
+            created_at_utc: now(),
+            ..Default::default()
+        },
+    )
+    .await;
     let price_row = price::ActiveModel {
+        plan_revision: Set(1),
+        charge_line_id: Set(seeded_graph.charge_line_id),
+        line_version_id: Set(seeded_graph.line_version_id),
+        market_price_id: Set(seeded_graph.market_price_id),
         price_id: Set(Uuid::from_u128(0xb002)),
         tenant_id: Set(TENANT),
         plan_id: Set(plan_id),
-        currency: Set("EUR".to_owned()),
-        region: Set("eu".to_owned()),
-        price_overlay: Set("base".to_owned()),
-        phase: Set(Uuid::from_u128(0xf1)),
-        price_eligibility: Set("all_subscriptions".to_owned()),
-        charge_kind: Set("recurring".to_owned()),
-        cohort: Set("none".to_owned()),
-        // D-372's ninth axis, `NOT NULL` since `m20260916_000044_price_row_sku`.
-        sku_id: Set(Uuid::from_u128(5)),
-        dimension_key: Set(String::new()),
         tax_inclusive: Set(false),
         lifecycle_state: Set("published".to_owned()),
         // The authored column stays empty: this row leaned on the tenant default
@@ -2890,7 +2924,7 @@ async fn seed_revision_naming_gl_code(
         tenant_id: Set(TENANT),
         lifecycle_state: Set("draft".to_owned()),
         // D-372: `pricing_plan.sku_id` is `NOT NULL` since
-        // `m20260916_000044_price_row_sku`.
+        // the fresh-install DDL.
         sku_id: Set(Uuid::from_u128(5)),
         created_by: Set(Uuid::from_u128(0x4444)),
         created_at_utc: Set(now()),
@@ -2904,24 +2938,41 @@ async fn seed_revision_naming_gl_code(
         .await
         .expect("seed the plan revision");
 
+    let seeded_graph = common::seed_charge_graph(
+        &conn,
+        &AccessScope::allow_all(),
+        &common::ChargeGraphSeed {
+            tenant_id: TENANT,
+            plan_id,
+            phase: Uuid::from_u128(0xface),
+            sku_id: Uuid::from_u128(5),
+            price_eligibility: "all_subscriptions".to_owned(),
+            charge_kind: "recurring".to_owned(),
+            currency: "USD".to_owned(),
+            region: "eu".to_owned(),
+            lifecycle_state: state.to_owned(),
+            gl_code_ref: Some(gl_code.to_owned()),
+            resolved_invoice_line_template: Some("{plan}".to_owned()),
+            resolved_gl_code: if state == "published" {
+                Some(gl_code.to_owned())
+            } else {
+                None
+            },
+            created_by: Uuid::from_u128(0x4444),
+            created_at_utc: now(),
+            ..Default::default()
+        },
+    )
+    .await;
     let descriptors = price::ActiveModel {
+        plan_revision: Set(1),
+        charge_line_id: Set(seeded_graph.charge_line_id),
+        line_version_id: Set(seeded_graph.line_version_id),
+        market_price_id: Set(seeded_graph.market_price_id),
         price_id: Set(Uuid::now_v7()),
         plan_id: Set(plan_id),
         tenant_id: Set(TENANT),
-        sku_id: Set(Uuid::from_u128(5)),
-        phase: Set(Uuid::from_u128(0xface)),
-        currency: Set("USD".to_owned()),
-        region: Set("eu".to_owned()),
-        charge_kind: Set("recurring".to_owned()),
-        price_eligibility: Set("all_subscriptions".to_owned()),
         lifecycle_state: Set(state.to_owned()),
-        gl_code_ref: Set(Some(gl_code.to_owned())),
-        resolved_gl_code: Set(if state == "published" {
-            Some(gl_code.to_owned())
-        } else {
-            None
-        }),
-        resolved_invoice_line_template: Set(Some("{plan}".to_owned())),
         created_by: Set(Uuid::from_u128(0x4444)),
         created_at_utc: Set(now()),
         ..Default::default()

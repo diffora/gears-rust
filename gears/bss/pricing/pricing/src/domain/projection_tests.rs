@@ -29,8 +29,7 @@ use crate::domain::overlay::{
     OverlayRevision, ScopeClass, ScopeSelector, ScopeValue, TargetRef, TaxBasis,
 };
 use crate::domain::plan_shape::{
-    AddonRule, CompositeMeter, CustomIntervalUnit, Frequency, PeriodFloorCap,
-    PhaseKind, PlanPhase,
+    AddonRule, CompositeMeter, CustomIntervalUnit, Frequency, PeriodFloorCap, PhaseKind, PlanPhase,
 };
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
@@ -208,7 +207,6 @@ fn the_plan_level_wire_keys_are_what_a_consumer_reads() {
     );
     assert_eq!(value.get("planTier"), Some(&json!("gold")));
     assert_eq!(value.get("planTierOverride"), Some(&json!(false)));
-    assert_eq!(value.get("billingCycle"), Some(&json!("recurring")));
     assert_eq!(
         value.get("frequency"),
         Some(&json!({ "token": "monthly" })),
@@ -1581,10 +1579,11 @@ fn every_member_of_the_frozen_payload_is_classified_exactly_once() {
     // in both lists compiles. That is what the dedup assertion below is for.
     //
     // The count is now a secondary reading rather than the guard. Its first
-    // spelling was the guard and was armed backwards (D-303, corrected by D-309):
-    // a forgotten member left the total at 22 and passed, while classifying it
-    // correctly made 23 and failed — it fired on the fix and was silent on the
-    // omission.
+    // spelling was the guard and was armed backwards (D-303, corrected by
+    // D-309): a forgotten member left the total one short and passed, while
+    // classifying it correctly raised it and failed — it fired on the fix and was
+    // silent on the omission. The total moved from 23 to 22 when `billing_cycle`
+    // left `PlanSubjectDelta`, which is the kind of move it is meant to track.
     let (reached, not_reached) = super::partition_delta_members(&shape_only());
 
     let mut all: Vec<&str> = reached.iter().chain(not_reached.iter()).copied().collect();
@@ -1597,7 +1596,7 @@ fn every_member_of_the_frozen_payload_is_classified_exactly_once() {
         "no member is classified on both sides: {all:?}"
     );
     assert_eq!(
-        named, 23,
+        named, 22,
         "the payload's member count, read back: it moves with the payload on purpose, and a \
          member left unclassified is caught by the compiler before it reaches here"
     );

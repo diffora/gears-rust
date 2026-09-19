@@ -143,6 +143,8 @@ async fn seed_draft(
             TENANT,
             NewPriceDraft {
                 price_id,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key,
                 content: content(amount),
                 created_by: ACTOR,

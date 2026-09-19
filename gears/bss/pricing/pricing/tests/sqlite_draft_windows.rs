@@ -128,17 +128,34 @@ async fn seed_price(
 ) {
     let conn = provider.conn().expect("scoped connection");
     let row_scope = AccessScope::for_tenant(tenant_id);
+    let seeded_graph = common::seed_charge_graph(
+        &conn,
+        &row_scope,
+        &common::ChargeGraphSeed {
+            tenant_id,
+            plan_id,
+            phase: PHASE,
+            sku_id: SKU,
+            charge_kind: "recurring".to_owned(),
+            currency: "USD".to_owned(),
+            region: "EU".to_owned(),
+            lifecycle_state: "draft".to_owned(),
+            model_kind: Some("flat".to_owned()),
+            created_by: ACTOR,
+            created_at_utc: t(1),
+            ..Default::default()
+        },
+    )
+    .await;
     let row = price::ActiveModel {
+        plan_revision: Set(1),
+        charge_line_id: Set(seeded_graph.charge_line_id),
+        line_version_id: Set(seeded_graph.line_version_id),
+        market_price_id: Set(seeded_graph.market_price_id),
         price_id: Set(price_id),
         tenant_id: Set(tenant_id),
         plan_id: Set(plan_id),
-        sku_id: Set(SKU),
-        currency: Set("USD".to_owned()),
-        region: Set("EU".to_owned()),
-        phase: Set(PHASE),
-        charge_kind: Set("recurring".to_owned()),
         amount_minor: Set(Some(1_000)),
-        model_kind: Set(Some("flat".to_owned())),
         lifecycle_state: Set("draft".to_owned()),
         created_by: Set(ACTOR),
         created_at_utc: Set(t(1)),
@@ -486,12 +503,27 @@ async fn at_publish_cannot_carry_an_authored_start() {
         ),
     )
     .await;
+    let graph = common::seed_charge_graph_sql(
+        &conn,
+        &common::SqlGraphSeed {
+            lifecycle_state: "draft",
+            created_by: &ACTOR.to_string(),
+            created_at_utc: "2026-09-18 10:00:00 +00:00",
+            ..common::SqlGraphSeed::new(
+                &tenant_s(),
+                &PLAN.to_string(),
+                &PHASE.to_string(),
+                &SKU.to_string(),
+            )
+        },
+    )
+    .await;
     must_succeed(
         &conn,
         &format!(
-            "INSERT INTO pricing_price (price_id, tenant_id, plan_id, sku_id, currency, region, phase, charge_kind, amount_minor, model_kind, lifecycle_state, created_by, created_at_utc)
-             VALUES ('{ROW}', '{}', '{PLAN}', '{SKU}', 'USD', 'EU', '{PHASE}', 'recurring', 1000, 'flat', 'draft', '{ACTOR}', '2026-09-18 10:00:00 +00:00')",
-            tenant_s()
+            "INSERT INTO pricing_price (price_id, tenant_id, plan_id, plan_revision, charge_line_id, line_version_id, market_price_id, amount_minor, lifecycle_state, created_by, created_at_utc)
+             VALUES ('{ROW}', '{}', '{PLAN}', 0, '{}', '{}', '{}', 1000, 'draft', '{ACTOR}', '2026-09-18 10:00:00 +00:00')",
+            tenant_s(), graph.charge_line_id, graph.line_version_id, graph.market_price_id
         ),
     )
     .await;
@@ -533,12 +565,27 @@ async fn a_non_draft_revision_refuses_insert() {
         ),
     )
     .await;
+    let graph = common::seed_charge_graph_sql(
+        &conn,
+        &common::SqlGraphSeed {
+            lifecycle_state: "published",
+            created_by: &ACTOR.to_string(),
+            created_at_utc: "2026-09-18 10:00:00 +00:00",
+            ..common::SqlGraphSeed::new(
+                &tenant_s(),
+                &PLAN.to_string(),
+                &PHASE.to_string(),
+                &SKU.to_string(),
+            )
+        },
+    )
+    .await;
     must_succeed(
         &conn,
         &format!(
-            "INSERT INTO pricing_price (price_id, tenant_id, plan_id, sku_id, currency, region, phase, charge_kind, amount_minor, model_kind, lifecycle_state, created_by, created_at_utc)
-             VALUES ('{ROW}', '{}', '{PLAN}', '{SKU}', 'USD', 'EU', '{PHASE}', 'recurring', 1000, 'flat', 'published', '{ACTOR}', '2026-09-18 10:00:00 +00:00')",
-            tenant_s()
+            "INSERT INTO pricing_price (price_id, tenant_id, plan_id, plan_revision, charge_line_id, line_version_id, market_price_id, amount_minor, lifecycle_state, created_by, created_at_utc)
+             VALUES ('{ROW}', '{}', '{PLAN}', 0, '{}', '{}', '{}', 1000, 'published', '{ACTOR}', '2026-09-18 10:00:00 +00:00')",
+            tenant_s(), graph.charge_line_id, graph.line_version_id, graph.market_price_id
         ),
     )
     .await;

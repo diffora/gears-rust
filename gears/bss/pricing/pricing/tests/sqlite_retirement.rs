@@ -664,6 +664,8 @@ async fn price_row_on(prices: &PriceRepo, plan_id: PlanId) -> Uuid {
             TENANT,
             bss_pricing::infra::storage::repo::NewPriceDraft {
                 price_id,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: MarketPriceScopeKey::new(
                     ChargeLineScopeKey::new(
                         plan_id,

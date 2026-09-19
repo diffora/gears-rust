@@ -2311,20 +2311,26 @@ async fn price_facts(
         .all(runner)
         .await
         .map_err(|e| RepoError::Db(format!("read pricing_price for overlay world: {e}")))?;
-    for row in rows {
-        let plan_id = PlanId::new(row.plan_id);
-        let sku = TargetSku::new(row.sku_id).ok_or_else(|| {
-            RepoError::CorruptRow(format!("pricing_price {} has a nil SKU", row.price_id))
+    // The SKU, the eligibility class and the cohort are the charge line's now and
+    // the currency is the market's, so the facts are gathered off each row's graph
+    // rather than off the row.
+    for graph in super::price_join::load_graphs(runner, scope, tenant_id, &rows).await? {
+        let plan_id = PlanId::new(graph.price.plan_id);
+        let sku = TargetSku::new(graph.line.sku_id).ok_or_else(|| {
+            RepoError::CorruptRow(format!(
+                "pricing_price {} has a nil SKU",
+                graph.price.price_id
+            ))
         })?;
         facts.skus.entry(plan_id).or_default().insert(sku);
-        let currency = sold_currency(row.price_id, &row.currency)?;
+        let currency = sold_currency(graph.price.price_id, &graph.market.currency)?;
         facts
             .currencies
             .entry(plan_id)
             .or_default()
             .insert(currency);
-        if row.price_eligibility == PriceEligibility::ExistingGrandfathered.as_str()
-            && let Some(at) = published_generation(&row.cohort)
+        if graph.line.price_eligibility == PriceEligibility::ExistingGrandfathered.as_str()
+            && let Some(at) = published_generation(&graph.line.cohort)
         {
             facts.cohorts.entry(plan_id).or_default().insert(at);
         }

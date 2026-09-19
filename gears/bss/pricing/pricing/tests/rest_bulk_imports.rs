@@ -1132,19 +1132,35 @@ async fn a_metered_draft_is_found_by_the_batch_that_names_its_key() {
 async fn poison_the_published_read(harness: &Harness, plan_id: Uuid) {
     let conn = harness.db.conn().expect("conn");
     let scope = harness.scope();
+    let seeded_graph = common::seed_charge_graph(
+        &conn,
+        &scope,
+        &common::ChargeGraphSeed {
+            tenant_id: harness.tenant,
+            plan_id,
+            phase: rest_support::seeded_phase().get(),
+            // true on the axis that now decides the key.
+            sku_id: Uuid::from_u128(0x5c_09),
+            charge_kind: "recurring".to_owned(),
+            currency: "US".to_owned(),
+            region: "EU".to_owned(),
+            lifecycle_state: "published".to_owned(),
+            model_kind: Some("flat".to_owned()),
+            created_by: Uuid::from_u128(0xac_11),
+            created_at_utc: OffsetDateTime::now_utc(),
+            ..Default::default()
+        },
+    )
+    .await;
     let row = price::ActiveModel {
+        plan_revision: Set(1),
+        charge_line_id: Set(seeded_graph.charge_line_id),
+        line_version_id: Set(seeded_graph.line_version_id),
+        market_price_id: Set(seeded_graph.market_price_id),
         price_id: Set(Uuid::now_v7()),
         tenant_id: Set(harness.tenant),
         plan_id: Set(plan_id),
-        // A SKU of its own (D-372), so the doc's "a row of its **own** key" stays
-        // true on the axis that now decides the key.
-        sku_id: Set(Uuid::from_u128(0x5c_09)),
-        currency: Set("US".to_owned()),
-        region: Set("EU".to_owned()),
-        phase: Set(rest_support::seeded_phase().get()),
-        charge_kind: Set("recurring".to_owned()),
         amount_minor: Set(Some(1_000)),
-        model_kind: Set(Some("flat".to_owned())),
         lifecycle_state: Set("published".to_owned()),
         created_by: Set(Uuid::from_u128(0xac_11)),
         created_at_utc: Set(OffsetDateTime::now_utc()),

@@ -1232,15 +1232,21 @@ async fn the_nil_uuid_cannot_be_spelled_as_a_plan_id() {
     .await;
 }
 
-/// The same argument on the second forgeable sentinel: `COALESCE(target_sku,
-/// '')` means a **blank** SKU keys as "no SKU", so a blank-SKU line collides
-/// with its plan's own per-plan line rather than naming a SKU.
+/// The same argument on the second forgeable sentinel, on the value that is
+/// still forgeable.
+///
+/// It used to be the **blank** SKU: `target_sku` was free-form text, so `''`
+/// keyed as "no SKU" through `COALESCE(target_sku, '')` and a blank-SKU line
+/// collided with its plan's own per-plan line rather than naming a SKU. The
+/// column is a `uuid` since D-372 and cannot hold a blank at all, so the
+/// sentinel that survives is the **nil** UUID — syntactically a SKU, and no SKU
+/// — and `chk_pricing_price_overlay_line_target_sku_not_nil` is what refuses it.
 ///
 /// The plan is named on the row because `chk_..._sku_needs_plan` would otherwise
 /// answer first — a mis-arranged fixture here would prove that neighbouring rule
 /// a second time and leave this one untouched.
 #[tokio::test]
-async fn a_blank_target_sku_is_refused() {
+async fn a_nil_target_sku_is_refused() {
     let conn = migrated_db().await;
     must_succeed(&conn, &draft_overlay(OVERLAY, 0)).await;
 
@@ -1251,13 +1257,13 @@ async fn a_blank_target_sku_is_refused() {
             OVERLAY,
             0,
             &format!("'{PLAN}'"),
-            "''",
+            "'00000000-0000-0000-0000-000000000000'",
             "NULL",
             "discount",
             "percent_bp",
             "1500",
         ),
-        "chk_pricing_price_overlay_line_target_sku_present",
+        "chk_pricing_price_overlay_line_target_sku_not_nil",
     )
     .await;
 }

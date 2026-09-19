@@ -919,6 +919,8 @@ async fn commit_rows(
                     tenant_id,
                     NewPriceDraft {
                         price_id,
+                        line_version_id: None,
+                        market_price_id: None,
                         scope_key: row.scope_key.clone(),
                         content: row.content.clone(),
                         created_by: stamp.actor_principal_id,

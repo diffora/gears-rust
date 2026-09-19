@@ -52,6 +52,8 @@ use toolkit_db::secure::{AccessScope, SecureInsertExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
 
+mod common;
+
 const TENANT: Uuid = Uuid::from_u128(0x7e_11);
 const OTHER_TENANT: Uuid = Uuid::from_u128(0x7e_22);
 const ACTOR: Uuid = Uuid::from_u128(0xac_01);
@@ -135,19 +137,35 @@ async fn seed_price_row(
 ) {
     let conn = provider.conn().expect("scoped connection");
     let scope = AccessScope::for_tenant(tenant_id);
+    let seeded_graph = common::seed_charge_graph(
+        &conn,
+        &scope,
+        &common::ChargeGraphSeed {
+            tenant_id,
+            plan_id: PLAN,
+            phase: PHASE,
+            sku_id: SKU,
+            charge_kind: charge_kind.to_owned(),
+            currency: "USD".to_owned(),
+            region: "EU".to_owned(),
+            lifecycle_state: lifecycle_state.to_owned(),
+            model_kind: Some("flat".to_owned()),
+            created_by: ACTOR,
+            created_at_utc: t(1),
+            ..Default::default()
+        },
+    )
+    .await;
     let row = price::ActiveModel {
+        plan_revision: Set(1),
+        charge_line_id: Set(seeded_graph.charge_line_id),
+        line_version_id: Set(seeded_graph.line_version_id),
+        market_price_id: Set(seeded_graph.market_price_id),
         price_id: Set(price_id),
         tenant_id: Set(tenant_id),
         plan_id: Set(PLAN),
         // D-372's ninth axis: `pricing_price.sku_id` is `NOT NULL` since
-        // `m20260916_000044_price_row_sku`, so a seeded row names a SKU.
-        sku_id: Set(SKU),
-        currency: Set("USD".to_owned()),
-        region: Set("EU".to_owned()),
-        phase: Set(PHASE),
-        charge_kind: Set(charge_kind.to_owned()),
         amount_minor: Set(Some(1_000)),
-        model_kind: Set(Some("flat".to_owned())),
         lifecycle_state: Set(lifecycle_state.to_owned()),
         created_by: Set(ACTOR),
         created_at_utc: Set(t(1)),

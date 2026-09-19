@@ -21,7 +21,7 @@ const RUN: &str = "11111111-1111-1111-1111-111111111111";
 const TENANT: &str = "22222222-2222-2222-2222-222222222222";
 const ACTOR: &str = "33333333-3333-3333-3333-333333333333";
 /// The SKU every seeded row prices (D-372). `pricing_price.sku_id` and
-/// `pricing_plan.sku_id` are `NOT NULL` since `m20260916_000044_price_row_sku`,
+/// `pricing_plan.sku_id` are `NOT NULL` in the fresh-install DDL,
 /// so a seed names one; the value itself is incidental to these cases.
 const SKU: &str = "00000000-0000-0000-0000-000000000005";
 const PRICE: &str = "44444444-4444-4444-4444-444444444444";
@@ -59,20 +59,35 @@ fn seed_run_of_kind(kind: &str) -> String {
 ///
 /// Both are real `pricing_price` rows because the journal keys them, exactly as
 /// `pricing_price_tier_band` and `pricing_price_window` key theirs.
-fn seed_price(id: &str) -> String {
+async fn seed_price(conn: &DatabaseConnection, id: &str) {
     // The phase is derived from the row id so the two rows this suite seeds do
-    // not collide on `uq_pricing_price_scope_key_current`, which admits one
-    // published row per canonical scope key.
+    // not collide on the canonical scope key, which admits one published row per
+    // market. The key is the **charge line's** now, so two phases mean two lines.
     let phase = if id == SUCCESSOR { PHASE_B } else { PHASE_A };
-    format!(
-        "INSERT INTO pricing_price ( \
-             price_id, tenant_id, plan_id, currency, region, phase, \
-             charge_kind, amount_minor, model_kind, lifecycle_state, \
-             created_by, created_at_utc, sku_id) \
-         VALUES ('{id}', '{TENANT}', '{PLAN}', 'EUR', 'eu', '{phase}', \
-             'recurring', 1000, 'flat', 'published', '{ACTOR}', \
-             '2026-08-08T00:00:00Z', '{SKU}')"
+    let graph = common::seed_charge_graph_sql(
+        conn,
+        &common::SqlGraphSeed {
+            currency: "EUR",
+            region: "eu",
+            created_by: ACTOR,
+            created_at_utc: "2026-08-08T00:00:00Z",
+            ..common::SqlGraphSeed::new(TENANT, PLAN, phase, SKU)
+        },
     )
+    .await;
+    must_succeed(
+        conn,
+        &format!(
+            "INSERT INTO pricing_price ( \
+                 price_id, tenant_id, plan_id, plan_revision, charge_line_id, \
+                 line_version_id, market_price_id, amount_minor, lifecycle_state, \
+                 created_by, created_at_utc) \
+             VALUES ('{id}', '{TENANT}', '{PLAN}', 0, '{}', '{}', '{}', \
+                 1000, 'published', '{ACTOR}', '2026-08-08T00:00:00Z')",
+            graph.charge_line_id, graph.line_version_id, graph.market_price_id
+        ),
+    )
+    .await;
 }
 
 /// One selected row, `pending` — the only state a journal row may be born in.
@@ -106,8 +121,8 @@ async fn journalled(conn: &DatabaseConnection) {
 /// The world a journal row needs before it can exist: its run and both price
 /// rows its two keys name.
 async fn seeded(conn: &DatabaseConnection) {
-    must_succeed(conn, &seed_price(PRICE)).await;
-    must_succeed(conn, &seed_price(SUCCESSOR)).await;
+    seed_price(conn, PRICE).await;
+    seed_price(conn, SUCCESSOR).await;
     must_succeed(conn, &seed_run()).await;
 }
 
@@ -371,7 +386,7 @@ async fn a_successor_may_not_wear_the_selected_rows_own_id() {
 async fn every_key_names_a_row_that_exists() {
     // The run.
     let conn = migrated_db().await;
-    must_succeed(&conn, &seed_price(PRICE)).await;
+    seed_price(&conn, PRICE).await;
     must_be_rejected(&conn, &seed_row(), "FOREIGN KEY").await;
 
     // The selected price row.
@@ -382,7 +397,7 @@ async fn every_key_names_a_row_that_exists() {
     // The successor. Its key is only reachable at the apply, since the column is
     // null in every other state.
     let conn = migrated_db().await;
-    must_succeed(&conn, &seed_price(PRICE)).await;
+    seed_price(&conn, PRICE).await;
     must_succeed(&conn, &seed_run()).await;
     must_succeed(&conn, &seed_row()).await;
     must_be_rejected(&conn, &decide("applied"), "FOREIGN KEY").await;
@@ -416,8 +431,8 @@ async fn one_journal_row_per_run_and_price() {
 #[tokio::test]
 async fn an_import_does_not_journal() {
     let conn = migrated_db().await;
-    must_succeed(&conn, &seed_price(PRICE)).await;
-    must_succeed(&conn, &seed_price(SUCCESSOR)).await;
+    seed_price(&conn, PRICE).await;
+    seed_price(&conn, SUCCESSOR).await;
     must_succeed(&conn, &seed_run_of_kind("import")).await;
     must_be_rejected(&conn, &seed_row(), "only a repricing run").await;
 }

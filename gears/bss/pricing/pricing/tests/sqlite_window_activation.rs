@@ -42,7 +42,7 @@ use bss_pricing::domain::draft_window::{
 };
 use bss_pricing::domain::events::CatalogEvent;
 use bss_pricing::domain::lifecycle::LifecycleState;
-use bss_pricing::domain::plan_shape::{Frequency};
+use bss_pricing::domain::plan_shape::Frequency;
 use bss_pricing::domain::scope_key::PlanId;
 use bss_pricing::domain::window::WindowState;
 use bss_pricing::infra::draft_window::{self, DraftWindowCommand};
@@ -64,6 +64,8 @@ use toolkit_db::migration_runner::run_migrations_for_testing;
 use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt, SecureUpdateExt};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
+
+mod common;
 
 const TENANT: Uuid = Uuid::from_u128(0x7e_11);
 const OTHER_TENANT: Uuid = Uuid::from_u128(0x7e_22);
@@ -179,19 +181,35 @@ async fn seed_price_row(
     lifecycle_state: &str,
 ) {
     let conn = provider.conn().expect("scoped connection");
+    let seeded_graph = common::seed_charge_graph(
+        &conn,
+        &scope_of(tenant_id),
+        &common::ChargeGraphSeed {
+            tenant_id,
+            plan_id,
+            phase: PHASE,
+            sku_id: SKU,
+            charge_kind: charge_kind.to_owned(),
+            currency: "USD".to_owned(),
+            region: "EU".to_owned(),
+            lifecycle_state: lifecycle_state.to_owned(),
+            model_kind: Some("flat".to_owned()),
+            created_by: ACTOR,
+            created_at_utc: t(0),
+            ..Default::default()
+        },
+    )
+    .await;
     let row = price::ActiveModel {
+        plan_revision: Set(1),
+        charge_line_id: Set(seeded_graph.charge_line_id),
+        line_version_id: Set(seeded_graph.line_version_id),
+        market_price_id: Set(seeded_graph.market_price_id),
         price_id: Set(price_id),
         tenant_id: Set(tenant_id),
         plan_id: Set(plan_id),
         // D-372's ninth axis: `pricing_price.sku_id` is `NOT NULL` since
-        // `m20260916_000044_price_row_sku`, so a seeded row names a SKU.
-        sku_id: Set(SKU),
-        currency: Set("USD".to_owned()),
-        region: Set("EU".to_owned()),
-        phase: Set(PHASE),
-        charge_kind: Set(charge_kind.to_owned()),
         amount_minor: Set(Some(1_000)),
-        model_kind: Set(Some("flat".to_owned())),
         lifecycle_state: Set(lifecycle_state.to_owned()),
         created_by: Set(ACTOR),
         created_at_utc: Set(t(0)),
@@ -273,10 +291,22 @@ async fn seed_active_window(
 ) -> Uuid {
     let conn = provider.conn().expect("scoped connection");
     let window_id = Uuid::from_u128(id);
+    // The window competes on the market, so it carries the market its row names
+    // and the table's compound FK requires that id to be the row's own.
+    let market_price_id = bss_pricing::infra::storage::repo::price_repo::load_market_id(
+        &conn,
+        &AccessScope::allow_all(),
+        tenant,
+        price_id,
+    )
+    .await
+    .expect("read the row's market")
+    .expect("the seeded price row is there");
     let row = price_window::ActiveModel {
         window_id: Set(window_id),
         tenant_id: Set(tenant),
         price_id: Set(price_id),
+        market_price_id: Set(market_price_id),
         effective_from: Set(from),
         effective_to: Set(Some(to)),
         state: Set("active".to_owned()),

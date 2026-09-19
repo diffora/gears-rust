@@ -80,7 +80,7 @@ const PLAN: &str = "22222222-2222-2222-2222-222222222222";
 const PHASE: &str = "33333333-3333-3333-3333-333333333333";
 const ACTOR: &str = "44444444-4444-4444-4444-444444444444";
 /// The SKU every seeded row prices (D-372). `pricing_price.sku_id` and
-/// `pricing_plan.sku_id` are `NOT NULL` since `m20260916_000044_price_row_sku`,
+/// `pricing_plan.sku_id` are `NOT NULL` in the fresh-install DDL,
 /// so a seed names one; the value itself is incidental to these cases.
 const SKU: &str = "00000000-0000-0000-0000-000000000005";
 const SEED: &str = "55555555-5555-5555-5555-555555555555";
@@ -97,6 +97,27 @@ const FOREIGN_TOKEN: &str = "sum_of_squares";
 /// refused whatever its `model_kind` says — so a test that accepted any error
 /// would pass against a table whose constraint under test had been deleted.
 /// `SQLite` reports a named `CHECK` as `CHECK constraint failed: <name>`.
+/// Refused by a **trigger**, naming its sentence.
+///
+/// Two of the rules this file proves span tables now — a block price needs the
+/// `package` kind, a grandfather horizon needs the `existing_grandfathered`
+/// class — and the column each rule reads lives on `pricing_charge_line_version`
+/// or `pricing_charge_line` while the column it guards stayed on
+/// `pricing_price`. A `CHECK` cannot see another table, so those two moved to
+/// triggers, and a case demanding `CHECK constraint failed` would report them
+/// missing when they are merely expressed differently.
+async fn must_abort(conn: &DatabaseConnection, sql: &str, sentence: &str) {
+    let err = exec(conn, sql)
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("the guard must refuse: {sql}"));
+    let message = err.to_string();
+    assert!(
+        message.contains(sentence),
+        "the refusal must be `{sentence}`, got: {message}"
+    );
+}
+
 async fn must_violate(conn: &DatabaseConnection, sql: &str, constraint: &str) {
     let err = exec(conn, sql)
         .await
@@ -113,50 +134,197 @@ async fn must_violate(conn: &DatabaseConnection, sql: &str, constraint: &str) {
     );
 }
 
-/// One draft usage row, on the base scope key, carrying none of the columns
-/// under test.
+/// The one charge line the version cases below hang their versions off.
+const CHARGE_LINE: &str = "0000cc00-0000-0000-0000-000000000001";
+
+/// The line and the two markets the package cases price against.
 ///
-/// A draft is freely mutable, so the token cases drive this single row through
-/// every value rather than inserting one row per token — which would need a
-/// distinct scope key per token and would prove something about the key index
-/// instead.
-async fn seed(conn: &DatabaseConnection) {
+/// One line, because the rules under test are the *version's* and the *row's*,
+/// not the line's — a line per case would vary an axis nothing here is about.
+/// Two markets, because a draft row is unique per market and the case needs two.
+async fn ensure_line(conn: &DatabaseConnection) {
     must_succeed(
         conn,
         &format!(
-            "INSERT INTO pricing_price (
-                price_id, tenant_id, plan_id, currency, region, phase,
-                charge_kind, model_kind, meter, lifecycle_state,
-                created_by, created_at_utc, sku_id)
-             VALUES ('{SEED}', '{TENANT}', '{PLAN}', 'USD', 'EU', '{PHASE}',
-                'usage', 'per_unit', 'api_calls', 'draft', '{ACTOR}',
-                '2026-08-02 10:00:00 +00:00', '{SKU}')"
+            "INSERT OR IGNORE INTO pricing_charge_line (tenant_id, charge_line_id, plan_id, \
+             phase, charge_kind, sku_id) VALUES \
+             ('{TENANT}', '{CHARGE_LINE}', '{PLAN}', '{PHASE}', 'usage', '{SKU}')"
+        ),
+    )
+    .await;
+    for (region, market) in [
+        ("pk", "0000dd00-0000-0000-0000-000000000001"),
+        ("nk", "0000dd00-0000-0000-0000-000000000002"),
+    ] {
+        must_succeed(
+            conn,
+            &format!(
+                "INSERT OR IGNORE INTO pricing_market_price (tenant_id, market_price_id, \
+                 charge_line_id, currency, region) VALUES \
+                 ('{TENANT}', '{market}', '{CHARGE_LINE}', 'USD', '{region}')"
+            ),
+        )
+        .await;
+    }
+}
+
+/// A version of [`LINE`], at a revision derived from its id.
+///
+/// One line holds one version per plan revision, so the id's last digit doubles
+/// as the revision — which keeps the cases independent without making the
+/// revision a thing any of them is about.
+fn insert_version(version_id: &str, model_kind: &str, columns: &str, values: &str) -> String {
+    let revision = version_id.chars().last().unwrap_or('1');
+    format!(
+        "INSERT INTO pricing_charge_line_version (tenant_id, line_version_id, charge_line_id, \
+         plan_revision, lifecycle_state, model_kind, created_by, created_at_utc, \
+         row_version{columns}) \
+         VALUES ('{TENANT}', '{version_id}', '{CHARGE_LINE}', {revision}, 'draft', {model_kind}, \
+         '{ACTOR}', '2026-08-02 10:00:00 +00:00', 0{values})"
+    )
+}
+
+/// A draft price row against one version, in one of [`ensure_line`]'s markets.
+fn insert_price_on(
+    price_id: &str,
+    version_id: &str,
+    region: &str,
+    columns: &str,
+    values: &str,
+) -> String {
+    let market = if region == "pk" {
+        "0000dd00-0000-0000-0000-000000000001"
+    } else {
+        "0000dd00-0000-0000-0000-000000000002"
+    };
+    format!(
+        "INSERT INTO pricing_price (price_id, tenant_id, plan_id, plan_revision, \
+         charge_line_id, line_version_id, market_price_id, lifecycle_state, created_by, \
+         created_at_utc{columns}) \
+         VALUES ('{price_id}', '{TENANT}', '{PLAN}', 0, '{CHARGE_LINE}', '{version_id}', '{market}', \
+         'draft', '{ACTOR}', '2026-08-02 10:00:00 +00:00'{values})"
+    )
+}
+
+/// The seeded version and market the drivable cases mutate.
+const SEED_VERSION: &str = "0000cc00-0000-0000-0000-00000000000e";
+const SEED_MARKET: &str = "0000dd00-0000-0000-0000-00000000000e";
+
+/// One draft usage line — its version and one draft price row — carrying none
+/// of the columns under test.
+///
+/// A draft is freely mutable, so the token cases drive this single line through
+/// every value rather than inserting one row per token — which would need a
+/// distinct scope key per token and would prove something about the key index
+/// instead.
+///
+/// **Three rows rather than one**, because the columns those cases drive have
+/// three owners now: the eight logical axes are `pricing_charge_line`'s, the
+/// shared calculation is its version's, and the money is the price row's.
+async fn seed(conn: &DatabaseConnection) {
+    ensure_line(conn).await;
+    must_succeed(
+        conn,
+        &format!(
+            "INSERT INTO pricing_market_price (tenant_id, market_price_id, charge_line_id, \
+             currency, region) VALUES ('{TENANT}', '{SEED_MARKET}', '{CHARGE_LINE}', 'USD', 'EU')"
+        ),
+    )
+    .await;
+    must_succeed(
+        conn,
+        &format!(
+            "INSERT INTO pricing_charge_line_version (tenant_id, line_version_id, \
+             charge_line_id, plan_revision, lifecycle_state, model_kind, meter, created_by, \
+             created_at_utc, row_version) VALUES \
+             ('{TENANT}', '{SEED_VERSION}', '{CHARGE_LINE}', 0, 'draft', 'per_unit', \
+              'api_calls', '{ACTOR}', '2026-08-02 10:00:00 +00:00', 0)"
+        ),
+    )
+    .await;
+    must_succeed(
+        conn,
+        &format!(
+            "INSERT INTO pricing_price (price_id, tenant_id, plan_id, plan_revision, \
+             charge_line_id, line_version_id, market_price_id, lifecycle_state, created_by, \
+             created_at_utc) VALUES \
+             ('{SEED}', '{TENANT}', '{PLAN}', 0, '{CHARGE_LINE}', '{SEED_VERSION}', \
+              '{SEED_MARKET}', 'draft', '{ACTOR}', '2026-08-02 10:00:00 +00:00')"
         ),
     )
     .await;
 }
 
-/// An INSERT of a row that differs from the seed only in the columns given —
-/// `region` keeps it on a scope key of its own, so nothing here can be refused
-/// by a unique index.
-fn insert_row(price_id: &str, region: &str, columns: &str, values: &str) -> String {
+/// A charge line differing from the base only in the columns given.
+///
+/// `region` used to keep each case on a scope key of its own; the region is an
+/// axis of the *market* now, so the discriminator is `dimension_key` instead —
+/// which is an axis of the line and does the same job one table over.
+fn insert_line_row(line_id: &str, discriminator: &str, columns: &str, values: &str) -> String {
     format!(
-        "INSERT INTO pricing_price (
-            price_id, tenant_id, plan_id, currency, region, phase,
-            charge_kind, lifecycle_state, created_by, created_at_utc, sku_id{columns})
-         VALUES ('{price_id}', '{TENANT}', '{PLAN}', 'USD', '{region}', '{PHASE}',
-            'usage', 'draft', '{ACTOR}', '2026-08-02 10:00:00 +00:00', '{SKU}'{values})"
+        "INSERT INTO pricing_charge_line (
+            tenant_id, charge_line_id, plan_id, phase, charge_kind, sku_id,
+            dimension_key{columns})
+         VALUES ('{TENANT}', '{line_id}', '{PLAN}', '{PHASE}', 'usage', '{SKU}',
+            '{discriminator}'{values})"
     )
 }
 
-/// An INSERT whose four `NOT NULL` token columns are all caller-chosen, `column`
-/// carrying `token` and the rest their defaults.
+/// A draft version of an arbitrary line, for the cases that need one per line.
+fn version_on(version_id: &str, line_id: &str, revision: u32) -> String {
+    format!(
+        "INSERT INTO pricing_charge_line_version (tenant_id, line_version_id, charge_line_id, \
+         plan_revision, lifecycle_state, created_by, created_at_utc, row_version) \
+         VALUES ('{TENANT}', '{version_id}', '{line_id}', {revision}, 'draft', '{ACTOR}', \
+         '2026-08-02 10:00:00 +00:00', 0)"
+    )
+}
+
+/// A draft price row naming its line, version and market explicitly.
+fn price_on(
+    price_id: &str,
+    line_id: &str,
+    version_id: &str,
+    market_id: &str,
+    columns: &str,
+    values: &str,
+) -> String {
+    format!(
+        "INSERT INTO pricing_price (price_id, tenant_id, plan_id, plan_revision, \
+         charge_line_id, line_version_id, market_price_id, lifecycle_state, created_by, \
+         created_at_utc{columns}) \
+         VALUES ('{price_id}', '{TENANT}', '{PLAN}', 0, '{line_id}', '{version_id}', \
+         '{market_id}', 'draft', '{ACTOR}', '2026-08-02 10:00:00 +00:00'{values})"
+    )
+}
+
+/// A draft version of [`CHARGE_LINE`] carrying a chosen meter literal.
+fn meter_version(version_id: &str, revision: u32, meter: &str) -> String {
+    format!(
+        "INSERT INTO pricing_charge_line_version (tenant_id, line_version_id, charge_line_id, \
+         plan_revision, lifecycle_state, meter, created_by, created_at_utc, row_version) \
+         VALUES ('{TENANT}', '{version_id}', '{CHARGE_LINE}', {revision}, 'draft', {meter}, \
+         '{ACTOR}', '2026-08-02 10:00:00 +00:00', 0)"
+    )
+}
+
+/// An INSERT of a **market** on the base line, so a case can vary currency or
+/// region without touching the line.
+fn insert_market(market_id: &str, line_id: &str, currency: &str, region: &str) -> String {
+    format!(
+        "INSERT INTO pricing_market_price (tenant_id, market_price_id, charge_line_id, \
+         currency, region) \
+         VALUES ('{TENANT}', '{market_id}', '{line_id}', '{currency}', '{region}')"
+    )
+}
+
+/// An INSERT whose caller-chosen token lands on whichever table owns it.
 ///
-/// These four cannot be driven the way the nullable ones are. Three of them are
-/// scope-key columns, so an UPDATE moves the row's key rather than its content;
-/// `lifecycle_state` is guarded by the append-only triggers the moment it leaves
-/// `draft`, which would answer before the CHECK ever did. So each token gets a
-/// row, on a `region` — and therefore a scope key — of its own.
+/// `lifecycle_state` is the price row's; `price_overlay`, `price_eligibility`
+/// and `charge_kind` are axes of the charge line. Each gets a row of its own —
+/// a line discriminated by `dimension_key`, or a price row on its own market —
+/// because three of the four are key columns, so an UPDATE would move the row's
+/// key rather than its content.
 ///
 /// `cohort` follows `price_eligibility` because the biconditional binds them: a
 /// helper that wrote `none` under `existing_grandfathered` would have every
@@ -166,6 +334,18 @@ fn insert_token_row(seq: usize, column: &str, token: &str) -> String {
     let chosen = |name: &str, default: &str| -> String {
         if name == column { token } else { default }.to_owned()
     };
+    if column == "lifecycle_state" {
+        // A market of its own per row: `uq_pricing_price_market_draft` admits one
+        // *draft* per market, and `draft` is one of the tokens under test.
+        return format!(
+            "INSERT INTO pricing_price (price_id, tenant_id, plan_id, plan_revision, \
+             charge_line_id, line_version_id, market_price_id, lifecycle_state, created_by, \
+             created_at_utc) \
+             VALUES ('cccc0000-0000-0000-0000-{seq:012}', '{TENANT}', '{PLAN}', 0, \
+             '{CHARGE_LINE}', '{SEED_VERSION}', 'cccc0000-0000-0000-1111-{seq:012}', \
+             '{token}', '{ACTOR}', '2026-08-02 10:00:00 +00:00')"
+        );
+    }
     let eligibility = chosen("price_eligibility", "all_subscriptions");
     let cohort = if eligibility == "existing_grandfathered" {
         "1780000000000"
@@ -173,48 +353,37 @@ fn insert_token_row(seq: usize, column: &str, token: &str) -> String {
         "none"
     };
     format!(
-        "INSERT INTO pricing_price (
-            price_id, tenant_id, plan_id, currency, region, phase,
-            price_overlay, price_eligibility, cohort, charge_kind,
-            lifecycle_state, created_by, created_at_utc, sku_id)
-         VALUES ('cccc0000-0000-0000-0000-{seq:012}', '{TENANT}', '{PLAN}', 'USD',
-            'R{seq}', '{PHASE}', '{}', '{eligibility}', '{cohort}', '{}', '{}',
-            '{ACTOR}', '2026-08-02 10:00:00 +00:00', '{SKU}')",
+        "INSERT INTO pricing_charge_line (
+            tenant_id, charge_line_id, plan_id, phase, price_overlay,
+            price_eligibility, cohort, charge_kind, sku_id, dimension_key)
+         VALUES ('{TENANT}', 'cccc0000-0000-0000-0000-{seq:012}', '{PLAN}', '{PHASE}',
+            '{}', '{eligibility}', '{cohort}', '{}', '{SKU}', 'D{seq}')",
         chosen("price_overlay", "base"),
         chosen("charge_kind", "usage"),
-        chosen("lifecycle_state", "draft"),
     )
 }
 
-/// A row as `uq_pricing_price_scope_key_current` sees it: the axes a case varies,
-/// the column that decides whether the partial index looks at the row at all
-/// (`lifecycle_state`), and `meter`, which D-372 took **off** the key.
+/// A line as `uq_pricing_charge_line_logical_scope` sees it: the axes a case
+/// varies, plus the two that left the key entirely.
 ///
-/// It was `uq_pricing_price_meter_line_current`'s fixture until D-372 dropped that
-/// index: two units of one SKU are one key now, so the index that made them two
-/// markets has no subject. What survives of those cases is what was never about
-/// that index -- `dimension_key` and `cohort` discriminating, the predicate being
-/// partial over `published` -- plus the statement that replaced it.
+/// `region` and `meter` are both off the logical key now — the first to
+/// `pricing_market_price`, the second to the line's version — so a case that
+/// varies either is asserting that they do **not** discriminate, which is the
+/// inverse of what the old fixture asserted and is why they stay in the struct.
 #[derive(Clone, Copy)]
 struct Line {
     seq: usize,
-    region: &'static str,
     charge_kind: &'static str,
     cohort: &'static str,
-    meter: Option<&'static str>,
     dimension_key: &'static str,
-    lifecycle_state: &'static str,
 }
 
-/// The published, undimensioned usage line every case below varies one axis of.
+/// The undimensioned usage line every case below varies one axis of.
 const LINE: Line = Line {
     seq: 0,
-    region: "EU",
     charge_kind: "usage",
     cohort: "none",
-    meter: Some("api_calls"),
     dimension_key: "",
-    lifecycle_state: "published",
 };
 
 /// The INSERT for one [`Line`].
@@ -226,104 +395,125 @@ const LINE: Line = Line {
 fn insert_line(line: &Line) -> String {
     let Line {
         seq,
-        region,
         charge_kind,
         cohort,
-        meter,
         dimension_key,
-        lifecycle_state,
     } = *line;
     let eligibility = if cohort == "none" {
         "all_subscriptions"
     } else {
         "existing_grandfathered"
     };
-    let meter = meter.map_or_else(|| "NULL".to_owned(), |m| format!("'{m}'"));
     format!(
-        "INSERT INTO pricing_price (
-            price_id, tenant_id, plan_id, currency, region, phase,
-            price_eligibility, cohort, charge_kind, meter, dimension_key,
-            lifecycle_state, created_by, created_at_utc, sku_id)
-         VALUES ('eeee0000-0000-0000-0000-{seq:012}', '{TENANT}', '{PLAN}', 'USD',
-            '{region}', '{PHASE}', '{eligibility}', '{cohort}', '{charge_kind}',
-            {meter}, '{dimension_key}', '{lifecycle_state}', '{ACTOR}',
-            '2026-08-02 10:00:00 +00:00', '{SKU}')"
+        "INSERT INTO pricing_charge_line (
+            tenant_id, charge_line_id, plan_id, phase, price_eligibility, cohort,
+            charge_kind, sku_id, dimension_key)
+         VALUES ('{TENANT}', 'eeee0000-0000-0000-0000-{seq:012}', '{PLAN}', '{PHASE}',
+            '{eligibility}', '{cohort}', '{charge_kind}', '{SKU}', '{dimension_key}')"
     )
 }
 
 #[tokio::test]
 async fn package_block_fields_need_the_kind_that_gives_them_meaning() {
     let conn = migrated_db().await;
+    ensure_line(&conn).await;
 
-    // The kindless row. `model_kind` is nullable — a draft may be authored
-    // before its kind is — so this row's package fields would once have landed:
-    // `FALSE OR NULL` is NULL, and a NULL CHECK result is satisfied. Nothing
-    // downstream reads a block on a row with no kind, and nothing prices it, so
-    // it is a silent unpriceable row rather than a loud one.
+    // **One rule, now enforced in two places, because its two columns have two
+    // owners.** `chk_pricing_price_package_fields_kind` read "a block field
+    // requires `model_kind = 'package'`" over two columns of one row. The block
+    // *size* is shared geometry and moved to `pricing_charge_line_version` with
+    // the kind, so that half is still a `CHECK`. The block *price* is market
+    // money and stayed on `pricing_price`, where the kind is one table away and
+    // no `CHECK` can reach it — so that half is a trigger. Both halves are
+    // proved here, or the split would have quietly dropped one of them.
+
+    // The size half. A kindless version first: `model_kind` is nullable — a
+    // draft may be authored before its kind is — so this row's block would once
+    // have landed, because `FALSE OR NULL` is NULL and a NULL CHECK result is
+    // satisfied.
     must_violate(
         &conn,
-        &insert_row(
+        &insert_version(
             "aaaa0001-0000-0000-0000-000000000001",
-            "EU",
-            ", package_size, package_price_minor",
-            ", 100, 5000",
+            "NULL",
+            ", package_size",
+            ", 100",
         ),
-        "chk_pricing_price_package_fields_kind",
+        "chk_pricing_charge_line_version_package_fields_kind",
     )
     .await;
-
-    // And the case the constraint always did refuse: a block on a kind whose
-    // money lives somewhere else. One field is enough — the rule is about the
-    // pair being present at all, not about the pair being complete.
+    // And a block on a kind whose money lives somewhere else.
     must_violate(
         &conn,
-        &insert_row(
+        &insert_version(
             "aaaa0001-0000-0000-0000-000000000002",
-            "US",
-            ", model_kind, amount_minor, package_price_minor",
-            ", 'flat', 1000, 5000",
+            "'graduated'",
+            ", package_size",
+            ", 100",
         ),
-        "chk_pricing_price_package_fields_kind",
+        "chk_pricing_charge_line_version_package_fields_kind",
     )
     .await;
-    must_violate(
-        &conn,
-        &insert_row(
-            "aaaa0001-0000-0000-0000-000000000003",
-            "APAC",
-            ", model_kind, package_size",
-            ", 'graduated', 100",
-        ),
-        "chk_pricing_price_package_fields_kind",
-    )
-    .await;
-
-    // The positive control, without which all of the above would pass against a
-    // constraint that refused every row: on `package` the block is the price.
+    // The positive control, without which both of the above would pass against a
+    // constraint that refused every row.
     must_succeed(
         &conn,
-        &insert_row(
-            "aaaa0001-0000-0000-0000-000000000004",
-            "LATAM",
-            ", model_kind, package_size, package_price_minor",
-            ", 'package', 100, 5000",
+        &insert_version(
+            "aaaa0001-0000-0000-0000-000000000003",
+            "'package'",
+            ", package_size",
+            ", 100",
         ),
     )
     .await;
-    // As is a kindless row that carries no block at all: the rule forbids the
+    // As is a kindless version carrying no block at all: the rule forbids the
     // pairing, not the absent kind.
     must_succeed(
         &conn,
-        &insert_row("aaaa0001-0000-0000-0000-000000000005", "MEA", "", ""),
+        &insert_version("aaaa0001-0000-0000-0000-000000000004", "NULL", "", ""),
     )
     .await;
 
-    let landed = scalar(
+    // The money half, against the version the size half just proved. A block
+    // price on the `package` version lands; the same price on the kindless one
+    // is refused, and by the trigger's own sentence rather than by a `CHECK`
+    // that no longer exists.
+    must_succeed(
+        &conn,
+        &insert_price_on(
+            "bbbb0001-0000-0000-0000-000000000001",
+            "aaaa0001-0000-0000-0000-000000000003",
+            "pk",
+            ", package_price_minor",
+            ", 5000",
+        ),
+    )
+    .await;
+    must_abort(
+        &conn,
+        &insert_price_on(
+            "bbbb0001-0000-0000-0000-000000000002",
+            "aaaa0001-0000-0000-0000-000000000004",
+            "nk",
+            ", package_price_minor",
+            ", 5000",
+        ),
+        "package_price_minor is permitted only on a package line version",
+    )
+    .await;
+
+    let versions = scalar(
+        &conn,
+        "SELECT CAST(count(*) AS TEXT) AS v FROM pricing_charge_line_version",
+    )
+    .await;
+    assert_eq!(versions, "2", "only the two permitted versions landed");
+    let rows = scalar(
         &conn,
         "SELECT CAST(count(*) AS TEXT) AS v FROM pricing_price",
     )
     .await;
-    assert_eq!(landed, "2", "only the two permitted rows landed");
+    assert_eq!(rows, "1", "and only the block price on the package version");
 }
 
 #[tokio::test]
@@ -344,10 +534,14 @@ async fn each_not_null_token_column_holds_only_the_tokens_its_enum_renders() {
             "chk_pricing_price_lifecycle_state",
             &["draft", "published", "superseded"],
         ),
-        ("price_overlay", "chk_pricing_price_overlay", &["base"]),
+        (
+            "price_overlay",
+            "chk_pricing_charge_line_overlay",
+            &["base"],
+        ),
         (
             "price_eligibility",
-            "chk_pricing_price_eligibility",
+            "chk_pricing_charge_line_eligibility",
             &[
                 "all_subscriptions",
                 "new_subscriptions_only",
@@ -356,12 +550,13 @@ async fn each_not_null_token_column_holds_only_the_tokens_its_enum_renders() {
         ),
         (
             "charge_kind",
-            "chk_pricing_price_charge_kind",
+            "chk_pricing_charge_line_charge_kind",
             &["recurring", "usage", "one_time"],
         ),
     ];
 
     let conn = migrated_db().await;
+    seed(&conn).await;
     let mut seq = 0;
     let mut landed = 0;
     for (column, constraint, tokens) in COLUMNS {
@@ -373,6 +568,18 @@ async fn each_not_null_token_column_holds_only_the_tokens_its_enum_renders() {
         for token in tokens {
             seq += 1;
             landed += 1;
+            if column == "lifecycle_state" {
+                must_succeed(
+                    &conn,
+                    &insert_market(
+                        &format!("cccc0000-0000-0000-1111-{seq:012}"),
+                        CHARGE_LINE,
+                        "USD",
+                        &format!("R{seq}"),
+                    ),
+                )
+                .await;
+            }
             must_succeed(&conn, &insert_token_row(seq, column, token)).await;
         }
         // And the token no enum renders, which is the refusal the repository's
@@ -380,6 +587,18 @@ async fn each_not_null_token_column_holds_only_the_tokens_its_enum_renders() {
         // about the repository, so only a statement the repository never issues
         // can make it.
         seq += 1;
+        if column == "lifecycle_state" {
+            must_succeed(
+                &conn,
+                &insert_market(
+                    &format!("cccc0000-0000-0000-1111-{seq:012}"),
+                    CHARGE_LINE,
+                    "USD",
+                    &format!("R{seq}"),
+                ),
+            )
+            .await;
+        }
         must_violate(
             &conn,
             &insert_token_row(seq, column, FOREIGN_TOKEN),
@@ -395,6 +614,16 @@ async fn each_not_null_token_column_holds_only_the_tokens_its_enum_renders() {
     // and a `retired` price row would sit outside both partial `UNIQUE` indexes
     // with its key reading free.
     seq += 1;
+    must_succeed(
+        &conn,
+        &insert_market(
+            &format!("cccc0000-0000-0000-1111-{seq:012}"),
+            CHARGE_LINE,
+            "USD",
+            &format!("R{seq}"),
+        ),
+    )
+    .await;
     must_violate(
         &conn,
         &insert_token_row(seq, "lifecycle_state", "retired"),
@@ -404,37 +633,59 @@ async fn each_not_null_token_column_holds_only_the_tokens_its_enum_renders() {
 
     // A CHECK that refused a statement which took effect anyway would be
     // indistinguishable above from one that worked.
-    let stored = scalar(
+    // **Counted across both owners.** Three of the four columns are axes of the
+    // charge line and one is the price row's, so the rows this case landed are
+    // split between two tables — and the seed's own line, version and row are
+    // there too, which is why the base is subtracted rather than assumed away.
+    let lines_landed: u64 = scalar(
+        &conn,
+        "SELECT CAST(count(*) AS TEXT) AS v FROM pricing_charge_line",
+    )
+    .await
+    .parse()
+    .expect("a count");
+    let rows_landed: u64 = scalar(
         &conn,
         "SELECT CAST(count(*) AS TEXT) AS v FROM pricing_price",
     )
-    .await;
-    assert_eq!(stored, landed.to_string(), "exactly the legal rows landed");
+    .await
+    .parse()
+    .expect("a count");
+    assert_eq!(
+        lines_landed + rows_landed - 2,
+        landed,
+        "exactly the legal rows landed, the seed's line and row aside"
+    );
 }
 
 #[tokio::test]
 async fn each_nullable_token_column_holds_only_the_tokens_its_enum_renders() {
     /// Column, the constraint that guards it, and every token the domain enum
     /// behind it renders.
+    ///
+    /// **All eight are the line version's now.** They are shared calculation
+    /// structure - the model, the meter's folding windows, the quantity source -
+    /// so they moved off `pricing_price` with the rest of it, and their `CHECK`s
+    /// moved with them rather than being restated.
     const COLUMNS: [(&str, &str, &[&str]); 8] = [
         (
             "model_kind",
-            "chk_pricing_price_model_kind",
+            "chk_pricing_charge_line_version_model_kind",
             &["flat", "per_unit", "graduated", "volume", "package"],
         ),
         (
             "billing_timing",
-            "chk_pricing_price_billing_timing",
+            "chk_pricing_charge_line_version_billing_timing",
             &["advance", "arrears"],
         ),
         (
             "quantity_source",
-            "chk_pricing_price_quantity_source",
+            "chk_pricing_charge_line_version_quantity_source",
             &["subscription_seat_count", "manual"],
         ),
         (
             "billing_granularity",
-            "chk_pricing_price_billing_granularity",
+            "chk_pricing_charge_line_version_billing_granularity",
             &[
                 "per_second",
                 "per_minute",
@@ -445,17 +696,17 @@ async fn each_nullable_token_column_holds_only_the_tokens_its_enum_renders() {
         ),
         (
             "aggregation_function",
-            "chk_pricing_price_aggregation_function",
+            "chk_pricing_charge_line_version_aggregation_function",
             &["sum", "peak", "time_weighted"],
         ),
         (
             "aggregation_granularity",
-            "chk_pricing_price_aggregation_granularity",
+            "chk_pricing_charge_line_version_aggregation_granularity",
             &["hour", "day"],
         ),
         (
             "tier_aggregation_window",
-            "chk_pricing_price_tier_aggregation_window",
+            "chk_pricing_charge_line_version_tier_aggregation_window",
             &[
                 "calendar_month",
                 "invoice_period",
@@ -470,7 +721,7 @@ async fn each_nullable_token_column_holds_only_the_tokens_its_enum_renders() {
         ),
         (
             "tier_qualification_window",
-            "chk_pricing_price_tier_qualification_window",
+            "chk_pricing_charge_line_version_tier_qualification_window",
             &["current", "trailing_period"],
         ),
     ];
@@ -497,19 +748,19 @@ async fn each_nullable_token_column_holds_only_the_tokens_its_enum_renders() {
         for token in tokens {
             must_succeed(
                 &conn,
-                &format!("UPDATE pricing_price SET {column} = '{token}' WHERE price_id = '{SEED}'"),
+                &format!("UPDATE pricing_charge_line_version SET {column} = '{token}' WHERE line_version_id = '{SEED_VERSION}'"),
             )
             .await;
         }
         must_succeed(
             &conn,
-            &format!("UPDATE pricing_price SET {column} = NULL WHERE price_id = '{SEED}'"),
+            &format!("UPDATE pricing_charge_line_version SET {column} = NULL WHERE line_version_id = '{SEED_VERSION}'"),
         )
         .await;
         must_violate(
             &conn,
             &format!(
-                "UPDATE pricing_price SET {column} = '{FOREIGN_TOKEN}' WHERE price_id = '{SEED}'"
+                "UPDATE pricing_charge_line_version SET {column} = '{FOREIGN_TOKEN}' WHERE line_version_id = '{SEED_VERSION}'"
             ),
             constraint,
         )
@@ -517,8 +768,8 @@ async fn each_nullable_token_column_holds_only_the_tokens_its_enum_renders() {
         let stored = scalar(
             &conn,
             &format!(
-                "SELECT coalesce({column}, 'null') AS v FROM pricing_price \
-                 WHERE price_id = '{SEED}'"
+                "SELECT coalesce({column}, 'null') AS v FROM pricing_charge_line_version \
+                 WHERE line_version_id = '{SEED_VERSION}'"
             ),
         )
         .await;
@@ -538,51 +789,71 @@ async fn each_quantity_and_money_column_refuses_the_value_just_past_its_bound() 
     /// but one, so a case that only offered `-1` would pass against all three
     /// and a bound copied from the wrong neighbour would look correct. Naming
     /// both sides of the step pins which of the three each column carries.
-    const BOUNDS: [(&str, &str, &str, &str); 9] = [
+    /// **The table is part of the case now.** Four of the nine are quantities —
+    /// shared calculation structure — and moved to `pricing_charge_line_version`
+    /// with their `CHECK`s; the five that are money stayed on `pricing_price`.
+    /// A bound proved against the wrong table would be proved against a column
+    /// that is not there, which `no such column` reports rather than a passing
+    /// constraint.
+    const BOUNDS: [(&str, &str, &str, &str, &str); 9] = [
         (
+            "pricing_price",
             "amount_minor",
             "chk_pricing_price_amount_non_negative",
             "0",
             "-1",
         ),
         (
+            "pricing_charge_line_version",
             "manual_quantity",
-            "chk_pricing_price_manual_quantity",
+            "chk_pricing_charge_line_version_manual_quantity",
             "0",
             "-1",
         ),
         (
+            "pricing_charge_line_version",
             "max_hold_granules",
-            "chk_pricing_price_max_hold_granules",
+            "chk_pricing_charge_line_version_max_hold_granules",
             "1",
             "0",
         ),
         (
+            "pricing_charge_line_version",
             "min_qty_purchase",
-            "chk_pricing_price_min_qty_purchase",
+            "chk_pricing_charge_line_version_min_qty_purchase",
             "0",
             "-1",
         ),
         (
+            "pricing_charge_line_version",
             "min_qty_usage",
-            "chk_pricing_price_min_qty_usage",
+            "chk_pricing_charge_line_version_min_qty_usage",
             "0",
             "-1",
         ),
         (
+            "pricing_price",
             "package_price_minor",
             "chk_pricing_price_package_price",
             "0",
             "-1",
         ),
-        ("package_size", "chk_pricing_price_package_size", "1", "0"),
         (
+            "pricing_charge_line_version",
+            "package_size",
+            "chk_pricing_charge_line_version_package_size",
+            "1",
+            "0",
+        ),
+        (
+            "pricing_price",
             "reserved_rate_nano",
             "chk_pricing_price_reserved_rate_nano",
             "0",
             "-1",
         ),
         (
+            "pricing_price",
             "unit_rate_nano",
             "chk_pricing_price_unit_rate_nano",
             "0",
@@ -597,19 +868,24 @@ async fn each_quantity_and_money_column_refuses_the_value_just_past_its_bound() 
     // case would prove that constraint twice instead of these two once.
     must_succeed(
         &conn,
-        &format!("UPDATE pricing_price SET model_kind = 'package' WHERE price_id = '{SEED}'"),
+        &format!("UPDATE pricing_charge_line_version SET model_kind = 'package' WHERE line_version_id = '{SEED_VERSION}'"),
     )
     .await;
 
-    for (column, constraint, admitted, refused) in BOUNDS {
+    for (table, column, constraint, admitted, refused) in BOUNDS {
+        let row = if table == "pricing_price" {
+            format!("price_id = '{SEED}'")
+        } else {
+            format!("line_version_id = '{SEED_VERSION}'")
+        };
         must_succeed(
             &conn,
-            &format!("UPDATE pricing_price SET {column} = {admitted} WHERE price_id = '{SEED}'"),
+            &format!("UPDATE {table} SET {column} = {admitted} WHERE {row}"),
         )
         .await;
         must_violate(
             &conn,
-            &format!("UPDATE pricing_price SET {column} = {refused} WHERE price_id = '{SEED}'"),
+            &format!("UPDATE {table} SET {column} = {refused} WHERE {row}"),
             constraint,
         )
         .await;
@@ -617,9 +893,7 @@ async fn each_quantity_and_money_column_refuses_the_value_just_past_its_bound() 
         // one of these columns: each is required only for some kinds.
         let stored = scalar(
             &conn,
-            &format!(
-                "SELECT CAST({column} AS TEXT) AS v FROM pricing_price WHERE price_id = '{SEED}'"
-            ),
+            &format!("SELECT CAST({column} AS TEXT) AS v FROM {table} WHERE {row}"),
         )
         .await;
         assert_eq!(
@@ -628,7 +902,7 @@ async fn each_quantity_and_money_column_refuses_the_value_just_past_its_bound() 
         );
         must_succeed(
             &conn,
-            &format!("UPDATE pricing_price SET {column} = NULL WHERE price_id = '{SEED}'"),
+            &format!("UPDATE {table} SET {column} = NULL WHERE {row}"),
         )
         .await;
     }
@@ -664,80 +938,124 @@ async fn the_entity_tag_refuses_the_value_just_past_its_bound() {
 async fn the_cohort_pairing_holds_both_ways_and_the_horizon_needs_its_class() {
     let conn = migrated_db().await;
 
-    // Forward direction of the biconditional: a cohort on a row of a class that
-    // retains nobody. Such a row sits on a key no resolution class ever selects
-    // — published, and never priced from.
+    // **The pair split across two tables, and so did their guards.** The cohort
+    // and the eligibility class are axes of the charge line, so their
+    // biconditional is still a `CHECK` - one table over. The horizon is market
+    // money and stayed on `pricing_price`, where the class it needs is a join
+    // away, so that half is a trigger. Both are proved, because a split that
+    // dropped one would look exactly like this file passing.
+
+    // Forward direction of the biconditional: a cohort on a line of a class that
+    // retains nobody. Such a line sits on a key no resolution class ever selects.
     for (seq, eligibility) in ["all_subscriptions", "new_subscriptions_only"]
         .into_iter()
         .enumerate()
     {
         must_violate(
             &conn,
-            &insert_row(
+            &insert_line_row(
                 &format!("dddd0000-0000-0000-0000-00000000000{seq}"),
                 &format!("F{seq}"),
                 ", price_eligibility, cohort",
                 &format!(", '{eligibility}', '1780000000000'"),
             ),
-            "chk_pricing_price_cohort_eligibility",
+            "chk_pricing_charge_line_cohort_eligibility",
         )
         .await;
     }
 
-    // Reverse direction, and the more damaging one: a grandfathered row with no
+    // Reverse direction, and the more damaging one: a grandfathered line with no
     // generation lands on the `all_subscriptions` successor's own key and, being
     // immutable, occupies the key the next reprice needs.
     must_violate(
         &conn,
-        &insert_row(
+        &insert_line_row(
             "dddd0000-0000-0000-0000-000000000010",
             "F10",
             ", price_eligibility, cohort",
             ", 'existing_grandfathered', 'none'",
         ),
-        "chk_pricing_price_cohort_eligibility",
+        "chk_pricing_charge_line_cohort_eligibility",
     )
     .await;
 
     // The horizon is the grandfathered class's alone: it expires a *retained
-    // generation*, and the other two classes retain nobody. Neither statement
-    // trips the biconditional — both carry `cohort = 'none'` under a
-    // non-grandfathered class — so the constraint under test is the only one
-    // that can be answering.
+    // generation*, and the other two classes retain nobody. The lines below are
+    // legal - they carry `cohort = 'none'` under a non-grandfathered class - so
+    // the only thing that can refuse the price row is the guard under test.
     for (seq, eligibility) in ["all_subscriptions", "new_subscriptions_only"]
         .into_iter()
         .enumerate()
     {
-        must_violate(
+        let line = format!("dddd0000-0000-0000-0000-00000000002{seq}");
+        let market = format!("dddd0000-0000-0000-0000-00000000012{seq}");
+        let version = format!("dddd0000-0000-0000-0000-00000000022{seq}");
+        must_succeed(
             &conn,
-            &insert_row(
-                &format!("dddd0000-0000-0000-0000-00000000002{seq}"),
+            &insert_line_row(
+                &line,
                 &format!("G{seq}"),
-                ", price_eligibility, grandfather_until",
-                &format!(", '{eligibility}', '2027-01-01 00:00:00 +00:00'"),
+                ", price_eligibility",
+                &format!(", '{eligibility}'"),
             ),
-            "chk_pricing_price_grandfather_until",
+        )
+        .await;
+        must_succeed(&conn, &insert_market(&market, &line, "USD", "EU")).await;
+        must_succeed(&conn, &version_on(&version, &line, 0)).await;
+        must_abort(
+            &conn,
+            &price_on(
+                &format!("dddd0000-0000-0000-0000-00000000032{seq}"),
+                &line,
+                &version,
+                &market,
+                ", grandfather_until",
+                ", '2027-01-01 00:00:00 +00:00'",
+            ),
+            "grandfather_until is permitted only on an existing_grandfathered line",
         )
         .await;
     }
 
     // The positive controls, without which every case above would pass against
-    // a pair of constraints that refused every row: the grandfathered class
-    // carries both a generation and a horizon, and the default class carries
-    // neither.
+    // guards that refused every row: the grandfathered class carries both a
+    // generation and a horizon, and the default class carries neither.
+    let kept = "dddd0000-0000-0000-0000-000000000030";
     must_succeed(
         &conn,
-        &insert_row(
-            "dddd0000-0000-0000-0000-000000000030",
+        &insert_line_row(
+            kept,
             "H0",
-            ", price_eligibility, cohort, grandfather_until",
-            ", 'existing_grandfathered', '1780000000000', '2027-01-01 00:00:00 +00:00'",
+            ", price_eligibility, cohort",
+            ", 'existing_grandfathered', '1780000000000'",
         ),
     )
     .await;
     must_succeed(
         &conn,
-        &insert_row(
+        &insert_market("dddd0000-0000-0000-0000-000000000130", kept, "USD", "EU"),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &version_on("dddd0000-0000-0000-0000-000000000230", kept, 0),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &price_on(
+            "dddd0000-0000-0000-0000-000000000330",
+            kept,
+            "dddd0000-0000-0000-0000-000000000230",
+            "dddd0000-0000-0000-0000-000000000130",
+            ", grandfather_until",
+            ", '2027-01-01 00:00:00 +00:00'",
+        ),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &insert_line_row(
             "dddd0000-0000-0000-0000-000000000031",
             "H1",
             ", price_eligibility",
@@ -746,12 +1064,18 @@ async fn the_cohort_pairing_holds_both_ways_and_the_horizon_needs_its_class() {
     )
     .await;
 
-    let landed = scalar(
+    let lines_landed = scalar(
+        &conn,
+        "SELECT CAST(count(*) AS TEXT) AS v FROM pricing_charge_line",
+    )
+    .await;
+    assert_eq!(lines_landed, "4", "only the four legal lines landed");
+    let rows = scalar(
         &conn,
         "SELECT CAST(count(*) AS TEXT) AS v FROM pricing_price",
     )
     .await;
-    assert_eq!(landed, "2", "only the two permitted rows landed");
+    assert_eq!(rows, "1", "and only the horizon on the class that retains");
 }
 
 /// D-372: two units of one SKU are **one** key, and the index that used to make
@@ -769,35 +1093,39 @@ async fn two_units_of_one_sku_are_one_key_and_two_skus_are_two() {
 
     must_succeed(&conn, &insert_line(&LINE)).await;
 
-    // Two published usage rows on one slice, differing in their meter alone.
-    // Under D-196 that was two keys; under D-372 it is one, and the scope-key
-    // index is what says so.
-    let err = exec(
-        &conn,
-        &insert_line(&Line {
-            seq: 1,
-            meter: Some("api_bytes"),
-            ..LINE
-        }),
-    )
-    .await
-    .expect_err("a second unit of one SKU is the same key");
+    // Two usage lines on one slice, differing in nothing the key admits. Under
+    // D-196 a differing meter made them two keys; under D-372 the meter is not
+    // an axis at all - it is content of the line's version - so they are one
+    // key, and `uq_pricing_charge_line_logical_scope` is what says so.
+    let err = exec(&conn, &insert_line(&Line { seq: 1, ..LINE }))
+        .await
+        .expect_err("a second unit of one SKU is the same key");
     let message = err.to_string();
     assert!(
-        message.contains("UNIQUE constraint failed") && message.contains("pricing_price.sku_id"),
-        "the refusal must come from the scope-key index, over an axis list carrying the SKU: \
-         {message}"
+        message.contains("UNIQUE constraint failed")
+            && message.contains("pricing_charge_line.sku_id"),
+        "the refusal must come from the logical-scope index, over an axis list carrying the \
+         SKU: {message}"
     );
 
-    // And a row that disagrees about `charge_kind` is still a different key: the
-    // axis never left, and the pair below is the one the dropped index existed to
-    // refuse. Nothing refuses it now, which is the behaviour change D-372 makes
-    // and this line is its record.
+    // And a line that disagrees about `charge_kind` is still a different key:
+    // the axes that remain in the key still discriminate.
     must_succeed(
         &conn,
         &insert_line(&Line {
             seq: 2,
-            charge_kind: "one_time",
+            charge_kind: "recurring",
+            ..LINE
+        }),
+    )
+    .await;
+
+    // As does the tenth axis, which stayed in the key when the meter left it.
+    must_succeed(
+        &conn,
+        &insert_line(&Line {
+            seq: 3,
+            dimension_key: "region=eu",
             ..LINE
         }),
     )
@@ -805,50 +1133,63 @@ async fn two_units_of_one_sku_are_one_key_and_two_skus_are_two() {
 
     let landed = scalar(
         &conn,
-        "SELECT CAST(count(*) AS TEXT) AS v FROM pricing_price",
+        "SELECT CAST(count(*) AS TEXT) AS v FROM pricing_charge_line",
     )
     .await;
-    assert_eq!(landed, "2", "only the two distinct keys landed");
+    assert_eq!(
+        landed, "3",
+        "the three distinct keys landed and the duplicate did not"
+    );
 }
 
 #[tokio::test]
 async fn neither_free_form_key_axis_admits_the_separator() {
     let conn = migrated_db().await;
+    ensure_line(&conn).await;
 
+    // **Two axes, two tables.** The region is an axis of the market and the
+    // meter is content of the line version, so the pair that used to share one
+    // `CHECK` per column on `pricing_price` is now one `CHECK` on each of two
+    // tables. Both still exist, which is the whole of this case: a separator in
+    // either renders the same canonical key string as a different key.
     must_violate(
         &conn,
-        &insert_row("aaaa0091-0000-0000-0000-000000000001", "eu|west", "", ""),
-        "chk_pricing_price_region_no_separator",
+        &insert_market(
+            "aaaa0091-0000-0000-0000-000000000001",
+            CHARGE_LINE,
+            "USD",
+            "eu|west",
+        ),
+        "chk_pricing_market_price_region_no_separator",
     )
     .await;
-
     must_violate(
         &conn,
-        &insert_row(
-            "aaaa0091-0000-0000-0000-000000000002",
-            "EU",
-            ", meter",
-            ", 'api|calls'",
-        ),
-        "chk_pricing_price_meter_no_separator",
+        &meter_version("aaaa0091-0000-0000-0000-000000000002", 7, "'api|calls'"),
+        "chk_pricing_charge_line_version_meter_no_separator",
     )
     .await;
 
     // The positive controls: a separator-free meter lands, and so does no meter
-    // at all — the arm the nullable constraint's disjunct exists for.
+    // at all - the arm the nullable constraint's disjunct exists for.
     must_succeed(
         &conn,
-        &insert_row(
-            "aaaa0091-0000-0000-0000-000000000003",
-            "EU",
-            ", meter",
-            ", 'api_calls'",
-        ),
+        &meter_version("aaaa0091-0000-0000-0000-000000000003", 8, "'api_calls'"),
     )
     .await;
     must_succeed(
         &conn,
-        &insert_row("aaaa0091-0000-0000-0000-000000000004", "US", "", ""),
+        &meter_version("aaaa0091-0000-0000-0000-000000000004", 9, "NULL"),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &insert_market(
+            "aaaa0091-0000-0000-0000-000000000005",
+            CHARGE_LINE,
+            "USD",
+            "us",
+        ),
     )
     .await;
 }

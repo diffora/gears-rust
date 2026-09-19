@@ -290,6 +290,8 @@ async fn seed(h: &Harness) -> Seeded {
             TENANT,
             NewPriceDraft {
                 price_id,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: scope_key("eu"),
                 content: flat_row(),
                 created_by: SUBMITTER,
@@ -761,6 +763,8 @@ async fn the_regions_compared_are_the_price_rows_own() {
             TENANT,
             NewPriceDraft {
                 price_id: Uuid::from_u128(0xb_0002),
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: scope_key("us"),
                 content: flat_row(),
                 created_by: SUBMITTER,
@@ -1188,6 +1192,8 @@ async fn creating_a_price_row_voids_the_pending_unit() {
             TENANT,
             NewPriceDraft {
                 price_id: Uuid::from_u128(0xb_0003),
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: scope_key("us"),
                 content: flat_row(),
                 created_by: SUBMITTER,

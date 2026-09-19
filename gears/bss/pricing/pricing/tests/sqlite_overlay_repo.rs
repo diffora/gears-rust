@@ -41,6 +41,8 @@ use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt, SecureUp
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
 
+mod common;
+
 const TENANT: Uuid = Uuid::from_u128(0x1111_1111);
 const OVERLAY: Uuid = Uuid::from_u128(0xAAAA_AAAA);
 const LINE_A: Uuid = Uuid::from_u128(0xCCCC_0001);
@@ -1345,7 +1347,7 @@ async fn seed_plan(provider: &DBProvider<DbError>, plan_id: PlanId, revision: i6
         tenant_id: Set(TENANT),
         lifecycle_state: Set(state.to_owned()),
         // D-372: `pricing_plan.sku_id` is `NOT NULL` since
-        // `m20260916_000044_price_row_sku`.
+        // the fresh-install DDL.
         sku_id: Set(Uuid::from_u128(5)),
         created_by: Set(Uuid::from_u128(0x4444)),
         created_at_utc: Set(utc_ymd_hms(2099, 1, 1, 0, 0, 0)),
@@ -1970,16 +1972,33 @@ async fn overlay_sku_targets_come_from_published_resource_rows() {
     seed_plan(&provider, plan(1), 0, "published").await;
     let resource = Uuid::from_u128(0x372);
     let conn = provider.conn().expect("connection");
+    let seeded_graph = common::seed_charge_graph(
+        &conn,
+        &AccessScope::allow_all(),
+        &common::ChargeGraphSeed {
+            tenant_id: TENANT,
+            plan_id: plan(1).get(),
+            phase: Uuid::from_u128(0xf1),
+            sku_id: resource,
+            charge_kind: "usage".to_owned(),
+            currency: "USD".to_owned(),
+            region: "eu".to_owned(),
+            lifecycle_state: "published".to_owned(),
+            meter: Some("GB-hour".to_owned()),
+            created_by: Uuid::from_u128(0x4444),
+            created_at_utc: utc_ymd_hms(2099, 1, 1, 0, 0, 0),
+            ..Default::default()
+        },
+    )
+    .await;
     let row = price::ActiveModel {
+        plan_revision: Set(1),
+        charge_line_id: Set(seeded_graph.charge_line_id),
+        line_version_id: Set(seeded_graph.line_version_id),
+        market_price_id: Set(seeded_graph.market_price_id),
         price_id: Set(Uuid::from_u128(0x3721)),
         tenant_id: Set(TENANT),
         plan_id: Set(plan(1).get()),
-        sku_id: Set(resource),
-        currency: Set("USD".to_owned()),
-        region: Set("eu".to_owned()),
-        phase: Set(Uuid::from_u128(0xf1)),
-        charge_kind: Set("usage".to_owned()),
-        meter: Set(Some("GB-hour".to_owned())),
         lifecycle_state: Set("published".to_owned()),
         created_by: Set(Uuid::from_u128(0x4444)),
         created_at_utc: Set(utc_ymd_hms(2099, 1, 1, 0, 0, 0)),

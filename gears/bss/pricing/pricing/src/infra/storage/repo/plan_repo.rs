@@ -2152,7 +2152,7 @@ fn revision_model(
         tenant_id: Set(tenant_id),
         sku_id: Set(revision.sku_id),
         plan_tier: Set(revision.plan_tier.clone()),
-            plan_name: Set(revision.plan_name.clone()),
+        plan_name: Set(revision.plan_name.clone()),
         frequency: Set(interval.token),
         custom_interval_n: Set(interval.n),
         custom_interval_unit: Set(interval.unit),

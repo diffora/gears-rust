@@ -36,7 +36,7 @@ use rest_support::{
     Harness, approval_rows, audit_rows, body_json, code_in, denial_reason, etag_of, location_of,
     not_found_code, plan_count, plan_row_version, plan_state, problem_code, problem_family,
     refused_by, request, seed_current_plan, seed_draft_plan, seed_foreign_plan, seed_price,
-    seed_publishable_plan, violation_for, with_headers,
+    seed_price_keyed, seed_publishable_plan, violation_for, with_headers,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -2456,13 +2456,20 @@ async fn seed_plan_with_a_row_on_its_phase(harness: &Harness, plan_id: Uuid) -> 
     seed_draft_plan(harness, plan_id).await;
     seed_price(harness, plan_id, "eu").await;
 
+    // **Read the tag, do not assume `0-0`.** Pricing a plan is a plan-plane
+    // mutation now — `charge_line_repo::ensure_draft_graph` bumps the containing
+    // revision, because a charge line is authoring content of the plan — so the
+    // row seeded one line up has already moved the tag this `PATCH` presents.
+    let seeded = rest_support::plan_row_version(harness, plan_id, 0)
+        .await
+        .expect("the seeded draft revision is there");
     let attached = harness
         .allowed()
         .send(with_headers(
             "PATCH",
             &plan_path(plan_id),
             Some(phase_chain(rest_support::seeded_phase().get())),
-            &[("if-match", "\"0-0\"")],
+            &[("if-match", format!("\"0-{seeded}\"").as_str())],
         ))
         .await;
     assert_eq!(
@@ -2470,7 +2477,7 @@ async fn seed_plan_with_a_row_on_its_phase(harness: &Harness, plan_id: Uuid) -> 
         StatusCode::OK,
         "attaching the phase a stranded row names is the repair, not the fault"
     );
-    1
+    seeded + 1
 }
 
 /// One phases body over a chain that keeps `seeded_phase` and prepends a trial.

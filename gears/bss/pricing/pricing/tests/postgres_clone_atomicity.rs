@@ -338,6 +338,8 @@ async fn seed(provider: &DBProvider<DbError>) {
             TENANT,
             NewPriceDraft {
                 price_id: SOURCE_ROW,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: source_key(),
                 content: flat_row(),
                 created_by: ACTOR,

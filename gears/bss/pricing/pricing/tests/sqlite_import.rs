@@ -145,6 +145,8 @@ async fn publish_for(
             tenant,
             NewPriceDraft {
                 price_id,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key,
                 content: content(amount),
                 created_by: ACTOR,
@@ -243,6 +245,8 @@ async fn publish_usage(
             TENANT,
             NewPriceDraft {
                 price_id,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key,
                 content: usage_content(meter, amount),
                 created_by: ACTOR,
@@ -415,6 +419,8 @@ async fn a_draft_row_on_the_key_is_not_a_published_row() {
             TENANT,
             NewPriceDraft {
                 price_id: Uuid::now_v7(),
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: key("eu"),
                 content: content(9_900),
                 created_by: ACTOR,

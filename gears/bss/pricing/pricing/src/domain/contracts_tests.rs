@@ -165,11 +165,7 @@ fn a_recurring_row_stating_its_timing_passes() {
 /// is not the author's to give.
 #[test]
 fn a_non_recurring_row_without_billing_timing_is_not_this_rules_business() {
-    for kind in [
-        ChargeKind::Usage,
-        ChargeKind::OneTime,
-        ChargeKind::OneTime,
-    ] {
+    for kind in [ChargeKind::Usage, ChargeKind::OneTime, ChargeKind::OneTime] {
         let shape = shape_of(vec![row(
             0xb3,
             kind,
@@ -333,11 +329,7 @@ fn a_recurring_row_stating_the_contract_passes() {
 /// the author's to give — the same boundary `inst-bt-required` draws.
 #[test]
 fn a_non_recurring_row_owes_no_proration_contract() {
-    for kind in [
-        ChargeKind::Usage,
-        ChargeKind::OneTime,
-        ChargeKind::OneTime,
-    ] {
+    for kind in [ChargeKind::Usage, ChargeKind::OneTime, ChargeKind::OneTime] {
         let shape = shape_of(vec![row(
             0xc3,
             kind,

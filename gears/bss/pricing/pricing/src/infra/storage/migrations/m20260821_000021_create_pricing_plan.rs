@@ -127,14 +127,14 @@ const PG_UP_STATEMENTS: &[&str] = &[
             custom_interval_unit         text,
             entitlement_grants           jsonb,
             frequency                    text,
-            invoice_grouping_key         text,
+            descriptor_ext               jsonb       NOT NULL DEFAULT '{}'::jsonb,
             lifecycle_state              text        NOT NULL,
             plan_name                    text,
             plan_tier                    text,
             plan_tier_override           boolean     NOT NULL DEFAULT false,
             purchase_max_qty             bigint,
             purchase_min_qty             bigint,
-            sku_id                       uuid,
+            sku_id                       uuid        NOT NULL,
             usage_counter_on_plan_change text,
             created_at_utc               timestamptz NOT NULL DEFAULT now(),
             created_by                   uuid        NOT NULL,
@@ -198,7 +198,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
           OR NEW.plan_tier_override   IS DISTINCT FROM OLD.plan_tier_override
           OR NEW.purchase_min_qty     IS DISTINCT FROM OLD.purchase_min_qty
           OR NEW.purchase_max_qty     IS DISTINCT FROM OLD.purchase_max_qty
-          OR NEW.invoice_grouping_key IS DISTINCT FROM OLD.invoice_grouping_key
+          OR NEW.descriptor_ext       IS DISTINCT FROM OLD.descriptor_ext
           OR NEW.available_from       IS DISTINCT FROM OLD.available_from
           OR NEW.available_to         IS DISTINCT FROM OLD.available_to
           OR NEW.created_by           IS DISTINCT FROM OLD.created_by
@@ -246,14 +246,14 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             custom_interval_unit         text,
             entitlement_grants           text,
             frequency                    text,
-            invoice_grouping_key         text,
+            descriptor_ext               text    NOT NULL DEFAULT '{}',
             lifecycle_state              text    NOT NULL,
             plan_name                    text,
             plan_tier                    text,
             plan_tier_override           boolean NOT NULL DEFAULT 0,
             purchase_max_qty             bigint,
             purchase_min_qty             bigint,
-            sku_id                       text,
+            sku_id                       text    NOT NULL,
             usage_counter_on_plan_change text,
             created_at_utc               text    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now') || '+00:00'),
             created_by                   text    NOT NULL,
@@ -276,7 +276,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
     "CREATE UNIQUE INDEX uq_pricing_plan_open_draft ON pricing_plan (plan_id) WHERE lifecycle_state = 'draft'",
     "CREATE TRIGGER trg_pricing_plan_draft_flip_whitelist BEFORE UPDATE ON pricing_plan FOR EACH ROW WHEN OLD.lifecycle_state = 'draft' AND NEW.lifecycle_state NOT IN ('draft','published','abandoned') BEGIN SELECT RAISE(ABORT, 'pricing_plan: lifecycle_state transition is not a sanctioned flip'); END",
     "CREATE TRIGGER trg_pricing_plan_flip_whitelist BEFORE UPDATE ON pricing_plan FOR EACH ROW WHEN OLD.lifecycle_state <> 'draft' AND NOT (OLD.lifecycle_state = 'published' AND NEW.lifecycle_state IN ('superseded','retired')) BEGIN SELECT RAISE(ABORT, 'pricing_plan: lifecycle_state transition is not a sanctioned flip'); END",
-    "CREATE TRIGGER trg_pricing_plan_frozen_columns BEFORE UPDATE ON pricing_plan FOR EACH ROW WHEN OLD.lifecycle_state <> 'draft' AND (NEW.plan_id IS NOT OLD.plan_id OR NEW.revision IS NOT OLD.revision OR NEW.tenant_id IS NOT OLD.tenant_id OR NEW.sku_id IS NOT OLD.sku_id OR NEW.plan_tier IS NOT OLD.plan_tier OR NEW.frequency IS NOT OLD.frequency OR NEW.custom_interval_n IS NOT OLD.custom_interval_n OR NEW.custom_interval_unit IS NOT OLD.custom_interval_unit OR NEW.plan_tier_override IS NOT OLD.plan_tier_override OR NEW.purchase_min_qty IS NOT OLD.purchase_min_qty OR NEW.purchase_max_qty IS NOT OLD.purchase_max_qty OR NEW.invoice_grouping_key IS NOT OLD.invoice_grouping_key OR NEW.available_from IS NOT OLD.available_from OR NEW.available_to IS NOT OLD.available_to OR NEW.created_by IS NOT OLD.created_by OR NEW.created_at_utc IS NOT OLD.created_at_utc OR NEW.allowed_change_targets IS NOT OLD.allowed_change_targets OR NEW.comparability_rank IS NOT OLD.comparability_rank OR NEW.usage_counter_on_plan_change IS NOT OLD.usage_counter_on_plan_change OR NEW.entitlement_grants IS NOT OLD.entitlement_grants OR NEW.cloned_from IS NOT OLD.cloned_from OR NEW.plan_name IS NOT OLD.plan_name OR NEW.row_version IS NOT OLD.row_version) BEGIN SELECT RAISE(ABORT, 'pricing_plan: revision is frozen; only a sanctioned lifecycle_state flip is permitted'); END",
+    "CREATE TRIGGER trg_pricing_plan_frozen_columns BEFORE UPDATE ON pricing_plan FOR EACH ROW WHEN OLD.lifecycle_state <> 'draft' AND (NEW.plan_id IS NOT OLD.plan_id OR NEW.revision IS NOT OLD.revision OR NEW.tenant_id IS NOT OLD.tenant_id OR NEW.sku_id IS NOT OLD.sku_id OR NEW.plan_tier IS NOT OLD.plan_tier OR NEW.frequency IS NOT OLD.frequency OR NEW.custom_interval_n IS NOT OLD.custom_interval_n OR NEW.custom_interval_unit IS NOT OLD.custom_interval_unit OR NEW.plan_tier_override IS NOT OLD.plan_tier_override OR NEW.purchase_min_qty IS NOT OLD.purchase_min_qty OR NEW.purchase_max_qty IS NOT OLD.purchase_max_qty OR NEW.descriptor_ext IS NOT OLD.descriptor_ext OR NEW.available_from IS NOT OLD.available_from OR NEW.available_to IS NOT OLD.available_to OR NEW.created_by IS NOT OLD.created_by OR NEW.created_at_utc IS NOT OLD.created_at_utc OR NEW.allowed_change_targets IS NOT OLD.allowed_change_targets OR NEW.comparability_rank IS NOT OLD.comparability_rank OR NEW.usage_counter_on_plan_change IS NOT OLD.usage_counter_on_plan_change OR NEW.entitlement_grants IS NOT OLD.entitlement_grants OR NEW.cloned_from IS NOT OLD.cloned_from OR NEW.plan_name IS NOT OLD.plan_name OR NEW.row_version IS NOT OLD.row_version) BEGIN SELECT RAISE(ABORT, 'pricing_plan: revision is frozen; only a sanctioned lifecycle_state flip is permitted'); END",
     "CREATE TRIGGER trg_pricing_plan_no_delete BEFORE DELETE ON pricing_plan FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_plan: DELETE of a revision is not permitted; a discarded draft revision is abandoned'); END",
 ];
 

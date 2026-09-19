@@ -59,6 +59,8 @@ async fn seed_priced_plan(harness: &Harness, plan_id: Uuid, case_seq: u128) -> S
             harness.tenant,
             NewPriceDraft {
                 price_id,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: publishable_scope_key(plan, shape.phase, "eu"),
                 content: publishable_row(),
                 created_by: rest_support::SEED_ACTOR,
@@ -702,7 +704,7 @@ async fn seed_published_revision_naming(harness: &Harness, plan_id: Uuid, gl_cod
         tenant_id: Set(harness.tenant),
         lifecycle_state: Set(LifecycleState::Draft.as_str().to_owned()),
         // D-372: `pricing_plan.sku_id` is `NOT NULL` since
-        // `m20260916_000044_price_row_sku`.
+        // the fresh-install DDL.
         sku_id: Set(Uuid::from_u128(5)),
         created_by: Set(rest_support::SEED_ACTOR),
         created_at_utc: Set(rest_support::at(9)),
@@ -716,20 +718,37 @@ async fn seed_published_revision_naming(harness: &Harness, plan_id: Uuid, gl_cod
         .await
         .expect("seed the plan revision");
 
+    let seeded_graph = common::seed_charge_graph(
+        &conn,
+        &AccessScope::allow_all(),
+        &common::ChargeGraphSeed {
+            tenant_id: harness.tenant,
+            plan_id,
+            phase: Uuid::from_u128(0xface),
+            sku_id: Uuid::from_u128(5),
+            price_eligibility: "all_subscriptions".to_owned(),
+            charge_kind: "recurring".to_owned(),
+            currency: "USD".to_owned(),
+            region: "eu".to_owned(),
+            lifecycle_state: "published".to_owned(),
+            gl_code_ref: Some(gl_code.to_owned()),
+            resolved_invoice_line_template: Some("{plan}".to_owned()),
+            resolved_gl_code: Some(gl_code.to_owned()),
+            created_by: rest_support::SEED_ACTOR,
+            created_at_utc: rest_support::at(9),
+            ..Default::default()
+        },
+    )
+    .await;
     let descriptors = price::ActiveModel {
+        plan_revision: Set(1),
+        charge_line_id: Set(seeded_graph.charge_line_id),
+        line_version_id: Set(seeded_graph.line_version_id),
+        market_price_id: Set(seeded_graph.market_price_id),
         price_id: Set(Uuid::now_v7()),
         plan_id: Set(plan_id),
         tenant_id: Set(harness.tenant),
-        sku_id: Set(Uuid::from_u128(5)),
-        phase: Set(Uuid::from_u128(0xface)),
-        currency: Set("USD".to_owned()),
-        region: Set("eu".to_owned()),
-        charge_kind: Set("recurring".to_owned()),
-        price_eligibility: Set("all_subscriptions".to_owned()),
         lifecycle_state: Set("published".to_owned()),
-        gl_code_ref: Set(Some(gl_code.to_owned())),
-        resolved_gl_code: Set(Some(gl_code.to_owned())),
-        resolved_invoice_line_template: Set(Some("{plan}".to_owned())),
         created_by: Set(rest_support::SEED_ACTOR),
         created_at_utc: Set(rest_support::at(9)),
         ..Default::default()

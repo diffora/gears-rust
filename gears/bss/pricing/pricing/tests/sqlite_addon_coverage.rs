@@ -25,6 +25,8 @@ use bss_pricing::infra::storage::entity::{plan, price};
 use bss_pricing::infra::storage::migrations::Migrator;
 use time::OffsetDateTime;
 
+mod common;
+
 const TENANT: Uuid = Uuid::from_u128(0x1111_1111);
 const OTHER_TENANT: Uuid = Uuid::from_u128(0x9999_9999);
 const SKU: Uuid = Uuid::from_u128(0x05c0_0001);
@@ -88,26 +90,42 @@ async fn seed_row(provider: &DBProvider<DbError>, spec: RowSpec<'_>) {
     } = spec;
     let conn = provider.conn().expect("conn");
     let grandfathered = eligibility == "existing_grandfathered";
+    let seeded_graph = common::seed_charge_graph(
+        &conn,
+        &AccessScope::allow_all(),
+        &common::ChargeGraphSeed {
+            tenant_id: tenant,
+            plan_id: Uuid::from_u128(plan_id),
+            phase: Uuid::from_u128(0xf1),
+            sku_id: Uuid::from_u128(5),
+            price_overlay: "base".to_owned(),
+            price_eligibility: eligibility.to_owned(),
+            charge_kind: "recurring".to_owned(),
+            // The biconditional `chk_pricing_price_cohort_eligibility`: a cohort
+            // other than `none` iff the row is grandfathered.
+            cohort: if grandfathered {
+                "1893456000000".to_owned()
+            } else {
+                "none".to_owned()
+            },
+            dimension_key: String::new(),
+            currency: currency.to_owned(),
+            region: region.to_owned(),
+            lifecycle_state: state.to_owned(),
+            created_by: Uuid::from_u128(0x4444),
+            created_at_utc: now(),
+            ..Default::default()
+        },
+    )
+    .await;
     let row = price::ActiveModel {
+        plan_revision: Set(1),
+        charge_line_id: Set(seeded_graph.charge_line_id),
+        line_version_id: Set(seeded_graph.line_version_id),
+        market_price_id: Set(seeded_graph.market_price_id),
         price_id: Set(Uuid::from_u128(price_id)),
         tenant_id: Set(tenant),
         plan_id: Set(Uuid::from_u128(plan_id)),
-        currency: Set(currency.to_owned()),
-        region: Set(region.to_owned()),
-        price_overlay: Set("base".to_owned()),
-        phase: Set(Uuid::from_u128(0xf1)),
-        price_eligibility: Set(eligibility.to_owned()),
-        charge_kind: Set("recurring".to_owned()),
-        // The biconditional `chk_pricing_price_cohort_eligibility`: a cohort
-        // other than `none` iff the row is grandfathered.
-        cohort: Set(if grandfathered {
-            "1893456000000".to_owned()
-        } else {
-            "none".to_owned()
-        }),
-        dimension_key: Set(String::new()),
-        // D-372's ninth axis, `NOT NULL` since `m20260916_000044_price_row_sku`.
-        sku_id: Set(Uuid::from_u128(5)),
         tax_inclusive: Set(false),
         lifecycle_state: Set(state.to_owned()),
         created_by: Set(Uuid::from_u128(0x4444)),

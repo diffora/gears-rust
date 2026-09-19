@@ -262,7 +262,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
             magnitude_kind   text        NOT NULL,
             plan_id          uuid,
             price_overlay_id uuid        NOT NULL,
-            target_sku       text,
+            target_sku       uuid,
             CONSTRAINT chk_pricing_price_overlay_line_adjustment_kind CHECK (adjustment_kind IN ('markup', 'discount', 'fixed')),
             CONSTRAINT chk_pricing_price_overlay_line_cohort_needs_plan CHECK (cohort IS NULL OR plan_id IS NOT NULL),
             CONSTRAINT chk_pricing_price_overlay_line_discount_ceiling CHECK (adjustment_kind <> 'discount' OR adjustment_value IS NULL OR adjustment_value <= 10000),
@@ -272,13 +272,13 @@ const PG_UP_STATEMENTS: &[&str] = &[
             CONSTRAINT chk_pricing_price_overlay_line_magnitude_positive CHECK (adjustment_value IS NULL OR adjustment_value > 0),
             CONSTRAINT chk_pricing_price_overlay_line_plan_id_not_nil CHECK (plan_id IS NULL OR plan_id <> '00000000-0000-0000-0000-000000000000'),
             CONSTRAINT chk_pricing_price_overlay_line_sku_needs_plan CHECK (target_sku IS NULL OR plan_id IS NOT NULL),
-            CONSTRAINT chk_pricing_price_overlay_line_target_sku_present CHECK (target_sku IS NULL OR length(btrim(target_sku, chr(9) || chr(10) || chr(11) || chr(12) || chr(13) || chr(32))) > 0),
+            CONSTRAINT chk_pricing_price_overlay_line_target_sku_not_nil CHECK (target_sku IS NULL OR target_sku <> '00000000-0000-0000-0000-000000000000'::uuid),
             CONSTRAINT fk_pricing_price_overlay_line_overlay FOREIGN KEY (price_overlay_id, overlay_revision) REFERENCES bss.pricing_price_overlay(price_overlay_id, revision),
             CONSTRAINT pricing_price_overlay_line_pkey PRIMARY KEY (tenant_id, overlay_revision, line_id)
         )",
     "CREATE INDEX idx_pricing_price_overlay_line_plan ON bss.pricing_price_overlay_line USING btree (tenant_id, plan_id)",
     "CREATE INDEX idx_pricing_price_overlay_line_revision ON bss.pricing_price_overlay_line USING btree (tenant_id, price_overlay_id, overlay_revision)",
-    "CREATE UNIQUE INDEX uq_pricing_price_overlay_line_key ON bss.pricing_price_overlay_line USING btree (price_overlay_id, overlay_revision, COALESCE(plan_id, '00000000-0000-0000-0000-000000000000'::uuid), COALESCE(target_sku, ''::text), COALESCE(cohort, '-infinity'::timestamp with time zone))",
+    "CREATE UNIQUE INDEX uq_pricing_price_overlay_line_key ON bss.pricing_price_overlay_line USING btree (price_overlay_id, overlay_revision, COALESCE(plan_id, '00000000-0000-0000-0000-000000000000'::uuid), COALESCE(target_sku, '00000000-0000-0000-0000-000000000000'::uuid), COALESCE(cohort, '-infinity'::timestamp with time zone))",
     "CREATE OR REPLACE FUNCTION bss.pricing_price_overlay_line_append_only() RETURNS trigger AS $$
         DECLARE
           parent_state  text;
@@ -356,12 +356,12 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             CONSTRAINT chk_pricing_price_overlay_line_magnitude_positive CHECK (adjustment_value IS NULL OR adjustment_value > 0),
             CONSTRAINT chk_pricing_price_overlay_line_plan_id_not_nil CHECK (plan_id IS NULL OR plan_id <> '00000000-0000-0000-0000-000000000000'),
             CONSTRAINT chk_pricing_price_overlay_line_sku_needs_plan CHECK (target_sku IS NULL OR plan_id IS NOT NULL),
-            CONSTRAINT chk_pricing_price_overlay_line_target_sku_present CHECK (target_sku IS NULL OR length(trim(target_sku, char(9,10,11,12,13,32))) > 0),
+            CONSTRAINT chk_pricing_price_overlay_line_target_sku_not_nil CHECK (target_sku IS NULL OR target_sku <> '00000000-0000-0000-0000-000000000000'),
             CONSTRAINT fk_pricing_price_overlay_line_overlay FOREIGN KEY (price_overlay_id, overlay_revision) REFERENCES pricing_price_overlay(price_overlay_id, revision)
         )",
     "CREATE INDEX idx_pricing_price_overlay_line_plan ON pricing_price_overlay_line (tenant_id, plan_id)",
     "CREATE INDEX idx_pricing_price_overlay_line_revision ON pricing_price_overlay_line (tenant_id, price_overlay_id, overlay_revision)",
-    "CREATE UNIQUE INDEX uq_pricing_price_overlay_line_key ON pricing_price_overlay_line (price_overlay_id, overlay_revision, COALESCE(plan_id, '00000000-0000-0000-0000-000000000000'), COALESCE(target_sku, ''), COALESCE(cohort, ''))",
+    "CREATE UNIQUE INDEX uq_pricing_price_overlay_line_key ON pricing_price_overlay_line (price_overlay_id, overlay_revision, COALESCE(plan_id, '00000000-0000-0000-0000-000000000000'), COALESCE(target_sku, '00000000-0000-0000-0000-000000000000'), COALESCE(cohort, ''))",
     "CREATE TRIGGER trg_pricing_price_overlay_line_no_delete BEFORE DELETE ON pricing_price_overlay_line FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_price_overlay_line: DELETE of a line under a non-draft overlay revision is not permitted') WHERE NOT EXISTS (SELECT 1 FROM pricing_price_overlay o WHERE o.price_overlay_id = OLD.price_overlay_id AND o.revision = OLD.overlay_revision AND o.lifecycle_state = 'draft'); END",
     "CREATE TRIGGER trg_pricing_price_overlay_line_no_insert BEFORE INSERT ON pricing_price_overlay_line FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_price_overlay_line: INSERT of a line under a non-draft overlay revision is not permitted') WHERE NOT EXISTS (SELECT 1 FROM pricing_price_overlay o WHERE o.price_overlay_id = NEW.price_overlay_id AND o.revision = NEW.overlay_revision AND o.lifecycle_state = 'draft'); END",
     "CREATE TRIGGER trg_pricing_price_overlay_line_no_update BEFORE UPDATE ON pricing_price_overlay_line FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_price_overlay_line: UPDATE of a line under a non-draft overlay revision is not permitted') WHERE NOT EXISTS (SELECT 1 FROM pricing_price_overlay o WHERE o.price_overlay_id = OLD.price_overlay_id AND o.revision = OLD.overlay_revision AND o.lifecycle_state = 'draft') OR NOT EXISTS (SELECT 1 FROM pricing_price_overlay o WHERE o.price_overlay_id = NEW.price_overlay_id AND o.revision = NEW.overlay_revision AND o.lifecycle_state = 'draft'); END",

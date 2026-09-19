@@ -219,6 +219,8 @@ async fn with_a_default_set_a_plan_whose_rows_have_no_ref_publishes() {
             harness.tenant,
             NewPriceDraft {
                 price_id,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: publishable_scope_key(plan, shape.phase, "eu"),
                 content: PriceContent {
                     rounding_policy_ref: None,
@@ -295,6 +297,8 @@ async fn an_undeclared_rounding_reference_is_refused_and_declaring_it_lets_the_p
             harness.tenant,
             NewPriceDraft {
                 price_id,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: publishable_scope_key(plan, shape.phase, "eu"),
                 content: PriceContent {
                     rounding_policy_ref: Some("half_even".to_owned()),
@@ -353,6 +357,8 @@ async fn a_tenant_with_no_declared_vocabulary_publishes_any_reference() {
             harness.tenant,
             NewPriceDraft {
                 price_id,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: publishable_scope_key(plan, shape.phase, "eu"),
                 content: PriceContent {
                     rounding_policy_ref: Some("anything_at_all".to_owned()),

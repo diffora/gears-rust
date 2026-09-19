@@ -72,11 +72,12 @@ use sea_orm_migration::prelude::*;
 #[derive(DeriveMigrationName)]
 pub struct Migration;
 
-const PG_UP_STATEMENTS: &[&str] = &[
-    "CREATE TABLE bss.pricing_policy_object (
+const PG_UP_STATEMENTS: &[&str] = &[r#"CREATE TABLE bss.pricing_policy_object (
             tenant_id                       uuid        NOT NULL,
             additional_required_descriptors jsonb       NOT NULL DEFAULT '[]'::jsonb,
             default_rounding_policy_ref     text,
+            default_gl_code_ref             text,
+            default_line_templates          jsonb       NOT NULL DEFAULT '{"recurring":"{sku} - {period}","usage":"{sku}, {unit}","one_time":"{sku}"}'::jsonb,
             enforced_migration_notice_days  integer     NOT NULL DEFAULT 60,
             max_custom_interval_days        integer,
             max_custom_interval_months      integer,
@@ -91,17 +92,24 @@ const PG_UP_STATEMENTS: &[&str] = &[
             CONSTRAINT chk_pricing_policy_object_price_row_cap CHECK (max_price_rows_per_plan IS NULL OR max_price_rows_per_plan > 0),
             CONSTRAINT chk_pricing_policy_object_tax_display_policy CHECK (tax_display_policy_mode IN ('fail_closed', 'warn')),
             CONSTRAINT chk_pricing_policy_object_tier_band_cap CHECK (max_tier_bands_per_row IS NULL OR max_tier_bands_per_row > 0),
+            CONSTRAINT chk_pricing_policy_line_templates CHECK (
+                jsonb_typeof(default_line_templates) = 'object'
+                AND default_line_templates - ARRAY['recurring','usage','one_time'] = '{}'::jsonb
+                AND COALESCE(jsonb_typeof(default_line_templates->'recurring') = 'string', false)
+                AND COALESCE(jsonb_typeof(default_line_templates->'usage') = 'string', false)
+                AND COALESCE(jsonb_typeof(default_line_templates->'one_time') = 'string', false)
+            ),
             CONSTRAINT pricing_policy_object_pkey PRIMARY KEY (tenant_id)
-        )",
-];
+        )"#];
 
 const PG_DOWN_STATEMENTS: &[&str] = &["DROP TABLE IF EXISTS bss.pricing_policy_object"];
 
-const SQLITE_UP_STATEMENTS: &[&str] = &[
-    "CREATE TABLE pricing_policy_object (
+const SQLITE_UP_STATEMENTS: &[&str] = &[r#"CREATE TABLE pricing_policy_object (
             tenant_id                       text    NOT NULL,
             additional_required_descriptors text    NOT NULL DEFAULT '[]',
             default_rounding_policy_ref     text,
+            default_gl_code_ref             text,
+            default_line_templates          text    NOT NULL DEFAULT '{"recurring":"{sku} - {period}","usage":"{sku}, {unit}","one_time":"{sku}"}',
             enforced_migration_notice_days  integer NOT NULL DEFAULT 60,
             max_custom_interval_days        integer,
             max_custom_interval_months      integer,
@@ -116,9 +124,16 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             CONSTRAINT chk_pricing_policy_object_notice_floor CHECK (enforced_migration_notice_days >= 60),
             CONSTRAINT chk_pricing_policy_object_price_row_cap CHECK (max_price_rows_per_plan IS NULL OR max_price_rows_per_plan > 0),
             CONSTRAINT chk_pricing_policy_object_tax_display_policy CHECK (tax_display_policy_mode IN ('fail_closed', 'warn')),
-            CONSTRAINT chk_pricing_policy_object_tier_band_cap CHECK (max_tier_bands_per_row IS NULL OR max_tier_bands_per_row > 0)
-        )",
-];
+            CONSTRAINT chk_pricing_policy_object_tier_band_cap CHECK (max_tier_bands_per_row IS NULL OR max_tier_bands_per_row > 0),
+            CONSTRAINT chk_pricing_policy_line_templates CHECK (
+                json_valid(default_line_templates)
+                AND json_type(default_line_templates) = 'object'
+                AND json_remove(default_line_templates, '$.recurring', '$.usage', '$.one_time') = '{}'
+                AND COALESCE(json_type(default_line_templates, '$.recurring') = 'text', 0)
+                AND COALESCE(json_type(default_line_templates, '$.usage') = 'text', 0)
+                AND COALESCE(json_type(default_line_templates, '$.one_time') = 'text', 0)
+            )
+        )"#];
 
 const SQLITE_DOWN_STATEMENTS: &[&str] = &["DROP TABLE IF EXISTS pricing_policy_object"];
 

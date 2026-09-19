@@ -187,6 +187,8 @@ async fn seed(provider: &DBProvider<DbError>) {
             TENANT,
             NewPriceDraft {
                 price_id: LATE,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: key("JPY"),
                 content: PriceContent {
                     row,
@@ -229,19 +231,35 @@ async fn seed_row(
     authored_at: OffsetDateTime,
 ) {
     let conn = provider.conn().expect("scoped connection");
+    let seeded_graph = common::seed_charge_graph(
+        &conn,
+        &AccessScope::for_tenant(tenant_id),
+        &common::ChargeGraphSeed {
+            tenant_id,
+            plan_id: PLAN,
+            phase: PHASE,
+            sku_id: SKU,
+            charge_kind: "recurring".to_owned(),
+            currency: currency.to_owned(),
+            region: "EU".to_owned(),
+            lifecycle_state: lifecycle_state.to_owned(),
+            model_kind: Some("flat".to_owned()),
+            created_by: SEEDING_ACTOR,
+            created_at_utc: authored_at,
+            ..Default::default()
+        },
+    )
+    .await;
     let row = price::ActiveModel {
+        plan_revision: Set(1),
+        charge_line_id: Set(seeded_graph.charge_line_id),
+        line_version_id: Set(seeded_graph.line_version_id),
+        market_price_id: Set(seeded_graph.market_price_id),
         price_id: Set(price_id),
         tenant_id: Set(tenant_id),
         plan_id: Set(PLAN),
         // D-372's ninth axis: `pricing_price.sku_id` is `NOT NULL` since
-        // `m20260916_000044_price_row_sku`, so a seeded row names a SKU.
-        sku_id: Set(SKU),
-        currency: Set(currency.to_owned()),
-        region: Set("EU".to_owned()),
-        phase: Set(PHASE),
-        charge_kind: Set("recurring".to_owned()),
         amount_minor: Set(Some(1_000)),
-        model_kind: Set(Some("flat".to_owned())),
         lifecycle_state: Set(lifecycle_state.to_owned()),
         created_by: Set(SEEDING_ACTOR),
         created_at_utc: Set(authored_at),

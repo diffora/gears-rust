@@ -60,7 +60,9 @@ use bss_pricing::domain::scope_key::{
     PlanId, PriceEligibility, Region, SkuId,
 };
 use bss_pricing::domain::tax_display::{RegionReadiness, RegionTaxReadiness};
-use bss_pricing::infra::storage::entity::{audit_log, price, price_tier_band, price_window};
+use bss_pricing::infra::storage::entity::{
+    audit_log, charge_line_version, charge_tier, price, price_tier_band, price_window,
+};
 use bss_pricing::infra::storage::migrations::Migrator;
 use bss_pricing::infra::storage::repo::price_repo::aggregate_authoring_rows_for_plans;
 use bss_pricing::infra::storage::repo::{NewPriceDraft, PriceRepo};
@@ -68,12 +70,15 @@ use bss_pricing::infra::storage::{RepoError, repo_failure};
 use time::OffsetDateTime;
 
 use sea_orm::ActiveValue::Set;
+use sea_orm::ExprTrait;
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, Condition, EntityTrait};
 use sea_orm_migration::MigratorTrait;
 use toolkit::api::canonical_prelude::CanonicalError;
 use toolkit_db::migration_runner::run_migrations_for_testing;
-use toolkit_db::secure::{AccessScope, SecureEntityExt, SecureInsertExt, SecureUpdateExt};
+use toolkit_db::secure::{
+    AccessScope, SecureDeleteExt, SecureEntityExt, SecureInsertExt, SecureUpdateExt,
+};
 use toolkit_db::{ConnectOpts, DBProvider, DbError, connect_db};
 use uuid::Uuid;
 
@@ -327,6 +332,8 @@ fn graduated_content() -> PriceContent {
 fn draft(price_id: Uuid, scope_key: MarketPriceScopeKey, content: PriceContent) -> NewPriceDraft {
     NewPriceDraft {
         price_id,
+        line_version_id: None,
+        market_price_id: None,
         scope_key,
         content,
         created_by: Uuid::from_u128(0xac_10),
@@ -379,6 +386,62 @@ async fn stored_bands(
         .all(&conn)
         .await
         .expect("read the band table directly")
+}
+
+/// The shared tier geometry of the version a price row names.
+///
+/// The boundaries left `pricing_price_tier_band` for `pricing_charge_tier` when
+/// the structure became shared, so a case that asserts *where* a band starts
+/// reads them here and a case that asserts its rate still reads the band table.
+async fn stored_geometry(
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+    price_id: Uuid,
+) -> Vec<bss_pricing::infra::storage::entity::charge_tier::Model> {
+    let graph = stored_graph(provider, scope, price_id).await;
+    let conn = provider.conn().expect("conn");
+    bss_pricing::infra::storage::repo::charge_line_repo::load_geometry(
+        &conn,
+        scope,
+        graph.price.tenant_id,
+        graph.price.line_version_id,
+    )
+    .await
+    .expect("read the shared geometry")
+}
+
+/// Every geometry row this tenant holds, with no price row to route through.
+///
+/// [`stored_geometry`] starts from a price and follows it to its line version,
+/// which a case about a *refused* create cannot do: the thing it has to prove
+/// absent is the row that would have been the route. This reads the table flat
+/// instead, so "nothing was left behind" is measured rather than inferred from
+/// a lookup that could only have failed.
+async fn stored_geometry_if_any(
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+) -> Vec<charge_tier::Model> {
+    let conn = provider.conn().expect("conn");
+    charge_tier::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(Condition::all().add(charge_tier::Column::TenantId.eq(tenant())))
+        .all(&conn)
+        .await
+        .expect("read the geometry table directly")
+}
+
+/// The stored row joined to the line, version and market it references.
+async fn stored_graph(
+    provider: &DBProvider<DbError>,
+    scope: &AccessScope,
+    price_id: Uuid,
+) -> bss_pricing::infra::storage::repo::price_join::PriceGraph {
+    let row = stored_row(provider, scope, price_id).await;
+    let conn = provider.conn().expect("conn");
+    bss_pricing::infra::storage::repo::price_join::load_graph(&conn, scope, row.tenant_id, row)
+        .await
+        .expect("join the stored row to its graph")
 }
 
 #[tokio::test]
@@ -493,7 +556,7 @@ async fn the_band_set_comes_back_in_quantity_order_however_the_rows_were_written
         TierBand::closed(100, 1_000, rate(25)),
         TierBand::open(1_000, rate(10)),
     ];
-    let descending = vec![
+    let descending = [
         TierBand::open(1_000, rate(10)),
         TierBand::closed(100, 1_000, rate(25)),
         TierBand::closed(0, 100, rate(0)),
@@ -513,36 +576,82 @@ async fn the_band_set_comes_back_in_quantity_order_however_the_rows_were_written
         .expect("create");
     assert_eq!(created.row.bands, ascending);
 
-    // `update_draft` does **not** normalize: it deletes the band set and writes
-    // the caller's, row by row, in the order given. So this update is what
-    // actually puts descending rows into the table, and it is the only way this
-    // suite can reach that state — `create_draft` sorts first, so a test driven
-    // through it would prove an in-memory sort and leave the read side unpinned.
-    let mut content = graduated_content();
-    content.row.bands = descending.clone();
-    repo.update_draft(
-        &scope,
-        tenant(),
-        price_id,
-        RowVersion::new(0),
-        content,
-        stamp(),
-        /* on_behalf_of */ None,
-    )
-    .await
-    .expect("replace the band set, descending");
-
-    // The physical rows really are the wrong way round: this reads the table
-    // with no ORDER BY at all, so it is measuring what the repository has to
-    // correct rather than restating what it did.
+    // Both write paths normalize: `create_draft` and `update_draft` assign
+    // `band_ordinal` in `from_qty` order, so neither can be used to reach a
+    // stored state whose ordinal order disagrees with its quantity order. A
+    // test driven through either would prove an in-memory sort and leave the
+    // read side unpinned — so the scrambled state is written here, past the
+    // repository, the way a raw fixture or a future writer could.
     //
-    // An unordered read has no contract, which is the point and also the risk:
-    // the literal below is the order this engine happens to return, so an engine
-    // that came back sorted would fail here loudly instead of leaving the case
-    // below silently measuring nothing. No column would help — the key note
-    // under the read says why.
+    // `1000 - band_ordinal` reverses the three ordinals in one statement per
+    // table and cannot collide: the new values (998, 999, 1000) are disjoint
+    // from the old (0, 1, 2) and from each other, so no intermediate row ever
+    // duplicates a primary key. The same transform is applied to geometry and
+    // to rates, so band *N* of one still pairs with band *N* of the other and
+    // the compound foreign key holds.
+    let conn = provider.conn().expect("conn");
+    // A compound foreign key ties each rate to the geometry row of the same
+    // `(line_version_id, band_ordinal)`, and SQLite checks it per statement, so
+    // the rates have to step aside before the geometry can be re-ordinalled.
+    // They are read, removed, and written back under the transformed ordinal
+    // with every other column — `band_id` included — untouched.
+    let rates = price_tier_band::Entity::find()
+        .secure()
+        .scope_with(&scope)
+        .filter(Condition::all().add(price_tier_band::Column::PriceId.eq(price_id)))
+        .all(&conn)
+        .await
+        .expect("read the stored rates");
+    assert_eq!(rates.len(), 3, "the authored set is three bands");
 
-    let physical: Vec<u64> = stored_bands(&provider, &scope, price_id)
+    let removed = price_tier_band::Entity::delete_many()
+        .secure()
+        .scope_with(&scope)
+        .filter(Condition::all().add(price_tier_band::Column::PriceId.eq(price_id)))
+        .exec(&conn)
+        .await
+        .expect("lift the rates off their geometry");
+    assert_eq!(removed.rows_affected, 3);
+
+    let moved = charge_tier::Entity::update_many()
+        .secure()
+        .scope_with(&scope)
+        .col_expr(
+            charge_tier::Column::BandOrdinal,
+            Expr::value(1_000).sub(Expr::col(charge_tier::Column::BandOrdinal)),
+        )
+        .exec(&conn)
+        .await
+        .expect("scramble the stored geometry ordinals");
+    assert_eq!(
+        moved.rows_affected, 3,
+        "all three bands must have been re-ordinalled, or the scramble is not \
+         the state under test"
+    );
+
+    for rate in rates {
+        let row = price_tier_band::ActiveModel {
+            band_id: Set(rate.band_id),
+            tenant_id: Set(rate.tenant_id),
+            price_id: Set(rate.price_id),
+            line_version_id: Set(rate.line_version_id),
+            band_ordinal: Set(1_000 - rate.band_ordinal),
+            unit_price_nano: Set(rate.unit_price_nano),
+        };
+        price_tier_band::Entity::insert(row.clone())
+            .secure()
+            .scope_with_model(&scope, &row)
+            .expect("rate scope")
+            .exec(&conn)
+            .await
+            .expect("put the rate back on its re-ordinalled geometry");
+    }
+
+    // The physical rows really are the wrong way round now: `load_geometry`
+    // reads in `band_ordinal` order, so this is the order a repository that
+    // trusted the ordinal would answer in. It is measuring what the read has to
+    // correct rather than restating what the write did.
+    let physical: Vec<u64> = stored_geometry(&provider, &scope, price_id)
         .await
         .iter()
         .map(|band| u64::try_from(band.from_qty).expect("a non-negative bound"))
@@ -550,19 +659,23 @@ async fn the_band_set_comes_back_in_quantity_order_however_the_rows_were_written
     assert_eq!(
         physical,
         vec![1_000, 100, 0],
-        "the update must have written the rows in the order it was given, \
-         or this test is no longer measuring the read-side guarantee"
+        "the scramble must have left ordinal order disagreeing with quantity \
+         order, or this test is no longer measuring the read-side guarantee"
+    );
+    assert_eq!(
+        physical.len(),
+        descending.len(),
+        "the scrambled set is the authored set, re-ordinalled"
     );
 
-    // And a read still answers ascending. The table carries **no ordinal**:
-    // `uq_pricing_price_tier_band_lower_bound` is `UNIQUE (price_id, from_qty)`
-    // and the `PRIMARY KEY` is `band_id`, which `price_repo::band_id` derives as
-    // `Uuid::new_v5(price_id, from_qty)` — the same pair again, hashed, and so no
-    // more a record of authoring order than the pair itself. Authoring order
-    // therefore does not survive persistence; `TierBandValidator` judges geometry
-    // over the set sorted by `from_qty` for that reason, and a repository that
-    // answered in stored order would let a row pass the save-time pre-check and
-    // fail the identical re-run inside the publish commit.
+    // And a read still answers ascending. The ordinal joins a rate to its
+    // geometry; it does not decide the order the set comes back in, because
+    // `to_price_row` sorts the assembled bands on `from_qty`. Authoring order
+    // therefore does not survive persistence and stored order does not leak
+    // out; `TierBandValidator` judges geometry over the set sorted by `from_qty`
+    // for that reason, and a repository that answered in stored order would let
+    // a row pass the save-time pre-check and fail the identical re-run inside
+    // the publish commit.
 
     let read = repo
         .find(&scope, tenant(), price_id)
@@ -1297,8 +1410,9 @@ async fn the_store_itself_refuses_the_second_draft_the_check_can_only_read_for()
         .await
         .expect_err("a second draft on one canonical scope key must not land");
 
-    // **This assertion has changed shape twice, and each time because `SQLite`'s
-    // message follows the index's form rather than anything chosen here.**
+    // **This assertion has changed shape three times, and each time because
+    // `SQLite`'s message follows the index's form rather than anything chosen
+    // here.**
     //
     //     UNIQUE (a, b)                     -> "UNIQUE constraint failed: t.a, t.b"
     //     UNIQUE (a, b, COALESCE(meter,'')) -> "UNIQUE constraint failed: index 'ix'"
@@ -1306,11 +1420,19 @@ async fn the_store_itself_refuses_the_second_draft_the_check_can_only_read_for()
     // measured directly on both forms, 2026-08-06. D-196 clause (2) put the
     // `COALESCE(meter, '')` sentinel into the index and the message moved to the
     // second form, so this asserted the index **name**. D-372 took the sentinel
-    // out again — `sku_id` replaced `meter` on the key and it is `NOT NULL`, so
-    // there is no NULL to coalesce — and the message is back to the first form.
-    // The axis list is therefore assertable again, which is the stronger check:
-    // it says *which* axes the guarantee covers instead of only which index
-    // carries it.
+    // out again — `sku_id` replaced `meter` on the key and it is `NOT NULL` — and
+    // the message went back to the first form, over an axis list carried inline
+    // on `pricing_price`.
+    //
+    // Normalizing the key moved that axis list off this table altogether. The
+    // guarantee is now composed of two uniqueness rules, not one: the eight
+    // structural axes are unique per `pricing_charge_line`
+    // (`uq_pricing_charge_line_logical_scope`, proved in `sqlite_charge_lines`),
+    // currency and region are unique per line (`uq_pricing_market_price_scope`,
+    // same file), and what `pricing_price` itself has to refuse is a second
+    // *draft* on one market — which is the whole key, reached through the two
+    // identity tables. So the axis list is no longer assertable here, and
+    // asserting it would only prove the key had not been normalized.
     //
     // The rest of the original note stands: this is also why the repository does
     // not turn the violation back into `DUPLICATE_SCOPE_KEY` itself — recognizing
@@ -1322,9 +1444,9 @@ async fn the_store_itself_refuses_the_second_draft_the_check_can_only_read_for()
         "the refusal must be a unique violation, got: {message}"
     );
     assert!(
-        message.contains("pricing_price.sku_id"),
-        "the violated guard must be the scope-key index, over an axis list that carries the \
-         SKU, got: {message}"
+        message.contains("pricing_price.market_price_id"),
+        "the violated guard must be the draft index on the market this row prices, \
+         got: {message}"
     );
 
     // And the winner is untouched.
@@ -1356,21 +1478,37 @@ async fn insert_bare_draft(
     price_id: Uuid,
 ) -> Result<(), toolkit_db::secure::ScopeError> {
     let conn = provider.conn().expect("conn");
+    let seeded_graph = common::seed_charge_graph(
+        &conn,
+        scope,
+        &common::ChargeGraphSeed {
+            tenant_id: tenant(),
+            plan_id: plan().get(),
+            phase: Uuid::from_u128(0xfa_5e),
+            sku_id: Uuid::from_u128(5),
+            charge_kind: ChargeKind::Recurring.as_str().to_owned(),
+            currency: "USD".to_owned(),
+            region: "EU".to_owned(),
+            lifecycle_state: LifecycleState::Draft.as_str().to_owned(),
+            model_kind: Some("flat".to_owned()),
+            created_by: Uuid::from_u128(0xac_10),
+            created_at_utc: at(10),
+            ..Default::default()
+        },
+    )
+    .await;
     let row = price::ActiveModel {
+        plan_revision: Set(1),
+        charge_line_id: Set(seeded_graph.charge_line_id),
+        line_version_id: Set(seeded_graph.line_version_id),
+        market_price_id: Set(seeded_graph.market_price_id),
         price_id: Set(price_id),
         tenant_id: Set(tenant()),
         plan_id: Set(plan().get()),
         // D-372's ninth axis, and it has to be the **fixture's** SKU: the row this
         // one races is composed through the repository off a key carrying
         // `SkuId::new(Uuid::from_u128(5))`, and a different value here would be a
-        // different key, which is not the collision under test.
-        sku_id: Set(Uuid::from_u128(5)),
-        currency: Set("USD".to_owned()),
-        region: Set("EU".to_owned()),
-        phase: Set(Uuid::from_u128(0xfa_5e)),
-        charge_kind: Set(ChargeKind::Recurring.as_str().to_owned()),
         amount_minor: Set(Some(1_000)),
-        model_kind: Set(Some("flat".to_owned())),
         lifecycle_state: Set(LifecycleState::Draft.as_str().to_owned()),
         created_by: Set(Uuid::from_u128(0xac_10)),
         created_at_utc: Set(at(10)),
@@ -2177,10 +2315,24 @@ async fn list_for_plan_filters_by_state_and_orders_stably() {
     let one_time = Uuid::from_u128(0xb_a2);
     let setup = Uuid::from_u128(0xb_a3);
 
-    for (price_id, charge_kind) in [
-        (setup, ChargeKind::OneTime),
-        (one_time, ChargeKind::OneTime),
-        (recurring, ChargeKind::Recurring),
+    // The two one-time rows sit on **different eligibility classes**. They used
+    // to be distinguished by `charge_kind` alone, back when a setup fee was its
+    // own kind; with that variant gone both would land on one scope key, and the
+    // second create would be refused as a duplicate before this case reached the
+    // ordering it exists to pin. The axis chosen does not matter to the claim —
+    // only that three rows of one plan are three keys.
+    for (price_id, charge_kind, key) in [
+        (setup, ChargeKind::OneTime, base_key(ChargeKind::OneTime)),
+        (
+            one_time,
+            ChargeKind::OneTime,
+            new_subscriptions_key(ChargeKind::OneTime),
+        ),
+        (
+            recurring,
+            ChargeKind::Recurring,
+            base_key(ChargeKind::Recurring),
+        ),
     ] {
         let mut content = flat_content();
         content.row = {
@@ -2189,13 +2341,9 @@ async fn list_for_plan_filters_by_state_and_orders_stably() {
             descriptor_row
         };
         content.row.amount_minor = Some(money(1_000));
-        repo.create_draft(
-            &scope,
-            tenant(),
-            draft(price_id, base_key(charge_kind), content),
-        )
-        .await
-        .expect("create");
+        repo.create_draft(&scope, tenant(), draft(price_id, key, content))
+            .await
+            .expect("create");
     }
     flip_state(&provider, &scope, one_time, LifecycleState::Published).await;
 
@@ -2353,8 +2501,15 @@ async fn a_create_the_band_table_refuses_leaves_no_row_behind() {
     // A `flat` row carrying a band set. It fails in the one place that makes
     // the transaction observable: the row INSERT succeeds — `flat` is a legal
     // kind and the row satisfies every CHECK on its own table — and the *next*
-    // statement is refused, by the band table's structural-exclusivity trigger
+    // statement is refused, by a band table's structural-exclusivity trigger
     // reading the parent this call has just written.
+    //
+    // Which band table refuses is a consequence of write order, not of the
+    // claim: geometry goes to `pricing_charge_tier` before the rate reaches
+    // `pricing_price_tier_band`, so the geometry trigger is the one that sees a
+    // `flat` parent first and the rate table is never reached. Either refusal
+    // proves the same thing, so the assertion names both rather than pinning
+    // the order two repositories happen to write in.
     let mut content = flat_content();
     content.row.bands = vec![TierBand::closed(0, 100, rate(50))];
     let err = repo
@@ -2369,8 +2524,8 @@ async fn a_create_the_band_table_refuses_leaves_no_row_behind() {
         panic!("the band table's refusal reaches the caller as a storage failure");
     };
     assert!(
-        detail.contains("pricing_price_tier_band"),
-        "the refusal must be the band table's, got: {detail}"
+        detail.contains("pricing_price_tier_band") || detail.contains("pricing_charge_tier"),
+        "the refusal must be a band table's, got: {detail}"
     );
 
     // The claim this file's repository makes is "both tables or neither", and
@@ -2386,7 +2541,12 @@ async fn a_create_the_band_table_refuses_leaves_no_row_behind() {
     );
     assert!(
         stored_bands(&provider, &scope, price_id).await.is_empty(),
-        "and no band either"
+        "and no rate either"
+    );
+    assert!(
+        stored_geometry_if_any(&provider, &scope).await.is_empty(),
+        "nor any geometry - the write that was refused is the one that must \
+         leave nothing behind"
     );
 
     // The key is free, which is the operational half of the same fact: an
@@ -3168,12 +3328,24 @@ async fn the_supersession_door_refuses_a_key_a_draft_already_stands_on() {
 }
 
 #[tokio::test]
-async fn a_successor_publishes_only_after_its_predecessor_leaves_the_published_plane() {
-    // D-195 clause (3), measured rather than reasoned. §3.7 admits one published
-    // row per key, so the order of the commit's two row moves is not free: the
-    // failing order is a raw driver error - a 500 - and not a refusal, which is
-    // why the rule is written down at `inst-su-commit` rather than left to be
-    // rediscovered. With the flip first, `publish_rows` needs no change at all.
+async fn a_successor_may_publish_beside_the_predecessor_it_supersedes() {
+    // **This case used to assert the opposite, and the reversal is the point.**
+    //
+    // D-195 clause (3) read the ordering of the supersession commit's two row
+    // moves off §3.7's "one published row per key": with a published-plane
+    // `UNIQUE` in the schema, publishing the successor before flipping the
+    // predecessor was a raw driver error — a 500 rather than a refusal — so
+    // `inst-su-commit` wrote the order down so it would not be rediscovered.
+    //
+    // Normalizing the key removed that index. Two published monetary versions of
+    // one market are now admitted, and what keeps only one of them in force is
+    // the **window plane**: `excl_pricing_price_window_no_overlap` and its
+    // `SQLite` mirror refuse two occupying windows on one market, which
+    // `sqlite_window_guards` proves. So the row plane no longer decides this,
+    // and the commit's ordering is a property of `commit_supersession_rows`
+    // (which still flips the predecessor — see
+    // `the_supersession_commit_flips_the_predecessor_and_publishes_the_successor`)
+    // rather than something the store extracts from the caller by failing.
     let (repo, provider) = harness().await;
     let scope = AccessScope::for_tenant(tenant());
     let predecessor = published_predecessor(&repo, &provider, &scope).await;
@@ -3188,26 +3360,6 @@ async fn a_successor_publishes_only_after_its_predecessor_leaves_the_published_p
     .expect("stage the shape through the door that permits it");
 
     let validated = vec![(successor, RowVersion::new(0))];
-    let refused = publish_rows(
-        &provider,
-        &scope,
-        tenant(),
-        plan(),
-        validated.clone(),
-        &fixture_readiness(),
-    )
-    .await
-    .expect_err("publishing beside a live predecessor collides on the key");
-    let RepoError::Db(detail) = &refused else {
-        panic!("the collision arrives as a storage fault, got: {refused:?}");
-    };
-    assert!(
-        detail.contains("UNIQUE"),
-        "and it is the published-plane index that produced it, got: {detail}"
-    );
-
-    // The ordering `inst-su-commit` now states: the predecessor leaves first.
-    flip_state(&provider, &scope, predecessor, LifecycleState::Superseded).await;
     let moved = publish_rows(
         &provider,
         &scope,
@@ -3217,7 +3369,7 @@ async fn a_successor_publishes_only_after_its_predecessor_leaves_the_published_p
         &fixture_readiness(),
     )
     .await
-    .expect("with the key free on the published plane, the flip is ordinary");
+    .expect("the row plane admits a second published version of one market");
 
     assert_eq!(moved, vec![successor]);
     assert_eq!(
@@ -3225,6 +3377,18 @@ async fn a_successor_publishes_only_after_its_predecessor_leaves_the_published_p
             .await
             .lifecycle_state,
         LifecycleState::Published.as_str()
+    );
+
+    // And the predecessor is still standing, which is the half that would have
+    // been unreachable before: the two versions coexist on the published plane
+    // and their windows are what tell them apart.
+    assert_eq!(
+        stored_row(&provider, &scope, predecessor)
+            .await
+            .lifecycle_state,
+        LifecycleState::Published.as_str(),
+        "the successor's publish must not have moved the predecessor - only \
+         `commit_supersession_rows` does that"
     );
 }
 
@@ -3781,10 +3945,24 @@ async fn the_keyset_page_walks_the_same_total_order_the_list_declares() {
         Uuid::from_u128(0xbb04),
     ];
 
-    for (price_id, charge_kind) in [
-        (ids[3], ChargeKind::OneTime),
-        (ids[1], ChargeKind::OneTime),
-        (ids[0], ChargeKind::Recurring),
+    // The two one-time rows sit on **different eligibility classes**. They used
+    // to be distinguished by `charge_kind` alone, back when a setup fee was its
+    // own kind; with that variant gone both would land on one scope key, and the
+    // second create would be refused as a duplicate before this case reached the
+    // ordering it exists to pin. The axis chosen does not matter to the claim —
+    // only that three rows of one plan are three keys.
+    for (price_id, charge_kind, key) in [
+        (ids[3], ChargeKind::OneTime, base_key(ChargeKind::OneTime)),
+        (
+            ids[1],
+            ChargeKind::OneTime,
+            new_subscriptions_key(ChargeKind::OneTime),
+        ),
+        (
+            ids[0],
+            ChargeKind::Recurring,
+            base_key(ChargeKind::Recurring),
+        ),
     ] {
         let mut content = flat_content();
         content.row = {
@@ -3793,13 +3971,9 @@ async fn the_keyset_page_walks_the_same_total_order_the_list_declares() {
             descriptor_row
         };
         content.row.amount_minor = Some(money(1_000));
-        repo.create_draft(
-            &scope,
-            tenant(),
-            draft(price_id, base_key(charge_kind), content),
-        )
-        .await
-        .expect("create");
+        repo.create_draft(&scope, tenant(), draft(price_id, key, content))
+            .await
+            .expect("create");
     }
 
     // **One `graduated` row, because the band claim below needs an operand.**
@@ -4397,21 +4571,21 @@ async fn a_meter_with_stray_whitespace_does_not_mint_a_second_key() {
     // The mechanism, read back: the stored columns are the key's axes, so a
     // loaded key equals the key the row was filed under and the occupancy read
     // above had something to match against.
-    let stored = stored_row(&provider, &scope, padded).await;
+    let stored = stored_graph(&provider, &scope, padded).await;
     assert_eq!(
-        stored.meter.as_deref(),
+        stored.version.meter.as_deref(),
         Some("api_calls"),
         "the column holds the axis, not the spelling the caller sent"
     );
-    assert_eq!(stored.dimension_key, "region=eu");
+    assert_eq!(stored.line.dimension_key, "region=eu");
     assert_eq!(
         created.row.meter.as_deref(),
-        stored.meter.as_deref(),
+        stored.version.meter.as_deref(),
         "the key the row is filed under and the column that stores that axis must be one value"
     );
     assert_eq!(
         created.scope_key.dimension_key().as_str(),
-        stored.dimension_key,
+        stored.line.dimension_key,
         "and the same for the tenth axis"
     );
 }
@@ -4497,9 +4671,9 @@ async fn an_update_may_respell_the_stored_line_with_stray_whitespace() {
         .expect("whitespace around an axis value is not a move to another line");
 
     assert_eq!(updated.row.meter.as_deref(), Some("cloudlets"));
-    let stored = stored_row(&provider, &scope, price_id).await;
-    assert_eq!(stored.meter.as_deref(), Some("cloudlets"));
-    assert_eq!(stored.dimension_key, "region=eu");
+    let stored = stored_graph(&provider, &scope, price_id).await;
+    assert_eq!(stored.version.meter.as_deref(), Some("cloudlets"));
+    assert_eq!(stored.line.dimension_key, "region=eu");
 }
 
 // ---------------------------------------------------------------------------
@@ -5160,14 +5334,20 @@ async fn a_malformed_included_allowance_is_a_corrupt_row_and_not_an_internal_err
         serde_json::json!({ "quantity": 50 }),
     ] {
         let conn = provider.conn().expect("conn");
-        price::Entity::update_many()
+        // The allowance is shared content of the line version now, so the poison
+        // goes on the version the row names rather than on the row.
+        let version_id = stored_graph(&provider, &scope, price_id)
+            .await
+            .price
+            .line_version_id;
+        charge_line_version::Entity::update_many()
             .secure()
             .scope_with(&scope)
             .col_expr(
-                price::Column::IncludedAllowance,
+                charge_line_version::Column::IncludedAllowance,
                 Expr::value(poison.clone()),
             )
-            .filter(Condition::all().add(price::Column::PriceId.eq(price_id)))
+            .filter(Condition::all().add(charge_line_version::Column::LineVersionId.eq(version_id)))
             .exec(&conn)
             .await
             .expect("write the malformed document");

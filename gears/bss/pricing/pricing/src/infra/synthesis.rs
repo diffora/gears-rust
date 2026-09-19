@@ -81,8 +81,9 @@ use crate::domain::synthesis::{
     LiveCandidate, SelectedRow, SynthesisOutcome, UnresolvedKey, select_rows,
 };
 use crate::domain::window::WindowState;
-use crate::infra::storage::entity::{plan_period_floor_cap, price, price_tier_band};
-use crate::infra::storage::repo::{plan_repo, price_repo, window_repo};
+use crate::infra::storage::entity::{charge_tier, plan_period_floor_cap, price, price_tier_band};
+use crate::infra::storage::repo::price_join::{self, PriceGraph};
+use crate::infra::storage::repo::{charge_line_repo, plan_repo, price_repo, window_repo};
 use crate::infra::storage::{RepoError, repo_failure};
 use time::OffsetDateTime;
 
@@ -293,7 +294,16 @@ pub async fn materialize(
         // Ascending by lower bound, which is `inst-tb-order`'s single read-side
         // guarantee — the table carries no ordinal and authored order does not
         // survive it, so the order has to come from the query.
-        let bands = price_tier_band::Entity::find()
+        // The row's immutable graph: the logical line it belongs to, the shared
+        // version its structure is frozen in, and the market its money is in.
+        let graph = price_join::load_graph(runner, scope, tenant_id, stored)
+            .await
+            .map_err(|e| repo_failure(&e))?;
+
+        // Ascending by `band_ordinal`, which is `inst-tb-order`'s single read-side
+        // guarantee expressed on the column the two band tables share — authored
+        // order does not survive the store and the ordinal is what carries it.
+        let rates = price_tier_band::Entity::find()
             .secure()
             .scope_with(scope)
             .filter(
@@ -301,7 +311,7 @@ pub async fn materialize(
                     .add(price_tier_band::Column::TenantId.eq(tenant_id))
                     .add(price_tier_band::Column::PriceId.eq(row.row_id)),
             )
-            .order_by(price_tier_band::Column::FromQty, Order::Asc)
+            .order_by(price_tier_band::Column::BandOrdinal, Order::Asc)
             .all(runner)
             .await
             .map_err(|e| {
@@ -310,8 +320,12 @@ pub async fn materialize(
                     row.row_id
                 )))
             })?;
+        let geometry =
+            charge_line_repo::load_geometry(runner, scope, tenant_id, graph.price.line_version_id)
+                .await
+                .map_err(|e| repo_failure(&e))?;
 
-        rows.push(row_value(row, &stored, &bands));
+        rows.push(row_value(row, &graph, &geometry, &rates));
     }
 
     Ok(json!({
@@ -345,19 +359,20 @@ pub async fn materialize(
 /// declaration beside it.
 fn row_value(
     row: &SelectedRow,
-    stored: &price::Model,
-    bands: &[price_tier_band::Model],
+    graph: &PriceGraph,
+    geometry: &[charge_tier::Model],
+    rates: &[price_tier_band::Model],
 ) -> JsonValue {
     let mut value = json!({
         "rowId": row.row_id,
-        "skuId": stored.sku_id,
+        "skuId": graph.line.sku_id,
         "source": row.tier.as_str(),
-        "currency": stored.currency,
-        "region": stored.region,
-        "phase": stored.phase,
-        "chargeKind": stored.charge_kind,
-        "modelKind": stored.model_kind,
-        "amountMinor": stored.amount_minor,
+        "currency": graph.market.currency,
+        "region": graph.market.region,
+        "phase": graph.line.phase,
+        "chargeKind": graph.line.charge_kind,
+        "modelKind": graph.version.model_kind,
+        "amountMinor": graph.price.amount_minor,
             // **The `per_unit` row's money, and between D-311 and D-323 it was
             // nowhere in this payload.** D-311 moved a `per_unit` rate out of
             // `amount_minor` into its own column and measured its cost as
@@ -386,7 +401,7 @@ fn row_value(
             // payload could not *read*, while this column is read on every row
             // and `modelKind` — which is right above — says which member holds
             // the price.
-        "unitRateNanoMinor": stored.unit_rate_nano,
+        "unitRateNanoMinor": graph.price.unit_rate_nano,
             // **The fourth priced member, and the one the placement matrix leaves as
             // the whole price of two model kinds.** `check_amount_placement` gives
             // `graduated` and `volume` `(wants_amount, wants_rate) = (false, false)`
@@ -409,10 +424,20 @@ fn row_value(
             // unreadable — and rendering the set is what closes it: an empty array
             // beside `"modelKind": "flat"` says the row has no bands, which is what
             // `inst-mk-forbidden` says too.
-        "bands": bands
+            // **Two tables, one ladder.** The boundaries are shared geometry of the
+            // line version (`pricing_charge_tier`) and the rates are this market's
+            // (`pricing_price_tier_band`); both come back ordered by `band_ordinal`,
+            // which is the ordinal the two were written under together. A rate whose
+            // ordinal names no boundary is dropped rather than rendered against an
+            // invented band — the payload is INSERT-only and uncorrectable, so a
+            // half-read ladder must not reach it.
+        "bands": geometry
             .iter()
-            .map(|band| {
-                json!({
+            .filter_map(|band| {
+                let rate = rates
+                    .iter()
+                    .find(|rate| rate.band_ordinal == band.band_ordinal)?;
+                Some(json!({
                     "fromQty": band.from_qty,
                         // `null` is the **open top** (D-17) — a state of the band
                         // rather than an absent value, and the read model's
@@ -421,24 +446,24 @@ fn row_value(
                         // D-311's scale and the read model's member name, so one
                         // number has one name whichever door a consumer read it
                         // through.
-                    "unitPriceNanoMinor": band.unit_price_nano,
-                })
+                    "unitPriceNanoMinor": rate.unit_price_nano,
+                }))
             })
             .collect::<Vec<_>>(),
-        "packageSize": stored.package_size,
-        "packagePriceMinor": stored.package_price_minor,
-        "meter": stored.meter,
+        "packageSize": graph.version.package_size,
+        "packagePriceMinor": graph.price.package_price_minor,
+        "meter": graph.version.meter,
         // `null` for an absent line, which is what the member above it renders
         // for the other half of the same pair. `meter` is an `Option` column and
         // `dimension_key` is not, so copying both raw spells one absence two
         // ways inside one frozen document — and this plane is INSERT-only over a
         // record that resolves through no `CatalogVersion` and can never be
         // corrected.
-        "dimensionKey": (!stored.dimension_key.is_empty()).then(|| stored.dimension_key.clone()),
+        "dimensionKey": (!graph.line.dimension_key.is_empty()).then(|| graph.line.dimension_key.clone()),
             // The evaluation-policy and S6 consumer-contract fields: a
             // `migrated-origin` line is evaluated from this and nothing else.
             //
-            // **Projected, not raw.** `stored.billing_timing` is `NULL` on a usage line by
+            // **Projected, not raw.** `graph.version.billing_timing` is `NULL` on a usage line by
             // intent — `inst-bt-required` requires it only on `recurring`, and
             // `check_setup_fields` forbids it on setup rows — so rendering the column
             // directly puts `null` on every usage and one-time line of a legacy
@@ -454,30 +479,30 @@ fn row_value(
             //
             // An unparseable token renders `null`, which is the pre-existing
             // behaviour for a row whose kind this build does not know.
-        "billingTiming": crate::domain::scope_key::ChargeKind::parse(&stored.charge_kind)
+        "billingTiming": crate::domain::scope_key::ChargeKind::parse(&graph.line.charge_kind)
             .and_then(|kind| {
                 crate::domain::contracts::published_billing_timing(
                     kind,
-                    stored.billing_timing.as_deref(),
+                    graph.version.billing_timing.as_deref(),
                 )
             }),
-        "quantitySource": stored.quantity_source,
+        "quantitySource": graph.version.quantity_source,
             // **What the source says, beside where it comes from.**
             // `check_quantity_source` does not merely permit `manual_quantity`
             // beside a `manual` source, it *requires* it — "the fixed quantity is
             // the whole of what `manual` supplies" — so the payload stated where a
             // non-usage `per_unit` row's `Q` comes from and never what it is, and
             // the rate D-323 restored had nothing to multiply.
-        "manualQuantity": stored.manual_quantity,
-        "billingGranularity": stored.billing_granularity,
-        "aggregationFunction": stored.aggregation_function,
-        "aggregationGranularity": stored.aggregation_granularity,
-        "tierAggregationWindow": stored.tier_aggregation_window,
-        "tierQualificationWindow": stored.tier_qualification_window,
+        "manualQuantity": graph.version.manual_quantity,
+        "billingGranularity": graph.version.billing_granularity,
+        "aggregationFunction": graph.version.aggregation_function,
+        "aggregationGranularity": graph.version.aggregation_granularity,
+        "tierAggregationWindow": graph.version.tier_aggregation_window,
+        "tierQualificationWindow": graph.version.tier_qualification_window,
             // The hold bound a level fold reads (`inst-la-hold`); required on a
             // non-`sum` row, so it is not an optional decoration there.
-        "maxHoldGranules": stored.max_hold_granules,
-        "includedAllowance": stored.included_allowance,
+        "maxHoldGranules": graph.version.max_hold_granules,
+        "includedAllowance": graph.version.included_allowance,
             // **This payload is uncompiled, and now says so**.
             //
             // The read model materializes the D-45 compile — a presented `graduated`
@@ -516,39 +541,41 @@ fn row_value(
             // the column is already NULL under every policy that anchors without a
             // day, and re-deriving it here would be a second answer to a question
             // storage has already answered.
-        "billingAnchorPolicy": stored.billing_anchor_policy,
-        "anchorDay": stored.anchor_day,
-        "prorationBasis": stored.proration_basis,
-        "creditOnDowngrade": stored.credit_on_downgrade,
+        "billingAnchorPolicy": graph.version.billing_anchor_policy,
+        "anchorDay": graph.version.anchor_day,
+        "prorationBasis": graph.version.proration_basis,
+        "creditOnDowngrade": graph.version.credit_on_downgrade,
             // The reservation pair (`inst-rv-attrs`). **Money**: Rating sources the
             // self-service reserved rate from the row, and on a `migrated-origin`
             // line there is no other row to source it from.
-        "reservedRateNanoMinor": stored.reserved_rate_nano,
-        "reservationFlavor": stored.reservation_flavor,
+        "reservedRateNanoMinor": graph.price.reserved_rate_nano,
+        "reservationFlavor": graph.version.reservation_flavor,
             // The typed floors and the discount hook, carried verbatim
             // (`inst-ft-both`, `inst-dr-boundary`). Enforcement is downstream —
             // Subscriptions at order time, Tariffs/Rating at eligibility, Promotions
             // for the instrument — so a consumer that cannot read them here cannot
             // enforce them at all.
-        "minQtyPurchase": stored.min_qty_purchase,
-        "minQtyUsage": stored.min_qty_usage,
-        "minQtyUsageFallback": stored.min_qty_usage_fallback,
-        "discountRef": stored.discount_ref,
+        "minQtyPurchase": graph.version.min_qty_purchase,
+        "minQtyUsage": graph.version.min_qty_usage,
+        "minQtyUsageFallback": graph.version.min_qty_usage_fallback,
+        "discountRef": graph.version.discount_ref,
             // Tax basis, and both halves of each resolution: what the author wrote
             // and what the publish resolved it to. A publish that wrote the resolution
             // over the authored column would carry `roundingPolicyRef` under an authored
             // name, and a consumer could not tell a row that named a policy from one
             // that fell back to the tenant default.
-        "taxInclusive": stored.tax_inclusive,
-        "taxCategoryRef": stored.tax_category_ref,
-        "resolvedTaxCategory": stored.resolved_tax_category,
-        "roundingPolicyRef": stored.rounding_policy_ref,
-        "resolvedRoundingPolicy": stored.resolved_rounding_policy,
+        "taxInclusive": graph.price.tax_inclusive,
+        "taxCategoryRef": graph.price.tax_category_ref,
+        "resolvedTaxCategory": graph.price.resolved_tax_category,
+        "roundingPolicyRef": graph.price.rounding_policy_ref,
+        "resolvedRoundingPolicy": graph.price.resolved_rounding_policy,
     });
-    value["invoiceLineTemplate"] = json!(stored.resolved_invoice_line_template);
-    value["glCode"] = json!(stored.resolved_gl_code);
-    value["descriptorSetUnavailable"] =
-        json!(stored.resolved_invoice_line_template.is_none() || stored.resolved_gl_code.is_none());
+    value["invoiceLineTemplate"] = json!(graph.version.resolved_invoice_line_template);
+    value["glCode"] = json!(graph.version.resolved_gl_code);
+    value["descriptorSetUnavailable"] = json!(
+        graph.version.resolved_invoice_line_template.is_none()
+            || graph.version.resolved_gl_code.is_none()
+    );
     value
 }
 

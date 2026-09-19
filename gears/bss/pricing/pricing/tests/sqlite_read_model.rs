@@ -19,6 +19,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use bss_pricing::infra::storage::repo::price_join::PriceGraph;
 mod common;
 
 use bss_pricing_sdk::catalog_version_registry::registry_unreachable;
@@ -544,6 +545,8 @@ async fn seed_publishable_of(
             tenant,
             NewPriceDraft {
                 price_id,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: scope_key(plan_id, phase),
                 content: flat_row(),
                 created_by: ACTOR,
@@ -3584,11 +3587,40 @@ async fn published_price_id(h: &Harness, plan_id: PlanId) -> Uuid {
 /// as incidental setup for an assertion about projection.
 /// The insert still goes through the tenant gate, so the seeding cannot fabricate
 /// a row the scope would not admit.
-async fn draft_row_on_the_same_key(h: &Harness, source: &price::Model, draft_id: Uuid) {
+async fn draft_row_on_the_same_key(h: &Harness, source: &PriceGraph, draft_id: Uuid) {
     let conn = h.provider.conn().expect("conn");
+    let seeded_graph = common::seed_charge_graph(
+        &conn,
+        &h.scope,
+        &common::ChargeGraphSeed {
+            tenant_id: source.price.tenant_id,
+            plan_id: source.price.plan_id,
+            phase: source.line.phase,
+            // Copied off the source row like every other key column beside it.
+            sku_id: source.line.sku_id,
+            price_overlay: source.line.price_overlay.clone(),
+            price_eligibility: source.line.price_eligibility.clone(),
+            charge_kind: source.line.charge_kind.clone(),
+            cohort: source.line.cohort.clone(),
+            dimension_key: source.line.dimension_key.clone(),
+            currency: source.market.currency.clone(),
+            region: source.market.region.clone(),
+            lifecycle_state: LifecycleState::Draft.as_str().to_owned(),
+            model_kind: source.version.model_kind.clone(),
+            meter: source.version.meter.clone(),
+            created_by: source.price.created_by,
+            created_at_utc: source.price.created_at_utc,
+            ..Default::default()
+        },
+    )
+    .await;
     let row = price::ActiveModel {
+        plan_revision: Set(1),
+        charge_line_id: Set(seeded_graph.charge_line_id),
+        line_version_id: Set(seeded_graph.line_version_id),
+        market_price_id: Set(seeded_graph.market_price_id),
         price_id: Set(draft_id),
-        tenant_id: Set(source.tenant_id),
+        tenant_id: Set(source.price.tenant_id),
         // The ten axes, copied rather than restated: a literal here that drifted
         // from the fixture's key would put the draft on a key of its own and the
         // test would pass against the defect.
@@ -3598,23 +3630,11 @@ async fn draft_row_on_the_same_key(h: &Harness, source: &price::Model, draft_id:
         // taken from the table. Correct only for as long as the seeded source
         // stayed `recurring` — a usage source would have put the "same key" draft
         // on a different key, silently.
-        plan_id: Set(source.plan_id),
-        // Copied off the source row like every other key column beside it.
-        sku_id: Set(source.sku_id),
-        currency: Set(source.currency.clone()),
-        region: Set(source.region.clone()),
-        price_overlay: Set(source.price_overlay.clone()),
-        phase: Set(source.phase),
-        price_eligibility: Set(source.price_eligibility.clone()),
-        charge_kind: Set(source.charge_kind.clone()),
-        cohort: Set(source.cohort.clone()),
-        meter: Set(source.meter.clone()),
-        dimension_key: Set(source.dimension_key.clone()),
-        amount_minor: Set(source.amount_minor),
-        model_kind: Set(source.model_kind.clone()),
+        plan_id: Set(source.price.plan_id),
+        amount_minor: Set(source.price.amount_minor),
         lifecycle_state: Set(LifecycleState::Draft.as_str().to_owned()),
-        created_by: Set(source.created_by),
-        created_at_utc: Set(source.created_at_utc),
+        created_by: Set(source.price.created_by),
+        created_at_utc: Set(source.price.created_at_utc),
         ..price::ActiveModel::default()
     };
     price::Entity::insert(row.clone())
@@ -3852,7 +3872,16 @@ async fn a_draft_rows_window_does_not_move_the_published_keys_coverage_end() {
     // A never-published draft on the same key, carrying a window that runs forty
     // days past it.
     let draft_id = Uuid::from_u128(0x_d1);
-    draft_row_on_the_same_key(&h, &published, draft_id).await;
+    let conn = h.provider.conn().expect("conn");
+    let published_graph = bss_pricing::infra::storage::repo::price_join::load_graph(
+        &conn,
+        &h.scope,
+        published.tenant_id,
+        published.clone(),
+    )
+    .await
+    .expect("join the published row to its graph");
+    draft_row_on_the_same_key(&h, &published_graph, draft_id).await;
     window(
         &h,
         draft_id,
@@ -3997,6 +4026,18 @@ async fn a_draft_row_on_a_new_key_gets_no_group_at_all() {
 
     // One axis apart — a different eligibility class, so a different canonical
     // key, and `cohort` stays `none` as the class requires.
+    //
+    // The axes it keeps come off the published row's graph: the phase is the
+    // line's and the currency/region pair is the market's.
+    let conn = h.provider.conn().expect("conn");
+    let published_graph = bss_pricing::infra::storage::repo::price_join::load_graph(
+        &conn,
+        &h.scope,
+        published.tenant_id,
+        published.clone(),
+    )
+    .await
+    .expect("join the published row to its graph");
     let draft_id = Uuid::from_u128(0x_d2);
     h.prices
         .create_draft(
@@ -4004,18 +4045,20 @@ async fn a_draft_row_on_a_new_key_gets_no_group_at_all() {
             TENANT,
             NewPriceDraft {
                 price_id: draft_id,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: MarketPriceScopeKey::new(
                     ChargeLineScopeKey::new(
                         plan_id,
-                        PhaseId::new(published.phase),
+                        PhaseId::new(published_graph.line.phase),
                         PriceEligibility::NewSubscriptionsOnly,
                         ChargeKind::Recurring,
                         Cohort::None,
                         SkuId::new(Uuid::from_u128(5)),
                     )
                     .expect("the class pairs with cohort none"),
-                    CurrencyCode::new(&published.currency).expect("three letters"),
-                    Region::new(&published.region).expect("a non-blank region"),
+                    CurrencyCode::new(&published_graph.market.currency).expect("three letters"),
+                    Region::new(&published_graph.market.region).expect("a non-blank region"),
                 ),
                 content: flat_row(),
                 created_by: ACTOR,
@@ -4840,6 +4883,8 @@ async fn three_charge_kinds_freeze_distinct_descriptors_before_default_drift() {
                 TENANT,
                 NewPriceDraft {
                     price_id,
+                    line_version_id: None,
+                    market_price_id: None,
                     scope_key: key,
                     content,
                     created_by: ACTOR,

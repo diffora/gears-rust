@@ -227,6 +227,8 @@ async fn the_gated_market_read_is_paged_and_still_counts_every_market_once() {
             tenant(),
             NewPriceDraft {
                 price_id,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: market_key(region, eligibility),
                 content: tax_inclusive_flat(),
                 created_by: Uuid::from_u128(0xac_10),
@@ -262,11 +264,17 @@ async fn the_gated_market_read_is_paged_and_still_counts_every_market_once() {
         ROWS,
         "every seeded row is one the walk will see"
     );
-    let per_page: Vec<BTreeSet<(String, String)>> = ordered
+    // The market pair is the market row's now, so the page's markets are read
+    // through each row's graph rather than off the row.
+    let graphs =
+        bss_pricing::infra::storage::repo::price_join::load_graphs(&conn, &all, tenant(), &ordered)
+            .await
+            .expect("join every seeded row to its market");
+    let per_page: Vec<BTreeSet<(String, String)>> = graphs
         .chunks(usize::try_from(PAGE).expect("a small page"))
         .map(|page| {
             page.iter()
-                .map(|row| (row.currency.clone(), row.region.clone()))
+                .map(|graph| (graph.market.currency.clone(), graph.market.region.clone()))
                 .collect()
         })
         .collect();

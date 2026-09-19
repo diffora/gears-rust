@@ -26,7 +26,7 @@ const RUN: &str = "11111111-1111-1111-1111-111111111111";
 const TENANT: &str = "22222222-2222-2222-2222-222222222222";
 const ACTOR: &str = "33333333-3333-3333-3333-333333333333";
 /// The SKU every seeded row prices (D-372). `pricing_price.sku_id` and
-/// `pricing_plan.sku_id` are `NOT NULL` since `m20260916_000044_price_row_sku`,
+/// `pricing_plan.sku_id` are `NOT NULL` in the fresh-install DDL,
 /// so a seed names one; the value itself is incidental to these cases.
 const SKU: &str = "00000000-0000-0000-0000-000000000005";
 const PRICE: &str = "44444444-4444-4444-4444-444444444444";
@@ -92,22 +92,41 @@ fn take_lock(op: &str, tenant: &str, price: &str) -> String {
 }
 
 /// The held row, as a real `pricing_price` row — the lock keys it.
-fn seed_price(tenant: &str) -> String {
-    format!(
-        "INSERT INTO pricing_price ( \
-             price_id, tenant_id, plan_id, currency, region, phase, \
-             charge_kind, amount_minor, model_kind, lifecycle_state, \
-             created_by, created_at_utc, sku_id) \
-         VALUES ('{PRICE}', '{tenant}', '{PLAN}', 'EUR', 'eu', '{PHASE}', \
-             'recurring', 1000, 'flat', 'published', '{ACTOR}', \
-             '2026-08-08T00:00:00Z', '{SKU}')"
+///
+/// Its charge line, that line's version and its market come first: the row is a
+/// monetary version of a market now and carries three foreign keys, so a bare
+/// insert would be refused before the lock under test ever ran.
+async fn seed_price(conn: &DatabaseConnection, tenant: &str) {
+    let graph = common::seed_charge_graph_sql(
+        conn,
+        &common::SqlGraphSeed {
+            currency: "EUR",
+            region: "eu",
+            created_by: ACTOR,
+            created_at_utc: "2026-08-08T00:00:00Z",
+            ..common::SqlGraphSeed::new(tenant, PLAN, PHASE, SKU)
+        },
     )
+    .await;
+    must_succeed(
+        conn,
+        &format!(
+            "INSERT INTO pricing_price ( \
+                 price_id, tenant_id, plan_id, plan_revision, charge_line_id, \
+                 line_version_id, market_price_id, amount_minor, lifecycle_state, \
+                 created_by, created_at_utc) \
+             VALUES ('{PRICE}', '{tenant}', '{PLAN}', 0, '{}', '{}', '{}', \
+                 1000, 'published', '{ACTOR}', '2026-08-08T00:00:00Z')",
+            graph.charge_line_id, graph.line_version_id, graph.market_price_id
+        ),
+    )
+    .await;
 }
 
 /// A run that has reached `committing`, which is the only state a lock may be
 /// taken under, and the row it is about to hold.
 async fn committing_run(conn: &DatabaseConnection) {
-    must_succeed(conn, &seed_price(TENANT)).await;
+    seed_price(conn, TENANT).await;
     must_succeed(conn, &seed_run(RUN, TENANT)).await;
     must_succeed(conn, &advance(RUN, "committing")).await;
 }
@@ -181,7 +200,7 @@ async fn a_lock_may_only_be_taken_while_its_run_commits() {
         "rejected",
     ] {
         let conn = migrated_db().await;
-        must_succeed(&conn, &seed_price(TENANT)).await;
+        seed_price(&conn, TENANT).await;
         must_succeed(&conn, &seed_run(RUN, TENANT)).await;
         // The two terminal states are only reachable through `committing`, and
         // the run must not keep its lock across that edge either.
@@ -315,7 +334,7 @@ async fn both_keys_name_a_row_that_exists() {
     // what answers rather than a trigger reporting a tenancy or state fault the
     // caller does not have.
     let conn = migrated_db().await;
-    must_succeed(&conn, &seed_price(TENANT)).await;
+    seed_price(&conn, TENANT).await;
     must_be_rejected(&conn, &take_lock(OTHER_RUN, TENANT, PRICE), "FOREIGN KEY").await;
 
     // No price row.
@@ -342,7 +361,7 @@ async fn both_keys_name_a_row_that_exists() {
 #[tokio::test]
 async fn an_import_takes_a_lock_like_any_other_run() {
     let conn = migrated_db().await;
-    must_succeed(&conn, &seed_price(TENANT)).await;
+    seed_price(&conn, TENANT).await;
     must_succeed(&conn, &seed_run_of_kind(RUN, TENANT, "import")).await;
     must_succeed(&conn, &advance(RUN, "committing")).await;
     must_succeed(&conn, &take_lock(RUN, TENANT, PRICE)).await;

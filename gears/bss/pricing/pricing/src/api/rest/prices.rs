@@ -895,6 +895,8 @@ async fn create_price(
                 // states: a replay must answer the FIRST caller's id.
                 let draft = NewPriceDraft {
                     price_id: Uuid::now_v7(),
+                    line_version_id: None,
+                    market_price_id: None,
                     scope_key: key,
                     content,
                     created_by: actor,

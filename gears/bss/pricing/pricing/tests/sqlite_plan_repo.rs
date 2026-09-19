@@ -24,8 +24,7 @@ use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::plan::{PlanRevision, PlanShapePatch};
 use bss_pricing::domain::plan_shape::{
-    AddonRule, CompositeMeter, CustomIntervalUnit, Frequency, PeriodFloorCap,
-    PhaseKind, PlanPhase,
+    AddonRule, CompositeMeter, CustomIntervalUnit, Frequency, PeriodFloorCap, PhaseKind, PlanPhase,
 };
 use bss_pricing::domain::scope_key::{PhaseId, PlanId, Region};
 use bss_pricing::infra::storage::entity::{
@@ -2703,6 +2702,34 @@ async fn the_revision_scoped_tables_are_a_closed_set_and_each_one_is_copied_and_
     const REVISION_OWNED_WINDOW_STORES: [&str; 2] =
         ["pricing_draft_window", "pricing_window_baseline"];
 
+    /// The normalized charge graph carries `plan_revision` too, so the schema
+    /// census sees it. It does **not** take the copy/drop obligation above, and
+    /// these are the three facts that say why rather than an assertion that it
+    /// would be inconvenient:
+    ///
+    /// 1. A line's version is minted **on demand** for the revision being
+    ///    edited — `charge_line_repo::find_or_insert_version`, keyed
+    ///    `UNIQUE (charge_line_id, plan_revision)` — so there is nothing for
+    ///    `open_revision` to copy. A revision that edits no line has no version
+    ///    at that number, which is the correct state and not an absence.
+    /// 2. A price row references its line **version**, and nothing filters on
+    ///    `pricing_price.plan_revision`; the column mirrors the version's. So a
+    ///    published row keeps resolving through the version it was published
+    ///    against however many revisions open afterwards, and opening one loses
+    ///    no prices.
+    /// 3. Revision numbers are never reused — `open_revision` takes the maximum
+    ///    over the whole chain, tombstones included, so an abandoned draft's
+    ///    number is skipped forever. A version left at an abandoned number is
+    ///    therefore unreachable by `find_or_insert_version`, which is why
+    ///    `abandon_draft` need not delete it. Like the window stores above, the
+    ///    rows are retained.
+    ///
+    /// Price rows' own draft lifecycle is plan-scoped rather than
+    /// revision-scoped and was so before this column existed: `list_for_plan`
+    /// filters on plan and state, never on revision. Normalizing the key did not
+    /// move that boundary.
+    const REVISION_OWNED_CHARGE_GRAPH: [&str; 2] = ["pricing_charge_line_version", "pricing_price"];
+
     let conn = common::migrated_db().await;
     // Every table of the whole chain that carries a `plan_revision` column,
     // asked of `sqlite_master` and `pragma_table_info` rather than of a list
@@ -2721,6 +2748,7 @@ async fn the_revision_scoped_tables_are_a_closed_set_and_each_one_is_copied_and_
     let mut expected: Vec<&str> = REVISION_SCOPED
         .iter()
         .chain(REVISION_OWNED_WINDOW_STORES.iter())
+        .chain(REVISION_OWNED_CHARGE_GRAPH.iter())
         .copied()
         .collect();
     expected.sort_unstable();
@@ -2747,7 +2775,10 @@ async fn the_revision_scoped_tables_are_a_closed_set_and_each_one_is_copied_and_
          simply add it there: this assertion is the notice, not the obligation. \
          D-374's `pricing_draft_window` / `pricing_window_baseline` are the \
          documented exception: add them to `REVISION_OWNED_WINDOW_STORES` only, \
-         and prove successor capture / abandon-retain in the draft-window suites."
+         and prove successor capture / abandon-retain in the draft-window suites. \
+         The normalized charge graph is the second documented exception, for the \
+         three reasons spelled out over `REVISION_OWNED_CHARGE_GRAPH`; a table \
+         joining it owes those same three, measured, not assumed."
     );
 }
 
@@ -3052,7 +3083,7 @@ async fn a_retired_plan_takes_no_publish_and_says_so_in_its_own_words() {
         revision: sea_orm::ActiveValue::Set(1),
         tenant_id: sea_orm::ActiveValue::Set(tenant),
         // D-372: `pricing_plan.sku_id` is `NOT NULL` since
-        // `m20260916_000044_price_row_sku`, so a fabricated draft names one.
+        // the fresh-install DDL, so a fabricated draft names one.
         sku_id: sea_orm::ActiveValue::Set(Uuid::from_u128(5)),
         plan_tier: sea_orm::ActiveValue::Set(None),
         frequency: sea_orm::ActiveValue::Set(None),

@@ -183,6 +183,8 @@ fn content(amount: i64) -> PriceContent {
 fn draft(price_id: Uuid, amount: i64) -> NewPriceDraft {
     NewPriceDraft {
         price_id,
+        line_version_id: None,
+        market_price_id: None,
         scope_key: key(),
         content: content(amount),
         created_by: Uuid::from_u128(0xac_30),

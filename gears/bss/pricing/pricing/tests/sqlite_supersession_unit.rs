@@ -179,33 +179,42 @@ async fn approve(h: &Harness, approval_id: Uuid) {
 
 async fn rows_on_key(h: &Harness, key: &MarketPriceScopeKey) -> Vec<price::Model> {
     let conn = h.db.conn().expect("conn");
-    price::Entity::find()
+    let rows = price::Entity::find()
         .secure()
         .scope_with(&AccessScope::allow_all())
         .filter(Condition::all().add(price::Column::TenantId.eq(h.tenant)))
         .order_by(price::Column::PriceId, Order::Asc)
         .all(&conn)
         .await
-        .expect("read the price rows")
-        .into_iter()
-        // More than `(currency, region)`: this suite seeds a usage key that shares
-        // both with the recurring one, and a coarser filter counted the other key's
-        // rows as this one's.
-        //
-        // Less than the canonical key. `plan_id`, `phase`, `cohort`,
-        // `price_overlay`, `meter` and `dimension_key` go uncompared, and what
-        // makes that sound is not a property of the key but of this file's
-        // fixtures: the only pair of keys a harness here holds at once is the
-        // recurring one and the usage one, and `charge_kind` separates them. A
-        // second usage line, or a second overlay, on an otherwise identical key
-        // would be the first fixture this helper could not tell apart.
-        .filter(|row| {
-            row.currency == key.currency().as_str()
-                && row.region == key.region().as_str()
-                && row.charge_kind == key.charge_kind().as_str()
-                && row.price_eligibility == key.price_eligibility().as_str()
-        })
-        .collect()
+        .expect("read the price rows");
+    bss_pricing::infra::storage::repo::price_join::load_graphs(
+        &conn,
+        &AccessScope::allow_all(),
+        h.tenant,
+        &rows,
+    )
+    .await
+    .expect("join each row to its line and market")
+    .into_iter()
+    // More than `(currency, region)`: this suite seeds a usage key that shares
+    // both with the recurring one, and a coarser filter counted the other key's
+    // rows as this one's.
+    //
+    // Less than the canonical key. `plan_id`, `phase`, `cohort`,
+    // `price_overlay`, `meter` and `dimension_key` go uncompared, and what
+    // makes that sound is not a property of the key but of this file's
+    // fixtures: the only pair of keys a harness here holds at once is the
+    // recurring one and the usage one, and `charge_kind` separates them. A
+    // second usage line, or a second overlay, on an otherwise identical key
+    // would be the first fixture this helper could not tell apart.
+    .filter(|graph| {
+        graph.market.currency == key.currency().as_str()
+            && graph.market.region == key.region().as_str()
+            && graph.line.charge_kind == key.charge_kind().as_str()
+            && graph.line.price_eligibility == key.price_eligibility().as_str()
+    })
+    .map(|graph| graph.price)
+    .collect()
 }
 
 async fn state_of(h: &Harness, price_id: Uuid) -> String {
@@ -1140,6 +1149,8 @@ async fn usage_key_with_published_row(
             h.tenant,
             bss_pricing::infra::storage::repo::NewPriceDraft {
                 price_id,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: key.clone(),
                 content: graduated_usage(500),
                 created_by: SUBMITTER,

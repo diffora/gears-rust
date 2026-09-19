@@ -256,7 +256,7 @@ async fn seed_published_price_row_n(harness: &Harness, region: &str, nth: u128) 
         tenant_id: Set(harness.tenant),
         lifecycle_state: Set("published".to_owned()),
         // D-372: `pricing_plan.sku_id` is `NOT NULL` since
-        // `m20260916_000044_price_row_sku`.
+        // the fresh-install DDL.
         sku_id: Set(uuid::Uuid::from_u128(5)),
         created_by: Set(uuid::Uuid::from_u128(0x4444)),
         created_at_utc: Set(stamped),
@@ -274,31 +274,47 @@ async fn seed_published_price_row_n(harness: &Harness, region: &str, nth: u128) 
         planted.expect("seed the plan revision");
     }
 
+    let seeded_graph = common::seed_charge_graph(
+        &conn,
+        &AccessScope::allow_all(),
+        &common::ChargeGraphSeed {
+            tenant_id: harness.tenant,
+            plan_id,
+            phase: uuid::Uuid::from_u128(0xf1),
+            // D-372: `pricing_price.sku_id` is `NOT NULL` since
+            // the fresh-install DDL.
+            sku_id: uuid::Uuid::from_u128(5),
+            price_overlay: "base".to_owned(),
+            price_eligibility: "all_subscriptions".to_owned(),
+            charge_kind: "recurring".to_owned(),
+            cohort: "none".to_owned(),
+            dimension_key: if nth == 0 {
+                String::new()
+            } else {
+                format!("d{nth}")
+            },
+            currency: "EUR".to_owned(),
+            region: region.to_owned(),
+            lifecycle_state: "published".to_owned(),
+            created_by: uuid::Uuid::from_u128(0x4444),
+            created_at_utc: stamped,
+            ..Default::default()
+        },
+    )
+    .await;
     let price_row = bss_pricing::infra::storage::entity::price::ActiveModel {
+        plan_revision: Set(1),
+        charge_line_id: Set(seeded_graph.charge_line_id),
+        line_version_id: Set(seeded_graph.line_version_id),
+        market_price_id: Set(seeded_graph.market_price_id),
         price_id: Set(uuid::Uuid::from_u128(0xb0_01_00 + nth)),
         tenant_id: Set(harness.tenant),
         plan_id: Set(plan_id),
-        currency: Set("EUR".to_owned()),
-        region: Set(region.to_owned()),
-        price_overlay: Set("base".to_owned()),
-        phase: Set(uuid::Uuid::from_u128(0xf1)),
-        price_eligibility: Set("all_subscriptions".to_owned()),
-        charge_kind: Set("recurring".to_owned()),
-        cohort: Set("none".to_owned()),
         // Distinct per call: `uq_pricing_price_scope_key_current` is unique over
         // the whole eleven-column scope key among published rows, and `region`
         // is the one column this seeder must hold fixed — so the ordinal moves
-        // `dimension_key`, the axis with no meaning of its own here.
-        dimension_key: Set(if nth == 0 {
-            String::new()
-        } else {
-            format!("d{nth}")
-        }),
         tax_inclusive: Set(false),
         lifecycle_state: Set("published".to_owned()),
-        // D-372: `pricing_price.sku_id` is `NOT NULL` since
-        // `m20260916_000044_price_row_sku`.
-        sku_id: Set(uuid::Uuid::from_u128(5)),
         created_by: Set(uuid::Uuid::from_u128(0x4444)),
         created_at_utc: Set(stamped),
         row_version: Set(0),

@@ -557,6 +557,28 @@ impl fmt::Display for TierBand {
     }
 }
 
+/// Pair each band with the `band_ordinal` it is stored under, in quantity order.
+///
+/// **Both band tables key off this ordinal**, and they are written by different
+/// modules: geometry (`from_qty`/`to_qty`) goes to `pricing_charge_tier` from
+/// the line repository, the rate goes to `pricing_price_tier_band` from the
+/// price repository, and a compound foreign key requires band *N* of one to be
+/// band *N* of the other. Deriving the ordinal here rather than at each writer
+/// is what makes that agreement structural instead of a coincidence of both
+/// having called `enumerate()` on the same slice.
+///
+/// Ordering by `from_qty` is also what keeps the read-side guarantee the price
+/// repository documents: a band set comes back in quantity order however it was
+/// authored. The normalized schema replaced a `(price_id, from_qty)` index with
+/// an ordinal, so without this sort the ordinal would carry authoring order and
+/// a caller that wrote its top band first would read it back first.
+#[must_use]
+pub fn bands_in_ordinal_order(bands: &[TierBand]) -> Vec<(usize, &TierBand)> {
+    let mut ordered: Vec<&TierBand> = bands.iter().collect();
+    ordered.sort_by_key(|band| band.from_qty);
+    ordered.into_iter().enumerate().collect()
+}
+
 /// The authored price row: the Slice-3 shape, plus the `chargeKind` axis it is
 /// judged against.
 ///

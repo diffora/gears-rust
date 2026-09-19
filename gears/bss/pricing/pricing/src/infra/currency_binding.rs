@@ -45,6 +45,7 @@ use crate::domain::scope_key::{PriceEligibility, Region};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{plan, price};
 use crate::infra::storage::repo::plan_repo;
+use crate::infra::storage::repo::price_join;
 
 /// What each add-on SKU covers, as this module assembles it.
 type CoverageBySku = BTreeMap<Uuid, BTreeSet<Market>>;
@@ -113,37 +114,44 @@ pub async fn addon_coverage(
             Condition::all()
                 .add(price::Column::TenantId.eq(tenant_id))
                 .add(price::Column::PlanId.is_in(plan_to_sku.keys().copied()))
-                .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str()))
-                // **The one `.ne()` over this vocabulary in the crate**, which is
-                // what made a hand-spelled token here fail *open*: a spelling
-                // that stopped matching the stored one would match every row and
-                // count grandfathered rows as coverage, letting an
-                // `inst-cb-addon` publish through that D-95 requires refused.
-                // Every `.eq()` sibling drifts to zero rows and is loud. So this
-                // predicate renders through the enum that owns the token.
-                .add(
-                    price::Column::PriceEligibility
-                        .ne(PriceEligibility::ExistingGrandfathered.as_str()),
-                ),
+                .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str())),
         )
         .all(runner)
         .await
         .map_err(|e| RepoError::Db(format!("read add-on coverage rows: {e}")))?;
+    let graphs = price_join::load_graphs(runner, scope, tenant_id, &rows).await?;
 
     // Per **plan**, then intersected per SKU — see below.
+    //
+    // **The one `.ne()` over this vocabulary in the crate**, which is what made a
+    // hand-spelled token here fail *open*: a spelling that stopped matching the
+    // stored one would match every row and count grandfathered rows as coverage,
+    // letting an `inst-cb-addon` publish through that D-95 requires refused. Every
+    // `.eq()` sibling drifts to zero rows and is loud. So this comparison renders
+    // through the enum that owns the token — now against the charge line, which is
+    // where the eligibility class lives.
     let mut by_plan: BTreeMap<Uuid, BTreeSet<Market>> = BTreeMap::new();
-    for row in rows {
-        if !plan_to_sku.contains_key(&row.plan_id) {
+    for graph in graphs {
+        if !plan_to_sku.contains_key(&graph.price.plan_id) {
             continue;
         }
-        let currency = CurrencyCode::new(&row.currency).map_err(|e| {
-            RepoError::CorruptRow(format!("pricing_price.currency `{}`: {e}", row.currency))
+        if graph.line.price_eligibility == PriceEligibility::ExistingGrandfathered.as_str() {
+            continue;
+        }
+        let currency = CurrencyCode::new(&graph.market.currency).map_err(|e| {
+            RepoError::CorruptRow(format!(
+                "pricing_market_price.currency `{}`: {e}",
+                graph.market.currency
+            ))
         })?;
-        let region = Region::new(&row.region).map_err(|e| {
-            RepoError::CorruptRow(format!("pricing_price.region `{}`: {e}", row.region))
+        let region = Region::new(&graph.market.region).map_err(|e| {
+            RepoError::CorruptRow(format!(
+                "pricing_market_price.region `{}`: {e}",
+                graph.market.region
+            ))
         })?;
         by_plan
-            .entry(row.plan_id)
+            .entry(graph.price.plan_id)
             .or_default()
             .insert((currency, region));
     }

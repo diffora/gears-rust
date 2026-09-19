@@ -206,6 +206,8 @@ fn flat_row() -> PriceContent {
 fn new_price(market: &str, seed: u128) -> NewPriceDraft {
     NewPriceDraft {
         price_id: Uuid::from_u128(seed),
+        line_version_id: None,
+        market_price_id: None,
         scope_key: scope_key(market),
         content: flat_row(),
         created_by: SUBMITTER,

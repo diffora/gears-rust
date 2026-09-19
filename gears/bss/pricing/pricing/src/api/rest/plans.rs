@@ -66,12 +66,12 @@ use crate::domain::instant::rfc3339;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::plan::{PlanRevision, PlanShapePatch};
-use crate::domain::plan_rules::composition::AddonQtyRange;
 use crate::domain::plan_rules::charge_shape::PurchaseQtyRange;
+use crate::domain::plan_rules::composition::AddonQtyRange;
 use crate::domain::plan_rules::period_floor_cap::PeriodFloorCapAmounts;
 use crate::domain::plan_shape::{
-    AddonRule, CompositeMeter, CustomIntervalUnit, Frequency, PeriodFloorCap,
-    PhaseKind, PlanPhase, PlanShape,
+    AddonRule, CompositeMeter, CustomIntervalUnit, Frequency, PeriodFloorCap, PhaseKind, PlanPhase,
+    PlanShape,
 };
 use crate::domain::scope_key::{PhaseId, PlanId, Region};
 use crate::domain::validation::ValidationPipeline;

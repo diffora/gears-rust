@@ -35,7 +35,7 @@ use common::{exec, migrated_db, must_succeed, scalar};
 
 const TENANT: &str = "11111111-1111-1111-1111-111111111111";
 /// The SKU every seeded plan revision names (D-372). `pricing_plan.sku_id` is
-/// `NOT NULL` since `m20260916_000044_price_row_sku`.
+/// `NOT NULL` in the fresh-install DDL.
 const SKU: &str = "00000000-0000-0000-0000-000000000005";
 const PLAN: &str = "22222222-2222-2222-2222-222222222222";
 const ACTOR: &str = "44444444-4444-4444-4444-444444444444";
@@ -638,12 +638,7 @@ async fn a_published_revision_freezes_every_column_the_whitelist_names() {
         let plan = plan_of(i);
         must_succeed(
             &conn,
-            &insert_with(
-                &plan,
-                0,
-                "published",
-                &[("frequency", "'monthly'")],
-            ),
+            &insert_with(&plan, 0, "published", &[("frequency", "'monthly'")]),
         )
         .await;
         must_be_rejected(
@@ -768,10 +763,7 @@ async fn a_published_revision_freezes_its_grant_set_and_change_contract() {
                 &plan,
                 0,
                 "published",
-                &[
-                    ("frequency", "'monthly'"),
-                    (column, seeded),
-                ],
+                &[("frequency", "'monthly'"), (column, seeded)],
             ),
         )
         .await;

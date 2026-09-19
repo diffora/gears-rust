@@ -2198,6 +2198,12 @@ async fn apply_plan_in(
               own identity, the plan and its rows, the adjustment and changeover the report \
               carried, and the stamp. Bundling them would name a struct with exactly one reader"
 )]
+#[allow(
+    clippy::too_many_lines,
+    reason = "two lines over the bar since the successor's draft gained its line-version and \
+              market references; splitting the row loop would put the transaction's commit \
+              ordering in two places"
+)]
 async fn apply_rows_in(
     txn: &DbTx<'_>,
     scope: &AccessScope,
@@ -2423,6 +2429,8 @@ async fn apply_rows_in(
             tenant_id,
             NewPriceDraft {
                 price_id: Uuid::now_v7(),
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: key.clone(),
                 content: successor_content,
                 created_by: stamp.actor_principal_id,
@@ -2816,7 +2824,7 @@ mod ordinary_failure_release {
                     created_by: Uuid::from_u128(0x1),
                     created_at_utc: now,
                     // D-372: `pricing_plan.sku_id` is `NOT NULL` since
-                    // `m20260916_000044_price_row_sku`, so a draft with no SKU is
+                    // the fresh-install DDL, so a draft with no SKU is
                     // refused by the store. `PlanShape.sku_id` stays `Option`
                     // until Task 8 makes the DTO require one; this fixture names
                     // the value the suite's other seeds do.
@@ -2859,6 +2867,8 @@ mod ordinary_failure_release {
                 tenant_id,
                 NewPriceDraft {
                     price_id,
+                    line_version_id: None,
+                    market_price_id: None,
                     scope_key: key,
                     content: PriceContent {
                         row,
@@ -3118,7 +3128,7 @@ mod step0_probe {
                     created_by: Uuid::from_u128(0x1),
                     created_at_utc: now,
                     // D-372: `pricing_plan.sku_id` is `NOT NULL` since
-                    // `m20260916_000044_price_row_sku`, so a draft with no SKU is
+                    // the fresh-install DDL, so a draft with no SKU is
                     // refused by the store. `PlanShape.sku_id` stays `Option`
                     // until Task 8 makes the DTO require one; this fixture names
                     // the value the suite's other seeds do.
@@ -3170,6 +3180,8 @@ mod step0_probe {
                         tenant_id,
                         NewPriceDraft {
                             price_id,
+                            line_version_id: None,
+                            market_price_id: None,
                             scope_key: key,
                             content: PriceContent {
                                 row,

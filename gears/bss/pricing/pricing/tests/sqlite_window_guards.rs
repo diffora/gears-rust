@@ -66,7 +66,7 @@ const PLAN: &str = "22222222-2222-2222-2222-222222222222";
 const PHASE: &str = "33333333-3333-3333-3333-333333333333";
 const ACTOR: &str = "44444444-4444-4444-4444-444444444444";
 /// The SKU every seeded row prices (D-372). `pricing_price.sku_id` and
-/// `pricing_plan.sku_id` are `NOT NULL` since `m20260916_000044_price_row_sku`,
+/// `pricing_plan.sku_id` are `NOT NULL` in the fresh-install DDL,
 /// so a seed names one; the value itself is incidental to these cases.
 const SKU: &str = "00000000-0000-0000-0000-000000000005";
 const ROW: &str = "aaaaaaaa-0000-0000-0000-000000000001";
@@ -132,16 +132,26 @@ async fn must_be_rejected(conn: &DatabaseConnection, sql: &str, because: &str) {
 async fn seeded() -> DatabaseConnection {
     let conn = migrated_db().await;
     for (id, charge_kind) in [(ROW, "recurring"), (OTHER_ROW, "one_time")] {
+        let graph = common::seed_charge_graph_sql(
+            &conn,
+            &common::SqlGraphSeed {
+                charge_kind,
+                created_by: ACTOR,
+                created_at_utc: "2026-08-04T09:00:00+00:00",
+                ..common::SqlGraphSeed::new(TENANT, PLAN, PHASE, SKU)
+            },
+        )
+        .await;
         must_succeed(
             &conn,
             &format!(
                 "INSERT INTO pricing_price (
-                     price_id, tenant_id, plan_id, currency, region, phase,
-                     charge_kind, amount_minor, model_kind, lifecycle_state,
-                     created_by, created_at_utc, sku_id)
-                 VALUES ('{id}', '{TENANT}', '{PLAN}', 'USD', 'EU', '{PHASE}',
-                     '{charge_kind}', 1000, 'flat', 'published', '{ACTOR}',
-                     '2026-08-04T09:00:00+00:00', '{SKU}')"
+                     price_id, tenant_id, plan_id, plan_revision, charge_line_id,
+                     line_version_id, market_price_id, amount_minor, lifecycle_state,
+                     created_by, created_at_utc)
+                 VALUES ('{id}', '{TENANT}', '{PLAN}', 0, '{}', '{}', '{}',
+                     1000, 'published', '{ACTOR}', '2026-08-04T09:00:00+00:00')",
+                graph.charge_line_id, graph.line_version_id, graph.market_price_id
             ),
         )
         .await;
@@ -149,11 +159,32 @@ async fn seeded() -> DatabaseConnection {
     conn
 }
 
+/// The market `ROW` belongs to, derived the way [`common::seed_charge_graph_sql`]
+/// derives it.
+///
+/// A window carries its row's market now — non-overlap is judged per market, and
+/// the table's foreign key is the compound `(tenant_id, price_id,
+/// market_price_id)` — so every window this file seeds has to name it.
+fn row_market() -> String {
+    market_of(ROW)
+}
+
+/// The market of one of [`seeded`]'s two price rows.
+fn market_of(price_id: &str) -> String {
+    let charge_kind = if price_id == OTHER_ROW {
+        "one_time"
+    } else {
+        "recurring"
+    };
+    common::sql_market_id(TENANT, PLAN, PHASE, SKU, charge_kind, "USD", "EU")
+}
+
 fn base_window(id: &str) -> Vec<(String, String)> {
     [
         ("window_id", format!("'{id}'")),
         ("tenant_id", format!("'{TENANT}'")),
         ("price_id", format!("'{ROW}'")),
+        ("market_price_id", format!("'{}'", row_market())),
         ("effective_from", FUTURE_FROM.to_owned()),
         ("effective_to", FUTURE_TO.to_owned()),
         ("state", "'scheduled'".to_owned()),
@@ -194,6 +225,26 @@ fn insert(id: &str, overrides: &[(&str, &str)]) -> String {
             Some(slot) => (*value).clone_into(&mut slot.1),
             None => columns.push(((*name).to_owned(), (*value).to_owned())),
         }
+    }
+    // **The market follows the row, after the overrides.** A window carries its
+    // price row's market, the table's foreign key is the compound
+    // `(tenant_id, price_id, market_price_id)`, and the overlap guard compares
+    // markets — so a case that overrides `price_id` and left the market behind
+    // would be refused by the FK, or worse, judged against the other row's
+    // occupancy.
+    let row = columns
+        .iter()
+        .find(|(column, _)| column == "price_id")
+        .map_or_else(
+            || ROW.to_owned(),
+            |(_, value)| value.trim_matches('\'').to_owned(),
+        );
+    let market = market_of(&row);
+    if let Some(slot) = columns
+        .iter_mut()
+        .find(|(column, _)| column == "market_price_id")
+    {
+        slot.1 = format!("'{market}'");
     }
     let names = columns
         .iter()

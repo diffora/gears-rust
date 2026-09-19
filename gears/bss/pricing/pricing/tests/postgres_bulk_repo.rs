@@ -149,6 +149,8 @@ async fn a_price_row(store: &Store, region: &str) -> Uuid {
             TENANT,
             NewPriceDraft {
                 price_id,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: MarketPriceScopeKey::new(
                     ChargeLineScopeKey::new(
                         PlanId::new(plan_id),

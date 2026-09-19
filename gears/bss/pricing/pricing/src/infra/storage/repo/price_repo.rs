@@ -136,19 +136,22 @@ use crate::domain::price_row::{
 use crate::domain::projection::PROJECTED_ROW_STATES;
 use crate::domain::repricing::RunSelector;
 use crate::domain::scope_key::{
-    ChargeKind, ChargeLineScopeKey, Cohort, DimensionKey, MarketPriceScopeKey,
-    MarketPriceScopeKeyParts, Meter, PhaseId, PlanId, PriceEligibility, PriceOverlay, Region,
-    SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, DimensionKey, MarketPriceScopeKey, Meter, PhaseId,
+    PlanId, PriceEligibility, PriceOverlay, Region, SkuId,
 };
 use crate::domain::tax_display::RegionTaxReadiness;
 use crate::infra::storage::RepoError;
-use crate::infra::storage::entity::{price, price_tier_band, price_window};
+use crate::infra::storage::entity::{
+    charge_line, charge_line_version, charge_tier, market_price, price, price_tier_band,
+    price_window,
+};
 use crate::infra::storage::odata_mapping::{
     HistoryODataMapper, LIST_LIMIT_CFG, OdataPageError, PlanPriceODataMapper,
     filter_mentions_field, map_odata_err, query_with_default_order,
 };
 use crate::infra::storage::repo::check_authored_instant;
 use crate::infra::storage::repo::outbox_repo::{NewOutboxEvent, PriceCreatedPayload};
+use crate::infra::storage::repo::price_join::{PriceGraph, load_graph, load_graphs};
 use crate::infra::storage::repo::{NewAuditEntry, audit_repo, outbox_repo, window_guard_repo};
 
 /// The noun the authoring refusals name, so one subject word reaches the wire
@@ -244,6 +247,11 @@ pub const ROLLOVER_POLICIES: &[RolloverPolicy] = &[RolloverPolicy::None, Rollove
 pub struct NewPriceDraft {
     /// The row being created.
     pub price_id: Uuid,
+    /// Exact line-version this money binds to. `None` means ensure the graph
+    /// from [`Self::scope_key`] and [`Self::content`].
+    pub line_version_id: Option<Uuid>,
+    /// Exact market this money belongs to. `None` means ensure from the key.
+    pub market_price_id: Option<Uuid>,
     /// The ten axes it is filed under.
     pub scope_key: MarketPriceScopeKey,
     /// What the row says.
@@ -367,7 +375,7 @@ impl PriceRepo {
         // also why the split below is `prepare_draft` + `insert_prepared` rather
         // than one runner-taking body — `create_draft_on` runs both, which the
         // seam needs, and this path keeps the refusal ahead of the BEGIN.
-        let prepared = prepare_draft(tenant_id, draft)?;
+        let prepared = prepare_draft(&draft)?;
         let plan_id = prepared.record.scope_key.plan_id().get();
 
         let scope = scope.clone();
@@ -1184,14 +1192,14 @@ pub async fn publish_rows(
     // returned against what was validated, not from having read them one at a
     // time — so the refusal below is exactly as precise, and is still taken
     // through [`refuse`] so its three answers are spelled in one place.
-    let held: HashMap<Uuid, price::Model> =
-        load_rows(txn, scope, tenant_id, validated.iter().map(|(id, _)| *id))
-            .await?
-            .into_iter()
-            .map(|row| (row.price_id, row))
-            .collect();
+    let rows = load_rows(txn, scope, tenant_id, validated.iter().map(|(id, _)| *id)).await?;
+    let held: HashMap<Uuid, PriceGraph> = load_graphs(txn, scope, tenant_id, &rows)
+        .await?
+        .into_iter()
+        .map(|graph| (graph.price.price_id, graph))
+        .collect();
     for (price_id, expected) in validated {
-        if !stands_at(held.get(price_id), *expected) {
+        if !stands_at(held.get(price_id).map(|graph| &graph.price), *expected) {
             return Err(refuse(txn, scope, tenant_id, *price_id, *expected).await);
         }
     }
@@ -1238,27 +1246,31 @@ pub async fn publish_rows(
     let mut by_resolution: BTreeMap<ResolutionKey, Vec<Uuid>> = BTreeMap::new();
     for (price_id, _) in validated {
         let row = held.get(price_id);
-        let category = row.and_then(|row| {
-            row.tax_category_ref.clone().or_else(|| {
+        let category = row.and_then(|graph| {
+            graph.price.tax_category_ref.clone().or_else(|| {
                 readiness
-                    .of_str(&row.region)
+                    .of_str(&graph.market.region)
                     .and_then(|markers| markers.tax_category.clone())
             })
         });
-        let rounding = row.and_then(|row| {
-            row.rounding_policy_ref
+        let rounding = row.and_then(|graph| {
+            graph
+                .price
+                .rounding_policy_ref
                 .clone()
                 .or_else(|| default_rounding_policy.map(ToOwned::to_owned))
         });
         let stored =
             row.ok_or_else(|| RepoError::CorruptRow(format!("missing validated row {price_id}")))?;
-        let kind = ChargeKind::parse(&stored.charge_kind)
+        let kind = ChargeKind::parse(&stored.line.charge_kind)
             .ok_or_else(|| RepoError::CorruptRow("invalid charge kind".into()))?;
         let template = stored
+            .version
             .invoice_line_template
             .clone()
             .unwrap_or_else(|| default_templates.get(kind).to_owned());
         let gl = stored
+            .version
             .gl_code_ref
             .clone()
             .or_else(|| default_gl.clone())
@@ -1329,10 +1341,22 @@ pub async fn publish_rows(
     }
 
     let mut result_rows = 0_u64;
+    // **Two writes, because the two resolutions have two owners.** The descriptor
+    // pair is shared content of the line version (Task 2's ledger: invoice
+    // template and GL code are shared), so freezing it onto `pricing_price`
+    // would give one line's markets divergent descriptors. Tax category and
+    // rounding stay market-specific and stay here.
+    let mut frozen_versions: Vec<(Uuid, String, String)> = Vec::new();
     for ((resolved, rounding, template, gl), price_ids) in by_resolution {
         let mut group = Condition::any();
         for price_id in &price_ids {
             group = group.add(price::Column::PriceId.eq(*price_id));
+            let version_id = held
+                .get(price_id)
+                .ok_or_else(|| RepoError::CorruptRow(format!("missing validated row {price_id}")))?
+                .price
+                .line_version_id;
+            frozen_versions.push((version_id, template.clone(), gl.clone()));
         }
         let outcome = price::Entity::update_many()
             .secure()
@@ -1355,11 +1379,6 @@ pub async fn publish_rows(
                 price::Column::ResolvedRoundingPolicy,
                 Expr::value(rounding.clone()),
             )
-            .col_expr(
-                price::Column::ResolvedInvoiceLineTemplate,
-                Expr::value(template),
-            )
-            .col_expr(price::Column::ResolvedGlCode, Expr::value(gl))
             .filter(
                 plan_rows_in_state(tenant_id, plan_id, LifecycleState::Draft)
                     .add(identities.clone())
@@ -1370,6 +1389,14 @@ pub async fn publish_rows(
             .map_err(|e| RepoError::Db(format!("publish plan price rows: {e}")))?;
         result_rows += outcome.rows_affected;
     }
+
+    // The shared half of the same freeze. Deduplicated because a line's markets
+    // all name one version, and the same version must not be flipped once per
+    // market.
+    frozen_versions.sort_unstable();
+    frozen_versions.dedup();
+    super::charge_line_repo::freeze_published_versions(txn, scope, tenant_id, &frozen_versions)
+        .await?;
 
     // Checked rather than cast: a cast that wrapped would report a mismatched
     // set as a matching one, which is the one answer this comparison must never
@@ -1620,16 +1647,18 @@ async fn refuse_mispaired(
     predecessor: Uuid,
     successor: Uuid,
 ) -> Result<(), RepoError> {
-    let rows: HashMap<Uuid, price::Model> = load_rows(
+    let loaded = load_rows(
         runner,
         scope,
         tenant_id,
         [predecessor, successor].into_iter(),
     )
-    .await?
-    .into_iter()
-    .map(|row| (row.price_id, row))
-    .collect();
+    .await?;
+    let rows: HashMap<Uuid, PriceGraph> = load_graphs(runner, scope, tenant_id, &loaded)
+        .await?
+        .into_iter()
+        .map(|graph| (graph.price.price_id, graph))
+        .collect();
     let (Some(before), Some(after)) = (rows.get(&predecessor), rows.get(&successor)) else {
         // Which one is missing is not this function's answer to give: the two sibling
         // moves below each produce a precise refusal for their own row, and answering
@@ -1647,13 +1676,13 @@ async fn refuse_mispaired(
             ),
         });
     }
-    if after.supersedes_price_id != Some(predecessor) {
+    if after.price.supersedes_price_id != Some(predecessor) {
         return Err(RepoError::NotSupersedable {
             subject: SUBJECT.to_owned(),
             id: successor.to_string(),
             state: format!(
                 "carrying supersedesPriceId {:?}, which does not name price {predecessor}",
-                after.supersedes_price_id
+                after.price.supersedes_price_id
             ),
         });
     }
@@ -1763,12 +1792,12 @@ async fn refuse_ungenerational(
     copy: Uuid,
     cutover_at: OffsetDateTime,
 ) -> Result<(), RepoError> {
-    let rows: HashMap<Uuid, price::Model> =
-        load_rows(runner, scope, tenant_id, [predecessor, copy].into_iter())
-            .await?
-            .into_iter()
-            .map(|row| (row.price_id, row))
-            .collect();
+    let loaded = load_rows(runner, scope, tenant_id, [predecessor, copy].into_iter()).await?;
+    let rows: HashMap<Uuid, PriceGraph> = load_graphs(runner, scope, tenant_id, &loaded)
+        .await?
+        .into_iter()
+        .map(|graph| (graph.price.price_id, graph))
+        .collect();
     // Which one is missing is the sibling moves' answer to give, exactly as in
     // `refuse_mispaired`.
     let (Some(before), Some(after)) = (rows.get(&predecessor), rows.get(&copy)) else {
@@ -1783,18 +1812,18 @@ async fn refuse_ungenerational(
             ),
         });
     }
-    if after.price_eligibility != PriceEligibility::ExistingGrandfathered.as_str() {
+    if after.line.price_eligibility != PriceEligibility::ExistingGrandfathered.as_str() {
         return Err(RepoError::NotSupersedable {
             subject: SUBJECT.to_owned(),
             id: copy.to_string(),
             state: format!(
                 "on eligibility class {}; a cutover copy is the existing_grandfathered row",
-                after.price_eligibility
+                after.line.price_eligibility
             ),
         });
     }
     let this_generation = Cohort::Generation(cutover_at).to_string();
-    if after.cohort != this_generation {
+    if after.line.cohort != this_generation {
         return Err(RepoError::NotSupersedable {
             subject: SUBJECT.to_owned(),
             id: copy.to_string(),
@@ -1802,7 +1831,7 @@ async fn refuse_ungenerational(
                 "on generation {}, not this cutover's {this_generation}; each cutover mints one \
                  generation keyed by its own instant, and an earlier one is a previous act's \
                  retained row",
-                after.cohort
+                after.line.cohort
             ),
         });
     }
@@ -1823,16 +1852,16 @@ type MarketColumns<'a> = (
 
 /// The scope-key columns a generation shares with the row it was copied from — all
 /// of them but `priceEligibility` and `cohort`.
-fn market_columns(row: &price::Model) -> MarketColumns<'_> {
+fn market_columns(graph: &PriceGraph) -> MarketColumns<'_> {
     (
-        row.plan_id,
-        row.currency.as_str(),
-        row.region.as_str(),
-        row.price_overlay.as_str(),
-        row.phase,
-        row.charge_kind.as_str(),
-        row.sku_id,
-        row.dimension_key.as_str(),
+        graph.line.plan_id,
+        graph.market.currency.as_str(),
+        graph.market.region.as_str(),
+        graph.line.price_overlay.as_str(),
+        graph.line.phase,
+        graph.line.charge_kind.as_str(),
+        graph.line.sku_id,
+        graph.line.dimension_key.as_str(),
     )
 }
 
@@ -1855,18 +1884,18 @@ fn market_columns(row: &price::Model) -> MarketColumns<'_> {
 /// **The ninth axis is `sku_id` since D-372**, not `meter`: the meter left the key
 /// and a row's SKU took its place, so comparing `meter` here would compare content
 /// while the key it is supposed to decide moved one column over.
-fn scope_key_columns(row: &price::Model) -> ScopeKeyColumns<'_> {
+fn scope_key_columns(graph: &PriceGraph) -> ScopeKeyColumns<'_> {
     (
-        row.plan_id,
-        row.currency.as_str(),
-        row.region.as_str(),
-        row.price_overlay.as_str(),
-        row.phase,
-        row.price_eligibility.as_str(),
-        row.charge_kind.as_str(),
-        row.cohort.as_str(),
-        row.sku_id,
-        row.dimension_key.as_str(),
+        graph.line.plan_id,
+        graph.market.currency.as_str(),
+        graph.market.region.as_str(),
+        graph.line.price_overlay.as_str(),
+        graph.line.phase,
+        graph.line.price_eligibility.as_str(),
+        graph.line.charge_kind.as_str(),
+        graph.line.cohort.as_str(),
+        graph.line.sku_id,
+        graph.line.dimension_key.as_str(),
     )
 }
 
@@ -2038,13 +2067,16 @@ pub struct PlanRowAggregate {
 /// [`PlanRowAggregate`] for each of `plan_ids` that holds at least one authoring
 /// row (D-360).
 ///
-/// **One grouped read for the whole page**, not one per plan: grouped by
-/// `(plan_id, model_kind, currency)`, so the row count is the sum of the group
-/// counts and the two vocabularies are the distinct group keys, and the result is
-/// bounded by a plan's model×currency combinations — single digits — never by
-/// its rows. Built with `project_all`, the secure layer's one projection door,
-/// so the scope is compiled before the grouping runs and nothing loads rows to
-/// count them.
+/// **Grouped reads for the whole page**, not one per plan. The count is grouped
+/// by `plan_id` alone. The two vocabularies no longer live on `pricing_price` —
+/// `model_kind` is shared content of the line version, `currency` is an axis of
+/// the market — so they are reached by reading the distinct
+/// `(plan_id, line_version_id, market_price_id)` references and then those two
+/// small tables by id. The reference read is bounded by a plan's lines ×
+/// markets, never by its rows, because every monetary version of one market
+/// collapses into one reference. The grouped reads are built with `project_all`,
+/// the secure layer's one projection door, so the scope is compiled before the
+/// grouping runs and nothing loads rows to count them.
 ///
 /// A plan with no authoring row has **no entry**; the caller renders zero and two
 /// empty lists. A `NULL` or empty `model_kind` contributes to the count and to no
@@ -2063,15 +2095,25 @@ pub async fn aggregate_authoring_rows_for_plans(
     #[derive(sea_orm::FromQueryResult)]
     struct Group {
         plan_id: Uuid,
-        model_kind: Option<String>,
-        currency: String,
         cnt: i64,
+    }
+    /// One authoring row's two references, without its money.
+    #[derive(sea_orm::FromQueryResult)]
+    #[allow(
+        clippy::struct_field_names,
+        reason = "every field is an id because the struct is nothing but references"
+    )]
+    struct Reference {
+        plan_id: Uuid,
+        line_version_id: Uuid,
+        market_price_id: Uuid,
     }
     if plan_ids.is_empty() {
         return Ok(HashMap::new());
     }
     let ids: Vec<Uuid> = plan_ids.iter().map(|plan| plan.get()).collect();
     let mut groups = Vec::new();
+    let mut references: Vec<Reference> = Vec::new();
     // **Chunked on `MAX_IN_BINDS`, as every other `is_in` in this file is.**
     // Today's only caller is a page and cannot exceed D-125's limit, but that
     // bound is the caller's and not this signature's - `load_for_plans` takes the
@@ -2079,45 +2121,121 @@ pub async fn aggregate_authoring_rows_for_plans(
     // catalogue-sized id set arrives here an unchunked bind list is a driver
     // parameter-limit error the caller reads as a 500.
     for chunk in ids.chunks(MAX_IN_BINDS) {
+        let authoring = Condition::all()
+            .add(price::Column::TenantId.eq(tenant_id))
+            .add(price::Column::PlanId.is_in(chunk.to_vec()))
+            .add(price::Column::LifecycleState.is_in([
+                LifecycleState::Draft.as_str(),
+                LifecycleState::Published.as_str(),
+            ]));
         let page = price::Entity::find()
             .secure()
             .scope_with(scope)
-            .filter(
-                Condition::all()
-                    .add(price::Column::TenantId.eq(tenant_id))
-                    .add(price::Column::PlanId.is_in(chunk.to_vec()))
-                    .add(price::Column::LifecycleState.is_in([
-                        LifecycleState::Draft.as_str(),
-                        LifecycleState::Published.as_str(),
-                    ])),
-            )
+            .filter(authoring.clone())
             .project_all(runner, |q| {
                 q.select_only()
                     .column(price::Column::PlanId)
-                    .column(price::Column::ModelKind)
-                    .column(price::Column::Currency)
                     .column_as(Expr::col(price::Column::PriceId).count(), "cnt")
                     .group_by(price::Column::PlanId)
-                    .group_by(price::Column::ModelKind)
-                    .group_by(price::Column::Currency)
                     .into_model::<Group>()
             })
             .await
             .map_err(|e| RepoError::Db(format!("aggregate authoring rows per plan: {e}")))?;
         groups.extend(page);
+
+        // **The two vocabularies moved off this table**: `model_kind` is shared
+        // content of the line version and `currency` is an axis of the market, so
+        // neither can be grouped here any more. Distinct *references* are read
+        // instead — bounded by the plan's lines × markets, never by its rows,
+        // because every monetary version of one market collapses into one pair —
+        // and the two small tables they name are then read by id.
+        let page = price::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(authoring)
+            .project_all(runner, |q| {
+                q.select_only()
+                    .column(price::Column::PlanId)
+                    .column(price::Column::LineVersionId)
+                    .column(price::Column::MarketPriceId)
+                    .group_by(price::Column::PlanId)
+                    .group_by(price::Column::LineVersionId)
+                    .group_by(price::Column::MarketPriceId)
+                    .into_model::<Reference>()
+            })
+            .await
+            .map_err(|e| RepoError::Db(format!("aggregate authoring references per plan: {e}")))?;
+        references.extend(page);
+    }
+
+    let mut kinds: HashMap<Uuid, Option<String>> = HashMap::new();
+    let version_ids: Vec<Uuid> = {
+        let mut ids: Vec<Uuid> = references.iter().map(|r| r.line_version_id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    };
+    for chunk in version_ids.chunks(MAX_IN_BINDS) {
+        let page = charge_line_version::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(
+                Condition::all()
+                    .add(charge_line_version::Column::TenantId.eq(tenant_id))
+                    .add(charge_line_version::Column::LineVersionId.is_in(chunk.to_vec())),
+            )
+            .all(runner)
+            .await
+            .map_err(|e| RepoError::Db(format!("read line versions for plan aggregate: {e}")))?;
+        for row in page {
+            kinds.insert(row.line_version_id, row.model_kind);
+        }
+    }
+
+    let mut currencies: HashMap<Uuid, String> = HashMap::new();
+    let market_ids: Vec<Uuid> = {
+        let mut ids: Vec<Uuid> = references.iter().map(|r| r.market_price_id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    };
+    for chunk in market_ids.chunks(MAX_IN_BINDS) {
+        let page = market_price::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(
+                Condition::all()
+                    .add(market_price::Column::TenantId.eq(tenant_id))
+                    .add(market_price::Column::MarketPriceId.is_in(chunk.to_vec())),
+            )
+            .all(runner)
+            .await
+            .map_err(|e| RepoError::Db(format!("read markets for plan aggregate: {e}")))?;
+        for row in page {
+            currencies.insert(row.market_price_id, row.currency);
+        }
     }
 
     let mut out: HashMap<PlanId, PlanRowAggregate> = HashMap::new();
     for group in groups {
         let aggregate = out.entry(PlanId::new(group.plan_id)).or_default();
         aggregate.price_row_count += u64::try_from(group.cnt).unwrap_or(0);
-        if let Some(kind) = group.model_kind.filter(|kind| !kind.is_empty())
+    }
+    for reference in references {
+        let aggregate = out.entry(PlanId::new(reference.plan_id)).or_default();
+        if let Some(kind) = kinds
+            .get(&reference.line_version_id)
+            .cloned()
+            .flatten()
+            .filter(|kind| !kind.is_empty())
             && !aggregate.model_kinds.contains(&kind)
         {
             aggregate.model_kinds.push(kind);
         }
-        if !aggregate.currencies.contains(&group.currency) {
-            aggregate.currencies.push(group.currency);
+        if let Some(currency) = currencies.get(&reference.market_price_id).cloned()
+            && !aggregate.currencies.contains(&currency)
+        {
+            aggregate.currencies.push(currency);
         }
     }
     for aggregate in out.values_mut() {
@@ -2357,7 +2475,7 @@ async fn hydrate_bands(
                     .add(price_tier_band::Column::PriceId.is_in(chunk.to_vec())),
             )
             .order_by(price_tier_band::Column::PriceId, Order::Asc)
-            .order_by(price_tier_band::Column::FromQty, Order::Asc)
+            .order_by(price_tier_band::Column::BandOrdinal, Order::Asc)
             .all(runner)
             .await
             .map_err(|e| RepoError::Db(format!("list plan price bands: {e}")))?;
@@ -2366,12 +2484,24 @@ async fn hydrate_bands(
         }
     }
 
-    rows.iter()
-        .map(|row| {
-            let bands = grouped.remove(&row.price_id).unwrap_or_default();
-            to_record(row, &bands)
-        })
-        .collect()
+    let graphs = load_graphs(runner, scope, tenant_id, rows).await?;
+    let mut records = Vec::with_capacity(graphs.len());
+    for graph in graphs {
+        let rates = grouped.remove(&graph.price.price_id).unwrap_or_default();
+        let geometry = if rates.is_empty() {
+            Vec::new()
+        } else {
+            super::charge_line_repo::load_geometry(
+                runner,
+                scope,
+                tenant_id,
+                graph.price.line_version_id,
+            )
+            .await?
+        };
+        records.push(to_record(&graph, &geometry, &rates)?);
+    }
+    Ok(records)
 }
 
 // ---------------------------------------------------------------------------
@@ -2524,13 +2654,15 @@ pub async fn gated_markets_in_pages(
     // cursor needs no compound compare.
     let mut after: Option<Uuid> = None;
     loop {
+        // **The eligibility axis left this table.** It is a column of the charge
+        // line now, so the page is bounded by what `pricing_price` still knows —
+        // state and the tax-inclusive flag — and the grandfathered class is
+        // dropped from the page's graphs below. The page bound therefore counts
+        // rows read, not rows kept, which is what it always meant: it exists to
+        // cap rows held in memory at once.
         let mut filter = Condition::all()
             .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str()))
-            .add(price::Column::TaxInclusive.eq(true))
-            .add(
-                price::Column::PriceEligibility
-                    .ne(PriceEligibility::ExistingGrandfathered.as_str()),
-            );
+            .add(price::Column::TaxInclusive.eq(true));
         if let Some(above) = after {
             filter = filter.add(price::Column::PriceId.gt(above));
         }
@@ -2546,9 +2678,26 @@ pub async fn gated_markets_in_pages(
         // A page under its bound is the end of the table above the cursor. Read
         // before the rows are consumed, since the loop moves them into the set.
         let exhausted = u64::try_from(rows.len()).unwrap_or(u64::MAX) < page;
+        // This walk spans tenants — the counted subject is `(tenant, currency,
+        // region)` — so the joins are taken one tenant at a time, because a graph
+        // load is answerable only within the tenant that owns the ids.
+        let mut by_tenant: BTreeMap<Uuid, Vec<price::Model>> = BTreeMap::new();
         for row in rows {
             after = Some(row.price_id);
-            markets.insert((row.tenant_id, row.currency, row.region));
+            by_tenant.entry(row.tenant_id).or_default().push(row);
+        }
+        for (tenant, rows) in by_tenant {
+            for graph in load_graphs(runner, scope, tenant, &rows).await? {
+                if graph.line.price_eligibility == PriceEligibility::ExistingGrandfathered.as_str()
+                {
+                    continue;
+                }
+                markets.insert((
+                    graph.price.tenant_id,
+                    graph.market.currency,
+                    graph.market.region,
+                ));
+            }
         }
         if exhausted {
             break;
@@ -2608,7 +2757,8 @@ pub async fn load_scope_key(
     let Some(row) = load_row(runner, scope, tenant_id, price_id).await? else {
         return Ok(None);
     };
-    to_scope_key(&row).map(Some)
+    let graph = load_graph(runner, scope, tenant_id, row).await?;
+    to_scope_key(&graph).map(Some)
 }
 
 /// Every row of one plan paired with its canonical scope key.
@@ -2638,7 +2788,7 @@ pub async fn load_scope_keys_for_plan(
     tenant_id: Uuid,
     plan_id: PlanId,
 ) -> Result<Vec<(Uuid, MarketPriceScopeKey)>, RepoError> {
-    price::Entity::find()
+    let rows = price::Entity::find()
         .secure()
         .scope_with(scope)
         .filter(
@@ -2649,9 +2799,11 @@ pub async fn load_scope_keys_for_plan(
         .order_by(price::Column::PriceId, Order::Asc)
         .all(runner)
         .await
-        .map_err(|e| RepoError::Db(format!("read the scope keys of plan {plan_id}: {e}")))?
+        .map_err(|e| RepoError::Db(format!("read the scope keys of plan {plan_id}: {e}")))?;
+    load_graphs(runner, scope, tenant_id, &rows)
+        .await?
         .iter()
-        .map(|row| Ok((row.price_id, to_scope_key(row)?)))
+        .map(|graph| Ok((graph.price.price_id, to_scope_key(graph)?)))
         .collect()
 }
 
@@ -2685,7 +2837,7 @@ pub async fn load_scope_keys_for_ids(
     if price_ids.is_empty() {
         return Ok(Vec::new());
     }
-    price::Entity::find()
+    let rows = price::Entity::find()
         .secure()
         .scope_with(scope)
         .filter(
@@ -2701,9 +2853,11 @@ pub async fn load_scope_keys_for_ids(
                 "read the scope keys of {} rows: {e}",
                 price_ids.len()
             ))
-        })?
+        })?;
+    load_graphs(runner, scope, tenant_id, &rows)
+        .await?
         .iter()
-        .map(|row| Ok((row.price_id, to_scope_key(row)?)))
+        .map(|graph| Ok((graph.price.price_id, to_scope_key(graph)?)))
         .collect()
 }
 
@@ -2749,6 +2903,18 @@ pub async fn load_scope_keys_for_ids(
 /// [`RunSelector::admits_grandfathered`]: crate::domain::repricing::RunSelector::admits_grandfathered
 /// [`LimitsConfig`]: crate::config::LimitsConfig
 ///
+/// # The resolved id sets are bounded by the catalogue, and are not chunked
+///
+/// The selector's axes are resolved to `charge_line_id`, `market_price_id` and
+/// `line_version_id` sets and offered to the price read as `IN` lists. A tenant
+/// would need more than [`MAX_IN_BINDS`] *lines* matching one selector's logical
+/// axes to exceed a driver's parameter limit — §14's soft cap is 500 price rows
+/// per plan, so that is a catalogue-wide selector over thousands of plans.
+/// Stated rather than chunked: chunking here means running the whole three-way
+/// intersection once per chunk, and the bound has not been measured as reachable.
+/// If it becomes so, chunk the final read on `line_ids` and concatenate in
+/// `price_id` order, which is the order this function already promises.
+///
 /// # Errors
 /// [`RepoError::Db`] on a scope or storage failure.
 pub async fn load_published_for_selector(
@@ -2757,44 +2923,130 @@ pub async fn load_published_for_selector(
     tenant_id: Uuid,
     selector: &RunSelector,
 ) -> Result<Vec<Uuid>, RepoError> {
-    let mut filter = Condition::all()
-        .add(price::Column::TenantId.eq(tenant_id))
-        .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str()));
+    // **The selector's axes live on three tables now.** Only `plan_id` and the
+    // lifecycle state are still columns of `pricing_price` — `plan_id` because the
+    // row keeps a derived, FK-checked copy of its line's plan for exactly this
+    // kind of filter. The rest are resolved to id sets first, and an axis that
+    // matches nothing short-circuits to an empty run rather than reaching the
+    // store as an `IN ()` no backend spells the same way.
+    let mut line_filter = Condition::all().add(charge_line::Column::TenantId.eq(tenant_id));
+    // **Stated from its conditions rather than accumulated.** Whether the line
+    // axes restrict anything is a property of the selector, so it is read off the
+    // selector once; the `if`s below only build the filter. An accumulator would
+    // say the same thing in seven places and let one of them drift.
+    let line_restricted = !selector.admits_grandfathered()
+        || selector.plan_id.is_some()
+        || selector.phase.is_some()
+        || selector.price_eligibility.is_some()
+        || selector.charge_kind.is_some()
+        || selector.cohort.is_some()
+        || selector.dimension_key.is_some();
     if !selector.admits_grandfathered() {
-        filter = filter.add(
-            price::Column::PriceEligibility.ne(PriceEligibility::ExistingGrandfathered.as_str()),
+        line_filter = line_filter.add(
+            charge_line::Column::PriceEligibility
+                .ne(PriceEligibility::ExistingGrandfathered.as_str()),
         );
     }
     if let Some(plan_id) = selector.plan_id {
-        filter = filter.add(price::Column::PlanId.eq(plan_id.get()));
-    }
-    if let Some(currency) = selector.currency.as_ref() {
-        filter = filter.add(price::Column::Currency.eq(currency.as_str()));
-    }
-    if let Some(region) = selector.region.as_ref() {
-        filter = filter.add(price::Column::Region.eq(region.as_str()));
+        line_filter = line_filter.add(charge_line::Column::PlanId.eq(plan_id.get()));
     }
     if let Some(phase) = selector.phase {
-        filter = filter.add(price::Column::Phase.eq(phase.get()));
+        line_filter = line_filter.add(charge_line::Column::Phase.eq(phase.get()));
     }
     if let Some(eligibility) = selector.price_eligibility {
-        filter = filter.add(price::Column::PriceEligibility.eq(eligibility.as_str()));
+        line_filter =
+            line_filter.add(charge_line::Column::PriceEligibility.eq(eligibility.as_str()));
     }
     if let Some(charge_kind) = selector.charge_kind {
-        filter = filter.add(price::Column::ChargeKind.eq(charge_kind.as_str()));
+        line_filter = line_filter.add(charge_line::Column::ChargeKind.eq(charge_kind.as_str()));
     }
     if let Some(cohort) = selector.cohort {
         // The column holds the domain token — `none`, or the generation's epoch
         // milliseconds — so the match is against `Cohort`'s own rendering rather
         // than against an RFC 3339 instant. `read_cohort` parses this exact
         // spelling back, which is what keeps the two ends of the axis comparable.
-        filter = filter.add(price::Column::Cohort.eq(cohort.to_string()));
-    }
-    if let Some(meter) = selector.meter.as_ref() {
-        filter = filter.add(price::Column::Meter.eq(meter.as_str()));
+        line_filter = line_filter.add(charge_line::Column::Cohort.eq(cohort.to_string()));
     }
     if let Some(dimension_key) = selector.dimension_key.as_ref() {
-        filter = filter.add(price::Column::DimensionKey.eq(dimension_key.as_str()));
+        line_filter = line_filter.add(charge_line::Column::DimensionKey.eq(dimension_key.as_str()));
+    }
+
+    let mut filter = Condition::all()
+        .add(price::Column::TenantId.eq(tenant_id))
+        .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str()));
+
+    let line_ids: Option<Vec<Uuid>> = if line_restricted {
+        let ids: Vec<Uuid> = charge_line::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(line_filter)
+            .all(runner)
+            .await
+            .map_err(|e| RepoError::Db(format!("expand a repricing run's line axes: {e}")))?
+            .into_iter()
+            .map(|row| row.charge_line_id)
+            .collect();
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        filter = filter.add(price::Column::ChargeLineId.is_in(ids.clone()));
+        Some(ids)
+    } else {
+        None
+    };
+
+    if selector.currency.is_some() || selector.region.is_some() {
+        let mut market_filter = Condition::all().add(market_price::Column::TenantId.eq(tenant_id));
+        if let Some(currency) = selector.currency.as_ref() {
+            market_filter = market_filter.add(market_price::Column::Currency.eq(currency.as_str()));
+        }
+        if let Some(region) = selector.region.as_ref() {
+            market_filter = market_filter.add(market_price::Column::Region.eq(region.as_str()));
+        }
+        if let Some(ids) = line_ids.as_ref() {
+            market_filter =
+                market_filter.add(market_price::Column::ChargeLineId.is_in(ids.clone()));
+        }
+        let market_ids: Vec<Uuid> = market_price::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(market_filter)
+            .all(runner)
+            .await
+            .map_err(|e| RepoError::Db(format!("expand a repricing run's market axes: {e}")))?
+            .into_iter()
+            .map(|row| row.market_price_id)
+            .collect();
+        if market_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        filter = filter.add(price::Column::MarketPriceId.is_in(market_ids));
+    }
+
+    // The meter is derived content of the line version, not an axis of the key,
+    // so it selects versions rather than lines.
+    if let Some(meter) = selector.meter.as_ref() {
+        let mut version_filter = Condition::all()
+            .add(charge_line_version::Column::TenantId.eq(tenant_id))
+            .add(charge_line_version::Column::Meter.eq(meter.as_str()));
+        if let Some(ids) = line_ids.as_ref() {
+            version_filter =
+                version_filter.add(charge_line_version::Column::ChargeLineId.is_in(ids.clone()));
+        }
+        let version_ids: Vec<Uuid> = charge_line_version::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(version_filter)
+            .all(runner)
+            .await
+            .map_err(|e| RepoError::Db(format!("expand a repricing run's meter axis: {e}")))?
+            .into_iter()
+            .map(|row| row.line_version_id)
+            .collect();
+        if version_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        filter = filter.add(price::Column::LineVersionId.is_in(version_ids));
     }
 
     Ok(price::Entity::find()
@@ -2876,13 +3128,13 @@ async fn load_bands(
                 .add(price_tier_band::Column::TenantId.eq(tenant_id))
                 .add(price_tier_band::Column::PriceId.eq(price_id)),
         )
-        .order_by(price_tier_band::Column::FromQty, Order::Asc)
+        .order_by(price_tier_band::Column::BandOrdinal, Order::Asc)
         .all(runner)
         .await
         .map_err(|e| RepoError::Db(format!("read price tier bands: {e}")))
 }
 
-/// Read one whole record — the row and its bands — or nothing.
+/// Read one whole record — the row, its graph, and its bands — or nothing.
 async fn load_record(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -2892,8 +3144,16 @@ async fn load_record(
     let Some(row) = load_row(runner, scope, tenant_id, price_id).await? else {
         return Ok(None);
     };
-    let bands = load_bands(runner, scope, tenant_id, price_id).await?;
-    to_record(&row, &bands).map(Some)
+    let graph = load_graph(runner, scope, tenant_id, row).await?;
+    let rates = load_bands(runner, scope, tenant_id, price_id).await?;
+    let geometry = super::charge_line_repo::load_geometry(
+        runner,
+        scope,
+        tenant_id,
+        graph.price.line_version_id,
+    )
+    .await?;
+    to_record(&graph, &geometry, &rates).map(Some)
 }
 
 /// [`PriceRepo::find`] through a runner the caller already holds.
@@ -2927,36 +3187,65 @@ pub async fn find_on(
 /// (`03-price-structure.md` §4) has three states and `retired` is not one of
 /// them, which `chk_pricing_price_lifecycle_state` now says out loud.
 ///
-/// A key can hold a draft **and** a published row at once — the partial `UNIQUE`
-/// only forbids two published ones, and [`insert_successor_draft_on`] is the path
-/// that reaches that state (D-88's row half; **D-195** is why it is a second door
-/// rather than a relaxation of this reader). Both block a new draft equally, so
+/// A key can hold a draft **and** a published row at once, and
+/// [`insert_successor_draft_on`] is the path that reaches that state (D-88's row
+/// half; **D-195** is why it is a second door rather than a relaxation of this
+/// reader). Both block a new draft equally, so
 /// the query takes the lowest `price_id` rather than whichever row the plan index
 /// happened to reach first: a refusal that named a different row on each attempt
 /// would send an author looking in a different place each time.
 ///
 /// That collapse is also why the supersession door does not use this reader: it
 /// needs the two planes told apart, and [`read_key_occupants`] is what tells them.
+///
+/// **Normalizing the key did not widen this door.** The published-plane `UNIQUE`
+/// is gone from the schema, because two published monetary versions of one
+/// market are admitted when their windows do not overlap — but that is a fact
+/// about what the *store* permits, not about what authoring may do behind the
+/// supersession door's back. A published row is therefore still an occupant
+/// here: reaching the two-version state stays [`insert_successor_draft_on`]'s
+/// job, which is what makes the successor record what it supersedes. What the
+/// relaxed schema changed is the publish step, which no longer needs the
+/// predecessor to leave the published plane first.
 async fn find_key_occupant(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
     key: &MarketPriceScopeKey,
 ) -> Result<Option<price::Model>, RepoError> {
+    let Some(market_price_id) = market_id_for_key(runner, scope, tenant_id, key).await? else {
+        return Ok(None);
+    };
     price::Entity::find()
         .secure()
         .scope_with(scope)
         .filter(
-            scope_key_filter(tenant_id, key).add(price::Column::LifecycleState.is_in([
-                LifecycleState::Draft.as_str(),
-                LifecycleState::Published.as_str(),
-            ])),
+            Condition::all()
+                .add(price::Column::TenantId.eq(tenant_id))
+                .add(price::Column::MarketPriceId.eq(market_price_id))
+                .add(
+                    price::Column::LifecycleState
+                        .is_in(OCCUPYING_ROW_STATES.iter().map(|state| state.as_str())),
+                ),
         )
         .order_by(price::Column::PriceId, Order::Asc)
         .one(runner)
         .await
-        .map_err(|e| RepoError::Db(format!("read scope-key occupant: {e}")))
+        .map_err(|e| RepoError::Db(format!("read market key occupant: {e}")))
 }
+
+/// The states that make a key taken to the authoring door.
+///
+/// `superseded` is absent on purpose: it is history rather than the current row
+/// on its key (§4.3), and refusing a new draft because of one would make a key
+/// unusable forever after its first reprice.
+///
+/// This holds the same two states as [`CANDIDATE_ROW_STATES`] and is deliberately
+/// not the same constant: that one answers "what does a publish compose over",
+/// this one answers "is this key free to author on". They agree today because the
+/// state machine has three states and both exclude the same one; a fourth state
+/// would have to be judged against each question separately.
+const OCCUPYING_ROW_STATES: &[LifecycleState] = &[LifecycleState::Draft, LifecycleState::Published];
 
 /// The draft and the published row standing on one key, told apart.
 ///
@@ -2978,21 +3267,35 @@ struct KeyOccupants {
     draft: Option<price::Model>,
 }
 
-/// Read both planes of one key in a single statement.
+/// Read the draft (at most one) and a published predecessor of one market.
+///
+/// Multiple published monetary versions of one market are admitted when windows
+/// do not overlap; this reader returns the most recently created published row
+/// as the supersession predecessor. Two drafts on one market remain corruption
+/// — `uq_pricing_price_market_draft` admits one.
 async fn read_key_occupants(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
     key: &MarketPriceScopeKey,
 ) -> Result<KeyOccupants, RepoError> {
+    let Some(market_price_id) = market_id_for_key(runner, scope, tenant_id, key).await? else {
+        return Ok(KeyOccupants {
+            published: None,
+            draft: None,
+        });
+    };
     let rows = price::Entity::find()
         .secure()
         .scope_with(scope)
         .filter(
-            scope_key_filter(tenant_id, key).add(price::Column::LifecycleState.is_in([
-                LifecycleState::Draft.as_str(),
-                LifecycleState::Published.as_str(),
-            ])),
+            Condition::all()
+                .add(price::Column::TenantId.eq(tenant_id))
+                .add(price::Column::MarketPriceId.eq(market_price_id))
+                .add(price::Column::LifecycleState.is_in([
+                    LifecycleState::Draft.as_str(),
+                    LifecycleState::Published.as_str(),
+                ])),
         )
         .order_by(price::Column::PriceId, Order::Asc)
         .all(runner)
@@ -3004,18 +3307,20 @@ async fn read_key_occupants(
         draft: None,
     };
     for row in rows {
-        let plane = if row.lifecycle_state == LifecycleState::Published.as_str() {
-            &mut occupants.published
-        } else {
-            &mut occupants.draft
-        };
-        if let Some(first) = plane {
-            return Err(RepoError::CorruptRow(format!(
-                "{key} carries two {} rows, {} and {}; the plane's partial UNIQUE admits one",
-                row.lifecycle_state, first.price_id, row.price_id
-            )));
+        if row.lifecycle_state == LifecycleState::Draft.as_str() {
+            if let Some(first) = occupants.draft.as_ref() {
+                return Err(RepoError::CorruptRow(format!(
+                    "{key} carries two draft rows, {} and {}; uq_pricing_price_market_draft admits one",
+                    first.price_id, row.price_id
+                )));
+            }
+            occupants.draft = Some(row);
+            continue;
         }
-        *plane = Some(row);
+        match occupants.published.as_ref() {
+            Some(first) if row.created_at_utc < first.created_at_utc => {}
+            _ => occupants.published = Some(row),
+        }
     }
     Ok(occupants)
 }
@@ -3292,7 +3597,7 @@ pub async fn insert_successor_draft_on(
     tenant_id: Uuid,
     draft: NewPriceDraft,
 ) -> Result<(PriceRecord, Uuid), RepoError> {
-    let mut prepared = prepare_draft(tenant_id, draft)?;
+    let mut prepared = prepare_draft(&draft)?;
     let key = prepared.record.scope_key.clone();
 
     // Foundation §4.3, refused before the key is even read. See
@@ -3313,7 +3618,6 @@ pub async fn insert_successor_draft_on(
     }
 
     prepared.record.supersedes_price_id = Some(predecessor.price_id);
-    prepared.row.supersedes_price_id = Set(Some(predecessor.price_id));
 
     let record = write_prepared(runner, scope, tenant_id, prepared).await?;
     Ok((record, predecessor.price_id))
@@ -3503,7 +3807,7 @@ pub(crate) fn resolve_authored_usage_line(
 /// An update cannot move the frozen dimension axis. The SKU itself comes from
 /// the stored key; the registry-derived meter may be refreshed on a draft.
 fn check_update_keeps_the_line(
-    row: &price::Model,
+    graph: &PriceGraph,
     submitted: &(Option<String>, String),
 ) -> Result<(), RepoError> {
     // **Both sides are normalized, not one.** `submitted` arrives from
@@ -3524,12 +3828,18 @@ fn check_update_keeps_the_line(
     // (`Meter::normalized`'s doc: "the one trim it spends, so there is exactly
     // one statement in the crate of what an axis value's spelling is"), called
     // rather than the function, because that function reads a `PriceRow` and this
-    // is the stored `price::Model`.
+    // is the stored graph. The meter is derived content of the line **version**
+    // and the dimension is an axis of the **line**, so the pair comes from two
+    // rows rather than one.
     let stored = (
-        row.meter
+        graph
+            .version
+            .meter
             .as_deref()
             .map(|meter| Meter::normalized(meter).to_owned()),
-        DimensionKey::new(&row.dimension_key).as_str().to_owned(),
+        DimensionKey::new(&graph.line.dimension_key)
+            .as_str()
+            .to_owned(),
     );
     if stored.1 == submitted.1 {
         return Ok(());
@@ -3600,47 +3910,50 @@ fn swap_guard(tenant_id: Uuid, price_id: Uuid, expected: RowVersion) -> Option<C
     )
 }
 
-/// The ten axes as a filter, in normative order.
+/// Resolve the stable market id of a canonical key, if the line and market exist.
+async fn market_id_for_key(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    key: &MarketPriceScopeKey,
+) -> Result<Option<Uuid>, RepoError> {
+    let Some(line) =
+        super::charge_line_repo::find_by_scope(runner, scope, tenant_id, key.line()).await?
+    else {
+        return Ok(None);
+    };
+    Ok(super::market_price_repo::find_by_line_market(
+        runner,
+        scope,
+        tenant_id,
+        line.charge_line_id,
+        key.currency(),
+        key.region(),
+    )
+    .await?
+    .map(|market| market.market_price_id))
+}
+
+/// The market a stored price row belongs to, read **off the row**.
 ///
-/// One spelling, so no statement here can decide "the same key" by fewer axes
-/// than the key actually has — the mistake that would report a collision
-/// between two rows that do not share a key at all.
-fn scope_key_filter(tenant_id: Uuid, key: &MarketPriceScopeKey) -> Condition {
-    // Destructured through `parts()`, which is what this function's own doc says
-    // it needs: *"One spelling, so no statement here can decide 'the same key' by
-    // fewer axes than the key actually has."* It could, and it did — D-196 widened
-    // this key from eight axes to ten and three sites went unchanged. An eleventh
-    // axis is now a compile error here rather than a `Condition` that silently
-    // matches too much.
-    let MarketPriceScopeKeyParts {
-        plan_id,
-        currency,
-        region,
-        price_overlay,
-        phase,
-        price_eligibility,
-        charge_kind,
-        cohort,
-        sku_id,
-        dimension_key,
-    } = key.parts();
-    Condition::all()
-        .add(price::Column::TenantId.eq(tenant_id))
-        .add(price::Column::PlanId.eq(plan_id.get()))
-        // The ninth axis (D-372 I1). `m20260916_000044_price_row_sku` is what
-        // gives it a column to be compared against; without the predicate this
-        // filter decided "the same key" by nine axes, and two rows pricing two
-        // SKUs answered as one key — the under-matching this function's doc is
-        // about, arriving from the other direction.
-        .add(price::Column::SkuId.eq(sku_id.as_uuid()))
-        .add(price::Column::Currency.eq(currency.as_str()))
-        .add(price::Column::Region.eq(region.as_str()))
-        .add(price::Column::PriceOverlay.eq(price_overlay.as_str()))
-        .add(price::Column::Phase.eq(phase.get()))
-        .add(price::Column::PriceEligibility.eq(price_eligibility.as_str()))
-        .add(price::Column::ChargeKind.eq(charge_kind.as_str()))
-        .add(price::Column::Cohort.eq(cohort.to_string()))
-        .add(price::Column::DimensionKey.eq(dimension_key.as_str()))
+/// Not re-derived from the row's scope key, and the difference is load-bearing:
+/// `pricing_price_window`'s foreign key is the compound
+/// `(tenant_id, price_id, market_price_id)`, so a window must carry the market
+/// id the row itself names. Deriving it from the key would agree in every
+/// consistent store and, in an inconsistent one, produce a raw FK violation
+/// instead of this function's honest absence.
+///
+/// # Errors
+/// [`RepoError::Db`] on a scope or storage failure.
+pub async fn load_market_id(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    price_id: Uuid,
+) -> Result<Option<Uuid>, RepoError> {
+    Ok(load_row(runner, scope, tenant_id, price_id)
+        .await?
+        .map(|row| row.market_price_id))
 }
 
 /// The "absent, or not yours" refusal — deliberately one answer for both, so
@@ -3685,59 +3998,20 @@ fn duplicate_key(key: &MarketPriceScopeKey, occupant: &price::Model) -> RepoErro
 /// axis the row is filed under, whichever door wrote it. Taking the raw strings
 /// instead would break that promise — see `canonical_usage_line` for the
 /// duplicate key that admits.
-fn content_model(content: &PriceContent) -> Result<price::ActiveModel, RepoError> {
+fn content_model(content: &PriceContent) -> price::ActiveModel {
     let row = &content.row;
-    let (meter, dimension_key) = canonical_usage_line(row);
-    Ok(price::ActiveModel {
-        invoice_line_template: Set(row.invoice_line_template.clone()),
-        gl_code_ref: Set(row.gl_code_ref.clone()),
+    price::ActiveModel {
         amount_minor: Set(row.amount_minor.map(MinorAmount::get)),
         unit_rate_nano: Set(row.unit_rate.map(RateMinor::nano_minor)),
-        model_kind: Set(row.model_kind.map(model_kind_wire).map(str::to_owned)),
+        package_price_minor: Set(row.package_price_minor.map(MinorAmount::get)),
+        reserved_rate_nano: Set(row.reserved_rate.map(RateMinor::nano_minor)),
         tax_inclusive: Set(content.tax_inclusive),
         tax_category_ref: Set(content.tax_category_ref.clone()),
-        billing_timing: Set(content.billing_timing.clone()),
-        // The four proration columns, flattened from the one domain value that
-        // holds them. `anchor_day` is read off the policy rather than carried
-        // beside it, which is what makes a `fixed_day` with no day and a day
-        // beside `calendar_month` both unreachable from here.
-        billing_anchor_policy: Set(content
-            .proration_contract
-            .map(|c| c.billing_anchor_policy.as_str().to_owned())),
-        anchor_day: Set(content
-            .proration_contract
-            .and_then(|c| c.billing_anchor_policy.anchor_day())
-            .map(|d| i32::from(d.get()))),
-        proration_basis: Set(content
-            .proration_contract
-            .map(|c| c.proration_basis.as_str().to_owned())),
-        credit_on_downgrade: Set(content.proration_contract.map(|c| c.credit_on_downgrade)),
-        quantity_source: Set(row.quantity_source.map(|s| s.as_str().to_owned())),
-        manual_quantity: Set(stored_count("manual_quantity", row.manual_quantity)?),
-        package_size: Set(stored_count("package_size", row.package_size)?),
-        package_price_minor: Set(row.package_price_minor.map(MinorAmount::get)),
-        meter: Set(meter),
-        dimension_key: Set(dimension_key),
-        billing_granularity: Set(row.billing_granularity.map(|g| g.as_str().to_owned())),
-        aggregation_function: Set(row.aggregation_function.map(|f| f.as_str().to_owned())),
-        aggregation_granularity: Set(row.aggregation_granularity.map(|g| g.as_str().to_owned())),
-        tier_aggregation_window: Set(row.tier_aggregation_window.map(|w| w.as_str().to_owned())),
-        tier_qualification_window: Set(row
-            .tier_qualification_window
-            .map(|w| w.as_str().to_owned())),
-        max_hold_granules: Set(stored_count("max_hold_granules", row.max_hold_granules)?),
-        included_allowance: Set(row.included_allowance.map(allowance_json)),
-        reserved_rate_nano: Set(row.reserved_rate.map(RateMinor::nano_minor)),
-        reservation_flavor: Set(row.reservation_flavor.map(|f| f.as_str().to_owned())),
-        min_qty_purchase: Set(stored_count("min_qty_purchase", row.min_qty_purchase)?),
-        min_qty_usage: Set(stored_count("min_qty_usage", row.min_qty_usage)?),
-        min_qty_usage_fallback: Set(row.min_qty_usage_fallback.map(|f| f.as_str().to_owned())),
-        discount_ref: Set(row.discount_ref.clone()),
         rounding_policy_ref: Set(content.rounding_policy_ref.clone()),
         grandfather_until: Set(content.grandfather_until),
         supersedes_price_id: Set(content.supersedes_price_id),
         ..price::ActiveModel::default()
-    })
+    }
 }
 
 /// A create, rendered and value-checked, with no statement issued yet.
@@ -3749,15 +4023,13 @@ fn content_model(content: &PriceContent) -> Result<price::ActiveModel, RepoError
 struct PreparedDraft {
     /// The record as it will be answered, bands already in read order.
     record: PriceRecord,
-    /// The row, rendered.
-    row: price::ActiveModel,
-    /// Its band set, rendered.
-    bands: Vec<price_tier_band::ActiveModel>,
+    /// Authored content, split onto line version vs market price at write time.
+    content: PriceContent,
+    /// Exact line-version reference, or `None` to ensure from the key.
+    line_version_id: Option<Uuid>,
+    /// Exact market reference, or `None` to ensure from the key.
+    market_price_id: Option<Uuid>,
     /// The causing request's correlation (D-178), carried through from the draft.
-    ///
-    /// [`PriceRecord`] holds the row's columns and the correlation is not one —
-    /// it belongs to the request, not to the price — so it rides here rather than
-    /// being smuggled onto the record and stored.
     correlation_id: Uuid,
 }
 
@@ -3772,28 +4044,26 @@ use crate::domain::instant::format_rfc3339;
 pub use crate::domain::price_record::authored_content;
 
 /// Render a create and refuse every value the store cannot take, statement-free.
-fn prepare_draft(tenant_id: Uuid, draft: NewPriceDraft) -> Result<PreparedDraft, RepoError> {
+fn prepare_draft(draft: &NewPriceDraft) -> Result<PreparedDraft, RepoError> {
     // The key the row is actually filed under: the usage line comes from the
     // content, because that is the half of the request that can carry it (D-196
     // — see `resolve_authored_usage_line` for why this is the mirror image of
     // `authored_content` rather than a disagreement with it).
     let scope_key = resolve_authored_usage_line(&draft.scope_key, &draft.content.row)?;
+    let content = draft.content.clone();
     let record = PriceRecord {
         resolved_invoice_line_template: None,
         resolved_gl_code: None,
         price_id: draft.price_id,
         scope_key: scope_key.clone(),
-        // The two rewrites this door performs, applied through their **one**
-        // spelling — see [`authored_content`]. Applied here rather than open-coded
-        // because a second caller now has to be able to predict them.
-        row: authored_content(&scope_key, draft.content.clone()).row,
-        tax_inclusive: draft.content.tax_inclusive,
-        tax_category_ref: draft.content.tax_category_ref.clone(),
-        billing_timing: draft.content.billing_timing,
-        proration_contract: draft.content.proration_contract,
-        rounding_policy_ref: draft.content.rounding_policy_ref,
-        grandfather_until: draft.content.grandfather_until,
-        supersedes_price_id: draft.content.supersedes_price_id,
+        row: authored_content(&scope_key, content.clone()).row,
+        tax_inclusive: content.tax_inclusive,
+        tax_category_ref: content.tax_category_ref.clone(),
+        billing_timing: content.billing_timing.clone(),
+        proration_contract: content.proration_contract,
+        rounding_policy_ref: content.rounding_policy_ref.clone(),
+        grandfather_until: content.grandfather_until,
+        supersedes_price_id: content.supersedes_price_id,
         lifecycle_state: LifecycleState::Draft,
         created_by: draft.created_by,
         created_at_utc: draft.created_at_utc,
@@ -3807,12 +4077,11 @@ fn prepare_draft(tenant_id: Uuid, draft: NewPriceDraft) -> Result<PreparedDraft,
     )?;
 
     check_authored_instant("grandfatherUntil", record.grandfather_until)?;
-    let row = insert_model(tenant_id, &record)?;
-    let bands = band_models(tenant_id, record.price_id, &record.row.bands)?;
     Ok(PreparedDraft {
         record,
-        row,
-        bands,
+        content,
+        line_version_id: draft.line_version_id,
+        market_price_id: draft.market_price_id,
         correlation_id: draft.correlation_id,
     })
 }
@@ -3837,6 +4106,85 @@ async fn insert_prepared(
     write_prepared(runner, scope, tenant_id, prepared).await
 }
 
+struct ResolvedGraph {
+    charge_line_id: Uuid,
+    line_version_id: Uuid,
+    market_price_id: Uuid,
+    plan_id: Uuid,
+    plan_revision: i64,
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the key, the content it resolves from, the authoring stamp, and the two \
+              optional exact references a caller may already hold"
+)]
+async fn resolve_graph(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    key: &MarketPriceScopeKey,
+    content: &PriceContent,
+    created_by: Uuid,
+    created_at_utc: OffsetDateTime,
+    line_version_id: Option<Uuid>,
+    market_price_id: Option<Uuid>,
+) -> Result<ResolvedGraph, RepoError> {
+    let graph = if let Some(line_version_id) = line_version_id {
+        let version =
+            super::charge_line_repo::require_version(runner, scope, tenant_id, line_version_id)
+                .await?;
+        let line =
+            super::charge_line_repo::require_line(runner, scope, tenant_id, version.charge_line_id)
+                .await?;
+        super::charge_line_repo::ChargeGraph {
+            charge_line_id: line.charge_line_id,
+            line_version_id: version.line_version_id,
+            plan_id: line.plan_id,
+            plan_revision: version.plan_revision,
+        }
+    } else {
+        super::charge_line_repo::ensure_draft_graph(
+            runner,
+            scope,
+            tenant_id,
+            key.line(),
+            content,
+            created_by,
+            created_at_utc,
+        )
+        .await?
+    };
+    let market_price_id = if let Some(market_price_id) = market_price_id {
+        let market =
+            super::market_price_repo::require(runner, scope, tenant_id, market_price_id).await?;
+        if market.charge_line_id != graph.charge_line_id {
+            return Err(RepoError::Db(format!(
+                "market {market_price_id} does not belong to charge line {}",
+                graph.charge_line_id
+            )));
+        }
+        market_price_id
+    } else {
+        super::market_price_repo::find_or_create(
+            runner,
+            scope,
+            tenant_id,
+            graph.charge_line_id,
+            key.currency(),
+            key.region(),
+        )
+        .await?
+    };
+    Ok(ResolvedGraph {
+        charge_line_id: graph.charge_line_id,
+        line_version_id: graph.line_version_id,
+        market_price_id,
+        plan_id: graph.plan_id,
+        plan_revision: graph.plan_revision,
+    })
+}
+
 /// The two row writes and the audit record, with the occupancy question already
 /// answered by whichever door asked it.
 ///
@@ -3854,10 +4202,30 @@ async fn write_prepared(
 ) -> Result<PriceRecord, RepoError> {
     let PreparedDraft {
         record,
-        row,
-        bands,
+        content,
+        line_version_id,
+        market_price_id,
         correlation_id,
     } = prepared;
+    let graph = resolve_graph(
+        runner,
+        scope,
+        tenant_id,
+        &record.scope_key,
+        &content,
+        record.created_by,
+        record.created_at_utc,
+        line_version_id,
+        market_price_id,
+    )
+    .await?;
+    let row = insert_model(tenant_id, &record, &graph)?;
+    let bands = band_models(
+        tenant_id,
+        record.price_id,
+        graph.line_version_id,
+        &record.row.bands,
+    )?;
     insert_price(runner, scope, row).await?;
     insert_bands(runner, scope, bands).await?;
     // The record, in the same transaction as the insert (D-135). The stamp is the
@@ -4019,7 +4387,7 @@ pub async fn create_draft_on(
         runner,
         scope,
         tenant_id,
-        prepare_draft(tenant_id, draft)?,
+        prepare_draft(&draft)?,
     ))
     .await
 }
@@ -4047,8 +4415,7 @@ pub async fn update_draft_on(
 ) -> Result<PriceRecord, RepoError> {
     let horizon = content.grandfather_until;
     check_authored_instant("grandfatherUntil", horizon)?;
-    let assignments = content_assignments(content_model(&content)?);
-    let bands = band_models(tenant_id, price_id, &content.row.bands)?;
+    let assignments = content_assignments(content_model(&content));
     let content_line = canonical_usage_line(&content.row);
     let Some(guard) = swap_guard(tenant_id, price_id, expected) else {
         return Err(refuse(runner, scope, tenant_id, price_id, expected).await);
@@ -4065,9 +4432,41 @@ pub async fn update_draft_on(
     let Some(row) = mutable_draft(runner, scope, tenant_id, price_id, expected).await? else {
         return Err(refuse(runner, scope, tenant_id, price_id, expected).await);
     };
-    check_grandfather_horizon(horizon, read_eligibility(&row)?)?;
-    check_update_keeps_the_line(&row, &content_line)?;
+    // **The door writes the market half.** The eligibility class and the usage
+    // line axis are the line's, and the tier *rates* are this row's against the
+    // version's shared geometry — so both guards read through the graph and the
+    // band models are bound to the version the row already names rather than to
+    // anything the submission could move.
+    let graph = load_graph(runner, scope, tenant_id, row).await?;
+    let bands = band_models(
+        tenant_id,
+        price_id,
+        graph.price.line_version_id,
+        &content.row.bands,
+    )?;
+    check_grandfather_horizon(horizon, read_eligibility(&graph.line)?)?;
+    check_update_keeps_the_line(&graph, &content_line)?;
+    // **The whole submitted content still lands, across both owners.** This door
+    // takes a `PriceContent`, which is one resolved row: its shared half — model,
+    // tier geometry, descriptor, timing, the proration contract — belongs to the
+    // line version and its monetary half to this row. Splitting the *doors* is
+    // Task 5's job, and until the line's own `PATCH` exists, dropping the shared
+    // half here would make it unauthorable rather than authorable elsewhere. The
+    // write is a no-op once the version is published, which `update_draft_structure`
+    // decides for itself.
+    // **The rates come off before the geometry they point at.**
+    // `pricing_price_tier_band` has a compound foreign key into
+    // `pricing_charge_tier`, so clearing the ladder while this row's rates
+    // still reference it is a raw FK violation rather than an edit.
     delete_bands(runner, scope, tenant_id, price_id).await?;
+    super::charge_line_repo::update_draft_structure(
+        runner,
+        scope,
+        tenant_id,
+        graph.price.line_version_id,
+        &content,
+    )
+    .await?;
     let mut update = price::Entity::update_many().secure().scope_with(scope);
     for (column, value) in assignments {
         update = update.col_expr(column, Expr::value(value));
@@ -4122,128 +4521,52 @@ pub async fn update_draft_on(
 ///
 /// Every binding is either written from `record` on the line that shadows it or
 /// carried through from `content` verbatim, so an omission is not expressible.
-fn insert_model(tenant_id: Uuid, record: &PriceRecord) -> Result<price::ActiveModel, RepoError> {
-    let key = &record.scope_key;
+fn insert_model(
+    tenant_id: Uuid,
+    record: &PriceRecord,
+    graph: &ResolvedGraph,
+) -> Result<price::ActiveModel, RepoError> {
     let price::ActiveModel {
-        // Identity, the scope key and the provenance columns: `content_model`
-        // leaves all of them `NotSet` and this function is what sets them, from
-        // the record rather than from the content. Bound and ignored so the
-        // pattern stays exhaustive.
         price_id: _,
         tenant_id: _,
+        market_price_id: _,
+        line_version_id: _,
+        charge_line_id: _,
         plan_id: _,
-        // The ninth axis (D-372 I1). A key column like `plan_id` beside it, not a
-        // content column: `authored_content` normalizes `row.sku_id` to the key's
-        // own, so the key is the one source, and writing it from the content here
-        // would give the same fact two writers.
-        sku_id: _,
-        currency: _,
-        region: _,
-        price_overlay: _,
-        phase: _,
-        price_eligibility: _,
-        charge_kind: _,
-        cohort: _,
+        plan_revision: _,
         lifecycle_state: _,
         created_by: _,
         created_at_utc: _,
         row_version: _,
-        // D-154's resolved category is frozen inside the publish transaction and
-        // is NULL on a draft by definition, so a creation has nothing to say
-        // about it either — `content_model` leaves it `NotSet` and so does this.
         resolved_tax_category: _,
-        // The rounding resolution, frozen by the same statement for the same
-        // reason (`pricing_price`). A creation says nothing about it either.
         resolved_rounding_policy: _,
-        resolved_invoice_line_template: _,
-        resolved_gl_code: _,
-        invoice_line_template,
-        gl_code_ref,
-        // --- content, carried through exactly as `content_model` rendered it ---
         amount_minor,
         unit_rate_nano,
-        model_kind,
+        package_price_minor,
+        reserved_rate_nano,
         tax_inclusive,
         tax_category_ref,
-        billing_timing,
-        billing_anchor_policy,
-        anchor_day,
-        proration_basis,
-        credit_on_downgrade,
-        quantity_source,
-        manual_quantity,
-        package_size,
-        package_price_minor,
-        meter,
-        dimension_key,
-        billing_granularity,
-        aggregation_function,
-        aggregation_granularity,
-        tier_aggregation_window,
-        tier_qualification_window,
-        max_hold_granules,
-        included_allowance,
-        reserved_rate_nano,
-        reservation_flavor,
-        min_qty_purchase,
-        min_qty_usage,
-        min_qty_usage_fallback,
-        discount_ref,
         rounding_policy_ref,
         grandfather_until,
         supersedes_price_id,
-    } = content_model(&record.content())?;
+    } = content_model(&record.content());
     Ok(price::ActiveModel {
         price_id: Set(record.price_id),
         tenant_id: Set(tenant_id),
-        plan_id: Set(key.plan_id().get()),
-        sku_id: Set(key.sku_id().as_uuid()),
-        invoice_line_template,
-        gl_code_ref,
-        resolved_invoice_line_template: NotSet,
-        resolved_gl_code: NotSet,
-        currency: Set(key.currency().as_str().to_owned()),
-        region: Set(key.region().as_str().to_owned()),
-        // The axis is a `NOT NULL` text token — `none`, or the cutover instant
-        // — rather than a nullable timestamp, because distinct `NULL`s do not
-        // collide in the partial `UNIQUE` that decides row uniqueness.
-        price_overlay: Set(key.price_overlay().as_str().to_owned()),
-        phase: Set(key.phase().get()),
-        price_eligibility: Set(key.price_eligibility().as_str().to_owned()),
-        charge_kind: Set(key.charge_kind().as_str().to_owned()),
-        cohort: Set(key.cohort().to_string()),
+        market_price_id: Set(graph.market_price_id),
+        line_version_id: Set(graph.line_version_id),
+        charge_line_id: Set(graph.charge_line_id),
+        plan_id: Set(graph.plan_id),
+        plan_revision: Set(graph.plan_revision),
         amount_minor,
         unit_rate_nano,
-        model_kind,
+        package_price_minor,
+        reserved_rate_nano,
         tax_inclusive,
         tax_category_ref,
         resolved_tax_category: NotSet,
-        resolved_rounding_policy: NotSet,
-        billing_timing,
-        billing_anchor_policy,
-        anchor_day,
-        proration_basis,
-        credit_on_downgrade,
-        quantity_source,
-        manual_quantity,
-        package_size,
-        package_price_minor,
-        meter,
-        dimension_key,
-        billing_granularity,
-        aggregation_function,
-        aggregation_granularity,
-        tier_aggregation_window,
-        tier_qualification_window,
-        max_hold_granules,
-        included_allowance,
-        reserved_rate_nano,
-        reservation_flavor,
-        min_qty_purchase,
-        min_qty_usage,
-        min_qty_usage_fallback,
-        discount_ref,
         rounding_policy_ref,
+        resolved_rounding_policy: NotSet,
         grandfather_until,
         supersedes_price_id,
         lifecycle_state: Set(record.lifecycle_state.as_str().to_owned()),
@@ -4291,179 +4614,43 @@ fn insert_model(tenant_id: Uuid, record: &PriceRecord) -> Result<price::ActiveMo
 /// that reads identically to one.
 fn content_assignments(model: price::ActiveModel) -> Vec<(price::Column, Value)> {
     let price::ActiveModel {
-        // Identity. `insert_model` writes it once; an update addresses the row by
-        // it and can no more move it than a caller can rename what they are editing.
         price_id: _,
         tenant_id: _,
-        // The canonical scope key, all ten axes. Moving one is a different row:
-        // the key decides which duplicate a row is, which supersession chain it
-        // joins and which window covers it, so the remedy is a delete and a new
-        // draft — see `update_draft`'s own doc. (`meter` and `dimension_key` are
-        // axes too since D-196, but they are also content, so they are written
-        // below; `check_update_keeps_the_line` refuses an edit that moves them,
-        // which is what makes writing them back a no-op rather than a key move.)
+        market_price_id: _,
+        line_version_id: _,
+        charge_line_id: _,
         plan_id: _,
-        // D-372's ninth axis. A draft edit that moved it would re-file the row
-        // under another SKU's key while addressing it by `price_id`, which is the
-        // key move `update_draft`'s doc refuses for every axis beside it.
-        sku_id: _,
-        currency: _,
-        region: _,
-        price_overlay: _,
-        phase: _,
-        price_eligibility: _,
-        charge_kind: _,
-        cohort: _,
-        // --- content: every one of these is what a draft edit is for ---
+        plan_revision: _,
         amount_minor,
         unit_rate_nano,
-        model_kind,
+        package_price_minor,
+        reserved_rate_nano,
         tax_inclusive,
         tax_category_ref,
-        // D-154's resolved category, frozen inside the publish transaction. NULL
-        // on a draft by definition — there is nothing to freeze until a publish
-        // resolves it — so a draft edit has nothing to say about it.
         resolved_tax_category: _,
-        // Its rounding twin, on the same terms: the publish resolves and freezes
-        // it, and a draft edit must not be able to reach it. Before
-        // `pricing_price` the resolution went into `rounding_policy_ref` -
-        // which a draft edit *can* reach - so a `PATCH` could overwrite what a
-        // publish had frozen.
         resolved_rounding_policy: _,
-        resolved_invoice_line_template: _,
-        resolved_gl_code: _,
-        invoice_line_template,
-        gl_code_ref,
-        billing_timing,
-        billing_anchor_policy,
-        anchor_day,
-        proration_basis,
-        credit_on_downgrade,
-        quantity_source,
-        manual_quantity,
-        package_size,
-        package_price_minor,
-        meter,
-        dimension_key,
-        billing_granularity,
-        aggregation_function,
-        aggregation_granularity,
-        tier_aggregation_window,
-        tier_qualification_window,
-        max_hold_granules,
-        included_allowance,
-        reserved_rate_nano,
-        reservation_flavor,
-        min_qty_purchase,
-        min_qty_usage,
-        min_qty_usage_fallback,
-        discount_ref,
         rounding_policy_ref,
         grandfather_until,
         supersedes_price_id,
-        // Lifecycle is moved by publish and supersession, never by an edit; the
-        // table's own trigger enumerates the sanctioned transitions.
         lifecycle_state: _,
-        // Provenance: who authored the row and when. An edit is not an authoring,
-        // and the Slice-12 history export reads these as the original facts.
         created_by: _,
         created_at_utc: _,
-        // The `ETag`. `update_draft` advances it with `RowVersion + 1` in the same
-        // statement, under the compare-and-swap guard; an assignment here would
-        // overwrite the swap with the value the caller submitted.
         row_version: _,
     } = model;
 
     [
-        (
-            price::Column::InvoiceLineTemplate,
-            invoice_line_template.into_value(),
-        ),
-        (price::Column::GlCodeRef, gl_code_ref.into_value()),
         (price::Column::AmountMinor, amount_minor.into_value()),
-        // `content_model` sets it (D-311) and `to_record` reads it back, so
-        // omitting it here discards a draft edit that re-rates a metered row — the
-        // commonest edit there is on a `per_unit` row, since this column *is* its
-        // price — while the call answers success.
         (price::Column::UnitRateNano, unit_rate_nano.into_value()),
-        (price::Column::ModelKind, model_kind.into_value()),
-        (price::Column::TaxInclusive, tax_inclusive.into_value()),
-        // `charge_kind` and the usage line each get a paragraph in `update_draft`'s
-        // doc explaining why they do not move. This column moves, and omitting it
-        // would be an omission rather than a decision: `PATCH` answers 200 with a
-        // body rendered from the stored record, so the field would silently revert.
-        //
-        // D-110 makes this column the source of truth and the only place a
-        // category lives, and D-154 freezes `coalesce(tax_category_ref,
-        // readiness.taxCategory)` inside the publish transaction into a version
-        // that is INSERT-only over the seven-year horizon. So a correction made on
-        // a draft never landed and the row published the category its author
-        // already knew was wrong — and `04-currency-tax.md:198` names authoring
-        // this very field as D-245's remedy, which was therefore unexpressible.
-        (price::Column::TaxCategoryRef, tax_category_ref.into_value()),
-        (price::Column::BillingTiming, billing_timing.into_value()),
-        (
-            price::Column::BillingAnchorPolicy,
-            billing_anchor_policy.into_value(),
-        ),
-        (price::Column::AnchorDay, anchor_day.into_value()),
-        (price::Column::ProrationBasis, proration_basis.into_value()),
-        (
-            price::Column::CreditOnDowngrade,
-            credit_on_downgrade.into_value(),
-        ),
-        (price::Column::QuantitySource, quantity_source.into_value()),
-        (price::Column::ManualQuantity, manual_quantity.into_value()),
-        (price::Column::PackageSize, package_size.into_value()),
         (
             price::Column::PackagePriceMinor,
             package_price_minor.into_value(),
-        ),
-        (price::Column::Meter, meter.into_value()),
-        (price::Column::DimensionKey, dimension_key.into_value()),
-        (
-            price::Column::BillingGranularity,
-            billing_granularity.into_value(),
-        ),
-        (
-            price::Column::AggregationFunction,
-            aggregation_function.into_value(),
-        ),
-        (
-            price::Column::AggregationGranularity,
-            aggregation_granularity.into_value(),
-        ),
-        (
-            price::Column::TierAggregationWindow,
-            tier_aggregation_window.into_value(),
-        ),
-        (
-            price::Column::TierQualificationWindow,
-            tier_qualification_window.into_value(),
-        ),
-        (
-            price::Column::MaxHoldGranules,
-            max_hold_granules.into_value(),
-        ),
-        (
-            price::Column::IncludedAllowance,
-            included_allowance.into_value(),
         ),
         (
             price::Column::ReservedRateNano,
             reserved_rate_nano.into_value(),
         ),
-        (
-            price::Column::ReservationFlavor,
-            reservation_flavor.into_value(),
-        ),
-        (price::Column::MinQtyPurchase, min_qty_purchase.into_value()),
-        (price::Column::MinQtyUsage, min_qty_usage.into_value()),
-        (
-            price::Column::MinQtyUsageFallback,
-            min_qty_usage_fallback.into_value(),
-        ),
-        (price::Column::DiscountRef, discount_ref.into_value()),
+        (price::Column::TaxInclusive, tax_inclusive.into_value()),
+        (price::Column::TaxCategoryRef, tax_category_ref.into_value()),
         (
             price::Column::RoundingPolicyRef,
             rounding_policy_ref.into_value(),
@@ -4490,22 +4677,22 @@ fn content_assignments(model: price::ActiveModel) -> Vec<(price::Column, Value)>
 fn band_models(
     tenant_id: Uuid,
     price_id: Uuid,
+    line_version_id: Uuid,
     bands: &[TierBand],
 ) -> Result<Vec<price_tier_band::ActiveModel>, RepoError> {
-    bands
-        .iter()
-        .map(|band| {
-            let from_qty = stored_bound("band from_qty", band.from_qty)?;
-            let to_qty = match band.to_qty {
-                BandTop::Open => None,
-                BandTop::Closed(top) => Some(stored_bound("band to_qty", top)?),
-            };
+    crate::domain::price_row::bands_in_ordinal_order(bands)
+        .into_iter()
+        .map(|(ordinal, band)| {
+            let band_ordinal = i32::try_from(ordinal).map_err(|_| RepoError::ValueOutOfRange {
+                field: "band_ordinal".to_owned(),
+                value: ordinal.to_string(),
+            })?;
             Ok(price_tier_band::ActiveModel {
-                band_id: Set(band_id(price_id, from_qty)),
+                band_id: Set(band_id(price_id, band_ordinal)),
                 tenant_id: Set(tenant_id),
                 price_id: Set(price_id),
-                from_qty: Set(from_qty),
-                to_qty: Set(to_qty),
+                line_version_id: Set(line_version_id),
+                band_ordinal: Set(band_ordinal),
                 unit_price_nano: Set(band.unit_price_rate.nano_minor()),
             })
         })
@@ -4513,16 +4700,16 @@ fn band_models(
 }
 
 /// A band's surrogate key, derived from the identity the table actually states:
-/// `UNIQUE (price_id, from_qty)`.
+/// `UNIQUE (price_id, band_ordinal)`.
 ///
 /// `band_id` is a `PRIMARY KEY` with no default and nothing outside this module
 /// reads it, so it could have been random. Deriving it makes the surrogate agree
 /// with the real identity: replacing a band set with an identical one writes the
 /// same ids back, so no consumer can come to depend on an id that changes on
-/// every save, and two bands sharing a lower bound collide on both keys rather
+/// every save, and two bands sharing an ordinal collide on both keys rather
 /// than on only the one that happened to be checked.
-fn band_id(price_id: Uuid, from_qty: i64) -> Uuid {
-    Uuid::new_v5(&price_id, &from_qty.to_be_bytes())
+fn band_id(price_id: Uuid, band_ordinal: i32) -> Uuid {
+    Uuid::new_v5(&price_id, &band_ordinal.to_be_bytes())
 }
 
 /// The D-45 declaration as the column carries it, in the `{quantity,
@@ -4530,7 +4717,7 @@ fn band_id(price_id: Uuid, from_qty: i64) -> Uuid {
 /// and never compiled here: the compile is Slice 10's, and the D-129
 /// supersession guard reads this field, so a round trip that reshaped it would
 /// make the guard report a change nobody made.
-fn allowance_json(allowance: IncludedAllowance) -> JsonValue {
+pub(crate) fn allowance_json(allowance: IncludedAllowance) -> JsonValue {
     json!({
         "quantity": allowance.quantity,
         "rolloverPolicy": allowance.rollover_policy.as_str(),
@@ -4543,7 +4730,7 @@ fn allowance_json(allowance: IncludedAllowance) -> JsonValue {
 /// [`RepoError::ValueOutOfRange`] past [`i64::MAX`]. Checked rather than cast: a
 /// cast would turn an impossible quantity into a plausible one and price
 /// something nobody authored.
-fn stored_count(field: &str, value: Option<u64>) -> Result<Option<i64>, RepoError> {
+pub(crate) fn stored_count(field: &str, value: Option<u64>) -> Result<Option<i64>, RepoError> {
     let Some(value) = value else {
         return Ok(None);
     };
@@ -4553,7 +4740,7 @@ fn stored_count(field: &str, value: Option<u64>) -> Result<Option<i64>, RepoErro
 }
 
 /// Render a band bound for its `bigint` column.
-fn stored_bound(field: &str, value: u64) -> Result<i64, RepoError> {
+pub(crate) fn stored_bound(field: &str, value: u64) -> Result<i64, RepoError> {
     i64::try_from(value).map_err(|_| out_of_range(field, value))
 }
 
@@ -4588,21 +4775,23 @@ fn out_of_range(field: &str, value: u64) -> RepoError {
 /// Map a stored row and its bands to the domain value, at this boundary and
 /// nowhere else.
 fn to_record(
-    row: &price::Model,
-    bands: &[price_tier_band::Model],
+    graph: &PriceGraph,
+    geometry: &[charge_tier::Model],
+    rates: &[price_tier_band::Model],
 ) -> Result<PriceRecord, RepoError> {
-    let scope_key = to_scope_key(row)?;
-    let shape = to_price_row(row, scope_key.charge_kind(), bands)?;
+    let row = &graph.price;
+    let scope_key = to_scope_key(graph)?;
+    let shape = to_price_row(graph, scope_key.charge_kind(), geometry, rates)?;
     Ok(PriceRecord {
-        resolved_invoice_line_template: row.resolved_invoice_line_template.clone(),
-        resolved_gl_code: row.resolved_gl_code.clone(),
+        resolved_invoice_line_template: graph.version.resolved_invoice_line_template.clone(),
+        resolved_gl_code: graph.version.resolved_gl_code.clone(),
         price_id: row.price_id,
         scope_key,
         row: shape,
         tax_inclusive: row.tax_inclusive,
         tax_category_ref: row.tax_category_ref.clone(),
-        billing_timing: row.billing_timing.clone(),
-        proration_contract: to_proration_contract(row)?,
+        billing_timing: graph.version.billing_timing.clone(),
+        proration_contract: to_proration_contract(&graph.version)?,
         rounding_policy_ref: row.rounding_policy_ref.clone(),
         grandfather_until: row.grandfather_until,
         supersedes_price_id: row.supersedes_price_id,
@@ -4613,118 +4802,110 @@ fn to_record(
     })
 }
 
-/// Rebuild the canonical key from its ten columns, naming the row when it cannot.
-///
-/// **The row id is in the message, and that is the whole of this wrapper.**
-/// `RepoError::CorruptRow` becomes `DomainError::Internal`, so a single
-/// unreadable axis answers `500` for the *whole* listing the row appears in —
-/// and until this wrapper existed the operator was told which column and not
-/// which row, which on a plan of two hundred prices is not a repairable
-/// diagnostic. `overlay_repo_tests::a_stored_currency_the_domain_cannot_read_is_a_corrupt_row`
-/// states the standard the sibling door already holds — *"the refusal names the
-/// column and the row"* — and this is that standard on this one.
-///
-/// It matters more here than it reads, because the population is real rather than
-/// hypothetical: `pricing_price.region` and `.meter` carry **no** `CHECK` on
-/// either engine (verified against the chain as it stands), while
-/// `Region::new` and `Meter::new` refuse
-/// [`KEY_SEPARATOR`](crate::domain::scope_key::KEY_SEPARATOR) and
-/// have trimmed since D-196. So the store admits two spellings the loader now
-/// refuses, and a row carrying one was writable by this gear's own earlier
-/// history. **The chain cannot repair such a row**: the toolkit runner skips any
-/// migration already in its ledger, so a normalization added in place to an
-/// applied migration never executes on the databases that would need it. A repair
-/// is an out-of-band data statement or the chain's re-issue, not a migration edit.
-fn to_scope_key(row: &price::Model) -> Result<MarketPriceScopeKey, RepoError> {
-    read_scope_key(row).map_err(|e| match e {
+/// Rebuild the canonical key from the line and market, naming the price when it cannot.
+fn to_scope_key(graph: &PriceGraph) -> Result<MarketPriceScopeKey, RepoError> {
+    read_scope_key(graph).map_err(|e| match e {
         RepoError::CorruptRow(detail) => {
-            RepoError::CorruptRow(format!("price row {}: {detail}", row.price_id))
+            RepoError::CorruptRow(format!("price row {}: {detail}", graph.price.price_id))
         }
         other => other,
     })
 }
 
-/// [`to_scope_key`]'s body, unwrapped, so every arm below is covered by the one
-/// row-naming `map_err` above rather than by a copy of it per axis.
-///
-/// The cohort / eligibility biconditional is re-established here rather than
-/// assumed: the two axes are read back as two independent columns, so the
-/// pairing has to hold on every rehydration and not only at first construction.
-fn read_scope_key(row: &price::Model) -> Result<MarketPriceScopeKey, RepoError> {
-    let currency = CurrencyCode::new(&row.currency)
-        .map_err(|e| RepoError::CorruptRow(format!("pricing_price.currency: {e}")))?;
-    let region = Region::new(&row.region)
-        .map_err(|e| RepoError::CorruptRow(format!("pricing_price.region: {e}")))?;
-    // Asked even though `MarketPriceScopeKey` takes no overlay: the constructor would
-    // silently answer `base` for a row stored on any other plane, and a row the
-    // authoring path could not have written must not read back as one it could.
+fn read_scope_key(graph: &PriceGraph) -> Result<MarketPriceScopeKey, RepoError> {
+    let line = &graph.line;
+    let market = &graph.market;
+    let currency = CurrencyCode::new(&market.currency)
+        .map_err(|e| RepoError::CorruptRow(format!("pricing_market_price.currency: {e}")))?;
+    let region = Region::new(&market.region)
+        .map_err(|e| RepoError::CorruptRow(format!("pricing_market_price.region: {e}")))?;
     read_token(
-        "pricing_price.price_overlay",
-        &row.price_overlay,
+        "pricing_charge_line.price_overlay",
+        &line.price_overlay,
         PRICE_OVERLAYS,
         PriceOverlay::as_str,
     )?;
     ChargeLineScopeKey::new(
-        PlanId::new(row.plan_id),
-        PhaseId::new(row.phase),
-        read_eligibility(row)?,
+        PlanId::new(line.plan_id),
+        PhaseId::new(line.phase),
+        read_eligibility(line)?,
         read_token(
-            "pricing_price.charge_kind",
-            &row.charge_kind,
+            "pricing_charge_line.charge_kind",
+            &line.charge_kind,
             CHARGE_KINDS,
             ChargeKind::as_str,
         )?,
-        read_cohort(&row.cohort)?,
-        SkuId::new(row.sku_id),
+        read_cohort(&line.cohort)?,
+        SkuId::new(line.sku_id),
     )
-    .map(|line| MarketPriceScopeKey::new(line, currency, region))
+    .map(|logical| MarketPriceScopeKey::new(logical, currency, region))
     .and_then(|key| {
-        // The tenth axis, from the same column the two scope-key indexes read
-        // (D-196). Attached here rather than by every consumer, for the reason
-        // the eight above are: the window plane, the approval register and the
-        // supersession door all compare *loaded* keys, and a key that dropped it
-        // would compare equal across two rows that the store holds as two. The
-        // meter is read alongside because the D-196 implication is stated over
-        // the pair; it is no longer an axis (D-372).
-        let meter = row
+        let meter = graph
+            .version
             .meter
             .as_deref()
             .map(Meter::new)
             .transpose()
-            .map_err(|e| DomainError::InvalidRequest(format!("pricing_price.meter: {e}")))?;
-        key.with_usage_line(meter.as_ref(), DimensionKey::new(&row.dimension_key))
+            .map_err(|e| {
+                DomainError::InvalidRequest(format!("pricing_charge_line_version.meter: {e}"))
+            })?;
+        key.with_usage_line(meter.as_ref(), DimensionKey::new(&line.dimension_key))
     })
     .map_err(|e| RepoError::CorruptRow(format!("pricing_price scope key: {e}")))
 }
 
-/// Read the eligibility axis back into the class the row is filed under.
-///
-/// One spelling, because two readers want it: the key rehydration below, and
-/// the horizon pairing an update has to check against the *stored* class. Two
-/// spellings would be two inverse lists, and the one that fell behind would read
-/// a live class as a corrupt row.
-fn read_eligibility(row: &price::Model) -> Result<PriceEligibility, RepoError> {
+fn read_eligibility(line: &charge_line::Model) -> Result<PriceEligibility, RepoError> {
     read_token(
-        "pricing_price.price_eligibility",
-        &row.price_eligibility,
+        "pricing_charge_line.price_eligibility",
+        &line.price_eligibility,
         PRICE_ELIGIBILITIES,
         PriceEligibility::as_str,
     )
 }
 
-/// Map the Slice-3 columns and the band set back into the shape the rules judge.
 fn to_price_row(
-    row: &price::Model,
+    graph: &PriceGraph,
     charge_kind: ChargeKind,
-    bands: &[price_tier_band::Model],
+    geometry: &[charge_tier::Model],
+    rates: &[price_tier_band::Model],
 ) -> Result<PriceRow, RepoError> {
+    let version = &graph.version;
+    let line = &graph.line;
+    let row = &graph.price;
+    let mut geometry_by_ordinal: HashMap<i32, &charge_tier::Model> = HashMap::new();
+    for band in geometry {
+        geometry_by_ordinal.insert(band.band_ordinal, band);
+    }
+    let mut rates_sorted = rates.to_vec();
+    rates_sorted.sort_by_key(|band| band.band_ordinal);
+    let mut bands = rates_sorted
+        .iter()
+        .map(|rate| {
+            let geom = geometry_by_ordinal.get(&rate.band_ordinal).ok_or_else(|| {
+                RepoError::CorruptRow(format!(
+                    "price {} rate ordinal {} has no charge_tier geometry",
+                    row.price_id, rate.band_ordinal
+                ))
+            })?;
+            to_band(geom, rate)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    // The ordinal joined the rate to its geometry; it does not decide the order
+    // the set comes back in. Sorting on the bound the bands actually describe
+    // makes the read-side guarantee hold for rows this repository did not
+    // write — a raw fixture, a migration, a future writer — and not merely for
+    // rows whose ordinals were normalized on the way in. `TierBandValidator`
+    // judges geometry over the set sorted this way, so a repository answering
+    // in stored order would let a row pass the save-time pre-check and fail the
+    // identical re-run inside the publish commit.
+    bands.sort_by_key(|band| band.from_qty);
     Ok(PriceRow {
-        invoice_line_template: row.invoice_line_template.clone(),
-        gl_code_ref: row.gl_code_ref.clone(),
+        invoice_line_template: version.invoice_line_template.clone(),
+        gl_code_ref: version.gl_code_ref.clone(),
         charge_kind,
         model_kind: read_optional(
-            "pricing_price.model_kind",
-            row.model_kind.as_deref(),
+            "pricing_charge_line_version.model_kind",
+            version.model_kind.as_deref(),
             &ModelKind::ALL,
             model_kind_wire,
         )?,
@@ -4734,54 +4915,63 @@ fn to_price_row(
             .map(RateMinor::from_nano_minor)
             .transpose()
             .map_err(|e| RepoError::CorruptRow(format!("pricing_price.unit_rate_nano: {e}")))?,
-        bands: bands.iter().map(to_band).collect::<Result<_, _>>()?,
-        package_size: read_count("pricing_price.package_size", row.package_size)?,
+        bands,
+        package_size: read_count(
+            "pricing_charge_line_version.package_size",
+            version.package_size,
+        )?,
         package_price_minor: read_amount(
             "pricing_price.package_price_minor",
             row.package_price_minor,
         )?,
         quantity_source: read_optional(
-            "pricing_price.quantity_source",
-            row.quantity_source.as_deref(),
+            "pricing_charge_line_version.quantity_source",
+            version.quantity_source.as_deref(),
             QUANTITY_SOURCES,
             QuantitySource::as_str,
         )?,
-        manual_quantity: read_count("pricing_price.manual_quantity", row.manual_quantity)?,
-        sku_id: SkuId::new(row.sku_id),
-        meter: row.meter.clone(),
-        dimension_key: row.dimension_key.clone(),
+        manual_quantity: read_count(
+            "pricing_charge_line_version.manual_quantity",
+            version.manual_quantity,
+        )?,
+        sku_id: SkuId::new(line.sku_id),
+        meter: version.meter.clone(),
+        dimension_key: line.dimension_key.clone(),
         billing_granularity: read_optional(
-            "pricing_price.billing_granularity",
-            row.billing_granularity.as_deref(),
+            "pricing_charge_line_version.billing_granularity",
+            version.billing_granularity.as_deref(),
             BILLING_GRANULARITIES,
             BillingGranularity::as_str,
         )?,
         tier_aggregation_window: read_optional(
-            "pricing_price.tier_aggregation_window",
-            row.tier_aggregation_window.as_deref(),
+            "pricing_charge_line_version.tier_aggregation_window",
+            version.tier_aggregation_window.as_deref(),
             TIER_AGGREGATION_WINDOWS,
             TierAggregationWindow::as_str,
         )?,
         tier_qualification_window: read_optional(
-            "pricing_price.tier_qualification_window",
-            row.tier_qualification_window.as_deref(),
+            "pricing_charge_line_version.tier_qualification_window",
+            version.tier_qualification_window.as_deref(),
             TIER_QUALIFICATION_WINDOWS,
             TierQualificationWindow::as_str,
         )?,
         aggregation_function: read_optional(
-            "pricing_price.aggregation_function",
-            row.aggregation_function.as_deref(),
+            "pricing_charge_line_version.aggregation_function",
+            version.aggregation_function.as_deref(),
             AGGREGATION_FUNCTIONS,
             AggregationFunction::as_str,
         )?,
         aggregation_granularity: read_optional(
-            "pricing_price.aggregation_granularity",
-            row.aggregation_granularity.as_deref(),
+            "pricing_charge_line_version.aggregation_granularity",
+            version.aggregation_granularity.as_deref(),
             AGGREGATION_GRANULARITIES,
             AggregationGranularity::as_str,
         )?,
-        max_hold_granules: read_count("pricing_price.max_hold_granules", row.max_hold_granules)?,
-        included_allowance: row
+        max_hold_granules: read_count(
+            "pricing_charge_line_version.max_hold_granules",
+            version.max_hold_granules,
+        )?,
+        included_allowance: version
             .included_allowance
             .as_ref()
             .map(read_allowance)
@@ -4792,32 +4982,39 @@ fn to_price_row(
             .transpose()
             .map_err(|e| RepoError::CorruptRow(format!("pricing_price.reserved_rate_nano: {e}")))?,
         reservation_flavor: read_optional(
-            "pricing_price.reservation_flavor",
-            row.reservation_flavor.as_deref(),
+            "pricing_charge_line_version.reservation_flavor",
+            version.reservation_flavor.as_deref(),
             RESERVATION_FLAVORS,
             ReservationFlavor::as_str,
         )?,
-        min_qty_purchase: read_count("pricing_price.min_qty_purchase", row.min_qty_purchase)?,
-        min_qty_usage: read_count("pricing_price.min_qty_usage", row.min_qty_usage)?,
+        min_qty_purchase: read_count(
+            "pricing_charge_line_version.min_qty_purchase",
+            version.min_qty_purchase,
+        )?,
+        min_qty_usage: read_count(
+            "pricing_charge_line_version.min_qty_usage",
+            version.min_qty_usage,
+        )?,
         min_qty_usage_fallback: read_optional(
-            "pricing_price.min_qty_usage_fallback",
-            row.min_qty_usage_fallback.as_deref(),
+            "pricing_charge_line_version.min_qty_usage_fallback",
+            version.min_qty_usage_fallback.as_deref(),
             MIN_QTY_USAGE_FALLBACKS,
             MinQtyUsageFallback::as_str,
         )?,
-        discount_ref: row.discount_ref.clone(),
+        discount_ref: version.discount_ref.clone(),
     })
 }
 
-/// Map one stored band. `NULL` `to_qty` is the **open top** — a state of the
-/// band, not an absent value.
-fn to_band(band: &price_tier_band::Model) -> Result<TierBand, RepoError> {
-    let from_qty = read_bound("pricing_price_tier_band.from_qty", band.from_qty)?;
-    let to_qty = match read_count("pricing_price_tier_band.to_qty", band.to_qty)? {
+fn to_band(
+    geometry: &charge_tier::Model,
+    rate: &price_tier_band::Model,
+) -> Result<TierBand, RepoError> {
+    let from_qty = read_bound("pricing_charge_tier.from_qty", geometry.from_qty)?;
+    let to_qty = match read_count("pricing_charge_tier.to_qty", geometry.to_qty)? {
         None => BandTop::Open,
         Some(top) => BandTop::Closed(top),
     };
-    let unit_price_rate = RateMinor::from_nano_minor(band.unit_price_nano).map_err(|e| {
+    let unit_price_rate = RateMinor::from_nano_minor(rate.unit_price_nano).map_err(|e| {
         RepoError::CorruptRow(format!("pricing_price_tier_band.unit_price_nano: {e}"))
     })?;
     Ok(TierBand {
@@ -4898,48 +5095,42 @@ fn read_lifecycle(token: &str) -> Result<LifecycleState, RepoError> {
 /// reason [`to_scope_key`] re-establishes the cohort biconditional: the two
 /// columns come back independently, and the domain enum will not hold a
 /// mismatched pair, so this is where a mismatch has to be caught.
-fn to_proration_contract(row: &price::Model) -> Result<Option<ProrationContract>, RepoError> {
-    // `anchor_day` is in this array because the doc's "all four or none" is only
-    // true with it: left out, a row carrying an anchor day alone takes the
-    // all-absent early return and reads back as *no proration contract at all*,
-    // never reaching the pairing check below that exists to catch exactly that.
+fn to_proration_contract(
+    version: &charge_line_version::Model,
+) -> Result<Option<ProrationContract>, RepoError> {
     let present = [
-        row.billing_anchor_policy.is_some(),
-        row.proration_basis.is_some(),
-        row.credit_on_downgrade.is_some(),
-        row.anchor_day.is_some(),
+        version.billing_anchor_policy.is_some(),
+        version.proration_basis.is_some(),
+        version.credit_on_downgrade.is_some(),
+        version.anchor_day.is_some(),
     ];
     if present.iter().all(|p| !p) {
         return Ok(None);
     }
     let (Some(policy_token), Some(basis_token), Some(credit)) = (
-        row.billing_anchor_policy.as_deref(),
-        row.proration_basis.as_deref(),
-        row.credit_on_downgrade,
+        version.billing_anchor_policy.as_deref(),
+        version.proration_basis.as_deref(),
+        version.credit_on_downgrade,
     ) else {
         return Err(RepoError::CorruptRow(format!(
-            "pricing_price {} holds a partial proration contract (anchor policy: {}, basis: {}, \
+            "pricing_charge_line_version {} holds a partial proration contract (anchor policy: {}, basis: {}, \
              credit: {}, anchor day: {}); they publish together or not at all",
-            row.price_id, present[0], present[1], present[2], present[3]
+            version.line_version_id, present[0], present[1], present[2], present[3]
         )));
     };
 
-    // Through the enum's own roster, as the `proration_basis` field below already
-    // was. The match this replaced re-spelled all three tokens in a module that
-    // imports the enum, so a fourth K2 policy would have been read back as
-    // corruption — which is a stored row this gear wrote refusing to load.
     let policy = read_token(
-        "pricing_price.billing_anchor_policy",
+        "pricing_charge_line_version.billing_anchor_policy",
         policy_token,
         BillingAnchorPolicy::ALL,
         BillingAnchorPolicy::as_str,
     )?;
     let billing_anchor_policy = match policy.anchor_day() {
         Some(_) => {
-            let day = row.anchor_day.ok_or_else(|| {
+            let day = version.anchor_day.ok_or_else(|| {
                 RepoError::CorruptRow(format!(
-                    "pricing_price {}: a fixed_day anchor holds no anchor_day",
-                    row.price_id
+                    "pricing_charge_line_version {}: a fixed_day anchor holds no anchor_day",
+                    version.line_version_id
                 ))
             })?;
             let day = u8::try_from(day)
@@ -4947,25 +5138,25 @@ fn to_proration_contract(row: &price::Model) -> Result<Option<ProrationContract>
                 .and_then(|d| AnchorDay::new(d).ok())
                 .ok_or_else(|| {
                     RepoError::CorruptRow(format!(
-                        "pricing_price {}: anchor_day holds {day}",
-                        row.price_id
+                        "pricing_charge_line_version {}: anchor_day holds {day}",
+                        version.line_version_id
                     ))
                 })?;
             policy.with_anchor_day(day)
         }
         None => policy,
     };
-    if billing_anchor_policy.anchor_day().is_none() && row.anchor_day.is_some() {
+    if billing_anchor_policy.anchor_day().is_none() && version.anchor_day.is_some() {
         return Err(RepoError::CorruptRow(format!(
-            "pricing_price {}: {policy_token} carries an anchor_day, which only fixed_day has",
-            row.price_id
+            "pricing_charge_line_version {}: {policy_token} carries an anchor_day, which only fixed_day has",
+            version.line_version_id
         )));
     }
 
     Ok(Some(ProrationContract {
         billing_anchor_policy,
         proration_basis: read_token(
-            "pricing_price.proration_basis",
+            "pricing_charge_line_version.proration_basis",
             basis_token,
             ProrationBasis::ALL,
             ProrationBasis::as_str,
@@ -4973,7 +5164,6 @@ fn to_proration_contract(row: &price::Model) -> Result<Option<ProrationContract>
         credit_on_downgrade: credit,
     }))
 }
-
 /// Read the entity tag back out of its `bigint` column.
 fn read_row_version(price_id: Uuid, stored: i64) -> Result<RowVersion, RepoError> {
     RowVersion::from_stored(stored)

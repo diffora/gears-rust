@@ -21,7 +21,12 @@ use schema_dump::{migrate_and_dump_sqlite, normalise_sql, tables_in};
 /// Task 3, and two rosters would drift apart. What this number is for is to catch a dump that
 /// silently renders **fewer** objects than the schema has — a filter that is too eager reads as
 /// a passing determinism case, because an empty dump is perfectly deterministic.
-const PRICING_TABLES: usize = 43;
+///
+/// 43 until the charge-line split, which added `pricing_charge_line`, its version,
+/// `pricing_charge_tier` and `pricing_market_price`: four tables that carry the
+/// scope key, the shared calculation, the shared tier geometry and the market a
+/// price row used to hold itself.
+const PRICING_TABLES: usize = 47;
 
 async fn migrated_dump() -> String {
     let conn = Database::connect("sqlite::memory:")

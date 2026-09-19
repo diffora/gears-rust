@@ -52,7 +52,9 @@ use crate::domain::instant::utc_ymd_hms;
 use crate::domain::scope_key::MarketPriceScopeKey;
 use crate::domain::window::WindowState;
 use crate::infra::storage::RepoError;
-use crate::infra::storage::entity::{price, price_window};
+use crate::infra::storage::entity::{
+    charge_line, charge_line_version, market_price, price, price_window,
+};
 use crate::infra::storage::migrations::Migrator;
 use crate::infra::storage::repo::price_repo;
 use time::OffsetDateTime;
@@ -197,6 +199,11 @@ const SKU: Uuid = Uuid::from_u128(0x_5c_01);
 /// `(tenant_id, price_id)`, so one row is the whole world either of them can see.
 const ROW: Uuid = Uuid::from_u128(0x_a0_01);
 
+/// The logical line, its one version, and its market — the graph `ROW` hangs off.
+const LINE: Uuid = Uuid::from_u128(0x_c0_01);
+const VERSION: Uuid = Uuid::from_u128(0x_c0_02);
+const MARKET: Uuid = Uuid::from_u128(0x_c0_03);
+
 /// The abort text `excl_pricing_price_window_no_overlap`'s two `SQLite` triggers raise, as the
 /// **migration** spells it.
 ///
@@ -213,7 +220,7 @@ const ABUTTING: u128 = 0x_02;
 const COLLIDING: u128 = 0x_03;
 const SUBJECT: u128 = 0x_04;
 
-const MIRROR_ABORT: &str = "interval overlaps an occupying window on this price row";
+const MIRROR_ABORT: &str = "interval overlaps an occupying window on this market";
 
 /// `2099-09-<day>T00:00:00Z`.
 ///
@@ -240,18 +247,70 @@ async fn mirror() -> (DBProvider<DbError>, MarketPriceScopeKey) {
     let scope = AccessScope::for_tenant(TENANT);
     let conn = provider.conn().expect("scoped connection");
 
+    // The row's graph first: the logical line it is filed under, the shared
+    // version its structure lives in, and the market its money is in. A bare
+    // `price::ActiveModel` would write three dangling references.
+    let line = charge_line::ActiveModel {
+        tenant_id: Set(TENANT),
+        charge_line_id: Set(LINE),
+        plan_id: Set(PLAN),
+        phase: Set(PHASE),
+        price_overlay: Set("base".to_owned()),
+        price_eligibility: Set("all_subscriptions".to_owned()),
+        charge_kind: Set("recurring".to_owned()),
+        cohort: Set("none".to_owned()),
+        sku_id: Set(SKU),
+        dimension_key: Set(String::new()),
+    };
+    charge_line::Entity::insert(line.clone())
+        .secure()
+        .scope_with_model(&scope, &line)
+        .expect("scope the charge line")
+        .exec(&conn)
+        .await
+        .expect("seed the charge line");
+    let version = charge_line_version::ActiveModel {
+        tenant_id: Set(TENANT),
+        line_version_id: Set(VERSION),
+        charge_line_id: Set(LINE),
+        plan_revision: Set(1),
+        lifecycle_state: Set("published".to_owned()),
+        model_kind: Set(Some("flat".to_owned())),
+        created_by: Set(ACTOR),
+        created_at_utc: Set(future(1)),
+        ..charge_line_version::ActiveModel::default()
+    };
+    charge_line_version::Entity::insert(version.clone())
+        .secure()
+        .scope_with_model(&scope, &version)
+        .expect("scope the line version")
+        .exec(&conn)
+        .await
+        .expect("seed the line version");
+    let market = market_price::ActiveModel {
+        tenant_id: Set(TENANT),
+        market_price_id: Set(MARKET),
+        charge_line_id: Set(LINE),
+        currency: Set("USD".to_owned()),
+        region: Set("EU".to_owned()),
+    };
+    market_price::Entity::insert(market.clone())
+        .secure()
+        .scope_with_model(&scope, &market)
+        .expect("scope the market")
+        .exec(&conn)
+        .await
+        .expect("seed the market");
+
     let row = price::ActiveModel {
         price_id: Set(ROW),
         tenant_id: Set(TENANT),
+        market_price_id: Set(MARKET),
+        line_version_id: Set(VERSION),
+        charge_line_id: Set(LINE),
         plan_id: Set(PLAN),
-        // D-372's ninth axis, `NOT NULL` since `m20260916_000044_price_row_sku`.
-        sku_id: Set(SKU),
-        currency: Set("USD".to_owned()),
-        region: Set("EU".to_owned()),
-        phase: Set(PHASE),
-        charge_kind: Set("recurring".to_owned()),
+        plan_revision: Set(1),
         amount_minor: Set(Some(1_000)),
-        model_kind: Set(Some("flat".to_owned())),
         lifecycle_state: Set("published".to_owned()),
         created_by: Set(ACTOR),
         created_at_utc: Set(future(1)),
@@ -292,6 +351,9 @@ async fn insert_window(
         window_id: Set(Uuid::from_u128(id)),
         tenant_id: Set(TENANT),
         price_id: Set(ROW),
+        // The overlap guard compares windows by market, so the column is the
+        // subject under test rather than bookkeeping.
+        market_price_id: Set(MARKET),
         effective_from: Set(from),
         effective_to: Set(Some(to)),
         state: Set(WindowState::Scheduled.as_str().to_owned()),

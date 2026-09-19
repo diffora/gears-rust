@@ -1852,7 +1852,7 @@ pub fn new_draft(plan_id: Uuid, tenant_id: Uuid) -> NewPlanDraft {
         created_by: SEED_ACTOR,
         created_at_utc: at(10),
         // D-372: `pricing_plan.sku_id` is `NOT NULL` since
-        // `m20260916_000044_price_row_sku`, so a seeded draft names one. The value
+        // the fresh-install DDL, so a seeded draft names one. The value
         // is this harness's own, the one `seed_published_plan` twenty lines up
         // already used.
         sku_id: Uuid::from_u128(0x5_c1),
@@ -2094,6 +2094,8 @@ pub async fn seed_price_keyed_with_horizon(
             harness.tenant,
             NewPriceDraft {
                 price_id: Uuid::now_v7(),
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: key,
                 content: PriceContent {
                     row: {
@@ -2187,6 +2189,8 @@ pub async fn seed_priced_row_on_phase(
             harness.tenant,
             NewPriceDraft {
                 price_id: Uuid::now_v7(),
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: key,
                 content: PriceContent {
                     row,
@@ -2238,6 +2242,19 @@ pub async fn seed_priced_row_on_phase(
 /// makes a **non-usage** `per_unit` row declare where its quantity comes from,
 /// and the seat count is the one answer that needs no second field beside it
 /// (`manual` additionally requires `manual_quantity`).
+/// **On its own eligibility class, so it is a line of its own.**
+///
+/// `model_kind` is shared calculation structure: every market of one charge line
+/// reads the same one. A `per_unit` row keyed identically to this file's flat
+/// row would therefore be the *same line*, and whichever seed ran second would
+/// move the first one's model — which is what a repricing fixture holding both a
+/// rate row and an amount row needs not to happen.
+///
+/// `new_subscriptions_only` is the axis chosen because it is the one that
+/// discriminates without changing what the row *is*: `charge_kind` would make it
+/// a usage line and bring the usage rules with it, and a repricing selector that
+/// names no class still reaches this one — only `existing_grandfathered` is
+/// excluded.
 pub async fn seed_per_unit_rate_row(
     harness: &Harness,
     plan_id: Uuid,
@@ -2248,7 +2265,7 @@ pub async fn seed_per_unit_rate_row(
         ChargeLineScopeKey::new(
             PlanId::new(plan_id),
             seeded_phase(),
-            PriceEligibility::AllSubscriptions,
+            PriceEligibility::NewSubscriptionsOnly,
             ChargeKind::Recurring,
             Cohort::None,
             SkuId::new(OFFER_SKU),
@@ -2272,6 +2289,8 @@ pub async fn seed_per_unit_rate_row(
             harness.tenant,
             NewPriceDraft {
                 price_id: Uuid::now_v7(),
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: key,
                 content: PriceContent {
                     row,
@@ -2522,13 +2541,32 @@ pub async fn cover_never_published_price(
     price_id: Uuid,
 ) -> String {
     let conn = harness.state.db.conn().expect("conn");
+    // **Read the version, do not carry `shape.version` in.** Pricing the plan is
+    // itself a plan-plane mutation now — `charge_line_repo::ensure_draft_graph`
+    // bumps the containing revision's entity tag, because a charge line is
+    // authoring content of the plan — so the tag captured when the *shape* was
+    // seeded is one behind by the time a price row exists. This helper is setup,
+    // not the concurrency case: it wants whatever the plan stands at.
+    let version = harness
+        .state
+        .plans
+        .find_revision(
+            &harness.scope(),
+            harness.tenant,
+            PlanId::new(plan_id),
+            shape.revision,
+        )
+        .await
+        .expect("read the plan revision the fixture is covering")
+        .expect("the revision the shape seeded is there")
+        .row_version;
     let version = crate::common::author_covering_intention(
         &conn,
         &harness.scope(),
         harness.tenant,
         PlanId::new(plan_id),
         shape.revision,
-        shape.version,
+        version,
         price_id,
         DraftStart::AtPublish,
         None,
@@ -2669,6 +2707,8 @@ pub async fn seed_publishable_plan_with(
             harness.tenant,
             NewPriceDraft {
                 price_id,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: key_for(plan, phase),
                 content,
                 created_by: SEED_ACTOR,
@@ -2685,13 +2725,23 @@ pub async fn seed_publishable_plan_with(
     // and not this file's, so the sqlite seeds that owe the same covering cannot
     // drift from it.
     let conn = harness.state.db.conn().expect("conn");
+    // Read the tag rather than carry `shape.version` in: see
+    // [`cover_never_published_price`] for why pricing the plan moves it.
+    let version = harness
+        .state
+        .plans
+        .find_revision(&scope, harness.tenant, plan, shape.revision)
+        .await
+        .expect("read the plan revision the fixture is covering")
+        .expect("the revision the shape seeded is there")
+        .row_version;
     let version = crate::common::author_covering_intention(
         &conn,
         &scope,
         harness.tenant,
         plan,
         shape.revision,
-        shape.version,
+        version,
         price_id,
         DraftStart::AtPublish,
         None,
@@ -3217,6 +3267,14 @@ async fn planes_of_the_plan_aggregate(harness: &Harness, out: &mut Planes) {
 /// The price row, its bands and its windows.
 async fn planes_of_the_price_aggregate(harness: &Harness, out: &mut Planes) {
     let conn = harness.db.conn().expect("conn");
+    // The logical line, its shared version and its markets are planes of this
+    // aggregate too: a denied authoring call must leave all six untouched, and a
+    // write that landed on one of the four new tables would otherwise read here
+    // as a call that wrote nothing.
+    plane!(out, &conn, harness, charge_line);
+    plane!(out, &conn, harness, charge_line_version);
+    plane!(out, &conn, harness, charge_tier);
+    plane!(out, &conn, harness, market_price);
     plane!(out, &conn, harness, price);
     plane!(out, &conn, harness, price_tier_band);
     plane!(out, &conn, harness, price_window);

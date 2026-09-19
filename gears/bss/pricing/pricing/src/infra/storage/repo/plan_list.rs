@@ -24,7 +24,7 @@ use uuid::Uuid;
 
 use super::{PlanRevision, to_domain};
 use crate::infra::storage::RepoError;
-use crate::infra::storage::entity::{plan, price};
+use crate::infra::storage::entity::{charge_line_version, market_price, plan, price};
 use crate::infra::storage::odata_mapping::{
     LIST_LIMIT_CFG, OdataPageError, lifecycle_token, query_with_default_order,
     query_with_unique_order,
@@ -92,6 +92,58 @@ fn price_query() -> SelectStatement {
             Expr::col((price::Entity, price::Column::LifecycleState)).is_in(["draft", "published"]),
         )
         .to_owned()
+}
+
+/// [`price_query`] joined to the line version, for the one filter field whose
+/// column moved there.
+///
+/// `model_kind` is shared content of the charge-line version now, so a plan's
+/// membership in a model vocabulary is a question about the versions its rows
+/// reference. The join carries `tenant_id` as well as the version id: the FK is
+/// compound, and an ON clause that omitted the tenant would be a join no scope
+/// predicate constrains.
+fn price_query_on_version() -> SelectStatement {
+    let mut query = price_query();
+    query.inner_join(
+        charge_line_version::Entity,
+        Condition::all()
+            .add(
+                Expr::col((
+                    charge_line_version::Entity,
+                    charge_line_version::Column::TenantId,
+                ))
+                .equals((price::Entity, price::Column::TenantId)),
+            )
+            .add(
+                Expr::col((
+                    charge_line_version::Entity,
+                    charge_line_version::Column::LineVersionId,
+                ))
+                .equals((price::Entity, price::Column::LineVersionId)),
+            ),
+    );
+    query.clone()
+}
+
+/// [`price_query`] joined to the market, for `currency`.
+///
+/// The currency is an axis of `pricing_market_price` now; the join's shape is
+/// [`price_query_on_version`]'s and for its reason.
+fn price_query_on_market() -> SelectStatement {
+    let mut query = price_query();
+    query.inner_join(
+        market_price::Entity,
+        Condition::all()
+            .add(
+                Expr::col((market_price::Entity, market_price::Column::TenantId))
+                    .equals((price::Entity, price::Column::TenantId)),
+            )
+            .add(
+                Expr::col((market_price::Entity, market_price::Column::MarketPriceId))
+                    .equals((price::Entity, price::Column::MarketPriceId)),
+            ),
+    );
+    query.clone()
 }
 
 /// SQL count, usable in ORDER BY and the keyset predicate before LIMIT.
@@ -213,18 +265,27 @@ fn predicate(
         if matches!(value, ODataValue::Null) {
             return Err(bad_filter("price membership requires a string, not null"));
         }
-        let column = if field == Field::ModelKind {
-            price::Column::ModelKind
+        let (subject, mut membership) = if field == Field::ModelKind {
+            (
+                Expr::col((
+                    charge_line_version::Entity,
+                    charge_line_version::Column::ModelKind,
+                )),
+                price_query_on_version(),
+            )
         } else {
-            price::Column::Currency
+            (
+                Expr::col((market_price::Entity, market_price::Column::Currency)),
+                price_query_on_market(),
+            )
         };
         let comparison = scalar(
-            Expr::col((price::Entity, column)),
+            subject,
             if op == FilterOp::Ne { FilterOp::Eq } else { op },
             value,
         )?;
         let exists = Condition::all().add(Expr::exists(
-            price_query()
+            membership
                 .expr(Expr::val(1))
                 .cond_where(comparison)
                 .to_owned(),

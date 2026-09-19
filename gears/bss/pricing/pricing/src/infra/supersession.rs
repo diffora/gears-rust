@@ -1462,6 +1462,8 @@ async fn stage_successor(
         tenant_id,
         NewPriceDraft {
             price_id: request.successor_price_id,
+            line_version_id: None,
+            market_price_id: None,
             scope_key: request.key.clone(),
             content: request.successor.clone(),
             created_by: stamp.actor_principal_id,
@@ -1508,13 +1510,33 @@ async fn stage_successor(
 /// record against an authored content, so the cutover spends it three times: on its
 /// successor, on its grandfathered copy, and on both of its arms.
 ///
+/// # The comparison is the **market** half, because the shared half is not this
+/// door's to write
+///
+/// Since the charge-line split, a successor on an occupied key resolves to the
+/// line version that key's line already holds — `find_or_insert_version` returns
+/// the existing one, and a second version of one revision is not expressible.
+/// So the shared half of the row the door writes is the version's, whatever the
+/// request said, and comparing it here is comparing a field the caller cannot
+/// move. That is the same shape as the `charge_kind` bug this function's own
+/// history records: a side the wire cannot spell, refused permanently with a
+/// remedy sentence no caller could act on. Measured on a cutover whose successor
+/// carried no proration contract while the line version held the predecessor's:
+/// the readback said `Some(..)`, the request said `None`, and a legitimately
+/// composed unit was refused.
+///
+/// What the guard still covers is everything a successor *can* diverge in:
+/// amounts, rates, tier rates, the tax and rounding bindings, the grandfather
+/// horizon and the predecessor it names. A structural change is a new revision's
+/// business, and the structural-cutover schedule is what judges those.
+///
 /// # Errors
 /// [`DomainError::DuplicateScopeKey`] naming the staged row.
 pub(crate) fn refuse_divergent_successor(
     staged: &PriceRecord,
     successor_content: &PriceContent,
 ) -> Result<(), DomainError> {
-    if staged.content() == *successor_content {
+    if market_half(&staged.content()) == market_half(successor_content) {
         return Ok(());
     }
     Err(DomainError::DuplicateScopeKey(format!(
@@ -1523,6 +1545,32 @@ pub(crate) fn refuse_divergent_successor(
          content, or withdraw the unit to free the key and compose again",
         staged.price_id, staged.scope_key
     )))
+}
+
+/// The half of a content the monetary door actually writes.
+///
+/// `split_row` is Task 2's own ledger of which side each field is on, so this
+/// reuses it rather than restating the split and drifting from it.
+/// The monetary side of a content, as [`market_half`] compares it.
+type MarketHalf = (
+    crate::domain::market_price::MarketPriceTerms,
+    bool,
+    Option<String>,
+    Option<String>,
+    Option<time::OffsetDateTime>,
+    Option<uuid::Uuid>,
+);
+
+fn market_half(content: &PriceContent) -> MarketHalf {
+    let (_structure, terms) = crate::domain::market_price::split_row(content.row.clone());
+    (
+        terms,
+        content.tax_inclusive,
+        content.tax_category_ref.clone(),
+        content.rounding_policy_ref.clone(),
+        content.grandfather_until,
+        content.supersedes_price_id,
+    )
 }
 
 /// The request's successor **as the door would write it**.

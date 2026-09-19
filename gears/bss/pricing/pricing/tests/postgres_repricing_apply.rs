@@ -388,6 +388,8 @@ async fn seed_published_row(
             TENANT,
             NewPriceDraft {
                 price_id,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: scope_key(plan, phase, region),
                 content: publishable_row(amount_minor),
                 created_by: ACTOR,
@@ -450,6 +452,8 @@ async fn seed_stray_draft(h: &Harness, plan: PlanId, phase: Uuid) {
             TENANT,
             NewPriceDraft {
                 price_id: Uuid::now_v7(),
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: scope_key(plan, phase, "us-east"),
                 content: publishable_row(5_000),
                 created_by: ACTOR,

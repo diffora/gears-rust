@@ -318,6 +318,8 @@ async fn seed_row(db: &DBProvider<DbError>, tenant: Uuid, actor: Uuid, region: &
             tenant,
             NewPriceDraft {
                 price_id: Uuid::now_v7(),
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: MarketPriceScopeKey::new(
                     ChargeLineScopeKey::new(
                         PlanId::new(plan_id),

@@ -928,6 +928,8 @@ async fn copy_rows_on(
             tenant_id,
             NewPriceDraft {
                 price_id: Uuid::new_v4(),
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: reset_key(row, target, remap)?,
                 content: reset_content(row),
                 created_by: stamp.actor_principal_id,

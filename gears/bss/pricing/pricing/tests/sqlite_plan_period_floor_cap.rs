@@ -54,7 +54,7 @@ const TEST_CORRELATION: Uuid = Uuid::from_u128(0x_c0_11_a7_11);
 
 const TENANT: &str = "11111111-1111-1111-1111-111111111111";
 /// The SKU every seeded plan revision names (D-372). `pricing_plan.sku_id` is
-/// `NOT NULL` since `m20260916_000044_price_row_sku`; the value is incidental
+/// `NOT NULL` in the fresh-install DDL; the value is incidental
 /// to these cases and the column is not.
 const SKU: &str = "00000000-0000-0000-0000-000000000005";
 const PLAN: &str = "22222222-2222-2222-2222-222222222222";
@@ -508,7 +508,7 @@ async fn the_bound_set_round_trips_in_market_order_and_replaces_wholesale() {
                 created_by: Uuid::from_u128(0xac_10),
                 created_at_utc: at(15),
                 // D-372: `pricing_plan.sku_id` is `NOT NULL` since
-                // `m20260916_000044_price_row_sku`, so a draft with no SKU is refused
+                // the fresh-install DDL, so a draft with no SKU is refused
                 // by the store. `PlanShape.sku_id` stays `Option` until Task 8.
                 sku_id: Uuid::from_u128(5),
                 plan_tier: None,
@@ -601,7 +601,7 @@ async fn an_empty_bound_set_is_how_every_bound_is_withdrawn() {
                 created_by: Uuid::from_u128(0xac_10),
                 created_at_utc: at(15),
                 // D-372: `pricing_plan.sku_id` is `NOT NULL` since
-                // `m20260916_000044_price_row_sku`, so a draft with no SKU is refused
+                // the fresh-install DDL, so a draft with no SKU is refused
                 // by the store. `PlanShape.sku_id` stays `Option` until Task 8.
                 sku_id: Uuid::from_u128(5),
                 plan_tier: None,

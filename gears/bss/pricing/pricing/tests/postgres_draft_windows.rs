@@ -179,17 +179,34 @@ async fn store() -> Store {
 async fn seed_price(store: &Store, tenant_id: Uuid, plan_id: Uuid, price_id: Uuid) {
     let conn = store.db.conn().expect("scoped connection");
     let row_scope = AccessScope::for_tenant(tenant_id);
+    let seeded_graph = common::seed_charge_graph(
+        &conn,
+        &row_scope,
+        &common::ChargeGraphSeed {
+            tenant_id,
+            plan_id,
+            phase: PHASE,
+            sku_id: SKU,
+            charge_kind: "recurring".to_owned(),
+            currency: "USD".to_owned(),
+            region: "EU".to_owned(),
+            lifecycle_state: "draft".to_owned(),
+            model_kind: Some("flat".to_owned()),
+            created_by: ACTOR,
+            created_at_utc: t(1),
+            ..Default::default()
+        },
+    )
+    .await;
     let row = price::ActiveModel {
+        plan_revision: Set(1),
+        charge_line_id: Set(seeded_graph.charge_line_id),
+        line_version_id: Set(seeded_graph.line_version_id),
+        market_price_id: Set(seeded_graph.market_price_id),
         price_id: Set(price_id),
         tenant_id: Set(tenant_id),
         plan_id: Set(plan_id),
-        sku_id: Set(SKU),
-        currency: Set("USD".to_owned()),
-        region: Set("EU".to_owned()),
-        phase: Set(PHASE),
-        charge_kind: Set("recurring".to_owned()),
         amount_minor: Set(Some(1_000)),
-        model_kind: Set(Some("flat".to_owned())),
         lifecycle_state: Set("draft".to_owned()),
         created_by: Set(ACTOR),
         created_at_utc: Set(t(1)),
@@ -787,6 +804,8 @@ async fn seed_publishable_draft() -> (Store, u64) {
             TENANT,
             NewPriceDraft {
                 price_id: ROW,
+                line_version_id: None,
+                market_price_id: None,
                 scope_key: publishable_scope_key(),
                 content: publishable_row(9_900),
                 created_by: ACTOR,

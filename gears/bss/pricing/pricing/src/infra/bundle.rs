@@ -89,7 +89,7 @@ use crate::infra::storage::repo::bundle_repo::{self, CompositionDraft};
 use crate::infra::storage::repo::outbox_repo::BundleUpdatedPayload;
 use crate::infra::storage::repo::plan_repo::{self, read_frequency};
 use crate::infra::storage::repo::{
-    BundleRepo, NewAuditEntry, NewOutboxEvent, audit_repo, outbox_repo,
+    BundleRepo, NewAuditEntry, NewOutboxEvent, audit_repo, outbox_repo, price_join,
 };
 
 /// The eligibility class a component contributes coverage from: the durable base.
@@ -867,6 +867,11 @@ async fn component_rows(
     tenant_id: Uuid,
     plan_id: PlanId,
 ) -> Result<Vec<CoverageRow>, RepoError> {
+    // **The two narrowing axes left `pricing_price`.** The eligibility class and
+    // the cohort are columns of the charge line, and currency/region are the
+    // market's, so the state-and-plan rows are read here and the narrowing is
+    // applied to their graphs. The predicate is the same one, over the same
+    // vocabulary, one join further out.
     let rows = price::Entity::find()
         .secure()
         .scope_with(scope)
@@ -874,37 +879,41 @@ async fn component_rows(
             Condition::all()
                 .add(price::Column::TenantId.eq(tenant_id))
                 .add(price::Column::PlanId.eq(plan_id.get()))
-                .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str()))
-                .add(price::Column::PriceEligibility.eq(COVERAGE_ELIGIBILITY))
-                // The non-grandfathered generation (ADR-0002), rendered by
-                // `Cohort` and not spelled: `Display` is the writer's
-                // rendering (`price_repo`'s `cohort.to_string()`), and it is
-                // not `const`, so it lives at the call site rather than in a
-                // constant above.
-                .add(price::Column::Cohort.eq(Cohort::None.to_string())),
+                .add(price::Column::LifecycleState.eq(LifecycleState::Published.as_str())),
         )
         .all(runner)
         .await
         .map_err(|e| RepoError::Db(format!("read component coverage rows: {e}")))?;
+    let graphs = price_join::load_graphs(runner, scope, tenant_id, &rows).await?;
 
-    let mut coverage = Vec::with_capacity(rows.len());
-    for row in rows {
-        let currency = CurrencyCode::new(&row.currency).map_err(|e| {
+    // The non-grandfathered generation (ADR-0002), rendered by `Cohort` and not
+    // spelled: `Display` is the writer's rendering (`price_repo`'s
+    // `cohort.to_string()`), and it is not `const`, so it lives here rather than
+    // in a constant above.
+    let ungrandfathered = Cohort::None.to_string();
+    let mut coverage = Vec::with_capacity(graphs.len());
+    for graph in graphs {
+        if graph.line.price_eligibility != COVERAGE_ELIGIBILITY
+            || graph.line.cohort != ungrandfathered
+        {
+            continue;
+        }
+        let currency = CurrencyCode::new(&graph.market.currency).map_err(|e| {
             RepoError::CorruptRow(format!(
                 "price {} carries an unusable currency: {e}",
-                row.price_id
+                graph.price.price_id
             ))
         })?;
-        let region = Region::new(&row.region).map_err(|e| {
+        let region = Region::new(&graph.market.region).map_err(|e| {
             RepoError::CorruptRow(format!(
                 "price {} carries an unusable region: {e}",
-                row.price_id
+                graph.price.price_id
             ))
         })?;
         coverage.push(CoverageRow {
             currency,
             region,
-            tax_inclusive: row.tax_inclusive,
+            tax_inclusive: graph.price.tax_inclusive,
         });
     }
     Ok(coverage)

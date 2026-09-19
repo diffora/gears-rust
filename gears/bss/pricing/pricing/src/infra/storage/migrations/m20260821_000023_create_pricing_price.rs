@@ -304,87 +304,52 @@ const PG_UP_STATEMENTS: &[&str] = &[
     "CREATE TABLE bss.pricing_price (
             tenant_id                 uuid        NOT NULL,
             price_id                  uuid        NOT NULL,
-            aggregation_function      text,
-            aggregation_granularity   text,
-            amount_minor              bigint,
-            anchor_day                integer,
-            billing_anchor_policy     text,
-            billing_granularity       text,
-            billing_timing            text,
-            charge_kind               text        NOT NULL,
-            cohort                    text        NOT NULL DEFAULT 'none'::text,
-            credit_on_downgrade       boolean,
-            currency                  varchar(3)  NOT NULL,
-            dimension_key             text        NOT NULL DEFAULT ''::text,
-            discount_ref              text,
-            grandfather_until         timestamptz,
-            included_allowance        jsonb,
-            lifecycle_state           text        NOT NULL,
-            manual_quantity           bigint,
-            max_hold_granules         bigint,
-            meter                     text,
-            min_qty_purchase          bigint,
-            min_qty_usage             bigint,
-            min_qty_usage_fallback    text,
-            model_kind                text,
-            package_price_minor       bigint,
-            package_size              bigint,
-            phase                     uuid        NOT NULL,
+            market_price_id           uuid        NOT NULL,
+            line_version_id           uuid        NOT NULL,
+            charge_line_id            uuid        NOT NULL,
             plan_id                   uuid        NOT NULL,
-            price_eligibility         text        NOT NULL DEFAULT 'all_subscriptions'::text,
-            price_overlay             text        NOT NULL DEFAULT 'base'::text,
-            proration_basis           text,
-            quantity_source           text,
-            region                    text        NOT NULL,
-            reservation_flavor        text,
+            plan_revision             bigint      NOT NULL,
+            amount_minor              bigint,
+            unit_rate_nano            bigint,
+            package_price_minor       bigint,
             reserved_rate_nano        bigint,
-            resolved_rounding_policy  text,
+            tax_inclusive             boolean     NOT NULL DEFAULT false,
+            tax_category_ref          text,
             resolved_tax_category     text,
             rounding_policy_ref       text,
+            resolved_rounding_policy  text,
+            grandfather_until         timestamptz,
             supersedes_price_id       uuid,
-            tax_category_ref          text,
-            tax_inclusive             boolean     NOT NULL DEFAULT false,
-            tier_aggregation_window   text,
-            tier_qualification_window text,
-            unit_rate_nano            bigint,
+            lifecycle_state           text        NOT NULL,
             created_at_utc            timestamptz NOT NULL DEFAULT now(),
             created_by                uuid        NOT NULL,
             row_version               bigint      NOT NULL DEFAULT 0,
-            CONSTRAINT chk_pricing_price_aggregation_function CHECK (aggregation_function IS NULL OR aggregation_function IN ('sum','peak','time_weighted')),
-            CONSTRAINT chk_pricing_price_aggregation_granularity CHECK (aggregation_granularity IS NULL OR aggregation_granularity IN ('hour','day')),
-            CONSTRAINT chk_pricing_price_meter_no_separator CHECK (meter IS NULL OR meter NOT LIKE '%|%'),
-            CONSTRAINT chk_pricing_price_region_no_separator CHECK (region NOT LIKE '%|%'),
             CONSTRAINT chk_pricing_price_amount_non_negative CHECK (amount_minor IS NULL OR amount_minor >= 0),
-            CONSTRAINT chk_pricing_price_billing_granularity CHECK (billing_granularity IS NULL OR billing_granularity IN ( 'per_second','per_minute','per_hour','per_day','whole_unit')),
-            CONSTRAINT chk_pricing_price_billing_timing CHECK (billing_timing IS NULL OR billing_timing IN ('advance','arrears')),
-            CONSTRAINT chk_pricing_price_charge_kind CHECK (charge_kind IN ('recurring','usage','one_time')),
-            CONSTRAINT chk_pricing_price_cohort_eligibility CHECK ((cohort <> 'none') = (price_eligibility = 'existing_grandfathered')),
-            CONSTRAINT chk_pricing_price_eligibility CHECK (price_eligibility IN ( 'all_subscriptions','new_subscriptions_only','existing_grandfathered')),
-            CONSTRAINT chk_pricing_price_grandfather_until CHECK (grandfather_until IS NULL OR price_eligibility = 'existing_grandfathered'),
             CONSTRAINT chk_pricing_price_lifecycle_state CHECK (lifecycle_state IN ('draft','published','superseded')),
-            CONSTRAINT chk_pricing_price_manual_quantity CHECK (manual_quantity IS NULL OR manual_quantity >= 0),
-            CONSTRAINT chk_pricing_price_max_hold_granules CHECK (max_hold_granules IS NULL OR max_hold_granules >= 1),
-            CONSTRAINT chk_pricing_price_min_qty_purchase CHECK (min_qty_purchase IS NULL OR min_qty_purchase >= 0),
-            CONSTRAINT chk_pricing_price_min_qty_usage CHECK (min_qty_usage IS NULL OR min_qty_usage >= 0),
-            CONSTRAINT chk_pricing_price_model_kind CHECK (model_kind IS NULL OR model_kind IN ('flat','per_unit','graduated','volume','package')),
-            CONSTRAINT chk_pricing_price_overlay CHECK (price_overlay = 'base'),
-            CONSTRAINT chk_pricing_price_package_fields_kind CHECK ((package_size IS NULL AND package_price_minor IS NULL) OR (model_kind IS NOT NULL AND model_kind = 'package')),
             CONSTRAINT chk_pricing_price_package_price CHECK (package_price_minor IS NULL OR package_price_minor >= 0),
-            CONSTRAINT chk_pricing_price_package_size CHECK (package_size IS NULL OR package_size > 0),
-            CONSTRAINT chk_pricing_price_quantity_source CHECK (quantity_source IS NULL OR quantity_source IN ('subscription_seat_count','manual')),
             CONSTRAINT chk_pricing_price_reserved_rate_nano CHECK (reserved_rate_nano IS NULL OR reserved_rate_nano >= 0),
             CONSTRAINT chk_pricing_price_row_version CHECK (row_version >= 0),
-            CONSTRAINT chk_pricing_price_tier_aggregation_window CHECK (tier_aggregation_window IS NULL OR tier_aggregation_window IN ( 'calendar_month','invoice_period','subscription_lifetime','per_event','per_hour')),
-            CONSTRAINT chk_pricing_price_tier_qualification_window CHECK (tier_qualification_window IS NULL OR tier_qualification_window IN ('current','trailing_period')),
             CONSTRAINT chk_pricing_price_unit_rate_nano CHECK (unit_rate_nano IS NULL OR unit_rate_nano >= 0),
+            CONSTRAINT chk_pricing_price_revision CHECK (plan_revision >= 0),
+            CONSTRAINT fk_pricing_price_market_line FOREIGN KEY (tenant_id, market_price_id, charge_line_id)
+                REFERENCES bss.pricing_market_price (tenant_id, market_price_id, charge_line_id),
+            CONSTRAINT fk_pricing_price_version_line FOREIGN KEY (tenant_id, line_version_id, charge_line_id)
+                REFERENCES bss.pricing_charge_line_version (tenant_id, line_version_id, charge_line_id),
+            CONSTRAINT fk_pricing_price_line_plan FOREIGN KEY (tenant_id, charge_line_id, plan_id)
+                REFERENCES bss.pricing_charge_line (tenant_id, charge_line_id, plan_id),
+            CONSTRAINT uq_pricing_price_tenant_id UNIQUE (tenant_id, price_id),
+            CONSTRAINT uq_pricing_price_id_market UNIQUE (tenant_id, price_id, market_price_id),
+            CONSTRAINT uq_pricing_price_id_version UNIQUE (tenant_id, price_id, line_version_id),
             CONSTRAINT pricing_price_pkey PRIMARY KEY (price_id)
         )",
+    "CREATE INDEX idx_pricing_price_line ON bss.pricing_price USING btree (tenant_id, charge_line_id, lifecycle_state)",
     "CREATE INDEX idx_pricing_price_plan ON bss.pricing_price USING btree (tenant_id, plan_id, lifecycle_state)",
+    "CREATE INDEX idx_pricing_price_market ON bss.pricing_price USING btree (tenant_id, market_price_id, lifecycle_state)",
     "CREATE INDEX idx_pricing_price_supersedes ON bss.pricing_price USING btree (tenant_id, supersedes_price_id) WHERE (supersedes_price_id IS NOT NULL)",
-    "CREATE UNIQUE INDEX uq_pricing_price_meter_line_current ON bss.pricing_price USING btree (tenant_id, plan_id, currency, region, price_overlay, phase, price_eligibility, cohort, meter, dimension_key) WHERE ((lifecycle_state = 'published'::text) AND (meter IS NOT NULL))",
-    "CREATE UNIQUE INDEX uq_pricing_price_scope_key_current ON bss.pricing_price USING btree (tenant_id, plan_id, currency, region, price_overlay, phase, price_eligibility, charge_kind, cohort, COALESCE(meter, ''::text), dimension_key) WHERE (lifecycle_state = 'published'::text)",
-    "CREATE UNIQUE INDEX uq_pricing_price_scope_key_draft ON bss.pricing_price USING btree (tenant_id, plan_id, currency, region, price_overlay, phase, price_eligibility, charge_kind, cohort, COALESCE(meter, ''::text), dimension_key) WHERE (lifecycle_state = 'draft'::text)",
+    "CREATE UNIQUE INDEX uq_pricing_price_market_draft ON bss.pricing_price USING btree (tenant_id, market_price_id) WHERE (lifecycle_state = 'draft'::text)",
     "CREATE OR REPLACE FUNCTION bss.pricing_price_append_only() RETURNS trigger AS $$
+        DECLARE
+          elig text;
         BEGIN
           IF TG_OP = 'DELETE' THEN
             IF OLD.lifecycle_state <> 'draft' THEN
@@ -392,6 +357,17 @@ const PG_UP_STATEMENTS: &[&str] = &[
                 OLD.lifecycle_state;
             END IF;
             RETURN OLD;
+          END IF;
+
+          IF NEW.grandfather_until IS NOT NULL THEN
+            SELECT l.price_eligibility INTO elig
+              FROM bss.pricing_charge_line l
+             WHERE l.tenant_id = NEW.tenant_id AND l.charge_line_id = NEW.charge_line_id;
+            IF elig IS DISTINCT FROM 'existing_grandfathered' THEN
+              RAISE EXCEPTION
+                'pricing_price: grandfather_until is permitted only on an existing_grandfathered line (row %)',
+                NEW.price_id;
+            END IF;
           END IF;
 
           IF OLD.lifecycle_state = 'draft' THEN
@@ -405,52 +381,26 @@ const PG_UP_STATEMENTS: &[&str] = &[
 
           IF NEW.price_id                  IS DISTINCT FROM OLD.price_id
           OR NEW.tenant_id                 IS DISTINCT FROM OLD.tenant_id
+          OR NEW.market_price_id           IS DISTINCT FROM OLD.market_price_id
+          OR NEW.line_version_id           IS DISTINCT FROM OLD.line_version_id
+          OR NEW.charge_line_id            IS DISTINCT FROM OLD.charge_line_id
           OR NEW.plan_id                   IS DISTINCT FROM OLD.plan_id
-          OR NEW.currency                  IS DISTINCT FROM OLD.currency
-          OR NEW.region                    IS DISTINCT FROM OLD.region
-          OR NEW.price_overlay             IS DISTINCT FROM OLD.price_overlay
-          OR NEW.phase                     IS DISTINCT FROM OLD.phase
-          OR NEW.price_eligibility         IS DISTINCT FROM OLD.price_eligibility
-          OR NEW.charge_kind               IS DISTINCT FROM OLD.charge_kind
-          OR NEW.cohort                    IS DISTINCT FROM OLD.cohort
+          OR NEW.plan_revision             IS DISTINCT FROM OLD.plan_revision
           OR NEW.amount_minor              IS DISTINCT FROM OLD.amount_minor
           OR NEW.unit_rate_nano            IS DISTINCT FROM OLD.unit_rate_nano
-          OR NEW.model_kind                IS DISTINCT FROM OLD.model_kind
+          OR NEW.package_price_minor       IS DISTINCT FROM OLD.package_price_minor
+          OR NEW.reserved_rate_nano        IS DISTINCT FROM OLD.reserved_rate_nano
           OR NEW.tax_inclusive             IS DISTINCT FROM OLD.tax_inclusive
           OR NEW.tax_category_ref          IS DISTINCT FROM OLD.tax_category_ref
           OR NEW.resolved_tax_category     IS DISTINCT FROM OLD.resolved_tax_category
           OR NEW.resolved_rounding_policy  IS DISTINCT FROM OLD.resolved_rounding_policy
-          OR NEW.billing_timing            IS DISTINCT FROM OLD.billing_timing
-          OR NEW.billing_anchor_policy     IS DISTINCT FROM OLD.billing_anchor_policy
-          OR NEW.anchor_day                IS DISTINCT FROM OLD.anchor_day
-          OR NEW.proration_basis           IS DISTINCT FROM OLD.proration_basis
-          OR NEW.credit_on_downgrade       IS DISTINCT FROM OLD.credit_on_downgrade
-          OR NEW.quantity_source           IS DISTINCT FROM OLD.quantity_source
-          OR NEW.manual_quantity           IS DISTINCT FROM OLD.manual_quantity
-          OR NEW.package_size              IS DISTINCT FROM OLD.package_size
-          OR NEW.package_price_minor       IS DISTINCT FROM OLD.package_price_minor
-          OR NEW.meter                     IS DISTINCT FROM OLD.meter
-          OR NEW.dimension_key             IS DISTINCT FROM OLD.dimension_key
-          OR NEW.billing_granularity       IS DISTINCT FROM OLD.billing_granularity
-          OR NEW.aggregation_function      IS DISTINCT FROM OLD.aggregation_function
-          OR NEW.aggregation_granularity   IS DISTINCT FROM OLD.aggregation_granularity
-          OR NEW.tier_aggregation_window   IS DISTINCT FROM OLD.tier_aggregation_window
-          OR NEW.tier_qualification_window IS DISTINCT FROM OLD.tier_qualification_window
-          OR NEW.max_hold_granules         IS DISTINCT FROM OLD.max_hold_granules
-          OR NEW.included_allowance        IS DISTINCT FROM OLD.included_allowance
-          OR NEW.reserved_rate_nano       IS DISTINCT FROM OLD.reserved_rate_nano
-          OR NEW.reservation_flavor        IS DISTINCT FROM OLD.reservation_flavor
-          OR NEW.min_qty_purchase          IS DISTINCT FROM OLD.min_qty_purchase
-          OR NEW.min_qty_usage             IS DISTINCT FROM OLD.min_qty_usage
-          OR NEW.min_qty_usage_fallback    IS DISTINCT FROM OLD.min_qty_usage_fallback
-          OR NEW.discount_ref              IS DISTINCT FROM OLD.discount_ref
           OR NEW.rounding_policy_ref       IS DISTINCT FROM OLD.rounding_policy_ref
           OR NEW.supersedes_price_id       IS DISTINCT FROM OLD.supersedes_price_id
           OR NEW.created_by                IS DISTINCT FROM OLD.created_by
           OR NEW.created_at_utc            IS DISTINCT FROM OLD.created_at_utc
           OR NEW.row_version               IS DISTINCT FROM OLD.row_version THEN
             RAISE EXCEPTION
-              'pricing_price: row % is published; price, scope, model and entity-tag columns are immutable',
+              'pricing_price: row % is published; price, market-policy and entity-tag columns are immutable',
               OLD.price_id;
           END IF;
 
@@ -473,119 +423,118 @@ const PG_UP_STATEMENTS: &[&str] = &[
           RETURN NEW;
         END;
      $$ LANGUAGE plpgsql",
-    "CREATE OR REPLACE FUNCTION bss.pricing_price_tier_band_parent_kind() RETURNS trigger AS $$
+    "CREATE TRIGGER trg_pricing_price_append_only BEFORE DELETE OR UPDATE ON bss.pricing_price FOR EACH ROW EXECUTE FUNCTION bss.pricing_price_append_only()",
+    "CREATE OR REPLACE FUNCTION bss.pricing_price_grandfather_class() RETURNS trigger AS $$
+        DECLARE
+          elig text;
         BEGIN
-          IF NEW.model_kind IS NULL OR NEW.model_kind NOT IN ('graduated','volume') THEN
-            IF EXISTS (SELECT 1 FROM bss.pricing_price_tier_band
-                        WHERE price_id = OLD.price_id) THEN
-              RAISE EXCEPTION
-                'pricing_price_tier_band: price row % still carries bands and may not become a % row',
-                OLD.price_id, coalesce(NEW.model_kind, 'kindless');
-            END IF;
+          IF NEW.grandfather_until IS NULL THEN
+            RETURN NEW;
+          END IF;
+          SELECT l.price_eligibility INTO elig
+            FROM bss.pricing_charge_line l
+           WHERE l.tenant_id = NEW.tenant_id AND l.charge_line_id = NEW.charge_line_id;
+          IF elig IS DISTINCT FROM 'existing_grandfathered' THEN
+            RAISE EXCEPTION
+              'pricing_price: grandfather_until is permitted only on an existing_grandfathered line (row %)',
+              NEW.price_id;
           END IF;
           RETURN NEW;
         END;
      $$ LANGUAGE plpgsql",
-    "CREATE TRIGGER trg_pricing_price_append_only BEFORE DELETE OR UPDATE ON bss.pricing_price FOR EACH ROW EXECUTE FUNCTION bss.pricing_price_append_only()",
-    "CREATE TRIGGER trg_pricing_price_tier_band_parent_kind BEFORE UPDATE ON bss.pricing_price FOR EACH ROW EXECUTE FUNCTION bss.pricing_price_tier_band_parent_kind()",
+    "CREATE TRIGGER trg_pricing_price_grandfather_class BEFORE INSERT ON bss.pricing_price FOR EACH ROW EXECUTE FUNCTION bss.pricing_price_grandfather_class()",
+    // **The money half of the old `chk_pricing_price_package_fields_kind`.**
+    // That CHECK read "a block field requires `model_kind = 'package'`" over two
+    // columns of one row. The block *size* is shared geometry and moved to
+    // `pricing_charge_line_version` with the kind, where the rule is still a
+    // CHECK. The block *price* is market money and stayed here — and the kind it
+    // needs is now one table over, which no CHECK can reach. Without this guard
+    // the split would have silently dropped half a rule: a `flat` line could
+    // carry a package price and nothing would say so.
+    "CREATE OR REPLACE FUNCTION bss.pricing_price_package_price_kind() RETURNS trigger AS $$
+        DECLARE
+          kind text;
+        BEGIN
+          IF NEW.package_price_minor IS NULL THEN
+            RETURN NEW;
+          END IF;
+          SELECT v.model_kind INTO kind
+            FROM bss.pricing_charge_line_version v
+           WHERE v.tenant_id = NEW.tenant_id AND v.line_version_id = NEW.line_version_id;
+          IF kind IS DISTINCT FROM 'package' THEN
+            RAISE EXCEPTION
+              'pricing_price: package_price_minor is permitted only on a package line version (row %)',
+              NEW.price_id;
+          END IF;
+          RETURN NEW;
+        END;
+     $$ LANGUAGE plpgsql",
+    "CREATE TRIGGER trg_pricing_price_package_price_kind BEFORE INSERT OR UPDATE ON bss.pricing_price FOR EACH ROW EXECUTE FUNCTION bss.pricing_price_package_price_kind()",
 ];
 
 const PG_DOWN_STATEMENTS: &[&str] = &[
     "DROP TABLE IF EXISTS bss.pricing_price",
     "DROP FUNCTION IF EXISTS bss.pricing_price_append_only()",
-    "DROP FUNCTION IF EXISTS bss.pricing_price_tier_band_parent_kind()",
+    "DROP FUNCTION IF EXISTS bss.pricing_price_grandfather_class()",
+    "DROP FUNCTION IF EXISTS bss.pricing_price_package_price_kind()",
 ];
 
 const SQLITE_UP_STATEMENTS: &[&str] = &[
     "CREATE TABLE pricing_price (
             tenant_id                 text       NOT NULL,
             price_id                  text       NOT NULL,
-            aggregation_function      text,
-            aggregation_granularity   text,
-            amount_minor              bigint,
-            anchor_day                integer,
-            billing_anchor_policy     text,
-            billing_granularity       text,
-            billing_timing            text,
-            charge_kind               text       NOT NULL,
-            cohort                    text       NOT NULL DEFAULT 'none',
-            credit_on_downgrade       boolean,
-            currency                  varchar(3) NOT NULL,
-            dimension_key             text       NOT NULL DEFAULT '',
-            discount_ref              text,
-            grandfather_until         text,
-            included_allowance        text,
-            lifecycle_state           text       NOT NULL,
-            manual_quantity           bigint,
-            max_hold_granules         bigint,
-            meter                     text,
-            min_qty_purchase          bigint,
-            min_qty_usage             bigint,
-            min_qty_usage_fallback    text,
-            model_kind                text,
-            package_price_minor       bigint,
-            package_size              bigint,
-            phase                     text       NOT NULL,
+            market_price_id           text       NOT NULL,
+            line_version_id           text       NOT NULL,
+            charge_line_id            text       NOT NULL,
             plan_id                   text       NOT NULL,
-            price_eligibility         text       NOT NULL DEFAULT 'all_subscriptions',
-            price_overlay             text       NOT NULL DEFAULT 'base',
-            proration_basis           text,
-            quantity_source           text,
-            region                    text       NOT NULL,
-            reservation_flavor        text,
+            plan_revision             bigint     NOT NULL,
+            amount_minor              bigint,
+            unit_rate_nano            bigint,
+            package_price_minor       bigint,
             reserved_rate_nano        bigint,
-            resolved_rounding_policy  text,
+            tax_inclusive             boolean    NOT NULL DEFAULT false,
+            tax_category_ref          text,
             resolved_tax_category     text,
             rounding_policy_ref       text,
+            resolved_rounding_policy  text,
+            grandfather_until         text,
             supersedes_price_id       text,
-            tax_category_ref          text,
-            tax_inclusive             boolean    NOT NULL DEFAULT false,
-            tier_aggregation_window   text,
-            tier_qualification_window text,
-            unit_rate_nano            bigint,
+            lifecycle_state           text       NOT NULL,
             created_at_utc            text       NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S', 'now') || '+00:00'),
             created_by                text       NOT NULL,
             row_version               bigint     NOT NULL DEFAULT 0,
             PRIMARY KEY (price_id),
-            CONSTRAINT chk_pricing_price_aggregation_function CHECK (aggregation_function IS NULL OR aggregation_function IN ('sum','peak','time_weighted')),
-            CONSTRAINT chk_pricing_price_aggregation_granularity CHECK (aggregation_granularity IS NULL OR aggregation_granularity IN ('hour','day')),
-            CONSTRAINT chk_pricing_price_meter_no_separator CHECK (meter IS NULL OR meter NOT LIKE '%|%'),
-            CONSTRAINT chk_pricing_price_region_no_separator CHECK (region NOT LIKE '%|%'),
             CONSTRAINT chk_pricing_price_amount_non_negative CHECK (amount_minor IS NULL OR amount_minor >= 0),
-            CONSTRAINT chk_pricing_price_billing_granularity CHECK (billing_granularity IS NULL OR billing_granularity IN ( 'per_second','per_minute','per_hour','per_day','whole_unit')),
-            CONSTRAINT chk_pricing_price_billing_timing CHECK (billing_timing IS NULL OR billing_timing IN ('advance','arrears')),
-            CONSTRAINT chk_pricing_price_charge_kind CHECK (charge_kind IN ('recurring','usage','one_time')),
-            CONSTRAINT chk_pricing_price_cohort_eligibility CHECK ((cohort <> 'none') = (price_eligibility = 'existing_grandfathered')),
-            CONSTRAINT chk_pricing_price_eligibility CHECK (price_eligibility IN ( 'all_subscriptions','new_subscriptions_only','existing_grandfathered')),
-            CONSTRAINT chk_pricing_price_grandfather_until CHECK (grandfather_until IS NULL OR price_eligibility = 'existing_grandfathered'),
             CONSTRAINT chk_pricing_price_lifecycle_state CHECK (lifecycle_state IN ('draft','published','superseded')),
-            CONSTRAINT chk_pricing_price_manual_quantity CHECK (manual_quantity IS NULL OR manual_quantity >= 0),
-            CONSTRAINT chk_pricing_price_max_hold_granules CHECK (max_hold_granules IS NULL OR max_hold_granules >= 1),
-            CONSTRAINT chk_pricing_price_min_qty_purchase CHECK (min_qty_purchase IS NULL OR min_qty_purchase >= 0),
-            CONSTRAINT chk_pricing_price_min_qty_usage CHECK (min_qty_usage IS NULL OR min_qty_usage >= 0),
-            CONSTRAINT chk_pricing_price_model_kind CHECK (model_kind IS NULL OR model_kind IN ('flat','per_unit','graduated','volume','package')),
-            CONSTRAINT chk_pricing_price_overlay CHECK (price_overlay = 'base'),
-            CONSTRAINT chk_pricing_price_package_fields_kind CHECK ((package_size IS NULL AND package_price_minor IS NULL) OR (model_kind IS NOT NULL AND model_kind = 'package')),
             CONSTRAINT chk_pricing_price_package_price CHECK (package_price_minor IS NULL OR package_price_minor >= 0),
-            CONSTRAINT chk_pricing_price_package_size CHECK (package_size IS NULL OR package_size > 0),
-            CONSTRAINT chk_pricing_price_quantity_source CHECK (quantity_source IS NULL OR quantity_source IN ('subscription_seat_count','manual')),
             CONSTRAINT chk_pricing_price_reserved_rate_nano CHECK (reserved_rate_nano IS NULL OR reserved_rate_nano >= 0),
             CONSTRAINT chk_pricing_price_row_version CHECK (row_version >= 0),
-            CONSTRAINT chk_pricing_price_tier_aggregation_window CHECK (tier_aggregation_window IS NULL OR tier_aggregation_window IN ( 'calendar_month','invoice_period','subscription_lifetime','per_event','per_hour')),
-            CONSTRAINT chk_pricing_price_tier_qualification_window CHECK (tier_qualification_window IS NULL OR tier_qualification_window IN ('current','trailing_period')),
-            CONSTRAINT chk_pricing_price_unit_rate_nano CHECK (unit_rate_nano IS NULL OR unit_rate_nano >= 0)
+            CONSTRAINT chk_pricing_price_unit_rate_nano CHECK (unit_rate_nano IS NULL OR unit_rate_nano >= 0),
+            CONSTRAINT chk_pricing_price_revision CHECK (plan_revision >= 0),
+            CONSTRAINT fk_pricing_price_market_line FOREIGN KEY (tenant_id, market_price_id, charge_line_id)
+                REFERENCES pricing_market_price (tenant_id, market_price_id, charge_line_id),
+            CONSTRAINT fk_pricing_price_version_line FOREIGN KEY (tenant_id, line_version_id, charge_line_id)
+                REFERENCES pricing_charge_line_version (tenant_id, line_version_id, charge_line_id),
+            CONSTRAINT fk_pricing_price_line_plan FOREIGN KEY (tenant_id, charge_line_id, plan_id)
+                REFERENCES pricing_charge_line (tenant_id, charge_line_id, plan_id),
+            CONSTRAINT uq_pricing_price_tenant_id UNIQUE (tenant_id, price_id),
+            CONSTRAINT uq_pricing_price_id_market UNIQUE (tenant_id, price_id, market_price_id),
+            CONSTRAINT uq_pricing_price_id_version UNIQUE (tenant_id, price_id, line_version_id)
         )",
+    "CREATE INDEX idx_pricing_price_line ON pricing_price (tenant_id, charge_line_id, lifecycle_state)",
     "CREATE INDEX idx_pricing_price_plan ON pricing_price (tenant_id, plan_id, lifecycle_state)",
+    "CREATE INDEX idx_pricing_price_market ON pricing_price (tenant_id, market_price_id, lifecycle_state)",
     "CREATE INDEX idx_pricing_price_supersedes ON pricing_price (tenant_id, supersedes_price_id) WHERE supersedes_price_id IS NOT NULL",
-    "CREATE UNIQUE INDEX uq_pricing_price_meter_line_current ON pricing_price (tenant_id, plan_id, currency, region, price_overlay, phase, price_eligibility, cohort, meter, dimension_key) WHERE lifecycle_state = 'published' AND meter IS NOT NULL",
-    "CREATE UNIQUE INDEX uq_pricing_price_scope_key_current ON pricing_price (tenant_id, plan_id, currency, region, price_overlay, phase, price_eligibility, charge_kind, cohort, COALESCE(meter, ''), dimension_key) WHERE lifecycle_state = 'published'",
-    "CREATE UNIQUE INDEX uq_pricing_price_scope_key_draft ON pricing_price (tenant_id, plan_id, currency, region, price_overlay, phase, price_eligibility, charge_kind, cohort, COALESCE(meter, ''), dimension_key) WHERE lifecycle_state = 'draft'",
+    "CREATE UNIQUE INDEX uq_pricing_price_market_draft ON pricing_price (tenant_id, market_price_id) WHERE lifecycle_state = 'draft'",
     "CREATE TRIGGER trg_pricing_price_draft_flip_whitelist BEFORE UPDATE ON pricing_price FOR EACH ROW WHEN OLD.lifecycle_state = 'draft' AND NEW.lifecycle_state NOT IN ('draft','published') BEGIN SELECT RAISE(ABORT, 'pricing_price: lifecycle_state transition is not sanctioned'); END",
     "CREATE TRIGGER trg_pricing_price_flip_whitelist BEFORE UPDATE ON pricing_price FOR EACH ROW WHEN OLD.lifecycle_state <> 'draft' AND NEW.lifecycle_state IS NOT OLD.lifecycle_state AND NOT (OLD.lifecycle_state = 'published' AND NEW.lifecycle_state = 'superseded') BEGIN SELECT RAISE(ABORT, 'pricing_price: lifecycle_state transition is not sanctioned'); END",
-    "CREATE TRIGGER trg_pricing_price_frozen_columns BEFORE UPDATE ON pricing_price FOR EACH ROW WHEN OLD.lifecycle_state <> 'draft' AND (NEW.price_id IS NOT OLD.price_id OR NEW.tenant_id IS NOT OLD.tenant_id OR NEW.plan_id IS NOT OLD.plan_id OR NEW.currency IS NOT OLD.currency OR NEW.region IS NOT OLD.region OR NEW.price_overlay IS NOT OLD.price_overlay OR NEW.phase IS NOT OLD.phase OR NEW.price_eligibility IS NOT OLD.price_eligibility OR NEW.charge_kind IS NOT OLD.charge_kind OR NEW.cohort IS NOT OLD.cohort OR NEW.amount_minor IS NOT OLD.amount_minor OR NEW.unit_rate_nano IS NOT OLD.unit_rate_nano OR NEW.model_kind IS NOT OLD.model_kind OR NEW.tax_inclusive IS NOT OLD.tax_inclusive OR NEW.tax_category_ref IS NOT OLD.tax_category_ref OR NEW.resolved_tax_category IS NOT OLD.resolved_tax_category OR NEW.resolved_rounding_policy IS NOT OLD.resolved_rounding_policy OR NEW.billing_timing IS NOT OLD.billing_timing OR NEW.billing_anchor_policy IS NOT OLD.billing_anchor_policy OR NEW.anchor_day IS NOT OLD.anchor_day OR NEW.proration_basis IS NOT OLD.proration_basis OR NEW.credit_on_downgrade IS NOT OLD.credit_on_downgrade OR NEW.quantity_source IS NOT OLD.quantity_source OR NEW.manual_quantity IS NOT OLD.manual_quantity OR NEW.package_size IS NOT OLD.package_size OR NEW.package_price_minor IS NOT OLD.package_price_minor OR NEW.meter IS NOT OLD.meter OR NEW.dimension_key IS NOT OLD.dimension_key OR NEW.billing_granularity IS NOT OLD.billing_granularity OR NEW.aggregation_function IS NOT OLD.aggregation_function OR NEW.aggregation_granularity IS NOT OLD.aggregation_granularity OR NEW.tier_aggregation_window IS NOT OLD.tier_aggregation_window OR NEW.tier_qualification_window IS NOT OLD.tier_qualification_window OR NEW.max_hold_granules IS NOT OLD.max_hold_granules OR NEW.included_allowance IS NOT OLD.included_allowance OR NEW.reserved_rate_nano IS NOT OLD.reserved_rate_nano OR NEW.reservation_flavor IS NOT OLD.reservation_flavor OR NEW.min_qty_purchase IS NOT OLD.min_qty_purchase OR NEW.min_qty_usage IS NOT OLD.min_qty_usage OR NEW.min_qty_usage_fallback IS NOT OLD.min_qty_usage_fallback OR NEW.discount_ref IS NOT OLD.discount_ref OR NEW.rounding_policy_ref IS NOT OLD.rounding_policy_ref OR NEW.supersedes_price_id IS NOT OLD.supersedes_price_id OR NEW.created_by IS NOT OLD.created_by OR NEW.created_at_utc IS NOT OLD.created_at_utc OR NEW.row_version IS NOT OLD.row_version) BEGIN SELECT RAISE(ABORT, 'pricing_price: row is published; price, scope, model and entity-tag columns are immutable'); END",
+    "CREATE TRIGGER trg_pricing_price_frozen_columns BEFORE UPDATE ON pricing_price FOR EACH ROW WHEN OLD.lifecycle_state <> 'draft' AND (NEW.price_id IS NOT OLD.price_id OR NEW.tenant_id IS NOT OLD.tenant_id OR NEW.market_price_id IS NOT OLD.market_price_id OR NEW.line_version_id IS NOT OLD.line_version_id OR NEW.charge_line_id IS NOT OLD.charge_line_id OR NEW.plan_id IS NOT OLD.plan_id OR NEW.plan_revision IS NOT OLD.plan_revision OR NEW.amount_minor IS NOT OLD.amount_minor OR NEW.unit_rate_nano IS NOT OLD.unit_rate_nano OR NEW.package_price_minor IS NOT OLD.package_price_minor OR NEW.reserved_rate_nano IS NOT OLD.reserved_rate_nano OR NEW.tax_inclusive IS NOT OLD.tax_inclusive OR NEW.tax_category_ref IS NOT OLD.tax_category_ref OR NEW.resolved_tax_category IS NOT OLD.resolved_tax_category OR NEW.resolved_rounding_policy IS NOT OLD.resolved_rounding_policy OR NEW.rounding_policy_ref IS NOT OLD.rounding_policy_ref OR NEW.supersedes_price_id IS NOT OLD.supersedes_price_id OR NEW.created_by IS NOT OLD.created_by OR NEW.created_at_utc IS NOT OLD.created_at_utc OR NEW.row_version IS NOT OLD.row_version) BEGIN SELECT RAISE(ABORT, 'pricing_price: row is published; price, market-policy and entity-tag columns are immutable'); END",
     "CREATE TRIGGER trg_pricing_price_grandfather_monotonic BEFORE UPDATE ON pricing_price FOR EACH ROW WHEN OLD.lifecycle_state <> 'draft' AND NEW.grandfather_until IS NOT OLD.grandfather_until AND (NEW.grandfather_until IS NULL OR (OLD.grandfather_until IS NOT NULL AND NEW.grandfather_until > OLD.grandfather_until)) BEGIN SELECT RAISE(ABORT, 'pricing_price: grandfather_until may only be tightened, never loosened'); END",
     "CREATE TRIGGER trg_pricing_price_no_delete BEFORE DELETE ON pricing_price FOR EACH ROW WHEN OLD.lifecycle_state <> 'draft' BEGIN SELECT RAISE(ABORT, 'pricing_price: DELETE of a non-draft row is not permitted'); END",
-    "CREATE TRIGGER trg_pricing_price_tier_band_parent_kind BEFORE UPDATE ON pricing_price FOR EACH ROW WHEN NEW.model_kind IS NULL OR NEW.model_kind NOT IN ('graduated','volume') BEGIN SELECT RAISE(ABORT, 'pricing_price_tier_band: a price row that still carries bands may not leave the graduated or volume kinds') WHERE EXISTS (SELECT 1 FROM pricing_price_tier_band WHERE price_id = OLD.price_id); END",
+    "CREATE TRIGGER trg_pricing_price_grandfather_class_insert BEFORE INSERT ON pricing_price FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_price: grandfather_until is permitted only on an existing_grandfathered line') WHERE NEW.grandfather_until IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pricing_charge_line WHERE tenant_id = NEW.tenant_id AND charge_line_id = NEW.charge_line_id AND price_eligibility = 'existing_grandfathered'); END",
+    "CREATE TRIGGER trg_pricing_price_grandfather_class_update BEFORE UPDATE ON pricing_price FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_price: grandfather_until is permitted only on an existing_grandfathered line') WHERE NEW.grandfather_until IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pricing_charge_line WHERE tenant_id = NEW.tenant_id AND charge_line_id = NEW.charge_line_id AND price_eligibility = 'existing_grandfathered'); END",
+    "CREATE TRIGGER trg_pricing_price_package_price_kind_insert BEFORE INSERT ON pricing_price FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_price: package_price_minor is permitted only on a package line version') WHERE NEW.package_price_minor IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pricing_charge_line_version WHERE tenant_id = NEW.tenant_id AND line_version_id = NEW.line_version_id AND model_kind = 'package'); END",
+    "CREATE TRIGGER trg_pricing_price_package_price_kind_update BEFORE UPDATE ON pricing_price FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_price: package_price_minor is permitted only on a package line version') WHERE NEW.package_price_minor IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pricing_charge_line_version WHERE tenant_id = NEW.tenant_id AND line_version_id = NEW.line_version_id AND model_kind = 'package'); END",
 ];
 
 const SQLITE_DOWN_STATEMENTS: &[&str] = &["DROP TABLE IF EXISTS pricing_price"];

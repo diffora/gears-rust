@@ -38,16 +38,18 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+mod common;
+
 use bss_pricing::infra::storage::entity::{
     approval, approval_key, approval_threshold, approval_threshold_tombstone, audit_log,
     brand_taxonomy, bulk_operation, bulk_row_lock, bundle, bundle_component, bundle_revshare,
-    bundle_revshare_group, catalog_version_ref, composite_meter, customer_group_taxonomy,
-    draft_window, gl_code_taxonomy, group_membership, idempotency_dedup, migration, operator_flag,
-    org_tier_taxonomy, outbox, partner_taxonomy, pin_frontier, plan, plan_addon_rule,
-    plan_period_floor_cap, plan_phase, policy_object, price, price_overlay, price_overlay_line,
-    price_overlay_line_amount, price_tier_band, price_window, read_model, region_taxonomy,
-    repricing_journal, rounding_policy_taxonomy, snapshot_provenance, window_baseline,
-    window_guard,
+    bundle_revshare_group, catalog_version_ref, charge_line, charge_line_version, charge_tier,
+    composite_meter, customer_group_taxonomy, draft_window, gl_code_taxonomy, group_membership,
+    idempotency_dedup, market_price, migration, operator_flag, org_tier_taxonomy, outbox,
+    partner_taxonomy, pin_frontier, plan, plan_addon_rule, plan_period_floor_cap, plan_phase,
+    policy_object, price, price_overlay, price_overlay_line, price_overlay_line_amount,
+    price_tier_band, price_window, read_model, region_taxonomy, repricing_journal,
+    rounding_policy_taxonomy, snapshot_provenance, window_baseline, window_guard,
 };
 use bss_pricing::infra::storage::migrations::Migrator;
 use sea_orm::{ConnectionTrait, Database, EntityName, EntityTrait, Statement};
@@ -64,6 +66,10 @@ const EXPECTED_TABLES: &[&str] = &[
     "pricing_plan_addon_rule",
     "pricing_plan_period_floor_cap",
     "pricing_price",
+    "pricing_charge_line",
+    "pricing_charge_line_version",
+    "pricing_charge_tier",
+    "pricing_market_price",
     "pricing_price_tier_band",
     "pricing_read_model",
     "pricing_catalog_version_ref",
@@ -175,6 +181,17 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     // Slice 10's composite meter. Three arms mirroring the one Postgres
     // function, `pricing_plan_phase`'s shape: the parent revision's
     // `lifecycle_state` is the row's, so every verb consults it.
+    "trg_pricing_charge_line_frozen_columns",
+    "trg_pricing_charge_line_version_draft_flip_whitelist",
+    "trg_pricing_charge_line_version_flip_whitelist",
+    "trg_pricing_charge_line_version_frozen_columns",
+    "trg_pricing_charge_line_version_no_delete",
+    "trg_pricing_charge_tier_kind_insert",
+    "trg_pricing_charge_tier_kind_update",
+    "trg_pricing_charge_tier_no_delete",
+    "trg_pricing_charge_tier_no_insert",
+    "trg_pricing_charge_tier_no_update",
+    "trg_pricing_charge_tier_parent_kind",
     "trg_pricing_composite_meter_no_delete",
     "trg_pricing_composite_meter_no_insert",
     "trg_pricing_composite_meter_no_update",
@@ -195,6 +212,7 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     // Slice 11. Five arms, mirroring the one Postgres function: the DELETE ban,
     // the terminal-row ban, the frozen-column whitelist, section 4's edges, and
     // D-65's replay guard on the persisted exclusion set.
+    "trg_pricing_market_price_frozen_columns",
     "trg_pricing_migration_exclusion_replay",
     "trg_pricing_migration_flip_whitelist",
     "trg_pricing_migration_frozen_columns",
@@ -222,6 +240,8 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_price_draft_flip_whitelist",
     "trg_pricing_price_flip_whitelist",
     "trg_pricing_price_frozen_columns",
+    "trg_pricing_price_grandfather_class_insert",
+    "trg_pricing_price_grandfather_class_update",
     "trg_pricing_price_grandfather_monotonic",
     "trg_pricing_price_no_delete",
     // Slice 9's ten. The header carries the `pricing_plan` arrangement — a
@@ -241,12 +261,11 @@ const EXPECTED_TRIGGERS: &[&str] = &[
     "trg_pricing_price_overlay_line_same_tenant_as_its_revision_on_insert",
     "trg_pricing_price_overlay_line_same_tenant_as_its_revision_on_update",
     "trg_pricing_price_overlay_no_delete",
-    "trg_pricing_price_tier_band_kind_insert",
-    "trg_pricing_price_tier_band_kind_update",
+    "trg_pricing_price_package_price_kind_insert",
+    "trg_pricing_price_package_price_kind_update",
     "trg_pricing_price_tier_band_no_delete",
     "trg_pricing_price_tier_band_no_insert",
     "trg_pricing_price_tier_band_no_update",
-    "trg_pricing_price_tier_band_parent_kind",
     "trg_pricing_price_window_act_sequence",
     "trg_pricing_price_window_flip_whitelist",
     "trg_pricing_price_window_frozen_columns",
@@ -301,6 +320,9 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_bundle_revshare_revision",
     "idx_pricing_bundle_tenant",
     "idx_pricing_catalog_version_ref_version",
+    "idx_pricing_charge_line_plan",
+    "idx_pricing_charge_line_version_line",
+    "idx_pricing_charge_tier_version",
     "idx_pricing_composite_meter_revision",
     "idx_pricing_draft_window_revision",
     // The resolution walk (`inst-cg-resolve`) and the exclusion constraint's own
@@ -308,6 +330,7 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_group_membership_payer",
     "idx_pricing_group_membership_walk",
     "idx_pricing_idempotency_dedup_created",
+    "idx_pricing_market_price_line",
     "idx_pricing_migration_due",
     "idx_pricing_migration_source",
     "idx_pricing_migration_target",
@@ -317,6 +340,8 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_plan_period_floor_cap_revision",
     "idx_pricing_plan_phase_revision",
     "idx_pricing_plan_tenant",
+    "idx_pricing_price_line",
+    "idx_pricing_price_market",
     "idx_pricing_price_overlay_line_amount_tenant",
     "idx_pricing_price_overlay_line_plan",
     "idx_pricing_price_overlay_line_revision",
@@ -325,6 +350,7 @@ const EXPECTED_INDEXES: &[&str] = &[
     "idx_pricing_price_supersedes",
     "idx_pricing_price_tier_band_price",
     "idx_pricing_price_window_due",
+    "idx_pricing_price_window_market",
     "idx_pricing_price_window_price",
     "idx_pricing_read_model_resolve",
     "idx_pricing_snapshot_provenance_plan",
@@ -342,18 +368,18 @@ const EXPECTED_INDEXES: &[&str] = &[
     // `uq_pricing_price_meter_line_current` stood here until D-372. It keyed the
     // usage line as a market of its own, which is the statement D-372 reverses:
     // two units of one SKU are one key, so the index that made them two was
-    // dropped rather than re-keyed (`m20260916_000044_price_row_sku`).
+    // dropped rather than re-keyed. The ALTER that first did so was folded away
+    // with the charge-line split; the fresh-install DDL carries the result.
     // D-42's null-safe line key — an **expression** index over three COALESCEd
     // sentinels, because a plain UNIQUE over three nullable columns admits the
     // very rows section 6 spells as "one default line, one line per plan".
+    "uq_pricing_price_market_draft",
     "uq_pricing_price_overlay_line_key",
     "uq_pricing_price_overlay_open_draft",
     // D-107's partial predicate. Dropping the `WHERE lifecycle_state =
     // 'published'` makes a draft revision of a published overlay collide with
     // itself, so an overlay is authorable exactly once.
     "uq_pricing_price_overlay_precedence",
-    "uq_pricing_price_scope_key_current",
-    "uq_pricing_price_scope_key_draft",
     // Section 9's idempotency rule as an index: one subscription, one frozen
     // snapshot, ever. Keyed without the trigger on purpose - D-81 gives the two
     // triggers different instants, so a per-trigger key would let one
@@ -412,6 +438,31 @@ const EXPECTED_CHECKS: &[&str] = &[
     // rules are publish rules rather than column constraints -- see
     // `pricing_composite_meter`'s migration doc for why, and `chk_pricing_price_overlay_lifecycle_state`'s for the
     // portability argument it inherits.
+    "chk_pricing_charge_line_charge_kind",
+    "chk_pricing_charge_line_cohort_eligibility",
+    "chk_pricing_charge_line_eligibility",
+    "chk_pricing_charge_line_overlay",
+    "chk_pricing_charge_line_version_aggregation_function",
+    "chk_pricing_charge_line_version_aggregation_granularity",
+    "chk_pricing_charge_line_version_billing_granularity",
+    "chk_pricing_charge_line_version_billing_timing",
+    "chk_pricing_charge_line_version_lifecycle_state",
+    "chk_pricing_charge_line_version_manual_quantity",
+    "chk_pricing_charge_line_version_max_hold_granules",
+    "chk_pricing_charge_line_version_meter_no_separator",
+    "chk_pricing_charge_line_version_min_qty_purchase",
+    "chk_pricing_charge_line_version_min_qty_usage",
+    "chk_pricing_charge_line_version_model_kind",
+    "chk_pricing_charge_line_version_package_fields_kind",
+    "chk_pricing_charge_line_version_package_size",
+    "chk_pricing_charge_line_version_quantity_source",
+    "chk_pricing_charge_line_version_revision",
+    "chk_pricing_charge_line_version_row_version",
+    "chk_pricing_charge_line_version_tier_aggregation_window",
+    "chk_pricing_charge_line_version_tier_qualification_window",
+    "chk_pricing_charge_tier_from_qty",
+    "chk_pricing_charge_tier_ordinal",
+    "chk_pricing_charge_tier_width",
     "chk_pricing_composite_meter_output_unit",
     // Slice 9's own taxonomy (`inst-cg-taxonomy`), the taxonomy pair of CHECKs
     // over `pricing_customer_group_taxonomy`.
@@ -440,6 +491,7 @@ const EXPECTED_CHECKS: &[&str] = &[
     // (`cancelled` is reachable both started and unstarted, so `started_at` is
     // deliberately not a biconditional), the two that are, D-65's co-nullable
     // exclusion set, D-49's row-local half, and three ordering rules.
+    "chk_pricing_market_price_region_no_separator",
     "chk_pricing_migration_announced_before_effective",
     "chk_pricing_migration_cancelled_at",
     "chk_pricing_migration_cancelled_order",
@@ -498,23 +550,8 @@ const EXPECTED_CHECKS: &[&str] = &[
     // unambiguous rather than merely adjacent.
     "chk_pricing_policy_object_tax_display_policy",
     "chk_pricing_policy_object_tier_band_cap",
-    "chk_pricing_price_aggregation_function",
-    "chk_pricing_price_aggregation_granularity",
     "chk_pricing_price_amount_non_negative",
-    "chk_pricing_price_billing_granularity",
-    "chk_pricing_price_billing_timing",
-    "chk_pricing_price_charge_kind",
-    "chk_pricing_price_cohort_eligibility",
-    "chk_pricing_price_eligibility",
-    "chk_pricing_price_grandfather_until",
     "chk_pricing_price_lifecycle_state",
-    "chk_pricing_price_manual_quantity",
-    "chk_pricing_price_max_hold_granules",
-    "chk_pricing_price_meter_no_separator",
-    "chk_pricing_price_min_qty_purchase",
-    "chk_pricing_price_min_qty_usage",
-    "chk_pricing_price_model_kind",
-    "chk_pricing_price_overlay",
     // Slice 9's overlay object. Note the near-collision one line up:
     // `chk_pricing_price_overlay` is the **price row's** `price_overlay` axis
     // CHECK (always `base`, Foundation section 4.1), and everything from here
@@ -534,24 +571,18 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_price_overlay_line_magnitude_positive",
     "chk_pricing_price_overlay_line_plan_id_not_nil",
     "chk_pricing_price_overlay_line_sku_needs_plan",
-    "chk_pricing_price_overlay_line_target_sku_present",
+    "chk_pricing_price_overlay_line_target_sku_not_nil",
     "chk_pricing_price_overlay_revision",
     "chk_pricing_price_overlay_row_version",
     "chk_pricing_price_overlay_scope_class",
     "chk_pricing_price_overlay_scope_value",
     "chk_pricing_price_overlay_tax_basis",
-    "chk_pricing_price_package_fields_kind",
     "chk_pricing_price_package_price",
-    "chk_pricing_price_package_size",
-    "chk_pricing_price_quantity_source",
-    "chk_pricing_price_region_no_separator",
     "chk_pricing_price_reserved_rate_nano",
+    "chk_pricing_price_revision",
     "chk_pricing_price_row_version",
-    "chk_pricing_price_tier_aggregation_window",
-    "chk_pricing_price_tier_band_from_qty",
+    "chk_pricing_price_tier_band_ordinal",
     "chk_pricing_price_tier_band_unit_price",
-    "chk_pricing_price_tier_band_width",
-    "chk_pricing_price_tier_qualification_window",
     // D-311's `unit_rate_nano` carries this CHECK on both engines, and every
     // column rule here does. Giving one to Postgres alone, on the ground that
     // rebuilding `pricing_price` for a single clause "would be a large edit",
@@ -645,6 +676,15 @@ const EXPECTED_PRIMARY_KEYS: &[(&str, &str)] = &[
         "pricing_catalog_version_ref",
         "tenant_id, pending_ref, subject_kind, subject_ref",
     ),
+    // The charge-line split's three: the logical line, its revision-owned
+    // version, and the shared tier geometry that hangs off that version. Each is
+    // tenant-first like every other key here.
+    ("pricing_charge_line", "tenant_id, charge_line_id"),
+    ("pricing_charge_line_version", "tenant_id, line_version_id"),
+    (
+        "pricing_charge_tier",
+        "tenant_id, line_version_id, band_ordinal",
+    ),
     // Slice 10's composite meter, D-106's revision discipline in the key
     // itself: `composite_id` is stable across revisions and the revision is the
     // second column, so a copy-forward is a new row rather than an edit.
@@ -685,6 +725,7 @@ const EXPECTED_PRIMARY_KEYS: &[(&str, &str)] = &[
     // could take an id and deny it to every other permanently, with no remedy
     // (`trg_pricing_migration_no_delete` refuses the DELETE that would free it).
     // Every sibling client-key store already scoped its key; this was the last.
+    ("pricing_market_price", "tenant_id, market_price_id"),
     ("pricing_migration", "tenant_id, migration_id"),
     ("pricing_operator_flag", "tenant_id, subject_ref, flag"),
     ("pricing_org_tier_taxonomy", "tenant_id, value"),
@@ -895,6 +936,50 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
         18_093_686_238_376_949_727_u64,
     ),
     (
+        "trg_pricing_charge_line_frozen_columns",
+        850_359_701_293_804_494_u64,
+    ),
+    (
+        "trg_pricing_charge_line_version_draft_flip_whitelist",
+        9_492_250_624_276_090_015_u64,
+    ),
+    (
+        "trg_pricing_charge_line_version_flip_whitelist",
+        13_933_333_869_430_492_307_u64,
+    ),
+    (
+        "trg_pricing_charge_line_version_frozen_columns",
+        11_601_896_525_331_108_343_u64,
+    ),
+    (
+        "trg_pricing_charge_line_version_no_delete",
+        3_133_939_019_997_044_640_u64,
+    ),
+    (
+        "trg_pricing_charge_tier_kind_insert",
+        11_702_517_855_604_031_680_u64,
+    ),
+    (
+        "trg_pricing_charge_tier_kind_update",
+        9_438_023_538_088_757_248_u64,
+    ),
+    (
+        "trg_pricing_charge_tier_no_delete",
+        5_100_207_432_444_194_297_u64,
+    ),
+    (
+        "trg_pricing_charge_tier_no_insert",
+        16_976_366_173_058_031_311_u64,
+    ),
+    (
+        "trg_pricing_charge_tier_no_update",
+        10_008_278_653_887_274_629_u64,
+    ),
+    (
+        "trg_pricing_charge_tier_parent_kind",
+        14_749_494_382_767_439_272_u64,
+    ),
+    (
         "trg_pricing_composite_meter_no_delete",
         7_816_235_272_572_446_796_u64,
     ),
@@ -951,6 +1036,10 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
         13_095_055_540_033_788_195_u64,
     ),
     (
+        "trg_pricing_market_price_frozen_columns",
+        13_892_097_533_080_094_460_u64,
+    ),
+    (
         "trg_pricing_migration_exclusion_replay",
         9_285_572_797_681_964_741_u64,
     ),
@@ -1000,7 +1089,7 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     ),
     (
         "trg_pricing_plan_frozen_columns",
-        16_086_879_142_628_523_546_u64,
+        16_040_617_608_812_288_893_u64,
     ),
     ("trg_pricing_plan_no_delete", 11_619_837_810_759_772_588_u64),
     (
@@ -1051,13 +1140,20 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
         "trg_pricing_price_flip_whitelist",
         6_864_967_922_611_899_704_u64,
     ),
-    // Re-pinned by `m20260916_000044_price_row_sku`: the trigger is the
-    // `m20260821_000023:585` body with one clause added,
-    // `OR NEW.sku_id IS NOT OLD.sku_id`, so a published row's SKU is as frozen as
-    // the `plan_id` beside it. Was `9_876_821_329_598_270_805`.
+    // Re-pinned when the charge-line split folded the SKU ALTER away: the SKU is
+    // an axis of `pricing_charge_line` now, and this trigger froze the
+    // `pricing_price` columns that stayed behind. Was `9_876_821_329_598_270_805`.
     (
         "trg_pricing_price_frozen_columns",
-        7_201_717_262_620_712_042_u64,
+        3_921_593_608_980_653_397_u64,
+    ),
+    (
+        "trg_pricing_price_grandfather_class_insert",
+        7_539_030_975_505_980_490_u64,
+    ),
+    (
+        "trg_pricing_price_grandfather_class_update",
+        12_780_673_588_376_542_802_u64,
     ),
     (
         "trg_pricing_price_grandfather_monotonic",
@@ -1113,12 +1209,12 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
         11_656_928_464_923_846_849_u64,
     ),
     (
-        "trg_pricing_price_tier_band_kind_insert",
-        10_239_315_632_932_883_221_u64,
+        "trg_pricing_price_package_price_kind_insert",
+        1_122_073_152_367_455_864_u64,
     ),
     (
-        "trg_pricing_price_tier_band_kind_update",
-        10_273_461_858_767_310_749_u64,
+        "trg_pricing_price_package_price_kind_update",
+        4_098_446_913_409_470_352_u64,
     ),
     (
         "trg_pricing_price_tier_band_no_delete",
@@ -1133,10 +1229,6 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
         4_573_092_537_464_078_304_u64,
     ),
     (
-        "trg_pricing_price_tier_band_parent_kind",
-        12_207_771_120_581_007_916_u64,
-    ),
-    (
         "trg_pricing_price_window_act_sequence",
         8_416_459_948_900_544_137_u64,
     ),
@@ -1146,7 +1238,7 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     ),
     (
         "trg_pricing_price_window_frozen_columns",
-        3_006_703_635_329_582_194_u64,
+        11_358_924_645_375_324_185_u64,
     ),
     (
         "trg_pricing_price_window_future_end",
@@ -1162,11 +1254,11 @@ const EXPECTED_TRIGGER_BODIES: &[(&str, u64)] = &[
     ),
     (
         "trg_pricing_price_window_no_overlap_insert",
-        9_764_480_166_630_561_019_u64,
+        689_394_895_453_325_488_u64,
     ),
     (
         "trg_pricing_price_window_no_overlap_update",
-        4_203_920_929_710_482_773_u64,
+        192_474_804_908_435_062_u64,
     ),
     (
         "trg_pricing_repricing_journal_born_pending",
@@ -1503,6 +1595,13 @@ async fn the_chain_creates_every_table_and_re_runs_cleanly() {
         plan_addon_rule::Entity,
         // D-319's fourth revision-scoped child.
         plan_period_floor_cap::Entity,
+        // The four the charge-line split added: a price row is money plus three
+        // references now, and each of those tables is read on every authoring
+        // path, so each owes this census a probe.
+        charge_line::Entity,
+        charge_line_version::Entity,
+        charge_tier::Entity,
+        market_price::Entity,
         price::Entity,
         price_tier_band::Entity,
         read_model::Entity,
@@ -1702,27 +1801,30 @@ async fn the_pending_key_register_is_unique_and_partial_on_submitted() {
     );
 }
 
-/// D-372 replaces D-196 clause (2): both scope-key indexes carry the **SKU**, and
-/// the sentinel is gone with the axis it stood for.
+/// D-372's rule, on the table that holds it now: the logical scope carries the
+/// **SKU**, and the meter sentinel is gone with the axis it stood for.
 ///
-/// The DDL half is the cheap half. The behavioural half is the one that matters,
-/// and it is the exact inverse of what this case asserted until D-372:
+/// The claims are the ones this case always made, one table over. Currency and
+/// region left the logical key for `pricing_market_price`, and what remains — the
+/// eight axes of a *charge line* — is guarded by one index rather than two:
 ///
-///   - two usage lines differing only in `meter` are now **one** key, so the
-///     second is refused (D-103's example, read the other way round);
-///   - two rows on two SKUs are two keys, on both planes;
-///   - a row with no meter at all still has a key, because the ninth axis is a
-///     column that cannot be absent rather than a `COALESCE(meter, '')` sentinel.
+///   - two usage lines differing only in `meter` are **one** key, so the second
+///     is refused (D-103's example, read the other way round);
+///   - two lines on two SKUs are two keys;
+///   - a line with no meter at all still has a key, because the meter is not an
+///     axis of it — it is content of the line's version.
 ///
-/// The last point is why the sentinel could go rather than move: `meter` was
-/// nullable and NULLs do not collide inside a `UNIQUE`, so the axis had to be
-/// indexed through a coalesce; `sku_id` is `NOT NULL` (a trigger pair here, a real
-/// constraint on Postgres), so it is indexed as itself.
+/// **The draft/published pair collapsed into one statement.** There used to be
+/// two partial indexes, one per plane, because a price row carried its own
+/// lifecycle *and* its key. A charge line is an identity row with no lifecycle at
+/// all — the lifecycle belongs to its versions — so one logical scope is one
+/// line, whatever state its versions are in. That is a stronger guarantee than
+/// the pair it replaces, and it is asserted as one.
 ///
 /// The rows go in as raw SQL rather than through the repository on purpose: the
 /// repository is the layer that cannot see a guard stop refusing.
 #[tokio::test]
-async fn both_scope_key_indexes_carry_the_sku_and_two_units_of_one_sku_are_one_key() {
+async fn the_logical_scope_carries_the_sku_and_two_units_of_one_sku_are_one_key() {
     let conn = Database::connect("sqlite::memory:")
         .await
         .expect("connect in-memory sqlite");
@@ -1734,36 +1836,34 @@ async fn both_scope_key_indexes_carry_the_sku_and_two_units_of_one_sku_are_one_k
             .unwrap_or_else(|e| panic!("up {} must succeed: {e}", migration.name()));
     }
 
-    for index in [
-        "uq_pricing_price_scope_key_current",
-        "uq_pricing_price_scope_key_draft",
-    ] {
-        let ddl = index_sql(&conn, index).await.expect("the scope-key index");
-        assert!(
-            ddl.contains("sku_id"),
-            "the ninth axis must be indexed as itself: {ddl}"
-        );
-        assert!(
-            !ddl.contains("COALESCE(meter"),
-            "the meter sentinel left the key with the meter (D-372): {ddl}"
-        );
-        assert!(
-            ddl.contains("dimension_key"),
-            "the tenth axis belongs to the key too: {ddl}"
-        );
-    }
+    let ddl = table_sql(&conn, "pricing_charge_line").await;
+    assert!(
+        ddl.contains("sku_id"),
+        "the ninth axis must be part of the logical scope: {ddl}"
+    );
+    assert!(
+        !ddl.contains("COALESCE(meter"),
+        "the meter sentinel left the key with the meter (D-372): {ddl}"
+    );
+    assert!(
+        ddl.contains("dimension_key"),
+        "the tenth axis belongs to the key too: {ddl}"
+    );
+    assert!(
+        !ddl.contains("currency"),
+        "currency is an axis of the market, not of the logical line: {ddl}"
+    );
 
     let sku_a = "aaaaaaaa-0000-0000-0000-000000000001";
     let sku_b = "bbbbbbbb-0000-0000-0000-000000000002";
-    let row = |id: u32, state: &str, meter: &str, sku: &str| {
+    let line = |id: u32, sku: &str| {
         format!(
-            "INSERT INTO pricing_price (price_id, tenant_id, plan_id, currency, region, phase, \
-             charge_kind, model_kind, amount_minor, lifecycle_state, created_by, created_at_utc, \
-             meter, sku_id) VALUES ('{id:0>8}-0000-0000-0000-000000000000', \
-             '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', \
-             'USD', 'EU', '33333333-3333-3333-3333-333333333333', 'usage', 'per_unit', 1000, \
-             '{state}', '44444444-4444-4444-4444-000000000000', '2026-08-03 09:00:00+00', \
-             {meter}, '{sku}')"
+            "INSERT INTO pricing_charge_line (tenant_id, charge_line_id, plan_id, phase, \
+             charge_kind, sku_id) VALUES \
+             ('11111111-1111-1111-1111-111111111111', \
+              '{id:0>8}-0000-0000-0000-000000000000', \
+              '22222222-2222-2222-2222-222222222222', \
+              '33333333-3333-3333-3333-333333333333', 'usage', '{sku}')"
         )
     };
     let exec = async |sql: String| {
@@ -1774,335 +1874,31 @@ async fn both_scope_key_indexes_carry_the_sku_and_two_units_of_one_sku_are_one_k
         .await
     };
 
-    // D-103's example, reversed: two meters of one SKU are one key now.
-    exec(row(1, "published", "'cloudlets'", sku_a))
+    // D-103's example, reversed: two meters of one SKU are one key now — and the
+    // second insert cannot even *name* a meter, because the column is not here.
+    exec(line(1, sku_a))
         .await
         .expect("the first usage line takes its key");
-    let collision = exec(row(2, "published", "'egress_gb'", sku_a))
+    let collision = exec(line(2, sku_a))
         .await
         .expect_err("a second unit of one SKU is the same key and must be refused");
-    // `SQLite` names the **index** in a uniqueness failure only while the index
-    // carries an expression; a plain-column index is reported by its column list.
-    // Dropping `COALESCE(meter, '')` moved this refusal from the first shape to
-    // the second, so the assertion follows it rather than the other way round.
     let text = collision.to_string();
     assert!(
-        text.contains("UNIQUE constraint failed") && text.contains("pricing_price.sku_id"),
-        "the refusal must come from the scope-key index, over an axis list that \
+        text.contains("UNIQUE constraint failed") && text.contains("pricing_charge_line.sku_id"),
+        "the refusal must come from the logical-scope index, over an axis list that \
          carries the SKU: {text}"
     );
 
     // And the positive statement of D-372: a second SKU is a second key.
-    exec(row(3, "published", "'egress_gb'", sku_b))
+    exec(line(3, sku_b))
         .await
         .expect("a second SKU is a second key, which is the whole of D-372");
 
-    // The draft plane answers the same way, both directions.
-    exec(row(4, "draft", "'cloudlets'", sku_a))
+    // A meterless line is not a special case any more: the meter is not an axis,
+    // so there is no NULL for an index to lose.
+    exec(line(4, "cccccccc-0000-0000-0000-000000000003"))
         .await
-        .expect("the draft plane holds the key once");
-    let draft_collision = exec(row(5, "draft", "'egress_gb'", sku_a))
-        .await
-        .expect_err("two units of one SKU collide on the draft plane too");
-    let draft_text = draft_collision.to_string();
-    assert!(
-        draft_text.contains("UNIQUE constraint failed")
-            && draft_text.contains("pricing_price.sku_id"),
-        "the draft plane must refuse on the same axis list: {draft_text}"
-    );
-
-    // A meterless row is not a special case any more: the ninth axis is a column
-    // that is always there, so there is no NULL for the index to lose.
-    exec(row(
-        6,
-        "published",
-        "NULL",
-        "cccccccc-0000-0000-0000-000000000003",
-    ))
-    .await
-    .expect("a meterless usage row keys on its SKU like any other");
-}
-
-/// Both D-372 retry paths preserve legacy rows and children through D-373.
-/// Absent-column refusal rolls expansion back; a prestaged partial assignment
-/// survives refusal, and completing it preserves an explicit fee override too.
-#[tokio::test]
-async fn the_sku_backfill_fills_fee_rows_and_refuses_usage_rows() {
-    const TENANT: &str = "11111111-1111-1111-1111-111111111111";
-    const PLAN: &str = "22222222-2222-2222-2222-222222222222";
-    const BLOB_PLAN: &str = "22222222-2222-2222-2222-222222222223";
-    const PLAN_SKU: &str = "55555555-5555-5555-5555-000000000005";
-    const EXPLICIT_FEE_SKU: &str = "55555555-5555-5555-5555-000000000006";
-    const FEE_ROW: &str = "f0000000-0000-0000-0000-00000000000f";
-    const USAGE_ROW: &str = "0a5a9e00-0000-0000-0000-00000000000a";
-
-    let db = Database::connect("sqlite::memory:")
-        .await
-        .expect("connect in-memory sqlite");
-    let exec = async |sql: String| {
-        db.execute_raw(Statement::from_string(
-            sea_orm::DatabaseBackend::Sqlite,
-            sql,
-        ))
-        .await
-    };
-
-    let all_but_last = u32::try_from(
-        Migrator::migrations()
-            .iter()
-            .position(|m| m.name() == "m20260916_000044_price_row_sku")
-            .expect("SKU migration"),
-    )
-    .expect("chain length");
-    Migrator::up(&db, Some(all_but_last))
-        .await
-        .expect("the shipped chain");
-
-    // Raw INSERTs, with every `NOT NULL` column given a literal: the columns come
-    // from `m20260821_000021` and `m20260821_000023`, and `pricing_price.sku_id`
-    // does not exist yet, which is the whole point of seeding here.
-    exec(format!(
-        "INSERT INTO pricing_plan (tenant_id, plan_id, revision, lifecycle_state, created_by, \
-         sku_id) VALUES ('{TENANT}', '{PLAN}', 1, 'draft', \
-         '44444444-4444-4444-4444-000000000000', '{PLAN_SKU}')"
-    ))
-    .await
-    .expect("seed the plan that holds the one SKU fact the database has");
-
-    // A separate plan with the driver's native UUID binding is the positive
-    // control: normalization must preserve valid blobs as well as fix text.
-    db.execute_raw(Statement::from_sql_and_values(
-        sea_orm::DatabaseBackend::Sqlite,
-        format!("INSERT INTO pricing_plan (tenant_id, plan_id, revision, lifecycle_state, created_by, sku_id) VALUES ('{TENANT}', '{BLOB_PLAN}', 1, 'draft', '{TENANT}', ?)"),
-        [uuid::Uuid::parse_str(PLAN_SKU).unwrap().into()],
-    )).await.unwrap();
-
-    exec(format!("INSERT INTO pricing_plan_period_floor_cap (tenant_id, plan_id, plan_revision, currency, region, floor_minor) VALUES ('{TENANT}', '{PLAN}', 1, 'USD', 'EU', 1)"))
-        .await.expect("seed plan child");
-    exec(format!("INSERT INTO pricing_plan_descriptor_set (tenant_id, plan_id, plan_revision, gl_code, invoice_line_template) VALUES ('{TENANT}', '{PLAN}', 1, '4000-SAAS', '{{sku}} service')"))
-        .await.expect("descriptor-safe legacy plan");
-    exec(format!(
-        "UPDATE pricing_plan SET lifecycle_state = 'published' WHERE plan_id = '{PLAN}'"
-    ))
-    .await
-    .expect("freeze parent with its child");
-
-    let price = |id: &str, kind: &str, state: &str, meter: &str| {
-        format!(
-            "INSERT INTO pricing_price (price_id, tenant_id, plan_id, currency, region, phase, \
-             charge_kind, model_kind, amount_minor, lifecycle_state, created_by, created_at_utc, \
-             meter) VALUES ('{id}', '{TENANT}', '{PLAN}', 'USD', 'EU', \
-             '33333333-3333-3333-3333-333333333333', '{kind}', 'per_unit', 1000, '{state}', \
-             '44444444-4444-4444-4444-000000000000', '2026-08-03 09:00:00+00', {meter})"
-        )
-    };
-    exec(price(FEE_ROW, "recurring", "published", "NULL"))
-        .await
-        .expect("seed the fee row, published, so the guard ordering is under test");
-    exec(format!("INSERT INTO pricing_price_window (window_id, tenant_id, price_id, effective_from, state, reason_code, created_by) VALUES ('77777777-7777-7777-7777-777777777777', '{TENANT}', '{FEE_ROW}', '2026-09-01T00:00:00+00:00', 'scheduled', 'test', '{TENANT}')"))
-        .await.expect("seed a child of the published price");
-    exec(price(USAGE_ROW, "usage", "draft", "'GB-hour'"))
-        .await
-        .expect("seed the usage row whose authoritative mapping must be retained");
-
-    let err = Migrator::up(&db, Some(1))
-        .await
-        .expect_err("a usage row cannot be backfilled");
-    let text = err.to_string();
-    assert!(text.contains("D-372 backfill incomplete"), "{text}");
-    assert!(
-        text.contains(USAGE_ROW),
-        "the refusal names the row: {text}"
-    );
-    assert!(
-        !text.contains(FEE_ROW),
-        "the fee row was backfilled and is not named: {text}"
-    );
-
-    let columns = db
-        .query_all_raw(Statement::from_string(
-            sea_orm::DatabaseBackend::Sqlite,
-            "PRAGMA table_info(pricing_price)",
-        ))
-        .await
-        .unwrap();
-    assert!(
-        !columns
-            .iter()
-            .any(|r| r.try_get::<String>("", "name").unwrap() == "sku_id")
-    );
-    exec("ALTER TABLE pricing_price ADD COLUMN sku_id TEXT".into())
-        .await
-        .unwrap();
-    exec(format!("UPDATE pricing_price SET sku_id = '{EXPLICIT_FEE_SKU}' WHERE tenant_id = '{TENANT}' AND price_id = '{FEE_ROW}'")).await.unwrap();
-    let refused = Migrator::up(&db, Some(1)).await.unwrap_err().to_string();
-    assert!(
-        refused.contains("prestaged column and explicit mappings are retained"),
-        "{refused}"
-    );
-    let held = db
-        .query_one_raw(Statement::from_string(
-            sea_orm::DatabaseBackend::Sqlite,
-            format!("SELECT sku_id FROM pricing_price WHERE price_id = '{FEE_ROW}'"),
-        ))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        held.try_get::<String>("", "sku_id").unwrap(),
-        EXPLICIT_FEE_SKU
-    );
-    for invalid in ["not-a-uuid", "00000000-0000-0000-0000-000000000000"] {
-        exec(format!("UPDATE pricing_price SET sku_id = '{invalid}' WHERE tenant_id = '{TENANT}' AND price_id = '{USAGE_ROW}'")).await.unwrap();
-        let refused = Migrator::up(&db, Some(1)).await.unwrap_err().to_string();
-        assert!(refused.contains("not a non-nil UUID"), "{refused}");
-        let held = db
-            .query_one_raw(Statement::from_string(
-                sea_orm::DatabaseBackend::Sqlite,
-                format!("SELECT sku_id FROM pricing_price WHERE price_id = '{USAGE_ROW}'"),
-            ))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(held.try_get::<String>("", "sku_id").unwrap(), invalid);
-    }
-    exec(format!("UPDATE pricing_price SET sku_id = '{PLAN_SKU}' WHERE tenant_id = '{TENANT}' AND price_id = '{USAGE_ROW}'")).await.unwrap();
-
-    Migrator::up(&db, Some(1))
-        .await
-        .expect("tightens once every row has a SKU");
-
-    let sku: uuid::Uuid = db
-        .query_one_raw(Statement::from_string(
-            sea_orm::DatabaseBackend::Sqlite,
-            format!("SELECT sku_id FROM pricing_price WHERE price_id = '{FEE_ROW}'"),
-        ))
-        .await
-        .expect("read the backfilled row")
-        .expect("the fee row is still there")
-        .try_get("", "sku_id")
-        .expect("the column the migration added");
-    assert_eq!(
-        sku.to_string(),
-        EXPLICIT_FEE_SKU,
-        "explicit fee mapping wins"
-    );
-    assert_sku_tightening_preserves_children(&db).await;
-    Migrator::up(&db, Some(1))
-        .await
-        .expect("descriptor migration over retained rows");
-    let rows = db.query_all_raw(Statement::from_string(sea_orm::DatabaseBackend::Sqlite,
-        "SELECT charge_kind, sku_id, gl_code_ref, resolved_gl_code FROM pricing_price ORDER BY charge_kind")).await.unwrap();
-    assert_eq!(rows.len(), 2);
-    assert_eq!(
-        rows[0].try_get::<String>("", "resolved_gl_code").unwrap(),
-        "4000-SAAS"
-    );
-    assert_eq!(
-        rows[1]
-            .try_get::<uuid::Uuid>("", "sku_id")
-            .unwrap()
-            .to_string(),
-        PLAN_SKU
-    );
-    assert_eq!(
-        rows[1].try_get::<String>("", "gl_code_ref").unwrap(),
-        "4000-SAAS"
-    );
-    assert_plan_skus_are_uuid_blobs(&db, PLAN_SKU).await;
-    assert!(
-        exec(format!(
-            "UPDATE pricing_price SET sku_id = '{PLAN_SKU}' WHERE price_id = '{FEE_ROW}'"
-        ))
-        .await
-        .unwrap_err()
-        .to_string()
-        .contains("immutable")
-    );
-    assert!(
-        exec(format!(
-            "UPDATE pricing_plan SET sku_id = '{EXPLICIT_FEE_SKU}' WHERE plan_id = '{PLAN}'"
-        ))
-        .await
-        .is_err()
-    );
-    assert!(
-        db.query_all_raw(Statement::from_string(
-            sea_orm::DatabaseBackend::Sqlite,
-            "PRAGMA foreign_key_check"
-        ))
-        .await
-        .unwrap()
-        .is_empty()
-    );
-}
-
-/// Both legacy plan encodings must support the ORM's typed UUID read.
-async fn assert_plan_skus_are_uuid_blobs(db: &sea_orm::DatabaseConnection, expected_sku: &str) {
-    let plans = db.query_all_raw(Statement::from_string(
-        sea_orm::DatabaseBackend::Sqlite,
-        "SELECT plan_id, sku_id, typeof(sku_id) AS storage, length(sku_id) AS bytes FROM pricing_plan ORDER BY plan_id",
-    )).await.unwrap();
-    assert_eq!(plans.len(), 2, "both legacy plan encodings survive");
-    for plan in plans {
-        assert_eq!(
-            plan.try_get::<uuid::Uuid>("", "sku_id")
-                .unwrap()
-                .to_string(),
-            expected_sku
-        );
-        assert_eq!(plan.try_get::<String>("", "storage").unwrap(), "blob");
-        assert_eq!(plan.try_get::<i64>("", "bytes").unwrap(), 16);
-    }
-}
-
-/// Tightening both SKU columns preserves each parent's foreign-key children.
-async fn assert_sku_tightening_preserves_children(db: &sea_orm::DatabaseConnection) {
-    for table in ["pricing_price", "pricing_plan"] {
-        let columns = db
-            .query_all_raw(Statement::from_string(
-                sea_orm::DatabaseBackend::Sqlite,
-                format!("PRAGMA table_info({table})"),
-            ))
-            .await
-            .unwrap();
-        let sku_column = columns
-            .iter()
-            .find(|r| r.try_get::<String>("", "name").unwrap() == "sku_id")
-            .unwrap();
-        assert_eq!(
-            sku_column.try_get::<i64>("", "notnull").unwrap(),
-            1,
-            "{table} physically requires SKU"
-        );
-    }
-    let children = db
-        .query_one_raw(Statement::from_string(
-            sea_orm::DatabaseBackend::Sqlite,
-            "SELECT count(*) AS n FROM pricing_price_window",
-        ))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(children.try_get::<i64>("", "n").unwrap(), 1);
-    assert!(
-        db.query_all_raw(Statement::from_string(
-            sea_orm::DatabaseBackend::Sqlite,
-            "PRAGMA foreign_key_check"
-        ))
-        .await
-        .unwrap()
-        .is_empty()
-    );
-    let plan_children = db
-        .query_one_raw(Statement::from_string(
-            sea_orm::DatabaseBackend::Sqlite,
-            "SELECT count(*) AS n FROM pricing_plan_period_floor_cap",
-        ))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(plan_children.try_get::<i64>("", "n").unwrap(), 1);
+        .expect("a line with no meter keys on its SKU like any other");
 }
 
 /// D-09's cross-group non-overlap invariant, the `SQLite` arm
@@ -3192,18 +2988,21 @@ async fn the_target_sku_predicate_refuses_a_blank_and_keeps_its_null_arm() {
         )
     };
 
-    for code in STRIPPED_WHITESPACE {
-        let refused = try_exec(&conn, &line(*code, &format!("char({code})")))
-            .await
-            .expect_err(&format!(
-                "a target SKU of nothing but char({code}) must be refused by the store"
-            ));
-        assert!(
-            refused.contains("chk_pricing_price_overlay_line_target_sku_present"),
-            "and by the SKU-present predicate rather than by one of the line's eight \
-             other CHECKs: {refused}"
-        );
-    }
+    // **The blank arm is gone with the column's type, and the guard moved with
+    // it.** `target_sku` was free-form text, so "present" meant "not blank" and
+    // every whitespace codepoint was a way to write an absent SKU that looked
+    // named. The column is a `uuid` now (D-372), which cannot hold whitespace at
+    // all — the only value that is syntactically a SKU and semantically none is
+    // the **nil** UUID, and `chk_pricing_price_overlay_line_target_sku_not_nil`
+    // is the predicate that refuses it.
+    let refused = try_exec(&conn, &line(97, "'00000000-0000-0000-0000-000000000000'"))
+        .await
+        .expect_err("a nil target SKU must be refused by the store");
+    assert!(
+        refused.contains("chk_pricing_price_overlay_line_target_sku_not_nil"),
+        "and by the not-nil predicate rather than by one of the line's eight \
+         other CHECKs: {refused}"
+    );
 
     // The `NULL` arm, which is the whole reason this predicate is a disjunction, and a
     // named SKU beside it.
@@ -3350,12 +3149,9 @@ async fn a_journal_row_may_not_name_another_tenants_run() {
     let remainder = staged_to(&manager, "create_pricing_repricing_journal").await;
 
     // The plan the row prices, and its SKU. Seeded since D-372 rather than left
-    // implicit: the remainder of the chain now carries
-    // `m20260916_000044_price_row_sku`, whose backfill reads a fee row's SKU off
-    // its plan and refuses to guess a usage row's -- so a row staged here has to
-    // be one the backfill can reach, which is a **non-usage** row under a plan
-    // that names a SKU. `charge_kind` is incidental to this case (the journal's
-    // key is `(run_id, price_id)`), and being reachable by the backfill is not.
+    // implicit: the SKU is a `NOT NULL` axis of the charge line a price hangs
+    // off, so a row staged here has to name one. `charge_kind` is incidental to
+    // this case (the journal's key is `(run_id, price_id)`).
     must_apply(
         &conn,
         &format!(
@@ -3369,13 +3165,31 @@ async fn a_journal_row_may_not_name_another_tenants_run() {
     // One price row: a second under the same tenant would need a different scope
     // key, and the journal's own key is `(run_id, price_id)`, so both journal rows
     // below can name this one.
+    let graph = common::seed_charge_graph_sql(
+        &conn,
+        &common::SqlGraphSeed {
+            model_kind: Some("per_unit"),
+            lifecycle_state: "draft",
+            created_by: ACTOR,
+            created_at_utc: "2026-08-03 09:00:00+00",
+            ..common::SqlGraphSeed::new(
+                TENANT_A,
+                PLAN,
+                PHASE,
+                "00000000-0000-0000-0000-000000000005",
+            )
+        },
+    )
+    .await;
     must_apply(
         &conn,
         &format!(
-            "INSERT INTO pricing_price (price_id, tenant_id, plan_id, currency, region, \
-             phase, charge_kind, model_kind, lifecycle_state, created_by, created_at_utc) \
-             VALUES ('{PRICE}', '{TENANT_A}', '{PLAN}', 'USD', 'EU', '{PHASE}', 'recurring', \
-             'per_unit', 'draft', '{ACTOR}', '2026-08-03 09:00:00+00')"
+            "INSERT INTO pricing_price (price_id, tenant_id, plan_id, plan_revision, \
+             charge_line_id, line_version_id, market_price_id, lifecycle_state, created_by, \
+             created_at_utc) \
+             VALUES ('{PRICE}', '{TENANT_A}', '{PLAN}', 0, '{}', '{}', '{}', 'draft', \
+             '{ACTOR}', '2026-08-03 09:00:00+00')",
+            graph.charge_line_id, graph.line_version_id, graph.market_price_id
         ),
     )
     .await;
@@ -3451,428 +3265,4 @@ async fn a_journal_row_may_not_name_another_tenants_run() {
         message.contains("belongs to another tenant"),
         "by the same arm: {message}"
     );
-}
-
-/// A price does not record a plan revision: neither another tenant's plan nor
-/// an arbitrary latest revision is evidence of its SKU.
-#[tokio::test]
-async fn sku_backfill_refuses_wrong_tenant_and_ambiguous_revisions() {
-    for ambiguous in [false, true] {
-        let db = Database::connect("sqlite::memory:").await.unwrap();
-        let n = u32::try_from(
-            Migrator::migrations()
-                .iter()
-                .position(|m| m.name() == "m20260916_000044_price_row_sku")
-                .expect("SKU migration"),
-        )
-        .unwrap();
-        Migrator::up(&db, Some(n)).await.unwrap();
-        db.execute_unprepared("INSERT INTO pricing_plan (tenant_id, plan_id, revision, lifecycle_state, created_by, sku_id) VALUES ('tenant-a', 'plan', 1, 'superseded', 'actor', '55555555-5555-5555-5555-000000000001')").await.unwrap();
-        if ambiguous {
-            db.execute_unprepared("INSERT INTO pricing_plan (tenant_id, plan_id, revision, lifecycle_state, created_by, sku_id) VALUES ('tenant-a', 'plan', 2, 'published', 'actor', '55555555-5555-5555-5555-000000000002')").await.unwrap();
-        }
-        let tenant = if ambiguous { "tenant-a" } else { "tenant-b" };
-        db.execute_unprepared(&format!("INSERT INTO pricing_price (price_id, tenant_id, plan_id, currency, region, phase, charge_kind, lifecycle_state, created_by) VALUES ('unresolved-fee', '{tenant}', 'plan', 'USD', 'EU', 'phase', 'recurring', 'draft', 'actor')")).await.unwrap();
-        let err = Migrator::up(&db, None)
-            .await
-            .expect_err("must not guess a SKU")
-            .to_string();
-        assert!(err.contains("unresolved-fee"), "{err}");
-        let columns = db
-            .query_all_raw(Statement::from_string(
-                sea_orm::DatabaseBackend::Sqlite,
-                "PRAGMA table_info(pricing_price)",
-            ))
-            .await
-            .unwrap();
-        assert!(
-            !columns
-                .iter()
-                .any(|r| r.try_get::<String>("", "name").unwrap() == "sku_id"),
-            "refusal rolls back ADD COLUMN"
-        );
-    }
-}
-
-/// A collision can be discovered only after the physical rebuild, when the new
-/// scope index is created. The runner must undo the rebuild as well as backfill.
-#[tokio::test]
-async fn sku_scope_collision_rolls_back_the_physical_rebuild() {
-    let db = Database::connect("sqlite::memory:").await.unwrap();
-    let n = u32::try_from(
-        Migrator::migrations()
-            .iter()
-            .position(|m| m.name() == "m20260916_000044_price_row_sku")
-            .expect("SKU migration"),
-    )
-    .unwrap();
-    Migrator::up(&db, Some(n)).await.unwrap();
-    db.execute_unprepared("INSERT INTO pricing_plan (tenant_id, plan_id, revision, lifecycle_state, created_by, sku_id) VALUES ('tenant', 'plan', 1, 'published', 'actor', 'sku')").await.unwrap();
-    for meter in ["unit-a", "unit-b"] {
-        db.execute_unprepared(&format!("INSERT INTO pricing_price (price_id, tenant_id, plan_id, currency, region, phase, charge_kind, lifecycle_state, created_by, meter) VALUES ('{meter}', 'tenant', 'plan', 'USD', 'EU', 'phase', 'recurring', 'draft', 'actor', '{meter}')")).await.unwrap();
-    }
-    Migrator::up(&db, None)
-        .await
-        .expect_err("two old meter keys collapse into one SKU key");
-    let columns = db
-        .query_all_raw(Statement::from_string(
-            sea_orm::DatabaseBackend::Sqlite,
-            "PRAGMA table_info(pricing_price)",
-        ))
-        .await
-        .unwrap();
-    assert!(
-        !columns
-            .iter()
-            .any(|r| r.try_get::<String>("", "name").unwrap() == "sku_id")
-    );
-    let rows = db
-        .query_all_raw(Statement::from_string(
-            sea_orm::DatabaseBackend::Sqlite,
-            "SELECT price_id FROM pricing_price",
-        ))
-        .await
-        .unwrap();
-    assert_eq!(rows.len(), 2, "failed rebuild preserves both original rows");
-    let plan_columns = db
-        .query_all_raw(Statement::from_string(
-            sea_orm::DatabaseBackend::Sqlite,
-            "PRAGMA table_info(pricing_plan)",
-        ))
-        .await
-        .unwrap();
-    let sku_column = plan_columns
-        .iter()
-        .find(|r| r.try_get::<String>("", "name").unwrap() == "sku_id")
-        .unwrap();
-    assert_eq!(sku_column.try_get::<i64>("", "notnull").unwrap(), 0);
-}
-
-// D-372: historical overlay targets were text, while the UUID driver binds blobs.
-const OVERLAY_UUID_MIGRATION: &str = "m20260916_000044_price_row_sku";
-const OVERLAY_UUID_TENANT: &str = "11111111-1111-1111-1111-111111111111";
-const OVERLAY_UUID_ID: &str = "22222222-2222-2222-2222-222222222222";
-const OVERLAY_UUID_PLAN: &str = "33333333-3333-3333-3333-333333333333";
-const OVERLAY_UUID_LINE: &str = "44444444-4444-4444-4444-444444444444";
-const OVERLAY_UUID_TARGET: &str = "abcdef01-2345-6789-abcd-ef0123456789";
-
-async fn before_overlay_uuid_migration() -> sea_orm::DatabaseConnection {
-    let db = Database::connect("sqlite::memory:").await.expect("SQLite");
-    let boundary = Migrator::migrations()
-        .iter()
-        .position(|migration| migration.name() == OVERLAY_UUID_MIGRATION)
-        .expect("D-372 migration registered");
-    Migrator::up(&db, Some(u32::try_from(boundary).expect("migration count")))
-        .await
-        .expect("run the actual predecessor chain");
-    must_apply(&db, &format!(
-        "INSERT INTO pricing_price_overlay (price_overlay_id, revision, tenant_id, lifecycle_state, scope_class, scope_value, precedence, tax_basis, disclosure, target_ref) \
-         VALUES ('{OVERLAY_UUID_ID}', 0, '{OVERLAY_UUID_TENANT}', 'draft', 'brand', 'acme', 10, 'delegated_tariffs', 'restricted', '{{}}')"
-    )).await;
-    db
-}
-
-async fn seed_legacy_overlay_uuid_line(db: &sea_orm::DatabaseConnection, target: &str) {
-    must_apply(db, &format!(
-        "INSERT INTO pricing_price_overlay_line (line_id, price_overlay_id, overlay_revision, tenant_id, plan_id, target_sku, adjustment_kind, magnitude_kind, adjustment_value) \
-         VALUES ('{OVERLAY_UUID_LINE}', '{OVERLAY_UUID_ID}', 0, '{OVERLAY_UUID_TENANT}', '{OVERLAY_UUID_PLAN}', '{target}', 'discount', 'amount', NULL)"
-    )).await;
-    must_apply(db, &format!(
-        "INSERT INTO pricing_price_overlay_line_amount (line_id, overlay_revision, currency, tenant_id, value_minor) \
-         VALUES ('{OVERLAY_UUID_LINE}', 0, 'EUR', '{OVERLAY_UUID_TENANT}', 1000)"
-    )).await;
-    must_apply(db, &format!(
-        "INSERT INTO pricing_price_overlay_line (line_id, price_overlay_id, overlay_revision, tenant_id, adjustment_kind, magnitude_kind, adjustment_value) \
-         VALUES ('55555555-5555-5555-5555-555555555555', '{OVERLAY_UUID_ID}', 0, '{OVERLAY_UUID_TENANT}', 'discount', 'percent_bp', 100)"
-    )).await;
-}
-
-async fn assert_overlay_uuid_children_survive(db: &sea_orm::DatabaseConnection) {
-    assert_eq!(
-        count(db, "SELECT count(*) AS n FROM pricing_price_overlay").await,
-        1
-    );
-    assert_eq!(count(db, "SELECT count(*) AS n FROM pricing_price_overlay_line_amount WHERE currency = 'EUR' AND value_minor = 1000").await, 1);
-    assert_eq!(
-        count(
-            db,
-            "SELECT count(*) AS n FROM pricing_price_overlay_line WHERE target_sku IS NULL"
-        )
-        .await,
-        1,
-        "the list-default line stays NULL"
-    );
-    assert!(
-        db.query_all_raw(Statement::from_string(
-            sea_orm::DatabaseBackend::Sqlite,
-            "PRAGMA foreign_key_check"
-        ))
-        .await
-        .expect("FK census")
-        .is_empty()
-    );
-}
-
-async fn assert_overlay_uuid_blob(db: &sea_orm::DatabaseConnection) {
-    let row = db.query_one_raw(Statement::from_string(sea_orm::DatabaseBackend::Sqlite,
-        format!("SELECT target_sku, typeof(target_sku) AS storage_type, length(target_sku) AS bytes FROM pricing_price_overlay_line WHERE line_id = '{OVERLAY_UUID_LINE}'")))
-        .await.expect("read migrated target").expect("line retained");
-    assert_eq!(
-        row.try_get::<String>("", "storage_type").expect("type"),
-        "blob"
-    );
-    assert_eq!(row.try_get::<i64>("", "bytes").expect("length"), 16);
-    assert_eq!(
-        row.try_get::<Uuid>("", "target_sku")
-            .expect("driver reads UUID"),
-        Uuid::parse_str(OVERLAY_UUID_TARGET).expect("target UUID")
-    );
-}
-
-#[tokio::test]
-async fn overlay_target_uuid_text_normalizes_and_round_trips_with_its_children() {
-    let db = before_overlay_uuid_migration().await;
-    seed_legacy_overlay_uuid_line(&db, &OVERLAY_UUID_TARGET.to_uppercase()).await;
-    Migrator::up(&db, Some(1))
-        .await
-        .expect("normalize legacy UUID text");
-    assert_overlay_uuid_blob(&db).await;
-    assert_overlay_uuid_children_survive(&db).await;
-
-    // Direct writers cannot reintroduce text, a short blob or the nil sentinel.
-    for target in [
-        format!("'{OVERLAY_UUID_TARGET}'"),
-        "zeroblob(15)".to_owned(),
-        "zeroblob(16)".to_owned(),
-    ] {
-        let refusal = try_exec(&db, &format!(
-            "INSERT INTO pricing_price_overlay_line (line_id, price_overlay_id, overlay_revision, tenant_id, plan_id, target_sku, adjustment_kind, magnitude_kind, adjustment_value) \
-             VALUES ('77777777-7777-7777-7777-777777777777', '{OVERLAY_UUID_ID}', 0, '{OVERLAY_UUID_TENANT}', '{OVERLAY_UUID_PLAN}', {target}, 'discount', 'percent_bp', 100)"
-        )).await.expect_err("only non-nil 16-byte UUID blobs are storable");
-        assert!(
-            refusal.contains("chk_pricing_price_overlay_line_target_sku_present"),
-            "{refusal}"
-        );
-    }
-
-    // The API's UUID binding must collide with the normalized historical text.
-    let target = Uuid::parse_str(OVERLAY_UUID_TARGET).expect("target UUID");
-    let duplicate = db.execute_raw(Statement::from_sql_and_values(sea_orm::DatabaseBackend::Sqlite,
-        format!("INSERT INTO pricing_price_overlay_line (line_id, price_overlay_id, overlay_revision, tenant_id, plan_id, target_sku, adjustment_kind, magnitude_kind, adjustment_value) \
-                 VALUES ('66666666-6666-6666-6666-666666666666', '{OVERLAY_UUID_ID}', 0, '{OVERLAY_UUID_TENANT}', '{OVERLAY_UUID_PLAN}', ?, 'discount', 'percent_bp', 100)"),
-        [target.into()])).await.expect_err("one SKU has one overlay line key");
-    assert!(
-        duplicate.to_string().contains("UNIQUE constraint failed"),
-        "{duplicate}"
-    );
-    assert_eq!(
-        count(&db, "SELECT count(*) AS n FROM pricing_price_overlay_line").await,
-        2
-    );
-
-    Migrator::down(&db, Some(1))
-        .await
-        .expect("restore legacy text representation");
-    let row = db.query_one_raw(Statement::from_string(sea_orm::DatabaseBackend::Sqlite,
-        format!("SELECT target_sku, typeof(target_sku) AS storage_type FROM pricing_price_overlay_line WHERE line_id = '{OVERLAY_UUID_LINE}'")))
-        .await.expect("read restored target").expect("line retained");
-    assert_eq!(
-        row.try_get::<String>("", "storage_type").expect("type"),
-        "text"
-    );
-    assert_eq!(
-        row.try_get::<String>("", "target_sku")
-            .expect("canonical text"),
-        OVERLAY_UUID_TARGET
-    );
-    assert_overlay_uuid_children_survive(&db).await;
-    Migrator::up(&db, Some(1))
-        .await
-        .expect("reapply UUID normalization");
-    assert_overlay_uuid_blob(&db).await;
-    assert_overlay_uuid_children_survive(&db).await;
-}
-
-async fn assert_overlay_uuid_refusal_rolls_back(
-    db: &sea_orm::DatabaseConnection,
-    original: &str,
-    rows: i64,
-) {
-    let row = db.query_one_raw(Statement::from_string(sea_orm::DatabaseBackend::Sqlite,
-        format!("SELECT target_sku, typeof(target_sku) AS storage_type FROM pricing_price_overlay_line WHERE line_id = '{OVERLAY_UUID_LINE}'")))
-        .await.expect("read original target").expect("line retained");
-    assert_eq!(
-        row.try_get::<String>("", "target_sku").expect("text"),
-        original
-    );
-    assert_eq!(
-        row.try_get::<String>("", "storage_type").expect("type"),
-        "text"
-    );
-    assert_eq!(
-        count(db, "SELECT count(*) AS n FROM pricing_price_overlay_line").await,
-        rows
-    );
-    assert_overlay_uuid_children_survive(db).await;
-    assert_eq!(
-        count(
-            db,
-            "SELECT count(*) AS n FROM pragma_table_info('pricing_price') WHERE name = 'sku_id'"
-        )
-        .await,
-        0,
-        "the earlier SKU ADD COLUMN rolls back too"
-    );
-    assert_eq!(count(db, "SELECT count(*) AS n FROM seaql_migrations WHERE version = 'm20260916_000044_price_row_sku'").await, 0, "a failed migration is not marked applied");
-}
-
-#[tokio::test]
-async fn invalid_and_nil_legacy_overlay_targets_refuse_without_partial_conversion() {
-    for target in ["not-a-uuid", "00000000-0000-0000-0000-000000000000"] {
-        let db = before_overlay_uuid_migration().await;
-        seed_legacy_overlay_uuid_line(&db, target).await;
-        let error = Migrator::up(&db, Some(1))
-            .await
-            .expect_err("invalid target must refuse");
-        let message = error.to_string();
-        assert!(
-            message.contains("target_sku") && message.contains(target),
-            "{message}"
-        );
-        assert_overlay_uuid_refusal_rolls_back(&db, target, 2).await;
-    }
-}
-
-#[tokio::test]
-async fn semantically_duplicate_legacy_uuid_targets_refuse_and_preserve_both_texts() {
-    let db = before_overlay_uuid_migration().await;
-    let uppercase = OVERLAY_UUID_TARGET.to_uppercase();
-    seed_legacy_overlay_uuid_line(&db, &uppercase).await;
-    let compact = OVERLAY_UUID_TARGET.replace('-', "");
-    must_apply(&db, &format!(
-        "INSERT INTO pricing_price_overlay_line (line_id, price_overlay_id, overlay_revision, tenant_id, plan_id, target_sku, adjustment_kind, magnitude_kind, adjustment_value) \
-         VALUES ('66666666-6666-6666-6666-666666666666', '{OVERLAY_UUID_ID}', 0, '{OVERLAY_UUID_TENANT}', '{OVERLAY_UUID_PLAN}', '{compact}', 'discount', 'percent_bp', 100)"
-    )).await;
-    let error = Migrator::up(&db, Some(1))
-        .await
-        .expect_err("two text spellings cannot become two keys for one UUID");
-    assert!(
-        error.to_string().contains("UNIQUE constraint failed"),
-        "{error}"
-    );
-    assert_overlay_uuid_refusal_rolls_back(&db, &uppercase, 3).await;
-    let row = db.query_one_raw(Statement::from_string(sea_orm::DatabaseBackend::Sqlite,
-        "SELECT target_sku FROM pricing_price_overlay_line WHERE line_id = '66666666-6666-6666-6666-666666666666'"))
-        .await.expect("read second original target").expect("duplicate retained");
-    assert_eq!(
-        row.try_get::<String>("", "target_sku")
-            .expect("original compact text"),
-        compact
-    );
-}
-
-/// Refuse incompatible staging before any backfill, even on an empty catalogue.
-#[tokio::test]
-async fn sku_staging_rejects_incompatible_sqlite_columns() {
-    for definition in [
-        "INTEGER",
-        "TEXT CHECK (sku_id IS NULL)",
-        "TEXT NOT NULL DEFAULT ''",
-        "TEXT DEFAULT 'bad'",
-        "TEXT GENERATED ALWAYS AS ('bad') VIRTUAL",
-    ] {
-        let db = Database::connect("sqlite::memory:").await.unwrap();
-        let before = u32::try_from(
-            Migrator::migrations()
-                .iter()
-                .position(|m| m.name() == "m20260916_000044_price_row_sku")
-                .unwrap(),
-        )
-        .unwrap();
-        Migrator::up(&db, Some(before)).await.unwrap();
-        db.execute_unprepared(&format!(
-            "ALTER TABLE pricing_price ADD COLUMN sku_id {definition}"
-        ))
-        .await
-        .unwrap();
-        let original = db
-            .query_one_raw(Statement::from_string(
-                sea_orm::DatabaseBackend::Sqlite,
-                "SELECT sql FROM sqlite_master WHERE name = 'pricing_price'",
-            ))
-            .await
-            .unwrap()
-            .unwrap()
-            .try_get::<String>("", "sql")
-            .unwrap();
-        let error = Migrator::up(&db, Some(1)).await.unwrap_err().to_string();
-        assert!(
-            error.contains("incompatible prestaged"),
-            "{definition}: {error}"
-        );
-        let after = db
-            .query_one_raw(Statement::from_string(
-                sea_orm::DatabaseBackend::Sqlite,
-                "SELECT sql FROM sqlite_master WHERE name = 'pricing_price'",
-            ))
-            .await
-            .unwrap()
-            .unwrap()
-            .try_get::<String>("", "sql")
-            .unwrap();
-        assert_eq!(after, original);
-    }
-}
-
-/// Text and blob spellings of one SKU must collide after normalization.
-#[tokio::test]
-async fn sku_staging_normalizes_sqlite_keys_before_unique_tightening() {
-    let db = Database::connect("sqlite::memory:").await.unwrap();
-    let before = u32::try_from(
-        Migrator::migrations()
-            .iter()
-            .position(|m| m.name() == "m20260916_000044_price_row_sku")
-            .unwrap(),
-    )
-    .unwrap();
-    Migrator::up(&db, Some(before)).await.unwrap();
-    db.execute_unprepared("ALTER TABLE pricing_price ADD COLUMN sku_id TEXT")
-        .await
-        .unwrap();
-    for (id, meter, sku) in [
-        (1, "a", "'55555555-5555-5555-5555-555555555555'"),
-        (2, "b", "X'55555555555555555555555555555555'"),
-    ] {
-        db.execute_unprepared(&format!("INSERT INTO pricing_price (price_id, tenant_id, plan_id, currency, region, phase, charge_kind, model_kind, unit_rate_nano, lifecycle_state, created_by, meter, sku_id) VALUES ('00000000-0000-0000-0000-{id:012}', '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', 'USD', 'EU', '33333333-3333-3333-3333-333333333333', 'usage', 'per_unit', 1, 'draft', '44444444-4444-4444-4444-444444444444', '{meter}', {sku})")).await.unwrap();
-    }
-    let error = Migrator::up(&db, Some(1)).await.unwrap_err().to_string();
-    assert!(
-        error.contains("UNIQUE constraint failed") && error.contains("pricing_price.sku_id"),
-        "{error}"
-    );
-    let rows = db
-        .query_all_raw(Statement::from_string(
-            sea_orm::DatabaseBackend::Sqlite,
-            "SELECT typeof(sku_id) AS storage FROM pricing_price ORDER BY price_id",
-        ))
-        .await
-        .unwrap();
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].try_get::<String>("", "storage").unwrap(), "text");
-    assert_eq!(rows[1].try_get::<String>("", "storage").unwrap(), "blob");
-    db.execute_unprepared("UPDATE pricing_price SET sku_id = '66666666-6666-6666-6666-666666666666' WHERE meter = 'b'").await.unwrap();
-    Migrator::up(&db, Some(1))
-        .await
-        .expect("distinct SKU control");
-    let rows = db
-        .query_all_raw(Statement::from_string(
-            sea_orm::DatabaseBackend::Sqlite,
-            "SELECT sku_id FROM pricing_price",
-        ))
-        .await
-        .unwrap();
-    assert_eq!(rows.len(), 2);
-    for row in rows {
-        assert!(!row.try_get::<uuid::Uuid>("", "sku_id").unwrap().is_nil());
-    }
 }

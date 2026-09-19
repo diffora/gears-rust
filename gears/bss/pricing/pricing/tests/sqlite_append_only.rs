@@ -28,7 +28,7 @@ const PLAN: &str = "22222222-2222-2222-2222-222222222222";
 const PHASE: &str = "33333333-3333-3333-3333-333333333333";
 const ACTOR: &str = "44444444-4444-4444-4444-444444444444";
 /// The SKU every seeded row prices (D-372). `pricing_price.sku_id` and
-/// `pricing_plan.sku_id` are `NOT NULL` since `m20260916_000044_price_row_sku`,
+/// `pricing_plan.sku_id` are `NOT NULL` in the fresh-install DDL,
 /// so a seed names one; the value itself is incidental to these cases.
 const SKU: &str = "00000000-0000-0000-0000-000000000005";
 const PUBLISHED: &str = "55555555-5555-5555-5555-555555555555";
@@ -44,13 +44,22 @@ const DRAFT: &str = "66666666-6666-6666-6666-666666666666";
 /// prove switched off, refused instead by a constraint it never intended to
 /// trip.
 async fn must_be_rejected(conn: &DatabaseConnection, sql: &str, because: &str) {
+    must_be_rejected_by(conn, sql, "pricing_price", because).await;
+}
+
+/// [`must_be_rejected`] for a guard that lives on another table.
+///
+/// The shared half of a price row is `pricing_charge_line_version`'s now, so the
+/// freeze that covers it raises from there — and a case that kept demanding the
+/// string `pricing_price` would be asserting the wrong guard's name.
+async fn must_be_rejected_by(conn: &DatabaseConnection, sql: &str, table: &str, because: &str) {
     let err = exec(conn, sql)
         .await
         .err()
         .unwrap_or_else(|| panic!("the append-only guard must reject: {sql}"));
     let message = err.to_string();
     assert!(
-        message.contains("pricing_price"),
+        message.contains(table),
         "the rejection must name the guard it came from, got: {message}"
     );
     assert!(
@@ -62,29 +71,51 @@ async fn must_be_rejected(conn: &DatabaseConnection, sql: &str, because: &str) {
 /// Insert one published `all_subscriptions` row and one draft row on the same
 /// plan (different charge kinds, so the scope-key unique index is satisfied).
 async fn seed(conn: &DatabaseConnection) {
-    must_succeed(
+    // The scope key and the shared structure are the charge line's now, so the
+    // two rows hang off two lines — they differ on `charge_kind`, which is an
+    // axis — and each names its line, version and market rather than restating
+    // the axes it no longer holds.
+    let published = common::seed_charge_graph_sql(
         conn,
-        &format!(
-            "INSERT INTO pricing_price (
-                price_id, tenant_id, plan_id, currency, region, phase,
-                charge_kind, amount_minor, model_kind, lifecycle_state,
-                created_by, created_at_utc, sku_id)
-             VALUES ('{PUBLISHED}', '{TENANT}', '{PLAN}', 'USD', 'EU', '{PHASE}',
-                'recurring', 1000, 'flat', 'published', '{ACTOR}', '2026-08-02 10:00:00 +00:00', \
-                '{SKU}')"
-        ),
+        &common::SqlGraphSeed {
+            created_by: ACTOR,
+            ..common::SqlGraphSeed::new(TENANT, PLAN, PHASE, SKU)
+        },
     )
     .await;
     must_succeed(
         conn,
         &format!(
             "INSERT INTO pricing_price (
-                price_id, tenant_id, plan_id, currency, region, phase,
-                charge_kind, amount_minor, model_kind, lifecycle_state,
-                created_by, created_at_utc, sku_id)
-             VALUES ('{DRAFT}', '{TENANT}', '{PLAN}', 'USD', 'EU', '{PHASE}',
-                'one_time', 500, 'flat', 'draft', '{ACTOR}', '2026-08-02 10:00:00 +00:00', \
-                '{SKU}')"
+                price_id, tenant_id, plan_id, plan_revision, charge_line_id,
+                line_version_id, market_price_id, amount_minor, lifecycle_state,
+                created_by, created_at_utc)
+             VALUES ('{PUBLISHED}', '{TENANT}', '{PLAN}', 0, '{}', '{}', '{}',
+                1000, 'published', '{ACTOR}', '2026-08-02 10:00:00 +00:00')",
+            published.charge_line_id, published.line_version_id, published.market_price_id
+        ),
+    )
+    .await;
+    let draft = common::seed_charge_graph_sql(
+        conn,
+        &common::SqlGraphSeed {
+            charge_kind: "one_time",
+            lifecycle_state: "draft",
+            created_by: ACTOR,
+            ..common::SqlGraphSeed::new(TENANT, PLAN, PHASE, SKU)
+        },
+    )
+    .await;
+    must_succeed(
+        conn,
+        &format!(
+            "INSERT INTO pricing_price (
+                price_id, tenant_id, plan_id, plan_revision, charge_line_id,
+                line_version_id, market_price_id, amount_minor, lifecycle_state,
+                created_by, created_at_utc)
+             VALUES ('{DRAFT}', '{TENANT}', '{PLAN}', 0, '{}', '{}', '{}',
+                500, 'draft', '{ACTOR}', '2026-08-02 10:00:00 +00:00')",
+            draft.charge_line_id, draft.line_version_id, draft.market_price_id
         ),
     )
     .await;
@@ -157,19 +188,35 @@ async fn a_published_price_row_is_immutable_in_content() {
     must_be_rejected(
         &conn,
         &format!("UPDATE pricing_price SET amount_minor = 1 WHERE price_id = '{PUBLISHED}'"),
-        "price, scope, model and entity-tag columns are immutable",
+        "price, market-policy and entity-tag columns are immutable",
     )
     .await;
-    must_be_rejected(
+    // **The currency is not this row's to freeze any more.** It is an axis of
+    // `pricing_market_price`, which is an identity row: its guard refuses *any*
+    // update, published or not, because a market whose currency could move is a
+    // market two published versions could come to share. The case follows the
+    // column rather than dropping with it.
+    must_be_rejected_by(
         &conn,
-        &format!("UPDATE pricing_price SET currency = 'EUR' WHERE price_id = '{PUBLISHED}'"),
-        "price, scope, model and entity-tag columns are immutable",
+        &format!(
+            "UPDATE pricing_market_price SET currency = 'EUR' WHERE market_price_id = '{}'",
+            common::sql_market_id(TENANT, PLAN, PHASE, SKU, "recurring", "USD", "EU")
+        ),
+        "pricing_market_price",
+        "market is an identity row; currency and region are immutable",
     )
     .await;
-    must_be_rejected(
+    // The model is shared calculation structure, so its freeze is the line
+    // version's — same rule, one table over, and still proved.
+    must_be_rejected_by(
         &conn,
-        &format!("UPDATE pricing_price SET model_kind = 'volume' WHERE price_id = '{PUBLISHED}'"),
-        "price, scope, model and entity-tag columns are immutable",
+        &format!(
+            "UPDATE pricing_charge_line_version SET model_kind = 'volume' \
+             WHERE line_version_id = '{}'",
+            common::sql_line_version_id(TENANT, PLAN, PHASE, SKU, "recurring", 0)
+        ),
+        "pricing_charge_line_version",
+        "line version is published; shared content is immutable",
     )
     .await;
     // The two tax columns (`T-18`, `trg_pricing_price_append_only`), and they are here on the
@@ -188,7 +235,7 @@ async fn a_published_price_row_is_immutable_in_content() {
         &format!(
             "UPDATE pricing_price SET tax_category_ref = 'reduced' WHERE price_id = '{PUBLISHED}'"
         ),
-        "price, scope, model and entity-tag columns are immutable",
+        "price, market-policy and entity-tag columns are immutable",
     )
     .await;
     must_be_rejected(
@@ -197,7 +244,7 @@ async fn a_published_price_row_is_immutable_in_content() {
             "UPDATE pricing_price SET resolved_tax_category = 'standard' \
              WHERE price_id = '{PUBLISHED}'"
         ),
-        "price, scope, model and entity-tag columns are immutable",
+        "price, market-policy and entity-tag columns are immutable",
     )
     .await;
 
@@ -209,16 +256,24 @@ async fn a_published_price_row_is_immutable_in_content() {
     // downgrade's credit is computed from, and all four are inside the approval
     // content pin at `v6`, so a published row whose proration contract moved
     // would diverge from the pin that approved it, silently and for money.
+    // **All four are the line version's now** — the proration contract is shared,
+    // because timing that differed per currency is exactly what §7 forbids — so
+    // the freeze that covers them is the version's. Same four columns, same
+    // reason, one table over.
     for column in [
         "billing_anchor_policy = 'subscription_start'",
         "anchor_day = 9",
         "proration_basis = 'by_second'",
         "credit_on_downgrade = 1",
     ] {
-        must_be_rejected(
+        must_be_rejected_by(
             &conn,
-            &format!("UPDATE pricing_price SET {column} WHERE price_id = '{PUBLISHED}'"),
-            "price, scope, model and entity-tag columns are immutable",
+            &format!(
+                "UPDATE pricing_charge_line_version SET {column} WHERE line_version_id = '{}'",
+                common::sql_line_version_id(TENANT, PLAN, PHASE, SKU, "recurring", 0)
+            ),
+            "pricing_charge_line_version",
+            "line version is published; shared content is immutable",
         )
         .await;
     }
@@ -328,16 +383,26 @@ async fn a_draft_row_may_only_go_to_published_d153() {
 async fn grandfather_until_may_only_be_tightened() {
     let conn = migrated_db().await;
     let row = "77777777-7777-7777-7777-777777777777";
+    let graph = common::seed_charge_graph_sql(
+        &conn,
+        &common::SqlGraphSeed {
+            price_eligibility: "existing_grandfathered",
+            cohort: "1780000000000",
+            created_by: ACTOR,
+            ..common::SqlGraphSeed::new(TENANT, PLAN, PHASE, SKU)
+        },
+    )
+    .await;
     must_succeed(
         &conn,
         &format!(
             "INSERT INTO pricing_price (
-                price_id, tenant_id, plan_id, currency, region, phase,
-                price_eligibility, charge_kind, cohort, amount_minor, model_kind,
-                lifecycle_state, created_by, created_at_utc, sku_id)
-             VALUES ('{row}', '{TENANT}', '{PLAN}', 'USD', 'EU', '{PHASE}',
-                'existing_grandfathered', 'recurring', '1780000000000', 900, 'flat',
-                'published', '{ACTOR}', '2026-08-02 10:00:00 +00:00', '{SKU}')"
+                price_id, tenant_id, plan_id, plan_revision, charge_line_id,
+                line_version_id, market_price_id, amount_minor, lifecycle_state,
+                created_by, created_at_utc)
+             VALUES ('{row}', '{TENANT}', '{PLAN}', 0, '{}', '{}', '{}', 900,
+                'published', '{ACTOR}', '2026-08-02 10:00:00 +00:00')",
+            graph.charge_line_id, graph.line_version_id, graph.market_price_id
         ),
     )
     .await;
@@ -432,7 +497,7 @@ async fn a_published_rows_entity_tag_is_frozen_with_its_content() {
         &format!(
             "UPDATE pricing_price SET row_version = row_version + 1 WHERE price_id = '{PUBLISHED}'"
         ),
-        "price, scope, model and entity-tag columns are immutable",
+        "price, market-policy and entity-tag columns are immutable",
     )
     .await;
 
@@ -450,19 +515,58 @@ async fn a_published_rows_entity_tag_is_frozen_with_its_content() {
 async fn a_published_rows_package_block_size_is_frozen() {
     let conn = migrated_db().await;
     let row = "88888888-8888-8888-8888-888888888888";
-    // A published `package` row, so the kind CHECK that ties the package fields
-    // to `model_kind` is already satisfied and the only thing that can reject
-    // the UPDATE below is the append-only whitelist.
+    // A published `package` line version, so the kind CHECK that ties the package
+    // fields to `model_kind` is already satisfied and the only thing that can
+    // reject the UPDATE below is the frozen-content guard.
+    //
+    // **The block size moved tables, so the guard under test moved with it.**
+    // `package_size` is shared calculation structure and lives on
+    // `pricing_charge_line_version`; the money it prices (`package_price_minor`)
+    // stayed on the row. A case still updating `pricing_price.package_size` would
+    // be refused for having no such column, which is not the freeze this asserts.
+    // Authored while the version is a **draft** and frozen afterwards: the guard
+    // under test only fires on a published version, so a fixture that seeded one
+    // published would be refused by it while setting up rather than while being
+    // tested.
+    let graph = common::seed_charge_graph_sql(
+        &conn,
+        &common::SqlGraphSeed {
+            charge_kind: "usage",
+            model_kind: Some("package"),
+            lifecycle_state: "draft",
+            created_by: ACTOR,
+            ..common::SqlGraphSeed::new(TENANT, PLAN, PHASE, SKU)
+        },
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &format!(
+            "UPDATE pricing_charge_line_version SET package_size = 100 \
+             WHERE line_version_id = '{}'",
+            graph.line_version_id
+        ),
+    )
+    .await;
+    must_succeed(
+        &conn,
+        &format!(
+            "UPDATE pricing_charge_line_version SET lifecycle_state = 'published' \
+             WHERE line_version_id = '{}'",
+            graph.line_version_id
+        ),
+    )
+    .await;
     must_succeed(
         &conn,
         &format!(
             "INSERT INTO pricing_price (
-                price_id, tenant_id, plan_id, currency, region, phase,
-                charge_kind, model_kind, package_size, package_price_minor,
-                lifecycle_state, created_by, created_at_utc, sku_id)
-             VALUES ('{row}', '{TENANT}', '{PLAN}', 'USD', 'EU', '{PHASE}',
-                'usage', 'package', 100, 5000, 'published', '{ACTOR}',
-                '2026-08-02 10:00:00 +00:00', '{SKU}')"
+                price_id, tenant_id, plan_id, plan_revision, charge_line_id,
+                line_version_id, market_price_id, package_price_minor,
+                lifecycle_state, created_by, created_at_utc)
+             VALUES ('{row}', '{TENANT}', '{PLAN}', 0, '{}', '{}', '{}', 5000,
+                'published', '{ACTOR}', '2026-08-02 10:00:00 +00:00')",
+            graph.charge_line_id, graph.line_version_id, graph.market_price_id
         ),
     )
     .await;
@@ -471,17 +575,24 @@ async fn a_published_rows_package_block_size_is_frozen() {
     // math is non-linear in the window, so re-sizing a block mid-window
     // re-buckets an already-accumulated counter (D-122). It is frozen for the
     // same reason every other model column is.
-    must_be_rejected(
+    must_be_rejected_by(
         &conn,
-        &format!("UPDATE pricing_price SET package_size = 200 WHERE price_id = '{row}'"),
-        "price, scope, model and entity-tag columns are immutable",
+        &format!(
+            "UPDATE pricing_charge_line_version SET package_size = 200 \
+             WHERE line_version_id = '{}'",
+            graph.line_version_id
+        ),
+        "pricing_charge_line_version",
+        "line version is published; shared content is immutable",
     )
     .await;
 
     let size = scalar(
         &conn,
         &format!(
-            "SELECT CAST(package_size AS TEXT) AS v FROM pricing_price WHERE price_id = '{row}'"
+            "SELECT CAST(package_size AS TEXT) AS v FROM pricing_charge_line_version \
+             WHERE line_version_id = '{}'",
+            graph.line_version_id
         ),
     )
     .await;
