@@ -8,6 +8,13 @@
 //! level-aggregation triple). The `chargeKind` rides along from the canonical
 //! scope key because half the shape rules are a function of it.
 //!
+//! **Internally this is a resolved join.** [`crate::domain::charge_line::ChargeStructure`]
+//! holds every non-monetary field (`bands` as quantity geometry only).
+//! [`crate::domain::market_price::MarketPriceTerms`] holds the amounts and rates.
+//! [`crate::domain::market_price::split_row`] / [`crate::domain::market_price::resolve_row`]
+//! convert between the two views. Persistence and REST still speak the joined
+//! row; the split is a domain converter, not a write adapter.
+//!
 //! **Per-kind optionality is modelled honestly.** Nearly every field is an
 //! `Option`, and none of them is defaulted here. A price row is *authored*
 //! before it is *published*, so the type has to be able to hold a draft that is
@@ -558,6 +565,11 @@ impl fmt::Display for TierBand {
 /// constructor that refused an unpublishable combination would move the rules
 /// into the type — where they could not be enumerated into one aggregate report,
 /// which is the whole point of the fail-closed pipeline.
+///
+/// The type is the **resolved** join of shared structure and market money. A
+/// draft may still omit operands; publication (and [`crate::domain::market_price::resolve_row`])
+/// reject an incomplete or contradictory operand set using the existing row-local
+/// codes.
 #[domain_model]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PriceRow {

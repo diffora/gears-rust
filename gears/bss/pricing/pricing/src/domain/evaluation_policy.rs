@@ -90,6 +90,7 @@
 //! the surface refusal is also contingent on both members remaining modelled
 //! fields rather than silently ignored ones (D-174 clause 1).
 
+use crate::domain::charge_line::ChargeStructure;
 use crate::domain::contracts::PlanChangeContract;
 use crate::domain::price_row::PriceRow;
 
@@ -147,6 +148,57 @@ macro_rules! partition_fields {
             vec![$(stringify!($outside)),*],
         )
     }};
+}
+
+/// Every field of [`ChargeStructure`], sorted into the evaluation-policy roster
+/// and out of it.
+///
+/// The roster is the same set [`partition_row_fields`] names on [`PriceRow`]:
+/// those fields live on the shared line, not on market money. Money columns
+/// (`amount_minor`, `unit_rate`, `package_price_minor`, `reserved_rate`) are
+/// absent here by construction. `bands` remains outside the roster — it is
+/// geometry on the structure, rates on the market terms — and still does not
+/// tell an evaluator *how* to derive `Q`.
+///
+/// The exhaustive destructure is the point, as on [`partition_row_fields`]: a
+/// field added to [`ChargeStructure`] and filed in neither list does not
+/// compile. Do **not** bump [`EVALUATION_POLICY_GENERATION`] for this split —
+/// the resolved [`PriceRow`] field set is unchanged.
+#[must_use]
+pub fn partition_structure_fields(
+    structure: &ChargeStructure,
+) -> (Vec<&'static str>, Vec<&'static str>) {
+    partition_fields!(
+        ChargeStructure,
+        structure,
+        roster: [
+            model_kind,
+            package_size,
+            billing_granularity,
+            tier_aggregation_window,
+            tier_qualification_window,
+            aggregation_function,
+            aggregation_granularity,
+            max_hold_granules,
+            included_allowance,
+            reservation_flavor,
+            min_qty_usage,
+            min_qty_usage_fallback,
+        ],
+        outside: [
+            invoice_line_template,
+            gl_code_ref,
+            charge_kind,
+            bands,
+            quantity_source,
+            manual_quantity,
+            sku_id,
+            meter,
+            dimension_key,
+            min_qty_purchase,
+            discount_ref,
+        ]
+    )
 }
 
 /// Every field of [`PriceRow`], sorted into the evaluation-policy roster and out

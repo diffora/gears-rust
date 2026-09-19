@@ -28,7 +28,11 @@
 
 use std::collections::BTreeSet;
 
-use super::{EVALUATION_POLICY_GENERATION, partition_plan_fields, partition_row_fields};
+use super::{
+    EVALUATION_POLICY_GENERATION, partition_plan_fields, partition_row_fields,
+    partition_structure_fields,
+};
+use crate::domain::charge_line::ChargeStructure;
 use crate::domain::contracts::{PlanChangeContract, UsageCounterOnPlanChange};
 use crate::domain::price_row::PriceRow;
 use crate::domain::scope_key::{ChargeKind, SkuId};
@@ -84,6 +88,34 @@ fn any_row() -> PriceRow {
         max_hold_granules: None,
         included_allowance: None,
         reserved_rate: None,
+        reservation_flavor: None,
+        min_qty_purchase: None,
+        min_qty_usage: None,
+        min_qty_usage_fallback: None,
+        discount_ref: None,
+    }
+}
+
+fn any_structure() -> ChargeStructure {
+    ChargeStructure {
+        invoice_line_template: None,
+        gl_code_ref: None,
+        charge_kind: ChargeKind::Recurring,
+        model_kind: None,
+        bands: Vec::new(),
+        package_size: None,
+        quantity_source: None,
+        manual_quantity: None,
+        sku_id: SkuId::new(Uuid::from_u128(5)),
+        meter: None,
+        dimension_key: String::new(),
+        billing_granularity: None,
+        tier_aggregation_window: None,
+        tier_qualification_window: None,
+        aggregation_function: None,
+        aggregation_granularity: None,
+        max_hold_granules: None,
+        included_allowance: None,
         reservation_flavor: None,
         min_qty_purchase: None,
         min_qty_usage: None,
@@ -287,6 +319,51 @@ fn every_field_of_the_plan_contract_is_classified_exactly_once() {
     // Derived, for `every_field_of_the_row_is_classified_exactly_once`'s reason:
     // the destructure comes from these lists, so an unclassified field does not
     // compile and a total here would only restate what the pattern already refuses.
+    let union: BTreeSet<&str> = roster.iter().chain(outside.iter()).copied().collect();
+    assert_eq!(
+        union.len(),
+        roster.len() + outside.len(),
+        "a field is classified twice or named twice"
+    );
+}
+
+#[test]
+fn the_shared_structure_roster_is_the_rows() {
+    let (row_roster, _) = partition_row_fields(&any_row());
+    let (structure_roster, _) = partition_structure_fields(&any_structure());
+    assert_eq!(
+        structure_roster, row_roster,
+        "evaluation-policy fields live on the shared structure; a split that moved one \
+         would be a generation bump, which this change must not do"
+    );
+}
+
+#[test]
+fn the_shared_structure_omits_only_market_money_columns() {
+    let (_, row_outside) = partition_row_fields(&any_row());
+    let (_, structure_outside) = partition_structure_fields(&any_structure());
+    let money: BTreeSet<&str> = [
+        "amount_minor",
+        "unit_rate",
+        "package_price_minor",
+        "reserved_rate",
+    ]
+    .into_iter()
+    .collect();
+    let expected: BTreeSet<&str> = row_outside
+        .into_iter()
+        .filter(|field| !money.contains(field))
+        .collect();
+    assert_eq!(
+        structure_outside.into_iter().collect::<BTreeSet<_>>(),
+        expected,
+        "ChargeStructure outside the roster is PriceRow's outside set minus market money"
+    );
+}
+
+#[test]
+fn every_field_of_the_shared_structure_is_classified_exactly_once() {
+    let (roster, outside) = partition_structure_fields(&any_structure());
     let union: BTreeSet<&str> = roster.iter().chain(outside.iter()).copied().collect();
     assert_eq!(
         union.len(),

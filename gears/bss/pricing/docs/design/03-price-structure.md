@@ -1,5 +1,5 @@
 Created:  2026-08-24 by Virtuozzo International GmbH
-Updated:  2026-08-24 by Virtuozzo International GmbH
+Updated:  2026-09-19 by Virtuozzo International GmbH
 
 <!-- CONFLUENCE_TITLE: [BSS]: Pricing — Price Structure & Model Kinds (Design, Slice 3) -->
 <!-- Related: ../PRD.md, ../DESIGN.md, ./01-foundation.md | Owners: BSS Product Catalog team -->
@@ -53,6 +53,17 @@ golden-conformance-fixture gate** that blocks publish of any `modelKind` Tariffs
 provably evaluate. Rows live on the Foundation's canonical scope key and publish through the
 Foundation pipeline; the **math is never computed here** — Tariffs applies the formula per
 the §17.2 conformance mapping.
+
+**Shared structure versus market money.** A `PriceRow` is the *resolved* join of a
+`ChargeStructure` (SKU, `model_kind`, derived `meter`, `dimension_key`, tier
+`from_qty`/`to_qty` geometry, `package_size`, quantity source, evaluation-policy
+windows, allowance, reservation flavor, floors, invoice template, `gl_code_ref`,
+`discount_ref`) and `MarketPriceTerms` (`amount_minor`, `unit_rate`, `tier_rates`,
+`package_price_minor`, `reserved_rate`). `billing_timing` and the proration contract
+are authored on the charge-line version so they cannot differ per `currency`.
+`split_row` / `resolve_row` are internal converters; a `tier_rates` count that does
+not match the geometry fails with `MARKET_TIER_RATE_COUNT_MISMATCH` before any
+partial row is produced. Persistence and REST still speak the joined row.
 
 **Traces to**: `cpt-cf-bss-pricing-fr-model-kind`, `cpt-cf-bss-pricing-fr-tier-validation`,
 `cpt-cf-bss-pricing-fr-package-pricing`, `cpt-cf-bss-pricing-fr-model-kind-conformance`,
@@ -120,8 +131,12 @@ Design-introduced names (Slice 3):
 |------|---------|
 | `ModelKindValidator` | Registered rules: explicit kind, kind-specific required/forbidden fields |
 | `TierBandValidator` | Registered rules: ordering, non-overlap, contiguity, top-band policy under Q1 |
-| `PackageValidator` | Registered rules: `packageSize`/`packagePrice` presence + structural exclusivity with tier-band fields |
-| `FixtureGate` | The publish-time check that the row's `modelKind` (and the reservation / `level-aggregation` (D-44) / `trailing_tier` (D-40, S10 `inst-tt-fixture`) variants) has a green joint golden fixture |
+| `PackageValidator` | Registered rules: `package_size`/`package_price_minor` presence + structural exclusivity with tier-band fields |
+| `FixtureGate` | The publish-time check that the row's `model_kind` (and the reservation / `level-aggregation` (D-44) / `trailing_tier` (D-40, S10 `inst-tt-fixture`) variants) has a green joint golden fixture |
+| `ChargeStructure` | Shared non-monetary shape of a charge-line version. Every `PriceRow` field that is not a market money operand; `bands` are `from_qty`/`to_qty` geometry only |
+| `TierGeometry` | One band's quantity bounds without its rate |
+| `MarketPriceTerms` | Market money operands: `amount_minor`, `unit_rate`, `tier_rates`, `package_price_minor`, `reserved_rate` |
+| `split_row` / `resolve_row` | Internal converters between the resolved `PriceRow` and `(ChargeStructure, MarketPriceTerms)`. Not a public write adapter; persistence still stores the joined row |
 
 ### 1.8 Context & Dependencies
 
@@ -330,6 +345,9 @@ counterpart of `aggregationGranularity` (`hour` ⇒ `per_hour`, `day` ⇒ `per_d
 `inst-la-granularity`, D-77 — otherwise `inst-tb-units` and `inst-la-units` name different band
 units for one row), `LEVEL_COMPOSITE_FORBIDDEN` (422 — non-`sum` on a derived
 (composite) meter; launch, D-44),
+`MARKET_TIER_RATE_COUNT_MISMATCH` (422 — `ChargeStructure.bands` and
+`MarketPriceTerms.tier_rates` differ in length; joining must not emit a partial
+row),
 `DUPLICATE_SCOPE_KEY` (409 — Foundation-owned, referenced here; on the **draft** plane too since
 D-148, §6), `STALE_VERSION` (409 — Foundation-owned, referenced here; the ETag precondition of
 **both** `PATCH` and `DELETE`, D-141), `PRECISION_EXCEEDED` (422 —

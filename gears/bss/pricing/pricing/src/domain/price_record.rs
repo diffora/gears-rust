@@ -14,6 +14,14 @@
 //! 6's registered rule**, cross-referenced elsewhere and never re-registered —
 //! so an enum minted here would be a second registration of a rule this slice
 //! does not own, free to disagree with the one that does.
+//!
+//! **Shared authoring, resolved presentation.** `billing_timing` and
+//! [`ProrationContract`] are authored on
+//! [`crate::domain::charge_line::ChargeLineVersion`] so two markets of one line
+//! cannot carry different timing. This record still *presents* the resolved
+//! values. Tax display, rounding, grandfathering and supersession stay
+//! market-specific on this record; `currency` / `region` stay on
+//! [`MarketPriceScopeKey`].
 
 use toolkit_macros::domain_model;
 use uuid::Uuid;
@@ -51,6 +59,10 @@ pub struct PriceContent {
     /// the region taxonomy's default at publish.
     pub tax_category_ref: Option<String>,
     /// `advance` | `arrears`, Slice-6-owned; see the module doc.
+    ///
+    /// Authored on [`crate::domain::charge_line::ChargeLineVersion`] so two
+    /// currencies of one line cannot disagree; this content still carries the
+    /// resolved presentation.
     pub billing_timing: Option<String>,
     /// The three proration inputs Subscriptions computes from, when the row has
     /// authored them (`inst-pi-required`).
@@ -61,6 +73,8 @@ pub struct PriceContent {
     /// while the proration vocabulary has exactly one owner (K1 says the enum is
     /// owned by Slice 6 and adopted verbatim downstream) and nothing else in the
     /// crate can spell it. See [`crate::domain::contracts`].
+    ///
+    /// Shared authoring ownership is the line version, matching `billing_timing`.
     pub proration_contract: Option<ProrationContract>,
     /// The named rounding policy this row resolves against, when one is set on
     /// the row rather than inherited from the tenant default.
@@ -111,6 +125,9 @@ pub struct PriceRecord {
     /// the region taxonomy's default at publish.
     pub tax_category_ref: Option<String>,
     /// `advance` | `arrears`, Slice-6-owned; see the module doc.
+    ///
+    /// Presented here; authored on the charge-line version so markets of one
+    /// line share one timing.
     pub billing_timing: Option<String>,
     /// The three proration inputs Subscriptions computes from, when the row has
     /// authored them (`inst-pi-required`).
@@ -121,6 +138,8 @@ pub struct PriceRecord {
     /// while the proration vocabulary has exactly one owner (K1 says the enum is
     /// owned by Slice 6 and adopted verbatim downstream) and nothing else in the
     /// crate can spell it. See [`crate::domain::contracts`].
+    ///
+    /// Presented here; authored on the charge-line version, matching `billing_timing`.
     pub proration_contract: Option<ProrationContract>,
     /// The named rounding policy resolved for this row, when one is set on it.
     pub rounding_policy_ref: Option<String>,

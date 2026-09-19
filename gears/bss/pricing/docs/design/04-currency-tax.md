@@ -1,5 +1,5 @@
 Created:  2026-08-24 by Virtuozzo International GmbH
-Updated:  2026-08-24 by Virtuozzo International GmbH
+Updated:  2026-09-19 by Virtuozzo International GmbH
 
 <!-- CONFLUENCE_TITLE: [BSS]: Pricing — Multi-Currency, Regions & Tax Display (Design, Slice 4) -->
 <!-- Related: ../PRD.md, ../DESIGN.md, ./01-foundation.md | Owners: BSS Product Catalog team -->
@@ -45,12 +45,20 @@ Updated:  2026-08-24 by Virtuozzo International GmbH
 
 This slice owns the **market axes of a price row**: independent per-`(currency, region)` rows
 (no FX derivation, ever), the tenant-configured **region and brand taxonomies** with
-membership validation before publish, the **`taxInclusive` display basis** + `taxCategory`
+membership validation before publish, the **`tax_inclusive` display basis** + `tax_category`
 reference governed by the fail-closed tenant tax-display policy (with the tax-inclusive
 **not-sellable-GA** gate while Tax Engine is post-MVP), and the
 **single-currency-per-invoice binding** checks that reject configurations forcing
 mixed-currency lines onto one invoice. It registers its rules into the Foundation pipeline;
 tax **scheme determination and calculation** are explicitly not here (Tax Engine).
+
+**Market money versus shared structure.** `currency` and `region` live on
+`MarketPriceScopeKey`. Amounts and rates live on `MarketPriceTerms` (`amount_minor`,
+`unit_rate`, `tier_rates`, `package_price_minor`, `reserved_rate`). `tax_inclusive`,
+`tax_category_ref`, resolved tax bindings, `rounding_policy_ref`, grandfathering and
+supersession stay market-specific on the price record. `billing_timing` and the proration
+contract are **not** per-currency — they are authored on the charge-line version and only
+*presented* on each market's `PriceRecord`.
 
 **Traces to**: `cpt-cf-bss-pricing-fr-multi-currency-rows`,
 `cpt-cf-bss-pricing-fr-region-brand-taxonomy`, `cpt-cf-bss-pricing-fr-tax-display-basis`,
@@ -120,7 +128,9 @@ Design-introduced names (Slice 4):
 | `TaxDisplayValidator` | Registered rules: `taxInclusive`/`taxCategory` completeness under the tenant tax-display policy (C4) + the GA gate (C3) |
 | `CurrencyBindingChecker` | Registered rules: the three enumerated mixed-currency rejection configs (§3); reused by Slice 8 for bundles |
 | `not_sellable_ga` | Read-model flag on a tax-inclusive **price row** (⇒ per `(currency, region)` market) while Tax Engine is pre-GA: authorable, previewable, **not sellable** on that market |
-| `RegionTaxReadiness` | The C4 input port: `(tenant, region) → { taxCategory, ratePresent }`, fail-closed on unknown. MVP provider: tenant-declared columns on `pricing_region_taxonomy`; post-GA provider: Tax Engine-backed (sync lookup or event-fed mirror — decided in the Tax Engine PRD) |
+| `RegionTaxReadiness` | The C4 input port: `(tenant, region) → { tax_category, rate_present }`, fail-closed on unknown. MVP provider: tenant-declared columns on `pricing_region_taxonomy`; post-GA provider: Tax Engine-backed (sync lookup or event-fed mirror — decided in the Tax Engine PRD) |
+| `MarketPriceTerms` | Monetary operands of one market price; currency and region stay on `MarketPriceScopeKey` |
+| `MarketPriceVersion` | Identity of one market price version bound to a `line_version_id` and `MarketPriceScopeKey` |
 
 ### 1.8 Context & Dependencies
 
@@ -318,6 +328,8 @@ region-only):
 projected **resolved effective tax category** (**D-154**, 2026-08-03 — derived at publish from
 `coalesce(row.tax_category_ref, readiness.taxCategory)`, not authored, and frozen with the
 `CatalogVersion` so Billing never re-resolves the fallback against the mutable region taxonomy).
+Those tax and rounding columns are **market-specific** and are not part of `ChargeStructure`.
+`currency` / `region` are axes of `MarketPriceScopeKey`. Amounts live on `MarketPriceTerms`.
 `tax_category_ref` is the **source of truth** for a row's tax category, and it is the **only**
 place a tax category lives (**D-110**, 2026-07-31 review fix): the D-48 descriptor set's
 per-plan `tax_category` column is **removed** and the "mirrors it, with a publish-time
