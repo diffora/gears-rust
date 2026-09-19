@@ -93,7 +93,7 @@ use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::instant::utc_ymd_hms;
 use bss_pricing::domain::materiality::{ThresholdBasis, ThresholdEntry};
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
-use bss_pricing::domain::plan_shape::{BillingCycle, Frequency, PhaseKind, PlanPhase};
+use bss_pricing::domain::plan_shape::{Frequency, PhaseKind, PlanPhase};
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
@@ -234,7 +234,6 @@ async fn seed(pg: &Pg) {
                 created_at_utc: at(10),
                 sku_id: Uuid::from_u128(0x5_c1),
                 plan_tier: Some("gold".to_owned()),
-                billing_cycle: Some(BillingCycle::Recurring),
                 frequency: Some(Frequency::Monthly),
                 plan_tier_override: false,
                 purchase_min_qty: None,

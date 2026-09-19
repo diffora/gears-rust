@@ -13,8 +13,9 @@
 //! **publish** (§4.2 step 2), and authoring an incomplete draft is legal by
 //! design - an author assembles a plan over several calls, and refusing an
 //! intermediate state would make the pre-check-at-publish design unreachable. So
-//! a `PATCH` that leaves a plan with no `billing_cycle` succeeds, and the plan
-//! is simply not publishable yet.
+//! a `PATCH` that leaves a plan with no `frequency` on a draft that already
+//! carries recurring charge lines succeeds, and the plan is simply not
+//! publishable yet.
 //!
 //! # The refusals this plane can raise, all of them Foundation-owned
 //!
@@ -66,10 +67,10 @@ use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::plan::{PlanRevision, PlanShapePatch};
 use crate::domain::plan_rules::composition::AddonQtyRange;
-use crate::domain::plan_rules::cycle_shape::PurchaseQtyRange;
+use crate::domain::plan_rules::charge_shape::PurchaseQtyRange;
 use crate::domain::plan_rules::period_floor_cap::PeriodFloorCapAmounts;
 use crate::domain::plan_shape::{
-    AddonRule, BillingCycle, CompositeMeter, CustomIntervalUnit, Frequency, PeriodFloorCap,
+    AddonRule, CompositeMeter, CustomIntervalUnit, Frequency, PeriodFloorCap,
     PhaseKind, PlanPhase, PlanShape,
 };
 use crate::domain::scope_key::{PhaseId, PlanId, Region};
@@ -492,8 +493,6 @@ pub struct PlanView {
     pub plan_tier: Option<String>,
     /// The plan's human label (D-318), absent until an operator names it.
     pub plan_name: Option<String>,
-    /// `one_time` | `recurring` | `usage` | `hybrid`.
-    pub billing_cycle: Option<String>,
     /// The recurring frequency, interval and all.
     pub frequency: Option<FrequencyView>,
     /// Whether the tier diverges from the parent SKU's under an audited
@@ -639,9 +638,6 @@ impl PlanView {
             sku_id: revision.sku_id,
             plan_tier: revision.plan_tier,
             plan_name: revision.plan_name,
-            billing_cycle: revision
-                .billing_cycle
-                .map(|cycle| cycle.as_str().to_owned()),
             frequency: revision.frequency.map(FrequencyView::from),
             plan_tier_override: revision.plan_tier_override,
             purchase_min_qty: revision.purchase_min_qty,
@@ -703,8 +699,6 @@ pub struct PlanSummaryView {
     pub plan_tier: Option<String>,
     /// The plan's human label (D-318), absent until an operator names it.
     pub plan_name: Option<String>,
-    /// `one_time` | `recurring` | `usage` | `hybrid`.
-    pub billing_cycle: Option<String>,
     /// Start of the availability window, UTC.
     #[serde(default, with = "rfc3339::option")]
     pub available_from: Option<OffsetDateTime>,
@@ -764,9 +758,6 @@ impl From<&plan_repo::PlanListEntry> for PlanSummaryView {
             sku_id: revision.sku_id,
             plan_tier: revision.plan_tier.clone(),
             plan_name: revision.plan_name.clone(),
-            billing_cycle: revision
-                .billing_cycle
-                .map(|cycle| cycle.as_str().to_owned()),
             available_from: revision.available_from,
             available_to: revision.available_to,
             created_at: entry.created_at,
@@ -804,8 +795,6 @@ pub struct PlanShapeRequest {
     /// Absent leaves it alone; the empty string is **refused**, not stored, so
     /// `NULL` stays the only spelling of "unnamed".
     pub plan_name: Option<String>,
-    /// `one_time` | `recurring` | `usage` | `hybrid`.
-    pub billing_cycle: Option<String>,
     /// The recurring frequency, interval and all.
     pub frequency: Option<FrequencyView>,
     /// Declare or withdraw the audited tier override (P3).
@@ -854,8 +843,6 @@ pub struct CreatePlanRequest {
     /// Absent leaves it alone; the empty string is **refused**, not stored, so
     /// `NULL` stays the only spelling of "unnamed".
     pub plan_name: Option<String>,
-    /// `one_time` | `recurring` | `usage` | `hybrid`.
-    pub billing_cycle: Option<String>,
     /// The recurring frequency, interval and all.
     pub frequency: Option<FrequencyView>,
     /// Declare or withdraw the audited tier override (P3).
@@ -894,7 +881,6 @@ impl From<CreatePlanRequest> for PlanShapeRequest {
             sku_id: Some(value.sku_id),
             plan_tier: value.plan_tier,
             plan_name: value.plan_name,
-            billing_cycle: value.billing_cycle,
             frequency: value.frequency,
             plan_tier_override: value.plan_tier_override,
             purchase_min_qty: value.purchase_min_qty,
@@ -1475,7 +1461,7 @@ pub fn router(state: Arc<AuthoringState>, openapi: &dyn OpenApiRegistry) -> Rout
             "One row per plan: choose its open draft, else current published/retired revision, \
              then apply filters, ordering and keyset pagination. Historical revisions cannot \
              match filters on the displayed name/state. Default order is plan_id asc; supported \
-             sort fields are plan_id, plan_name, lifecycle_state, billing_cycle, created_at and \
+             sort fields are plan_id, plan_name, lifecycle_state, created_at and \
              price_row_count. plan_id asc is appended as a unique tie-breaker when absent; \
              nullable names/cycles sort last in both directions. limit defaults to 100, max 1,000. \
              Repeat the same $filter with cursor; omit $orderby on subsequent pages. \
@@ -3048,7 +3034,6 @@ struct DraftShape {
     plan_tier: Option<String>,
     plan_name: Option<String>,
     /// The plan's billing cycle.
-    billing_cycle: Option<BillingCycle>,
     /// The recurring frequency, interval and all.
     frequency: Option<Frequency>,
     /// The audited tier override (P3); absent means no override, because the
@@ -3105,7 +3090,6 @@ impl DraftShape {
             sku_id: self.sku_id,
             plan_tier: self.plan_tier,
             plan_name: self.plan_name,
-            billing_cycle: self.billing_cycle,
             frequency: self.frequency,
             plan_tier_override: self.plan_tier_override,
             purchase_min_qty: self.purchase_min_qty,
@@ -3311,7 +3295,6 @@ fn shape_of(body: &PlanShapeRequest) -> Result<DraftShape, DomainError> {
         })?,
         plan_tier: body.plan_tier.clone(),
         plan_name: body.plan_name.clone(),
-        billing_cycle: billing_cycle_of(body.billing_cycle.as_deref())?,
         frequency: frequency_of(body.frequency.as_ref())?,
         plan_tier_override: body.plan_tier_override.unwrap_or(false),
         purchase_min_qty: body.purchase_min_qty,
@@ -3357,7 +3340,6 @@ fn shape_patch(body: &PlanShapeRequest) -> Result<PlanShapePatch, DomainError> {
         sku_id: body.sku_id,
         plan_tier: body.plan_tier.clone(),
         plan_name: body.plan_name.clone(),
-        billing_cycle: billing_cycle_of(body.billing_cycle.as_deref())?,
         frequency: frequency_of(body.frequency.as_ref())?,
         plan_tier_override: body.plan_tier_override,
         purchase_min_qty: body.purchase_min_qty,
@@ -3435,19 +3417,6 @@ fn read_change_contract(
                 })?,
         },
     })
-}
-
-/// Parse a billing-cycle token.
-fn billing_cycle_of(raw: Option<&str>) -> Result<Option<BillingCycle>, DomainError> {
-    raw.map(|token| {
-        wire_token(
-            "billing_cycle",
-            token,
-            BillingCycle::ALL,
-            BillingCycle::as_str,
-        )
-    })
-    .transpose()
 }
 
 /// Parse a frequency, interval included.

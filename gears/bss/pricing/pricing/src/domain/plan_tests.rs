@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use super::PlanShapePatch;
 use crate::domain::instant::utc_ymd_hms;
-use crate::domain::plan_shape::{BillingCycle, CustomIntervalUnit, Frequency};
+use crate::domain::plan_shape::{CustomIntervalUnit, Frequency};
 
 #[test]
 fn the_patch_names_its_columns_and_cannot_mean_clear_any_of_them() {
@@ -33,7 +33,6 @@ fn the_patch_names_its_columns_and_cannot_mean_clear_any_of_them() {
         sku_id: Some(Uuid::from_u128(1)),
         plan_tier: Some("silver".to_owned()),
         plan_name: None,
-        billing_cycle: Some(BillingCycle::Recurring),
         frequency: Some(Frequency::CustomEveryN {
             n: 45,
             unit: CustomIntervalUnit::Days,
@@ -68,7 +67,6 @@ fn the_patch_names_its_columns_and_cannot_mean_clear_any_of_them() {
     // alone", which is precisely the reading a `Default` of `Some("")` would
     // break.
     assert!(empty.plan_name.is_none());
-    assert!(empty.billing_cycle.is_none());
     assert!(empty.frequency.is_none());
     assert!(empty.plan_tier_override.is_none());
     assert!(empty.purchase_min_qty.is_none());

@@ -1248,7 +1248,6 @@ pub(crate) async fn assemble_from(
         sku_id,
         plan_tier,
         plan_name,
-        billing_cycle,
         frequency,
         plan_tier_override,
         purchase_min_qty,
@@ -1272,7 +1271,6 @@ pub(crate) async fn assemble_from(
 
     let mut shape = PlanShape::new(plan_id, revision, now);
     shape.sku_id = sku_id;
-    shape.billing_cycle = billing_cycle;
     shape.frequency = frequency;
     shape.plan_tier = plan_tier;
     shape.plan_name = plan_name;

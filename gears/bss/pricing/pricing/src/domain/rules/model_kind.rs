@@ -366,7 +366,7 @@ fn check_quantity_source_placement(row: &PriceRow, kind: ModelKind, report: &mut
 /// metered quantity stream, and no `Q` semantics exist for a non-usage row. So
 /// `flat` on a usage row (a metered row that ignores its meter) and
 /// `graduated` / `volume` / `package` on a `recurring` / `one_time` /
-/// `one_time_setup` row (bands over a quantity nothing produces) both fail
+/// `one_time` row (bands over a quantity nothing produces) both fail
 /// publish. Tiered per-seat pricing is Future scope.
 #[domain_model]
 #[derive(Clone, Copy, Debug, Default)]

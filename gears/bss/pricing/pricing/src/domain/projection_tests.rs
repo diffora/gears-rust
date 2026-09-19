@@ -29,7 +29,7 @@ use crate::domain::overlay::{
     OverlayRevision, ScopeClass, ScopeSelector, ScopeValue, TargetRef, TaxBasis,
 };
 use crate::domain::plan_shape::{
-    AddonRule, BillingCycle, CompositeMeter, CustomIntervalUnit, Frequency, PeriodFloorCap,
+    AddonRule, CompositeMeter, CustomIntervalUnit, Frequency, PeriodFloorCap,
     PhaseKind, PlanPhase,
 };
 use crate::domain::price_record::PriceRecord;
@@ -97,7 +97,6 @@ fn shape_only() -> PlanSubjectDelta {
         sku_id: Some(uuid::Uuid::from_u128(0x5_c1)),
         plan_tier: Some("gold".to_owned()),
         plan_tier_override: false,
-        billing_cycle: Some(BillingCycle::Recurring),
         frequency: Some(Frequency::Monthly),
         available_from: Some(utc_ymd_hms(2026, 8, 1, 0, 0, 0)),
         available_to: None,
@@ -424,7 +423,7 @@ fn a_non_recurring_row_projects_its_constant_timing() {
         json!("advance")
     );
     assert_eq!(
-        projected_timing(row_of_kind(ChargeKind::OneTimeSetup, None)),
+        projected_timing(row_of_kind(ChargeKind::OneTime, None)),
         json!("advance")
     );
 }

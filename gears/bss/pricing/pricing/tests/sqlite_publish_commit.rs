@@ -286,7 +286,6 @@ fn new_plan_draft() -> NewPlanDraft {
         created_at_utc: at(10),
         sku_id: Uuid::from_u128(0x5_c1),
         plan_tier: Some("gold".to_owned()),
-        billing_cycle: Some(bss_pricing::domain::plan_shape::BillingCycle::Recurring),
         frequency: Some(bss_pricing::domain::plan_shape::Frequency::Monthly),
         plan_tier_override: false,
         purchase_min_qty: None,

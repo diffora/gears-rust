@@ -14,7 +14,7 @@ use std::fmt;
 use uuid::Uuid;
 
 use super::{
-    BillingCycle, CustomIntervalUnit, Frequency, PhaseGraph, PhaseKind, PlanPhase, PlanShape,
+    CustomIntervalUnit, Frequency, PhaseGraph, PhaseKind, PlanPhase, PlanShape,
 };
 use crate::domain::concurrency::RowVersion;
 use crate::domain::instant::utc_ymd_hms;
@@ -134,20 +134,6 @@ fn round_trip<T: Copy + PartialEq + fmt::Debug>(variants: &[T], token: impl Fn(T
 // ---------------------------------------------------------------------------
 
 #[test]
-fn billing_cycle_tokens_are_the_persisted_spelling() {
-    assert_eq!(BillingCycle::OneTime.as_str(), "one_time");
-    assert_eq!(BillingCycle::Recurring.as_str(), "recurring");
-    assert_eq!(BillingCycle::Usage.as_str(), "usage");
-    assert_eq!(BillingCycle::Hybrid.as_str(), "hybrid");
-
-    assert_eq!(BillingCycle::ALL.len(), 4, "one member per variant");
-    round_trip(BillingCycle::ALL, BillingCycle::as_str);
-    for cycle in BillingCycle::ALL {
-        assert_eq!(cycle.to_string(), cycle.as_str());
-    }
-}
-
-#[test]
 fn custom_interval_unit_tokens_are_the_persisted_spelling() {
     assert_eq!(CustomIntervalUnit::Days.as_str(), "days");
     assert_eq!(CustomIntervalUnit::Months.as_str(), "months");
@@ -250,39 +236,6 @@ fn phase_kind_tokens_are_the_persisted_spelling() {
 // on `Frequency` itself, and the place it *could* fail is the storage boundary
 // that reassembles `frequency` / `custom_interval_n` / `custom_interval_unit`,
 // which is `infra`'s and has no assertion here to lose.
-
-// ---------------------------------------------------------------------------
-// The cycle predicates
-// ---------------------------------------------------------------------------
-
-#[test]
-fn the_three_cycle_predicates_answer_for_every_cycle() {
-    // Each column is one rule's scope, named for the rule that reads it. The
-    // whole matrix is here so that widening a predicate to a third cycle is a
-    // visible edit rather than a rule that quietly starts firing.
-    for (cycle, recurring, usage, setup) in [
-        (BillingCycle::OneTime, false, false, false),
-        (BillingCycle::Recurring, true, false, true),
-        (BillingCycle::Usage, false, true, false),
-        (BillingCycle::Hybrid, true, true, true),
-    ] {
-        assert_eq!(
-            cycle.has_recurring_part(),
-            recurring,
-            "has_recurring_part on {cycle}"
-        );
-        assert_eq!(
-            cycle.requires_usage_part(),
-            usage,
-            "requires_usage_part on {cycle}"
-        );
-        assert_eq!(
-            cycle.admits_setup_row(),
-            setup,
-            "admits_setup_row on {cycle}"
-        );
-    }
-}
 
 // ---------------------------------------------------------------------------
 // The phase graph
@@ -433,7 +386,7 @@ fn usage_rows_and_rows_on_phase_read_the_scope_key() {
         record(ChargeKind::Recurring, "usd", "US", terminal),
         record(ChargeKind::Usage, "usd", "US", terminal),
         record(ChargeKind::Usage, "usd", "US", trial),
-        record(ChargeKind::OneTimeSetup, "usd", "US", terminal),
+        record(ChargeKind::OneTime, "usd", "US", terminal),
     ];
 
     assert_eq!(subject.usage_rows().len(), 2);
@@ -453,7 +406,6 @@ fn a_fresh_shape_carries_nothing_but_its_name_and_its_clock() {
     assert_eq!(subject.plan_id, plan());
     assert_eq!(subject.revision, 3);
     assert_eq!(subject.evaluated_at, now());
-    assert!(subject.billing_cycle.is_none());
     assert!(subject.frequency.is_none());
     assert!(subject.plan_tier.is_none());
     assert!(!subject.plan_tier_override);

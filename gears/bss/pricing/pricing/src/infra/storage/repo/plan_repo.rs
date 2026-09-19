@@ -97,7 +97,7 @@ use crate::domain::contracts::{
 use crate::domain::draft_window::DraftWindowOwner;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::plan::{PlanRevision, PlanShapePatch};
-use crate::domain::plan_shape::{BillingCycle, CustomIntervalUnit, Frequency};
+use crate::domain::plan_shape::{CustomIntervalUnit, Frequency};
 use crate::domain::scope_key::PlanId;
 use crate::infra::storage::entity::plan;
 use crate::infra::storage::repo::bundle_repo;
@@ -166,7 +166,6 @@ pub struct NewPlanDraft {
     /// The plan's human label (D-318), or `None` when it has never been named.
     pub plan_name: Option<String>,
     /// The plan's billing cycle.
-    pub billing_cycle: Option<BillingCycle>,
     /// The recurring frequency, interval and all.
     pub frequency: Option<Frequency>,
     /// Whether the tier diverges from the parent SKU's under an audited
@@ -797,7 +796,6 @@ impl PlanRepo {
             sku_id: current.sku_id,
             plan_tier: current.plan_tier,
             plan_name: current.plan_name,
-            billing_cycle: current.billing_cycle,
             frequency: current.frequency,
             plan_tier_override: current.plan_tier_override,
             purchase_min_qty: current.purchase_min_qty,
@@ -1235,7 +1233,6 @@ pub async fn create_granted_draft_on(
         sku_id: draft.sku_id,
         plan_tier: draft.plan_tier,
         plan_name: draft.plan_name,
-        billing_cycle: draft.billing_cycle,
         frequency: draft.frequency,
         plan_tier_override: draft.plan_tier_override,
         purchase_min_qty: draft.purchase_min_qty,
@@ -2155,10 +2152,7 @@ fn revision_model(
         tenant_id: Set(tenant_id),
         sku_id: Set(revision.sku_id),
         plan_tier: Set(revision.plan_tier.clone()),
-        plan_name: Set(revision.plan_name.clone()),
-        billing_cycle: Set(revision
-            .billing_cycle
-            .map(|cycle| cycle.as_str().to_owned())),
+            plan_name: Set(revision.plan_name.clone()),
         frequency: Set(interval.token),
         custom_interval_n: Set(interval.n),
         custom_interval_unit: Set(interval.unit),
@@ -2264,7 +2258,6 @@ fn patched_columns(patch: PlanShapePatch) -> Result<Vec<(plan::Column, SimpleExp
         sku_id,
         plan_tier,
         plan_name,
-        billing_cycle,
         frequency,
         plan_tier_override,
         purchase_min_qty,
@@ -2285,12 +2278,6 @@ fn patched_columns(patch: PlanShapePatch) -> Result<Vec<(plan::Column, SimpleExp
     }
     if let Some(plan_name) = plan_name {
         columns.push((plan::Column::PlanName, Expr::value(plan_name)));
-    }
-    if let Some(billing_cycle) = billing_cycle {
-        columns.push((
-            plan::Column::BillingCycle,
-            Expr::value(billing_cycle.as_str()),
-        ));
     }
     // One value, three columns. Moving the token on its own would leave a fixed
     // frequency wearing the interval of the custom one it replaced - the
@@ -2644,7 +2631,7 @@ pub(super) fn not_found(plan_id: PlanId, revision: u64) -> RepoError {
 /// Map a stored row to the domain value, at this boundary and nowhere else.
 ///
 /// Every reading that can fail is an **invariant breach, not a caller
-/// mistake**: `lifecycle_state`, `billing_cycle`, `frequency` and
+/// mistake**: `lifecycle_state`, `frequency` and
 /// `custom_interval_unit` are each `CHECK`-constrained to the token set their
 /// domain type renders, and `revision` / `row_version` / the purchase bounds
 /// are columns that only ever hold counts. A row that reads otherwise means
@@ -2659,12 +2646,6 @@ fn to_domain(row: plan::Model) -> Result<PlanRevision, RepoError> {
     })?;
     let lifecycle_state = read_lifecycle(&row)?;
     let row_version = read_row_version(&row)?;
-    let billing_cycle = read_optional_token(
-        "pricing_plan.billing_cycle",
-        row.billing_cycle.as_deref(),
-        BillingCycle::ALL,
-        BillingCycle::as_str,
-    )?;
     let frequency = read_frequency(&row)?;
     let purchase_min_qty = read_qty("pricing_plan.purchase_min_qty", row.purchase_min_qty)?;
     let purchase_max_qty = read_qty("pricing_plan.purchase_max_qty", row.purchase_max_qty)?;
@@ -2678,7 +2659,6 @@ fn to_domain(row: plan::Model) -> Result<PlanRevision, RepoError> {
         sku_id: row.sku_id,
         plan_tier: row.plan_tier,
         plan_name: row.plan_name,
-        billing_cycle,
         frequency,
         plan_tier_override: row.plan_tier_override,
         purchase_min_qty,
@@ -2813,19 +2793,6 @@ fn read_qty(column: &str, stored: Option<i64>) -> Result<Option<u64>, RepoError>
     u64::try_from(value)
         .map(Some)
         .map_err(|_| RepoError::CorruptRow(format!("{column} holds {value}, not a quantity")))
-}
-
-/// Read a nullable token column.
-fn read_optional_token<T: Copy>(
-    column: &str,
-    token: Option<&str>,
-    candidates: &[T],
-    render: fn(T) -> &'static str,
-) -> Result<Option<T>, RepoError> {
-    let Some(token) = token else {
-        return Ok(None);
-    };
-    read_token(column, token, candidates, render).map(Some)
 }
 
 /// Read a stored token back into the domain value that renders it.

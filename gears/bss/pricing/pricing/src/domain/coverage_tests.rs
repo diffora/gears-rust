@@ -29,7 +29,7 @@ use crate::domain::instant::utc_ymd_hms;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::plan_shape::{
-    BillingCycle, CustomIntervalUnit, Frequency, PhaseGraph, PhaseKind, PlanPhase, PlanShape,
+    CustomIntervalUnit, Frequency, PhaseGraph, PhaseKind, PlanPhase, PlanShape,
 };
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow};
@@ -121,7 +121,6 @@ fn interval(from: i64, to: Option<i64>, state: WindowState) -> WindowInterval {
 /// A plan with one recurring EUR/eu row and whatever windows the case gives it.
 fn one_row_plan(windows: Vec<KeyWindows>) -> PlanShape {
     let mut shape = PlanShape::new(plan(), 1, at(0));
-    shape.billing_cycle = Some(BillingCycle::Recurring);
     shape.frequency = Some(Frequency::Monthly);
     shape.plan_tier = Some("standard".to_owned());
     shape.phases = PhaseGraph::new(vec![PlanPhase {
@@ -298,20 +297,19 @@ fn a_cancelled_window_is_not_coverage() {
     );
 }
 
-/// `inst-wc-perkey`: a hybrid's recurring / usage / `one_time_setup` components
+/// `inst-wc-perkey`: a hybrid's recurring / usage / `one_time` components
 /// carry their own coverage. Covering the recurring key does not cover the
 /// usage key.
 #[test]
 fn a_hybrid_needs_coverage_on_every_charge_kind_key() {
     let recurring = key(ChargeKind::Recurring, "EUR", "eu");
     let usage = key(ChargeKind::Usage, "EUR", "eu");
-    let setup = key(ChargeKind::OneTimeSetup, "EUR", "eu");
+    let setup = key(ChargeKind::OneTime, "EUR", "eu");
 
     let mut shape = one_row_plan(vec![group(
         recurring.clone(),
         vec![interval(1, None, WindowState::Scheduled)],
     )]);
-    shape.billing_cycle = Some(BillingCycle::Hybrid);
     shape.rows = vec![
         row_on(0xb001, recurring.clone()),
         row_on(0xb002, usage.clone()),
@@ -844,7 +842,6 @@ fn one_component_key_short_of_the_availability_bound_blocks_the_plan() {
             vec![interval(1, Some(5), WindowState::Scheduled)],
         ),
     ]);
-    shape.billing_cycle = Some(BillingCycle::Hybrid);
     shape.rows = vec![row_on(0xb001, recurring), row_on(0xb002, usage.clone())];
     shape.available_to = Some(at(9));
 
@@ -870,7 +867,6 @@ fn one_component_key_short_of_the_availability_bound_blocks_the_plan() {
 #[test]
 fn the_margin_is_zero_where_the_market_sells_no_recurring_row() {
     let mut shape = one_row_plan(Vec::new());
-    shape.billing_cycle = Some(BillingCycle::Usage);
     shape.frequency = None;
     shape.rows = vec![row_on(0xb001, key(ChargeKind::Usage, "EUR", "eu"))];
 

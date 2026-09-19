@@ -14,7 +14,7 @@ use crate::domain::contracts::{EntitlementGrants, PlanChangeContract};
 use crate::domain::instant::utc_ymd_hms;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::plan::PlanRevision;
-use crate::domain::plan_shape::{BillingCycle, CustomIntervalUnit, Frequency};
+use crate::domain::plan_shape::{CustomIntervalUnit, Frequency};
 use crate::domain::scope_key::PlanId;
 
 fn revision(plan_id: PlanId) -> PlanRevision {
@@ -24,7 +24,6 @@ fn revision(plan_id: PlanId) -> PlanRevision {
         sku_id: Uuid::nil(),
         plan_tier: Some("gold".to_owned()),
         plan_name: None,
-        billing_cycle: Some(BillingCycle::Recurring),
         frequency: Some(Frequency::CustomEveryN {
             n: 45,
             unit: CustomIntervalUnit::Days,

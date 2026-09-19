@@ -22,7 +22,7 @@ async fn defaults_replace_conditionally_and_clear_gl_without_changing_other_tena
     assert!(body["default_gl_code_ref"].is_null());
     assert_eq!(
         body["default_line_templates"],
-        serde_json::json!({"recurring":"{sku} - {period}","usage":"{sku}, {unit}","one_time":"{sku}","one_time_setup":"{sku} setup"})
+        serde_json::json!({"recurring":"{sku} - {period}","usage":"{sku}, {unit}","one_time":"{sku}"})
     );
     body["default_gl_code_ref"] = serde_json::json!("4000");
     body["default_line_templates"]["usage"] = serde_json::json!("{sku_code}: {dimension}");

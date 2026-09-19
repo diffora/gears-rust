@@ -39,7 +39,7 @@ use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::instant::utc_ymd_hms;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
-use bss_pricing::domain::plan_shape::{AddonRule, BillingCycle, Frequency};
+use bss_pricing::domain::plan_shape::{AddonRule, Frequency};
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::retirement::BlockingReferenceKind;
@@ -97,7 +97,6 @@ fn new_draft(plan_id: PlanId) -> NewPlanDraft {
         created_at_utc: at(10),
         sku_id: Uuid::from_u128(0x5_c1_11),
         plan_tier: Some("gold".to_owned()),
-        billing_cycle: Some(BillingCycle::Recurring),
         frequency: Some(Frequency::Monthly),
         plan_tier_override: false,
         purchase_min_qty: None,

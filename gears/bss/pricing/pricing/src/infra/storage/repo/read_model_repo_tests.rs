@@ -20,7 +20,7 @@ use crate::domain::instant::utc_ymd_hms;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::plan_shape::{
-    BillingCycle, CompositeMeter, CustomIntervalUnit, Frequency, PeriodFloorCap, PhaseKind,
+    CompositeMeter, CustomIntervalUnit, Frequency, PeriodFloorCap, PhaseKind,
     PlanPhase,
 };
 use crate::domain::price_record::PriceRecord;
@@ -131,7 +131,6 @@ fn populated() -> PlanSubjectDelta {
         sku_id: Some(Uuid::from_u128(0x5_c1)),
         plan_tier: Some("gold".to_owned()),
         plan_tier_override: true,
-        billing_cycle: Some(BillingCycle::Recurring),
         frequency: Some(Frequency::CustomEveryN {
             n: 7,
             unit: CustomIntervalUnit::Months,

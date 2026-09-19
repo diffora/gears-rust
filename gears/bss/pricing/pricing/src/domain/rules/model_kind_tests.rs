@@ -377,7 +377,7 @@ fn the_tier_and_block_kinds_are_illegal_on_every_non_usage_row() {
     for charge_kind in [
         ChargeKind::Recurring,
         ChargeKind::OneTime,
-        ChargeKind::OneTimeSetup,
+        ChargeKind::OneTime,
     ] {
         for model_kind in [ModelKind::Graduated, ModelKind::Volume, ModelKind::Package] {
             let row = PriceRow::new(charge_kind, Some(model_kind));

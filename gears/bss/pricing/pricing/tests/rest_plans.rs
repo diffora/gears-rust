@@ -294,7 +294,7 @@ async fn a_plan_whose_only_revision_is_abandoned_is_not_readable() {
 /// A minimal well-formed create body.
 fn create_body(tier: &str) -> serde_json::Value {
     serde_json::json!({
-        "sku_id": Uuid::from_u128(0x5_c1), "plan_tier": tier, "billing_cycle": "recurring" })
+        "sku_id": Uuid::from_u128(0x5_c1), "plan_tier": tier })
 }
 
 fn keyed(key: &str) -> Vec<(&str, &str)> {
@@ -319,7 +319,6 @@ async fn a_plan_can_be_created_with_a_name_and_reads_back_with_it() {
                 "sku_id": Uuid::from_u128(0x5_c1),
                 "plan_tier": "gold",
                 "plan_name": "Managed WordPress",
-                "billing_cycle": "recurring",
             })),
             &keyed("create-named"),
         ))
@@ -488,7 +487,6 @@ async fn an_empty_plan_name_is_refused_at_the_write() {
                 "sku_id": Uuid::from_u128(0x5_c1),
                 "plan_tier": "gold",
                 "plan_name": "   ",
-                "billing_cycle": "recurring",
             })),
             &keyed("create-blank-name"),
         ))
@@ -3506,7 +3504,6 @@ async fn a_create_carrying_entitlement_grants_and_a_change_contract_stores_them(
             Some(serde_json::json!({
                 "sku_id": Uuid::from_u128(0x5_c1),
                 "plan_tier": "gold",
-                "billing_cycle": "recurring",
                 "entitlement_grants": {
                     "plan_tier_ref": "tier-gold",
                     "feature_flags": { "sso": true },
@@ -3931,7 +3928,6 @@ async fn a_create_whose_purchase_window_admits_no_quantity_is_refused_at_the_wri
             Some(serde_json::json!({
                 "sku_id": Uuid::from_u128(0x5_c1),
                 "plan_tier": "gold",
-                "billing_cycle": "one_time",
                 "purchase_min_qty": 5,
                 "purchase_max_qty": 2
             })),

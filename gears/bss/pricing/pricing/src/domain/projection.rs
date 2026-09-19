@@ -157,7 +157,7 @@
 //! `plan_id`, `revision` and `sku_id` are identity; `lifecycle_state`,
 //! `available_from` and `available_to` are sellability inputs (predicates (3)
 //! and (4)), which decide *whether* a thing may be sold and never *at what
-//! rate*; `billing_cycle` and `frequency` name the period a subscription's
+//! rate*; `frequency` names the period a subscription's
 //! cycle clock runs on, which `01-foundation.md` §4.4 puts in the
 //! consumer-contract family D-162 excludes by name (proration, anchoring,
 //! billing timing) and which no evaluator reads to derive a quantity — the
@@ -258,7 +258,7 @@ use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::MinorAmount;
 use crate::domain::overlay::{OverlayInterval, OverlayLine, OverlayRevision, TargetSku};
 use crate::domain::plan_shape::{
-    AddonRule, BillingCycle, CompositeMeter, Frequency, PeriodFloorCap, PhaseKind, PlanPhase,
+    AddonRule, CompositeMeter, Frequency, PeriodFloorCap, PhaseKind, PlanPhase,
 };
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
@@ -613,7 +613,6 @@ pub struct PlanSubjectDelta {
     /// audited override.
     pub plan_tier_override: bool,
     /// The plan's billing cycle.
-    pub billing_cycle: Option<BillingCycle>,
     /// The recurring frequency, custom interval riding the variant.
     pub frequency: Option<Frequency>,
     /// Start of the plan's availability window, UTC — sellability predicate (3).
@@ -801,7 +800,6 @@ impl PlanSubjectDelta {
             sku_id,
             plan_tier,
             plan_tier_override,
-            billing_cycle,
             frequency,
             available_from,
             available_to,
@@ -827,7 +825,6 @@ impl PlanSubjectDelta {
             "skuId": sku_id,
             "planTier": plan_tier,
             "planTierOverride": plan_tier_override,
-            "billingCycle": billing_cycle.map(BillingCycle::as_str),
             "frequency": frequency.map(frequency_value),
             "availableFrom": available_from.map(format_rfc3339),
             "availableTo": available_to.map(format_rfc3339),
@@ -1497,7 +1494,6 @@ pub fn partition_delta_members(delta: &PlanSubjectDelta) -> (Vec<&'static str>, 
         sku_id,
         plan_tier,
         plan_tier_override,
-        billing_cycle,
         frequency,
         available_from,
         available_to,
@@ -1546,7 +1542,6 @@ pub fn partition_delta_members(delta: &PlanSubjectDelta) -> (Vec<&'static str>, 
         named("sku_id", sku_id),
         named("plan_tier", plan_tier),
         named("plan_tier_override", plan_tier_override),
-        named("billing_cycle", billing_cycle),
         named("frequency", frequency),
         named("available_from", available_from),
         named("available_to", available_to),

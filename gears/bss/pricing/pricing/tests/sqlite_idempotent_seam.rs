@@ -16,7 +16,6 @@
 
 use bss_pricing::domain::error::DomainError;
 use bss_pricing::domain::plan::PlanRevision;
-use bss_pricing::domain::plan_shape::BillingCycle;
 use bss_pricing::domain::scope_key::PlanId;
 use bss_pricing::infra::idempotent::{Guarded, GuardedRequest, TxFuture, guarded};
 use bss_pricing::infra::storage::entity::{idempotency_dedup, plan};
@@ -73,7 +72,6 @@ fn new_draft(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
         // by the store. `PlanShape.sku_id` stays `Option` until Task 8.
         sku_id: Uuid::from_u128(5),
         plan_tier: Some("gold".to_owned()),
-        billing_cycle: Some(BillingCycle::Recurring),
         frequency: None,
         plan_tier_override: false,
         purchase_min_qty: None,

@@ -31,7 +31,7 @@ use crate::domain::validation::{ValidationReport, ValidationRule};
 /// Some(kind) = subject.model_kind else { return };` was the first statement of
 /// `evaluate`. `ModelKind::Package` is legal only on a usage row
 /// (`inst-mk-chargekind`), so `package_size` / `package_price_minor` beside a
-/// `recurring`, `one_time` or `one_time_setup` `chargeKind` can never be
+/// `recurring` or `one_time` `chargeKind` can never be
 /// legalised by a later call — `chargeKind` is frozen by the scope key and the
 /// only resolution retracts the field just sent. That is `inst-mk-forbidden`'s
 /// criterion exactly, and it is why the four siblings hoist theirs.

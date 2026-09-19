@@ -19,8 +19,6 @@ struct PlanListQuery {
     #[odata(filter(kind = "String"))]
     pub plan_tier: String,
     #[odata(filter(kind = "String"))]
-    pub billing_cycle: String,
-    #[odata(filter(kind = "String"))]
     pub plan_name: String,
     #[odata(filter(kind = "DateTimeUtc"))]
     pub created_at: OffsetDateTime,
@@ -44,8 +42,6 @@ struct PlanListOrder {
     pub plan_name: String,
     #[odata(filter(kind = "String"))]
     pub lifecycle_state: String,
-    #[odata(filter(kind = "String"))]
-    pub billing_cycle: String,
     #[odata(filter(kind = "DateTimeUtc"))]
     pub created_at: OffsetDateTime,
     #[odata(filter(kind = "I64"))]

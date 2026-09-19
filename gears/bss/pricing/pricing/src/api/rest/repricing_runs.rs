@@ -270,7 +270,7 @@ pub struct RepricingSelectorRequest {
     /// (`inst-mp-grandfathered`); naming it is how an operator asks for that
     /// class, and what they then get is the per-row refusal the apply owes.
     pub price_eligibility: Option<String>,
-    /// Axis 7 — `recurring | usage | one_time | one_time_setup`.
+    /// Axis 7 — `recurring | usage | one_time`.
     pub charge_kind: Option<String>,
     /// Axis 8: the grandfathering generation's cutover instant.
     ///

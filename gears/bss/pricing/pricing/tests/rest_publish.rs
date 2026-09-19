@@ -176,7 +176,7 @@ async fn a_plan_that_cannot_publish_opens_no_unit_at_all() {
     let response = publish_as(&h, SUBMITTER, plan_id, "\"0-0\"").await;
 
     assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
-    assert_eq!(problem_code(response).await, "CYCLE_METADATA_MISSING");
+    assert_eq!(problem_code(response).await, "RECURRING_FREQUENCY_REQUIRED");
     assert!(
         approval_rows(&h).await.is_empty(),
         "an unpublishable plan must not reach a reviewer"

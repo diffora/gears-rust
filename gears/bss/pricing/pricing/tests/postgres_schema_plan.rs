@@ -301,7 +301,7 @@ async fn a_draft_revision_is_freely_mutable_in_content() {
         &conn,
         &format!(
             "UPDATE bss.pricing_plan SET sku_id = '{ACTOR}', plan_tier = 'gold', \
-             billing_cycle = 'recurring', row_version = 1 \
+             row_version = 1 \
              WHERE plan_id = '{PLAN_A}' AND revision = 0"
         ),
     )
@@ -443,19 +443,6 @@ async fn an_availability_window_that_does_not_open_before_it_closes_is_refused()
     must_succeed(
         &conn,
         &insert(PLAN_B, 0, &[("available_to", "'2026-12-01 00:00:00+00'")]),
-    )
-    .await;
-}
-
-/// Slice 2's `billing_cycle` value set.
-#[tokio::test]
-#[ignore = "requires Docker (testcontainers)"]
-async fn a_billing_cycle_outside_the_four_is_refused() {
-    let conn = applied().await;
-    must_be_rejected(
-        &conn,
-        &insert(PLAN_A, 0, &[("billing_cycle", "'subscription'")]),
-        "chk_pricing_plan_billing_cycle",
     )
     .await;
 }
@@ -878,7 +865,6 @@ async fn every_frozen_column_of_a_frozen_revision_refuses_to_move() {
         format!("sku_id = '{ACTOR}'"),
         "plan_tier = 'gold'".to_owned(),
         "plan_name = 'Renamed Under A Frozen Version'".to_owned(),
-        "billing_cycle = 'recurring'".to_owned(),
         "frequency = 'monthly'".to_owned(),
         "custom_interval_n = 3".to_owned(),
         "custom_interval_unit = 'days'".to_owned(),

@@ -95,7 +95,7 @@ fn insert(plan: &str, revision: u32, state: &str) -> String {
 ///
 /// The values arrive as raw SQL fragments rather than as typed arguments,
 /// because half the cases here exist to store something the typed path would
-/// have refused — a `billing_cycle` of `monthly`, an interval with no custom
+/// have refused — a `frequency` of `biweekly`, an interval with no custom
 /// frequency. A helper that took domain values could not express the subjects
 /// these CHECKs are for.
 fn insert_with(plan: &str, revision: u32, state: &str, extra: &[(&str, &str)]) -> String {
@@ -356,21 +356,6 @@ async fn the_shape_checks_admit_the_slice_2_tokens_and_nothing_else() {
 
     // The value sets §6 declares, each stored under its own plan so the two
     // partial UNIQUE indexes stay out of the way.
-    for (i, cycle) in ["one_time", "recurring", "usage", "hybrid"]
-        .into_iter()
-        .enumerate()
-    {
-        must_succeed(
-            &conn,
-            &insert_with(
-                &plan_of(i),
-                0,
-                "draft",
-                &[("billing_cycle", &format!("'{cycle}'"))],
-            ),
-        )
-        .await;
-    }
     for (i, frequency) in ["monthly", "quarterly", "semiannual", "annual"]
         .into_iter()
         .enumerate()
@@ -403,15 +388,6 @@ async fn the_shape_checks_admit_the_slice_2_tokens_and_nothing_else() {
         .await;
     }
 
-    // `monthly` is the near-miss that matters, because it is a real token of the
-    // **other** column: a `frequency` value in the `billing_cycle` slot is the
-    // transposition an authoring surface makes, not a typo.
-    must_be_rejected(
-        &conn,
-        &insert_with(PLAN, 0, "draft", &[("billing_cycle", "'monthly'")]),
-        "chk_pricing_plan_billing_cycle",
-    )
-    .await;
     must_be_rejected(
         &conn,
         &insert_with(PLAN, 0, "draft", &[("frequency", "'biweekly'")]),
@@ -626,14 +602,13 @@ async fn a_published_revision_freezes_every_column_the_whitelist_names() {
     // frequency and no interval, so moving one interval column on its own
     // leaves the pairing CHECK satisfied and the trigger is the only guard that
     // can refuse — which is what this case has to observe.
-    const FROZEN: [(&str, &str); 20] = [
+    const FROZEN: [(&str, &str); 19] = [
         ("plan_id", "'99999999-9999-9999-9999-999999999999'"),
         ("revision", "7"),
         ("tenant_id", "'88888888-8888-8888-8888-888888888888'"),
         ("sku_id", "'77777777-7777-7777-7777-777777777777'"),
         ("plan_tier", "'silver'"),
         ("plan_name", "'Renamed Under A Frozen Version'"),
-        ("billing_cycle", "'usage'"),
         ("frequency", "'quarterly'"),
         ("custom_interval_n", "3"),
         ("custom_interval_unit", "'months'"),
@@ -667,7 +642,7 @@ async fn a_published_revision_freezes_every_column_the_whitelist_names() {
                 &plan,
                 0,
                 "published",
-                &[("billing_cycle", "'recurring'"), ("frequency", "'monthly'")],
+                &[("frequency", "'monthly'")],
             ),
         )
         .await;
@@ -794,7 +769,6 @@ async fn a_published_revision_freezes_its_grant_set_and_change_contract() {
                 0,
                 "published",
                 &[
-                    ("billing_cycle", "'recurring'"),
                     ("frequency", "'monthly'"),
                     (column, seeded),
                 ],

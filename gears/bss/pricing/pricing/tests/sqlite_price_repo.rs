@@ -2178,7 +2178,7 @@ async fn list_for_plan_filters_by_state_and_orders_stably() {
     let setup = Uuid::from_u128(0xb_a3);
 
     for (price_id, charge_kind) in [
-        (setup, ChargeKind::OneTimeSetup),
+        (setup, ChargeKind::OneTime),
         (one_time, ChargeKind::OneTime),
         (recurring, ChargeKind::Recurring),
     ] {
@@ -3782,7 +3782,7 @@ async fn the_keyset_page_walks_the_same_total_order_the_list_declares() {
     ];
 
     for (price_id, charge_kind) in [
-        (ids[3], ChargeKind::OneTimeSetup),
+        (ids[3], ChargeKind::OneTime),
         (ids[1], ChargeKind::OneTime),
         (ids[0], ChargeKind::Recurring),
     ] {

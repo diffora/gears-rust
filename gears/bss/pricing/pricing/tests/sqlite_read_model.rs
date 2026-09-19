@@ -40,7 +40,7 @@ use bss_pricing::domain::overlay::{
     ScopeSelector, ScopeValue, TargetRef, TaxBasis,
 };
 use bss_pricing::domain::plan::PlanShapePatch;
-use bss_pricing::domain::plan_shape::{BillingCycle, Frequency, PhaseKind, PlanPhase};
+use bss_pricing::domain::plan_shape::{Frequency, PhaseKind, PlanPhase};
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::publish::{OverlayPublishUnit, PlanPublishUnit, PublishAuthorization};
@@ -369,7 +369,6 @@ fn plan_draft_of(tenant: Uuid, plan_id: PlanId, tier: &str) -> NewPlanDraft {
         created_at_utc: at(10),
         sku_id: Uuid::from_u128(0x5_c1),
         plan_tier: Some(tier.to_owned()),
-        billing_cycle: Some(BillingCycle::Recurring),
         frequency: Some(Frequency::Monthly),
         plan_tier_override: false,
         purchase_min_qty: None,
@@ -4794,7 +4793,7 @@ async fn three_charge_kinds_freeze_distinct_descriptors_before_default_drift() {
         .expect("defaults")
     );
     for (kind, gl, template) in [
-        (ChargeKind::OneTimeSetup, "4100", "Setup {sku}"),
+        (ChargeKind::OneTime, "4100", "Setup {sku}"),
         (ChargeKind::Usage, "4000", "{sku}, {unit}"),
     ] {
         let mut content = flat_row();
@@ -4901,7 +4900,7 @@ async fn three_charge_kinds_freeze_distinct_descriptors_before_default_drift() {
     assert_eq!(rows.len(), 3);
     for (kind, code, label) in [
         ("recurring", "4000", "{sku} - {period}"),
-        ("one_time_setup", "4100", "Setup {sku}"),
+        ("one_time", "4100", "Setup {sku}"),
         ("usage", "4000", "{sku}, {unit}"),
     ] {
         let row = rows

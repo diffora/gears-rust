@@ -51,8 +51,7 @@
 //! # The Slice-2 shape columns (`design/02-plan-definition.md` §6)
 //!
 //! The table is Foundation-owned and its **capability semantics** are not:
-//! Slice 2 declares `billing_cycle`'s value set, the `frequency` metadata beside
-//! it, `plan_tier_override`, the one-time purchase-quantity window and D-96's
+//! Slice 2 declares frequency metadata, `plan_tier_override`, the purchase-quantity window and D-96's
 //! `invoice_grouping_key`. Each of them joins the frozen-column whitelist above,
 //! and that is not bookkeeping: a column outside the whitelist is a column an
 //! ad-hoc UPDATE can move under a `CatalogVersion` that is already frozen, which
@@ -122,7 +121,6 @@ const PG_UP_STATEMENTS: &[&str] = &[
             allowed_change_targets       jsonb,
             available_from               timestamptz,
             available_to                 timestamptz,
-            billing_cycle                text,
             cloned_from                  uuid,
             comparability_rank           integer,
             custom_interval_n            integer,
@@ -142,7 +140,6 @@ const PG_UP_STATEMENTS: &[&str] = &[
             created_by                   uuid        NOT NULL,
             row_version                  bigint      NOT NULL DEFAULT 0,
             CONSTRAINT chk_pricing_plan_availability CHECK (available_from IS NULL OR available_to IS NULL OR available_to > available_from),
-            CONSTRAINT chk_pricing_plan_billing_cycle CHECK (billing_cycle IS NULL OR billing_cycle IN ('one_time','recurring','usage','hybrid')),
             CONSTRAINT chk_pricing_plan_custom_interval_n CHECK (custom_interval_n IS NULL OR custom_interval_n > 0),
             CONSTRAINT chk_pricing_plan_custom_interval_pairing CHECK ((frequency IS NOT NULL AND frequency = 'custom_every_n') = (custom_interval_n IS NOT NULL AND custom_interval_unit IS NOT NULL)),
             CONSTRAINT chk_pricing_plan_custom_interval_unit CHECK (custom_interval_unit IS NULL OR custom_interval_unit IN ('days','months')),
@@ -194,7 +191,7 @@ const PG_UP_STATEMENTS: &[&str] = &[
           OR NEW.tenant_id            IS DISTINCT FROM OLD.tenant_id
           OR NEW.sku_id               IS DISTINCT FROM OLD.sku_id
           OR NEW.plan_tier            IS DISTINCT FROM OLD.plan_tier
-          OR NEW.billing_cycle        IS DISTINCT FROM OLD.billing_cycle
+         
           OR NEW.frequency            IS DISTINCT FROM OLD.frequency
           OR NEW.custom_interval_n    IS DISTINCT FROM OLD.custom_interval_n
           OR NEW.custom_interval_unit IS DISTINCT FROM OLD.custom_interval_unit
@@ -243,7 +240,6 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             allowed_change_targets       text,
             available_from               text,
             available_to                 text,
-            billing_cycle                text,
             cloned_from                  text,
             comparability_rank           integer,
             custom_interval_n            int,
@@ -264,7 +260,6 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             row_version                  bigint  NOT NULL DEFAULT 0,
             PRIMARY KEY (plan_id, revision),
             CONSTRAINT chk_pricing_plan_availability CHECK (available_from IS NULL OR available_to IS NULL OR available_to > available_from),
-            CONSTRAINT chk_pricing_plan_billing_cycle CHECK (billing_cycle IS NULL OR billing_cycle IN ('one_time','recurring','usage','hybrid')),
             CONSTRAINT chk_pricing_plan_custom_interval_n CHECK (custom_interval_n IS NULL OR custom_interval_n > 0),
             CONSTRAINT chk_pricing_plan_custom_interval_pairing CHECK ((frequency IS NOT NULL AND frequency = 'custom_every_n') = (custom_interval_n IS NOT NULL AND custom_interval_unit IS NOT NULL)),
             CONSTRAINT chk_pricing_plan_custom_interval_unit CHECK (custom_interval_unit IS NULL OR custom_interval_unit IN ('days','months')),
@@ -281,7 +276,7 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
     "CREATE UNIQUE INDEX uq_pricing_plan_open_draft ON pricing_plan (plan_id) WHERE lifecycle_state = 'draft'",
     "CREATE TRIGGER trg_pricing_plan_draft_flip_whitelist BEFORE UPDATE ON pricing_plan FOR EACH ROW WHEN OLD.lifecycle_state = 'draft' AND NEW.lifecycle_state NOT IN ('draft','published','abandoned') BEGIN SELECT RAISE(ABORT, 'pricing_plan: lifecycle_state transition is not a sanctioned flip'); END",
     "CREATE TRIGGER trg_pricing_plan_flip_whitelist BEFORE UPDATE ON pricing_plan FOR EACH ROW WHEN OLD.lifecycle_state <> 'draft' AND NOT (OLD.lifecycle_state = 'published' AND NEW.lifecycle_state IN ('superseded','retired')) BEGIN SELECT RAISE(ABORT, 'pricing_plan: lifecycle_state transition is not a sanctioned flip'); END",
-    "CREATE TRIGGER trg_pricing_plan_frozen_columns BEFORE UPDATE ON pricing_plan FOR EACH ROW WHEN OLD.lifecycle_state <> 'draft' AND (NEW.plan_id IS NOT OLD.plan_id OR NEW.revision IS NOT OLD.revision OR NEW.tenant_id IS NOT OLD.tenant_id OR NEW.sku_id IS NOT OLD.sku_id OR NEW.plan_tier IS NOT OLD.plan_tier OR NEW.billing_cycle IS NOT OLD.billing_cycle OR NEW.frequency IS NOT OLD.frequency OR NEW.custom_interval_n IS NOT OLD.custom_interval_n OR NEW.custom_interval_unit IS NOT OLD.custom_interval_unit OR NEW.plan_tier_override IS NOT OLD.plan_tier_override OR NEW.purchase_min_qty IS NOT OLD.purchase_min_qty OR NEW.purchase_max_qty IS NOT OLD.purchase_max_qty OR NEW.invoice_grouping_key IS NOT OLD.invoice_grouping_key OR NEW.available_from IS NOT OLD.available_from OR NEW.available_to IS NOT OLD.available_to OR NEW.created_by IS NOT OLD.created_by OR NEW.created_at_utc IS NOT OLD.created_at_utc OR NEW.allowed_change_targets IS NOT OLD.allowed_change_targets OR NEW.comparability_rank IS NOT OLD.comparability_rank OR NEW.usage_counter_on_plan_change IS NOT OLD.usage_counter_on_plan_change OR NEW.entitlement_grants IS NOT OLD.entitlement_grants OR NEW.cloned_from IS NOT OLD.cloned_from OR NEW.plan_name IS NOT OLD.plan_name OR NEW.row_version IS NOT OLD.row_version) BEGIN SELECT RAISE(ABORT, 'pricing_plan: revision is frozen; only a sanctioned lifecycle_state flip is permitted'); END",
+    "CREATE TRIGGER trg_pricing_plan_frozen_columns BEFORE UPDATE ON pricing_plan FOR EACH ROW WHEN OLD.lifecycle_state <> 'draft' AND (NEW.plan_id IS NOT OLD.plan_id OR NEW.revision IS NOT OLD.revision OR NEW.tenant_id IS NOT OLD.tenant_id OR NEW.sku_id IS NOT OLD.sku_id OR NEW.plan_tier IS NOT OLD.plan_tier OR NEW.frequency IS NOT OLD.frequency OR NEW.custom_interval_n IS NOT OLD.custom_interval_n OR NEW.custom_interval_unit IS NOT OLD.custom_interval_unit OR NEW.plan_tier_override IS NOT OLD.plan_tier_override OR NEW.purchase_min_qty IS NOT OLD.purchase_min_qty OR NEW.purchase_max_qty IS NOT OLD.purchase_max_qty OR NEW.invoice_grouping_key IS NOT OLD.invoice_grouping_key OR NEW.available_from IS NOT OLD.available_from OR NEW.available_to IS NOT OLD.available_to OR NEW.created_by IS NOT OLD.created_by OR NEW.created_at_utc IS NOT OLD.created_at_utc OR NEW.allowed_change_targets IS NOT OLD.allowed_change_targets OR NEW.comparability_rank IS NOT OLD.comparability_rank OR NEW.usage_counter_on_plan_change IS NOT OLD.usage_counter_on_plan_change OR NEW.entitlement_grants IS NOT OLD.entitlement_grants OR NEW.cloned_from IS NOT OLD.cloned_from OR NEW.plan_name IS NOT OLD.plan_name OR NEW.row_version IS NOT OLD.row_version) BEGIN SELECT RAISE(ABORT, 'pricing_plan: revision is frozen; only a sanctioned lifecycle_state flip is permitted'); END",
     "CREATE TRIGGER trg_pricing_plan_no_delete BEFORE DELETE ON pricing_plan FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_plan: DELETE of a revision is not permitted; a discarded draft revision is abandoned'); END",
 ];
 

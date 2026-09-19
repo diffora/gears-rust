@@ -87,7 +87,7 @@ pub fn parse(source: &str) -> Result<Template, Vec<UnknownPlaceholder>> {
     }
 }
 
-/// Complete tenant template policy, keyed by the four charge kinds.
+/// Complete tenant template policy, keyed by the live charge kinds.
 #[domain_model]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DefaultLineTemplates(BTreeMap<String, String>);
@@ -98,7 +98,6 @@ impl Default for DefaultLineTemplates {
                 ("recurring", "{sku} - {period}"),
                 ("usage", "{sku}, {unit}"),
                 ("one_time", "{sku}"),
-                ("one_time_setup", "{sku} setup"),
             ]
             .into_iter()
             .map(|(kind, source)| (kind.to_owned(), source.to_owned()))
@@ -112,9 +111,9 @@ impl DefaultLineTemplates {
     /// # Errors
     /// Returns a description of missing/extra keys or malformed templates.
     pub fn from_map(values: BTreeMap<String, String>) -> Result<Self, String> {
-        let expected = ["recurring", "usage", "one_time", "one_time_setup"];
+        let expected = ["recurring", "usage", "one_time"];
         if values.len() != expected.len() || expected.iter().any(|key| !values.contains_key(*key)) {
-            return Err("default_line_templates requires exactly recurring, usage, one_time, one_time_setup".to_owned());
+            return Err("default_line_templates requires exactly recurring, usage, one_time".to_owned());
         }
         for (kind, source) in &values {
             if let Err(errors) = parse(source) {
@@ -123,7 +122,7 @@ impl DefaultLineTemplates {
         }
         Ok(Self(values))
     }
-    /// Template for a kind; all four entries are guaranteed by construction.
+    /// Template for a kind; all three entries are guaranteed by construction.
     #[must_use]
     pub fn get(&self, kind: ChargeKind) -> &str {
         self.0.get(kind.as_str()).map_or("", String::as_str)

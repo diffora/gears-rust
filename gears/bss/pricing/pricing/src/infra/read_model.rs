@@ -92,7 +92,7 @@
 //! billing cycle sold on the **key**" and is *defined* per **plan**: the longest
 //! `frequency` among the plan's **recurring** rows on the key's
 //! `(currency, region)`. §1.6 says so in as many words and gives the reason — a
-//! `usage`, `one_time` or `one_time_setup` key carries no `frequency` at all, so the
+//! `usage` or `one_time` key carries no `frequency` at all, so the
 //! literal per-key reading is undefined on most keys of a hybrid — and matches it to
 //! D-121's own `H`. It is **zero** on a plan with no recurring part, where the
 //! horizon predicate reduces to "an active window covers `t`". Whoever builds it
@@ -1116,7 +1116,6 @@ async fn project_plan_subject(
         sku_id: Some(current.sku_id),
         plan_tier: current.plan_tier,
         plan_tier_override: current.plan_tier_override,
-        billing_cycle: current.billing_cycle,
         frequency: current.frequency,
         available_from: current.available_from,
         available_to: current.available_to,

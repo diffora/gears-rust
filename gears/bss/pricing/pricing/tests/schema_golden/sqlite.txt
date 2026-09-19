@@ -472,7 +472,6 @@ TABLE pricing_plan
   COLUMN allowed_change_targets TEXT NULL DEFAULT - PK 0
   COLUMN available_from TEXT NULL DEFAULT - PK 0
   COLUMN available_to TEXT NULL DEFAULT - PK 0
-  COLUMN billing_cycle TEXT NULL DEFAULT - PK 0
   COLUMN cloned_from TEXT NULL DEFAULT - PK 0
   COLUMN comparability_rank INTEGER NULL DEFAULT - PK 0
   COLUMN created_at_utc TEXT NOT NULL DEFAULT strftime('%Y-%m-%dT%H:%M:%S', 'now') || '+00:00' PK 0
@@ -495,7 +494,6 @@ TABLE pricing_plan
   COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 0
   COLUMN usage_counter_on_plan_change TEXT NULL DEFAULT - PK 0
   CONSTRAINT chk_pricing_plan_availability CHECK (available_from IS NULL OR available_to IS NULL OR available_to > available_from)
-  CONSTRAINT chk_pricing_plan_billing_cycle CHECK (billing_cycle IS NULL OR billing_cycle IN ('one_time','recurring','usage','hybrid'))
   CONSTRAINT chk_pricing_plan_custom_interval_n CHECK (custom_interval_n IS NULL OR custom_interval_n > 0)
   CONSTRAINT chk_pricing_plan_custom_interval_pairing CHECK ((frequency IS NOT NULL AND frequency = 'custom_every_n') = (custom_interval_n IS NOT NULL AND custom_interval_unit IS NOT NULL))
   CONSTRAINT chk_pricing_plan_custom_interval_unit CHECK (custom_interval_unit IS NULL OR custom_interval_unit IN ('days','months'))
@@ -563,7 +561,7 @@ TABLE pricing_plan_phase
 TABLE pricing_policy_object
   COLUMN additional_required_descriptors TEXT NOT NULL DEFAULT '[]' PK 0
   COLUMN default_gl_code_ref TEXT NULL DEFAULT - PK 0
-  COLUMN default_line_templates TEXT NOT NULL DEFAULT '{"recurring":"{sku} - {period}","usage":"{sku}, {unit}","one_time":"{sku}","one_time_setup":"{sku} setup"}' PK 0
+  COLUMN default_line_templates TEXT NOT NULL DEFAULT '{"recurring":"{sku} - {period}","usage":"{sku}, {unit}","one_time":"{sku}"}' PK 0
   COLUMN default_rounding_policy_ref TEXT NULL DEFAULT - PK 0
   COLUMN enforced_migration_notice_days INTEGER NOT NULL DEFAULT 60 PK 0
   COLUMN max_custom_interval_days INTEGER NULL DEFAULT - PK 0
@@ -574,7 +572,7 @@ TABLE pricing_policy_object
   COLUMN tenant_id TEXT NOT NULL DEFAULT - PK 1
   COLUMN updated_at_utc TEXT NOT NULL DEFAULT strftime('%Y-%m-%dT%H:%M:%S', 'now') || '+00:00' PK 0
   COLUMN updated_by TEXT NOT NULL DEFAULT - PK 0
-  CONSTRAINT chk_pricing_policy_line_templates CHECK (json_valid(default_line_templates) AND json_type(default_line_templates) = 'object' AND json_remove(default_line_templates, '$.recurring', '$.usage', '$.one_time', '$.one_time_setup') = '{}' AND COALESCE(json_type(default_line_templates, '$.recurring') = 'text', 0) AND COALESCE(json_type(default_line_templates, '$.usage') = 'text', 0) AND COALESCE(json_type(default_line_templates, '$.one_time') = 'text', 0) AND COALESCE(json_type(default_line_templates, '$.one_time_setup') = 'text', 0))
+  CONSTRAINT chk_pricing_policy_line_templates CHECK (json_valid(default_line_templates) AND json_type(default_line_templates) = 'object' AND json_remove(default_line_templates, '$.recurring', '$.usage', '$.one_time') = '{}' AND COALESCE(json_type(default_line_templates, '$.recurring') = 'text', 0) AND COALESCE(json_type(default_line_templates, '$.usage') = 'text', 0) AND COALESCE(json_type(default_line_templates, '$.one_time') = 'text', 0))
   CONSTRAINT chk_pricing_policy_object_interval_days_cap CHECK (max_custom_interval_days IS NULL OR max_custom_interval_days > 0)
   CONSTRAINT chk_pricing_policy_object_interval_months_cap CHECK (max_custom_interval_months IS NULL OR max_custom_interval_months > 0)
   CONSTRAINT chk_pricing_policy_object_notice_floor CHECK (enforced_migration_notice_days >= 60)
@@ -640,7 +638,7 @@ TABLE pricing_price
   CONSTRAINT chk_pricing_price_amount_non_negative CHECK (amount_minor IS NULL OR amount_minor >= 0)
   CONSTRAINT chk_pricing_price_billing_granularity CHECK (billing_granularity IS NULL OR billing_granularity IN ( 'per_second','per_minute','per_hour','per_day','whole_unit'))
   CONSTRAINT chk_pricing_price_billing_timing CHECK (billing_timing IS NULL OR billing_timing IN ('advance','arrears'))
-  CONSTRAINT chk_pricing_price_charge_kind CHECK (charge_kind IN ('recurring','usage','one_time','one_time_setup'))
+  CONSTRAINT chk_pricing_price_charge_kind CHECK (charge_kind IN ('recurring','usage','one_time'))
   CONSTRAINT chk_pricing_price_cohort_eligibility CHECK ((cohort <> 'none') = (price_eligibility = 'existing_grandfathered'))
   CONSTRAINT chk_pricing_price_eligibility CHECK (price_eligibility IN ( 'all_subscriptions','new_subscriptions_only','existing_grandfathered'))
   CONSTRAINT chk_pricing_price_grandfather_until CHECK (grandfather_until IS NULL OR price_eligibility = 'existing_grandfathered')
@@ -1024,7 +1022,7 @@ TRIGGER trg_pricing_plan_flip_whitelist
   DDL CREATE TRIGGER trg_pricing_plan_flip_whitelist BEFORE UPDATE ON pricing_plan FOR EACH ROW WHEN OLD.lifecycle_state <> 'draft' AND NOT (OLD.lifecycle_state = 'published' AND NEW.lifecycle_state IN ('superseded','retired')) BEGIN SELECT RAISE(ABORT, 'pricing_plan: lifecycle_state transition is not a sanctioned flip'); END
 TRIGGER trg_pricing_plan_frozen_columns
   ON pricing_plan
-  DDL CREATE TRIGGER trg_pricing_plan_frozen_columns BEFORE UPDATE ON pricing_plan FOR EACH ROW WHEN OLD.lifecycle_state <> 'draft' AND (NEW.plan_id IS NOT OLD.plan_id OR NEW.revision IS NOT OLD.revision OR NEW.tenant_id IS NOT OLD.tenant_id OR NEW.sku_id IS NOT OLD.sku_id OR NEW.plan_tier IS NOT OLD.plan_tier OR NEW.billing_cycle IS NOT OLD.billing_cycle OR NEW.frequency IS NOT OLD.frequency OR NEW.custom_interval_n IS NOT OLD.custom_interval_n OR NEW.custom_interval_unit IS NOT OLD.custom_interval_unit OR NEW.plan_tier_override IS NOT OLD.plan_tier_override OR NEW.purchase_min_qty IS NOT OLD.purchase_min_qty OR NEW.purchase_max_qty IS NOT OLD.purchase_max_qty OR NEW.descriptor_ext IS NOT OLD.descriptor_ext OR NEW.available_from IS NOT OLD.available_from OR NEW.available_to IS NOT OLD.available_to OR NEW.created_by IS NOT OLD.created_by OR NEW.created_at_utc IS NOT OLD.created_at_utc OR NEW.allowed_change_targets IS NOT OLD.allowed_change_targets OR NEW.comparability_rank IS NOT OLD.comparability_rank OR NEW.usage_counter_on_plan_change IS NOT OLD.usage_counter_on_plan_change OR NEW.entitlement_grants IS NOT OLD.entitlement_grants OR NEW.cloned_from IS NOT OLD.cloned_from OR NEW.plan_name IS NOT OLD.plan_name OR NEW.row_version IS NOT OLD.row_version) BEGIN SELECT RAISE(ABORT, 'pricing_plan: revision is frozen; only a sanctioned lifecycle_state flip is permitted'); END
+  DDL CREATE TRIGGER trg_pricing_plan_frozen_columns BEFORE UPDATE ON pricing_plan FOR EACH ROW WHEN OLD.lifecycle_state <> 'draft' AND (NEW.plan_id IS NOT OLD.plan_id OR NEW.revision IS NOT OLD.revision OR NEW.tenant_id IS NOT OLD.tenant_id OR NEW.sku_id IS NOT OLD.sku_id OR NEW.plan_tier IS NOT OLD.plan_tier OR NEW.frequency IS NOT OLD.frequency OR NEW.custom_interval_n IS NOT OLD.custom_interval_n OR NEW.custom_interval_unit IS NOT OLD.custom_interval_unit OR NEW.plan_tier_override IS NOT OLD.plan_tier_override OR NEW.purchase_min_qty IS NOT OLD.purchase_min_qty OR NEW.purchase_max_qty IS NOT OLD.purchase_max_qty OR NEW.descriptor_ext IS NOT OLD.descriptor_ext OR NEW.available_from IS NOT OLD.available_from OR NEW.available_to IS NOT OLD.available_to OR NEW.created_by IS NOT OLD.created_by OR NEW.created_at_utc IS NOT OLD.created_at_utc OR NEW.allowed_change_targets IS NOT OLD.allowed_change_targets OR NEW.comparability_rank IS NOT OLD.comparability_rank OR NEW.usage_counter_on_plan_change IS NOT OLD.usage_counter_on_plan_change OR NEW.entitlement_grants IS NOT OLD.entitlement_grants OR NEW.cloned_from IS NOT OLD.cloned_from OR NEW.plan_name IS NOT OLD.plan_name OR NEW.row_version IS NOT OLD.row_version) BEGIN SELECT RAISE(ABORT, 'pricing_plan: revision is frozen; only a sanctioned lifecycle_state flip is permitted'); END
 TRIGGER trg_pricing_plan_no_delete
   ON pricing_plan
   DDL CREATE TRIGGER trg_pricing_plan_no_delete BEFORE DELETE ON pricing_plan FOR EACH ROW BEGIN SELECT RAISE(ABORT, 'pricing_plan: DELETE of a revision is not permitted; a discarded draft revision is abandoned'); END

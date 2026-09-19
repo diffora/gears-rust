@@ -85,7 +85,6 @@ fn new_draft(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
         created_at_utc: t(1),
         sku_id: SKU,
         plan_tier: None,
-        billing_cycle: None,
         frequency: None,
         plan_tier_override: false,
         purchase_min_qty: None,

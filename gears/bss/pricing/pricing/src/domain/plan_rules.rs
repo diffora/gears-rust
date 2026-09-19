@@ -7,7 +7,7 @@
 //! referenced at every `report.violate` site rather than spelled at each call
 //! site. A code spelled twice is a code that can be spelled two ways.
 //!
-//! The four validators of this slice — `CycleShapeValidator`,
+//! The four validators of this slice — charge-shape rules,
 //! `CompositionValidator`, the `PhaseGraph` rules and the billing extension rules
 //! — each register their own
 //! [`ValidationRule`](crate::domain::validation::ValidationRule)s over a
@@ -86,9 +86,9 @@
 //! - `taxCategory` is each row's Slice-4 `tax_category_ref` (D-110) — never a
 //!   descriptor-set column and never a Slice-2 check.
 
+pub mod charge_shape;
 pub mod composite;
 pub mod composition;
-pub mod cycle_shape;
 pub mod descriptor_set;
 pub mod period_floor_cap;
 pub mod phase_graph;
@@ -96,66 +96,30 @@ pub mod phase_graph;
 use crate::domain::plan_shape::PlanShape;
 use crate::domain::validation::ValidationPipeline;
 
-pub use cycle_shape::CustomIntervalBounds;
+pub use charge_shape::CustomIntervalBounds;
 pub use descriptor_set::DescriptorSetComplete;
 
 // ---------------------------------------------------------------------------
-// Cycle shape (design/02-plan-definition.md 5, cpt-cf-bss-pricing-algo-cycle-shape)
+// Charge shape (design/02-plan-definition.md 5)
 // ---------------------------------------------------------------------------
 
-/// A plan that has not said how it charges (`inst-cs-declared`, D-149 clause 2).
-///
-/// **One code, two fields, and the field is named in the report.** An unset
-/// `billing_cycle`, and an unset `frequency` on a cycle that carries a recurring
-/// part, are one code by D-146's line: the operator's next action is identical —
-/// author the field the plan is missing — and a second code would be a second
-/// thing to look up for the same remedy.
-///
-/// It is evaluated **before every other rule of the cycle-shape step**, and that
-/// order is the whole reason the code exists. `billing_cycle` is nullable while a
-/// plan is authored incrementally (§4.2 step 1), and every other rule of the step
-/// is cycle-conditioned: each correctly declines to judge a plan whose cycle it
-/// cannot read. So without it a `NULL` cycle passes the entire step **vacuously**
-/// and reaches publish unjudged — a plan that has said nothing about how it
-/// charges is exactly the plan a fail-closed validator cannot protect.
-pub const CYCLE_METADATA_MISSING: &str = "CYCLE_METADATA_MISSING";
+/// An ordinary phase with no logical charge lines at publish.
+pub const PHASE_CHARGE_LINES_EMPTY: &str = "PHASE_CHARGE_LINES_EMPTY";
 
-/// A sold `(currency, region)` with no base row of the kind its cycle mandates
-/// (`inst-cs-onetime` / `inst-cs-recurring`, D-149 clause 1).
-///
-/// One rule over two `chargeKind` values, because the two instructions state one
-/// sentence twice: the *at least one* half of the one-time rule and the `>= 1`
-/// half of the recurring rule. A one-time plan selling in a market with no
-/// `one_time` row is a plan that can be bought there for nothing.
-///
-/// It is [`USAGE_MARKET_INCOMPLETE`]'s base-side sibling and takes its shape
-/// deliberately: same subject key, same "an absence is not a free market"
-/// posture. [`HYBRID_INCOMPLETE`] keeps its own meaning — a part missing
-/// **anywhere**, never naming a market — so the two never contest a case.
-pub const BASE_MARKET_INCOMPLETE: &str = "BASE_MARKET_INCOMPLETE";
+/// Recurring lines exist and the plan has not authored a frequency.
+pub const RECURRING_FREQUENCY_REQUIRED: &str = "RECURRING_FREQUENCY_REQUIRED";
+
+/// A logical line in a phase has no monetary binding in a sold market.
+pub const LINE_MARKET_PRICE_MISSING: &str = "LINE_MARKET_PRICE_MISSING";
+
+/// Consecutive phase-local usage definitions are missing or counter-incompatible.
+pub const PHASE_USAGE_INCOMPATIBLE: &str = "PHASE_USAGE_INCOMPATIBLE";
 
 /// A custom interval `n` that is non-positive or over the configured cap
 /// (`inst-cs-customfreq`, P1; the caps are the tenant's, from their
 /// `pricing_policy_object` entry, else the ratified deployment default —
 /// D-152). Over-cap is rejected at authoring rather than silently clamped.
 pub const INVALID_CUSTOM_INTERVAL: &str = "INVALID_CUSTOM_INTERVAL";
-
-/// A `hybrid` plan missing one of its two mandatory parts (`inst-cs-hybrid`).
-pub const HYBRID_INCOMPLETE: &str = "HYBRID_INCOMPLETE";
-
-/// A priced `(meter, dimensionKey)` line with no usage row in a
-/// `(currency, region)` the plan sells (D-84).
-///
-/// The "sold but unrateable" state D-15/D-17 declare impossible by
-/// construction: a hybrid selling recurring in EUR and USD with usage priced
-/// only in EUR is sellable in USD, and the USD subscriber's usage events fail
-/// closed. A market where usage is genuinely free is an explicit `$0` row,
-/// never an absence.
-pub const USAGE_MARKET_INCOMPLETE: &str = "USAGE_MARKET_INCOMPLETE";
-
-/// A `one_time_setup` row on a plan whose cycle does not admit one, or one
-/// carrying recurrence, `billingTiming` or tier fields (`inst-cs-setup`).
-pub const SETUP_ROW_INVALID: &str = "SETUP_ROW_INVALID";
 
 /// `purchase_min_qty > purchase_max_qty` (`inst-cs-onetime`).
 ///
@@ -177,7 +141,7 @@ pub const PURCHASE_QTY_RANGE_INVALID: &str = "PURCHASE_QTY_RANGE_INVALID";
 /// (`""`, or whitespace) and a value no surface can render.
 pub const PLAN_NAME_INVALID: &str = "PLAN_NAME_INVALID";
 
-/// A **newly set or changed** `availableFrom` in the past, on any billing cycle
+/// A **newly set or changed** `availableFrom` in the past
 /// (`inst-cs-availability`).
 ///
 /// The rule is cycle-independent (hoisted from the one-time step)
@@ -376,9 +340,8 @@ pub const DESCRIPTOR_INCOMPLETE: &str = "DESCRIPTOR_INCOMPLETE";
 /// A period floor/cap authored on a `(currency, region)` the plan prices
 /// nothing in (`inst-pfc-market`, **D-319**).
 ///
-/// The mirror image of [`BASE_MARKET_INCOMPLETE`] and
-/// [`USAGE_MARKET_INCOMPLETE`], which ask whether every sold market carries the
-/// rows it owes. This one asks whether an authored bound has a market to apply
+/// The mirror image of [`LINE_MARKET_PRICE_MISSING`], which asks whether every
+/// sold market carries the monetary bindings it owes. This one asks whether an authored bound has a market to apply
 /// in: a floor on a market the plan does not sell is not a smaller floor, it is
 /// no floor at all, frozen into an immutable snapshot on a plan whose author
 /// believes it has a minimum.
@@ -470,20 +433,13 @@ pub fn plan_shape_rules(
     descriptors: DescriptorSetComplete,
 ) -> ValidationPipeline<PlanShape> {
     ValidationPipeline::new()
-        // Cycle shape: what commercial shape the plan is.
-        //
-        // `CycleDeclared` is **first**, and the order is load-bearing rather
-        // than cosmetic (D-149 clause 2): every other rule of this step is
-        // cycle-conditioned and correctly declines to judge a plan whose cycle
-        // it cannot read, so a NULL cycle passed the whole step vacuously.
-        .with_rule(Box::new(cycle_shape::CycleDeclared))
+        // Charge shape: what the phase actually carries, not a plan-type token.
+        .with_rule(Box::new(charge_shape::PhaseChargeLinesPresent))
+        .with_rule(Box::new(charge_shape::RecurringFrequencyRequired))
         .with_rule(Box::new(interval_bounds))
-        .with_rule(Box::new(cycle_shape::HybridCompleteness))
-        .with_rule(Box::new(cycle_shape::BaseMarketCompleteness))
-        .with_rule(Box::new(cycle_shape::UsageMarketCompleteness))
-        .with_rule(Box::new(cycle_shape::SetupRowShape))
-        .with_rule(Box::new(cycle_shape::PurchaseQtyRange))
-        .with_rule(Box::new(cycle_shape::AvailableFromNotBackdated))
+        .with_rule(Box::new(charge_shape::LineMarketPricePresent))
+        .with_rule(Box::new(charge_shape::PurchaseQtyRange))
+        .with_rule(Box::new(charge_shape::AvailableFromNotBackdated))
         // Composition: what the plan is made of.
         .with_rule(Box::new(composition::PlanNameWellFormed))
         .with_rule(Box::new(composition::PlanTierDeclared))
@@ -519,8 +475,7 @@ pub fn plan_shape_rules(
         // the `phases` facet's own, built at that door.
         .with_rule(Box::new(phase_graph::RowPhaseAttached::default()))
         .with_rule(Box::new(phase_graph::PhaseCoverage))
-        .with_rule(Box::new(phase_graph::PhaseOverrideBase))
-        .with_rule(Box::new(phase_graph::PhaseOverrideUnits))
+        .with_rule(Box::new(charge_shape::PhaseUsageCompatible))
         .with_rule(Box::new(phase_graph::TerminalPhaseStable))
         // Period floor/cap: what the plan bills at least, and at most, per
         // period. After the phase schedule and before the descriptors: it is a

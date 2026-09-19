@@ -64,7 +64,7 @@ use crate::domain::overlay::{
     TaxBasis,
 };
 use crate::domain::plan_shape::{
-    AddonRule, BillingCycle, CustomIntervalUnit, Frequency, PeriodFloorCap, PhaseGraph, PhaseKind,
+    AddonRule, CustomIntervalUnit, Frequency, PeriodFloorCap, PhaseGraph, PhaseKind,
     PlanPhase, PlanShape, PublishedBaseline,
 };
 use crate::domain::price_record::PriceRecord;
@@ -309,7 +309,6 @@ fn base() -> PlanShape {
         formula: serde_json::json!({ "op": "weighted_sum", "weights": [1, 1] }),
     }];
     shape.sku_id = Uuid::from_u128(0x5_c1);
-    shape.billing_cycle = Some(BillingCycle::Recurring);
     shape.frequency = Some(Frequency::CustomEveryN {
         n: 7,
         unit: CustomIntervalUnit::Days,
@@ -497,10 +496,6 @@ fn plan_level_mutators() -> Vec<Mutator> {
         // equal.
         ("sku_id", |s| s.sku_id = Uuid::from_u128(0x5_c2)),
         ("sku_id -> nil", |s| s.sku_id = Uuid::nil()),
-        ("billing_cycle", |s| {
-            s.billing_cycle = Some(BillingCycle::Hybrid);
-        }),
-        ("billing_cycle -> None", |s| s.billing_cycle = None),
         ("frequency kind", |s| {
             s.frequency = Some(Frequency::Monthly);
         }),

@@ -418,12 +418,15 @@ impl fmt::Display for PriceEligibility {
 /// The `chargeKind` axis: which component of the plan a row prices.
 ///
 /// It is in the key because a single plan legitimately carries several
-/// components **at once**: a hybrid plan holds a `recurring` **and** a `usage`
-/// row (optionally a `one_time_setup` row) on one `planId`, all on the same
+/// components **at once**: a plan holds a `recurring` **and** a `usage`
+/// row (optionally a `one_time` row) on one `planId`, all on the same
 /// currency, region and phase. Without this axis those rows would collide on
 /// the duplicate-key index and the second one would be rejected as a duplicate
 /// of the first. With it they are **distinct keys**, each with its own windows
 /// and its own supersession chain.
+///
+/// `one_time_setup` is not a live kind. Plan behaviour is derived from the
+/// charge lines a phase actually carries, not from a plan-type token.
 #[domain_model]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ChargeKind {
@@ -431,14 +434,14 @@ pub enum ChargeKind {
     Recurring,
     /// A metered usage charge.
     Usage,
-    /// A one-off charge that is not a setup fee.
+    /// A one-off charge.
     OneTime,
-    /// A one-off setup fee, distinguished from [`ChargeKind::OneTime`] so a
-    /// hybrid plan can carry both without them colliding on one key.
-    OneTimeSetup,
 }
 
 impl ChargeKind {
+    /// Every live kind, stable order. `one_time_setup` is not a member.
+    pub const ALL: &'static [Self] = &[Self::Recurring, Self::Usage, Self::OneTime];
+
     /// The persisted / wire token.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -446,7 +449,6 @@ impl ChargeKind {
             Self::Recurring => "recurring",
             Self::Usage => "usage",
             Self::OneTime => "one_time",
-            Self::OneTimeSetup => "one_time_setup",
         }
     }
 
@@ -461,14 +463,10 @@ impl ChargeKind {
     /// compile error in the other.
     #[must_use]
     pub fn parse(token: &str) -> Option<Self> {
-        [
-            Self::Recurring,
-            Self::Usage,
-            Self::OneTime,
-            Self::OneTimeSetup,
-        ]
-        .into_iter()
-        .find(|kind| kind.as_str() == token)
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|kind| kind.as_str() == token)
     }
 
     /// Is this the metered kind?

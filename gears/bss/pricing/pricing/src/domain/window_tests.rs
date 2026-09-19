@@ -538,7 +538,7 @@ fn key(charge_kind: &str) -> crate::domain::scope_key::MarketPriceScopeKey {
             PriceEligibility::AllSubscriptions,
             match charge_kind {
                 "recurring" => ChargeKind::Recurring,
-                _ => ChargeKind::OneTimeSetup,
+                _ => ChargeKind::OneTime,
             },
             Cohort::None,
             SkuId::new(Uuid::from_u128(5)),
@@ -694,7 +694,7 @@ fn covers_at_folds_the_key_and_a_cancelled_interval_covers_nothing() {
 #[test]
 fn grouping_is_per_key_and_ordered_regardless_of_the_input_order() {
     let recurring = key("recurring");
-    let one_time = key("one_time_setup");
+    let one_time = key("one_time");
     let late = WindowInterval::new(t(20), Some(t(30)), WindowState::Scheduled);
     let early = WindowInterval::new(t(10), Some(t(20)), WindowState::Active);
 
@@ -768,7 +768,7 @@ fn two_windows_with_one_interval_and_two_states_order_the_same_whichever_arrives
 #[test]
 fn a_seeded_key_with_no_window_is_a_group_that_reads_uncovered() {
     let recurring = key("recurring");
-    let one_time = key("one_time_setup");
+    let one_time = key("one_time");
     let interval = WindowInterval::new(t(10), Some(t(20)), WindowState::Active);
 
     let groups = group_by_key_seeded(

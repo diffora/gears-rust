@@ -30,9 +30,6 @@ pub struct Model {
     /// The plan's human label (D-318). `NULL` is "not named", and the empty
     /// string is refused at the write stage rather than stored beside it.
     pub plan_name: Option<String>,
-    /// `one_time` | `recurring` | `usage` | `hybrid`, `CHECK`-constrained to
-    /// those four; the value set is `domain::plan_shape::BillingCycle`.
-    pub billing_cycle: Option<String>,
     /// `monthly` | `quarterly` | `semiannual` | `annual` | `custom_every_n`.
     ///
     /// The custom token is the bare discriminator: its interval rides the two

@@ -215,7 +215,7 @@ fn a_hybrid_plans_recurring_and_usage_rows_are_distinct_keys() {
     .expect("usage key");
     let setup = key(
         PriceEligibility::AllSubscriptions,
-        ChargeKind::OneTimeSetup,
+        ChargeKind::OneTime,
         Cohort::None,
     )
     .expect("setup key");
@@ -328,7 +328,6 @@ fn the_charge_kind_tokens_are_the_persisted_ones() {
     assert_eq!(ChargeKind::Recurring.as_str(), "recurring");
     assert_eq!(ChargeKind::Usage.as_str(), "usage");
     assert_eq!(ChargeKind::OneTime.as_str(), "one_time");
-    assert_eq!(ChargeKind::OneTimeSetup.as_str(), "one_time_setup");
 }
 
 // ---------------------------------------------------------------------------
@@ -717,7 +716,7 @@ fn only_usage_is_usage() {
     for kind in [
         ChargeKind::Recurring,
         ChargeKind::OneTime,
-        ChargeKind::OneTimeSetup,
+        ChargeKind::OneTime,
     ] {
         assert!(!kind.is_usage(), "{kind} is not a usage charge");
     }

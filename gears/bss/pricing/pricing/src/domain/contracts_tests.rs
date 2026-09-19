@@ -168,7 +168,7 @@ fn a_non_recurring_row_without_billing_timing_is_not_this_rules_business() {
     for kind in [
         ChargeKind::Usage,
         ChargeKind::OneTime,
-        ChargeKind::OneTimeSetup,
+        ChargeKind::OneTime,
     ] {
         let shape = shape_of(vec![row(
             0xb3,
@@ -336,7 +336,7 @@ fn a_non_recurring_row_owes_no_proration_contract() {
     for kind in [
         ChargeKind::Usage,
         ChargeKind::OneTime,
-        ChargeKind::OneTimeSetup,
+        ChargeKind::OneTime,
     ] {
         let shape = shape_of(vec![row(
             0xc3,

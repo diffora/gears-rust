@@ -1364,6 +1364,8 @@ resulting set.
 - **Owed back to the implementation** (`bss/pricing-impl`): three rules the gear does not have — the two `BASE_MARKET_INCOMPLETE` arms and `CYCLE_METADATA_MISSING`'s two fields — plus, when the registry read model lands, `ADDON_INCOMPATIBLE`'s cycle arm. G4 built and reported the gap rather than minting vocabulary, which is why this entry exists.
 - **Propagated**: S2 §3 (`inst-cs-declared` — new — plus `inst-cs-onetime`, `inst-cs-recurring`, `inst-cmp-addons`) + §5 (the two new codes + the widened `ADDON_INCOMPATIBLE` gloss) + §6 (`billing_cycle` nullable in draft, required at publish) + §8 (`dod-billing-cycles`, `dod-composition`) + §9; PRD §17.1 (the one-time and recurring rows) + §17.3 (add-on compatibility) + `fr-billing-cycles` + `fr-addon-rules`.
 
+- **Superseded (2026-09-19, charge-line derivation):** plan behaviour is derived from actual phase charge lines, not from a `billing_cycle` token. Live codes are `PHASE_CHARGE_LINES_EMPTY`, `RECURRING_FREQUENCY_REQUIRED`, `LINE_MARKET_PRICE_MISSING`, `PHASE_USAGE_INCOMPATIBLE`. `billing_cycle`, `one_time_setup`, `CYCLE_METADATA_MISSING`, `BASE_MARKET_INCOMPLETE`, `HYBRID_INCOMPLETE`, `USAGE_MARKET_INCOMPLETE` and `SETUP_ROW_INVALID` are removed from the live contract. `ADDON_INCOMPATIBLE`'s registry half is unchanged.
+
 #### D-150 [M] An add-on rule's quantity bounds are a rule with a code, not three column checks
 
 - **Where**: [`design/02-plan-definition.md`](./design/02-plan-definition.md) §3 `inst-cmp-addons`, §5, §6 key constraints, §8 `dod-composition`, §9; [PRD](./PRD.md) §17.3 + `fr-addon-rules`.

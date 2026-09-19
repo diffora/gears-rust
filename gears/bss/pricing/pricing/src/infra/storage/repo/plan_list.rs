@@ -108,7 +108,6 @@ fn sort_expr(field: SortField) -> Expr {
         SortField::PlanId => col(plan::Column::PlanId),
         SortField::PlanName => col(plan::Column::PlanName),
         SortField::LifecycleState => col(plan::Column::LifecycleState),
-        SortField::BillingCycle => col(plan::Column::BillingCycle),
         SortField::CreatedAt => created_at_expr(),
         SortField::PriceRowCount => count_expr(),
     }
@@ -116,7 +115,7 @@ fn sort_expr(field: SortField) -> Expr {
 
 /// Only these sort fields admit SQL NULL; nullable tokens use JSON option strings.
 fn nullable(field: SortField) -> bool {
-    matches!(field, SortField::PlanName | SortField::BillingCycle)
+    matches!(field, SortField::PlanName)
 }
 
 /// Malformed filter error at the same canonical boundary as toolkit conversions.
@@ -245,7 +244,6 @@ fn predicate(
         Field::LifecycleState => col(plan::Column::LifecycleState),
         Field::SkuId => col(plan::Column::SkuId),
         Field::PlanTier => col(plan::Column::PlanTier),
-        Field::BillingCycle => col(plan::Column::BillingCycle),
         Field::CreatedAt => created_at_expr(),
         Field::ModelKind | Field::Currency | Field::HasPendingApprovals => {
             return Err(bad_filter("invalid scalar field"));
@@ -394,11 +392,7 @@ fn cursor_keys(row: &Row, fields: &[(SortField, SortDir)]) -> Result<Vec<String>
         .iter()
         .map(|(field, _)| {
             if nullable(*field) {
-                let text = if *field == SortField::PlanName {
-                    &row.model.plan_name
-                } else {
-                    &row.model.billing_cycle
-                };
+                let text = &row.model.plan_name;
                 return serde_json::to_string(text)
                     .map_err(|e| OdataPageError::Db(format!("encode nullable plan cursor: {e}")));
             }
@@ -416,7 +410,7 @@ fn cursor_keys(row: &Row, fields: &[(SortField, SortDir)]) -> Result<Vec<String>
                         )
                     })?
                     .into(),
-                SortField::PlanName | SortField::BillingCycle => {
+                SortField::PlanName => {
                     return Err(Error::CursorInvalidKeys.into());
                 }
             };

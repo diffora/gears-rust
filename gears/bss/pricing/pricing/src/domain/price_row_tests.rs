@@ -183,7 +183,7 @@ fn only_a_usage_charge_kind_is_a_usage_row() {
     for kind in [
         ChargeKind::Recurring,
         ChargeKind::OneTime,
-        ChargeKind::OneTimeSetup,
+        ChargeKind::OneTime,
     ] {
         assert!(!PriceRow::new(kind, Some(ModelKind::Flat)).is_usage());
     }

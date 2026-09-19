@@ -17,10 +17,10 @@ use crate::domain::instant::utc_ymd_hms;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::plan_rules::{
-    CustomIntervalBounds, DescriptorSetComplete, HYBRID_INCOMPLETE, INVALID_CUSTOM_INTERVAL,
+    CustomIntervalBounds, DescriptorSetComplete, INVALID_CUSTOM_INTERVAL,
     PHASE_GRAPH_INVALID, PHASE_ROW_ORPHANED, PLANTIER_MISSING,
 };
-use crate::domain::plan_shape::{BillingCycle, Frequency, PlanShape};
+use crate::domain::plan_shape::{Frequency, PlanShape};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow};
 use crate::domain::rules::MODEL_KIND_MISSING;
@@ -180,7 +180,6 @@ fn a_row_shape_fault_and_a_plan_shape_fault_appear_in_one_report_in_the_fixed_or
     // row findings come first because a malformed row is malformed regardless
     // of the plan it sits in.
     let mut shape = PlanShape::new(plan(), 1, now());
-    shape.billing_cycle = Some(BillingCycle::Recurring);
     // `inst-cs-declared` (D-149): a plan that recurs owes a
     // frequency. These fixtures used to omit it and pass, which is
     // the vacuous pass that rule exists to close.
@@ -222,7 +221,6 @@ fn one_awful_plan_produces_every_expected_violation_rather_than_the_first() {
     // pass. A run that stopped at the first would still block the publish and
     // would still look correct from outside.
     let mut shape = PlanShape::new(plan(), 1, now());
-    shape.billing_cycle = Some(BillingCycle::Hybrid);
     // `inst-cs-declared` (D-149): a plan that recurs owes a
     // frequency. These fixtures used to omit it and pass, which is
     // the vacuous pass that rule exists to close.
@@ -235,7 +233,6 @@ fn one_awful_plan_produces_every_expected_violation_rather_than_the_first() {
     for expected in [
         MODEL_KIND_MISSING,
         ROUNDING_POLICY_UNRESOLVED,
-        HYBRID_INCOMPLETE,
         PLANTIER_MISSING,
         PHASE_GRAPH_INVALID,
         // D-337's, and the **sixth** distinct code this plan produces: the fixture
@@ -636,7 +633,6 @@ fn clean_plan() -> PlanShape {
 
     let terminal = PhaseId::new(Uuid::from_u128(0xf1));
     let mut shape = PlanShape::new(plan(), 1, now());
-    shape.billing_cycle = Some(BillingCycle::Recurring);
     // `inst-cs-declared` (D-149): a plan that recurs owes a
     // frequency. These fixtures used to omit it and pass, which is
     // the vacuous pass that rule exists to close.

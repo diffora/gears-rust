@@ -417,7 +417,7 @@ fn two_rows_differing_only_in_charge_kind_still_collide() {
     // admits any row carrying a meter. A metered row mis-filed on a non-usage
     // charge component must therefore fail here rather than at the driver.
     let mut misfiled = Line::usage(0x2, "cloudlets");
-    misfiled.charge_kind = ChargeKind::OneTimeSetup;
+    misfiled.charge_kind = ChargeKind::OneTime;
 
     assert_eq!(
         codes(&injectivity(&[Line::usage(0x1, "cloudlets"), misfiled])),

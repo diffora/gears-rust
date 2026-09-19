@@ -2942,7 +2942,6 @@ fn delta_of(
         sku_id: None,
         plan_tier: Some("gold".to_owned()),
         plan_tier_override: false,
-        billing_cycle: None,
         frequency: Some(Frequency::Monthly),
         available_from: Some(at(-10)),
         available_to: None,

@@ -599,7 +599,6 @@ fn draft_of(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
         // by the store. `PlanShape.sku_id` stays `Option` until Task 8.
         sku_id: Uuid::from_u128(5),
         plan_tier: None,
-        billing_cycle: None,
         frequency: None,
         plan_tier_override: false,
         purchase_min_qty: None,

@@ -860,7 +860,6 @@ async fn the_record_carries_the_content_its_pin_covers() {
     assert_eq!(pinned["plan_id"], plan_id.to_string());
     assert_eq!(pinned["revision"], seeded.revision);
     assert_eq!(pinned["plan_tier"], "gold");
-    assert_eq!(pinned["billing_cycle"], "recurring");
     assert_eq!(pinned["rows"][0]["price_id"], seeded.price_id.to_string());
     assert_eq!(pinned["rows"][0]["content"]["amount_minor"], 9_900);
     assert_eq!(pinned["rows"][0]["scope_key"]["region"], "eu");

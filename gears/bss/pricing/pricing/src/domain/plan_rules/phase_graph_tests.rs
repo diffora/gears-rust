@@ -32,7 +32,7 @@ use crate::domain::plan_rules::{
     PHASE_UNCOVERED, TERMINAL_PHASE_CHANGED, TERMINAL_PHASE_KIND_INVALID,
 };
 use crate::domain::plan_shape::{
-    BillingCycle, PhaseGraph, PhaseKind, PlanPhase, PlanShape, PublishedBaseline,
+    PhaseGraph, PhaseKind, PlanPhase, PlanShape, PublishedBaseline,
 };
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
@@ -709,7 +709,6 @@ fn a_terminal_phase_carrying_a_duration_fails() {
 #[test]
 fn a_phase_with_no_recurring_row_fails_naming_the_phase_and_the_market() {
     let mut subject = phased();
-    subject.billing_cycle = Some(BillingCycle::Recurring);
     subject.rows = vec![
         recurring("usd", "US", phase_id(TRIAL)),
         recurring("usd", "US", phase_id(EVERGREEN)),
@@ -730,30 +729,9 @@ fn the_same_uncovered_phase_on_a_usage_plan_is_outside_the_rule() {
     // could ever cover a phase, so the literal reading would block it through
     // its implicit terminal phase - a rule it can never satisfy.
     let mut subject = phased();
-    subject.billing_cycle = Some(BillingCycle::Usage);
     subject.rows = vec![usage("usd", "US", phase_id(EVERGREEN), METER)];
 
     assert!(judge(&PhaseCoverage, &subject).is_publishable());
-}
-
-#[test]
-fn a_one_time_plan_is_outside_the_rule_and_an_unauthored_cycle_is_not_judged() {
-    let mut subject = phased();
-    subject.rows = vec![recurring("usd", "US", phase_id(TRIAL))];
-
-    assert!(
-        judge(&PhaseCoverage, &subject).is_publishable(),
-        "a draft that has not declared its cycle yet is not a coverage fault"
-    );
-
-    subject.billing_cycle = Some(BillingCycle::OneTime);
-    assert!(judge(&PhaseCoverage, &subject).is_publishable());
-
-    subject.billing_cycle = Some(BillingCycle::Hybrid);
-    assert!(
-        !judge(&PhaseCoverage, &subject).is_publishable(),
-        "hybrid carries a recurring part and is inside the rule"
-    );
 }
 
 #[test]
@@ -762,7 +740,6 @@ fn coverage_is_required_in_every_sold_market_independently() {
     // phases in USD alone leaves a EUR subscriber's conversion resolving to
     // nothing.
     let mut subject = phased();
-    subject.billing_cycle = Some(BillingCycle::Hybrid);
     subject.rows = vec![
         recurring("usd", "US", phase_id(TRIAL)),
         recurring("usd", "US", phase_id(INTRO)),

@@ -357,7 +357,7 @@ async fn each_not_null_token_column_holds_only_the_tokens_its_enum_renders() {
         (
             "charge_kind",
             "chk_pricing_price_charge_kind",
-            &["recurring", "usage", "one_time", "one_time_setup"],
+            &["recurring", "usage", "one_time"],
         ),
     ];
 

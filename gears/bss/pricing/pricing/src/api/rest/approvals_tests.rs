@@ -15,7 +15,7 @@ use crate::domain::materiality::delta::MoveScale;
 use crate::domain::materiality::triggers::Trigger;
 use crate::domain::materiality::{MaterialityReason, MaterialityVerdict, TrippedRow};
 use crate::domain::money::CurrencyCode;
-use crate::domain::plan_shape::{BillingCycle, PlanShape};
+use crate::domain::plan_shape::{PlanShape};
 use crate::domain::ports::metrics::{
     AlarmSeverity, CurrencyBindingCase, PreviewFailClosed, PricingAlarm, PricingMetricsPort,
 };
@@ -35,7 +35,6 @@ fn shape() -> PlanShape {
     );
     shape.sku_id = Uuid::from_u128(0x5_c1);
     shape.plan_tier = Some("gold".to_owned());
-    shape.billing_cycle = Some(BillingCycle::Recurring);
     shape.draft_window_entries = vec![DraftWindowEntry {
         operation_id: Uuid::from_u128(0xd01),
         action: DraftWindowAction::Create {
@@ -77,7 +76,6 @@ fn the_pinned_content_carries_the_plan_the_pin_was_taken_over() {
     // reading this view has to be shown it.
     assert_eq!(view.sku_id, shape.sku_id);
     assert_eq!(view.plan_tier, shape.plan_tier);
-    assert_eq!(view.billing_cycle.as_deref(), Some("recurring"));
     // And the draft-window intention is the same case with the operands swapped:
     // the pin frames authoring inputs and this view must show them, so two
     // subjects differing only in a reason code cannot render identically here

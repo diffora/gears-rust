@@ -121,7 +121,7 @@ use crate::domain::plan_rules::{
     PHASE_IN_USE, PHASE_OVERRIDE_ORPHANED, PHASE_OVERRIDE_UNIT_MISMATCH, PHASE_ROW_ORPHANED,
     PHASE_UNCOVERED, TERMINAL_PHASE_CHANGED, TERMINAL_PHASE_KIND_INVALID,
 };
-use crate::domain::plan_shape::{BillingCycle, PhaseGraph, PhaseKind, PlanShape};
+use crate::domain::plan_shape::{PhaseGraph, PhaseKind, PlanShape};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::unit_determining_mismatch;
 use crate::domain::scope_key::{ChargeKind, PhaseId};
@@ -476,12 +476,12 @@ impl ValidationRule<PlanShape> for RowPhaseAttached {
 /// `inst-ph-coverage` (D-15) — every phase is covered by a recurring row in
 /// every sold market.
 ///
-/// **Scoped to plans whose cycle carries a recurring part.** One-time and
-/// usage-only plans have no recurring
+/// **Scoped to plans that actually carry a recurring line.** One-time and
+/// usage-only revisions have no recurring
 /// row that could ever cover a phase, so a literal reading would fail them
 /// through their implicit terminal phase - a rule they can never satisfy. The
-/// scope is read from [`BillingCycle::has_recurring_part`] rather than
-/// re-spelled here, so widening it is one visible edit.
+/// scope is read from the effective charge lines (or the candidate rows when
+/// lines have not been assembled yet) rather than from a plan-type token.
 ///
 /// The rule exists because a phase conversion must never resolve to nothing, and
 /// the row-based Slice-7 coverage check cannot see a phase that has **no rows at
@@ -496,10 +496,7 @@ impl ValidationRule<PlanShape> for PhaseCoverage {
     }
 
     fn evaluate(&self, subject: &PlanShape, report: &mut ValidationReport) {
-        if !subject
-            .billing_cycle
-            .is_some_and(BillingCycle::has_recurring_part)
-        {
+        if !has_recurring_part(subject) {
             return;
         }
         let markets = subject.markets();
@@ -795,6 +792,17 @@ fn describe(phase_id: Option<PhaseId>) -> String {
     phase_id.map_or_else(|| "nothing (terminal)".to_owned(), |id| id.to_string())
 }
 
+fn has_recurring_part(subject: &PlanShape) -> bool {
+    subject
+        .charge_lines
+        .iter()
+        .any(|line| line.scope_key.charge_kind() == ChargeKind::Recurring)
+        || subject
+            .rows
+            .iter()
+            .any(|record| record.scope_key.charge_kind() == ChargeKind::Recurring)
+}
+
 #[cfg(test)]
 #[path = "phase_graph_tests.rs"]
 mod phase_graph_tests;
@@ -820,7 +828,7 @@ mod phase_graph_tests;
 /// - [`TerminalPhaseKind`] is **correct** to find `evergreen` there.
 ///
 /// Three guards, each right, and the shape they exist to forbid passed all of
-/// them. That is the same arithmetic [`CycleDeclared`](super::cycle_shape::CycleDeclared)
+/// them. That is the same arithmetic [`RecurringFrequencyRequired`](super::charge_shape::RecurringFrequencyRequired)
 /// closes one step over.
 ///
 /// The `CHECK` is deliberately **not** tightened (D-151): a phase graph is

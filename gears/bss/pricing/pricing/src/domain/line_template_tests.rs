@@ -41,7 +41,6 @@ fn shipped_defaults_and_exact_policy_keys_are_enforced() {
         (ChargeKind::Recurring, "{sku} - {period}"),
         (ChargeKind::Usage, "{sku}, {unit}"),
         (ChargeKind::OneTime, "{sku}"),
-        (ChargeKind::OneTimeSetup, "{sku} setup"),
     ] {
         assert_eq!(defaults.get(kind), expected);
     }

@@ -276,7 +276,7 @@ The database first selects the open draft, otherwise the current published/retir
 revision, then filters, sorts and pages that projection. A name/state from an old
 revision cannot make the plan match; use history for superseded/abandoned rows.
 
-`$orderby` supports `plan_id`, `plan_name`, `lifecycle_state`, `billing_cycle`,
+`$orderby` supports `plan_id`, `plan_name`, `lifecycle_state`,
 `created_at`, `price_row_count`, with `asc`/`desc` and multiple keys. An absent
 `plan_id` is appended ascending as the unique tie-breaker. Nullable names/cycles
 sort **last in both directions**. Count ordering happens in SQL before LIMIT,
@@ -302,7 +302,7 @@ The response arrays are still `model_kinds` and `currencies`. Query-only
 draft/published price-row set: a flat/USD row and a per_unit/EUR row jointly match
 `model_kind eq 'flat' and currency eq 'EUR'`. `ne`/`not(eq)` mean no matching row.
 Plans with zero rows have empty arrays and a count of zero. Other existing
-filters (`plan_id`, `sku_id`, `plan_tier`, `billing_cycle`, `lifecycle_state`)
+filters (`plan_id`, `sku_id`, `plan_tier`, `lifecycle_state`)
 remain supported.
 
 `has_pending_approvals` is query-only; it is not a stored boolean or an additional

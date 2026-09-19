@@ -75,10 +75,6 @@ async fn nullable_multi_page_order_and_canonical_revision_filters_on_postgres() 
     );
     assert_eq!(walk(&plans, query("plan_name", SortDir::Desc)).await, ids);
     assert_eq!(
-        walk(&plans, query("billing_cycle", SortDir::Desc)).await,
-        ids
-    );
-    assert_eq!(
         walk(&plans, query("price_row_count", SortDir::Desc)).await,
         ids
     );
@@ -128,7 +124,6 @@ async fn draft_at(plans: &PlanRepo, id: Uuid, created: OffsetDateTime) {
                 // by the store. `PlanShape.sku_id` stays `Option` until Task 8.
                 sku_id: Uuid::from_u128(5),
                 plan_tier: None,
-                billing_cycle: None,
                 frequency: None,
                 plan_tier_override: false,
                 purchase_min_qty: None,

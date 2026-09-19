@@ -208,12 +208,8 @@ pub enum ChargeKind {
     /// A metered usage charge — the only component with a metered `Q` for the
     /// tier, block and fold machinery to read.
     Usage,
-    /// A one-off charge that is not a setup fee: a one-time plan's base row.
+    /// A one-off charge.
     OneTime,
-    /// A setup charge on a recurring or hybrid plan. Distinct from
-    /// [`ChargeKind::OneTime`] so a hybrid plan can carry both without them
-    /// colliding on one scope key.
-    OneTimeSetup,
 }
 
 /// Fields frozen in `pricingSnapshotRef`. Nothing else may appear here.

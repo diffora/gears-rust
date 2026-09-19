@@ -586,7 +586,6 @@ pub struct PinnedContentView {
     /// same digest.
     pub sku_id: Uuid,
     /// `one_time` | `recurring` | `usage` | `hybrid`.
-    pub billing_cycle: Option<String>,
     /// The recurring frequency, interval and all.
     pub frequency: Option<FrequencyView>,
     /// The plan's tier.
@@ -807,7 +806,6 @@ impl From<&PlanShape> for PinnedContentView {
             plan_id,
             revision,
             sku_id,
-            billing_cycle,
             frequency,
             plan_tier,
             plan_name,
@@ -821,6 +819,8 @@ impl From<&PlanShape> for PinnedContentView {
             addon_rules,
             period_floor_caps,
             rows,
+            charge_lines: _,
+            market_prices: _,
             entitlement_grants,
             composites,
             change_contract,
@@ -837,7 +837,6 @@ impl From<&PlanShape> for PinnedContentView {
             plan_id: plan_id.get(),
             revision: *revision,
             sku_id: *sku_id,
-            billing_cycle: billing_cycle.map(|cycle| cycle.as_str().to_owned()),
             frequency: frequency.map(FrequencyView::from),
             plan_tier: plan_tier.clone(),
             plan_name: plan_name.clone(),

@@ -15,7 +15,7 @@ use uuid::Uuid;
 use super::{CustomIntervalBounds, DescriptorSetComplete, plan_shape_rules};
 use crate::domain::instant::utc_ymd_hms;
 use crate::domain::plan_shape::{
-    AddonRule, BillingCycle, CustomIntervalUnit, Frequency, PlanShape,
+    AddonRule, CustomIntervalUnit, Frequency, PlanShape,
 };
 use crate::domain::rules;
 use crate::domain::scope_key::PlanId;
@@ -23,13 +23,13 @@ use crate::domain::validation::ValidationPipeline;
 
 use super::{
     ADDON_CYCLE, ADDON_INCOMPATIBLE, ADDON_QTY_RANGE_INVALID, AVAILABLE_FROM_IN_PAST,
-    BASE_MARKET_INCOMPLETE, CYCLE_METADATA_MISSING, DESCRIPTOR_INCOMPLETE,
-    DISPLAY_TRIAL_DAYS_INVALID, HYBRID_INCOMPLETE, INVALID_CUSTOM_INTERVAL, METER_AMBIGUOUS,
-    PERIOD_FLOOR_CAP_AMOUNT_INVALID, PERIOD_FLOOR_CAP_MARKET_UNSOLD, PHASE_CHAIN_NONLINEAR,
+    DESCRIPTOR_INCOMPLETE, DISPLAY_TRIAL_DAYS_INVALID, INVALID_CUSTOM_INTERVAL,
+    LINE_MARKET_PRICE_MISSING, METER_AMBIGUOUS, PERIOD_FLOOR_CAP_AMOUNT_INVALID,
+    PERIOD_FLOOR_CAP_MARKET_UNSOLD, PHASE_CHAIN_NONLINEAR, PHASE_CHARGE_LINES_EMPTY,
     PHASE_DURATION_INVALID, PHASE_GRAPH_INVALID, PHASE_IN_USE, PHASE_OVERRIDE_ORPHANED,
-    PHASE_OVERRIDE_UNIT_MISMATCH, PHASE_ROW_ORPHANED, PHASE_UNCOVERED, PLAN_NAME_INVALID,
-    PLANTIER_MISSING, PURCHASE_QTY_RANGE_INVALID, SETUP_ROW_INVALID, TERMINAL_PHASE_CHANGED,
-    TERMINAL_PHASE_KIND_INVALID, USAGE_MARKET_INCOMPLETE,
+    PHASE_OVERRIDE_UNIT_MISMATCH, PHASE_ROW_ORPHANED, PHASE_UNCOVERED, PHASE_USAGE_INCOMPATIBLE,
+    PLAN_NAME_INVALID, PLANTIER_MISSING, PURCHASE_QTY_RANGE_INVALID, RECURRING_FREQUENCY_REQUIRED,
+    TERMINAL_PHASE_CHANGED, TERMINAL_PHASE_KIND_INVALID,
 };
 use crate::domain::rules::{COMPOSITE_SELF_REFERENCE, COMPOSITE_TOO_FEW_CONSTITUENTS};
 
@@ -59,12 +59,11 @@ const DECLARED: &[(&str, &str)] = &[
         "COMPOSITE_TOO_FEW_CONSTITUENTS",
     ),
     (COMPOSITE_SELF_REFERENCE, "COMPOSITE_SELF_REFERENCE"),
-    (CYCLE_METADATA_MISSING, "CYCLE_METADATA_MISSING"),
-    (BASE_MARKET_INCOMPLETE, "BASE_MARKET_INCOMPLETE"),
+    (PHASE_CHARGE_LINES_EMPTY, "PHASE_CHARGE_LINES_EMPTY"),
+    (RECURRING_FREQUENCY_REQUIRED, "RECURRING_FREQUENCY_REQUIRED"),
+    (LINE_MARKET_PRICE_MISSING, "LINE_MARKET_PRICE_MISSING"),
+    (PHASE_USAGE_INCOMPATIBLE, "PHASE_USAGE_INCOMPATIBLE"),
     (INVALID_CUSTOM_INTERVAL, "INVALID_CUSTOM_INTERVAL"),
-    (HYBRID_INCOMPLETE, "HYBRID_INCOMPLETE"),
-    (USAGE_MARKET_INCOMPLETE, "USAGE_MARKET_INCOMPLETE"),
-    (SETUP_ROW_INVALID, "SETUP_ROW_INVALID"),
     (PURCHASE_QTY_RANGE_INVALID, "PURCHASE_QTY_RANGE_INVALID"),
     (PLAN_NAME_INVALID, "PLAN_NAME_INVALID"),
     (AVAILABLE_FROM_IN_PAST, "AVAILABLE_FROM_IN_PAST"),
@@ -183,17 +182,11 @@ fn pipeline() -> ValidationPipeline<PlanShape> {
 /// module still compiles, its own unit tests still pass, and the plan it exists
 /// to reject publishes.
 const REGISTERED: &[&str] = &[
-    // cpt-cf-bss-pricing-algo-cycle-shape
-    //
-    // `inst-cs-declared` is FIRST, and the order is the rule's reason for
-    // existing (D-149 clause 2): every rule after it is cycle-conditioned, so a
-    // NULL cycle passed the whole step vacuously.
-    "inst-cs-declared",
+    // Charge shape: derived from actual phase lines, not a plan-type token.
+    "inst-cs-charge-lines",
+    "inst-cs-frequency",
     "inst-cs-customfreq",
-    "inst-cs-hybrid",
-    "inst-cs-recurring",
-    "inst-cs-usage",
-    "inst-cs-setup",
+    "inst-cs-market-price",
     "inst-cs-onetime",
     "inst-cs-availability",
     // cpt-cf-bss-pricing-algo-composition
@@ -223,8 +216,7 @@ const REGISTERED: &[&str] = &[
     // carrying both names them together.
     "inst-ph-row-attached",
     "inst-ph-coverage",
-    "inst-ph-usage-invariant",
-    "inst-ph-override-units",
+    "inst-ph-usage-compatible",
     "inst-ph-terminal-stable",
     // cpt-cf-bss-pricing-algo-period-floor-cap (D-319). Between the phase
     // schedule and the descriptors: a period bound is a fact about a whole
@@ -285,8 +277,6 @@ fn one_awful_plan_produces_every_finding_in_one_report() {
     let support = Uuid::from_u128(0xadd02);
 
     let mut plan = PlanShape::new(plan_id, 2, now);
-    // A hybrid with no rows at all: both mandatory parts missing.
-    plan.billing_cycle = Some(BillingCycle::Hybrid);
     // A custom frequency that recurs every zero days.
     plan.frequency = Some(Frequency::CustomEveryN {
         n: 0,
@@ -335,8 +325,6 @@ fn one_awful_plan_produces_every_finding_in_one_report() {
         codes,
         [
             INVALID_CUSTOM_INTERVAL,
-            HYBRID_INCOMPLETE,
-            HYBRID_INCOMPLETE,
             PURCHASE_QTY_RANGE_INVALID,
             AVAILABLE_FROM_IN_PAST,
             PLANTIER_MISSING,

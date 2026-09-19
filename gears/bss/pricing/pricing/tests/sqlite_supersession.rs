@@ -200,7 +200,6 @@ async fn composed(repo: &PriceRepo, provider: &DBProvider<DbError>, scope: &Acce
                 created_at_utc: now(),
                 sku_id: Uuid::from_u128(5),
                 plan_tier: None,
-                billing_cycle: None,
                 frequency: None,
                 plan_tier_override: false,
                 purchase_min_qty: None,

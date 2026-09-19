@@ -623,7 +623,7 @@ pub fn published_billing_timing(charge_kind: ChargeKind, authored: Option<&str>)
     match charge_kind {
         ChargeKind::Recurring => authored,
         ChargeKind::Usage => Some(BILLING_TIMING_ARREARS),
-        ChargeKind::OneTime | ChargeKind::OneTimeSetup => Some(BILLING_TIMING_ADVANCE),
+        ChargeKind::OneTime => Some(BILLING_TIMING_ADVANCE),
     }
 }
 

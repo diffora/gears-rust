@@ -282,7 +282,7 @@ use crate::domain::overlay::{
     ScopeSelectorParts, ScopeValue, TargetRef,
 };
 use crate::domain::plan_shape::{
-    AddonRule, BillingCycle, CompositeMeter, Frequency, PeriodFloorCap, PlanPhase, PlanShape,
+    AddonRule, CompositeMeter, Frequency, PeriodFloorCap, PlanPhase, PlanShape,
 };
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
@@ -1177,7 +1177,6 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
         plan_id,
         revision,
         sku_id,
-        billing_cycle,
         frequency,
         plan_tier,
         plan_name,
@@ -1191,6 +1190,8 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
         descriptor_ext,
         period_floor_caps,
         rows,
+        charge_lines: _,
+        market_prices: _,
         entitlement_grants,
         composites,
         change_contract,
@@ -1207,7 +1208,6 @@ fn put_plan_shape(buf: &mut Vec<u8>, shape: &PlanShape) {
     put_u64(buf, *revision);
     // Keep the v17 frame stable for the now-required plan SKU.
     put_opt_uuid(buf, Some(*sku_id));
-    put_opt_str(buf, billing_cycle.map(BillingCycle::as_str));
     put_frequency(buf, *frequency);
     put_opt_str(buf, plan_tier.as_deref());
     put_opt_str(buf, plan_name.as_deref());

@@ -765,7 +765,6 @@ const EXPECTED_CHECKS: &[&str] = &[
     "chk_pricing_plan_addon_rule_required_max_qty",
     "chk_pricing_plan_addon_rule_step_qty",
     "chk_pricing_plan_availability",
-    "chk_pricing_plan_billing_cycle",
     "chk_pricing_plan_custom_interval_n",
     "chk_pricing_plan_custom_interval_pairing",
     "chk_pricing_plan_custom_interval_unit",

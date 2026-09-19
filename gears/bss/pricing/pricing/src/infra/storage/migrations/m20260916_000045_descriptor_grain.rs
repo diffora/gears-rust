@@ -20,7 +20,7 @@ const PRICE_FIELDS: [&str; 4] = [
     "resolved_invoice_line_template",
     "resolved_gl_code",
 ];
-const DEFAULT_TEMPLATES: &str = r#"{"recurring":"{sku} - {period}","usage":"{sku}, {unit}","one_time":"{sku}","one_time_setup":"{sku} setup"}"#;
+const DEFAULT_TEMPLATES: &str = r#"{"recurring":"{sku} - {period}","usage":"{sku}, {unit}","one_time":"{sku}"}"#;
 
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
@@ -52,9 +52,9 @@ impl MigrationTrait for Migration {
         ))
         .await?;
         let check = if manager.get_database_backend() == DbBackend::Postgres {
-            "jsonb_typeof(default_line_templates) = 'object' AND default_line_templates - ARRAY['recurring','usage','one_time','one_time_setup'] = '{}'::jsonb AND COALESCE(jsonb_typeof(default_line_templates->'recurring') = 'string', false) AND COALESCE(jsonb_typeof(default_line_templates->'usage') = 'string', false) AND COALESCE(jsonb_typeof(default_line_templates->'one_time') = 'string', false) AND COALESCE(jsonb_typeof(default_line_templates->'one_time_setup') = 'string', false)"
+            "jsonb_typeof(default_line_templates) = 'object' AND default_line_templates - ARRAY['recurring','usage','one_time'] = '{}'::jsonb AND COALESCE(jsonb_typeof(default_line_templates->'recurring') = 'string', false) AND COALESCE(jsonb_typeof(default_line_templates->'usage') = 'string', false) AND COALESCE(jsonb_typeof(default_line_templates->'one_time') = 'string', false)"
         } else {
-            "json_valid(default_line_templates) AND json_type(default_line_templates) = 'object' AND json_remove(default_line_templates, '$.recurring', '$.usage', '$.one_time', '$.one_time_setup') = '{}' AND COALESCE(json_type(default_line_templates, '$.recurring') = 'text', 0) AND COALESCE(json_type(default_line_templates, '$.usage') = 'text', 0) AND COALESCE(json_type(default_line_templates, '$.one_time') = 'text', 0) AND COALESCE(json_type(default_line_templates, '$.one_time_setup') = 'text', 0)"
+            "json_valid(default_line_templates) AND json_type(default_line_templates) = 'object' AND json_remove(default_line_templates, '$.recurring', '$.usage', '$.one_time') = '{}' AND COALESCE(json_type(default_line_templates, '$.recurring') = 'text', 0) AND COALESCE(json_type(default_line_templates, '$.usage') = 'text', 0) AND COALESCE(json_type(default_line_templates, '$.one_time') = 'text', 0)"
         };
         db.execute_unprepared(&format!(
             "ALTER TABLE {prefix}pricing_policy_object ADD COLUMN default_line_templates {json_type} NOT NULL DEFAULT '{DEFAULT_TEMPLATES}' CONSTRAINT chk_pricing_policy_line_templates CHECK ({check})"

@@ -58,7 +58,7 @@
 //! # Every charge kind is billable, per `inst-wc-perkey`
 //!
 //! No `ChargeKind` is excluded. `inst-wc-perkey` names the opposite obligation —
-//! a hybrid's `recurring`, `usage` and `one_time_setup` components each carry
+//! a hybrid's `recurring`, `usage` and `one_time` components each carry
 //! their **own** coverage, because each is its own canonical scope key (the
 //! `chargeKind` axis exists precisely so they do not collide). Covering the
 //! recurring key covers nothing else.
@@ -167,8 +167,8 @@ pub const AVAILABILITY_OUTSIDE_COVERAGE: &str = "AVAILABILITY_OUTSIDE_COVERAGE";
 ///
 /// That constant names the same two states and answers a different question —
 /// which intervals *compete for a key* under `WINDOW_OVERLAP`. Deriving one from
-/// the other is the trap `BillingCycle::admits_setup_row` refuses one module
-/// over: two sentences of the design set that happen to name the same values
+/// the other is the trap of sharing a list between two rules that happen to
+/// name the same values today: two sentences of the design set that happen to name the same values
 /// today, where a later divergence would become a silent change to the wrong
 /// rule. It is also in `infra`, which dylint DE0301 keeps out of here.
 const COVERING_STATES: &[WindowState] = &[WindowState::Scheduled, WindowState::Active];
@@ -463,7 +463,7 @@ pub fn check_shape(shape: &PlanShape) -> CoverageReport {
 /// W6 *calls* it "the longest billing cycle sold on the **key**" and *defines* it
 /// **per plan** — "the longest `frequency` among the plan's **recurring** rows on
 /// the key's `(currency, region)`" — with its own reason: a `usage`, `one_time` or
-/// `one_time_setup` key carries no `frequency` at all, so read literally the term
+/// `one_time` key carries no `frequency` at all, so read literally the term
 /// was undefined on most keys of a hybrid. §1.6 matches it to D-121's `H` ("2 ×
 /// the longest cycle sold on the plan").
 ///

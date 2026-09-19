@@ -2,11 +2,12 @@
 //! (`design/02-plan-definition.md`).
 //!
 //! Slice 3 owns what one price row costs; this slice owns what the plan around
-//! those rows *is*: the billing-cycle matrix and its frequency metadata, the
+//! those rows *is*: the charge lines a phase actually carries and the frequency
+//! metadata they require, the
 //! phase graph with its `convertsToPhaseId` chain, the add-on composition
 //! rules, the billing descriptor set, and the availability and
 //! purchase-quantity window the plan sells in. Nothing here judges anything —
-//! the four validators (`CycleShapeValidator`, `CompositionValidator`,
+//! the validators (`charge_shape` rules, `CompositionValidator`,
 //! `PhaseGraph` rules, billing extension rules) register into
 //! [`crate::domain::validation`] the way the Slice-3 rules do, and every code
 //! they report is declared once in [`crate::domain::plan_rules`].
@@ -120,7 +121,7 @@
 //! the PRD writes it as `customEveryN{Days|Months}(n)` — neither states what
 //! the `frequency` column holds when the frequency is the custom one. The
 //! spelling follows the `snake_case` convention every other persisted token in
-//! this crate uses (`one_time_setup`, `all_subscriptions`, `whole_unit`); it is
+//! this crate uses (`one_time`, `all_subscriptions`, `whole_unit`); it is
 //! recorded here because a token invented in code and never written down is
 //! one a later document is free to contradict.
 
@@ -134,89 +135,12 @@ use uuid::Uuid;
 use crate::domain::contracts::{EntitlementGrants, PlanChangeContract};
 use crate::domain::draft_window::{DraftWindowEntry, WindowBaseline};
 use crate::domain::money::{CurrencyCode, MinorAmount};
+use crate::domain::charge_line::ChargeLineVersion;
+use crate::domain::market_price::MarketPriceVersion;
 use crate::domain::price_record::PriceRecord;
 use crate::domain::scope_key::{ChargeKind, PhaseId, PlanId, Region};
 use crate::domain::window::KeyWindows;
 use time::OffsetDateTime;
-
-/// The §17.1 billing-cycle matrix: what commercial shape the plan is.
-///
-/// The three predicates below are each named for the **rule that reads them**,
-/// so no rule re-derives the cycle set for itself. That matters more than it
-/// looks: `inst-ph-coverage` was scoped to `recurring`/`hybrid` by the
-/// review fix precisely because its literal reading blocked one-time
-/// and usage-only plans through their implicit terminal phase, and a rule that
-/// re-spelled the set would be free to re-acquire the defect.
-#[domain_model]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum BillingCycle {
-    /// A single charge; no recurrence.
-    OneTime,
-    /// A subscription fee on a [`Frequency`].
-    Recurring,
-    /// Metered consumption only.
-    Usage,
-    /// A recurring base **and** a metered part on one `planId`, on distinct
-    /// `chargeKind` keys.
-    Hybrid,
-}
-
-impl BillingCycle {
-    /// Every cycle, stable order.
-    pub const ALL: &'static [Self] = &[Self::OneTime, Self::Recurring, Self::Usage, Self::Hybrid];
-
-    /// Does the plan carry a recurring part?
-    ///
-    /// This is `inst-ph-coverage`'s **scope**: phase coverage by recurring rows
-    /// is required on `recurring` and `hybrid` plans and on nothing else,
-    /// because a one-time or usage-only plan has no recurring row that could
-    /// ever cover a phase and would fail a rule it can never satisfy.
-    #[must_use]
-    pub const fn has_recurring_part(self) -> bool {
-        matches!(self, Self::Recurring | Self::Hybrid)
-    }
-
-    /// Does the plan owe a metered part?
-    ///
-    /// `inst-cs-hybrid`'s half of `HYBRID_INCOMPLETE`, and the scope of D-84's
-    /// per-market line completeness: on a `hybrid` plan the usage part is
-    /// required **per sold market**, not merely somewhere, or the plan is
-    /// sellable in a market whose usage events fail closed.
-    #[must_use]
-    pub const fn requires_usage_part(self) -> bool {
-        matches!(self, Self::Usage | Self::Hybrid)
-    }
-
-    /// May the plan carry a `one_time_setup` row (`inst-cs-setup`)?
-    ///
-    /// It answers `true` on the same two cycles as
-    /// [`BillingCycle::has_recurring_part`] and is deliberately **not**
-    /// implemented in terms of it: the two are different sentences of the
-    /// design set — one scopes phase coverage, one permits a setup row — that
-    /// happen to name the same cycles today. Deriving one from the other would
-    /// make a future divergence a silent change to the wrong rule.
-    #[must_use]
-    pub const fn admits_setup_row(self) -> bool {
-        matches!(self, Self::Recurring | Self::Hybrid)
-    }
-
-    /// The persisted / wire token.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::OneTime => "one_time",
-            Self::Recurring => "recurring",
-            Self::Usage => "usage",
-            Self::Hybrid => "hybrid",
-        }
-    }
-}
-
-impl fmt::Display for BillingCycle {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
 
 /// The unit a custom recurring interval counts in.
 ///
@@ -753,10 +677,7 @@ pub struct PlanShape {
     /// tier-equality half of P3 is the one that will, and it needs the registry
     /// this gear does not call.
     pub sku_id: Uuid,
-    /// The §17.1 cycle. `None` is an authored-but-unfinished draft, not a
-    /// default: nothing in the matrix is implied.
-    pub billing_cycle: Option<BillingCycle>,
-    /// The recurring frequency, when the cycle has one.
+    /// Recurring frequency, when this revision carries recurring lines.
     pub frequency: Option<Frequency>,
     /// The plan's tier. Optional at draft and required at publish
     /// (`PLANTIER_MISSING`).
@@ -798,6 +719,13 @@ pub struct PlanShape {
     pub period_floor_caps: Vec<PeriodFloorCap>,
     /// The candidate row set the publish would produce; see the module doc.
     pub rows: Vec<PriceRecord>,
+    /// Effective logical charge lines for this revision. Empty on an unfinished
+    /// draft; publish rules range over these rather than a plan type.
+    pub charge_lines: Vec<ChargeLineVersion>,
+    /// Market money variants of [`Self::charge_lines`]. Sold markets are the
+    /// union of these variants, including effective bundle components the
+    /// caller has already folded in.
+    pub market_prices: Vec<MarketPriceVersion>,
     /// The entitlement grant set this revision publishes (Slice 6, §6, D-41):
     /// the plan-level set, the `PlanTier` it resolved from when it did, and any
     /// per-phase sets.
@@ -868,7 +796,6 @@ impl PlanShape {
             plan_id,
             revision,
             sku_id: Uuid::nil(),
-            billing_cycle: None,
             frequency: None,
             plan_tier: None,
             plan_name: None,
@@ -882,6 +809,8 @@ impl PlanShape {
             descriptor_ext: BTreeMap::new(),
             period_floor_caps: Vec::new(),
             rows: Vec::new(),
+            charge_lines: Vec::new(),
+            market_prices: Vec::new(),
             entitlement_grants: EntitlementGrants::default(),
             composites: Vec::new(),
             change_contract: PlanChangeContract::default(),

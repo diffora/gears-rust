@@ -30,7 +30,7 @@ pub const BILLING_DESCRIPTORS: &str = "/bss-pricing/v1/config/billing-descriptor
 pub struct BillingDescriptorPolicyView {
     /// Null clears the fallback and requires GL overrides on published rows.
     pub default_gl_code_ref: Option<String>,
-    /// Exactly `recurring`, `usage`, `one_time` and `one_time_setup` template sources.
+    /// Exactly `recurring`, `usage` and `one_time` template sources.
     pub default_line_templates: BTreeMap<String, String>,
 }
 

@@ -303,7 +303,6 @@ const fn charge_kind(kind: CorpusChargeKind) -> ChargeKind {
         CorpusChargeKind::Recurring => ChargeKind::Recurring,
         CorpusChargeKind::Usage => ChargeKind::Usage,
         CorpusChargeKind::OneTime => ChargeKind::OneTime,
-        CorpusChargeKind::OneTimeSetup => ChargeKind::OneTimeSetup,
     }
 }
 

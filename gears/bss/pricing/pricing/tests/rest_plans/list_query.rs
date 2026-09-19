@@ -80,10 +80,6 @@ async fn names_nulls_and_equal_sort_keys_are_not_lost_between_pages() {
             "plan_name asc,plan_id desc",
             vec![ids[2], ids[1], ids[0], ids[4], ids[3]],
         ),
-        (
-            "billing_cycle desc,plan_name asc",
-            vec![ids[1], ids[2], ids[0], ids[3], ids[4]],
-        ),
     ] {
         let rows = walk(&h, order).await;
         assert_eq!(

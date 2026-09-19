@@ -82,7 +82,6 @@ async fn seed_published_plan(provider: &DBProvider<DbError>, plan_id: PlanId) {
                 // by the store. `PlanShape.sku_id` stays `Option` until Task 8.
                 sku_id: Uuid::from_u128(5),
                 plan_tier: Some("gold".to_owned()),
-                billing_cycle: None,
                 frequency: None,
                 plan_tier_override: false,
                 purchase_min_qty: None,
@@ -377,7 +376,6 @@ async fn the_authoring_counts_group_in_the_engine_and_subtract_the_draft_shadow(
                 // by the store. `PlanShape.sku_id` stays `Option` until Task 8.
                 sku_id: Uuid::from_u128(5),
                 plan_tier: Some("gold".to_owned()),
-                billing_cycle: None,
                 frequency: None,
                 plan_tier_override: false,
                 purchase_min_qty: None,

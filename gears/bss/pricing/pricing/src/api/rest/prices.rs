@@ -216,7 +216,7 @@ pub struct ScopeKeyRequest {
     pub phase: Uuid,
     /// `all_subscriptions` | `new_subscriptions_only` | `existing_grandfathered`.
     pub price_eligibility: String,
-    /// `recurring` | `usage` | `one_time` | `one_time_setup`.
+    /// `recurring` | `usage` | `one_time`.
     pub charge_kind: String,
     /// The grandfathering generation's cutover instant, or `null` for a row
     /// that retains nobody.

@@ -50,7 +50,7 @@ use bss_pricing::domain::money::CurrencyCode;
 use bss_pricing::domain::money::{MinorAmount, RateMinor};
 use bss_pricing::domain::plan::PlanRevision;
 use bss_pricing::domain::plan_shape::Frequency;
-use bss_pricing::domain::plan_shape::{AddonRule, BillingCycle, PhaseKind, PlanPhase};
+use bss_pricing::domain::plan_shape::{AddonRule, PhaseKind, PlanPhase};
 use bss_pricing::domain::ports::metrics::PricingMetricsPort;
 use bss_pricing::domain::price_record::PriceContent as PriceContentAlias;
 use bss_pricing::domain::price_record::{PriceContent, PriceRecord};
@@ -1669,7 +1669,7 @@ pub async fn seed_current_plan(harness: &Harness, plan_id: Uuid) {
 ///
 /// `seed_current_plan` alone leaves a plan with **zero** phases and no
 /// frequency or descriptor set, which `PHASE_GRAPH_INVALID`,
-/// `CYCLE_METADATA_MISSING` and `DESCRIPTOR_INCOMPLETE` refuse outright. That
+/// `RECURRING_FREQUENCY_REQUIRED` and `DESCRIPTOR_INCOMPLETE` refuse outright. That
 /// was never reachable through this crate's raw seed doors —
 /// `Harness::publish`/`publish_price` bypass the rule set entirely — until a
 /// caller ran the **real** aggregate pass over a plan seeded this way, which
@@ -1691,7 +1691,6 @@ pub async fn seed_current_plan_with_phase(harness: &Harness, plan_id: Uuid) {
                 created_at_utc: at(10),
                 sku_id: Uuid::from_u128(0x5_c1),
                 plan_tier: Some("gold".to_owned()),
-                billing_cycle: Some(BillingCycle::Recurring),
                 frequency: Some(Frequency::Monthly),
                 plan_tier_override: false,
                 purchase_min_qty: None,
@@ -1858,7 +1857,6 @@ pub fn new_draft(plan_id: Uuid, tenant_id: Uuid) -> NewPlanDraft {
         // already used.
         sku_id: Uuid::from_u128(0x5_c1),
         plan_tier: Some("gold".to_owned()),
-        billing_cycle: Some(BillingCycle::Recurring),
         frequency: None,
         plan_tier_override: false,
         purchase_min_qty: None,
@@ -2559,7 +2557,6 @@ pub async fn seed_publishable_shape(harness: &Harness, plan_id: Uuid) -> Publish
                 created_at_utc: at(10),
                 sku_id: Uuid::from_u128(0x5_c1),
                 plan_tier: Some("gold".to_owned()),
-                billing_cycle: Some(BillingCycle::Recurring),
                 frequency: Some(Frequency::Monthly),
                 plan_tier_override: false,
                 purchase_min_qty: None,

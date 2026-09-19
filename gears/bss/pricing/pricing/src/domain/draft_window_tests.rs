@@ -30,7 +30,7 @@ fn key(charge_kind: &str) -> crate::domain::scope_key::MarketPriceScopeKey {
             PriceEligibility::AllSubscriptions,
             match charge_kind {
                 "recurring" => ChargeKind::Recurring,
-                _ => ChargeKind::OneTimeSetup,
+                _ => ChargeKind::OneTime,
             },
             Cohort::None,
             SkuId::new(Uuid::from_u128(5)),

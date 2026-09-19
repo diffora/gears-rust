@@ -190,7 +190,7 @@ pub const CHARGE_KINDS: &[ChargeKind] = &[
     ChargeKind::Recurring,
     ChargeKind::Usage,
     ChargeKind::OneTime,
-    ChargeKind::OneTimeSetup,
+    ChargeKind::OneTime,
 ];
 /// Where a non-usage `per_unit` row's quantity comes from.
 pub const QUANTITY_SOURCES: &[QuantitySource] = &[

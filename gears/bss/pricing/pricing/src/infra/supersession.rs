@@ -1492,7 +1492,7 @@ async fn stage_successor(
 /// side has to be the row the door *would have written*, not the row the wire carried.
 /// It used to normalize `supersedes_price_id` alone, and the door rewrites two more
 /// things: `charge_kind`, from the key, and the band order. So on a **usage**,
-/// `one_time` or `one_time_setup` key the two sides differed in `charge_kind` on every
+/// `one_time` key the two sides differed in `charge_kind` on every
 /// call — the wire cannot spell that axis — and a legitimately approved unit was refused
 /// here, permanently, with a remedy sentence ("re-send that content") no caller could
 /// act on. A body listing bands out of order failed the same way on any key. Both sides

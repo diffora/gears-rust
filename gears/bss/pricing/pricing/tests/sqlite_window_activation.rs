@@ -42,7 +42,7 @@ use bss_pricing::domain::draft_window::{
 };
 use bss_pricing::domain::events::CatalogEvent;
 use bss_pricing::domain::lifecycle::LifecycleState;
-use bss_pricing::domain::plan_shape::{BillingCycle, Frequency};
+use bss_pricing::domain::plan_shape::{Frequency};
 use bss_pricing::domain::scope_key::PlanId;
 use bss_pricing::domain::window::WindowState;
 use bss_pricing::infra::draft_window::{self, DraftWindowCommand};
@@ -1144,7 +1144,6 @@ async fn abandoned_draft_intentions_never_activate() {
                 created_at_utc: t(0),
                 sku_id: SKU,
                 plan_tier: None,
-                billing_cycle: Some(BillingCycle::Recurring),
                 frequency: Some(Frequency::Monthly),
                 plan_tier_override: false,
                 purchase_min_qty: None,

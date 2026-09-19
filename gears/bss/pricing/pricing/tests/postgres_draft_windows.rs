@@ -29,7 +29,7 @@ use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::materiality::{ThresholdBasis, ThresholdEntry};
 use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::plan::PlanShapePatch;
-use bss_pricing::domain::plan_shape::{BillingCycle, Frequency, PhaseKind, PlanPhase};
+use bss_pricing::domain::plan_shape::{Frequency, PhaseKind, PlanPhase};
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::publish::{PlanPublishUnit, PublishAuthorization};
@@ -125,7 +125,6 @@ fn new_draft(plan_id: PlanId, tenant_id: Uuid) -> NewPlanDraft {
         created_at_utc: t(1),
         sku_id: SKU,
         plan_tier: None,
-        billing_cycle: None,
         frequency: None,
         plan_tier_override: false,
         purchase_min_qty: None,
@@ -731,7 +730,6 @@ async fn seed_publishable_draft() -> (Store, u64) {
                 created_at_utc: race_now(),
                 sku_id: OFFER_SKU,
                 plan_tier: Some("gold".to_owned()),
-                billing_cycle: Some(BillingCycle::Recurring),
                 frequency: Some(Frequency::Monthly),
                 plan_tier_override: false,
                 purchase_min_qty: None,

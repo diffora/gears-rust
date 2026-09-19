@@ -169,7 +169,6 @@ async fn seed(provider: &DBProvider<DbError>) {
                 created_at_utc: at(10),
                 sku_id: Uuid::from_u128(0x5_c2),
                 plan_tier: Some("gold".to_owned()),
-                billing_cycle: None,
                 frequency: None,
                 plan_tier_override: false,
                 purchase_min_qty: None,

@@ -31,7 +31,7 @@ use uuid::Uuid;
 use crate::domain::concurrency::RowVersion;
 use crate::domain::contracts::{EntitlementGrants, PlanChangeContract};
 use crate::domain::lifecycle::LifecycleState;
-use crate::domain::plan_shape::{BillingCycle, Frequency};
+use crate::domain::plan_shape::Frequency;
 use crate::domain::scope_key::PlanId;
 use time::OffsetDateTime;
 
@@ -85,19 +85,6 @@ pub struct PlanRevision {
     /// those things. Every surface showed the tier only because there was
     /// nothing else to show.
     pub plan_name: Option<String>,
-    /// The plan's billing cycle.
-    ///
-    /// Typed, unlike [`PlanRevision::plan_tier`], and for the reason that field
-    /// is not: **Slice 2 owns this value set**. `billing_cycle` was a `String`
-    /// only while the rules that constrain it did not exist; they do now
-    /// ([`crate::domain::plan_shape::BillingCycle`], §17.1), so an enum here
-    /// fixes nothing prematurely — it names what the slice already fixed. The
-    /// tier's taxonomy is still **registry-owned**, which is why it stays a
-    /// `String` and the note on it still holds.
-    ///
-    /// `None` is an authored-but-unfinished draft, never a default: nothing in
-    /// the matrix is implied.
-    pub billing_cycle: Option<BillingCycle>,
     /// The recurring frequency, with a custom interval riding the variant.
     ///
     /// One field, three columns. `frequency`, `custom_interval_n` and
@@ -191,7 +178,7 @@ pub struct PlanRevision {
 /// from null at all. So this is a **known limitation, stated rather than
 /// designed around**, and it is now owed by whichever wave next changes the
 /// draft patch shape — not by a surface group. Slice 2 widens what it costs
-/// rather than quietly inheriting it: a `sku_id`, `plan_tier`, `billing_cycle`,
+/// rather than quietly inheriting it: a `sku_id`, `plan_tier`,
 /// `frequency`, `purchase_min_qty`, `purchase_max_qty`, `descriptor_ext`,
 /// `available_from` or `available_to` that has been set cannot be cleared
 /// through a patch — only replaced, or discarded by abandoning the draft
@@ -226,8 +213,6 @@ pub struct PlanShapePatch {
     /// the missing verb, and a plan that has been shown to an operator under a
     /// name is not improved by losing it.
     pub plan_name: Option<String>,
-    /// Move the plan's billing cycle.
-    pub billing_cycle: Option<BillingCycle>,
     /// Move the recurring frequency, interval and all; see the type doc.
     pub frequency: Option<Frequency>,
     /// Declare or withdraw the audited tier override (P3).

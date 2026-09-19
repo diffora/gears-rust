@@ -127,7 +127,7 @@ Design-introduced names (Slice 2):
 
 | Name | Meaning |
 |------|---------|
-| `CycleShapeValidator` | Registered rule set validating the billing-cycle matrix (§17.1) per plan |
+| `ChargeShapeValidator` | Registered rule set deriving plan behaviour from actual phase charge lines |
 | `CompositionValidator` | Registered rule set for `PlanTier`, meter injectivity, add-on rules (§17.3) |
 | `PhaseGraph` | The ordered phase set with `convertsToPhaseId` edges; validated acyclic with exactly one terminal phase |
 | `RowLineTemplateResolves` | Resolves and freezes each row's effective invoice line template at publish (**D-373**) |
@@ -142,7 +142,7 @@ flowchart TB
         REG["Catalog registry<br/>published SKUs · PlanTier taxonomy · meteringUnit"]
     end
     subgraph s2["Slice 2 — Plan Definition"]
-        CSV["CycleShapeValidator"]
+        CSV["ChargeShapeValidator"]
         CMP["CompositionValidator"]
         PHG["PhaseGraph"]
         DSC["Row descriptor rules + plan extension (D-373)"]
@@ -173,7 +173,7 @@ beside `taxCategory` and `billingTiming`; `invoiceGroupingKey` is removed (D-96 
 **Actor**: `cpt-cf-bss-pricing-actor-finance-manager`, `cpt-cf-bss-pricing-actor-product-manager`
 
 **Success Scenarios**:
-- A draft Plan is created against a **published** SKU with a billing cycle from the §17.1 matrix; add-on rules and phases attach incrementally in `draft`; descriptor overrides are authored on rows and the extension on the plan (**D-373**)
+- A draft Plan is created against a **published** SKU; charge kinds are whatever lines the phases actually carry; add-on rules and phases attach incrementally in `draft`; descriptor overrides are authored on rows and the extension on the plan (**D-373**)
 - A recurring plan persists `frequency` (`monthly|quarterly|semiannual|annual|customEveryN{Days|Months}(n)`) as metadata
 
 **Error Scenarios**:
@@ -184,7 +184,7 @@ beside `taxCategory` and `billingTiming`; `invoiceGroupingKey` is removed (D-96 
 **Steps**:
 1. [ ] - `p1` - API: POST /bss-pricing/v1/plans (draft; idempotency key honored) - `inst-pa-create`
 2. [ ] - `p1` - Validate the parent `skuId` is **published** in the registry read model The plan's own `skuId` is required, including for pay-as-you-go plans with no fee row (D-372). - `inst-pa-sku`
-3. [ ] - `p1` - Persist cycle + frequency metadata (`n` validated > 0 and ≤ cap, P1) - `inst-pa-cycle`
+3. [ ] - `p1` - Persist frequency metadata when recurring lines will exist (`n` validated > 0 and ≤ cap, P1) - `inst-pa-cycle`
 4. [ ] - `p1` - Attach add-on rules / phases via PATCH while `draft`; author descriptor overrides on price rows and `descriptor_ext` on the plan shape (**D-373**) - `inst-pa-attach`
 5. [ ] - `p1` - **RETURN** 201 (draft plan, ETag); `PlanCreated` emitted by the Foundation outbox - `inst-pa-return`
 
@@ -202,29 +202,28 @@ beside `taxCategory` and `billingTiming`; `invoiceGroupingKey` is removed (D-96 
 
 **Steps**:
 1. [ ] - `p1` - API: POST /bss-pricing/v1/plans/{planId}/publish - `inst-pp-api`
-2. [ ] - `p1` - Foundation `ValidationPipeline` executes `CycleShapeValidator` + `CompositionValidator` + `PhaseGraph` + row descriptor and plan-extension rules (**D-373**, this slice) alongside Slice-3 price rules - `inst-pp-validate`
+2. [ ] - `p1` - Foundation `ValidationPipeline` executes charge-shape rules + `CompositionValidator` + `PhaseGraph` + row descriptor and plan-extension rules (**D-373**, this slice) alongside Slice-3 price rules - `inst-pp-validate`
 3. [ ] - `p1` - On success: Foundation freezes the shape into the read model + snapshot, emits the frozen events, requests `CatalogVersion` ([`01-foundation.md`](./01-foundation.md) §4.2 steps 3–5) - `inst-pp-freeze`
 4. [ ] - `p1` - **RETURN** 202 (publish accepted / pending approval) or 422 (validation report) - `inst-pp-return`
 
 ## 3. Processes / Business Logic (CDSL)
 
-### Billing-Cycle Shape Validation
+### Charge-Shape Validation
 
-- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-cycle-shape`
+- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-charge-shape`
 
-**Input**: a draft plan + its price rows (rows authored via Slice 3)
+**Input**: a draft plan + its charge lines and market variants (flattened price rows until charge-line storage lands)
 **Output**: pass, or enumerated fail-closed violations
 
+Plan behaviour is derived from the charge lines a phase actually carries. Mixed kinds on one phase are legal. There is no live `billing_cycle` token and no live `one_time_setup` kind. **Supersedes** D-149's cycle dispatch (`inst-cs-declared`, `CYCLE_METADATA_MISSING`, `BASE_MARKET_INCOMPLETE`, `HYBRID_INCOMPLETE`, `USAGE_MARKET_INCOMPLETE`, `SETUP_ROW_INVALID`).
+
 **Steps**:
-0. [ ] - `p1` - **The cycle is declared (cycle-independent, evaluated before every step below; normative, D-149, 2026-08-03, found while building this validator):** a plan MUST carry a `billing_cycle` from the §17.1 matrix at publish; an unset one fails publish `CYCLE_METADATA_MISSING` (422, the field named) — the same code as the absent `frequency` in step 2, because the operator's next action is the same: author the field the plan is missing. Nothing required it. `billing_cycle` is nullable while a plan is authored incrementally in `draft` (Foundation §4.2 step 1), **every** rule of this step is conditioned on the cycle, and a rule that reads no cycle correctly declines to judge rather than reporting a fault the author did not make — so an unfinished draft carrying a `NULL` cycle passed this whole step **vacuously** and reached publish unjudged. A plan that has said nothing about how it charges is exactly the plan a fail-closed validator cannot protect - `inst-cs-declared`
-1. [ ] - `p1` - **One-time**: exactly one `one_time` base row **per sold `(currency, region)`** — the **at most one** half is the Foundation's published-plane scope-key partial `UNIQUE` (`chargeKind` is a key axis, §4.1), and the **at least one** half fails publish `BASE_MARKET_INCOMPLETE` (422, cycle, `chargeKind` and market named — **D-149**, 2026-08-03: the rule was stated here from the start and §5 named no code for it, so a one-time plan could publish with a sold market carrying no `one_time` row and be bought for nothing); optional purchase qty min/max (`purchase_min_qty ≤ purchase_max_qty` when both set, `PURCHASE_QTY_RANGE_INVALID` otherwise) + availability dates (past-`availableFrom` rule: `inst-cs-availability`). **Recurring-only add-ons are refused by `inst-cmp-addons` under `ADDON_INCOMPATIBLE`** — cross-referenced here, never re-registered (**D-149**: the refusal needs the add-on SKU's own published plans, which is the registry read the composition step already makes and this one does not) - `inst-cs-onetime`
-2. [ ] - `p1` - **Recurring**: ≥ 1 recurring base row per sold `(currency, region)` — `BASE_MARKET_INCOMPLETE` otherwise (**D-149**, the same code and the same rule as the one-time step's, over `chargeKind = recurring`; `HYBRID_INCOMPLETE` keeps its own meaning, a hybrid missing a whole part **anywhere**, and never reports a market); `billingTiming` REQUIRED on every recurring row (the requirement is **Slice 6's registered rule** — cross-referenced here, never re-registered; single owner, 2026-07-28 review fix); frequency metadata present, else `CYCLE_METADATA_MISSING` (422, the field named — **D-149**; a `recurring`/`hybrid` plan with no `frequency` says nothing about when it charges, and nothing rejected it); optional `one_time_setup` row allowed - `inst-cs-recurring`
-3. [ ] - `p1` - **Usage-based**: parent SKU `meteringUnit` required; `billingGranularity` on **all** usage rows; `tierAggregationWindow` when tiered **or `package`** (Slice 3 `inst-pk-window`, D-58 — block round-up is non-linear in the window; the "when tiered" wording had excluded the `package` case D-70 propagated everywhere else, 2026-07-31 review fix). **Per-market line completeness (D-84):** every `(skuId, dimensionKey)` line the plan prices MUST have a row in every sold `(currency, region)` of the plan (the union of its usage rows' markets) — `USAGE_MARKET_INCOMPLETE` otherwise, same rule and rationale as `inst-cs-hybrid` - **The per-line reading is storable, and was not before (D-196, decided by the product owner 2026-08-06):** the canonical scope key had no `meter` axis, so two usage lines of one plan in one market rendered one key and the second was refused `DUPLICATE_SCOPE_KEY` at authoring — this rule and D-103's example both presumed a storage shape Foundation §3.7 did not admit. The key now carries `(skuId, dimensionKey)` on `chargeKind = 'usage'` rows (Foundation §4.1), so a line here is a key there, and this rule's per-market completeness is checkable against rows that can all exist at once. **The implementation is owed** — D-196 carries the clauses — so until it lands the authoring door still refuses the second line - `inst-cs-usage`
-4. [ ] - `p1` - **Hybrid**: BOTH ≥ 1 recurring **and** ≥ 1 usage row on the same `planId` (distinct `chargeKind` keys); missing either part fails publish (`HYBRID_INCOMPLETE`, 422, the absent part named — the rule is about a part missing **anywhere** on the plan, never about a market, which is `BASE_MARKET_INCOMPLETE`'s and `USAGE_MARKET_INCOMPLETE`'s ground); optional `one_time_setup` allowed. **Per-market completeness (D-84, 2026-07-30 review fix):** the usage part is required **per sold market**, not merely anywhere — every `(skuId, dimensionKey)` line the plan prices (evaluated over its phase-invariant terminal-phase rows; phase-scoped overrides are additive and exempt) MUST have a published usage row in **every** `(currency, region)` where a recurring row exists, else publish fails (`USAGE_MARKET_INCOMPLETE`, 422, meter/dimension/market named). Otherwise a hybrid selling recurring in EUR+USD with usage only in EUR is sellable in USD, and the USD subscriber's usage events fail closed — the "sold but unrateable" state D-15/D-17 declare impossible by construction. A market where usage is genuinely free is an explicit `$0` row (Slice 3 Q5), never an absence - `inst-cs-hybrid`
-5. [ ] - `p1` - **Custom frequency**: `customEveryN Days(n)` MUST anchor `subscription_start`; `customEveryN Months(n)` MAY anchor `subscription_start` or `calendar_month` with month-end clamp + preserved anchor day (P2, D-20); non-positive/over-cap `n` fails - `inst-cs-customfreq`
-6. [ ] - `p1` - **Setup row**: `chargeKind=one_time_setup` allowed only on recurring/hybrid plans; validated as one-time — no recurrence, no `billingTiming`, no tier fields; first-class row (participates in approval/snapshot/preview), never a synthetic add-on SKU - `inst-cs-setup`
-7. [ ] - `p1` - **Setup charge timing (normative):** the setup row charges **once per subscription lifetime** — at activation, or for a plan with a `trial` phase at entry into the **first non-trial phase** (trial conversion; a cancelled trial is never charged setup). A plan change or `PlanLink` migration **never charges the target plan's setup row at all** — whether or not the origin plan carried one: setup is tied to **subscription activation**, not plan entry, so a plan-change entrant who never paid any setup is still not charged (Slice 11 honors this in the migration contract; wording sharpened 2026-07-30 review fix). The timing is published in the read model for Subscriptions/Billing - `inst-cs-setup-timing`
-8. [ ] - `p1` - **Availability dates (cycle-independent):** a past `availableFrom` is rejected on **every** billing cycle (`AVAILABLE_FROM_IN_PAST`) — with **no** sanctioned backdating anywhere in this gear since D-330 struck the Slice 5 historical-import path (2026-08-16), so the refusal is now unconditional rather than the default arm of a two-way rule (rule hoisted from the one-time step, 2026-07-28 review fix, confirmed 2026-07-31). The rule binds **newly set or changed** values only (2026-07-31 review fix): a revision re-publishing an **unchanged** `availableFrom` that has legitimately passed since the original publish is not backdating and passes — otherwise every later re-publish (a descriptor fix, a new market) of a once-future-dated plan would be blocked until the operator erased the date - `inst-cs-availability`
+0. [ ] - `p1` - **Ordinary phases carry logical charge lines at publish:** emptiness is counted on lines, not flattened currency rows (`PHASE_CHARGE_LINES_EMPTY`, 422, the phase named). An unfinished draft with no phases yet is not this fault - `inst-cs-charge-lines`
+1. [ ] - `p1` - **Frequency is required only when effective recurring lines exist** (`RECURRING_FREQUENCY_REQUIRED`, 422). One-time-only and usage-only plans owe none. `billingTiming` REQUIRED on every recurring row remains Slice 6's registered rule — cross-referenced here, never re-registered. Purchase qty min/max (`purchase_min_qty ≤ purchase_max_qty` when both set, `PURCHASE_QTY_RANGE_INVALID` otherwise). Recurring-only add-ons on a one-time-only plan remain `inst-cmp-addons` under `ADDON_INCOMPATIBLE` - `inst-cs-frequency` / `inst-cs-onetime`
+2. [ ] - `p1` - **Every applicable logical line in an ordinary phase owes a monetary binding in every sold market** (`LINE_MARKET_PRICE_MISSING`, 422, phase, line scope and market named). Sold markets are the union of that revision's variants, including bundle components. An explicit zero operand counts; absent operands or an absent variant do not. Eligibility, cohort and overlay applicability is preserved rather than multiplying incompatible selection classes. Parent SKU `meteringUnit` and usage `billingGranularity` / `tierAggregationWindow` remain Slice 3's rules - `inst-cs-market-price`
+3. [ ] - `p1` - **Custom frequency:** `customEveryN Days(n)` MUST anchor `subscription_start`; `customEveryN Months(n)` MAY anchor `subscription_start` or `calendar_month` with month-end clamp + preserved anchor day (P2, D-20); non-positive/over-cap `n` fails `INVALID_CUSTOM_INTERVAL` - `inst-cs-customfreq`
+4. [ ] - `p1` - **Per-phase usage lookup:** missing usage in the selected phase MUST NOT select another phase's tariff. Consecutive phase-local usage definitions must stay counter-compatible (SKU/meter/dimension, unit/denomination, aggregation function/granularity/window, package size and existing `unit_determining_mismatch` axes). Price amount, phase id and line id alone MUST NOT fail continuation (`PHASE_USAGE_INCOMPATIBLE`, 422). **Supersedes** terminal-phase usage inheritance; `PhaseOverrideBase` / `PhaseOverrideUnits` remain as types and are unregistered from the default pipeline - `inst-ph-usage-compatible`
+5. [ ] - `p1` - **Availability dates:** a past `availableFrom` is rejected (`AVAILABLE_FROM_IN_PAST`) — with **no** sanctioned backdating anywhere in this gear since D-330 struck the Slice 5 historical-import path (2026-08-16). The rule binds **newly set or changed** values only: a revision re-publishing an **unchanged** `availableFrom` that has legitimately passed since the original publish is not backdating and passes - `inst-cs-availability`
 
 ### Plan Composition Validation
 
@@ -305,8 +304,8 @@ Pricing freezes the **template string**, never the rendered label (**D-373**): B
 the invoice locale and period. Authored literals remain single-language; `{sku}` inherits
 registry localization from the pinned version.
 
-**Shipped tenant defaults (D-373):** the `default_line_templates` map is keyed by the four
-`charge_kind` values and uses exactly these ASCII literals; typographic dash and middle-dot
+**Shipped tenant defaults (D-373):** the `default_line_templates` map is keyed by the three
+live `charge_kind` values and uses exactly these ASCII literals; typographic dash and middle-dot
 forms are prose only, not shipped literals.
 
 | `charge_kind` | default template |
@@ -314,7 +313,6 @@ forms are prose only, not shipped literals.
 | `recurring` | `{sku} - {period}` |
 | `usage` | `{sku}, {unit}` |
 | `one_time` | `{sku}` |
-| `one_time_setup` | `{sku} setup` |
 
 A tenant may edit or empty any default through the policy door (**D-373**); an empty default
 with no authored row override fails the row-template publish rule. The parser accepts only
@@ -360,19 +358,16 @@ so its `revision` number stays consumed (`inst-pl-abandon`, D-145); optional `Pl
 | `PATCH` | `/bss-pricing/v1/plans/{planId}` | Update draft shape — **exactly one** of shape (including `descriptor_ext`), phases, add-ons, composites, period floor/cap per call (**D-373** removes the separate descriptors facet; row overrides use the price door) (**D-173**; the composites facet is Slice 10's, authorized by `inst-ad-author`; the period floor/cap facet is **D-319**'s) | ETag |
 | `POST` | `/bss-pricing/v1/plans/{planId}/publish` | Run fail-closed validation + submit for approval/publish | per plan revision |
 | `POST` | `/bss-pricing/v1/plans/{planId}/abandon` | **Discard the plan's open draft revision** — the author-driven arm of `inst-pl-abandon` (**D-145**): the row flips to the terminal `abandoned` state, its child copies drop, the flip is audited, and the `revision` number stays consumed. It is never deleted, so the verb is not `DELETE` | ETag |
-| `GET` | `/bss-pricing/v1/plans` | One canonical authoring revision per plan (draft, else current published/retired), **then** filters, SQL ordering and cursor pagination (**D-367**, superseding the old D-125 collapse). Sort: `plan_id`, `plan_name`, `lifecycle_state`, `billing_cycle`, `created_at`, `price_row_count`; stable ID tie-breaker, NULLS LAST in both directions. Response: `pending_approvals`, `price_row_count`, `model_kinds`, `currencies`. Query-only filters: `has_pending_approvals`, `model_kind`, `currency`, plus `plan_name` and existing scalar keys. Plan timestamps: original `created_at`, shown `revision_created_at`; no `created_at_utc`. Shared OData toolkit unchanged. See [read contract and examples](./ui-read-contracts.md#plan-list-queries-and-creation-timestamps). | — |
+| `GET` | `/bss-pricing/v1/plans` | One canonical authoring revision per plan (draft, else current published/retired), **then** filters, SQL ordering and cursor pagination (**D-367**, superseding the old D-125 collapse). Sort: `plan_id`, `plan_name`, `lifecycle_state`, `created_at`, `price_row_count`; stable ID tie-breaker, NULLS LAST in both directions. Response: `pending_approvals`, `price_row_count`, `model_kinds`, `currencies`. Query-only filters: `has_pending_approvals`, `model_kind`, `currency`, plus `plan_name` and existing scalar keys. Plan timestamps: original `created_at`, shown `revision_created_at`; no `created_at_utc`. Shared OData toolkit unchanged. See [read contract and examples](./ui-read-contracts.md#plan-list-queries-and-creation-timestamps). | — |
 | `GET` | `/bss-pricing/v1/plans/counts` | The tenant's plans counted by **authoring** state — a plan with an open draft is `draft`, else its current revision's state, the list's own collapse — over the **whole** catalogue: `{ total, draft, published, retired }`, `total` the number of plans (**D-360**). A static segment beside `{planId}`; `plan × read`, no resource | — |
 | `GET` | `/bss-pricing/v1/plans/{planId}` | Read the plan's **editable revision** — its open draft if it holds one, else its current revision (**D-170**; published content is *consumed* via the read model), and `pending_approvals` — submitted direct revision/window/price units, else `[]` (**D-361**; same three-field DTO as list, sorted by submission time then id; **D-366**: private/no-store, no 304; ETag remains the authored-content write token) | — |
 
 **Problem responses (RFC 9457):** `SKU_NOT_PUBLISHED` (422), `INVALID_CUSTOM_INTERVAL` (422),
-`CYCLE_METADATA_MISSING` (422 — the plan carries no `billing_cycle`, or a `recurring`/`hybrid`
-plan carries no `frequency`; the field is named; **D-149**),
-`BASE_MARKET_INCOMPLETE` (422 — a sold `(currency, region)` with no base row of the
-`chargeKind` the plan's cycle mandates: no `one_time` row on a one-time plan, no `recurring` row
-on a recurring or hybrid one; cycle, `chargeKind` and market named; **D-149** — the base-side
-sibling of `USAGE_MARKET_INCOMPLETE`),
-`HYBRID_INCOMPLETE` (422), `USAGE_MARKET_INCOMPLETE` (422 — a priced `(skuId, dimensionKey)`
-line missing a usage row for a sold `(currency, region)`; D-84), `PLAN_NAME_INVALID` (422, D-318), `PLANTIER_MISSING`/`PLANTIER_DIVERGENT` (422), `METER_AMBIGUOUS`
+`PHASE_CHARGE_LINES_EMPTY` (422 — an ordinary phase with no logical charge lines at publish; emptiness is counted on lines, not flattened currency rows),
+`RECURRING_FREQUENCY_REQUIRED` (422 — recurring lines exist and frequency is unset),
+`LINE_MARKET_PRICE_MISSING` (422 — a logical line in a phase has no monetary binding in a sold market; phase, line and market named; an explicit zero operand counts; absent operands or an absent variant do not),
+`PHASE_USAGE_INCOMPATIBLE` (422 — consecutive phase-local usage definitions are missing or counter-incompatible; lookup is phase-local and must not inherit another phase's tariff),
+`PLAN_NAME_INVALID` (422, D-318), `PLANTIER_MISSING`/`PLANTIER_DIVERGENT` (422), `METER_AMBIGUOUS`
 (422), `ADDON_CYCLE`/`ADDON_INCOMPATIBLE` (422 — the second now also carrying the recurring-only
 add-on attached to a one-time plan, **D-149**), `ADDON_QTY_RANGE_INVALID` (422 — a required
 add-on with `maxQty < 1`, `minQty > maxQty`, or `stepQty ≤ 0`; the offending bound named;
@@ -414,8 +409,7 @@ guard has no referent, D-84 completeness never sees the line, and the line resol
 after conversion),
 `TERMINAL_PHASE_CHANGED` (422 — a revision re-terminalizing an existing phase or introducing a
 different terminal phase, `inst-ph-terminal-stable`, **D-64**), `PHASE_IN_USE` (422 — a revision dropping
-a phase still referenced by a current published price row), `SETUP_ROW_INVALID` (422 — setup row on a
-one-time plan, or carrying recurrence/`billingTiming`/tier fields),
+a phase still referenced by a current published price row),
 `PURCHASE_QTY_RANGE_INVALID` (422 — `purchase_min_qty > purchase_max_qty`),
 `AVAILABLE_FROM_IN_PAST` (422 — no exception since D-330),
 `METER_USAGE_TYPE_UNBOUND` (422 — the row's meter carries no registry `usageTypeRef`; UC3),
@@ -432,7 +426,7 @@ declared active GL vocabulary, `inst-ds-glcode`; one finding per row; an empty v
 constrains nothing and an absent code is `GL_CODE_UNRESOLVED`'s; **D-356**, **D-373**),
 `PERIOD_FLOOR_CAP_MARKET_UNSOLD` (422 — a period floor/cap authored on a `(currency, region)`
 the plan prices nothing in; the market named; **D-319** — the mirror of
-`BASE_MARKET_INCOMPLETE`, which asks the same question from the market's side),
+`LINE_MARKET_PRICE_MISSING`, which asks the same question from the market's side),
 `PERIOD_FLOOR_CAP_AMOUNT_INVALID` (422 — a period bound that admits no bill: a `0` floor, a
 `0` cap, a floor above its cap, or an entry authoring neither; the offending bound named;
 **D-319** — `0` is refused because the per-line non-negative guard already makes
@@ -562,9 +556,7 @@ per Foundation §2.2 authz-gate + S5 `inst-rb-pep`; `pricing_` prefix per Founda
 draft rows mutable, published rows append-only per Foundation §4.3):
 
 **`pricing_plan` (Foundation-owned; Slice-2 columns)** — extends the Foundation-owned table
-with **slice-declared columns** (capability semantics owned here): `billing_cycle`
-(`one_time|recurring|usage|hybrid`; nullable in `draft` — a plan is authored incrementally —
-and REQUIRED at publish by `inst-cs-declared`, D-149), `frequency`
+with **slice-declared columns** (capability semantics owned here): `frequency`
 (`monthly|quarterly|semiannual|annual|custom_every_n` — the last is the persisted token for the
 PRD's `customEveryN{Days|Months}(n)`, whose interval rides `custom_interval_n`/
 `custom_interval_unit`; neither document had said what the column holds for the custom case, and
@@ -685,29 +677,26 @@ metric (§10), not an operational alarm.
 
 ## 8. Definitions of Done
 
-### Billing-Cycle Matrix
+### Charge Shape
 
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-dod-billing-cycles`
 
-The system **MUST** support authoring and fail-closed publish of the §17.1 cycle matrix —
+The system **MUST** derive plan behaviour from the charge lines a phase actually carries —
 one-time, recurring (incl. `customEveryN{Days|Months}(n)` with `n > 0` ≤ cap and
-`subscription_start` anchoring for custom-days), usage-based, and hybrid (both parts required
-— the usage part **per sold market and per priced `(skuId, dimensionKey)` line**,
-`USAGE_MARKET_INCOMPLETE` otherwise, D-84). Publish **MUST** reject a plan that declares no
-`billing_cycle` at all and a recurring/hybrid plan that declares no `frequency`
-(`CYCLE_METADATA_MISSING`), and **MUST** reject a sold `(currency, region)` carrying no base row
-of the cycle's mandated `chargeKind` (`BASE_MARKET_INCOMPLETE`) — both **D-149**
-— with the optional first-class `one_time_setup` row validated as one-time, and its charge
-semantics (once per subscription lifetime; at activation, or at trial conversion for trialed
-plans; never charged on plan change/`PlanLink` migration, whether or not the origin plan
-carried one) projected into the read model.
+`subscription_start` anchoring for custom-days), usage, and mixed kinds on one phase are
+legal. Publish **MUST** reject an ordinary phase with no logical charge lines
+(`PHASE_CHARGE_LINES_EMPTY`), a revision with recurring lines and no `frequency`
+(`RECURRING_FREQUENCY_REQUIRED`), and a logical line with no monetary binding in a sold
+market (`LINE_MARKET_PRICE_MISSING`). Consecutive phase-local usage definitions **MUST** stay
+counter-compatible (`PHASE_USAGE_INCOMPATIBLE`); lookup is per-phase. `one_time_setup` and
+`billing_cycle` are not live contract.
 
-**Implements**: `cpt-cf-bss-pricing-algo-cycle-shape`, `cpt-cf-bss-pricing-flow-plan-author`
+**Implements**: `cpt-cf-bss-pricing-algo-charge-shape`, `cpt-cf-bss-pricing-flow-plan-author`
 
 **Touches**:
 - API: `POST/PATCH /bss-pricing/v1/plans`, `POST /bss-pricing/v1/plans/{planId}/publish`
-- DB: `pricing_plan` (cycle/frequency columns)
-- Entities: `CycleShapeValidator`
+- DB: `pricing_plan` (frequency columns; no `billing_cycle`)
+- Entities: `ChargeShapeValidator`
 
 ### Plan Composition & PlanTier
 
@@ -829,7 +818,7 @@ Delta over the Foundation testing architecture (levels + mocking inherited).
 
 Unit:
 
-- [ ] Cycle-matrix validation per §17.1 (each cycle's required/forbidden fields); custom-`n` bounds + anchoring; hybrid completeness; setup-row one-time constraints; one-time purchase-qty range (`minQty > maxQty` rejected) + past-`availableFrom` rejection (any cycle — `inst-cs-availability`); PlanTier equality/override; add-on cycle detection over plan-authored `depends_on` edges (an edge outside the plan's add-on set fails; conflict symmetry normalized; two required conflicting add-ons fail); add-on override-home resolution (unpublished ref or uncovered `(currency, region)` fails); phase-graph acyclicity + single terminal + non-terminal duration required + **linear chain** (a skip/branch/unreachable phase fails, `PHASE_CHAIN_NONLINEAR`; the entry phase = lowest ordinal — L-3 fix); a phase-scoped usage override changing `billingGranularity`/`model_kind`/a window/`package_size` vs its terminal-phase row fails (`PHASE_OVERRIDE_UNIT_MISMATCH`, D-89/D-122) while a `$0` same-denomination trial override passes; a phase-scoped usage row whose `(skuId, dimensionKey)` line has **no** terminal-phase row fails (`PHASE_OVERRIDE_ORPHANED`, D-117); a draft whose price row keys on a phase the revision does not attach fails publish naming the row **and** the phase (`PHASE_ROW_ORPHANED`, **D-337**) while the same row on an attached phase passes, and a draft carrying **several** such rows names every one of them rather than the first — the remediation is per row, and the shape that motivated the rule had four; a revision re-publishing an **unchanged** now-past `availableFrom` passes while setting a new past value fails (`inst-cs-availability`); plan descriptor extension — including a required key declared in `pricing_policy_object` and absent from `pricing_plan.descriptor_ext` (`DESCRIPTOR_INCOMPLETE`, **D-152**, **D-373**); a plan with no `billing_cycle` and a recurring plan with no `frequency` each fail naming the field (`CYCLE_METADATA_MISSING`, **D-149**); a one-time plan selling two markets with a `one_time` row in one, and a recurring plan likewise, each fail naming cycle, `chargeKind` and market (`BASE_MARKET_INCOMPLETE`, D-149) while a hybrid missing its whole recurring part still reports `HYBRID_INCOMPLETE`; a required add-on with `maxQty = 0`, an inverted `minQty`/`maxQty` pair and a `stepQty` of 0 each fail naming the bound (`ADDON_QTY_RANGE_INVALID`, **D-150**); `displayTrialDays` on an `interim` phase, and on the `evergreen` terminal phase that carries no duration, both fail (`DISPLAY_TRIAL_DAYS_INVALID`, **D-151**) while a `trial` phase projecting its own duration passes; a period floor authored on a `(currency, region)` the plan prices nothing in fails naming the market (`PERIOD_FLOOR_CAP_MARKET_UNSOLD`, **D-319**) while the same amount on a sold market passes, and an unsold **currency** on a sold region fails the same way; a `0` floor, a `0` cap, a floor one minor unit above its cap and an entry authoring neither each fail naming the bound (`PERIOD_FLOOR_CAP_AMOUNT_INVALID`, **D-319**) while an equal floor and cap pass — a fixed-fee plan is not a contradiction — and a plan authoring **no** bound at all passes, absence being how "no minimum" is said
+- [ ] Charge-shape validation: ordinary-phase logical lines (`PHASE_CHARGE_LINES_EMPTY`); frequency only when recurring lines exist (`RECURRING_FREQUENCY_REQUIRED`); per-line monetary bindings in every sold market (`LINE_MARKET_PRICE_MISSING`; explicit zero counts); consecutive phase-local usage counter-compatibility (`PHASE_USAGE_INCOMPATIBLE`); custom-`n` bounds; one-time purchase-qty range (`minQty > maxQty` rejected) + past-`availableFrom` rejection (`inst-cs-availability`); PlanTier equality/override; add-on cycle detection over plan-authored `depends_on` edges (an edge outside the plan's add-on set fails; conflict symmetry normalized; two required conflicting add-ons fail); add-on override-home resolution (unpublished ref or uncovered `(currency, region)` fails); phase-graph acyclicity + single terminal + non-terminal duration required + **linear chain** (a skip/branch/unreachable phase fails, `PHASE_CHAIN_NONLINEAR`; the entry phase = lowest ordinal — L-3 fix); a draft whose price row keys on a phase the revision does not attach fails publish naming the row **and** the phase (`PHASE_ROW_ORPHANED`, **D-337**) while the same row on an attached phase passes, and a draft carrying **several** such rows names every one of them rather than the first — the remediation is per row, and the shape that motivated the rule had four; a revision re-publishing an **unchanged** now-past `availableFrom` passes while setting a new past value fails (`inst-cs-availability`); plan descriptor extension — including a required key declared in `pricing_policy_object` and absent from `pricing_plan.descriptor_ext` (`DESCRIPTOR_INCOMPLETE`, **D-152**, **D-373**); a required add-on with `maxQty = 0`, an inverted `minQty`/`maxQty` pair and a `stepQty` of 0 each fail naming the bound (`ADDON_QTY_RANGE_INVALID`, **D-150**); `displayTrialDays` on an `interim` phase, and on the `evergreen` terminal phase that carries no duration, both fail (`DISPLAY_TRIAL_DAYS_INVALID`, **D-151**) while a `trial` phase projecting its own duration passes; a period floor authored on a `(currency, region)` the plan prices nothing in fails naming the market (`PERIOD_FLOOR_CAP_MARKET_UNSOLD`, **D-319**) while the same amount on a sold market passes, and an unsold **currency** on a sold region fails the same way; a `0` floor, a `0` cap, a floor one minor unit above its cap and an entry authoring neither each fail naming the bound (`PERIOD_FLOOR_CAP_AMOUNT_INVALID`, **D-319**) while an equal floor and cap pass — a fixed-fee plan is not a contradiction — and a plan authoring **no** bound at all passes, absence being how "no minimum" is said
 
 - [ ] **D-373** template vocabulary: accept exactly the seven §3 names and all four exact ASCII defaults; reject an unknown placeholder at both row and policy writes with `LINE_TEMPLATE_INVALID`. An authored literal remains single-language; pinned SKU display data supports localized rendering.
 - [ ] **D-373** row resolution: an authored template/GL override wins over its tenant default; otherwise the default resolves by charge kind (template) or tenant (GL). An empty effective template yields `DESCRIPTOR_INCOMPLETE`; an empty effective GL yields `GL_CODE_UNRESOLVED` even with warn policy or empty vocabulary. Every failing row is named by `priceId`.
@@ -837,8 +826,8 @@ Unit:
 
 Integration (testcontainers):
 
-- [ ] A hybrid plan (recurring + usage + setup) publishes; removing either mandatory part fails publish with the part named
-- [ ] A hybrid selling recurring in two markets with a usage line priced in only one fails publish (`USAGE_MARKET_INCOMPLETE`, meter + market named); adding the missing row — a `$0` amount is legal — unblocks; a usage-only plan pricing meter M1 in two markets and M2 in one fails the same way (D-84) — and **publishes** once M2's second market is added, because a plan pricing several meters is legal (D-103): only a **duplicate** `(skuId, dimensionKey)` line within one scope-key slice fails, with `METER_AMBIGUOUS`
+- [ ] A plan with mixed recurring + usage + one-time lines in one phase publishes; an ordinary phase with no logical lines fails `PHASE_CHARGE_LINES_EMPTY`; a line missing a sold-market binding fails `LINE_MARKET_PRICE_MISSING` (a `$0` amount is legal)
+- [ ] A plan selling two markets with a logical line priced in only one fails publish (`LINE_MARKET_PRICE_MISSING`, phase + line + market named); adding the missing binding — a `$0` amount is legal — unblocks; a usage-only plan pricing meter M1 in two markets and M2 in one fails the same way — and **publishes** once M2's second market is added, because a plan pricing several meters is legal (D-103): only a **duplicate** `(skuId, dimensionKey)` line within one scope-key slice fails, with `METER_AMBIGUOUS`
 - [ ] A plan carrying **three** add-on rules round-trips: all three persist under the revision (D-105 — the key carries `addon_sku_id`), the `depends_on` cycle walk sees all three edges, and a draft revision's edit copies all three under the new `plan_revision`
 - [ ] A plan against a draft SKU fails publish (`SKU_NOT_PUBLISHED`)
 - [ ] `customEveryN Days(30)` with `calendar_month` anchor fails publish
