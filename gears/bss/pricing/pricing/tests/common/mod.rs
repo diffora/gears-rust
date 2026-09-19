@@ -81,7 +81,7 @@ pub async fn migrated_db() -> DatabaseConnection {
 /// about which rejections the database produces.
 pub async fn exec(conn: &DatabaseConnection, sql: &str) -> Result<(), sea_orm::DbErr> {
     conn.execute_raw(Statement::from_string(
-        sea_orm::DatabaseBackend::Sqlite,
+        conn.get_database_backend(),
         sql.to_owned(),
     ))
     .await
@@ -109,7 +109,7 @@ pub async fn must_succeed(conn: &DatabaseConnection, sql: &str) {
 pub async fn scalar(conn: &DatabaseConnection, sql: &str) -> String {
     let row = conn
         .query_one_raw(Statement::from_string(
-            sea_orm::DatabaseBackend::Sqlite,
+            conn.get_database_backend(),
             sql.to_owned(),
         ))
         .await
@@ -919,12 +919,21 @@ pub async fn seed_charge_graph_sql(
     )
     .to_string();
 
+    // One seeder for both engines: the statements differ only in how
+    // "insert unless present" is spelled and in the schema the tables live in, and
+    // a second copy of this graph for the Postgres suites is exactly how they fell a
+    // whole task behind the mirror's.
+    let (insert, schema, absent) = match conn.get_database_backend() {
+        sea_orm::DatabaseBackend::Postgres => ("INSERT INTO", "bss.", " ON CONFLICT DO NOTHING"),
+        _ => ("INSERT OR IGNORE INTO", "", ""),
+    };
+
     must_succeed(
         conn,
         &format!(
-            "INSERT OR IGNORE INTO pricing_charge_line (tenant_id, charge_line_id, plan_id, \
+            "{insert} {schema}pricing_charge_line (tenant_id, charge_line_id, plan_id, \
              phase, price_eligibility, charge_kind, cohort, sku_id, dimension_key) VALUES \
-             ('{}','{charge_line_id}','{}','{}','{}','{}','{}','{}','{}')",
+             ('{}','{charge_line_id}','{}','{}','{}','{}','{}','{}','{}'){absent}",
             seed.tenant_id,
             seed.plan_id,
             seed.phase,
@@ -943,10 +952,10 @@ pub async fn seed_charge_graph_sql(
     must_succeed(
         conn,
         &format!(
-            "INSERT OR IGNORE INTO pricing_charge_line_version (tenant_id, line_version_id, \
+            "{insert} {schema}pricing_charge_line_version (tenant_id, line_version_id, \
              charge_line_id, plan_revision, lifecycle_state, model_kind, created_by, \
              created_at_utc, row_version) VALUES \
-             ('{}','{line_version_id}','{charge_line_id}',{},'{}',{model_kind},'{}','{}',0)",
+             ('{}','{line_version_id}','{charge_line_id}',{},'{}',{model_kind},'{}','{}',0){absent}",
             seed.tenant_id,
             seed.plan_revision,
             seed.lifecycle_state,
@@ -959,9 +968,9 @@ pub async fn seed_charge_graph_sql(
     must_succeed(
         conn,
         &format!(
-            "INSERT OR IGNORE INTO pricing_market_price (tenant_id, market_price_id, \
+            "{insert} {schema}pricing_market_price (tenant_id, market_price_id, \
              charge_line_id, currency, region) VALUES \
-             ('{}','{market_price_id}','{charge_line_id}','{}','{}')",
+             ('{}','{market_price_id}','{charge_line_id}','{}','{}'){absent}",
             seed.tenant_id, seed.currency, seed.region,
         ),
     )

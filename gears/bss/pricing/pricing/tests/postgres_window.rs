@@ -61,6 +61,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
+mod common;
 mod pg_support;
 
 use bss_pricing::domain::instant::format_rfc3339;
@@ -72,6 +73,8 @@ use time::OffsetDateTime;
 const TENANT: &str = "11111111-1111-1111-1111-111111111111";
 const PLAN: &str = "22222222-2222-2222-2222-222222222222";
 const PHASE: &str = "33333333-3333-3333-3333-333333333333";
+/// The SKU the seeded charge lines meter, as the mirror's pair names it.
+const SKU: &str = "00000000-0000-0000-0000-000000000005";
 const ACTOR: &str = "44444444-4444-4444-4444-444444444444";
 
 /// The price row every window here hangs off.
@@ -138,16 +141,29 @@ async fn applied_pg() -> (Pg, DatabaseConnection) {
     let pg = Pg::applied().await;
     let conn = pg.raw().await;
     for (id, charge_kind) in [(ROW, "recurring"), (OTHER_ROW, "one_time")] {
+        // The same graph the mirror's pair seeds, through the same seeder: a price
+        // row is a monetary version now and owns no scope axis, so it has to hang
+        // off a charge line, that line's version and a market.
+        let graph = common::seed_charge_graph_sql(
+            &conn,
+            &common::SqlGraphSeed {
+                charge_kind,
+                created_by: ACTOR,
+                created_at_utc: "2026-08-04 09:00:00+00",
+                ..common::SqlGraphSeed::new(TENANT, PLAN, PHASE, SKU)
+            },
+        )
+        .await;
         must_succeed(
             &conn,
             &format!(
-                "INSERT INTO bss.pricing_price (sku_id,
-                     price_id, tenant_id, plan_id, currency, region, phase,
-                     charge_kind, amount_minor, model_kind, lifecycle_state,
+                "INSERT INTO bss.pricing_price (
+                     price_id, tenant_id, plan_id, plan_revision, charge_line_id,
+                     line_version_id, market_price_id, amount_minor, lifecycle_state,
                      created_by, created_at_utc)
-                 VALUES ('55555555-5555-5555-5555-555555555555', '{id}', '{TENANT}', '{PLAN}', 'USD', 'EU', '{PHASE}',
-                     '{charge_kind}', 1000, 'flat', 'published', '{ACTOR}',
-                     '2026-08-04 09:00:00+00')"
+                 VALUES ('{id}', '{TENANT}', '{PLAN}', 0, '{}', '{}', '{}',
+                     1000, 'published', '{ACTOR}', '2026-08-04 09:00:00+00')",
+                graph.charge_line_id, graph.line_version_id, graph.market_price_id
             ),
         )
         .await;
@@ -189,12 +205,27 @@ async fn must_be_rejected(conn: &DatabaseConnection, sql: &str, by: &str) {
     );
 }
 
+/// The market of one of the two seeded price rows, derived the way
+/// [`common::seed_charge_graph_sql`] derives it.
+///
+/// A window carries its row's market: non-overlap is judged per market and the
+/// table's foreign key is the compound `(tenant_id, price_id, market_price_id)`.
+fn market_of(price_id: &str) -> String {
+    let charge_kind = if price_id == OTHER_ROW {
+        "one_time"
+    } else {
+        "recurring"
+    };
+    common::sql_market_id(TENANT, PLAN, PHASE, SKU, charge_kind, "USD", "EU")
+}
+
 /// A window row's columns, as a name/value list a test may move one entry of.
 fn base_window(id: &str) -> Vec<(String, String)> {
     [
         ("window_id", format!("'{id}'")),
         ("tenant_id", format!("'{TENANT}'")),
         ("price_id", format!("'{ROW}'")),
+        ("market_price_id", format!("'{}'", market_of(ROW))),
         ("effective_from", FUTURE_FROM.to_owned()),
         ("effective_to", FUTURE_TO.to_owned()),
         ("state", "'scheduled'".to_owned()),
@@ -219,6 +250,23 @@ fn insert(id: &str, overrides: &[(&str, &str)]) -> String {
             Some(slot) => (*value).clone_into(&mut slot.1),
             None => columns.push(((*name).to_owned(), (*value).to_owned())),
         }
+    }
+    // **The market follows the row, after the overrides** -- as in the mirror's
+    // pair. A case that overrides `price_id` and left the market behind would be
+    // refused by the compound foreign key instead of by the guard it names.
+    let row = columns
+        .iter()
+        .find(|(column, _)| column == "price_id")
+        .map_or_else(
+            || ROW.to_owned(),
+            |(_, value)| value.trim_matches('\'').to_owned(),
+        );
+    let market = market_of(&row);
+    if let Some(slot) = columns
+        .iter_mut()
+        .find(|(column, _)| column == "market_price_id")
+    {
+        slot.1 = format!("'{market}'");
     }
     let names = columns
         .iter()

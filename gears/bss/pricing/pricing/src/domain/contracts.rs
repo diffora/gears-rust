@@ -615,7 +615,7 @@ fn is_recurring(charge_kind: ChargeKind) -> bool {
 /// on the read side for every non-recurring kind at once.
 ///
 /// The tokens are the **stored** spelling (`advance` / `arrears`), which is what
-/// `chk_pricing_price_billing_timing` admits and what a recurring row already
+/// `chk_pricing_charge_line_version_billing_timing` admits and what a recurring row already
 /// projects. See this module's note in the hand-back on the design set's
 /// `in_advance` / `in_arrears` prose.
 #[must_use]

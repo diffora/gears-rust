@@ -24,7 +24,15 @@ use schema_dump::postgres_dump;
 ///
 /// The same number the `SQLite` half asserts, and asserted here for the same reason: an
 /// over-eager filter produces a dump that is perfectly deterministic and perfectly useless.
-const PRICING_TABLES: usize = 43;
+///
+/// 43 until the charge-line split, which added `pricing_charge_line`, its version,
+/// `pricing_charge_tier` and `pricing_market_price`. **This half fell behind its
+/// sibling by one task**: the `SQLite` golden is regenerated from an in-memory
+/// database and moved with the migrations, while this one needs the Postgres
+/// harness, which the programme runs once at the end rather than per task. So the
+/// count and the golden below were both stale while every fast-tier run stayed
+/// green — the two cases that read them are `#[ignore]`d behind that harness.
+const PRICING_TABLES: usize = 47;
 
 fn tables_in(dump: &str) -> Vec<String> {
     let mut names: Vec<String> = dump

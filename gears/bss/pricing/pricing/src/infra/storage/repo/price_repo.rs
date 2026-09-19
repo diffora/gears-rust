@@ -1527,15 +1527,24 @@ pub async fn frozen_resolutions(
 /// # The ordering is the function
 ///
 /// `inst-su-commit`'s moves include these two, and D-195 makes their order
-/// normative: §3.7 admits at most one published row per key, so a successor
-/// flipped `draft → published` while its predecessor still reads `published`
-/// violates `uq_pricing_price_scope_key_current` — and violates it as a raw driver
-/// error, a 500 carrying nothing an operator can act on rather than a refusal.
+/// normative. Its original reason was physical: §3.7 admitted at most one
+/// published row per key, so publishing the successor first died on
+/// `uq_pricing_price_scope_key_current` as a raw driver error — a 500 carrying
+/// nothing an operator can act on rather than a refusal.
 ///
-/// They are therefore **one function rather than two calls a caller sequences**. A
-/// caller who can order them can order them wrongly, and the failure mode is not a
-/// refused request but a fault; the whole reason the ordering had to be written
-/// into the design set is that it is invisible until it fires. Withholding the
+/// **That index is gone (D-195 amendment, 2026-09-19).** The charge-line split
+/// removed the published-plane `UNIQUE` on purpose, so two scheduled immutable
+/// versions of one market can coexist while their windows do not overlap. Either
+/// order now commits, and the ordering survives on the **diagnosis** ground
+/// `inst-su-commit` states: a replayed commit blocks on the predecessor *row* and
+/// is refused by name — recompose against the key's new current row — rather than
+/// blocking on its *window* and being told an entity tag is stale, which is not
+/// what changed.
+///
+/// They remain **one function rather than two calls a caller sequences**, now for
+/// that reason alone. Note what this costs: the ordering used to be held by an
+/// index *and* by this shape, and is now held by this shape only — a future edit
+/// that separates the moves will not be caught by the database. Withholding the
 /// separate moves is the point of this shape, not an oversight in it.
 ///
 /// # Atomicity, and which move goes first
@@ -1718,11 +1727,12 @@ type ScopeKeyColumns<'a> = (
 /// comparison that must be written down rather than assumed, because "modulo two
 /// axes" is precisely the kind of looseness that later reads as "unchecked".
 ///
-/// **The flip goes first**, for `commit_supersession_rows`' reason and it is the same
-/// index: Foundation §3.7 admits one published row per key, so publishing the
-/// successor while the predecessor still reads `published` violates
-/// `uq_pricing_price_scope_key_current` — and violates it as a raw driver error, a
-/// 500 carrying nothing an operator can act on, rather than as a refusal. The copy is
+/// **The flip goes first**, for `commit_supersession_rows`' reason — which was the
+/// same index, and is no longer an index at all. Foundation §3.7's published-plane
+/// `uq_pricing_price_scope_key_current` used to make the other order a raw driver
+/// error; the charge-line split removed it on purpose (D-195 amendment,
+/// 2026-09-19), so the flip goes first on the replay-diagnosis ground rather than
+/// because the store refuses the alternative. The copy is
 /// on a different key and could publish in any order; it goes with the successor so
 /// that one statement covers both and no future edit can separate them.
 ///
@@ -3558,11 +3568,13 @@ async fn refuse_untightenable(
 /// # What this does **not** do
 ///
 /// It does not flip the predecessor. That is the commit's move and it is ordered
-/// **before** the successor's publish (`inst-su-commit`, D-195): §3.7 admits one
-/// published row per key, so a successor flipped while its predecessor still reads
-/// `published` dies on `uq_pricing_price_scope_key_current` as a raw driver error.
-/// After compose, both rows legitimately stand on the key and the predecessor is
-/// untouched.
+/// **before** the successor's publish (`inst-su-commit`, D-195). That ordering used
+/// to be physical — §3.7 admitted one published row per key, so the other order died
+/// on `uq_pricing_price_scope_key_current` as a raw driver error — until the
+/// charge-line split removed that index on purpose (D-195 amendment, 2026-09-19).
+/// It is now a property of `commit_supersession_rows` and of the replay diagnosis
+/// it buys, not of the store. After compose, both rows legitimately stand on the
+/// key and the predecessor is untouched.
 ///
 /// **What it does beyond the three writes**: it reaches [`record_price_mutation`] through
 /// [`write_prepared`], so it appends the row's audit entry **and voids the plan's

@@ -24,7 +24,7 @@
 //! must still land terminal with its locks released — `inst-bs-done` says the
 //! lock is released "either way", and D-294 is the commit where a `?` on
 //! `commit_rows` made that false. Reaching that arm needs a store refusal the
-//! domain types do not screen out first; `chk_pricing_price_billing_timing` is
+//! domain types do not screen out first; `chk_pricing_charge_line_version_billing_timing` is
 //! one, and this engine names it in the message.
 //!
 //! Every case asserts **both halves** of the receipt, for
@@ -115,7 +115,7 @@ fn content(amount: i64) -> PriceContent {
 /// `billing_timing` stays an unvalidated `String` in the domain on purpose —
 /// `price_record`'s module doc: the rule is Slice 6's registered one and an enum
 /// minted in Slice 2 would be a second registration. The store is therefore the
-/// only thing that checks it, through `chk_pricing_price_billing_timing`, which
+/// only thing that checks it, through `chk_pricing_charge_line_version_billing_timing`, which
 /// is what lets a case here reach a **storage** refusal without inventing a fault
 /// no caller could produce.
 fn content_timed(amount: i64, timing: Option<&str>) -> PriceContent {
@@ -503,7 +503,9 @@ async fn stored_amounts(h: &Harness) -> BTreeMap<Uuid, i64> {
 /// assertions below (the state stays `committing`, the lock stays held) and
 /// nothing else.
 ///
-/// The refusal is reached through `chk_pricing_price_billing_timing`, which the
+/// The refusal is reached through `chk_pricing_charge_line_version_billing_timing`
+/// (the column moved from the price row to the shared line version when charge
+/// lines were normalized, and its guard moved with it), which the
 /// domain deliberately does not screen — `billing_timing` is Slice 6's registered
 /// rule and stays an unvalidated `String` here — so this is a fault a caller can
 /// really produce rather than one manufactured for the case. Postgres names the
@@ -533,7 +535,7 @@ async fn a_run_level_failure_still_lands_terminal_and_releases_its_locks() {
     .await
     .expect_err("a storage refusal is the run's failure, not a row's conflict");
     assert!(
-        format!("{failed:?}").contains("chk_pricing_price_billing_timing"),
+        format!("{failed:?}").contains("chk_pricing_charge_line_version_billing_timing"),
         "the caller must still learn what failed: {failed:?}"
     );
 
