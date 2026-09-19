@@ -64,8 +64,8 @@ use crate::domain::overlay::{
     TaxBasis,
 };
 use crate::domain::plan_shape::{
-    AddonRule, CustomIntervalUnit, Frequency, PeriodFloorCap, PhaseGraph, PhaseKind,
-    PlanPhase, PlanShape, PublishedBaseline,
+    AddonRule, CustomIntervalUnit, Frequency, PeriodFloorCap, PhaseGraph, PhaseKind, PlanPhase,
+    PlanShape, PublishedBaseline,
 };
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{
@@ -1534,12 +1534,17 @@ fn the_clock_may_flip_a_window_but_not_the_pin() {
 /// the composed `windows` plane left the preimage; `draft_window_entries` and
 /// `window_baseline` joined it. Every open unit answers `APPROVAL_CONTENT_MISMATCH`
 /// until resubmitted. There is no pin-rewrite path.
+///
+/// **2026-09-19 (Task 3 review): `billing_cycle` left `put_plan_shape` and the
+/// constant moved to `v20`.** Charge-line collections stay `_` until Task 8
+/// (`v21`). Every open unit drain-fails `APPROVAL_CONTENT_MISMATCH`. There is no
+/// pin-rewrite path.
 #[test]
-// D-374 v19 freezes explicit draft-window authoring inputs, not the composed plane.
+// v20 re-freezes the plan preimage after billing_cycle left put_plan_shape.
 fn the_encoding_is_frozen() {
     assert_eq!(
         hex32(&content_hash(&base())),
-        "b301cd75459cac1a26ffc5539057e9a3207c8fd2492cf6aac69137e0ab91622d"
+        "2f93d1cb67b722bff38e3c0af9927f0293039ae62f081478d1906a1706fc0aec"
     );
 }
 
@@ -1699,7 +1704,7 @@ fn the_two_pin_domains_are_disjoint_and_each_names_its_own_generation() {
     );
     assert_eq!(
         super::CONTENT_PIN_DOMAIN_SEP,
-        b"VHP-BSS-PRICING-APPROVAL-PIN-v19\x1f"
+        b"VHP-BSS-PRICING-APPROVAL-PIN-v20\x1f"
     );
     assert_eq!(
         super::THRESHOLD_PIN_DOMAIN_SEP,

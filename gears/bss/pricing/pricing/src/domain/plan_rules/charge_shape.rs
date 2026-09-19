@@ -8,15 +8,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use toolkit_macros::domain_model;
 
 use crate::domain::charge_line::{ChargeLineVersion, ChargeStructure};
+use crate::domain::currency_binding;
 use crate::domain::instant::format_rfc3339;
 use crate::domain::market_price::{MarketPriceTerms, MarketPriceVersion};
-use crate::domain::money::CurrencyCode;
+use crate::domain::money::{CurrencyCode, RateMinor};
 use crate::domain::plan_rules::{
     AVAILABLE_FROM_IN_PAST, INVALID_CUSTOM_INTERVAL, LINE_MARKET_PRICE_MISSING,
     PHASE_CHARGE_LINES_EMPTY, PHASE_USAGE_INCOMPATIBLE, PURCHASE_QTY_RANGE_INVALID,
     RECURRING_FREQUENCY_REQUIRED,
 };
 use crate::domain::plan_shape::{CustomIntervalUnit, Frequency, PlanShape};
+use crate::domain::price_row::{PriceRow, TierBand, unit_determining_mismatch};
 use crate::domain::scope_key::{
     ChargeKind, ChargeLineScopeKey, Cohort, PhaseId, PriceEligibility, PriceOverlay, Region, SkuId,
 };
@@ -25,7 +27,10 @@ use crate::domain::validation::{ValidationReport, ValidationRule};
 /// Distinct charge kinds present on the effective lines.
 #[must_use]
 pub fn charge_kinds(lines: &[ChargeLineVersion]) -> BTreeSet<ChargeKind> {
-    lines.iter().map(|line| line.scope_key.charge_kind()).collect()
+    lines
+        .iter()
+        .map(|line| line.scope_key.charge_kind())
+        .collect()
 }
 
 /// Frequency is required only when a recurring line exists.
@@ -172,6 +177,9 @@ impl ValidationRule<PlanShape> for LineMarketPricePresent {
         let variants = effective_variants(subject);
         let markets = sold_markets(subject, &variants);
         for line in &lines {
+            if line.scope_key.price_eligibility() == PriceEligibility::ExistingGrandfathered {
+                continue;
+            }
             if !subject
                 .phases
                 .in_ordinal_order()
@@ -227,7 +235,10 @@ impl ValidationRule<PlanShape> for PhaseUsageCompatible {
             for key in keys {
                 match (prev_usage.get(&key), next_usage.get(&key)) {
                     (Some(left), Some(right)) => {
-                        let changed = structure_unit_mismatch(&left.structure, &right.structure);
+                        let changed = unit_determining_mismatch(
+                            &assembled_row(&left.structure),
+                            &assembled_row(&right.structure),
+                        );
                         if changed.is_empty() {
                             continue;
                         }
@@ -365,17 +376,19 @@ fn effective_lines(subject: &PlanShape) -> Vec<ChargeLineVersion> {
     }
     let mut by_line: BTreeMap<ChargeLineScopeKey, ChargeLineVersion> = BTreeMap::new();
     for record in &subject.rows {
-        by_line.entry(record.scope_key.line().clone()).or_insert_with(|| {
-            let (structure, _) = crate::domain::market_price::split_row(record.row.clone());
-            ChargeLineVersion {
-                charge_line_id: record.price_id,
-                line_version_id: record.price_id,
-                scope_key: record.scope_key.line().clone(),
-                structure,
-                billing_timing: record.billing_timing.clone(),
-                proration_contract: record.proration_contract.clone(),
-            }
-        });
+        by_line
+            .entry(record.scope_key.line().clone())
+            .or_insert_with(|| {
+                let (structure, _) = crate::domain::market_price::split_row(record.row.clone());
+                ChargeLineVersion {
+                    charge_line_id: record.price_id,
+                    line_version_id: record.price_id,
+                    scope_key: record.scope_key.line().clone(),
+                    structure,
+                    billing_timing: record.billing_timing.clone(),
+                    proration_contract: record.proration_contract.clone(),
+                }
+            });
     }
     by_line.into_values().collect()
 }
@@ -404,19 +417,21 @@ fn sold_markets(
     subject: &PlanShape,
     variants: &[MarketPriceVersion],
 ) -> BTreeSet<(CurrencyCode, Region)> {
-    let mut markets: BTreeSet<(CurrencyCode, Region)> = variants
+    if !subject.rows.is_empty() {
+        return currency_binding::sold_markets(subject);
+    }
+    variants
         .iter()
+        .filter(|price| {
+            price.scope_key.price_eligibility() != PriceEligibility::ExistingGrandfathered
+        })
         .map(|price| {
             (
                 price.scope_key.currency().clone(),
                 price.scope_key.region().clone(),
             )
         })
-        .collect();
-    if markets.is_empty() {
-        markets = subject.markets();
-    }
-    markets
+        .collect()
 }
 
 fn has_money(money: &MarketPriceTerms) -> bool {
@@ -434,16 +449,19 @@ fn has_binding(
     region: &Region,
 ) -> bool {
     variants.iter().any(|price| {
-        price.line_version_id == line.line_version_id
-            && price.scope_key.currency() == currency
-            && price.scope_key.region() == region
-            && has_money(&price.money)
-    }) || variants.iter().any(|price| {
-        price.scope_key.line() == &line.scope_key
+        same_line_scope(price, line)
             && price.scope_key.currency() == currency
             && price.scope_key.region() == region
             && has_money(&price.money)
     })
+}
+
+fn same_line_scope(price: &MarketPriceVersion, line: &ChargeLineVersion) -> bool {
+    price.scope_key.price_eligibility() == line.scope_key.price_eligibility()
+        && price.scope_key.cohort() == line.scope_key.cohort()
+        && price.scope_key.price_overlay() == line.scope_key.price_overlay()
+        && (price.line_version_id == line.line_version_id
+            || price.scope_key.line() == &line.scope_key)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -481,41 +499,75 @@ fn usage_by_identity(
     map
 }
 
-fn structure_unit_mismatch(before: &ChargeStructure, after: &ChargeStructure) -> Vec<&'static str> {
-    let mut changed = Vec::new();
-    if before.model_kind != after.model_kind {
-        changed.push("model_kind");
-    } else if before.included_allowance != after.included_allowance {
-        changed.push("includedAllowance (presented modelKind)");
+/// Inverse of [`crate::domain::market_price::split_row`]'s structure half.
+///
+/// Dummy money is enough for [`unit_determining_mismatch`]: amounts are not on
+/// that list, and a zero `unit_rate` lets `presented_model_kind` compile an
+/// allowance ladder so quantity on a compatible ladder stays a price lever
+/// (D-317).
+fn assembled_row(structure: &ChargeStructure) -> PriceRow {
+    let ChargeStructure {
+        invoice_line_template,
+        gl_code_ref,
+        charge_kind,
+        model_kind,
+        bands,
+        package_size,
+        quantity_source,
+        manual_quantity,
+        sku_id,
+        meter,
+        dimension_key,
+        billing_granularity,
+        tier_aggregation_window,
+        tier_qualification_window,
+        aggregation_function,
+        aggregation_granularity,
+        max_hold_granules,
+        included_allowance,
+        reservation_flavor,
+        min_qty_purchase,
+        min_qty_usage,
+        min_qty_usage_fallback,
+        discount_ref,
+    } = structure;
+
+    PriceRow {
+        invoice_line_template: invoice_line_template.clone(),
+        gl_code_ref: gl_code_ref.clone(),
+        charge_kind: *charge_kind,
+        model_kind: *model_kind,
+        amount_minor: None,
+        unit_rate: Some(RateMinor::ZERO),
+        bands: bands
+            .iter()
+            .map(|geometry| TierBand {
+                from_qty: geometry.from_qty,
+                to_qty: geometry.to_qty,
+                unit_price_rate: RateMinor::ZERO,
+            })
+            .collect(),
+        package_size: *package_size,
+        package_price_minor: None,
+        quantity_source: *quantity_source,
+        manual_quantity: *manual_quantity,
+        sku_id: *sku_id,
+        meter: meter.clone(),
+        dimension_key: dimension_key.clone(),
+        billing_granularity: *billing_granularity,
+        tier_aggregation_window: *tier_aggregation_window,
+        tier_qualification_window: *tier_qualification_window,
+        aggregation_function: *aggregation_function,
+        aggregation_granularity: *aggregation_granularity,
+        max_hold_granules: *max_hold_granules,
+        included_allowance: *included_allowance,
+        reserved_rate: None,
+        reservation_flavor: *reservation_flavor,
+        min_qty_purchase: *min_qty_purchase,
+        min_qty_usage: *min_qty_usage,
+        min_qty_usage_fallback: *min_qty_usage_fallback,
+        discount_ref: discount_ref.clone(),
     }
-    if before.billing_granularity != after.billing_granularity {
-        changed.push("billingGranularity");
-    }
-    if before.aggregation_function != after.aggregation_function {
-        changed.push("aggregationFunction");
-    }
-    if before.aggregation_granularity != after.aggregation_granularity {
-        changed.push("aggregationGranularity");
-    }
-    if before.tier_aggregation_window != after.tier_aggregation_window {
-        changed.push("tierAggregationWindow");
-    }
-    if before.tier_qualification_window != after.tier_qualification_window {
-        changed.push("tierQualificationWindow");
-    }
-    if before.package_size != after.package_size {
-        changed.push("package_size");
-    }
-    if before.sku_id != after.sku_id {
-        changed.push("sku_id");
-    }
-    if before.meter != after.meter {
-        changed.push("meter");
-    }
-    if before.dimension_key != after.dimension_key {
-        changed.push("dimensionKey");
-    }
-    changed
 }
 
 fn phase_subject(shape: &PlanShape, phase_id: PhaseId) -> String {

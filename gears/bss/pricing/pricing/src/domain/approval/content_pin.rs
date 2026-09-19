@@ -614,7 +614,19 @@ use time::OffsetDateTime;
 /// **Drain-fail.** Every open approval unit in a deployed tenant answers
 /// `APPROVAL_CONTENT_MISMATCH` until it is withdrawn and resubmitted under v19.
 /// There is no pin-rewrite path: a stored v18 digest cannot be translated.
-pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v19\x1f";
+///
+/// # `v20`: `billing_cycle` left the preimage
+///
+/// Task 3 dropped `billing_cycle` from [`put_plan_shape`]. Charge-line
+/// collections stay unframed (`charge_lines` / `market_prices` are still `_`);
+/// Task 8 takes **v21** when those collections join the preimage. Framing fewer
+/// fields than v19 changes every digest, so the separator moves now rather than
+/// leaving v19 pins matching a shorter shape.
+///
+/// **Drain-fail.** Every open `pricing_approval` unit answers
+/// `APPROVAL_CONTENT_MISMATCH` until it is withdrawn and resubmitted under v20.
+/// There is no pin-rewrite path: a stored v19 digest cannot be translated.
+pub const CONTENT_PIN_DOMAIN_SEP: &[u8] = b"VHP-BSS-PRICING-APPROVAL-PIN-v20\x1f";
 
 /// Versioned domain-separation tag for the **threshold-policy** content pin.
 ///

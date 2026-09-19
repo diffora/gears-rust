@@ -24,7 +24,9 @@ use crate::domain::plan_rules::{
 use crate::domain::plan_shape::{
     CustomIntervalUnit, Frequency, PhaseGraph, PhaseKind, PlanPhase, PlanShape, PublishedBaseline,
 };
-use crate::domain::price_row::{BillingGranularity, ModelKind};
+use crate::domain::price_row::{
+    AggregationFunction, BillingGranularity, IncludedAllowance, ModelKind, RolloverPolicy,
+};
 use crate::domain::scope_key::{
     ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
     Region, SkuId,
@@ -233,10 +235,7 @@ fn removed_setup_kind_is_not_accepted() {
 fn charge_kind_cardinality_is_three_live_tokens() {
     assert_eq!(ChargeKind::ALL.len(), 3, "one member per live variant");
     let tokens: BTreeSet<&str> = ChargeKind::ALL.iter().map(|kind| kind.as_str()).collect();
-    assert_eq!(
-        tokens,
-        BTreeSet::from(["recurring", "usage", "one_time"])
-    );
+    assert_eq!(tokens, BTreeSet::from(["recurring", "usage", "one_time"]));
     for kind in ChargeKind::ALL {
         assert_eq!(ChargeKind::parse(kind.as_str()), Some(*kind));
     }
@@ -254,7 +253,10 @@ fn rest_request_deserializer_rejects_setup_and_accepts_one_time() {
 
     let one_time: ScopeKeyRequest =
         serde_json::from_str(&setup_json("one_time")).expect("wire DTO is a string");
-    assert_eq!(ChargeKind::parse(&one_time.charge_kind), Some(ChargeKind::OneTime));
+    assert_eq!(
+        ChargeKind::parse(&one_time.charge_kind),
+        Some(ChargeKind::OneTime)
+    );
     assert!(scope_key_of(plan(), &one_time).is_ok());
 }
 
@@ -277,7 +279,11 @@ fn charge_kinds_collects_presence_from_lines() {
     );
     assert_eq!(
         charge_kinds(&[one_time, usage, recurring]),
-        BTreeSet::from([ChargeKind::OneTime, ChargeKind::Usage, ChargeKind::Recurring])
+        BTreeSet::from([
+            ChargeKind::OneTime,
+            ChargeKind::Usage,
+            ChargeKind::Recurring
+        ])
     );
 }
 
@@ -380,15 +386,12 @@ fn two_currency_rows_of_one_line_are_one_logical_line() {
     let recurring = line(1, ChargeKind::Recurring, phase_id(TERMINAL));
     let mut subject = shape_with(
         vec![recurring.clone()],
-        vec![
-            market(&recurring, "usd", "US", priced_flat()),
-            {
-                let mut eur = market(&recurring, "eur", "DE", priced_flat());
-                eur.market_price_id = Uuid::from_u128(0x51);
-                eur.price_id = Uuid::from_u128(0x52);
-                eur
-            },
-        ],
+        vec![market(&recurring, "usd", "US", priced_flat()), {
+            let mut eur = market(&recurring, "eur", "DE", priced_flat());
+            eur.market_price_id = Uuid::from_u128(0x51);
+            eur.price_id = Uuid::from_u128(0x52);
+            eur
+        }],
     );
     subject.frequency = Some(Frequency::Monthly);
     assert!(findings(&super::PhaseChargeLinesPresent, &subject).is_publishable());
@@ -401,13 +404,10 @@ fn a_missing_market_variant_is_named_with_phase_line_and_market() {
     let recurring = line(1, ChargeKind::Recurring, phase_id(TERMINAL));
     let mut subject = shape_with(
         vec![recurring.clone()],
-        vec![
-            market(&recurring, "usd", "US", priced_flat()),
-            {
-                let other = line(2, ChargeKind::OneTime, phase_id(TERMINAL));
-                market(&other, "eur", "DE", priced_flat())
-            },
-        ],
+        vec![market(&recurring, "usd", "US", priced_flat()), {
+            let other = line(2, ChargeKind::OneTime, phase_id(TERMINAL));
+            market(&other, "eur", "DE", priced_flat())
+        }],
     );
     subject.frequency = Some(Frequency::Monthly);
     subject.charge_lines = vec![recurring.clone()];
@@ -418,7 +418,10 @@ fn a_missing_market_variant_is_named_with_phase_line_and_market() {
         subject_key.contains(&phase_id(TERMINAL).to_string()),
         "{subject_key}"
     );
-    assert!(subject_key.contains("EUR") || subject_key.contains("eur"), "{subject_key}");
+    assert!(
+        subject_key.contains("EUR") || subject_key.contains("eur"),
+        "{subject_key}"
+    );
     assert!(subject_key.contains("DE"), "{subject_key}");
 }
 
@@ -485,6 +488,66 @@ fn consecutive_phase_usage_may_change_price_but_not_counter_fields() {
         }),
     ];
     assert!(findings(&super::PhaseUsageCompatible, &subject).is_publishable());
+}
+
+#[test]
+fn allowance_quantity_on_a_compatible_ladder_does_not_fail_continuation() {
+    let mut trial_usage = line(1, ChargeKind::Usage, phase_id(TRIAL));
+    trial_usage.structure.included_allowance = Some(IncludedAllowance {
+        quantity: 10,
+        rollover_policy: RolloverPolicy::None,
+    });
+    let mut evergreen_usage = line(2, ChargeKind::Usage, phase_id(TERMINAL));
+    evergreen_usage.structure.included_allowance = Some(IncludedAllowance {
+        quantity: 50,
+        rollover_policy: RolloverPolicy::None,
+    });
+    let mut subject = PlanShape::new(plan(), 3, now());
+    subject.phases = trial_then_terminal_graph();
+    subject.charge_lines = vec![trial_usage.clone(), evergreen_usage.clone()];
+    subject.market_prices = vec![
+        market(&trial_usage, "usd", "US", priced_rate()),
+        market(&evergreen_usage, "usd", "US", priced_rate()),
+    ];
+    assert!(findings(&super::PhaseUsageCompatible, &subject).is_publishable());
+}
+
+#[test]
+fn authored_default_aggregation_matches_unauthored_on_continuation() {
+    let trial_usage = line(1, ChargeKind::Usage, phase_id(TRIAL));
+    let mut evergreen_usage = line(2, ChargeKind::Usage, phase_id(TERMINAL));
+    evergreen_usage.structure.aggregation_function = Some(AggregationFunction::Sum);
+    let mut subject = PlanShape::new(plan(), 3, now());
+    subject.phases = trial_then_terminal_graph();
+    subject.charge_lines = vec![trial_usage.clone(), evergreen_usage.clone()];
+    subject.market_prices = vec![
+        market(&trial_usage, "usd", "US", priced_rate()),
+        market(&evergreen_usage, "usd", "US", priced_rate()),
+    ];
+    assert!(findings(&super::PhaseUsageCompatible, &subject).is_publishable());
+}
+
+#[test]
+fn grandfathered_only_markets_are_not_required_sold_markets() {
+    let selling = line(1, ChargeKind::Usage, phase_id(TERMINAL));
+    let mut grandfathered = line(2, ChargeKind::Usage, phase_id(TERMINAL));
+    grandfathered.scope_key = ChargeLineScopeKey::new(
+        plan(),
+        phase_id(TERMINAL),
+        PriceEligibility::ExistingGrandfathered,
+        ChargeKind::Usage,
+        Cohort::Generation(now()),
+        sku(),
+    )
+    .expect("grandfathered pairs with a generation");
+    let subject = shape_with(
+        vec![selling.clone(), grandfathered.clone()],
+        vec![
+            market(&selling, "usd", "US", priced_rate()),
+            market(&grandfathered, "eur", "DE", priced_rate()),
+        ],
+    );
+    assert!(findings(&super::LineMarketPricePresent, &subject).is_publishable());
 }
 
 #[test]

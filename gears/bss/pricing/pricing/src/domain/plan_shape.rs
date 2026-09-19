@@ -132,11 +132,11 @@ use serde_json::Value as JsonValue;
 use toolkit_macros::domain_model;
 use uuid::Uuid;
 
+use crate::domain::charge_line::ChargeLineVersion;
 use crate::domain::contracts::{EntitlementGrants, PlanChangeContract};
 use crate::domain::draft_window::{DraftWindowEntry, WindowBaseline};
-use crate::domain::money::{CurrencyCode, MinorAmount};
-use crate::domain::charge_line::ChargeLineVersion;
 use crate::domain::market_price::MarketPriceVersion;
+use crate::domain::money::{CurrencyCode, MinorAmount};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::scope_key::{ChargeKind, PhaseId, PlanId, Region};
 use crate::domain::window::KeyWindows;
@@ -487,7 +487,7 @@ impl PhaseGraph {
     /// [`Self::find`] because `plan_rules`' module doc makes terminality one of
     /// the three readings derived in exactly one place — *"a disagreement between
     /// two derivations of one fact is invisible; both readings look right at
-    /// their own call site"*. Split across `phase_graph` and `cycle_shape` it is two
+    /// their own call site"*. Split across `phase_graph` and `charge_shape` it is two
     /// byte-identical copies, each with its own doc arguing the same point.
     #[must_use]
     pub fn sole_terminal(&self) -> Option<PhaseId> {

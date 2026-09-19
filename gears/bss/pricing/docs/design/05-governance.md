@@ -359,6 +359,9 @@ never read.
 live baseline references, every authored operation, row versions and symbolic starts.
 `CONTENT_PIN_DOMAIN_SEP` bumps `v18` → `v19`; open units drain-fail
 `APPROVAL_CONTENT_MISMATCH`. Draft-window writes themselves open no unit.
+**Task 3 (2026-09-19):** `put_plan_shape` dropped `billing_cycle`; the separator
+bumps `v19` → `v20` and open units drain-fail `APPROVAL_CONTENT_MISMATCH` again.
+Charge-line collections stay unframed until Task 8 (`v21`).
 
 ### Audit Trail and Retention
 
