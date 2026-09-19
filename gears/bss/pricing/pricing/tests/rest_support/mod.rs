@@ -59,8 +59,8 @@ use bss_pricing::domain::price_row::{
     QuantitySource, ReservationFlavor, TierAggregationWindow, TierBand,
 };
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
-    SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, DimensionKey, MarketPriceScopeKey, Meter, PhaseId,
+    PlanId, PriceEligibility, Region, SkuId,
 };
 use bss_pricing::infra::approval::ApprovalService;
 use bss_pricing::infra::fixture_gate::FixtureGate;
@@ -2045,7 +2045,7 @@ pub async fn seed_price(harness: &Harness, plan_id: Uuid, region: &str) -> Price
 /// bodies would drift on the content, and a suite asserting about the class would
 /// then be asserting about a row that differs in ways it never named.
 ///
-/// The pairing is `ScopeKey::new`'s to enforce: `cohort != none` if and only if
+/// The pairing is `ChargeLineScopeKey::new`'s to enforce: `cohort != none` if and only if
 /// the class is `existing_grandfathered`, so a caller that gets it wrong is
 /// refused here rather than seeding a key no resolution class selects.
 pub async fn seed_price_keyed(
@@ -2075,17 +2075,19 @@ pub async fn seed_price_keyed_with_horizon(
     cohort: Cohort,
     grandfather_until: Option<OffsetDateTime>,
 ) -> PriceRecord {
-    let key = ScopeKey::new(
-        PlanId::new(plan_id),
+    let key = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(plan_id),
+            seeded_phase(),
+            price_eligibility,
+            ChargeKind::Recurring,
+            cohort,
+            SkuId::new(OFFER_SKU),
+        )
+        .expect("scope key"),
         CurrencyCode::new("USD").expect("currency"),
         Region::new(region).expect("region"),
-        seeded_phase(),
-        price_eligibility,
-        ChargeKind::Recurring,
-        cohort,
-        SkuId::new(OFFER_SKU),
-    )
-    .expect("scope key");
+    );
     harness
         .state
         .prices
@@ -2160,17 +2162,19 @@ pub async fn seed_priced_row_on_phase(
     amount_minor: i64,
     phase: PhaseId,
 ) -> PriceRecord {
-    let key = ScopeKey::new(
-        PlanId::new(plan_id),
+    let key = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(plan_id),
+            phase,
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(OFFER_SKU),
+        )
+        .expect("scope key"),
         CurrencyCode::new("USD").expect("currency"),
         Region::new(region).expect("region"),
-        phase,
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(OFFER_SKU),
-    )
-    .expect("scope key");
+    );
     let mut row = {
         let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
         descriptor_row.gl_code_ref = Some("4000".to_owned());
@@ -2242,17 +2246,19 @@ pub async fn seed_per_unit_rate_row(
     region: &str,
     rate_nano_minor: i64,
 ) -> PriceRecord {
-    let key = ScopeKey::new(
-        PlanId::new(plan_id),
+    let key = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(plan_id),
+            seeded_phase(),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(OFFER_SKU),
+        )
+        .expect("scope key"),
         CurrencyCode::new("USD").expect("currency"),
         Region::new(region).expect("region"),
-        seeded_phase(),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(OFFER_SKU),
-    )
-    .expect("scope key");
+    );
     let mut row = {
         let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::PerUnit));
         descriptor_row.gl_code_ref = Some("4000".to_owned());
@@ -2649,7 +2655,7 @@ pub async fn seed_publishable_plan(harness: &Harness, plan_id: Uuid) -> Publisha
 pub async fn seed_publishable_plan_with(
     harness: &Harness,
     plan_id: Uuid,
-    key_for: impl FnOnce(PlanId, PhaseId) -> ScopeKey,
+    key_for: impl FnOnce(PlanId, PhaseId) -> MarketPriceScopeKey,
     content: PriceContentAlias,
 ) -> Publishable {
     let plan = PlanId::new(plan_id);
@@ -2935,18 +2941,24 @@ pub const USAGE_METER: &str = "api_calls";
 /// component of the charge-kind axis, with the `(meter, dimensionKey)` line a
 /// usage row is keyed by.
 #[must_use]
-pub fn publishable_usage_scope_key(plan_id: PlanId, phase: PhaseId, region: &str) -> ScopeKey {
-    ScopeKey::new(
-        plan_id,
+pub fn publishable_usage_scope_key(
+    plan_id: PlanId,
+    phase: PhaseId,
+    region: &str,
+) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan_id,
+            phase,
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Usage,
+            Cohort::None,
+            SkuId::new(resource_sku(USAGE_METER)),
+        )
+        .expect("the class pairs with cohort none"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new(region).expect("a non-blank region"),
-        phase,
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Usage,
-        Cohort::None,
-        SkuId::new(resource_sku(USAGE_METER)),
     )
-    .expect("the class pairs with cohort none")
     .with_usage_line(
         Some(&Meter::new(USAGE_METER).expect("a non-blank meter")),
         DimensionKey::none(),
@@ -2956,18 +2968,20 @@ pub fn publishable_usage_scope_key(plan_id: PlanId, phase: PhaseId, region: &str
 
 /// The canonical scope key a publishable row sits on.
 #[must_use]
-pub fn publishable_scope_key(plan_id: PlanId, phase: PhaseId, region: &str) -> ScopeKey {
-    ScopeKey::new(
-        plan_id,
+pub fn publishable_scope_key(plan_id: PlanId, phase: PhaseId, region: &str) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan_id,
+            phase,
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(OFFER_SKU),
+        )
+        .expect("the class pairs with cohort none"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new(region).expect("a non-blank region"),
-        phase,
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(OFFER_SKU),
     )
-    .expect("the class pairs with cohort none")
 }
 
 /// Every approval record the caller's tenant holds, in `submitted_at` order.

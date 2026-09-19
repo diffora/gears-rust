@@ -123,7 +123,7 @@ use toolkit_macros::domain_model;
 use crate::domain::money::CurrencyCode;
 use crate::domain::price_record::PriceRecord;
 use crate::domain::publish::PublishUnitKind;
-use crate::domain::scope_key::ScopeKey;
+use crate::domain::scope_key::MarketPriceScopeKey;
 use time::OffsetDateTime;
 
 pub mod delta;
@@ -630,7 +630,7 @@ pub struct ThresholdVersion {
 /// Every field of a [`ThresholdVersion`], handed over at once so a consumer that
 /// must account for all of them cannot miss one.
 ///
-/// [`ScopeKeyParts`](crate::domain::scope_key::ScopeKeyParts)' construction and
+/// [`MarketPriceScopeKeyParts`](crate::domain::scope_key::MarketPriceScopeKeyParts)' construction and
 /// for its reason: the fields are private, so the only alternative is a set of
 /// accessor calls — and a set of accessor calls is exactly what a fourth field
 /// arrives without breaking. Produced by [`ThresholdVersion::parts`], which
@@ -775,7 +775,7 @@ impl ThresholdVersion {
     /// Every field of this version at once, for a caller that must account for
     /// **all** of them — the content pin.
     ///
-    /// [`ScopeKey::parts`](crate::domain::scope_key::ScopeKey::parts)' shape and
+    /// [`MarketPriceScopeKey::parts`](crate::domain::scope_key::MarketPriceScopeKey::parts)' shape and
     /// for its reason. The fields are private because [`Self::new`] is what
     /// refuses an empty or duplicated entry set, so a consumer that has to frame
     /// the whole version can only reach it through accessors — and three separate
@@ -1037,7 +1037,7 @@ impl ChangeSet {
     }
 
     /// The keys those rows sit on — `inst-mat-newrow`'s whole question.
-    pub fn keys(&self) -> impl Iterator<Item = &ScopeKey> {
+    pub fn keys(&self) -> impl Iterator<Item = &MarketPriceScopeKey> {
         self.rows.iter().map(|row| &row.scope_key)
     }
 }
@@ -1057,7 +1057,7 @@ pub struct PublishedPriceBaseline {
     ///
     /// [`evaluate`] asks `covers` once per change-set key and `row` once per
     /// row, so a scan here is the whole product — and each comparison of two
-    /// `ScopeKey`s walks four `String` axes. The baseline spans **every**
+    /// `MarketPriceScopeKey`s walks four `String` axes. The baseline spans **every**
     /// published row of every plan a repricing selector touched, which is the
     /// one path a run cannot avoid and the one carrying the design's rows/s
     /// budget.
@@ -1065,7 +1065,7 @@ pub struct PublishedPriceBaseline {
     /// Nothing iterates this map, so its order is unobservable and a
     /// `HashMap` costs nothing the `BTreeMap`s elsewhere in this crate are
     /// chosen for.
-    by_key: HashMap<ScopeKey, usize>,
+    by_key: HashMap<MarketPriceScopeKey, usize>,
 }
 
 impl PublishedPriceBaseline {
@@ -1092,7 +1092,7 @@ impl PublishedPriceBaseline {
 
     /// Is there a published row on `key`?
     #[must_use]
-    pub fn covers(&self, key: &ScopeKey) -> bool {
+    pub fn covers(&self, key: &MarketPriceScopeKey) -> bool {
         self.by_key.contains_key(key)
     }
 
@@ -1103,7 +1103,7 @@ impl PublishedPriceBaseline {
     /// baseline does not carry has no predecessor to delta against **because** it
     /// has no predecessor at all.
     #[must_use]
-    pub fn row(&self, key: &ScopeKey) -> Option<&PriceRecord> {
+    pub fn row(&self, key: &MarketPriceScopeKey) -> Option<&PriceRecord> {
         self.by_key
             .get(key)
             .and_then(|position| self.rows.get(*position))

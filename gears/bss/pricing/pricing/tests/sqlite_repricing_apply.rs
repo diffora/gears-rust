@@ -60,7 +60,8 @@ use bss_pricing::domain::price_row::{
     BillingGranularity, ModelKind, PriceRow, TierAggregationWindow, TierBand,
 };
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use bss_pricing::infra::repricing::apply_run_in;
 use bss_pricing::infra::storage::migrations::Migrator;
@@ -397,34 +398,38 @@ async fn publish_plan(h: &Harness, plan: PlanId, revision: u64) {
     outcome.expect("publish the seeded plan revision");
 }
 
-fn scope_key(plan: PlanId, phase: Uuid, region: &str) -> ScopeKey {
-    ScopeKey::new(
-        plan,
+fn scope_key(plan: PlanId, phase: Uuid, region: &str) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan,
+            PhaseId::new(phase),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("scope key"),
         CurrencyCode::new("USD").expect("currency"),
         Region::new(region).expect("region"),
-        PhaseId::new(phase),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("scope key")
 }
 
 /// [`scope_key`]'s usage sibling: `graduated` and `volume` are usage-only kinds
 /// (`MODEL_KIND_CHARGEKIND_MISMATCH`), so a ladder cannot ride a recurring key.
-fn usage_scope_key(plan: PlanId, phase: Uuid, region: &str) -> ScopeKey {
-    ScopeKey::new(
-        plan,
+fn usage_scope_key(plan: PlanId, phase: Uuid, region: &str) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan,
+            PhaseId::new(phase),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Usage,
+            Cohort::None,
+            SkuId::new(Uuid::new_v5(&Uuid::NAMESPACE_OID, b"cloudlets")),
+        )
+        .expect("scope key"),
         CurrencyCode::new("USD").expect("currency"),
         Region::new(region).expect("region"),
-        PhaseId::new(phase),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Usage,
-        Cohort::None,
-        SkuId::new(Uuid::new_v5(&Uuid::NAMESPACE_OID, b"cloudlets")),
     )
-    .expect("scope key")
 }
 
 /// Author and publish one row, with a scheduled coverage window
@@ -447,7 +452,11 @@ async fn seed_published_row(
 
 /// [`seed_published_row`] over content the caller chooses, for the cases whose
 /// subject is the row's **shape** rather than its amount.
-async fn seed_published_content(h: &Harness, key: ScopeKey, content: PriceContent) -> Uuid {
+async fn seed_published_content(
+    h: &Harness,
+    key: MarketPriceScopeKey,
+    content: PriceContent,
+) -> Uuid {
     let price_id = Uuid::now_v7();
     let plan = key.plan_id();
     h.prices
@@ -510,17 +519,19 @@ async fn seed_grandfathered_row(
     amount_minor: i64,
 ) -> Uuid {
     let price_id = Uuid::now_v7();
-    let key = ScopeKey::new(
-        plan,
+    let key = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan,
+            PhaseId::new(phase),
+            PriceEligibility::ExistingGrandfathered,
+            ChargeKind::Recurring,
+            Cohort::Generation(generation),
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("a grandfathered eligibility pairs with a non-none cohort"),
         CurrencyCode::new("USD").expect("currency"),
         Region::new(region).expect("region"),
-        PhaseId::new(phase),
-        PriceEligibility::ExistingGrandfathered,
-        ChargeKind::Recurring,
-        Cohort::Generation(generation),
-        SkuId::new(Uuid::from_u128(5)),
-    )
-    .expect("a grandfathered eligibility pairs with a non-none cohort");
+    );
     h.prices
         .create_draft(
             &h.scope,

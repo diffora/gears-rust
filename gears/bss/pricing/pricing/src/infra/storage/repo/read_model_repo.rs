@@ -72,8 +72,8 @@ use crate::domain::plan_shape::{CustomIntervalUnit, Frequency};
 use crate::domain::projection::PROJECTED_WINDOW_STATES;
 use crate::domain::read_model::{SubjectKind, SubjectRef};
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, DimensionKey, PhaseId, PlanId, PriceEligibility, PriceOverlay, Region,
-    ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, DimensionKey, MarketPriceScopeKey, PhaseId, PlanId,
+    PriceEligibility, PriceOverlay, Region, SkuId,
 };
 use crate::domain::sellability::{PinnedFacts, SellabilityFacts};
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
@@ -486,14 +486,14 @@ fn read_frequency(payload: &JsonValue) -> Result<Option<Frequency>, RepoError> {
 
 /// One canonical scope key, axis by axis.
 ///
-/// Through [`ScopeKey::new`], the crate's only constructor, so the cohort /
+/// Through [`ChargeLineScopeKey::new`] then [`MarketPriceScopeKey::new`], so the cohort /
 /// eligibility biconditional and the D-144 quantum are re-established on this
 /// rehydration exactly as `price_repo::to_scope_key` re-establishes them on its
 /// own. `priceOverlay` is read and **checked** rather than passed: the constructor
 /// answers `base` for everything, so a payload naming another plane must be
 /// refused rather than silently flattened — `to_scope_key`'s own comment, one
 /// carrier over.
-fn read_scope_key(value: &JsonValue) -> Result<ScopeKey, RepoError> {
+fn read_scope_key(value: &JsonValue) -> Result<MarketPriceScopeKey, RepoError> {
     read_token(
         "pricing_read_model.payload.scopeKey.priceOverlay",
         string(value, "priceOverlay")?,
@@ -523,28 +523,31 @@ fn read_scope_key(value: &JsonValue) -> Result<ScopeKey, RepoError> {
         None => DimensionKey::none(),
         Some(_) => DimensionKey::new(string(value, "dimensionKey")?),
     };
-    ScopeKey::new(
-        PlanId::new(uuid(value, "planId")?),
-        CurrencyCode::new(string(value, "currency")?)
-            .map_err(|e| malformed("scopeKey.currency", &e.to_string()))?,
-        Region::new(string(value, "region")?)
-            .map_err(|e| malformed("scopeKey.region", &e.to_string()))?,
-        PhaseId::new(uuid(value, "phase")?),
-        read_token(
-            "pricing_read_model.payload.scopeKey.priceEligibility",
-            string(value, "priceEligibility")?,
-            PRICE_ELIGIBILITIES,
-            PriceEligibility::as_str,
-        )?,
-        read_token(
-            "pricing_read_model.payload.scopeKey.chargeKind",
-            string(value, "chargeKind")?,
-            CHARGE_KINDS,
-            ChargeKind::as_str,
-        )?,
-        cohort,
-        sku_id,
-    )
+    {
+        let market_currency = CurrencyCode::new(string(value, "currency")?)
+            .map_err(|e| malformed("scopeKey.currency", &e.to_string()))?;
+        let market_region = Region::new(string(value, "region")?)
+            .map_err(|e| malformed("scopeKey.region", &e.to_string()))?;
+        ChargeLineScopeKey::new(
+            PlanId::new(uuid(value, "planId")?),
+            PhaseId::new(uuid(value, "phase")?),
+            read_token(
+                "pricing_read_model.payload.scopeKey.priceEligibility",
+                string(value, "priceEligibility")?,
+                PRICE_ELIGIBILITIES,
+                PriceEligibility::as_str,
+            )?,
+            read_token(
+                "pricing_read_model.payload.scopeKey.chargeKind",
+                string(value, "chargeKind")?,
+                CHARGE_KINDS,
+                ChargeKind::as_str,
+            )?,
+            cohort,
+            sku_id,
+        )
+        .map(|line| MarketPriceScopeKey::new(line, market_currency, market_region))
+    }
     .and_then(|key| key.with_dimension_key(dimension))
     .map_err(|e| malformed("scopeKey", &e.to_string()))
 }

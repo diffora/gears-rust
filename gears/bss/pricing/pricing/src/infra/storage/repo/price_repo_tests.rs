@@ -4,7 +4,7 @@
 //! # Why this file is a test and not a refactor
 //!
 //! [`market_columns`] and [`scope_key_columns`] compare stored **columns** rather
-//! than parsed [`ScopeKey`]s, and `scope_key_columns`' own doc gives the reason:
+//! than parsed [`MarketPriceScopeKey`]s, and `scope_key_columns`' own doc gives the reason:
 //! *"a comparison that had to parse first would answer 'corrupt' where the honest
 //! answer is 'these two rows are not on one key'"*. That argument is sound and
 //! this file does not touch it. What it supplies is the cover the argument costs.
@@ -12,7 +12,7 @@
 //! # What the cover has to be, and why the obvious one is not enough
 //!
 //! `domain::scope_key`'s register of ungated sites names three that build a key
-//! **from** a row and says their partial cover is `ScopeKey::new`'s positional
+//! **from** a row and says their partial cover is `ChargeLineScopeKey::new`'s positional
 //! signature — an axis added as a constructor parameter breaks them. There is a
 //! fourth, and `market_columns` had **no** cover at all: it touches no
 //! constructor, it is a bare eight-element tuple literal, and neither kind of
@@ -36,7 +36,7 @@
 //!
 //! So the cover here is not "these two tuples have ten and eight elements" — a
 //! count is what a stale-count grep already fails at. It is one case **per axis**,
-//! driven from an exhaustive [`ScopeKeyParts`] destructure, so an eleventh axis
+//! driven from an exhaustive [`MarketPriceScopeKeyParts`] destructure, so an eleventh axis
 //! makes this file stop compiling in the same commit that adds it.
 
 use super::{check_update_keeps_the_line, market_columns, scope_key_columns, to_scope_key};
@@ -44,8 +44,8 @@ use crate::domain::instant::from_unix;
 use crate::domain::instant::utc_ymd_hms;
 use crate::domain::money::CurrencyCode;
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
-    ScopeKeyParts, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, DimensionKey, MarketPriceScopeKey,
+    MarketPriceScopeKeyParts, Meter, PhaseId, PlanId, PriceEligibility, Region, SkuId,
 };
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::price;
@@ -65,18 +65,20 @@ const ACTOR: uuid::Uuid = uuid::Uuid::from_u128(0x_ac_a1);
 /// reason. Every axis moves *between two real values*.
 const METER: &str = "api_calls";
 
-fn base_key() -> ScopeKey {
-    ScopeKey::new(
-        PlanId::new(PLAN),
+fn base_key() -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(PLAN),
+            PhaseId::new(PHASE),
+            PriceEligibility::ExistingGrandfathered,
+            ChargeKind::Usage,
+            Cohort::Generation(utc_ymd_hms(2099, 8, 20, 0, 0, 0)),
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the grandfathered class pairs with a generation cohort"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new("eu").expect("a non-blank region"),
-        PhaseId::new(PHASE),
-        PriceEligibility::ExistingGrandfathered,
-        ChargeKind::Usage,
-        Cohort::Generation(utc_ymd_hms(2099, 8, 20, 0, 0, 0)),
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("the grandfathered class pairs with a generation cohort")
     .with_usage_line(
         Some(&Meter::new(METER).expect("a non-blank meter")),
         DimensionKey::new("region=eu"),
@@ -89,7 +91,7 @@ fn base_key() -> ScopeKey {
 /// The ten key columns are written **from the key** rather than typed twice, so a
 /// case that moves an axis on the key moves the column the comparators read and
 /// the two cannot drift apart in this fixture.
-fn row_of(key: &ScopeKey) -> price::Model {
+fn row_of(key: &MarketPriceScopeKey) -> price::Model {
     price::Model {
         price_id: uuid::Uuid::from_u128(0x_11),
         tenant_id: uuid::Uuid::from_u128(0x_7e),
@@ -165,7 +167,7 @@ struct AxisCase {
 
 /// One case per axis of the canonical scope key.
 ///
-/// **The destructure is the gate.** `let ScopeKeyParts { … } = key.parts()` carries
+/// **The destructure is the gate.** `let MarketPriceScopeKeyParts { … } = key.parts()` carries
 /// no rest pattern, so an eleventh axis makes this pattern non-exhaustive and this
 /// file stops compiling — in the same commit that adds the axis, and pointing at
 /// the list below that has to grow with it. That is `approval_repo_tests`' own
@@ -184,7 +186,7 @@ fn axis_cases() -> Vec<AxisCase> {
         row
     };
 
-    let ScopeKeyParts {
+    let MarketPriceScopeKeyParts {
         plan_id,
         currency,
         region,
@@ -405,7 +407,7 @@ fn the_history_cursor_breaks_a_shared_instant_by_price_id_on_both_engines() {
 /// renders is the pair the key's axes hold; reading it off `key` here is that
 /// contract used as the fixture, so a case cannot be armed against a spelling the
 /// key never has.
-fn submitted_line(key: &ScopeKey) -> (Option<String>, String) {
+fn submitted_line(key: &MarketPriceScopeKey) -> (Option<String>, String) {
     // The unit half comes from the fixture's own column since D-372 took it off
     // the key; the dimension half is still an axis and still read off the key.
     (

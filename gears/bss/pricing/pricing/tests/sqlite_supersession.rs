@@ -30,7 +30,8 @@ use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use bss_pricing::domain::supersession::{ChangeoverMoment, NamedWindow, plan_supersession};
 use bss_pricing::domain::window::{WindowInterval, WindowState};
@@ -89,18 +90,20 @@ fn stamp() -> AuditStamp {
     }
 }
 
-fn key() -> ScopeKey {
-    ScopeKey::new(
-        plan(),
+fn key() -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            PhaseId::new(Uuid::from_u128(0xfa_6e)),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("all_subscriptions pairs with cohort none"),
         CurrencyCode::new("USD").expect("three letters"),
         Region::new("EU").expect("a non-blank region"),
-        PhaseId::new(Uuid::from_u128(0xfa_6e)),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("all_subscriptions pairs with cohort none")
 }
 
 fn content(amount: i64) -> PriceContent {
@@ -298,18 +301,20 @@ fn commit_of(shorten_seq: u64) -> SupersessionCommit {
 
 /// A second key of the same plan — a different eligibility class, so a legal key that
 /// this supersession has nothing to do with.
-fn other_key() -> ScopeKey {
-    ScopeKey::new(
-        plan(),
+fn other_key() -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            PhaseId::new(Uuid::from_u128(0xfa_6e)),
+            PriceEligibility::NewSubscriptionsOnly,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("new_subscriptions_only pairs with cohort none"),
         CurrencyCode::new("USD").expect("three letters"),
         Region::new("EU").expect("a non-blank region"),
-        PhaseId::new(Uuid::from_u128(0xfa_6e)),
-        PriceEligibility::NewSubscriptionsOnly,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("new_subscriptions_only pairs with cohort none")
 }
 
 async fn commit(
@@ -954,7 +959,9 @@ async fn clear_region_tax_category(harness: &Harness, region: &str) {
 /// That is the shape the gap needs and it is not exotic: the predecessor is
 /// publishable in a region declaring no default precisely because it states one,
 /// and the successor's author simply does not restate it.
-async fn published_plan_stating_its_own_category(harness: &Harness) -> (PlanId, ScopeKey, Uuid) {
+async fn published_plan_stating_its_own_category(
+    harness: &Harness,
+) -> (PlanId, MarketPriceScopeKey, Uuid) {
     let plan_uuid = Uuid::now_v7();
     let mut content = rest_support::publishable_row();
     content.tax_category_ref = Some("standard".to_owned());
@@ -979,7 +986,7 @@ fn successor_stating_no_category(amount: i64) -> PriceContent {
     content
 }
 
-fn request_of(key: &ScopeKey, successor: PriceContent) -> SupersessionRequest {
+fn request_of(key: &MarketPriceScopeKey, successor: PriceContent) -> SupersessionRequest {
     SupersessionRequest {
         key: key.clone(),
         changeover: unit_changeover(),

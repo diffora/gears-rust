@@ -49,7 +49,8 @@ use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use bss_pricing::domain::window::WindowState;
 use bss_pricing::infra::history::{
@@ -130,18 +131,20 @@ fn stamp() -> AuditStamp {
 /// Distinct keys because the two partial `UNIQUE` indexes over `pricing_price`
 /// admit one draft and one published row per canonical key, and this fixture
 /// wants four rows that coexist rather than four that supersede one another.
-fn key(currency: &str) -> ScopeKey {
-    ScopeKey::new(
-        PlanId::new(PLAN),
+fn key(currency: &str) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(PLAN),
+            PhaseId::new(PHASE),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("all_subscriptions pairs with cohort none"),
         CurrencyCode::new(currency).expect("three letters"),
         Region::new("EU").expect("a non-blank region"),
-        PhaseId::new(PHASE),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("all_subscriptions pairs with cohort none")
 }
 
 async fn harness() -> (HistoryExporter, DBProvider<DbError>) {

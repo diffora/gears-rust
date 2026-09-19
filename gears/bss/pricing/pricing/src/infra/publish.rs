@@ -922,7 +922,7 @@ fn validated_draft_rows(shape: &PlanShape) -> Vec<(Uuid, RowVersion)> {
 /// moves.
 pub(crate) fn unit_row_set(shape: &PlanShape) -> Vec<&PriceRecord> {
     // Compared by canonical **rendering**, the way `infra::window`'s pending-key check
-    // does: `ScopeKey` is not `Ord`, and the rendering is the ten axes in a fixed
+    // does: `MarketPriceScopeKey` is not `Ord`, and the rendering is the ten axes in a fixed
     // order — the same string a `DUPLICATE_SCOPE_KEY` refusal names.
     //
     // Two equal renderings are one key because the two free-form axes that can
@@ -1550,7 +1550,7 @@ fn compose_validation_plane(
     entries: &[crate::domain::draft_window::DraftWindowEntry],
     evaluated_at: OffsetDateTime,
 ) -> Result<Vec<crate::domain::window::KeyWindows>, DomainError> {
-    let keys: BTreeMap<Uuid, crate::domain::scope_key::ScopeKey> = candidates
+    let keys: BTreeMap<Uuid, crate::domain::scope_key::MarketPriceScopeKey> = candidates
         .iter()
         .map(|row| (row.price_id, row.scope_key.clone()))
         .collect();

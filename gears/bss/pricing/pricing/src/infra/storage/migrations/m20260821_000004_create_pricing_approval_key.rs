@@ -96,7 +96,7 @@
 //!
 //! # The scope key is `text`, and it is the canonical rendering
 //!
-//! The same ten-axis string `ScopeKey::to_string` produces and the same string a
+//! The same ten-axis string `MarketPriceScopeKey::to_string` produces and the same string a
 //! publish refusal names a key by — not the ten columns spread out. The register
 //! answers set membership and nothing else: it is never joined to `pricing_price`,
 //! never filtered per axis, and never read to reconstruct a key. Spreading it would

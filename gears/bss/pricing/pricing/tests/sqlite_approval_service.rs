@@ -70,7 +70,8 @@ use bss_pricing::domain::plan_shape::{AddonRule, BillingCycle, Frequency, PhaseK
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use bss_pricing::infra::approval::{
     ApprovalService, DecideRequest, RegionGrant, TOCTOU_VOID_REASON,
@@ -213,18 +214,20 @@ fn flat_row() -> PriceContent {
     }
 }
 
-fn scope_key(market: &str) -> ScopeKey {
-    ScopeKey::new(
-        plan_id(),
+fn scope_key(market: &str) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan_id(),
+            terminal_phase(),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("all_subscriptions pairs with cohort none"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new(market).expect("a non-blank region"),
-        terminal_phase(),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("all_subscriptions pairs with cohort none")
 }
 
 /// One plan with a phase chain, a descriptor set and one `eu` price row, plus
@@ -2367,17 +2370,19 @@ async fn a_selection_spanning_two_plans_is_refused() {
     let h = harness().await;
     seed_published(&h).await;
 
-    let other_plan = ScopeKey::new(
-        PlanId::new(Uuid::from_u128(0x9_9999)),
+    let other_plan = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(Uuid::from_u128(0x9_9999)),
+            terminal_phase(),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("all_subscriptions pairs with cohort none"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new("eu").expect("a non-blank region"),
-        terminal_phase(),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
-    )
-    .expect("all_subscriptions pairs with cohort none");
+    );
 
     let conn = h.provider.conn().expect("conn");
     let err = ApprovalService::submit_cutover_on(

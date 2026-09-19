@@ -54,7 +54,8 @@ use bss_pricing::domain::plan_shape::{AddonRule, PeriodFloorCap, PhaseKind, Plan
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use bss_pricing::infra::clone::{CloneNotice, CloneReceipt, SeededPhaseOrigin, clone_plan_on};
 use bss_pricing::infra::draft_window::{self, DraftWindowCommand};
@@ -182,7 +183,12 @@ async fn clone_it(h: &Harness) -> Result<CloneReceipt, DomainError> {
     })
 }
 
-fn key_on(plan: PlanId, phase: PhaseId, eligibility: PriceEligibility, cohort: Cohort) -> ScopeKey {
+fn key_on(
+    plan: PlanId,
+    phase: PhaseId,
+    eligibility: PriceEligibility,
+    cohort: Cohort,
+) -> MarketPriceScopeKey {
     key_in(plan, phase, eligibility, cohort, "eu")
 }
 
@@ -192,18 +198,20 @@ fn key_in(
     eligibility: PriceEligibility,
     cohort: Cohort,
     region: &str,
-) -> ScopeKey {
-    ScopeKey::new(
-        plan,
+) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan,
+            phase,
+            eligibility,
+            ChargeKind::Recurring,
+            cohort,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the class pairs with the cohort"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new(region).expect("a non-blank region"),
-        phase,
-        eligibility,
-        ChargeKind::Recurring,
-        cohort,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("the class pairs with the cohort")
 }
 
 fn flat_row() -> PriceContent {
@@ -1579,18 +1587,19 @@ async fn a_successor_omits_superseded_prices_live_windows_from_the_baseline() {
             .any(|row| row.window_id == second_kept_covering.window_id)
     );
 
-    let keys: BTreeMap<Uuid, bss_pricing::domain::scope_key::ScopeKey> = price_repo::load_for_plan(
-        &conn,
-        &h.scope,
-        TENANT,
-        source_plan(),
-        &[LifecycleState::Published, LifecycleState::Draft],
-    )
-    .await
-    .expect("load candidate rows")
-    .into_iter()
-    .map(|row| (row.price_id, row.scope_key))
-    .collect();
+    let keys: BTreeMap<Uuid, bss_pricing::domain::scope_key::MarketPriceScopeKey> =
+        price_repo::load_for_plan(
+            &conn,
+            &h.scope,
+            TENANT,
+            source_plan(),
+            &[LifecycleState::Published, LifecycleState::Draft],
+        )
+        .await
+        .expect("load candidate rows")
+        .into_iter()
+        .map(|row| (row.price_id, row.scope_key))
+        .collect();
     assert!(
         !keys.contains_key(&superseded_price),
         "the superseded row is not a compose candidate"

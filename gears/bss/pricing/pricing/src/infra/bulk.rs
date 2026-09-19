@@ -85,7 +85,7 @@ use crate::domain::error::DomainError;
 use crate::domain::import::{BatchReport, ImportRow, RowOutcome, RowViolation};
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::price_record::PriceRecord;
-use crate::domain::scope_key::{PlanId, ScopeKey};
+use crate::domain::scope_key::{MarketPriceScopeKey, PlanId};
 use crate::infra::storage::repo::{
     BulkOperationRecord, NewPriceDraft, PriceRepo, bulk_repo, price_repo,
 };
@@ -867,7 +867,7 @@ async fn commit_rows(
     tenant_id: Uuid,
     operation_id: Uuid,
     rows: &[ImportRow],
-    drafts: &HashMap<ScopeKey, PriceRecord>,
+    drafts: &HashMap<MarketPriceScopeKey, PriceRecord>,
     stamp: AuditStamp,
     now: OffsetDateTime,
 ) -> (CommitReceipt, Option<DomainError>) {
@@ -1007,7 +1007,7 @@ async fn draft_rows(
     scope: &AccessScope,
     tenant_id: Uuid,
     rows: &[ImportRow],
-) -> Result<HashMap<ScopeKey, PriceRecord>, DomainError> {
+) -> Result<HashMap<MarketPriceScopeKey, PriceRecord>, DomainError> {
     let mut plans: Vec<PlanId> = rows.iter().map(|row| row.scope_key.plan_id()).collect();
     plans.sort_by_key(|plan| plan.get());
     plans.dedup();

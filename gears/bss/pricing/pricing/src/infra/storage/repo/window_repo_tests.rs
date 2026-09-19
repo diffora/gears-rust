@@ -49,7 +49,7 @@ use uuid::Uuid;
 
 use super::{OCCUPYING_STATES, intersects, overlap_or, pick, render_interval};
 use crate::domain::instant::utc_ymd_hms;
-use crate::domain::scope_key::ScopeKey;
+use crate::domain::scope_key::MarketPriceScopeKey;
 use crate::domain::window::WindowState;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::entity::{price, price_window};
@@ -229,7 +229,7 @@ fn future(day: u32) -> OffsetDateTime {
 
 /// A migrated in-memory mirror holding one price row, with that row's canonical
 /// scope key resolved out of it rather than restated here.
-async fn mirror() -> (DBProvider<DbError>, ScopeKey) {
+async fn mirror() -> (DBProvider<DbError>, MarketPriceScopeKey) {
     let db = connect_db("sqlite::memory:", ConnectOpts::default())
         .await
         .expect("connect in-memory sqlite");

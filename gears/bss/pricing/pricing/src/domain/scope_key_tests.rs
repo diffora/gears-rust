@@ -3,9 +3,10 @@
 use uuid::Uuid;
 
 use super::{
-    ABSENT_AXIS_TOKEN, COHORT_ELIGIBILITY_MISMATCH, ChargeKind, Cohort, DimensionKey,
-    KEY_SEPARATOR, Meter, PhaseId, PlanId, PriceEligibility, PriceOverlay, Region, ScopeKey, SkuId,
-    USAGE_LINE_AXIS_MISMATCH, check_cohort_eligibility, check_usage_line_axes,
+    ABSENT_AXIS_TOKEN, COHORT_ELIGIBILITY_MISMATCH, ChargeKind, ChargeLineScopeKey, Cohort,
+    DimensionKey, KEY_SEPARATOR, MarketPriceScopeKey, Meter, PhaseId, PlanId, PriceEligibility,
+    PriceOverlay, Region, SkuId, USAGE_LINE_AXIS_MISMATCH, check_cohort_eligibility,
+    check_usage_line_axes,
 };
 use crate::domain::error::DomainError;
 use crate::domain::instant::from_unix;
@@ -41,7 +42,7 @@ fn key(
     price_eligibility: PriceEligibility,
     charge_kind: ChargeKind,
     cohort: Cohort,
-) -> Result<ScopeKey, DomainError> {
+) -> Result<MarketPriceScopeKey, DomainError> {
     key_of(sku(), price_eligibility, charge_kind, cohort)
 }
 
@@ -51,17 +52,19 @@ fn key_of(
     price_eligibility: PriceEligibility,
     charge_kind: ChargeKind,
     cohort: Cohort,
-) -> Result<ScopeKey, DomainError> {
-    ScopeKey::new(
-        plan(),
+) -> Result<MarketPriceScopeKey, DomainError> {
+    Ok(MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            phase(),
+            price_eligibility,
+            charge_kind,
+            cohort,
+            sku_id,
+        )?,
         usd(),
         eu(),
-        phase(),
-        price_eligibility,
-        charge_kind,
-        cohort,
-        sku_id,
-    )
+    ))
 }
 
 fn violation_codes(err: &DomainError) -> Vec<String> {
@@ -296,28 +299,18 @@ fn the_canonical_rendering_carries_the_first_eight_axes_in_order() {
 fn a_currency_axis_differing_only_in_case_is_the_same_key() {
     // The normalization in CurrencyCode exists for exactly this: otherwise two
     // rows on one market would both pass the duplicate-key index.
-    let upper = ScopeKey::new(
+    let line = ChargeLineScopeKey::new(
         plan(),
-        CurrencyCode::new("USD").expect("USD"),
-        eu(),
         phase(),
         PriceEligibility::AllSubscriptions,
         ChargeKind::Recurring,
         Cohort::None,
         sku(),
     )
-    .expect("key");
-    let lower = ScopeKey::new(
-        plan(),
-        CurrencyCode::new("usd").expect("usd"),
-        eu(),
-        phase(),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        sku(),
-    )
-    .expect("key");
+    .expect("line");
+    let upper =
+        MarketPriceScopeKey::new(line.clone(), CurrencyCode::new("USD").expect("USD"), eu());
+    let lower = MarketPriceScopeKey::new(line, CurrencyCode::new("usd").expect("usd"), eu());
 
     assert_eq!(upper, lower);
 }
@@ -342,7 +335,7 @@ fn the_charge_kind_tokens_are_the_persisted_ones() {
 // The usage line axes (D-196, clause 1)
 // ---------------------------------------------------------------------------
 
-fn usage_key(meter: Option<&str>, dimension: &str) -> Result<ScopeKey, DomainError> {
+fn usage_key(meter: Option<&str>, dimension: &str) -> Result<MarketPriceScopeKey, DomainError> {
     key(
         PriceEligibility::AllSubscriptions,
         ChargeKind::Usage,
@@ -677,7 +670,7 @@ fn the_key_carries_the_sku_and_not_the_meter() {
     )
     .expect("the eight axes agree");
 
-    assert_eq!(key.sku_id, sku);
+    assert_eq!(key.sku_id(), sku);
 
     // A rendered key spells the sku in the position the meter used to hold.
     let rendered = key.to_string();
@@ -728,4 +721,155 @@ fn only_usage_is_usage() {
     ] {
         assert!(!kind.is_usage(), "{kind} is not a usage charge");
     }
+}
+
+#[test]
+fn markets_share_a_logical_line_without_sharing_a_conflict_key() {
+    let line = ChargeLineScopeKey::new(
+        plan(),
+        phase(),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Recurring,
+        Cohort::None,
+        sku(),
+    )
+    .unwrap();
+    let us = MarketPriceScopeKey::new(line.clone(), usd(), Region::new("US").unwrap());
+    let ca = MarketPriceScopeKey::new(line.clone(), usd(), Region::new("CA").unwrap());
+    assert_eq!(us.line(), ca.line());
+    assert_ne!(us, ca);
+    assert_eq!(
+        us,
+        MarketPriceScopeKey::new(line, usd(), Region::new("US").unwrap())
+    );
+}
+
+/// Logical axes discriminate both the charge line and the full market key.
+/// Currency and region discriminate only the full key.
+#[test]
+fn logical_axes_change_both_keys_market_axes_change_only_the_full_key() {
+    let base_line = ChargeLineScopeKey::new(
+        plan(),
+        phase(),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Recurring,
+        Cohort::None,
+        sku(),
+    )
+    .expect("base line");
+    let base = MarketPriceScopeKey::new(base_line.clone(), usd(), eu());
+
+    let other_plan = ChargeLineScopeKey::new(
+        PlanId::new(Uuid::from_u128(11)),
+        phase(),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Recurring,
+        Cohort::None,
+        sku(),
+    )
+    .expect("other plan");
+    assert_ne!(other_plan, base_line);
+    assert_ne!(MarketPriceScopeKey::new(other_plan, usd(), eu()), base);
+
+    let other_phase = ChargeLineScopeKey::new(
+        plan(),
+        PhaseId::new(Uuid::from_u128(12)),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Recurring,
+        Cohort::None,
+        sku(),
+    )
+    .expect("other phase");
+    assert_ne!(other_phase, base_line);
+    assert_ne!(MarketPriceScopeKey::new(other_phase, usd(), eu()), base);
+
+    let other_eligibility = ChargeLineScopeKey::new(
+        plan(),
+        phase(),
+        PriceEligibility::NewSubscriptionsOnly,
+        ChargeKind::Recurring,
+        Cohort::None,
+        sku(),
+    )
+    .expect("other eligibility");
+    assert_ne!(other_eligibility, base_line);
+    assert_ne!(
+        MarketPriceScopeKey::new(other_eligibility, usd(), eu()),
+        base
+    );
+
+    let other_kind = ChargeLineScopeKey::new(
+        plan(),
+        phase(),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::OneTime,
+        Cohort::None,
+        sku(),
+    )
+    .expect("other kind");
+    assert_ne!(other_kind, base_line);
+    assert_ne!(MarketPriceScopeKey::new(other_kind, usd(), eu()), base);
+
+    let other_cohort = ChargeLineScopeKey::new(
+        plan(),
+        phase(),
+        PriceEligibility::ExistingGrandfathered,
+        ChargeKind::Recurring,
+        Cohort::Generation(cutover()),
+        sku(),
+    )
+    .expect("other cohort");
+    assert_ne!(other_cohort, base_line);
+    assert_ne!(MarketPriceScopeKey::new(other_cohort, usd(), eu()), base);
+
+    let other_sku = ChargeLineScopeKey::new(
+        plan(),
+        phase(),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Recurring,
+        Cohort::None,
+        SkuId::new(Uuid::from_u128(13)),
+    )
+    .expect("other sku");
+    assert_ne!(other_sku, base_line);
+    assert_ne!(MarketPriceScopeKey::new(other_sku, usd(), eu()), base);
+
+    let other_dimension = ChargeLineScopeKey::new(
+        plan(),
+        phase(),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Usage,
+        Cohort::None,
+        sku(),
+    )
+    .expect("usage line")
+    .with_dimension_key(DimensionKey::new("region=eu"))
+    .expect("dimensioned");
+    let undimensioned_usage = ChargeLineScopeKey::new(
+        plan(),
+        phase(),
+        PriceEligibility::AllSubscriptions,
+        ChargeKind::Usage,
+        Cohort::None,
+        sku(),
+    )
+    .expect("undimensioned usage");
+    assert_ne!(other_dimension, undimensioned_usage);
+    assert_ne!(
+        MarketPriceScopeKey::new(other_dimension, usd(), eu()),
+        MarketPriceScopeKey::new(undimensioned_usage, usd(), eu())
+    );
+
+    let eur = MarketPriceScopeKey::new(
+        base_line.clone(),
+        CurrencyCode::new("EUR").expect("EUR"),
+        eu(),
+    );
+    assert_eq!(eur.line(), base.line());
+    assert_ne!(eur, base);
+
+    let other_region =
+        MarketPriceScopeKey::new(base_line, usd(), Region::new("APAC").expect("region"));
+    assert_eq!(other_region.line(), base.line());
+    assert_ne!(other_region, base);
 }

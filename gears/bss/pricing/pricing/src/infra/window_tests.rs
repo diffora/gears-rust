@@ -23,7 +23,8 @@ use crate::domain::materiality::{MaterialityReason, MaterialityVerdict};
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_shape::PlanShape;
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use crate::domain::window::KeyWindows;
 use crate::infra::storage::repo::approval_repo::ApprovalRecord;
@@ -41,18 +42,20 @@ fn plan() -> PlanId {
     PlanId::new(uuid::Uuid::from_u128(0x_71a2))
 }
 
-fn key() -> ScopeKey {
-    ScopeKey::new(
-        plan(),
+fn key() -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            PhaseId::new(uuid::Uuid::from_u128(0x_fa5e)),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the class pairs with cohort none"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new("eu").expect("a region"),
-        PhaseId::new(uuid::Uuid::from_u128(0x_fa5e)),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("the class pairs with cohort none")
 }
 
 /// One stored window, `scheduled`, over `[from, to)`.

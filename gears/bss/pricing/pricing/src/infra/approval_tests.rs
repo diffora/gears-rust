@@ -31,7 +31,8 @@ use crate::domain::plan_shape::PlanShape;
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow};
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use crate::infra::storage::repo::approval_repo::ApprovalRecord;
 
@@ -113,17 +114,19 @@ fn a_subject_ref_that_is_not_a_plan_revision_is_an_internal_fault() {
 // ---------------------------------------------------------------------------
 
 fn row(market: &str) -> PriceRecord {
-    let scope_key = ScopeKey::new(
-        PlanId::new(PLAN),
+    let scope_key = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(PLAN),
+            PhaseId::new(Uuid::from_u128(0x11)),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("all_subscriptions pairs with cohort none"),
         CurrencyCode::new("USD").expect("three letters"),
         Region::new(market).expect("a non-blank region"),
-        PhaseId::new(Uuid::from_u128(0x11)),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
-    )
-    .expect("all_subscriptions pairs with cohort none");
+    );
     PriceRecord {
         resolved_invoice_line_template: None,
 

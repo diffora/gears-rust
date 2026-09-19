@@ -25,7 +25,8 @@ use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow};
 use crate::domain::rules::MODEL_KIND_MISSING;
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use crate::domain::tax_display::{RegionReadiness, RegionTaxReadiness, TaxDisplayPolicy};
 use crate::domain::taxonomy::REGION_UNKNOWN;
@@ -106,17 +107,19 @@ fn base_params(default_rounding_policy: Option<&str>) -> PublishRuleParams {
 }
 
 fn record(price_id: u128, model_kind: Option<ModelKind>, rounding: Option<&str>) -> PriceRecord {
-    let scope_key = ScopeKey::new(
-        plan(),
+    let scope_key = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            PhaseId::new(Uuid::from_u128(0xf1)),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("all_subscriptions pairs with cohort none"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new("eu").expect("non-blank"),
-        PhaseId::new(Uuid::from_u128(0xf1)),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
-    )
-    .expect("all_subscriptions pairs with cohort none");
+    );
 
     let mut row = PriceRow::new(ChargeKind::Recurring, model_kind);
     row.gl_code_ref = Some("4000".to_owned());
@@ -827,22 +830,24 @@ fn the_hard_interval_caps_still_block_and_produce_no_advisory() {
 /// One record filed under `class`, carrying a grandfathering horizon.
 fn horizoned(price_id: u128, class: PriceEligibility) -> PriceRecord {
     let mut record = record(price_id, Some(ModelKind::Flat), Some("half_up"));
-    record.scope_key = ScopeKey::new(
-        plan(),
+    record.scope_key = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            PhaseId::new(Uuid::from_u128(0xf1)),
+            class,
+            ChargeKind::Recurring,
+            match class {
+                // The cohort biconditional (D-147's sibling): a grandfathered class
+                // pairs with a generation, and every other class with none.
+                PriceEligibility::ExistingGrandfathered => Cohort::Generation(now()),
+                _ => Cohort::None,
+            },
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the class pairs with its cohort"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new("eu").expect("non-blank"),
-        PhaseId::new(Uuid::from_u128(0xf1)),
-        class,
-        ChargeKind::Recurring,
-        match class {
-            // The cohort biconditional (D-147's sibling): a grandfathered class
-            // pairs with a generation, and every other class with none.
-            PriceEligibility::ExistingGrandfathered => Cohort::Generation(now()),
-            _ => Cohort::None,
-        },
-        SkuId::new(Uuid::from_u128(5)),
-    )
-    .expect("the class pairs with its cohort");
+    );
     record.grandfather_until = Some(now());
     record
 }

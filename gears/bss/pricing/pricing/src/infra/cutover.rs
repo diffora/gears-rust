@@ -52,7 +52,7 @@ use crate::domain::price_record::{PriceContent, PriceRecord};
 use crate::domain::publish::rules::run_publish_rules;
 use crate::domain::read_model::SubjectRef;
 use crate::domain::scope_key::PlanId;
-use crate::domain::scope_key::{Cohort, PriceEligibility, ScopeKey};
+use crate::domain::scope_key::{Cohort, MarketPriceScopeKey, PriceEligibility};
 use crate::domain::supersession::{ChangeoverMoment, NamedWindow, plan_supersession};
 use crate::domain::window::WindowInterval;
 use crate::infra::fixture_gate::FixtureGate;
@@ -296,7 +296,7 @@ const CUTOVER_KEY_SET_SEP: &[u8] = b"VHP-BSS-PRICING-CUTOVER-KEYSET-v1\x1f";
 /// **A set, so it is sorted and deduplicated first.** The selector is a set in the
 /// payload and nothing downstream makes it a list, so two orderings of one
 /// selection are one act and a key named twice is one member. Sorting is over the
-/// canonical [`ScopeKey`] rendering, which is total and stable.
+/// canonical [`MarketPriceScopeKey`] rendering, which is total and stable.
 ///
 /// **Length-framed, so two selections cannot be re-split into each other.** The
 /// axis values are operator-supplied strings and nothing forbids a separator
@@ -304,13 +304,16 @@ const CUTOVER_KEY_SET_SEP: &[u8] = b"VHP-BSS-PRICING-CUTOVER-KEYSET-v1\x1f";
 /// preimage — the hazard `content_pin`'s framing exists for, met here at a
 /// different layer.
 ///
-/// It hashes [`ScopeKey`]'s own rendering rather than an encoding written out
+/// It hashes [`MarketPriceScopeKey`]'s own rendering rather than an encoding written out
 /// here, and that is the point rather than a shortcut: `Display` is fixed at ten
 /// segments by its own doc, so this hash discriminates on every axis the key has
 /// and gains an eleventh without being edited. A hand-listed encoding is what left
 /// `content_pin::put_scope_key` on eight.
-fn key_set_hash(selected: &[ScopeKey]) -> String {
-    let mut rendered: Vec<String> = selected.iter().map(ScopeKey::to_string).collect();
+fn key_set_hash(selected: &[MarketPriceScopeKey]) -> String {
+    let mut rendered: Vec<String> = selected
+        .iter()
+        .map(MarketPriceScopeKey::to_string)
+        .collect();
     rendered.sort_unstable();
     rendered.dedup();
 
@@ -357,7 +360,7 @@ fn key_set_hash(selected: &[ScopeKey]) -> String {
 #[must_use]
 pub fn cutover_unit_ref(
     plan_id: PlanId,
-    selected: &[ScopeKey],
+    selected: &[MarketPriceScopeKey],
     cutover_at: OffsetDateTime,
 ) -> String {
     format!(
@@ -451,10 +454,10 @@ pub fn cutover_instant_of_unit_ref(subject_ref: &str) -> Result<Option<OffsetDat
 /// Whatever [`grandfathered_copy_key`] refuses — a generation that already carries
 /// the instant, or an axis the constructor will not take.
 pub fn cutover_held_keys(
-    predecessor: &ScopeKey,
+    predecessor: &MarketPriceScopeKey,
     cutover_at: OffsetDateTime,
     existing_generations: &[Cohort],
-) -> Result<[ScopeKey; 2], DomainError> {
+) -> Result<[MarketPriceScopeKey; 2], DomainError> {
     Ok([
         predecessor.clone(),
         grandfathered_copy_key(predecessor, cutover_at, existing_generations)?,
@@ -483,7 +486,7 @@ pub fn cutover_held_keys(
 #[derive(Clone, Debug)]
 pub struct CutoverRequest {
     /// The key being cut over: the `all_subscriptions` row's own.
-    pub predecessor_key: ScopeKey,
+    pub predecessor_key: MarketPriceScopeKey,
     /// The instant all three window operations pivot on.
     pub cutover_at: OffsetDateTime,
     /// The successor's authored content, landing on the predecessor's own key.
@@ -529,7 +532,7 @@ pub struct CutoverReceipt {
     /// The retained copy, on its own generation.
     pub copy_price_id: Uuid,
     /// The generation the copy was minted on.
-    pub copy_key: ScopeKey,
+    pub copy_key: MarketPriceScopeKey,
     /// The instant coverage handed over.
     pub cutover_at: OffsetDateTime,
     /// The predecessor's window, now ending at the cutover.
@@ -560,7 +563,7 @@ pub struct CutoverPending {
     /// The staged copy's id, on the same rule.
     pub copy_price_id: Uuid,
     /// The generation the copy stands on.
-    pub copy_key: ScopeKey,
+    pub copy_key: MarketPriceScopeKey,
     /// The unit a second principal has to decide.
     pub approval: ApprovalRecord,
 }
@@ -1447,8 +1450,8 @@ async fn submitted_cutover(
     tenant_id: Uuid,
     context: &CutoverContext,
     request: &CutoverRequest,
-    copy_key: &ScopeKey,
-    selected: &[ScopeKey],
+    copy_key: &MarketPriceScopeKey,
+    selected: &[MarketPriceScopeKey],
     verdict: MaterialityVerdict,
     verdict_json: VerdictJson,
     stamp: AuditStamp,
@@ -1532,7 +1535,7 @@ async fn submitted_cutover(
 fn refuse_divergent_staged(
     context: &CutoverContext,
     request: &CutoverRequest,
-    copy_key: &ScopeKey,
+    copy_key: &MarketPriceScopeKey,
 ) -> Result<(), DomainError> {
     if let Some(staged) = context.staged_successor.as_ref() {
         crate::infra::supersession::refuse_divergent_successor(
@@ -1692,7 +1695,7 @@ fn compose_and_judge(
     request: &CutoverRequest,
     now: OffsetDateTime,
     moment: ChangeoverMoment,
-) -> Result<(ComposedCutover, ScopeKey), DomainError> {
+) -> Result<(ComposedCutover, MarketPriceScopeKey), DomainError> {
     check_cutover_instant(request.cutover_at, now, moment)?;
     let composed = compose_cutover_windows(&context.plane, request.cutover_at)?;
     let copy_key = grandfathered_copy_key(
@@ -1768,8 +1771,8 @@ async fn refuse_held_keys(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-    predecessor: &ScopeKey,
-    copy: &ScopeKey,
+    predecessor: &MarketPriceScopeKey,
+    copy: &MarketPriceScopeKey,
 ) -> Result<(), DomainError> {
     let held = std::collections::BTreeSet::from([predecessor.to_string(), copy.to_string()]);
     crate::infra::approval::refuse_held_key(runner, scope, tenant_id, &held).await
@@ -1805,7 +1808,7 @@ async fn stage_and_gate(
     tenant_id: Uuid,
     context: &CutoverContext,
     request: &CutoverRequest,
-    copy_key: &ScopeKey,
+    copy_key: &MarketPriceScopeKey,
     now: OffsetDateTime,
     stamp: AuditStamp,
 ) -> Result<(PriceRecord, PriceRecord), DomainError> {
@@ -1857,7 +1860,7 @@ async fn stage_both(
     tenant_id: Uuid,
     context: &CutoverContext,
     request: &CutoverRequest,
-    copy_key: &ScopeKey,
+    copy_key: &MarketPriceScopeKey,
     stamp: AuditStamp,
 ) -> Result<(PriceRecord, PriceRecord), DomainError> {
     let successor = if let Some(staged) = context.staged_successor.as_ref() {
@@ -1918,7 +1921,7 @@ async fn read_cutover_context(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-    key: &ScopeKey,
+    key: &MarketPriceScopeKey,
     cutover: OffsetDateTime,
     now: OffsetDateTime,
 ) -> Result<CutoverContext, DomainError> {
@@ -1933,7 +1936,7 @@ async fn read_cutover_context(
     let lifecycle_state = revision.lifecycle_state;
     let shape = assemble_from(runner, scope, tenant_id, plan_id, revision, now).await?;
 
-    let on_key = |wanted: &ScopeKey, state: LifecycleState| {
+    let on_key = |wanted: &MarketPriceScopeKey, state: LifecycleState| {
         shape
             .rows
             .iter()

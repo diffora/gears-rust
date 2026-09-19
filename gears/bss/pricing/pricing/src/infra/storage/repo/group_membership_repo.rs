@@ -697,7 +697,7 @@ fn after_state(
 #[allow(
     clippy::too_many_arguments,
     reason = "window_repo::refuse_overlap holds seven of these under the same lint's threshold \
-              because it resolves one already-assembled `&ScopeKey`; this function's collision \
+              because it resolves one already-assembled `&MarketPriceScopeKey`; this function's collision \
               domain is `(tenant_id, payer_tenant_id)` with no existing domain type over that \
               pair to resolve into first, and `group_value` cannot fold into either — it is the \
               one field the whole function reads to decide which of the two D-09 codes applies, \

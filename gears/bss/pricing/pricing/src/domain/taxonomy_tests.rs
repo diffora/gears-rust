@@ -20,7 +20,8 @@ use crate::domain::plan_shape::PlanShape;
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::PriceRow;
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use crate::domain::validation::{ValidationReport, ValidationRule};
 use std::collections::BTreeSet;
@@ -44,17 +45,19 @@ fn region(raw: &str) -> Region {
 
 /// One candidate row on a named region.
 fn row_in(price_id: u128, in_region: &str) -> PriceRecord {
-    let scope_key = ScopeKey::new(
-        plan(),
+    let scope_key = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            PhaseId::new(Uuid::from_u128(0xf1)),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("all_subscriptions pairs with cohort none"),
         CurrencyCode::new("EUR").expect("three letters"),
         region(in_region),
-        PhaseId::new(Uuid::from_u128(0xf1)),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
-    )
-    .expect("all_subscriptions pairs with cohort none");
+    );
 
     let mut row = PriceRow::new(ChargeKind::Recurring, None);
     row.amount_minor = Some(MinorAmount::new(1000).expect("non-negative"));

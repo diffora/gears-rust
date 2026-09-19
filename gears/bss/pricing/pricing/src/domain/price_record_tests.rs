@@ -19,23 +19,25 @@ use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::CurrencyCode;
 use crate::domain::price_row::{ModelKind, PriceRow};
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
-    SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, DimensionKey, MarketPriceScopeKey, Meter, PhaseId,
+    PlanId, PriceEligibility, Region, SkuId,
 };
 
 #[test]
 fn the_content_carries_every_editable_column_and_no_identity() {
-    let key = ScopeKey::new(
-        PlanId::new(Uuid::from_u128(0x9_1a4)),
+    let key = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(Uuid::from_u128(0x9_1a4)),
+            PhaseId::new(Uuid::from_u128(0xfa_5e)),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("all_subscriptions pairs with cohort none"),
         CurrencyCode::new("usd").expect("USD is three letters"),
         Region::new("EU").expect("a non-blank region"),
-        PhaseId::new(Uuid::from_u128(0xfa_5e)),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
-    )
-    .expect("all_subscriptions pairs with cohort none");
+    );
 
     // The exhaustive struct literal is the assertion, and it is a compile-time
     // one: when a slice widens what a draft edit may touch, this stops
@@ -100,17 +102,19 @@ fn the_content_carries_every_editable_column_and_no_identity() {
 /// through this function.
 #[test]
 fn authored_content_spells_the_usage_line_the_way_its_axes_do() {
-    let key = ScopeKey::new(
-        PlanId::new(Uuid::from_u128(0x9_1a4)),
+    let key = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(Uuid::from_u128(0x9_1a4)),
+            PhaseId::new(Uuid::from_u128(0xfa_5e)),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Usage,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("all_subscriptions pairs with cohort none"),
         CurrencyCode::new("usd").expect("USD is three letters"),
         Region::new("EU").expect("a non-blank region"),
-        PhaseId::new(Uuid::from_u128(0xfa_5e)),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Usage,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("all_subscriptions pairs with cohort none")
     .with_usage_line(
         Some(&Meter::new("api_calls").expect("a non-blank meter")),
         DimensionKey::new("region=eu"),
@@ -157,17 +161,19 @@ fn authored_content_spells_the_usage_line_the_way_its_axes_do() {
 /// its batch through this function.
 #[test]
 fn authored_content_files_the_row_under_its_keys_sku() {
-    let key = ScopeKey::new(
-        PlanId::new(Uuid::from_u128(0x9_1a4)),
+    let key = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(Uuid::from_u128(0x9_1a4)),
+            PhaseId::new(Uuid::from_u128(0xfa_5e)),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Usage,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("all_subscriptions pairs with cohort none"),
         CurrencyCode::new("usd").expect("USD is three letters"),
         Region::new("EU").expect("a non-blank region"),
-        PhaseId::new(Uuid::from_u128(0xfa_5e)),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Usage,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("all_subscriptions pairs with cohort none")
     .with_usage_line(
         Some(&Meter::new("api_calls").expect("a non-blank meter")),
         DimensionKey::new("region=eu"),

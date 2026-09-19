@@ -114,7 +114,7 @@ use crate::domain::materiality::{self, ChangeSet, PublishedPriceBaseline};
 use crate::domain::ports::CatalogVersionRegistryV1;
 use crate::domain::price_record::PriceRecord;
 use crate::domain::read_model::SubjectRef;
-use crate::domain::scope_key::{PlanId, PriceEligibility, ScopeKey};
+use crate::domain::scope_key::{MarketPriceScopeKey, PlanId, PriceEligibility};
 use crate::domain::window::{KeyWindows, WindowInterval};
 use crate::infra::publish::assemble_from;
 use crate::infra::registry_deadline::request_version_now;
@@ -156,7 +156,7 @@ pub struct HorizonReceipt {
     /// The generation whose horizon moved.
     pub price_id: Uuid,
     /// That generation's canonical scope key, rendered.
-    pub scope_key: ScopeKey,
+    pub scope_key: MarketPriceScopeKey,
     /// The horizon the store held before this act. `None` is D-147's indefinite.
     pub prior_grandfather_until: Option<OffsetDateTime>,
     /// The horizon it holds now.
@@ -179,7 +179,7 @@ pub struct HorizonPending {
     /// The generation named.
     pub price_id: Uuid,
     /// Its canonical scope key.
-    pub scope_key: ScopeKey,
+    pub scope_key: MarketPriceScopeKey,
     /// The **stored** horizon, because nothing moved.
     pub prior_grandfather_until: Option<OffsetDateTime>,
     /// What was asked for.
@@ -251,7 +251,7 @@ struct HorizonContext {
     revision: u64,
     lifecycle_state: LifecycleState,
     generation: PriceRecord,
-    key: ScopeKey,
+    key: MarketPriceScopeKey,
     windows: KeyWindows,
     margin: Option<time::Duration>,
     published: Vec<PriceRecord>,

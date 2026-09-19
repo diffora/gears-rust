@@ -375,7 +375,7 @@ impl StatedRequest {
     /// **Destructured, so a twelfth field on [`NewMigration`] is a compile error
     /// here** rather than a request component silently outside the comparison —
     /// which is the whole failure this type exists to end, and the shape
-    /// `ScopeKey`'s `Display` uses for the same reason one plane over.
+    /// `MarketPriceScopeKey`'s `Display` uses for the same reason one plane over.
     #[must_use]
     pub fn of(new: &NewMigration) -> Self {
         let NewMigration {

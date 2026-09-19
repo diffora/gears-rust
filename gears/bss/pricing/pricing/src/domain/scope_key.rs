@@ -1,10 +1,15 @@
-//! The **canonical scope key** and its ten axes.
+//! The **canonical scope key** and its ten axes, split into a logical charge
+//! line and a market selection.
 //!
-//! One key serves four jobs at once (`design/01-foundation.md` §4.1): row
-//! uniqueness, supersession scoping, `PriceWindow` non-overlap, and window
-//! ownership. That is why it is a type rather than a tuple assembled per call
-//! site — every one of those four rules has to agree, to the axis, about what
-//! "the same key" means.
+//! [`ChargeLineScopeKey`] holds the eight logical axes (`plan_id`, `phase`,
+//! `price_overlay`, `price_eligibility`, `charge_kind`, `cohort`, `sku_id`,
+//! `dimension_key`). [`MarketPriceScopeKey`] composes that line with
+//! `currency` and `region` — the full ten-axis identity that still serves four
+//! jobs at once (`design/01-foundation.md` §4.1): row uniqueness, supersession
+//! scoping, `PriceWindow` non-overlap, and window ownership. That is why the
+//! market key is a type rather than a tuple assembled per call site — every
+//! one of those four rules has to agree, to the axis, about what "the same
+//! key" means.
 //!
 //! ```text
 //! (planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind,
@@ -33,8 +38,8 @@
 //! `plan_rules::cycle_shape_tests` all assumed it storable.
 //!
 //! The pairing rule is an implication and not a biconditional — a meter implies
-//! `usage`, while a usage row with no meter stays admissible ([`ScopeKey::new`]
-//! returns exactly that, and [`ScopeKey::with_usage_line`] is never needed to
+//! `usage`, while a usage row with no meter stays admissible ([`ChargeLineScopeKey::new`]
+//! returns exactly that, and [`ChargeLineScopeKey::with_usage_line`] is never needed to
 //! omit the pair). [`fmt::Display`] keeps **fixed arity at ten segments**, `none`
 //! filling both usage positions on a key that has no line. The physical half is
 //! §3.7's: `meter` is nullable and NULLs are distinct inside a `UNIQUE`, so the
@@ -48,6 +53,7 @@
 //! revisiting: while it reads as unbuilt, every such site reads as correct.
 //! `scope_key_columns`, `content_pin::put_scope_key`, `sellability::siblings` and
 //! `ScopeKeyView` each had to be found separately, by four different routes.
+//! The live types are [`ChargeLineScopeKey`] and [`MarketPriceScopeKey`].
 //!
 //! # The ninth axis is the SKU, not the meter (D-372)
 //!
@@ -524,7 +530,7 @@ impl Cohort {
 }
 
 impl fmt::Display for Cohort {
-    /// Epoch milliseconds, and **lossless** because of it: [`ScopeKey::new`]
+    /// Epoch milliseconds, and **lossless** because of it: [`ChargeLineScopeKey::new`]
     /// refuses a generation below the quantum (D-144), so this rendering can
     /// never be the place an instant quietly loses precision on its way into a
     /// key that is then matched for equality.
@@ -550,7 +556,7 @@ impl fmt::Display for Cohort {
 /// two axes are separate key columns: they are read back from the database as
 /// two independent values, so the pairing has to be re-established on every
 /// rehydration, not only at first construction. This is the entry point that
-/// path calls; [`ScopeKey::new`] calls it too.
+/// path calls; [`ChargeLineScopeKey::new`] calls it too.
 ///
 /// The rejection is carried as a [`DomainError::ValidationFailed`] envelope
 /// with one violation rather than a bespoke variant, so the rule has exactly
@@ -672,7 +678,7 @@ impl DimensionKey {
     /// reads the column back gets `''` for it.
     ///
     /// **Total, so [`KEY_SEPARATOR`] is refused one door up** — by
-    /// [`ScopeKey::with_usage_line`], the only way this value becomes the tenth
+    /// [`ChargeLineScopeKey::with_usage_line`], the only way this value becomes the tenth
     /// axis of a key. Refusing here would make this fallible, and it is also the
     /// normalization `price_record::canonical_usage_line` spends on the *column*;
     /// a normalization that cannot run before the refusal that judges it is the
@@ -733,7 +739,7 @@ impl fmt::Display for DimensionKey {
 /// **Only one of the two is still a key axis** (D-372): `meter` left the key for
 /// [`SkuId`] and is a column of [`crate::domain::price_row::PriceRow`], so this
 /// rule is now stated over a row and checked by the callers that hold one.
-/// [`ScopeKey::with_dimension_key`] is the half a caller holding only a key can
+/// [`ChargeLineScopeKey::with_dimension_key`] is the half a caller holding only a key can
 /// check.
 ///
 /// # Errors
@@ -773,20 +779,18 @@ pub fn check_usage_line_axes(
     Ok(())
 }
 
-/// The canonical scope key.
+/// The logical charge-line identity: the eight axes that do not include market.
 ///
-/// Fields are private and the constructor validates, so a key that violates the
-/// cohort biconditional cannot be handed to the duplicate-key index or the
-/// window rules. Axis order below is the normative order and is the order
-/// [`fmt::Display`] renders in.
+/// Fields are private and the constructor validates, so a line that violates the
+/// cohort biconditional cannot be composed into a market key. Overlay defaults
+/// to [`PriceOverlay::Base`]; the tenth axis arrives through
+/// [`Self::with_dimension_key`].
 #[domain_model]
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ScopeKey {
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ChargeLineScopeKey {
     plan_id: PlanId,
-    currency: CurrencyCode,
-    region: Region,
-    price_overlay: PriceOverlay,
     phase: PhaseId,
+    price_overlay: PriceOverlay,
     price_eligibility: PriceEligibility,
     charge_kind: ChargeKind,
     cohort: Cohort,
@@ -794,19 +798,32 @@ pub struct ScopeKey {
     dimension_key: DimensionKey,
 }
 
-/// Every axis of a [`ScopeKey`], borrowed — the shape that makes "all ten axes"
+/// The canonical market price key: a logical charge line plus currency and region.
+///
+/// Fields are private. Axis order in [`fmt::Display`] is the normative ten-axis
+/// rendering and is unchanged by this split: `{plan}|{currency}|{region}|{overlay}|{phase}|{eligibility}|{kind}|{cohort}|{sku}|{dimension}`.
+#[domain_model]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MarketPriceScopeKey {
+    line: ChargeLineScopeKey,
+    currency: CurrencyCode,
+    region: Region,
+}
+
+/// Every axis of a [`MarketPriceScopeKey`], borrowed — the shape that makes "all ten axes"
 /// a compile-time obligation at a call site instead of a count somebody has to
 /// re-check.
 ///
 /// # Why this exists
 ///
-/// The fields of [`ScopeKey`] are private, so the exhaustive `let Self {.. }`
-/// that [`ScopeKey::is_sibling_of`] and [`ScopeKey::to_generation`] use is
-/// available only inside this module. Every site outside it reached in through
-/// accessors one axis at a time, which compiles unchanged when the key grows —
-/// and D-196, which widened this key from eight axes to ten, is the record of
-/// what that costs. The sweep that widened it missed three sites, and two of the
-/// three shipped a defect:
+/// The fields of [`MarketPriceScopeKey`] are private, so the exhaustive
+/// `let Self {.. }` that [`MarketPriceScopeKey::is_sibling_of`] and
+/// [`MarketPriceScopeKey::to_generation`] use is available only inside this
+/// module. Every site outside it reached in through accessors one axis at a
+/// time, which compiles unchanged when the key grows — and D-196, which
+/// widened this key from eight axes to ten, is the record of what that costs.
+/// The sweep that widened it missed three sites, and two of the three shipped
+/// a defect:
 ///
 /// - `price_repo.rs`'s row comparator, which reading eight columns of a ten-axis
 ///   key makes read a successor on a **different meter of the same market** as
@@ -817,20 +834,22 @@ pub struct ScopeKey {
 ///   bypass, and it has shipped once.
 ///
 /// A stale-count grep cannot find these sites, which is why the last sweep missed
-/// three. A destructure can: add an axis to [`ScopeKey`] and every consumer that
-/// takes its parts stops compiling until it says what to do with the new one.
+/// three. A destructure can: add an axis to [`ChargeLineScopeKey`] or
+/// [`MarketPriceScopeKey`] and every consumer that takes its parts stops
+/// compiling until it says what to do with the new one.
 ///
 /// # What this does *not* gate
 ///
 /// **Four sites**, not three, and their cover is not the same. All four build or
 /// compare a key **from** a stored row or a JSON payload rather than consuming a
-/// `ScopeKey`, so none of them can take its parts.
+/// `MarketPriceScopeKey`, so none of them can take its parts.
 ///
 /// Three of them — `price_repo::to_scope_key`, `price_repo::scope_key_columns`,
-/// `read_model_repo::read_scope_key` — have [`ScopeKey::new`]'s positional
-/// signature as a partial cover, and that cover fails for exactly the widening
-/// D-196 performed: an axis pair added through a `with_*` builder rather than a
-/// constructor parameter, which is how `meter` and `dimension_key` arrived.
+/// `read_model_repo::read_scope_key` — have [`ChargeLineScopeKey::new`]'s
+/// positional signature plus [`MarketPriceScopeKey::new`] as a partial cover,
+/// and that cover fails for exactly the widening D-196 performed: an axis pair
+/// added through a `with_*` builder rather than a constructor parameter, which
+/// is how `meter` and `dimension_key` arrived.
 ///
 /// **`price_repo::market_columns` has no cover at all.** It touches no
 /// constructor — it is a bare eight-element tuple literal off `price::Model` — so
@@ -845,11 +864,12 @@ pub struct ScopeKey {
 /// still walk past it.
 ///
 /// Its cover is now a test rather than a type: `price_repo_tests` drives one case
-/// per axis from an exhaustive [`ScopeKeyParts`] destructure, so an eleventh axis
-/// stops **that file** compiling. A refactor was rejected on `scope_key_columns`'
-/// own stated ground — a comparison that had to parse first would answer
-/// "corrupt" where the honest answer is "these two rows are not on one key".
-pub(crate) struct ScopeKeyParts<'a> {
+/// per axis from an exhaustive [`MarketPriceScopeKeyParts`] destructure, so an
+/// eleventh axis stops **that file** compiling. A refactor was rejected on
+/// `scope_key_columns`' own stated ground — a comparison that had to parse first
+/// would answer "corrupt" where the honest answer is "these two rows are not on
+/// one key".
+pub(crate) struct MarketPriceScopeKeyParts<'a> {
     pub plan_id: PlanId,
     pub currency: &'a CurrencyCode,
     pub region: &'a Region,
@@ -862,41 +882,8 @@ pub(crate) struct ScopeKeyParts<'a> {
     pub dimension_key: &'a DimensionKey,
 }
 
-impl ScopeKey {
-    /// Borrow every axis at once.
-    ///
-    /// The `let Self {.. }` below carries **no** rest pattern, so an eleventh
-    /// axis is a compile error here — and, because [`ScopeKeyParts`] gains the
-    /// field too, at every site that destructures the result.
-    #[must_use]
-    pub(crate) fn parts(&self) -> ScopeKeyParts<'_> {
-        let Self {
-            plan_id,
-            currency,
-            region,
-            price_overlay,
-            phase,
-            price_eligibility,
-            charge_kind,
-            cohort,
-            sku_id,
-            dimension_key,
-        } = self;
-        ScopeKeyParts {
-            plan_id: *plan_id,
-            currency,
-            region,
-            price_overlay: *price_overlay,
-            phase: *phase,
-            price_eligibility: *price_eligibility,
-            charge_kind: *charge_kind,
-            cohort: *cohort,
-            sku_id: *sku_id,
-            dimension_key,
-        }
-    }
-
-    /// Build a validated key for a row this gear authors.
+impl ChargeLineScopeKey {
+    /// Build a validated logical charge line.
     ///
     /// `price_overlay` is not a parameter: rows authored here always carry
     /// [`PriceOverlay::Base`], and partner / orgTier / brand overlays are
@@ -916,18 +903,8 @@ impl ScopeKey {
     /// matched for **equality** against an instant a different gear produced, so
     /// an unquantized value would build a key nobody can find rather than a key
     /// that is wrong.
-    // **Eight parameters, one per unconditional axis.** The alternative clippy asks
-    // for is a parameters struct, and it would be a second spelling of
-    // [`ScopeKeyParts`] that no destructure gates: the positional signature is
-    // this constructor's whole cover — `ScopeKeyParts`' own doc names it as the
-    // partial cover the three from-storage builders rely on — and an axis added
-    // as a struct field rather than as a parameter is an axis every caller can
-    // keep omitting.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         plan_id: PlanId,
-        currency: CurrencyCode,
-        region: Region,
         phase: PhaseId,
         price_eligibility: PriceEligibility,
         charge_kind: ChargeKind,
@@ -940,10 +917,8 @@ impl ScopeKey {
         }
         Ok(Self {
             plan_id,
-            currency,
-            region,
-            price_overlay: PriceOverlay::Base,
             phase,
+            price_overlay: PriceOverlay::Base,
             price_eligibility,
             charge_kind,
             cohort,
@@ -963,11 +938,11 @@ impl ScopeKey {
     /// the reason is the axes' own shape: they exist on `usage` rows and
     /// nowhere else, so every non-usage caller would pass `None` and
     /// [`DimensionKey::none`] to satisfy a signature that cannot use them. The
-    /// eight unconditional axes stay one call; the conditional pair is a second
-    /// one, taken only by the callers that have a line to name.
+    /// six parameterized logical axes stay one call; the conditional pair is a
+    /// second one, taken only by the callers that have a line to name.
     ///
-    /// A key with no usage line is what [`Self::new`] already returns, so this
-    /// is never needed to *omit* the pair.
+    /// A line with no usage dimension is what [`Self::new`] already returns, so
+    /// this is never needed to *omit* the pair.
     ///
     /// # Errors
     ///
@@ -1040,10 +1015,231 @@ impl ScopeKey {
         Ok(self)
     }
 
-    /// Axis 1 — the plan.
+    /// Axis — the plan.
     #[must_use]
     pub const fn plan_id(&self) -> PlanId {
         self.plan_id
+    }
+
+    /// Axis — the overlay plane (always `base` on an authored row).
+    #[must_use]
+    pub const fn price_overlay(&self) -> PriceOverlay {
+        self.price_overlay
+    }
+
+    /// Axis — the phase.
+    #[must_use]
+    pub const fn phase(&self) -> PhaseId {
+        self.phase
+    }
+
+    /// Axis — the eligibility class.
+    #[must_use]
+    pub const fn price_eligibility(&self) -> PriceEligibility {
+        self.price_eligibility
+    }
+
+    /// Axis — the charge component.
+    #[must_use]
+    pub const fn charge_kind(&self) -> ChargeKind {
+        self.charge_kind
+    }
+
+    /// Axis — the grandfathering generation.
+    #[must_use]
+    pub const fn cohort(&self) -> Cohort {
+        self.cohort
+    }
+
+    /// Axis — the SKU the row prices (D-372).
+    #[must_use]
+    pub const fn sku_id(&self) -> SkuId {
+        self.sku_id
+    }
+
+    /// Axis — the dimension discriminator on the line (D-196).
+    #[must_use]
+    pub const fn dimension_key(&self) -> &DimensionKey {
+        &self.dimension_key
+    }
+
+    /// This line's **grandfathered generation** at `cutover` (D-309).
+    ///
+    /// A cutover moves exactly two axes — `price_eligibility` to
+    /// `existing_grandfathered` and `cohort` to the generation — and carries the
+    /// other logical axes across. That is the whole of what a copy line is, and
+    /// it lives here for [`is_sibling_of`]'s reason: **the destructure below has
+    /// no rest pattern**, so an eleventh logical axis is a compile error until
+    /// somebody decides whether a generation carries it.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::TimestampPrecisionExceeded`] when `cutover` is finer than
+    /// the millisecond quantum (D-144) — this axis is matched for **equality**
+    /// against an instant another gear produced, so an unquantized value builds a
+    /// key nobody can find. The cohort/eligibility biconditional is satisfied by
+    /// construction and re-checked anyway, because a check that costs nothing and
+    /// documents an invariant is cheaper than the invariant going unstated.
+    pub fn to_generation(&self, cutover: OffsetDateTime) -> Result<Self, DomainError> {
+        let Self {
+            plan_id,
+            phase,
+            price_overlay,
+            price_eligibility: _,
+            charge_kind,
+            cohort: _,
+            sku_id,
+            dimension_key,
+        } = self;
+
+        let cohort = Cohort::Generation(cutover);
+        check_cohort_eligibility(PriceEligibility::ExistingGrandfathered, cohort)?;
+        instant::check_quantum("cohort", cutover)?;
+
+        Ok(Self {
+            plan_id: *plan_id,
+            phase: *phase,
+            price_overlay: *price_overlay,
+            price_eligibility: PriceEligibility::ExistingGrandfathered,
+            charge_kind: *charge_kind,
+            cohort,
+            sku_id: *sku_id,
+            dimension_key: dimension_key.clone(),
+        })
+    }
+
+    /// Do these two lines compete for **one** sale — equal on every logical axis
+    /// but the eligibility class and the cohort?
+    ///
+    /// Market axes are not compared here; [`MarketPriceScopeKey::is_sibling_of`]
+    /// adds currency and region. The `let Self {.. }` below carries **no** rest
+    /// pattern, so an eleventh logical axis is a compile error here rather than
+    /// a gate input silently disappearing.
+    #[must_use]
+    pub fn is_sibling_of(&self, other: &Self) -> bool {
+        let Self {
+            plan_id,
+            phase,
+            price_overlay,
+            price_eligibility: _,
+            charge_kind,
+            cohort: _,
+            sku_id,
+            dimension_key,
+        } = self;
+        *plan_id == other.plan_id
+            && *price_overlay == other.price_overlay
+            && *phase == other.phase
+            && *charge_kind == other.charge_kind
+            && *sku_id == other.sku_id
+            && *dimension_key == other.dimension_key
+    }
+}
+
+impl MarketPriceScopeKey {
+    /// Compose a full market key from a logical line and the two market axes.
+    #[must_use]
+    pub fn new(line: ChargeLineScopeKey, currency: CurrencyCode, region: Region) -> Self {
+        Self {
+            line,
+            currency,
+            region,
+        }
+    }
+
+    /// The logical charge line this market key prices.
+    #[must_use]
+    pub fn line(&self) -> &ChargeLineScopeKey {
+        &self.line
+    }
+
+    /// Borrow every axis at once.
+    ///
+    /// The destructures below carry **no** rest pattern, so an eleventh axis on
+    /// either type is a compile error here — and, because
+    /// [`MarketPriceScopeKeyParts`] gains the field too, at every site that
+    /// destructures the result.
+    #[must_use]
+    pub(crate) fn parts(&self) -> MarketPriceScopeKeyParts<'_> {
+        let Self {
+            line,
+            currency,
+            region,
+        } = self;
+        let ChargeLineScopeKey {
+            plan_id,
+            phase,
+            price_overlay,
+            price_eligibility,
+            charge_kind,
+            cohort,
+            sku_id,
+            dimension_key,
+        } = line;
+        MarketPriceScopeKeyParts {
+            plan_id: *plan_id,
+            currency,
+            region,
+            price_overlay: *price_overlay,
+            phase: *phase,
+            price_eligibility: *price_eligibility,
+            charge_kind: *charge_kind,
+            cohort: *cohort,
+            sku_id: *sku_id,
+            dimension_key,
+        }
+    }
+
+    /// Attach the usage line — the tenth axis (D-196, D-372).
+    ///
+    /// Delegates to [`ChargeLineScopeKey::with_usage_line`]; currency and region
+    /// are carried across.
+    ///
+    /// # Errors
+    ///
+    /// The same errors as [`ChargeLineScopeKey::with_usage_line`].
+    pub fn with_usage_line(
+        self,
+        meter: Option<&Meter>,
+        dimension_key: DimensionKey,
+    ) -> Result<Self, DomainError> {
+        let Self {
+            line,
+            currency,
+            region,
+        } = self;
+        Ok(Self {
+            line: line.with_usage_line(meter, dimension_key)?,
+            currency,
+            region,
+        })
+    }
+
+    /// Attach the tenth axis **alone**.
+    ///
+    /// Delegates to [`ChargeLineScopeKey::with_dimension_key`]; currency and
+    /// region are carried across.
+    ///
+    /// # Errors
+    ///
+    /// The same errors as [`ChargeLineScopeKey::with_dimension_key`].
+    pub fn with_dimension_key(self, dimension_key: DimensionKey) -> Result<Self, DomainError> {
+        let Self {
+            line,
+            currency,
+            region,
+        } = self;
+        Ok(Self {
+            line: line.with_dimension_key(dimension_key)?,
+            currency,
+            region,
+        })
+    }
+
+    /// Axis 1 — the plan.
+    #[must_use]
+    pub const fn plan_id(&self) -> PlanId {
+        self.line.plan_id()
     }
 
     /// Axis 2 — the currency.
@@ -1061,99 +1257,66 @@ impl ScopeKey {
     /// Axis 4 — the overlay plane (always `base` on an authored row).
     #[must_use]
     pub const fn price_overlay(&self) -> PriceOverlay {
-        self.price_overlay
+        self.line.price_overlay()
     }
 
     /// Axis 5 — the phase.
     #[must_use]
     pub const fn phase(&self) -> PhaseId {
-        self.phase
+        self.line.phase()
     }
 
     /// Axis 6 — the eligibility class.
     #[must_use]
     pub const fn price_eligibility(&self) -> PriceEligibility {
-        self.price_eligibility
+        self.line.price_eligibility()
     }
 
     /// Axis 7 — the charge component.
     #[must_use]
     pub const fn charge_kind(&self) -> ChargeKind {
-        self.charge_kind
+        self.line.charge_kind()
     }
 
     /// Axis 8 — the grandfathering generation.
     #[must_use]
     pub const fn cohort(&self) -> Cohort {
-        self.cohort
+        self.line.cohort()
     }
 
     /// Axis 9 — the SKU the row prices (D-372).
     #[must_use]
     pub const fn sku_id(&self) -> SkuId {
-        self.sku_id
+        self.line.sku_id()
     }
 
     /// Axis 10 — the dimension discriminator on the line (D-196).
     #[must_use]
     pub const fn dimension_key(&self) -> &DimensionKey {
-        &self.dimension_key
+        self.line.dimension_key()
     }
 
     /// This key's **grandfathered generation** at `cutover` (D-309).
     ///
-    /// A cutover moves exactly two axes — `price_eligibility` to
+    /// A cutover moves exactly two logical axes — `price_eligibility` to
     /// `existing_grandfathered` and `cohort` to the generation — and carries the
-    /// other eight across. That is the whole of what a copy key is, and it lives
-    /// here for [`is_sibling_of`]'s reason: **the destructure below has no rest
-    /// pattern**, so an eleventh axis is a compile error until somebody decides
-    /// whether a generation carries it.
-    ///
-    /// It was `domain::cutover::generation_key` first, reading the predecessor's
-    /// axes through accessors one call at a time — which compiles unchanged when
-    /// the key grows and drops the new axis from every grandfathered copy in
-    /// silence. That is D-205's defect verbatim, minted in the same wave that
-    /// repaired its fifth and sixth instances (D-296, D-300), and it is why the
-    /// construction belongs to the type that owns the fields rather than to a
-    /// caller reaching in through getters.
+    /// other eight across, including currency and region. The destructure below
+    /// has no rest pattern, so an eleventh axis on this type is a compile error
+    /// until somebody decides whether a generation carries it.
     ///
     /// # Errors
     ///
-    /// [`DomainError::TimestampPrecisionExceeded`] when `cutover` is finer than
-    /// the millisecond quantum (D-144) — this axis is matched for **equality**
-    /// against an instant another gear produced, so an unquantized value builds a
-    /// key nobody can find. The cohort/eligibility biconditional is satisfied by
-    /// construction and re-checked anyway, because a check that costs nothing and
-    /// documents an invariant is cheaper than the invariant going unstated.
+    /// The same errors as [`ChargeLineScopeKey::to_generation`].
     pub fn to_generation(&self, cutover: OffsetDateTime) -> Result<Self, DomainError> {
         let Self {
-            plan_id,
+            line,
             currency,
             region,
-            price_overlay,
-            phase,
-            price_eligibility: _,
-            charge_kind,
-            cohort: _,
-            sku_id,
-            dimension_key,
         } = self;
-
-        let cohort = Cohort::Generation(cutover);
-        check_cohort_eligibility(PriceEligibility::ExistingGrandfathered, cohort)?;
-        instant::check_quantum("cohort", cutover)?;
-
         Ok(Self {
-            plan_id: *plan_id,
+            line: line.to_generation(cutover)?,
             currency: currency.clone(),
             region: region.clone(),
-            price_overlay: *price_overlay,
-            phase: *phase,
-            price_eligibility: PriceEligibility::ExistingGrandfathered,
-            charge_kind: *charge_kind,
-            cohort,
-            sku_id: *sku_id,
-            dimension_key: dimension_key.clone(),
         })
     }
 
@@ -1166,41 +1329,22 @@ impl ScopeKey {
     /// rows that are *not* siblings are two different things being bought, and
     /// ranking them against each other drops one from the sale entirely.
     ///
-    /// **It lives on the key, and it destructures.** The caller that needs this is
-    /// `domain::sellability`, and a six-axis spelling of its own reads two usage
-    /// lines of one market as siblings, dropping the less specific one from the
-    /// sellability gate and answering over a key whose window plane nobody has looked
-    /// at. A comparison stated as "every axis except two"
-    /// is the one kind that cannot be written safely at a distance: it has to be
-    /// re-read whenever the key gains an axis, and nothing makes that happen. So
-    /// the `let Self {.. }` below carries **no** rest pattern, and an eleventh axis
+    /// **It lives on the key, and it destructures.** Currency and region stay in
+    /// the comparison: two markets of one logical line are not siblings. The
+    /// `let Self {.. }` below carries **no** rest pattern, and an eleventh axis
     /// is a compile error here rather than a gate input silently disappearing.
     #[must_use]
     pub fn is_sibling_of(&self, other: &Self) -> bool {
         let Self {
-            plan_id,
+            line,
             currency,
             region,
-            price_overlay,
-            phase,
-            price_eligibility: _,
-            charge_kind,
-            cohort: _,
-            sku_id,
-            dimension_key,
         } = self;
-        *plan_id == other.plan_id
-            && *currency == other.currency
-            && *region == other.region
-            && *price_overlay == other.price_overlay
-            && *phase == other.phase
-            && *charge_kind == other.charge_kind
-            && *sku_id == other.sku_id
-            && *dimension_key == other.dimension_key
+        line.is_sibling_of(&other.line) && *currency == other.currency && *region == other.region
     }
 }
 
-impl fmt::Display for ScopeKey {
+impl fmt::Display for MarketPriceScopeKey {
     /// The canonical rendering: ten axes, normative order, one separator.
     /// This is the string a `DUPLICATE_SCOPE_KEY` rejection names, so it has to
     /// be stable and complete — a rendering that dropped an axis would report a
@@ -1215,8 +1359,8 @@ impl fmt::Display for ScopeKey {
     /// cross-tenant registry idempotency key.
     ///
     /// **Ten segments, always.** The two free-form axes refuse [`KEY_SEPARATOR`]
-    /// — [`Region::new`] and [`ScopeKey::with_dimension_key`] — which is why this
-    /// impl may join with a bare literal and count on ten.
+    /// — [`Region::new`] and [`ChargeLineScopeKey::with_dimension_key`] — which is
+    /// why this impl may join with a bare literal and count on ten.
     ///
     /// **And the rendering is injective**, which is the property the four surfaces
     /// that read it back as identity actually need. The one axis with an absent
@@ -1226,7 +1370,7 @@ impl fmt::Display for ScopeKey {
         // Destructured, so an eleventh axis is a compile error here rather than a
         // segment silently missing from the string a `DUPLICATE_SCOPE_KEY`
         // rejection names.
-        let ScopeKeyParts {
+        let MarketPriceScopeKeyParts {
             plan_id,
             currency,
             region,

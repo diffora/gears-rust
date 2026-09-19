@@ -13,7 +13,8 @@ use crate::domain::overlay::{Adjustment, AmountSet, Magnitude};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow, TierBand};
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 
 #[test]
@@ -121,17 +122,19 @@ fn a_record(row: PriceRow, currency: CurrencyCode) -> PriceRecord {
         resolved_invoice_line_template: None,
         resolved_gl_code: None,
         price_id: Uuid::from_u128(0xb_10),
-        scope_key: ScopeKey::new(
-            PlanId::new(Uuid::from_u128(0x9_1a4)),
+        scope_key: MarketPriceScopeKey::new(
+            ChargeLineScopeKey::new(
+                PlanId::new(Uuid::from_u128(0x9_1a4)),
+                PhaseId::new(Uuid::from_u128(0xfa_5e)),
+                PriceEligibility::AllSubscriptions,
+                ChargeKind::Recurring,
+                Cohort::None,
+                SkuId::new(Uuid::from_u128(5)),
+            )
+            .expect("all_subscriptions pairs with cohort none"),
             currency,
             Region::new("eu").expect("a non-blank region"),
-            PhaseId::new(Uuid::from_u128(0xfa_5e)),
-            PriceEligibility::AllSubscriptions,
-            ChargeKind::Recurring,
-            Cohort::None,
-            SkuId::new(Uuid::from_u128(5)),
-        )
-        .expect("all_subscriptions pairs with cohort none"),
+        ),
         row,
         tax_inclusive: false,
         tax_category_ref: None,

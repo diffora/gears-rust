@@ -44,7 +44,8 @@ use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::retirement::BlockingReferenceKind;
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use bss_pricing::infra::draft_window::{self, DraftWindowCommand};
 use bss_pricing::infra::storage::migrations::Migrator;
@@ -664,17 +665,19 @@ async fn price_row_on(prices: &PriceRepo, plan_id: PlanId) -> Uuid {
             TENANT,
             bss_pricing::infra::storage::repo::NewPriceDraft {
                 price_id,
-                scope_key: ScopeKey::new(
-                    plan_id,
+                scope_key: MarketPriceScopeKey::new(
+                    ChargeLineScopeKey::new(
+                        plan_id,
+                        PhaseId::new(Uuid::from_u128(0xfa_11)),
+                        PriceEligibility::AllSubscriptions,
+                        ChargeKind::Recurring,
+                        Cohort::None,
+                        SkuId::new(Uuid::from_u128(5)),
+                    )
+                    .expect("the class pairs with the cohort"),
                     CurrencyCode::new("EUR").expect("three letters"),
                     Region::new("eu").expect("a non-blank region"),
-                    PhaseId::new(Uuid::from_u128(0xfa_11)),
-                    PriceEligibility::AllSubscriptions,
-                    ChargeKind::Recurring,
-                    Cohort::None,
-                    SkuId::new(Uuid::from_u128(5)),
-                )
-                .expect("the class pairs with the cohort"),
+                ),
                 content: PriceContent {
                     row,
                     tax_inclusive: false,

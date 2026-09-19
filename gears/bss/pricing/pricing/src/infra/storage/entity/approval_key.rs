@@ -37,7 +37,7 @@ pub struct Model {
     pub approval_id: Uuid,
     /// The key it holds, in the **canonical ten-axis rendering** — the same
     /// string a publish refusal names a key by, and the same
-    /// `ScopeKey::to_string` produces. The migration's doc says why the axes are
+    /// `MarketPriceScopeKey::to_string` produces. The migration's doc says why the axes are
     /// not spread into columns.
     #[sea_orm(primary_key, auto_increment = false)]
     pub scope_key: String,

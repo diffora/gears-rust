@@ -26,8 +26,8 @@ use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{IncludedAllowance, ModelKind, PriceRow, RolloverPolicy};
 use bss_pricing::domain::publish::rules::PRIMITIVE_RULES_UNBUILT;
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
-    SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, DimensionKey, MarketPriceScopeKey, Meter, PhaseId,
+    PlanId, PriceEligibility, Region, SkuId,
 };
 use bss_pricing::infra::import::classify_against_store;
 use bss_pricing::infra::storage::migrations::Migrator;
@@ -61,18 +61,20 @@ fn scope() -> AccessScope {
     AccessScope::for_tenant(TENANT)
 }
 
-fn key(region: &str) -> ScopeKey {
-    ScopeKey::new(
-        plan(),
+fn key(region: &str) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            phase(),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the class pairs with the cohort"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new(region).expect("a non-blank region"),
-        phase(),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("the class pairs with the cohort")
 }
 
 fn content(amount: i64) -> PriceContent {
@@ -94,7 +96,7 @@ fn content(amount: i64) -> PriceContent {
     }
 }
 
-fn row(scope_key: ScopeKey, amount: i64) -> ImportRow {
+fn row(scope_key: MarketPriceScopeKey, amount: i64) -> ImportRow {
     ImportRow {
         scope_key,
         content: content(amount),
@@ -123,13 +125,18 @@ async fn harness() -> Harness {
 }
 
 /// Author a row and publish it past the engine, so the key is genuinely held.
-async fn publish(h: &Harness, scope_key: ScopeKey, amount: i64) -> Uuid {
+async fn publish(h: &Harness, scope_key: MarketPriceScopeKey, amount: i64) -> Uuid {
     publish_for(h, TENANT, scope_key, amount).await
 }
 
 /// [`publish`] under a named tenant — the operand the cross-tenant case varies,
 /// and the only one it varies.
-async fn publish_for(h: &Harness, tenant: Uuid, scope_key: ScopeKey, amount: i64) -> Uuid {
+async fn publish_for(
+    h: &Harness,
+    tenant: Uuid,
+    scope_key: MarketPriceScopeKey,
+    amount: i64,
+) -> Uuid {
     let scope = AccessScope::for_tenant(tenant);
     let price_id = Uuid::now_v7();
     h.prices
@@ -184,7 +191,7 @@ fn usage_content(meter: &str, amount: i64) -> PriceContent {
     }
 }
 
-fn usage_row(scope_key: ScopeKey, meter: &str, amount: i64) -> ImportRow {
+fn usage_row(scope_key: MarketPriceScopeKey, meter: &str, amount: i64) -> ImportRow {
     ImportRow {
         scope_key,
         content: usage_content(meter, amount),
@@ -202,18 +209,20 @@ fn usage_row(scope_key: ScopeKey, meter: &str, amount: i64) -> ImportRow {
 /// vector, so both would have gone red on a fault that is the fixture's rather
 /// than the report's. The fixture is fixed, exactly as `usage_content` was one
 /// wave earlier for the same class of fault.
-fn metered_key() -> ScopeKey {
-    ScopeKey::new(
-        plan(),
+fn metered_key() -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            phase(),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Usage,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the class pairs with the cohort"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new("eu").expect("a non-blank region"),
-        phase(),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Usage,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("the class pairs with the cohort")
     .with_usage_line(
         Some(&Meter::new("api-calls").expect("a meter")),
         DimensionKey::new("region=eu"),
@@ -221,7 +230,12 @@ fn metered_key() -> ScopeKey {
     .expect("a usage line on a usage key")
 }
 
-async fn publish_usage(h: &Harness, scope_key: ScopeKey, meter: &str, amount: i64) -> Uuid {
+async fn publish_usage(
+    h: &Harness,
+    scope_key: MarketPriceScopeKey,
+    meter: &str,
+    amount: i64,
+) -> Uuid {
     let price_id = Uuid::now_v7();
     h.prices
         .create_draft(
@@ -310,17 +324,19 @@ async fn a_usage_line_key_is_matched_through_the_store_like_any_other() {
     // its key; a row on a *different* meter is a different key and is untouched.
     let h = harness().await;
     let usage = |meter: &str| {
-        ScopeKey::new(
-            plan(),
+        MarketPriceScopeKey::new(
+            ChargeLineScopeKey::new(
+                plan(),
+                phase(),
+                PriceEligibility::AllSubscriptions,
+                ChargeKind::Usage,
+                Cohort::None,
+                SkuId::new(Uuid::new_v5(&Uuid::NAMESPACE_OID, meter.as_bytes())),
+            )
+            .expect("the class pairs with the cohort"),
             CurrencyCode::new("EUR").expect("three letters"),
             Region::new("eu").expect("a non-blank region"),
-            phase(),
-            PriceEligibility::AllSubscriptions,
-            ChargeKind::Usage,
-            Cohort::None,
-            SkuId::new(Uuid::new_v5(&Uuid::NAMESPACE_OID, meter.as_bytes())),
         )
-        .expect("the class pairs with the cohort")
     };
     let metered = usage("api-calls")
         .with_usage_line(
@@ -419,12 +435,12 @@ async fn a_draft_row_on_the_key_is_not_a_published_row() {
 
 /// Open a `submitted` approval unit holding the given keys, so they are genuinely
 /// reserved by the one-pending-unit rule.
-async fn hold(h: &Harness, keys: &[ScopeKey]) -> Uuid {
+async fn hold(h: &Harness, keys: &[MarketPriceScopeKey]) -> Uuid {
     hold_for(h, TENANT, keys).await
 }
 
 /// [`hold`] under a named tenant.
-async fn hold_for(h: &Harness, tenant: Uuid, keys: &[ScopeKey]) -> Uuid {
+async fn hold_for(h: &Harness, tenant: Uuid, keys: &[MarketPriceScopeKey]) -> Uuid {
     let approval_id = Uuid::now_v7();
     let conn = h.provider.conn().expect("conn");
     approval_repo::open(
@@ -561,17 +577,19 @@ async fn one_read_serves_every_row_of_a_plan_and_a_batch_may_span_plans() {
     let h = harness().await;
     let other = PlanId::new(Uuid::from_u128(0x50_c4));
     let first_holder = publish(&h, key("eu"), 9_900).await;
-    let there = ScopeKey::new(
-        other,
+    let there = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            other,
+            phase(),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the class pairs with the cohort"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new("eu").expect("a non-blank region"),
-        phase(),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
-    )
-    .expect("the class pairs with the cohort");
+    );
     let second_holder = publish(&h, there.clone(), 5_000).await;
 
     let report = judged(&h, &[row(key("eu"), 12_500), row(there, 7_500)]).await;

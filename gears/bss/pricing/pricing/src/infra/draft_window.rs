@@ -17,7 +17,7 @@ use crate::domain::draft_window::{
     DraftWindowAction, DraftWindowEntry, DraftWindowOwner, compose_windows,
 };
 use crate::domain::error::DomainError;
-use crate::domain::scope_key::{PlanId, ScopeKey};
+use crate::domain::scope_key::{MarketPriceScopeKey, PlanId};
 use crate::infra::publish::CANDIDATE_ROW_STATES;
 use crate::infra::storage::RepoError;
 use crate::infra::storage::repo::plan_repo::{
@@ -252,7 +252,7 @@ async fn candidate_keys(
     runner: &impl DBRunner,
     scope: &AccessScope,
     owner: &DraftWindowOwner,
-) -> Result<BTreeMap<Uuid, ScopeKey>, DomainError> {
+) -> Result<BTreeMap<Uuid, MarketPriceScopeKey>, DomainError> {
     let rows = map_repo_result(
         price_repo::load_for_plan(
             runner,

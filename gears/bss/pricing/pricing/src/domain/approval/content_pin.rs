@@ -207,10 +207,10 @@
 //! exhaustively, so a new member is a compile error in the owning module *and* —
 //! because the parts struct is destructured here in turn — a decision at the pin:
 //!
-//! - [`ScopeKey`](crate::domain::scope_key::ScopeKey), whose ten axes are
+//! - [`MarketPriceScopeKey`](crate::domain::scope_key::MarketPriceScopeKey), whose ten axes are
 //!   frozen by the canonical key itself and by ten columns of `pricing_price`,
 //!   read through
-//!   [`ScopeKeyParts`](crate::domain::scope_key::ScopeKeyParts).
+//!   [`MarketPriceScopeKeyParts`](crate::domain::scope_key::MarketPriceScopeKeyParts).
 //! - [`ThresholdVersion`](crate::domain::materiality::ThresholdVersion), read
 //!   through [`ThresholdVersionParts`]. Its fields are private because its
 //!   constructor is what refuses an empty or duplicated entry set, and a public
@@ -290,7 +290,7 @@ use crate::domain::price_row::{
     MinQtyUsageFallback, PriceRow, QuantitySource, ReservationFlavor, TierAggregationWindow,
     TierBand, TierQualificationWindow, model_kind_wire,
 };
-use crate::domain::scope_key::{PhaseId, PlanId, ScopeKey, ScopeKeyParts};
+use crate::domain::scope_key::{MarketPriceScopeKey, MarketPriceScopeKeyParts, PhaseId, PlanId};
 use crate::domain::taxonomy::{RegionTaxMarkers, TaxonomyEntry, TaxonomyValueChange};
 use time::OffsetDateTime;
 
@@ -1521,8 +1521,8 @@ fn put_price_record(buf: &mut Vec<u8>, record: &PriceRecord) {
     put_u64(buf, row_version.get());
 }
 
-/// The scope key's axes, bound through [`ScopeKeyParts`]: `parts()` destructures
-/// [`ScopeKey`] exhaustively, so a frame that went short here would not compile.
+/// The scope key's axes, bound through [`MarketPriceScopeKeyParts`]: `parts()` destructures
+/// [`MarketPriceScopeKey`] exhaustively, so a frame that went short here would not compile.
 ///
 /// **This is where the exhaustive binding earns its keep.** [`put_price_record`]
 /// frames the row straight after the key, and `sku_id`, `meter` and
@@ -1536,13 +1536,13 @@ fn put_price_record(buf: &mut Vec<u8>, record: &PriceRecord) {
 /// undimensioned key, rather than only on `usage` rows: a conditional field count
 /// is how two adjacent values become re-splittable, which is the hazard
 /// [`count_of`] exists for one level up.
-fn put_scope_key(buf: &mut Vec<u8>, key: &ScopeKey) {
+fn put_scope_key(buf: &mut Vec<u8>, key: &MarketPriceScopeKey) {
     // Destructured through `parts()`, and this is the site where that matters
     // most: a short frame here pins two window plans on two SKUs of one market
     // identically, so an approve can be satisfied by a re-derivation over the other
     // SKU's coverage. An eleventh axis is a compile error here rather than a digest
     // that quietly stops discriminating. `put_price_row` below has the same shape.
-    let ScopeKeyParts {
+    let MarketPriceScopeKeyParts {
         plan_id,
         currency,
         region,

@@ -154,7 +154,7 @@
 //!   in the register as a claim about **the retirement path** rather than about
 //!   this function. The first half is true of `window_repo` and the second half is
 //!   false of `infra::retirement`: [`list_for_plan`] resolves every window's
-//!   `ScopeKey` off `pricing_price` on every read, which *is* the act's key set,
+//!   `MarketPriceScopeKey` off `pricing_price` on every read, which *is* the act's key set,
 //!   and `infra::retirement::retire_in` already assembled the `PlanShape` for the
 //!   approval pin eleven lines below the composition. So the operand was never
 //!   missing — it was missing **here**, one layer down, and the conclusion drawn
@@ -237,7 +237,7 @@ use crate::domain::audit::AuditStamp;
 use crate::domain::projection::PROJECTED_ROW_STATES;
 use std::collections::HashMap;
 
-use crate::domain::scope_key::{PlanId, ScopeKey};
+use crate::domain::scope_key::{MarketPriceScopeKey, PlanId};
 use crate::domain::window::{
     FrozenEnd, WindowInterval, WindowState, frozen_end, interval_is_non_empty,
 };
@@ -307,7 +307,7 @@ pub struct WindowRecord {
     pub price_id: Uuid,
     /// The ten axes that row is filed under — resolved from `pricing_price` on
     /// every read, never stored here.
-    pub scope_key: ScopeKey,
+    pub scope_key: MarketPriceScopeKey,
     /// Inclusive start, UTC.
     pub effective_from: OffsetDateTime,
     /// Exclusive end, UTC; `None` is open-ended.
@@ -555,7 +555,7 @@ pub async fn list_for_plan(
     tenant_id: Uuid,
     plan_id: PlanId,
 ) -> Result<Vec<WindowRecord>, RepoError> {
-    let keys: HashMap<Uuid, ScopeKey> =
+    let keys: HashMap<Uuid, MarketPriceScopeKey> =
         price_repo::load_scope_keys_for_plan(runner, scope, tenant_id, plan_id)
             .await?
             .into_iter()
@@ -637,7 +637,7 @@ pub async fn list_page(
     // Indexed once rather than scanned per row: the mapping closure below runs for
     // every row of a page capped at `LIST_LIMIT_CFG`, and a linear `find` over the
     // key set made that `page x price_ids` comparisons.
-    let keys: HashMap<Uuid, ScopeKey> =
+    let keys: HashMap<Uuid, MarketPriceScopeKey> =
         price_repo::load_scope_keys_for_ids(runner, scope, tenant_id, &price_ids)
             .await?
             .into_iter()
@@ -695,7 +695,7 @@ pub async fn list_odata(
     price_ids.sort_unstable();
     price_ids.dedup();
     // Indexed once, for the reason `load_for_plan`'s twin above carries.
-    let keys: HashMap<Uuid, ScopeKey> =
+    let keys: HashMap<Uuid, MarketPriceScopeKey> =
         price_repo::load_scope_keys_for_ids(runner, scope, tenant_id, &price_ids)
             .await
             .map_err(OdataPageError::Repo)?
@@ -1479,7 +1479,7 @@ pub async fn adjust_effective_to(
 /// fourth writer and it wants this too.
 fn overlap_or(
     err: &toolkit_db::secure::ScopeError,
-    key: &ScopeKey,
+    key: &MarketPriceScopeKey,
     from: OffsetDateTime,
     to: Option<OffsetDateTime>,
     subject: &str,
@@ -1620,7 +1620,7 @@ async fn refuse_overlap(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-    key: &ScopeKey,
+    key: &MarketPriceScopeKey,
     from: OffsetDateTime,
     to: Option<OffsetDateTime>,
     except: Option<Uuid>,
@@ -2002,7 +2002,10 @@ fn render_interval(from: OffsetDateTime, to: Option<OffsetDateTime>) -> String {
 /// `approval_repo::to_domain`'s reason: the enumeration lives in one place per
 /// type, and a token the CHECK admits while this crate does not is an invariant
 /// breach the boundary reports rather than a string a handler renders.
-fn to_domain(row: price_window::Model, scope_key: ScopeKey) -> Result<WindowRecord, RepoError> {
+fn to_domain(
+    row: price_window::Model,
+    scope_key: MarketPriceScopeKey,
+) -> Result<WindowRecord, RepoError> {
     let state = super::plan_repo::read_token(
         "pricing_price_window.state",
         &row.state,

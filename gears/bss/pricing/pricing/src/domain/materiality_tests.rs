@@ -35,7 +35,8 @@ use crate::domain::money::{CurrencyCode, MinorAmount, RateMinor};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow, TierBand};
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use time::OffsetDateTime;
 
@@ -87,18 +88,20 @@ fn graduated(currency: &str, bands: &[(u64, Option<u64>, i64)]) -> PriceRecord {
     record
 }
 
-fn key(currency: &str) -> ScopeKey {
-    ScopeKey::new(
-        PlanId::new(Uuid::from_u128(1)),
+fn key(currency: &str) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(Uuid::from_u128(1)),
+            PhaseId::new(Uuid::from_u128(2)),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the eight axes agree"),
         CurrencyCode::new(currency).expect("a three-letter code"),
         Region::new("EU").expect("a non-blank region"),
-        PhaseId::new(Uuid::from_u128(2)),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("the eight axes agree")
 }
 
 /// An absolute entry for `currency`, in that currency's minor units.

@@ -67,7 +67,7 @@ use toolkit_macros::domain_model;
 use uuid::Uuid;
 
 use crate::domain::error::DomainError;
-use crate::domain::scope_key::ScopeKey;
+use crate::domain::scope_key::MarketPriceScopeKey;
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 use time::OffsetDateTime;
 
@@ -290,7 +290,7 @@ enum BoundSpan {
 pub struct GenerationCoverage {
     /// The generation's key. Its `cohort` axis is D-316 clause (3)'s lower
     /// anchor, and its `price_eligibility` is what selected it.
-    pub scope_key: ScopeKey,
+    pub scope_key: MarketPriceScopeKey,
     /// Every window on this key **as stored**, paired with the id that names it.
     ///
     /// The whole set and not the condemned subset: the bound is a question about

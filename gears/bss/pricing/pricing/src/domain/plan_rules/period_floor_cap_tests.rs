@@ -20,7 +20,8 @@ use crate::domain::plan_shape::{PeriodFloorCap, PlanShape};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow};
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use crate::domain::validation::{ValidationReport, ValidationRule};
 use time::OffsetDateTime;
@@ -50,17 +51,19 @@ fn minor(units: i64) -> MinorAmount {
 /// A recurring base row, which is what puts a market into
 /// [`PlanShape::markets`].
 fn recurring(seed: u128, code: &str, market: &str) -> PriceRecord {
-    let scope_key = ScopeKey::new(
-        plan(),
+    let scope_key = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            PhaseId::new(Uuid::from_u128(TERMINAL)),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("all_subscriptions pairs with cohort none"),
         currency(code),
         region(market),
-        PhaseId::new(Uuid::from_u128(TERMINAL)),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
-    )
-    .expect("all_subscriptions pairs with cohort none");
+    );
     let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
     row.amount_minor = Some(minor(2_500));
     PriceRecord {

@@ -34,7 +34,8 @@ use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::publish::{PlanPublishUnit, PublishAuthorization};
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use bss_pricing::infra::approval::{ApprovalService, DecideRequest, RegionGrant};
 use bss_pricing::infra::draft_window::{self, DraftWindowCommand};
@@ -648,18 +649,20 @@ fn publishable_row(amount_minor: i64) -> PriceContent {
     }
 }
 
-fn publishable_scope_key() -> ScopeKey {
-    ScopeKey::new(
-        PlanId::new(PLAN),
+fn publishable_scope_key() -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(PLAN),
+            PhaseId::new(PHASE),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("scope key"),
         CurrencyCode::new("EUR").expect("currency"),
         Region::new("eu").expect("region"),
-        PhaseId::new(PHASE),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("scope key")
 }
 
 fn committed_registry_path() -> PathBuf {

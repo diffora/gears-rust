@@ -18,7 +18,8 @@ use crate::domain::plan_shape::PlanShape;
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::PriceRow;
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use crate::domain::validation::{ValidationReport, ValidationRule};
 use time::OffsetDateTime;
@@ -45,17 +46,19 @@ fn row(
     } else {
         Cohort::None
     };
-    let scope_key = ScopeKey::new(
-        plan(),
+    let scope_key = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            PhaseId::new(Uuid::from_u128(0xf1)),
+            eligibility,
+            ChargeKind::Recurring,
+            cohort,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the eligibility and cohort pair"),
         CurrencyCode::new(currency).expect("three letters"),
         Region::new(region).expect("non-blank"),
-        PhaseId::new(Uuid::from_u128(0xf1)),
-        eligibility,
-        ChargeKind::Recurring,
-        cohort,
-        SkuId::new(Uuid::from_u128(5)),
-    )
-    .expect("the eligibility and cohort pair");
+    );
 
     let mut shape = PriceRow::new(ChargeKind::Recurring, None);
     shape.amount_minor = Some(MinorAmount::new(1000).expect("non-negative"));

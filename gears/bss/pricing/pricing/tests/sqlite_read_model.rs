@@ -48,7 +48,8 @@ use bss_pricing::domain::read_model::{
     OverlayIndexShard, OverlayScopeClass, SubjectKind, SubjectRef,
 };
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use bss_pricing::domain::window::{WindowInterval, WindowState};
 use bss_pricing::infra::fixture_gate::FixtureGate;
@@ -409,18 +410,20 @@ fn flat_row() -> PriceContent {
     }
 }
 
-fn scope_key(plan_id: PlanId, phase: PhaseId) -> ScopeKey {
-    ScopeKey::new(
-        plan_id,
+fn scope_key(plan_id: PlanId, phase: PhaseId) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan_id,
+            phase,
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the class pairs with cohort none"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new("eu").expect("a non-blank region"),
-        phase,
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("the class pairs with cohort none")
 }
 
 /// A plan the whole rule set passes, plus one flat recurring row.
@@ -4002,17 +4005,19 @@ async fn a_draft_row_on_a_new_key_gets_no_group_at_all() {
             TENANT,
             NewPriceDraft {
                 price_id: draft_id,
-                scope_key: ScopeKey::new(
-                    plan_id,
+                scope_key: MarketPriceScopeKey::new(
+                    ChargeLineScopeKey::new(
+                        plan_id,
+                        PhaseId::new(published.phase),
+                        PriceEligibility::NewSubscriptionsOnly,
+                        ChargeKind::Recurring,
+                        Cohort::None,
+                        SkuId::new(Uuid::from_u128(5)),
+                    )
+                    .expect("the class pairs with cohort none"),
                     CurrencyCode::new(&published.currency).expect("three letters"),
                     Region::new(&published.region).expect("a non-blank region"),
-                    PhaseId::new(published.phase),
-                    PriceEligibility::NewSubscriptionsOnly,
-                    ChargeKind::Recurring,
-                    Cohort::None,
-                    SkuId::new(Uuid::from_u128(5)),
-                )
-                .expect("the class pairs with cohort none"),
+                ),
                 content: flat_row(),
                 created_by: ACTOR,
                 created_at_utc: at(10),
@@ -4803,17 +4808,19 @@ async fn three_charge_kinds_freeze_distinct_descriptors_before_default_drift() {
         } else {
             Uuid::from_u128(0x5_c1)
         };
-        let mut key = ScopeKey::new(
-            plan_id,
+        let mut key = MarketPriceScopeKey::new(
+            ChargeLineScopeKey::new(
+                plan_id,
+                phase,
+                PriceEligibility::AllSubscriptions,
+                kind,
+                Cohort::None,
+                SkuId::new(sku),
+            )
+            .expect("scope"),
             CurrencyCode::new("EUR").expect("currency"),
             Region::new("eu").expect("region"),
-            phase,
-            PriceEligibility::AllSubscriptions,
-            kind,
-            Cohort::None,
-            SkuId::new(sku),
-        )
-        .expect("scope");
+        );
         if kind == ChargeKind::Usage {
             content.row.model_kind = Some(ModelKind::PerUnit);
             content.row.amount_minor = None;

@@ -136,8 +136,9 @@ use crate::domain::price_row::{
 use crate::domain::projection::PROJECTED_ROW_STATES;
 use crate::domain::repricing::RunSelector;
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, PriceOverlay,
-    Region, ScopeKey, ScopeKeyParts, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, DimensionKey, MarketPriceScopeKey,
+    MarketPriceScopeKeyParts, Meter, PhaseId, PlanId, PriceEligibility, PriceOverlay, Region,
+    SkuId,
 };
 use crate::domain::tax_display::RegionTaxReadiness;
 use crate::infra::storage::RepoError;
@@ -244,7 +245,7 @@ pub struct NewPriceDraft {
     /// The row being created.
     pub price_id: Uuid,
     /// The ten axes it is filed under.
-    pub scope_key: ScopeKey,
+    pub scope_key: MarketPriceScopeKey,
     /// What the row says.
     pub content: PriceContent,
     /// Pseudonymous principal id of the authoring actor.
@@ -1837,7 +1838,7 @@ fn market_columns(row: &price::Model) -> MarketColumns<'_> {
 
 /// The canonical scope-key columns of a stored row, as a comparable tuple.
 ///
-/// Compared column-wise rather than by parsing back into a [`ScopeKey`]: a row whose
+/// Compared column-wise rather than by parsing back into a [`MarketPriceScopeKey`]: a row whose
 /// stored axis is outside its enumeration is a [`RepoError::CorruptRow`] that the
 /// callers' own reads will report with the subject attached, and a comparison that
 /// had to parse first would answer "corrupt" where the honest answer is "these two
@@ -2603,7 +2604,7 @@ pub async fn load_scope_key(
     scope: &AccessScope,
     tenant_id: Uuid,
     price_id: Uuid,
-) -> Result<Option<ScopeKey>, RepoError> {
+) -> Result<Option<MarketPriceScopeKey>, RepoError> {
     let Some(row) = load_row(runner, scope, tenant_id, price_id).await? else {
         return Ok(None);
     };
@@ -2636,7 +2637,7 @@ pub async fn load_scope_keys_for_plan(
     scope: &AccessScope,
     tenant_id: Uuid,
     plan_id: PlanId,
-) -> Result<Vec<(Uuid, ScopeKey)>, RepoError> {
+) -> Result<Vec<(Uuid, MarketPriceScopeKey)>, RepoError> {
     price::Entity::find()
         .secure()
         .scope_with(scope)
@@ -2680,7 +2681,7 @@ pub async fn load_scope_keys_for_ids(
     scope: &AccessScope,
     tenant_id: Uuid,
     price_ids: &[Uuid],
-) -> Result<Vec<(Uuid, ScopeKey)>, RepoError> {
+) -> Result<Vec<(Uuid, MarketPriceScopeKey)>, RepoError> {
     if price_ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -2940,7 +2941,7 @@ async fn find_key_occupant(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-    key: &ScopeKey,
+    key: &MarketPriceScopeKey,
 ) -> Result<Option<price::Model>, RepoError> {
     price::Entity::find()
         .secure()
@@ -2982,7 +2983,7 @@ async fn read_key_occupants(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-    key: &ScopeKey,
+    key: &MarketPriceScopeKey,
 ) -> Result<KeyOccupants, RepoError> {
     let rows = price::Entity::find()
         .secure()
@@ -3061,7 +3062,7 @@ async fn read_key_occupants(
 ///
 /// # Errors
 /// [`RepoError::NotSupersedable`] naming the key and the class.
-pub fn refuse_unsupersedable_class(key: &ScopeKey) -> Result<(), RepoError> {
+pub fn refuse_unsupersedable_class(key: &MarketPriceScopeKey) -> Result<(), RepoError> {
     if key.price_eligibility() == PriceEligibility::ExistingGrandfathered {
         return Err(RepoError::NotSupersedable {
             subject: SUBJECT.to_owned(),
@@ -3445,9 +3446,9 @@ fn check_grandfather_horizon(
 /// meter. Internal callers pass that derived value; this repository must not
 /// mistake it for authored input. Only the dimension needs reconciliation here.
 pub(crate) fn resolve_authored_usage_line(
-    key: &ScopeKey,
+    key: &MarketPriceScopeKey,
     row: &PriceRow,
-) -> Result<ScopeKey, RepoError> {
+) -> Result<MarketPriceScopeKey, RepoError> {
     let row_meter = row
         .meter
         .as_deref()
@@ -3604,14 +3605,14 @@ fn swap_guard(tenant_id: Uuid, price_id: Uuid, expected: RowVersion) -> Option<C
 /// One spelling, so no statement here can decide "the same key" by fewer axes
 /// than the key actually has — the mistake that would report a collision
 /// between two rows that do not share a key at all.
-fn scope_key_filter(tenant_id: Uuid, key: &ScopeKey) -> Condition {
+fn scope_key_filter(tenant_id: Uuid, key: &MarketPriceScopeKey) -> Condition {
     // Destructured through `parts()`, which is what this function's own doc says
     // it needs: *"One spelling, so no statement here can decide 'the same key' by
     // fewer axes than the key actually has."* It could, and it did — D-196 widened
     // this key from eight axes to ten and three sites went unchanged. An eleventh
     // axis is now a compile error here rather than a `Condition` that silently
     // matches too much.
-    let ScopeKeyParts {
+    let MarketPriceScopeKeyParts {
         plan_id,
         currency,
         region,
@@ -3657,7 +3658,7 @@ fn not_found(price_id: Uuid) -> RepoError {
 /// `DUPLICATE_SCOPE_KEY` response has to carry; the occupant's id and state
 /// follow, because "this key is taken" without saying by what leaves the author
 /// to go looking.
-fn duplicate_key(key: &ScopeKey, occupant: &price::Model) -> RepoError {
+fn duplicate_key(key: &MarketPriceScopeKey, occupant: &price::Model) -> RepoError {
     RepoError::DuplicateScopeKey(format!(
         "{key} is held by {} price {}",
         occupant.lifecycle_state, occupant.price_id
@@ -4634,7 +4635,7 @@ fn to_record(
 /// migration already in its ledger, so a normalization added in place to an
 /// applied migration never executes on the databases that would need it. A repair
 /// is an out-of-band data statement or the chain's re-issue, not a migration edit.
-fn to_scope_key(row: &price::Model) -> Result<ScopeKey, RepoError> {
+fn to_scope_key(row: &price::Model) -> Result<MarketPriceScopeKey, RepoError> {
     read_scope_key(row).map_err(|e| match e {
         RepoError::CorruptRow(detail) => {
             RepoError::CorruptRow(format!("price row {}: {detail}", row.price_id))
@@ -4649,12 +4650,12 @@ fn to_scope_key(row: &price::Model) -> Result<ScopeKey, RepoError> {
 /// The cohort / eligibility biconditional is re-established here rather than
 /// assumed: the two axes are read back as two independent columns, so the
 /// pairing has to hold on every rehydration and not only at first construction.
-fn read_scope_key(row: &price::Model) -> Result<ScopeKey, RepoError> {
+fn read_scope_key(row: &price::Model) -> Result<MarketPriceScopeKey, RepoError> {
     let currency = CurrencyCode::new(&row.currency)
         .map_err(|e| RepoError::CorruptRow(format!("pricing_price.currency: {e}")))?;
     let region = Region::new(&row.region)
         .map_err(|e| RepoError::CorruptRow(format!("pricing_price.region: {e}")))?;
-    // Asked even though `ScopeKey` takes no overlay: the constructor would
+    // Asked even though `MarketPriceScopeKey` takes no overlay: the constructor would
     // silently answer `base` for a row stored on any other plane, and a row the
     // authoring path could not have written must not read back as one it could.
     read_token(
@@ -4663,10 +4664,8 @@ fn read_scope_key(row: &price::Model) -> Result<ScopeKey, RepoError> {
         PRICE_OVERLAYS,
         PriceOverlay::as_str,
     )?;
-    ScopeKey::new(
+    ChargeLineScopeKey::new(
         PlanId::new(row.plan_id),
-        currency,
-        region,
         PhaseId::new(row.phase),
         read_eligibility(row)?,
         read_token(
@@ -4678,6 +4677,7 @@ fn read_scope_key(row: &price::Model) -> Result<ScopeKey, RepoError> {
         read_cohort(&row.cohort)?,
         SkuId::new(row.sku_id),
     )
+    .map(|line| MarketPriceScopeKey::new(line, currency, region))
     .and_then(|key| {
         // The tenth axis, from the same column the two scope-key indexes read
         // (D-196). Attached here rather than by every consumer, for the reason

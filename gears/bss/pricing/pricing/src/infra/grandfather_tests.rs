@@ -26,7 +26,8 @@ use crate::domain::error::DomainError;
 use crate::domain::instant::{format_rfc3339, utc_ymd_hms};
 use crate::domain::money::CurrencyCode;
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 use crate::infra::window::refuse_horizon_span_uncovered;
@@ -44,18 +45,20 @@ fn at(day: i64) -> OffsetDateTime {
 
 /// A grandfathered generation whose cohort is the cutover that created it
 /// (ADR-0002), so the span's lower anchor is `at(0)` rather than the wall clock.
-fn generation() -> ScopeKey {
-    ScopeKey::new(
-        PlanId::new(uuid::Uuid::from_u128(0x_9f_01)),
+fn generation() -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(uuid::Uuid::from_u128(0x_9f_01)),
+            PhaseId::new(uuid::Uuid::from_u128(0x_fa5e)),
+            PriceEligibility::ExistingGrandfathered,
+            ChargeKind::Recurring,
+            Cohort::Generation(at(0)),
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the grandfathered class pairs with a generation cohort"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new("eu").expect("a region"),
-        PhaseId::new(uuid::Uuid::from_u128(0x_fa5e)),
-        PriceEligibility::ExistingGrandfathered,
-        ChargeKind::Recurring,
-        Cohort::Generation(at(0)),
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("the grandfathered class pairs with a generation cohort")
 }
 
 /// The key's coverage as `[from, to)`, `to = None` being open-ended.
@@ -238,17 +241,19 @@ fn a_generation_whose_coverage_opens_after_its_cohort_may_not_be_bounded() {
 /// deliberate and that the walk itself is class-agnostic.
 #[test]
 fn the_span_walk_carries_no_class_test_of_its_own() {
-    let ordinary = ScopeKey::new(
-        PlanId::new(uuid::Uuid::from_u128(0x_9f_01)),
+    let ordinary = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(uuid::Uuid::from_u128(0x_9f_01)),
+            PhaseId::new(uuid::Uuid::from_u128(0x_fa5e)),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the ordinary class pairs with cohort none"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new("eu").expect("a region"),
-        PhaseId::new(uuid::Uuid::from_u128(0x_fa5e)),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
-    )
-    .expect("the ordinary class pairs with cohort none");
+    );
     let err = refuse_horizon_span_uncovered(
         &ordinary,
         Some(at(60)),

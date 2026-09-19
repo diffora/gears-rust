@@ -40,7 +40,7 @@
 //!   doc gives the reason: a rule that re-derived "which rows count" is a second
 //!   answer to a question the publish unit already answered, and the two are free
 //!   to disagree the day the publish unit changes what it feeds in.
-//! - **on the base overlay.** [`ScopeKey::new`] hard-codes
+//! - **on the base overlay.** [`crate::domain::scope_key::ChargeLineScopeKey::new`] hard-codes
 //!   `price_overlay: PriceOverlay::Base`, so no other value is *constructible*
 //!   today and [`is_billable`]'s overlay test cannot be false. It is written
 //!   anyway, for the reason `content_pin_tests.rs` gives for framing the same
@@ -69,7 +69,7 @@ use crate::domain::instant::format_rfc3339;
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_shape::{Frequency, PlanShape};
 use crate::domain::price_record::PriceRecord;
-use crate::domain::scope_key::{ChargeKind, PriceOverlay, Region, ScopeKey};
+use crate::domain::scope_key::{ChargeKind, MarketPriceScopeKey, PriceOverlay, Region};
 use crate::domain::validation::{ValidationReport, ValidationRule};
 use crate::domain::window::{CoverageEnd, KeyWindows, WindowInterval, WindowState};
 use time::OffsetDateTime;
@@ -214,7 +214,7 @@ pub struct KeyCoverage {
 impl KeyCoverage {
     /// The ten axes this coverage is filed under.
     #[must_use]
-    pub const fn scope_key(&self) -> &ScopeKey {
+    pub const fn scope_key(&self) -> &MarketPriceScopeKey {
         &self.windows.scope_key
     }
 
@@ -383,7 +383,7 @@ impl CoverageReport {
 
     /// This key's entry, when the report carries one.
     #[must_use]
-    pub fn find(&self, key: &ScopeKey) -> Option<&KeyCoverage> {
+    pub fn find(&self, key: &MarketPriceScopeKey) -> Option<&KeyCoverage> {
         self.keys.iter().find(|entry| entry.scope_key() == key)
     }
 }
@@ -406,7 +406,7 @@ impl CoverageReport {
 /// the *absence* of an entry, a caller that forgot to seed would silently lose
 /// the finding, and the answer would have two spellings.
 #[must_use]
-pub fn check(billable: &[ScopeKey], windows: &[KeyWindows]) -> CoverageReport {
+pub fn check(billable: &[MarketPriceScopeKey], windows: &[KeyWindows]) -> CoverageReport {
     let mut keys: Vec<KeyCoverage> = windows
         .iter()
         .map(|group| KeyCoverage {
@@ -435,8 +435,8 @@ pub fn check(billable: &[ScopeKey], windows: &[KeyWindows]) -> CoverageReport {
 /// `published` successor — so the set is what the rules range over, never the row
 /// list.
 #[must_use]
-pub fn billable_keys(shape: &PlanShape) -> Vec<ScopeKey> {
-    let mut keys: Vec<ScopeKey> = Vec::new();
+pub fn billable_keys(shape: &PlanShape) -> Vec<MarketPriceScopeKey> {
+    let mut keys: Vec<MarketPriceScopeKey> = Vec::new();
     for record in shape.rows.iter().filter(|record| is_billable(record)) {
         if !keys.contains(&record.scope_key) {
             keys.push(record.scope_key.clone());
@@ -527,7 +527,7 @@ pub fn longest_cycle_sold(
 /// publish-side caller passes every candidate row's key for the same reason.
 #[must_use]
 pub fn longest_cycle_sold_on<'a>(
-    keys: impl IntoIterator<Item = &'a ScopeKey>,
+    keys: impl IntoIterator<Item = &'a MarketPriceScopeKey>,
     frequency: Option<Frequency>,
     currency: &CurrencyCode,
     region: &Region,

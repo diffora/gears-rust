@@ -36,7 +36,8 @@ use crate::domain::price_row::{
 use crate::domain::rules::model_kind::{KindChargeKindMatrix, KindRequiredFields};
 use crate::domain::rules::{AMOUNT_PLACEMENT_INVALID, MODEL_KIND_CHARGEKIND_MISMATCH};
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use crate::domain::validation::{ValidationReport, ValidationRule};
 use time::Duration;
@@ -80,18 +81,25 @@ fn rate(minor_units: i64) -> RateMinor {
     RateMinor::from_minor_units(minor_units).expect("test rate is non-negative")
 }
 
-fn scope_key(charge_kind: ChargeKind, code: &str, market: &str, on_phase: PhaseId) -> ScopeKey {
-    ScopeKey::new(
-        plan(),
+fn scope_key(
+    charge_kind: ChargeKind,
+    code: &str,
+    market: &str,
+    on_phase: PhaseId,
+) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            on_phase,
+            PriceEligibility::AllSubscriptions,
+            charge_kind,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("all_subscriptions pairs with cohort none"),
         CurrencyCode::new(code).expect("test currency is three letters"),
         Region::new(market).expect("test region is non-blank"),
-        on_phase,
-        PriceEligibility::AllSubscriptions,
-        charge_kind,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("all_subscriptions pairs with cohort none")
 }
 
 fn record(

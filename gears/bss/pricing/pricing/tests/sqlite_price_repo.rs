@@ -56,8 +56,8 @@ use bss_pricing::domain::price_row::{
     TierAggregationWindow, TierBand, TierQualificationWindow,
 };
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
-    SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, DimensionKey, MarketPriceScopeKey, Meter, PhaseId,
+    PlanId, PriceEligibility, Region, SkuId,
 };
 use bss_pricing::domain::tax_display::{RegionReadiness, RegionTaxReadiness};
 use bss_pricing::infra::storage::entity::{audit_log, price, price_tier_band, price_window};
@@ -185,35 +185,39 @@ fn nano_rate(nano_minor: i64) -> RateMinor {
 }
 
 /// The default key: `all_subscriptions`, `cohort = none`.
-fn base_key(charge_kind: ChargeKind) -> ScopeKey {
-    ScopeKey::new(
-        plan(),
+fn base_key(charge_kind: ChargeKind) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            PhaseId::new(Uuid::from_u128(0xfa_5e)),
+            PriceEligibility::AllSubscriptions,
+            charge_kind,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("all_subscriptions pairs with cohort none"),
         CurrencyCode::new("USD").expect("three letters"),
         Region::new("EU").expect("a non-blank region"),
-        PhaseId::new(Uuid::from_u128(0xfa_5e)),
-        PriceEligibility::AllSubscriptions,
-        charge_kind,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("all_subscriptions pairs with cohort none")
 }
 
 /// The third eligibility class's key. It carries `cohort = none` like the
 /// default class does — the cohort axis discriminates *retained* generations,
 /// and this one retains nobody.
-fn new_subscriptions_key(charge_kind: ChargeKind) -> ScopeKey {
-    ScopeKey::new(
-        plan(),
+fn new_subscriptions_key(charge_kind: ChargeKind) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            PhaseId::new(Uuid::from_u128(0xfa_5e)),
+            PriceEligibility::NewSubscriptionsOnly,
+            charge_kind,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("new_subscriptions_only pairs with cohort none"),
         CurrencyCode::new("USD").expect("three letters"),
         Region::new("EU").expect("a non-blank region"),
-        PhaseId::new(Uuid::from_u128(0xfa_5e)),
-        PriceEligibility::NewSubscriptionsOnly,
-        charge_kind,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("new_subscriptions_only pairs with cohort none")
 }
 
 /// A grandfathered generation's key.
@@ -222,18 +226,20 @@ fn new_subscriptions_key(charge_kind: ChargeKind) -> ScopeKey {
 /// `price_eligibility = existing_grandfathered`, enforced by the domain
 /// constructor and again by `chk_pricing_price_cohort_eligibility`. So the two
 /// axes move together here, which is what a real cutover does.
-fn grandfathered_key(charge_kind: ChargeKind, cutover: OffsetDateTime) -> ScopeKey {
-    ScopeKey::new(
-        plan(),
+fn grandfathered_key(charge_kind: ChargeKind, cutover: OffsetDateTime) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            PhaseId::new(Uuid::from_u128(0xfa_5e)),
+            PriceEligibility::ExistingGrandfathered,
+            charge_kind,
+            Cohort::Generation(cutover),
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("existing_grandfathered pairs with a generation"),
         CurrencyCode::new("USD").expect("three letters"),
         Region::new("EU").expect("a non-blank region"),
-        PhaseId::new(Uuid::from_u128(0xfa_5e)),
-        PriceEligibility::ExistingGrandfathered,
-        charge_kind,
-        Cohort::Generation(cutover),
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("existing_grandfathered pairs with a generation")
 }
 
 /// The simplest publishable-looking shape: a flat recurring amount.
@@ -318,7 +324,7 @@ fn graduated_content() -> PriceContent {
     }
 }
 
-fn draft(price_id: Uuid, scope_key: ScopeKey, content: PriceContent) -> NewPriceDraft {
+fn draft(price_id: Uuid, scope_key: MarketPriceScopeKey, content: PriceContent) -> NewPriceDraft {
     NewPriceDraft {
         price_id,
         scope_key,
@@ -1104,10 +1110,8 @@ async fn an_authored_instant_finer_than_the_quantum_is_refused_on_both_write_pat
     // The cohort axis is refused by the key itself, one layer earlier: it is
     // matched for equality against an instant another gear produced, so an
     // unquantized generation would build a key nobody can find.
-    let err = ScopeKey::new(
+    let err = ChargeLineScopeKey::new(
         plan(),
-        CurrencyCode::new("USD").expect("three letters"),
-        Region::new("EU").expect("a non-blank region"),
         PhaseId::new(Uuid::from_u128(0xfa_5e)),
         PriceEligibility::ExistingGrandfathered,
         ChargeKind::Recurring,
@@ -1247,17 +1251,19 @@ async fn every_other_axis_that_can_move_is_a_different_key_too() {
         (Uuid::from_u128(0xb_c4), plan(), "USD", "EU", 0xfa_5f),
     ];
     for (price_id, plan_id, currency, region, phase) in variants {
-        let key = ScopeKey::new(
-            plan_id,
+        let key = MarketPriceScopeKey::new(
+            ChargeLineScopeKey::new(
+                plan_id,
+                PhaseId::new(Uuid::from_u128(phase)),
+                PriceEligibility::AllSubscriptions,
+                ChargeKind::Recurring,
+                Cohort::None,
+                SkuId::new(Uuid::from_u128(5)),
+            )
+            .expect("all_subscriptions pairs with cohort none"),
             CurrencyCode::new(currency).expect("three letters"),
             Region::new(region).expect("a non-blank region"),
-            PhaseId::new(Uuid::from_u128(phase)),
-            PriceEligibility::AllSubscriptions,
-            ChargeKind::Recurring,
-            Cohort::None,
-            SkuId::new(Uuid::from_u128(5)),
-        )
-        .expect("all_subscriptions pairs with cohort none");
+        );
         repo.create_draft(&scope, tenant(), draft(price_id, key, flat_content()))
             .await
             .unwrap_or_else(|e| {
@@ -3711,17 +3717,19 @@ async fn a_validated_row_of_another_plan_is_caught_by_the_count() {
     .await
     .expect("author a row of the plan under publish");
 
-    let foreign_key = ScopeKey::new(
-        other_plan,
+    let foreign_key = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            other_plan,
+            PhaseId::new(Uuid::from_u128(0xfa_5e)),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("all_subscriptions pairs with cohort none"),
         CurrencyCode::new("USD").expect("three letters"),
         Region::new("EU").expect("a non-blank region"),
-        PhaseId::new(Uuid::from_u128(0xfa_5e)),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
-    )
-    .expect("all_subscriptions pairs with cohort none");
+    );
     repo.create_draft(
         &scope,
         tenant(),
@@ -4083,21 +4091,23 @@ async fn a_grandfathered_generation_may_not_be_superseded() {
 // ---------------------------------------------------------------------------
 
 /// The line a key names, as the authoring door receives it.
-fn usage_key(meter: Option<&str>, dimension: &str) -> ScopeKey {
-    ScopeKey::new(
-        plan(),
+fn usage_key(meter: Option<&str>, dimension: &str) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            PhaseId::new(Uuid::from_u128(0xfa_5e)),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Usage,
+            Cohort::None,
+            SkuId::new(Uuid::new_v5(
+                &Uuid::NAMESPACE_OID,
+                meter.unwrap_or("unresolved").trim().as_bytes(),
+            )),
+        )
+        .expect("usage scope"),
         CurrencyCode::new("USD").expect("currency"),
         Region::new("EU").expect("region"),
-        PhaseId::new(Uuid::from_u128(0xfa_5e)),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Usage,
-        Cohort::None,
-        SkuId::new(Uuid::new_v5(
-            &Uuid::NAMESPACE_OID,
-            meter.unwrap_or("unresolved").trim().as_bytes(),
-        )),
     )
-    .expect("usage scope")
     .with_usage_line(
         meter
             .map(|m| Meter::new(m).expect("a non-blank meter"))
@@ -5051,7 +5061,7 @@ async fn the_cross_plane_commit_moves_three_windows_and_three_rows_together() {
 // ---------------------------------------------------------------------------
 
 /// A publishable market key on one region, everything else held constant.
-fn market_key(region: &str) -> ScopeKey {
+fn market_key(region: &str) -> MarketPriceScopeKey {
     market_key_in("USD", region)
 }
 
@@ -5061,18 +5071,20 @@ fn market_key(region: &str) -> ScopeKey {
 /// this file hard-codes `USD`, so the currency axis of that key was never varied:
 /// dropping it from the tuple collapsed two currencies of one region into one
 /// market with the suite green.
-fn market_key_in(currency: &str, region: &str) -> ScopeKey {
-    ScopeKey::new(
-        plan(),
+fn market_key_in(currency: &str, region: &str) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            PhaseId::new(Uuid::from_u128(0xfa_5e)),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("all_subscriptions pairs with cohort none"),
         CurrencyCode::new(currency).expect("three letters"),
         Region::new(region).expect("a non-blank region"),
-        PhaseId::new(Uuid::from_u128(0xfa_5e)),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("all_subscriptions pairs with cohort none")
 }
 
 /// A grandfathered generation's key **on a market of its own**.
@@ -5082,18 +5094,20 @@ fn market_key_in(currency: &str, region: &str) -> ScopeKey {
 /// exclusion unobservable — removing it from the query changed no count, so the
 /// clause was asserted by a fixture that could not reach the state it claimed to
 /// cover. Found by a probe that reddened **nothing**.
-fn grandfathered_market_key(region: &str, cutover: OffsetDateTime) -> ScopeKey {
-    ScopeKey::new(
-        plan(),
+fn grandfathered_market_key(region: &str, cutover: OffsetDateTime) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            PhaseId::new(Uuid::from_u128(0xfa_5e)),
+            PriceEligibility::ExistingGrandfathered,
+            ChargeKind::Recurring,
+            Cohort::Generation(cutover),
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("existing_grandfathered pairs with a generation"),
         CurrencyCode::new("USD").expect("three letters"),
         Region::new(region).expect("a non-blank region"),
-        PhaseId::new(Uuid::from_u128(0xfa_5e)),
-        PriceEligibility::ExistingGrandfathered,
-        ChargeKind::Recurring,
-        Cohort::Generation(cutover),
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("existing_grandfathered pairs with a generation")
 }
 
 /// The flat recurring shape, priced **tax-inclusive** — the gated one.
@@ -5894,18 +5908,25 @@ async fn a_supersession_whose_tenant_lost_its_default_is_refused_at_the_commit()
 
 /// A key on `plan` in `currency`, on its own phase so several rows of one plan
 /// and one currency do not collide on the scope key.
-fn key_on(plan: PlanId, currency: &str, phase: u128, charge_kind: ChargeKind) -> ScopeKey {
-    ScopeKey::new(
-        plan,
+fn key_on(
+    plan: PlanId,
+    currency: &str,
+    phase: u128,
+    charge_kind: ChargeKind,
+) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan,
+            PhaseId::new(Uuid::from_u128(phase)),
+            PriceEligibility::AllSubscriptions,
+            charge_kind,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("all_subscriptions pairs with cohort none"),
         CurrencyCode::new(currency).expect("three letters"),
         Region::new("EU").expect("a non-blank region"),
-        PhaseId::new(Uuid::from_u128(phase)),
-        PriceEligibility::AllSubscriptions,
-        charge_kind,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("all_subscriptions pairs with cohort none")
 }
 
 /// A recurring row that names **no** model kind - the "tiered (unspecified)"

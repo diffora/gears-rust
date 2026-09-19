@@ -115,7 +115,7 @@ Capability slices (modules)   plan-definition · price-structure · currency-tax
                               advanced-primitives · lifecycle · operator-efficiency
         │  (publish API: authorDraft / validate / publish / projectReadModel / requestVersion)
         ▼
-Publish Engine (Foundation)   ScopeKey · DraftStateMachine · ValidationPipeline ·
+Publish Engine (Foundation)   ChargeLineScopeKey · MarketPriceScopeKey · DraftStateMachine · ValidationPipeline ·
                               VersioningStore · ReadModelProjector · SnapshotStamper · EventOutbox
         │
         ▼
@@ -233,7 +233,7 @@ outbox**, and the **audit store** (append-only, actor/before-after/approval trai
 
 The Foundation is a set of in-process components behind one publish API:
 
-- **`ScopeKey`** — constructs and validates the canonical scope key, applies the axis defaults **D-19** types (`priceOverlay = base`, `phase =` the plan's terminal `phase_id`, `priceEligibility = all_subscriptions`, `cohort = none`), and backs the row-uniqueness index.
+- **`ChargeLineScopeKey` / `MarketPriceScopeKey`** — the canonical scope key, split so a logical charge line is the eight axes that do not include market (`plan_id`, `phase`, `price_overlay`, `price_eligibility`, `charge_kind`, `cohort`, `sku_id`, `dimension_key`), while market selection, window overlap, uniqueness, supersession, and approval encoding still use the full ten-axis `MarketPriceScopeKey` (those eight plus `currency` and `region`). Overlay still defaults to `base`; dimension still arrives through `with_dimension_key`. This split **does not** narrow conflict identity: two markets of one logical line remain distinct keys.
 - **`DraftStateMachine`** — the `draft` → `published` → `superseded` | `retired` transitions (per revision row — D-90), plus the terminal `draft → abandoned` flip a discarded plan draft revision takes (**D-145**, 2026-08-02 — [`02-plan-definition.md`](./02-plan-definition.md) `inst-pl-abandon`) **and, since D-231 (2026-08-07), the one a discarded price-overlay draft revision takes for the same reason** ([`09-price-overlays.md`](./09-price-overlays.md) §6). Only `draft` rows are mutable; only never-published `draft` **price** rows are deletable — a plan's open draft revision row is abandoned rather than deleted, so the `revision` number it consumed is never re-minted (§4.3) — **and an overlay's is not deletable either since D-231**, which closes the one place the rule did not hold and where a re-minted number let a stale `If-Match` match a different revision under the same identity.
 - **`ValidationPipeline`** — runs the aggregate fail-closed rule set at publish; slices register rules; a single failure blocks the publish transaction and populates the validation report.
 - **`VersioningStore`** — writes new immutable rows on versioning/supersession, retains history, and enforces append-only via role + triggers.
@@ -662,11 +662,18 @@ fails deployment config validation (fail-closed).
 - [ ] `p1` - **ID**: `cpt-cf-bss-pricing-normative-scope-key`
 
 The single scope key for **row-uniqueness, supersession, `PriceWindow` non-overlap, and window
-coverage** is:
+coverage** is the full ten-axis **`MarketPriceScopeKey`**:
 
 ```text
 (planId, currency, region, priceOverlay, phase, priceEligibility, chargeKind, cohort, skuId, dimensionKey)
 ```
+
+**Logical charge lines are a strict subset.** `ChargeLineScopeKey` holds the eight axes that do
+not include market — `planId`, `phase`, `priceOverlay`, `priceEligibility`, `chargeKind`,
+`cohort`, `skuId`, `dimensionKey`. Two markets of one logical line share that line and **do not**
+share a conflict key: window overlap, uniqueness, supersession, and approval encoding still
+compare all ten axes. Canonical serialized order of the full key remains
+`{plan}|{currency}|{region}|{overlay}|{phase}|{eligibility}|{kind}|{cohort}|{sku}|{dimension}`.
 
 **D-372 (2026-09-16): `skuId` is required for every charge kind.** It identifies the product or resource priced by the row. `dimensionKey` discriminates usage dimensions and is empty on fee rows. The rendered key always has ten segments. Equality, hashing, occupied-key queries, phase pairing, windows and supersession all use these same axes.
 

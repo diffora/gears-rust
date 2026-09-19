@@ -34,7 +34,8 @@ use crate::domain::plan_shape::{
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow};
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use crate::domain::validation::ValidationReport;
 use crate::domain::window::{
@@ -60,24 +61,26 @@ fn phase() -> PhaseId {
     PhaseId::new(Uuid::from_u128(0xf1))
 }
 
-fn key(charge_kind: ChargeKind, currency: &str, region: &str) -> ScopeKey {
-    ScopeKey::new(
-        plan(),
+fn key(charge_kind: ChargeKind, currency: &str, region: &str) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            phase(),
+            PriceEligibility::AllSubscriptions,
+            charge_kind,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("all_subscriptions pairs with cohort none"),
         CurrencyCode::new(currency).expect("three letters"),
         Region::new(region).expect("non-blank"),
-        phase(),
-        PriceEligibility::AllSubscriptions,
-        charge_kind,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("all_subscriptions pairs with cohort none")
 }
 
 /// A row on `scope_key`, publishable as far as every rule outside this module is
 /// concerned.
 ///
-fn row_on(price_id: u128, scope_key: ScopeKey) -> PriceRecord {
+fn row_on(price_id: u128, scope_key: MarketPriceScopeKey) -> PriceRecord {
     PriceRecord {
         resolved_invoice_line_template: None,
         resolved_gl_code: None,
@@ -103,7 +106,7 @@ fn row_on(price_id: u128, scope_key: ScopeKey) -> PriceRecord {
 }
 
 /// A group of windows on one key.
-fn group(scope_key: ScopeKey, intervals: Vec<WindowInterval>) -> KeyWindows {
+fn group(scope_key: MarketPriceScopeKey, intervals: Vec<WindowInterval>) -> KeyWindows {
     KeyWindows {
         scope_key,
         intervals,

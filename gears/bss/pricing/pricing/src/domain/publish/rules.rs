@@ -385,7 +385,7 @@ impl PublishRuleParams {
     /// Attach the bundle markets this plan's rows are judged against (D-212).
     ///
     /// A **second call** rather than a fifth parameter on [`Self::new`], for
-    /// `ScopeKey::with_usage_line`'s reason: almost no plan is a component of any
+    /// `MarketPriceScopeKey::with_usage_line`'s reason: almost no plan is a component of any
     /// bundle, so every caller would be passing an empty vector to satisfy a
     /// signature it has nothing to say to. The empty set is what [`Self::new`]
     /// already produces, so this is never needed to express "no referencing

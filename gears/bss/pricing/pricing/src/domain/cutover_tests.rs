@@ -10,8 +10,8 @@ use crate::domain::instant::format_rfc3339;
 use crate::domain::instant::utc_ymd_hms;
 use crate::domain::money::CurrencyCode;
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
-    SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, DimensionKey, MarketPriceScopeKey, Meter, PhaseId,
+    PlanId, PriceEligibility, Region, SkuId,
 };
 use crate::domain::supersession::{
     ChangeoverMoment, MAX_BATCHING_DELAY, NamedWindow, SUPERSESSION_INSTANT_PASSED,
@@ -241,18 +241,20 @@ fn cancelled_and_expired_windows_are_not_coverage() {
 // `inst-co-copy`: the grandfathered copy's new generation key
 // ---------------------------------------------------------------------------
 
-fn predecessor_key() -> ScopeKey {
-    ScopeKey::new(
-        PlanId::new(Uuid::from_u128(0x9_1a4)),
+fn predecessor_key() -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(Uuid::from_u128(0x9_1a4)),
+            PhaseId::new(Uuid::from_u128(0xfa_5e)),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("all_subscriptions pairs with cohort none"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new("EU").expect("a non-blank region"),
-        PhaseId::new(Uuid::from_u128(0xfa_5e)),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("all_subscriptions pairs with cohort none")
 }
 
 #[test]
@@ -284,17 +286,19 @@ fn the_copy_carries_the_predecessors_usage_line() {
     let metered = predecessor_key()
         .with_usage_line(None, DimensionKey::none())
         .expect("the recurring key carries no line");
-    let usage = ScopeKey::new(
-        PlanId::new(Uuid::from_u128(0x9_1a4)),
+    let usage = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(Uuid::from_u128(0x9_1a4)),
+            PhaseId::new(Uuid::from_u128(0xfa_5e)),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Usage,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("key"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new("EU").expect("a non-blank region"),
-        PhaseId::new(Uuid::from_u128(0xfa_5e)),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Usage,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("key")
     .with_usage_line(
         Some(&Meter::new("cloudlets").expect("a non-blank meter")),
         DimensionKey::new("region=eu"),
@@ -394,18 +398,20 @@ fn the_copys_window_is_open_ended_so_the_d04_bound_holds_by_construction() {
 // ---------------------------------------------------------------------------
 
 /// A second selectable key on the predecessor's plan: another market.
-fn sibling_market_key() -> ScopeKey {
-    ScopeKey::new(
-        predecessor_key().plan_id(),
+fn sibling_market_key() -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            predecessor_key().plan_id(),
+            PhaseId::new(Uuid::from_u128(0xfa_5e)),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("all_subscriptions pairs with cohort none"),
         CurrencyCode::new("USD").expect("three letters"),
         Region::new("US").expect("a non-blank region"),
-        PhaseId::new(Uuid::from_u128(0xfa_5e)),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("all_subscriptions pairs with cohort none")
 }
 
 #[test]
@@ -487,17 +493,19 @@ fn two_skus_of_one_market_are_two_selections() {
     // rendering has stopped carrying and pass on any encoding at all.
     let plan = predecessor_key().plan_id();
     let line = |sku: u128, meter: &str| {
-        ScopeKey::new(
-            plan,
+        MarketPriceScopeKey::new(
+            ChargeLineScopeKey::new(
+                plan,
+                PhaseId::new(Uuid::from_u128(0xfa_5e)),
+                PriceEligibility::AllSubscriptions,
+                ChargeKind::Usage,
+                Cohort::None,
+                SkuId::new(Uuid::from_u128(sku)),
+            )
+            .expect("all_subscriptions pairs with cohort none"),
             CurrencyCode::new("EUR").expect("three letters"),
             Region::new("EU").expect("a non-blank region"),
-            PhaseId::new(Uuid::from_u128(0xfa_5e)),
-            PriceEligibility::AllSubscriptions,
-            ChargeKind::Usage,
-            Cohort::None,
-            SkuId::new(Uuid::from_u128(sku)),
         )
-        .expect("all_subscriptions pairs with cohort none")
         .with_usage_line(
             Some(&Meter::new(meter).expect("a non-blank meter")),
             DimensionKey::none(),

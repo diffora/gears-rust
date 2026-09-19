@@ -5,6 +5,8 @@ decision-makers: "BSS Product Catalog team"
 ---
 
 > D-372 amendment (2026-09-16): the current ten-axis key requires `skuId` for every row; `dimensionKey` is the usage discriminator and `meter` is derived content. The D-196 meter-axis statements below record the earlier decision. The current normative definition is Foundation §4.1.
+>
+> Charge-line / market split: the Foundation type formerly named `ScopeKey` is now `MarketPriceScopeKey` (all ten axes). `ChargeLineScopeKey` holds the eight logical axes without currency/region. Market selection, window overlap, uniqueness, supersession, and approval encoding still use the full ten-axis key; this split does not narrow conflict identity. Canonical serialized axis order is unchanged until pin encoding is versioned.
 
 
 Created:  2026-08-24 by Virtuozzo International GmbH
@@ -113,7 +115,7 @@ meaning and the new axes carry safe defaults for plans that do not use them.
 
 ### Consequences
 
-* Row-uniqueness enforcement (a partial `UNIQUE` index over **current** rows — published and not superseded) is on the **seven-column** key (eight with `cohort`, ADR-0002; **ten** with the conditional usage pair `(meter, dimensionKey)`, D-196), holding at most one current row per key; **temporal `PriceWindow` non-overlap and coverage are enforced by publish-time validation (Slice 7) + the effective-dating UC (the UC enforcement partner was later absorbed into Slice 7 by ADR-0003), not by the index** (a published predecessor and its scheduled successor legally coexist). The Foundation's `ScopeKey` component constructs and defaults the key centrally (Foundation §4.1).
+* Row-uniqueness enforcement (a partial `UNIQUE` index over **current** rows — published and not superseded) is on the **seven-column** key (eight with `cohort`, ADR-0002; **ten** with the conditional usage pair `(meter, dimensionKey)`, D-196), holding at most one current row per key; **temporal `PriceWindow` non-overlap and coverage are enforced by publish-time validation (Slice 7) + the effective-dating UC (the UC enforcement partner was later absorbed into Slice 7 by ADR-0003), not by the index** (a published predecessor and its scheduled successor legally coexist). The Foundation's `MarketPriceScopeKey` component constructs and defaults the full ten-axis key centrally (Foundation §4.1); `ChargeLineScopeKey` is the logical subset without currency/region and is **not** the uniqueness or overlap identity.
 * Grandfathering reconciles with the frozen-snapshot doctrine: an `existing_grandfathered` row is a **distinct, immutable** key that Tariffs live-resolves; the cutover shortens the current `all_subscriptions` window and schedules the grandfathered copy + successor as one atomic unit, so no coverage gap opens (Foundation §4.3).
 * Supersession is explicitly **scoped to one canonical key** and operates within one `priceEligibility` class and one `chargeKind`; it opens/closes a `PriceWindow` rather than overlapping it.
 * Tariffs MUST adopt the identical key for its non-overlap check; divergence would re-introduce the collisions this decision removes. Cross-team alignment with Tariffs is required.
@@ -122,7 +124,7 @@ meaning and the new axes carry safe defaults for plans that do not use them.
 
 ### Confirmation
 
-* Design review: the Foundation `ScopeKey` component, the `pricing_price` partial `UNIQUE` index (current rows), and the Slice 7 window non-overlap/coverage validation all key off the same seven (**ten** today, D-196) columns (eight with `cohort`, ADR-0002); no invariant keys off a narrower subset.
+* Design review: the Foundation `MarketPriceScopeKey` component, the `pricing_price` partial `UNIQUE` index (current rows), and the Slice 7 window non-overlap/coverage validation all key off the same seven (**ten** today, D-196) columns (eight with `cohort`, ADR-0002); no invariant keys off the narrower `ChargeLineScopeKey` subset.
 * Integration test: a hybrid plan (`recurring` + `usage` + `one_time_setup`) publishes without a duplicate-scope failure; a grandfathered row and its successor hold concurrent active windows without a non-overlap violation; a per-phase schedule publishes per phase.
 * Cross-team checkpoint: Tariffs confirms it evaluates the non-overlap check on the identical seven-column key (eight with `cohort`, ADR-0002; **ten** with the conditional usage pair `(meter, dimensionKey)`, D-196) — the *identity* is the obligation, and it holds at whatever the current width is.
 

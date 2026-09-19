@@ -68,7 +68,7 @@ use toolkit_macros::domain_model;
 
 use crate::domain::error::DomainError;
 use crate::domain::instant::format_rfc3339;
-use crate::domain::scope_key::ScopeKey;
+use crate::domain::scope_key::MarketPriceScopeKey;
 use time::OffsetDateTime;
 
 /// A scheduled or adjusted window intersects one already on the same canonical
@@ -785,7 +785,7 @@ fn empty_interval(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyWindows {
     /// The ten axes this set is filed under.
-    pub scope_key: ScopeKey,
+    pub scope_key: MarketPriceScopeKey,
     /// The key's windows, ordered.
     pub intervals: Vec<WindowInterval>,
 }
@@ -1018,7 +1018,7 @@ impl CoverageEnd {
 /// present and uncovered rather than absent, wants [`group_by_key_seeded`].
 #[must_use]
 pub fn group_by_key(
-    pairs: impl IntoIterator<Item = (ScopeKey, WindowInterval)>,
+    pairs: impl IntoIterator<Item = (MarketPriceScopeKey, WindowInterval)>,
 ) -> Vec<KeyWindows> {
     group_by_key_seeded(std::iter::empty(), pairs)
 }
@@ -1052,8 +1052,8 @@ pub fn group_by_key(
 /// value, so the output is a function of the multiset of facts and of nothing else.
 #[must_use]
 pub fn group_by_key_seeded(
-    keys: impl IntoIterator<Item = ScopeKey>,
-    pairs: impl IntoIterator<Item = (ScopeKey, WindowInterval)>,
+    keys: impl IntoIterator<Item = MarketPriceScopeKey>,
+    pairs: impl IntoIterator<Item = (MarketPriceScopeKey, WindowInterval)>,
 ) -> Vec<KeyWindows> {
     let mut groups: Vec<KeyWindows> = Vec::new();
     for scope_key in keys {

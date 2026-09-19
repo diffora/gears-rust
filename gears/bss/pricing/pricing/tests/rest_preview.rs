@@ -60,7 +60,8 @@ fn delta_of(
     use bss_pricing::domain::price_row::{ModelKind, PriceRow};
     use bss_pricing::domain::projection::{PlanSubjectDelta, RowResolutionProjection};
     use bss_pricing::domain::scope_key::{
-        ChargeKind, Cohort, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+        ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PlanId, PriceEligibility,
+        Region, SkuId,
     };
 
     let (eligibility, cohort) = if grandfathered {
@@ -71,17 +72,19 @@ fn delta_of(
     } else {
         (PriceEligibility::AllSubscriptions, Cohort::None)
     };
-    let key = ScopeKey::new(
-        PlanId::new(plan_id),
+    let key = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(plan_id),
+            rest_support::seeded_phase(),
+            eligibility,
+            ChargeKind::Recurring,
+            cohort,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the class pairs with its cohort"),
         CurrencyCode::new(currency).expect("three letters"),
         Region::new(region).expect("a non-blank region"),
-        rest_support::seeded_phase(),
-        eligibility,
-        ChargeKind::Recurring,
-        cohort,
-        SkuId::new(Uuid::from_u128(5)),
-    )
-    .expect("the class pairs with its cohort");
+    );
 
     let mut row = {
         let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
@@ -422,7 +425,8 @@ fn hybrid_delta(plan_id: Uuid) -> bss_pricing::domain::projection::PlanSubjectDe
     use bss_pricing::domain::price_record::PriceRecord;
     use bss_pricing::domain::price_row::{ModelKind, PriceRow};
     use bss_pricing::domain::scope_key::{
-        ChargeKind, Cohort, DimensionKey, Meter, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+        ChargeKind, ChargeLineScopeKey, Cohort, DimensionKey, MarketPriceScopeKey, Meter, PlanId,
+        PriceEligibility, Region, SkuId,
     };
 
     let mut delta = delta_of(
@@ -435,17 +439,19 @@ fn hybrid_delta(plan_id: Uuid) -> bss_pricing::domain::projection::PlanSubjectDe
         false,
     );
 
-    let usage_key = ScopeKey::new(
-        PlanId::new(plan_id),
+    let usage_key = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(plan_id),
+            rest_support::seeded_phase(),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Usage,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the class pairs with cohort none"),
         CurrencyCode::new(CURRENCY).expect("three letters"),
         Region::new(REGION).expect("a non-blank region"),
-        rest_support::seeded_phase(),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Usage,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("the class pairs with cohort none")
     .with_usage_line(
         Some(&Meter::new("api_calls").expect("a non-blank meter")),
         DimensionKey::none(),
@@ -540,7 +546,8 @@ fn trial_and_steady_delta(plan_id: Uuid) -> bss_pricing::domain::projection::Pla
     use bss_pricing::domain::price_record::PriceRecord;
     use bss_pricing::domain::price_row::{ModelKind, PriceRow};
     use bss_pricing::domain::scope_key::{
-        ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+        ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId,
+        PriceEligibility, Region, SkuId,
     };
 
     let mut delta = delta_of(
@@ -577,17 +584,19 @@ fn trial_and_steady_delta(plan_id: Uuid) -> bss_pricing::domain::projection::Pla
         },
     ];
 
-    let trial_key = ScopeKey::new(
-        PlanId::new(plan_id),
+    let trial_key = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(plan_id),
+            trial_phase,
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the class pairs with cohort none"),
         CurrencyCode::new(CURRENCY).expect("three letters"),
         Region::new(REGION).expect("a non-blank region"),
-        trial_phase,
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
-    )
-    .expect("the class pairs with cohort none");
+    );
 
     let mut trial_row = {
         let mut descriptor_row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
@@ -629,7 +638,7 @@ fn trial_and_steady_delta(plan_id: Uuid) -> bss_pricing::domain::projection::Pla
 /// rather than proven.
 ///
 /// `PROJECTED_ROW_STATES` includes `superseded`, and a supersession stages the
-/// successor on the **same** `ScopeKey` while flipping its predecessor — so a
+/// successor on the **same** `MarketPriceScopeKey` while flipping its predecessor — so a
 /// market that has ever been repriced carries two byte-identical keys in the
 /// frozen delta. The predecessor is seeded first here, so a filter-less
 /// implementation picks it.

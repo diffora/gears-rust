@@ -102,7 +102,8 @@ use bss_pricing::domain::plan_shape::{BillingCycle, Frequency, PhaseKind, PlanPh
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use bss_pricing::infra::repricing::apply_run_in;
 use bss_pricing::infra::storage::repo::repricing_journal_repo::NewJournalRow;
@@ -355,18 +356,20 @@ async fn publish_plan(h: &Harness, plan: PlanId, revision: u64) {
     outcome.expect("publish the seeded plan revision");
 }
 
-fn scope_key(plan: PlanId, phase: Uuid, region: &str) -> ScopeKey {
-    ScopeKey::new(
-        plan,
+fn scope_key(plan: PlanId, phase: Uuid, region: &str) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan,
+            PhaseId::new(phase),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("scope key"),
         CurrencyCode::new("USD").expect("currency"),
         Region::new(region).expect("region"),
-        PhaseId::new(phase),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("scope key")
 }
 
 /// Author and publish one row, with a scheduled coverage window

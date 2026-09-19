@@ -99,7 +99,9 @@ use crate::domain::lifecycle::LifecycleState;
 use crate::domain::plan::PlanShapePatch;
 use crate::domain::plan_shape::{PhaseKind, PlanPhase};
 use crate::domain::price_record::PriceRecord;
-use crate::domain::scope_key::{Meter, PhaseId, PlanId, PriceEligibility, ScopeKey};
+use crate::domain::scope_key::{
+    ChargeLineScopeKey, MarketPriceScopeKey, Meter, PhaseId, PlanId, PriceEligibility,
+};
 use crate::infra::storage::repo::{
     NewBundle, NewPlanDraft, NewPriceDraft, bundle_repo, plan_repo, plan_shape_repo, price_repo,
     window_guard_repo,
@@ -992,7 +994,7 @@ fn remapped_grants(
 ///
 /// `inst-cl-resets`: `priceEligibility` goes to `all_subscriptions` because
 /// eligibility must be re-decided, and the cohort follows it to `none` — the two
-/// are one fact, and `ScopeKey::new` refuses the pair that disagrees.
+/// are one fact, and `ChargeLineScopeKey::new` refuses the pair that disagrees.
 ///
 /// **Both resets are structural fences and neither has an operand** since D-268:
 /// the only two classes that could carry another value are excluded before a row
@@ -1009,22 +1011,24 @@ fn reset_key(
     record: &PriceRecord,
     target: PlanId,
     remap: &BTreeMap<Uuid, PhaseId>,
-) -> Result<ScopeKey, DomainError> {
+) -> Result<MarketPriceScopeKey, DomainError> {
     let key = &record.scope_key;
     let phase = remap
         .get(&key.phase().get())
         .copied()
         .unwrap_or(key.phase());
-    let reset = ScopeKey::new(
-        target,
+    let reset = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            target,
+            phase,
+            PriceEligibility::AllSubscriptions,
+            key.charge_kind(),
+            crate::domain::scope_key::Cohort::None,
+            key.sku_id(),
+        )?,
         key.currency().clone(),
         key.region().clone(),
-        phase,
-        PriceEligibility::AllSubscriptions,
-        key.charge_kind(),
-        crate::domain::scope_key::Cohort::None,
-        key.sku_id(),
-    )?;
+    );
     let meter = record.row.meter.as_deref().map(Meter::new).transpose()?;
     reset.with_usage_line(meter.as_ref(), key.dimension_key().clone())
 }

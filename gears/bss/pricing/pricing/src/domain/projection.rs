@@ -267,7 +267,7 @@ use crate::domain::price_row::{
     TierBand, TierQualificationWindow, model_kind_wire,
 };
 use crate::domain::read_model::OverlayIndexShard;
-use crate::domain::scope_key::{PlanId, ScopeKey, ScopeKeyParts};
+use crate::domain::scope_key::{MarketPriceScopeKey, MarketPriceScopeKeyParts, PlanId};
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 use time::OffsetDateTime;
 
@@ -1380,14 +1380,14 @@ fn band_value(band: &TierBand) -> JsonValue {
 
 /// The ten canonical axes, in the normative order §4.1 fixes.
 ///
-/// Rendered axis by axis rather than through [`ScopeKey`]'s `Display`: the
+/// Rendered axis by axis rather than through [`MarketPriceScopeKey`]'s `Display`: the
 /// display form is one string for a log line, and a consumer resolving a row
 /// matches on axes.
-fn scope_key_value(key: &ScopeKey) -> JsonValue {
+fn scope_key_value(key: &MarketPriceScopeKey) -> JsonValue {
     // Destructured through `parts()`, so an eleventh axis is a compile error here
     // rather than a member missing from the read model — which is how the last
     // widening of this key (D-196) reached production with three sites unchanged.
-    let ScopeKeyParts {
+    let MarketPriceScopeKeyParts {
         plan_id,
         currency,
         region,

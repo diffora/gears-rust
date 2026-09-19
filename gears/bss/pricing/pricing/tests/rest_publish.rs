@@ -27,7 +27,7 @@ mod rest_support;
 use bss_pricing::domain::approval::ApprovalState;
 use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::price_record::PriceContent;
-use bss_pricing::domain::scope_key::{PhaseId, PlanId, ScopeKey};
+use bss_pricing::domain::scope_key::{MarketPriceScopeKey, PhaseId, PlanId};
 use bss_pricing::infra::storage::repo::NewPriceDraft;
 use rest_support::{
     Harness, Publishable, SEED_ACTOR, approval_row, approval_rows, at, audit_rows, body_json,
@@ -307,7 +307,7 @@ async fn seed_uncovered_plan(h: &Harness, plan_id: Uuid) -> Publishable {
 async fn seed_uncovered_plan_with(
     h: &Harness,
     plan_id: Uuid,
-    key_for: impl FnOnce(PlanId, PhaseId) -> ScopeKey,
+    key_for: impl FnOnce(PlanId, PhaseId) -> MarketPriceScopeKey,
     content: PriceContent,
 ) -> Publishable {
     let plan = PlanId::new(plan_id);

@@ -30,7 +30,8 @@ use crate::domain::plan_shape::{AddonRule, PlanShape};
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow};
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use crate::domain::validation::Stage;
 use crate::domain::validation::{ValidationReport, ValidationRule};
@@ -115,17 +116,19 @@ impl Line {
     }
 
     fn record(&self) -> PriceRecord {
-        let scope_key = ScopeKey::new(
-            plan(),
+        let scope_key = MarketPriceScopeKey::new(
+            ChargeLineScopeKey::new(
+                plan(),
+                self.phase,
+                self.eligibility,
+                self.charge_kind,
+                self.cohort,
+                SkuId::new(Uuid::from_u128(5)),
+            )
+            .expect("the test eligibility and cohort are paired"),
             CurrencyCode::new(self.currency).expect("test currency is three letters"),
             Region::new(self.region).expect("test region is non-blank"),
-            self.phase,
-            self.eligibility,
-            self.charge_kind,
-            self.cohort,
-            SkuId::new(Uuid::from_u128(5)),
-        )
-        .expect("the test eligibility and cohort are paired");
+        );
 
         let mut row = PriceRow::new(self.charge_kind, Some(ModelKind::PerUnit));
         row.meter = self.meter.map(str::to_owned);

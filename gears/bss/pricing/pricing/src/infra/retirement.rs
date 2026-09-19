@@ -85,7 +85,7 @@ use crate::domain::retirement::{
     BlockingReferenceKind, GenerationCoverage, PlanReference, PresenceMap, ReferenceReport,
     ScheduledWindow, WindowVerdict, dispose_windows, strand_free_disposition,
 };
-use crate::domain::scope_key::{PlanId, PriceEligibility, ScopeKey};
+use crate::domain::scope_key::{MarketPriceScopeKey, PlanId, PriceEligibility};
 use crate::domain::window::{WindowInterval, WindowState};
 use crate::infra::approval::retirement_unit_ref;
 use crate::infra::publish::assemble_from;
@@ -747,7 +747,7 @@ pub async fn compose_preview_with(
 /// `window_repo`** — that function holds one window and its key — and the
 /// conclusion drawn from it does not survive one layer up: every operand
 /// `refuse_horizon_uncovered` reads is already assembled on this path.
-/// [`window_repo::list_for_plan`] resolves each window's `ScopeKey` off
+/// [`window_repo::list_for_plan`] resolves each window's `MarketPriceScopeKey` off
 /// `pricing_price` on every read, which **is** the act's key set;
 /// [`assemble_from`] is called by [`retire_in`] eleven lines below the composition
 /// for the approval pin, which **is** the plan shape; and W6's margin is
@@ -771,7 +771,7 @@ async fn generation_coverage(
 ) -> Result<Vec<GenerationCoverage>, DomainError> {
     // The **grandfathered** keys of the plane, in a stable order. Every other key
     // carries no horizon and nothing here to judge.
-    let mut keys: Vec<ScopeKey> = Vec::new();
+    let mut keys: Vec<MarketPriceScopeKey> = Vec::new();
     for record in plane {
         if record.scope_key.price_eligibility() == PriceEligibility::ExistingGrandfathered
             && !keys.contains(&record.scope_key)

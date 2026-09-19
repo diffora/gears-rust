@@ -25,7 +25,8 @@ use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::projection::PlanSubjectDelta;
 use bss_pricing::domain::read_model::SubjectRef;
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use bss_pricing::domain::sellability::{
     PlanMarketVerdict, Predicate, PredicateAnswer, SellabilitySurface,
@@ -65,18 +66,20 @@ fn plan() -> PlanId {
     PlanId::new(Uuid::from_u128(0x5e_11))
 }
 
-fn recurring_key() -> ScopeKey {
-    ScopeKey::new(
-        plan(),
+fn recurring_key() -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            PhaseId::new(Uuid::from_u128(0xfa_5e)),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the class pairs with cohort none"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new("eu").expect("a non-blank region"),
-        PhaseId::new(Uuid::from_u128(0xfa_5e)),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("the class pairs with cohort none")
 }
 
 fn row() -> PriceRecord {

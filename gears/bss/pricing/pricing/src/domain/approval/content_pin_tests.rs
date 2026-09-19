@@ -30,7 +30,7 @@
 //!
 //! # What cannot be tested here, stated rather than skipped
 //!
-//! - `ScopeKey::price_overlay` has exactly one value in this gear
+//! - `MarketPriceScopeKey::price_overlay` has exactly one value in this gear
 //!   (`PriceOverlay::Base`), so no mutator can move it and its framing rests on
 //!   inspection. It is framed anyway, so the day S9 adds an overlay the pin
 //!   already covers the axis.
@@ -74,7 +74,8 @@ use crate::domain::price_row::{
     TierAggregationWindow, TierBand, TierQualificationWindow,
 };
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 use time::OffsetDateTime;
@@ -105,7 +106,7 @@ fn money(units: i64) -> MinorAmount {
     MinorAmount::new(units).expect("a non-negative test amount")
 }
 
-fn key(charge_kind: ChargeKind, code: &str, market: &str, phase: PhaseId) -> ScopeKey {
+fn key(charge_kind: ChargeKind, code: &str, market: &str, phase: PhaseId) -> MarketPriceScopeKey {
     sku_key(
         SkuId::new(Uuid::from_u128(5)),
         charge_kind,
@@ -122,18 +123,20 @@ fn sku_key(
     code: &str,
     market: &str,
     phase: PhaseId,
-) -> ScopeKey {
-    ScopeKey::new(
-        plan(),
+) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            phase,
+            PriceEligibility::AllSubscriptions,
+            charge_kind,
+            Cohort::None,
+            sku_id,
+        )
+        .expect("all_subscriptions pairs with cohort none"),
         CurrencyCode::new(code).expect("three letters"),
         Region::new(market).expect("a non-blank region"),
-        phase,
-        PriceEligibility::AllSubscriptions,
-        charge_kind,
-        Cohort::None,
-        sku_id,
     )
-    .expect("all_subscriptions pairs with cohort none")
 }
 
 /// A usage row with **every** Slice-3 field authored, so a mutator on any of
@@ -800,7 +803,7 @@ fn row_mutators() -> Vec<Mutator> {
         ("record.row_version", |s| {
             s.rows[0].row_version = RowVersion::new(5);
         }),
-        // ScopeKey
+        // MarketPriceScopeKey
         ("key.currency", |s| {
             s.rows[0].scope_key = key(ChargeKind::Usage, "EUR", "EU", phase_id(0x11));
         }),
@@ -814,30 +817,34 @@ fn row_mutators() -> Vec<Mutator> {
             s.rows[0].scope_key = key(ChargeKind::Recurring, "USD", "EU", phase_id(0x11));
         }),
         ("key.price_eligibility", |s| {
-            s.rows[0].scope_key = ScopeKey::new(
-                plan(),
+            s.rows[0].scope_key = MarketPriceScopeKey::new(
+                ChargeLineScopeKey::new(
+                    plan(),
+                    phase_id(0x11),
+                    PriceEligibility::NewSubscriptionsOnly,
+                    ChargeKind::Usage,
+                    Cohort::None,
+                    SkuId::new(Uuid::from_u128(5)),
+                )
+                .expect("new_subscriptions_only pairs with cohort none"),
                 CurrencyCode::new("USD").expect("three letters"),
                 Region::new("EU").expect("a non-blank region"),
-                phase_id(0x11),
-                PriceEligibility::NewSubscriptionsOnly,
-                ChargeKind::Usage,
-                Cohort::None,
-                SkuId::new(Uuid::from_u128(5)),
-            )
-            .expect("new_subscriptions_only pairs with cohort none");
+            );
         }),
         ("key.cohort", |s| {
-            s.rows[0].scope_key = ScopeKey::new(
-                plan(),
+            s.rows[0].scope_key = MarketPriceScopeKey::new(
+                ChargeLineScopeKey::new(
+                    plan(),
+                    phase_id(0x11),
+                    PriceEligibility::ExistingGrandfathered,
+                    ChargeKind::Usage,
+                    Cohort::Generation(at(6)),
+                    SkuId::new(Uuid::from_u128(5)),
+                )
+                .expect("existing_grandfathered pairs with a generation"),
                 CurrencyCode::new("USD").expect("three letters"),
                 Region::new("EU").expect("a non-blank region"),
-                phase_id(0x11),
-                PriceEligibility::ExistingGrandfathered,
-                ChargeKind::Usage,
-                Cohort::Generation(at(6)),
-                SkuId::new(Uuid::from_u128(5)),
-            )
-            .expect("existing_grandfathered pairs with a generation");
+            );
         }),
         // PriceRow
         ("row.charge_kind", |s| {

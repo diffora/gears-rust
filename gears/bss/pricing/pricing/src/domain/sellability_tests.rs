@@ -27,8 +27,8 @@ use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_shape::Frequency;
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
-    SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, DimensionKey, MarketPriceScopeKey, Meter, PhaseId,
+    PlanId, PriceEligibility, Region, SkuId,
 };
 use crate::domain::window::{CoverageEnd, KeyWindows, WindowInterval, WindowState};
 use time::OffsetDateTime;
@@ -66,41 +66,49 @@ fn usd() -> CurrencyCode {
     CurrencyCode::new("USD").expect("three letters")
 }
 
-fn key_of(charge_kind: ChargeKind, currency: &CurrencyCode, region: &Region) -> ScopeKey {
-    ScopeKey::new(
-        plan(),
+fn key_of(
+    charge_kind: ChargeKind,
+    currency: &CurrencyCode,
+    region: &Region,
+) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            phase(),
+            PriceEligibility::AllSubscriptions,
+            charge_kind,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the class pairs with cohort none"),
         currency.clone(),
         region.clone(),
-        phase(),
-        PriceEligibility::AllSubscriptions,
-        charge_kind,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("the class pairs with cohort none")
 }
 
-fn recurring() -> ScopeKey {
+fn recurring() -> MarketPriceScopeKey {
     key_of(ChargeKind::Recurring, &eur(), &eu())
 }
 
-fn usage() -> ScopeKey {
+fn usage() -> MarketPriceScopeKey {
     key_of(ChargeKind::Usage, &eur(), &eu())
 }
 
 /// A recurring key on the baseline market under another eligibility class.
-fn eligibility_of(class: PriceEligibility, cohort: Cohort) -> ScopeKey {
-    ScopeKey::new(
-        plan(),
+fn eligibility_of(class: PriceEligibility, cohort: Cohort) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            phase(),
+            class,
+            ChargeKind::Recurring,
+            cohort,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the class pairs with the cohort"),
         eur(),
         eu(),
-        phase(),
-        class,
-        ChargeKind::Recurring,
-        cohort,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("the class pairs with the cohort")
 }
 
 /// One usage **line** on the baseline market: a meter, a dimension, a class.
@@ -108,7 +116,7 @@ fn eligibility_of(class: PriceEligibility, cohort: Cohort) -> ScopeKey {
 /// The pair D-196 added, which `eligibility_of` cannot express: it builds a
 /// recurring key, and a recurring key carrying a meter is refused by
 /// `check_usage_line_axes`.
-fn usage_line_of(meter: &str, dimension: &str, class: PriceEligibility) -> ScopeKey {
+fn usage_line_of(meter: &str, dimension: &str, class: PriceEligibility) -> MarketPriceScopeKey {
     sku_line_of(SkuId::new(Uuid::from_u128(5)), meter, dimension, class)
 }
 
@@ -117,18 +125,25 @@ fn usage_line_of(meter: &str, dimension: &str, class: PriceEligibility) -> Scope
 /// The unit stopped discriminating keys when the SKU took its place, so a case
 /// about two lines that are **not** one sale has to name two SKUs; the unit rides
 /// along because the D-196 pair rule is still checked at the door.
-fn sku_line_of(sku_id: SkuId, meter: &str, dimension: &str, class: PriceEligibility) -> ScopeKey {
-    ScopeKey::new(
-        plan(),
+fn sku_line_of(
+    sku_id: SkuId,
+    meter: &str,
+    dimension: &str,
+    class: PriceEligibility,
+) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            phase(),
+            class,
+            ChargeKind::Usage,
+            Cohort::None,
+            sku_id,
+        )
+        .expect("the class pairs with cohort none"),
         eur(),
         eu(),
-        phase(),
-        class,
-        ChargeKind::Usage,
-        Cohort::None,
-        sku_id,
     )
-    .expect("the class pairs with cohort none")
     .with_usage_line(
         Some(&Meter::new(meter).expect("a non-blank meter")),
         DimensionKey::new(dimension),
@@ -136,7 +151,7 @@ fn sku_line_of(sku_id: SkuId, meter: &str, dimension: &str, class: PriceEligibil
     .expect("a usage row carries a usage line")
 }
 
-fn windows_of(scope_key: ScopeKey, intervals: Vec<WindowInterval>) -> KeyWindows {
+fn windows_of(scope_key: MarketPriceScopeKey, intervals: Vec<WindowInterval>) -> KeyWindows {
     KeyWindows {
         scope_key,
         intervals,

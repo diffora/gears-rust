@@ -20,21 +20,24 @@ use crate::domain::price_row::{
     BandTop, IncludedAllowance, PriceRow, RolloverPolicy, TierBand, TierQualificationWindow,
 };
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 
 fn record(bands: Vec<TierBand>) -> PriceRecord {
-    let key = ScopeKey::new(
-        PlanId::new(Uuid::from_u128(0x91a4)),
+    let key = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(Uuid::from_u128(0x91a4)),
+            PhaseId::new(Uuid::from_u128(0x9ba5e)),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Usage,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("key"),
         CurrencyCode::new("USD").expect("currency"),
         Region::new("EU").expect("region"),
-        PhaseId::new(Uuid::from_u128(0x9ba5e)),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Usage,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
-    )
-    .expect("key");
+    );
     PriceRecord {
         resolved_invoice_line_template: Some("{sku}".to_owned()),
         resolved_gl_code: Some("4000".to_owned()),
@@ -436,18 +439,20 @@ mod key_contradictions {
     use super::*;
     use crate::domain::rules::MODEL_KIND_CHARGEKIND_MISMATCH;
 
-    fn key_on(charge_kind: ChargeKind) -> ScopeKey {
-        ScopeKey::new(
-            PlanId::new(Uuid::from_u128(0x91a4)),
+    fn key_on(charge_kind: ChargeKind) -> MarketPriceScopeKey {
+        MarketPriceScopeKey::new(
+            ChargeLineScopeKey::new(
+                PlanId::new(Uuid::from_u128(0x91a4)),
+                PhaseId::new(Uuid::from_u128(0x9ba5e)),
+                PriceEligibility::AllSubscriptions,
+                charge_kind,
+                Cohort::None,
+                SkuId::new(Uuid::from_u128(5)),
+            )
+            .expect("key"),
             CurrencyCode::new("USD").expect("currency"),
             Region::new("EU").expect("region"),
-            PhaseId::new(Uuid::from_u128(0x9ba5e)),
-            PriceEligibility::AllSubscriptions,
-            charge_kind,
-            Cohort::None,
-            SkuId::new(Uuid::from_u128(5)),
         )
-        .expect("key")
     }
 
     fn check(charge_kind: ChargeKind, view: &PriceContentView) -> Result<(), String> {

@@ -29,13 +29,13 @@
 //! # The in-batch duplicate, and the key it is judged on (D-148)
 //!
 //! Two rows on one canonical scope key are a duplicate **inside** the batch and
-//! fail Phase 1 per-row. The key is the **whole** [`ScopeKey`], usage line
+//! fail Phase 1 per-row. The key is the **whole** [`MarketPriceScopeKey`], usage line
 //! included, which is the column list of `uq_pricing_price_scope_key_draft` as
 //! `uq_pricing_price_scope_key_current` **widened** it: `COALESCE(meter, '')` and `dimension_key`
 //! are in the index, so two rows differing only in their usage line are two
 //! keys and both author.
 //!
-//! The index also carries `tenant_id`, which [`ScopeKey`] does not, so this rule
+//! The index also carries `tenant_id`, which [`MarketPriceScopeKey`] does not, so this rule
 //! is **stricter than the index by one column** — harmless because a bulk
 //! operation carries one tenant (`pricing_bulk_operation` has a `tenant_id` and
 //! no `plan_id`, so a run is single-tenant and may span plans). That premise is
@@ -66,7 +66,7 @@ use crate::domain::concurrency::RowVersion;
 use crate::domain::price_record::{PriceContent, authored_content};
 use crate::domain::publish::rules::{PRIMITIVE_RULES_UNBUILT, unjudged_primitives};
 use crate::domain::rules::row_local_rules;
-use crate::domain::scope_key::ScopeKey;
+use crate::domain::scope_key::MarketPriceScopeKey;
 
 /// The wire code for two rows on one canonical scope key.
 ///
@@ -103,7 +103,7 @@ pub const IMPORT_TARGETS_PUBLISHED: &str = "IMPORT_TARGETS_PUBLISHED";
 #[derive(Clone, Debug)]
 pub struct ImportRow {
     /// The canonical key the row would occupy.
-    pub scope_key: ScopeKey,
+    pub scope_key: MarketPriceScopeKey,
     /// The authored content.
     pub content: PriceContent,
     /// The version the row asserts, when it edits an existing draft.

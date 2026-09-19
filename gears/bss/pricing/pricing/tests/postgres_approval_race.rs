@@ -97,7 +97,8 @@ use bss_pricing::domain::plan_shape::{BillingCycle, Frequency, PhaseKind, PlanPh
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use bss_pricing::infra::approval::{ApprovalService, DecideRequest, RegionGrant};
 use bss_pricing::infra::storage::RepoError;
@@ -163,18 +164,20 @@ fn scope() -> AccessScope {
     AccessScope::for_tenant(TENANT)
 }
 
-fn scope_key(market: &str) -> ScopeKey {
-    ScopeKey::new(
-        plan_id(),
+fn scope_key(market: &str) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan_id(),
+            terminal_phase(),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("all_subscriptions pairs with cohort none"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new(market).expect("a non-blank region"),
-        terminal_phase(),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("all_subscriptions pairs with cohort none")
 }
 
 fn flat_row() -> PriceContent {

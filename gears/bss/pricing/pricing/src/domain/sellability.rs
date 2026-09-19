@@ -255,7 +255,7 @@ use crate::domain::instant::format_rfc3339;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::money::CurrencyCode;
 use crate::domain::plan_shape::Frequency;
-use crate::domain::scope_key::{PlanId, PriceEligibility, Region, ScopeKey};
+use crate::domain::scope_key::{MarketPriceScopeKey, PlanId, PriceEligibility, Region};
 use crate::domain::window::{CoverageEnd, KeyWindows, WindowInterval};
 use time::OffsetDateTime;
 
@@ -433,7 +433,7 @@ pub struct PredicateOutcome {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeySellability {
     /// The ten axes this answer is filed under.
-    pub scope_key: ScopeKey,
+    pub scope_key: MarketPriceScopeKey,
     /// The key's frozen intervals, ordered, exactly as the version froze them.
     pub intervals: Vec<WindowInterval>,
     /// The coverage end derived from those intervals —
@@ -539,7 +539,7 @@ pub struct PinnedFacts {
     pub frequency: Option<Frequency>,
     /// The canonical scope keys of the version's price rows: the gate's roster
     /// before eligibility resolution, and W6's "the plan's recurring rows".
-    pub price_keys: Vec<ScopeKey>,
+    pub price_keys: Vec<MarketPriceScopeKey>,
     /// The version's window facts, grouped per key.
     pub windows: Vec<KeyWindows>,
 }
@@ -719,43 +719,43 @@ impl SellabilitySurface {
 /// - **`new_subscriptions_only` wins over `all_subscriptions` where both exist**,
 ///   which is `PriceEligibility`'s own most-specific-wins order (W3). Sibling
 ///   keys are the ones equal on every *other* axis — eight of them since D-196,
-///   and [`ScopeKey::is_sibling_of`] is where they are enumerated, because that
+///   and [`MarketPriceScopeKey::is_sibling_of`] is where they are enumerated, because that
 ///   is where the compiler can insist the list stays complete. **A six-axis copy
 ///   of the comparison here** would read two usage lines of one market as siblings
 ///   and drop the less specific one from the roster below, so the gate would
 ///   answer over a market whose second line it had never looked at a window for.
 fn gate_input_keys(
-    price_keys: &[ScopeKey],
+    price_keys: &[MarketPriceScopeKey],
     currency: &CurrencyCode,
     region: &Region,
-) -> Vec<ScopeKey> {
-    let candidates: Vec<&ScopeKey> = price_keys
+) -> Vec<MarketPriceScopeKey> {
+    let candidates: Vec<&MarketPriceScopeKey> = price_keys
         .iter()
         .filter(|key| key.currency() == currency && key.region() == region)
         .filter(|key| key.price_eligibility() != PriceEligibility::ExistingGrandfathered)
         .collect();
 
-    let mut resolved: Vec<ScopeKey> = Vec::new();
+    let mut resolved: Vec<MarketPriceScopeKey> = Vec::new();
     for key in candidates.iter().copied() {
         let most_specific = candidates
             .iter()
             .copied()
             .filter(|sibling| sibling.is_sibling_of(key))
-            .map(ScopeKey::price_eligibility)
+            .map(MarketPriceScopeKey::price_eligibility)
             .max()
             .unwrap_or_else(|| key.price_eligibility());
         if key.price_eligibility() == most_specific && !resolved.contains(key) {
             resolved.push(key.clone());
         }
     }
-    resolved.sort_by_key(ScopeKey::to_string);
+    resolved.sort_by_key(MarketPriceScopeKey::to_string);
     resolved
 }
 
 /// One key's window facts and its per-key predicates.
 fn key_sellability(
     pinned: &PinnedFacts,
-    scope_key: ScopeKey,
+    scope_key: MarketPriceScopeKey,
     at: OffsetDateTime,
     margin: Option<time::Duration>,
 ) -> KeySellability {

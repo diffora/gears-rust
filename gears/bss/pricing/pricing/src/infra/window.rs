@@ -259,7 +259,7 @@ use crate::domain::ports::CatalogVersionRegistryV1;
 use crate::domain::price_record::PriceRecord;
 use crate::domain::publish::PlanPublishUnit;
 use crate::domain::read_model::SubjectRef;
-use crate::domain::scope_key::{PlanId, PriceEligibility, ScopeKey};
+use crate::domain::scope_key::{MarketPriceScopeKey, PlanId, PriceEligibility};
 use crate::domain::validation::ValidationReport;
 use crate::domain::window::{self, CoverageEnd, KeyWindows, WindowInterval, WindowState};
 use crate::infra::publish::assemble_from;
@@ -906,14 +906,14 @@ struct PlanContext {
     /// The window as stored — `None` only on the schedule path.
     current: Option<WindowRecord>,
     /// The key the mutation's window sits on.
-    key: ScopeKey,
+    key: MarketPriceScopeKey,
     /// The key's interval set as stored, **before** the mutation.
     before: KeyWindows,
     /// W6's margin on the key's market: `Some(zero)` when the plan sells no
     /// recurring row there, `None` when the term has no value at all.
     margin: Option<time::Duration>,
     /// Every window of the plan with its id, as stored.
-    plane: Vec<(Uuid, ScopeKey, WindowInterval)>,
+    plane: Vec<(Uuid, MarketPriceScopeKey, WindowInterval)>,
     /// The plan's **published** price rows — the row set the mutation's
     /// re-projection freezes, and the baseline the same rows are compared against.
     ///
@@ -1553,7 +1553,7 @@ async fn refuse_pending_key_holder(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-    key: &ScopeKey,
+    key: &MarketPriceScopeKey,
 ) -> Result<(), DomainError> {
     let keys = std::collections::BTreeSet::from([key.to_string()]);
     crate::infra::approval::refuse_held_key(runner, scope, tenant_id, &keys).await
@@ -1636,7 +1636,7 @@ pub(crate) fn window_unit_ref(plan_id: PlanId, window_id: Uuid, act: &str) -> St
 /// variant because `WINDOW_GAP` is a report code — the same code the publish rule
 /// raises, from the same constant, so an operator sees one sentence about one fault
 /// whichever surface refused it.
-fn refuse_interior_gap(key: &ScopeKey, after: &KeyWindows) -> Result<(), DomainError> {
+fn refuse_interior_gap(key: &MarketPriceScopeKey, after: &KeyWindows) -> Result<(), DomainError> {
     let report = coverage::check(std::slice::from_ref(key), std::slice::from_ref(after));
     let Some(entry) = report.find(key) else {
         return Ok(());
@@ -1894,7 +1894,7 @@ fn refuse_horizon_uncovered(
 /// representable instant), naming the missing operand instead of an instant no
 /// walk could reach.
 pub(crate) fn refuse_horizon_span_uncovered(
-    key: &ScopeKey,
+    key: &MarketPriceScopeKey,
     horizon: Option<OffsetDateTime>,
     margin: Option<time::Duration>,
     after: &KeyWindows,
@@ -2062,7 +2062,7 @@ async fn read_plan_context(
         })?;
     let lifecycle_state = revision.lifecycle_state;
     let shape = assemble_from(runner, scope, tenant_id, plan_id, revision, now).await?;
-    let plane: Vec<(Uuid, ScopeKey, WindowInterval)> =
+    let plane: Vec<(Uuid, MarketPriceScopeKey, WindowInterval)> =
         window_repo::list_for_plan(runner, scope, tenant_id, plan_id)
             .await
             .map_err(|e| repo_failure(&e))?

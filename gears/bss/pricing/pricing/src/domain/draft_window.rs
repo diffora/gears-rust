@@ -27,7 +27,7 @@ use uuid::Uuid;
 
 use crate::domain::error::DomainError;
 use crate::domain::instant::{check_quantum, format_rfc3339};
-use crate::domain::scope_key::ScopeKey;
+use crate::domain::scope_key::MarketPriceScopeKey;
 use crate::domain::window::{
     OCCUPYING_STATES, WindowInterval, WindowState, check_cancellation,
     check_effective_to_adjustment, interval_is_non_empty,
@@ -102,7 +102,7 @@ pub struct WindowBaseline {
 pub struct ProposedWindow {
     pub window_id: Uuid,
     pub price_id: Uuid,
-    pub key: ScopeKey,
+    pub key: MarketPriceScopeKey,
     pub effective_from: OffsetDateTime,
     pub effective_to: Option<OffsetDateTime>,
 }
@@ -178,7 +178,7 @@ enum ClockBound {
 pub fn compose_windows(
     baseline: &[WindowBaseline],
     entries: &[DraftWindowEntry],
-    keys: &BTreeMap<Uuid, ScopeKey>,
+    keys: &BTreeMap<Uuid, MarketPriceScopeKey>,
     evaluated_at: OffsetDateTime,
 ) -> Result<Vec<ProposedWindow>, DomainError> {
     compose_schedule(baseline, entries, keys, evaluated_at, ClockBound::Commit)
@@ -196,7 +196,7 @@ pub fn compose_windows(
 pub fn project_working_windows(
     baseline: &[WindowBaseline],
     entries: &[DraftWindowEntry],
-    keys: &BTreeMap<Uuid, ScopeKey>,
+    keys: &BTreeMap<Uuid, MarketPriceScopeKey>,
     evaluated_at: OffsetDateTime,
 ) -> Result<Vec<ProposedWindow>, DomainError> {
     compose_schedule(baseline, entries, keys, evaluated_at, ClockBound::Working)
@@ -205,7 +205,7 @@ pub fn project_working_windows(
 fn compose_schedule(
     baseline: &[WindowBaseline],
     entries: &[DraftWindowEntry],
-    keys: &BTreeMap<Uuid, ScopeKey>,
+    keys: &BTreeMap<Uuid, MarketPriceScopeKey>,
     evaluated_at: OffsetDateTime,
     clock: ClockBound,
 ) -> Result<Vec<ProposedWindow>, DomainError> {

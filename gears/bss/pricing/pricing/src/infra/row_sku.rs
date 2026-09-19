@@ -1,5 +1,7 @@
 //! Product registry inputs shared by all price write paths.
-use crate::domain::{error::DomainError, price_record::PriceContent, scope_key::ScopeKey};
+use crate::domain::{
+    error::DomainError, price_record::PriceContent, scope_key::MarketPriceScopeKey,
+};
 use std::sync::Arc;
 use toolkit_security::SecurityContext;
 use uuid::Uuid;
@@ -58,7 +60,7 @@ pub async fn sku_index_for(
 
 pub fn derive_meter(
     content: &mut PriceContent,
-    key: &ScopeKey,
+    key: &MarketPriceScopeKey,
     index: &crate::domain::registry_view::SkuIndex,
 ) {
     content.row.sku_id = key.sku_id();

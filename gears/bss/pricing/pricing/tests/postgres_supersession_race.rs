@@ -68,7 +68,8 @@ use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use bss_pricing::domain::supersession::{ChangeoverMoment, NamedWindow, plan_supersession};
 use bss_pricing::domain::window::{WindowInterval, WindowState};
@@ -137,18 +138,20 @@ fn stamp() -> AuditStamp {
     }
 }
 
-fn key() -> ScopeKey {
-    ScopeKey::new(
-        plan_id(),
+fn key() -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan_id(),
+            PhaseId::new(Uuid::from_u128(0xfa_7e)),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("all_subscriptions pairs with cohort none"),
         CurrencyCode::new("USD").expect("three letters"),
         Region::new("EU").expect("a non-blank region"),
-        PhaseId::new(Uuid::from_u128(0xfa_7e)),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("all_subscriptions pairs with cohort none")
 }
 
 fn content(amount: i64) -> PriceContent {

@@ -10,7 +10,7 @@ use toolkit_macros::domain_model;
 
 use crate::domain::error::DomainError;
 use crate::domain::instant::format_rfc3339;
-use crate::domain::scope_key::{Cohort, ScopeKey};
+use crate::domain::scope_key::{Cohort, MarketPriceScopeKey};
 use crate::domain::supersession::{ChangeoverMoment, NamedWindow, WindowShorten, changeover_floor};
 use crate::domain::window::{OCCUPYING_STATES, WindowInterval, WindowState};
 use time::OffsetDateTime;
@@ -193,7 +193,7 @@ pub fn compose_cutover_windows(
 /// whose author only has to move the instant. The same reasoning `inst-pr-return`
 /// gives for keeping the save-time read beside the index.
 ///
-/// The D-144 millisecond quantum is checked by [`ScopeKey::new`], not here: the
+/// The D-144 millisecond quantum is checked by [`MarketPriceScopeKey::to_generation`], not here: the
 /// cohort axis is matched for equality against an instant another gear produced, so
 /// an unquantized value builds a key nobody can find rather than a key that is
 /// wrong.
@@ -201,13 +201,13 @@ pub fn compose_cutover_windows(
 /// # Errors
 ///
 /// [`DomainError::DuplicateScopeKey`] when `existing_generations` already carries
-/// this instant; whatever [`ScopeKey::new`] refuses otherwise (the quantum, and the
+/// this instant; whatever [`MarketPriceScopeKey::to_generation`] refuses otherwise (the quantum, and the
 /// cohort/eligibility biconditional this function satisfies by construction).
 pub fn grandfathered_copy_key(
-    predecessor: &ScopeKey,
+    predecessor: &MarketPriceScopeKey,
     cutover: OffsetDateTime,
     existing_generations: &[Cohort],
-) -> Result<ScopeKey, DomainError> {
+) -> Result<MarketPriceScopeKey, DomainError> {
     if existing_generations.contains(&Cohort::Generation(cutover)) {
         return Err(DomainError::DuplicateScopeKey(format!(
             "a grandfathered generation of this canonical scope key already carries the cutover \
@@ -228,18 +228,18 @@ pub fn grandfathered_copy_key(
 /// predecessor's axes through accessors one call at a time, which compiles
 /// unchanged when the key grows and drops the new axis from every grandfathered
 /// copy in silence — D-205's defect, minted in the wave that repaired its fifth
-/// and sixth instances. [`ScopeKey::to_generation`] owns the construction now and
+/// and sixth instances. [`MarketPriceScopeKey::to_generation`] owns the construction now and
 /// destructures with no rest pattern, so an eleventh axis is a compile error
 /// there. This function is the name the cutover's vocabulary calls it by.
 ///
 /// # Errors
 ///
-/// Whatever [`ScopeKey::new`] refuses — the millisecond quantum on `cutover`
+/// Whatever [`MarketPriceScopeKey::to_generation`] refuses — the millisecond quantum on `cutover`
 /// (D-144); the cohort/eligibility biconditional is satisfied by construction.
 pub fn generation_key(
-    predecessor: &ScopeKey,
+    predecessor: &MarketPriceScopeKey,
     cutover: OffsetDateTime,
-) -> Result<ScopeKey, DomainError> {
+) -> Result<MarketPriceScopeKey, DomainError> {
     predecessor.to_generation(cutover)
 }
 

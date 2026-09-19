@@ -213,7 +213,7 @@ use crate::domain::price_row::ModelKind;
 use crate::domain::publish::rules::run_publish_rules;
 use crate::domain::read_model::SubjectRef;
 use crate::domain::repricing::{adjusts_rate, project_row};
-use crate::domain::scope_key::{PlanId, ScopeKey};
+use crate::domain::scope_key::{MarketPriceScopeKey, PlanId};
 use crate::domain::supersession::{ChangeoverMoment, NamedWindow, plan_supersession};
 use crate::domain::window::WindowInterval;
 use crate::infra::publish::{assemble_from, rule_params};
@@ -2095,7 +2095,7 @@ fn failure_reason(err: &DomainError) -> String {
 struct AppliedRow {
     predecessor_price_id: Uuid,
     successor_price_id: Uuid,
-    scope_key: ScopeKey,
+    scope_key: MarketPriceScopeKey,
     scheduled_window: crate::infra::storage::repo::WindowRecord,
 }
 
@@ -2768,7 +2768,8 @@ mod ordinary_failure_release {
     use crate::domain::price_record::PriceContent;
     use crate::domain::price_row::{ModelKind, PriceRow};
     use crate::domain::scope_key::{
-        ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+        ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId,
+        PriceEligibility, Region, SkuId,
     };
     use crate::infra::storage::migrations::Migrator;
     use crate::infra::storage::repo::repricing_journal_repo::NewJournalRow;
@@ -2838,17 +2839,19 @@ mod ordinary_failure_release {
             .expect("create the plan's first draft");
 
         let price_id = Uuid::from_u128(0xb_00);
-        let key = ScopeKey::new(
-            plan_id,
+        let key = MarketPriceScopeKey::new(
+            ChargeLineScopeKey::new(
+                plan_id,
+                PhaseId::new(Uuid::from_u128(0xc0)),
+                PriceEligibility::AllSubscriptions,
+                ChargeKind::Recurring,
+                Cohort::None,
+                SkuId::new(Uuid::from_u128(5)),
+            )
+            .expect("the class pairs with cohort none"),
             CurrencyCode::new("EUR").expect("three letters"),
             Region::new("eu").expect("non-blank"),
-            PhaseId::new(Uuid::from_u128(0xc0)),
-            PriceEligibility::AllSubscriptions,
-            ChargeKind::Recurring,
-            Cohort::None,
-            SkuId::new(Uuid::from_u128(5)),
-        )
-        .expect("the class pairs with cohort none");
+        );
         let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
         row.amount_minor = Some(MinorAmount::new(1_000).expect("non-negative"));
         PriceRepo::new(provider.clone())
@@ -3077,7 +3080,8 @@ mod step0_probe {
     use crate::domain::price_record::PriceContent;
     use crate::domain::price_row::{ModelKind, PriceRow};
     use crate::domain::scope_key::{
-        ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+        ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId,
+        PriceEligibility, Region, SkuId,
     };
     use crate::infra::publish::assemble_from;
     use crate::infra::storage::migrations::Migrator;
@@ -3144,17 +3148,19 @@ mod step0_probe {
             .in_transaction::<bool, DomainError, _>(move |txn| {
                 let scope = scope_for_tx.clone();
                 Box::pin(async move {
-                    let key = ScopeKey::new(
-                        plan_id,
+                    let key = MarketPriceScopeKey::new(
+                        ChargeLineScopeKey::new(
+                            plan_id,
+                            PhaseId::new(Uuid::from_u128(0xc0)),
+                            PriceEligibility::AllSubscriptions,
+                            ChargeKind::Recurring,
+                            Cohort::None,
+                            SkuId::new(Uuid::from_u128(5)),
+                        )
+                        .expect("the class pairs with cohort none"),
                         CurrencyCode::new("EUR").expect("three letters"),
                         Region::new("eu").expect("non-blank"),
-                        PhaseId::new(Uuid::from_u128(0xc0)),
-                        PriceEligibility::AllSubscriptions,
-                        ChargeKind::Recurring,
-                        Cohort::None,
-                        SkuId::new(Uuid::from_u128(5)),
-                    )
-                    .expect("the class pairs with cohort none");
+                    );
                     let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
                     row.amount_minor = Some(MinorAmount::new(1_000).expect("non-negative"));
 

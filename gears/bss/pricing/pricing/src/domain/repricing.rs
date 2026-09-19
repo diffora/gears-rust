@@ -26,7 +26,7 @@
 //! gear authors carries `base` and
 //! [`PriceOverlay`](crate::domain::scope_key::PriceOverlay) has no second variant
 //! — offering it would offer a choice the authoring plane does not have, which is
-//! the same argument [`ScopeKey::new`](crate::domain::scope_key::ScopeKey::new)
+//! the same argument [`ChargeLineScopeKey::new`](crate::domain::scope_key::ChargeLineScopeKey::new)
 //! makes for leaving it out of its own parameters.
 //!
 //! # `None` is *unconstrained*, and that is not the same word as `Cohort::None`

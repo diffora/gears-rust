@@ -106,7 +106,7 @@ use crate::domain::plan_shape::PlanShape;
 use crate::domain::ports::CatalogVersionRegistryV1;
 use crate::domain::price_record::{PriceContent, PriceRecord};
 use crate::domain::read_model::SubjectRef;
-use crate::domain::scope_key::{PlanId, ScopeKey};
+use crate::domain::scope_key::{MarketPriceScopeKey, PlanId};
 use crate::domain::supersession::{
     ChangeoverMoment, ComposedWindows, NamedWindow, SupersessionPlan, WindowShorten,
     plan_supersession,
@@ -487,7 +487,7 @@ pub async fn commit_supersession(
 #[must_use]
 pub fn supersession_unit_ref(
     plan_id: PlanId,
-    key: &crate::domain::scope_key::ScopeKey,
+    key: &crate::domain::scope_key::MarketPriceScopeKey,
     changeover: OffsetDateTime,
 ) -> String {
     format!(
@@ -522,7 +522,7 @@ pub fn supersession_unit_ref(
 #[derive(Clone, Debug)]
 pub struct SupersessionRequest {
     /// The canonical scope key being repriced.
-    pub key: ScopeKey,
+    pub key: MarketPriceScopeKey,
     /// When coverage hands over from the predecessor to the successor.
     pub changeover: OffsetDateTime,
     /// The successor row's authored content.
@@ -1721,7 +1721,7 @@ async fn read_unit_context(
     runner: &impl DBRunner,
     scope: &AccessScope,
     tenant_id: Uuid,
-    key: &ScopeKey,
+    key: &MarketPriceScopeKey,
     now: OffsetDateTime,
 ) -> Result<UnitContext, DomainError> {
     let plan_id = key.plan_id();

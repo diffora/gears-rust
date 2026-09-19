@@ -18,8 +18,8 @@ use crate::domain::rules::{
     AMOUNT_PLACEMENT_INVALID, MODEL_KIND_CHARGEKIND_MISMATCH, row_local_rules,
 };
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
-    SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, DimensionKey, MarketPriceScopeKey, Meter, PhaseId,
+    PlanId, PriceEligibility, Region, SkuId,
 };
 use uuid::Uuid;
 
@@ -31,21 +31,23 @@ fn phase() -> PhaseId {
     PhaseId::new(Uuid::from_u128(0xfa_5e))
 }
 
-fn key(region: &str, eligibility: PriceEligibility, charge: ChargeKind) -> ScopeKey {
-    ScopeKey::new(
-        plan(),
+fn key(region: &str, eligibility: PriceEligibility, charge: ChargeKind) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            phase(),
+            eligibility,
+            charge,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the class pairs with the cohort"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new(region).expect("a non-blank region"),
-        phase(),
-        eligibility,
-        charge,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("the class pairs with the cohort")
 }
 
-fn base() -> ScopeKey {
+fn base() -> MarketPriceScopeKey {
     key(
         "eu",
         PriceEligibility::AllSubscriptions,
@@ -68,7 +70,7 @@ fn content() -> PriceContent {
     }
 }
 
-fn row(scope_key: ScopeKey) -> ImportRow {
+fn row(scope_key: MarketPriceScopeKey) -> ImportRow {
     ImportRow {
         scope_key,
         content: content(),
@@ -94,7 +96,7 @@ fn usage_content() -> PriceContent {
     PriceContent { row, ..content() }
 }
 
-fn usage_row(scope_key: ScopeKey) -> ImportRow {
+fn usage_row(scope_key: MarketPriceScopeKey) -> ImportRow {
     ImportRow {
         scope_key,
         content: usage_content(),
@@ -113,7 +115,7 @@ fn usage_row(scope_key: ScopeKey) -> ImportRow {
 /// on the wrong report. The fixture is fixed rather than the assertion — the rows
 /// were always wrong, and D-312's own arm found the same class of fault in the
 /// duplicate-key fixtures one wave earlier.
-fn metered_key() -> ScopeKey {
+fn metered_key() -> MarketPriceScopeKey {
     key("eu", PriceEligibility::AllSubscriptions, ChargeKind::Usage)
         .with_usage_line(
             Some(&Meter::new("api-calls").expect("a meter")),
@@ -213,17 +215,19 @@ fn two_rows_differing_only_in_their_sku_are_two_keys_and_both_author() {
     // SKU render one key, so a case written on the unit alone would assert that
     // `classify` accepts a genuine duplicate.
     let line = |sku: u128, meter: &str| {
-        ScopeKey::new(
-            plan(),
+        MarketPriceScopeKey::new(
+            ChargeLineScopeKey::new(
+                plan(),
+                phase(),
+                PriceEligibility::AllSubscriptions,
+                ChargeKind::Usage,
+                Cohort::None,
+                SkuId::new(Uuid::from_u128(sku)),
+            )
+            .expect("the class pairs with the cohort"),
             CurrencyCode::new("EUR").expect("three letters"),
             Region::new("eu").expect("a non-blank region"),
-            phase(),
-            PriceEligibility::AllSubscriptions,
-            ChargeKind::Usage,
-            Cohort::None,
-            SkuId::new(Uuid::from_u128(sku)),
         )
-        .expect("the class pairs with the cohort")
         .with_usage_line(
             Some(&Meter::new(meter).expect("a meter")),
             DimensionKey::new("region=eu"),
@@ -412,7 +416,7 @@ fn an_empty_batch_blocks_nothing() {
 }
 
 /// A usage key carrying a usage line, by region so two of them are two keys.
-fn metered(region: &str) -> ScopeKey {
+fn metered(region: &str) -> MarketPriceScopeKey {
     key(
         region,
         PriceEligibility::AllSubscriptions,
@@ -425,7 +429,7 @@ fn metered(region: &str) -> ScopeKey {
     .expect("a usage line on a usage key")
 }
 
-fn one(scope_key: ScopeKey, content: PriceContent) -> Vec<ImportRow> {
+fn one(scope_key: MarketPriceScopeKey, content: PriceContent) -> Vec<ImportRow> {
     vec![ImportRow {
         scope_key,
         content,

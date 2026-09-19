@@ -10,7 +10,8 @@ use super::supersession_unit_ref;
 use crate::domain::instant::utc_ymd_hms;
 use crate::domain::money::CurrencyCode;
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use time::OffsetDateTime;
 
@@ -18,18 +19,20 @@ fn plan() -> PlanId {
     PlanId::new(Uuid::from_u128(0x9_4d7))
 }
 
-fn key(class: PriceEligibility) -> ScopeKey {
-    ScopeKey::new(
-        plan(),
+fn key(class: PriceEligibility) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            PhaseId::new(Uuid::from_u128(0xfa_8e)),
+            class,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("both classes pair with cohort none"),
         CurrencyCode::new("USD").expect("three letters"),
         Region::new("EU").expect("a non-blank region"),
-        PhaseId::new(Uuid::from_u128(0xfa_8e)),
-        class,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("both classes pair with cohort none")
 }
 
 fn at(day: u32) -> OffsetDateTime {

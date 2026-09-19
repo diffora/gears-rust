@@ -21,7 +21,8 @@ use crate::domain::price_row::{
     TierAggregationWindow, TierBand, TierQualificationWindow,
 };
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 
 /// A band rate, stated in whole minor units so these cases read as they always
@@ -39,17 +40,19 @@ fn record(row: PriceRow) -> PriceRecord {
         resolved_invoice_line_template: None,
         resolved_gl_code: None,
         price_id: Uuid::from_u128(0xd_10),
-        scope_key: ScopeKey::new(
-            PlanId::new(Uuid::from_u128(1)),
+        scope_key: MarketPriceScopeKey::new(
+            ChargeLineScopeKey::new(
+                PlanId::new(Uuid::from_u128(1)),
+                PhaseId::new(Uuid::from_u128(2)),
+                PriceEligibility::AllSubscriptions,
+                ChargeKind::Recurring,
+                Cohort::None,
+                SkuId::new(Uuid::from_u128(5)),
+            )
+            .expect("the eight axes agree"),
             CurrencyCode::new("USD").expect("USD"),
             Region::new("EU").expect("a non-blank region"),
-            PhaseId::new(Uuid::from_u128(2)),
-            PriceEligibility::AllSubscriptions,
-            ChargeKind::Recurring,
-            Cohort::None,
-            SkuId::new(Uuid::from_u128(5)),
-        )
-        .expect("the eight axes agree"),
+        ),
         row,
         tax_inclusive: false,
         tax_category_ref: None,

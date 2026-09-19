@@ -56,7 +56,8 @@ use bss_pricing::domain::plan_shape::{AddonRule, CompositeMeter, PhaseKind, Plan
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use bss_pricing::infra::clone::clone_plan_on;
 use bss_pricing::infra::storage::repo::{
@@ -109,18 +110,20 @@ fn stamp() -> AuditStamp {
     }
 }
 
-fn source_key() -> ScopeKey {
-    ScopeKey::new(
-        source_plan(),
+fn source_key() -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            source_plan(),
+            trial_phase(),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the class pairs with the cohort"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new("eu").expect("a non-blank region"),
-        trial_phase(),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("the class pairs with the cohort")
 }
 
 fn flat_row() -> PriceContent {

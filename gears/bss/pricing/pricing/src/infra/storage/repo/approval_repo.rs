@@ -275,10 +275,10 @@ pub struct NewApproval {
     /// `Vec` would make the register's primary key the deduplicator and turn an
     /// ordinary shape into a spurious conflict with the unit's own insert.
     ///
-    /// **The canonical rendering, not `ScopeKey`** — ten axes since D-196, which is
-    /// what `ScopeKey`'s `Display` writes. That is the register's
+    /// **The canonical rendering, not `MarketPriceScopeKey`** — ten axes since D-196, which is
+    /// what `MarketPriceScopeKey`'s `Display` writes. That is the register's
     /// own column, the string a publish refusal names a key by, and the only
-    /// ordering over keys this gear has ever meant — `ScopeKey` deliberately derives
+    /// ordering over keys this gear has ever meant — `MarketPriceScopeKey` deliberately derives
     /// no `Ord`, its axis order being a *rendering* order rather than a comparison
     /// one, and inventing a comparison on a validated domain type to hold a set the
     /// store keeps as text would put a second canonical form in the crate.
@@ -1153,7 +1153,7 @@ pub async fn find_pending_key_holders(
 /// cannot tell a unit that held the right keys from one that held every key of the
 /// tenant — the observability twin of `find_pending_key_holder`.
 ///
-/// Rendered keys and not `ScopeKey`s: this reads the register's own column, and
+/// Rendered keys and not `MarketPriceScopeKey`s: this reads the register's own column, and
 /// re-parsing ten axes out of it to hand back a type the caller renders again
 /// would put a second parser on the one string the store keeps.
 ///

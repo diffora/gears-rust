@@ -387,23 +387,26 @@ async fn seed_foreign_priced_plan(h: &Harness, plan_id: Uuid) -> String {
     use bss_pricing::domain::price_record::PriceContent;
     use bss_pricing::domain::price_row::{ModelKind, PriceRow};
     use bss_pricing::domain::scope_key::{
-        ChargeKind, Cohort, PriceEligibility, Region, ScopeKey, SkuId,
+        ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PriceEligibility, Region,
+        SkuId,
     };
     use bss_pricing::infra::storage::repo::{NewPriceDraft, price_repo};
 
     rest_support::seed_foreign_current_plan(h, plan_id).await;
 
-    let key = ScopeKey::new(
-        PlanId::new(plan_id),
+    let key = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(plan_id),
+            rest_support::seeded_phase(),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("scope key"),
         CurrencyCode::new("USD").expect("currency"),
         Region::new("eu").expect("region"),
-        rest_support::seeded_phase(),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
-    )
-    .expect("scope key");
+    );
     let rendered = key.to_string();
 
     let mut row = {
@@ -2885,20 +2888,24 @@ fn market_query(at_day: i64) -> String {
 fn sellability_key(
     plan_id: Uuid,
     charge_kind: bss_pricing::domain::scope_key::ChargeKind,
-) -> bss_pricing::domain::scope_key::ScopeKey {
+) -> bss_pricing::domain::scope_key::MarketPriceScopeKey {
     use bss_pricing::domain::money::CurrencyCode;
-    use bss_pricing::domain::scope_key::{Cohort, PriceEligibility, Region, ScopeKey, SkuId};
-    ScopeKey::new(
-        PlanId::new(plan_id),
+    use bss_pricing::domain::scope_key::{
+        ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PriceEligibility, Region, SkuId,
+    };
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(plan_id),
+            rest_support::seeded_phase(),
+            PriceEligibility::AllSubscriptions,
+            charge_kind,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the class pairs with cohort none"),
         CurrencyCode::new(MARKET_CURRENCY).expect("three letters"),
         Region::new(MARKET_REGION).expect("a non-blank region"),
-        rest_support::seeded_phase(),
-        PriceEligibility::AllSubscriptions,
-        charge_kind,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("the class pairs with cohort none")
 }
 
 /// A published, monthly plan whose one recurring key carries `intervals`.

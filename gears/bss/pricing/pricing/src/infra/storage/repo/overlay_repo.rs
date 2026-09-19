@@ -1574,7 +1574,7 @@ async fn refuse_edit(
 /// every line write passes through — `create`, `replace_lines` and the
 /// `open_revision` copy — so a gate on any single caller would leave a plane open.
 ///
-/// It is the axis the price plane already gates twice (`ScopeKey::new` and the
+/// It is the axis the price plane already gates twice (`ChargeLineScopeKey::new` and the
 /// cutover narrowing), and the two planes are matched against each other for
 /// **equality**: [`published_generation`] rebuilds the price plane's milliseconds,
 /// so an unquantized cohort belongs to no generation set. Without this the fault

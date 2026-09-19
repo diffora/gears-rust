@@ -12,7 +12,8 @@ use crate::domain::error::DomainError;
 use crate::domain::instant::utc_ymd_hms;
 use crate::domain::money::CurrencyCode;
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use crate::domain::window::{WindowInterval, WindowState};
 use time::OffsetDateTime;
@@ -212,18 +213,20 @@ fn every_blocking_referrer_is_named_not_just_the_first() {
 // to pin them.
 // ---------------------------------------------------------------------------
 
-fn generation_key(cohort: OffsetDateTime) -> ScopeKey {
-    ScopeKey::new(
-        PlanId::new(Uuid::now_v7()),
+fn generation_key(cohort: OffsetDateTime) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(Uuid::now_v7()),
+            PhaseId::new(Uuid::from_u128(0x9ba5e)),
+            PriceEligibility::ExistingGrandfathered,
+            ChargeKind::Recurring,
+            Cohort::Generation(cohort),
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("scope key"),
         CurrencyCode::new("USD").expect("currency"),
         Region::new("us").expect("region"),
-        PhaseId::new(Uuid::from_u128(0x9ba5e)),
-        PriceEligibility::ExistingGrandfathered,
-        ChargeKind::Recurring,
-        Cohort::Generation(cohort),
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("scope key")
 }
 
 fn at(day: u32) -> OffsetDateTime {

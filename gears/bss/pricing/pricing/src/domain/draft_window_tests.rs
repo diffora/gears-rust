@@ -6,7 +6,7 @@ use super::{
 };
 use crate::domain::error::DomainError;
 use crate::domain::instant::utc_ymd_hms;
-use crate::domain::scope_key::ScopeKey;
+use crate::domain::scope_key::MarketPriceScopeKey;
 use crate::domain::window::{WINDOW_OVERLAP, WINDOW_START_ELAPSED};
 use std::collections::BTreeMap;
 use time::OffsetDateTime;
@@ -16,26 +16,29 @@ fn t(day: i64) -> OffsetDateTime {
     utc_ymd_hms(2026, 9, 1, 0, 0, 0) + time::Duration::days(day)
 }
 
-fn key(charge_kind: &str) -> crate::domain::scope_key::ScopeKey {
+fn key(charge_kind: &str) -> crate::domain::scope_key::MarketPriceScopeKey {
     use crate::domain::money::CurrencyCode;
     use crate::domain::scope_key::{
-        ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+        ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId,
+        PriceEligibility, Region, SkuId,
     };
 
-    ScopeKey::new(
-        PlanId::new(Uuid::from_u128(0x91_a1)),
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(Uuid::from_u128(0x91_a1)),
+            PhaseId::new(Uuid::from_u128(0x40_a5)),
+            PriceEligibility::AllSubscriptions,
+            match charge_kind {
+                "recurring" => ChargeKind::Recurring,
+                _ => ChargeKind::OneTimeSetup,
+            },
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("a valid canonical scope key"),
         CurrencyCode::new("USD").expect("iso currency"),
         Region::new("us-east").expect("region"),
-        PhaseId::new(Uuid::from_u128(0x40_a5)),
-        PriceEligibility::AllSubscriptions,
-        match charge_kind {
-            "recurring" => ChargeKind::Recurring,
-            _ => ChargeKind::OneTimeSetup,
-        },
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("a valid canonical scope key")
 }
 
 fn price_id(n: u128) -> Uuid {
@@ -50,7 +53,7 @@ fn operation_id(n: u128) -> Uuid {
     Uuid::from_u128(0xE000 + n)
 }
 
-fn keys_for(prices: &[(Uuid, &str)]) -> BTreeMap<Uuid, ScopeKey> {
+fn keys_for(prices: &[(Uuid, &str)]) -> BTreeMap<Uuid, MarketPriceScopeKey> {
     prices.iter().map(|(id, kind)| (*id, key(kind))).collect()
 }
 

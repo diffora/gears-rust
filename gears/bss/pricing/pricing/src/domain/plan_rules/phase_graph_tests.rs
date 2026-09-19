@@ -40,7 +40,8 @@ use crate::domain::price_row::{
     RolloverPolicy, TierAggregationWindow, TierBand, TierQualificationWindow,
 };
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use crate::domain::validation::{Stage, ValidationReport, ValidationRule, Violation};
 use time::OffsetDateTime;
@@ -127,17 +128,19 @@ fn record(
     on_phase: PhaseId,
     row: PriceRow,
 ) -> PriceRecord {
-    let scope_key = ScopeKey::new(
-        plan(),
+    let scope_key = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            on_phase,
+            PriceEligibility::AllSubscriptions,
+            charge_kind,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("all_subscriptions pairs with cohort none"),
         currency(code),
         region(market),
-        on_phase,
-        PriceEligibility::AllSubscriptions,
-        charge_kind,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
-    )
-    .expect("all_subscriptions pairs with cohort none");
+    );
 
     PriceRecord {
         resolved_invoice_line_template: None,

@@ -47,7 +47,8 @@ use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use bss_pricing::infra::storage::entity::price;
 use bss_pricing::infra::storage::migrations::Migrator;
@@ -143,18 +144,20 @@ fn plan() -> PlanId {
 /// market: `all_subscriptions` and `new_subscriptions_only` are different scope
 /// keys — `DuplicateScopeKey` refuses a second row on one — and the same
 /// `(tenant, currency, region)`, which is what `gated_markets` deduplicates on.
-fn market_key(region: &str, eligibility: PriceEligibility) -> ScopeKey {
-    ScopeKey::new(
-        plan(),
+fn market_key(region: &str, eligibility: PriceEligibility) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            PhaseId::new(Uuid::from_u128(0xfa_5e)),
+            eligibility,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("both eligibilities pair with cohort none"),
         CurrencyCode::new("USD").expect("three letters"),
         Region::new(region).expect("a non-blank region"),
-        PhaseId::new(Uuid::from_u128(0xfa_5e)),
-        eligibility,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("both eligibilities pair with cohort none")
 }
 
 /// A flat recurring row, tax-inclusive — the predicate `gated_markets` counts.

@@ -19,7 +19,8 @@ use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow};
 use crate::domain::publish::PlanPublishUnit;
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use time::OffsetDateTime;
 
@@ -307,22 +308,24 @@ fn the_evaluators_row_set_is_the_set_the_commit_publishes() {
 }
 
 /// One key per eligibility class, so two rows can be made to share a key or not.
-fn key(class: PriceEligibility) -> ScopeKey {
-    ScopeKey::new(
-        PlanId::new(Uuid::from_u128(0x_9f)),
+fn key(class: PriceEligibility) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            PlanId::new(Uuid::from_u128(0x_9f)),
+            PhaseId::new(Uuid::from_u128(0x_fa)),
+            class,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("both classes pair with cohort none"),
         CurrencyCode::new("USD").expect("three letters"),
         Region::new("EU").expect("non-blank"),
-        PhaseId::new(Uuid::from_u128(0x_fa)),
-        class,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("both classes pair with cohort none")
 }
 
 /// A minimal candidate row: identity, key and state are all this set reads.
-fn row(id: u128, scope_key: &ScopeKey, state: LifecycleState) -> PriceRecord {
+fn row(id: u128, scope_key: &MarketPriceScopeKey, state: LifecycleState) -> PriceRecord {
     PriceRecord {
         resolved_invoice_line_template: None,
 

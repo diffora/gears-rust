@@ -69,7 +69,7 @@ use crate::domain::approval::PENDING_CHANGE_UNIT_EXISTS;
 use crate::domain::import::{BatchReport, IMPORT_TARGETS_PUBLISHED, ImportRow, RowViolation};
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::price_record::PriceRecord;
-use crate::domain::scope_key::{PlanId, ScopeKey};
+use crate::domain::scope_key::{MarketPriceScopeKey, PlanId};
 use crate::infra::storage::RepoError;
 use crate::infra::storage::repo::{approval_repo, price_repo};
 
@@ -192,7 +192,7 @@ async fn published_rows(
     scope: &AccessScope,
     tenant_id: Uuid,
     rows: &[ImportRow],
-) -> Result<HashMap<ScopeKey, PriceRecord>, RepoError> {
+) -> Result<HashMap<MarketPriceScopeKey, PriceRecord>, RepoError> {
     let mut plans: Vec<PlanId> = rows.iter().map(|row| row.scope_key.plan_id()).collect();
     plans.sort_by_key(|plan| plan.get());
     plans.dedup();

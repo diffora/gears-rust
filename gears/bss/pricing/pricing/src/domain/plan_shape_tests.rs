@@ -23,7 +23,8 @@ use crate::domain::money::CurrencyCode;
 use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow};
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use time::OffsetDateTime;
 
@@ -64,17 +65,19 @@ fn phase(seed: u128, kind: PhaseKind, ordinal: i32, converts_to: Option<PhaseId>
 }
 
 fn record(charge_kind: ChargeKind, code: &str, market: &str, on_phase: PhaseId) -> PriceRecord {
-    let scope_key = ScopeKey::new(
-        plan(),
+    let scope_key = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            on_phase,
+            PriceEligibility::AllSubscriptions,
+            charge_kind,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("all_subscriptions pairs with cohort none"),
         currency(code),
         region(market),
-        on_phase,
-        PriceEligibility::AllSubscriptions,
-        charge_kind,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
-    )
-    .expect("all_subscriptions pairs with cohort none");
+    );
 
     PriceRecord {
         resolved_invoice_line_template: None,

@@ -400,7 +400,7 @@ async fn the_grandfathered_class_is_excluded_unless_the_selector_names_it() {
     assert_eq!(
         retained.scope_key.price_eligibility(),
         PriceEligibility::ExistingGrandfathered,
-        "the fixture really is on the retained class; `ScopeKey::new` is what pairs it with the \
+        "the fixture really is on the retained class; `ChargeLineScopeKey::new` is what pairs it with the \
          cohort, and a fixture on the wrong class would make both halves below vacuous"
     );
 

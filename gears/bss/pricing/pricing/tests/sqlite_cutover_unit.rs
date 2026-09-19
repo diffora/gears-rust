@@ -30,8 +30,8 @@ use bss_pricing::domain::price_row::{
     BillingGranularity, ModelKind, PriceRow, TierAggregationWindow, TierBand,
 };
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
-    SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, DimensionKey, MarketPriceScopeKey, Meter, PhaseId,
+    PlanId, PriceEligibility, Region, SkuId,
 };
 use bss_pricing::infra::cutover::{CutoverOutcome, CutoverRequest, CutoverService};
 use bss_pricing::infra::fixture_gate::FixtureGate;
@@ -74,7 +74,7 @@ async fn published_plan(h: &Harness) -> (PlanId, Publishable) {
     (PlanId::new(plan_uuid), seeded)
 }
 
-fn key_of(plan_id: PlanId, seeded: &Publishable) -> ScopeKey {
+fn key_of(plan_id: PlanId, seeded: &Publishable) -> MarketPriceScopeKey {
     rest_support::publishable_scope_key(plan_id, seeded.phase, "eu")
 }
 
@@ -84,7 +84,7 @@ fn successor_content(amount: i64) -> PriceContent {
     content
 }
 
-fn request_of(key: &ScopeKey, amount: i64) -> CutoverRequest {
+fn request_of(key: &MarketPriceScopeKey, amount: i64) -> CutoverRequest {
     CutoverRequest {
         predecessor_key: key.clone(),
         cutover_at: cutover_at(),
@@ -161,10 +161,10 @@ async fn rows_of(h: &Harness, plan_id: PlanId) -> usize {
 }
 
 /// A second published row on this plan and market, differing from the seeded one
-/// only in its **phase** — one of the axes `ScopeKey::is_sibling_of`
+/// only in its **phase** — one of the axes `MarketPriceScopeKey::is_sibling_of`
 /// compares, and one the hand-written predicate in `read_cutover_context` did
 /// not (D-296).
-async fn second_published_key(h: &Harness, plan_id: PlanId) -> ScopeKey {
+async fn second_published_key(h: &Harness, plan_id: PlanId) -> MarketPriceScopeKey {
     let key = rest_support::publishable_scope_key(plan_id, PhaseId::new(Uuid::now_v7()), "eu");
     let price_id = Uuid::now_v7();
     h.state
@@ -239,18 +239,20 @@ async fn a_cutover_does_not_adopt_the_copy_staged_for_a_neighbouring_key() {
 /// A usage key on this plan's market, discriminated only by its **meter** —
 /// D-103's confirmed shape: "a `PaaS` plan pricing cloudlets, storage and egress is
 /// one plan, not three".
-fn usage_key(plan_id: PlanId, phase: PhaseId, meter: &str) -> ScopeKey {
-    ScopeKey::new(
-        plan_id,
+fn usage_key(plan_id: PlanId, phase: PhaseId, meter: &str) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan_id,
+            phase,
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Usage,
+            Cohort::None,
+            SkuId::new(Uuid::new_v5(&Uuid::NAMESPACE_OID, meter.as_bytes())),
+        )
+        .expect("the class pairs with cohort none"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new("eu").expect("a non-blank region"),
-        phase,
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Usage,
-        Cohort::None,
-        SkuId::new(Uuid::new_v5(&Uuid::NAMESPACE_OID, meter.as_bytes())),
     )
-    .expect("the class pairs with cohort none")
     .with_usage_line(
         Some(&Meter::new(meter).expect("a non-blank meter")),
         DimensionKey::none(),
@@ -304,7 +306,7 @@ fn usage_content(meter: &str, amount: i64) -> PriceContent {
 }
 
 /// One published, covered usage line on the plan's market.
-async fn published_usage_line(h: &Harness, key: &ScopeKey, meter: &str) -> Uuid {
+async fn published_usage_line(h: &Harness, key: &MarketPriceScopeKey, meter: &str) -> Uuid {
     let price_id = Uuid::now_v7();
     h.state
         .prices
@@ -332,7 +334,7 @@ async fn published_usage_line(h: &Harness, key: &ScopeKey, meter: &str) -> Uuid 
 }
 
 /// The same act, on a usage key: the successor has to carry the key's own line.
-fn usage_request(key: &ScopeKey, meter: &str, amount: i64) -> CutoverRequest {
+fn usage_request(key: &MarketPriceScopeKey, meter: &str, amount: i64) -> CutoverRequest {
     CutoverRequest {
         predecessor_key: key.clone(),
         cutover_at: cutover_at(),

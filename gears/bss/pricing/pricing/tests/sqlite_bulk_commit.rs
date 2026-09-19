@@ -22,7 +22,8 @@ use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use bss_pricing::infra::bulk::{
     ABORT_NOTE, ABORTED_MEMBER, BULK_ROW_CONFLICT, CommitReceipt, PRIOR_REPORT_MEMBER,
@@ -67,18 +68,20 @@ fn stamp() -> AuditStamp {
     }
 }
 
-fn key(region: &str) -> ScopeKey {
-    ScopeKey::new(
-        plan(),
+fn key(region: &str) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan(),
+            phase(),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the class pairs with the cohort"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new(region).expect("a non-blank region"),
-        phase(),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("the class pairs with the cohort")
 }
 
 fn content(amount: i64) -> PriceContent {
@@ -100,7 +103,7 @@ fn content(amount: i64) -> PriceContent {
     }
 }
 
-fn row(scope_key: ScopeKey, amount: i64, if_match: Option<RowVersion>) -> ImportRow {
+fn row(scope_key: MarketPriceScopeKey, amount: i64, if_match: Option<RowVersion>) -> ImportRow {
     ImportRow {
         scope_key,
         content: content(amount),
@@ -127,7 +130,11 @@ async fn harness() -> Harness {
 }
 
 /// Author a draft row and answer `(price_id, its version)`.
-async fn seed_draft(h: &Harness, scope_key: ScopeKey, amount: i64) -> (Uuid, RowVersion) {
+async fn seed_draft(
+    h: &Harness,
+    scope_key: MarketPriceScopeKey,
+    amount: i64,
+) -> (Uuid, RowVersion) {
     let price_id = Uuid::now_v7();
     let record = h
         .prices

@@ -103,7 +103,7 @@ use bss_pricing::domain::materiality::triggers::Trigger;
 use bss_pricing::domain::materiality::{self, ChangeSet, MaterialityReason, MaterialityVerdict};
 use bss_pricing::domain::money::MinorAmount;
 use bss_pricing::domain::price_record::PriceContent;
-use bss_pricing::domain::scope_key::{PlanId, ScopeKey};
+use bss_pricing::domain::scope_key::{MarketPriceScopeKey, PlanId};
 use bss_pricing::domain::sellability::SellabilityFacts;
 use bss_pricing::domain::window::WindowState;
 use bss_pricing::infra::cutover::{
@@ -175,7 +175,7 @@ async fn published_plan(h: &Harness) -> (PlanId, Publishable) {
     (PlanId::new(plan_uuid), seeded)
 }
 
-fn key_of(plan_id: PlanId, seeded: &Publishable) -> ScopeKey {
+fn key_of(plan_id: PlanId, seeded: &Publishable) -> MarketPriceScopeKey {
     rest_support::publishable_scope_key(plan_id, seeded.phase, "eu")
 }
 
@@ -185,7 +185,7 @@ fn successor_content(amount: i64) -> PriceContent {
     content
 }
 
-fn request_of(key: &ScopeKey, amount: i64) -> CutoverRequest {
+fn request_of(key: &MarketPriceScopeKey, amount: i64) -> CutoverRequest {
     CutoverRequest {
         predecessor_key: key.clone(),
         cutover_at: cutover_at(),
@@ -256,7 +256,7 @@ async fn approve(h: &Harness, approval_id: Uuid) {
 }
 
 /// Submit, approve, re-post: one committed cutover on the seeded key.
-async fn committed_cutover(h: &Harness, key: &ScopeKey) -> CutoverReceipt {
+async fn committed_cutover(h: &Harness, key: &MarketPriceScopeKey) -> CutoverReceipt {
     let opened = cut_over(h, request_of(key, 12_000), SUBMITTER)
         .await
         .expect("the unit opens");

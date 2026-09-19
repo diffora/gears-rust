@@ -569,7 +569,7 @@ async fn a_line_naming_the_nil_plan_id_is_refused() {
 /// `cohort` is the same kind of value as the price plane's generation and is
 /// matched for **equality** against it: `published_generation` rebuilds the price
 /// plane's milliseconds, so an unquantized cohort is a member of no generation
-/// set. Before this gate, `ScopeKey::new` refused the finer instant and the line
+/// set. Before this gate, `ChargeLineScopeKey::new` refused the finer instant and the line
 /// table took it, and the fault then surfaced as
 /// `OVERLAY_LINE_COHORT_UNKNOWN` — a refusal naming the wrong cause, on the value
 /// a client gets by copying a `timestamptz` rendering out of another gear.

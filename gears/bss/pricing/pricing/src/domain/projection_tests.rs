@@ -38,8 +38,8 @@ use crate::domain::price_row::{
 };
 use crate::domain::read_model::OverlayIndexShard;
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
-    SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, DimensionKey, MarketPriceScopeKey, Meter, PhaseId,
+    PlanId, PriceEligibility, Region, SkuId,
 };
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
 use time::OffsetDateTime;
@@ -168,17 +168,19 @@ fn graduated_row() -> PriceRecord {
         resolved_invoice_line_template: None,
         resolved_gl_code: None,
         price_id: uuid::Uuid::from_u128(0xb_0001),
-        scope_key: ScopeKey::new(
-            plan_id(),
+        scope_key: MarketPriceScopeKey::new(
+            ChargeLineScopeKey::new(
+                plan_id(),
+                terminal_phase(),
+                PriceEligibility::AllSubscriptions,
+                ChargeKind::Usage,
+                Cohort::None,
+                SkuId::new(Uuid::from_u128(5)),
+            )
+            .expect("the class pairs with cohort none"),
             CurrencyCode::new("EUR").expect("three letters"),
             Region::new("eu").expect("a non-blank region"),
-            terminal_phase(),
-            PriceEligibility::AllSubscriptions,
-            ChargeKind::Usage,
-            Cohort::None,
-            SkuId::new(Uuid::from_u128(5)),
-        )
-        .expect("the class pairs with cohort none"),
+        ),
         row,
         tax_inclusive: false,
         tax_category_ref: None,
@@ -382,17 +384,19 @@ fn row_of_kind(kind: ChargeKind, authored: Option<&str>) -> PriceRecord {
     let mut record = graduated_row();
     record.row = PriceRow::new(kind, Some(ModelKind::Flat));
     record.row.amount_minor = Some(MinorAmount::new(1000).expect("a non-negative amount"));
-    record.scope_key = ScopeKey::new(
-        plan_id(),
+    record.scope_key = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan_id(),
+            terminal_phase(),
+            PriceEligibility::AllSubscriptions,
+            kind,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the class pairs with cohort none"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new("eu").expect("a non-blank region"),
-        terminal_phase(),
-        PriceEligibility::AllSubscriptions,
-        kind,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
-    )
-    .expect("the class pairs with cohort none");
+    );
     record.billing_timing = authored.map(ToOwned::to_owned);
     record
 }
@@ -1073,18 +1077,20 @@ fn the_projected_row_states_are_the_two_that_are_not_never_published_drafts() {
 // ---------------------------------------------------------------------------
 
 /// Every axis of the scope key, and one window, on the plan's recurring key.
-fn recurring_key() -> ScopeKey {
-    ScopeKey::new(
-        plan_id(),
+fn recurring_key() -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan_id(),
+            terminal_phase(),
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("a valid canonical scope key"),
         CurrencyCode::new("USD").expect("iso currency"),
         Region::new("EU").expect("region"),
-        terminal_phase(),
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("a valid canonical scope key")
 }
 
 fn at(day: u32) -> OffsetDateTime {

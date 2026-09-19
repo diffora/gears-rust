@@ -360,7 +360,7 @@
 //! are simply absent from `PriceContent`, and `check_update_keeps_the_line`
 //! refuses a move of the `(meter, dimensionKey)` pair), so a copy cannot drift.
 //! What it costs is a backfill that renders the key **in SQL**, and a rendering
-//! that disagrees with `ScopeKey`'s `Display` by one separator would split the
+//! that disagrees with `MarketPriceScopeKey`'s `Display` by one separator would split the
 //! key space silently — every row landing in its own partition, the constraint
 //! green and enforcing nothing. That is a data migration owing its own proof,
 //! not a clause of this one.

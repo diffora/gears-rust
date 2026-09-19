@@ -152,7 +152,8 @@ use crate::domain::price_row::{
     TierAggregationWindow, TierBand, TierQualificationWindow, model_kind_wire,
 };
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, Meter, PhaseId, PlanId,
+    PriceEligibility, Region, SkuId,
 };
 use crate::infra::idempotent::{self, Guarded, GuardedRequest, TxFuture};
 use crate::infra::storage::repo::{NewPriceDraft, price_repo, window_guard_repo};
@@ -259,7 +260,7 @@ pub struct ScopeKeyView {
 impl ScopeKeyView {
     /// Render the key identity. The legacy meter argument is ignored; meter is
     /// response-only content and cannot be reconstructed from a key alone.
-    pub(crate) fn of(key: &ScopeKey, _meter: Option<&str>) -> Self {
+    pub(crate) fn of(key: &MarketPriceScopeKey, _meter: Option<&str>) -> Self {
         Self {
             plan_id: key.plan_id().get(),
             sku_id: key.sku_id().as_uuid(),
@@ -1307,7 +1308,7 @@ async fn require_declared_region(
     runner: &impl toolkit_db::secure::DBRunner,
     scope: &toolkit_db::secure::AccessScope,
     tenant: Uuid,
-    key: &ScopeKey,
+    key: &MarketPriceScopeKey,
 ) -> Result<(), DomainError> {
     let declared =
         crate::infra::storage::repo::taxonomy_repo::active_regions(runner, scope, tenant)
@@ -1349,7 +1350,7 @@ async fn require_declared_region(
 /// parsing the publish envelope parses this unchanged, and folding a
 /// multi-violation report into one line hides the second fault behind the first.
 fn require_no_key_contradiction(
-    key: &ScopeKey,
+    key: &MarketPriceScopeKey,
     content: &PriceContent,
     sku_context: crate::domain::row_sku_rules::RowSkuContext,
 ) -> Result<(), DomainError> {
@@ -1365,27 +1366,30 @@ fn require_no_key_contradiction(
 pub(crate) fn scope_key_of(
     plan_id: PlanId,
     key: &ScopeKeyRequest,
-) -> Result<ScopeKey, DomainError> {
-    ScopeKey::new(
-        plan_id,
-        CurrencyCode::new(&key.currency)?,
-        Region::new(&key.region)?,
-        PhaseId::new(key.phase),
-        wire_token(
-            "scope_key.price_eligibility",
-            &key.price_eligibility,
-            price_repo::PRICE_ELIGIBILITIES,
-            PriceEligibility::as_str,
-        )?,
-        wire_token(
-            "scope_key.charge_kind",
-            &key.charge_kind,
-            price_repo::CHARGE_KINDS,
-            ChargeKind::as_str,
-        )?,
-        key.cohort.map_or(Cohort::None, Cohort::Generation),
-        SkuId::new(key.sku_id),
-    )
+) -> Result<MarketPriceScopeKey, DomainError> {
+    {
+        let market_currency = CurrencyCode::new(&key.currency)?;
+        let market_region = Region::new(&key.region)?;
+        ChargeLineScopeKey::new(
+            plan_id,
+            PhaseId::new(key.phase),
+            wire_token(
+                "scope_key.price_eligibility",
+                &key.price_eligibility,
+                price_repo::PRICE_ELIGIBILITIES,
+                PriceEligibility::as_str,
+            )?,
+            wire_token(
+                "scope_key.charge_kind",
+                &key.charge_kind,
+                price_repo::CHARGE_KINDS,
+                ChargeKind::as_str,
+            )?,
+            key.cohort.map_or(Cohort::None, Cohort::Generation),
+            SkuId::new(key.sku_id),
+        )
+        .map(|line| MarketPriceScopeKey::new(line, market_currency, market_region))
+    }
 }
 
 /// Build the row's content.

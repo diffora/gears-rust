@@ -4,7 +4,7 @@
 //! [`PriceRow`] is the **shape** the thirteen Slice-3 rules judge, and it
 //! deliberately carries no identity and no key — a rule able to see which row it
 //! was looking at would be free to reach a different verdict for two rows that
-//! are the same shape. [`ScopeKey`] carries the ten axes. Neither is enough on
+//! are the same shape. [`MarketPriceScopeKey`] carries the ten axes. Neither is enough on
 //! its own for a caller that has to name a row, tag it, or decide whether it may
 //! still be edited, so this module composes them with exactly the columns that
 //! answer those three questions.
@@ -22,7 +22,7 @@ use crate::domain::concurrency::RowVersion;
 use crate::domain::contracts::ProrationContract;
 use crate::domain::lifecycle::LifecycleState;
 use crate::domain::price_row::PriceRow;
-use crate::domain::scope_key::{DimensionKey, Meter, ScopeKey};
+use crate::domain::scope_key::{DimensionKey, MarketPriceScopeKey, Meter};
 use time::OffsetDateTime;
 
 /// Everything about a price row that an open draft may still change.
@@ -101,7 +101,7 @@ pub struct PriceRecord {
     /// included, and `uq_pricing_price_scope_key_current` and
     /// `uq_pricing_price_scope_key_draft` carry all ten. The count matters: a rule
     /// built from eight refuses work the store admits (D-283).
-    pub scope_key: ScopeKey,
+    pub scope_key: MarketPriceScopeKey,
     /// The authored shape the Slice-3 rules judge.
     pub row: PriceRow,
     /// Whether the authored amounts are tax-inclusive.
@@ -200,7 +200,7 @@ impl PriceRecord {
 /// The pair is D-196's ninth and tenth axis *and* two ordinary fields on
 /// [`PriceRow`], stored in one column each — so the axis and the field are the
 /// same value and there is nowhere for them to disagree in the schema. They can
-/// still disagree in the **code**: [`ScopeKey`]'s constructors trim
+/// still disagree in the **code**: [`MarketPriceScopeKey`]'s constructors trim
 /// (`Meter::new`, `DimensionKey::new`), so a render into the columns that took
 /// the caller's raw string would file a row authored `meter: "api_calls "` under
 /// the key whose ninth axis is `api_calls` and store a column reading
@@ -296,7 +296,7 @@ pub fn canonical_usage_line(row: &PriceRow) -> (Option<String>, String) {
 /// reach into `infra`, and the alternative was a second copy of the projection,
 /// which is the exact fault the two Criticals above were.
 #[must_use]
-pub fn authored_content(key: &ScopeKey, content: PriceContent) -> PriceContent {
+pub fn authored_content(key: &MarketPriceScopeKey, content: PriceContent) -> PriceContent {
     let (meter, dimension_key) = canonical_usage_line(&content.row);
     let mut row = PriceRow {
         charge_kind: key.charge_kind(),

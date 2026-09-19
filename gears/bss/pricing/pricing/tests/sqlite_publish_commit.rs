@@ -65,7 +65,8 @@ use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::publish::{PlanPublishUnit, PublishAuthorization};
 use bss_pricing::domain::read_model::SubjectKind;
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use bss_pricing::domain::snapshot::VersionRef;
 use bss_pricing::domain::window::WindowState;
@@ -328,18 +329,20 @@ fn flat_row() -> PriceContent {
     }
 }
 
-fn scope_key(eligibility: PriceEligibility) -> ScopeKey {
-    ScopeKey::new(
-        plan_id(),
+fn scope_key(eligibility: PriceEligibility) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan_id(),
+            terminal_phase(),
+            eligibility,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the class pairs with cohort none"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new("eu").expect("a non-blank region"),
-        terminal_phase(),
-        eligibility,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("the class pairs with cohort none")
 }
 
 /// A plan the whole rule set passes: one evergreen terminal phase, a descriptor
@@ -1227,17 +1230,19 @@ async fn seed_stolen_window(h: &Harness) {
             TENANT,
             NewPriceDraft {
                 price_id: foreign_price,
-                scope_key: ScopeKey::new(
-                    other,
+                scope_key: MarketPriceScopeKey::new(
+                    ChargeLineScopeKey::new(
+                        other,
+                        terminal_phase(),
+                        PriceEligibility::AllSubscriptions,
+                        ChargeKind::Recurring,
+                        Cohort::None,
+                        SkuId::new(Uuid::from_u128(5)),
+                    )
+                    .expect("the class pairs with cohort none"),
                     CurrencyCode::new("EUR").expect("three letters"),
                     Region::new("eu").expect("a non-blank region"),
-                    terminal_phase(),
-                    PriceEligibility::AllSubscriptions,
-                    ChargeKind::Recurring,
-                    Cohort::None,
-                    SkuId::new(Uuid::from_u128(5)),
-                )
-                .expect("the class pairs with cohort none"),
+                ),
                 content: flat_row(),
                 created_by: ACTOR,
                 created_at_utc: at(10),
@@ -3375,17 +3380,19 @@ async fn seed_referencing_bundle(h: &Harness, sibling_tax_inclusive: bool) {
             TENANT,
             NewPriceDraft {
                 price_id: sibling_price,
-                scope_key: ScopeKey::new(
-                    sibling_plan,
+                scope_key: MarketPriceScopeKey::new(
+                    ChargeLineScopeKey::new(
+                        sibling_plan,
+                        terminal_phase(),
+                        PriceEligibility::AllSubscriptions,
+                        ChargeKind::Recurring,
+                        Cohort::None,
+                        SkuId::new(Uuid::from_u128(5)),
+                    )
+                    .expect("the class pairs with cohort none"),
                     CurrencyCode::new("EUR").expect("three letters"),
                     Region::new("eu").expect("a non-blank region"),
-                    terminal_phase(),
-                    PriceEligibility::AllSubscriptions,
-                    ChargeKind::Recurring,
-                    Cohort::None,
-                    SkuId::new(Uuid::from_u128(5)),
-                )
-                .expect("the class pairs with cohort none"),
+                ),
                 content,
                 created_by: ACTOR,
                 created_at_utc: at(10),
@@ -3419,17 +3426,19 @@ async fn seed_referencing_bundle(h: &Harness, sibling_tax_inclusive: bool) {
                 TENANT,
                 NewPriceDraft {
                     price_id: price,
-                    scope_key: ScopeKey::new(
-                        owner,
+                    scope_key: MarketPriceScopeKey::new(
+                        ChargeLineScopeKey::new(
+                            owner,
+                            terminal_phase(),
+                            PriceEligibility::AllSubscriptions,
+                            ChargeKind::Recurring,
+                            Cohort::None,
+                            SkuId::new(Uuid::from_u128(5)),
+                        )
+                        .expect("the class pairs with cohort none"),
                         CurrencyCode::new("USD").expect("three letters"),
                         Region::new("us").expect("a non-blank region"),
-                        terminal_phase(),
-                        PriceEligibility::AllSubscriptions,
-                        ChargeKind::Recurring,
-                        Cohort::None,
-                        SkuId::new(Uuid::from_u128(5)),
-                    )
-                    .expect("the class pairs with cohort none"),
+                    ),
                     content: second,
                     created_by: ACTOR,
                     created_at_utc: at(10),
@@ -3768,18 +3777,20 @@ fn trial_phase() -> PhaseId {
 }
 
 /// The seed's canonical scope key moved onto another phase.
-fn scope_key_in_phase(phase: PhaseId) -> ScopeKey {
-    ScopeKey::new(
-        plan_id(),
+fn scope_key_in_phase(phase: PhaseId) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan_id(),
+            phase,
+            PriceEligibility::AllSubscriptions,
+            ChargeKind::Recurring,
+            Cohort::None,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the class pairs with cohort none"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new("eu").expect("a non-blank region"),
-        phase,
-        PriceEligibility::AllSubscriptions,
-        ChargeKind::Recurring,
-        Cohort::None,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("the class pairs with cohort none")
 }
 
 /// Give the seeded plan a real two-phase schedule, covered in its one market.

@@ -27,8 +27,8 @@ use crate::domain::price_record::PriceRecord;
 use crate::domain::price_row::{ModelKind, PriceRow};
 use crate::domain::projection::PlanSubjectDelta;
 use crate::domain::scope_key::{
-    ChargeKind, Cohort, DimensionKey, Meter, PhaseId, PlanId, PriceEligibility, Region, ScopeKey,
-    SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, DimensionKey, MarketPriceScopeKey, Meter, PhaseId,
+    PlanId, PriceEligibility, Region, SkuId,
 };
 use crate::domain::sellability::{PinnedFacts, SellabilityFacts};
 use crate::domain::window::{KeyWindows, WindowInterval, WindowState};
@@ -48,21 +48,27 @@ fn phase() -> PhaseId {
     PhaseId::new(Uuid::from_u128(0xfa_5e))
 }
 
-fn key_of(charge_kind: ChargeKind, eligibility: PriceEligibility, cohort: Cohort) -> ScopeKey {
-    ScopeKey::new(
-        plan_id(),
+fn key_of(
+    charge_kind: ChargeKind,
+    eligibility: PriceEligibility,
+    cohort: Cohort,
+) -> MarketPriceScopeKey {
+    MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan_id(),
+            phase(),
+            eligibility,
+            charge_kind,
+            cohort,
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("the class pairs with the cohort"),
         CurrencyCode::new("EUR").expect("three letters"),
         Region::new("eu").expect("a non-blank region"),
-        phase(),
-        eligibility,
-        charge_kind,
-        cohort,
-        SkuId::new(Uuid::from_u128(5)),
     )
-    .expect("the class pairs with the cohort")
 }
 
-fn row_on(scope_key: ScopeKey) -> PriceRecord {
+fn row_on(scope_key: MarketPriceScopeKey) -> PriceRecord {
     let mut row = PriceRow::new(ChargeKind::Recurring, Some(ModelKind::Flat));
     row.amount_minor = Some(MinorAmount::new(1_200).expect("a non-negative amount"));
     PriceRecord {
@@ -450,7 +456,7 @@ fn a_payload_this_gear_could_not_have_written_is_a_corrupt_row() {
     });
     assert!(matches!(alien_state, RepoError::CorruptRow(ref detail) if detail.contains("paused")));
 
-    // A scope-key axis on a plane the authoring path cannot write. `ScopeKey::new`
+    // A scope-key axis on a plane the authoring path cannot write. `ChargeLineScopeKey::new`
     // answers `base` for everything, so an unread overlay would be silently
     // flattened - `price_repo::to_scope_key`'s own reason for asking.
     let alien_overlay = mutilate(|payload| {

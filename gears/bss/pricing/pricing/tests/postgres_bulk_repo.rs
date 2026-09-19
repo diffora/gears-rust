@@ -53,7 +53,8 @@ use bss_pricing::domain::money::{CurrencyCode, MinorAmount};
 use bss_pricing::domain::price_record::PriceContent;
 use bss_pricing::domain::price_row::{ModelKind, PriceRow};
 use bss_pricing::domain::scope_key::{
-    ChargeKind, Cohort, PhaseId, PlanId, PriceEligibility, Region, ScopeKey, SkuId,
+    ChargeKind, ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PhaseId, PlanId, PriceEligibility,
+    Region, SkuId,
 };
 use bss_pricing::infra::storage::RepoError;
 use bss_pricing::infra::storage::repo::{
@@ -148,17 +149,19 @@ async fn a_price_row(store: &Store, region: &str) -> Uuid {
             TENANT,
             NewPriceDraft {
                 price_id,
-                scope_key: ScopeKey::new(
-                    PlanId::new(plan_id),
+                scope_key: MarketPriceScopeKey::new(
+                    ChargeLineScopeKey::new(
+                        PlanId::new(plan_id),
+                        PhaseId::new(Uuid::from_u128(0xfa_80)),
+                        PriceEligibility::AllSubscriptions,
+                        ChargeKind::Recurring,
+                        Cohort::None,
+                        SkuId::new(Uuid::from_u128(5)),
+                    )
+                    .expect("the class pairs with the cohort"),
                     CurrencyCode::new("EUR").expect("three letters"),
                     Region::new(region).expect("a non-blank region"),
-                    PhaseId::new(Uuid::from_u128(0xfa_80)),
-                    PriceEligibility::AllSubscriptions,
-                    ChargeKind::Recurring,
-                    Cohort::None,
-                    SkuId::new(Uuid::from_u128(5)),
-                )
-                .expect("the class pairs with the cohort"),
+                ),
                 content: PriceContent {
                     row,
                     tax_inclusive: false,

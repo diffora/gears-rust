@@ -51,7 +51,9 @@ use bss_pricing::domain::lifecycle::LifecycleState;
 use bss_pricing::domain::materiality::{MaterialityReason, MaterialityVerdict};
 use bss_pricing::domain::money::{MinorAmount, RateMinor};
 use bss_pricing::domain::price_record::PriceContent;
-use bss_pricing::domain::scope_key::{Cohort, PlanId, PriceEligibility, ScopeKey, SkuId};
+use bss_pricing::domain::scope_key::{
+    ChargeLineScopeKey, Cohort, MarketPriceScopeKey, PlanId, PriceEligibility, SkuId,
+};
 use bss_pricing::domain::window::WindowState;
 use bss_pricing::infra::approval::{DecideRequest, RegionGrant};
 use bss_pricing::infra::storage::entity::{audit_log, outbox, price, price_window};
@@ -106,7 +108,7 @@ async fn published_plan(h: &Harness) -> (PlanId, Publishable) {
     (PlanId::new(plan_uuid), seeded)
 }
 
-fn key_of(plan_id: PlanId, seeded: &Publishable) -> ScopeKey {
+fn key_of(plan_id: PlanId, seeded: &Publishable) -> MarketPriceScopeKey {
     rest_support::publishable_scope_key(plan_id, seeded.phase, "eu")
 }
 
@@ -117,7 +119,7 @@ fn successor_content(amount: i64) -> PriceContent {
     content
 }
 
-fn request_of(key: &ScopeKey, amount: i64) -> SupersessionRequest {
+fn request_of(key: &MarketPriceScopeKey, amount: i64) -> SupersessionRequest {
     SupersessionRequest {
         key: key.clone(),
         changeover: changeover(),
@@ -175,7 +177,7 @@ async fn approve(h: &Harness, approval_id: Uuid) {
 // landed rather than what the caller was allowed to see.
 // ---------------------------------------------------------------------------
 
-async fn rows_on_key(h: &Harness, key: &ScopeKey) -> Vec<price::Model> {
+async fn rows_on_key(h: &Harness, key: &MarketPriceScopeKey) -> Vec<price::Model> {
     let conn = h.db.conn().expect("conn");
     price::Entity::find()
         .secure()
@@ -873,17 +875,19 @@ async fn an_existing_grandfathered_generation_cannot_be_superseded() {
     rest_support::approve_threshold_policy(&h, &[("EUR", 1_000_000)]).await;
     let (plan_id, seeded) = published_plan(&h).await;
     let base = key_of(plan_id, &seeded);
-    let retained = ScopeKey::new(
-        plan_id,
+    let retained = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan_id,
+            seeded.phase,
+            PriceEligibility::ExistingGrandfathered,
+            base.charge_kind(),
+            Cohort::Generation(utc_ymd_hms(2099, 1, 1, 0, 0, 0)),
+            SkuId::new(Uuid::from_u128(5)),
+        )
+        .expect("existing_grandfathered carries a generation"),
         base.currency().clone(),
         base.region().clone(),
-        seeded.phase,
-        PriceEligibility::ExistingGrandfathered,
-        base.charge_kind(),
-        Cohort::Generation(utc_ymd_hms(2099, 1, 1, 0, 0, 0)),
-        SkuId::new(Uuid::from_u128(5)),
-    )
-    .expect("existing_grandfathered carries a generation");
+    );
 
     let refused = supersede(&h, request_of(&retained, 10_000), SUBMITTER)
         .await
@@ -1106,18 +1110,20 @@ async fn usage_key_with_published_row(
     h: &Harness,
     plan_id: PlanId,
     seeded: &Publishable,
-) -> ScopeKey {
-    let key = ScopeKey::new(
-        plan_id,
+) -> MarketPriceScopeKey {
+    let key = MarketPriceScopeKey::new(
+        ChargeLineScopeKey::new(
+            plan_id,
+            seeded.phase,
+            PriceEligibility::NewSubscriptionsOnly,
+            bss_pricing::domain::scope_key::ChargeKind::Usage,
+            Cohort::None,
+            SkuId::new(rest_support::resource_sku("api_calls")),
+        )
+        .expect("new_subscriptions_only pairs with cohort none"),
         bss_pricing::domain::money::CurrencyCode::new("EUR").expect("three letters"),
         bss_pricing::domain::scope_key::Region::new("eu").expect("non-blank"),
-        seeded.phase,
-        PriceEligibility::NewSubscriptionsOnly,
-        bss_pricing::domain::scope_key::ChargeKind::Usage,
-        Cohort::None,
-        SkuId::new(rest_support::resource_sku("api_calls")),
-    )
-    .expect("new_subscriptions_only pairs with cohort none");
+    );
 
     let price_id = Uuid::now_v7();
     // **The key the door files it under, not the one handed in** (D-196 clause 3).
@@ -1193,7 +1199,7 @@ fn graduated_usage(unit_price: i64) -> PriceContent {
     }
 }
 
-fn usage_request(key: &ScopeKey, amount: i64) -> SupersessionRequest {
+fn usage_request(key: &MarketPriceScopeKey, amount: i64) -> SupersessionRequest {
     SupersessionRequest {
         key: key.clone(),
         changeover: changeover(),

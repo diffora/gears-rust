@@ -378,7 +378,7 @@ async fn preview_plan_price(
 ///   subscription.
 /// * **`lifecycleState = published`.** `PROJECTED_ROW_STATES` includes
 ///   `superseded`, and a supersession stages the successor on the **same**
-///   `ScopeKey` while flipping its predecessor — so a market that has ever been
+///   `MarketPriceScopeKey` while flipping its predecessor — so a market that has ever been
 ///   repriced carries two byte-identical keys in the frozen delta. Without this
 ///   filter a plan raised from 12.00 to 15.00 quotes 12.00 for the life of that
 ///   version, decided only by which `priceId` sorted first, and a frozen version
