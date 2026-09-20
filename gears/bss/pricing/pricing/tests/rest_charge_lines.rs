@@ -976,3 +976,316 @@ async fn the_line_list_pages_by_logical_line_and_stops_at_the_exact_boundary() {
         .await;
     assert_eq!(zero.status(), StatusCode::BAD_REQUEST);
 }
+
+// ---------------------------------------------------------------------------
+// One scenario, end to end, through the real router.
+// ---------------------------------------------------------------------------
+
+/// The authoring half of the end-to-end scenario: a plan with a trial that
+/// converts to a paid phase, one recurring line per phase, each in EUR/EU and
+/// USD/US. Returns the plan, the two line versions and the four price ids.
+///
+/// The trial is free by an **explicit zero**, not by an absent price.
+async fn author_two_phases_two_markets(h: &Harness) -> (Uuid, Vec<String>, Vec<String>) {
+    use bss_pricing::domain::plan_shape::{PhaseKind, PlanPhase};
+    use bss_pricing::domain::scope_key::{PhaseId, PlanId};
+
+    let plan_id = Uuid::now_v7();
+    let shape = rest_support::seed_publishable_shape(h, plan_id).await;
+    let paid = shape.phase;
+    let trial = PhaseId::new(Uuid::now_v7());
+    h.state
+        .shapes
+        .replace_phases(
+            &h.scope(),
+            h.tenant,
+            PlanId::new(plan_id),
+            shape.revision,
+            shape.version,
+            vec![
+                PlanPhase {
+                    phase_id: trial,
+                    kind: PhaseKind::Trial,
+                    display_name: None,
+                    ordinal: 0,
+                    converts_to_phase_id: Some(paid),
+                    phase_duration_days: Some(14),
+                    display_trial_days: None,
+                },
+                PlanPhase {
+                    phase_id: paid,
+                    kind: PhaseKind::Evergreen,
+                    display_name: None,
+                    ordinal: 1,
+                    converts_to_phase_id: None,
+                    phase_duration_days: None,
+                    display_trial_days: None,
+                },
+            ],
+            rest_support::seed_stamp(),
+        )
+        .await
+        .expect("a trial that converts to a paid phase");
+
+    // 2. One recurring line per phase, each in EUR/EU and USD/US. The trial is
+    //    free by an **explicit zero**, not by an absent price.
+    let mut price_ids = Vec::new();
+    let mut versions = Vec::new();
+    for (nth, (phase, eur, usd)) in [(trial, 0, 0), (paid, 9_900, 10_900)]
+        .into_iter()
+        .enumerate()
+    {
+        let mut body = flat_line_body("recurring");
+        body["scope_key"]["phase"] = serde_json::json!(phase.get());
+        body["structure"]["gl_code_ref"] = serde_json::json!("4000");
+        body["structure"]["billing_timing"] = serde_json::json!("advance");
+        body["structure"]["billing_anchor_policy"] = serde_json::json!("calendar_month");
+        body["structure"]["proration_basis"] = serde_json::json!("calendar_days_actual");
+        body["structure"]["credit_on_downgrade"] = serde_json::json!(false);
+        let created = post_line(h, plan_id, body, &format!("e2e-line-{nth}")).await;
+        let status = created.status();
+        let line = body_json(created).await;
+        assert_eq!(status, StatusCode::CREATED, "{line}");
+        let version = line["line_version_id"].as_str().expect("id").to_owned();
+        for (currency, region, amount) in [("EUR", "EU", eur), ("USD", "US", usd)] {
+            let mut price = flat_price_body(currency, region, amount);
+            price["market_policy"]["rounding_policy_ref"] = serde_json::json!("half_up");
+            let priced = post_price(
+                h,
+                plan_id,
+                &version,
+                price,
+                &format!("e2e-price-{nth}-{currency}"),
+            )
+            .await;
+            let status = priced.status();
+            let priced = body_json(priced).await;
+            assert_eq!(status, StatusCode::CREATED, "{priced}");
+            price_ids.push(priced["price_id"].as_str().expect("id").to_owned());
+        }
+        versions.push(version);
+    }
+    (plan_id, versions, price_ids)
+}
+
+/// An explicit `at_publish` intention per price: every market of every phase.
+async fn schedule_at_publish_windows(h: &Harness, plan_id: Uuid, price_ids: &[String]) {
+    for (nth, price_id) in price_ids.iter().enumerate() {
+        let scheduled = h
+            .allowed()
+            .send(with_headers(
+                "POST",
+                &format!("/bss-pricing/v1/prices/{price_id}/windows"),
+                Some(serde_json::json!({
+                    "context": {"kind": "draft", "plan_revision": 0},
+                    "start": {"kind": "at_publish"},
+                    "reason_code": "launch"
+                })),
+                &[
+                    ("if-match", h.plan_etag(plan_id).await.as_str()),
+                    ("idempotency-key", &format!("e2e-window-{nth}")),
+                ],
+            ))
+            .await;
+        assert_eq!(
+            scheduled.status(),
+            StatusCode::CREATED,
+            "{}",
+            body_json(scheduled).await
+        );
+    }
+}
+
+/// Neither the shared structure nor the money moves in place once published,
+/// and each refusal leaves the store exactly as it was.
+async fn assert_frozen(h: &Harness, plan_id: Uuid, versions: &[String], price_ids: &[String]) {
+    // 5. Frozen: neither half moves in place, and each refusal leaves the store
+    //    exactly as it was.
+    let lines_before = body_json(
+        h.allowed()
+            .send(request("GET", &lines_path(plan_id), None))
+            .await,
+    )
+    .await;
+    let restructure = h
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &line_path(plan_id, &versions[1]),
+            Some(serde_json::json!({ "structure": { "model_kind": "per_unit" } })),
+            &[
+                ("if-match", h.plan_etag(plan_id).await.as_str()),
+                ("idempotency-key", "e2e-restructure"),
+            ],
+        ))
+        .await;
+    assert!(
+        restructure.status().is_client_error(),
+        "a frozen structure version is immutable: {}",
+        restructure.status()
+    );
+    let reprice = h
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &format!("/bss-pricing/v1/plans/{plan_id}/prices/{}", price_ids[3]),
+            Some(serde_json::json!({ "money": { "amount_minor": 1 } })),
+            &[("if-match", "\"1\"")],
+        ))
+        .await;
+    assert!(
+        reprice.status().is_client_error(),
+        "a published monetary version is immutable: {}",
+        reprice.status()
+    );
+    let lines_after = body_json(
+        h.allowed()
+            .send(request("GET", &lines_path(plan_id), None))
+            .await,
+    )
+    .await;
+    assert_eq!(lines_after, lines_before, "both refusals wrote nothing");
+    assert_eq!(lines_after["items"].as_array().map(Vec::len), Some(2));
+    for item in lines_after["items"].as_array().expect("lines") {
+        assert_eq!(item["prices"].as_array().map(Vec::len), Some(2));
+    }
+}
+
+/// **A trial + paid plan with no plan type, two markets, explicit windows —
+/// authored, approved, published and then held frozen.**
+///
+/// Every step is a real route; the two seeds that are not (the plan shell and
+/// its two-phase graph) use the repositories the plan routes themselves call.
+/// What is asserted is the contract as a whole rather than any one door:
+///
+/// 1. the plan says what it charges from its lines (`charge_kinds`), with no
+///    type anywhere;
+/// 2. each phase carries its **own** complete line, and each line two markets;
+/// 3. nothing publishes without an authored window per market per phase, and
+///    nothing publishes on one signature;
+/// 4. the reviewer is shown the normalized graph they sign for;
+/// 5. once published, neither the shared structure nor the money moves in
+///    place — each refusal is asserted by code **and** by the store being
+///    exactly what it was.
+///
+/// **What this scenario cannot reach, recorded rather than faked:** a
+/// *structural* change of a published line across its markets. No door authors
+/// one — `PATCH …/charge-lines/{id}` refuses a frozen version, a plan revision
+/// may add rows but not supersede them, and the supersession door is
+/// single-market. `inst-sc-simultaneous` guards that state at publish; the unit
+/// that would *produce* it lawfully is not built.
+#[tokio::test]
+async fn a_two_phase_two_market_plan_is_authored_approved_published_and_frozen() {
+    const SUBMITTER: Uuid = Uuid::from_u128(0x5_b0);
+    const APPROVER: Uuid = Uuid::from_u128(0xa_b0);
+
+    let h = Harness::new().await;
+    let (plan_id, versions, price_ids) = author_two_phases_two_markets(&h).await;
+
+    // 3a. No window, no submit.
+    let unscheduled = h
+        .allowed_as(SUBMITTER)
+        .send(with_headers(
+            "POST",
+            &format!("/bss-pricing/v1/plans/{plan_id}/publish"),
+            None,
+            &[("if-match", h.plan_etag(plan_id).await.as_str())],
+        ))
+        .await;
+    assert!(unscheduled.status().is_client_error());
+    assert!(
+        body_json(unscheduled)
+            .await
+            .to_string()
+            .contains("WINDOW_COVERAGE_MISSING"),
+        "every market of every phase owes an authored window"
+    );
+
+    schedule_at_publish_windows(&h, plan_id, &price_ids).await;
+
+    // 1. What the plan charges, read off its lines.
+    let plan = body_json(
+        h.allowed()
+            .send(request(
+                "GET",
+                &format!("/bss-pricing/v1/plans/{plan_id}"),
+                None,
+            ))
+            .await,
+    )
+    .await;
+    assert_eq!(plan["charge_kinds"], serde_json::json!(["recurring"]));
+    assert!(plan.get("billing_cycle").is_none());
+
+    // 3b. Submit opens a unit; it does not publish.
+    let submit_tag = h.plan_etag(plan_id).await;
+    let submitted = h
+        .allowed_as(SUBMITTER)
+        .send(with_headers(
+            "POST",
+            &format!("/bss-pricing/v1/plans/{plan_id}/publish"),
+            None,
+            &[("if-match", submit_tag.as_str())],
+        ))
+        .await;
+    let status = submitted.status();
+    let submitted = body_json(submitted).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{submitted}");
+    let approval_id = submitted["approval"]["approval_id"]
+        .as_str()
+        .expect("the unit")
+        .to_owned();
+
+    // 4. The reviewer's document carries the graph.
+    let unit = body_json(
+        h.allowed_as(APPROVER)
+            .send(request(
+                "GET",
+                &format!("/bss-pricing/v1/approvals/{approval_id}"),
+                None,
+            ))
+            .await,
+    )
+    .await;
+    let pinned = &unit["pinned_content"];
+    assert_eq!(pinned["charge_lines"].as_array().map(Vec::len), Some(2));
+    assert_eq!(pinned["market_prices"].as_array().map(Vec::len), Some(4));
+    assert_eq!(
+        pinned["draft_window_entries"].as_array().map(Vec::len),
+        Some(4)
+    );
+
+    let approved = h
+        .allowed_as(APPROVER)
+        .send(with_headers(
+            "POST",
+            &format!("/bss-pricing/v1/approvals/{approval_id}/approve"),
+            None,
+            &[],
+        ))
+        .await;
+    assert_eq!(approved.status(), StatusCode::OK);
+
+    let published = h
+        .allowed_as(SUBMITTER)
+        .send(with_headers(
+            "POST",
+            &format!("/bss-pricing/v1/plans/{plan_id}/publish"),
+            None,
+            &[("if-match", submit_tag.as_str())],
+        ))
+        .await;
+    let status = published.status();
+    let published = body_json(published).await;
+    assert_eq!(status, StatusCode::OK, "{published}");
+
+    let rows = price_rows(&h, plan_id).await;
+    assert_eq!(rows.len(), 4);
+    assert!(
+        rows.iter()
+            .all(|row| row.lifecycle_state.as_str() == "published"),
+        "both phases, both markets"
+    );
+
+    assert_frozen(&h, plan_id, &versions, &price_ids).await;
+}

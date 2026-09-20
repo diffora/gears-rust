@@ -19,6 +19,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+mod common;
 mod pg_support;
 
 use pg_support::Pg;
@@ -31,6 +32,7 @@ const PRICE: &str = "44444444-4444-4444-4444-444444444444";
 const OTHER_RUN: &str = "55555555-5555-5555-5555-555555555555";
 const OTHER_TENANT: &str = "66666666-6666-6666-6666-666666666666";
 const PLAN: &str = "77777777-7777-7777-7777-777777777777";
+const SKU: &str = "55555555-5555-5555-5555-555555555555";
 const PHASE: &str = "88888888-8888-8888-8888-888888888888";
 
 async fn applied() -> DatabaseConnection {
@@ -124,15 +126,33 @@ fn advance(op: &str, state: &str) -> String {
 }
 
 /// The held row, as a real `pricing_price` row — the lock keys it.
-fn seed_price(tenant: &str) -> String {
-    format!(
-        "INSERT INTO bss.pricing_price (sku_id,  \
-             price_id, tenant_id, plan_id, currency, region, phase, \
-             charge_kind, amount_minor, model_kind, lifecycle_state, \
-             created_by, created_at_utc) \
-         VALUES ('55555555-5555-5555-5555-555555555555', '{PRICE}', '{tenant}', '{PLAN}', 'EUR', 'eu', '{PHASE}', \
-             'recurring', 1000, 'flat', 'published', '{ACTOR}', now())"
+async fn seed_price(conn: &DatabaseConnection, tenant: &str) {
+    // A price row is a monetary version and owns no scope axis, so it hangs off a
+    // charge line, that line's version and a market — seeded through the shared
+    // seeder every other schema suite uses, under the tenant the case names.
+    let graph = common::seed_charge_graph_sql(
+        conn,
+        &common::SqlGraphSeed {
+            currency: "EUR",
+            region: "eu",
+            created_by: ACTOR,
+            ..common::SqlGraphSeed::new(tenant, PLAN, PHASE, SKU)
+        },
     )
+    .await;
+    must_succeed(
+        conn,
+        &format!(
+            "INSERT INTO bss.pricing_price (
+                 price_id, tenant_id, plan_id, plan_revision, charge_line_id,
+                 line_version_id, market_price_id, amount_minor, lifecycle_state,
+                 created_by, created_at_utc)
+             VALUES ('{PRICE}', '{tenant}', '{PLAN}', 0, '{}', '{}', '{}',
+                 1000, 'published', '{ACTOR}', now())",
+            graph.charge_line_id, graph.line_version_id, graph.market_price_id
+        ),
+    )
+    .await;
 }
 
 fn take_lock(op: &str, tenant: &str) -> String {
@@ -146,7 +166,7 @@ fn take_lock(op: &str, tenant: &str) -> String {
 /// A run in `committing` and the row it is about to hold.
 async fn committing_run() -> DatabaseConnection {
     let conn = applied().await;
-    must_succeed(&conn, &seed_price(TENANT)).await;
+    seed_price(&conn, TENANT).await;
     must_succeed(&conn, &seed_run(RUN, TENANT)).await;
     must_succeed(&conn, &advance(RUN, "committing")).await;
     conn
@@ -197,7 +217,7 @@ async fn a_lock_may_only_be_taken_while_its_run_commits() {
         "rejected",
     ] {
         let conn = applied().await;
-        must_succeed(&conn, &seed_price(TENANT)).await;
+        seed_price(&conn, TENANT).await;
         must_succeed(&conn, &seed_run(RUN, TENANT)).await;
         // The two terminal states are only reachable through `committing`, and a
         // run must not keep its lock across that edge either.
@@ -234,7 +254,7 @@ async fn a_run_may_not_lock_another_tenants_row() {
     // this arm is what answers rather than the key. Its **tenant** is irrelevant
     // to that: the key covers `price_id` alone, which is why the mirror's twin of
     // this case seeds the price under the other tenant and gets the same refusal.
-    must_succeed(&conn, &seed_price(OTHER_TENANT)).await;
+    seed_price(&conn, OTHER_TENANT).await;
     must_succeed(&conn, &seed_run(RUN, TENANT)).await;
     must_succeed(&conn, &advance(RUN, "committing")).await;
     must_be_rejected(
@@ -329,7 +349,7 @@ async fn a_lock_is_releasable_whatever_state_its_run_reached() {
 #[ignore = "requires Docker"]
 async fn both_keys_name_a_row_that_exists() {
     let conn = applied().await;
-    must_succeed(&conn, &seed_price(TENANT)).await;
+    seed_price(&conn, TENANT).await;
     must_be_rejected(
         &conn,
         &take_lock(OTHER_RUN, TENANT),
@@ -362,7 +382,7 @@ async fn both_keys_name_a_row_that_exists() {
 #[ignore = "requires Docker"]
 async fn an_import_takes_a_lock_like_any_other_run() {
     let conn = applied().await;
-    must_succeed(&conn, &seed_price(TENANT)).await;
+    seed_price(&conn, TENANT).await;
     must_succeed(&conn, &seed_run_of_kind(RUN, TENANT, "import")).await;
     must_succeed(&conn, &advance(RUN, "committing")).await;
     must_succeed(&conn, &take_lock(RUN, TENANT)).await;

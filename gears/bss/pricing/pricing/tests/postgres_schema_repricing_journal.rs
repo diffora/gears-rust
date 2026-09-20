@@ -14,6 +14,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+mod common;
 mod pg_support;
 
 use pg_support::Pg;
@@ -25,6 +26,7 @@ const ACTOR: &str = "33333333-3333-3333-3333-333333333333";
 const PRICE: &str = "44444444-4444-4444-4444-444444444444";
 const SUCCESSOR: &str = "55555555-5555-5555-5555-555555555555";
 const PLAN: &str = "77777777-7777-7777-7777-777777777777";
+const SKU: &str = "55555555-5555-5555-5555-555555555555";
 const PHASE_A: &str = "88888888-8888-8888-8888-888888888888";
 const PHASE_B: &str = "99999999-9999-9999-9999-999999999999";
 
@@ -73,25 +75,42 @@ fn seed_run_of_kind(kind: &str) -> String {
 
 /// The selected row and the successor an apply would produce — real
 /// `pricing_price` rows, because the journal keys both.
-fn seed_price(id: &str) -> String {
-    // Distinct phases so the two do not collide on the published-plane scope-key
-    // index, which admits one current row per canonical key.
+async fn seed_price(conn: &DatabaseConnection, id: &str) {
+    // Distinct phases so the two are two logical lines: a price row is a monetary
+    // version now and owns no scope axis, so each hangs off its own charge line,
+    // that line's version and a market, seeded through the shared seeder every
+    // other schema suite uses.
     let phase = if id == SUCCESSOR { PHASE_B } else { PHASE_A };
-    format!(
-        "INSERT INTO bss.pricing_price (sku_id,  \
-             price_id, tenant_id, plan_id, currency, region, phase, \
-             charge_kind, amount_minor, model_kind, lifecycle_state, \
-             created_by, created_at_utc) \
-         VALUES ('55555555-5555-5555-5555-555555555555', '{id}', '{TENANT}', '{PLAN}', 'EUR', 'eu', '{phase}', \
-             'recurring', 1000, 'flat', 'published', '{ACTOR}', now())"
+    let graph = common::seed_charge_graph_sql(
+        conn,
+        &common::SqlGraphSeed {
+            currency: "EUR",
+            region: "eu",
+            created_by: ACTOR,
+            ..common::SqlGraphSeed::new(TENANT, PLAN, phase, SKU)
+        },
     )
+    .await;
+    must_succeed(
+        conn,
+        &format!(
+            "INSERT INTO bss.pricing_price (
+                 price_id, tenant_id, plan_id, plan_revision, charge_line_id,
+                 line_version_id, market_price_id, amount_minor, lifecycle_state,
+                 created_by, created_at_utc)
+             VALUES ('{id}', '{TENANT}', '{PLAN}', 0, '{}', '{}', '{}',
+                 1000, 'published', '{ACTOR}', now())",
+            graph.charge_line_id, graph.line_version_id, graph.market_price_id
+        ),
+    )
+    .await;
 }
 
 /// Everything a journal row's three keys name.
 async fn seeded() -> DatabaseConnection {
     let conn = applied().await;
-    must_succeed(&conn, &seed_price(PRICE)).await;
-    must_succeed(&conn, &seed_price(SUCCESSOR)).await;
+    seed_price(&conn, PRICE).await;
+    seed_price(&conn, SUCCESSOR).await;
     must_succeed(&conn, &seed_run()).await;
     conn
 }
@@ -339,7 +358,7 @@ async fn the_outcome_columns_agree_with_the_state() {
 #[ignore = "requires Docker"]
 async fn every_key_names_a_row_that_exists() {
     let conn = applied().await;
-    must_succeed(&conn, &seed_price(PRICE)).await;
+    seed_price(&conn, PRICE).await;
     must_be_rejected(&conn, &seed_row(), "fk_pricing_repricing_journal_run").await;
 
     let conn = applied().await;
@@ -349,7 +368,7 @@ async fn every_key_names_a_row_that_exists() {
     // The successor's key is reachable only at the apply: the column is null in
     // every other state.
     let conn = applied().await;
-    must_succeed(&conn, &seed_price(PRICE)).await;
+    seed_price(&conn, PRICE).await;
     must_succeed(&conn, &seed_run()).await;
     must_succeed(&conn, &seed_row()).await;
     must_be_rejected(
@@ -386,7 +405,7 @@ async fn one_journal_row_per_run_and_price() {
 #[ignore = "requires Docker"]
 async fn an_import_does_not_journal() {
     let conn = applied().await;
-    must_succeed(&conn, &seed_price(PRICE)).await;
+    seed_price(&conn, PRICE).await;
     must_succeed(&conn, &seed_run_of_kind("import")).await;
     must_be_rejected(&conn, &seed_row(), "only a repricing run").await;
 }
