@@ -167,6 +167,54 @@ fn sku_row(
     row
 }
 
+/// Every role reaches Pricing intact, and the sale flag travels beside it
+/// without either deciding the other.
+///
+/// This mapping is the only place the two cross a gear boundary, and Pricing's
+/// rules key on both from here on: the role decides where a SKU may sit, the
+/// flag whether it may be sold. A mapping that dropped an unrecognised role to
+/// a default, or that inferred one from the flag, would hand Pricing a fact
+/// Products never stated — so the pairing is asserted whole, for all six
+/// combinations, rather than sampled on the one the fixture happens to carry.
+#[tokio::test]
+async fn every_role_and_flag_pairing_reaches_pricing_unchanged() {
+    let db = projection_harness().await;
+    let mut expected = Vec::new();
+
+    for (n, role, sellable) in [
+        (0x10_u128, "offer", true),
+        (0x11, "offer", false),
+        (0x12, "component", true),
+        (0x13, "component", false),
+        (0x14, "bundle", true),
+        (0x15, "bundle", false),
+    ] {
+        let id = Uuid::from_u128(0xb0_1e_00_00 + n);
+        let mut row = sku_row(id, &format!("ROLE-{n:x}"), "published", false);
+        row.sku_type = Some(role.to_owned());
+        row.sellable = Some(sellable);
+        insert_projection_row(&db, row).await;
+        expected.push((id, role.to_owned(), sellable));
+    }
+
+    let ids: Vec<Uuid> = expected.iter().map(|(id, _, _)| *id).collect();
+    let catalog = BrowseCatalogProvider::new(db);
+    let ctx = crate::test_support::authed_ctx(TENANT);
+    let served = catalog
+        .get_skus(&ctx, &ids)
+        .await
+        .expect("the registry answers");
+
+    for (id, role, sellable) in expected {
+        let sku = served
+            .iter()
+            .find(|sku| sku.sku_id == id)
+            .unwrap_or_else(|| panic!("{role}/{sellable} is served"));
+        assert_eq!(sku.sku_type, role, "the role is carried, not defaulted");
+        assert_eq!(sku.sellable, sellable, "the flag is carried beside it");
+    }
+}
+
 async fn seed_four_states(db: &DBProvider<DbError>) {
     insert_projection_row(db, sku_row(SKU_ID, "COMP-PUB", "published", false)).await;
     insert_projection_row(db, sku_row(DEPRECATED_ID, "COMP-DEP", "deprecated", true)).await;

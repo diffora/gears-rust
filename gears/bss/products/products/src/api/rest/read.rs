@@ -335,6 +335,27 @@ pub struct BrowseRowView {
     pub replaced_by_sku_id: Option<Uuid>,
     pub region_scope: String,
     pub brand_scope: String,
+    /// The SKU's role: `offer`, `component` or `bundle`. `None` on a Product
+    /// row and on a SKU published before it carried one.
+    ///
+    /// # This column is every picker, and there is no picker endpoint
+    ///
+    /// Pricing selects SKUs by filtering this projection, not through a
+    /// surface of its own:
+    ///
+    /// ```text
+    /// Plan picker:      sku_type eq 'offer'
+    /// Bundle picker:    sku_type eq 'bundle'
+    /// Row picker:       sku_type eq 'component' or entity_id eq <plan-sku-uuid>
+    /// Sales prefilter:  sku_type eq 'offer' and sellable eq true
+    /// ```
+    ///
+    /// The row picker's second arm is the plan's own SKU, which a charge line
+    /// may price without being a component. The sales prefilter is a
+    /// convenience for a screen that only wants to show what is currently for
+    /// sale — it is **not** the eligibility gate. Browse is a projection, so
+    /// what it lists is what was published, and whether a write may name a
+    /// given SKU is decided by Pricing at save against the registry, not here.
     pub sku_type: Option<String>,
     pub plan_tier_label: Option<String>,
     pub metering_unit: Option<String>,

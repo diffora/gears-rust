@@ -691,6 +691,119 @@ fn qval(value: &str) -> String {
 }
 
 /// A browse URL from `(key, value)` pairs, each value encoded by [`qval`].
+/// The plan picker is a browse query, not an endpoint: `sku_type eq 'offer'`
+/// narrows the published projection to the SKUs a plan may be built on.
+///
+/// Five candidates cover what the picker must and must not offer. Both active
+/// offers appear **with their real flags** — an offer closed for new sales is
+/// still a legitimate thing to author a plan against, and a picker that hid it
+/// would make an unsellable catalogue unmaintainable. The component and the
+/// bundle are absent because they cannot own an ordinary plan at all, the
+/// deprecated offer because it may not be newly named, and the draft because
+/// browse serves the published projection. A sales prefilter (`and sellable eq
+/// true`) is a separate, narrower question and is **not** the eligibility gate:
+/// that is Pricing's, at save.
+#[tokio::test]
+async fn the_plan_picker_filters_the_published_projection_by_role() {
+    let harness = harness().await;
+    let conn = harness.state.db.conn().expect("conn");
+    let now = crate::test_support::utc(2026, 9, 20, 9, 0, 0);
+
+    let mut seed = |tenant: Uuid,
+                    n: u128,
+                    name: &str,
+                    role: &str,
+                    sellable: bool,
+                    state: &str,
+                    deprecated: bool| {
+        let row = repo::ReadEntityRow {
+            tenant_id: tenant,
+            entity_kind: "sku".to_owned(),
+            entity_id: Uuid::from_u128(0xb0_1e_00 + n),
+            entity_code: Some(format!("PICK-{n}")),
+            name: name.to_owned(),
+            lifecycle_state: state.to_owned(),
+            deprecated,
+            composition_pending: false,
+            sellable: Some(sellable),
+            deprecation_provenance: None,
+            replaced_by_sku_id: None,
+            region_scope: String::new(),
+            brand_scope: String::new(),
+            sku_type: Some(role.to_owned()),
+            plan_tier_label: None,
+            metering_unit: None,
+            usage_type_ref: None,
+            display_attributes: None,
+            category_paths: None,
+            published_version: 1,
+            projected_at: now,
+            generation: 0,
+        };
+        row
+    };
+
+    for row in [
+        seed(TENANT, 1, "Offer Open", "offer", true, "published", false),
+        seed(
+            TENANT,
+            2,
+            "Offer Closed",
+            "offer",
+            false,
+            "published",
+            false,
+        ),
+        seed(
+            TENANT,
+            3,
+            "A Component",
+            "component",
+            true,
+            "published",
+            false,
+        ),
+        seed(TENANT, 4, "A Bundle", "bundle", true, "published", false),
+        seed(TENANT, 5, "Offer Gone", "offer", true, "deprecated", true),
+        seed(TENANT, 6, "Offer Draft", "offer", true, "draft", false),
+    ] {
+        repo::upsert_read_entity(&conn, &scope(), row)
+            .await
+            .expect("the projection row lands");
+    }
+
+    let body = body_json(
+        get(
+            &harness,
+            &browse_url(&[
+                ("kind", "sku"),
+                ("excludeDeprecated", "true"),
+                ("$filter", "sku_type eq 'offer'"),
+                ("limit", "50"),
+            ]),
+            TENANT,
+        )
+        .await,
+    )
+    .await;
+
+    let rows = body["rows"].as_array().expect("rows");
+    let offered: Vec<(&str, bool)> = rows
+        .iter()
+        .map(|row| {
+            (
+                row["name"].as_str().expect("name"),
+                row["sellable"].as_bool().expect("the flag rides the row"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        offered,
+        vec![("Offer Closed", false), ("Offer Open", true)],
+        "both published offers, each with its real flag, ordered by name: {body}"
+    );
+}
+
 fn browse_url(params: &[(&str, &str)]) -> String {
     let query: Vec<String> = params
         .iter()
