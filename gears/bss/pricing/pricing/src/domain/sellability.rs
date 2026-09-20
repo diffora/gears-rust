@@ -535,6 +535,13 @@ pub struct PinnedFacts {
     pub available_from: Option<OffsetDateTime>,
     /// End of the plan's availability — predicate (3).
     pub available_to: Option<OffsetDateTime>,
+    /// Every SKU a new sale of this pinned configuration includes — predicate
+    /// (6)'s roster, frozen with the content it was published against.
+    ///
+    /// Read back from the projected delta rather than re-derived here: a gate
+    /// that recomputed the roster from live storage would answer about a plan the
+    /// pin does not describe.
+    pub sale_sku_ids: Vec<uuid::Uuid>,
     /// The plan's recurring frequency — W6's margin, per D-123 a plan-level fact.
     pub frequency: Option<Frequency>,
     /// The canonical scope keys of the version's price rows: the gate's roster
@@ -584,11 +591,20 @@ impl SellabilitySurface {
     /// `inst-sg-segment-boundary` guard**: there is no payer, no group, no
     /// authenticated principal and no cache handle to pass. See the module doc.
     #[must_use]
+    /// `registry_permission` is predicate (6), resolved by the caller.
+    ///
+    /// An explicit parameter and not a lookup: no domain function here performs
+    /// I/O, and this predicate's operand is the registry's **present** state
+    /// rather than anything the pin froze. The caller reads the registry at the
+    /// REST boundary, after authorization, and hands the aggregate in — including
+    /// [`registry_unreadable`] when it could not read at all, which is
+    /// `NotEvaluable` and never `Satisfied`.
     pub fn of_delta(
         facts: &SellabilityFacts,
         at: OffsetDateTime,
         currency: &CurrencyCode,
         region: &Region,
+        registry_permission: PredicateAnswer,
     ) -> Self {
         let pinned = match facts {
             SellabilityFacts::Pinned(pinned) => pinned,
@@ -659,9 +675,7 @@ impl SellabilitySurface {
                         Predicate::CommittedVersion => PredicateAnswer::Satisfied,
                         Predicate::AvailabilityDates => availability(pinned, at),
                         Predicate::PlanLifecycleState => lifecycle(pinned),
-                        Predicate::RegistrySellable => PredicateAnswer::NotEvaluable {
-                            owed_to: OWED_TO_REGISTRY,
-                        },
+                        Predicate::RegistrySellable => registry_permission.clone(),
                         // Answered on the key plane, so never reached from this
                         // roster. Spelled out rather than folded into a wildcard:
                         // "not evaluable, and here is who owes it" is D-167
@@ -946,6 +960,93 @@ fn describe(end: CoverageEnd) -> String {
         CoverageEnd::Uncovered => "does not exist on this key at any instant".to_owned(),
         CoverageEnd::Ends(at) => format!("ends at {}", format_rfc3339(at)),
         CoverageEnd::OpenEnded => "is open-ended".to_owned(),
+    }
+}
+
+/// What the registry is owed when it could not be read at all.
+const OWED_TO_A_LIVE_REGISTRY: &str =
+    "a successful read of the product registry's current published SKUs";
+
+/// What the projection is owed when the frozen sale set is missing.
+const OWED_TO_A_FROZEN_SALE_SET: &str =
+    "a complete frozen sale SKU set on the published subject delta";
+
+/// Predicate (6) for **one** SKU: is it open for new sales right now?
+///
+/// The operand is the registry's **current published** state, not the state the
+/// pricing terms were frozen against. A tenant who closes sales on a SKU expects
+/// new sales to stop; a tenant who reopens them expects new sales to resume. The
+/// pinned price terms do not move either way, and existing subscriptions keep
+/// billing against the pin they already hold.
+///
+/// Absence is `Failed`, not `NotEvaluable`. A SKU the registry does not serve is
+/// a SKU that is not published, deprecated, or gone — three answers that all mean
+/// "not for sale" — and rounding absence to "cannot tell" is the direction a
+/// fail-closed gate must not round in. A registry that could not be **read** is a
+/// different thing, and the caller reports that as `NotEvaluable` before it gets
+/// here.
+#[must_use]
+pub fn registry_sale_permission(sku: Option<&crate::domain::ports::CatalogSku>) -> PredicateAnswer {
+    match sku {
+        Some(sku) if sku.status == "published" && !sku.deprecated && sku.sellable => {
+            PredicateAnswer::Satisfied
+        }
+        _ => PredicateAnswer::Failed {
+            detail: "the SKU is not open for new sales, including within a plan or bundle"
+                .to_owned(),
+        },
+    }
+}
+
+/// Predicate (6) over the **whole** set of SKUs a sale includes.
+///
+/// Every member is asked, with no exemption for a component or a bundle member:
+/// closing sales on a constituent closes sales on everything that includes it,
+/// which is what the flag was asked to mean. The set itself comes frozen from the
+/// published subject, never from the caller, so a consumer cannot narrow the
+/// question by sending a shorter list.
+///
+/// **Every closed SKU is named, not the first.** An operator told about one
+/// closed component and left to discover the second on the next attempt is the
+/// report this gear's own convention exists to prevent.
+///
+/// An empty set is `NotEvaluable`. A conjunction over nothing is vacuously true,
+/// and "this sale includes no SKUs" is never a fact about a real sale — it is a
+/// projection that has not carried its roster yet.
+#[must_use]
+pub fn registry_sale_permissions(
+    required: &[uuid::Uuid],
+    index: &crate::domain::registry_view::SkuIndex,
+) -> PredicateAnswer {
+    if required.is_empty() {
+        return PredicateAnswer::NotEvaluable {
+            owed_to: OWED_TO_A_FROZEN_SALE_SET,
+        };
+    }
+    let closed: Vec<String> = required
+        .iter()
+        .filter(|id| {
+            matches!(
+                registry_sale_permission(index.get(crate::domain::scope_key::SkuId::new(**id))),
+                PredicateAnswer::Failed { .. }
+            )
+        })
+        .map(ToString::to_string)
+        .collect();
+    if closed.is_empty() {
+        PredicateAnswer::Satisfied
+    } else {
+        PredicateAnswer::Failed {
+            detail: format!("not open for new sales: {}", closed.join(", ")),
+        }
+    }
+}
+
+/// What a caller reports when the registry could not be read for this evaluation.
+#[must_use]
+pub const fn registry_unreadable() -> PredicateAnswer {
+    PredicateAnswer::NotEvaluable {
+        owed_to: OWED_TO_A_LIVE_REGISTRY,
     }
 }
 

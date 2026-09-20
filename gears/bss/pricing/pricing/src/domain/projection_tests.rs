@@ -94,6 +94,7 @@ fn shape_only() -> PlanSubjectDelta {
         revision: 3,
         lifecycle_state: LifecycleState::Published,
         sku_id: Some(uuid::Uuid::from_u128(0x5_c1)),
+        sale_sku_ids: vec![uuid::Uuid::from_u128(0x5_c1)],
         plan_tier: Some("gold".to_owned()),
         plan_tier_override: false,
         frequency: Some(Frequency::Monthly),
@@ -1604,7 +1605,7 @@ fn every_member_of_the_frozen_payload_is_classified_exactly_once() {
         "no member is classified on both sides: {all:?}"
     );
     assert_eq!(
-        named, 24,
+        named, 25,
         "the payload's member count, read back: it moves with the payload on purpose, and a \
          member left unclassified is caught by the compiler before it reaches here"
     );

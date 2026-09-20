@@ -166,6 +166,7 @@ fn sellable_facts() -> PinnedFacts {
         plan_id: plan(),
         catalog_version: CatalogVersion::new(7),
         lifecycle_state: LifecycleState::Published,
+        sale_sku_ids: vec![Uuid::from_u128(0x5_c1)],
         available_from: Some(at(0)),
         available_to: None,
         frequency: Some(Frequency::Monthly),
@@ -179,7 +180,13 @@ fn sellable_facts() -> PinnedFacts {
 
 /// The surface over `facts`, evaluated at `at(10)` on the `EUR`/`eu` market.
 fn surface_of(facts: PinnedFacts) -> SellabilitySurface {
-    SellabilitySurface::of_delta(&SellabilityFacts::Pinned(facts), at(10), &eur(), &eu())
+    SellabilitySurface::of_delta(
+        &SellabilityFacts::Pinned(facts),
+        at(10),
+        &eur(),
+        &eu(),
+        crate::domain::sellability::registry_unreadable(),
+    )
 }
 
 /// The answer a named predicate gave, plan-level or per key.
@@ -492,6 +499,7 @@ fn an_instant_whose_horizon_is_not_representable_refuses_rather_than_panicking()
         crate::domain::instant::max_utc(),
         &eur(),
         &eu(),
+        crate::domain::sellability::registry_unreadable(),
     );
 
     let given = key_answer(&surface.keys[0], Predicate::ActiveWindowWithHorizon);
@@ -542,6 +550,7 @@ fn a_pending_uncommitted_version_is_not_sellable() {
         at(10),
         &eur(),
         &eu(),
+        crate::domain::sellability::registry_unreadable(),
     );
 
     assert!(matches!(
@@ -646,6 +655,7 @@ fn the_available_from_boundary_is_inside_the_window_and_the_quantum_before_it_is
         from,
         &eur(),
         &eu(),
+        crate::domain::sellability::registry_unreadable(),
     );
 
     assert_eq!(
@@ -662,6 +672,7 @@ fn the_available_from_boundary_is_inside_the_window_and_the_quantum_before_it_is
         from - time::Duration::milliseconds(1),
         &eur(),
         &eu(),
+        crate::domain::sellability::registry_unreadable(),
     );
     assert!(matches!(
         answer(&before, Predicate::AvailabilityDates),
@@ -934,6 +945,7 @@ fn a_market_the_plan_publishes_no_key_on_is_not_sellable() {
         at(10),
         &usd(),
         &eu(),
+        crate::domain::sellability::registry_unreadable(),
     );
 
     assert!(surface.keys.is_empty());
@@ -962,11 +974,16 @@ fn predicates_five_and_six_answer_not_evaluable_and_name_their_slices() {
         "predicate (5) names the two slices that owe it: {ga:?}"
     );
 
+    // (6) is no longer owed to another gear: this gear asks it, of the registry's
+    // present state, and `surface_of` is the caller that did not read. What is
+    // pinned is that an unread registry stays `NotEvaluable` and names a live
+    // read as what it wants — never `Satisfied`, which is the direction a
+    // fail-closed gate must not round in.
     let registry = answer(&surface, Predicate::RegistrySellable);
     assert!(
         matches!(registry, PredicateAnswer::NotEvaluable { owed_to }
-            if owed_to.contains("D-46") && owed_to.contains("registry")),
-        "predicate (6) names the registry gear: {registry:?}"
+            if owed_to.contains("registry")),
+        "an unread registry is not evaluable and says what it wants: {registry:?}"
     );
 }
 
@@ -1106,8 +1123,13 @@ fn a_past_instant_inside_an_expired_interval_still_answers_covered() {
         ..sellable_facts()
     };
 
-    let surface =
-        SellabilitySurface::of_delta(&SellabilityFacts::Pinned(facts), at(-20), &eur(), &eu());
+    let surface = SellabilitySurface::of_delta(
+        &SellabilityFacts::Pinned(facts),
+        at(-20),
+        &eur(),
+        &eu(),
+        crate::domain::sellability::registry_unreadable(),
+    );
 
     assert_eq!(
         key_answer(&surface.keys[0], Predicate::ActiveWindowWithHorizon),
@@ -1146,8 +1168,13 @@ fn an_expired_only_key_answers_a_past_instant_off_both_halves() {
         ..sellable_facts()
     };
 
-    let surface =
-        SellabilitySurface::of_delta(&SellabilityFacts::Pinned(facts), at(-20), &eur(), &eu());
+    let surface = SellabilitySurface::of_delta(
+        &SellabilityFacts::Pinned(facts),
+        at(-20),
+        &eur(),
+        &eu(),
+        crate::domain::sellability::registry_unreadable(),
+    );
 
     let key = &surface.keys[0];
     assert_eq!(
@@ -1187,11 +1214,29 @@ fn the_surface_takes_no_payer_and_holds_no_cache() {
     // differently off the *same* delta.
     let facts = SellabilityFacts::Pinned(sellable_facts());
 
-    let first = SellabilitySurface::of_delta(&facts, at(10), &eur(), &eu());
-    let second = SellabilitySurface::of_delta(&facts, at(10), &eur(), &eu());
+    let first = SellabilitySurface::of_delta(
+        &facts,
+        at(10),
+        &eur(),
+        &eu(),
+        crate::domain::sellability::registry_unreadable(),
+    );
+    let second = SellabilitySurface::of_delta(
+        &facts,
+        at(10),
+        &eur(),
+        &eu(),
+        crate::domain::sellability::registry_unreadable(),
+    );
     assert_eq!(first, second, "the surface is a function of its arguments");
 
-    let earlier = SellabilitySurface::of_delta(&facts, at(-1), &eur(), &eu());
+    let earlier = SellabilitySurface::of_delta(
+        &facts,
+        at(-1),
+        &eur(),
+        &eu(),
+        crate::domain::sellability::registry_unreadable(),
+    );
     assert!(matches!(
         answer(&earlier, Predicate::AvailabilityDates),
         PredicateAnswer::Failed { .. }
@@ -1250,6 +1295,7 @@ fn the_gates_facts_carry_no_bundle_operand() {
         plan_id,
         catalog_version,
         lifecycle_state,
+        sale_sku_ids,
         available_from,
         available_to,
         frequency,
@@ -1263,4 +1309,129 @@ fn the_gates_facts_carry_no_bundle_operand() {
     let _ = (plan_id, catalog_version, lifecycle_state);
     let _ = (available_from, available_to, frequency);
     let _ = (price_keys, windows);
+}
+
+/// Predicate (6) asks the registry's **current** answer, for every role.
+///
+/// The role does not exempt anything: a component closed for sale closes every
+/// sale that includes it, which is what the flag was asked to mean. Nor does a
+/// satisfied permission say anything about where a SKU may be used — a component
+/// open for sale still cannot own a plan, and `plan_sku_rules` is what refuses
+/// that.
+#[test]
+fn registry_permission_applies_to_every_sku_role() {
+    for (role, sellable, allowed) in [
+        ("offer", true, true),
+        ("offer", false, false),
+        ("bundle", true, true),
+        ("bundle", false, false),
+        ("component", false, false),
+        ("component", true, true),
+    ] {
+        let sku = catalog_sku(1, role, sellable, "published", false);
+        assert_eq!(
+            matches!(
+                super::registry_sale_permission(Some(&sku)),
+                PredicateAnswer::Satisfied
+            ),
+            allowed,
+            "{role}/{sellable}",
+        );
+    }
+
+    // Absence, an unpublished head and a deprecated row all mean "not for sale",
+    // and all three are `Failed` rather than "cannot tell".
+    assert!(matches!(
+        super::registry_sale_permission(None),
+        PredicateAnswer::Failed { .. }
+    ));
+    for (status, deprecated) in [("draft", false), ("retired", false), ("published", true)] {
+        let sku = catalog_sku(1, "offer", true, status, deprecated);
+        assert!(
+            matches!(
+                super::registry_sale_permission(Some(&sku)),
+                PredicateAnswer::Failed { .. }
+            ),
+            "{status}/deprecated={deprecated} is not open for new sales"
+        );
+    }
+}
+
+/// One closed SKU anywhere in the sale closes the sale, and the report names
+/// **every** closed one.
+#[test]
+fn a_closed_component_blocks_the_whole_sale() {
+    use crate::domain::registry_view::SkuIndex;
+
+    let required = [Uuid::from_u128(1), Uuid::from_u128(2)];
+    for component_open in [true, false] {
+        let index = SkuIndex::from_listing(vec![
+            catalog_sku(1, "offer", true, "published", false),
+            catalog_sku(2, "component", component_open, "published", false),
+        ]);
+        assert_eq!(
+            matches!(
+                super::registry_sale_permissions(&required, &index),
+                PredicateAnswer::Satisfied
+            ),
+            component_open,
+            "a component open={component_open} decides the whole sale"
+        );
+    }
+
+    // A member the registry does not serve is a closed sale, not an unanswerable
+    // one: rounding absence to "cannot tell" is the direction this gate must not
+    // round in.
+    let only_offer =
+        SkuIndex::from_listing(vec![catalog_sku(1, "offer", true, "published", false)]);
+    assert!(matches!(
+        super::registry_sale_permissions(&required, &only_offer),
+        PredicateAnswer::Failed { .. }
+    ));
+
+    // Two closed members are both named. An operator who fixes the one the report
+    // mentioned and meets the other on the next attempt is the report this gear's
+    // convention exists to prevent.
+    let both_closed = SkuIndex::from_listing(vec![
+        catalog_sku(1, "offer", false, "published", false),
+        catalog_sku(2, "component", false, "published", false),
+    ]);
+    let PredicateAnswer::Failed { detail } =
+        super::registry_sale_permissions(&required, &both_closed)
+    else {
+        panic!("two closed members close the sale");
+    };
+    assert!(
+        detail.contains(&Uuid::from_u128(1).to_string())
+            && detail.contains(&Uuid::from_u128(2).to_string()),
+        "both closed SKUs are named: {detail}"
+    );
+
+    // An empty roster is a projection that has not carried its set, never a sale
+    // with nothing in it: a conjunction over nothing is vacuously true.
+    assert!(matches!(
+        super::registry_sale_permissions(&[], &only_offer),
+        PredicateAnswer::NotEvaluable { .. }
+    ));
+}
+
+fn catalog_sku(
+    id: u128,
+    role: &str,
+    sellable: bool,
+    status: &str,
+    deprecated: bool,
+) -> crate::domain::ports::CatalogSku {
+    crate::domain::ports::CatalogSku {
+        sku_id: Uuid::from_u128(id),
+        sku_code: format!("SKU-{id}"),
+        name: "Test sale".to_owned(),
+        metering_unit: None,
+        status: status.to_owned(),
+        plan_tier: None,
+        sku_type: role.to_owned(),
+        sellable,
+        usage_type_ref: None,
+        deprecated,
+    }
 }

@@ -105,6 +105,12 @@ pub struct AuthoringState {
 /// never another's.
 #[derive(Clone)]
 pub struct GovernanceState {
+    /// The product registry, for the sellability gate's predicate (6).
+    ///
+    /// The gate asks the registry's **present** answer rather than anything the
+    /// pin froze, so this surface reads it per request — after authorization, in
+    /// one bounded batch over the frozen sale roster.
+    pub catalog: std::sync::Arc<dyn crate::domain::ports::ProductCatalogClientV1>,
     /// The provider the publish subject is assembled over. Its own read, not
     /// the engine's: `PublishService::precheck` answers a report and the
     /// materiality evaluator needs the shape.

@@ -2841,6 +2841,7 @@ fn delta_of(
         revision: 0,
         lifecycle_state: LifecycleState::Published,
         sku_id: None,
+        sale_sku_ids: Vec::new(),
         plan_tier: Some("gold".to_owned()),
         plan_tier_override: false,
         frequency: Some(Frequency::Monthly),
@@ -3116,6 +3117,10 @@ async fn the_document_carries_no_member_a_caller_could_read_as_a_renewal_check()
             "predicate",
             "predicates",
             "region",
+            // When the registry was read for predicate (6). A present-time
+            // observation and not a claim about `at`, which names nothing about
+            // a subscription, an entitlement or a renewal.
+            "registry_checked_at",
             "scope_key",
             "state",
             "verdict",

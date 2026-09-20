@@ -761,11 +761,32 @@ pub struct PlanSellabilityView {
     /// Every key the purchase binds on this market, eligibility-resolved.
     /// **Empty means not sellable**, never vacuously sellable.
     pub keys: Vec<KeySellabilityView>,
+    /// When the registry was read for predicate (6), UTC. `null` when it was not
+    /// read successfully.
+    ///
+    /// **A separate clock from `at`, deliberately.** `at` selects the *pricing*
+    /// evaluation instant and can be any time the caller asks about; this is the
+    /// present-time instant at which the registry's sale permission was observed,
+    /// and it is never a claim about what that permission was at `at`. The gate
+    /// has no history of it and does not pretend to: a consumer that needs to
+    /// know whether a sale was permitted last month cannot learn it here.
+    #[serde(default, with = "rfc3339::option")]
+    pub registry_checked_at: Option<OffsetDateTime>,
+}
+
+impl PlanSellabilityView {
+    /// Stamp the instant the registry was read at, for a surface that read it.
+    #[must_use]
+    pub fn checked_at(mut self, at: Option<OffsetDateTime>) -> Self {
+        self.registry_checked_at = at;
+        self
+    }
 }
 
 impl From<&SellabilitySurface> for PlanSellabilityView {
     fn from(surface: &SellabilitySurface) -> Self {
         Self {
+            registry_checked_at: None,
             plan_id: surface.plan_id.get(),
             at: surface.at,
             currency: surface.currency.as_str().to_owned(),
@@ -1918,8 +1939,42 @@ async fn get_plan_sellability(
     })?;
 
     let facts = sellability_facts(&conn, &scope, tenant, plan_id).await?;
-    let surface = SellabilitySurface::of_delta(&facts, at, &currency, &region);
-    Ok(Json(PlanSellabilityView::from(&surface)))
+    // Predicate (6), asked of the registry's **present** state and not of
+    // anything the pin froze. The roster comes frozen with the content, so a
+    // consumer cannot narrow the question; the answers come live, so closing
+    // sales on any member stops new sales of everything that includes it.
+    //
+    // Read after authorization, in one bounded batch over the roster. An outage
+    // is `NotEvaluable` and never `Satisfied`: a consumer authorizing a sale must
+    // refuse on it rather than read "cannot tell" as "go ahead".
+    let (registry_permission, registry_checked_at) = match &facts {
+        SellabilityFacts::Pinned(pinned) if !pinned.sale_sku_ids.is_empty() => {
+            match crate::infra::row_sku::sku_index_for(
+                state.catalog.as_ref(),
+                &ctx,
+                &pinned.sale_sku_ids,
+            )
+            .await
+            {
+                Ok(index) => (
+                    crate::domain::sellability::registry_sale_permissions(
+                        &pinned.sale_sku_ids,
+                        &index,
+                    ),
+                    Some(OffsetDateTime::now_utc()),
+                ),
+                Err(_) => (crate::domain::sellability::registry_unreadable(), None),
+            }
+        }
+        // No roster to ask about: an older pin that predates the member, or a
+        // subject with no priced line. Either way the question is unanswerable
+        // rather than answered yes.
+        _ => (crate::domain::sellability::registry_unreadable(), None),
+    };
+    let surface = SellabilitySurface::of_delta(&facts, at, &currency, &region, registry_permission);
+    Ok(Json(
+        PlanSellabilityView::from(&surface).checked_at(registry_checked_at),
+    ))
 }
 
 /// The three query parameters, or the refusal that names the missing one.

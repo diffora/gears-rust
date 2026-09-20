@@ -1319,6 +1319,8 @@ async fn a_cancel_can_move_a_published_plan_outside_its_own_coverage() {
         inside,
         &bss_pricing::domain::money::CurrencyCode::new("EUR").expect("three letters"),
         &bss_pricing::domain::scope_key::Region::new("eu").expect("a region"),
+        // A window case: the registry is not read and the gate says so.
+        bss_pricing::domain::sellability::registry_unreadable(),
     );
     assert_eq!(
         surface.plan_market_verdict(),

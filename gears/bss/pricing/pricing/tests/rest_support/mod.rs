@@ -588,6 +588,7 @@ impl Harness {
             compensation,
         );
         let governance = Arc::new(GovernanceState {
+            catalog: Arc::clone(&catalog),
             participants: bss_pricing::infra::approval_participants::ApprovalParticipants::new(
                 Arc::new(toolkit::ClientHub::new()),
             ),

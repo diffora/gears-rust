@@ -132,6 +132,7 @@ fn delta_covering_for(plan_id: PlanId, coverage_to: Option<OffsetDateTime>) -> P
         composites: Vec::new(),
         lifecycle_state: LifecycleState::Published,
         sku_id: None,
+        sale_sku_ids: Vec::new(),
         plan_tier: Some("gold".to_owned()),
         plan_tier_override: false,
         frequency: Some(Frequency::Monthly),
@@ -415,6 +416,9 @@ async fn a_consumer_pinned_before_a_cancel_still_reads_the_old_coverage() {
             at(5),
             &CurrencyCode::new("EUR").expect("three letters"),
             &Region::new("eu").expect("a non-blank region"),
+            // This case is about coverage, not about sale permission: the
+            // registry is not read, and the gate says so rather than guessing.
+            bss_pricing::domain::sellability::registry_unreadable(),
         )
     };
 

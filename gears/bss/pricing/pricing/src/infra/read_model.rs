@@ -1134,11 +1134,26 @@ async fn project_plan_subject(
         })
         .collect();
 
+    // Every SKU a new sale of this configuration includes, frozen with it: the
+    // plan's own and every SKU its projected lines price. Derived from the same
+    // rows the rest of this delta is, so the roster cannot describe a plan the
+    // pin does not. Sorted and deduplicated, because it is a set and a consumer
+    // comparing two pins should not see an ordering difference that means nothing.
+    //
+    // A component priced in a phase the buyer has not reached yet is still part
+    // of the sale: they bought the plan, and the plan includes it.
+    let sale_sku_ids: Vec<Uuid> = std::iter::once(current.sku_id)
+        .chain(prices.iter().map(|row| row.scope_key.sku_id().as_uuid()))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
     Ok(PlanSubjectDelta {
         plan_id,
         revision,
         lifecycle_state,
         sku_id: Some(current.sku_id),
+        sale_sku_ids,
         plan_tier: current.plan_tier,
         plan_tier_override: current.plan_tier_override,
         frequency: current.frequency,

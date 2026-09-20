@@ -1445,6 +1445,7 @@ impl Gear for BssPricingGear {
         // is mounted here, so the engine moves to the state that serves it
         // rather than staying somewhere with an allow and a second reader.
         let governance_api = Arc::new(GovernanceState {
+            catalog: Arc::clone(&product_catalog),
             db: db.clone(),
             apply_lane: apply_lane.clone(),
             plans: PlanRepo::new(db.clone()),

@@ -413,6 +413,10 @@ async fn registered_operations() -> OpenApiRegistryImpl {
     // request. Wiring a working pair would be wiring a publish this test does
     // not perform.
     let governance = Arc::new(GovernanceState {
+        // The sellability gate's registry. This harness sends no request, so the
+        // unconfigured double is the honest one: a catalog wired here would claim
+        // a dependency the test does not exercise.
+        catalog: Arc::new(bss_pricing::domain::ports::UnconfiguredProductCatalogClientV1),
         participants: bss_pricing::infra::approval_participants::ApprovalParticipants::new(
             Arc::new(toolkit::ClientHub::new()),
         ),

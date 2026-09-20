@@ -104,6 +104,7 @@ fn delta_of(
         revision: 0,
         lifecycle_state: LifecycleState::Published,
         sku_id: None,
+        sale_sku_ids: Vec::new(),
         plan_tier: Some("gold".to_owned()),
         plan_tier_override: false,
         frequency: None,

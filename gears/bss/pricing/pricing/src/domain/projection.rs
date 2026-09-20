@@ -607,6 +607,22 @@ pub struct PlanSubjectDelta {
     pub lifecycle_state: LifecycleState,
     /// The catalog SKU this plan realizes, when one is bound.
     pub sku_id: Option<Uuid>,
+    /// Every SKU a new sale of this published configuration includes: the plan's
+    /// own and every SKU its priced lines name, sorted and deduplicated.
+    ///
+    /// **Frozen with the content, and asked of the registry live.** The set is
+    /// derived here from the revision the version froze, so what a sale consists
+    /// of cannot drift after publication and cannot be narrowed by a consumer
+    /// sending a shorter list. Whether each member is currently open for sale is
+    /// a different question with a different answer at a different time, asked
+    /// against the registry's present state by
+    /// [`registry_sale_permissions`](crate::domain::sellability::registry_sale_permissions).
+    ///
+    /// Empty only on a subject that carries no priced line at all. A consumer
+    /// reading an empty set must not read it as "nothing blocks this sale": the
+    /// gate answers `NotEvaluable` on it, because a conjunction over nothing is
+    /// vacuously true and that is the one direction it must not round in.
+    pub sale_sku_ids: Vec<Uuid>,
     /// The plan's tier, from the registry taxonomy.
     pub plan_tier: Option<String>,
     /// Whether the tier deliberately diverges from the parent SKU's under an
@@ -812,6 +828,7 @@ impl PlanSubjectDelta {
             revision,
             lifecycle_state,
             sku_id,
+            sale_sku_ids,
             plan_tier,
             plan_tier_override,
             frequency,
@@ -839,6 +856,7 @@ impl PlanSubjectDelta {
             "revision": revision,
             "lifecycleState": lifecycle_state.as_str(),
             "skuId": sku_id,
+            "saleSkuIds": sale_sku_ids,
             "planTier": plan_tier,
             "planTierOverride": plan_tier_override,
             "frequency": frequency.map(frequency_value),
@@ -1581,6 +1599,7 @@ pub fn partition_delta_members(delta: &PlanSubjectDelta) -> (Vec<&'static str>, 
         revision,
         lifecycle_state,
         sku_id,
+        sale_sku_ids,
         plan_tier,
         plan_tier_override,
         frequency,
@@ -1631,6 +1650,12 @@ pub fn partition_delta_members(delta: &PlanSubjectDelta) -> (Vec<&'static str>, 
         named("revision", revision),
         named("lifecycle_state", lifecycle_state),
         named("sku_id", sku_id),
+        // The sale roster is a **gate** operand, not an evaluator input: it says
+        // which SKUs a sale includes so their current sale permission can be
+        // asked, and tells a rater nothing about deriving a charge. Same class as
+        // `windows` and `tax_projection` one line down — sellability, not
+        // derivation — so it does not move `EVALUATION_POLICY_GENERATION`.
+        named("sale_sku_ids", sale_sku_ids),
         named("plan_tier", plan_tier),
         named("plan_tier_override", plan_tier_override),
         named("frequency", frequency),

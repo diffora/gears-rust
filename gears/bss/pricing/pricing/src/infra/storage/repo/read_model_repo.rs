@@ -392,6 +392,26 @@ pub fn sellability_facts(delta: &StoredDelta) -> Result<SellabilityFacts, RepoEr
             LifecycleState::ALL,
             LifecycleState::as_str,
         )?,
+        // The frozen roster, read back rather than re-derived: a gate that
+        // recomputed it from live storage would answer about a plan the pin does
+        // not describe. An older pin that predates the member carries none, and
+        // the gate reports that as `NotEvaluable` rather than as a sale with
+        // nothing in it.
+        sale_sku_ids: {
+            let mut ids = Vec::new();
+            if let Some(values) = payload.get("saleSkuIds").and_then(|v| v.as_array()) {
+                for value in values {
+                    let raw = value
+                        .as_str()
+                        .ok_or_else(|| malformed("saleSkuIds", "carries a non-string member"))?;
+                    ids.push(
+                        raw.parse::<Uuid>()
+                            .map_err(|_| malformed("saleSkuIds", "carries a non-uuid member"))?,
+                    );
+                }
+            }
+            ids
+        },
         available_from: optional_instant(payload, "availableFrom")?,
         available_to: optional_instant(payload, "availableTo")?,
         frequency: read_frequency(payload)?,
