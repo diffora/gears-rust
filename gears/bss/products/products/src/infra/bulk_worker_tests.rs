@@ -812,6 +812,44 @@ mod batch_machine_tests {
         }
     }
 
+    /// A SKU row naming no role is refused, not defaulted.
+    ///
+    /// The create door has always required `sku_type`; bulk quietly minted one
+    /// for a silent row, so the two write paths disagreed about what a SKU must
+    /// declare. That was survivable while the token described what a SKU *was*.
+    /// It is not survivable now: the role bulk would have chosen is the one that
+    /// decides whether the SKU may own a plan, and a silent default hands that
+    /// out to a row whose author never asked for it.
+    #[tokio::test]
+    async fn a_bulk_sku_row_naming_no_role_is_refused() {
+        let harness = harness().await;
+        set_quorum(&harness, 0).await;
+        let parent = published_product(&harness, "p-roleless", "Roleless Line").await;
+        let mut roleless = sku_row("r-none", parent, "NO-ROLE-1", "offer");
+        roleless.staged_payload = Some(
+            json!({ "product_id": parent, "sku_code": "NO-ROLE-1", "region_scope": "eu" })
+                .to_string(),
+        );
+        let batch_id = seed_batch_with(
+            &harness,
+            "b-roleless",
+            "import",
+            "import",
+            OffsetDateTime::now_utc(),
+            vec![roleless],
+        )
+        .await;
+        stage_only(&harness).await;
+
+        let refused = row(&harness, batch_id, "r-none").await;
+        assert_eq!(refused.disposition.as_deref(), Some("failed"));
+        assert_eq!(refused.code.as_deref(), Some("VALIDATION"));
+        assert!(
+            refused.entity_id.is_none(),
+            "a refused row mints no SKU: {refused:?}"
+        );
+    }
+
     fn product_row_in(key: &str, name: &str, region: &str) -> NewBulkRow {
         NewBulkRow {
             row_key: key.to_owned(),
@@ -1190,7 +1228,7 @@ mod batch_machine_tests {
             "b-bundles",
             vec![
                 sku_row("rb", parent, "BNDL-1", "bundle"),
-                sku_row("rp", parent, "PLAIN-1", "product"),
+                sku_row("rp", parent, "PLAIN-1", "offer"),
             ],
         )
         .await;

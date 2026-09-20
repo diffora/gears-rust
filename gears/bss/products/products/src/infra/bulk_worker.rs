@@ -297,11 +297,24 @@ async fn stage_sku(
     let mut report = ValidationReport::new();
     let code = field(payload, "sku_code");
     let parent = field(payload, "product_id").and_then(|raw| Uuid::parse_str(&raw).ok());
+    let sku_type = field(payload, "sku_type");
     if code.is_none() {
         report.violate("VALIDATION", "sku_code", "sku_code must not be blank");
     }
     if parent.is_none() {
         report.violate("VALIDATION", "product_id", "product_id must be a uuid");
+    }
+    // A role is declared, never defaulted. The create door has always required
+    // it; bulk minted one for a silent row, so the two write paths disagreed
+    // about what a SKU must say about itself. The role decides where the SKU
+    // may be used -- whether it may own a plan, sit in a charge line, or
+    // package a composition -- and handing that out by default gives a row an
+    // eligibility its author never asked for. The closed-set refusal on a
+    // *present* token stays `type_profile`'s (`SKU_TYPE_UNKNOWN`); absence is
+    // this path's own required-field violation, the shape its two neighbours
+    // above already use.
+    if sku_type.is_none() {
+        report.violate("VALIDATION", "sku_type", "sku_type must name a role");
     }
     if !report.is_empty() {
         return Err(StageRowError::Refused(DomainError::Validation(report)));
@@ -319,16 +332,11 @@ async fn stage_sku(
         created_at: now,
         cloned_from: None,
         cloned_from_version: None,
-        // 03's classification (P-D-145) as the row carries it; a row naming
-        // none falls back on the `standard` tier — the row shape that carries
-        // these by contract is 09's (group 6). The role's own fallback is
-        // retokenised here and **removed** by the next task: a role is not a
-        // thing a bulk row may leave to a default.
-        sku_type: field(payload, "sku_type").unwrap_or_else(|| {
-            crate::domain::recognized::SkuType::Offer
-                .as_str()
-                .to_owned()
-        }),
+        // 03's classification (P-D-145) as the row carries it; a row naming no
+        // tier falls back on `standard` — the row shape that carries these by
+        // contract is 09's (group 6). The **role** has no fallback: the guard
+        // above refused the row before this point if it named none.
+        sku_type: sku_type.unwrap_or_default(),
         sellable: payload
             .get("sellable")
             .and_then(serde_json::Value::as_bool)

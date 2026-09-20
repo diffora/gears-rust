@@ -6380,6 +6380,68 @@ mod lifecycle_column_guard_tests {
         .map(|_| ())
     }
 
+    /// The role column admits the three roles and `NULL`, and nothing else —
+    /// with either sale flag on every one of them.
+    ///
+    /// The doors refuse an unknown token already, so this is the backstop for a
+    /// write that went around them: `type_profile` reads the column into a
+    /// closed enum, and a stray token there is a `CorruptRow` on every later
+    /// read rather than something an author can fix. `NULL` stays admitted
+    /// because a draft is authored across several writes. There is deliberately
+    /// no role/flag cross-constraint — the two `component` rows below differ
+    /// only in `sellable`, and both must land.
+    #[tokio::test]
+    async fn the_role_column_admits_its_closed_set_with_either_sale_flag() {
+        let db = harness().await;
+        exec(
+            &db,
+            "INSERT INTO products_product \
+             (product_id, tenant_id, brand_id, name, name_normalized, region_scope, \
+              brand_scope, lifecycle_state, internal_revision, published_version, \
+              created_by, created_at, updated_at) \
+             VALUES ('p-role', 't-a', 'b-1', 'Roles', 'roles', 'eu', 'acme', 'published', \
+              1, 1, 'actor-1', '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')",
+        )
+        .await
+        .expect("seed the parent Product");
+
+        let row = |id: &str, role: &str, sellable: i32| {
+            format!(
+                "INSERT INTO products_sku \
+                 (sku_id, tenant_id, product_id, sku_code, region_scope, brand_scope, \
+                  lifecycle_state, internal_revision, published_version, sku_type, sellable, \
+                  created_by, created_at, updated_at) \
+                 VALUES ('{id}', 't-a', 'p-role', 'SKU-{id}', 'eu', 'acme', 'draft', 1, 0, \
+                  {role}, {sellable}, 'actor-1', '2026-09-01T00:00:00Z', \
+                  '2026-09-01T00:00:00Z')"
+            )
+        };
+
+        for (id, role, sellable) in [
+            ("r-off-t", "'offer'", 1),
+            ("r-off-f", "'offer'", 0),
+            ("r-cmp-t", "'component'", 1),
+            ("r-cmp-f", "'component'", 0),
+            ("r-bnd-t", "'bundle'", 1),
+            ("r-bnd-f", "'bundle'", 0),
+            ("r-null", "NULL", 1),
+        ] {
+            exec(&db, &row(id, role, sellable))
+                .await
+                .unwrap_or_else(|e| panic!("{role} + sellable={sellable} must land: {e}"));
+        }
+
+        for stale in ["'product'", "'service'", "'Offer'", "''"] {
+            let err = exec(&db, &row("r-bad", stale, 1))
+                .await
+                .expect_err("a token outside the closed set is refused");
+            assert!(
+                err.to_string().contains("chk_products_sku_type"),
+                "{stale} is refused by the role CHECK, not by something else: {err}"
+            );
+        }
+    }
+
     /// **P-D-34's two row-image predicates**, probed as the design states them
     /// rather than as an earlier revision of this file assumed.
     ///

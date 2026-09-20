@@ -6615,6 +6615,72 @@ fn typed_body(product_id: Uuid, code: &str) -> serde_json::Value {
     })
 }
 
+/// Role and sale permission are independent, and every pairing of them is a
+/// legal thing to author.
+///
+/// The two were one field in effect before the roles landed: a SKU could only
+/// be priced into somebody else's plan by declaring itself unsellable, so
+/// `sellable=false` did double duty as "not for sale" and "eligible as a
+/// constituent". Roles took the second job. What is pinned here is that taking
+/// it did not leave a residue — no role forces a flag, no flag is refused for a
+/// role, and omission still resolves to `true` for all three. A
+/// component-specific refusal or a role-dependent default would each break one
+/// row of this table, and both were proposed and rejected while planning it.
+#[tokio::test]
+async fn every_role_accepts_either_sale_flag_and_omission_is_true() {
+    let harness = harness().await;
+    let parent = seed_parent(&harness, new_parent_product(Uuid::now_v7(), TENANT)).await;
+
+    for (n, role, sellable, expected) in [
+        (1, "component", None, true),
+        (2, "component", Some(true), true),
+        (3, "component", Some(false), false),
+        (4, "offer", Some(false), false),
+        (5, "bundle", Some(false), false),
+    ] {
+        let mut body = json!({
+            "product_id": parent,
+            "sku_code": format!("SKU-PERM-{n}"),
+            "sku_type": role,
+        });
+        if let Some(flag) = sellable {
+            body["sellable"] = json!(flag);
+        }
+        let created = post_create_sku(app_for(&harness, TENANT), TENANT, &body).await;
+        assert_eq!(
+            created.status(),
+            StatusCode::CREATED,
+            "{role} + {sellable:?} is an admissible authoring state"
+        );
+        let view = body_json(created).await;
+        assert_eq!(view["sku_type"], role);
+        assert_eq!(
+            view["sellable"], expected,
+            "{role} + {sellable:?} stores {expected}"
+        );
+    }
+
+    // The role's own closed set is unmoved by any of it: a retired token is
+    // refused whatever the flag says.
+    let stale = post_create_sku(
+        app_for(&harness, TENANT),
+        TENANT,
+        &json!({
+            "product_id": parent,
+            "sku_code": "SKU-PERM-6",
+            "sku_type": "product",
+            "sellable": true,
+        }),
+    )
+    .await;
+    assert_eq!(stale.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(stale).await;
+    assert!(
+        body.to_string().contains("SKU_TYPE_UNKNOWN"),
+        "a retired role token is refused by name: {body}"
+    );
+}
+
 /// The precondition-shaped refusal's code (`error_mapping::precondition`).
 fn violation_code(body: &serde_json::Value) -> serde_json::Value {
     body["context"]["violations"][0]["type"].clone()
@@ -7430,6 +7496,12 @@ mod correction_door_tests {
         );
         let after = head(&harness, sku_id).await;
         assert_eq!(after.sku_type.as_deref(), Some("component"));
+        assert!(
+            after.sellable,
+            "a role-only correction leaves the sale flag alone: the two are \
+             independent, and re-deriving one from the other is how a component \
+             would silently stop being sellable"
+        );
         assert_eq!(after.published_version, 2, "re-published as N+1");
         assert!(
             after.correction_ref.is_some(),
@@ -7690,6 +7762,12 @@ mod correction_door_tests {
         );
         let after = head(&harness, sku_id).await;
         assert_eq!(after.sku_type.as_deref(), Some("component"));
+        assert!(
+            after.sellable,
+            "a role-only correction leaves the sale flag alone: the two are \
+             independent, and re-deriving one from the other is how a component \
+             would silently stop being sellable"
+        );
         assert_eq!(after.published_version, 2);
         assert_eq!(
             crate::test_support::raw_i64(

@@ -111,6 +111,20 @@
 //!
 //! # 03's three classification columns (P-D-145, narrowed by P-D-169)
 //!
+//! # The role's closed set is backstopped, its presence is not
+//!
+//! `chk_products_sku_type` admits the three roles and `NULL`, which is the
+//! nullable-draft policy the paragraph below states: presence is the create
+//! door's rule, and tightening the CHECK to `NOT NULL` would make the
+//! half-authored draft unsavable. The set itself is here because a token
+//! outside it is not a state any door can produce, so a row carrying one is
+//! evidence of a write that went around them — and `type_profile` reads the
+//! column back into a closed enum, so an unknown token is a `CorruptRow` on
+//! every later read rather than a refusal the author could act on. There is
+//! **no** cross-field constraint between the role and `sellable`: every
+//! pairing is a legal authoring state, which is `inst-cl-sellable`'s own
+//! reading and what the role split exists to make true.
+//!
 //! `sku_type`, `sellable` and `plan_tier` are slice 03's columns carried here
 //! (01 §4.2 / 03 §4), edited in place with the slice's first build. Nullable in
 //! the DDL — presence is the doors' rule (`sku_type` at create, `plan_tier` at
@@ -228,7 +242,8 @@ const PG_UP_STATEMENTS: &[&str] = &[
             CONSTRAINT chk_products_sku_internal_revision CHECK (internal_revision >= 1),
             CONSTRAINT chk_products_sku_published_version CHECK (published_version >= 0),
             CONSTRAINT chk_products_sku_cloned_from_shape CHECK (cloned_from IS NOT NULL OR cloned_from_version IS NULL),
-            CONSTRAINT chk_products_sku_meter_pair CHECK ((metering_unit IS NULL) = (usage_type_ref IS NULL))
+            CONSTRAINT chk_products_sku_meter_pair CHECK ((metering_unit IS NULL) = (usage_type_ref IS NULL)),
+            CONSTRAINT chk_products_sku_type CHECK (sku_type IS NULL OR sku_type IN ('offer', 'component', 'bundle'))
         )",
     "CREATE INDEX idx_products_sku_tenant ON bss.products_sku USING btree (tenant_id, sku_id)",
     "CREATE INDEX idx_products_sku_parent ON bss.products_sku USING btree (tenant_id, product_id)",
@@ -380,7 +395,8 @@ const SQLITE_UP_STATEMENTS: &[&str] = &[
             CONSTRAINT chk_products_sku_internal_revision CHECK (internal_revision >= 1),
             CONSTRAINT chk_products_sku_published_version CHECK (published_version >= 0),
             CONSTRAINT chk_products_sku_cloned_from_shape CHECK (cloned_from IS NOT NULL OR cloned_from_version IS NULL),
-            CONSTRAINT chk_products_sku_meter_pair CHECK ((metering_unit IS NULL) = (usage_type_ref IS NULL))
+            CONSTRAINT chk_products_sku_meter_pair CHECK ((metering_unit IS NULL) = (usage_type_ref IS NULL)),
+            CONSTRAINT chk_products_sku_type CHECK (sku_type IS NULL OR sku_type IN ('offer', 'component', 'bundle'))
         )",
     "CREATE INDEX idx_products_sku_tenant ON products_sku (tenant_id, sku_id)",
     "CREATE INDEX idx_products_sku_parent ON products_sku (tenant_id, product_id)",

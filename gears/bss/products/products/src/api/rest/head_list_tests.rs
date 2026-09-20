@@ -45,7 +45,7 @@ async fn seed(h: &TestHarness, tenant: Uuid, name: &str, sellable: bool) -> (Uui
             created_at: crate::test_support::utc(2026, 9, 18, 9, 0, 0),
             cloned_from: None,
             cloned_from_version: None,
-            sku_type: "simple".to_owned(),
+            sku_type: "offer".to_owned(),
             sellable,
             plan_tier: "standard".to_owned(),
             metering_unit: None,
@@ -184,7 +184,7 @@ async fn lists_apply_product_search_and_sku_parent_classification_filters() {
         assert_eq!(body["items"][0]["product_id"], product.to_string());
     }
     let filter = format!(
-        "product_id eq {product} and contains(sku_code,'Cloud') and lifecycle_state eq 'draft' and sku_type eq 'simple' and sellable eq false"
+        "product_id eq {product} and contains(sku_code,'Cloud') and lifecycle_state eq 'draft' and sku_type eq 'offer' and sellable eq false"
     );
     let (status, body) = get(
         app(&h, TENANT),

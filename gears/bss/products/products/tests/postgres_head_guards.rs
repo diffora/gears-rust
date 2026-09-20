@@ -593,3 +593,55 @@ async fn composition_pending_moves_only_with_a_published_version_bump() {
     )
     .await;
 }
+
+/// **The role column admits its closed set, with either sale flag, and `NULL`.**
+///
+/// The PostgreSQL half of the same backstop the SQLite migration suite pins:
+/// `chk_products_sku_type`. It matters on this dialect for the same reason the
+/// rest of this file does — the doors are Rust and the constraint is the only
+/// thing standing behind a write that did not come through one.
+///
+/// The pairs are deliberate. Every role appears with `sellable` both true and
+/// false, because the role and the sale permission are independent and a
+/// cross-field constraint between them would be the one mistake this table
+/// exists to forbid. `NULL` is admitted: presence is the create door's rule,
+/// and a `NOT NULL` here would make the half-authored draft unsavable.
+#[tokio::test]
+#[ignore = "requires Docker (testcontainers)"]
+async fn the_role_column_admits_its_closed_set_with_either_sale_flag() {
+    let pg = Pg::applied().await;
+    let conn = pg.raw().await;
+    seed(&conn, "draft", 0).await;
+
+    let row = |suffix: &str, role: &str, sellable: &str| {
+        format!(
+            "INSERT INTO bss.products_sku
+               (tenant_id, sku_id, product_id, sku_code, lifecycle_state, internal_revision,
+                published_version, composition_pending, sku_type, sellable, region_scope,
+                brand_scope, created_by, created_at, updated_at)
+             VALUES ('{TENANT}', '00000000-0000-0000-0000-0000000033{suffix}', '{PRODUCT}',
+                'ROLE-{suffix}', 'draft', 1, 0, false, {role}, {sellable}, 'eu', '',
+                'principal:a', now(), now())"
+        )
+    };
+
+    for (suffix, role, sellable) in [
+        ("01", "'offer'", "true"),
+        ("02", "'offer'", "false"),
+        ("03", "'component'", "true"),
+        ("04", "'component'", "false"),
+        ("05", "'bundle'", "true"),
+        ("06", "'bundle'", "false"),
+        ("07", "NULL", "true"),
+    ] {
+        admitted(&conn, &row(suffix, role, sellable)).await;
+    }
+
+    for (suffix, stale) in [("91", "'product'"), ("92", "'service'"), ("93", "'Offer'")] {
+        let message = refusal(&conn, &row(suffix, stale, "true")).await;
+        assert!(
+            message.contains("chk_products_sku_type"),
+            "{stale} is refused by the role CHECK and not by a neighbour: {message}"
+        );
+    }
+}
