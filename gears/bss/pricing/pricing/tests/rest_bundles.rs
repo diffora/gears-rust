@@ -14,6 +14,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+mod charge_line_support;
 mod common;
 mod rest_support;
 
@@ -2144,5 +2145,255 @@ async fn a_published_plain_plan_cannot_acquire_a_bundle_header() {
             .as_array()
             .expect("bundle page")
             .is_empty()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Component one-time charges compose (charge-line split, §6).
+// ---------------------------------------------------------------------------
+
+/// A published component plan whose **only** line is `one_time`, priced in the
+/// fixture market. Authored through the line-first routes, because that is the
+/// only door that files a one-time line.
+async fn seed_one_time_component(harness: &Harness) -> Uuid {
+    use charge_line_support::{flat_line_body, flat_price_body, post_line, post_price};
+
+    let component = Uuid::now_v7();
+    seed_draft_plan(harness, component).await;
+    let mut body = flat_line_body("one_time");
+    // A row publishes only with a GL code that resolves; stated on the line,
+    // since the descriptor is part of what every market of it shares.
+    body["structure"]["gl_code_ref"] = serde_json::json!("4000");
+    let line = post_line(harness, component, body, "ot-line").await;
+    assert_eq!(line.status(), StatusCode::CREATED);
+    let line = body_json(line).await;
+    let version = line["line_version_id"].as_str().expect("the line version");
+    let priced = post_price(
+        harness,
+        component,
+        version,
+        flat_price_body("USD", "EU", 2_000),
+        "ot-price",
+    )
+    .await;
+    assert_eq!(priced.status(), StatusCode::CREATED);
+    let price_id: Uuid = body_json(priced).await["price_id"]
+        .as_str()
+        .and_then(|id| id.parse().ok())
+        .expect("the price id");
+    harness.publish(component, 0).await;
+    harness.publish_price(component, price_id).await;
+    component
+}
+
+async fn compose_and_publish(
+    harness: &Harness,
+    plan_id: Uuid,
+    bundle_id: Uuid,
+    component: Uuid,
+) -> axum::http::Response<axum::body::Body> {
+    let tag = harness.plan_etag(plan_id).await;
+    let composed = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &bundle_path(bundle_id),
+            Some(serde_json::json!({
+                "plan_revision": 0,
+                "components": [{
+                    "component_plan_id": component,
+                    "included_sku_id": Uuid::now_v7(),
+                }],
+            })),
+            &[("if-match", &tag)],
+        ))
+        .await;
+    assert_eq!(composed.status(), StatusCode::OK, "the composition lands");
+    harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &publish_path(bundle_id),
+            Some(serde_json::json!({
+                "plan_revision": 0,
+                "markets": [{ "currency": "USD", "region": "EU" }],
+            })),
+            &[],
+        ))
+        .await
+}
+
+async fn charge_kinds_of(harness: &Harness, plan_id: Uuid) -> serde_json::Value {
+    let plan = body_json(
+        harness
+            .allowed()
+            .send(with_headers(
+                "GET",
+                &format!("/bss-pricing/v1/plans/{plan_id}"),
+                None,
+                &[],
+            ))
+            .await,
+    )
+    .await;
+    plan["charge_kinds"].clone()
+}
+
+/// **A `sum_of_parts` bundle composes a one-time-only component.** Its one-time
+/// row is market coverage like any other kind's, the row-less bundle plan is not
+/// refused as an empty ordinary plan, and what the bundle says it charges is
+/// what its component charges — read off the component's lines, since the bundle
+/// has none of its own.
+#[tokio::test]
+async fn a_sum_of_parts_bundle_composes_a_one_time_only_component() {
+    let harness = Harness::new().await;
+    let (plan_id, bundle_id) = seed_bundle_with(&harness, "sum_of_parts").await;
+    let component = seed_one_time_component(&harness).await;
+
+    let response = compose_and_publish(&harness, plan_id, bundle_id, component).await;
+    let status = response.status();
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "a one-time row covers the market and the row-less bundle is composable: {}",
+        body_json(response).await
+    );
+
+    assert_eq!(
+        charge_kinds_of(&harness, plan_id).await,
+        serde_json::json!(["one_time"]),
+        "a composed bundle's kinds are its effective component lines'"
+    );
+    assert_eq!(
+        charge_kinds_of(&harness, component).await,
+        serde_json::json!(["one_time"])
+    );
+}
+
+/// **An `own_price` bundle charges from its own lines alone.** The same one-time
+/// component under an `own_price` header contributes nothing to what the bundle
+/// says it charges: that basis prices the bundle itself, and folding component
+/// lines in would advertise charges the purchase never makes.
+#[tokio::test]
+async fn an_own_price_bundle_does_not_borrow_its_components_kinds() {
+    let harness = Harness::new().await;
+    let (plan_id, bundle_id) = seed_bundle_with(&harness, "own_price").await;
+    let component = seed_one_time_component(&harness).await;
+    // Composed only; whether this basis publishes without own rows is another
+    // rule's question and not this case's.
+    let _ = compose_and_publish(&harness, plan_id, bundle_id, component).await;
+
+    assert_eq!(
+        charge_kinds_of(&harness, plan_id).await,
+        serde_json::json!([]),
+        "no own line, no kind: the component's one-time line is not the bundle's"
+    );
+}
+
+/// Author a plan-level frequency through the plan `PATCH`.
+async fn set_frequency(harness: &Harness, plan_id: Uuid, kind: &str) {
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &format!("/bss-pricing/v1/plans/{plan_id}"),
+            Some(serde_json::json!({ "shape": { "frequency": { "kind": kind } } })),
+            &[("if-match", &harness.plan_etag(plan_id).await)],
+        ))
+        .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "{}",
+        body_json(response).await
+    );
+}
+
+/// **A one-time-only component has no frequency to disagree with.** Its plan
+/// carries `annual`, the recurring component beside it bills `monthly`, and the
+/// composition publishes: the common-frequency rule ranges over components that
+/// sum onto the bundle's recurring line set, and a component with no recurring
+/// line sums nothing onto it, whatever its plan row says.
+///
+/// Before the rule read the component's lines it read the plan column alone, so
+/// this composition answered `FREQUENCY_MISMATCH` for a charge made once.
+#[tokio::test]
+async fn a_one_time_component_is_outside_the_common_frequency_rule() {
+    let harness = Harness::new().await;
+    let (plan_id, bundle_id) = seed_bundle_with(&harness, "sum_of_parts").await;
+
+    let recurring = Uuid::now_v7();
+    seed_draft_plan(&harness, recurring).await;
+    set_frequency(&harness, recurring, "monthly").await;
+    let row = seed_price(&harness, recurring, "EU").await;
+    harness.publish(recurring, 0).await;
+    harness.publish_price(recurring, row.price_id).await;
+
+    // The one-time plan states a *different* frequency before it publishes.
+    let one_time = {
+        use charge_line_support::{flat_line_body, flat_price_body, post_line, post_price};
+        let component = Uuid::now_v7();
+        seed_draft_plan(&harness, component).await;
+        set_frequency(&harness, component, "annual").await;
+        let mut body = flat_line_body("one_time");
+        body["structure"]["gl_code_ref"] = serde_json::json!("4000");
+        let line = body_json(post_line(&harness, component, body, "ot-freq-line").await).await;
+        let version = line["line_version_id"].as_str().expect("the line version");
+        let priced = post_price(
+            &harness,
+            component,
+            version,
+            flat_price_body("USD", "EU", 2_000),
+            "ot-freq-price",
+        )
+        .await;
+        let price_id: Uuid = body_json(priced).await["price_id"]
+            .as_str()
+            .and_then(|id| id.parse().ok())
+            .expect("the price id");
+        harness.publish(component, 0).await;
+        harness.publish_price(component, price_id).await;
+        component
+    };
+
+    let tag = harness.plan_etag(plan_id).await;
+    let composed = harness
+        .allowed()
+        .send(with_headers(
+            "PATCH",
+            &bundle_path(bundle_id),
+            Some(serde_json::json!({
+                "plan_revision": 0,
+                "components": [
+                    { "component_plan_id": recurring, "included_sku_id": Uuid::now_v7() },
+                    { "component_plan_id": one_time, "included_sku_id": Uuid::now_v7() },
+                ],
+            })),
+            &[("if-match", &tag)],
+        ))
+        .await;
+    assert_eq!(composed.status(), StatusCode::OK);
+
+    let response = harness
+        .allowed()
+        .send(with_headers(
+            "POST",
+            &publish_path(bundle_id),
+            Some(serde_json::json!({
+                "plan_revision": 0,
+                "markets": [{ "currency": "USD", "region": "EU" }],
+            })),
+            &[],
+        ))
+        .await;
+    let status = response.status();
+    let detail = body_json(response).await.to_string();
+    assert_eq!(status, StatusCode::ACCEPTED, "{detail}");
+    assert!(!detail.contains("FREQUENCY_MISMATCH"), "{detail}");
+
+    assert_eq!(
+        charge_kinds_of(&harness, plan_id).await,
+        serde_json::json!(["one_time", "recurring"]),
+        "the union of both components' lines"
     );
 }

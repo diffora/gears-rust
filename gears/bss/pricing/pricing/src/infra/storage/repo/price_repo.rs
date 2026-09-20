@@ -2303,6 +2303,28 @@ pub async fn aggregate_authoring_rows_for_plans(
             aggregate.currencies.push(currency);
         }
     }
+    fold_charge_kinds(runner, scope, tenant_id, &ids, &mut out).await?;
+    for aggregate in out.values_mut() {
+        aggregate.model_kinds.sort();
+        aggregate.currencies.sort();
+        aggregate.charge_kinds.sort();
+    }
+    Ok(out)
+}
+
+/// Fill [`PlanRowAggregate::charge_kinds`]: each plan's own lines, then — for a
+/// composed bundle — its components'.
+///
+/// Its own function only because [`aggregate_authoring_rows_for_plans`] outgrew
+/// its complexity budget with these two reads inside it; the split has no other
+/// meaning.
+async fn fold_charge_kinds(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    ids: &[Uuid],
+    out: &mut HashMap<PlanId, PlanRowAggregate>,
+) -> Result<(), RepoError> {
     // The kinds, from the lines. One small read per chunk: a plan's lines are
     // bounded by its phases x SKUs x kinds, never by its rows or markets.
     for chunk in ids.chunks(MAX_IN_BINDS) {
@@ -2324,10 +2346,137 @@ pub async fn aggregate_authoring_rows_for_plans(
             }
         }
     }
-    for aggregate in out.values_mut() {
-        aggregate.model_kinds.sort();
-        aggregate.currencies.sort();
-        aggregate.charge_kinds.sort();
+    // **A composed bundle charges what its components charge.** A `sum_of_parts`
+    // bundle plan is row-less and line-less by design (`inst-bb-rowless`), so read
+    // off its own lines it would list no kind at all while selling three. Its
+    // effective kinds are the union of its component plans' lines — including
+    // `one_time`, which a bundle purchase now charges on phase entry. An
+    // `own_price` bundle charges from its own lines alone, which the read above
+    // already covered, so it is deliberately left out here.
+    for (bundle_plan, kinds) in composed_bundle_kinds(runner, scope, tenant_id, ids).await? {
+        let aggregate = out.entry(PlanId::new(bundle_plan)).or_default();
+        for kind in kinds {
+            if !aggregate.charge_kinds.contains(&kind) {
+                aggregate.charge_kinds.push(kind);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// For each `sum_of_parts` bundle plan among `plan_ids`, the charge kinds of its
+/// component plans' logical lines.
+///
+/// The composition read is the **latest revision's** component set: the list
+/// shows a plan's authoring revision, and a component added in the open draft is
+/// something that draft would charge for. Three small reads for the whole page —
+/// the bundle headers, their components, the components' lines — each chunked on
+/// [`MAX_IN_BINDS`] like every other `is_in` here.
+async fn composed_bundle_kinds(
+    runner: &impl DBRunner,
+    scope: &AccessScope,
+    tenant_id: Uuid,
+    plan_ids: &[Uuid],
+) -> Result<HashMap<Uuid, Vec<String>>, RepoError> {
+    use crate::infra::storage::entity::{bundle, bundle_component};
+
+    let mut headers: Vec<bundle::Model> = Vec::new();
+    for chunk in plan_ids.chunks(MAX_IN_BINDS) {
+        headers.extend(
+            bundle::Entity::find()
+                .secure()
+                .scope_with(scope)
+                .filter(
+                    Condition::all()
+                        .add(bundle::Column::TenantId.eq(tenant_id))
+                        .add(bundle::Column::PlanId.is_in(chunk.to_vec()))
+                        .add(
+                            bundle::Column::PriceBasis
+                                .eq(crate::domain::bundle::PriceBasis::SumOfParts.as_str()),
+                        ),
+                )
+                .all(runner)
+                .await
+                .map_err(|e| {
+                    RepoError::Db(format!("read bundle headers for plan aggregate: {e}"))
+                })?,
+        );
+    }
+    if headers.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let bundle_ids: Vec<Uuid> = headers.iter().map(|header| header.bundle_id).collect();
+    let mut components: Vec<bundle_component::Model> = Vec::new();
+    for chunk in bundle_ids.chunks(MAX_IN_BINDS) {
+        components.extend(
+            bundle_component::Entity::find()
+                .secure()
+                .scope_with(scope)
+                .filter(
+                    Condition::all()
+                        .add(bundle_component::Column::TenantId.eq(tenant_id))
+                        .add(bundle_component::Column::BundleId.is_in(chunk.to_vec())),
+                )
+                .all(runner)
+                .await
+                .map_err(|e| {
+                    RepoError::Db(format!("read bundle components for plan aggregate: {e}"))
+                })?,
+        );
+    }
+    let mut latest: HashMap<Uuid, i64> = HashMap::new();
+    for component in &components {
+        let revision = latest.entry(component.bundle_id).or_insert(i64::MIN);
+        *revision = std::cmp::Ord::max(*revision, component.plan_revision);
+    }
+    components
+        .retain(|component| latest.get(&component.bundle_id) == Some(&component.plan_revision));
+
+    let component_plans: Vec<Uuid> = {
+        let mut ids: Vec<Uuid> = components
+            .iter()
+            .map(|component| component.component_plan_id)
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    };
+    let mut kinds_of: HashMap<Uuid, Vec<String>> = HashMap::new();
+    for chunk in component_plans.chunks(MAX_IN_BINDS) {
+        let lines = charge_line::Entity::find()
+            .secure()
+            .scope_with(scope)
+            .filter(
+                Condition::all()
+                    .add(charge_line::Column::TenantId.eq(tenant_id))
+                    .add(charge_line::Column::PlanId.is_in(chunk.to_vec())),
+            )
+            .all(runner)
+            .await
+            .map_err(|e| RepoError::Db(format!("read component lines for plan aggregate: {e}")))?;
+        for line in lines {
+            kinds_of
+                .entry(line.plan_id)
+                .or_default()
+                .push(line.charge_kind);
+        }
+    }
+
+    let plan_of: HashMap<Uuid, Uuid> = headers
+        .iter()
+        .map(|header| (header.bundle_id, header.plan_id))
+        .collect();
+    let mut out: HashMap<Uuid, Vec<String>> = HashMap::new();
+    for component in components {
+        let Some(bundle_plan) = plan_of.get(&component.bundle_id) else {
+            continue;
+        };
+        if let Some(kinds) = kinds_of.get(&component.component_plan_id) {
+            out.entry(*bundle_plan)
+                .or_default()
+                .extend(kinds.iter().cloned());
+        }
     }
     Ok(out)
 }

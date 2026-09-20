@@ -826,11 +826,16 @@ async fn component_defects(
     Ok(defects)
 }
 
-/// A component's recurring frequency, or `None` when it is usage-only.
+/// A component's recurring frequency, or `None` when it charges nothing
+/// recurring — a usage-only **or one-time-only** component.
 ///
-/// Read off the plan's `frequency` column. A plan with none is usage-only for
-/// `inst-bc-frequency`'s purposes (L-8), which is the same thing the column
-/// says: a frequency is what a recurring cycle has.
+/// Read off the plan's `frequency` column, **and only when the component holds a
+/// recurring line**. The column alone was the whole test while a plan type said
+/// what a plan was; with the type gone a plan is what its lines are, and an
+/// author may leave a frequency on a plan whose only line is `one_time`. Such a
+/// component sums nothing onto the bundle's recurring line set, so it has no
+/// frequency to disagree with anybody's — `inst-bc-frequency` (L-8) puts it
+/// outside the rule for the same reason it always put usage-only ones there.
 async fn component_frequency(
     runner: &impl DBRunner,
     scope: &AccessScope,
@@ -852,6 +857,28 @@ async fn component_frequency(
     let Some(row) = row else {
         return Ok(None);
     };
+    let recurs = crate::infra::storage::entity::charge_line::Entity::find()
+        .secure()
+        .scope_with(scope)
+        .filter(
+            Condition::all()
+                .add(crate::infra::storage::entity::charge_line::Column::TenantId.eq(tenant_id))
+                .add(
+                    crate::infra::storage::entity::charge_line::Column::PlanId
+                        .eq(component_plan_id.get()),
+                )
+                .add(
+                    crate::infra::storage::entity::charge_line::Column::ChargeKind
+                        .eq(crate::domain::scope_key::ChargeKind::Recurring.as_str()),
+                ),
+        )
+        .one(runner)
+        .await
+        .map_err(|e| RepoError::Db(format!("read component recurring lines: {e}")))?
+        .is_some();
+    if !recurs {
+        return Ok(None);
+    }
     // `plan_repo`'s reader, not a second one: it refuses the half-set interval
     // pairings the CHECK cannot see, and a component's frequency has to mean
     // exactly what its own plan's does — `inst-bc-frequency` compares the two.

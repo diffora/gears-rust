@@ -213,11 +213,13 @@ pub struct ComponentSnapshot {
     /// Everything the caller's read found disqualifying about this component.
     /// Empty is the ordinary case.
     pub defects: BTreeSet<ComponentDefect>,
-    /// Its recurring frequency, or `None` for a **usage-only** component.
+    /// Its recurring frequency, or `None` for a component with **no recurring
+    /// line** — usage-only or one-time-only.
     ///
-    /// `None` is not "unknown": L-8 puts usage-only components outside
+    /// `None` is not "unknown": L-8 puts such components outside
     /// `inst-bc-frequency` by construction, because their charges rate per their
-    /// own rows rather than summing onto the bundle's recurring line set.
+    /// own rows (or are charged once on phase entry) rather than summing onto
+    /// the bundle's recurring line set.
     pub frequency: Option<Frequency>,
     /// Its coverage-eligible published rows — narrowed by the caller, see the
     /// module doc.
