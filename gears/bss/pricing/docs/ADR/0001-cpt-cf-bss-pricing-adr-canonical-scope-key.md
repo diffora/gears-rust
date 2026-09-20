@@ -6,6 +6,8 @@ decision-makers: "BSS Product Catalog team"
 
 > D-372 amendment (2026-09-16): the current ten-axis key requires `skuId` for every row; `dimensionKey` is the usage discriminator and `meter` is derived content. The D-196 meter-axis statements below record the earlier decision. The current normative definition is Foundation §4.1.
 >
+> **`chargeKind` has exactly three values — `recurring`, `usage`, `one_time` (D-375, 2026-09-19).** Every mention of `one_time_setup` and of a "hybrid plan" in the body below is the 2026-07 text, kept as the record of what was decided then and **superseded**: a setup charge is an ordinary `one_time` line, and a plan is what its charge lines are — no plan type declares the mix. The argument of this ADR (kind is an axis, so a plan's lines are distinct keys) is unchanged and is what makes the three-kind plan possible.
+>
 > Charge-line / market split: the Foundation type formerly named `ScopeKey` is now `MarketPriceScopeKey` (all ten axes). `ChargeLineScopeKey` holds the eight logical axes without currency/region. Market selection, window overlap, uniqueness, supersession, and approval encoding still use the full ten-axis key; this split does not narrow conflict identity. Canonical serialized axis order is unchanged until pin encoding is versioned.
 
 

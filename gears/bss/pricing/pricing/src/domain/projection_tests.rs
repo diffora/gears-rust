@@ -1709,3 +1709,131 @@ fn the_graph_identities_reach_the_frozen_row_and_the_frozen_interval() {
     assert_eq!(intervals[1]["windowId"], json!(Uuid::from_u128(0xd2)));
     assert_eq!(intervals[1]["priceId"], json!(record.price_id));
 }
+
+/// **The worked continuation example, read off the frozen payload.**
+///
+/// A trial phase and a paid phase each carry the same metered line — one SKU,
+/// one meter, one aggregation window, a 1 000-unit allowance — in EUR and USD.
+/// What a consumer continues a counter on is the *quantity contract*, and it has
+/// to be **the same** across the two phases and **absent** from anything that
+/// changes when a phase or a price does:
+///
+/// - the four lines have four `chargeLineId`-distinct identities and four
+///   `priceId`s, so none of those can be the continuation key — a trial that
+///   ended at 800 would restart at 0 on conversion;
+/// - the SKU, meter, dimension key, aggregation window and allowance are equal on
+///   all four, so they can;
+/// - EUR and USD differ in their monetary operands and in nothing else, so the
+///   50 units past the boundary cost different money and are the same 50 units.
+///
+/// The arithmetic itself (800 + 250 = 1 050, 50 above the boundary) is the
+/// consumer's and the conformance oracle's; what Pricing owes is that the frozen
+/// read makes it computable, which is what this asserts.
+#[test]
+fn the_frozen_payload_carries_a_phase_blind_market_blind_quantity_contract() {
+    use super::RowGraphRef;
+    use crate::domain::price_row::{IncludedAllowance, RolloverPolicy, TierAggregationWindow};
+
+    let trial = PhaseId::new(Uuid::from_u128(0x7a_01));
+    let paid = terminal_phase();
+    let line = |phase: PhaseId, currency: &str, region: &str, seed: u128, rate: i64| {
+        let mut record = graduated_row();
+        record.price_id = Uuid::from_u128(0xb_1000 + seed);
+        record.scope_key = MarketPriceScopeKey::new(
+            ChargeLineScopeKey::new(
+                plan_id(),
+                phase,
+                PriceEligibility::AllSubscriptions,
+                ChargeKind::Usage,
+                Cohort::None,
+                SkuId::new(Uuid::from_u128(5)),
+            )
+            .expect("the class pairs with cohort none"),
+            CurrencyCode::new(currency).expect("three letters"),
+            Region::new(region).expect("a non-blank region"),
+        );
+        record.row.tier_aggregation_window = Some(TierAggregationWindow::CalendarMonth);
+        record.row.included_allowance = Some(IncludedAllowance {
+            quantity: 1_000,
+            rollover_policy: RolloverPolicy::None,
+        });
+        record.row.bands = vec![TierBand::open(
+            0,
+            RateMinor::from_nano_minor(rate).expect("a non-negative rate"),
+        )];
+        record
+    };
+
+    let mut delta = shape_only();
+    delta.prices = vec![
+        line(trial, "EUR", "eu", 1, 5_000_000_000),
+        line(trial, "USD", "us", 2, 6_000_000_000),
+        line(paid, "EUR", "eu", 3, 5_000_000_000),
+        line(paid, "USD", "us", 4, 6_000_000_000),
+    ];
+    // Two logical lines (one per phase), each with two market variants.
+    delta.row_graph = delta
+        .prices
+        .iter()
+        .enumerate()
+        .map(|(nth, record)| {
+            let phase_line = u128::from(record.scope_key.phase() == paid);
+            (
+                record.price_id,
+                RowGraphRef {
+                    charge_line_id: Uuid::from_u128(0xc1_00 + phase_line),
+                    line_version_id: Uuid::from_u128(0xc2_00 + phase_line),
+                    market_price_id: Uuid::from_u128(0xc3_00 + nth as u128),
+                },
+            )
+        })
+        .collect();
+
+    let value = delta.to_value();
+    let prices = value["prices"].as_array().expect("the frozen rows");
+    assert_eq!(prices.len(), 4);
+
+    // What may key a continuing counter: equal on every phase and every market.
+    for member in [
+        "skuId",
+        "meter",
+        "dimensionKey",
+        "tierAggregationWindow",
+        "aggregationFunction",
+        "aggregationGranularity",
+        "includedAllowance",
+    ] {
+        let first = &prices[0][member];
+        assert!(
+            prices.iter().all(|price| &price[member] == first),
+            "`{member}` is the same quantity contract in both phases and both markets: {value}"
+        );
+    }
+    assert_eq!(prices[0]["includedAllowance"]["quantity"], json!(1_000));
+
+    // What may not: it moves with the phase or with the money.
+    let distinct = |member: &str| -> usize {
+        prices
+            .iter()
+            .map(|price| price[member].to_string())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    };
+    assert_eq!(
+        distinct("priceId"),
+        4,
+        "a monetary version per market per phase"
+    );
+    assert_eq!(distinct("marketPriceId"), 4);
+    assert_eq!(distinct("chargeLineId"), 2, "a logical line per phase");
+    assert_eq!(distinct("lineVersionId"), 2);
+
+    // And the money differs by market alone.
+    let rate_of = |price: &serde_json::Value| price["bands"].to_string();
+    assert_eq!(
+        rate_of(&prices[0]),
+        rate_of(&prices[2]),
+        "EUR, trial vs paid"
+    );
+    assert_ne!(rate_of(&prices[0]), rate_of(&prices[1]), "EUR vs USD");
+}

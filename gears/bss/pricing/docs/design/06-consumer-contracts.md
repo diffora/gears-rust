@@ -242,6 +242,47 @@ Tariffs/Rating compute from.
 2. [ ] - `p1` - Completeness cross-check (delegating to the owning slices' rules; this bundle asserts the **union**): `modelKind` + `quantitySource` + `packageSize`/`packagePrice` (Slice 3), `tierAggregationWindow`/`billingGranularity` on usage rows (Slice 3), `tierQualificationWindow` (Slice 10, D-40), `aggregationFunction`/`aggregationGranularity`/`max_hold_granules` on non-`sum` rows (Slice 3, D-44), meter injectivity (Slice 2), the row template/GL resolution and GL membership plus plan extension completeness (Slice 2 `inst-ds-template`, `inst-ds-glresolve`, `inst-ds-glcode`, `inst-ds-required`; **D-373**), row tax and recurring timing (Slices 4/6) — the enumeration is illustrative; exhaustiveness delegates to the owning slices' registered rules - `inst-rc-union`
 3. [ ] - `p1` - No monetary charge computed here — the contract is inputs-only (Foundation principle) - `inst-rc-nocompute`
 
+### Phase-Entry One-Time Occurrence Contract
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-phase-entry-occurrence`
+
+**Input**: a subscription's actual entry into a plan phase; the frozen `one_time` lines of that phase on the bound market
+**Output**: the billable occurrences a consumer owes for that entry — and none for anything that is not an entry
+
+This is a **consumer implementation requirement** (D-375). Pricing freezes the lines, the money and the identities; Subscriptions owns the entry, Rating/Billing resolve the frozen money. None of those gears has a runtime in this workspace, so nothing below is runtime-tested here.
+
+**Steps**:
+1. [ ] - `p1` - A `one_time` line charges **once per actual entry into the phase that carries it** — not once per subscription lifetime. Subscriptions mints a durable `phaseEntryId` per actual transition entry (initial entry, trial conversion, plan change, a later re-entry each have their own) and **reuses it on every retry** of that entry. This supersedes the lifetime `(subscriptionId, priceId)` setup rule and the `one_time_setup` kind it was written for - `inst-pe-entry`
+2. [ ] - `p1` - **Dedup identity:** `(tenantId, subscriptionId, phaseEntryId, componentOccurrenceId, chargeLineId)`. A standalone line (not bought through a bundle) carries the explicit standalone sentinel as `componentOccurrenceId`; a bundle purchase carries the component's occurrence, so two component lines of one bundle entry are two occurrences and a retry of either is none. The frozen `lineVersionId`, `priceId`, `windowId` and the quantity **accompany** the occurrence; they are **not** part of its identity — a price publication between an entry and its retry must not mint a second charge - `inst-pe-dedup`
+3. [ ] - `p1` - **Normative vectors** — `emit_one_time` is what a conforming consumer does:
+
+   | event | `phaseEntryId` | `emit_one_time` |
+   |---|---|---|
+   | `initial_entry` | `entry-1` | `true` |
+   | `retry` (of `entry-1`) | `entry-1` | `false` |
+   | `resume_same_phase` | `entry-1` | `false` |
+   | `price_publication` | `entry-1` | `false` |
+   | `trial_conversion` (enters the paid phase) | `entry-2` | `true` |
+   | `plan_change` (enters the target's phase) | `entry-3` | `true` |
+   | `later_reentry` | `entry-4` | `true` |
+   | `skipped_phase` | — | `false` |
+
+   - `inst-pe-vectors`
+4. [ ] - `p1` - **Amounts are the frozen operands, unchanged:** a `flat` one-time line of 1 500 minor units charges 1 500; a `per_unit` one at rate 250 with quantity 3 charges 750 — both **before** the existing tax and rounding rules. Two component occurrences of one bundle entry each produce their own amount (EUR 20 and EUR 30 yield EUR 50); retrying them produces none. Subscriptions' events stay **money-free**: the occurrence names the line and the entry, and Rating/Billing resolve the money from the pinned snapshot - `inst-pe-amounts`
+
+### Usage Continuation Contract
+
+- [ ] `p1` - **ID**: `cpt-cf-bss-pricing-algo-usage-continuation`
+
+**Input**: a subscription's usage counter at a phase transition; the frozen usage lines of the phase it leaves and the phase it enters
+**Output**: whether the counter continues, and what prices the next unit
+
+**Steps**:
+1. [ ] - `p1` - **The continuation key excludes phase-local line ids and monetary-version ids.** It is the subscription, the priced `skuId` / `meter` / `dimensionKey`, and the compatible aggregation-window identity, under the existing counter ownership. No `chargeLineId`, `lineVersionId`, `marketPriceId` or `priceId` may reset a counter: those change whenever a phase or a price does, and the quantity a customer consumed does not - `inst-uc-key`
+2. [ ] - `p1` - **Compatible transitions retain quantity.** Worked example: a trial phase with an included allowance of 1 000 units ends at 800 consumed; the paid phase carries the same compatible counter contract. The counter **remains 800**; the next 250 units bring it to 1 050, of which **50 lie above the shared allowance boundary** and are what the paid phase's rates price. Distinct EUR and USD monetary operands change what those 50 cost in each market and change nothing about which 50 they are - `inst-uc-retain`
+3. [ ] - `p1` - **Incompatible transitions fail before the transition, not after it.** A change of unit denomination, `packageSize`, aggregation function/granularity or tier aggregation/qualification window between consecutive phases is a change of *quantity semantics* and is refused at publish (`PHASE_USAGE_INCOMPATIBLE`, S2 `inst-ph-usage-compatible`), so a consumer never meets one at runtime. A change of **money** — amounts, rates, tax, rounding — is not one of them and never fails continuation - `inst-uc-incompatible`
+4. [ ] - `p1` - **A missing usage tariff is an error.** When the selected phase and market hold no usage price for a metered line, the consumer answers `USAGE_PRICE_MISSING` — never an implicit free tariff, never the previous phase's price, never another market's through FX. Free usage is an **explicit zero** price, which accepts and accumulates usage like any other. Publish already refuses the catalog side of this (`LINE_MARKET_PRICE_MISSING`), so the runtime code is the defence for a pinned version that predates a market - `inst-uc-missing`
+
 ## 4. States (CDSL)
 
 No slice-owned state machine: contract fields ride the plan/price lifecycle (draft →

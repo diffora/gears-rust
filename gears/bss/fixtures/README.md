@@ -133,7 +133,8 @@ asserting a different expected content is how a generated file starts flapping.
    `[runtime]`. Both deny unknown fields, so the gear ownership boundary is checked when the
    corpus loads — D-60's per-subscription trailing lock cannot be written into `[snapshot]`
    at all.
-3. State `charge_kind`. It is **required** — `recurring | usage | one_time | one_time_setup`,
+3. State `charge_kind`. It is **required** — `recurring | usage | one_time` (exactly three; `one_time_setup` was
+   withdrawn 2026-09-19, and the loader refuses it),
    the scope key's seventh axis — and it has no default, because a default is an inference
    and the gear used to carry one ("a row that names a `meter` is a usage row"). Derive it
    from what the case *means*, then check it against the `inst-mk-chargekind` matrix: `flat`
